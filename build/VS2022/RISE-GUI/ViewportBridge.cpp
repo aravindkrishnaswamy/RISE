@@ -428,6 +428,101 @@ int ViewportBridge::activeGizmoAxis() const
     return RISE_API_SceneEditController_ActiveGizmoAxis(m_controller);
 }
 
+// -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+
+bool ViewportBridge::refreshNavGizmo(double centerX, double centerY,
+                                     double ballRadius, double nubRadius)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_RefreshNavGizmo(
+        m_controller, centerX, centerY, ballRadius, nubRadius);
+}
+
+QVector<ViewportBridge::NavNub> ViewportBridge::navGizmoNubs() const
+{
+    QVector<NavNub> out;
+    if (!m_controller) return out;
+    const unsigned int n = RISE_API_SceneEditController_NavGizmoNubCount(m_controller);
+    out.reserve(static_cast<int>(n));
+    for (unsigned int i = 0; i < n; ++i) {
+        int axis = 0, negative = 0, facing = 0;
+        double x = 0, y = 0, r = 0;
+        if (!RISE_API_SceneEditController_NavGizmoNub(
+                m_controller, i, &axis, &negative, &x, &y, &r, &facing)) {
+            continue;
+        }
+        NavNub nub;
+        nub.axis         = axis;
+        nub.negative     = (negative != 0);
+        nub.screenX      = x;
+        nub.screenY      = y;
+        nub.screenRadius = r;
+        nub.facing       = (facing != 0);
+        out.push_back(nub);
+    }
+    return out;
+}
+
+int ViewportBridge::navGizmoNubAt(double x, double y) const
+{
+    if (!m_controller) return -1;
+    return RISE_API_SceneEditController_NavGizmoNubAt(m_controller, x, y);
+}
+
+bool ViewportBridge::snapViewToAxis(int axis, bool negative)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SnapViewToAxis(m_controller, axis, negative ? 1 : 0);
+}
+
+bool ViewportBridge::enterFreeFly()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_EnterFreeFly(m_controller);
+}
+
+bool ViewportBridge::exitFreeFly()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_ExitFreeFly(m_controller);
+}
+
+bool ViewportBridge::isFreeFlyActive() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_IsFreeFlyActive(m_controller);
+}
+
+bool ViewportBridge::setHomeView()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetHomeView(m_controller);
+}
+
+bool ViewportBridge::goToHomeView()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_GoToHomeView(m_controller);
+}
+
+bool ViewportBridge::hasHomeView() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_HasHomeView(m_controller);
+}
+
+QString ViewportBridge::stampViewToNewCamera(const QString& proposedName)
+{
+    if (!m_controller) return QString();
+    char name[256] = { 0 };
+    const QByteArray prop = proposedName.toUtf8();
+    if (!RISE_API_SceneEditController_StampViewToNewCamera(
+            m_controller, prop.constData(), name, sizeof(name))) {
+        return QString();
+    }
+    return QString::fromUtf8(name);
+}
+
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }
 void ViewportBridge::pointerMove(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerMove(m_controller, x, y); }
 void ViewportBridge::pointerUp(double x, double y)   { if (m_controller) RISE_API_SceneEditController_OnPointerUp(m_controller, x, y); }
@@ -771,6 +866,48 @@ bool ViewportBridge::getEntitySourceLocation(Category category, const QString& n
         outByteOffset, outLine);
 }
 
+// ---- Source traceability (any UI element <-> scene-file span) ------
+
+bool ViewportBridge::resolveSourceSpan(Category cat, const QString& name, const QString& param,
+                                        int occ, quint64* outOffset, quint64* outLength,
+                                        quint32* outLine, quint32* outColumn) const
+{
+    if (outOffset) *outOffset = 0;
+    if (outLength) *outLength = 0;
+    if (outLine)   *outLine   = 0;
+    if (outColumn) *outColumn = 0;
+    if (!m_controller) return false;
+    const QByteArray nameUtf8  = name.toUtf8();
+    const QByteArray paramUtf8 = param.toUtf8();
+    return RISE_API_SceneEditController_ResolveSourceSpan(
+        m_controller, static_cast<int>(cat),
+        nameUtf8.constData(), paramUtf8.constData(), occ,
+        outOffset, outLength, outLine, outColumn);
+}
+
+bool ViewportBridge::sourceRefAtByteOffset(quint64 offset, Category* outCat, QString* outName,
+                                            QString* outParam, int* outOccurrence) const
+{
+    if (outName)       *outName       = QString();
+    if (outParam)      *outParam      = QString();
+    if (outOccurrence) *outOccurrence = 0;
+    if (!m_controller) return false;
+    int catInt = 0;
+    int occ = 0;
+    char nameBuf[256] = {0};
+    char paramBuf[128] = {0};
+    if (!RISE_API_SceneEditController_SourceRefAtByteOffset(
+            m_controller, offset, &catInt,
+            nameBuf, sizeof(nameBuf), paramBuf, sizeof(paramBuf), &occ)) {
+        return false;
+    }
+    if (outCat)        *outCat        = static_cast<Category>(catInt);
+    if (outName)       *outName       = QString::fromUtf8(nameBuf);
+    if (outParam)      *outParam      = QString::fromUtf8(paramBuf);
+    if (outOccurrence) *outOccurrence = occ;
+    return true;
+}
+
 // ---- Entity creation + painter CRUD (entity-creation slice) --------
 
 unsigned int ViewportBridge::entityTemplateCount(Category category) const
@@ -838,6 +975,82 @@ bool ViewportBridge::removeEntity(Category category, const QString& name, QStrin
         messageBuf, sizeof(messageBuf));
     if (outMessage && messageBuf[0] != '\0') *outMessage = QString::fromUtf8(messageBuf);
     return applied;
+}
+
+// ---- Environment / IBL section --------------------------------------
+
+bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const
+{
+    if (!m_controller || !out) return false;
+    int hasEnv = 0, procSky = 0, editable = 0, background = 0;
+    char nameBuf[256] = {0};
+    char fileBuf[1024] = {0};
+    double scale = 1.0, ox = 0.0, oy = 0.0, oz = 0.0;
+    if (!RISE_API_SceneEditController_GetEnvironment(
+            m_controller, &hasEnv, &procSky, &editable,
+            nameBuf, sizeof(nameBuf), fileBuf, sizeof(fileBuf),
+            &scale, &ox, &oy, &oz, &background)) {
+        return false;
+    }
+    out->hasEnvironment = (hasEnv != 0);
+    out->proceduralSky  = (procSky != 0);
+    out->editable       = (editable != 0);
+    out->painterName    = QString::fromUtf8(nameBuf);
+    out->file           = QString::fromUtf8(fileBuf);
+    out->scale          = scale;
+    out->orientX        = ox;
+    out->orientY        = oy;
+    out->orientZ        = oz;
+    out->background     = (background != 0);
+    return true;
+}
+
+bool ViewportBridge::setEnvironmentScale(double scale)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetEnvironmentScale(m_controller, scale);
+}
+
+bool ViewportBridge::setEnvironmentBackground(bool background)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetEnvironmentBackground(m_controller, background ? 1 : 0);
+}
+
+bool ViewportBridge::setEnvironmentOrient(double xDeg, double yDeg, double zDeg)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetEnvironmentOrient(m_controller, xDeg, yDeg, zDeg);
+}
+
+bool ViewportBridge::setEnvironmentFile(const QString& absPath)
+{
+    if (!m_controller || absPath.isEmpty()) return false;
+    const QByteArray utf8 = absPath.toUtf8();
+    return RISE_API_SceneEditController_SetEnvironmentFile(m_controller, utf8.constData());
+}
+
+bool ViewportBridge::addEnvironment(const QString& hdriPath, QString* outName, QString* outMessage)
+{
+    if (!m_controller || hdriPath.isEmpty()) return false;
+    const QByteArray utf8 = hdriPath.toUtf8();
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const bool applied = RISE_API_SceneEditController_AddEnvironment(
+        m_controller, utf8.constData(),
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+    if (outName && nameBuf[0] != '\0') *outName = QString::fromUtf8(nameBuf);
+    if (outMessage && messageBuf[0] != '\0') *outMessage = QString::fromUtf8(messageBuf);
+    return applied;
+}
+
+bool ViewportBridge::removeEnvironment()
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_RemoveEnvironment(m_controller);
 }
 
 QString ViewportBridge::addCameraFromActive(const QString& proposedName)

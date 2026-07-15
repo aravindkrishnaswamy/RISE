@@ -3010,6 +3010,42 @@ size_t DocByteOffsetOfItem( const Document& doc, int index )
 	return SeqOffsetAt( doc.items, index, visits );
 }
 
+bool DocByteRangeOfParam( const Document& doc, NodeId chunkId, const std::string& role,
+                          int occ, size_t* outOffset, size_t* outLength )
+{
+	// Resolve the chunk to its top-level index (for its absolute byte offset) and
+	// its green node (to walk kids).  The param must live in a top-level chunk.
+	NodeRef chunk;
+	const int idx = DocIndexOfNodeId( doc, chunkId, &chunk );
+	if( idx < 0 || !chunk ) return false;
+	const size_t chunkOff = DocByteOffsetOfItem( doc, idx );
+	if( chunkOff == (size_t)-1 ) return false;
+
+	// Serialize is an in-order concatenation of a node's kids (leaf = text), so a
+	// kid's byte offset within the chunk is the summed serialized width of every
+	// preceding kid.  Walk the chunk's kids, counting `role` Param occurrences.
+	size_t intra = 0;
+	int    seen  = 0;
+	for( const NodeRef& kid : chunk->kids )
+	{
+		if( !kid ) continue;   // defensive (kernel never populates null kids)
+		std::string kidBytes;
+		Serialize( kid, kidBytes );
+		if( kid->kind == NodeKind::Param && kid->role == role )
+		{
+			if( seen == occ )
+			{
+				if( outOffset ) *outOffset = chunkOff + intra;
+				if( outLength ) *outLength = kidBytes.size();
+				return true;
+			}
+			++seen;
+		}
+		intra += kidBytes.size();
+	}
+	return false;   // no `occ`-th `role` param in this chunk
+}
+
 Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits, std::vector<NodeId>* invalidated )
 {
 	if( visits ) *visits = 0;

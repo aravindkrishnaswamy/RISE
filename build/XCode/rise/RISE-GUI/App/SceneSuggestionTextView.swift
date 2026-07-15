@@ -31,6 +31,20 @@ func utf8ByteOffset(text: String, utf16Index: Int) -> Int {
 final class SceneSuggestionTextView: NSTextView {
     let suggestionBridge = RISESceneEditorBridge()
 
+    /// Reverse source traceability (text -> UI select): called with the
+    /// UTF-8 byte offset of the click when the user picks "Select in
+    /// Inspector".  Wired by the SceneTextEditor representable to
+    /// `RenderViewModel.reverseSelectEntity`; nil when unwired.
+    var onSelectEntityAtByteOffset: ((Int) -> Void)?
+
+    /// Reverse source traceability: whether "Select in Inspector" can act
+    /// right now (a clean, editable scene buffer -- `canReverseSelect`).
+    /// When it returns false the item is shown DISABLED rather than silently
+    /// no-opping, so the affordance stays "right or absent, never misleading"
+    /// -- matching the forward reveal affordances.  Consulted from
+    /// `validateMenuItem`.  nil == always enabled.
+    var canSelectEntityAtByteOffset: (() -> Bool)?
+
     /// Cached chunk categories for submenu titles — mirrors the
     /// grouping RISESceneEditorBridge provides via categoryDisplayName
     /// on each suggestion.
@@ -48,59 +62,79 @@ final class SceneSuggestionTextView: NSTextView {
             cursorByte: UInt(byteOffset),
             mode: .contextMenu) as [RISESuggestion]
 
-        if suggestions.isEmpty {
-            // Fall back to AppKit's default text menu so the user can
-            // still cut / copy / paste / look up.
-            return super.menu(for: event)
-        }
+        // Start from AppKit's native text menu so its submenus (Font,
+        // Spelling, Substitutions, …), separators, and per-item enablement
+        // stay intact; PREPEND our items rather than cloning (a manual clone
+        // drops submenus / state / separators — a real regression).
+        let menu = super.menu(for: event) ?? NSMenu(title: "Suggestions")
+        // Our "Select in Inspector" greying relies on validateMenuItem being
+        // consulted, which requires autoenablesItems (true on AppKit's text
+        // menu, but make the invariant explicit so the disabled state is
+        // robust against a future menu source).
+        menu.autoenablesItems = true
 
-        let root = NSMenu(title: "Suggestions")
+        // Build the leading block in display order, then insert it at the top.
+        var leading: [NSMenuItem] = []
 
-        // Group by category when at scene root (lots of chunk types);
-        // flat otherwise.
-        let hasChunkKeywords = suggestions.contains(where: { $0.kind == .chunkKeyword })
-        if hasChunkKeywords {
-            var byCategory: [String: [RISESuggestion]] = [:]
-            var order: [String] = []
-            for s in suggestions {
-                let cat = s.categoryDisplayName
-                if byCategory[cat] == nil {
-                    byCategory[cat] = []
-                    order.append(cat)
+        // Reverse source traceability: always the first item, independent of
+        // whether there are suggestions here.  Enablement is decided by
+        // validateMenuItem (canSelectEntityAtByteOffset), so a dirty or
+        // uneditable buffer shows it greyed rather than silently dead.
+        let selectItem = NSMenuItem(title: "Select in Inspector",
+                                    action: #selector(selectEntityAction(_:)),
+                                    keyEquivalent: "")
+        selectItem.target = self
+        selectItem.representedObject = byteOffset
+        selectItem.toolTip = "Select the scene entity this text belongs to"
+        leading.append(selectItem)
+        leading.append(.separator())
+
+        if !suggestions.isEmpty {
+            // Group by category when at scene root (lots of chunk types);
+            // flat otherwise.
+            let hasChunkKeywords = suggestions.contains(where: { $0.kind == .chunkKeyword })
+            if hasChunkKeywords {
+                var byCategory: [String: [RISESuggestion]] = [:]
+                var order: [String] = []
+                for s in suggestions {
+                    let cat = s.categoryDisplayName
+                    if byCategory[cat] == nil {
+                        byCategory[cat] = []
+                        order.append(cat)
+                    }
+                    byCategory[cat]!.append(s)
                 }
-                byCategory[cat]!.append(s)
-            }
-            for cat in order {
-                let sub = NSMenu(title: cat)
-                for s in byCategory[cat]! {
-                    sub.addItem(makeItem(for: s))
+                for cat in order {
+                    let sub = NSMenu(title: cat)
+                    for s in byCategory[cat]! {
+                        sub.addItem(makeItem(for: s))
+                    }
+                    let header = NSMenuItem(title: cat, action: nil, keyEquivalent: "")
+                    header.submenu = sub
+                    leading.append(header)
                 }
-                let header = NSMenuItem(title: cat, action: nil, keyEquivalent: "")
-                header.submenu = sub
-                root.addItem(header)
+            } else {
+                for s in suggestions {
+                    leading.append(makeItem(for: s))
+                }
             }
-        } else {
-            for s in suggestions {
-                root.addItem(makeItem(for: s))
-            }
+            leading.append(.separator())
         }
 
-        // Append the default editing actions (Cut / Copy / Paste / …)
-        // so the right-click menu is still fully functional.
-        if let stdMenu = super.menu(for: event) {
-            root.addItem(.separator())
-            for item in stdMenu.items {
-                // items can only belong to one menu; copy them
-                let copy = NSMenuItem(title: item.title, action: item.action, keyEquivalent: item.keyEquivalent)
-                copy.target = item.target
-                copy.keyEquivalentModifierMask = item.keyEquivalentModifierMask
-                copy.representedObject = item.representedObject
-                copy.tag = item.tag
-                root.addItem(copy)
-            }
+        for (i, item) in leading.enumerated() {
+            menu.insertItem(item, at: i)
         }
+        return menu
+    }
 
-        return root
+    /// Drives the enablement of "Select in Inspector" (reverse source
+    /// traceability).  All other items fall through to NSTextView's own
+    /// validation so the native editing actions grey out normally.
+    override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(selectEntityAction(_:)) {
+            return canSelectEntityAtByteOffset?() ?? true
+        }
+        return super.validateMenuItem(item)
     }
 
     private func makeItem(for suggestion: RISESuggestion) -> NSMenuItem {
@@ -116,6 +150,11 @@ final class SceneSuggestionTextView: NSTextView {
     @objc private func insertSuggestionAction(_ sender: NSMenuItem) {
         guard let text = sender.representedObject as? String else { return }
         insertText(text, replacementRange: selectedRange())
+    }
+
+    @objc private func selectEntityAction(_ sender: NSMenuItem) {
+        guard let offset = sender.representedObject as? Int else { return }
+        onSelectEntityAtByteOffset?(offset)
     }
 
     /// Expose the bridge so the SceneTextEditor's coordinator can reach

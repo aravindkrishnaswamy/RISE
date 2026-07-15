@@ -260,6 +260,16 @@ struct ViewportView: View {
                     }
                 )
             }
+            .overlay(alignment: .topTrailing) {
+                // Navigation axis-ball (Tier 2 §4): always available (nav is
+                // not tool-gated), but hidden during a production render since
+                // the interactive camera state may not match the production
+                // frame.  Hit-testable — a nub click snaps the view.
+                if !isProductionRendering {
+                    ViewportNavOverlay(bridge: bridge, refreshTrigger: gizmoRefreshTrigger)
+                        .padding(12)
+                }
+            }
             .overlay(alignment: .topLeading) {
                 if selectionCategory != .none, !selectionNameText.isEmpty {
                     selectionChip.padding(12)

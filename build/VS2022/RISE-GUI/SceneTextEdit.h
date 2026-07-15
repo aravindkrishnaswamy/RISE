@@ -12,6 +12,7 @@
 
 #include <QPlainTextEdit>
 #include <QTimer>
+#include <functional>
 
 class QCompleter;
 class QStringListModel;
@@ -23,6 +24,26 @@ class SceneTextEdit : public QPlainTextEdit
 public:
     explicit SceneTextEdit(QWidget* parent = nullptr);
     ~SceneTextEdit() override;
+
+    /// Reverse source traceability: predicate deciding whether "Select in
+    /// Inspector" can act right now (a clean, editable scene buffer).  When
+    /// it returns false the menu item is shown DISABLED rather than silently
+    /// no-opping -- the affordance stays "right or absent, never misleading",
+    /// matching the forward reveal affordances.  Evaluated at right-click
+    /// time; unset == always enabled.  Set by MainWindow via SceneEditor
+    /// (it folds in both the render-transport gate and the dirty check).
+    void setCanSelectEntityPredicate(std::function<bool()> pred) {
+        m_canSelectEntity = std::move(pred);
+    }
+
+signals:
+    // Reverse source traceability (text -> UI select): the user picked
+    // "Select in Inspector" from the right-click menu.  Carries the UTF-8
+    // byte offset of the click position (the caret, which contextMenuEvent
+    // moves to the click before emitting) so MainWindow can resolve it to
+    // the containing entity via ViewportBridge::sourceRefAtByteOffset and
+    // select that entity.  The forward direction is SceneEditor::revealAt.
+    void selectEntityAtByteOffsetRequested(quint64 byteOffset);
 
 protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
@@ -45,6 +66,7 @@ private:
     QCompleter*       m_completer = nullptr;
     QStringListModel* m_completionModel = nullptr;
     QTimer            m_completionTimer; // debounces complete-trigger on keystrokes
+    std::function<bool()> m_canSelectEntity; // reverse-traceability item enablement
 };
 
 #endif // SCENETEXTEDIT_H

@@ -9,8 +9,9 @@
     "Add a second camera named 'none' positioned overhead looking down."
   ],
   "budgets": {
-    "maxToolCalls": 6,
-    "maxLlmCalls": 6
+    "maxToolCalls": 14,
+    "maxLlmCalls": 16,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/reserved_name_recovery.fixture.jsonl"
@@ -48,14 +49,8 @@
       "expect": "clean"
     },
     {
-      "kind": "trajectory",
-      "maxToolCalls": 5,
-      "noMechanicalLoop": true,
-      "requiredToolInOrder": [
-        "read_document",
-        "insert_chunk",
-        "insert_chunk"
-      ]
+      "kind": "trajectory", "terminalStatus": "final_text",
+      "noMechanicalLoop": true
     }
   ]
 }

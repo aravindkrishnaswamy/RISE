@@ -47,6 +47,7 @@ class ViewportToolbar;
 class ViewportTimeline;
 class ViewportProperties;
 class OutlinerWidget;
+class EnvironmentPanel;
 
 class MainWindow : public QMainWindow
 {
@@ -152,6 +153,15 @@ private:
     /// clicks.
     bool canUseSceneTransport() const;
 
+    /// Reverse source traceability: THE single gate for "Select in Inspector"
+    /// -- the scene transport is free (no render owns the controller) AND the
+    /// editor buffer is clean (the click offset resolves against the live CST
+    /// serialization, which the buffer only matches when clean).  Used both to
+    /// enable/grey the menu item (SceneTextEdit predicate) and to re-check in
+    /// the selectEntityAtByteOffset slot -- one source, no drift.  Mirrors
+    /// Mac's RenderViewModel.canReverseSelect.
+    bool canReverseSelect() const;
+
     // P2 fix (mirrors Mac's ContentView.swift:366 exposure-popover gate
     // `renderState != .idle && !edrEnabled`): re-derives the EV chip's
     // enabled state from BOTH inputs together instead of only the HDR
@@ -216,6 +226,29 @@ private:
     /// other serializedSceneText()-family call), or the entity doesn't
     /// resolve.
     void revealEntityInSceneText(int category, const QString& name);
+
+    /// Source traceability (param + Environment granularity): resolve a
+    /// specific UI element's EXACT scene-file span via
+    /// ViewportBridge::resolveSourceSpan, switch to the Scene-file tab, and
+    /// select/flash [offset, offset+length) in the SceneEditor.  `param`
+    /// empty falls back to a whole-chunk (line) reveal.  Same
+    /// canUseSceneTransport() gate + stale-buffer (isDirty) skip as
+    /// revealEntityInSceneText -- a reveal must be right or absent, never
+    /// misleading.  `category` uses the SAME raw-int convention as
+    /// revealEntityInSceneText above (ViewportBridge::Category numbering).
+    void revealSourceSpan(int category, const QString& name,
+                           const QString& param, int occurrence);
+
+    /// Reverse source traceability (text -> UI select): resolve the scene
+    /// entity whose source contains UTF-8 `byteOffset` (a right-click in the
+    /// SceneEditor) via ViewportBridge::sourceRefAtByteOffset, then select it
+    /// so the outliner + properties panel land on it.  Same
+    /// canUseSceneTransport() gate as the forward reveals; additionally
+    /// requires !m_sceneEditor->isDirty() because the offset comes from the
+    /// buffer but resolves against the live CST serialization -- the two only
+    /// agree when the buffer is clean.  A no-resolve (inter-chunk trivia, a
+    /// non-entity chunk, a dirty buffer) is a silent no-op.
+    void selectEntityAtByteOffset(quint64 byteOffset);
 
     // Entity creation + painter CRUD (entity-creation slice) -- mirrors
     // macOS RenderViewModel.addEntity / duplicateSelectedOrNamed /
@@ -291,6 +324,11 @@ private:
     QWidget*         m_rightPanel = nullptr;
     QVBoxLayout*     m_rightPanelLayout = nullptr;
     OutlinerWidget*  m_outlinerWidget = nullptr;
+    // Environment / IBL section, persistent (built once, like the
+    // outliner) between the outliner and the per-scene ViewportProperties.
+    // Shows nothing until setBridge() gives it a live scene; hides itself
+    // entirely when the scene has no active rasterizer.
+    EnvironmentPanel* m_environmentPanel = nullptr;
 
     // Center column: persistent host for the view stack / timeline /
     // log drawer.  m_viewportTimeline is inserted/removed at index 1

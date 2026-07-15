@@ -7515,6 +7515,94 @@ namespace RISE
 		return p->ActiveGizmoAxis();
 	}
 
+	// -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+
+	bool RISE_API_SceneEditController_RefreshNavGizmo(
+		SceneEditController* p,
+		double centerX, double centerY, double ballRadius, double nubRadius )
+	{
+		if( !p ) return false;
+		return p->RefreshNavGizmo( centerX, centerY, ballRadius, nubRadius );
+	}
+
+	unsigned int RISE_API_SceneEditController_NavGizmoNubCount(
+		SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->NavGizmoNubCount();
+	}
+
+	bool RISE_API_SceneEditController_NavGizmoNub(
+		SceneEditController* p, unsigned int idx,
+		int* outAxis, int* outNegative,
+		double* outScreenX, double* outScreenY, double* outScreenRadius,
+		int* outFacing )
+	{
+		if( !p ) return false;
+		int    axis = 0;   bool neg = false, facing = false;
+		double sx = 0, sy = 0, r = 0;
+		if( !p->NavGizmoNubInfo( idx, axis, neg, sx, sy, r, facing ) ) return false;
+		if( outAxis         ) *outAxis         = axis;
+		if( outNegative     ) *outNegative     = neg ? 1 : 0;
+		if( outScreenX      ) *outScreenX      = sx;
+		if( outScreenY      ) *outScreenY      = sy;
+		if( outScreenRadius ) *outScreenRadius = r;
+		if( outFacing       ) *outFacing       = facing ? 1 : 0;
+		return true;
+	}
+
+	int RISE_API_SceneEditController_NavGizmoNubAt(
+		SceneEditController* p, double x, double y )
+	{
+		if( !p ) return -1;
+		return p->NavGizmoNubAt( x, y );
+	}
+
+	// -------- View navigation (Tier 2 §4-5): non-destructive --------
+
+	bool RISE_API_SceneEditController_SnapViewToAxis(
+		SceneEditController* p, int axis, int negative )
+	{
+		if( !p ) return false;
+		return p->SnapViewToAxis( axis, negative != 0 );
+	}
+
+	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->EnterFreeFlyFromActiveCamera();
+	}
+
+	bool RISE_API_SceneEditController_ExitFreeFly( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->ExitFreeFly();
+	}
+
+	bool RISE_API_SceneEditController_IsFreeFlyActive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsFreeFlyActive();
+	}
+
+	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->SetHomeView();
+	}
+
+	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->GoToHomeView();
+	}
+
+	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->HasHomeView();
+	}
+
 	bool RISE_API_SceneEditController_OnPointerDown(
 		SceneEditController* p, Scalar x, Scalar y )
 	{
@@ -7698,6 +7786,54 @@ namespace RISE
 		if( !p->EntitySourceLocation( cat, String( name ), byteOffset, line ) ) return false;
 		if( outByteOffset ) *outByteOffset = byteOffset;
 		if( outLine )       *outLine       = line;
+		return true;
+	}
+
+	// Source traceability — any UI element -> its scene-file span, + the reverse.
+	// See SceneEditController::ResolveSourceSpan / SourceRefAtByteOffset.
+
+	bool RISE_API_SceneEditController_ResolveSourceSpan(
+		SceneEditController* p, int category, const char* name, const char* param, int occ,
+		unsigned long long* outByteOffset, unsigned long long* outByteLength,
+		unsigned int* outLine, unsigned int* outColumn )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		SceneEditController::SourceSpan sp;
+		if( !p->ResolveSourceSpan( cat, String( name ? name : "" ), String( param ? param : "" ), occ, sp ) )
+			return false;
+		if( outByteOffset ) *outByteOffset = sp.byteOffset;
+		if( outByteLength ) *outByteLength = sp.byteLength;
+		if( outLine )       *outLine       = sp.line;
+		if( outColumn )     *outColumn     = sp.column;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SourceRefAtByteOffset(
+		SceneEditController* p, unsigned long long offset,
+		int* outCategory,
+		char* outName, unsigned int outNameLen,
+		char* outParam, unsigned int outParamLen,
+		int* outOccurrence )
+	{
+		if( !p ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name, param;
+		int occ = 0;
+		if( !p->SourceRefAtByteOffset( offset, cat, name, param, &occ ) ) return false;
+		if( outCategory )   *outCategory   = static_cast<int>( cat );
+		if( outOccurrence ) *outOccurrence = occ;
+		// Inline truncating copy (CopyToBuf is defined later in this TU): NUL-terminate.
+		auto copyOut = []( const String& s, char* buf, unsigned int cap ) {
+			if( !buf || cap == 0 ) return;
+			const char* src = s.c_str();
+			unsigned int i = 0;
+			while( src && src[i] && i + 1 < cap ) { buf[i] = src[i]; ++i; }
+			buf[i] = '\0';
+		};
+		copyOut( name, outName, outNameLen );
+		copyOut( param, outParam, outParamLen );
 		return true;
 	}
 
@@ -7994,6 +8130,16 @@ namespace RISE
 		return p->CloneActiveCamera( prop, outName, outLen );
 	}
 
+	bool RISE_API_SceneEditController_StampViewToNewCamera(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->StampViewToNewCamera( prop, outName, outLen );
+	}
+
 	// -------------------------------------------------------------------
 	// Entity-creation slice.  AgentCommitResult carries more fields
 	// (rawCode / conflict / retriable / headVersion / chunkKeyword /
@@ -8065,6 +8211,81 @@ namespace RISE
 		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
 		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
 		return r.applied;
+	}
+
+	// -------------------------------------------------------------------
+	// Environment / IBL section (GUI Environment panel).  Thin wrappers over
+	// SceneEditController's environment accessors; see docs/gui/ENVIRONMENT_SECTION.md.
+	// -------------------------------------------------------------------
+
+	bool RISE_API_SceneEditController_GetEnvironment(
+		SceneEditController* p,
+		int* outHasEnvironment, int* outProceduralSky, int* outEditable,
+		char* outPainterName, unsigned int outPainterNameLen,
+		char* outFile, unsigned int outFileLen,
+		double* outScale, double* outOrientX, double* outOrientY, double* outOrientZ,
+		int* outBackground )
+	{
+		if( !p ) return false;
+		SceneEditController::EnvironmentInfo info;
+		if( !p->GetEnvironment( info ) ) return false;
+		if( outHasEnvironment ) *outHasEnvironment = info.hasEnvironment ? 1 : 0;
+		if( outProceduralSky )  *outProceduralSky  = info.proceduralSky ? 1 : 0;
+		if( outEditable )       *outEditable       = info.editable ? 1 : 0;
+		if( outPainterName && outPainterNameLen > 0 ) CopyToBuf( info.painterName, outPainterName, outPainterNameLen );
+		if( outFile && outFileLen > 0 )               CopyToBuf( info.file, outFile, outFileLen );
+		if( outScale )      *outScale      = info.scale;
+		if( outOrientX )    *outOrientX    = info.orientDeg[0];
+		if( outOrientY )    *outOrientY    = info.orientDeg[1];
+		if( outOrientZ )    *outOrientZ    = info.orientDeg[2];
+		if( outBackground ) *outBackground = info.background ? 1 : 0;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentScale( SceneEditController* p, double scale )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentScale( scale );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentBackground( SceneEditController* p, int background )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentBackground( background != 0 );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentOrient(
+		SceneEditController* p, double xDeg, double yDeg, double zDeg )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentOrient( xDeg, yDeg, zDeg );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentFile( SceneEditController* p, const char* absPath )
+	{
+		if( !p || !absPath ) return false;
+		return p->SetEnvironmentFile( String( absPath ) );
+	}
+
+	bool RISE_API_SceneEditController_AddEnvironment(
+		SceneEditController* p, const char* hdriPath,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p || !hdriPath ) return false;
+		String name;
+		const SceneEditController::AgentCommitResult r = p->AddEnvironment( String( hdriPath ), &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->RemoveEnvironment();
 	}
 
 	// -------------------------------------------------------------------

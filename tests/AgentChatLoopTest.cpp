@@ -676,10 +676,22 @@ static void TestAnthropicRequestShape()
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );
 	Check( root.get( "max_tokens" ).asNumber() == 16000.0,
 	       "body carries max_tokens 16000 (adaptive-thinking + scene-doc headroom)" );
-	Check( !root.get( "system" ).asString().empty(), "body carries a non-empty system prompt" );
-	Check( root.get( "system" ).asString().find( "co-edit" ) != std::string::npos ||
-	       root.get( "system" ).asString().find( "CO-EDIT" ) != std::string::npos,
+	// Prompt caching: system is emitted as a one-element array whose single
+	// text block carries a cache_control:ephemeral breakpoint.  That one
+	// breakpoint caches the tools+system prefix (tools render before system
+	// in Anthropic's cache prefix), so a live session pays the full-price
+	// prefix once and reads it at ~0.1x on every subsequent turn.
+	const JsonValue& sys = root.get( "system" );
+	Check( sys.isArray() && sys.size() == 1, "system is a one-block array (cache-control carrier)" );
+	const JsonValue& sysBlock = sys.at( 0 );
+	Check( sysBlock.get( "type" ).asString() == "text", "system block is a text block" );
+	const std::string sysText = sysBlock.get( "text" ).asString();
+	Check( !sysText.empty(), "body carries a non-empty system prompt" );
+	Check( sysText.find( "co-edit" ) != std::string::npos ||
+	       sysText.find( "CO-EDIT" ) != std::string::npos,
 	       "system prompt is the co-editing prompt" );
+	Check( sysBlock.get( "cache_control" ).get( "type" ).asString() == "ephemeral",
+	       "system block carries a cache_control:ephemeral prompt-cache breakpoint" );
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
@@ -775,31 +787,31 @@ static void TestAnthropicRequestShape()
 			       "render description mentions the integrator field" );
 		}
 	}
-	Check( root.get( "system" ).asString().find( "status=diagnosed" ) != std::string::npos,
+	Check( sysText.find( "status=diagnosed" ) != std::string::npos,
 	       "the system prompt teaches status=diagnosed" );
 	// Model-B F5 slice S2: the capability sentence now states entity add/remove
 	// is REAL (insert_chunk / remove_chunk) with honest limits, replacing the
 	// pre-S2 "not supported yet" scope.
-	Check( root.get( "system" ).asString().find( "adding or removing entities is not supported yet" ) == std::string::npos,
+	Check( sysText.find( "adding or removing entities is not supported yet" ) == std::string::npos,
 	       "the stale parameters-only capability sentence is GONE" );
-	Check( root.get( "system" ).asString().find( "insert_chunk" ) != std::string::npos &&
-	       root.get( "system" ).asString().find( "remove_chunk" ) != std::string::npos,
+	Check( sysText.find( "insert_chunk" ) != std::string::npos &&
+	       sysText.find( "remove_chunk" ) != std::string::npos,
 	       "the system prompt teaches the S2 chunk-CRUD verbs" );
-	Check( root.get( "system" ).asString().find( "whole-chunk granularity" ) != std::string::npos &&
-	       root.get( "system" ).asString().find( "no rename" ) != std::string::npos,
+	Check( sysText.find( "whole-chunk granularity" ) != std::string::npos &&
+	       sysText.find( "no rename" ) != std::string::npos,
 	       "the system prompt keeps honest limits (whole-chunk granularity; no rename)" );
 	// Round 3: the system prompt teaches the TRUE camera story -- the sole
 	// camera IS removable via kind="camera", the swap order is remove-FIRST --
 	// and the retarget-refused remove+re-insert escape.  The false round-2
 	// "an unnamed camera cannot be removed" claim must be gone.
-	Check( root.get( "system" ).asString().find( "an unnamed camera" ) == std::string::npos,
+	Check( sysText.find( "an unnamed camera" ) == std::string::npos,
 	       "the system prompt no longer claims the unnamed camera is unremovable" );
-	Check( root.get( "system" ).asString().find( "kind=\"camera\"" ) != std::string::npos &&
-	       root.get( "system" ).asString().find( "SOLE camera" ) != std::string::npos,
+	Check( sysText.find( "kind=\"camera\"" ) != std::string::npos &&
+	       sysText.find( "SOLE camera" ) != std::string::npos,
 	       "the system prompt teaches the kind=\"camera\" sole-camera removal" );
-	Check( root.get( "system" ).asString().find( "REMOVE the old camera FIRST" ) != std::string::npos,
+	Check( sysText.find( "REMOVE the old camera FIRST" ) != std::string::npos,
 	       "the system prompt teaches the remove-FIRST camera-swap order" );
-	Check( root.get( "system" ).asString().find( "re-insert" ) != std::string::npos,
+	Check( sysText.find( "re-insert" ) != std::string::npos,
 	       "the system prompt teaches the retarget-refused remove+re-insert escape" );
 
 	const JsonValue& msgs = root.get( "messages" );
@@ -3916,6 +3928,444 @@ static void TestReasoningEffortRetry()
 	}
 }
 
+//----------------------------------------------------------------------
+// T35: context-compaction slice S1 -- the token estimator + budget
+// config.  OBSERVABILITY ONLY: no BuildRequest/transcript behaviour is
+// touched by this slice, so these checks are entirely about
+// EstimateContextTokens/SetContextBudget/WouldCompactNow.
+//----------------------------------------------------------------------
+static void TestContextBudgetEstimator()
+{
+	std::printf( "T35: context-compaction S1 (token estimator + budget config)...\n" );
+
+	// (a) Empty transcript, budget disabled (the default): the estimate is
+	// roughly (system prompt + tool defs)/4 and strictly positive;
+	// WouldCompactNow is false.
+	{
+		AgentChatLoop loop;
+		Check( loop.ContextBudgetHigh() == 0 && loop.ContextBudgetLow() == 0,
+		       "T35: the budget defaults to disabled (0, 0)" );
+		const std::size_t baseline = loop.EstimateContextTokens();
+		Check( baseline > 0, "T35: an empty transcript still estimates the fixed-prefix tokens" );
+		// Loose sanity band: the system prompt + tool defs are several KB
+		// of text, so the /4 char-per-token proxy should land in the
+		// low thousands, not near-zero or absurdly huge.
+		Check( baseline > 100 && baseline < 100000,
+		       "T35: the empty-transcript estimate is in a sane range for a system-prompt+tools-only request" );
+		Check( !loop.WouldCompactNow(), "T35: WouldCompactNow is false while the budget is disabled" );
+	}
+
+	// (b) Growing the transcript grows the estimate monotonically.
+	{
+		AgentChatLoop loop;
+		const std::size_t before = loop.EstimateContextTokens();
+		loop.AddUserMessage( std::string( 4000, 'x' ) );
+		const std::size_t after = loop.EstimateContextTokens();
+		Check( after > before,
+		       "T35: adding a long user message strictly increases the estimate" );
+	}
+
+	// (c) SetContextBudget: a high-water mark BELOW the current estimate
+	// trips WouldCompactNow; (0,0) always disables it regardless of size.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( std::string( 4000, 'y' ) );
+		const std::size_t est = loop.EstimateContextTokens();
+		Check( est > 10, "T35: sanity -- the seeded transcript has a non-trivial estimate" );
+
+		loop.SetContextBudget( est - 1, 10 );
+		Check( loop.ContextBudgetHigh() == est - 1 && loop.ContextBudgetLow() == 10,
+		       "T35: SetContextBudget stores both values verbatim" );
+		Check( loop.WouldCompactNow(),
+		       "T35: a high-water mark below the current estimate trips WouldCompactNow" );
+
+		loop.SetContextBudget( 0, 0 );
+		Check( !loop.WouldCompactNow(),
+		       "T35: SetContextBudget(0,0) disables compaction regardless of transcript size" );
+	}
+
+	// (d) Budget config survives Reset() and SetProvider() -- provider-
+	// neutral config, like mSkillIndexText.
+	{
+		AgentChatLoop loop;
+		loop.SetContextBudget( 5000, 1000 );
+		loop.AddUserMessage( "hello" );
+
+		loop.Reset();
+		Check( loop.ContextBudgetHigh() == 5000 && loop.ContextBudgetLow() == 1000,
+		       "T35: Reset() leaves the context budget untouched" );
+
+		loop.SetProvider( ChatProvider::Anthropic );
+		Check( loop.ContextBudgetHigh() == 5000 && loop.ContextBudgetLow() == 1000,
+		       "T35: SetProvider() leaves the context budget untouched" );
+	}
+
+	// (e) IMAGE DISCOUNT: a live user-attached image is charged a flat
+	// per-image token cost, NOT its (huge) base64 byte length at the
+	// text chars-per-token rate.  AddUserMessage's attachments overload
+	// is the public path that packs a live image into a transcript entry
+	// (see AgentChatLoop.h "USER IMAGE RETENTION"), so no internal
+	// poking is needed here.
+	{
+		// A big-but-fake base64 payload (64KB of 'A's -- not a real PNG,
+		// but EstimateContextTokens never decodes it; only rawJson.size()
+		// and liveUserImageCount matter to the estimator).
+		const std::string bigB64( 64 * 1024, 'A' );
+
+		AgentChatLoop withImage;
+		withImage.SetProvider( ChatProvider::Anthropic );
+		std::vector<ChatAttachment> atts;
+		atts.push_back( ChatAttachment{ "image/png", bigB64 } );
+		withImage.AddUserMessage( "reference photo", atts );
+		Check( withImage.TranscriptAt( 0 ).liveUserImageCount == 1,
+		       "T35: sanity -- the attachment landed as a live user image" );
+		Check( withImage.TranscriptAt( 0 ).rawJson.size() > bigB64.size(),
+		       "T35: sanity -- the packed entry's rawJson really does carry the big base64 blob" );
+
+		const std::size_t estWithImage = withImage.EstimateContextTokens();
+
+		// The marginal tokens attributed to the one image-carrying entry
+		// (estimate minus the same-provider empty-transcript baseline)
+		// must be FAR below naively counting the base64 blob's bytes at
+		// the text chars-per-token rate -- that naive count is what a
+		// non-discounted estimator would have added for this one entry.
+		AgentChatLoop baseline;
+		baseline.SetProvider( ChatProvider::Anthropic );
+		const std::size_t base0 = baseline.EstimateContextTokens();
+		Check( estWithImage > base0,
+		       "T35: sanity -- the image entry still adds SOME tokens (the flat per-image charge)" );
+
+		const std::size_t marginalTokens = estWithImage - base0;
+		const std::size_t naiveBase64TokensAlone = bigB64.size() / 4;
+		Check( marginalTokens < naiveBase64TokensAlone,
+		       "T35: the image entry's marginal token cost is far below naively counting "
+		       "just its base64 payload at the text chars-per-token rate -- proving the "
+		       "image is billed by a flat per-image charge, not its byte length" );
+	}
+
+	// (f) P1-1 regression: a long caption CO-PACKED with an image
+	// attachment must NOT be discarded from the estimate.  Before the
+	// imageContentBytes fix, an image-bearing entry was charged a FLAT
+	// kImageEntryTextChars (512) and its entire rawJson (including any
+	// co-packed non-image text) was excluded -- so a multi-KB caption
+	// sitting right next to a small attachment silently vanished from
+	// the estimate.  Compare two estimates that differ ONLY in caption
+	// length, same one small attachment in both.
+	{
+		const std::string smallB64( 256, 'A' );   // small, fixed attachment in both cases
+		ChatAttachment att;
+		att.mimeType = "image/png";
+		att.base64Data = smallB64;
+		std::vector<ChatAttachment> atts;
+		atts.push_back( att );
+
+		const std::string shortCaption = "photo";
+		const std::string longCaption( 8 * 1024, 'x' );   // several KB, no JSON-escaped chars
+
+		AgentChatLoop shortLoop;
+		shortLoop.SetProvider( ChatProvider::Anthropic );
+		shortLoop.AddUserMessage( shortCaption, atts );
+		const std::size_t estShort = shortLoop.EstimateContextTokens();
+
+		AgentChatLoop longLoop;
+		longLoop.SetProvider( ChatProvider::Anthropic );
+		longLoop.AddUserMessage( longCaption, atts );
+		const std::size_t estLong = longLoop.EstimateContextTokens();
+
+		std::printf( "  T35f: estShort=%zu estLong=%zu (captionDelta=%zu, "
+		             "expected~%zu tokens)\n", estShort, estLong,
+		             longCaption.size() - shortCaption.size(),
+		             ( longCaption.size() - shortCaption.size() ) / 4 );
+
+		Check( estLong > estShort,
+		       "T35f/P1-1: a long co-packed caption strictly increases the estimate "
+		       "over a short caption with the same attachment (the caption text is "
+		       "NOT discarded because it rides in an image-bearing entry)" );
+
+		// The growth must track the caption's length at the standard
+		// chars-per-token rate (within a generous tolerance for JSON
+		// envelope overhead), not merely be "some" nonzero amount --
+		// otherwise a flat per-entry charge could still coincidentally
+		// pass a bare estLong > estShort check.
+		const std::size_t observedDelta = estLong - estShort;
+		const std::size_t expectedDelta = ( longCaption.size() - shortCaption.size() ) / 4;
+		const std::size_t lowerBound = expectedDelta / 2;
+		Check( observedDelta > lowerBound,
+		       "T35f/P1-1: the estimate's growth roughly tracks the caption length "
+		       "at kCharsPerToken, proving the caption's bytes -- not just a flat "
+		       "per-image charge -- are included" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T36 (context-compaction slice S2): the structural span-dropper.
+// Builds a realistic multi-span Anthropic transcript (each user turn is
+// one read_document tool round through the LIVE dispatcher -> a span of
+// User + Assistant(tool_use) + ToolResults + Assistant(final)) and
+// exercises CompactTranscript via BuildRequest: no-op below budget,
+// compaction-fires WIRE VALIDITY, the min-retained-spans floor,
+// determinism, and the low>=high / low==0 guards.
+//----------------------------------------------------------------------
+
+// Drive one full Anthropic user turn against the live dispatcher: a
+// user message carrying `marker`, one read_document tool round (id
+// derived from `turn` so ids never collide -- the duplicate-id gate
+// would otherwise refuse), then an end_turn final text.  Leaves the
+// loop idle with four fresh transcript entries (one whole span).
+static void DriveAnthropicSpan( AgentChatLoop& loop, AgentRpcDispatcher& rpc,
+                                int turn, const std::string& marker )
+{
+	loop.AddUserMessage( marker );
+
+	const std::string toolId = "toolu_span" + std::to_string( turn );
+	const std::string useFixture = AnthropicFixture(
+		std::string( "[{\"type\":\"text\",\"text\":\"reading the doc\"},"
+		"{\"type\":\"tool_use\",\"id\":\"" ) + toolId +
+		"\",\"name\":\"read_document\",\"input\":{\"kind\":\"scene\"}}]",
+		"tool_use" );
+	ChatStepResult st = loop.HandleResponse( 200, useFixture );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+	       "T36: setup -- each turn issues one read_document tool call" );
+	if( st.toolCalls.size() != 1 ) return;
+
+	const std::string line = loop.ToolCallToJsonRpcLine( st.toolCalls[0], turn );
+	const std::string resp = rpc.HandleLine( line );
+	loop.AddToolResult( st.toolCalls[0], resp );
+
+	const std::string done = AnthropicFixture(
+		std::string( "[{\"type\":\"text\",\"text\":\"finished turn " ) +
+		std::to_string( turn ) + "\"}]", "end_turn" );
+	ChatStepResult fin = loop.HandleResponse( 200, done );
+	Check( fin.kind == ChatStepResult::Kind::FinalText,
+	       "T36: setup -- each turn ends on FinalText" );
+}
+
+// Count tool_use / tool_result blocks across an Anthropic messages
+// array, and verify every message carrying a tool_result is immediately
+// preceded by a message whose tool_use ids cover it (no orphans).
+static void CheckAnthropicToolPairing( const JsonValue& root )
+{
+	const JsonValue& msgs = root.get( "messages" );
+	Check( msgs.isArray() && msgs.size() > 0,
+	       "T36: compacted body carries a non-empty messages array" );
+	Check( msgs.at( 0 ).get( "role" ).asString() == "user",
+	       "T36: WIRE -- the FIRST message after compaction has role user" );
+
+	int toolUseCount = 0, toolResultCount = 0;
+	bool everyResultPaired = true;
+	for( std::size_t i = 0; i < msgs.size(); ++i ) {
+		const JsonValue& content = msgs.at( i ).get( "content" );
+		if( !content.isArray() ) continue;
+
+		// Collect this message's tool_result ids + count both kinds.
+		std::vector<std::string> resultIdsHere;
+		for( std::size_t j = 0; j < content.size(); ++j ) {
+			const std::string t = content.at( j ).get( "type" ).asString();
+			if( t == "tool_use" ) ++toolUseCount;
+			else if( t == "tool_result" ) {
+				++toolResultCount;
+				resultIdsHere.push_back( content.at( j ).get( "tool_use_id" ).asString() );
+			}
+		}
+		if( resultIdsHere.empty() ) continue;
+
+		// Every tool_result here must be answered by a tool_use in the
+		// IMMEDIATELY-preceding message.
+		if( i == 0 ) { everyResultPaired = false; continue; }
+		const JsonValue& prev = msgs.at( i - 1 ).get( "content" );
+		for( std::size_t r = 0; r < resultIdsHere.size(); ++r ) {
+			bool matched = false;
+			if( prev.isArray() ) {
+				for( std::size_t j = 0; j < prev.size(); ++j ) {
+					if( prev.at( j ).get( "type" ).asString() == "tool_use" &&
+					    prev.at( j ).get( "id" ).asString() == resultIdsHere[r] ) {
+						matched = true;
+						break;
+					}
+				}
+			}
+			if( !matched ) everyResultPaired = false;
+		}
+	}
+
+	Check( toolUseCount == toolResultCount,
+	       "T36: WIRE -- tool_use block count equals tool_result block count (no orphans)" );
+	Check( everyResultPaired,
+	       "T36: WIRE -- every tool_result is preceded by its matching tool_use" );
+}
+
+static void TestContextCompaction( AgentRpcDispatcher& rpc )
+{
+	std::printf( "T36: context-compaction S2 (structural span-dropper + wire validity)...\n" );
+
+	const char* const kMark1 = "SPAN_ONE_UNIQUE_MARKER";
+	const char* const kMark2 = "SPAN_TWO_UNIQUE_MARKER";
+	const char* const kMark3 = "SPAN_THREE_UNIQUE_MARKER";
+	const char* const kMark4 = "SPAN_FOUR_UNIQUE_MARKER";
+
+	// (a) NO-OP below budget / disabled: a four-span transcript with the
+	// budget unset (the default) is left byte-identical by BuildRequest.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		DriveAnthropicSpan( loop, rpc, 1, kMark1 );
+		DriveAnthropicSpan( loop, rpc, 2, kMark2 );
+		DriveAnthropicSpan( loop, rpc, 3, kMark3 );
+		DriveAnthropicSpan( loop, rpc, 4, kMark4 );
+
+		const std::size_t sizeBefore = loop.TranscriptSize();
+		Check( sizeBefore == 16,
+		       "T36a: four turns produce 16 entries (four 4-entry spans)" );
+
+		// Budget disabled (default 0,0): BuildRequest must not compact.
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == sizeBefore,
+		       "T36a: budget disabled -> BuildRequest leaves the transcript size unchanged" );
+		JsonValue root = ParseBody( req.body );
+		Check( root.get( "messages" ).isArray() && root.get( "messages" ).size() == 16,
+		       "T36a: disabled-budget body still carries all 16 messages" );
+
+		// A high-water mark FAR above the estimate is likewise a no-op.
+		AgentChatLoop loop2;
+		loop2.SetProvider( ChatProvider::Anthropic );
+		DriveAnthropicSpan( loop2, rpc, 1, kMark1 );
+		DriveAnthropicSpan( loop2, rpc, 2, kMark2 );
+		DriveAnthropicSpan( loop2, rpc, 3, kMark3 );
+		DriveAnthropicSpan( loop2, rpc, 4, kMark4 );
+		loop2.SetContextBudget( loop2.EstimateContextTokens() + 1000000, 1000 );
+		const std::size_t size2 = loop2.TranscriptSize();
+		loop2.BuildRequest( kApiKey );
+		Check( loop2.TranscriptSize() == size2,
+		       "T36a: a high-water mark far above the estimate does not compact" );
+	}
+
+	// (b) COMPACTION FIRES + WIRE VALIDITY (the load-bearing case).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		DriveAnthropicSpan( loop, rpc, 1, kMark1 );
+		DriveAnthropicSpan( loop, rpc, 2, kMark2 );
+		DriveAnthropicSpan( loop, rpc, 3, kMark3 );
+		DriveAnthropicSpan( loop, rpc, 4, kMark4 );
+
+		const std::size_t entriesBefore = loop.TranscriptSize();
+		const std::size_t estBefore = loop.EstimateContextTokens();
+		std::printf( "  T36b: before compaction: %zu entries, est=%zu tokens\n",
+		             entriesBefore, estBefore );
+
+		// Force a drop: high-water below the current estimate, low-water
+		// well below that (so the span loop runs toward the floor).
+		loop.SetContextBudget( estBefore - 1, estBefore / 4 );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+
+		const std::size_t entriesAfter = loop.TranscriptSize();
+		const std::size_t estAfter = loop.EstimateContextTokens();
+		std::printf( "  T36b: after compaction:  %zu entries, est=%zu tokens\n",
+		             entriesAfter, estAfter );
+		Check( entriesAfter < entriesBefore,
+		       "T36b: compaction dropped at least one whole span (fewer entries)" );
+
+		// WIRE VALIDITY on the serialized body.
+		JsonValue root = ParseBody( req.body );
+		CheckAnthropicToolPairing( root );
+
+		// Dropped enough (estimate <= high-water) OR floored at the min
+		// retained span count (a single over-budget turn is accepted).
+		const std::size_t retainedSpans = entriesAfter / 4;   // 4 entries per span here
+		Check( estAfter <= loop.ContextBudgetHigh() ||
+		       retainedSpans == static_cast<std::size_t>( AgentChatLoop::kMinRetainedSpans ),
+		       "T36b: post-compaction estimate <= high-water OR only kMinRetainedSpans spans remain" );
+
+		// The LAST kMinRetainedSpans spans are intact: the two most-recent
+		// user turns' markers survive; the oldest span's marker is gone.
+		Check( req.body.find( kMark4 ) != std::string::npos,
+		       "T36b: the most-recent user turn's text survives compaction" );
+		Check( req.body.find( kMark3 ) != std::string::npos,
+		       "T36b: the second-most-recent user turn's text survives (kMinRetainedSpans==2)" );
+		Check( req.body.find( kMark1 ) == std::string::npos,
+		       "T36b: the OLDEST user turn's text was dropped" );
+	}
+
+	// (c) FLOOR respected: a transcript of exactly kMinRetainedSpans spans
+	// is never compacted, even under a tiny budget.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		DriveAnthropicSpan( loop, rpc, 1, kMark1 );
+		DriveAnthropicSpan( loop, rpc, 2, kMark2 );
+		Check( loop.TranscriptSize() == 8,
+		       "T36c: two turns == kMinRetainedSpans spans (8 entries)" );
+
+		// A genuinely tiny valid window (high=10, low=1): still over budget,
+		// but the two-span floor forbids any drop.
+		loop.SetContextBudget( 10, 1 );
+		const std::size_t sizeBefore = loop.TranscriptSize();
+		loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == sizeBefore,
+		       "T36c: a floor-sized transcript is never compacted, even under a tiny budget" );
+	}
+
+	// (d) DETERMINISM: two loops driven with an identical turn sequence and
+	// the identical budget produce byte-identical compacted request bodies.
+	{
+		AgentChatLoop a, b;
+		a.SetProvider( ChatProvider::Anthropic );
+		b.SetProvider( ChatProvider::Anthropic );
+		for( int k = 1; k <= 4; ++k ) {
+			const std::string m = "DET_MARK_" + std::to_string( k );
+			DriveAnthropicSpan( a, rpc, k, m );
+			DriveAnthropicSpan( b, rpc, k, m );
+		}
+		const std::size_t est = a.EstimateContextTokens();
+		a.SetContextBudget( est - 1, est / 4 );
+		b.SetContextBudget( est - 1, est / 4 );
+		const ChatHttpRequest ra = a.BuildRequest( kApiKey );
+		const ChatHttpRequest rb = b.BuildRequest( kApiKey );
+		Check( ra.body == rb.body,
+		       "T36d: identical turns + identical budget -> byte-identical compacted bodies" );
+		Check( a.TranscriptSize() == b.TranscriptSize(),
+		       "T36d: identical compaction leaves identical transcript sizes" );
+	}
+
+	// (e) low>=high or low==0 guard: neither SetContextBudget(high, 0) nor
+	// (high, high) compacts, even when over the high-water mark.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		DriveAnthropicSpan( loop, rpc, 1, kMark1 );
+		DriveAnthropicSpan( loop, rpc, 2, kMark2 );
+		DriveAnthropicSpan( loop, rpc, 3, kMark3 );
+		DriveAnthropicSpan( loop, rpc, 4, kMark4 );
+		const std::size_t est = loop.EstimateContextTokens();
+
+		// low == 0: invalid window -> no compaction.  P1-2 regression:
+		// WouldCompactNow() must agree with CompactTranscript's own no-op
+		// here -- before the ContextBudgetActive() unification, high > 0
+		// alone was enough to trip WouldCompactNow() even though
+		// CompactTranscript additionally required low > 0 && low < high,
+		// so a caller could see "would compact" for a budget that never
+		// actually compacts.
+		loop.SetContextBudget( est - 1, 0 );
+		Check( !loop.WouldCompactNow(),
+		       "T36e/P1-2: WouldCompactNow() is FALSE for SetContextBudget(est-1, 0) "
+		       "(agrees with CompactTranscript's low==0 no-op)" );
+		std::size_t sz = loop.TranscriptSize();
+		loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == sz,
+		       "T36e: SetContextBudget(high, 0) does NOT compact (low==0 guard)" );
+
+		// low == high: inverted/degenerate window -> no compaction.
+		loop.SetContextBudget( est - 1, est - 1 );
+		Check( !loop.WouldCompactNow(),
+		       "T36e/P1-2: WouldCompactNow() is FALSE for SetContextBudget(est-1, est-1) "
+		       "(agrees with CompactTranscript's low>=high no-op)" );
+		sz = loop.TranscriptSize();
+		loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == sz,
+		       "T36e: SetContextBudget(high, high) does NOT compact (low>=high guard)" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -3968,6 +4418,8 @@ int main()
 	TestGeminiFunctionResponseDedupe();
 	TestMultimodalRetry();
 	TestReasoningEffortRetry();
+	TestContextBudgetEstimator();
+	TestContextCompaction( rpc );
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

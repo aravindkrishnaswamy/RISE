@@ -328,9 +328,47 @@ static void TestTransportError()
 	       "a status-0 transport response on both attempts -> transport_error (got '" + h.result.terminalStatus + "')" );
 	Check( h.result.errorMessage.find( "connection lost" ) != std::string::npos,
 	       "the transport's header-free error category propagates to errorMessage" );
-	Check( h.result.llmCalls == 0, "no llm round was counted for a transport failure (neither attempt got an HTTP status)" );
+	Check( h.result.llmCalls == 2, "both transport-failed POSTs count against the budget -- a request sent may be billed even when its response is lost" );
 	Check( mock.seenRequests.size() == 2,
 	       "the transport saw exactly 2 POSTs -- the retry is bounded to ONE attempt, not a loop" );
+}
+
+//----------------------------------------------------------------------
+// P1-A: the transport-error retry is BUDGET-GATED.  A transport-failed POST
+//      returns proceed=false and (pre-fix) never incremented llmCalls, so a
+//      same-round transport retry could send a 2nd POST past a maxLlmCalls:1
+//      cap -- a request that may still have reached (and been billed by) the
+//      provider.  The fix counts every POST attempted, so the inner budget
+//      check bounds the retry: cap 1 -> exactly 1 POST, stop on the llm-call
+//      budget (NOT transport_error).
+//----------------------------------------------------------------------
+static void TestTransportRetryRespectsLlmBudget()
+{
+	std::printf( "P1-A: transport retry is budget-gated -- maxLlmCalls:1 sends exactly 1 POST...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	scenario.budgets.maxLlmCalls = 1;   // tighten the cap so the retry would exceed it
+
+	MockTransport mock;
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1005]: connection lost", 5 } );
+	// A 2nd transport response is queued but MUST NEVER be consumed -- the
+	// budget has to block the retry before its POST leaves the client.
+	mock.responses.push_back( { 0, "", "transport error [NSURLErrorDomain -1005]: connection lost", 5 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "p1a_transport_retry_budget" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( mock.seenRequests.size() == 1,
+	       "P1-A: maxLlmCalls:1 -> the transport retry is budget-blocked; exactly 1 POST (not 2)" );
+	Check( h.result.llmCalls == 1, "P1-A: the single attempted POST is counted" );
+	Check( h.result.terminalStatus == "budget_llm_calls",
+	       "P1-A: the run stops on the llm-call budget, not transport_error (got '" + h.result.terminalStatus + "')" );
 }
 
 //----------------------------------------------------------------------
@@ -364,7 +402,7 @@ static void TestLiveTransportRetrySucceeds()
 	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
 	Check( h.result.terminalStatus == "final_text",
 	       "a transport-fail-then-200 round still reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
-	Check( h.result.llmCalls == 2, "both real HTTP rounds (tool_use, final) are counted as llm calls -- the failed transport attempt is NOT" );
+	Check( h.result.llmCalls == 3, "all 3 POSTs count -- the 2 real HTTP rounds (tool_use, final) PLUS the transport-failed attempt (requests sent)" );
 	Check( mock.seenRequests.size() == 3,
 	       "the transport saw exactly 3 POSTs: the failed attempt + its retry, then the second turn's round" );
 	Check( h.result.finalText == "Done: pnt_albedo is now red.", "the retried round's eventual final text is captured" );
@@ -421,7 +459,7 @@ static void TestLiveTransportRetryStillFails()
 	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
 	Check( h.result.terminalStatus == "transport_error",
 	       "fail-then-fail falls through to transport_error (got '" + h.result.terminalStatus + "')" );
-	Check( h.result.llmCalls == 0, "no llm round was counted -- neither attempt reached an HTTP status" );
+	Check( h.result.llmCalls == 2, "both transport-failed POSTs count against the budget (requests sent, possibly billed)" );
 	Check( mock.seenRequests.size() == 2,
 	       "the transport saw exactly 2 POSTs -- the retry is bounded to ONE attempt, not a loop" );
 }
@@ -455,7 +493,7 @@ static void TestLiveTransportRetryDoesNotStackWith5xx()
 	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
 	Check( h.result.terminalStatus == "provider_error",
 	       "transport-fail-then-500 falls through to provider_error, not a second retry (got '" + h.result.terminalStatus + "')" );
-	Check( h.result.llmCalls == 1, "exactly 1 llm round counted -- the 500 (the transport failure recorded none)" );
+	Check( h.result.llmCalls == 2, "both POSTs count -- the 500 attempt AND the transport-failed attempt (requests sent)" );
 	Check( mock.seenRequests.size() == 2,
 	       "the transport saw exactly 2 POSTs total -- the two independent retry causes did not stack" );
 }
@@ -803,7 +841,7 @@ static void TestRunConfigLoad()
 		Check( LoadEvalRunConfig( "evals/runconfigs/local_shootout.json", cfg, err ),
 		       "evals/runconfigs/local_shootout.json loads (" + err + ")" );
 		Check( cfg.scenarios.size() == 4, "local_shootout.json: 4 scenarios" );
-		Check( cfg.providers.size() == 6, "local_shootout.json: 6 providers (gemini + openai + 4 distinct-model local)" );
+		Check( cfg.providers.size() == 7, "local_shootout.json: 7 providers (gemini + openai + xai + 4 distinct-model local)" );
 		int localCount = 0;
 		for( std::size_t i = 0; i < cfg.providers.size(); ++i )
 			if( cfg.providers[i].provider == "local" ) ++localCount;
@@ -1206,6 +1244,7 @@ int main()
 	TestLiveRunViaMock();
 	TestLiveBudget();
 	TestTransportError();
+	TestTransportRetryRespectsLlmBudget();
 	TestKeyHygieneRedProve();
 	TestLiveLocalProviderTimeoutBudget();
 	TestLiveHttp5xxRetrySucceeds();

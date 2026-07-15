@@ -183,6 +183,13 @@ namespace RISE
 			//! Assistant/ToolResults entries and for a User entry with no
 			//! attachments.
 			int         liveUserImageCount = 0;
+
+			//! Total base64 image-payload bytes of the CURRENTLY-LIVE
+			//! images in this entry, EXCLUDED from the text-proxy estimate
+			//! (images bill by area, not byte length -- see
+			//! EstimateContextTokens).  Maintained wherever carriesLiveImage
+			//! / liveUserImageCount change.  0 for entries with no live image.
+			std::size_t imageContentBytes = 0;
 		};
 
 		//! The sans-IO chat loop (see the file header for the contract).
@@ -200,6 +207,17 @@ namespace RISE
 			//! RETENTION in the file header.  Attaching beyond this cap
 			//! elides the oldest live one(s) first.
 			static const int kMaxLiveUserImages = 4;
+
+			//! Context-compaction slice S2: the FLOOR on how many trailing
+			//! spans CompactTranscript will ever leave in place.  A "span"
+			//! is a maximal run beginning at a Role::User entry, up to (not
+			//! including) the next Role::User entry (a User entry plus its
+			//! zero-or-more Assistant+ToolResults rounds).  Compaction drops
+			//! whole spans from the FRONT and never shrinks the transcript
+			//! below this many trailing spans -- the previous + current
+			//! conversation turn stay verbatim so a single over-budget turn
+			//! is accepted rather than mangled.
+			static const int kMinRetainedSpans = 2;
 
 			//! Constructs with the ChatGPT/OpenAI provider + its default model.
 			AgentChatLoop();
@@ -319,6 +337,54 @@ namespace RISE
 			void SetSkillIndex( const std::string& indexText );
 
 			//==========================================================
+			// Context-compaction slice S1: token estimator + budget
+			// config (observability only -- see EstimateContextTokens
+			// for the formula; NOTHING here changes request bytes or
+			// transcript behaviour.  S2 will make BuildRequest act on
+			// this).
+			//==========================================================
+
+			//! Set the compaction budget, in estimated tokens.
+			//! `highWaterTokens` == 0 DISABLES compaction (the default) --
+			//! WouldCompactNow() is then always false regardless of
+			//! transcript size.  `lowWaterTokens` is the S2 compaction
+			//! TARGET (how far a future compaction pass would shrink the
+			//! estimate back down); S1 just stores both values verbatim,
+			//! with no clamping or validation -- the caller is expected to
+			//! pass lowWaterTokens < highWaterTokens.  Provider-neutral
+			//! config, like mSkillIndexText: survives Reset() and
+			//! SetProvider().
+			void SetContextBudget( std::size_t highWaterTokens, std::size_t lowWaterTokens );
+
+			//! Estimate the current request's size in tokens: the system
+			//! prompt + tool declarations (fixed prefix) plus the
+			//! transcript body, IMAGE-DISCOUNTED (see the .cpp for the
+			//! formula and rationale).  Deterministic and pure -- reads
+			//! only mCodec/mSkillIndexText/mTranscript.  Cheap enough to
+			//! call on every BuildRequest (S2).
+			std::size_t EstimateContextTokens() const;
+
+			//! True iff a high-water budget is set AND the current
+			//! estimate has reached or exceeded it.  Always false while
+			//! the budget is disabled (ContextBudgetHigh() == 0) OR while
+			//! the window is otherwise invalid (see ContextBudgetActive) --
+			//! this MUST agree with CompactTranscript's own guard, or a
+			//! caller could see WouldCompactNow() true while a BuildRequest
+			//! silently no-ops the compaction.  S1: observability only --
+			//! nothing acts on this yet.
+			bool WouldCompactNow() const
+			{
+				return ContextBudgetActive() &&
+				       EstimateContextTokens() >= mContextBudgetHighTokens;
+			}
+
+			//! The configured high-water mark, in tokens (0 = disabled).
+			std::size_t ContextBudgetHigh() const { return mContextBudgetHighTokens; }
+
+			//! The configured low-water (S2 compaction target), in tokens.
+			std::size_t ContextBudgetLow() const { return mContextBudgetLowTokens; }
+
+			//==========================================================
 			// Eval-harness E1: trajectory recording.
 			//==========================================================
 
@@ -398,6 +464,19 @@ namespace RISE
 			//! record so the recorded prompt matches the sent prompt.
 			std::string ComposeSystemPrompt() const;
 
+			//! True iff the configured (high, low) budget window is valid
+			//! and enabled: high > 0, low > 0, and low < high.  The SINGLE
+			//! guard shared by WouldCompactNow() and CompactTranscript() --
+			//! before this helper the two had drifted (WouldCompactNow only
+			//! checked high > 0), so a caller could see WouldCompactNow()
+			//! return true for a budget CompactTranscript treats as invalid
+			//! and silently no-ops on.
+			bool ContextBudgetActive() const
+			{
+				return mContextBudgetHighTokens > 0 && mContextBudgetLowTokens > 0 &&
+				       mContextBudgetLowTokens < mContextBudgetHighTokens;
+			}
+
 			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: strip EVERY live
 			//! image from the WHOLE transcript in one sweep -- both packed
 			//! read_image tool-result images (via the codec's
@@ -410,6 +489,27 @@ namespace RISE
 			//! set, so once a model proves text-only the conversation never
 			//! re-sends an image.
 			void ElideAllLiveImages();
+
+			//! Context-compaction slice S2: the structural span-dropper
+			//! (Option C core; design doc 71 §7).  When a valid budget
+			//! window is set AND the current EstimateContextTokens() has
+			//! reached the high-water mark, erase the OLDEST WHOLE spans one
+			//! at a time until the estimate falls to (or below) the low-water
+			//! target -- or until only kMinRetainedSpans trailing spans
+			//! remain, whichever comes first.  A "span" is a maximal run
+			//! beginning at a Role::User entry up to (not including) the next
+			//! Role::User entry; dropping whole spans from the front keeps
+			//! mTranscript[0] a User entry (Anthropic requires the first wire
+			//! message be user) and never orphans a tool_result from its
+			//! tool_use (the wire invariants in the file header).  Pure
+			//! function of (mTranscript, the budget, the S1 estimator) ->
+			//! deterministic, replay-safe.  Records a "context_compaction"
+			//! history_edit (no-op with no trajectory sink) when it drops
+			//! anything.  A no-op when the budget is disabled/invalid, when
+			//! we are under the high-water, or when <= kMinRetainedSpans
+			//! spans remain.  Invoked by BuildRequest after the flush +
+			//! image-elision passes and before rawEntries assembly.
+			void CompactTranscript();
 
 			//! Emit the `session` record exactly once, on the first recorded
 			//! action, so it always leads the trajectory.  No-op with no sink.
@@ -438,6 +538,13 @@ namespace RISE
 			//! skills section).  Provider-neutral config -- survives Reset()
 			//! and SetProvider(), like mProvider/mModelId.
 			std::string                         mSkillIndexText;
+
+			//! Context-compaction slice S1: the compaction budget, in
+			//! estimated tokens (0 = disabled).  Provider-neutral config,
+			//! like mSkillIndexText -- survives Reset() and SetProvider().
+			//! See SetContextBudget's doc.
+			std::size_t                         mContextBudgetHighTokens;
+			std::size_t                         mContextBudgetLowTokens;
 
 			std::vector<ChatTranscriptEntry>    mTranscript;
 

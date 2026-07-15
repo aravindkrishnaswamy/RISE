@@ -63,6 +63,22 @@ using namespace RISE;
 - (instancetype)initWithLabel:(NSString *)label value:(NSString *)value;
 @end
 
+// Class extension: private initialiser for RISEEnvironmentInfo — hoists the
+// selector into scope for the `environmentInfo` accessor (the implementation
+// lives near the bottom of this file, after RISEViewportProperty's).
+@interface RISEEnvironmentInfo ()
+- (instancetype)initWithHasEnvironment:(BOOL)hasEnvironment
+                         proceduralSky:(BOOL)proceduralSky
+                              editable:(BOOL)editable
+                           painterName:(NSString *)painterName
+                                  file:(NSString *)file
+                                 scale:(double)scale
+                               orientX:(double)orientX
+                               orientY:(double)orientY
+                               orientZ:(double)orientZ
+                            background:(BOOL)background;
+@end
+
 // Class extension: private initialiser for RISEViewportGizmoHandle —
 // needed by the `gizmoHandles` accessor on RISEViewportBridge which
 // builds the snapshot array.  The implementation lives at the bottom
@@ -74,6 +90,16 @@ using namespace RISE;
                       screenX:(CGFloat)screenX
                       screenY:(CGFloat)screenY
                  screenRadius:(CGFloat)screenRadius;
+@end
+
+// Same hoist for the nav-gizmo nub value object (impl at the bottom).
+@interface RISEViewportNavNub ()
+- (instancetype)_initWithAxis:(NSInteger)axis
+                     negative:(BOOL)negative
+                      screenX:(CGFloat)screenX
+                      screenY:(CGFloat)screenY
+                 screenRadius:(CGFloat)screenRadius
+                       facing:(BOOL)facing;
 @end
 
 namespace {
@@ -798,6 +824,90 @@ private:
     return RISE_API_SceneEditController_ActiveGizmoAxis(_controller);
 }
 
+#pragma mark - Nav gizmo (axis-ball) + view navigation
+
+- (BOOL)refreshNavGizmoWithCenterX:(CGFloat)centerX centerY:(CGFloat)centerY
+                        ballRadius:(CGFloat)ballRadius nubRadius:(CGFloat)nubRadius {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_RefreshNavGizmo(
+        _controller, centerX, centerY, ballRadius, nubRadius) ? YES : NO;
+}
+
+- (NSArray<RISEViewportNavNub *> *)navGizmoNubs {
+    if (!_controller) return @[];
+    const unsigned int n = RISE_API_SceneEditController_NavGizmoNubCount(_controller);
+    NSMutableArray<RISEViewportNavNub *> *out = [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        int axis = 0, negative = 0, facing = 0;
+        double x = 0, y = 0, r = 0;
+        if (!RISE_API_SceneEditController_NavGizmoNub(
+                _controller, i, &axis, &negative, &x, &y, &r, &facing)) {
+            continue;
+        }
+        RISEViewportNavNub *nub = [[RISEViewportNavNub alloc]
+            _initWithAxis:static_cast<NSInteger>(axis)
+                 negative:(negative != 0)
+                  screenX:static_cast<CGFloat>(x)
+                  screenY:static_cast<CGFloat>(y)
+             screenRadius:static_cast<CGFloat>(r)
+                   facing:(facing != 0)];
+        [out addObject:nub];
+    }
+    return out;
+}
+
+- (NSInteger)navGizmoNubAtX:(CGFloat)x y:(CGFloat)y {
+    if (!_controller) return -1;
+    return RISE_API_SceneEditController_NavGizmoNubAt(_controller, x, y);
+}
+
+- (BOOL)snapViewToAxis:(NSInteger)axis negative:(BOOL)negative {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SnapViewToAxis(
+        _controller, static_cast<int>(axis), negative ? 1 : 0) ? YES : NO;
+}
+
+- (BOOL)enterFreeFly {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_EnterFreeFly(_controller) ? YES : NO;
+}
+
+- (BOOL)exitFreeFly {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_ExitFreeFly(_controller) ? YES : NO;
+}
+
+- (BOOL)freeFlyActive {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_IsFreeFlyActive(_controller) ? YES : NO;
+}
+
+- (BOOL)setHomeView {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SetHomeView(_controller) ? YES : NO;
+}
+
+- (BOOL)goToHomeView {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_GoToHomeView(_controller) ? YES : NO;
+}
+
+- (BOOL)hasHomeView {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_HasHomeView(_controller) ? YES : NO;
+}
+
+- (NSString *)stampViewToNewCamera:(NSString *)proposedName {
+    if (!_controller) return nil;
+    char name[256] = {0};
+    const char* prop = proposedName ? [proposedName UTF8String] : "";
+    if (!RISE_API_SceneEditController_StampViewToNewCamera(
+            _controller, prop, name, sizeof(name))) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:name];
+}
+
 #pragma mark - Pointer events
 
 - (void)pointerDownX:(double)x y:(double)y {
@@ -1168,6 +1278,51 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
                _controller, cat, name.UTF8String, outOffset, outLine) ? YES : NO;
 }
 
+#pragma mark - Source traceability
+
+- (BOOL)resolveSourceSpanForCategory:(RISEViewportCategory)category
+                                name:(NSString *)name
+                               param:(NSString *)param
+                          occurrence:(int)occ
+                          byteOffset:(unsigned long long *)outOffset
+                          byteLength:(unsigned long long *)outLength
+                                line:(unsigned int *)outLine
+                              column:(unsigned int *)outColumn {
+    if (outOffset) *outOffset = 0;
+    if (outLength) *outLength = 0;
+    if (outLine)   *outLine   = 0;
+    if (outColumn) *outColumn = 0;
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_ResolveSourceSpan(
+               _controller, (int)category,
+               name  ? name.UTF8String  : "",
+               param ? param.UTF8String : "",
+               occ, outOffset, outLength, outLine, outColumn) ? YES : NO;
+}
+
+- (BOOL)sourceRefAtByteOffset:(unsigned long long)offset
+                     category:(RISEViewportCategory *)outCategory
+                         name:(NSString **)outName
+                        param:(NSString **)outParam
+                   occurrence:(int *)outOccurrence {
+    if (outName)  *outName  = nil;
+    if (outParam) *outParam = nil;
+    if (outOccurrence) *outOccurrence = 0;
+    if (!_controller) return NO;
+    int catInt = 0, occ = 0;
+    char nameBuf[256] = {0};
+    char paramBuf[128] = {0};
+    const BOOL ok = RISE_API_SceneEditController_SourceRefAtByteOffset(
+        _controller, offset, &catInt,
+        nameBuf, sizeof(nameBuf), paramBuf, sizeof(paramBuf), &occ) ? YES : NO;
+    if (!ok) return NO;
+    if (outCategory)   *outCategory   = (RISEViewportCategory)catInt;
+    if (outName)       *outName       = [NSString stringWithUTF8String:nameBuf] ?: @"";
+    if (outParam)      *outParam      = [NSString stringWithUTF8String:paramBuf] ?: @"";
+    if (outOccurrence) *outOccurrence = occ;
+    return YES;
+}
+
 #pragma mark - Entity creation + painter CRUD (entity-creation slice)
 
 - (NSUInteger)entityTemplateCountForCategory:(RISEViewportCategory)category {
@@ -1263,6 +1418,93 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         [self refreshProperties];
     }
     return applied;
+}
+
+#pragma mark - Environment / IBL section
+
+- (nullable RISEEnvironmentInfo *)environmentInfo {
+    if (!_controller) return nil;
+    int hasEnv = 0, procSky = 0, editable = 0, background = 0;
+    char nameBuf[256] = {0};
+    char fileBuf[1024] = {0};
+    double scale = 1.0, ox = 0.0, oy = 0.0, oz = 0.0;
+    if (!RISE_API_SceneEditController_GetEnvironment(
+            _controller, &hasEnv, &procSky, &editable,
+            nameBuf, sizeof(nameBuf), fileBuf, sizeof(fileBuf),
+            &scale, &ox, &oy, &oz, &background)) {
+        return nil;
+    }
+    NSString *nm = [NSString stringWithUTF8String:nameBuf] ?: @"";
+    NSString *fl = [NSString stringWithUTF8String:fileBuf] ?: @"";
+    return [[RISEEnvironmentInfo alloc] initWithHasEnvironment:(hasEnv != 0)
+                                                 proceduralSky:(procSky != 0)
+                                                      editable:(editable != 0)
+                                                   painterName:nm
+                                                          file:fl
+                                                         scale:scale
+                                                       orientX:ox
+                                                       orientY:oy
+                                                       orientZ:oz
+                                                    background:(background != 0)];
+}
+
+- (BOOL)setEnvironmentScale:(double)scale {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentScale(_controller, scale) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)setEnvironmentBackground:(BOOL)background {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentBackground(_controller, background ? 1 : 0) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)setEnvironmentOrientX:(double)x y:(double)y z:(double)z {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentOrient(_controller, x, y, z) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)setEnvironmentFile:(NSString *)absPath {
+    if (!_controller || !absPath) return NO;
+    const BOOL ok = RISE_API_SceneEditController_SetEnvironmentFile(_controller, absPath.UTF8String) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
+}
+
+- (BOOL)addEnvironment:(NSString *)hdriPath
+               outName:(NSString **)outName
+            outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !hdriPath) return NO;
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_AddEnvironment(
+        _controller, hdriPath.UTF8String,
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    if (applied) [self refreshProperties];
+    return applied;
+}
+
+- (BOOL)removeEnvironment {
+    if (!_controller) return NO;
+    const BOOL ok = RISE_API_SceneEditController_RemoveEnvironment(_controller) ? YES : NO;
+    if (ok) [self refreshProperties];
+    return ok;
 }
 
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName {
@@ -1738,6 +1980,59 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 
 @end
 
+@implementation RISEEnvironmentInfo {
+    BOOL _hasEnvironment;
+    BOOL _proceduralSky;
+    BOOL _editable;
+    NSString *_painterName;
+    NSString *_file;
+    double _scale;
+    double _orientX;
+    double _orientY;
+    double _orientZ;
+    BOOL _background;
+}
+
+- (instancetype)initWithHasEnvironment:(BOOL)hasEnvironment
+                         proceduralSky:(BOOL)proceduralSky
+                              editable:(BOOL)editable
+                           painterName:(NSString *)painterName
+                                  file:(NSString *)file
+                                 scale:(double)scale
+                               orientX:(double)orientX
+                               orientY:(double)orientY
+                               orientZ:(double)orientZ
+                            background:(BOOL)background
+{
+    self = [super init];
+    if (self) {
+        _hasEnvironment = hasEnvironment;
+        _proceduralSky = proceduralSky;
+        _editable = editable;
+        _painterName = [painterName copy] ?: @"";
+        _file = [file copy] ?: @"";
+        _scale = scale;
+        _orientX = orientX;
+        _orientY = orientY;
+        _orientZ = orientZ;
+        _background = background;
+    }
+    return self;
+}
+
+- (BOOL)hasEnvironment { return _hasEnvironment; }
+- (BOOL)proceduralSky  { return _proceduralSky; }
+- (BOOL)editable       { return _editable; }
+- (NSString *)painterName { return _painterName; }
+- (NSString *)file     { return _file; }
+- (double)scale        { return _scale; }
+- (double)orientX      { return _orientX; }
+- (double)orientY      { return _orientY; }
+- (double)orientZ      { return _orientZ; }
+- (BOOL)background     { return _background; }
+
+@end
+
 @implementation RISEViewportPropertyPreset {
     NSString *_label;
     NSString *_value;
@@ -1793,5 +2088,42 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (CGFloat)screenX                    { return _screenX; }
 - (CGFloat)screenY                    { return _screenY; }
 - (CGFloat)screenRadius               { return _screenRadius; }
+
+@end
+
+@implementation RISEViewportNavNub {
+    NSInteger _axis;
+    BOOL      _negative;
+    CGFloat   _screenX;
+    CGFloat   _screenY;
+    CGFloat   _screenRadius;
+    BOOL      _facing;
+}
+
+- (instancetype)_initWithAxis:(NSInteger)axis
+                     negative:(BOOL)negative
+                      screenX:(CGFloat)screenX
+                      screenY:(CGFloat)screenY
+                 screenRadius:(CGFloat)screenRadius
+                       facing:(BOOL)facing
+{
+    self = [super init];
+    if (self) {
+        _axis = axis;
+        _negative = negative;
+        _screenX = screenX;
+        _screenY = screenY;
+        _screenRadius = screenRadius;
+        _facing = facing;
+    }
+    return self;
+}
+
+- (NSInteger)axis        { return _axis; }
+- (BOOL)negative         { return _negative; }
+- (CGFloat)screenX       { return _screenX; }
+- (CGFloat)screenY       { return _screenY; }
+- (CGFloat)screenRadius  { return _screenRadius; }
+- (BOOL)facing           { return _facing; }
 
 @end

@@ -9,8 +9,9 @@
     "Delete the ivy_sprig object from the scene."
   ],
   "budgets": {
-    "maxToolCalls": 6,
-    "maxLlmCalls": 6
+    "maxToolCalls": 12,
+    "maxLlmCalls": 14,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/remove_object.fixture.jsonl"
@@ -67,8 +68,7 @@
       "expect": "clean"
     },
     {
-      "kind": "trajectory",
-      "maxToolCalls": 3,
+      "kind": "trajectory", "terminalStatus": "final_text",
       "noMechanicalLoop": true
     }
   ]

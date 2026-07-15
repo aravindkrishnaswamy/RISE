@@ -200,6 +200,13 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
             paintRegionOverlay(p, drawRect, surface);
         }
     }
+
+    // Navigation axis-ball (Tier 2 §4): always available (not tool-gated),
+    // hidden during a production render since the interactive camera state may
+    // not match the production frame.
+    if (!m_productionRendering && m_bridge) {
+        paintNavOverlay(p);
+    }
 }
 
 void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface)
@@ -401,6 +408,154 @@ QPointF ViewportWidget::surfacePoint(const QPointF& pos) const
     return QPointF(nx * surface.width(), ny * surface.height());
 }
 
+// -------- Navigation axis-ball (Tier 2 §4) --------
+
+static constexpr double kNavInset  = 16.0;   // ball inset from the top-right corner
+static constexpr double kNavBallR  = 30.0;   // ball radius (widget px)
+static constexpr double kNavNubR   = 9.0;    // nub radius
+static constexpr double kNavBtnW   = 24.0;   // control-button width
+static constexpr double kNavBtnH   = 20.0;   // control-button height
+static constexpr double kNavBtnGap = 6.0;
+
+QPointF ViewportWidget::navBallCenter() const
+{
+    return QPointF(width() - kNavInset - kNavBallR, kNavInset + kNavBallR);
+}
+
+void ViewportWidget::navControlRects(QRectF& outHome, QRectF& outSet,
+                                     QRectF& outStamp, QRectF& outExit) const
+{
+    // A centered row just below the ball: Home, Set-home, and (only while
+    // free-flying) Stamp-to-camera + Back-to-camera.
+    const QPointF c = navBallCenter();
+    const double rowY = c.y() + kNavBallR + kNavNubR + 6.0;
+    const bool freeFly = m_bridge && m_bridge->isFreeFlyActive();
+    const int nButtons = freeFly ? 4 : 2;
+    const double totalW = nButtons * kNavBtnW + (nButtons - 1) * kNavBtnGap;
+    double x = c.x() - totalW / 2.0;
+    outHome  = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
+    outSet   = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
+    outStamp = freeFly ? QRectF(x, rowY, kNavBtnW, kNavBtnH) : QRectF();
+    if (freeFly) x += kNavBtnW + kNavBtnGap;
+    outExit  = freeFly ? QRectF(x, rowY, kNavBtnW, kNavBtnH) : QRectF();
+}
+
+void ViewportWidget::paintNavOverlay(QPainter& p)
+{
+    if (!m_bridge) return;
+    const QPointF c = navBallCenter();
+    if (!m_bridge->refreshNavGizmo(c.x(), c.y(), kNavBallR, kNavNubR)) {
+        return;   // no supported (pinhole) camera -> draw nothing
+    }
+    QVector<ViewportBridge::NavNub> nubs = m_bridge->navGizmoNubs();
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    // Ball backdrop.
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 0, 0, 56));
+    p.drawEllipse(c, kNavBallR, kNavBallR);
+
+    auto axisColor = [](int axis) -> QColor {
+        switch (axis) {
+        case 0:  return QColor(220, 60, 60);
+        case 1:  return QColor(80, 200, 80);
+        case 2:  return QColor(80, 120, 230);
+        default: return QColor(220, 200, 80);
+        }
+    };
+
+    // Back-facing nubs first so front-facing ones draw on top.
+    std::stable_sort(nubs.begin(), nubs.end(),
+        [](const ViewportBridge::NavNub& a, const ViewportBridge::NavNub& b) {
+            return (a.facing ? 1 : 0) < (b.facing ? 1 : 0);
+        });
+
+    static const char kLetters[3] = { 'X', 'Y', 'Z' };
+    for (const auto& nub : nubs) {
+        QColor col = axisColor(nub.axis);
+        col.setAlpha(nub.facing ? 255 : 110);
+        const QPointF nc(nub.screenX, nub.screenY);
+        const double r = nub.screenRadius;
+        if (nub.negative) {
+            p.setBrush(QColor(0, 0, 0, nub.facing ? 90 : 40));
+            p.setPen(QPen(col, 2));
+            p.drawEllipse(nc, r, r);
+        } else {
+            p.setPen(Qt::NoPen);
+            p.setBrush(col);
+            p.drawEllipse(nc, r, r);
+            const int a = (nub.axis >= 0 && nub.axis < 3) ? nub.axis : 0;
+            p.setPen(QColor(255, 255, 255, nub.facing ? 240 : 130));
+            QFont f = p.font(); f.setBold(true); f.setPointSizeF(r * 0.9); p.setFont(f);
+            p.drawText(QRectF(nc.x() - r, nc.y() - r, r * 2, r * 2),
+                       Qt::AlignCenter, QString(QChar(kLetters[a])));
+        }
+    }
+
+    // Control buttons.
+    QRectF homeR, setR, stampR, exitR;
+    navControlRects(homeR, setR, stampR, exitR);
+    const bool homeEnabled = m_bridge->hasHomeView();
+    auto drawBtn = [&](const QRectF& rc, const QString& label, bool enabled) {
+        if (rc.isNull()) return;
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0, 0, 0, enabled ? 120 : 60));
+        p.drawRoundedRect(rc, 4, 4);
+        p.setPen(QColor(255, 255, 255, enabled ? 230 : 90));
+        QFont f = p.font(); f.setBold(true); f.setPointSizeF(10); p.setFont(f);
+        p.drawText(rc, Qt::AlignCenter, label);
+    };
+    drawBtn(homeR, QStringLiteral("H"), homeEnabled);   // go Home
+    drawBtn(setR,  QStringLiteral("S"), true);           // Set home
+    if (!stampR.isNull()) drawBtn(stampR, QStringLiteral("+"), true);  // stamp view to new camera
+    if (!exitR.isNull())  drawBtn(exitR,  QStringLiteral("C"), true);  // back to scene Camera
+
+    p.restore();
+}
+
+bool ViewportWidget::handleNavClick(const QPointF& widgetPos)
+{
+    if (!m_bridge) return false;
+
+    // Gate on the SAME condition as paint: the whole overlay (ball + nubs +
+    // control buttons) is drawn only when the nav gizmo lays out (a supported
+    // pinhole interactive camera).  When it doesn't, nothing is visible — so
+    // nothing must consume clicks (no invisible dead zone in the corner).
+    // This also re-lays-out at the current ball geometry so the nub hit-test
+    // below matches what was painted.
+    const QPointF c = navBallCenter();
+    if (!m_bridge->refreshNavGizmo(c.x(), c.y(), kNavBallR, kNavNubR)) return false;
+
+    // Control buttons first (they sit below the ball, overlapping no nub).
+    QRectF homeR, setR, stampR, exitR;
+    navControlRects(homeR, setR, stampR, exitR);
+    if (homeR.contains(widgetPos)) {
+        if (m_bridge->hasHomeView()) { m_bridge->goToHomeView(); update(); }
+        return true;   // consume even when disabled — it's our visible control area
+    }
+    if (setR.contains(widgetPos)) { m_bridge->setHomeView(); update(); return true; }
+    if (!stampR.isNull() && stampR.contains(widgetPos)) {
+        // Auto-named + dedup-suffixed by the core; the new camera becomes
+        // active. The outliner picks it up via its scene-epoch poll.
+        m_bridge->stampViewToNewCamera(QStringLiteral("view_camera"));
+        update();
+        return true;
+    }
+    if (!exitR.isNull() && exitR.contains(widgetPos)) { m_bridge->exitFreeFly(); update(); return true; }
+
+    // Nub hit-test → snap the view.
+    const int idx = m_bridge->navGizmoNubAt(widgetPos.x(), widgetPos.y());
+    if (idx < 0) return false;
+    const QVector<ViewportBridge::NavNub> nubs = m_bridge->navGizmoNubs();
+    if (idx >= nubs.size()) return false;
+    const ViewportBridge::NavNub& n = nubs[idx];
+    m_bridge->snapViewToAxis(n.axis, n.negative);
+    update();
+    return true;
+}
+
 void ViewportWidget::mousePressEvent(QMouseEvent* event)
 {
     // Every press starts a NEW physical gesture -- any suppress flag
@@ -430,6 +585,15 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
         if (m_bridge) m_bridge->clearInteractiveRegion();
         m_hasRegion = false;
         update();
+        event->accept();
+        return;
+    }
+
+    // Navigation axis-ball: a nub click snaps the view; the labeled controls
+    // drive Home / free-fly.  Consumes the click so it isn't also forwarded as
+    // a scene pick.  Gated off during production render (the ball isn't drawn).
+    if (!m_productionRendering && event->button() == Qt::LeftButton
+        && handleNavClick(event->position())) {
         event->accept();
         return;
     }

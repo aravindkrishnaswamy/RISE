@@ -198,6 +198,46 @@ namespace RISE
 		int  ActiveGizmoKind() const;
 		int  ActiveGizmoAxis() const;
 
+		//! -------- Navigation axis-ball gizmo (Tier 2 / Direction B §4) --------
+		//!
+		//! Six nubs (+X/−X/+Y/−Y/+Z/−Z) laid out around a ball the platform
+		//! draws in a viewport corner; clicking a nub snaps the VIEW down that
+		//! world axis (SnapViewToAxis, non-destructive).  Mirrors the object
+		//! gizmo's shared-math / thin-platform-draw split: C++ projects the
+		//! world axes through the CURRENT interactive camera (the free-fly
+		//! viewport pose when active, else the scene's active camera), places
+		//! the nubs, and hit-tests; the platform only draws + routes the click.
+		//! See docs/gui/CAMERAS_AND_VIEWS.md §4.
+		struct NavGizmoNub
+		{
+			int    axis         = 0;      ///< 0=X, 1=Y, 2=Z (C-API surface)
+			bool   negative     = false;  ///< false=+axis, true=−axis
+			double screenX      = 0.0;    ///< nub center, in the caller's ball-geometry space
+			double screenY      = 0.0;
+			double screenRadius = 0.0;    ///< hit-test / draw radius (== nubRadius arg)
+			bool   facing       = true;   ///< true=toward viewer (bright), false=away (dim)
+		};
+
+		//! Recompute the six nubs for a ball centered at (centerX, centerY)
+		//! with `ballRadius`, each nub `nubRadius`, all in the caller's widget
+		//! space (whatever consistent space it also feeds NavGizmoHitTest).
+		//! Sets the count to 0 (nothing to draw) when there is no supported
+		//! (pinhole) interactive camera or the geometry args are non-positive.
+		//! Reads camera state only — no scene mutation, zero render cost.
+		bool RefreshNavGizmo( double centerX, double centerY,
+		                      double ballRadius, double nubRadius );
+
+		unsigned int NavGizmoNubCount() const;   ///< 0 or 6
+		//! Read nub `idx`; false (outputs untouched) when out of range.
+		bool NavGizmoNubInfo( unsigned int idx, int& outAxis, bool& outNegative,
+		                      double& outScreenX, double& outScreenY,
+		                      double& outScreenRadius, bool& outFacing ) const;
+
+		//! Hit-test a pointer position (same space as RefreshNavGizmo's ball
+		//! geometry) against the nubs.  Front-facing nubs win ties (they draw
+		//! on top of the ones pointing away).  Returns the nub index or -1.
+		int NavGizmoNubAt( double px, double py ) const;
+
 		//! Discriminator for the right-side accordion sections.
 		//! Selection is a (Category, entityName) tuple — see
 		//! `mSelectionCategory` / `mSelectionName`.  Numeric values are
@@ -1769,6 +1809,61 @@ namespace RISE
 		bool EntitySourceLocation( Category cat, const String& name,
 		                          std::uint64_t& outByteOffset, std::uint32_t& outLine ) const;
 
+		//! -------- Source traceability: any UI element -> its scene-file span -----
+		//!
+		//! Generalizes EntitySourceLocation from "a named entity's chunk" to "any
+		//! scene-derived UI element", at three granularities, keyed by the SAME
+		//! (Category, name, param) address the CST EDIT path uses -- so what a UI
+		//! element can REVEAL is exactly what it can EDIT (they resolve through one
+		//! CST-node path and cannot drift).  A byte RANGE (offset+length) lets the
+		//! editor highlight the exact span; line/column are 1-based.
+		//!
+		//! Resolution of (cat, name) -> chunk covers the named categories (Object /
+		//! Light / Material / Medium / Painter / Animation / SceneVariant), the
+		//! unnamed-active Camera (unique-fallback), AND the unnamed unique-in-kind
+		//! singletons Film and Rasterizer (which EntitySourceLocation /
+		//! RoleKindSuffixForCategory reject) -- so the Environment section reveals
+		//! its radiance_* rows via (Rasterizer, "", "radiance_scale"...) and its
+		//! HDRI file via (Painter, <bound painter>, "file").  Reference-following is
+		//! the WIDGET's job: it already knows the referenced entity's name, so it
+		//! builds the ref for the referenced chunk directly (no indirection here).
+		//!
+		//! `param` empty = whole-chunk span (byteLength 0; highlight the line);
+		//! non-empty = the `occ`-th (0-based) matching param's tight `role value…`
+		//! run.  Returns false (out.present stays false) on no retained CST, an
+		//! unresolvable ref (removed entity / bad param), or a session-only element
+		//! whose widget shouldn't have called this.  Same mMutex / no-poll-during-
+		//! render caveat + O(doc bytes) line-count cost as EntitySourceLocation.
+		struct SourceSpan
+		{
+			bool          present    = false;  //!< a scene-file span was resolved
+			std::uint64_t byteOffset = 0;      //!< absolute byte offset in SerializeCst(doc)
+			std::uint64_t byteLength = 0;      //!< param span width; 0 for a whole-chunk reveal
+			std::uint32_t line       = 1;      //!< 1-based line of byteOffset
+			std::uint32_t column     = 1;      //!< 1-based column of byteOffset
+		};
+		bool ResolveSourceSpan( Category cat, const String& name, const String& param,
+		                        int occ, SourceSpan& out ) const;
+
+		//! Reverse: the UI element whose scene-file source contains byte `offset`
+		//! (a text-editor cursor / selection) -> fills (outCat, outName, outParam)
+		//! so the caller can select + highlight that element.  outParam is empty
+		//! when the offset is inside a chunk but not on a specific param;
+		//! `*outOccurrence` (if non-null) is the 0-based occurrence index of that
+		//! param among its same-role siblings (0 for a non-repeated param / no
+		//! param), so a click inside the k-th repeat round-trips to
+		//! ResolveSourceSpan(...,occ=k).  For the Rasterizer category outName is the
+		//! rasterizer KIND (its keyword) -- rasterizer chunks are unnamed and
+		//! addressed by kind -- so a reverse ref into a non-active rasterizer chunk
+		//! forward-resolves to that SAME chunk.  Returns false when there is no
+		//! retained CST or the offset isn't inside an addressable chunk (inter-chunk
+		//! trivia, a non-entity chunk kind, EOF).  Completes the round-trip (text ->
+		//! UI) using the CST's byte->node map (DocParamAtByteOffset /
+		//! DocItemAtByteOffset).
+		bool SourceRefAtByteOffset( std::uint64_t offset, Category& outCat,
+		                            String& outName, String& outParam,
+		                            int* outOccurrence = nullptr ) const;
+
 		//! Phase 6.5 UI hook: install a listener that fires when
 		//! `HasUnsavedChanges()` flips (clean→dirty or dirty→clean).
 		//! The listener runs on the thread that drove the transition
@@ -1913,6 +2008,88 @@ namespace RISE
 		bool CloneActiveCamera( const String& proposedName,
 		                        char* outName, unsigned int outLen );
 
+		//! B3 fly-then-stamp (Tier 2 §5.3): promote the CURRENT transient
+		//! free-fly ViewportPose into a NEW named scene camera.  The single
+		//! B3 action that mutates the scene — an AddCamera transaction seeded
+		//! from the pose (which IS a CameraSnapshot) instead of the active
+		//! camera; it persists via the retained CST Document exactly like
+		//! CloneActiveCamera, and is undoable.  `outName` receives the chosen
+		//! (dedup-suffixed) name.  Returns false — outName cleared — when
+		//! free-fly isn't active (nothing transient to stamp), there's no
+		//! camera manager, the buffer is too small, or the edit is refused.
+		//! Non-destructive navigation (fly/snap/Home) stays pose-only; THIS is
+		//! the deliberate bridge to a durable camera.
+		bool StampViewToNewCamera( const String& proposedName,
+		                           char* outName, unsigned int outLen );
+
+		//! -------- Free-fly viewport pose (Tier 2 / Direction B §5.3-5.5) --------
+		//!
+		//! A transient, viewport-private "pose" the interactive preview renders
+		//! THROUGH (via a render-camera override, §5.5) so navigating / snapping /
+		//! restoring a named view never mutates Scene::pActiveCamera and never
+		//! touches production render.  The pose payload IS a CameraSnapshot (pose +
+		//! full optics + kind), the same value the clone/named-view paths use.
+		//! Entering free-fly seeds the pose from the current active camera; while
+		//! active, the interactive pass renders through the override; exiting
+		//! reverts to rendering through the scene's active camera.  NONE of these
+		//! is a scene mutation: no SceneEdit, no revision bump, no undo entry
+		//! (identical cost/side-effect profile to today's active-camera navigation,
+		//! but non-destructive).  Stamp/promote (a later slice) is the only action
+		//! that writes a scene camera.  See docs/gui/CAMERAS_AND_VIEWS.md.
+
+		//! Enter free-fly: capture the active camera into the transient pose and
+		//! realize the override.  Returns false when there is no active camera or
+		//! its kind isn't realizable (same clonability gate as CloneActiveCamera).
+		//! Cancel-and-parks (swaps the render-thread-read override under the lock).
+		bool EnterFreeFlyFromActiveCamera();
+
+		//! Set the transient pose explicitly (e.g. a named-view restore or an
+		//! axis snap computes the target pose).  Realizes a fresh override camera
+		//! from `pose`.  Returns false when the pose kind isn't realizable / no
+		//! film.  Cancel-and-parks.
+		bool SetViewportPose( const CameraSnapshot& pose );
+
+		//! Exit free-fly: drop the transient pose + release the override so the
+		//! interactive pass renders through Scene::pActiveCamera again.  No-op
+		//! (returns false) when free-fly isn't active.  Cancel-and-parks.
+		bool ExitFreeFly();
+
+		//! Whether a transient viewport pose is currently overriding the
+		//! interactive render camera.
+		bool IsFreeFlyActive() const;
+
+		//! Copy the current transient pose into `out`.  Returns false when
+		//! free-fly isn't active (out untouched).
+		bool GetViewportPose( CameraSnapshot& out ) const;
+
+		//! -------- Axis snaps + Home (Tier 2 / Direction B §4.2) --------
+		//!
+		//! Non-destructive VIEW navigation: re-pose the transient ViewportPose
+		//! (auto-entering free-fly from the active camera first if needed) to look
+		//! straight down a world axis at the current pivot, PRESERVING distance and
+		//! the camera's optics — the same pose-only math applied to the view, never
+		//! to a scene camera (no SceneEdit / revision bump / undo entry, §4.2).
+
+		//! Enumerates the six axis nubs.  `axis`: 0=X, 1=Y, 2=Z; `negative` picks
+		//! the −axis side (Blender: click again = opposite).  Snap positions the
+		//! camera on the chosen side of the pivot looking back down the axis, with
+		//! a sensible up (world-Y for X/Z axes; ∓Z for the Y/top-bottom axis so up
+		//! isn't parallel to the view).  Returns false on a bad axis, no seedable
+		//! camera, or a realization failure.
+		bool SnapViewToAxis( int axis, bool negative );
+
+		//! Capture the CURRENT view (the transient pose if in free-fly, else the
+		//! active camera) into the single reserved "home" slot.  Returns false when
+		//! there is no camera to capture.
+		bool SetHomeView();
+
+		//! Restore the home slot into the transient pose (a degenerate named-view
+		//! restore, §4.2).  Returns false when no home has been set.
+		bool GoToHomeView();
+
+		//! Whether a home view has been captured this session.
+		bool HasHomeView() const;
+
 		//! Entity-creation slice: number of "Add Entity" templates
 		//! registered for `cat` (see EntityTemplates.h).  0 for
 		//! categories with none (Camera/Rasterizer/Film/Animation/
@@ -1980,6 +2157,58 @@ namespace RISE
 		//! standard_object still references is rejected, not silently
 		//! skipped.
 		AgentCommitResult RemoveEntity( Category cat, const String& name );
+
+		//! -------- Environment / IBL section (GUI Environment panel) --------
+		//!
+		//! The image-based-lighting environment is a scene-level singleton
+		//! (NOT an ILight): an `hdr_painter`/`exr_painter` supplies the image
+		//! and four `radiance_*` params on the ACTIVE rasterizer chunk bind it
+		//! as the global radiance map.  These accessors surface + edit that
+		//! singleton without the GUI needing to know the two-chunk shape.  See
+		//! docs/gui/ENVIRONMENT_SECTION.md.
+		struct EnvironmentInfo
+		{
+			bool   hasEnvironment = false;  //!< a radiance_map painter is bound (name != "none")
+			bool   proceduralSky  = false;  //!< a procedural sky / non-painter map is installed (read-only in v1)
+			String painterName;             //!< bound painter name ("" if none)
+			String file;                    //!< resolved HDRI file path ("" if unresolved / procedural)
+			double scale = 1.0;             //!< intensity multiplier
+			double orientDeg[3] = { 0.0, 0.0, 0.0 };  //!< Euler rotation in DEGREES (converted from stored radians)
+			bool   background = true;       //!< map visible behind geometry (primary-ray visibility)
+			bool   editable = false;        //!< false when the active rasterizer takes no radiance map (MLT) or none exists
+		};
+
+		//! Read the current environment binding from the active rasterizer's
+		//! live snapshot (+ resolve the bound painter's `file` from the CST).
+		//! Returns false only when there is no scene / no active rasterizer;
+		//! otherwise fills `out` (with hasEnvironment=false when unbound).
+		bool GetEnvironment( EnvironmentInfo& out ) const;
+
+		//! Set the environment intensity / background-visibility / rotation.
+		//! Each applies BOTH a live rasterizer rebuild (viewport re-renders)
+		//! and a CST mirror (Job::ApplyCstEnvironmentEdit) so it persists on
+		//! save.  Return false when there is no editable bound environment.
+		bool SetEnvironmentScale( double scale );
+		bool SetEnvironmentBackground( bool background );
+		bool SetEnvironmentOrient( double xDeg, double yDeg, double zDeg );
+
+		//! Swap the HDRI file of the currently-bound environment painter.
+		//! Routes through the Painter CST-param path (a full re-derive that
+		//! reloads the texture) so it persists.  `absPath` should be an
+		//! existing file (the GUI file picker is the guard).  Returns false
+		//! when no environment is bound.
+		bool SetEnvironmentFile( const String& absPath );
+
+		//! Create an environment from an HDRI file when none exists: inserts a
+		//! `hdr_painter`/`exr_painter` chunk (kind chosen from the extension)
+		//! and binds it via radiance_map on the active rasterizer.  On success
+		//! `*outPainterName` (if non-null) receives the new painter name.
+		AgentCommitResult AddEnvironment( const String& hdriPath, String* outPainterName );
+
+		//! Remove the environment: unbinds radiance_map on the active
+		//! rasterizer (live + CST) so no global radiance map is installed.
+		//! The painter chunk is left in the Document (harmless, reusable).
+		bool RemoveEnvironment();
 
 	protected:
 		//! Test override point.  Production override calls
@@ -2170,6 +2399,22 @@ namespace RISE
 			const String& b,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		//! Shared core for the environment radiance-param setters (scale /
+		//! background / orient / radiance_map bind+unbind): under the
+		//! cancel-and-park critical section, apply the edit LIVE to the active
+		//! rasterizer (SetRasterizerParameter -> rebuild) then MIRROR it into
+		//! the retained CST (Job::ApplyCstEnvironmentEdit) so it survives a
+		//! save.  Refuses (false) inside an open transaction (not undoable),
+		//! when there is no active rasterizer, or when the active rasterizer
+		//! takes no radiance map (MLT).  An empty `value` for `radiance_map`
+		//! UNBINDS (live: no map; CST: erase all four radiance_* params).
+		//! `*outPersisted` (if non-null) reports whether the CST MIRROR recorded
+		//! the edit (true) or no-oped because the active rasterizer has no unique
+		//! chunk in the Document (false -> the live edit stands but a save would
+		//! drop it) -- callers surface that so a bind is never falsely "applied".
+		bool SetEnvironmentRadianceParam_( const char* paramName, const std::string& value,
+			bool* outPersisted = nullptr );
+
 		//! Re-point mEditor at the Job's CURRENT scene + managers.  Called at construction AND after any
 		//! whole-scene re-derive (a scene_variant switch ClearAll's + recreates the Scene + managers); without
 		//! the re-bind the editor's cached scene/manager pointers dangle into freed storage (use-after-free on
@@ -2219,6 +2464,10 @@ namespace RISE
 		//! when the active tool isn't an Object-transform tool or no
 		//! Object is selected.
 		std::vector<GizmoHandle>    mGizmoHandles;
+
+		//! Navigation axis-ball nubs, recomputed by RefreshNavGizmo (Tier 2
+		//! §4).  0 or 6 entries; read out through the count + per-index getter.
+		std::vector<NavGizmoNub>    mNavGizmoNubs;
 
 		//! Active gizmo drag state.  Captured at OnPointerDown when
 		//! the pointer hits a handle; consumed by OnPointerMove to
@@ -2809,6 +3058,25 @@ namespace RISE
 		// clamped at set time (no real film is that large).
 		std::atomic<bool>           mInteractiveRegionActive{ false };
 		std::atomic<std::uint64_t>  mInteractiveRegionPacked{ 0 };
+
+		// Free-fly viewport pose (Tier 2 §5.3-5.5).  `mViewportPoseActive` gates
+		// the render-camera override in DoOneRenderPass; when set,
+		// `mViewportOverrideCamera` is a viewport-private, addref'd standalone
+		// ICamera (realized from `mViewportPose` via RealizeStandaloneCamera) that
+		// the interactive pass renders through IN PLACE OF Scene::pActiveCamera.
+		// These are swapped ONLY under the cancel-and-park critical section (the
+		// render thread reads mViewportOverrideCamera at the top of a pass), so a
+		// plain bool + raw pointer are safe (no atomics needed — set while parked).
+		// The override is released on exit / re-realize / destruction.  `mViewportPose`
+		// keeps the source snapshot so a film-dim change can re-sync the override.
+		CameraSnapshot              mViewportPose;
+		bool                        mViewportPoseActive = false;
+		ICamera*                    mViewportOverrideCamera = nullptr;
+
+		// Home view (Tier 2 §4.2): a single reserved pose slot, session UI state
+		// (never a scene write).  Captured by SetHomeView, restored by GoToHomeView.
+		CameraSnapshot              mHomeView;
+		bool                        mHasHomeView = false;
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for

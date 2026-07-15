@@ -73,6 +73,16 @@ signals:
     /// that private using-declaration, must name an already-visible type.
     void revealRequested(ViewportBridge::Category category, const QString& name);
 
+    /// Source traceability at PARAM granularity: a property row's context
+    /// menu ("Reveal '<param>' in Scene File") was invoked.  MainWindow
+    /// connects this to revealSourceSpan(), which highlights the param's
+    /// EXACT `role value` span (not just the line).  Fully qualified
+    /// `ViewportBridge::Category` for the same reason as revealRequested
+    /// above.  Only emitted when the current entity resolves to a scene-
+    /// file chunk (the m_sourceLineKnown gate, same as the ⌗ chip).
+    void revealParamRequested(ViewportBridge::Category category,
+                              const QString& name, const QString& param);
+
 private slots:
     void onLineEditFinished();
 

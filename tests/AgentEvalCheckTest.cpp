@@ -48,13 +48,12 @@
 //    T9  Partial-credit arithmetic: a scenario with a 2:1-weighted mix of
 //        pass/fail checkpoints yields the exact expected fraction; a
 //        scenario with zero checkpoints is a vacuous pass (fraction 1.0).
-//    T10 Every committed evals/scenarios/*.json (the 4 seed scenarios plus
-//        the "editing verbs & recovery" set: remove_object,
-//        material_add_and_bind, conflict_retry, reserved_name_recovery),
-//        run end-to-end through its OWN evals/fixtures/*.fixture.jsonl and
-//        checked against its OWN wired checkpoints[] -- every checkpoint
-//        is TRUE of the fixture that produces it (allPassed,
-//        checkpointFraction 1.0).
+//    T10 EVERY committed evals/scenarios/*.json, discovered by a DYNAMIC
+//        directory enumeration (never a hard-coded id list -- P2(i): a new
+//        scenario file is covered automatically), run end-to-end through
+//        its OWN evals/fixtures/*.fixture.jsonl and checked against its OWN
+//        wired checkpoints[] -- every checkpoint is TRUE of the fixture
+//        that produces it (allPassed, checkpointFraction 1.0).
 //
 //  RED-PROVE (manual, not automated in this file -- see the final report):
 //    CheckDocumentKind's param_equals comparison was temporarily replaced
@@ -67,9 +66,11 @@
 #include "../src/Library/Agent/AgentEvalRunner.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
+#include "../src/Library/Agent/ChatHttpTransport.h"
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Job.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -148,6 +149,40 @@ static const char* const kReadThenDoneFixture =
 // (matches evals/fixtures/error_path.fixture.jsonl).
 static const char* const kErrorFixture =
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n";
+
+//----------------------------------------------------------------------
+// P1(b)'s MOCK transport -- the SAME minimal IChatHttpTransport seam
+// tests/AgentEvalLiveTransportTest.cpp drives (canned {status,body}
+// responses in sequence).  Needed here only to reach the 5xx-retry path:
+// the REPLAY fetch (RunScenario) always synthesizes status 200, so a
+// same-round 5xx retry can only be driven through RunScenarioLive.
+//----------------------------------------------------------------------
+class MockTransport : public IChatHttpTransport
+{
+public:
+	struct Canned { long status; std::string body; std::string error; long elapsedMs; };
+	std::vector<Canned>          responses;
+	std::size_t                  idx = 0;
+	std::vector<ChatHttpRequest> seenRequests;
+
+	ChatHttpResponse Post( const ChatHttpRequest& req ) override
+	{
+		seenRequests.push_back( req );
+		ChatHttpResponse r;
+		if( idx >= responses.size() ) { r.status = 0; r.error = "mock: no more canned responses"; r.elapsedMs = 1; return r; }
+		const Canned& c = responses[idx++];
+		r.status = c.status; r.body = c.body; r.error = c.error; r.elapsedMs = c.elapsedMs;
+		return r;
+	}
+};
+
+// The Anthropic 500 body + the final-text body the P1(b) mock replays
+// (matches evals/scenarios/param_edit.json's fixture shape).
+static const char* const kBody500 = "{\"error\":\"internal server error\"}";
+static const char* const kBodyFinalText =
+	"{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\","
+	"\"content\":[{\"type\":\"text\",\"text\":\"Done: pnt_albedo is now red.\"}],"
+	"\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}";
 
 //----------------------------------------------------------------------
 // Small helpers: a fresh scratch runDir, a raw-fixture writer, checkpoint
@@ -919,34 +954,43 @@ static void TestSeedScenariosCheckpointsAreTrue()
 	std::printf( "T10: the committed scenarios' checkpoints are TRUE of their own fixtures...\n" );
 	const std::string dir = ScratchRunDir( "t10_seed_scenarios" );
 
-	const char* const ids[] = { "param_edit", "two_tool_observe", "error_path", "camera_orbit_timeline",
-	                            "remove_object", "material_add_and_bind", "conflict_retry",
-	                            "reserved_name_recovery" };
-	const int idCount = static_cast<int>( sizeof( ids ) / sizeof( ids[0] ) );
-	for( int i = 0; i < idCount; ++i ) {
-		const std::string path = std::string( "evals/scenarios/" ) + ids[i] + ".json";
+	// P2(i): enumerate EVERY committed evals/scenarios/*.json dynamically --
+	// a hard-coded id list silently stops covering a scenario added later.
+	// Sorted for a deterministic run order.  The non-empty assert guards
+	// against a broken glob/path vacuously "passing" by finding nothing.
+	std::vector<std::string> paths;
+	for( const auto& entry : std::filesystem::directory_iterator( "evals/scenarios" ) ) {
+		if( entry.path().extension() == ".json" ) paths.push_back( entry.path().string() );
+	}
+	std::sort( paths.begin(), paths.end() );
+	Check( !paths.empty(), "evals/scenarios/*.json enumeration found at least one scenario file" );
+
+	for( const std::string& path : paths ) {
+		const std::string id = std::filesystem::path( path ).stem().string();
 		AgentEvalScenario s;
 		std::string err;
-		Check( LoadEvalScenario( path, s, err ), std::string( ids[i] ) + ": loads (" + err + ")" );
+		Check( LoadEvalScenario( path, s, err ), id + ": loads (" + err + ")" );
 		Check( !s.checkpoints.isArray() || s.checkpoints.size() > 0,
-			std::string( ids[i] ) + ": carries at least one checkpoint to verify" );
+			id + ": carries at least one checkpoint to verify" );
 
 		AgentEvalRunOptions opts;
 		opts.runDir = dir;
 		AgentEvalRunHandle h = RunScenario( s, opts );
 		Check( h.result.terminalStatus != "load_error",
-			std::string( ids[i] ) + ": run did not load_error (" + h.result.errorMessage + ")" );
+			id + ": run did not load_error (" + h.result.errorMessage + ")" );
+		Check( h.result.wallMs >= 0,
+			id + ": records a wall-clock completion duration (wallMs >= 0)" );
 
 		AgentEvalCheckResult r = CheckScenario( h, s );
 		Check( r.checkpoints.size() == s.checkpoints.size(),
-			std::string( ids[i] ) + ": one check result per committed checkpoint" );
+			id + ": one check result per committed checkpoint" );
 		for( std::size_t ci = 0; ci < r.checkpoints.size(); ++ci ) {
 			Check( r.checkpoints[ci].passed,
-				std::string( ids[i] ) + ": checkpoint[" + std::to_string( ci ) + "] (" + r.checkpoints[ci].kind +
+				id + ": checkpoint[" + std::to_string( ci ) + "] (" + r.checkpoints[ci].kind +
 				") is TRUE of the committed fixture (detail: " + r.checkpoints[ci].detail + ")" );
 		}
-		Check( r.allPassed, std::string( ids[i] ) + ": allPassed across its committed checkpoints" );
-		Check( r.checkpointFraction == 1.0, std::string( ids[i] ) + ": checkpointFraction is 1.0" );
+		Check( r.allPassed, id + ": allPassed across its committed checkpoints" );
+		Check( r.checkpointFraction == 1.0, id + ": checkpointFraction is 1.0" );
 	}
 }
 
@@ -1009,6 +1053,154 @@ static void TestScenarioIntervention()
 	}
 }
 
+//----------------------------------------------------------------------
+// P1(b): the maxLlmCalls budget must not be bypassed by a same-round
+// retry.  A cap of 1 plus a fixture whose FIRST response is a transient
+// HTTP 500 (which the drive loop retries once, same round) must NOT let
+// the retry's request go out -- the retry would be the 2nd llm call,
+// exceeding the cap.  Only reachable through RunScenarioLive (the REPLAY
+// fetch always synthesizes status 200, so a same-round 5xx retry can
+// never fire on the replay path -- see RunScenarioDriven's drive-loop
+// comment) -- mirrors tests/AgentEvalLiveTransportTest.cpp's
+// TestLiveHttp5xxRetrySucceeds/TestLiveHttp5xxRetryStillFails coverage.
+//----------------------------------------------------------------------
+static void TestBudgetLlmCallsNotBypassedByRetry()
+{
+	std::printf( "P1(b): maxLlmCalls budget is not bypassed by a same-round 5xx retry...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads (" + err + ")" );
+	scenario.budgets.maxLlmCalls = 1;
+
+	MockTransport mock;
+	mock.responses.push_back( { 500, kBody500, "", 3 } );
+	mock.responses.push_back( { 200, kBodyFinalText, "", 4 } );   // must NEVER be consumed -- the cap stops the retry first
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "p1b_budget_vs_5xx_retry" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.llmCalls <= 1,
+		"llmCalls never exceeds the maxLlmCalls:1 cap (got " + std::to_string( h.result.llmCalls ) + ")" );
+	Check( h.result.terminalStatus == "budget_llm_calls",
+		"the run stops on budget_llm_calls, not a silently-over-cap provider_error/final_text (got '" +
+		h.result.terminalStatus + "')" );
+	Check( h.result.budgetHit, "budgetHit is true" );
+	Check( mock.seenRequests.size() == 1,
+		"the transport saw exactly ONE POST -- the retry's request was never built/sent (got " +
+		std::to_string( mock.seenRequests.size() ) + ")" );
+}
+
+//----------------------------------------------------------------------
+// P1(a): CheckScenario's results ledger (<runDir>/results.jsonl) RECORDS
+// terminalStatus alongside checkpointFraction/allPassed -- a reviewer can
+// see that a run which passed every checkpoint nonetheless ended on a
+// non-clean status.  Recorded only -- pass/fail stays checkpoint-fraction
+// based, never gated on terminalStatus.
+//----------------------------------------------------------------------
+static void TestResultsLedgerRecordsTerminalStatus()
+{
+	std::printf( "P1(a): results.jsonl carries a \"terminalStatus\" field...\n" );
+	const std::string dir = ScratchRunDir( "p1a_results_ledger" );
+
+	AgentEvalScenario s = MakeScenario( "ledger_probe", kScene, "Recolor", "commit", kParamEditFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "ledger_probe run reached final_text" );
+
+	CheckScenario( h, s );
+
+	const std::string resultsPath = dir + "/results.jsonl";
+	std::ifstream rf( resultsPath.c_str(), std::ios::binary );
+	Check( static_cast<bool>( rf ), "results.jsonl was written" );
+	std::string line;
+	bool found = false;
+	while( std::getline( rf, line ) ) {
+		if( line.find( "\"ledger_probe\"" ) == std::string::npos ) continue;
+		JsonValue v; std::string perr;
+		Check( JsonParse( line, v, perr ), "the ledger_probe results.jsonl line parses as JSON" );
+		Check( v.has( "terminalStatus" ) && v.get( "terminalStatus" ).isString(),
+			"the results ledger line carries a string \"terminalStatus\" field" );
+		Check( v.get( "terminalStatus" ).asString() == "final_text",
+			"the recorded terminalStatus matches the run's actual terminal status (got '" +
+			v.get( "terminalStatus" ).asString() + "')" );
+		found = true;
+		break;
+	}
+	Check( found, "found the ledger_probe line in results.jsonl" );
+}
+
+//----------------------------------------------------------------------
+// P1(c): a checkpoint field the checker RECOGNIZES for its "kind" but that
+// carries the WRONG JSON type must HARD-FAIL LoadEvalScenario at load time
+// (fail-fast) rather than silently degrade to a skipped assertion (the
+// silent-weakening bug).  A correctly-typed sibling still loads cleanly.
+//----------------------------------------------------------------------
+static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
+{
+	std::printf( "P1(c): LoadEvalScenario hard-fails a wrong-typed RECOGNIZED checkpoint field...\n" );
+	const std::string dir = ScratchRunDir( "p1c_strict_types" );
+
+	auto writeScenario = [&]( const std::string& id, const std::string& checkpointsJson ) -> std::string {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses" );
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		return path;
+	};
+
+	// "trajectory".maxToolCalls as a STRING (not a number) -- must fail
+	// loudly, naming the offending field.
+	{
+		const std::string path = writeScenario( "bad_traj_type",
+			"[{\"kind\":\"trajectory\",\"maxToolCalls\":\"7\"}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "wrong-typed maxToolCalls (string \"7\") FAILS to load" );
+		Check( err.find( "maxToolCalls" ) != std::string::npos,
+			"the load error names the offending field \"maxToolCalls\" (got: " + err + ")" );
+	}
+	// The correctly-typed sibling still loads cleanly.
+	{
+		const std::string path = writeScenario( "good_traj_type",
+			"[{\"kind\":\"trajectory\",\"maxToolCalls\":7}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "correctly-typed maxToolCalls (number 7) loads (" + err + ")" );
+	}
+
+	// A second field/kind combination for coverage beyond one example: a
+	// "document" op:param_range checkpoint's "min" as a bare number (must
+	// be an array of numbers) fails; the array form loads.
+	{
+		const std::string path = writeScenario( "bad_range_type",
+			"[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\","
+			"\"min\":0.1,\"max\":[1,1,1]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_range \"min\" as a bare number (not an array) FAILS to load" );
+		Check( err.find( "min" ) != std::string::npos, "the load error names \"min\" (got: " + err + ")" );
+	}
+	{
+		const std::string path = writeScenario( "good_range_type",
+			"[{\"kind\":\"document\",\"op\":\"param_range\",\"target\":\"pnt_albedo\",\"param\":\"color\","
+			"\"min\":[0,0,0],\"max\":[1,1,1]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "correctly-typed param_range min/max arrays load (" + err + ")" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -1024,6 +1216,9 @@ int main()
 	TestPartialCreditArithmetic();
 	TestScenarioIntervention();
 	TestSeedScenariosCheckpointsAreTrue();
+	TestBudgetLlmCallsNotBypassedByRetry();
+	TestResultsLedgerRecordsTerminalStatus();
+	TestLoadEvalScenarioStrictCheckpointFieldTypes();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

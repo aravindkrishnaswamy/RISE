@@ -65,6 +65,23 @@ enum class ViewportTool {
     RollCamera      = 8
 };
 
+/// Snapshot of the scene's IBL environment (a scene-level singleton: an
+/// hdr/exr painter bound via `radiance_*` on the active rasterizer, NOT an
+/// ILight).  Mirrors SceneEditController::EnvironmentInfo and the macOS
+/// RISEEnvironmentInfo.  Filled by ViewportBridge::environmentInfo().
+struct EnvironmentInfo {
+    bool    hasEnvironment = false;   ///< a radiance_map painter is bound
+    bool    proceduralSky  = false;   ///< a procedural sky / non-painter map is installed (read-only)
+    bool    editable       = false;   ///< false when the active rasterizer takes no radiance map (MLT / pixel*)
+    QString painterName;              ///< bound painter name (empty if none)
+    QString file;                     ///< resolved HDRI path (empty if unresolved / procedural)
+    double  scale          = 1.0;     ///< intensity multiplier
+    double  orientX        = 0.0;     ///< Euler rotation X in DEGREES
+    double  orientY        = 0.0;     ///< Euler rotation Y in DEGREES
+    double  orientZ        = 0.0;     ///< Euler rotation Z in DEGREES
+    bool    background     = true;    ///< map visible behind geometry
+};
+
 class ViewportBridge : public QObject
 {
     Q_OBJECT
@@ -199,6 +216,50 @@ public:
     /// Use together with `gizmoDragActive()` for unambiguous state.
     GizmoKind activeGizmoKind() const;
     int       activeGizmoAxis() const;
+
+    // -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+
+    /// One nav-gizmo nub.  Positions are in the widget space the overlay
+    /// passed to refreshNavGizmo() (and the same space it feeds navGizmoNubAt).
+    struct NavNub {
+        int    axis         = 0;      ///< 0=X, 1=Y, 2=Z
+        bool   negative     = false;  ///< false=+axis, true=−axis
+        double screenX      = 0.0;
+        double screenY      = 0.0;
+        double screenRadius = 0.0;
+        bool   facing       = true;   ///< true=toward viewer (bright)
+    };
+
+    /// Recompute the six ±X/±Y/±Z nubs for a ball centered at (centerX,
+    /// centerY) with `ballRadius`, each nub `nubRadius`, all in widget space.
+    /// Returns false (empty array) when there's no supported (pinhole)
+    /// interactive camera.  Call once per paint before reading navGizmoNubs().
+    bool refreshNavGizmo(double centerX, double centerY,
+                         double ballRadius, double nubRadius);
+
+    /// Snapshot of the current nub array (empty when not shown).
+    QVector<NavNub> navGizmoNubs() const;
+
+    /// Hit-test a widget-space point against the nubs (front-facing win ties).
+    /// Returns the nub index or -1.
+    int navGizmoNubAt(double x, double y) const;
+
+    // View navigation (Tier 2 §4-5): non-destructive — drive the transient
+    // free-fly ViewportPose (the interactive pass renders through it) and
+    // NEVER mutate a scene camera.  Each returns true on success.
+    bool snapViewToAxis(int axis, bool negative);
+    bool enterFreeFly();
+    bool exitFreeFly();
+    bool isFreeFlyActive() const;
+    bool setHomeView();
+    bool goToHomeView();
+    bool hasHomeView() const;
+
+    /// B3 fly-then-stamp: promote the current free-fly view into a NEW named
+    /// scene camera (auto-named from `proposedName`, dedup-suffixed; the new
+    /// camera becomes active).  Returns the created camera's name, or an empty
+    /// QString when there's no free-fly pose to stamp / the edit was refused.
+    QString stampViewToNewCamera(const QString& proposedName);
 
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);
@@ -546,6 +607,35 @@ public:
     bool getEntitySourceLocation(Category category, const QString& name,
                                   quint64* outByteOffset, quint32* outLine) const;
 
+    // ---- Source traceability (any UI element <-> scene-file span) ----
+    // Mirrors the macOS RISEViewportBridge's identically-named section and
+    // the RISE_API_SceneEditController_ResolveSourceSpan /
+    // SourceRefAtByteOffset C exports.  Same do-not-poll-during-renders
+    // caveat as getEntitySourceLocation (both take the controller's commit
+    // mutex) -- gate on MainWindow::canUseSceneTransport().
+
+    /// Resolve a UI element's scene-file span (generalizes
+    /// getEntitySourceLocation to param granularity + the Film / Rasterizer
+    /// singletons).  `param` empty = the whole chunk (outLength 0); non-empty
+    /// = the `occ`-th matching param's tight `role value` run.  Fills
+    /// byteOffset/byteLength (UTF-8 bytes into serializedSceneText()) + 1-based
+    /// line/column.  Returns false (outputs left untouched) on a null
+    /// controller, no retained CST document, or an unresolvable ref.
+    bool resolveSourceSpan(Category cat, const QString& name, const QString& param,
+                            int occ, quint64* outOffset, quint64* outLength,
+                            quint32* outLine, quint32* outColumn) const;
+
+    /// Reverse (a text-editor byte offset -> the UI element it backs).  On
+    /// success fills `outCat` (a Category), `outName` (the entity name, empty
+    /// for an unnamed singleton), `outParam` (empty when the offset is on a
+    /// chunk header rather than a specific param), and `outOccurrence`.
+    /// Returns false when there's no retained CST or the offset isn't inside
+    /// an addressable entity/singleton chunk.  Exposed now for a later
+    /// text-cursor -> UI-select slice; the forward (resolveSourceSpan) is the
+    /// one wired in this slice.
+    bool sourceRefAtByteOffset(quint64 offset, Category* outCat, QString* outName,
+                                QString* outParam, int* outOccurrence) const;
+
     // ---- Entity creation + painter CRUD (entity-creation slice) -----
     // Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
     // EntityTemplateLabel,InstantiateEntityTemplate,DuplicateEntity,
@@ -603,6 +693,39 @@ public:
     /// work).  Caller should surface a one-shot warning the first
     /// time per session.
     QString addCameraFromActive(const QString& proposedName);
+
+    // ---- Environment / IBL section ----------------------------------
+    // Mirrors the macOS RISEViewportBridge's identically-named section and
+    // the RISE_API_SceneEditController_*Environment* C exports.  The
+    // mutating calls take the controller's commit mutex -- gate on
+    // MainWindow::canUseSceneTransport() before calling.
+
+    /// Read the current environment binding into `out`.  Returns false only
+    /// when there is no scene / no active rasterizer; otherwise fills `out`
+    /// (with hasEnvironment == false when unbound).
+    bool environmentInfo(EnvironmentInfo* out) const;
+
+    /// Set the environment intensity / background-visibility / rotation
+    /// (degrees).  Each applies live (viewport re-renders) AND persists (CST
+    /// mirror).  Returns false when no editable bound environment exists.
+    bool setEnvironmentScale(double scale);
+    bool setEnvironmentBackground(bool background);
+    bool setEnvironmentOrient(double xDeg, double yDeg, double zDeg);
+
+    /// Swap the bound environment painter's HDRI file (an existing path; the
+    /// file picker is the guard).  Returns false when none is bound.
+    bool setEnvironmentFile(const QString& absPath);
+
+    /// Create an environment from an HDRI file when none exists (inserts an
+    /// hdr/exr painter chosen from the extension + binds radiance_map).
+    /// Returns `applied`; `outName` / `outMessage` optional (may be null).
+    bool addEnvironment(const QString& hdriPath,
+                         QString* outName = nullptr,
+                         QString* outMessage = nullptr);
+
+    /// Remove the environment (unbinds radiance_map, live + CST).  Returns
+    /// false when no editable environment exists.
+    bool removeEnvironment();
 
 signals:
     /// Emitted on the UI thread with each completed preview frame.

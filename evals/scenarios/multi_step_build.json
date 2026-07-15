@@ -1,0 +1,61 @@
+{
+  "id": "multi_step_build",
+  "title": "Build a simple lit scene from a bare scaffold (multi-step insert_chunk sequence)",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 24\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "Build a simple lit scene: add a grey sphere at the origin and a bright area light in front of it, so the sphere is clearly visible when rendered."
+  ],
+  "budgets": {
+    "maxToolCalls": 28,
+    "maxLlmCalls": 30,
+    "maxWallMs": 600000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/multi_step_build.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_exists",
+      "chunkKind": "standard_object",
+      "name": "obj_sph"
+    },
+    {
+      "kind": "document",
+      "op": "chunk_exists",
+      "chunkKind": "standard_object",
+      "name": "obj_emit"
+    },
+    {
+      "kind": "document",
+      "op": "chunk_exists",
+      "chunkKind": "sphere_geometry",
+      "name": "sph"
+    },
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 2,
+      "max": 2
+    },
+    {
+      "kind": "render",
+      "meanLumaMin": 0.015,
+      "meanLumaMax": 0.2
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": ["read_document", "insert_chunk"]
+    }
+  ]
+}

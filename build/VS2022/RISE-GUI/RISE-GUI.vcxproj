@@ -106,6 +106,7 @@
     <ClCompile Include="ChatPanel.cpp" />
     <ClCompile Include="ProposalCard.cpp" />
     <ClCompile Include="OutlinerWidget.cpp" />
+    <ClCompile Include="EnvironmentPanel.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
     <ClCompile Include="SceneTextEdit.cpp" />
@@ -127,6 +128,7 @@
     <ClCompile Include="$(QtMocOutDir)moc_ChatPanel.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_ProposalCard.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_OutlinerWidget.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_EnvironmentPanel.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneTextEdit.cpp" />
@@ -182,6 +184,12 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="OutlinerWidget.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="EnvironmentPanel.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>

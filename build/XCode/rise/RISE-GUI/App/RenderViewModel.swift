@@ -178,6 +178,10 @@ final class RenderViewModel: ObservableObject {
     /// value and skip the reveal on the second click.
     struct EditorRevealRequest {
         let byteOffset: UInt64
+        /// UTF-8 byte length of the exact span to select+flash.  0 = select the
+        /// whole line containing byteOffset (the entity/whole-chunk reveal); > 0 =
+        /// highlight exactly [byteOffset, byteOffset+byteLength) (a param row).
+        let byteLength: UInt64
         let generation: Int
     }
     @Published var editorRevealRequest: EditorRevealRequest? = nil
@@ -284,6 +288,16 @@ final class RenderViewModel: ObservableObject {
     /// bridge-presence check every one of those five callers already
     /// needed.
     var canUseSceneTransport: Bool { viewportBridge != nil && isSceneEditableForAgents }
+
+    /// Reverse source traceability (text -> UI select): may a right-click
+    /// "Select in Inspector" act right now?  Needs the scene transport (no
+    /// render owns the controller) AND a clean editor buffer -- the click's
+    /// byte offset comes from the buffer but resolves against the live CST
+    /// serialization, so they must agree.  The SINGLE source of truth for
+    /// both the menu-item enablement (so the affordance is "right or absent,
+    /// never misleading", matching the forward reveal affordances) and the
+    /// `reverseSelectEntity` guard.
+    var canReverseSelect: Bool { canUseSceneTransport && !isEditorDirty }
 
     /// S2b P2-1: THE single source for the `renderState` case-list that
     /// means "a production render is currently occupying the
@@ -459,6 +473,15 @@ final class RenderViewModel: ObservableObject {
     /// the outliner for AGENT-driven adds/removes — those never touch
     /// this counter.
     @Published var entityListEpoch: Int = 0
+
+    /// Reverse source traceability (text -> UI select): bumped when a
+    /// right-click "Select in Inspector" in the scene-file editor resolves
+    /// to an entity and selects it on the bridge.  ContentView observes this
+    /// and bumps its shared `propertyRefresh`, so the inspector re-snapshots
+    /// and the outliner's highlight follows -- selection lives on the bridge
+    /// and needs an explicit refresh nudge (a reverse-select changes no
+    /// pixels, so no rendered-frame refresh fires).  See `reverseSelectEntity`.
+    @Published var reverseSelectEpoch: Int = 0
 
     /// View menu toggles (design brief workspace chrome).  Both default
     /// on; persistence isn't required for slice 1.
@@ -1769,8 +1792,54 @@ final class RenderViewModel: ObservableObject {
         // stale-buffer warning is already showing) — a reveal must be
         // right or absent, never misleading.
         guard !isEditorDirty else { return }
-        editorRevealRequest = EditorRevealRequest(byteOffset: offset, generation: nextEditorRevealGeneration)
+        editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: 0, generation: nextEditorRevealGeneration)
         nextEditorRevealGeneration += 1
+    }
+
+    /// Source traceability: reveal a specific UI element's span in the Scene-file
+    /// editor, highlighting the EXACT byte range (a param row) rather than the whole
+    /// line.  `param` empty falls back to a whole-chunk (line) reveal.  Same
+    /// stale-buffer guard as revealEntityInSceneText — a reveal must be right or
+    /// absent, never misleading.
+    func revealSourceSpan(category: RISEViewportCategory, name: String, param: String, occurrence: Int = 0) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var offset: UInt64 = 0
+        var length: UInt64 = 0
+        var line: UInt32 = 0
+        var col: UInt32 = 0
+        guard vb.resolveSourceSpan(for: category, name: name, param: param, occurrence: Int32(occurrence),
+                                   byteOffset: &offset, byteLength: &length, line: &line, column: &col) else { return }
+        leftTab = .sceneFile
+        guard !isEditorDirty else { return }
+        editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: length, generation: nextEditorRevealGeneration)
+        nextEditorRevealGeneration += 1
+    }
+
+    /// Reverse source traceability (text -> UI select): the inverse of the
+    /// two reveals above.  Resolve the scene entity whose source contains
+    /// UTF-8 `byteOffset` (a right-click in the scene-file editor) and select
+    /// it so the outliner highlight + inspector land on it.  Same editability
+    /// gate as the forward reveals; additionally requires a CLEAN editor
+    /// buffer -- the offset comes from the buffer but `sourceRef` resolves it
+    /// against the live CST serialization, and the two agree only when clean
+    /// (the inverse reasoning of the forward stale-buffer guard).  Selection
+    /// never mutates the document text, so this cannot dirty the buffer or
+    /// feed back into another resolve.  A no-resolve (inter-chunk trivia, a
+    /// non-entity chunk, EOF, or a dirty buffer) is a silent no-op.
+    func reverseSelectEntity(atByteOffset byteOffset: UInt64) {
+        guard let vb = viewportBridge, canReverseSelect else { return }
+        var cat: RISEViewportCategory = .none
+        var name: NSString? = nil
+        var param: NSString? = nil
+        var occurrence: Int32 = 0
+        guard vb.sourceRef(atByteOffset: byteOffset, category: &cat,
+                           name: &name, param: &param, occurrence: &occurrence) else { return }
+        // Only refresh the panels if the selection actually took (the
+        // resolver already validated addressability, so this normally
+        // succeeds; gating avoids a stale re-snapshot on the rare miss).
+        if vb.setSelection(cat, name: (name as String?) ?? "") {
+            reverseSelectEpoch &+= 1
+        }
     }
 
     // MARK: - Entity creation + painter CRUD (entity-creation slice)
@@ -1882,6 +1951,14 @@ final class RenderViewModel: ObservableObject {
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    /// Public surface for the Environment panel to report a refused / partial
+    /// environment edit (e.g. "already bound", or a live bind that couldn't be
+    /// recorded in the scene file).  Routes through the same warning alert the
+    /// entity-CRUD failures use.
+    func presentEnvironmentNotice(_ message: String) {
+        presentEntityEditAlert(title: "Environment", message: message)
     }
 
     func saveAndReloadScene() {

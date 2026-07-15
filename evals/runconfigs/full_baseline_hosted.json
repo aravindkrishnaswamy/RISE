@@ -1,0 +1,25 @@
+{
+  "scenarios": [
+    "evals/scenarios/param_edit.json",
+    "evals/scenarios/two_tool_observe.json",
+    "evals/scenarios/camera_orbit_timeline.json",
+    "evals/scenarios/remove_object.json",
+    "evals/scenarios/material_add_and_bind.json",
+    "evals/scenarios/conflict_retry.json",
+    "evals/scenarios/reserved_name_recovery.json",
+    "evals/scenarios/objectmap_frame_object.json",
+    "evals/scenarios/multi_step_build.json",
+    "evals/scenarios/lighting_luma_band.json",
+    "evals/scenarios/propose_mode_stages.json",
+    "evals/scenarios/read_mode_refuses.json",
+    "evals/scenarios/multi_turn_edit.json"
+  ],
+  "providers": [
+    { "provider": "anthropic", "model": "claude-opus-4-8", "keyEnvVar": "ANTHROPIC_API_KEY" },
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "xai", "model": "grok-4.5", "keyEnvVar": "XAI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/full_baseline"
+}

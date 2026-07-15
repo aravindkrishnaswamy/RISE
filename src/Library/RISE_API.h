@@ -3592,6 +3592,50 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	int  RISE_API_SceneEditController_ActiveGizmoKind( SceneEditController* p );
 	int  RISE_API_SceneEditController_ActiveGizmoAxis( SceneEditController* p );
 
+	//! -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+	//! Recompute the six ±X/±Y/±Z nubs for a ball centered at (centerX,
+	//! centerY) with `ballRadius`, each nub `nubRadius`, all in the caller's
+	//! widget space.  Returns false (count 0) when there is no supported
+	//! (pinhole) interactive camera or the geometry is non-positive.  Call
+	//! once per preview frame before reading nubs.
+	bool RISE_API_SceneEditController_RefreshNavGizmo(
+		SceneEditController* p,
+		double centerX, double centerY, double ballRadius, double nubRadius );
+
+	//! Number of nav-gizmo nubs (0 or 6).  Read AFTER RefreshNavGizmo.
+	unsigned int RISE_API_SceneEditController_NavGizmoNubCount(
+		SceneEditController* p );
+
+	//! Read one nub.  outAxis: 0=X,1=Y,2=Z; outNegative/outFacing are
+	//! bool-as-int (0/1); outScreenX/Y + outScreenRadius in the caller's
+	//! ball-geometry space.  Returns false on null controller, out-of-range
+	//! idx, or any null out-parameter (all fields optional per pointer).
+	bool RISE_API_SceneEditController_NavGizmoNub(
+		SceneEditController* p, unsigned int idx,
+		int* outAxis, int* outNegative,
+		double* outScreenX, double* outScreenY, double* outScreenRadius,
+		int* outFacing );
+
+	//! Hit-test a pointer position (same space as RefreshNavGizmo geometry)
+	//! against the nubs; front-facing nubs win ties.  Returns the nub index
+	//! or -1 (miss / null controller).
+	int  RISE_API_SceneEditController_NavGizmoNubAt(
+		SceneEditController* p, double x, double y );
+
+	//! -------- View navigation (Tier 2 §4-5): non-destructive --------
+	//! These drive the transient free-fly ViewportPose (the interactive pass
+	//! renders through it) and NEVER mutate a scene camera.  All return false
+	//! on null controller / the documented refusal cases.  `negative` is
+	//! bool-as-int.  See SceneEditController for the contracts.
+	bool RISE_API_SceneEditController_SnapViewToAxis(
+		SceneEditController* p, int axis, int negative );
+	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p );
+	bool RISE_API_SceneEditController_ExitFreeFly( SceneEditController* p );
+	bool RISE_API_SceneEditController_IsFreeFlyActive( SceneEditController* p );
+	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p );
+	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p );
+	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p );
+
 	//! Pointer events from the platform UI.  Coordinates are in the
 	//! preview surface's pixel space.
 	bool RISE_API_SceneEditController_OnPointerDown(
@@ -3692,6 +3736,33 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_GetEntitySourceLocation(
 		SceneEditController* p, int category, const char* name,
 		unsigned long long* outByteOffset, unsigned int* outLine );
+
+	//! Source traceability (any UI element -> its scene-file span).  Generalizes
+	//! GetEntitySourceLocation to param granularity (`param` empty = whole chunk;
+	//! non-empty = the `occ`-th matching param's tight `role value` run) and to the
+	//! Film / Rasterizer singletons (so the Environment section reveals its
+	//! radiance_* rows via category=Rasterizer + the HDRI file via category=Painter
+	//! + the bound painter name).  Fills byteOffset/byteLength (length 0 for a whole
+	//! chunk) + 1-based line/column.  Returns false (outputs unchanged) on a null
+	//! controller, no retained CST, or an unresolvable ref.  Same no-poll-during-
+	//! render caveat as GetEntitySourceLocation.
+	bool RISE_API_SceneEditController_ResolveSourceSpan(
+		SceneEditController* p, int category, const char* name, const char* param, int occ,
+		unsigned long long* outByteOffset, unsigned long long* outByteLength,
+		unsigned int* outLine, unsigned int* outColumn );
+
+	//! Reverse (a text-editor byte offset -> the UI element it backs).  Fills
+	//! `outCategory` (a SceneEditCategory_* int), `outName` (the entity name, empty
+	//! for an unnamed singleton), and `outParam` (empty when the offset is on a
+	//! chunk header rather than a specific param) so the caller can select +
+	//! highlight that element.  Returns false when there is no retained CST or the
+	//! offset isn't inside an addressable entity/singleton chunk.
+	bool RISE_API_SceneEditController_SourceRefAtByteOffset(
+		SceneEditController* p, unsigned long long offset,
+		int* outCategory,
+		char* outName, unsigned int outNameLen,
+		char* outParam, unsigned int outParamLen,
+		int* outOccurrence );
 
 	//! Save the in-memory edits to `filePath`.  Returns the engine's
 	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,
@@ -3983,6 +4054,17 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		const char* proposedName,
 		char* outName, unsigned int outLen );
 
+	//! B3 fly-then-stamp (Tier 2 §5.3): promote the CURRENT free-fly
+	//! ViewportPose into a NEW named scene camera.  `outName` receives the
+	//! chosen (dedup-suffixed) name.  Returns false — outName cleared — on
+	//! null controller, `outLen == 0`, no active free-fly pose to stamp, no
+	//! camera manager, a too-small buffer, or a refused edit.  Bumps the
+	//! SceneEpoch; persists via the retained CST Document; undoable.
+	bool RISE_API_SceneEditController_StampViewToNewCamera(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
+
 	//! Entity-creation slice: number of "Add Entity" templates
 	//! registered for `category` (0 for categories with none —
 	//! Camera/Rasterizer/Film/Animation/SceneVariant/None).
@@ -4030,6 +4112,48 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, int category, const char* name,
 		char* outStatus, unsigned int outStatusLen,
 		char* outMessage, unsigned int outMessageLen );
+
+	//! -------- Environment / IBL section (GUI Environment panel) --------
+	//! See SceneEditController's EnvironmentInfo + env accessors and
+	//! docs/gui/ENVIRONMENT_SECTION.md.  The environment is a scene-level
+	//! singleton (an hdr/exr painter bound via `radiance_*` on the active
+	//! rasterizer), not an ILight.
+
+	//! Read the current environment binding.  Returns false only when there is
+	//! no scene / no active rasterizer; otherwise every optional out-param is
+	//! filled (int flags are 0/1; `outHasEnvironment=0` means unbound).
+	bool RISE_API_SceneEditController_GetEnvironment(
+		SceneEditController* p,
+		int* outHasEnvironment, int* outProceduralSky, int* outEditable,
+		char* outPainterName, unsigned int outPainterNameLen,
+		char* outFile, unsigned int outFileLen,
+		double* outScale, double* outOrientX, double* outOrientY, double* outOrientZ,
+		int* outBackground );
+
+	//! Set the environment intensity / background-visibility / rotation (degrees).
+	//! Each applies live (viewport re-renders) and persists (CST mirror).
+	//! Returns false when no editable bound environment exists.
+	bool RISE_API_SceneEditController_SetEnvironmentScale( SceneEditController* p, double scale );
+	bool RISE_API_SceneEditController_SetEnvironmentBackground( SceneEditController* p, int background );
+	bool RISE_API_SceneEditController_SetEnvironmentOrient(
+		SceneEditController* p, double xDeg, double yDeg, double zDeg );
+
+	//! Swap the bound environment painter's HDRI file (an existing path; the
+	//! GUI file picker is the guard).  Returns false when none is bound.
+	bool RISE_API_SceneEditController_SetEnvironmentFile( SceneEditController* p, const char* absPath );
+
+	//! Create an environment from an HDRI file when none exists (inserts an
+	//! hdr/exr painter chosen from the extension + binds radiance_map).
+	//! Returns `applied`; out-params as the entity CRUD wrappers above.
+	bool RISE_API_SceneEditController_AddEnvironment(
+		SceneEditController* p, const char* hdriPath,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Remove the environment (unbinds radiance_map, live + CST).  Returns false
+	//! when no editable environment exists.
+	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p );
 }
 
 #endif

@@ -21,6 +21,7 @@
 #include "ViewportTimeline.h"
 #include "ViewportProperties.h"
 #include "OutlinerWidget.h"
+#include "EnvironmentPanel.h"
 #include "Theme.h"
 
 #include <QAction>
@@ -216,6 +217,14 @@ MainWindow::MainWindow(QWidget* parent)
     // the Agent tab instead of hiding a splitter pane.
     connect(m_sceneEditor, &SceneEditor::closeRequested, this, [this]() { setLeftTab(0); });
     connect(m_sceneEditor, &SceneEditor::saveAndReloadRequested, this, &MainWindow::onSaveAndReload);
+    connect(m_sceneEditor, &SceneEditor::selectEntityAtByteOffsetRequested,
+            this, &MainWindow::selectEntityAtByteOffset);
+    // Reverse source traceability: gate the "Select in Inspector" item's
+    // enablement on the SAME conditions selectEntityAtByteOffset checks, so
+    // it greys out (rather than silently no-opping) on a dirty buffer or
+    // while a render owns the scene.  Evaluated lazily at right-click time,
+    // so it always reflects the current transport + dirty state.
+    m_sceneEditor->setCanSelectEntityPredicate([this]() { return canReverseSelect(); });
 
     // Set initial status
     statusBar()->showMessage(QString("RISE %1 — Ready").arg(m_engine->versionString()));
@@ -421,6 +430,34 @@ QWidget* MainWindow::buildRightPanel()
     connect(m_outlinerWidget, &OutlinerWidget::deleteRequested, this,
             [this](ViewportBridge::Category category, const QString& name) {
                 removeEntity(static_cast<int>(category), name);
+            });
+
+    // Environment / IBL section, between the outliner and the per-scene
+    // ViewportProperties (which rebuildViewportForLoadedScene appends
+    // below it).  Persistent like the outliner -- setBridge() gives it a
+    // live scene on load, nullptr on teardown; it hides itself when the
+    // scene has no active rasterizer.  Mirrors the macOS EnvironmentPanel
+    // sitting between OutlinerView and PropertiesPanel.
+    m_environmentPanel = new EnvironmentPanel(panel);
+    m_rightPanelLayout->addWidget(m_environmentPanel);
+
+    // A landed environment edit changes the Painter list (Add/Remove) and
+    // re-renders (live edits) -- refresh the outliner so it follows.  The
+    // per-scene ViewportProperties is connected in
+    // rebuildViewportForLoadedScene (same persistent-to-per-scene split as
+    // the outliner's selectionActivated connect).  Both m_environmentPanel
+    // and m_outlinerWidget are persistent, so this connects once.
+    connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
+            m_outlinerWidget, &OutlinerWidget::refresh);
+
+    // Source traceability: a per-row reveal from the Environment section
+    // resolves the backing param's exact span (the HDRI file on the bound
+    // painter; radiance_* on the active rasterizer).  m_environmentPanel is
+    // persistent, so this connects once.  occurrence 0 = the first (only)
+    // matching param on the singleton chunk.
+    connect(m_environmentPanel, &EnvironmentPanel::revealEnvParamRequested, this,
+            [this](int category, const QString& name, const QString& param) {
+                revealSourceSpan(category, name, param, 0);
             });
 
     return panel;
@@ -707,6 +744,11 @@ bool MainWindow::canUseSceneTransport() const
     return !productionActive && !chatOutstanding;
 }
 
+bool MainWindow::canReverseSelect() const
+{
+    return canUseSceneTransport() && m_sceneEditor && !m_sceneEditor->isDirty();
+}
+
 void MainWindow::updateMenuActionStates()
 {
     const auto state = m_engine->state();
@@ -761,6 +803,10 @@ void MainWindow::updateMenuActionStates()
     // chat-driven render can never be wedged against by either affordance.
     if (m_viewportProps)  m_viewportProps->setSceneEditable(bridgeInteractingEnabled);
     if (m_outlinerWidget) m_outlinerWidget->setSceneEditable(bridgeInteractingEnabled);
+    // Environment section's mutating controls gate on the IDENTICAL term:
+    // each ViewportBridge setEnvironment* call takes the controller's
+    // commit mutex a production / chat-driven render owns.
+    if (m_environmentPanel) m_environmentPanel->setSceneEditable(bridgeInteractingEnabled);
 
     const bool refinementDisabled = !m_viewportBridge
         || state == RenderEngine::Rendering
@@ -1118,6 +1164,65 @@ void MainWindow::revealEntityInSceneText(int category, const QString& name)
     // never misleading.
     if (m_sceneEditor && !m_sceneEditor->isDirty()) {
         m_sceneEditor->revealAt(offset);
+    }
+}
+
+void MainWindow::revealSourceSpan(int category, const QString& name,
+                                  const QString& param, int occurrence)
+{
+    if (!m_viewportBridge || !canUseSceneTransport()) return;
+
+    quint64 offset = 0;
+    quint64 length = 0;
+    quint32 line = 0;
+    quint32 column = 0;
+    const auto cat = static_cast<ViewportBridge::Category>(category);
+    if (!m_viewportBridge->resolveSourceSpan(cat, name, param, occurrence,
+                                             &offset, &length, &line, &column)) {
+        return;
+    }
+
+    setLeftTab(1);   // Scene file tab
+
+    // Same stale-buffer guard as revealEntityInSceneText: the offset
+    // addresses the LIVE serialization, so skip the scroll (but still
+    // switch tabs, where the stale-buffer warning is already showing)
+    // when the editor buffer has unsaved hand edits -- a reveal must be
+    // right or absent, never misleading.
+    if (m_sceneEditor && !m_sceneEditor->isDirty()) {
+        m_sceneEditor->revealAt(offset, length);
+    }
+}
+
+void MainWindow::selectEntityAtByteOffset(quint64 byteOffset)
+{
+    if (!m_viewportBridge || !canUseSceneTransport()) return;
+
+    // The offset comes FROM the buffer but resolves against the live CST
+    // serialization; they only agree when the buffer is clean.  A dirty
+    // buffer (unsaved hand edits) would resolve the wrong entity, so refuse
+    // silently -- the inverse of the forward reveals' stale-buffer guard.
+    if (!m_sceneEditor || m_sceneEditor->isDirty()) return;
+
+    ViewportBridge::Category cat = ViewportBridge::Category::None;
+    QString name;
+    QString param;
+    int occurrence = 0;
+    if (!m_viewportBridge->sourceRefAtByteOffset(byteOffset, &cat, &name,
+                                                 &param, &occurrence)) {
+        return;   // inter-chunk trivia, non-entity chunk, or EOF
+    }
+
+    // Select the resolved entity.  A right-click in the text editor produces
+    // no imageUpdated frame, so (unlike a render-driven refresh) we must
+    // re-pull both panels explicitly -- mirrors the outliner's own selection
+    // path.  Selection never mutates the document text, so this cannot dirty
+    // the buffer or feed back into another resolve.  Refresh only if the
+    // selection took (the resolver already validated addressability, so this
+    // normally succeeds; gating avoids a stale re-snapshot on the rare miss).
+    if (m_viewportBridge->setSelection(cat, name)) {
+        if (m_viewportProps)    m_viewportProps->refresh();
+        if (m_outlinerWidget)   m_outlinerWidget->refresh();
     }
 }
 
@@ -1770,6 +1875,18 @@ void MainWindow::rebuildViewportForLoadedScene()
                 m_viewportProps, &ViewportProperties::refresh);
     }
 
+    if (m_environmentPanel) {
+        m_environmentPanel->setBridge(m_viewportBridge);
+        // An environment edit doesn't necessarily touch the PRIMARY
+        // selection, but Add/Remove change the Painter list and a live
+        // edit re-renders -- follow it so the single-entity inspector
+        // stays in sync (same persistent-to-per-scene connect as the
+        // outliner's selectionActivated above; m_viewportProps is
+        // recreated per load so this reconnects fresh each time).
+        connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
+                m_viewportProps, &ViewportProperties::refresh);
+    }
+
     // Pull the timeline range from the scene's animation_options
     // chunk via the bridge.  Defaults are (0, 1) when the scene
     // declares no animation_options; we keep the slider's max above
@@ -1859,6 +1976,14 @@ void MainWindow::rebuildViewportForLoadedScene()
         connect(m_viewportBridge, &ViewportBridge::imageUpdated,
                 m_outlinerWidget, &OutlinerWidget::refresh);
     }
+    if (m_environmentPanel) {
+        // Rides every preview frame like the outliner so a scene load /
+        // active-rasterizer change / undone edit re-reads environmentInfo
+        // (reload() self-skips while one of its own fields has focus, so a
+        // frame can't blow away an in-progress edit).
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_environmentPanel, &EnvironmentPanel::reload);
+    }
 
     // Round-trip save success: pull the just-written bytes into the
     // SceneEditor text pane so it reflects the saved edits, refresh
@@ -1878,6 +2003,14 @@ void MainWindow::rebuildViewportForLoadedScene()
     connect(m_viewportProps, &ViewportProperties::revealRequested, this,
             [this](ViewportBridge::Category category, const QString& name) {
                 revealEntityInSceneText(static_cast<int>(category), name);
+            });
+
+    // Per-param reveal (source traceability): a property row's context
+    // menu resolves to the param's EXACT span.  Same Category-to-int adapt
+    // as revealRequested above; occurrence 0 (the first matching param).
+    connect(m_viewportProps, &ViewportProperties::revealParamRequested, this,
+            [this](ViewportBridge::Category category, const QString& name, const QString& param) {
+                revealSourceSpan(static_cast<int>(category), name, param, 0);
             });
 
     // Production-render frames from the engine → also flow to the
@@ -1910,6 +2043,12 @@ void MainWindow::teardownViewport()
     }
     if (m_outlinerWidget) {
         m_outlinerWidget->setBridge(nullptr);
+    }
+    if (m_environmentPanel) {
+        // Drops the bridge and hides the section (environmentInfo returns
+        // false with no controller).  m_environmentPanel is persistent, so
+        // it is NOT deleted here -- only its bridge borrow is cleared.
+        m_environmentPanel->setBridge(nullptr);
     }
 
     // Close any looping preview-play (and its open scrub bracket) through the

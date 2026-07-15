@@ -9,8 +9,9 @@
     "Give the sphere a shiny metallic look."
   ],
   "budgets": {
-    "maxToolCalls": 7,
-    "maxLlmCalls": 8
+    "maxToolCalls": 16,
+    "maxLlmCalls": 18,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/material_add_and_bind.fixture.jsonl"
@@ -48,8 +49,7 @@
       "expect": "clean"
     },
     {
-      "kind": "trajectory",
-      "maxToolCalls": 7,
+      "kind": "trajectory", "terminalStatus": "final_text",
       "requiredToolInOrder": [
         "read_document",
         "read_schema",

@@ -288,9 +288,19 @@ namespace RISE
 			//! no turns ran).
 			std::string terminalStatus;
 
-			int  llmCalls  = 0;    //!< total LLM (replay) rounds actually driven
+			int  llmCalls  = 0;    //!< total LLM requests SENT (counts every POST attempted, incl. a transport-failed attempt that may still have been billed; can exceed the number of recorded llm rounds, which count only received responses)
 			int  toolCalls = 0;    //!< total tool calls actually dispatched
 			bool budgetHit = false;   //!< true iff terminalStatus is one of the three budget_* stops
+
+			//! Total WALL-CLOCK duration of the run in milliseconds (the whole
+			//! turn loop: LLM round-trips + tool dispatch), measured via the
+			//! same wall clock maxWallMs uses (TrajectoryNowMs, or the injected
+			//! deterministic clock under replay).  This is the "time to
+			//! completion" comparison metric across providers -- for LIVE runs
+			//! it is dominated by network + remote/local inference; under replay
+			//! (no network) it is near-zero or the injected-clock delta.  -1
+			//! only on a load_error (the run never started its timer).
+			long long wallMs = -1;
 
 			//! The scene's CST head-version revision at session start /
 			//! after the run (-1 when unknown -- a load_error before a

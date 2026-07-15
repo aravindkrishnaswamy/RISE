@@ -35,6 +35,8 @@
 #include "pch.h"
 #include "SceneEditController.h"
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
+#include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
+#include <map>                            // source-traceability reverse: cached keyword -> Category map
 #include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
 #include "ObjectIntrospection.h"
 #include "LightIntrospection.h"
@@ -112,6 +114,76 @@ static std::atomic<unsigned int>& NextEpoch() {
 	static std::atomic<unsigned int> s_next( 1 );
 	return s_next;
 }
+
+namespace {
+
+// ===================== Render-camera override (Tier 2 / Direction B §5.5) ======
+//
+// The foundational mechanism for the non-destructive view features (B2 axis
+// snaps, B1 named-view restore, B3 free-fly): render the interactive preview
+// through a viewport-private OVERRIDE camera without mutating Scene::pActiveCamera
+// and without touching production render.  The override is installed on the
+// interactive rasterizer via PixelBasedRasterizerHelper::SetViewportCameraOverride
+// (consulted at its RasterizeScene camera-read site) -- NOT by wrapping the IScene,
+// because the caster stores + addrefs the scene across passes (a wrapper would
+// dangle) and the render path downcasts the scene to IScenePriv/Scene (photon-map
+// build, light-sampler regen) which a wrapper would defeat.  Overriding at the
+// camera-read site keeps the REAL scene flowing to the caster.  The pose is
+// realized into a standalone camera below.
+
+// Realize a CameraSnapshot into a STANDALONE ICamera (NOT added to any manager),
+// sized to the scene's current Film.  Parallel to CameraIntrospection::
+// AddCameraFromSnapshot but using the RISE_API_Create*Camera factories (which yield
+// a standalone, addref'd camera) instead of the manager-adding IJob::Add*Camera.
+// Returns an addref'd ICamera (caller owns the ref) or nullptr on an unknown type /
+// factory failure / no film.
+ICamera* RealizeStandaloneCamera( const CameraSnapshot& s, const IScene& scene )
+{
+	const IFilm* film = scene.GetFilm();
+	if( !film ) return nullptr;
+	const unsigned int xres    = film->GetWidth();
+	const unsigned int yres    = film->GetHeight();
+	const Scalar       pixelAR = ( s.pixelAR > 0 ) ? Scalar( s.pixelAR ) : film->GetPixelAR();
+
+	ICamera* pCam = nullptr;
+	switch( s.type ) {
+	case CameraSnapshot::Pinhole:
+		RISE_API_CreatePinholeCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			s.fov, xres, yres, pixelAR, s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ),
+			s.iso, s.fstop );
+		break;
+	case CameraSnapshot::ThinLens:
+		RISE_API_CreateThinlensCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			s.sensorSize, s.focalLength, s.fstop, s.focusDistance, s.sceneUnitMeters,
+			xres, yres, pixelAR, s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ),
+			s.apertureBlades, s.apertureRotation, s.anamorphicSqueeze,
+			s.tiltX, s.tiltY, s.shiftX, s.shiftY, s.iso );
+		break;
+	case CameraSnapshot::Fisheye:
+		RISE_API_CreateFisheyeCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			xres, yres, pixelAR, s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ),
+			s.fisheyeScale );
+		break;
+	case CameraSnapshot::Orthographic:
+		RISE_API_CreateOrthographicCamera( &pCam,
+			Point3( s.location ), Point3( s.lookat ), Vector3( s.up ),
+			xres, yres, Vector2( s.viewportScale ), pixelAR,
+			s.exposure, s.scanningRate, s.pixelRate,
+			Vector3( s.orientation ), Vector2( s.target_orientation ) );
+		break;
+	default:
+		return nullptr;
+	}
+	return pCam;   // addref'd by the factory (or nullptr on failure)
+}
+
+}  // namespace
 
 SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiveRasterizer )
 : mJob( job )
@@ -596,6 +668,13 @@ SceneEditController::~SceneEditController()
 	{
 		mInteractiveFrameStore->release();
 		mInteractiveFrameStore = 0;
+	}
+	// Free-fly override camera (Tier 2 §5.5).  Stop() joined the render thread
+	// above, so no DoOneRenderPass is reading it.
+	if( mViewportOverrideCamera )
+	{
+		mViewportOverrideCamera->release();
+		mViewportOverrideCamera = 0;
 	}
 	// Inverse-edit rollback holds NO snapshot — a transaction left open
 	// at teardown needs no resource release; the (uncommitted) live edits
@@ -1150,6 +1229,160 @@ int SceneEditController::ActiveGizmoKind() const
 int SceneEditController::ActiveGizmoAxis() const
 {
 	return mGizmoDrag.active ? mGizmoDrag.axis : -1;
+}
+
+// Navigation axis-ball gizmo (Tier 2 §4) ------------------------------
+//
+// Lays out six nubs (±X/±Y/±Z) around a ball the platform draws in a
+// viewport corner.  Reuses the proven `ProjectWorldToScreen_` probe to get
+// each world axis's screen-space direction through the CURRENT interactive
+// camera (the free-fly override when active, else the scene's active camera);
+// facing (toward/away) comes from comparing the two endpoints' along-view
+// depth in inv-camera space.  Pinhole-gated for the same reason the object
+// gizmo is (`ProjectWorldToScreen_`'s derivation is pinhole-only).  Reads
+// camera state only — no scene mutation, zero render cost.  UI-thread only:
+// the override pointer is mutated solely by SetViewportPose / ExitFreeFly on
+// the same thread, so the read needs no lock (matches RefreshGizmoHandles).
+
+bool SceneEditController::RefreshNavGizmo( double centerX, double centerY,
+                                           double ballRadius, double nubRadius )
+{
+	mNavGizmoNubs.clear();
+	if( !( ballRadius > 0.0 ) || !( nubRadius > 0.0 ) ) return false;
+
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	const ICamera* cam = ( mViewportPoseActive && mViewportOverrideCamera )
+	                   ? mViewportOverrideCamera
+	                   : scene->GetCamera();
+	if( !cam || !IsGizmoSupportedCamera_( cam ) ) return false;
+
+	// A world pivot the camera is guaranteed to look at (projects on-screen):
+	// the free-fly pose's lookat, else the active camera's captured lookat.
+	CameraSnapshot snap;
+	if( mViewportPoseActive ) snap = mViewportPose;
+	else if( !CameraIntrospection::CaptureCameraSnapshot( *cam, snap ) ) return false;
+	const Point3 pivot( Scalar( snap.lookat[0] ), Scalar( snap.lookat[1] ), Scalar( snap.lookat[2] ) );
+
+	unsigned int stableW = 0, stableH = 0;
+	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return false;
+	const Implementation::CameraCommon* camC =
+		dynamic_cast<const Implementation::CameraCommon*>( cam );
+	const unsigned int curW = camC ? camC->GetWidth()  : stableW;
+	const unsigned int curH = camC ? camC->GetHeight() : stableH;
+	if( curW == 0 || curH == 0 ) return false;
+
+	const Matrix4 mxTrans = cam->GetMatrix();
+	const Point3  origin  = cam->GetLocation();
+
+	double px = 0, py = 0;
+	if( !ProjectWorldToScreen_( mxTrans, origin, pivot,
+		double( curW ), double( curH ), double( stableW ), double( stableH ), px, py ) ) return false;
+
+	const Matrix4 inv  = Matrix4Ops::Inverse( mxTrans );
+	const Point3  eyeV = Point3Ops::Transform( inv, origin );   // eye in inv-camera space
+
+	auto probeDir = [&]( const Point3& p, double& outDx, double& outDy ) -> bool {
+		double sx = 0, sy = 0;
+		if( !ProjectWorldToScreen_( mxTrans, origin, p,
+			double( curW ), double( curH ), double( stableW ), double( stableH ), sx, sy ) ) return false;
+		const double tx = sx - px, ty = sy - py;
+		const double mag = std::sqrt( tx * tx + ty * ty );
+		if( !( mag > 1e-6 ) || !std::isfinite( mag ) ) return false;
+		outDx = tx / mag; outDy = ty / mag;
+		return true;
+	};
+
+	std::vector<NavGizmoNub> nubs;
+	nubs.reserve( 6 );
+	for( int a = 0; a < 3; ++a ) {
+		Vector3 v( a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0 );
+		const Point3 pPlus ( pivot.x + v.x, pivot.y + v.y, pivot.z + v.z );
+		const Point3 pMinus( pivot.x - v.x, pivot.y - v.y, pivot.z - v.z );
+
+		// Screen direction of the +axis (proven-correct probe from the gizmo
+		// builder).  When the +axis endpoint is degenerate (view-aligned, so
+		// no screen direction, or off-screen) fall back to the negated −axis
+		// direction; if both are degenerate the axis points straight at/away
+		// from the eye, so both nubs sit at the ball center (dx=dy=0) — the
+		// front one draws as a dot, the back one hides behind it.  Either way
+		// the axis still emits its two nubs, so a view looking straight down an
+		// axis never makes the gizmo vanish.
+		double dx = 0.0, dy = 0.0;
+		double td = 0.0, te = 0.0;
+		if( probeDir( pPlus, td, te ) )        { dx = td;  dy = te;  }
+		else if( probeDir( pMinus, td, te ) )  { dx = -td; dy = -te; }
+
+		// Facing: the endpoint nearer the eye (smaller along-view depth) faces
+		// the viewer.  `inv`-space z is the along-view coordinate (see
+		// ProjectWorldToScreen_: denom = A.z - B.z).
+		const Point3 aPlus  = Point3Ops::Transform( inv, pPlus );
+		const Point3 aMinus = Point3Ops::Transform( inv, pMinus );
+		const double depthPlus  = std::fabs( double( aPlus.z )  - double( eyeV.z ) );
+		const double depthMinus = std::fabs( double( aMinus.z ) - double( eyeV.z ) );
+		const bool positiveFaces = depthPlus <= depthMinus;
+
+		NavGizmoNub plus;
+		plus.axis = a; plus.negative = false;
+		plus.screenX = centerX + dx * ballRadius;
+		plus.screenY = centerY + dy * ballRadius;
+		plus.screenRadius = nubRadius;
+		plus.facing = positiveFaces;
+
+		NavGizmoNub minus;
+		minus.axis = a; minus.negative = true;
+		minus.screenX = centerX - dx * ballRadius;
+		minus.screenY = centerY - dy * ballRadius;
+		minus.screenRadius = nubRadius;
+		minus.facing = !positiveFaces;
+
+		nubs.push_back( plus );
+		nubs.push_back( minus );
+	}
+
+	mNavGizmoNubs.swap( nubs );   // always 6 nubs once the pivot projects
+	return true;
+}
+
+unsigned int SceneEditController::NavGizmoNubCount() const
+{
+	return static_cast<unsigned int>( mNavGizmoNubs.size() );
+}
+
+bool SceneEditController::NavGizmoNubInfo( unsigned int idx, int& outAxis, bool& outNegative,
+                                           double& outScreenX, double& outScreenY,
+                                           double& outScreenRadius, bool& outFacing ) const
+{
+	if( idx >= mNavGizmoNubs.size() ) return false;
+	const NavGizmoNub& n = mNavGizmoNubs[ idx ];
+	outAxis         = n.axis;
+	outNegative     = n.negative;
+	outScreenX      = n.screenX;
+	outScreenY      = n.screenY;
+	outScreenRadius = n.screenRadius;
+	outFacing       = n.facing;
+	return true;
+}
+
+int SceneEditController::NavGizmoNubAt( double px, double py ) const
+{
+	int    hitIdx    = -1;
+	double hitDist2  = 0.0;
+	bool   hitFacing = false;
+	for( unsigned int i = 0; i < mNavGizmoNubs.size(); ++i ) {
+		const NavGizmoNub& n = mNavGizmoNubs[ i ];
+		const double dx = px - n.screenX;
+		const double dy = py - n.screenY;
+		const double d2 = dx * dx + dy * dy;
+		if( d2 > n.screenRadius * n.screenRadius ) continue;
+		// Front-facing nubs (drawn on top) win over back-facing ones; among
+		// equal facing, the nub whose center is nearer the pointer wins.
+		const bool better = ( hitIdx < 0 )
+		                 || ( n.facing && !hitFacing )
+		                 || ( n.facing == hitFacing && d2 < hitDist2 );
+		if( better ) { hitIdx = static_cast<int>( i ); hitDist2 = d2; hitFacing = n.facing; }
+	}
+	return hitIdx;
 }
 
 // Pointer events ------------------------------------------------------
@@ -5230,6 +5463,98 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 
 }  // namespace
 
+namespace {
+
+// Source traceability (forward): resolve a (Category, name) UI address to its
+// top-level CST chunk NodeId, covering the named categories + the unnamed-active
+// Camera (via RoleKindSuffixForCategory's unique-fallback) AND the unnamed
+// unique-in-kind singletons Film / Rasterizer (which RoleKindSuffixForCategory
+// rejects, since they have no chunk-`name` addressing).  `activeRasterizerKind` is
+// the active rasterizer's keyword (its CST role) for the Rasterizer singleton.
+RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
+	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind )
+{
+	std::string suffix; bool uf = false;
+	if( RoleKindSuffixForCategory( cat, suffix, uf ) ) {
+		if( name.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
+		return RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, suffix, uf );
+	}
+	// Singletons RoleKindSuffixForCategory rejects.  Film is a single unnamed
+	// chunk (resolve by kind).  Rasterizer chunks are unnamed and identified by
+	// KIND (their keyword), so `name` here carries the rasterizer KIND: empty ->
+	// the ACTIVE rasterizer (the Environment section's (Rasterizer,"") convention);
+	// non-empty -> that specific kind (so a reverse ref into a NON-active rasterizer
+	// chunk round-trips to the SAME chunk instead of collapsing to the active one).
+	if( cat == SceneEditController::Category::Film )
+		return RISE::Cst::DocFindByNameAnyRole( doc, "", nullptr, "film", true );
+	if( cat == SceneEditController::Category::Rasterizer ) {
+		const std::string kind = name.empty() ? activeRasterizerKind : name;
+		if( kind.empty() ) return 0;
+		return RISE::Cst::DocFindByNameAnyRole( doc, "", nullptr, kind, true );
+	}
+	return 0;
+}
+
+// Source traceability (reverse): a CST chunk keyword (its role) -> the UI Category,
+// for the text->UI direction.  DRIFT-PROOF: classifies by the parser registry's
+// AUTHORITATIVE per-chunk ChunkCategory (built once, cached) rather than a
+// hand-maintained suffix list -- a hand list silently misses non-suffix entity
+// keywords the forward path resolves by name (csg_object / override_object ->
+// Object, expression_function2d -> Painter, ...).  Category::None for a keyword
+// whose chunk isn't a UI-addressable entity/singleton (Geometry / Shader / ShaderOp
+// / Modifier / RasterizerOutput / PhotonMap / PhotonGather / IrradianceCache).
+SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
+{
+	using Cat = SceneEditController::Category;
+	static const std::map<std::string, Cat> kMap = []() {
+		auto toCat = []( ChunkCategory cc ) -> Cat {
+			switch( cc ) {
+			case ChunkCategory::Painter:      return Cat::Painter;
+			// NOTE: ChunkCategory::Function is NOT mapped to Painter.  The only two
+			// Function chunks (piecewise_linear_function / _function2d) register into
+			// the Function1D/2D managers, NOT the painter managers, so they never
+			// appear in the Painter UI list -- mapping them to Painter would surface
+			// a ref no Painter row can select.  (expression_function2d is registered
+			// as ChunkCategory::Painter, so it is still covered by the Painter arm.)
+			case ChunkCategory::Material:     return Cat::Material;
+			case ChunkCategory::Camera:       return Cat::Camera;
+			case ChunkCategory::Film:         return Cat::Film;
+			case ChunkCategory::Object:       return Cat::Object;    // standard_object / csg_object / override_object
+			case ChunkCategory::Medium:       return Cat::Medium;
+			case ChunkCategory::Rasterizer:   return Cat::Rasterizer;
+			case ChunkCategory::Light:        return Cat::Light;
+			case ChunkCategory::Animation:    return Cat::Animation;
+			case ChunkCategory::SceneVariant: return Cat::SceneVariant;
+			default:                          return Cat::None;      // not a UI-addressable category
+			}
+		};
+		std::map<std::string, Cat> m;
+		const std::vector<ChunkParserEntry> entries = CreateAllChunkParsers();
+		for( const ChunkParserEntry& e : entries ) {
+			if( !e.parser ) continue;
+			const Cat c = toCat( e.parser->Describe().category );
+			if( c != Cat::None && !e.keyword.empty() ) m[ e.keyword ] = c;
+		}
+		return m;
+	}();
+	const auto it = kMap.find( kw );
+	return ( it != kMap.end() ) ? it->second : Cat::None;
+}
+
+// Line (1-based) + column (1-based) of a byte offset in the serialized doc text.
+void LineColOfOffset( const std::string& full, size_t off, unsigned int& outLine, unsigned int& outCol )
+{
+	unsigned int line = 1, col = 1;
+	const size_t n = ( off <= full.size() ) ? off : full.size();
+	for( size_t i = 0; i < n; ++i ) {
+		if( full[i] == '\n' ) { ++line; col = 1; } else ++col;
+	}
+	outLine = line;
+	outCol  = col;
+}
+
+}  // namespace
+
 bool SceneEditController::EntitySourceLocation( Category cat, const String& name,
                                                  std::uint64_t& outByteOffset, std::uint32_t& outLine ) const
 {
@@ -5263,6 +5588,175 @@ bool SceneEditController::EntitySourceLocation( Category cat, const String& name
 
 	outByteOffset = static_cast<std::uint64_t>( off );
 	outLine       = line;
+	return true;
+}
+
+bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, const String& param,
+                                             int occ, SourceSpan& out ) const
+{
+	out = SourceSpan();
+
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return false;
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+
+	const std::string activeRast = mJob.GetActiveRasterizerName();
+	const RISE::Cst::NodeId chunkId =
+		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast );
+	if( chunkId == 0 ) return false;   // unresolvable ref (removed entity / ambiguous / no such singleton)
+
+	size_t off = 0, len = 0;
+	const std::string p( param.c_str() );
+	if( p.empty() ) {
+		// Whole-chunk span: byte offset of the chunk, no explicit length (the caller
+		// may highlight the chunk's first line).
+		const int idx = RISE::Cst::DocIndexOfNodeId( *doc, chunkId, nullptr );
+		if( idx < 0 ) return false;
+		off = RISE::Cst::DocByteOffsetOfItem( *doc, idx );
+		if( off == static_cast<size_t>( -1 ) ) return false;
+		len = 0;
+	} else {
+		// Param-granular span: the tight `role value…` run of the occ-th match.
+		if( !RISE::Cst::DocByteRangeOfParam( *doc, chunkId, p, occ, &off, &len ) ) return false;
+	}
+
+	// Byte offset -> line/column over the serialized prefix (O(doc bytes); click cadence).
+	const std::string full = RISE::Cst::SerializeCst( *doc );
+	if( off > full.size() ) return false;   // defensive
+	unsigned int line = 1, col = 1;
+	LineColOfOffset( full, off, line, col );
+
+	out.present    = true;
+	out.byteOffset = static_cast<std::uint64_t>( off );
+	out.byteLength = static_cast<std::uint64_t>( len );
+	out.line       = line;
+	out.column     = col;
+	return true;
+}
+
+bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category& outCat,
+                                                 String& outName, String& outParam,
+                                                 int* outOccurrence ) const
+{
+	outCat   = Category::None;
+	outName  = String();
+	outParam = String();
+	if( outOccurrence ) *outOccurrence = 0;
+
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mJob.HasRetainedCstDocument() ) return false;
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+
+	// Locate the chunk (and param, if the offset is on one) containing `offset`.
+	// DocParamAtByteOffset returns the Param node (or null) and fills the enclosing
+	// chunk; when the offset is inside a chunk but not on a param, chunk is still set.
+	RISE::Cst::NodeRef chunk;
+	int v = 0;
+	RISE::Cst::NodeRef paramNode =
+		RISE::Cst::DocParamAtByteOffset( *doc, static_cast<size_t>( offset ), &chunk, &v );
+
+	if( !chunk ) {
+		// Offset not resolved to a param's chunk (e.g. on the chunk header/braces):
+		// fall back to the top-level item at this offset.
+		RISE::Cst::NodeRef item; size_t start = 0; int v2 = 0;
+		const int idx = RISE::Cst::DocItemAtByteOffset( *doc, static_cast<size_t>( offset ), &item, &start, &v2 );
+		if( idx < 0 || !item ) return false;
+		chunk = item;
+	}
+	if( !chunk || chunk->kind != RISE::Cst::NodeKind::Chunk ) return false;   // inter-chunk trivia / EOF
+
+	const Category cat = CategoryForChunkKeyword( chunk->role );
+	if( cat == Category::None ) return false;   // not a UI-addressable entity/singleton chunk
+
+	// override_object is a legacy MODIFIER whose `name` param REFERENCES an existing
+	// object (it modifies, it doesn't declare) -- so its name is present in the Object
+	// enumeration but this chunk is NOT that entity.  Reject it so a click inside an
+	// override_object block doesn't jump to the referenced standard_object elsewhere.
+	if( chunk->role == "override_object" ) return false;
+
+	auto ends = []( const std::string& s, const char* suf ) {
+		const std::string t( suf );
+		return s.size() >= t.size() && s.compare( s.size() - t.size(), t.size(), t ) == 0;
+	};
+
+	// Name.  Rasterizer chunks are unnamed and addressed by KIND, so the name IS
+	// the keyword (a ref into a non-active rasterizer then round-trips).  Every
+	// other category takes the name from ChunkNamePath ("keyword/name" -> segment
+	// after the last '/'; an unnamed chunk yields empty).
+	std::string nm;
+	if( cat == Category::Rasterizer ) {
+		nm = chunk->role;
+	} else {
+		const std::string np = RISE::Cst::ChunkNamePath( chunk );
+		const size_t slash = np.rfind( '/' );
+		if( slash != std::string::npos ) nm = np.substr( slash + 1 );
+	}
+
+	// ADDRESSABILITY: registry ChunkCategory is a PARSE grouping, not a statement
+	// that a chunk is a UI-SELECTABLE entity -- several config/selector chunks carry
+	// an entity category (scene_options/camera_defaults -> Camera; light_rr_threshold
+	// -> Rasterizer; timeline/animation_options -> Animation; piecewise -> Function).
+	// A chunk is reverse-addressable iff it's a real row the UI can select: a named
+	// entity present in its category's LIVE enumeration, or the film / a rasterizer /
+	// a camera SINGLETON identified by its keyword.  This is grounded in "can the
+	// user actually select this?" and rejects every non-entity family robustly (no
+	// keyword blocklist, no forward-round-trip that role-keyed configs can defeat).
+	auto nameInEnum = [&]( Category c, const std::string& name ) {
+		if( name.empty() ) return false;
+		const unsigned int n = CategoryEntityCount( c );   // lock-free; safe under mMutex
+		for( unsigned int i = 0; i < n; ++i )
+			if( std::string( CategoryEntityName( c, i ).c_str() ) == name ) return true;
+		return false;
+	};
+
+	bool addressable = false;
+	switch( cat ) {
+	case Category::Film:
+		addressable = ( chunk->role == "film" );                 // the film singleton (not camera_defaults etc.)
+		nm.clear();
+		break;
+	case Category::Rasterizer:
+		addressable = ends( chunk->role, "_rasterizer" );        // a real rasterizer kind, NOT light_rr_threshold
+		break;
+	case Category::Camera:
+		// A camera chunk (keyword) -- excludes scene_options/camera_defaults.  Named
+		// -> must be in the camera list; unnamed -> the active camera (addressable).
+		// KNOWN EDGE (accepted): with 2+ UNNAMED cameras, a click in a non-active one
+		// still maps to (Camera,"") = the active camera -- the CST has no name to
+		// distinguish them and the (Camera,"") convention resolves the active one.
+		// Very narrow (multiple unnamed cameras); a net improvement over the prior
+		// guard, which over-rejected the active unnamed camera whenever >=2 existed.
+		if( chunk->role == "camera" || ends( chunk->role, "_camera" ) )
+			addressable = nm.empty() ? true : nameInEnum( Category::Camera, nm );
+		break;
+	default:
+		// Object / Light / Material / Medium / Painter / Animation / SceneVariant:
+		// a genuine entity is enumerated in its category's live UI list (excludes the
+		// unnamed animation_options/timeline and the non-painter piecewise chunks;
+		// maps the active_scene_variant selector to the declared variant it names).
+		addressable = nameInEnum( cat, nm );
+		break;
+	}
+	if( !addressable ) return false;
+
+	outCat  = cat;
+	outName = String( nm.c_str() );
+	if( paramNode && paramNode->kind == RISE::Cst::NodeKind::Param ) {
+		outParam = String( paramNode->role.c_str() );
+		// Occurrence: index of this param among same-role Param siblings (so a click
+		// inside the k-th repeat of a repeatable param round-trips to occ=k).
+		if( outOccurrence ) {
+			int occ = 0;
+			for( const RISE::Cst::NodeRef& kid : chunk->kids ) {
+				if( !kid || kid->kind != RISE::Cst::NodeKind::Param || kid->role != paramNode->role ) continue;
+				if( kid.get() == paramNode.get() ) break;   // reached the matched param
+				++occ;
+			}
+			*outOccurrence = occ;
+		}
+	}
 	return true;
 }
 
@@ -6182,6 +6676,254 @@ bool SceneEditController::CloneActiveCamera(
 	return true;
 }
 
+bool SceneEditController::StampViewToNewCamera(
+	const String& proposedName, char* outName, unsigned int outLen )
+{
+	if( !outName || outLen == 0 ) return false;
+	outName[0] = '\0';
+
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
+
+	// Park before reading mViewportPose + mutating the ICameraManager (same
+	// reason CloneActiveCamera parks: the render thread and other UI-thread
+	// edits touch these).  The pose fields are the value we stamp.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	// Nothing transient to stamp when not free-flying.
+	if( !mViewportPoseActive ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::StampViewToNewCamera: no active free-fly pose to stamp "
+			"(navigate the viewport first, then stamp)" );
+		return false;
+	}
+	const CameraSnapshot snapshot = mViewportPose;   // the pose IS a CameraSnapshot
+
+	// Pick a unique name under the lock so concurrent adds can't collide.
+	const String finalName = UniqueCameraName( proposedName, *cams );
+
+	// Buffer precheck: refuse to mutate the scene if the chosen name won't fit
+	// (an after-the-fact check would leave a registered orphan while reporting
+	// failure — same rationale as CloneActiveCamera).
+	if( finalName.size() > outLen ) {
+		outName[0] = '\0';
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::StampViewToNewCamera: outName buffer too small for `%s` (need %u, got %u) — not adding camera",
+			finalName.c_str(), static_cast<unsigned>( finalName.size() ), outLen );
+		return false;
+	}
+
+	SceneEdit edit;
+	edit.op             = SceneEdit::AddCamera;
+	edit.objectName     = finalName;
+	edit.cameraSnapshot = snapshot;
+
+	if( !mEditor.Apply( edit ) ) return false;
+
+	{
+		const char* s = finalName.c_str();
+		const size_t needed = finalName.size();
+		for( size_t i = 0; i < needed; ++i ) outName[i] = s[i];
+	}
+
+	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+// ===================== Free-fly viewport pose (Tier 2 §5.3-5.5) =================
+
+bool SceneEditController::EnterFreeFlyFromActiveCamera()
+{
+	// Capture the active camera's full pose+optics, then set it as the transient
+	// pose (SetViewportPose realizes the override).  The capture is done under the
+	// same cancel-and-park CloneActiveCamera uses (the snapshot fields tear under a
+	// concurrent orbit-drag write), so read it there rather than here.
+	CameraSnapshot snap;
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		const IScene* scene = mJob.GetScene();
+		if( !scene ) return false;
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		const ICamera* activeCam = scene->GetCamera();
+		if( !activeCam ) return false;
+		if( !CameraIntrospection::CaptureCameraSnapshot( *activeCam, snap ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController::EnterFreeFlyFromActiveCamera: active camera kind not realizable "
+				"(non-ONB Pinhole / ThinLens / Fisheye / Orthographic only)" );
+			return false;
+		}
+	}
+	return SetViewportPose( snap );
+}
+
+bool SceneEditController::SetViewportPose( const CameraSnapshot& pose )
+{
+	std::unique_lock<std::mutex> lk( mMutex );
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+
+	// Cancel-and-park: the render thread reads mViewportOverrideCamera at the top
+	// of a pass; we must swap it while no pass is in flight.
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	ICamera* realized = RealizeStandaloneCamera( pose, *scene );
+	if( !realized ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::SetViewportPose: could not realize a camera for the pose (unknown kind / no film)" );
+		return false;
+	}
+
+	// Swap in the new override, releasing any prior one.
+	if( mViewportOverrideCamera ) mViewportOverrideCamera->release();
+	mViewportOverrideCamera = realized;   // owns the factory's addref
+	mViewportPose           = pose;
+	mViewportPoseActive     = true;
+
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::ExitFreeFly()
+{
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( !mViewportPoseActive ) return false;
+
+	// Park before releasing the override the render thread reads.
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	if( mViewportOverrideCamera ) {
+		mViewportOverrideCamera->release();
+		mViewportOverrideCamera = nullptr;
+	}
+	mViewportPoseActive = false;
+
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::IsFreeFlyActive() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mViewportPoseActive;
+}
+
+bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mViewportPoseActive ) return false;
+	out = mViewportPose;
+	return true;
+}
+
+// ===================== Axis snaps + Home (Tier 2 §4.2) =========================
+
+bool SceneEditController::SnapViewToAxis( int axis, bool negative )
+{
+	if( axis < 0 || axis > 2 ) return false;
+
+	// Source pose: the current free-fly pose, or (auto-enter) the active camera.
+	CameraSnapshot src;
+	if( IsFreeFlyActive() ) {
+		if( !GetViewportPose( src ) ) return false;
+	} else {
+		if( !EnterFreeFlyFromActiveCamera() ) return false;
+		if( !GetViewportPose( src ) ) return false;   // now seeded from the active camera
+	}
+
+	// Pivot = the current lookat; preserve the eye->pivot distance and the optics.
+	const double pivot[3] = { src.lookat[0], src.lookat[1], src.lookat[2] };
+	const double dx = src.location[0] - pivot[0];
+	const double dy = src.location[1] - pivot[1];
+	const double dz = src.location[2] - pivot[2];
+	double dist = std::sqrt( dx*dx + dy*dy + dz*dz );
+	if( dist < 1e-6 ) dist = 5.0;   // degenerate (eye == pivot) -> a sane default distance
+
+	const double sign = negative ? -1.0 : 1.0;
+
+	CameraSnapshot snap = src;   // keep kind + optics
+	snap.location[0] = pivot[0]; snap.location[1] = pivot[1]; snap.location[2] = pivot[2];
+	snap.location[axis] += sign * dist;
+	snap.lookat[0] = pivot[0]; snap.lookat[1] = pivot[1]; snap.lookat[2] = pivot[2];
+	// Up: world-Y for the X/Z axes; for the Y axis (top/bottom) use -/+Z so up is
+	// not parallel to the view direction.
+	snap.up[0] = 0.0; snap.up[1] = 0.0; snap.up[2] = 0.0;
+	if( axis == 1 ) snap.up[2] = negative ? 1.0 : -1.0;
+	else            snap.up[1] = 1.0;
+	// A clean axis-aligned view drops any extra euler / target orientation.
+	snap.orientation[0] = snap.orientation[1] = snap.orientation[2] = 0.0;
+	snap.target_orientation[0] = snap.target_orientation[1] = 0.0;
+
+	return SetViewportPose( snap );
+}
+
+bool SceneEditController::SetHomeView()
+{
+	CameraSnapshot cur;
+	if( IsFreeFlyActive() ) {
+		if( !GetViewportPose( cur ) ) return false;
+	} else {
+		// Capture the active camera under the park (its fields tear under a
+		// concurrent orbit-drag write — same reason CloneActiveCamera parks).
+		std::unique_lock<std::mutex> lk( mMutex );
+		const IScene* scene = mJob.GetScene();
+		if( !scene ) return false;
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		const ICamera* cam = scene->GetCamera();
+		if( !cam || !CameraIntrospection::CaptureCameraSnapshot( *cam, cur ) ) return false;
+	}
+	std::lock_guard<std::mutex> lk( mMutex );
+	mHomeView = cur;
+	mHasHomeView = true;
+	return true;
+}
+
+bool SceneEditController::GoToHomeView()
+{
+	CameraSnapshot home;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( !mHasHomeView ) return false;
+		home = mHomeView;
+	}
+	return SetViewportPose( home );   // takes mMutex itself
+}
+
+bool SceneEditController::HasHomeView() const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mHasHomeView;
+}
+
 namespace {
 
 // Generalizes UniqueCameraName (above) across every category: build the
@@ -6555,6 +7297,322 @@ SceneEditController::AgentCommitResult SceneEditController::RemoveEntity( Catego
 		return r;
 	}
 	return ApplyAgentRemoveChunk( name, String( suffix.c_str() ), nullptr );
+}
+
+// ============================ Environment / IBL ============================
+//
+// See docs/gui/ENVIRONMENT_SECTION.md.  The IBL environment is a scene-level
+// singleton (NOT an ILight): an hdr_painter/exr_painter supplies the image and
+// four radiance_* params on the ACTIVE rasterizer chunk bind it as the global
+// radiance map.  READS come from the live active-rasterizer snapshot
+// (GetRasterizerParameter, radiance_*-aware since this change); WRITES apply
+// LIVE (SetRasterizerParameter -> rebuild) AND mirror to the CST
+// (Job::ApplyCstEnvironmentEdit) so they survive a save.
+
+namespace {
+
+// POSITIVE allow-list of the rasterizer kinds on which a live radiance-map edit
+// actually lands.  A live edit goes SetRasterizerParameter -> RebuildRasterizer,
+// which reconstructs the rasterizer from its snapshot -- so a kind is env-editable
+// ONLY if (a) RebuildRasterizer has a case for it AND (b) that factory takes a
+// radianceMapConfig.  This is deliberately an allow-list, not a deny-list: three
+// kinds fail one of those conditions and would SILENTLY drop a scale/orient/
+// background edit if we advertised them editable --
+//   - mlt_rasterizer / mlt_spectral_rasterizer: RebuildRasterizer handles them
+//     but SetMLTRasterizer / SetMLTSpectralRasterizer take NO radianceMapConfig;
+//   - pixelpel_rasterizer / pixelintegratingspectral_rasterizer: they ACCEPT
+//     radiance_* in scene files, but RebuildRasterizer has no case for them
+//     (returns false), so SetRasterizerParameter fails.
+// Any of those reports editable=false so the GUI keeps the env controls disabled
+// rather than offering an edit that no-ops.  (The pixel* rebuild gap is a broader
+// pre-existing limitation of the rasterizer-param edit path, tracked separately.)
+inline bool RasterizerSupportsRadianceMapEdit( const std::string& kind )
+{
+	return kind == "pathtracing_pel_rasterizer"
+	    || kind == "pathtracing_spectral_rasterizer"
+	    || kind == "bdpt_pel_rasterizer"
+	    || kind == "bdpt_spectral_rasterizer"
+	    || kind == "vcm_pel_rasterizer"
+	    || kind == "vcm_spectral_rasterizer"
+	    || kind == "auto_rasterizer"
+	    || kind == "auto_spectral_rasterizer";
+}
+
+}  // namespace
+
+bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
+{
+	out = EnvironmentInfo();
+
+	std::lock_guard<std::mutex> lk( mMutex );
+
+	const std::string activeName = mJob.GetActiveRasterizerName();
+	if( activeName.empty() ) return false;
+
+	out.editable = RasterizerSupportsRadianceMapEdit( activeName );
+
+	// Live snapshot's radiance binding (FormatRasterizerParam handles these;
+	// radiance_map is "" when unbound / "none").
+	const std::string mapName = mJob.GetRasterizerParameter( activeName.c_str(), "radiance_map" );
+	const std::string scaleS  = mJob.GetRasterizerParameter( activeName.c_str(), "radiance_scale" );
+	const std::string bgS     = mJob.GetRasterizerParameter( activeName.c_str(), "radiance_background" );
+	const std::string orientS = mJob.GetRasterizerParameter( activeName.c_str(), "radiance_orient" );
+
+	if( !scaleS.empty() ) { double v = 1.0; if( std::sscanf( scaleS.c_str(), "%lf", &v ) == 1 ) out.scale = v; }
+	out.background = ( bgS != "false" );   // default true
+	if( !orientS.empty() ) {
+		double x = 0, y = 0, z = 0;
+		if( std::sscanf( orientS.c_str(), "%lf %lf %lf", &x, &y, &z ) == 3 ) {
+			out.orientDeg[0] = x; out.orientDeg[1] = y; out.orientDeg[2] = z;
+		}
+	}
+
+	if( !mapName.empty() ) {
+		out.hasEnvironment = true;
+		out.painterName = String( mapName.c_str() );
+		// Resolve the bound painter's `file` param from the retained CST.
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( doc ) {
+			const RISE::Cst::NodeId pid =
+				RISE::Cst::DocFindByNameAnyRole( *doc, mapName, nullptr, "painter", false );
+			if( pid != 0 ) {
+				const RISE::Cst::NodeRef pchunk = RISE::Cst::DocResolveNodeId( *doc, pid );
+				bool present = false;
+				const std::string f = AgentReadFirstParamValue( pchunk, "file", &present );
+				if( present ) out.file = String( f.c_str() );
+			}
+		}
+	} else {
+		// No radiance_map painter bound -- but a procedural sky (hosek) or an
+		// ambient light may still have installed a global radiance map.
+		const IScene* scene = mJob.GetScene();
+		if( scene && scene->GetGlobalRadianceMap() != nullptr ) out.proceduralSky = true;
+	}
+	return true;
+}
+
+bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, const std::string& value,
+	bool* outPersisted )
+{
+	if( outPersisted ) *outPersisted = false;
+
+	if( mTxnOpen ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: environment edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
+		return false;
+	}
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	const std::string activeName = mJob.GetActiveRasterizerName();
+	if( activeName.empty() || !RasterizerSupportsRadianceMapEdit( activeName ) ) return false;
+
+	// Cancel-and-park: a rasterizer rebuild releases the old instance and
+	// constructs a new one; the render thread reads `pRasterizer` per-pixel, so
+	// it must be parked (same pattern as the Category::Rasterizer SetProperty case).
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	const bool ok = mJob.SetRasterizerParameter( activeName.c_str(), paramName, value.c_str() );
+	if( !ok ) return false;
+
+	// Mirror to the CST so the edit survives a save (Document-only, no re-derive;
+	// safe under the lock -- pCstDocument is swapped here too).  A 0 return means
+	// the active rasterizer has no unique chunk in the Document, so the edit will
+	// NOT persist -- reported via outPersisted so callers can be honest.
+	const int cstResult = mJob.ApplyCstEnvironmentEdit( paramName, value.c_str() );
+	if( outPersisted ) *outPersisted = ( cstResult != 0 );
+
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::SetEnvironmentScale( double scale )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof(buf), "%g", scale );
+	return SetEnvironmentRadianceParam_( "radiance_scale", buf );
+}
+
+bool SceneEditController::SetEnvironmentBackground( bool background )
+{
+	return SetEnvironmentRadianceParam_( "radiance_background", background ? "true" : "false" );
+}
+
+bool SceneEditController::SetEnvironmentOrient( double xDeg, double yDeg, double zDeg )
+{
+	char buf[96];
+	std::snprintf( buf, sizeof(buf), "%g %g %g", xDeg, yDeg, zDeg );
+	return SetEnvironmentRadianceParam_( "radiance_orient", buf );
+}
+
+bool SceneEditController::SetEnvironmentFile( const String& absPath )
+{
+	// Resolve the currently-bound painter, then edit its `file` via the Painter
+	// CST-param path (a full re-derive that reloads the texture -> live + persists).
+	std::string painterName;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const std::string activeName = mJob.GetActiveRasterizerName();
+		if( activeName.empty() ) return false;
+		painterName = mJob.GetRasterizerParameter( activeName.c_str(), "radiance_map" );
+	}
+	if( painterName.empty() ) return false;   // no environment bound to swap
+	// ApplyAgentParamEdit takes mMutex itself -> must be called with our lock released.
+	AgentCommitResult r = ApplyAgentParamEdit(
+		String( painterName.c_str() ), String( "painter" ), String( "file" ), absPath, nullptr );
+	return r.applied;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( const String& hdriPath, String* outPainterName )
+{
+	AgentCommitResult rej;
+	rej.applied = false;
+	rej.rawCode = 0;
+	rej.status  = String( "rejected" );
+
+	const std::string path = std::string( hdriPath.c_str() );
+	if( path.empty() ) {
+		rej.message = String( "environment file path is empty" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		rej.headVersion = mJob.GetCstHeadVersion();
+		return rej;
+	}
+
+	// Refuse if the active rasterizer takes no radiance map, or an environment is
+	// already bound (contract: AddEnvironment is "create when none exists"; the
+	// bound-replacement path is SetEnvironmentFile / RemoveEnvironment-then-Add).
+	std::string activeName;
+	bool alreadyBound = false;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		activeName = mJob.GetActiveRasterizerName();
+		if( !activeName.empty() ) {
+			alreadyBound = !mJob.GetRasterizerParameter( activeName.c_str(), "radiance_map" ).empty();
+		}
+	}
+	if( activeName.empty() || !RasterizerSupportsRadianceMapEdit( activeName ) ) {
+		rej.message = String( "the active rasterizer takes no environment map (use a PT/BDPT/VCM rasterizer)" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		rej.headVersion = mJob.GetCstHeadVersion();
+		return rej;
+	}
+	if( alreadyBound ) {
+		rej.message = String( "an environment is already bound; swap its file or remove it first" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		rej.headVersion = mJob.GetCstHeadVersion();
+		return rej;
+	}
+
+	// Painter kind from the file extension (.exr -> exr_painter, else hdr_painter).
+	std::string ext;
+	{
+		const size_t dot = path.rfind( '.' );
+		if( dot != std::string::npos ) {
+			ext = path.substr( dot + 1 );
+			for( char& c : ext ) if( c >= 'A' && c <= 'Z' ) c = char( c + 32 );
+		}
+	}
+	const std::string kind = ( ext == "exr" ) ? "exr_painter" : "hdr_painter";
+
+	// Unique painter name (doc-wide), base "env_hdri".
+	std::string painterName = "env_hdri";
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( doc ) {
+			std::vector<std::string> probe( 1, painterName );
+			if( AnyNameTakenDocWide( *doc, probe ) ) {
+				char buf[64];
+				for( int i = 2; i < 100000; ++i ) {
+					std::snprintf( buf, sizeof(buf), "env_hdri_%d", i );
+					probe[0] = buf;
+					if( !AnyNameTakenDocWide( *doc, probe ) ) { painterName = buf; break; }
+				}
+			}
+		}
+	}
+
+	// Insert the painter chunk (a D2 re-derive).  RISE uses hard tabs; the parser
+	// requires the chunk braces on their own lines.
+	const std::string chunkText = kind + "\n{\n\tname " + painterName + "\n\tfile " + path + "\n}\n";
+	AgentCommitResult ins = ApplyAgentInsertChunk( String( chunkText.c_str() ), nullptr );
+	if( !ins.applied ) return ins;   // insert rejected (e.g. malformed / dup) -> surface verbatim
+
+	// Bind radiance_map on the active rasterizer (live rebuild + CST mirror).
+	bool bindPersisted = false;
+	if( !SetEnvironmentRadianceParam_( "radiance_map", painterName, &bindPersisted ) ) {
+		// The painter DID land but the LIVE binding failed -- honest partial result
+		// (the orphan painter chunk is reusable / removable, not a silent loss).
+		if( outPainterName ) *outPainterName = String( painterName.c_str() );
+		AgentCommitResult r = ins;
+		r.status  = String( "partial" );
+		r.message = String( "HDRI painter inserted but binding radiance_map to the active rasterizer failed" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	if( !bindPersisted ) {
+		// The live bind succeeded (viewport shows the HDRI) but the CST mirror
+		// could NOT record it -- the active rasterizer has no unique chunk in the
+		// Document (e.g. a rasterizer kind switched to but never authored in the
+		// scene file).  Surface this honestly so the user isn't told "applied"
+		// while a save would drop the binding and orphan the painter.
+		if( outPainterName ) *outPainterName = String( painterName.c_str() );
+		AgentCommitResult r = ins;
+		r.status  = String( "partial" );
+		r.message = String( "environment applied live but NOT recorded in the scene file -- the active rasterizer has no chunk to bind radiance_map to (a save would drop it)" );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+
+	if( outPainterName ) *outPainterName = String( painterName.c_str() );
+	AgentCommitResult r = ins;
+	r.status = String( "applied" );
+	{
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+	}
+	return r;
+}
+
+bool SceneEditController::RemoveEnvironment()
+{
+	// Precheck: only unbind when a radiance_map is ACTUALLY bound.  This matters
+	// for correctness, not just cosmetics: the live-map clear below must NOT fire
+	// when nothing was bound, because the global map might then belong to a
+	// procedural sky (hosek) or ambient light this method must not clobber.
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const std::string activeName = mJob.GetActiveRasterizerName();
+		if( activeName.empty() ) return false;
+		if( mJob.GetRasterizerParameter( activeName.c_str(), "radiance_map" ).empty() ) return false;
+	}
+
+	// Unbind: live radiance_map "" -> the snapshot name becomes "none" and the
+	// rebuild installs no NEW map; the CST mirror erases all four radiance_* params.
+	if( !SetEnvironmentRadianceParam_( "radiance_map", std::string(), nullptr ) ) return false;
+
+	// The rebuild with name=="none" does NOT un-install the previously-installed
+	// global map (rasterizer setup only ever INSTALLS one) -- so the stale
+	// IRadianceMap would keep rendering.  Clear it explicitly now.  Safe because
+	// the precheck confirmed a radiance_map painter was bound, so the live map is
+	// that painter's, not a procedural sky's.  Same cancel-and-park as the setters.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+	mJob.ClearGlobalRadianceMap();
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
 }
 
 bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )
@@ -7411,6 +8469,39 @@ void SceneEditController::DoOneRenderPass()
 				pRegion = &regionRect;
 			}
 		}
+	}
+
+	// Free-fly (Tier 2 §5.5): install (or clear) the viewport-private render-camera
+	// override on the interactive helper for THIS pass.  The interactive
+	// RasterizeScene then renders THROUGH the override instead of
+	// Scene::pActiveCamera, while the REAL scene still flows to the caster (so the
+	// render path's IScenePriv/Scene downcasts -- photon-map build, light-sampler
+	// regen -- keep working) and production render (a separate rasterizer, never
+	// given an override) is untouched.  Render-thread-only: the UI thread swaps
+	// mViewportOverrideCamera only while parked, and we set the helper here.  We
+	// UNCONDITIONALLY set it every pass (override or nullptr), so a stale override
+	// can never leak into a non-free-fly pass.
+	if( Implementation::PixelBasedRasterizerHelper* helper =
+			dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( mInteractiveRasterizer ) )
+	{
+		const ICamera* overrideCam = ( mViewportPoseActive ? mViewportOverrideCamera : nullptr );
+		if( overrideCam )
+		{
+			// Keep the override's raster dims in lock-step with THIS pass's film:
+			// the preview-scale swap resized the film and re-synced MANAGER cameras
+			// via ResizeFilm, but the override isn't in the manager, so sync it
+			// here (SetDimensionsAndPixelAR calls RegenerateData internally).  Safe
+			// to mutate the override on the render thread: the UI thread parks
+			// before it ever releases/replaces the override.
+			if( const IFilm* passFilm = scene->GetFilm() )
+			{
+				if( Implementation::CameraCommon* cc = dynamic_cast<Implementation::CameraCommon*>( mViewportOverrideCamera ) )
+				{
+					cc->SetDimensionsAndPixelAR( passFilm->GetWidth(), passFilm->GetHeight(), passFilm->GetPixelAR() );
+				}
+			}
+		}
+		helper->SetViewportCameraOverride( overrideCam );
 	}
 
 	const auto t0 = std::chrono::steady_clock::now();

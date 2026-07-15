@@ -205,6 +205,212 @@ namespace RISE
 		}
 
 		//====================================================================
+		// 1b. Strict per-checkpoint field-TYPE validation (P1(c) fail-fast).
+		//
+		// LoadEvalScenario's existing checkpoint pass only requires each
+		// checkpoint to be a JSON object; the CheckXKind functions
+		// (AgentEvalRunner.cpp's checker section, below) each gate a field on
+		// `cp.has(...) && cp.get(...).isX()` -- so a PRESENT-but-WRONG-TYPED
+		// field (e.g. "maxToolCalls":"7") is silently treated as ABSENT and
+		// the assertion is skipped, weakening the rubric while the checkpoint
+		// still reports a pass.  This section mirrors the CheckXKind
+		// functions' field/type expectations exactly (by inspection -- see
+		// each kind's doc comment on its checker) and fails LOUDLY at LOAD
+		// time on any present-but-wrong-typed RECOGNIZED field.  A field that
+		// is simply ABSENT stays legal (every field below is optional per its
+		// reader).  Lives here (ahead of the CheckXKind functions, which are
+		// declared much later in this TU) as small, self-contained
+		// validators -- deliberately NOT sharing code with CheckXKind so this
+		// pass has zero risk of calling into not-yet-declared functions.
+		//====================================================================
+		namespace
+		{
+			const char* JsonTypeName( JsonValue::Type t )
+			{
+				switch( t ) {
+					case JsonValue::Type::Null:   return "null";
+					case JsonValue::Type::Bool:   return "bool";
+					case JsonValue::Type::Number: return "number";
+					case JsonValue::Type::String: return "string";
+					case JsonValue::Type::Array:  return "array";
+					case JsonValue::Type::Object: return "object";
+				}
+				return "<unknown>";
+			}
+
+			//! `label` is the field's DISPLAY name for the error text (a
+			//! dotted path for a nested field, e.g. "queryAt.x"); `obj`/`key`
+			//! are where the field is actually looked up.  Absent is always
+			//! legal; only a PRESENT, wrong-typed field fails.
+			bool RequireFieldType( const JsonValue& obj, const std::string& key, JsonValue::Type want,
+			                       const std::string& scenarioId, std::size_t cpIndex, const std::string& label,
+			                       std::string& err )
+			{
+				if( !obj.has( key ) ) return true;
+				const JsonValue& v = obj.get( key );
+				if( v.type() == want ) return true;
+				err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( cpIndex ) + "].\"" + label +
+				      "\" must be a " + JsonTypeName( want ) + " (got " + JsonTypeName( v.type() ) + ")";
+				return false;
+			}
+
+			//! As RequireFieldType, but the field itself must be an ARRAY
+			//! whose elements are all of `elemWant`.
+			bool RequireArrayOfType( const JsonValue& obj, const std::string& key, JsonValue::Type elemWant,
+			                         const std::string& scenarioId, std::size_t cpIndex, const std::string& label,
+			                         std::string& err )
+			{
+				if( !obj.has( key ) ) return true;
+				const JsonValue& v = obj.get( key );
+				if( !v.isArray() ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( cpIndex ) + "].\"" + label +
+					      "\" must be an array (got " + JsonTypeName( v.type() ) + ")";
+					return false;
+				}
+				for( std::size_t i = 0; i < v.size(); ++i ) {
+					if( v.at( i ).type() != elemWant ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( cpIndex ) + "].\"" + label +
+						      "\"[" + std::to_string( i ) + "] must be a " + JsonTypeName( elemWant ) +
+						      " (got " + JsonTypeName( v.at( i ).type() ) + ")";
+						return false;
+					}
+				}
+				return true;
+			}
+
+			//! "document" (mirrors CheckDocumentKind): "op"/"target"/"param"/
+			//! "value"/"name"/"chunkKind"/"referencedKind" are strings;
+			//! "numeric" is a bool; "referencedKinds" is a string array.
+			//! "min"/"max" are op-DEPENDENT -- chunk_count reads them as
+			//! numbers, param_range reads them as number arrays; every other
+			//! op ignores them entirely, so an op-less/unknown-op checkpoint
+			//! leaves them unchecked here (an unused stray field is out of
+			//! this fix's scope; CheckDocumentKind still runs and grades the
+			//! actual op normally).
+			bool ValidateDocumentCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind" };
+				for( const char* f : kStringFields )
+					if( !RequireFieldType( cp, f, JsonValue::Type::String, scenarioId, idx, f, err ) ) return false;
+				if( !RequireFieldType( cp, "numeric", JsonValue::Type::Bool, scenarioId, idx, "numeric", err ) ) return false;
+				if( !RequireArrayOfType( cp, "referencedKinds", JsonValue::Type::String, scenarioId, idx, "referencedKinds", err ) ) return false;
+
+				const std::string op = ( cp.has( "op" ) && cp.get( "op" ).isString() ) ? cp.get( "op" ).asString() : std::string();
+				if( op == "chunk_count" ) {
+					if( !RequireFieldType( cp, "min", JsonValue::Type::Number, scenarioId, idx, "min", err ) ) return false;
+					if( !RequireFieldType( cp, "max", JsonValue::Type::Number, scenarioId, idx, "max", err ) ) return false;
+				} else if( op == "param_range" ) {
+					if( !RequireArrayOfType( cp, "min", JsonValue::Type::Number, scenarioId, idx, "min", err ) ) return false;
+					if( !RequireArrayOfType( cp, "max", JsonValue::Type::Number, scenarioId, idx, "max", err ) ) return false;
+				}
+				return true;
+			}
+
+			//! "untouched" (mirrors CheckUntouchedKind): {chunks:[{name?:string,chunkKind?:string},...]}.
+			bool ValidateUntouchedCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				if( !cp.has( "chunks" ) ) return true;
+				const JsonValue& chunks = cp.get( "chunks" );
+				if( !chunks.isArray() ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"chunks\" must be an array (got " +
+					      JsonTypeName( chunks.type() ) + ")";
+					return false;
+				}
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					const JsonValue& c = chunks.at( i );
+					if( !c.isObject() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"chunks\"[" +
+						      std::to_string( i ) + "] must be an object (got " + JsonTypeName( c.type() ) + ")";
+						return false;
+					}
+					const std::string label = "chunks[" + std::to_string( i ) + "]";
+					if( !RequireFieldType( c, "name", JsonValue::Type::String, scenarioId, idx, label + ".name", err ) ) return false;
+					if( !RequireFieldType( c, "chunkKind", JsonValue::Type::String, scenarioId, idx, label + ".chunkKind", err ) ) return false;
+				}
+				return true;
+			}
+
+			//! "render" (mirrors CheckRenderKind): every width/height/band field is a number.
+			bool ValidateRenderCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				static const char* const kNumFields[] = {
+					"width", "height",
+					"meanLumaMin", "meanLumaMax",
+					"meanRMin", "meanRMax", "meanGMin", "meanGMax", "meanBMin", "meanBMax"
+				};
+				for( const char* f : kNumFields )
+					if( !RequireFieldType( cp, f, JsonValue::Type::Number, scenarioId, idx, f, err ) ) return false;
+				return true;
+			}
+
+			//! "objectmap" (mirrors CheckObjectmapKind):
+			//! {legendContains?:string, pixelCountFor?:string,
+			//!  pixelCountMin?/Max?:number, queryAt?:{x,y:number, expectName:string}}.
+			bool ValidateObjectmapCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				if( !RequireFieldType( cp, "legendContains", JsonValue::Type::String, scenarioId, idx, "legendContains", err ) ) return false;
+				if( !RequireFieldType( cp, "pixelCountFor", JsonValue::Type::String, scenarioId, idx, "pixelCountFor", err ) ) return false;
+				if( !RequireFieldType( cp, "pixelCountMin", JsonValue::Type::Number, scenarioId, idx, "pixelCountMin", err ) ) return false;
+				if( !RequireFieldType( cp, "pixelCountMax", JsonValue::Type::Number, scenarioId, idx, "pixelCountMax", err ) ) return false;
+				if( cp.has( "queryAt" ) ) {
+					const JsonValue& qa = cp.get( "queryAt" );
+					if( !qa.isObject() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"queryAt\" must be an object (got " +
+						      JsonTypeName( qa.type() ) + ")";
+						return false;
+					}
+					if( !RequireFieldType( qa, "x", JsonValue::Type::Number, scenarioId, idx, "queryAt.x", err ) ) return false;
+					if( !RequireFieldType( qa, "y", JsonValue::Type::Number, scenarioId, idx, "queryAt.y", err ) ) return false;
+					if( !RequireFieldType( qa, "expectName", JsonValue::Type::String, scenarioId, idx, "queryAt.expectName", err ) ) return false;
+				}
+				return true;
+			}
+
+			//! "diagnostics" (mirrors CheckDiagnosticsKind): {expect?:string, code?:string}.
+			bool ValidateDiagnosticsCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				if( !RequireFieldType( cp, "expect", JsonValue::Type::String, scenarioId, idx, "expect", err ) ) return false;
+				if( !RequireFieldType( cp, "code", JsonValue::Type::String, scenarioId, idx, "code", err ) ) return false;
+				return true;
+			}
+
+			//! "trajectory" (mirrors CheckTrajectoryKind):
+			//! {maxToolCalls?/maxLlmCalls?:number, terminalStatus?:string,
+			//!  noAutonomyRefusal?/noMechanicalLoop?:bool, requiredToolInOrder?:string array}.
+			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				if( !RequireFieldType( cp, "maxToolCalls", JsonValue::Type::Number, scenarioId, idx, "maxToolCalls", err ) ) return false;
+				if( !RequireFieldType( cp, "maxLlmCalls", JsonValue::Type::Number, scenarioId, idx, "maxLlmCalls", err ) ) return false;
+				if( !RequireFieldType( cp, "terminalStatus", JsonValue::Type::String, scenarioId, idx, "terminalStatus", err ) ) return false;
+				if( !RequireFieldType( cp, "noAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "noAutonomyRefusal", err ) ) return false;
+				if( !RequireFieldType( cp, "noMechanicalLoop", JsonValue::Type::Bool, scenarioId, idx, "noMechanicalLoop", err ) ) return false;
+				if( !RequireArrayOfType( cp, "requiredToolInOrder", JsonValue::Type::String, scenarioId, idx, "requiredToolInOrder", err ) ) return false;
+				return true;
+			}
+
+			//! Dispatch by "kind" (only when present AND a string -- a
+			//! missing/wrong-typed "kind" is caught elsewhere, at
+			//! CheckOneCheckpoint's RUNTIME dispatch, as a malformed/failed
+			//! checkpoint) plus the "weight" field every kind shares
+			//! (CheckScenario's own reader).  An unrecognized kind name is
+			//! left unchecked here too -- CheckOneCheckpoint already fails it
+			//! loudly at runtime ("unknown checkpoint kind").
+			bool ValidateCheckpointFieldTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				if( !RequireFieldType( cp, "weight", JsonValue::Type::Number, scenarioId, idx, "weight", err ) ) return false;
+				if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() ) return true;
+				const std::string kind = cp.get( "kind" ).asString();
+				if( kind == "document" )    return ValidateDocumentCheckpointTypes( cp, idx, scenarioId, err );
+				if( kind == "untouched" )   return ValidateUntouchedCheckpointTypes( cp, idx, scenarioId, err );
+				if( kind == "render" )      return ValidateRenderCheckpointTypes( cp, idx, scenarioId, err );
+				if( kind == "objectmap" )   return ValidateObjectmapCheckpointTypes( cp, idx, scenarioId, err );
+				if( kind == "diagnostics" ) return ValidateDiagnosticsCheckpointTypes( cp, idx, scenarioId, err );
+				if( kind == "trajectory" )  return ValidateTrajectoryCheckpointTypes( cp, idx, scenarioId, err );
+				return true;
+			}
+		}
+
+		//====================================================================
 		// 2. LoadEvalScenario.
 		//====================================================================
 		bool LoadEvalScenario( const std::string& path, AgentEvalScenario& out, std::string& err )
@@ -357,6 +563,11 @@ namespace RISE
 						err = "scenario '" + out.id + "': checkpoints[" + std::to_string( i ) + "] must be an object";
 						return false;
 					}
+					// P1(c) fail-fast: a field the checker RECOGNIZES for this
+					// checkpoint's kind but that carries the WRONG JSON type is
+					// a load-time error, not a silently-skipped (and therefore
+					// silently-weakened) assertion.
+					if( !ValidateCheckpointFieldTypes( cps.at( i ), i, out.id, err ) ) return false;
 				}
 				out.checkpoints = cps;   // carried OPAQUELY -- E3 interprets kinds
 			}
@@ -637,6 +848,19 @@ namespace RISE
 						ChatStepResult st;
 						bool roundStopped = false;
 						for( int attempt = 1; ; ++attempt ) {
+							// Re-check the llm-calls budget on EVERY attempt, not
+							// just the first: the outer check above only guards
+							// attempt 1 of a round, but a retry (5xx / image-elide
+							// / reasoning-effort-none / transport-error) issues its
+							// OWN request and increments llmCalls just like a fresh
+							// round -- without this, a maxLlmCalls:1 scenario could
+							// still send a 2nd request via the same-round retry
+							// path, silently exceeding the cap.  Stops BEFORE
+							// building/issuing the retry's request (an honest stop,
+							// never a request sent then discarded).
+							if( scenario.budgets.maxLlmCalls >= 0 && llmCalls >= scenario.budgets.maxLlmCalls ) {
+								terminalStatus = "budget_llm_calls"; budgetHit = true; roundStopped = true; break;
+							}
 							const ChatHttpRequest req = loop.BuildRequest( apiKey );
 							if( req.url.empty() ) {
 								terminalStatus = "provider_error";
@@ -646,6 +870,20 @@ namespace RISE
 							}
 
 							const FetchOutcome fo = fetch( req );
+							// Count EVERY POST attempted, BEFORE the proceed check.  A
+							// request whose response was lost to a transport failure
+							// (proceed == false, status 0) may still have reached --
+							// and been billed by -- the provider, so it counts against
+							// maxLlmCalls; counting it here is also what lets the inner
+							// budget check above bound a transport-error RETRY (whose
+							// failed attempt returns proceed=false and, if counted only
+							// after a received response, would never increment the
+							// counter -- so maxLlmCalls:1 could still send a 2nd POST).
+							// CONSEQUENCE: llmCalls is REQUESTS SENT, which can exceed
+							// the number of RECORDED llm rounds (RecordHttpRound fires
+							// only on a received response) by the count of transport-
+							// failed attempts -- the honest cost measure.
+							++llmCalls;
 							if( !fo.proceed ) {
 								if( attempt == 1 && fo.stopStatus == "transport_error" )
 									continue;   // one same-round retry of a transport failure
@@ -657,7 +895,6 @@ namespace RISE
 
 							loop.RecordHttpRound( fo.status, fo.body, fo.elapsedMs,
 							                      attempt, attempt > 1 ? attempt - 1 : -1 );
-							++llmCalls;
 							st = loop.HandleResponse( fo.status, fo.body );
 
 							if( attempt == 1 && fo.status >= 500 && fo.status <= 599 )
@@ -724,6 +961,11 @@ namespace RISE
 					}
 				}
 
+				// Wall-clock completion time of the run -- the whole turn loop
+				// (LLM round-trips + tool dispatch), captured BEFORE the post-run
+				// checker so it measures the agent's time, not the grader's.
+				// Same clock as maxWallMs above (startMs at the top of RunScenario).
+				const int64_t endMs = clock();
 				if( terminalStatus.empty() ) terminalStatus = "final_text";
 				loop.FinishTrajectory( terminalStatus );
 
@@ -731,6 +973,7 @@ namespace RISE
 				handle.result.llmCalls = llmCalls;
 				handle.result.toolCalls = toolCalls;
 				handle.result.budgetHit = budgetHit;
+				handle.result.wallMs = endMs - startMs;
 				handle.result.finalText = finalText;
 				handle.result.errorMessage = errorMessage;
 				handle.result.headVersionFinal = dispatcher->Session()
@@ -745,6 +988,7 @@ namespace RISE
 				r.set( "llmCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.llmCalls ) ) );
 				r.set( "toolCalls", JsonValue::MakeNumber( static_cast<double>( handle.result.toolCalls ) ) );
 				r.set( "budgetHit", JsonValue::MakeBool( handle.result.budgetHit ) );
+				r.set( "wallMs", JsonValue::MakeNumber( static_cast<double>( handle.result.wallMs ) ) );
 				r.set( "headVersionStart", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionStart ) ) );
 				r.set( "headVersionFinal", JsonValue::MakeNumber( static_cast<double>( handle.result.headVersionFinal ) ) );
 				r.set( "finalText", JsonValue::MakeString( handle.result.finalText ) );
@@ -2032,6 +2276,13 @@ namespace RISE
 					root.set( "scenarioId", JsonValue::MakeString( result.scenarioId ) );
 					root.set( "checkpointFraction", JsonValue::MakeNumber( result.checkpointFraction ) );
 					root.set( "allPassed", JsonValue::MakeBool( result.allPassed ) );
+					// RECORDED, not gated: pass/fail stays checkpoint-fraction-based
+					// (final-scene-state) -- terminalStatus just lets a reviewer see
+					// that a run which passed every checkpoint nonetheless ended on
+					// a non-clean status (e.g. a budget stop that still landed the
+					// edit).  handle.result is the same summary line RunScenario/
+					// RunScenarioLive already wrote to <id>.result.jsonl.
+					root.set( "terminalStatus", JsonValue::MakeString( handle.result.terminalStatus ) );
 					JsonValue arr = JsonValue::MakeArray();
 					for( const auto& c : result.checkpoints ) {
 						JsonValue o = JsonValue::MakeObject();

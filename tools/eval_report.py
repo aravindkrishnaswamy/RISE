@@ -12,7 +12,7 @@ subdirectory is written per (scenario, provider, model, repeat):
                                          see src/Library/Agent/ChatTrajectory.cpp)
         <scenarioId>.result.jsonl       one-line run result: scenarioId,
                                          terminalStatus, llmCalls, toolCalls,
-                                         budgetHit, headVersionStart,
+                                         budgetHit, wallMs, headVersionStart,
                                          headVersionFinal, finalText,
                                          optional errorMessage
                                          (AgentEvalRunner.cpp ~line 584-601)
@@ -36,8 +36,9 @@ Subcommands
       Aggregate every run subdirectory under <runDir>, grouped by
       (scenarioId, provider, model).  Prints pass@1, pass^k (all-repeats-pass
       reliability), a 95% Wilson score interval on pass@1, mean partial-credit
-      checkpointFraction, an estimated $-per-successful-task cost, and a
-      terminalStatus failure-label breakdown per group.
+      checkpointFraction, an estimated $-per-successful-task cost, a mean wall-clock completion
+      time per run (the provider speed metric), and a terminalStatus
+      failure-label breakdown per group.
         Example: python3 tools/eval_report.py report evals/runs/2026-07-10
 
   diff <trajectoryA.jsonl> <trajectoryB.jsonl>
@@ -106,6 +107,11 @@ PROVIDER_PRICING = {
     "anthropic": {
         "cached_in_input": False,
         "_default": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+        # NOTE: the generic "claude-opus" below is Opus-3-era pricing; current
+        # Opus (4.6/4.7/4.8) is $5/$25. The specific "claude-opus-4-8" key is
+        # longer and so wins the most-specific-match lookup for the 4.8 shootout
+        # runs, leaving the generic as a legacy fallback only.
+        "claude-opus-4-8": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
         "claude-opus": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
         "claude-sonnet": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
         "claude-haiku": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
@@ -138,10 +144,26 @@ PROVIDER_PRICING = {
         # Local inference (Ollama et al.): no marginal per-token cost, so every
         # rate is 0.0 and cost reports $0.00.  cached_in_input matches the
         # OpenAI-compatible convention it inherits (moot at zero rates).
+        # default_is_authoritative: the $0 _default is DEFINITIONAL here (not an
+        # estimate), so a local model with no specific entry is still PRICED at
+        # $0.00 -- unlike a hosted provider's generic _default, which is
+        # reported unpriced (see estimate_cost).
         "cached_in_input": True,
+        "default_is_authoritative": True,
         "_default": {"input": 0.0, "output": 0.0, "cached_input": 0.0},
     },
 }
+
+# EDIT-ME: the currently-shipped shootout models have NO specific pricing entry
+# above, so the report shows their $/success as "n/a (no pricing)" (honest --
+# their real rates are not encoded here) rather than billing them at the generic
+# per-provider _default. To price them, add a specific entry under the matching
+# provider with the published USD/1M-token rates, e.g.:
+#   gemini "gemini-3.5-flash": {"input": ?, "output": ?, "cached_input": ?}
+#   openai "gpt-5.6-terra":    {"input": ?, "output": ?, "cached_input": ?}
+#   xai    "grok-4.5":         {"input": ?, "output": ?, "cached_input": ?}
+# (grok-4.3 is already priced above.) Once added, that model reports a real
+# $/success. Do NOT invent rates -- an unpriced row is better than a wrong one.
 
 # Must stay in lockstep with the provider set recognized by
 # `ParseReplayProviderName` / `ChatProvider` in
@@ -180,29 +202,39 @@ def pass_at_1(successes, n):
 
 
 def pass_at_k(successes, n):
-    """All-repeats-pass reliability indicator: 1 if successes == n (n>0), else 0."""
+    """pass^k (caret, NOT pass@k): all-repeats-pass reliability indicator -- 1 if
+    successes == n (n>0), else 0. This is the reliability metric (did EVERY one
+    of the k repeats pass), NOT the conventional pass@k (>=1 of k passed). The
+    function name reads like 'pass_at_k' for identifier legality; the metric and
+    every user-facing label are pass^k. See the report legend."""
     if n <= 0:
         return 0
     return 1 if successes == n else 0
 
 
 def lookup_pricing(provider, model):
-    """Return {"input","output","cached_input"} USD/1M-token dict, or None
-    if the provider/model isn't in PROVIDER_PRICING."""
+    """Return (price_dict, exact). `price_dict` is the {"input","output",
+    "cached_input"} USD/1M-token rates, or None when the provider is unknown.
+    `exact` is True ONLY when a SPECIFIC model key matched -- False when we fell
+    back to the provider `_default`. Callers pair `exact` with the provider's
+    `default_is_authoritative` flag to decide whether the resulting cost is a
+    real per-model rate or must be reported unpriced (a generic provider
+    `_default` applied to an unlisted model -- e.g. gemini-3.5-flash at the
+    generic Gemini rate -- is a wrong number, not a price)."""
     prov_table = PROVIDER_PRICING.get(provider)
     if prov_table is None:
-        return None
+        return (None, False)
     model_l = (model or "").lower()
     best_key = None
     for key in prov_table:
-        if key in ("_default", "cached_in_input"):
+        if key in ("_default", "cached_in_input", "default_is_authoritative"):
             continue
         if key.lower() in model_l:
             if best_key is None or len(key) > len(best_key):
                 best_key = key
     if best_key is not None:
-        return prov_table[best_key]
-    return prov_table.get("_default")
+        return (prov_table[best_key], True)
+    return (prov_table.get("_default"), False)
 
 
 def estimate_cost(provider, model, input_tokens, output_tokens, cached_tokens):
@@ -216,14 +248,24 @@ def estimate_cost(provider, model, input_tokens, output_tokens, cached_tokens):
     subset-convention provider double-bills the cached portion, so we branch
     on the flag instead of applying one formula universally.
     """
-    price = lookup_pricing(provider, model)
+    price, exact = lookup_pricing(provider, model)
     if price is None:
         return (0.0, False)
+    prov_table = PROVIDER_PRICING[provider]
+    # A `_default` fallback (exact=False) is only trustworthy when the provider
+    # marks its default authoritative -- `local` alone does (no marginal
+    # per-token cost, so $0 is definitional, not an estimate). For every hosted
+    # provider the `_default` is a GENERIC rate that is simply wrong for an
+    # unlisted model (gemini-3.5-flash, gpt-5.6-terra, grok-4.5 all lack a
+    # specific entry), so report those UNPRICED rather than present a fabricated
+    # $/success. Add a specific PROVIDER_PRICING entry for a model to price it.
+    if not exact and not prov_table.get("default_is_authoritative", False):
+        return (0.0, False)
     # Provider is guaranteed present in PROVIDER_PRICING here (lookup_pricing
-    # only returns non-None when it found a table for `provider`). Missing
+    # only returns non-None price when it found a table for `provider`). Missing
     # the flag defaults to False (additive/anthropic-style) -- the
     # under-count-rather-than-double-count safer default.
-    cached_in_input = PROVIDER_PRICING[provider].get("cached_in_input", False)
+    cached_in_input = prov_table.get("cached_in_input", False)
     if cached_in_input:
         noncached_input = max(0, input_tokens - cached_tokens)
         cost = (
@@ -449,6 +491,7 @@ def compute_group_stats(key, recs):
     checkpoint_fracs = []
     status_counter = Counter()
     total_input = total_output = total_cached = 0
+    wall_ms_list = []
 
     for r in recs:
         all_passed = False
@@ -467,6 +510,12 @@ def compute_group_stats(key, recs):
         else:
             status_counter["<missing result>"] += 1
 
+        # Wall-clock completion time per run (ms) -- the provider "time to
+        # completion" comparison. Skip -1 (load_error, never timed) and a
+        # missing field (result.jsonl written before wallMs existed).
+        if r.result is not None and isinstance(r.result.get("wallMs"), (int, float)) and r.result["wallMs"] >= 0:
+            wall_ms_list.append(r.result["wallMs"])
+
         total_input += r.input_tokens
         total_output += r.output_tokens
         total_cached += r.cached_tokens
@@ -475,6 +524,7 @@ def compute_group_stats(key, recs):
     pk = pass_at_k(successes, n)
     lower, upper = wilson_score_interval(successes, n)
     mean_ckpt = (sum(checkpoint_fracs) / len(checkpoint_fracs)) if checkpoint_fracs else None
+    mean_wall_ms = (sum(wall_ms_list) / len(wall_ms_list)) if wall_ms_list else None
 
     cost, priced = estimate_cost(provider, model, total_input, total_output, total_cached)
     cps = cost_per_success(cost, priced, successes)
@@ -495,6 +545,7 @@ def compute_group_stats(key, recs):
         "total_cached_tokens": total_cached,
         "estimated_cost_usd": cost if priced else None,
         "cost_per_success": cps,
+        "mean_wall_ms": mean_wall_ms,
         "terminal_status_counts": dict(status_counter),
     }
 
@@ -543,6 +594,13 @@ def fmt_cost(x):
     return f"${x:.4f}"
 
 
+def fmt_wall(mean_ms):
+    """Mean wall-clock completion time per run, formatted in seconds."""
+    if mean_ms is None:
+        return "n/a"
+    return f"{mean_ms / 1000.0:.2f}s"
+
+
 def fmt_status_counts(counts):
     return " ".join(f"{k}:{v}" for k, v in sorted(counts.items())) if counts else "-"
 
@@ -550,7 +608,7 @@ def fmt_status_counts(counts):
 def render_text_report(stats_list, warnings):
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
-        "pass^k", "meanCkpt", "$/success", "failureBreakdown",
+        "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
     ]
     rows = []
     for s in stats_list:
@@ -561,6 +619,7 @@ def render_text_report(stats_list, warnings):
             str(s["pass_at_k"]),
             "n/a" if s["mean_checkpoint_fraction"] is None else f"{s['mean_checkpoint_fraction']:.3f}",
             fmt_cost(s["cost_per_success"]),
+            fmt_wall(s["mean_wall_ms"]),
             fmt_status_counts(s["terminal_status_counts"]),
         ])
 
@@ -589,6 +648,18 @@ def render_text_report(stats_list, warnings):
         f"{ov['groups_fully_reliable']}/{ov['num_groups']} groups fully reliable (pass^k=1)"
     )
 
+    lines.append("")
+    lines.append(
+        "Legend: pass@1 = mean success rate over N repeats. "
+        "pass^k (NOT pass@k) = 1 only when ALL N repeats passed -- a per-group "
+        "reliability indicator, distinct from the conventional pass@k "
+        "(>=1 of k). $/success = total cost / successes ('n/a (no pricing)' when "
+        "the model has no specific pricing entry). wall(s) = mean wall-clock "
+        "completion time per run in seconds (LLM round-trips + tool dispatch; "
+        "the provider speed metric -- runs are serialized so it is comparable). "
+        "failureBreakdown = terminal-status counts across the N repeats."
+    )
+
     if warnings:
         lines.append("")
         lines.append(f"{len(warnings)} warning(s):")
@@ -600,7 +671,7 @@ def render_text_report(stats_list, warnings):
 def render_markdown_report(stats_list, warnings):
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
-        "pass^k", "meanCkpt", "$/success", "failureBreakdown",
+        "pass^k", "meanCkpt", "$/success", "wall(s)", "failureBreakdown",
     ]
     lines = []
     lines.append("| " + " | ".join(headers) + " |")
@@ -613,6 +684,7 @@ def render_markdown_report(stats_list, warnings):
             str(s["pass_at_k"]),
             "n/a" if s["mean_checkpoint_fraction"] is None else f"{s['mean_checkpoint_fraction']:.3f}",
             fmt_cost(s["cost_per_success"]),
+            fmt_wall(s["mean_wall_ms"]),
             fmt_status_counts(s["terminal_status_counts"]).replace("|", "\\|"),
         ]
         lines.append("| " + " | ".join(row) + " |")
@@ -624,6 +696,17 @@ def render_markdown_report(stats_list, warnings):
         f"{ov['total_successes']} successes, pass@1={fmt_pct(ov['pass_at_1'])} "
         f"{fmt_ci(ov['wilson_lower'], ov['wilson_upper'])}, "
         f"{ov['groups_fully_reliable']}/{ov['num_groups']} groups fully reliable (pass^k=1)"
+    )
+    lines.append("")
+    lines.append(
+        "**Legend**: `pass@1` = mean success rate over N repeats. "
+        "`pass^k` (NOT pass@k) = 1 only when ALL N repeats passed -- a per-group "
+        "reliability indicator, distinct from the conventional pass@k (>=1 of k). "
+        "`$/success` = total cost / successes (`n/a (no pricing)` when the model "
+        "has no specific pricing entry). `wall(s)` = mean wall-clock completion "
+        "time per run in seconds (the provider speed metric; runs are "
+        "serialized so it is comparable). `failureBreakdown` = terminal-status "
+        "counts across the N repeats."
     )
     if warnings:
         lines.append("")
@@ -841,11 +924,38 @@ def selftest():
     # --- estimate_cost via PROVIDER_PRICING lookup (sanity, not a pin on
     # the live price table -- just checks the lookup/substring-match plumbing
     # doesn't crash and returns a priced result for a known provider) ---
-    est_cost, priced = estimate_cost("anthropic", "claude-3-5-sonnet-20241022", 1_000_000, 0, 0)
+    # A CURRENT model id substring-matches its specific key (claude-sonnet-5
+    # contains "claude-sonnet") -> priced exactly. (A legacy version-suffixed id
+    # like claude-3-5-sonnet-20241022 does NOT substring-match "claude-sonnet"
+    # and, post-P1(d), reports unpriced rather than borrowing the generic
+    # _default -- the honest behavior; add a specific entry to price it.)
+    est_cost, priced = estimate_cost("anthropic", "claude-sonnet-5", 1_000_000, 0, 0)
     if not priced:
-        raise AssertionError("expected anthropic/claude-sonnet family to be priced")
+        raise AssertionError("expected anthropic/claude-sonnet-5 (matches 'claude-sonnet') to be priced")
     _assert_close(est_cost, PROVIDER_PRICING["anthropic"]["claude-sonnet"]["input"], 1e-9,
                   "estimate_cost anthropic sonnet substring match")
+
+    # --- P1(d) regression: an unlisted HOSTED model must report UNPRICED, not
+    # silently bill at the generic provider _default (which is what shipped the
+    # wrong gemini-3.5-flash / gpt-5.6-terra $/success numbers) ---
+    _, flash_priced = estimate_cost("gemini", "gemini-3.5-flash", 1_000_000, 0, 0)
+    if flash_priced:
+        raise AssertionError("gemini-3.5-flash has no specific pricing entry -> must be UNPRICED, not the generic _default")
+    _, terra_priced = estimate_cost("openai", "gpt-5.6-terra", 1_000_000, 0, 0)
+    if terra_priced:
+        raise AssertionError("gpt-5.6-terra has no specific pricing entry -> must be UNPRICED, not the generic _default")
+    if cost_per_success(0.0, flash_priced, 5) != "n/a (no pricing)":
+        raise AssertionError("an unpriced hosted model's $/success must render 'n/a (no pricing)'")
+    # local's _default is DEFINITIONAL $0 (default_is_authoritative), so an
+    # unlisted local model is still PRICED -- at $0.00, not unpriced.
+    local_cost, local_priced = estimate_cost("local", "qwen3:32b", 1_000_000, 500_000, 0)
+    if not local_priced:
+        raise AssertionError("local models must stay PRICED at $0 (default_is_authoritative), not unpriced")
+    _assert_close(local_cost, 0.0, 1e-12, "local model costs $0.00")
+    # a specific xai entry still prices exactly (grok-4.3 is listed).
+    _, grok43_priced = estimate_cost("xai", "grok-4.3", 1_000_000, 0, 0)
+    if not grok43_priced:
+        raise AssertionError("grok-4.3 has a specific entry -> must be priced")
     est_cost2, priced2 = estimate_cost("unknown-provider", "some-model", 1_000_000, 0, 0)
     if priced2:
         raise AssertionError("unknown provider should never be priced")
@@ -880,26 +990,31 @@ def selftest():
     # separate from input_tokens), output=5000.
     #   cost = 100000/1e6*3.00 + 20000/1e6*0.30 + 5000/1e6*15.00
     #        = 0.3            + 0.006          + 0.075        = 0.381
+    # Use claude-sonnet-5 (substring-matches the "claude-sonnet" key -> priced);
+    # a legacy id like claude-3-5-sonnet-20241022 does NOT match and is unpriced
+    # post-P1(d). Rates are the same "claude-sonnet" ones, so 0.381 is unchanged.
     anthropic_cost, anthropic_priced = estimate_cost(
-        "anthropic", "claude-3-5-sonnet-20241022", 100000, 5000, 20000
+        "anthropic", "claude-sonnet-5", 100000, 5000, 20000
     )
     if not anthropic_priced:
-        raise AssertionError("expected anthropic/claude-sonnet to be priced")
+        raise AssertionError("expected anthropic/claude-sonnet-5 to be priced")
     _assert_close(anthropic_cost, 0.381, 1e-9,
                   "estimate_cost anthropic additive cached tokens (FIX 1 regression)")
 
-    # xAI "grok-4.5" (the _default) seeded rates: input=2.00, output=6.00,
-    # cached_input=2.00. xai is a SUBSET-convention provider (cached_in_input),
-    # so cached tokens are subtracted from input before charging. Case:
-    # input_tokens=10000 (TOTAL, includes 4000 cached), cached=4000, output=1000.
+    # xAI "grok-4.3" seeded rates: input=1.25, output=2.50, cached_input=0.20.
+    # xai is a SUBSET-convention provider (cached_in_input), so cached tokens
+    # are subtracted from input before charging. Case: input_tokens=10000
+    # (TOTAL, includes 4000 cached), cached=4000, output=1000.
     #   noncached_input = 10000 - 4000 = 6000
-    #   cost = 6000/1e6*2.00 + 4000/1e6*2.00 + 1000/1e6*6.00
-    #        = 0.012        + 0.008        + 0.006        = 0.026
-    xai_cost, xai_priced = estimate_cost("xai", "grok-4.5", 10000, 1000, 4000)
+    #   cost = 6000/1e6*1.25 + 4000/1e6*0.20 + 1000/1e6*2.50
+    #        = 0.0075        + 0.0008        + 0.0025        = 0.0108
+    # (grok-4.5 has NO specific entry -> unpriced per P1(d); grok-4.3 is priced,
+    # so it exercises the xai cached-as-subset accounting.)
+    xai_cost, xai_priced = estimate_cost("xai", "grok-4.3", 10000, 1000, 4000)
     if not xai_priced:
-        raise AssertionError("expected xai/grok-4.5 to be priced")
-    _assert_close(xai_cost, 0.026, 1e-9,
-                  "estimate_cost xai cached-as-subset (grok-4.5 default)")
+        raise AssertionError("expected xai/grok-4.3 to be priced")
+    _assert_close(xai_cost, 0.0108, 1e-9,
+                  "estimate_cost xai cached-as-subset (grok-4.3)")
 
     # local inference: every rate is 0.0, so any token counts report $0.00 --
     # but the provider IS priced (the entry exists), distinguishing "$0.00 by
@@ -953,7 +1068,8 @@ def selftest():
     def _mk_rec(all_passed):
         r = RunRecord()
         r.check = {"allPassed": all_passed, "checkpointFraction": 1.0 if all_passed else 0.0}
-        r.result = {"terminalStatus": "success" if all_passed else "failed"}
+        r.result = {"terminalStatus": "success" if all_passed else "failed",
+                    "wallMs": 1200 if all_passed else 800}
         r.input_tokens = r.output_tokens = r.cached_tokens = 0
         return r
 
@@ -963,6 +1079,20 @@ def selftest():
     if stats_a["n"] != 10 or stats_a["successes"] != 8:
         raise AssertionError(f"group A n/successes wrong: {stats_a}")
     _assert_close(stats_a["pass_at_1"], 0.8, 1e-12, "group A pass@1 = successes/n")
+    # wall-time mean over all runs: (8*1200 + 2*800)/10 = 1120 ms
+    _assert_close(stats_a["mean_wall_ms"], 1120.0, 1e-9, "mean_wall_ms = mean run wall-clock")
+
+    # wallMs == -1 (load_error, never timed) and a MISSING wallMs are both
+    # excluded from the mean -- only genuinely-timed runs count.
+    r_untimed = RunRecord()
+    r_untimed.check = {"allPassed": True, "checkpointFraction": 1.0}
+    r_untimed.result = {"terminalStatus": "load_error", "wallMs": -1}
+    r_untimed.input_tokens = r_untimed.output_tokens = r_untimed.cached_tokens = 0
+    r_nowall = _mk_rec(True)
+    del r_nowall.result["wallMs"]
+    stats_mixed = compute_group_stats(("scenC", "anthropic", ""), [_mk_rec(True), r_untimed, r_nowall])
+    _assert_close(stats_mixed["mean_wall_ms"], 1200.0, 1e-9,
+                  "mean_wall_ms excludes -1 and missing (only the one timed 1200ms run counts)")
 
     # Group B: 2 repeats, 0 successes -> pass@1 = 0.0
     group_b = [_mk_rec(False)] * 2

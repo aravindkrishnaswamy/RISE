@@ -50,7 +50,28 @@ namespace RISE
 				Scalar base_cur_time;
 			};
 
+			//! Tier 2 (docs/gui/CAMERAS_AND_VIEWS.md §5.5): a viewport-private
+			//! camera the INTERACTIVE RasterizeScene (still-frame) path renders
+			//! THROUGH in place of `pScene.GetCamera()`, so free-fly / axis-snap /
+			//! named-view-restore navigate without mutating the scene's active
+			//! camera and without touching production render.  Non-owning: the
+			//! caller (SceneEditController) owns the camera's ref and keeps it
+			//! alive for the pass; nullptr (default) renders through the scene
+			//! camera.  Applies ONLY to RasterizeScene -- the animation
+			//! (RenderFrameOfAnimation / RasterizeSceneAnimation) and prediction
+			//! paths ignore it (a movie / production frame always uses the scene
+			//! camera).  Set/cleared by the controller's interactive pass under
+			//! its cancel-and-park, so it is render-thread-only (no atomic needed).
+			//! Chosen over the §5.5 (b) scene-view wrapper because wrapping the
+			//! IScene dangles (the caster stores + addrefs the scene across passes)
+			//! and defeats the render path's IScenePriv/Scene downcasts (photon-map
+			//! build, light-sampler regen); overriding at the camera-read site keeps
+			//! the real scene flowing to the caster.
+			void SetViewportCameraOverride( const ICamera* pCam ) { m_pViewportCameraOverride = pCam; }
+
 		private:
+
+			const ICamera* m_pViewportCameraOverride = nullptr;
 
 			// Used only by the RasterizeAnimation
 			void RenderFrameOfAnimation( 

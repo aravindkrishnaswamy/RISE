@@ -18,6 +18,7 @@
 @class RISEBridge;
 @class RISEViewportProperty;
 @class RISEViewportGizmoHandle;
+@class RISEViewportNavNub;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -50,6 +51,23 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// NSLog/print/os_log call.
 @property (nonatomic, readonly, copy) NSString *bearerToken;
 @property (nonatomic, readonly, copy) NSString *message;
+@end
+
+/// Snapshot of the scene's IBL environment (a scene-level singleton: an
+/// hdr/exr painter bound via `radiance_*` on the active rasterizer, NOT
+/// an ILight).  See SceneEditController::EnvironmentInfo and
+/// docs/gui/ENVIRONMENT_SECTION.md.  Returned by -[RISEViewportBridge environmentInfo].
+@interface RISEEnvironmentInfo : NSObject
+@property (nonatomic, readonly) BOOL hasEnvironment;   ///< a radiance_map painter is bound
+@property (nonatomic, readonly) BOOL proceduralSky;    ///< a procedural sky / non-painter map is installed (read-only)
+@property (nonatomic, readonly) BOOL editable;         ///< false when the active rasterizer takes no radiance map (MLT / pixel*)
+@property (nonatomic, readonly) NSString *painterName; ///< bound painter name ("" if none)
+@property (nonatomic, readonly) NSString *file;        ///< resolved HDRI path ("" if unresolved / procedural)
+@property (nonatomic, readonly) double scale;          ///< intensity multiplier
+@property (nonatomic, readonly) double orientX;        ///< Euler rotation X in DEGREES
+@property (nonatomic, readonly) double orientY;        ///< Euler rotation Y in DEGREES
+@property (nonatomic, readonly) double orientZ;        ///< Euler rotation Z in DEGREES
+@property (nonatomic, readonly) BOOL background;        ///< map visible behind geometry
 @end
 
 @interface RISEViewportBridge : NSObject
@@ -184,6 +202,45 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 /// overlay's active-handle styling.
 @property (nonatomic, readonly) RISEViewportGizmoKind activeGizmoKind;
 @property (nonatomic, readonly) NSInteger             activeGizmoAxis;
+
+#pragma mark - Nav gizmo (axis-ball) + view navigation
+
+/// Recompute the six axis-ball nubs (±X/±Y/±Z) for a ball centered at
+/// (centerX, centerY) with `ballRadius`, each nub `nubRadius`, all in widget
+/// points.  Returns NO (empty nub array) when there's no supported (pinhole)
+/// interactive camera.  Call once per preview frame before reading
+/// `navGizmoNubs` — see docs/gui/CAMERAS_AND_VIEWS.md §4.
+- (BOOL)refreshNavGizmoWithCenterX:(CGFloat)centerX centerY:(CGFloat)centerY
+                        ballRadius:(CGFloat)ballRadius nubRadius:(CGFloat)nubRadius
+    NS_SWIFT_NAME(refreshNavGizmo(centerX:centerY:ballRadius:nubRadius:));
+
+/// Snapshot of the current nub array (empty if the gizmo isn't shown).
+/// Read AFTER `refreshNavGizmo…`.
+@property (nonatomic, readonly) NSArray<RISEViewportNavNub *> *navGizmoNubs;
+
+/// Hit-test a widget-space point against the nubs (front-facing win ties).
+/// Returns the nub index or -1.
+- (NSInteger)navGizmoNubAtX:(CGFloat)x y:(CGFloat)y
+    NS_SWIFT_NAME(navGizmoNubAt(x:y:));
+
+/// Non-destructive view navigation: these drive the transient free-fly
+/// ViewportPose (the interactive pass renders through it) and NEVER mutate a
+/// scene camera.  Each returns YES on success / the documented refusal cases.
+- (BOOL)snapViewToAxis:(NSInteger)axis negative:(BOOL)negative
+    NS_SWIFT_NAME(snapView(toAxis:negative:));
+- (BOOL)enterFreeFly;
+- (BOOL)exitFreeFly;
+@property (nonatomic, readonly) BOOL freeFlyActive;
+- (BOOL)setHomeView;
+- (BOOL)goToHomeView;
+@property (nonatomic, readonly) BOOL hasHomeView;
+
+/// B3 fly-then-stamp: promote the current free-fly view into a NEW named
+/// scene camera (auto-named from `proposedName`, dedup-suffixed; the new
+/// camera becomes active).  Returns the created camera's name, or nil when
+/// there's no free-fly pose to stamp or the edit was refused.
+- (nullable NSString *)stampViewToNewCamera:(NSString *)proposedName
+    NS_SWIFT_NAME(stampViewToNewCamera(_:));
 
 #pragma mark - Pointer events
 //
@@ -519,6 +576,36 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                                        line:(unsigned int *)outLine
     NS_SWIFT_NAME(getEntitySourceLocation(for:name:byteOffset:line:));
 
+#pragma mark - Source traceability (any UI element <-> scene-file span)
+
+/// Resolve a UI element's scene-file span (SceneEditController::ResolveSourceSpan).
+/// `param` empty = the whole chunk (byteLength 0); non-empty = the `occ`-th matching
+/// param's tight `role value` run.  Fills byteOffset/byteLength (UTF-8 bytes into
+/// -serializedSceneText) + 1-based line/column.  Returns NO (outputs untouched) on a
+/// null controller, no retained CST, or an unresolvable ref.  Same
+/// do-not-call-during-renders caveat as -getEntitySourceLocation.
+- (BOOL)resolveSourceSpanForCategory:(RISEViewportCategory)category
+                                name:(NSString *)name
+                               param:(NSString *)param
+                          occurrence:(int)occ
+                          byteOffset:(unsigned long long *)outOffset
+                          byteLength:(unsigned long long *)outLength
+                                line:(unsigned int *)outLine
+                              column:(unsigned int *)outColumn
+    NS_SWIFT_NAME(resolveSourceSpan(for:name:param:occurrence:byteOffset:byteLength:line:column:));
+
+/// Reverse: the UI element whose scene-file source contains UTF-8 byte `offset`
+/// (SceneEditController::SourceRefAtByteOffset).  On success fills `outCategory`
+/// (a RISEViewportCategory raw value), `outName`, `outParam` (empty if not on a
+/// specific param), and `outOccurrence`.  Returns NO when the offset isn't inside an
+/// addressable entity/singleton chunk.
+- (BOOL)sourceRefAtByteOffset:(unsigned long long)offset
+                     category:(RISEViewportCategory *)outCategory
+                         name:(NSString * _Nullable * _Nullable)outName
+                        param:(NSString * _Nullable * _Nullable)outParam
+                   occurrence:(int *)outOccurrence
+    NS_SWIFT_NAME(sourceRef(atByteOffset:category:name:param:occurrence:));
+
 #pragma mark - Entity creation + painter CRUD (entity-creation slice)
 //
 // Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
@@ -571,6 +658,37 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
                             name:(NSString *)name
                       outMessage:(NSString * _Nullable * _Nullable)outMessage
     NS_SWIFT_NAME(removeEntity(for:name:outMessage:));
+
+#pragma mark - Environment / IBL section
+
+/// Read the current environment binding.  Returns nil only when there is
+/// no scene / no active rasterizer; otherwise a fully-populated snapshot
+/// (with `hasEnvironment == NO` when unbound).
+- (nullable RISEEnvironmentInfo *)environmentInfo;
+
+/// Set the environment intensity / background-visibility / rotation
+/// (degrees).  Each applies live (viewport re-renders) AND persists (CST
+/// mirror).  Returns NO when no editable bound environment exists.
+- (BOOL)setEnvironmentScale:(double)scale;
+- (BOOL)setEnvironmentBackground:(BOOL)background;
+- (BOOL)setEnvironmentOrientX:(double)x y:(double)y z:(double)z
+    NS_SWIFT_NAME(setEnvironmentOrient(x:y:z:));
+
+/// Swap the bound environment painter's HDRI file (an existing path; the
+/// file picker is the guard).  Returns NO when none is bound.
+- (BOOL)setEnvironmentFile:(NSString *)absPath;
+
+/// Create an environment from an HDRI file when none exists (inserts an
+/// hdr/exr painter chosen from the extension + binds radiance_map).
+/// Returns `applied`; `outName` / `outMessage` optional (may be NULL).
+- (BOOL)addEnvironment:(NSString *)hdriPath
+               outName:(NSString * _Nullable * _Nullable)outName
+            outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(addEnvironment(_:outName:outMessage:));
+
+/// Remove the environment (unbinds radiance_map, live + CST).  Returns
+/// NO when no editable environment exists.
+- (BOOL)removeEnvironment;
 
 #pragma mark - Multi-camera
 
@@ -792,6 +910,18 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 @property (nonatomic, readonly) CGFloat screenX;
 @property (nonatomic, readonly) CGFloat screenY;
 @property (nonatomic, readonly) CGFloat screenRadius;
+@end
+
+/// One navigation axis-ball nub from the controller's layout.  Positions are
+/// in the widget space the overlay passed to `refreshNavGizmo…` (and the same
+/// space it feeds `navGizmoNubAt…`).
+@interface RISEViewportNavNub : NSObject
+@property (nonatomic, readonly) NSInteger axis;       ///< 0=X, 1=Y, 2=Z
+@property (nonatomic, readonly) BOOL negative;        ///< NO=+axis, YES=−axis
+@property (nonatomic, readonly) CGFloat screenX;
+@property (nonatomic, readonly) CGFloat screenY;
+@property (nonatomic, readonly) CGFloat screenRadius;
+@property (nonatomic, readonly) BOOL facing;          ///< YES=toward viewer (bright)
 @end
 
 /// Single quick-pick preset, surfaced from the descriptor's

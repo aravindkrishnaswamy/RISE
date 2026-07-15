@@ -168,6 +168,10 @@ SceneEditor::SceneEditor(QWidget* parent)
     connect(m_saveBtn, &QPushButton::clicked, this, &SceneEditor::save);
     connect(m_saveReloadBtn, &QPushButton::clicked, this, &SceneEditor::saveAndReload);
     connect(m_editor, &QPlainTextEdit::textChanged, this, &SceneEditor::onTextChanged);
+    // Reverse source traceability: relay the editor's "Select in Inspector"
+    // request up to MainWindow (which owns the bridge + selection).
+    connect(m_editor, &SceneTextEdit::selectEntityAtByteOffsetRequested,
+            this, &SceneEditor::selectEntityAtByteOffsetRequested);
 
     updateDirtyState();
 }
@@ -201,6 +205,11 @@ void SceneEditor::refreshFromDisk()
 bool SceneEditor::isDirty() const
 {
     return m_editor->toPlainText() != m_originalText;
+}
+
+void SceneEditor::setCanSelectEntityPredicate(std::function<bool()> pred)
+{
+    m_editor->setCanSelectEntityPredicate(std::move(pred));
 }
 
 void SceneEditor::save()
@@ -256,16 +265,23 @@ void SceneEditor::refreshFromLiveScene(const QString& text)
 
 void SceneEditor::revealAt(quint64 byteOffset)
 {
+    // The whole-line (entity/whole-chunk) reveal is the length-0 case of
+    // the span overload below.
+    revealAt(byteOffset, 0);
+}
+
+void SceneEditor::revealAt(quint64 byteOffset, quint64 byteLength)
+{
     if (!m_editor) return;
 
     // Convert the UTF-8 byte offset (what
-    // SceneEditController::EntitySourceLocation resolved against) into
-    // a UTF-16 code-unit index (what QTextCursor::setPosition wants) --
-    // the inverse of SceneTextEdit::cursorByteOffsetUtf8.  A byte
-    // offset at or past the end of the buffer means the caller's
-    // assumption (buffer == the serialization the offset was resolved
-    // against) no longer holds; bail out silently rather than landing
-    // on the wrong line.
+    // SceneEditController::EntitySourceLocation / ResolveSourceSpan
+    // resolved against) into a UTF-16 code-unit index (what
+    // QTextCursor::setPosition wants) -- the inverse of
+    // SceneTextEdit::cursorByteOffsetUtf8.  A byte offset at or past the
+    // end of the buffer means the caller's assumption (buffer == the
+    // serialization the offset was resolved against) no longer holds;
+    // bail out silently rather than landing on the wrong line.
     const QString text = m_editor->toPlainText();
     const QByteArray utf8 = text.toUtf8();
     if (byteOffset >= static_cast<quint64>(utf8.size())) return;
@@ -275,7 +291,29 @@ void SceneEditor::revealAt(quint64 byteOffset)
 
     QTextCursor cursor(m_editor->document());
     cursor.setPosition(charIndex);
-    cursor.select(QTextCursor::LineUnderCursor);
+
+    // byteLength > 0: select EXACTLY [byteOffset, byteOffset+byteLength)
+    // (a param's `role value` run) by anchoring at the start and dragging
+    // to the end with KeepAnchor.  Convert the END byte offset the SAME
+    // way (utf8.left -> QString::fromUtf8().length()).  byteLength == 0 (or
+    // an end that clamps past the buffer / before the start) falls back to
+    // selecting the whole line, matching the entity-level reveal.
+    bool rangeSelected = false;
+    if (byteLength > 0) {
+        const quint64 endByteOffset = byteOffset + byteLength;
+        if (endByteOffset <= static_cast<quint64>(utf8.size())) {
+            const QByteArray endPrefix = utf8.left(static_cast<int>(endByteOffset));
+            const int endCharIndex = QString::fromUtf8(endPrefix).length();
+            if (endCharIndex > charIndex && endCharIndex <= text.length()) {
+                cursor.setPosition(endCharIndex, QTextCursor::KeepAnchor);
+                rangeSelected = true;
+            }
+        }
+    }
+    if (!rangeSelected) {
+        cursor.select(QTextCursor::LineUnderCursor);
+    }
+
     m_editor->setTextCursor(cursor);
     m_editor->ensureCursorVisible();
     m_editor->setFocus();
@@ -289,7 +327,11 @@ void SceneEditor::revealAt(quint64 byteOffset)
     QTextEdit::ExtraSelection selection;
     selection.cursor = cursor;
     selection.format.setBackground(flashColor);
-    selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+    // A whole-line reveal fills the row (FullWidthSelection); a tight span
+    // must cover exactly the selected characters, so do NOT set it there.
+    if (!rangeSelected) {
+        selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+    }
     m_editor->setExtraSelections({ selection });
 
     // Context-object overload: the lambda is dropped automatically if
