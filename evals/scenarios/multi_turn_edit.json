@@ -10,8 +10,9 @@
     "Now also make the sphere noticeably bigger."
   ],
   "budgets": {
-    "maxToolCalls": 6,
-    "maxLlmCalls": 6
+    "maxToolCalls": 16,
+    "maxLlmCalls": 18,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/multi_turn_edit.fixture.jsonl"

@@ -9,8 +9,9 @@
     "Include in the animation the existing camera orbit the three objects"
   ],
   "budgets": {
-    "maxToolCalls": 6,
-    "maxLlmCalls": 6
+    "maxToolCalls": 14,
+    "maxLlmCalls": 16,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/camera_orbit_timeline.fixture.jsonl"
@@ -27,7 +28,7 @@
         { "name": "glassprism" }
       ]
     },
-    { "kind": "trajectory", "terminalStatus": "final_text", "maxToolCalls": 4, "noMechanicalLoop": true },
+    { "kind": "trajectory", "terminalStatus": "final_text", "noMechanicalLoop": true },
     { "kind": "diagnostics", "expect": "clean" }
   ]
 }

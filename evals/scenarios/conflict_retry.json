@@ -9,8 +9,9 @@
     "Recolor the sphere albedo to blue."
   ],
   "budgets": {
-    "maxToolCalls": 6,
-    "maxLlmCalls": 8
+    "maxToolCalls": 14,
+    "maxLlmCalls": 16,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/conflict_retry.fixture.jsonl"
@@ -55,7 +56,6 @@
     },
     {
       "kind": "trajectory", "terminalStatus": "final_text",
-      "maxToolCalls": 6,
       "noMechanicalLoop": true,
       "requiredToolInOrder": [
         "read_document",

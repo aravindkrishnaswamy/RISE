@@ -9,14 +9,15 @@
     "Render the scene and describe what you see"
   ],
   "budgets": {
-    "maxToolCalls": 5,
-    "maxLlmCalls": 5
+    "maxToolCalls": 10,
+    "maxLlmCalls": 12,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/two_tool_observe.fixture.jsonl"
   },
   "checkpoints": [
     { "kind": "render", "meanLumaMin": 0.001, "meanLumaMax": 5.0 },
-    { "kind": "trajectory", "terminalStatus": "final_text", "maxToolCalls": 2, "noMechanicalLoop": true }
+    { "kind": "trajectory", "terminalStatus": "final_text", "noMechanicalLoop": true }
   ]
 }

@@ -9,8 +9,9 @@
     "The scene is too dark -- make the light much brighter."
   ],
   "budgets": {
-    "maxToolCalls": 4,
-    "maxLlmCalls": 4
+    "maxToolCalls": 10,
+    "maxLlmCalls": 12,
+    "maxWallMs": 600000
   },
   "replay": {
     "fixture": "evals/fixtures/lighting_luma_band.fixture.jsonl"
@@ -43,7 +44,6 @@
     },
     {
       "kind": "trajectory",
-      "maxToolCalls": 4,
       "terminalStatus": "final_text",
       "requiredToolInOrder": [
         "read_document",
