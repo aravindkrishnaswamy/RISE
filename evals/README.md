@@ -337,9 +337,11 @@ against that fixture (`CheckScenario`'s `allPassed` and
 `checkpointFraction == 1.0`). This is what keeps a scenario honest: it
 proves the checkpoints are true of the canned session that's supposed to
 satisfy them, not just plausible-looking JSON that happens to parse. It
-covers all 8 committed scenarios (`param_edit`, `two_tool_observe`,
-`error_path`, `camera_orbit_timeline`, `remove_object`,
-`material_add_and_bind`, `conflict_retry`, `reserved_name_recovery`) and runs
-as part of the normal test suite (`./run_all_tests.sh` /
-`run_all_tests.ps1`), so adding a new scenario+fixture pair without wiring it
-into T10's `ids[]` array leaves it unverified by CI.
+**dynamically enumerates every committed `evals/scenarios/*.json`** (via a
+`std::filesystem::directory_iterator`, sorted for determinism — there is no
+hard-coded id list), so a new scenario is covered by CI automatically the
+moment its `.json` lands alongside a matching `evals/fixtures/*.fixture.jsonl`.
+It runs as part of the normal test suite (`./run_all_tests.sh` /
+`run_all_tests.ps1`). The one requirement is the paired fixture: a scenario
+whose `replay.fixture` file is missing or whose own checkpoints aren't all
+true of that fixture fails T10 loudly.
