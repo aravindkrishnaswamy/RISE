@@ -6924,6 +6924,135 @@ bool SceneEditController::HasHomeView() const
 	return mHasHomeView;
 }
 
+// ===================== Named Views (Tier 2 §3) =================================
+//
+// Session/UI bookmarks; mNamedViews is UI-thread-only (never read by the render
+// thread) so the vector itself needs no lock.  Capturing the CURRENT view does
+// need the cancel-and-park when it reads the active camera's fields (they tear
+// under a concurrent orbit-drag), same as SetHomeView / CloneActiveCamera.
+
+bool SceneEditController::CaptureCurrentView( CameraSnapshot& out )
+{
+	// Free-fly active: the transient pose IS the current view (GetViewportPose
+	// locks internally).  Otherwise capture the active scene camera under the
+	// cancel-and-park (its fields tear under a concurrent orbit-drag write —
+	// same reason SetHomeView / CloneActiveCamera park).
+	if( IsFreeFlyActive() )
+		return GetViewportPose( out );
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+	const ICamera* cam = scene->GetCamera();
+	if( !cam ) return false;
+	return CameraIntrospection::CaptureCameraSnapshot( *cam, out );
+}
+
+bool SceneEditController::CaptureNamedView( const String& name )
+{
+	CameraSnapshot snap;
+	if( !CaptureCurrentView( snap ) ) return false;
+	NamedView v;
+	v.name = name;
+	v.pose = snap;
+	mNamedViews.push_back( v );
+	return true;
+}
+
+unsigned int SceneEditController::NamedViewCount() const
+{
+	return static_cast<unsigned int>( mNamedViews.size() );
+}
+
+bool SceneEditController::NamedViewName( unsigned int idx, char* out, unsigned int outLen ) const
+{
+	if( !out || outLen == 0 ) return false;
+	out[0] = '\0';
+	if( idx >= mNamedViews.size() ) return false;
+	const String& nm = mNamedViews[ idx ].name;
+	if( nm.size() > outLen ) return false;   // RString size() includes the NUL
+	const char* s = nm.c_str();
+	const size_t n = nm.size();
+	for( size_t i = 0; i < n; ++i ) out[i] = s[i];
+	return true;
+}
+
+bool SceneEditController::RestoreNamedView( unsigned int idx )
+{
+	if( idx >= mNamedViews.size() ) return false;
+	return SetViewportPose( mNamedViews[ idx ].pose );   // non-destructive; parks + realizes
+}
+
+bool SceneEditController::UpdateNamedView( unsigned int idx )
+{
+	if( idx >= mNamedViews.size() ) return false;
+	CameraSnapshot snap;
+	if( !CaptureCurrentView( snap ) ) return false;
+	mNamedViews[ idx ].pose = snap;
+	return true;
+}
+
+bool SceneEditController::DeleteNamedView( unsigned int idx )
+{
+	if( idx >= mNamedViews.size() ) return false;
+	mNamedViews.erase( mNamedViews.begin() + idx );
+	return true;
+}
+
+bool SceneEditController::PromoteNamedViewToCamera(
+	unsigned int idx, const String& proposedName, char* outName, unsigned int outLen )
+{
+	if( !outName || outLen == 0 ) return false;
+	outName[0] = '\0';
+	if( idx >= mNamedViews.size() ) return false;
+	const CameraSnapshot snapshot = mNamedViews[ idx ].pose;   // copy before park
+
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
+
+	// Park before mutating the ICameraManager (same rationale as stamp/clone).
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	const String finalName = UniqueCameraName( proposedName, *cams );
+	if( finalName.size() > outLen ) {
+		outName[0] = '\0';
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::PromoteNamedViewToCamera: outName buffer too small for `%s` (need %u, got %u) — not adding camera",
+			finalName.c_str(), static_cast<unsigned>( finalName.size() ), outLen );
+		return false;
+	}
+
+	SceneEdit edit;
+	edit.op             = SceneEdit::AddCamera;
+	edit.objectName     = finalName;
+	edit.cameraSnapshot = snapshot;
+	if( !mEditor.Apply( edit ) ) return false;
+
+	{
+		const char* s = finalName.c_str();
+		const size_t needed = finalName.size();
+		for( size_t i = 0; i < needed; ++i ) outName[i] = s[i];
+	}
+
+	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
 namespace {
 
 // Generalizes UniqueCameraName (above) across every category: build the

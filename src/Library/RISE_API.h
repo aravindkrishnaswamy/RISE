@@ -4065,6 +4065,30 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		const char* proposedName,
 		char* outName, unsigned int outLen );
 
+	//! -------- Named Views (Tier 2 §3): session/UI bookmarks --------
+	//! Capture the current view (free-fly pose if active, else the active
+	//! camera) as a new named view.  Restore lands the payload in the
+	//! transient ViewportPose (non-destructive — no scene write); promote is
+	//! the only scene write.  All return false on null controller / the
+	//! documented refusal cases.
+	bool RISE_API_SceneEditController_CaptureNamedView(
+		SceneEditController* p, const char* name );
+	unsigned int RISE_API_SceneEditController_NamedViewCount(
+		SceneEditController* p );
+	bool RISE_API_SceneEditController_NamedViewName(
+		SceneEditController* p, unsigned int idx, char* out, unsigned int outLen );
+	bool RISE_API_SceneEditController_RestoreNamedView(
+		SceneEditController* p, unsigned int idx );
+	bool RISE_API_SceneEditController_UpdateNamedView(
+		SceneEditController* p, unsigned int idx );
+	bool RISE_API_SceneEditController_DeleteNamedView(
+		SceneEditController* p, unsigned int idx );
+	//! Promote view `idx` into a NEW named scene camera; `outName` receives the
+	//! chosen (dedup-suffixed) name; the new camera becomes active.
+	bool RISE_API_SceneEditController_PromoteNamedViewToCamera(
+		SceneEditController* p, unsigned int idx, const char* proposedName,
+		char* outName, unsigned int outLen );
+
 	//! Entity-creation slice: number of "Add Entity" templates
 	//! registered for `category` (0 for categories with none —
 	//! Camera/Rasterizer/Film/Animation/SceneVariant/None).

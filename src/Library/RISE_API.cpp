@@ -8140,6 +8140,59 @@ namespace RISE
 		return p->StampViewToNewCamera( prop, outName, outLen );
 	}
 
+	// -------- Named Views (Tier 2 §3) --------
+
+	bool RISE_API_SceneEditController_CaptureNamedView(
+		SceneEditController* p, const char* name )
+	{
+		if( !p ) return false;
+		return p->CaptureNamedView( String( name ? name : "" ) );
+	}
+
+	unsigned int RISE_API_SceneEditController_NamedViewCount(
+		SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->NamedViewCount();
+	}
+
+	bool RISE_API_SceneEditController_NamedViewName(
+		SceneEditController* p, unsigned int idx, char* out, unsigned int outLen )
+	{
+		if( !p ) return false;
+		return p->NamedViewName( idx, out, outLen );
+	}
+
+	bool RISE_API_SceneEditController_RestoreNamedView(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->RestoreNamedView( idx );
+	}
+
+	bool RISE_API_SceneEditController_UpdateNamedView(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->UpdateNamedView( idx );
+	}
+
+	bool RISE_API_SceneEditController_DeleteNamedView(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->DeleteNamedView( idx );
+	}
+
+	bool RISE_API_SceneEditController_PromoteNamedViewToCamera(
+		SceneEditController* p, unsigned int idx, const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->PromoteNamedViewToCamera( idx, prop, outName, outLen );
+	}
+
 	// -------------------------------------------------------------------
 	// Entity-creation slice.  AgentCommitResult carries more fields
 	// (rawCode / conflict / retriable / headVersion / chunkKeyword /

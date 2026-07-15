@@ -2090,6 +2090,53 @@ namespace RISE
 		//! Whether a home view has been captured this session.
 		bool HasHomeView() const;
 
+		//! -------- Named Views (Tier 2 / Direction B §3) --------
+		//!
+		//! Session/UI bookmarks of a view — the same pose+full-optics payload
+		//! (a CameraSnapshot) the free-fly ViewportPose and Home slot carry.
+		//! NOT scene state: capture/restore/update/delete never write the
+		//! scene; restore lands the payload in the transient ViewportPose
+		//! (non-destructive, exactly like an axis snap or Home).  The ONLY
+		//! scene write is PromoteNamedViewToCamera (§3.4).  In-memory this
+		//! slice; sidecar persistence + thumbnails are follow-ups.  Named
+		//! views are UI-thread-only state, so the store needs no lock.
+		struct NamedView
+		{
+			String         name;
+			CameraSnapshot pose;
+		};
+
+		//! Capture the CURRENT view (the free-fly pose if active, else the
+		//! active scene camera) as a NEW named view.  Returns false when there
+		//! is no capturable camera.  `name` is used as-is (caller dedups if it
+		//! wants unique labels).
+		bool CaptureNamedView( const String& name );
+
+		unsigned int NamedViewCount() const;
+		//! Copy view `idx`'s name into `out` (NUL-terminated).  False on a bad
+		//! index or a too-small buffer.
+		bool NamedViewName( unsigned int idx, char* out, unsigned int outLen ) const;
+
+		//! Restore view `idx` into the transient ViewportPose (non-destructive
+		//! — no scene mutation, no undo entry; a degenerate named-view restore
+		//! per §3.2).  False on a bad index or realization failure.
+		bool RestoreNamedView( unsigned int idx );
+
+		//! Re-capture the CURRENT view into slot `idx` (SketchUp "Update
+		//! Scene").  False on a bad index or no capturable camera.
+		bool UpdateNamedView( unsigned int idx );
+
+		//! Remove view `idx`.  False on a bad index.
+		bool DeleteNamedView( unsigned int idx );
+
+		//! Promote view `idx` into a NEW named scene camera (§3.4) — the same
+		//! AddCamera-from-a-pose write B3 stamp uses, sourced from the stored
+		//! view instead of the live pose.  `outName` receives the chosen
+		//! (dedup-suffixed) name; the new camera becomes active.  False on a
+		//! bad index, no camera manager, a too-small buffer, or a refused edit.
+		bool PromoteNamedViewToCamera( unsigned int idx, const String& proposedName,
+		                               char* outName, unsigned int outLen );
+
 		//! Entity-creation slice: number of "Add Entity" templates
 		//! registered for `cat` (see EntityTemplates.h).  0 for
 		//! categories with none (Camera/Rasterizer/Film/Animation/
@@ -2258,6 +2305,11 @@ namespace RISE
 	private:
 		void RenderLoop();
 		void KickRender();
+
+		//! Named Views / Home helper: capture the CURRENT view (the free-fly
+		//! pose if active, else the active scene camera under cancel-and-park)
+		//! into `out`.  False when there is no capturable camera.
+		bool CaptureCurrentView( CameraSnapshot& out );
 
 		//! Model-B F2 slice S2a: the dedicated agent-render worker's loop.
 		//! Started in the ctor, joined in Stop() (which the dtor calls
@@ -3077,6 +3129,10 @@ namespace RISE
 		// (never a scene write).  Captured by SetHomeView, restored by GoToHomeView.
 		CameraSnapshot              mHomeView;
 		bool                        mHasHomeView = false;
+
+		// Named Views (Tier 2 §3): session/UI bookmarks, UI-thread-only state
+		// (never read by the render thread), so no lock guards this vector.
+		std::vector<NamedView>      mNamedViews;
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for

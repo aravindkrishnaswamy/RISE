@@ -484,6 +484,86 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+	//------------------------------------------------------------------
+	// V9: B1 Named Views — capture / restore (non-destructive) / update /
+	// delete / promote-to-camera, all session state until an explicit promote.
+	//------------------------------------------------------------------
+	void TestNamedViews()
+	{
+		std::printf( "V9: B1 Named Views (capture/restore/update/delete/promote)...\n" );
+		const std::string tmp = TempPath( "vpose_v9.RISEscene" );
+		Job* pJob = LoadScene( kPinholeScene, tmp );   // active cam (0,0,5) -> origin
+		Check( pJob != nullptr, "fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		auto near = []( double a, double b ) { return std::fabs( a - b ) < 1e-6; };
+
+		Check( ctrl.NamedViewCount() == 0, "no named views initially" );
+		Check( !ctrl.RestoreNamedView( 0 ), "restore bad index refused" );
+		Check( !ctrl.DeleteNamedView( 0 ), "delete bad index refused" );
+		Check( !ctrl.UpdateNamedView( 0 ), "update bad index refused" );
+
+		// Capture the active-camera view (not free-flying yet -> parks + captures active).
+		Check( ctrl.CaptureNamedView( "front" ), "capture 'front' (from active camera)" );
+		Check( ctrl.NamedViewCount() == 1, "one named view" );
+		Check( !ctrl.IsFreeFlyActive(), "capturing a view did NOT enter free-fly" );
+
+		char nm[64] = { 0 };
+		Check( ctrl.NamedViewName( 0, nm, sizeof(nm) ) && std::string(nm) == "front", "view 0 name is 'front'" );
+		char tiny[2] = { 0 };
+		Check( !ctrl.NamedViewName( 0, tiny, sizeof(tiny) ), "NamedViewName refuses a too-small buffer" );
+		Check( !ctrl.NamedViewName( 5, nm, sizeof(nm) ), "NamedViewName bad index refused" );
+
+		// Fly to +X and capture a second view.
+		Check( ctrl.SnapViewToAxis( 0, false ), "snap +X (fly)" );
+		Check( ctrl.CaptureNamedView( "side" ), "capture 'side' (from the free-fly pose)" );
+		Check( ctrl.NamedViewCount() == 2, "two named views" );
+
+		// Restore is NON-DESTRUCTIVE: lands in the ViewportPose, no scene write.
+		const std::string serBefore = SerializedScene( *pJob );
+		Check( ctrl.RestoreNamedView( 0 ), "restore 'front'" );
+		CameraSnapshot p0;
+		Check( ctrl.GetViewportPose( p0 ), "pose after restoring 'front'" );
+		Check( near( p0.location[0], 0.0 ) && near( p0.location[1], 0.0 ) && near( p0.location[2], 5.0 ),
+			"'front' restored the active-camera framing (0,0,5)" );
+		Check( ctrl.RestoreNamedView( 1 ), "restore 'side'" );
+		CameraSnapshot p1;
+		Check( ctrl.GetViewportPose( p1 ) && near( p1.location[0], 5.0 ), "'side' restored the +X framing (5,0,0)" );
+		Check( SerializedScene( *pJob ) == serBefore, "restore mutated NO scene state (CST byte-identical)" );
+
+		// Update 'front' while looking down +X -> its pose becomes +X.
+		Check( ctrl.UpdateNamedView( 0 ), "update 'front' to the current (+X) view" );
+		Check( ctrl.RestoreNamedView( 0 ), "restore updated 'front'" );
+		CameraSnapshot p0b;
+		Check( ctrl.GetViewportPose( p0b ) && near( p0b.location[0], 5.0 ), "'front' now restores +X after update" );
+
+		// Promote 'side' (idx 1) to a NEW scene camera — the only scene write.
+		CameraSnapshot activeBefore;
+		Check( CaptureActive( *pJob, activeBefore ), "active captured (pre-promote)" );
+		char camName[64] = { 0 };
+		Check( ctrl.PromoteNamedViewToCamera( 1, "from_view", camName, sizeof(camName) ), "promote 'side' to a camera" );
+		Check( camName[0] != '\0', "promote returns the new camera name" );
+		const IScene* scene = pJob->GetScene();
+		const ICameraManager* cams = scene ? scene->GetCameras() : nullptr;
+		const ICamera* promoted = cams ? cams->GetItem( camName ) : nullptr;
+		Check( promoted != nullptr, "promoted camera is registered" );
+		if( promoted ) {
+			CameraSnapshot got;
+			Check( CameraIntrospection::CaptureCameraSnapshot( *promoted, got ), "promoted camera introspects" );
+			Check( near( got.location[0], 5.0 ), "promoted camera carries the view's +X framing" );
+		}
+		Check( SerializedScene( *pJob ) != serBefore, "promote mutated the scene (a camera was added)" );
+		Check( !ctrl.PromoteNamedViewToCamera( 9, "bad", camName, sizeof(camName) ), "promote bad index refused" );
+
+		// Delete 'front'.
+		Check( ctrl.DeleteNamedView( 0 ), "delete 'front'" );
+		Check( ctrl.NamedViewCount() == 1, "one named view after delete" );
+		Check( ctrl.NamedViewName( 0, nm, sizeof(nm) ) && std::string(nm) == "side", "remaining view is 'side'" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -496,6 +576,7 @@ int main()
 	TestHomeView();
 	TestNavGizmo();
 	TestStampView();
+	TestNamedViews();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
