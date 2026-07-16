@@ -24,6 +24,8 @@
 #include "AgentDiagnostic.h"
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 #include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
+#include "../Interfaces/IJobPriv.h"                // propose-mode mock-Owner: RISE_CreateJobPriv + IJobPriv::release/LoadAsciiSceneViaCst
+#include "../SceneEditor/SceneEditController.h"    // propose-mode mock-Owner: the unstarted headless controller ProposePatch stages against
 
 #include <cctype>
 #include <cmath>     // std::isfinite -- numeric param_equals tolerance
@@ -41,6 +43,25 @@ namespace RISE
 	{
 		namespace
 		{
+			//----------------------------------------------------------
+			// Headless propose-mode mock-Owner.
+			//----------------------------------------------------------
+
+			//! Headless mock-Owner: a SceneEditController that never renders
+			//! (never Start()ed) -- it exists only so an External-authority
+			//! Propose session has a live controller to STAGE proposals against
+			//! (StageProposal / ListProposals are pure mutex ops; no render
+			//! thread is needed).  DoOneRenderPass is overridden to a no-op
+			//! purely as belt-and-suspenders (it is never called when unstarted).
+			class EvalMockOwnerController : public RISE::SceneEditController
+			{
+			public:
+				explicit EvalMockOwnerController( IJobPriv& job )
+					: SceneEditController( job, /*interactiveRasterizer*/nullptr ) {}
+			protected:
+				void DoOneRenderPass() override {}
+			};
+
 			//----------------------------------------------------------
 			// Small file-IO helpers (kept local -- no other TU needs
 			// them).
@@ -924,12 +945,62 @@ namespace RISE
 					scenePathToLoad = tempScenePath;
 				}
 
-				std::unique_ptr<AgentSession> session =
-					AgentSession::LoadFromFile( scenePathToLoad, AuthorityForScenarioAutonomy( scenario.autonomy ) );
+				const AgentAuthority authority = AuthorityForScenarioAutonomy( scenario.autonomy );
+
+				std::unique_ptr<AgentSession> session;
+				if( scenario.autonomy == "propose" ) {
+					// Headless propose-mode mock-Owner: an External-authority
+					// session's ProposePatch STAGES against an attached controller
+					// but REJECTS ("no live controller attached") when
+					// mController==nullptr -- which is exactly what a plain
+					// LoadFromFile session is.  So load the Job ourselves, wrap a
+					// BORROWING (owns=false) session around it, and attach an
+					// UNSTARTED EvalMockOwnerController (StageProposal /
+					// ListProposals are pure mutex ops -- no render thread needed,
+					// so no Start()).  The Job + controller are handed to the
+					// handle (below) so both OUTLIVE the borrowing session; the
+					// handle's member declaration order gives session -> controller
+					// -> Job teardown.  On ANY failure we release the created Job
+					// and leave `session` null -> the existing load_error path.
+					// try/catch honors RunScenarioDriven's "never throws" contract:
+					// the EvalMockOwnerController ctor constructs a std::thread (the
+					// idle agent-render worker), which can throw std::system_error
+					// under thread/resource exhaustion.  Any throw here degrades to a
+					// clean load_error (session stays null) with no Job leak.  The
+					// controller is built into a LOCAL unique_ptr BEFORE the Job is
+					// handed to the handle, so an exception releases the still-local
+					// Job in the catch, never a double-release.
+					IJobPriv* job = nullptr;
+					try {
+						if( RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( scenePathToLoad.c_str() ) ) {
+							std::unique_ptr<AgentSession> wrapped = AgentSession::WrapJob( job, authority );
+							if( wrapped ) {
+								std::unique_ptr<SceneEditController> ctrl( new EvalMockOwnerController( *job ) );   // may throw
+								wrapped->AttachController( ctrl.get() );
+								handle.ownedProposeJob = std::unique_ptr<IJobPriv, void(*)(IJobPriv*)>(
+									job, +[]( IJobPriv* j ){ if( j ) j->release(); } );
+								job = nullptr;   // ownership transferred to the handle
+								handle.ownedProposeController = std::move( ctrl );
+								session = std::move( wrapped );
+							} else {
+								job->release(); job = nullptr;   // WrapJob refused -- release the created Job
+							}
+						} else if( job ) {
+							job->release(); job = nullptr;        // created, but LoadAsciiSceneViaCst failed
+						}
+					} catch( ... ) {
+						if( job ) { job->release(); job = nullptr; }   // not yet handle-owned -> release here
+						handle.ownedProposeController.reset();
+						handle.ownedProposeJob.reset();                // handle-owned (if set) -> deleter releases
+						session.reset();
+					}
+				} else {
+					session = AgentSession::LoadFromFile( scenePathToLoad, authority );
+				}
 
 				// Hygiene: clean up the throwaway inline-scene temp file
 				// regardless of load outcome -- the Job has already parsed its
-				// content by the time LoadFromFile returns.
+				// content by the time the load returns.
 				if( !tempScenePath.empty() ) std::remove( tempScenePath.c_str() );
 
 				if( !session ) {
@@ -1205,6 +1276,15 @@ namespace RISE
 				return handle;
 			}
 		}
+
+		// AgentEvalRunHandle's special members, DEFINED HERE (not defaulted in
+		// the header) so every instantiation over its incomplete-in-a-consumer
+		// unique_ptr members (SceneEditController / IJobPriv / AgentRpcDispatcher)
+		// happens in THIS TU, where all three are complete -- the pimpl idiom.
+		AgentEvalRunHandle::AgentEvalRunHandle() = default;
+		AgentEvalRunHandle::~AgentEvalRunHandle() = default;
+		AgentEvalRunHandle::AgentEvalRunHandle( AgentEvalRunHandle&& ) = default;
+		// move-assignment is =delete'd in the header (see its doc) -- no def here.
 
 		AgentEvalRunHandle RunScenario( const AgentEvalScenario& scenario, const AgentEvalRunOptions& options )
 		{

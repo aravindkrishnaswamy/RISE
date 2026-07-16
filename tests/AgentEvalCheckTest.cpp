@@ -942,19 +942,18 @@ static void TestTrajectoryNewAssertions()
 			true, "toolOutcomes: occurrence \"any\" passes when either call is applied" );
 	}
 
-	// toolOutcomes expect:"staged" -- status="staged" only occurs for an
+	// toolOutcomes expect:"staged" -- status="staged" occurs for an
 	// External-authority session with a LIVE controller attached
-	// (AgentSession::ProposePatch's Secure-MCP slice 5a doc); the headless
-	// eval harness's RunScenario never attaches a controller, so
-	// autonomy:"propose" there is External+NO-controller -> REFUSED
-	// status="rejected", never "staged" (the SAME kind of unreachability
-	// T6b documents for a validate-dirty live document).  Proven instead
-	// through a hand-built trajectory file (mirrors T6b's hand-built
-	// WrapJob handle) carrying one "tool" record whose response envelope
-	// is the real staged shape {"applied":false,"status":"staged",...} --
-	// this drives the CHECKER's "staged" branch on the exact wire shape
-	// AgentSession::ProposePatch documents, without needing the live-
-	// controller plumbing this harness doesn't have.
+	// (AgentSession::ProposePatch's Secure-MCP slice 5a doc).  RunScenario
+	// NOW attaches a headless mock-Owner controller under autonomy:"propose"
+	// (see RunScenarioDriven's propose branch), so a propose_patch there
+	// GENUINELY stages -- the end-to-end proof of that lives in the dedicated
+	// "propose_mode_stages: real staging through RunScenario" block below (and
+	// in T10, which runs the committed propose_mode_stages scenario).  This
+	// block keeps a FOCUSED unit-check of the CHECKER's "staged" branch on a
+	// hand-built trajectory carrying the exact staged wire shape
+	// {"applied":false,"status":"staged",...} -- isolating the checker's
+	// per-outcome logic from the runner's staging plumbing.
 	{
 		const std::string trajPath = dir + "/staged_probe.trajectory.jsonl";
 		Check( WriteFile( trajPath,
@@ -976,6 +975,55 @@ static void TestTrajectoryNewAssertions()
 			true, "toolOutcomes: expect:\"staged\" passes on a hand-built staged tool response" );
 		checkOne( h, s, "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"expect\":\"applied\"}]}]",
 			false, "toolOutcomes: expect:\"applied\" FAILS on a staged (not committed) response" );
+	}
+
+	// propose_mode_stages: real staging through RunScenario.  The committed
+	// autonomy:"propose" scenario is run END-TO-END through RunScenario ->
+	// RunScenarioDriven, which now attaches a headless mock-Owner controller so
+	// propose_patch STAGES (instead of the old "no live controller attached"
+	// rejection).  Proven three ways: (a) the run ends cleanly on final_text;
+	// (b) staging did NOT commit -- the head-version is unchanged; and (c) the
+	// load-bearing assertion -- the POST-RUN session's proposal queue actually
+	// holds the staged param_edit on pnt_albedo, read directly off the
+	// still-alive dispatcher (the E3 seam), not merely inferred from the
+	// trajectory.  CheckScenario then confirms the committed checkpoints
+	// (including toolOutcomes propose_patch:staged) all pass.
+	{
+		AgentEvalScenario s;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/propose_mode_stages.json", s, err ),
+			"propose_mode_stages: committed scenario loads (" + err + ")" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+
+		Check( h.result.terminalStatus == "final_text",
+			"propose_mode_stages: run ended on final_text (" + h.result.errorMessage + ")" );
+		Check( h.result.headVersionFinal == h.result.headVersionStart,
+			"propose_mode_stages: head-version UNCHANGED -- staging did not commit" );
+
+		// (c) the post-run session's proposal queue carries the staged edit.
+		bool staged = false;
+		if( h.dispatcher && h.dispatcher->Session() ) {
+			const std::vector<AgentSession::AgentProposalEntry> proposals =
+				h.dispatcher->Session()->ListProposals();
+			for( const AgentSession::AgentProposalEntry& p : proposals ) {
+				if( p.kind == "param_edit" && p.target == "pnt_albedo" &&
+				    p.param == "color" && p.status == "pending" ) { staged = true; break; }
+			}
+			Check( proposals.size() == 1,
+				"propose_mode_stages: exactly one proposal was staged (got " +
+				std::to_string( proposals.size() ) + ")" );
+		}
+		Check( staged,
+			"propose_mode_stages: propose_patch GENUINELY staged a pending param_edit on pnt_albedo" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		for( std::size_t ci = 0; ci < r.checkpoints.size(); ++ci )
+			Check( r.checkpoints[ci].passed,
+				"propose_mode_stages: checkpoint[" + std::to_string( ci ) + "] (" +
+				r.checkpoints[ci].kind + ") passed (detail: " + r.checkpoints[ci].detail + ")" );
+		Check( r.allPassed, "propose_mode_stages: all committed checkpoints pass end-to-end" );
 	}
 
 	// toolOutcomes expect:"error" -- an unknown tool name is a genuine
