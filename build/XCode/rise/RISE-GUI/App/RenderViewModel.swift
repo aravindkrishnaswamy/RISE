@@ -861,30 +861,13 @@ final class RenderViewModel: ObservableObject {
         // sidebar), so the guard is purely dirty-driven rather than
         // also checking whether the editor happens to be the
         // frontmost tab right now.
-        if isEditorDirty {
-            let saveAlert = NSAlert()
-            saveAlert.messageText = "Unsaved Changes"
-            saveAlert.informativeText = "The scene editor has unsaved changes. Would you like to save them before loading a new scene?"
-            saveAlert.alertStyle = .warning
-            saveAlert.addButton(withTitle: "Save")
-            saveAlert.addButton(withTitle: "Discard")
-            saveAlert.addButton(withTitle: "Cancel")
-
-            let saveResponse = saveAlert.runModal()
-            switch saveResponse {
-            case .alertFirstButtonReturn:
-                // Round-2 P1: for an UNTITLED scene saveEditorFile() was a
-                // silent no-op (nil loadedFilePath) and the flow then
-                // discarded the edits anyway — the user clicked Save and
-                // lost their text.  The helper Save-As-es the raw editor
-                // text when untitled; a cancelled panel aborts the open.
-                guard saveEditorTextEnsuringPath() else { return }
-            case .alertSecondButtonReturn:
-                break
-            default:
-                return
-            }
-        }
+        // Unsaved-work gate (round 3): the old pre-alert covered only RAW
+        // editor text (isEditorDirty) — a live scene edit (sceneEditsDirty,
+        // via Properties/agent) was silently discarded behind the generic
+        // "Clear & Load?" confirmation.  The shared helper covers both dirt
+        // kinds, the both-dirty case, and untitled scenes (Save-As), and
+        // aborts the open on Cancel or a refused save.
+        guard promptToSaveUnsavedWork(before: "loading a new scene") else { return }
 
         // If a scene is already loaded, confirm the clear-and-load.
         //
@@ -2018,6 +2001,15 @@ final class RenderViewModel: ObservableObject {
         // Untitled: choose a destination for the raw text.  Deliberately a
         // plain write with NO re-anchor: the callers are about to tear the
         // scene down, so adopting the path would be pointless churn.
+        return saveEditorTextViaPanel()
+    }
+
+    /// Save the raw editor text to a user-chosen path (always panels, never
+    /// writes to `loadedFilePath`).  Used for untitled scenes and for the
+    /// both-dirty case where the raw text is a DIVERGENT variant of the
+    /// just-saved scene — writing it to the scene's own path would clobber
+    /// that save.  Plain write, no re-anchor.  False on cancel / IO error.
+    private func saveEditorTextViaPanel() -> Bool {
         let panel = NSSavePanel()
         panel.allowedContentTypes = []
         panel.nameFieldStringValue = "untitled.RISEscene"
@@ -2037,6 +2029,61 @@ final class RenderViewModel: ObservableObject {
             alert.alertStyle = .critical
             alert.runModal()
             return false
+        }
+    }
+
+    /// The single unsaved-work gate for destructive scene transitions
+    /// (Close Scene, load-over).  Handles BOTH dirt kinds — unsaved LIVE
+    /// scene edits (sceneEditsDirty) and unsaved RAW editor text
+    /// (isEditorDirty) — including the BOTH-dirty case round 3 caught:
+    /// they are independent flags, and saving the scene does NOT save a
+    /// divergent editor buffer (writing that buffer to the same file
+    /// would clobber the scene save), so the both case gets an explicit
+    /// follow-up offer to save the text to a SEPARATE file.  Returns true
+    /// to proceed with the transition, false to abort it.
+    private func promptToSaveUnsavedWork(before action: String) -> Bool {
+        guard sceneEditsDirty || isEditorDirty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Unsaved Changes"
+        if sceneEditsDirty && isEditorDirty {
+            alert.informativeText = "The scene has unsaved changes, and the scene editor has separate unsaved text changes. Save the scene before \(action)?"
+        } else if sceneEditsDirty {
+            alert.informativeText = "The scene has unsaved changes. Save before \(action)?"
+        } else {
+            alert.informativeText = "The scene editor has unsaved text changes. Save before \(action)?"
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if sceneEditsDirty {
+                guard saveScene() else { return false }
+                if isEditorDirty {
+                    let follow = NSAlert()
+                    follow.messageText = "Scene editor text not included"
+                    follow.informativeText = "The scene editor's unsaved text changes were not part of the scene save (writing them to the same file would overwrite it). Save the editor text to a separate file?"
+                    follow.alertStyle = .warning
+                    follow.addButton(withTitle: "Save As…")
+                    follow.addButton(withTitle: "Discard Text")
+                    follow.addButton(withTitle: "Cancel")
+                    switch follow.runModal() {
+                    case .alertFirstButtonReturn:
+                        guard saveEditorTextViaPanel() else { return false }
+                    case .alertSecondButtonReturn:
+                        break
+                    default:
+                        return false
+                    }
+                }
+                return true
+            }
+            return saveEditorTextEnsuringPath()
+        case .alertSecondButtonReturn:
+            return true   // Discard — proceed
+        default:
+            return false  // Cancel — abort the transition
         }
     }
 
@@ -2470,36 +2517,11 @@ final class RenderViewModel: ObservableObject {
     }
 
     func clearScene() {
-        // Dirty-close prompt (spec §5.2, round-2 review: the spec claimed
-        // this flow existed — it didn't, for named OR untitled scenes;
-        // Close silently discarded unsaved work).  Both dirt kinds gate:
-        // unsaved LIVE scene edits (sceneEditsDirty — saveScene routes an
-        // untitled scene to Save-As) and unsaved RAW editor text
-        // (isEditorDirty — saved via the untitled-aware helper).  A
-        // cancelled prompt/panel or a refused save aborts the close.
-        if sceneEditsDirty || isEditorDirty {
-            let alert = NSAlert()
-            alert.messageText = "Unsaved Changes"
-            alert.informativeText = sceneEditsDirty
-                ? "The scene has unsaved changes. Save before closing?"
-                : "The scene editor has unsaved text changes. Save before closing?"
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Discard")
-            alert.addButton(withTitle: "Cancel")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                if sceneEditsDirty {
-                    guard saveScene() else { return }
-                } else {
-                    guard saveEditorTextEnsuringPath() else { return }
-                }
-            case .alertSecondButtonReturn:
-                break   // Discard — proceed with the close
-            default:
-                return  // Cancel — keep the scene open
-            }
-        }
+        // Dirty-close gate (spec §5.2; round-2 introduced it, round-3
+        // unified it with the load-over flow and fixed the BOTH-dirty
+        // case — see promptToSaveUnsavedWork).  A cancelled prompt/panel
+        // or a refused save aborts the close.
+        guard promptToSaveUnsavedWork(before: "closing") else { return }
 
         // Viewport bridge borrows the underlying job — tear it down
         // BEFORE bridge.clearAll() so the controller's render thread
