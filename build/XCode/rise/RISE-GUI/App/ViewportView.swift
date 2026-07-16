@@ -454,10 +454,12 @@ struct ViewportView: View {
                     .fill(Theme.spectralGradient)
                     .frame(width: max(0, 90 * status.fraction), height: 3)
             }
-            Text(status.label)
-                .font(Theme.sans(9))
-                .tracking(0.6)
-                .foregroundColor(Theme.success)
+            if !status.label.isEmpty {
+                Text(status.label)
+                    .font(Theme.sans(9))
+                    .tracking(0.6)
+                    .foregroundColor(Theme.success)
+            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 7)

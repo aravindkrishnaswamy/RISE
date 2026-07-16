@@ -44,29 +44,37 @@ enum RefinementStatusFormatter {
                         isCancelling: Bool,
                         productionProgress: Double,
                         isProductionPaused: Bool = false) -> Status {
+        // Label policy (user feedback 2026-07-16: "why does the rendering
+        // text say things in double?"): the small tracked label is shown
+        // ONLY when it adds information the primary text doesn't already
+        // carry — an empty label means the consumers render nothing beside
+        // the text.  Pre-fix, most states echoed themselves ("Settled
+        // SETTLED", "Production 42% PRODUCTION 42%").  The one label that
+        // always stays is Polishing's "DENOISED — NOT FINAL" honesty tag.
         if isCancelling {
-            return Status(text: "Cancelling…", label: "CANCELLING",
+            return Status(text: "Cancelling…", label: "",
                           fraction: CGFloat(productionProgress))
         }
         if isProduction {
             let pct = Int(productionProgress * 100)
             if isProductionPaused {
                 // Item 4: workers parked at the bridge's pause gate —
-                // progress honestly frozen at the pause point.
-                return Status(text: "Paused \(pct)%", label: "PAUSED — PRODUCTION",
+                // progress honestly frozen at the pause point.  The label
+                // adds WHAT is paused (a production render, not refinement).
+                return Status(text: "Paused \(pct)%", label: "PRODUCTION",
                               fraction: CGFloat(productionProgress))
             }
-            return Status(text: "Production \(pct)%", label: "PRODUCTION \(pct)%",
+            return Status(text: "Production \(pct)%", label: "",
                           fraction: CGFloat(productionProgress))
         }
         let r = rung(scaleDivisor: scaleDivisor)
         switch phase {
-        case 4: return Status(text: "Paused", label: "PAUSED", fraction: CGFloat(r) / 6.0)
-        case 2: return Status(text: "Refining · rung \(r)/6", label: "REFINING", fraction: CGFloat(r) / 6.0)
-        case 1: return Status(text: "Rendering", label: "REFINING", fraction: CGFloat(r) / 6.0)
+        case 4: return Status(text: "Paused", label: "", fraction: CGFloat(r) / 6.0)
+        case 2: return Status(text: "Refining · rung \(r)/6", label: "", fraction: CGFloat(r) / 6.0)
+        case 1: return Status(text: "Rendering", label: "", fraction: CGFloat(r) / 6.0)
         case 3: return Status(text: "Polishing", label: "DENOISED — NOT FINAL", fraction: 1.0)
-        case 0: return Status(text: "Settled", label: "SETTLED", fraction: 1.0)
-        default: return Status(text: "—", label: "—", fraction: 0)
+        case 0: return Status(text: "Settled", label: "", fraction: 1.0)
+        default: return Status(text: "—", label: "", fraction: 0)
         }
     }
 }

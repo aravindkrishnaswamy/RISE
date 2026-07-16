@@ -154,10 +154,12 @@ struct TopBar: View {
                 Text(statusRow1)
                     .font(Theme.mono(10.5))
                     .foregroundColor(Theme.textPrimary)
-                Text(statusLabel)
-                    .font(Theme.sans(9))
-                    .tracking(0.6)
-                    .foregroundColor(statusLabelColor)
+                if !statusLabel.isEmpty {
+                    Text(statusLabel)
+                        .font(Theme.sans(9))
+                        .tracking(0.6)
+                        .foregroundColor(statusLabelColor)
+                }
                 // P1-5 fix: elapsed/remaining time was tracked on the
                 // view model (formattedElapsedTime / formattedRemainingTime)
                 // but never surfaced anywhere in the redesigned TopBar —

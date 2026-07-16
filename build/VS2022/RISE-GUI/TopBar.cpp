@@ -128,8 +128,12 @@ RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
                                           double productionProgress,
                                           bool isProductionPaused = false)
 {
+    // Label policy (user feedback 2026-07-16, mirrors the Mac formatter):
+    // the small tracked label shows ONLY when it adds information the
+    // primary text doesn't carry -- empty means the consumer hides it.
+    // Pre-fix most states echoed themselves ("Settled SETTLED").
     if (isCancelling) {
-        return { QStringLiteral("Cancelling…"), QStringLiteral("CANCELLING"), productionProgress };
+        return { QStringLiteral("Cancelling…"), QString(), productionProgress };
     }
     if (isProduction) {
         const int pct = static_cast<int>(productionProgress * 100);
@@ -137,22 +141,23 @@ RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
         // progress honestly frozen at the pause point.  Mirrors
         // RefinementStatusFormatter.swift's isProductionPaused branch.
         if (isProductionPaused) {
+            // The label adds WHAT is paused (a production render).
             return { QStringLiteral("Paused %1%").arg(pct),
-                     QStringLiteral("PAUSED \xE2\x80\x94 PRODUCTION"),
+                     QStringLiteral("PRODUCTION"),
                      productionProgress };
         }
         return { QStringLiteral("Production %1%").arg(pct),
-                 QStringLiteral("PRODUCTION %1%").arg(pct),
+                 QString(),
                  productionProgress };
     }
     const int r = RefinementRung(scaleDivisor);
     switch (phase) {
-    case 4: return { QStringLiteral("Paused"), QStringLiteral("PAUSED"), r / 6.0 };
-    case 2: return { QStringLiteral("Refining · rung %1/6").arg(r), QStringLiteral("REFINING"), r / 6.0 };
-    case 1: return { QStringLiteral("Rendering"), QStringLiteral("REFINING"), r / 6.0 };
+    case 4: return { QStringLiteral("Paused"), QString(), r / 6.0 };
+    case 2: return { QStringLiteral("Refining · rung %1/6").arg(r), QString(), r / 6.0 };
+    case 1: return { QStringLiteral("Rendering"), QString(), r / 6.0 };
     case 3: return { QStringLiteral("Polishing"), QStringLiteral("DENOISED — NOT FINAL"), 1.0 };
-    case 0: return { QStringLiteral("Settled"), QStringLiteral("SETTLED"), 1.0 };
-    default: return { QStringLiteral("—"), QStringLiteral("—"), 0.0 };
+    case 0: return { QStringLiteral("Settled"), QString(), 1.0 };
+    default: return { QStringLiteral("—"), QString(), 0.0 };
     }
 }
 
@@ -667,6 +672,9 @@ void TopBar::updateReadout()
 
     m_statusRowLabel->setText(s.text);
     m_statusTagLabel->setText(s.label);
+    // Empty label = nothing to add beside the text (see the label-policy
+    // comment in RefinementStatus above) -- hide so no stray gap renders.
+    m_statusTagLabel->setVisible(!s.label.isEmpty());
 
     QColor tagColor = Theme::success;
     if (isCancelling) {
