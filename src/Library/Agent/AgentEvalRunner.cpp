@@ -898,22 +898,45 @@ namespace RISE
 				return "";   // unreachable for a valid enum value; keeps -Wreturn-type quiet on all compilers
 			}
 
+			//! Methodology epoch, folded into ScenarioContentHash. BUMP THIS by one whenever
+			//! a harness-side change alters how runs are DRIVEN or GRADED without touching
+			//! any scenario file -- a system-prompt change, a tool-definition change, a
+			//! checker-semantics change, a drive-loop behavior change. Bumping invalidates
+			//! every cached cell in every runDir on the next matrix invocation (they re-run
+			//! under the new methodology), preventing one runDir from silently mixing
+			//! results produced under two methodologies. Scenario-file changes do NOT need
+			//! this -- the hash already covers them.
+			static const int kEvalMethodologyEpoch = 1;
+
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
-			//! budgets, the scene definition, and the checkpoints[].  Two
-			//! scenario definitions with the same hash produce the same run + the
-			//! same grading, so a cached matrix cell is safe to reuse; a
-			//! different hash means the oracle (or the run) changed and the cell
-			//! is STALE (the cross-invocation resume guard wipes + re-runs it).
-			//! Stamped into each result.jsonl (see RunScenarioDriven) so a later
+			//! budgets, the scene definition (including a path-backed scene's
+			//! file BYTES, not just its path), the checkpoints[], the
+			//! interventions[], and the harness-side kEvalMethodologyEpoch.
+			//! Two scenario definitions with the same hash produce the same
+			//! run + the same grading, so a cached matrix cell is safe to
+			//! reuse; a different hash means the oracle (or the run, or the
+			//! harness methodology) changed and the cell is STALE (the
+			//! cross-invocation resume guard wipes + re-runs it).  Stamped
+			//! into each result.jsonl (see RunScenarioDriven) so a later
 			//! RunEvalMatrix invocation into the SAME runDir -- and the Python
-			//! reporter -- can tell "graded under the current oracle" from "stale
-			//! cell, re-run me".  (A scene given by PATH hashes the path string,
-			//! not the file's bytes -- the committed eval scenarios use inline
-			//! scenes, which ARE hashed in full.)
+			//! reporter -- can tell "graded under the current oracle" from
+			//! "stale cell, re-run me".
+			//!
+			//! v2 (this canonicalization) deliberately changes the hash for
+			//! EVERY scenario relative to v1 (interventions + methodology
+			//! epoch are new inputs; path-backed scenes now fold in file
+			//! bytes) -- every v1-stamped cell in an existing runDir is
+			//! therefore correctly treated as stale and re-run under v2. v1
+			//! was computed under an incomplete canonicalization (it missed
+			//! interventions entirely and hashed a path-backed scene's
+			//! PATH STRING rather than its bytes, so editing the scene file
+			//! in place or the intervention list left a cell wrongly marked
+			//! "current"); that was the bug this version fixes.
 			std::string ScenarioContentHash( const AgentEvalScenario& s )
 			{
-				std::string canon = "v1\n";
+				std::string canon = "v2\n";
+				canon += "epoch=" + std::to_string( kEvalMethodologyEpoch ) + "\n";
 				canon += "autonomy=" + s.autonomy + "\n";
 				// Prompts serialized as a JSON array (like checkpoints below) so the
 				// canonicalization is INJECTIVE: JSON escaping keeps a prompt that
@@ -926,10 +949,39 @@ namespace RISE
 				canon += "budgets=" + std::to_string( s.budgets.maxToolCalls ) + "|" +
 				         std::to_string( s.budgets.maxLlmCalls ) + "|" +
 				         std::to_string( s.budgets.maxWallMs ) + "\n";
-				canon += "scene=";
-				canon += s.scenePath.empty() ? ( "inline:" + s.sceneInline ) : ( "path:" + s.scenePath );
-				canon += "\n";
-				canon += "checkpoints=" + JsonSerialize( s.checkpoints );
+				if( s.scenePath.empty() ) {
+					canon += "scene=inline:" + s.sceneInline + "\n";
+				} else {
+					// Hash the file's CONTENTS as well as the path -- either a moved
+					// path or edited-in-place contents must invalidate the cell.  On
+					// an unreadable path we fall back to a fixed marker string: the
+					// run itself will fail with a load_error against an unreadable
+					// scene, so this fallback only needs to be DETERMINISTIC, not
+					// meaningful.
+					std::ifstream sceneFile( s.scenePath, std::ios::binary );
+					if( sceneFile ) {
+						std::ostringstream ss;
+						ss << sceneFile.rdbuf();
+						canon += "scene=path:" + s.scenePath + ":bytes:" + ss.str() + "\n";
+					} else {
+						canon += "scene=path:" + s.scenePath + ":unreadable\n";
+					}
+				}
+				canon += "checkpoints=" + JsonSerialize( s.checkpoints ) + "\n";
+
+				// Interventions serialized as a JSON array (like prompts/checkpoints
+				// above) for the same injectivity reason.
+				JsonValue ivArr = JsonValue::MakeArray();
+				for( const auto& iv : s.interventions ) {
+					JsonValue o = JsonValue::MakeObject();
+					o.set( "afterToolCalls", JsonValue::MakeNumber( static_cast<double>( iv.afterToolCalls ) ) );
+					o.set( "op", JsonValue::MakeString( iv.op ) );
+					o.set( "target", JsonValue::MakeString( iv.target ) );
+					o.set( "param", JsonValue::MakeString( iv.param ) );
+					o.set( "value", JsonValue::MakeString( iv.value ) );
+					ivArr.push_back( o );
+				}
+				canon += "interventions=" + JsonSerialize( ivArr ) + "\n";
 
 				// FNV-1a 64-bit over the canonical byte string.
 				std::uint64_t hash = 14695981039346656037ull;

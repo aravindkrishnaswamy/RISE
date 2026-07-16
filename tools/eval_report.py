@@ -394,7 +394,7 @@ class RunRecord:
     __slots__ = (
         "dir_path", "scenario_id", "provider", "model", "rep",
         "result", "check", "input_tokens", "output_tokens", "cached_tokens",
-        "notes",
+        "notes", "stale_marker",
     )
 
     def __init__(self):
@@ -409,6 +409,14 @@ class RunRecord:
         self.output_tokens = 0
         self.cached_tokens = 0
         self.notes = []
+        # "" (default) / "unversioned" (no stamped scenarioContentHash --
+        # pre-content-hash result) / "stale" (stamped checkpoint count does
+        # not match the current on-disk scenario file). Set by
+        # check_staleness(); comma-joined if a future check adds a second
+        # marker to the same record (today's checks are mutually exclusive
+        # per-record, but the table-tagging code below treats this as a
+        # set, not a single value, to stay correct if that changes).
+        self.stale_marker = ""
 
 
 def scan_run_dir(run_dir, warnings):
@@ -502,6 +510,16 @@ def scan_run_dir(run_dir, warnings):
     return out
 
 
+def _mark_stale(rec, marker):
+    """Add `marker` ("unversioned" / "stale") to rec.stale_marker, which is
+    treated as a comma-joined set so a record that somehow trips more than
+    one check keeps every marker rather than the last writer winning."""
+    existing = rec.stale_marker.split(",") if rec.stale_marker else []
+    if marker not in existing:
+        existing.append(marker)
+    rec.stale_marker = ",".join(existing)
+
+
 def check_staleness(records, warnings):
     """Cross-check each record's stamped scenarioContentHash /
     scenarioCheckpointCount (written by AgentEvalRunner.cpp's
@@ -510,7 +528,14 @@ def check_staleness(records, warnings):
     other within a scenario group, appending a warning wherever a cell looks
     to have been graded under a since-changed scenario version. Non-fatal --
     appends to `warnings`, never raises: the report still prints exactly as
-    before, just with more warnings when a cell is stale.
+    before, just with more warnings when a cell is stale. ALSO tags each
+    affected record's `stale_marker` ("unversioned" / "stale") so callers
+    that group/render records (cmd_report's table renderers) can mark the
+    affected scenario cells directly instead of relying on the reader to
+    correlate free-text warnings back to a row. Call this BEFORE grouping --
+    grouping copies records into per-group lists by reference, so the tags
+    are visible from the group's records either way, but callers should not
+    rely on that; check_staleness is meant to run first.
 
     ADVISORY ONLY -- and blind to one class of edit. This function cannot
     recompute the C++ FNV ScenarioContentHash from the on-disk scenario (the
@@ -537,6 +562,7 @@ def check_staleness(records, warnings):
                     f"warning: unversioned result (pre-content-hash) -- may have "
                     f"been graded under a different scenario version: {r.dir_path}"
                 )
+                _mark_stale(r, "unversioned")
                 continue
             hashes.add(h)
 
@@ -563,6 +589,7 @@ def check_staleness(records, warnings):
                     f"{int(stored_count)} checkpoints but evals/scenarios/{scenario_id}.json "
                     f"now has {current_count} -- re-run to refresh"
                 )
+                _mark_stale(r, "stale")
 
         # Two cells in the same group with different stamped hashes means the
         # sweep straddled a scenario change -- some rows are stale regardless of
@@ -634,6 +661,12 @@ def compute_group_stats(key, recs):
     cost, priced = estimate_cost(provider, model, total_input, total_output, total_cached)
     cps = cost_per_success(cost, priced, successes)
 
+    # Whether ANY record in this group was tagged by check_staleness() --
+    # drives the "†"/"!" markers on the rendered scenario cell (see
+    # render_text_report / render_markdown_report).
+    has_unversioned = any("unversioned" in (r.stale_marker or "").split(",") for r in recs)
+    has_stale = any("stale" in (r.stale_marker or "").split(",") for r in recs)
+
     return {
         "scenarioId": scenario_id,
         "provider": provider,
@@ -652,6 +685,8 @@ def compute_group_stats(key, recs):
         "cost_per_success": cps,
         "mean_wall_ms": mean_wall_ms,
         "terminal_status_counts": dict(status_counter),
+        "has_unversioned": has_unversioned,
+        "has_stale": has_stale,
     }
 
 
@@ -710,6 +745,21 @@ def fmt_status_counts(counts):
     return " ".join(f"{k}:{v}" for k, v in sorted(counts.items())) if counts else "-"
 
 
+def stale_cell_suffix(stats):
+    """"†" ('†') when the group contains any unversioned
+    (pre-content-hash) record, "!" when it contains any stale
+    (checkpoint-count-mismatch) record, both concatenated when it has both,
+    "" otherwise. Appended to the rendered scenario-id cell so a stale/
+    unversioned group is visible IN THE TABLE, not just in the warnings
+    list below it."""
+    suffix = ""
+    if stats.get("has_unversioned"):
+        suffix += "†"
+    if stats.get("has_stale"):
+        suffix += "!"
+    return suffix
+
+
 def render_text_report(stats_list, warnings):
     headers = [
         "scenario", "provider", "model", "N", "pass@1", "wilson95%",
@@ -718,7 +768,7 @@ def render_text_report(stats_list, warnings):
     rows = []
     for s in stats_list:
         rows.append([
-            s["scenarioId"], s["provider"], s["model"] or "-",
+            s["scenarioId"] + stale_cell_suffix(s), s["provider"], s["model"] or "-",
             str(s["n"]), fmt_pct(s["pass_at_1"]),
             fmt_ci(s["wilson_lower"], s["wilson_upper"]),
             str(s["pass_at_k"]),
@@ -745,12 +795,14 @@ def render_text_report(stats_list, warnings):
     # Overall roll-up (pooled, not a mean-of-per-group-pass@1 -- see
     # compute_overall_rollup()).
     ov = compute_overall_rollup(stats_list)
+    any_tagged = any(s.get("has_unversioned") or s.get("has_stale") for s in stats_list)
     lines.append("")
     lines.append(
         f"OVERALL: {ov['num_groups']} groups, {ov['total_n']} repeats total, "
         f"{ov['total_successes']} successes, pass@1={fmt_pct(ov['pass_at_1'])} "
         f"{fmt_ci(ov['wilson_lower'], ov['wilson_upper'])}, "
         f"{ov['groups_fully_reliable']}/{ov['num_groups']} groups fully reliable (pass^k=1)"
+        + (" [contains unversioned/stale rows -- see †/! markers]" if any_tagged else "")
     )
 
     lines.append("")
@@ -762,7 +814,10 @@ def render_text_report(stats_list, warnings):
         "the model has no specific pricing entry). wall(s) = mean wall-clock "
         "completion time per run in seconds (LLM round-trips + tool dispatch; "
         "the provider speed metric -- runs are serialized so it is comparable). "
-        "failureBreakdown = terminal-status counts across the N repeats."
+        "failureBreakdown = terminal-status counts across the N repeats. "
+        "† = contains unversioned (pre-content-hash) results -- not tied to "
+        "the current scenario definitions; re-run the matrix to refresh. "
+        "! = contains results graded under a different checkpoint count (stale)."
     )
 
     if warnings:
@@ -783,7 +838,7 @@ def render_markdown_report(stats_list, warnings):
     lines.append("|" + "|".join(["---"] * len(headers)) + "|")
     for s in stats_list:
         row = [
-            s["scenarioId"], s["provider"], s["model"] or "-",
+            s["scenarioId"] + stale_cell_suffix(s), s["provider"], s["model"] or "-",
             str(s["n"]), fmt_pct(s["pass_at_1"]),
             fmt_ci(s["wilson_lower"], s["wilson_upper"]),
             str(s["pass_at_k"]),
@@ -795,12 +850,14 @@ def render_markdown_report(stats_list, warnings):
         lines.append("| " + " | ".join(row) + " |")
 
     ov = compute_overall_rollup(stats_list)
+    any_tagged = any(s.get("has_unversioned") or s.get("has_stale") for s in stats_list)
     lines.append("")
     lines.append(
         f"**OVERALL**: {ov['num_groups']} groups, {ov['total_n']} repeats total, "
         f"{ov['total_successes']} successes, pass@1={fmt_pct(ov['pass_at_1'])} "
         f"{fmt_ci(ov['wilson_lower'], ov['wilson_upper'])}, "
         f"{ov['groups_fully_reliable']}/{ov['num_groups']} groups fully reliable (pass^k=1)"
+        + (" [contains unversioned/stale rows -- see †/! markers]" if any_tagged else "")
     )
     lines.append("")
     lines.append(
@@ -811,7 +868,10 @@ def render_markdown_report(stats_list, warnings):
         "has no specific pricing entry). `wall(s)` = mean wall-clock completion "
         "time per run in seconds (the provider speed metric; runs are "
         "serialized so it is comparable). `failureBreakdown` = terminal-status "
-        "counts across the N repeats."
+        "counts across the N repeats. "
+        "† = contains unversioned (pre-content-hash) results -- not tied to "
+        "the current scenario definitions; re-run the matrix to refresh. "
+        "! = contains results graded under a different checkpoint count (stale)."
     )
     if warnings:
         lines.append("")
@@ -1260,6 +1320,10 @@ def selftest():
     check_staleness([_rec_stale], _w)
     if not any("STALE" in m and "param_edit" in m for m in _w):
         raise AssertionError(f"check_staleness should flag a wrong checkpoint count as STALE; got {_w}")
+    if _rec_stale.stale_marker != "stale":
+        raise AssertionError(
+            f"check_staleness must tag a checkpoint-count-mismatch record's "
+            f"stale_marker == 'stale'; got {_rec_stale.stale_marker!r}")
 
     # (2) a MATCHING count + a present hash -> no staleness / mixed-version noise.
     _rec_ok = RunRecord()
@@ -1271,6 +1335,10 @@ def selftest():
     check_staleness([_rec_ok], _w)
     if any("STALE" in m or "mixed scenario versions" in m for m in _w):
         raise AssertionError(f"a current, matching-count result must not warn STALE/mixed; got {_w}")
+    if _rec_ok.stale_marker != "":
+        raise AssertionError(
+            f"a current, matching-count result must not be stale_marker-tagged; "
+            f"got {_rec_ok.stale_marker!r}")
 
     # (3) a result missing scenarioContentHash entirely -> an "unversioned" warning.
     _rec_unver = RunRecord()
@@ -1281,6 +1349,10 @@ def selftest():
     check_staleness([_rec_unver], _w)
     if not any("unversioned" in m for m in _w):
         raise AssertionError(f"a result with no scenarioContentHash must warn 'unversioned'; got {_w}")
+    if _rec_unver.stale_marker != "unversioned":
+        raise AssertionError(
+            f"a hash-less result must be tagged stale_marker == 'unversioned'; "
+            f"got {_rec_unver.stale_marker!r}")
 
     # (4) two records in one scenario group with DIFFERENT hashes -> a
     # "mixed scenario versions" warning. Point them at a nonexistent scenario id
@@ -1298,6 +1370,62 @@ def selftest():
     check_staleness([_rec_h1, _rec_h2], _w)
     if not any("mixed scenario versions" in m for m in _w):
         raise AssertionError(f"two differing hashes in one group must warn 'mixed scenario versions'; got {_w}")
+
+    # (6) reporter-side table tagging: a group containing a stale_marker-tagged
+    # record must carry a "†"/"!" suffix on its rendered scenario-id cell (both
+    # text and markdown renderers), and the OVERALL line must carry the
+    # "contains unversioned/stale" note. Build one CLEAN group and one
+    # unversioned-tagged group + one stale-tagged group so the clean group's
+    # cell must NOT be marked while the other two must.
+    _rec_clean = _mk_rec(True)
+    _rec_clean.scenario_id = "scenClean"
+    _rec_clean.result["scenarioContentHash"] = "abc123"
+    check_staleness([_rec_clean], [])  # present hash, no on-disk scenario file -> no tag
+
+    _rec_group_unver = _mk_rec(True)
+    _rec_group_unver.scenario_id = "scenUnver"
+    # no scenarioContentHash stamped -> tagged "unversioned" by check_staleness
+    check_staleness([_rec_group_unver], [])
+
+    _rec_group_stale = _mk_rec(True)
+    _rec_group_stale.scenario_id = "param_edit"
+    _rec_group_stale.result["scenarioContentHash"] = "deadbeef"
+    _rec_group_stale.result["scenarioCheckpointCount"] = _param_edit_count + 1
+    check_staleness([_rec_group_stale], [])
+
+    _stats_clean = compute_group_stats(("scenClean", "anthropic", ""), [_rec_clean])
+    _stats_unver = compute_group_stats(("scenUnver", "anthropic", ""), [_rec_group_unver])
+    _stats_stale = compute_group_stats(("param_edit", "anthropic", ""), [_rec_group_stale])
+
+    if _stats_clean["has_unversioned"] or _stats_clean["has_stale"]:
+        raise AssertionError(f"a clean group must not be tagged; got {_stats_clean}")
+    if not _stats_unver["has_unversioned"] or _stats_unver["has_stale"]:
+        raise AssertionError(f"the unversioned group must be tagged has_unversioned only; got {_stats_unver}")
+    if _stats_stale["has_unversioned"] or not _stats_stale["has_stale"]:
+        raise AssertionError(f"the stale group must be tagged has_stale only; got {_stats_stale}")
+
+    _text = render_text_report([_stats_clean, _stats_unver, _stats_stale], [])
+    _first_tokens = {line.split()[0] for line in _text.splitlines() if line.strip()}
+    if "scenClean" not in _first_tokens:
+        raise AssertionError(f"clean group's scenario cell must render unmarked as 'scenClean'; text table:\n{_text}")
+    if "scenUnver†" not in _first_tokens:
+        raise AssertionError("unversioned group's scenario cell must carry '†'; text table:\n" + _text)
+    if "param_edit!" not in _first_tokens:
+        raise AssertionError("stale group's scenario cell must carry '!'; text table:\n" + _text)
+    if "contains unversioned/stale rows" not in _text:
+        raise AssertionError("OVERALL line must note the presence of tagged rows; text table:\n" + _text)
+    if "† = contains unversioned" not in _text or "! = contains results graded" not in _text:
+        raise AssertionError("legend must define the †/! markers; text table:\n" + _text)
+
+    _md = render_markdown_report([_stats_clean, _stats_unver, _stats_stale], [])
+    if "| scenClean |" not in _md:
+        raise AssertionError(f"clean group's markdown cell must not carry a †/! marker:\n{_md}")
+    if "| scenUnver† |" not in _md:
+        raise AssertionError(f"unversioned group's markdown cell must carry '†':\n{_md}")
+    if "| param_edit! |" not in _md:
+        raise AssertionError(f"stale group's markdown cell must carry '!':\n{_md}")
+    if "contains unversioned/stale rows" not in _md:
+        raise AssertionError(f"markdown OVERALL line must note tagged rows:\n{_md}")
 
     # (5) scan_run_dir prefers the TRUE stamped provider/model over the lossy
     # dir-name parse (P2). Build a leaf with NO model segment (so the dir parse

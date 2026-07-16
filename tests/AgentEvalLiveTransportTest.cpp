@@ -1515,6 +1515,88 @@ static void TestRunEvalMatrixResumeContentAware()
 		       "a reloaded-from-disk unchanged scenario hashes IDENTICALLY -> skipped (determinism)" );
 		Check( m5b.seenRequests.empty(), "reload-determinism: transport never called on the skip" );
 	}
+
+	// (6) Mutate the scenario's interventions[] -- must ALSO change the hash
+	// and force re-execution.  Before the v2 ScenarioContentHash, this field
+	// was omitted from the canonicalization entirely, so this mutation left
+	// a cached cell wrongly marked "current".
+	{
+		AgentEvalIntervention iv;
+		iv.afterToolCalls = 1;
+		iv.op = "param_edit";
+		iv.target = "pnt_albedo";
+		iv.param = "color";
+		iv.value = "0.7 0.1 0.1";
+		scenarios[0].interventions.push_back( iv );
+
+		MockTransport mock6;
+		mock6.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock6.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock6.repeatLast = true;
+		mo.transport = &mock6;
+
+		AgentEvalMatrixResult mr6 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr6.runsExecuted == 1 && mr6.runsAlreadyComplete == 0,
+		       "sixth invocation (mutated interventions[], everything else unchanged): "
+		       "re-executed (hash covers interventions[])" );
+		Check( !mock6.seenRequests.empty(), "sixth invocation: the transport WAS called" );
+	}
+
+	// (7) A PATH-backed scene hashes the file's BYTES, not just the pathname.
+	// Build a fresh scenario whose scene is scenePath (not sceneInline),
+	// pointing at a throwaway temp file written with param_edit's own inline
+	// scene text (a known-loadable v7 scene, taken from the ORIGINAL `scenario`
+	// local -- unmutated by cases (1)-(6) above, which only touched the
+	// `scenarios[0]` copy). Run once (executes), then edit the temp file's
+	// BYTES in place (append a harmless '#'-comment line -- '#' starts a
+	// to-end-of-line comment in the CST tokenizer, so the scene stays
+	// loadable) and re-run into the SAME runDir -> must be re-executed, not
+	// skipped-as-complete.  Before this fix, ScenarioContentHash hashed only
+	// `s.scenePath` (the path STRING), so an in-place edit like this left the
+	// cached cell wrongly marked "current".
+	{
+		const std::string dir7 = ScratchRunDir( "t11_path_scene_bytes" );
+		const std::string scenePath = dir7 + "_scene/param_edit_copy.RISEscene";
+		Check( WriteFile( scenePath, scenario.sceneInline ), "path-scene: wrote the temp scene file" );
+
+		AgentEvalScenario pathScenario = scenario;   // fresh copy of the ORIGINAL (unmutated) param_edit load
+		pathScenario.scenePath = scenePath;
+		pathScenario.sceneInline.clear();
+
+		AgentEvalRunConfig cfg7;
+		cfg7.providers.push_back( p );
+		cfg7.repeats = 1;
+		cfg7.runDir = dir7;
+
+		std::vector<AgentEvalScenario> scenarios7;
+		scenarios7.push_back( pathScenario );
+
+		MockTransport mock7a;
+		mock7a.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock7a.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock7a.repeatLast = true;
+		mo.transport = &mock7a;
+		AgentEvalMatrixResult mr7a = RunEvalMatrix( cfg7, scenarios7, mo );
+		Check( mr7a.runsExecuted == 1 && mr7a.runsAlreadyComplete == 0,
+		       "path-scene first invocation: executes" );
+		Check( !mock7a.seenRequests.empty(), "path-scene first invocation: the transport WAS called" );
+
+		// MUTATE the temp scene file's bytes IN PLACE -- the path string is
+		// unchanged, only the file's contents.
+		Check( WriteFile( scenePath, scenario.sceneInline + "\n# mutated for T11(7)\n" ),
+		       "path-scene: mutated the temp scene file's bytes" );
+
+		MockTransport mock7b;
+		mock7b.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock7b.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock7b.repeatLast = true;
+		mo.transport = &mock7b;
+		AgentEvalMatrixResult mr7b = RunEvalMatrix( cfg7, scenarios7, mo );
+		Check( mr7b.runsExecuted == 1 && mr7b.runsAlreadyComplete == 0,
+		       "path-scene second invocation (mutated FILE BYTES, same path): re-executed "
+		       "(hash covers a path-backed scene's bytes, not just its path)" );
+		Check( !mock7b.seenRequests.empty(), "path-scene second invocation: the transport WAS called" );
+	}
 }
 
 //----------------------------------------------------------------------
