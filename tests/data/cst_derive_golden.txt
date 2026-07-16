@@ -67,6 +67,7 @@ scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene  30c9b024ca1febda527e2e
 scenes/FeatureBased/SDF/sdf_morph_torture.RISEscene  9b1cab2486e45a01bbff933fdd96ec618949d539a00d04777a32b710462bc3ab  2024  39
 scenes/FeatureBased/Shaders/SSS/sss_gi_dragon.RISEscene  178bd803bc80070bc5e1e62c92eeffc7134d195cbfbbadf1c4104fcbe3d55b20  2106  29
 scenes/FeatureBased/Shaders/visiblehuman.RISEscene  20394064aadcca9fd82fc7921c1e9910b6412cf6ac66c6564a23193c081c57fd  474  22
+scenes/Templates/empty_starter.RISEscene  8402d4ae8e7cf9bcf9298d9b5795cc3610fb82f5f45e05af6c7dcd36835eff33  218  16
 scenes/Tests/Animation/animation_exposure.RISEscene  2647e1304dd5f525651466721cbc9afa3dcb8a73574639eee535d5b0d277bcf9  1082  25
 scenes/Tests/Animation/animation_temporal_scanning.RISEscene  f28f1c320509dfd329bcb8feb80658385f5e5b62c76029e647ea6407fbe50539  1084  25
 scenes/Tests/Animation/basic_animation.RISEscene  8d49572700ad6c7ab8e27ad401015767b8e853f95713d744626032a83549a8f6  1082  25
