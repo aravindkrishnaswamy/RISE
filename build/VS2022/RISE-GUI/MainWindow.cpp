@@ -589,7 +589,7 @@ void MainWindow::createMenuBar()
     m_saveSceneAction->setEnabled(false);
 
     // Rehouses the retired ControlsWidget's "Clear" button.
-    m_closeSceneAction = fileMenu->addAction("&Close Scene", this, &MainWindow::onClear);
+    m_closeSceneAction = fileMenu->addAction("C&lear Scene", this, &MainWindow::onClear);
     m_closeSceneAction->setShortcut(QKeySequence("Ctrl+Shift+W"));
     m_closeSceneAction->setEnabled(false);
 

@@ -147,7 +147,7 @@ struct RISEApp: App {
                 // UI redesign: rehouses the retired controls panel's
                 // "Clear" button.  ⇧⌘W rather than the system-owned ⌘W
                 // (window close).
-                Button("Close Scene") {
+                Button("Clear Scene") {
                     viewModel.clearScene()
                 }
                 .keyboardShortcut("w", modifiers: [.command, .shift])

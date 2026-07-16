@@ -168,12 +168,13 @@ namespace RISE
 					cfg.baseUrl        = ( envUrl && envUrl[0] != '\0' )
 						? std::string( envUrl )
 						: std::string( "http://127.0.0.1:11434/v1/chat/completions" );
-					// Default model "qwen3:32b" (a newer alternative tag is
-					// "qwen3.6:27b"); requiresAuth=false -> keyless local
-					// servers emit NO Authorization header, while a server
-					// started with --api-key still gets a Bearer header when a
-					// key is supplied.
-					cfg.defaultModelId = "qwen3:32b";
+					// Default model "opencoder" (user decision 2026-07-16:
+					// a local open-weights coder as the out-of-box default;
+					// earlier default was "qwen3:32b").  requiresAuth=false ->
+					// keyless local servers emit NO Authorization header,
+					// while a server started with --api-key still gets a
+					// Bearer header when a key is supplied.
+					cfg.defaultModelId = "opencoder";
 					cfg.requiresAuth   = false;
 					// Local inference legitimately exceeds the hosted-provider
 					// 300s budget: a cold model swap loads 17-43GB before the

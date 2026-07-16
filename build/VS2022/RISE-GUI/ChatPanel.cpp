@@ -221,11 +221,15 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_providerCombo->addItem("Gemini");
     m_providerCombo->addItem("Grok (xAI)");
     m_providerCombo->addItem("Local (Ollama)");
+    // Default provider = Local (Ollama) with the "opencoder" model (user
+    // decision 2026-07-16) -- keyless out-of-box; combo order matches the
+    // Provider enum 1:1.
+    m_providerCombo->setCurrentIndex(static_cast<int>(Provider::Local));
     m_providerCombo->setFont(Theme::mono(10));
     m_providerCombo->setStyleSheet(QStringLiteral(
         "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
         .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
-    m_modelEdit = new QLineEdit(defaultModelFor(Provider::OpenAI));
+    m_modelEdit = new QLineEdit(defaultModelFor(Provider::Local));
     m_modelEdit->setPlaceholderText("model");
     m_modelEdit->setFont(Theme::mono(10));
     m_modelEdit->setStyleSheet(QStringLiteral(
@@ -242,7 +246,7 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_apiKeyEdit->setStyleSheet(QStringLiteral(
         "QLineEdit { color: %1; background: %2; border: 1px solid %3; border-radius: 6px; padding: 4px 8px; }")
         .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight)));
-    m_apiKeyEdit->setText(envKeyFor(Provider::OpenAI));
+    m_apiKeyEdit->setText(envKeyFor(Provider::Local));
     outer->addWidget(m_apiKeyEdit);
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): pending/
@@ -759,7 +763,7 @@ QString ChatPanel::defaultModelFor(Provider provider) const
         OpenAIChatCodec::Config cfg;
         cfg.providerName   = "local";
         cfg.baseUrl        = "http://127.0.0.1:11434/v1/chat/completions";
-        cfg.defaultModelId = "qwen3:32b";
+        cfg.defaultModelId = "opencoder";
         cfg.requiresAuth   = false;
         return QString::fromUtf8(OpenAIChatCodec(cfg).DefaultModelId());
     }

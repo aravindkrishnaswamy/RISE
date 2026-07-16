@@ -330,6 +330,22 @@ QWidget* StartWidget::buildCreateColumn()
         .arg(Theme::accent.red()).arg(Theme::accent.green()).arg(Theme::accent.blue()));
     m_providerChip->hide();
     headerRow->addWidget(m_providerChip);
+
+    // Always-visible settings affordance (user feedback 2026-07-16):
+    // switch models / add keys from the start screen even when already
+    // configured -- routes to the same place the unconfigured Set up...
+    // button does (the Agent tab's inline provider/model/key row).
+    auto* configBtn = new QPushButton(tr("\xE2\x9A\x99"), col);   // gear
+    configBtn->setFont(Theme::sans(11));
+    configBtn->setCursor(Qt::PointingHandCursor);
+    configBtn->setFlat(true);
+    configBtn->setToolTip(tr("Provider, model, and API-key settings"));
+    configBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { color: %1; border: none; background: transparent; padding: 0 2px; }"
+        "QPushButton:hover { color: %2; }")
+        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::textPrimary)));
+    connect(configBtn, &QPushButton::clicked, this, [this]() { emit setupAgentRequested(); });
+    headerRow->addWidget(configBtn);
     colLayout->addLayout(headerRow);
 
     m_promptEdit = new QPlainTextEdit(col);

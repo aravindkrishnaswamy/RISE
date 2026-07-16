@@ -287,7 +287,7 @@ static NSString *ToNS(const std::string& s) {
         Agent::OpenAIChatCodec::Config cfg;
         cfg.providerName   = "local";
         cfg.baseUrl        = "http://127.0.0.1:11434/v1/chat/completions";
-        cfg.defaultModelId = "qwen3:32b";
+        cfg.defaultModelId = "opencoder";
         cfg.requiresAuth   = false;
         return ToNS(Agent::OpenAIChatCodec(cfg).DefaultModelId());
     }

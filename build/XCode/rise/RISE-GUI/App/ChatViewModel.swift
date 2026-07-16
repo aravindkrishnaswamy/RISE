@@ -865,7 +865,7 @@ final class ChatViewModel: ObservableObject {
 
     init() {
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
-            .flatMap(AgentChatProviderChoice.init(rawValue:)) ?? .openai
+            .flatMap(AgentChatProviderChoice.init(rawValue:)) ?? .local   // default: keyless local (opencoder), user decision 2026-07-16
         let storedModelId = UserDefaults.standard.string(
             forKey: Self.modelIdKey(storedProvider)) ?? ""
         provider = storedProvider

@@ -40,8 +40,15 @@ struct StartView: View {
     /// Popover for the unconfigured state's Set up… button — the same
     /// ChatSettingsView the chat panel's gear opens.
     @State private var showAgentSettings = false
+    /// Popover for the always-visible header gear (separate state from
+    /// `showAgentSettings` so the two presenters can't fight when both
+    /// affordances are on screen in the unconfigured state).
+    @State private var showHeaderSettings = false
     /// Focus for "click Create with an empty prompt focuses the box".
     @FocusState private var promptFocused: Bool
+    /// Hovered recent-row path — drives the clickable-affordance highlight
+    /// (user feedback 2026-07-16: rows didn't read as clickable).
+    @State private var hoveredRecentPath: String? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -167,16 +174,23 @@ struct StartView: View {
         let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         let folder = (path as NSString).deletingLastPathComponent
 
+        // Clickable-affordance styling (user feedback 2026-07-16): hover
+        // highlight + accent name + trailing chevron + pointing-hand cursor,
+        // so the rows read as buttons rather than a static list.
+        let hovered = hoveredRecentPath == path && exists
+
         HStack(spacing: 10) {
             Image(systemName: exists ? "photo" : "photo.slash" /* missing */)
                 .font(.system(size: 13))
-                .foregroundColor(exists ? Theme.textSecondary : Theme.textMuted)
+                .foregroundColor(exists ? Theme.accentLight : Theme.textMuted)
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
-                    .font(Theme.sans(12.5))
-                    .foregroundColor(exists ? Theme.textPrimary : Theme.textSecondary)
+                    .font(Theme.sans(12.5, .medium))
+                    .foregroundColor(exists
+                        ? (hovered ? Theme.accentLight : Theme.textPrimary)
+                        : Theme.textSecondary)
                     .lineLimit(1)
                 if exists {
                     Text((folder as NSString).abbreviatingWithTildeInPath)
@@ -197,6 +211,9 @@ struct StartView: View {
                     .font(Theme.sans(10.5))
                     .foregroundColor(Theme.textMuted)
                     .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(hovered ? Theme.accentLight : Theme.textMuted)
             } else {
                 Button {
                     viewModel.removeRecentFile(path)
@@ -211,8 +228,19 @@ struct StartView: View {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
+        .background(hovered ? Theme.fillHover : Color.clear)
         .contentShape(Rectangle())
         .opacity(exists ? 1.0 : 0.6)
+        .onHover { inside in
+            if inside {
+                hoveredRecentPath = path
+                if exists { NSCursor.pointingHand.push() }
+            } else {
+                if hoveredRecentPath == path { hoveredRecentPath = nil }
+                if exists { NSCursor.pop() }
+            }
+        }
+        .help(exists ? "Open \(name)" : "")
         .onTapGesture {
             // A missing row does nothing on click (no error dialog) —
             // its ✕ is the affordance.
@@ -250,6 +278,22 @@ struct StartView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
                         .background(Capsule().fill(Theme.accent.opacity(0.12)))
+                }
+                // Always-visible settings affordance (user feedback
+                // 2026-07-16): switch models / add keys from the start
+                // screen even when already configured — same
+                // ChatSettingsView the chat panel's gear opens.
+                Button {
+                    showHeaderSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textDim)
+                }
+                .buttonStyle(.plain)
+                .help("Provider, model, and API-key settings")
+                .popover(isPresented: $showHeaderSettings, arrowEdge: .trailing) {
+                    ChatSettingsView(chat: viewModel.chat)
                 }
             }
 

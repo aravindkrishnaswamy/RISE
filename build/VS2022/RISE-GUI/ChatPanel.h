@@ -371,7 +371,7 @@ private:
     // applyProviderChangeWithConfirmation() to detect a genuine change
     // (vs. a stray focus-out that didn't alter anything) and as the
     // "old provider" key when stashing.
-    Provider m_appliedProvider = Provider::OpenAI;
+    Provider m_appliedProvider = Provider::Local;   // default: keyless local (opencoder), user decision 2026-07-16
     QString m_appliedModel;
 
     // P2-5: set on an Http-kind (or transport-level) ProviderError; lets
