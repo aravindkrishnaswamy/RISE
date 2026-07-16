@@ -383,6 +383,10 @@ final class RenderViewModel: ObservableObject {
     }
     @Published var hasAnimation: Bool = false
     @Published var recentFiles: [String] = []
+    /// Last-opened times for `recentFiles` entries (start-screen "2m ago"
+    /// labels).  Persisted under the sibling `recentSceneMeta` key; a path
+    /// with no entry renders without a time (old installs).
+    @Published var recentFileTimes: [String: Date] = [:]
 
     /// Live time-scrubber state, displayed on the viewport's bottom slider.
     @Published var sceneTime: Double = 0
@@ -679,11 +683,21 @@ final class RenderViewModel: ObservableObject {
     private static let maxLogMessages = 10000
     private static let maxRecentFiles = 10
     private static let recentFilesKey = "recentSceneFiles"
+    /// Start-screen spec §5.4: SIBLING key to `recentFilesKey` mapping
+    /// path -> last-opened unix time, so the start screen can show "2m ago"
+    /// labels.  Deliberately a separate key (not a schema change to the
+    /// shared path list) so old installs and the Windows client's identical
+    /// `recentSceneFiles` list stay compatible; a path with no meta entry
+    /// simply renders without a time.
+    private static let recentFilesMetaKey = "recentSceneMeta"
     private static let showAgentDebugPanelKey = "showAgentDebugPanel"
 
     init() {
         versionString = RISEBridge.versionString()
         recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
+        if let meta = UserDefaults.standard.dictionary(forKey: Self.recentFilesMetaKey) as? [String: Double] {
+            recentFileTimes = meta.mapValues { Date(timeIntervalSince1970: $0) }
+        }
         showAgentDebugPanel = UserDefaults.standard.bool(forKey: Self.showAgentDebugPanelKey)
         chatStateChangeObserver = chat.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -947,16 +961,44 @@ final class RenderViewModel: ObservableObject {
         if recentFiles.count > Self.maxRecentFiles {
             recentFiles = Array(recentFiles.prefix(Self.maxRecentFiles))
         }
+        recentFileTimes[path] = Date()
+        // Prune meta for paths that fell off the list so the sibling key
+        // stays bounded by maxRecentFiles rather than growing forever.
+        recentFileTimes = recentFileTimes.filter { recentFiles.contains($0.key) }
+        persistRecents()
+    }
+
+    /// Start screen: remove one entry (the ✕ on a missing-file row).
+    func removeRecentFile(_ path: String) {
+        recentFiles.removeAll { $0 == path }
+        recentFileTimes.removeValue(forKey: path)
+        persistRecents()
+    }
+
+    private func persistRecents() {
         UserDefaults.standard.set(recentFiles, forKey: Self.recentFilesKey)
+        UserDefaults.standard.set(
+            recentFileTimes.mapValues { $0.timeIntervalSince1970 },
+            forKey: Self.recentFilesMetaKey)
     }
 
     func clearRecentFiles() {
         recentFiles.removeAll()
+        recentFileTimes.removeAll()
         UserDefaults.standard.removeObject(forKey: Self.recentFilesKey)
+        UserDefaults.standard.removeObject(forKey: Self.recentFilesMetaKey)
     }
 
-    func loadScene(at path: String) {
-        addToRecentFiles(path)
+    /// Load a scene from `path`.  `untitled` (start-screen create path):
+    /// the file is a bundled template — the loaded scene has NO document
+    /// path (`loadedFilePath` stays nil, Save routes to Save-As) and never
+    /// enters the recents list.  Everything else (controller, bridge, CST
+    /// retention) is identical to a normal file open by design, so the
+    /// agent edits an ordinary live scene.
+    func loadScene(at path: String, untitled: Bool = false) {
+        if !untitled {
+            addToRecentFiles(path)
+        }
         renderState = .loading
         renderedImage = nil
         progress = 0.0
@@ -999,7 +1041,10 @@ final class RenderViewModel: ObservableObject {
 
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
-                self.loadedFilePath = path
+                // Untitled (start-screen create): the scene came from the
+                // bundled starter template — it has no user-facing document
+                // path.  TopBar shows "Untitled", Save routes to Save-As.
+                self.loadedFilePath = untitled ? nil : path
                 if success {
                     self.renderState = .sceneLoaded
                     self.progressTitle = ""
@@ -1724,8 +1769,81 @@ final class RenderViewModel: ObservableObject {
     /// explicitly triggers this method (the TopBar Save button or
     /// File > Save Scene).  Always alerts on refusal / I/O failure;
     /// there is no silent/suspended auto-save path to distinguish from.
+    /// Start-screen create path (spec §4.3): load the bundled EMPTY starter
+    /// scene as an untitled document, then hand `prompt` to the agent — the
+    /// chat consumes it exactly once in `sceneOpened` (after the bridge is
+    /// attached), so a slow load can neither drop nor double-send it.
+    /// Returns false only when the bundled template is missing (a packaging
+    /// bug — surfaced as a load error, not a silent no-op).
+    @discardableResult
+    func loadStarterScene(withPrompt prompt: String) -> Bool {
+        guard let templatePath = Bundle.main.path(
+            forResource: "empty_starter", ofType: "RISEscene") else {
+            renderState = .error("The starter scene template is missing from the app bundle")
+            return false
+        }
+        // Stash BEFORE the load so the prompt survives however long the
+        // load takes; sceneOpened is the single consumer.
+        chat.pendingFirstPrompt = prompt
+        leftTab = .agent
+        showLeftPanel = true
+        loadScene(at: templatePath, untitled: true)
+        return true
+    }
+
+    /// Save the scene to a user-chosen path (NSSavePanel).  Also the Save
+    /// fallback for UNTITLED scenes (start-screen create path): the first
+    /// Save becomes Save-As.  On success the scene gains the chosen path
+    /// (re-anchor, matching SaveEngine's own FileIdentity re-anchor), joins
+    /// the recents list, and behaves as a normal named scene from then on.
+    @discardableResult
+    func saveSceneAs() -> Bool {
+        guard let vb = viewportBridge else { return false }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = []  // accept any extension
+        panel.nameFieldStringValue = (loadedFilePath as NSString?)?.lastPathComponent
+            ?? "untitled.RISEscene"
+        if let lp = loadedFilePath {
+            panel.directoryURL = URL(fileURLWithPath: lp).deletingLastPathComponent()
+        }
+        panel.title = "Save Scene As"
+        panel.message = "Choose a destination for the .RISEscene file."
+        guard panel.runModal() == .OK, let path = panel.url?.path, !path.isEmpty else {
+            return false
+        }
+        var errMsg: NSString? = nil
+        let status = vb.saveScene(to: path, errorMessage: &errMsg)
+        switch status {
+        case 0, 1:
+            // Saved (or NoOp).  Re-anchor so subsequent in-place saves
+            // target the just-written file, and an untitled scene becomes
+            // a normal named scene (title, recents, in-place Save).
+            if path != loadedFilePath {
+                loadedFilePath = path
+                addToRecentFiles(path)
+            }
+            if !isEditorDirty {
+                refreshEditorContents()
+            }
+            return true
+        case 2:
+            showSaveAlert(title: "Save Refused",
+                          message: (errMsg as String?) ?? "The save engine declined to write this file.")
+            return false
+        default:
+            showSaveAlert(title: "Save Failed",
+                          message: (errMsg as String?) ?? "An I/O error occurred while saving the file.")
+            return false
+        }
+    }
+
     @discardableResult
     func saveScene() -> Bool {
+        // Untitled scene (start-screen create): nothing on disk to save
+        // in-place — the first Save IS Save-As (spec §5.2).
+        if loadedFilePath == nil {
+            return saveSceneAs()
+        }
         guard let vb = viewportBridge, let path = loadedFilePath else { return false }
         var errMsg: NSString? = nil
         let status = vb.saveScene(to: path, errorMessage: &errMsg)

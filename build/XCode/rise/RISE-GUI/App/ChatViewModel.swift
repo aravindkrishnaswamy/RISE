@@ -710,6 +710,23 @@ final class ChatViewModel: ObservableObject {
     /// itself.
     var isChatRenderOutstanding: Bool { chatRenderWorkerOccupied }
 
+    /// Start-screen create path: a prompt stashed by
+    /// `RenderViewModel.loadStarterScene(withPrompt:)` BEFORE the starter
+    /// scene load begins, consumed EXACTLY ONCE at the end of
+    /// `sceneOpened` (the earliest point a message can validly be sent —
+    /// fresh bridge attached, chat state reset).  MainActor-only.
+    var pendingFirstPrompt: String? = nil
+
+    /// True when the selected provider can actually take a message: keyless
+    /// providers (local/Ollama) always can; the rest need a resolvable key
+    /// (Keychain or env var).  The start screen's Create column mirrors this
+    /// so the agent path never dead-ends (spec §6).  Reads `keyStateEpoch`
+    /// so SwiftUI re-evaluates when a key is saved or cleared in settings.
+    var agentConfigured: Bool {
+        _ = keyStateEpoch
+        return !provider.requiresApiKey || keySource(for: provider) != .none
+    }
+
     private static let providerKey = "agentChat.provider"
     private static let recordTrajectoriesKey = "agentChat.recordTrajectories"
     private static func modelIdKey(_ p: AgentChatProviderChoice) -> String {
@@ -922,6 +939,20 @@ final class ChatViewModel: ObservableObject {
         // file (the skill index is set above, so the session record captures
         // the full system prompt including skills on first user message).
         startTrajectory()
+
+        // Start-screen create path (spec §7): consume the pending first
+        // prompt EXACTLY ONCE, and only here — after the fresh bridge is
+        // attached and the chat state reset above, i.e. the same point a
+        // typed message could first be sent.  Stashing-then-consuming (vs
+        // sending from the start screen directly) is what makes the handoff
+        // immune to the slow-load race: however long the scene load takes,
+        // the prompt can neither fire early (no bridge yet) nor double-fire
+        // (cleared before send).
+        if let prompt = pendingFirstPrompt {
+            pendingFirstPrompt = nil
+            inputText = prompt
+            send()
+        }
     }
 
     /// The scene is closing (clearScene / reload): stop any in-flight

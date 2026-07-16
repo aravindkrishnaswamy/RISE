@@ -541,7 +541,7 @@ private struct ChatTranscriptRow: View {
 /// never displays the stored key, and nothing here logs it.  At use
 /// time resolution is Keychain first, then the provider's environment
 /// variable — the caption below shows WHICH source is active.
-private struct ChatSettingsView: View {
+struct ChatSettingsView: View {
     @EnvironmentObject var viewModel: RenderViewModel
     @ObservedObject var chat: ChatViewModel
 

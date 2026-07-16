@@ -67,6 +67,23 @@ struct TopBar: View {
                         }
                     }
                 }
+            } else if viewModel.viewportBridge != nil {
+                // Untitled scene (start-screen create path, spec §5.2):
+                // loaded from the bundled starter template, not yet on
+                // disk.  Gains a real name via Save-As.
+                HStack(spacing: 8) {
+                    Text("Untitled")
+                        .font(Theme.mono(12))
+                        .foregroundColor(Theme.textSecondary)
+                    if viewModel.sceneEditsDirty {
+                        HStack(spacing: 5) {
+                            Circle().fill(Theme.dirty).frame(width: 6, height: 6)
+                            Text("edited")
+                                .font(Theme.sans(10))
+                                .foregroundColor(Theme.dirty)
+                        }
+                    }
+                }
             } else {
                 Text("No scene")
                     .font(Theme.mono(12))
@@ -287,7 +304,10 @@ struct TopBar: View {
 
     @ViewBuilder
     private var saveStateChip: some View {
-        if viewModel.loadedFilePath != nil {
+        // Untitled scenes (loadedFilePath == nil but a bridge exists) get
+        // the SAME save affordance — saveScene() routes to Save-As for
+        // them (spec §5.2), so the pill never leads to a silent no-op.
+        if viewModel.loadedFilePath != nil || viewModel.viewportBridge != nil {
             if viewModel.sceneEditsDirty {
                 Button {
                     viewModel.saveScene()

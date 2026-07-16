@@ -293,8 +293,18 @@ struct ContentView: View {
                     // re-snapshots and the outliner highlight follows.
                     propertyRefresh &+= 1
                 }
-            } else {
+            } else if viewModel.renderState == .loading {
+                // Scene load in flight — RenderImageView carries the
+                // progress overlay.
                 RenderImageView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                // No scene (fresh launch, after Close Scene, or a failed
+                // load) — the three-path start screen
+                // (docs/gui/START_SCREEN.md).  A load error renders as a
+                // banner atop the start screen rather than a dead
+                // placeholder.
+                StartView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
