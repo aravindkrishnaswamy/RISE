@@ -24,7 +24,13 @@ subdirectory is written per (scenario, provider, model, repeat):
 Directory-name separator is literally "__"; the model segment is present only
 when the provider config supplied a non-empty model string; "r<repeat>" is
 1-based and NOT zero-padded (e.g. "myScenario__anthropic__claude-3-5-sonnet__r1",
-or "myScenario__openai__r2" when no model was set).
+or "myScenario__openai__r2" when no model was set).  A scenario id or model
+string that itself contains "__" (e.g. model "gpt__xai") can make that
+dir-leaf ambiguous to parse -- scan_run_dir therefore treats the dir-leaf
+parse as a FALLBACK only; the PRIMARY scenarioId/provider/model identity for
+each cell comes from the STAMPED *.result.jsonl found inside the
+subdirectory (byte-true, never sanitized), so identity discovery is
+reversible even when the leaf itself is not.
 
 This tool is pure-Python-3-stdlib (json, argparse, math, os, glob, collections)
 -- no numpy/scipy/pandas -- since Python tooling is not part of the RISE make
@@ -308,6 +314,28 @@ def cost_per_success(total_cost_usd, priced, successes):
 
 
 # ---------------------------------------------------------------------------
+# FNV-1a 64-bit -- Finding 2: raw FILE-BYTE hashes a standalone Python
+# reporter can trivially recompute byte-for-byte, closing the
+# equal-checkpoint-count blind spot check_staleness's C++-hash cross-check
+# can't (this tool cannot replicate AgentEvalRunner.cpp's semantic
+# ScenarioContentHash canonicalization). MUST stay bit-identical to the C++
+# FnvHex helper in src/Library/Agent/AgentEvalRunner.cpp -- the cross-language
+# pin is FNV-1a 64 of b"hello" == "a430d84680aabd0b" (asserted by both
+# --selftest here and a C++ test; see AgentEvalReplayTest.cpp).
+# ---------------------------------------------------------------------------
+
+def fnv1a64_hex(data):
+    """FNV-1a 64-bit hex digest (16 lowercase hex chars) of `data` (bytes)."""
+    h = 14695981039346656037  # offset basis
+    prime = 1099511628211
+    mask = 0xFFFFFFFFFFFFFFFF
+    for b in data:
+        h ^= b
+        h = (h * prime) & mask
+    return "%016x" % h
+
+
+# ---------------------------------------------------------------------------
 # JSONL loading -- tolerant of malformed lines and missing files
 # ---------------------------------------------------------------------------
 
@@ -353,6 +381,22 @@ def load_jsonl(path, warnings):
 # "test__local__edit__anthropic__<model>__r1" would find "local" first
 # left-to-right instead of the real provider "anthropic").
 # ---------------------------------------------------------------------------
+
+def parse_rep_from_leaf(leaf):
+    """Extract ONLY the trailing "__r<repeat>" token from a run-dir leaf --
+    the ONE piece of identity that is unambiguous no matter what characters a
+    scenario id or model string contain (Finding 1b: everything else about a
+    cell's identity now comes from the STAMPED result.jsonl, not this parse;
+    see scan_run_dir). Returns an int repeat number, or None if the leaf
+    does not end with an "__r<digits>" token (not an eval run-dir at all)."""
+    tokens = leaf.split("__")
+    if len(tokens) < 2:
+        return None
+    last = tokens[-1]
+    if not (last.startswith("r") and last[1:].isdigit()):
+        return None
+    return int(last[1:])
+
 
 def parse_run_dir_name(leaf):
     tokens = leaf.split("__")
@@ -420,7 +464,18 @@ class RunRecord:
 
 
 def scan_run_dir(run_dir, warnings):
-    """Return list of RunRecord for every parseable run subdirectory under run_dir."""
+    """Return list of RunRecord for every parseable run subdirectory under run_dir.
+
+    Identity discovery (Finding 1b -- report-artifact-discovery reversibility):
+    a scenario id may legally contain characters that make the "__"-delimited
+    dir-leaf ambiguous or plain wrong to parse (pre-Finding-1a scenario ids;
+    a raw id containing a provider-name-shaped token; a model id itself
+    containing "__", e.g. "gpt__xai" inside "param_edit__openai__gpt__xai__r1",
+    which parse_run_dir_name's right-to-left provider scan can misattribute).
+    The dir-leaf parse is therefore demoted to a FALLBACK; the PRIMARY source
+    of scenario_id/provider/model is the STAMPED *.result.jsonl found inside
+    the subdirectory -- exactly the fields RunScenarioDriven writes and that
+    are, by construction, byte-true (never sanitized/lossy)."""
     out = []
     try:
         entries = sorted(os.listdir(run_dir))
@@ -432,11 +487,72 @@ def scan_run_dir(run_dir, warnings):
         sub = os.path.join(run_dir, leaf)
         if not os.path.isdir(sub):
             continue
-        parsed = parse_run_dir_name(leaf)
-        if parsed is None:
+
+        # `rep` is the one dir-leaf field that's unambiguous regardless of
+        # what a scenario id/model contain (it's always the LAST "__"-token,
+        # "r<digits>"). A leaf that doesn't carry one isn't an eval run-dir
+        # at all -- skip it exactly as before.
+        rep = parse_rep_from_leaf(leaf)
+        if rep is None:
             warnings.append(f"warning: could not parse run-dir name, skipping: {leaf}")
             continue
-        scenario_id, provider, model, rep = parsed
+
+        # FALLBACK identity, for pre-stamp results / a subdir whose
+        # result.jsonl is missing entirely. None when the leaf's tokens don't
+        # contain a recognizable provider (see parse_run_dir_name's own
+        # caveats) -- in that case scenario_id/provider start out None and
+        # MUST be filled in by the stamp below, or the record is dropped.
+        fallback = parse_run_dir_name(leaf)
+        scenario_id = fallback[0] if fallback else None
+        provider = fallback[1] if fallback else None
+        model = fallback[2] if fallback else ""
+
+        # PRIMARY identity: glob for *.result.jsonl rather than guessing the
+        # filename from the (possibly-wrong) dir-parsed scenario_id -- there
+        # is exactly one per healthy cell, named "<RAW scenarioId>.result.jsonl"
+        # by RunScenarioDriven, where "RAW" is the un-sanitized id (Finding 1a
+        # closed the class of ids that could make this diverge from the
+        # sanitized dir-leaf going forward, but old runDirs may still hold
+        # pre-fix cells). Several matches should never happen; warn and take
+        # the lexicographically first, deterministically.
+        result_candidates = sorted(glob.glob(os.path.join(sub, "*.result.jsonl")))
+        if len(result_candidates) > 1:
+            warnings.append(
+                f"warning: {sub}: multiple *.result.jsonl files found "
+                f"({', '.join(os.path.basename(p) for p in result_candidates)}) -- "
+                f"using {os.path.basename(result_candidates[0])}"
+            )
+        result_path = result_candidates[0] if result_candidates else None
+
+        result = None
+        if result_path is not None:
+            result_lines = load_jsonl(result_path, warnings)
+            if result_lines:
+                result = result_lines[-1]
+
+        # Prefer the TRUE (un-sanitized) scenarioId/provider/model stamped
+        # inside the result over the lossy dir-name parse (P1b + P2):
+        # SanitizeForPath maps any char outside [A-Za-z0-9._-] to '_', so two
+        # distinct ids/model ids can collapse to one leaf fragment -- the
+        # stamped fields are the authoritative source of what actually ran.
+        # scenarioId/provider are never legitimately empty (a run always has
+        # both), so a present+truthy check is right for them; model CAN be
+        # legitimately empty ("" => the codec default), which is meaningfully
+        # different from "unknown", so a present-only check (which lets an
+        # explicit "" override the dir-parsed value) is right for it.
+        if isinstance(result, dict):
+            if result.get("scenarioId"):
+                scenario_id = result["scenarioId"]
+            if result.get("provider"):
+                provider = result["provider"]
+            if "model" in result:
+                model = result["model"]
+
+        if scenario_id is None or provider is None:
+            # Neither a stamped result NOR a parseable dir-leaf could name
+            # this cell -- the original "could not parse" skip path.
+            warnings.append(f"warning: could not parse run-dir name, skipping: {leaf}")
+            continue
 
         rec = RunRecord()
         rec.dir_path = sub
@@ -444,28 +560,8 @@ def scan_run_dir(run_dir, warnings):
         rec.provider = provider
         rec.model = model
         rec.rep = rep
-
-        result_path = os.path.join(sub, scenario_id + ".result.jsonl")
-        result_lines = load_jsonl(result_path, warnings)
-        if result_lines:
-            rec.result = result_lines[-1]
-            # Prefer the TRUE (un-sanitized) provider/model stamped inside the
-            # result over the lossy dir-name parse (P2): SanitizeForPath maps
-            # any char outside [A-Za-z0-9._-] to '_', so two distinct model ids
-            # can collapse to one leaf fragment -- the stamped field is the
-            # authoritative source of what actually ran. Fall back to the
-            # dir-parsed value when the field is absent (a pre-P1 result file).
-            # provider is never legitimately empty (a run always has one), so a
-            # present+truthy check is right for it; model CAN be legitimately
-            # empty ("" => the codec default), which is meaningfully different
-            # from "unknown", so a present-only check (which lets an explicit
-            # "" override the dir-parsed value) is right for it.
-            if isinstance(rec.result, dict):
-                if rec.result.get("provider"):
-                    rec.provider = rec.result["provider"]
-                if "model" in rec.result:
-                    rec.model = rec.result["model"]
-        else:
+        rec.result = result
+        if result is None:
             rec.notes.append("missing .result.jsonl")
 
         check_path = os.path.join(sub, "results.jsonl")
@@ -537,16 +633,28 @@ def check_staleness(records, warnings):
     are visible from the group's records either way, but callers should not
     rely on that; check_staleness is meant to run first.
 
-    ADVISORY ONLY -- and blind to one class of edit. This function cannot
-    recompute the C++ FNV ScenarioContentHash from the on-disk scenario (the
-    canonicalization is not replicated in Python), so its on-disk cross-check is
-    only the raw checkpoint COUNT. An edit that changes a checkpoint's VALUE (or a
-    prompt/budget/scene) WITHOUT changing the count is invisible here if you run
-    the report against old result files without re-running the matrix. The
-    AUTHORITATIVE staleness protection is the C++ matrix resume guard, which
-    hashes the full content and RE-RUNS a changed cell; re-run the matrix and this
-    report then reflects the current oracle. This pass is a best-effort heads-up,
-    not that guarantee."""
+    ADVISORY ONLY for the scenarioContentHash/checkpoint-COUNT cross-check
+    above: this function cannot recompute the C++ FNV ScenarioContentHash
+    from the on-disk scenario (the semantic canonicalization is not
+    replicated in Python), so that half of the check is only the raw
+    checkpoint COUNT -- an edit that changes a checkpoint's VALUE (or a
+    prompt/budget/scene) WITHOUT changing the count is invisible to it if you
+    run the report against old result files without re-running the matrix.
+
+    Finding 2 closes that blind spot for FILE-BACKED scenarios (i.e. the
+    whole committed suite): "scenarioFileFnv" / "sceneFileFnv" are raw
+    FNV-1a 64 hashes of the scenario/scene files' BYTES, stamped by
+    RunScenarioDriven (AgentEvalRunner.cpp) and recomputed here byte-for-byte
+    via fnv1a64_hex -- a mismatch means the file's CONTENT changed even when
+    the checkpoint COUNT (and therefore the count cross-check above) did not.
+    The remaining advisory gap is only PROGRAMMATICALLY-BUILT scenarios that
+    carry no `sourcePath` (AgentEvalScenario.sourcePath is empty, so no
+    scenarioFileFnv/sceneFileFnv was ever stamped) -- those still rely solely
+    on the semantic-hash/count check above. The AUTHORITATIVE staleness
+    protection remains the C++ matrix resume guard, which hashes the full
+    semantic content and RE-RUNS a changed cell; re-run the matrix and this
+    report then reflects the current oracle. This pass is a best-effort
+    heads-up, not that guarantee."""
     by_scenario = defaultdict(list)
     for r in records:
         by_scenario[r.scenario_id].append(r)
@@ -556,6 +664,15 @@ def check_staleness(records, warnings):
         for r in recs:
             if r.result is None:
                 continue
+
+            # Key file lookups on the AUTHORITATIVE scenarioId stamped in the
+            # result (the raw scenario id), not the dir-parsed (sanitized)
+            # group key, so a scenario id that SanitizeForPath would rewrite
+            # still resolves to its file. Falls back to the group key for old
+            # results.
+            file_id = r.result.get("scenarioId") or scenario_id
+            scenario_path = os.path.join("evals", "scenarios", f"{file_id}.json")
+
             h = r.result.get("scenarioContentHash")
             if not h:
                 warnings.append(
@@ -563,33 +680,78 @@ def check_staleness(records, warnings):
                     f"been graded under a different scenario version: {r.dir_path}"
                 )
                 _mark_stale(r, "unversioned")
-                continue
-            hashes.add(h)
+            else:
+                hashes.add(h)
 
-            # A cheaper, filesystem-anchored cross-check: the stamped raw
-            # checkpoint count vs the scenario file's CURRENT checkpoint count.
-            # A mismatch is a definite oracle change even if the hash alone
-            # can't say which direction.
-            stored_count = r.result.get("scenarioCheckpointCount")
-            # Key the file lookup on the AUTHORITATIVE scenarioId stamped in the
-            # result (the raw scenario id), not the dir-parsed (sanitized) group
-            # key, so a scenario id that SanitizeForPath would rewrite still
-            # resolves to its file. Falls back to the group key for old results.
-            file_id = r.result.get("scenarioId") or scenario_id
-            scenario_path = os.path.join("evals", "scenarios", f"{file_id}.json")
-            try:
-                with open(scenario_path, "r", encoding="utf-8") as f:
-                    current = json.load(f)
-                current_count = len(current.get("checkpoints", []))
-            except (OSError, ValueError):
-                continue  # scenario file not found / unreadable -- skip the count check
-            if isinstance(stored_count, (int, float)) and int(stored_count) != current_count:
-                warnings.append(
-                    f"warning: STALE result: {r.dir_path} was graded with "
-                    f"{int(stored_count)} checkpoints but evals/scenarios/{scenario_id}.json "
-                    f"now has {current_count} -- re-run to refresh"
-                )
-                _mark_stale(r, "stale")
+                # A cheaper, filesystem-anchored cross-check: the stamped raw
+                # checkpoint count vs the scenario file's CURRENT checkpoint
+                # count. A mismatch is a definite oracle change even if the
+                # hash alone can't say which direction.
+                stored_count = r.result.get("scenarioCheckpointCount")
+                try:
+                    with open(scenario_path, "r", encoding="utf-8") as f:
+                        current = json.load(f)
+                    current_count = len(current.get("checkpoints", []))
+                except (OSError, ValueError):
+                    current_count = None  # scenario file not found / unreadable -- skip the count check
+                if current_count is not None and isinstance(stored_count, (int, float)) \
+                        and int(stored_count) != current_count:
+                    warnings.append(
+                        f"warning: STALE result: {r.dir_path} was graded with "
+                        f"{int(stored_count)} checkpoints but evals/scenarios/{scenario_id}.json "
+                        f"now has {current_count} -- re-run to refresh"
+                    )
+                    _mark_stale(r, "stale")
+
+            # --- Finding 2: raw file-byte FNV-1a 64 cross-check. Independent
+            # of scenarioContentHash's presence above -- runs whenever the
+            # corresponding stamp is present, closing the equal-count blind
+            # spot for FILE-backed scenarios/scenes. Absent stamps or
+            # unreadable files are skipped SILENTLY (absent means "not
+            # applicable / unknown", never "stale") -- only an actual
+            # mismatch between a present stamp and the current file's bytes
+            # warns.
+            scenario_fnv = r.result.get("scenarioFileFnv")
+            if scenario_fnv:
+                try:
+                    with open(scenario_path, "rb") as f:
+                        current_bytes = f.read()
+                except OSError:
+                    pass  # unreadable -- skip silently
+                else:
+                    if fnv1a64_hex(current_bytes) != scenario_fnv:
+                        warnings.append(
+                            f"warning: STALE result: {r.dir_path} -- evals/scenarios/{file_id}.json "
+                            f"changed since this cell was graded (file hash mismatch) -- "
+                            f"re-run to refresh"
+                        )
+                        _mark_stale(r, "stale")
+
+            scene_fnv = r.result.get("sceneFileFnv")
+            if scene_fnv:
+                scene_path = None
+                try:
+                    with open(scenario_path, "r", encoding="utf-8") as f:
+                        current_scenario = json.load(f)
+                    scene_obj = current_scenario.get("scene")
+                    if isinstance(scene_obj, dict):
+                        scene_path = scene_obj.get("path") or None
+                except (OSError, ValueError):
+                    scene_path = None
+                if scene_path:
+                    try:
+                        with open(scene_path, "rb") as f:
+                            current_scene_bytes = f.read()
+                    except OSError:
+                        pass  # unreadable -- skip silently
+                    else:
+                        if fnv1a64_hex(current_scene_bytes) != scene_fnv:
+                            warnings.append(
+                                f"warning: STALE result: {r.dir_path} -- scene file {scene_path} "
+                                f"changed since this cell was graded (file hash mismatch) -- "
+                                f"re-run to refresh"
+                            )
+                            _mark_stale(r, "stale")
 
         # Two cells in the same group with different stamped hashes means the
         # sweep straddled a scenario change -- some rows are stale regardless of
@@ -1448,6 +1610,98 @@ def selftest():
             raise AssertionError(f"scan_run_dir provider wrong; got {_recs[0].provider!r}")
     finally:
         shutil.rmtree(_tmp, ignore_errors=True)
+
+    # (6) Finding 2 cross-language pin: fnv1a64_hex must stay bit-identical
+    # to the C++ FnvHex helper (src/Library/Agent/AgentEvalRunner.cpp). See
+    # AgentEvalReplayTest.cpp for the C++-side half of this pin.
+    _hello_fnv = fnv1a64_hex(b"hello")
+    if _hello_fnv != "a430d84680aabd0b":
+        raise AssertionError(
+            f"fnv1a64_hex cross-language pin mismatch: FNV-1a 64 of b'hello' "
+            f"must be 'a430d84680aabd0b'; got {_hello_fnv!r}"
+        )
+
+    # (7) Finding 2: raw file-byte FNV staleness cross-check (scenarioFileFnv).
+    # Exercise both branches -- a stamp matching the current file's bytes must
+    # NOT warn/tag; a stamp that does not match must warn STALE + tag "stale".
+    # Uses a TEMP "evals/scenarios/" directory (via a chdir) so this test never
+    # depends on, or perturbs, the real committed scenario suite.
+    _tmp_fnv = tempfile.mkdtemp(prefix="eval_report_selftest_fnv_")
+    _orig_cwd = os.getcwd()
+    try:
+        os.makedirs(os.path.join(_tmp_fnv, "evals", "scenarios"))
+        _scn_bytes = b'{"id": "fnv_test_scenario", "checkpoints": []}'
+        _scn_path = os.path.join(_tmp_fnv, "evals", "scenarios", "fnv_test_scenario.json")
+        with open(_scn_path, "wb") as _f:
+            _f.write(_scn_bytes)
+        _correct_fnv = fnv1a64_hex(_scn_bytes)
+
+        os.chdir(_tmp_fnv)
+
+        _rec_fnv_match = RunRecord()
+        _rec_fnv_match.scenario_id = "fnv_test_scenario"
+        _rec_fnv_match.dir_path = "fake/fnv_test_scenario__anthropic__r1"
+        _rec_fnv_match.result = {"scenarioId": "fnv_test_scenario", "scenarioContentHash": "somehash",
+                                 "scenarioFileFnv": _correct_fnv}
+        _w = []
+        check_staleness([_rec_fnv_match], _w)
+        if any("STALE" in m for m in _w):
+            raise AssertionError(f"a matching scenarioFileFnv must not warn STALE; got {_w}")
+        if _rec_fnv_match.stale_marker != "":
+            raise AssertionError(
+                f"a matching scenarioFileFnv must not be stale-tagged; got {_rec_fnv_match.stale_marker!r}")
+
+        _rec_fnv_mismatch = RunRecord()
+        _rec_fnv_mismatch.scenario_id = "fnv_test_scenario"
+        _rec_fnv_mismatch.dir_path = "fake/fnv_test_scenario__anthropic__r1"
+        _rec_fnv_mismatch.result = {"scenarioId": "fnv_test_scenario", "scenarioContentHash": "somehash",
+                                    "scenarioFileFnv": "0" * 16}
+        _w = []
+        check_staleness([_rec_fnv_mismatch], _w)
+        if not any("STALE" in m and "file hash mismatch" in m for m in _w):
+            raise AssertionError(
+                f"a mismatching scenarioFileFnv must warn STALE (file hash mismatch); got {_w}")
+        if _rec_fnv_mismatch.stale_marker != "stale":
+            raise AssertionError(
+                f"a mismatching scenarioFileFnv must be tagged stale; got {_rec_fnv_mismatch.stale_marker!r}")
+    finally:
+        os.chdir(_orig_cwd)
+        shutil.rmtree(_tmp_fnv, ignore_errors=True)
+
+    # (8) Finding 1b: discovery reversibility. A dir-leaf whose right-to-left
+    # provider scan MISPARSES (a legal model id itself containing "__", e.g.
+    # "gpt__xai" inside "param_edit__openai__gpt__xai__r1") must still resolve
+    # to the STAMPED identity via scan_run_dir's *.result.jsonl glob, not the
+    # dir-parse's wrong guess.
+    _tmp_disc = tempfile.mkdtemp(prefix="eval_report_selftest_disc_")
+    try:
+        _leaf = "param_edit__openai__gpt__xai__r1"
+        # Sanity: prove the dir-leaf parse alone WOULD misparse this leaf (the
+        # premise of this test) before showing scan_run_dir corrects it.
+        _misparsed = parse_run_dir_name(_leaf)
+        if _misparsed is None or _misparsed[1] != "xai" or _misparsed[2] != "":
+            raise AssertionError(
+                f"test premise broken: expected parse_run_dir_name({_leaf!r}) to "
+                f"misparse provider='xai'/model=''; got {_misparsed}"
+            )
+        _leaf_dir = os.path.join(_tmp_disc, _leaf)
+        os.makedirs(_leaf_dir)
+        with open(os.path.join(_leaf_dir, "param_edit.result.jsonl"), "w", encoding="utf-8") as _f:
+            _f.write(json.dumps({"scenarioId": "param_edit", "provider": "openai",
+                                 "model": "gpt__xai"}) + "\n")
+        _recs = scan_run_dir(_tmp_disc, [])
+        if len(_recs) != 1:
+            raise AssertionError(f"scan_run_dir should find exactly 1 record; got {len(_recs)}")
+        _r = _recs[0]
+        if (_r.scenario_id, _r.provider, _r.model) != ("param_edit", "openai", "gpt__xai"):
+            raise AssertionError(
+                "scan_run_dir must recover the STAMPED identity from a misparsed dir-leaf; "
+                f"got scenario_id={_r.scenario_id!r} provider={_r.provider!r} model={_r.model!r}"
+            )
+        if _r.rep != 1:
+            raise AssertionError(f"scan_run_dir rep wrong; got {_r.rep!r}")
+    finally:
+        shutil.rmtree(_tmp_disc, ignore_errors=True)
 
     print("eval_report selftest: ALL PASS")
     return 0

@@ -196,6 +196,17 @@ namespace RISE
 			std::string id;
 			std::string title;
 
+			//! The evals/scenarios/*.json file this was loaded from; empty for
+			//! a programmatically-built scenario (e.g. a test that fills an
+			//! AgentEvalScenario in memory without going through
+			//! LoadEvalScenario).  Set by LoadEvalScenario to the `path` it
+			//! was called with.  Used ONLY to stamp result.jsonl's
+			//! "scenarioFileFnv" (a raw file-byte FNV-1a 64 hash a standalone
+			//! Python reporter can trivially recompute) -- see
+			//! RunScenarioDriven's result-summary write and
+			//! tools/eval_report.py's check_staleness.
+			std::string sourcePath;
+
 			//! Exactly one of these is non-empty after a successful load
 			//! (LoadEvalScenario enforces scene.path XOR scene.inline).
 			std::string scenePath;     //!< scene.path: loaded AS-IS

@@ -655,18 +655,54 @@ namespace RISE
 				return false;
 			}
 			out.id = root.get( "id" ).asString();
+			out.sourcePath = path;
 
-			// Review-round P2: the id is concatenated into filesystem paths
+			// Review-round P2 + Finding-1a hardening (report-artifact-discovery
+			// reversibility): the id is concatenated into filesystem paths
 			// (temp scene, trajectory, result) -- it MUST be a bare token so a
-			// scenario can never write outside runDir.  Mirrors the read_skill
-			// bare-name rule (AgentRpc.h: '/', '\\', ".." rejected).  The
-			// scenario JSON is dev-committed today, but this closes the hole
-			// before E4's live runner or any less-trusted scenario source.
+			// scenario can never write outside runDir, AND it must round-trip
+			// through SanitizeForPath (Section 3c) bit-for-bit so a reporter
+			// reconstructing "<id>.result.jsonl" from a run-dir leaf's parsed
+			// scenario-id field can never miss the raw file on disk.  Three
+			// loud rules:
+			//   (i)   no '/', '\\', or ".." (path traversal / escape) -- mirrors
+			//         the read_skill bare-name rule (AgentRpc.h: '/', '\\', ".."
+			//         rejected);
+			//   (ii)  every character must be one SanitizeForPath itself LEAVES
+			//         UNTOUCHED ([A-Za-z0-9._-]) -- so SanitizeForPath(id) == id
+			//         ALWAYS (a raw id with, say, a ':' sanitizes to a run-dir
+			//         leaf that no longer matches the raw "<id>.result.jsonl"
+			//         filename);
+			//   (iii) the id must not contain "__" -- RunEvalMatrix's run-dir
+			//         leaf is "<id>__<provider>[__<model>]__r<repeat>"
+			//         (SanitizeForPath is applied per-field, not to the whole
+			//         leaf); an id containing "__" makes that leaf ambiguous to
+			//         parse back apart into its fields.
+			// The scenario JSON is dev-committed today, but this closes the
+			// hole before E4's live runner or any less-trusted scenario source.
+			// Every committed scenario id (param_edit, reserved_name_recovery,
+			// ... single underscores only) already satisfies all three.
 			if( out.id.find( '/' ) != std::string::npos ||
 			    out.id.find( '\\' ) != std::string::npos ||
 			    out.id.find( ".." ) != std::string::npos ) {
 				err = "scenario id '" + out.id + "' must be a BARE token -- no '/', '\\\\', or \"..\" "
 				      "(it is used to build filesystem paths under the run dir)";
+				return false;
+			}
+			for( std::size_t i = 0; i < out.id.size(); ++i ) {
+				const unsigned char c = static_cast<unsigned char>( out.id[i] );
+				if( !( std::isalnum( c ) || c == '-' || c == '.' || c == '_' ) ) {
+					err = "scenario id '" + out.id + "' must consist only of [A-Za-z0-9._-] -- "
+					      "exactly the character set SanitizeForPath leaves untouched, so the raw "
+					      "id and its run-dir leaf are always identical (found disallowed character '" +
+					      std::string( 1, static_cast<char>( c ) ) + "' at index " + std::to_string( i ) + ")";
+					return false;
+				}
+			}
+			if( out.id.find( "__" ) != std::string::npos ) {
+				err = "scenario id '" + out.id + "' must not contain \"__\" -- that is the run-dir "
+				      "field separator (\"<id>__<provider>[__<model>]__r<repeat>\"); an id containing "
+				      "it makes the run-dir leaf ambiguous to parse back apart";
 				return false;
 			}
 
@@ -898,6 +934,43 @@ namespace RISE
 				return "";   // unreachable for a valid enum value; keeps -Wreturn-type quiet on all compilers
 			}
 
+			//! Shared FNV-1a 64-bit hex digest over an arbitrary byte string (16
+			//! lowercase hex chars, zero-padded).  Factored out of
+			//! ScenarioContentHash so the SAME implementation also backs
+			//! FnvHexOfFile below -- the raw-file-byte hashes stamped into
+			//! result.jsonl ("scenarioFileFnv" / "sceneFileFnv") that
+			//! tools/eval_report.py recomputes independently in Python
+			//! (fnv1a64_hex) to close the equal-count-edit blind spot a bare
+			//! semantic ScenarioContentHash can't: the two implementations are
+			//! pinned bit-identical against the FNV-1a 64 of "hello".
+			std::string FnvHex( const std::string& bytes )
+			{
+				std::uint64_t hash = 14695981039346656037ull;
+				const std::uint64_t prime = 1099511628211ull;
+				for( char ch : bytes ) {
+					hash ^= static_cast<unsigned char>( ch );
+					hash *= prime;
+				}
+				char buf[17];
+				std::snprintf( buf, sizeof( buf ), "%016llx", static_cast<unsigned long long>( hash ) );
+				return std::string( buf );
+			}
+
+			//! FnvHex of a file's raw bytes (binary read).  Returns "" when the
+			//! file cannot be opened -- callers treat that as "not applicable /
+			//! unknown" and OMIT the stamped key entirely rather than writing a
+			//! misleading empty hash (see RunScenarioDriven's result-summary
+			//! write, and eval_report.py's check_staleness, which skips the
+			//! comparison when the key is absent).
+			std::string FnvHexOfFile( const std::string& path )
+			{
+				std::ifstream f( path.c_str(), std::ios::binary );
+				if( !f ) return std::string();
+				std::ostringstream ss;
+				ss << f.rdbuf();
+				return FnvHex( ss.str() );
+			}
+
 			//! Methodology epoch, folded into ScenarioContentHash. BUMP THIS by one whenever
 			//! a harness-side change alters how runs are DRIVEN or GRADED without touching
 			//! any scenario file -- a system-prompt change, a tool-definition change, a
@@ -983,16 +1056,7 @@ namespace RISE
 				}
 				canon += "interventions=" + JsonSerialize( ivArr ) + "\n";
 
-				// FNV-1a 64-bit over the canonical byte string.
-				std::uint64_t hash = 14695981039346656037ull;
-				const std::uint64_t prime = 1099511628211ull;
-				for( char ch : canon ) {
-					hash ^= static_cast<unsigned char>( ch );
-					hash *= prime;
-				}
-				char buf[17];
-				std::snprintf( buf, sizeof( buf ), "%016llx", static_cast<unsigned long long>( hash ) );
-				return std::string( buf );
+				return FnvHex( canon );
 			}
 
 			//! One round's outcome from a body source (replay OR live
@@ -1396,6 +1460,23 @@ namespace RISE
 					JsonValue::MakeNumber( static_cast<double>( scenario.checkpoints.isArray() ? scenario.checkpoints.size() : 0 ) ) );
 				r.set( "provider", JsonValue::MakeString( ChatProviderName( provider ) ) );
 				r.set( "model", JsonValue::MakeString( modelId ) );
+
+				// Raw file-byte FNV-1a 64 hashes (Finding 2): unlike
+				// ScenarioContentHash (a semantic canonicalization only this C++
+				// binary can recompute), these are trivially recomputable
+				// byte-for-byte by a standalone Python reporter -- closing the
+				// "equal checkpoint count but different content" blind spot for
+				// FILE-backed scenarios/scenes.  Keys are OMITTED entirely (not
+				// stamped as "") when not applicable/unreadable -- absent means
+				// "no check", never "stale".
+				if( !scenario.sourcePath.empty() ) {
+					const std::string h = FnvHexOfFile( scenario.sourcePath );
+					if( !h.empty() ) r.set( "scenarioFileFnv", JsonValue::MakeString( h ) );
+				}
+				if( !scenario.scenePath.empty() ) {
+					const std::string h = FnvHexOfFile( scenario.scenePath );
+					if( !h.empty() ) r.set( "sceneFileFnv", JsonValue::MakeString( h ) );
+				}
 
 				const std::string resultPath = JoinPath( runDir, scenario.id + ".result.jsonl" );
 				{

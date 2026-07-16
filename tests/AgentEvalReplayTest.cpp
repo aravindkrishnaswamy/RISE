@@ -54,6 +54,7 @@
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -125,6 +126,26 @@ static bool WriteFile( const std::string& path, const std::string& text )
 	if( !f ) return false;
 	f.write( text.data(), static_cast<std::streamsize>( text.size() ) );
 	return true;
+}
+
+//! Test-local, INDEPENDENT reimplementation of FNV-1a 64 (NOT a call into
+//! AgentEvalRunner.cpp's anonymous-namespace FnvHex, which this TU cannot
+//! see) -- the C++-side half of the Finding-2 cross-language pin. The Python
+//! reporter's --selftest pins fnv1a64_hex(b"hello") ==
+//! "a430d84680aabd0b"; T9 below pins this implementation against a real
+//! stamped result.jsonl instead (both must independently recompute the SAME
+//! digest over the SAME file bytes for the staleness check to mean anything).
+static std::string TestFnvHex( const std::string& bytes )
+{
+	std::uint64_t hash = 14695981039346656037ull;
+	const std::uint64_t prime = 1099511628211ull;
+	for( char ch : bytes ) {
+		hash ^= static_cast<unsigned char>( ch );
+		hash *= prime;
+	}
+	char buf[17];
+	std::snprintf( buf, sizeof( buf ), "%016llx", static_cast<unsigned long long>( hash ) );
+	return std::string( buf );
 }
 
 //----------------------------------------------------------------------
@@ -243,6 +264,30 @@ static void TestLoadScenarioGates()
 	tryLoad( "slash_id.json",
 		"{\"id\":\"a/b\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"]}",
 		"id containing a path separator" );
+
+	// Finding 1a: the id-guard now ALSO rejects any character outside
+	// [A-Za-z0-9._-] (so SanitizeForPath(id) == id always) and any id
+	// containing "__" (the run-dir field separator).
+	tryLoad( "colon_id.json",
+		"{\"id\":\"scenario:v2\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"]}",
+		"id containing ':' (not in [A-Za-z0-9._-])" );
+	tryLoad( "dunder_id.json",
+		"{\"id\":\"scenario__v2\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"]}",
+		"id containing \"__\" (the run-dir field separator)" );
+
+	// Control: a normal (single-underscore, alnum) id still loads cleanly --
+	// the hardened guard must not over-refuse the committed-suite shape.
+	{
+		const std::string path = dir + "/normal_id.json";
+		Check( WriteFile( path,
+			"{\"id\":\"a_normal_id-2\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"]}" ),
+			"normal_id: wrote the scenario file" );
+		AgentEvalScenario s;
+		std::string err;
+		Check( LoadEvalScenario( path, s, err ), "normal_id: a bare alnum/-/._ id still loads (" + err + ")" );
+		Check( s.id == "a_normal_id-2", "normal_id: id parsed unchanged" );
+		Check( s.sourcePath == path, "normal_id: sourcePath stamped to the loaded path" );
+	}
 
 	// interventions (Part B): each malformed shape refuses LOUDLY.
 	const char* const ivHead = "{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"],\"interventions\":";
@@ -557,6 +602,60 @@ static void TestRecordOnceReplayForeverRedProve()
 	}
 }
 
+//----------------------------------------------------------------------
+// T9: Finding 2 -- RunScenario stamps scenarioFileFnv, and it equals an
+// INDEPENDENT FNV-1a64 recompute over the scenario file's raw bytes (the
+// C++-side half of the cross-language pin; see TestFnvHex above and
+// tools/eval_report.py's --selftest fnv1a64_hex(b"hello") pin).
+//----------------------------------------------------------------------
+static void TestScenarioFileFnvStamp()
+{
+	std::printf( "T9: RunScenario stamps scenarioFileFnv == independent FNV-1a64 recompute...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+	       "param_edit loads for the FNV pin (" + err + ")" );
+	Check( !scenario.sourcePath.empty(), "LoadEvalScenario stamped sourcePath" );
+
+	AgentEvalRunOptions opts;
+	opts.runDir = ScratchRunDir( "t9_fnv_pin" );
+
+	AgentEvalRunHandle h = RunScenario( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "param_edit (FNV pin run) reaches final_text (got '" + h.result.terminalStatus + "')" );
+	Check( !h.resultPath.empty(), "the FNV pin run wrote a result.jsonl" );
+
+	std::ifstream rf( h.resultPath.c_str(), std::ios::binary );
+	std::string line;
+	Check( static_cast<bool>( std::getline( rf, line ) ), "result.jsonl has a line to parse" );
+	JsonValue r;
+	std::string perr;
+	Check( JsonParse( line, r, perr ), "result.jsonl line parses as JSON (" + perr + ")" );
+
+	Check( r.has( "scenarioFileFnv" ) && r.get( "scenarioFileFnv" ).isString(),
+	       "result.jsonl stamps a string scenarioFileFnv" );
+
+	// Independent recompute over the RAW bytes of the exact file
+	// LoadEvalScenario read (scenario.sourcePath) -- this is the pin: the
+	// test's own FNV-1a64 (TestFnvHex, a separate implementation from
+	// AgentEvalRunner.cpp's file-local FnvHex) must land on the SAME digest
+	// C++ production code stamped.
+	std::ifstream sf( scenario.sourcePath.c_str(), std::ios::binary );
+	std::ostringstream ss;
+	ss << sf.rdbuf();
+	const std::string expected = TestFnvHex( ss.str() );
+
+	Check( r.get( "scenarioFileFnv" ).asString() == expected,
+	       "stamped scenarioFileFnv (" + r.get( "scenarioFileFnv" ).asString() +
+	       ") matches an independent FNV-1a64 recompute (" + expected +
+	       ") over evals/scenarios/param_edit.json's bytes" );
+
+	// param_edit's scene is INLINE (no scene.path), so sceneFileFnv must be
+	// OMITTED entirely -- absent means "not applicable", never a stale flag.
+	Check( !r.has( "sceneFileFnv" ), "param_edit (inline scene) does not stamp sceneFileFnv" );
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalReplayTest (Eval-harness slice E2: replay backend + scenario runner) ===\n" );
@@ -569,6 +668,7 @@ int main()
 	TestErrorPathScenario();
 	TestBudgetEnforcementRedProve();
 	TestRecordOnceReplayForeverRedProve();
+	TestScenarioFileFnvStamp();
 
 	std::printf( "=== AgentEvalReplayTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
