@@ -64,7 +64,7 @@ struct StartView: View {
                             .font(Theme.sans(20, .medium))
                             .foregroundColor(Theme.textPrimary)
                         Text("Open a scene you've worked on, browse for a file, or describe one for the agent to build.")
-                            .font(Theme.sans(12.5))
+                            .font(Theme.sans(13))
                             .foregroundColor(Theme.textSecondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -109,21 +109,30 @@ struct StartView: View {
 
     private var openColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Restyle round 2 (option B, user feedback 2026-07-16): headers
+            // one token step brighter + larger — textDim@11 read as
+            // decoration on the empty canvas.
             Text("Recent scenes")
-                .font(Theme.sans(11, .medium))
-                .foregroundColor(Theme.textDim)
+                .font(Theme.sans(12, .medium))
+                .foregroundColor(Theme.textSecondary)
 
             if viewModel.recentFiles.isEmpty {
                 Text("Scenes you open appear here.")
                     .font(Theme.sans(12))
-                    .foregroundColor(Theme.textMuted)
+                    .foregroundColor(Theme.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 26)
+                    .background(Theme.bgCard)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Theme.borderHairline, lineWidth: 1)
+                            .stroke(Theme.borderLight, lineWidth: 1)
                     )
             } else {
+                // Option B: the list is a RAISED surface (bgCard, a step
+                // lighter than the canvas) with a visible border — controls
+                // sit on it instead of text floating on the window
+                // background.
                 VStack(spacing: 0) {
                     ForEach(viewModel.recentFiles, id: \.self) { path in
                         recentRow(path)
@@ -132,9 +141,11 @@ struct StartView: View {
                         }
                     }
                 }
+                .background(Theme.bgCard)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Theme.borderHairline, lineWidth: 1)
+                        .stroke(Theme.borderLight, lineWidth: 1)
                 )
             }
 
@@ -159,8 +170,8 @@ struct StartView: View {
             .buttonStyle(.plain)
 
             Text("or drop a .RISEscene here")
-                .font(Theme.sans(10.5))
-                .foregroundColor(Theme.textMuted)
+                .font(Theme.sans(11))
+                .foregroundColor(Theme.textDim)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
     }
@@ -174,28 +185,30 @@ struct StartView: View {
         let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         let folder = (path as NSString).deletingLastPathComponent
 
-        // Clickable-affordance styling (user feedback 2026-07-16): hover
-        // highlight + accent name + trailing chevron + pointing-hand cursor,
-        // so the rows read as buttons rather than a static list.
+        // Option-B row styling (restyle round 2): the affordance is visible
+        // AT REST, not only on hover — accent file icon, textPrimary name,
+        // one textSecondary meta line ("folder · time"), and an
+        // always-visible accent chevron.  Hover adds a fill tint + brighter
+        // accent, and the pointing-hand cursor.
         let hovered = hoveredRecentPath == path && exists
 
         HStack(spacing: 10) {
-            Image(systemName: exists ? "photo" : "photo.slash" /* missing */)
-                .font(.system(size: 13))
+            Image(systemName: exists ? "cube" : "cube.transparent" /* missing */)
+                .font(.system(size: 14))
                 .foregroundColor(exists ? Theme.accentLight : Theme.textMuted)
-                .frame(width: 18)
+                .frame(width: 20)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
                     .font(Theme.sans(12.5, .medium))
                     .foregroundColor(exists
-                        ? (hovered ? Theme.accentLight : Theme.textPrimary)
+                        ? (hovered ? .white : Theme.textPrimary)
                         : Theme.textSecondary)
                     .lineLimit(1)
                 if exists {
-                    Text((folder as NSString).abbreviatingWithTildeInPath)
+                    Text(metaLine(folder: folder, path: path))
                         .font(Theme.sans(10.5))
-                        .foregroundColor(Theme.textMuted)
+                        .foregroundColor(Theme.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.head)
                 } else {
@@ -207,13 +220,9 @@ struct StartView: View {
             Spacer(minLength: 8)
 
             if exists {
-                Text(relativeTime(for: path))
-                    .font(Theme.sans(10.5))
-                    .foregroundColor(Theme.textMuted)
-                    .lineLimit(1)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(hovered ? Theme.accentLight : Theme.textMuted)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.accentLight)
             } else {
                 Button {
                     viewModel.removeRecentFile(path)
@@ -227,7 +236,7 @@ struct StartView: View {
             }
         }
         .padding(.horizontal, 11)
-        .padding(.vertical, 8)
+        .padding(.vertical, 9)
         .background(hovered ? Theme.fillHover : Color.clear)
         .contentShape(Rectangle())
         .opacity(exists ? 1.0 : 0.6)
@@ -245,7 +254,7 @@ struct StartView: View {
                 if exists { NSCursor.arrow.set() }
             }
         }
-        .help(exists ? "Open \(name)" : "")
+        .help(exists ? "Open \(path)" : "")
         .onTapGesture {
             // A missing row does nothing on click (no error dialog) —
             // its ✕ is the affordance.
@@ -270,14 +279,25 @@ struct StartView: View {
         return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
+    /// Option-B meta line: the folder's LAST TWO components + the relative
+    /// time, joined with a middot ("Tests/VCM · 2m ago").  The short tail
+    /// beats the old full ~-abbreviated path for both contrast and scan
+    /// speed; the full path stays available via the row tooltip.
+    private func metaLine(folder: String, path: String) -> String {
+        let comps = (folder as NSString).pathComponents.suffix(2)
+        let shortFolder = comps.joined(separator: "/")
+        let time = relativeTime(for: path)
+        return time.isEmpty ? shortFolder : "\(shortFolder) · \(time)"
+    }
+
     // MARK: - Right column: create with the agent
 
     private var createColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Text("Create with the agent")
-                    .font(Theme.sans(11, .medium))
-                    .foregroundColor(Theme.textDim)
+                    .font(Theme.sans(12, .medium))
+                    .foregroundColor(Theme.textSecondary)
                 Spacer()
                 if viewModel.chat.agentConfigured {
                     Text(viewModel.chat.provider.displayName)
@@ -354,8 +374,8 @@ struct StartView: View {
                 .disabled(createInFlight)
 
                 Text("Loads a blank stage, then the agent builds your scene from the description.")
-                    .font(Theme.sans(10.5))
-                    .foregroundColor(Theme.textMuted)
+                    .font(Theme.sans(11))
+                    .foregroundColor(Theme.textDim)
             } else {
                 // Unconfigured state (spec §6): path 3 must never dead-end.
                 VStack(alignment: .leading, spacing: 8) {

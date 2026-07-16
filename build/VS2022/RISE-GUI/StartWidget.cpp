@@ -16,6 +16,8 @@
 #include <QLabel>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QEnterEvent>
+#include <QEvent>
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -46,6 +48,26 @@ protected:
     {
         if (event->button() == Qt::LeftButton && m_onClick) m_onClick();
         QWidget::mousePressEvent(event);
+    }
+
+    // Option-B restyle (2026-07-16): hover fill tint so the row visibly
+    // reacts.  Palette toggle rather than QSS -- a non-Q_OBJECT class has
+    // metaObject className "QWidget", so a QSS type selector would style
+    // every child widget too.  Clickable rows only.
+    void enterEvent(QEnterEvent* event) override
+    {
+        if (m_onClick) {
+            QPalette pal = palette();
+            pal.setColor(QPalette::Window, Theme::fillHover);
+            setPalette(pal);
+            setAutoFillBackground(true);
+        }
+        QWidget::enterEvent(event);
+    }
+    void leaveEvent(QEvent* event) override
+    {
+        setAutoFillBackground(false);
+        QWidget::leaveEvent(event);
     }
 
 private:
@@ -144,15 +166,18 @@ QWidget* StartWidget::buildOpenColumn()
     colLayout->setSpacing(10);
 
     auto* header = new QLabel(tr("Recent scenes"), col);
-    header->setFont(Theme::sans(11, QFont::DemiBold));
-    header->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    header->setFont(Theme::sans(12, QFont::DemiBold));
+    header->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
     colLayout->addWidget(header);
 
     m_recentsContainer = new QFrame(col);
     m_recentsContainer->setFrameShape(QFrame::NoFrame);
+    // Option-B restyle: the list is a RAISED surface (bgCard) with a
+    // visible border -- controls sit ON it instead of text floating on the
+    // window background (contrast feedback 2026-07-16).
     m_recentsContainer->setStyleSheet(QStringLiteral(
-        "QFrame { border: 1px solid %1; border-radius: %2px; }")
-        .arg(Theme::hex(Theme::borderHairline)).arg(Theme::radiusMedium));
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+        .arg(Theme::hex(Theme::bgCard), Theme::hex(Theme::borderLight)).arg(Theme::radiusMedium));
     m_recentsLayout = new QVBoxLayout(m_recentsContainer);
     m_recentsLayout->setContentsMargins(0, 0, 0, 0);
     m_recentsLayout->setSpacing(0);
@@ -172,9 +197,9 @@ QWidget* StartWidget::buildOpenColumn()
     colLayout->addWidget(browseBtn);
 
     auto* dropHint = new QLabel(tr("or drop a .RISEscene here"), col);
-    dropHint->setFont(Theme::sans(10));
+    dropHint->setFont(Theme::sans(11));
     dropHint->setAlignment(Qt::AlignHCenter);
-    dropHint->setStyleSheet(QStringLiteral("color: %1; margin-top: 4px;").arg(Theme::hex(Theme::textMuted)));
+    dropHint->setStyleSheet(QStringLiteral("color: %1; margin-top: 4px;").arg(Theme::hex(Theme::textDim)));
     colLayout->addWidget(dropHint);
 
     colLayout->addStretch(1);
@@ -198,40 +223,59 @@ QWidget* StartWidget::buildRecentRow(const QString& path, qint64 epochSeconds)
     row->setAutoFillBackground(false);
 
     auto* rowLayout = new QHBoxLayout(row);
-    rowLayout->setContentsMargins(11, 8, 11, 8);
+    rowLayout->setContentsMargins(11, 9, 11, 9);
     rowLayout->setSpacing(10);
+
+    // Option-B restyle (2026-07-16): affordance visible AT REST -- accent
+    // scene glyph, medium-weight primary name, ONE textSecondary meta line
+    // ("Tests/VCM · 2m ago"; full path in the tooltip), and an always-
+    // visible accent chevron.
+    auto* iconLabel = new QLabel(QString::fromUtf8("\xE2\x97\x86"), row);   // ◆
+    iconLabel->setFont(Theme::sans(11));
+    iconLabel->setFixedWidth(16);
+    iconLabel->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+        .arg(Theme::hex(exists ? Theme::accentLight : Theme::textMuted)));
+    rowLayout->addWidget(iconLabel);
 
     auto* textCol = new QVBoxLayout();
     textCol->setSpacing(1);
 
     auto* nameLabel = new QLabel(name, row);
-    nameLabel->setFont(Theme::sans(12));
-    nameLabel->setStyleSheet(QStringLiteral("color: %1;")
+    nameLabel->setFont(Theme::sans(12, QFont::Medium));
+    nameLabel->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
         .arg(Theme::hex(exists ? Theme::textPrimary : Theme::textSecondary)));
     textCol->addWidget(nameLabel);
 
     auto* subLabel = new QLabel(row);
     subLabel->setFont(Theme::sans(10));
     if (exists) {
-        subLabel->setText(folder);
-        subLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textMuted)));
+        // Folder TAIL (last two components) + relative time, one line.
+        const QStringList parts = folder.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        const QString shortFolder = parts.size() >= 2
+            ? parts.at(parts.size() - 2) + QLatin1Char('/') + parts.last()
+            : (parts.isEmpty() ? folder : parts.last());
+        const QString timeStr = epochSeconds > 0 ? relativeTimeString(epochSeconds) : QString();
+        subLabel->setText(timeStr.isEmpty()
+            ? shortFolder
+            : shortFolder + QString::fromUtf8(" \xC2\xB7 ") + timeStr);   // ·
+        subLabel->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+            .arg(Theme::hex(Theme::textSecondary)));
+        row->setToolTip(tr("Open %1").arg(path));
     } else {
         subLabel->setText(tr("file not found"));
-        subLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::error)));
+        subLabel->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+            .arg(Theme::hex(Theme::error)));
     }
     textCol->addWidget(subLabel);
 
     rowLayout->addLayout(textCol, 1);
 
     if (exists) {
-        auto* timeLabel = new QLabel(row);
-        timeLabel->setFont(Theme::sans(10));
-        timeLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textMuted)));
-        // Absence of meta (old installs, or a path added before this
-        // feature) renders the row without a time rather than migrating
-        // -- spec §5.4.
-        timeLabel->setText(epochSeconds > 0 ? relativeTimeString(epochSeconds) : QString());
-        rowLayout->addWidget(timeLabel);
+        auto* chevron = new QLabel(QString::fromUtf8("\xE2\x80\xBA"), row);   // ›
+        chevron->setFont(Theme::sans(14, QFont::DemiBold));
+        chevron->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
+            .arg(Theme::hex(Theme::accentLight)));
+        rowLayout->addWidget(chevron);
     } else {
         auto* removeBtn = new QPushButton(QString::fromUtf8("\xE2\x9C\x95"), row);   // ✕
         removeBtn->setFlat(true);
@@ -268,7 +312,7 @@ void StartWidget::rebuildRecentsList()
         empty->setFont(Theme::sans(12));
         empty->setAlignment(Qt::AlignCenter);
         empty->setWordWrap(true);
-        empty->setStyleSheet(QStringLiteral("color: %1; padding: 26px 12px;").arg(Theme::hex(Theme::textMuted)));
+        empty->setStyleSheet(QStringLiteral("color: %1; padding: 26px 12px; background: transparent;").arg(Theme::hex(Theme::textSecondary)));
         m_recentsLayout->addWidget(empty);
         return;
     }
@@ -317,8 +361,8 @@ QWidget* StartWidget::buildCreateColumn()
 
     auto* headerRow = new QHBoxLayout();
     auto* header = new QLabel(tr("Create with the agent"), col);
-    header->setFont(Theme::sans(11, QFont::DemiBold));
-    header->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    header->setFont(Theme::sans(12, QFont::DemiBold));
+    header->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
     headerRow->addWidget(header);
     headerRow->addStretch(1);
 
@@ -376,8 +420,8 @@ QWidget* StartWidget::buildCreateColumn()
     m_createFootnote = new QLabel(
         tr("Loads a blank stage, then the agent builds your scene from the description."), col);
     m_createFootnote->setWordWrap(true);
-    m_createFootnote->setFont(Theme::sans(10));
-    m_createFootnote->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textMuted)));
+    m_createFootnote->setFont(Theme::sans(11));
+    m_createFootnote->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
     colLayout->addWidget(m_createFootnote);
 
     // Unconfigured state (spec §6): path 3 must never dead-end.
