@@ -145,7 +145,7 @@ static void TestLoadSeedScenarios()
 		Check( s.autonomy == "commit", "param_edit autonomy default is commit" );
 		Check( s.prompts.size() == 1 && s.prompts[0] == "Recolor the sphere albedo to red",
 		       "param_edit single prompt captured verbatim" );
-		Check( s.budgets.maxToolCalls == 4 && s.budgets.maxLlmCalls == 4,
+		Check( s.budgets.maxToolCalls == 10 && s.budgets.maxLlmCalls == 12,
 		       "param_edit budgets parsed" );
 		Check( s.replayFixturePath == "evals/fixtures/param_edit.fixture.jsonl",
 		       "param_edit replay.fixture path captured" );
@@ -170,7 +170,7 @@ static void TestLoadSeedScenarios()
 		Check( LoadEvalScenario( "evals/scenarios/two_tool_observe.json", s, err ),
 		       "two_tool_observe.json loads (" + err + ")" );
 		Check( s.id == "two_tool_observe", "two_tool_observe id" );
-		Check( s.budgets.maxToolCalls == 5, "two_tool_observe budgets parsed" );
+		Check( s.budgets.maxToolCalls == 10 && s.budgets.maxLlmCalls == 12, "two_tool_observe budgets parsed" );
 		// Eval-harness slice E3: a render band + a trajectory bound.
 		Check( s.checkpoints.isArray() && s.checkpoints.size() == 2,
 		       "two_tool_observe checkpoints carried opaquely (2 entries, wired by E3)" );
