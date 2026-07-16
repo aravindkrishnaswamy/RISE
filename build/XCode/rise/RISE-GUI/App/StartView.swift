@@ -232,12 +232,17 @@ struct StartView: View {
         .contentShape(Rectangle())
         .opacity(exists ? 1.0 : 0.6)
         .onHover { inside in
+            // Stateless NSCursor.set() (review P1): push()/pop() leaked a
+            // pushed pointing-hand when clicking a row — loadScene swaps
+            // StartView out SYNCHRONOUSLY, the exit-hover never fires, and
+            // the orphaned push left the hand cursor stuck over the
+            // workspace.  set() has no stack to unbalance.
             if inside {
                 hoveredRecentPath = path
-                if exists { NSCursor.pointingHand.push() }
+                if exists { NSCursor.pointingHand.set() }
             } else {
                 if hoveredRecentPath == path { hoveredRecentPath = nil }
-                if exists { NSCursor.pop() }
+                if exists { NSCursor.arrow.set() }
             }
         }
         .help(exists ? "Open \(name)" : "")
@@ -245,6 +250,9 @@ struct StartView: View {
             // A missing row does nothing on click (no error dialog) —
             // its ✕ is the affordance.
             guard exists else { return }
+            // The click unmounts this view synchronously — restore the
+            // cursor NOW (the exit-hover event will never arrive).
+            NSCursor.arrow.set()
             viewModel.loadScene(at: path)
         }
     }

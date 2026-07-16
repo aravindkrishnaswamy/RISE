@@ -335,7 +335,7 @@ QWidget* StartWidget::buildCreateColumn()
     // switch models / add keys from the start screen even when already
     // configured -- routes to the same place the unconfigured Set up...
     // button does (the Agent tab's inline provider/model/key row).
-    auto* configBtn = new QPushButton(tr("\xE2\x9A\x99"), col);   // gear
+    auto* configBtn = new QPushButton(QString::fromUtf8("\xE2\x9A\x99"), col);   // gear (house idiom, see ViewportProperties)
     configBtn->setFont(Theme::sans(11));
     configBtn->setCursor(Qt::PointingHandCursor);
     configBtn->setFlat(true);

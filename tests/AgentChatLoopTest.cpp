@@ -502,7 +502,7 @@ static void TestXaiAndLocalRequestShape()
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Local );
 		Check( loop.Provider() == ChatProvider::Local, "provider is Local" );
-		Check( loop.ModelId() == "qwen3:32b", "default local model id is qwen3:32b" );
+		Check( loop.ModelId() == "opencoder", "default local model id is opencoder" );
 
 		loop.AddUserMessage( "Make the sphere red" );
 		const ChatHttpRequest req = loop.BuildRequest( std::string() );   // NO key
@@ -515,7 +515,7 @@ static void TestXaiAndLocalRequestShape()
 		       "local request carries the raised 900s transport timeout budget "
 		       "(cold model swap + long generation legitimately exceeds 300s, FIX 1)" );
 		JsonValue root = ParseBody( req.body );
-		Check( root.get( "model" ).asString() == "qwen3:32b", "local body carries the qwen3:32b model id" );
+		Check( root.get( "model" ).asString() == "opencoder", "local body carries the qwen3:32b model id" );
 
 		// Restore the environment for the rest of the process.
 #if defined( _WIN32 )

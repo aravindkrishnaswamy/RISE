@@ -28,7 +28,7 @@ screen should instead present the three real user intents simultaneously:
 ## 3. Layout
 
 Replaces the placeholder in the center column whenever no scene is loaded
-(fresh launch AND after Close Scene).  The top bar, menus, and log drawer stay;
+(fresh launch AND after Clear Scene).  The top bar, menus, and log drawer stay;
 the left/right panels are hidden as today (no bridge exists yet).
 
 ```
@@ -115,7 +115,7 @@ make it a supported state everywhere:
   affordance route to the file-picker path; after a successful Save-As the
   scene gains a path, joins recents, and behaves as a normal scene).
 - Untitled scenes never enter the recents list (nothing to reopen).
-- Close Scene with unsaved edits (scene OR raw editor text, named OR
+- Clear Scene with unsaved edits (scene OR raw editor text, named OR
   untitled) prompts Save / Discard / Cancel.  (Round-2 review: this flow
   did not previously exist for ANY scene — implemented on this branch;
   Save routes untitled scenes to Save-As and a cancelled save aborts the
@@ -184,7 +184,7 @@ i.e. the same point where `sceneOpened` fires today.  Implement as
   workspace with the error in the chat transcript — the untitled empty scene
   stays open (they can retry by typing; nothing is torn down).
 - **Prompt length**: cap at the chat input's existing limit; no new rule.
-- **Close Scene returns here**: the start screen re-renders with updated
+- **Clear Scene returns here**: the start screen re-renders with updated
   recents (the just-closed scene now first).
 - **Render Animation while untitled**: the movie output path is derived
   from the scene path, so an untitled scene renders animation frames with
