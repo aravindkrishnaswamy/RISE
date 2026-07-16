@@ -44,6 +44,18 @@ namespace RISE
 	{
 		namespace
 		{
+
+			//! The single filesystem-identity charset predicate: true for the
+			//! characters SanitizeForPath PRESERVES.  Used by BOTH the loader's
+			//! scenario-id contract check (LoadEvalScenario) and SanitizeForPath
+			//! itself so the two can never drift apart -- two textually-identical
+			//! copies would silently reopen the raw-vs-sanitized filename
+			//! mismatch the id contract exists to prevent.
+			inline bool IsSanitizePreservedChar( char ch )
+			{
+				const unsigned char u = static_cast<unsigned char>( ch );
+				return std::isalnum( u ) || ch == '-' || ch == '.' || ch == '_';
+			}
 			//----------------------------------------------------------
 			// Headless propose-mode mock-Owner.
 			//----------------------------------------------------------
@@ -691,7 +703,7 @@ namespace RISE
 			}
 			for( std::size_t i = 0; i < out.id.size(); ++i ) {
 				const unsigned char c = static_cast<unsigned char>( out.id[i] );
-				if( !( std::isalnum( c ) || c == '-' || c == '.' || c == '_' ) ) {
+				if( !IsSanitizePreservedChar( out.id[i] ) ) {
 					err = "scenario id '" + out.id + "' must consist only of [A-Za-z0-9._-] -- "
 					      "exactly the character set SanitizeForPath leaves untouched, so the raw "
 					      "id and its run-dir leaf are always identical (found disallowed character '" +
@@ -1747,8 +1759,7 @@ namespace RISE
 				std::string o;
 				o.reserve( s.size() );
 				for( std::size_t i = 0; i < s.size(); ++i ) {
-					const unsigned char u = static_cast<unsigned char>( s[i] );
-					if( std::isalnum( u ) || s[i] == '-' || s[i] == '.' || s[i] == '_' ) o += s[i];
+					if( IsSanitizePreservedChar( s[i] ) ) o += s[i];
 					else o += '_';
 				}
 				if( o.empty() ) o = "x";

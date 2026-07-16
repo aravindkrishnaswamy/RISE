@@ -578,11 +578,14 @@ int main( int argc, char** argv )
 		std::cout << "on setting this path." << std::endl;
 		std::cout << std::endl;
 	} else {
-		// Agent mode (stdio OR http -- this message is shared across both
-		// transports, see `agentMode`'s pre-scan above): keep stdout clean,
-		// but the guidance is still useful -- route it to stderr so a
-		// caller diagnosing missing resources sees it.
-		std::cerr << "rise --agent-stdio/--agent-http: 'RISE_MEDIA_PATH' is not set; "
+		// Agent mode (ANY of the agentMode pre-scan's flags -- stdio, http,
+		// --agent-eval): keep stdout clean, but the guidance is still useful
+		// -- route it to stderr so a caller diagnosing missing resources
+		// sees it.  Generic prefix: this fires for every agent-mode flag,
+		// not just the two transports (the old hardcoded
+		// "--agent-stdio/--agent-http:" prefix misattributed which flag was
+		// running under --agent-eval).
+		std::cerr << "rise (agent mode): 'RISE_MEDIA_PATH' is not set; "
 		             "some resources may not load unless explicitly pathed.\n";
 	}
 
