@@ -44,8 +44,8 @@
       "terminalStatus": "final_text",
       "noMechanicalLoop": true,
       "toolCallAfterUserTurn": [
-        { "name": "propose_patch", "argsContains": "color", "minUserTurns": 1, "maxUserTurns": 1 },
-        { "name": "propose_patch", "argsContains": "radius", "minUserTurns": 2 }
+        { "name": "propose_patch", "argsContains": ["pnt_albedo", "color"], "minUserTurns": 1, "maxUserTurns": 1, "expect": "applied" },
+        { "name": "propose_patch", "argsContains": "radius", "minUserTurns": 2, "expect": "applied" }
       ]
     }
   ]

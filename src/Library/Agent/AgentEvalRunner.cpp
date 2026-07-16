@@ -423,6 +423,11 @@ namespace RISE
 			//! satisfies the assertion" existentially.  A target-less op WITHOUT
 			//! a chunkKind is a rubric bug (it addresses no chunk at all) and is
 			//! rejected LOUDLY here rather than deferred to a runtime failure.
+			//! The optional any-of-kind "where" co-binding filter (equality/range
+			//! entries) is validated here and rejected on the named-target form;
+			//! the "param_series_orbit" op is validated as any-of-kind-only with
+			//! bounded thresholds (minKeyframes>=2, minAngularSpreadDeg in
+			//! (0,360], maxRadiusRatio>1, centerWithin={x,z,radius}).
 			bool ValidateDocumentCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind" };
@@ -451,6 +456,97 @@ namespace RISE
 						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op '" + op +
 						      "' has no \"target\" -- the any-of-kind form REQUIRES a non-empty \"chunkKind\"";
 						return false;
+					}
+				}
+
+				// param_series_orbit is ANY-OF-KIND ONLY: it requires a
+				// non-empty "chunkKind" and a non-empty string "param", takes
+				// NO named "target", and its orbit thresholds have hard bounds
+				// (minKeyframes >= 2; minAngularSpreadDeg in (0,360];
+				// maxRadiusRatio > 1 when present; centerWithin is {x,z,radius}).
+				if( op == "param_series_orbit" ) {
+					const bool hasTarget = cp.has( "target" ) && cp.get( "target" ).isString() && !cp.get( "target" ).asString().empty();
+					const bool hasChunkKind = cp.has( "chunkKind" ) && cp.get( "chunkKind" ).isString() && !cp.get( "chunkKind" ).asString().empty();
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op 'param_series_orbit'";
+					if( hasTarget ) { err = pfx + " is any-of-kind only -- it takes no \"target\""; return false; }
+					if( !hasChunkKind ) { err = pfx + " REQUIRES a non-empty \"chunkKind\""; return false; }
+					if( !cp.has( "param" ) || !cp.get( "param" ).isString() || cp.get( "param" ).asString().empty() ) {
+						err = pfx + " REQUIRES a non-empty string \"param\""; return false;
+					}
+					if( !cp.has( "minKeyframes" ) || !cp.get( "minKeyframes" ).isNumber() || cp.get( "minKeyframes" ).asNumber() < 2.0 ) {
+						err = pfx + " REQUIRES a numeric \"minKeyframes\" >= 2"; return false;
+					}
+					if( !cp.has( "minAngularSpreadDeg" ) || !cp.get( "minAngularSpreadDeg" ).isNumber() ) {
+						err = pfx + " REQUIRES a numeric \"minAngularSpreadDeg\""; return false;
+					}
+					const double spreadReq = cp.get( "minAngularSpreadDeg" ).asNumber();
+					if( spreadReq <= 0.0 || spreadReq > 360.0 ) {
+						err = pfx + " \"minAngularSpreadDeg\" must be in (0, 360]"; return false;
+					}
+					if( cp.has( "maxRadiusRatio" ) ) {
+						if( !cp.get( "maxRadiusRatio" ).isNumber() || cp.get( "maxRadiusRatio" ).asNumber() <= 1.0 ) {
+							err = pfx + " \"maxRadiusRatio\" must be a number > 1"; return false;
+						}
+					}
+					if( cp.has( "centerWithin" ) ) {
+						const JsonValue& cw = cp.get( "centerWithin" );
+						if( !cw.isObject() ) { err = pfx + " \"centerWithin\" must be an object {x,z,radius}"; return false; }
+						if( !cw.has( "x" ) || !cw.get( "x" ).isNumber() || !cw.has( "z" ) || !cw.get( "z" ).isNumber() ||
+						    !cw.has( "radius" ) || !cw.get( "radius" ).isNumber() ) {
+							err = pfx + " \"centerWithin\" requires numeric \"x\",\"z\",\"radius\""; return false;
+						}
+						if( cw.get( "radius" ).asNumber() < 0.0 ) { err = pfx + " \"centerWithin.radius\" must be >= 0"; return false; }
+					}
+				}
+
+				// The optional co-binding "where" filter is an ANY-OF-KIND
+				// concept -- it narrows the candidate set of an existential op.
+				// Accept it only on the four any-of-kind-capable ops, and only
+				// in the target-LESS form; every entry is either an equality
+				// entry ({param, value}) or a range entry ({param, min, max}).
+				if( cp.has( "where" ) ) {
+					const bool opTakesWhere = ( op == "param_equals" || op == "param_range" ||
+						op == "param_references_kind" || op == "param_series_orbit" );
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"where\"";
+					if( !opTakesWhere ) {
+						err = pfx + ": op '" + op + "' does not accept a \"where\" filter";
+						return false;
+					}
+					const bool hasTarget = cp.has( "target" ) && cp.get( "target" ).isString() && !cp.get( "target" ).asString().empty();
+					if( hasTarget ) {
+						err = pfx + " is an any-of-kind co-binding filter -- it is not valid with a named \"target\"";
+						return false;
+					}
+					const JsonValue& w = cp.get( "where" );
+					if( !w.isArray() || w.size() == 0 ) {
+						err = pfx + " must be a NON-EMPTY array of filter entries";
+						return false;
+					}
+					for( std::size_t wi = 0; wi < w.size(); ++wi ) {
+						const JsonValue& e = w.at( wi );
+						const std::string el = pfx + "[" + std::to_string( wi ) + "]";
+						if( !e.isObject() ) { err = el + " must be an object"; return false; }
+						if( !e.has( "param" ) || !e.get( "param" ).isString() || e.get( "param" ).asString().empty() ) {
+							err = el + " requires a non-empty string \"param\""; return false;
+						}
+						const bool isRange = e.has( "min" ) || e.has( "max" );
+						if( isRange ) {
+							if( !e.has( "min" ) || !e.get( "min" ).isArray() || !e.has( "max" ) || !e.get( "max" ).isArray() ) {
+								err = el + " range entry requires array \"min\" AND array \"max\""; return false;
+							}
+							const JsonValue& mn = e.get( "min" ); const JsonValue& mx = e.get( "max" );
+							if( mn.size() == 0 || mn.size() != mx.size() ) {
+								err = el + " range entry \"min\"/\"max\" must be non-empty arrays of equal length"; return false;
+							}
+							for( std::size_t k = 0; k < mn.size(); ++k )
+								if( !mn.at( k ).isNumber() ) { err = el + " range \"min\"[" + std::to_string( k ) + "] is not a number"; return false; }
+							for( std::size_t k = 0; k < mx.size(); ++k )
+								if( !mx.at( k ).isNumber() ) { err = el + " range \"max\"[" + std::to_string( k ) + "] is not a number"; return false; }
+						} else {
+							if( !e.has( "value" ) || !e.get( "value" ).isString() ) {
+								err = el + " equality entry requires a string \"value\""; return false;
+							}
+						}
 					}
 				}
 				return true;
@@ -522,6 +618,22 @@ namespace RISE
 					if( !RequireFieldType( qa, "x", JsonValue::Type::Number, scenarioId, idx, "queryAt.x", err ) ) return false;
 					if( !RequireFieldType( qa, "y", JsonValue::Type::Number, scenarioId, idx, "queryAt.y", err ) ) return false;
 					if( !RequireFieldType( qa, "expectName", JsonValue::Type::String, scenarioId, idx, "queryAt.expectName", err ) ) return false;
+					if( !RequireFieldType( qa, "expectGeometryKind", JsonValue::Type::String, scenarioId, idx, "queryAt.expectGeometryKind", err ) ) return false;
+					// expectGeometryKind binds a HIT object's geometry to a chunk
+					// kind; it is meaningless when the query expects a MISS
+					// (expectName ""), so reject that combination at load.
+					if( qa.has( "expectGeometryKind" ) ) {
+						if( !qa.get( "expectGeometryKind" ).isString() || qa.get( "expectGeometryKind" ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"queryAt.expectGeometryKind\" must be a non-empty string";
+							return false;
+						}
+						if( qa.has( "expectName" ) && qa.get( "expectName" ).isString() && qa.get( "expectName" ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"queryAt.expectGeometryKind\" is meaningless with expectName \"\" (expect-miss)";
+							return false;
+						}
+					}
 				}
 				return true;
 			}
@@ -538,14 +650,17 @@ namespace RISE
 			//! {maxToolCalls?/maxLlmCalls?:number, terminalStatus?:string,
 			//!  noAutonomyRefusal?/noMechanicalLoop?/expectAutonomyRefusal?:bool,
 			//!  requiredToolInOrder?:string array,
-			//!  toolOutcomes?:[{name:string, occurrence?:string, expect:string, argsContains?:string},...],
+			//!  toolOutcomes?:[{name:string, occurrence?:string, expect:string, argsContains?:string|[string]},...],
 			//!  toolCallAfterUserTurn?: {name:string, minUserTurns?:number,
-			//!    maxUserTurns?:number, argsContains?:string}  -- OR an ARRAY of
-			//!    such spec objects}.  toolOutcomes.expect is one of
-			//!  applied|staged|rejected|error|conflict; toolOutcomes.argsContains
-			//!  (when present, non-empty) FILTERS which same-named records the
-			//!  spec selects among.  A toolCallAfterUserTurn spec must carry at
-			//!  least one of min/max (a spec with neither asserts nothing).
+			//!    maxUserTurns?:number, argsContains?:string|[string], expect?:string}
+			//!    -- OR an ARRAY of such spec objects}.  toolOutcomes.expect (and
+			//!  the optional toolCallAfterUserTurn.expect) is one of
+			//!  applied|staged|rejected|error|conflict; argsContains (when
+			//!  present) is a non-empty string OR a non-empty array of non-empty
+			//!  strings, ALL of which must be substrings of the record's args --
+			//!  it FILTERS which same-named records the spec selects among.  A
+			//!  toolCallAfterUserTurn spec must carry at least one of min/max (a
+			//!  spec with neither asserts nothing).
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				if( !RequireFieldType( cp, "maxToolCalls", JsonValue::Type::Number, scenarioId, idx, "maxToolCalls", err ) ) return false;
@@ -555,6 +670,43 @@ namespace RISE
 				if( !RequireFieldType( cp, "noMechanicalLoop", JsonValue::Type::Bool, scenarioId, idx, "noMechanicalLoop", err ) ) return false;
 				if( !RequireFieldType( cp, "expectAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "expectAutonomyRefusal", err ) ) return false;
 				if( !RequireArrayOfType( cp, "requiredToolInOrder", JsonValue::Type::String, scenarioId, idx, "requiredToolInOrder", err ) ) return false;
+
+				// Shared arg/expect validators so toolOutcomes and
+				// toolCallAfterUserTurn can never diverge.  argsContains accepts
+				// a non-empty string OR a non-empty array of non-empty strings.
+				auto validateArgsContains = [&]( const JsonValue& obj, const std::string& label ) -> bool {
+					if( !obj.has( "argsContains" ) ) return true;
+					const JsonValue& ac = obj.get( "argsContains" );
+					if( ac.isString() ) {
+						if( ac.asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".argsContains must be a non-empty string";
+							return false;
+						}
+						return true;
+					}
+					if( ac.isArray() ) {
+						if( ac.size() == 0 ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".argsContains array must be non-empty";
+							return false;
+						}
+						for( std::size_t i = 0; i < ac.size(); ++i ) {
+							if( !ac.at( i ).isString() || ac.at( i ).asString().empty() ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+								      ".argsContains[" + std::to_string( i ) + "] must be a non-empty string";
+								return false;
+							}
+						}
+						return true;
+					}
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+					      ".argsContains must be a string or an array of strings";
+					return false;
+				};
+				auto validExpectValue = []( const std::string& e ) -> bool {
+					return e == "applied" || e == "staged" || e == "rejected" || e == "error" || e == "conflict";
+				};
 
 				if( cp.has( "toolOutcomes" ) ) {
 					const JsonValue& arr = cp.get( "toolOutcomes" );
@@ -613,15 +765,10 @@ namespace RISE
 							}
 						}
 						// argsContains is OPTIONAL; when present it must be a
-						// NON-EMPTY string (an empty substring matches every record,
-						// asserting nothing -- reject it rather than silently no-op).
-						if( o.has( "argsContains" ) ) {
-							if( !o.get( "argsContains" ).isString() || o.get( "argsContains" ).asString().empty() ) {
-								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
-								      ".argsContains must be a non-empty string";
-								return false;
-							}
-						}
+						// non-empty string OR a non-empty array of non-empty
+						// strings (an empty needle matches every record, asserting
+						// nothing -- reject rather than silently no-op).
+						if( !validateArgsContains( o, label ) ) return false;
 					}
 				}
 
@@ -672,10 +819,15 @@ namespace RISE
 							      " must carry at least one of \"minUserTurns\"/\"maxUserTurns\" (a spec with neither asserts nothing)";
 							return false;
 						}
-						if( sp.has( "argsContains" ) ) {
-							if( !sp.get( "argsContains" ).isString() || sp.get( "argsContains" ).asString().empty() ) {
+						// argsContains accepts a non-empty string OR a non-empty
+						// array of non-empty strings.
+						if( !validateArgsContains( sp, specLabel ) ) return false;
+						// expect is OPTIONAL; when present the matching call must ALSO
+						// satisfy this outcome (same enum as toolOutcomes).
+						if( sp.has( "expect" ) ) {
+							if( !sp.get( "expect" ).isString() || !validExpectValue( sp.get( "expect" ).asString() ) ) {
 								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + specLabel +
-								      ".argsContains must be a non-empty string";
+								      ".expect must be one of applied|staged|rejected|error|conflict";
 								return false;
 							}
 						}
@@ -2298,6 +2450,35 @@ namespace RISE
 					return false;
 				}
 
+				//! EVERY value of `paramName` in a chunk, in document order.  A
+				//! repeated same-role param (e.g. a `timeline`'s repeated `value`
+				//! keyframes) is each its OWN NodeKind::Param child, so this
+				//! returns one space-joined string per occurrence -- the sibling
+				//! of CheckerChunkParamValue (which returns only the FIRST) that
+				//! series ops like param_series_orbit need to read a full keyframe
+				//! track.  An occurrence with no pvalue tokens yields an empty
+				//! string entry (kept, so positional callers see the gap).
+				std::vector<std::string> CheckerChunkParamValues( const NodeRef& chunk, const std::string& paramName )
+				{
+					std::vector<std::string> out;
+					if( !chunk ) return out;
+					for( const auto& kid : chunk->kids ) {
+						if( kid->kind != NodeKind::Param ) continue;
+						std::string pname;
+						std::vector<std::string> values;
+						for( const auto& tk : kid->kids ) {
+							if( tk->kind != NodeKind::Token ) continue;
+							if( tk->role == "pname" ) pname = tk->text;
+							else if( tk->role == "pvalue" ) values.push_back( tk->text );
+						}
+						if( pname != paramName ) continue;
+						std::string joined;
+						for( std::size_t i = 0; i < values.size(); ++i ) { if( i ) joined += ' '; joined += values[i]; }
+						out.push_back( joined );
+					}
+					return out;
+				}
+
 				//! Tokenize a space-separated string into finite doubles.
 				//! Returns false the moment ANY token fails to parse as a
 				//! complete number (trailing junk like "1abc" is rejected)
@@ -2316,6 +2497,57 @@ namespace RISE
 						if( end != begin + tok.size() ) return false;   // non-numeric / trailing junk
 						if( !std::isfinite( v ) ) return false;
 						out.push_back( v );
+					}
+					return true;
+				}
+
+				//! Evaluate the optional any-of-kind `where` co-binding filter
+				//! against a single candidate chunk.  Each entry is EITHER an
+				//! EQUALITY entry ({param, value}: the chunk's param value must
+				//! equal `value` -- 1e-4-per-component tolerance when BOTH sides
+				//! tokenize all-numeric, else exact string) OR a RANGE entry
+				//! ({param, min:[...], max:[...]}: the chunk's param float tokens
+				//! must each fall in the matching [min_i, max_i] band, mirroring
+				//! param_range).  A chunk passes ONLY when EVERY entry is
+				//! satisfied.  A missing param, a component-count mismatch, or a
+				//! non-numeric value where numbers are required all fail the entry
+				//! (the chunk is filtered OUT).  Load validation has already
+				//! enforced entry shape; the defensive shape checks here keep a
+				//! hand-built checkpoint from crashing.
+				bool CheckerChunkSatisfiesWhere( const NodeRef& chunk, const JsonValue& whereArr )
+				{
+					if( !whereArr.isArray() ) return true;   // no filter -> every chunk passes
+					for( std::size_t i = 0; i < whereArr.size(); ++i ) {
+						const JsonValue& e = whereArr.at( i );
+						if( !e.isObject() || !e.has( "param" ) || !e.get( "param" ).isString() ) return false;
+						const std::string param = e.get( "param" ).asString();
+						std::string actual;
+						if( !CheckerChunkParamValue( chunk, param, actual ) ) return false;
+						const bool isRange = e.has( "min" ) || e.has( "max" );
+						if( isRange ) {
+							if( !e.has( "min" ) || !e.get( "min" ).isArray() || !e.has( "max" ) || !e.get( "max" ).isArray() )
+								return false;
+							const JsonValue& mn = e.get( "min" );
+							const JsonValue& mx = e.get( "max" );
+							std::vector<double> mins, maxs, av;
+							for( std::size_t k = 0; k < mn.size(); ++k ) { if( !mn.at( k ).isNumber() ) return false; mins.push_back( mn.at( k ).asNumber() ); }
+							for( std::size_t k = 0; k < mx.size(); ++k ) { if( !mx.at( k ).isNumber() ) return false; maxs.push_back( mx.at( k ).asNumber() ); }
+							if( mins.empty() || mins.size() != maxs.size() ) return false;
+							if( !CheckerParseFloatTokens( actual, av ) || av.size() != mins.size() ) return false;
+							for( std::size_t k = 0; k < av.size(); ++k )
+								if( av[k] < mins[k] || av[k] > maxs[k] ) return false;
+						} else {
+							if( !e.has( "value" ) || !e.get( "value" ).isString() ) return false;
+							const std::string expected = e.get( "value" ).asString();
+							std::vector<double> av, ev;
+							if( CheckerParseFloatTokens( expected, ev ) && CheckerParseFloatTokens( actual, av ) &&
+							    av.size() == ev.size() && !ev.empty() ) {
+								for( std::size_t k = 0; k < av.size(); ++k )
+									if( std::fabs( av[k] - ev[k] ) > 1e-4 ) return false;
+							} else if( actual != expected ) {
+								return false;
+							}
+						}
 					}
 					return true;
 				}
@@ -2432,6 +2664,15 @@ namespace RISE
 				//! (or leave it empty) and supply a non-empty "chunkKind"; the op
 				//! then passes iff ANY chunk of that kind satisfies the per-chunk
 				//! assertion (the per-chunk logic is shared with the named form).
+				//! An optional any-of-kind "where":[{param,value}|{param,min,max}]
+				//! CO-BINDING filter narrows the candidate set BEFORE the per-chunk
+				//! assertion (only chunks satisfying every entry are considered) --
+				//! collapsing two independent existentials into one AND'd-on-the-
+				//! same-chunk grade.  {op:"param_series_orbit",chunkKind,where?,
+				//! param,minKeyframes,minAngularSpreadDeg,centerWithin?,
+				//! maxRadiusRatio?} (any-of-kind only) proves a single timeline's
+				//! keyframe track is a camera ORBIT rather than accepting two
+				//! independent existentials.
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -2469,6 +2710,21 @@ namespace RISE
 						std::vector<NodeRef> chunks = CheckerCollectChunksOfKind( doc, kind );
 						if( chunks.empty() )
 							return { false, opName + " (any-of-kind): no chunk of kind '" + kind + "' found", {}, true, kind };
+						// Optional co-binding "where" filter (any-of-kind ONLY --
+						// load-validated absent on the named-target form): a
+						// candidate survives only when it satisfies EVERY where
+						// entry, so two independent existentials collapse into one
+						// AND'd-on-the-same-chunk assertion.
+						if( cp.has( "where" ) && cp.get( "where" ).isArray() ) {
+							std::vector<NodeRef> filtered;
+							for( const NodeRef& c : chunks )
+								if( CheckerChunkSatisfiesWhere( c, cp.get( "where" ) ) ) filtered.push_back( c );
+							if( filtered.empty() )
+								return { false, opName + " (any-of-kind): " + std::to_string( chunks.size() ) +
+									" chunk(s) of kind '" + kind + "' found, but NONE satisfied the \"where\" co-binding filter",
+									{}, true, kind };
+							chunks.swap( filtered );
+						}
 						return { true, std::string(), chunks, true, kind };
 					};
 
@@ -2739,6 +2995,120 @@ namespace RISE
 						return runAssertion( "param_references_kind", res, evalChunk );
 					}
 
+					// param_series_orbit: ANY-OF-KIND only.  Per candidate chunk
+					// (post-`where`), collect EVERY `param` occurrence in order,
+					// parse each as 3 floats (skip malformed), dedupe consecutive
+					// duplicates, and grade the resulting XZ point track as an
+					// ORBIT: >= minKeyframes points, an angular spread (about the
+					// centerWithin point when given, else the points' XZ centroid)
+					// of >= minAngularSpreadDeg, the centroid within centerWithin's
+					// radius (when given), and a max/min radius ratio <=
+					// maxRadiusRatio (when given).  This binds a single timeline to
+					// PROVE a camera orbit rather than accepting two independent
+					// existentials.  Angular spread = 360 minus the largest gap
+					// between circularly-sorted per-point angles (a full sweep of N
+					// evenly-spaced points measures 360 - 360/N).
+					if( op == "param_series_orbit" ) {
+						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
+							return { false, "param_series_orbit missing string \"param\"" };
+						// All numeric knobs are load-validated (minKeyframes >= 2,
+						// minAngularSpreadDeg in (0,360], maxRadiusRatio > 1); these
+						// reads are defensive against a hand-built checkpoint.
+						const std::string param = cp.get( "param" ).asString();
+						const long minKeyframes = ( cp.has( "minKeyframes" ) && cp.get( "minKeyframes" ).isNumber() )
+							? static_cast<long>( cp.get( "minKeyframes" ).asNumber() ) : 2;
+						const double minSpread = ( cp.has( "minAngularSpreadDeg" ) && cp.get( "minAngularSpreadDeg" ).isNumber() )
+							? cp.get( "minAngularSpreadDeg" ).asNumber() : 0.0;
+						const bool hasCenter = cp.has( "centerWithin" ) && cp.get( "centerWithin" ).isObject();
+						double cwx = 0.0, cwz = 0.0, cwr = 0.0;
+						if( hasCenter ) {
+							const JsonValue& cw = cp.get( "centerWithin" );
+							cwx = cw.get( "x" ).asNumber( 0.0 );
+							cwz = cw.get( "z" ).asNumber( 0.0 );
+							cwr = cw.get( "radius" ).asNumber( 0.0 );
+						}
+						const bool hasRatio = cp.has( "maxRadiusRatio" ) && cp.get( "maxRadiusRatio" ).isNumber();
+						const double maxRatio = hasRatio ? cp.get( "maxRadiusRatio" ).asNumber() : 0.0;
+
+						const TargetResolution res = resolveTargets( "param_series_orbit" );
+						if( !res.ok ) return { false, res.detail };
+
+						auto evalChunk = [&]( const NodeRef& chunk, const std::string& desc ) -> CheckOutcome {
+							// Collect every `param` value; parse each as an XYZ
+							// triple (skip malformed); we grade in the XZ plane.
+							struct Pt { double x, y, z; };
+							std::vector<Pt> pts;
+							for( const std::string& s : CheckerChunkParamValues( chunk, param ) ) {
+								std::vector<double> f;
+								if( !CheckerParseFloatTokens( s, f ) || f.size() != 3 ) continue;
+								pts.push_back( { f[0], f[1], f[2] } );
+							}
+							// Dedupe CONSECUTIVE duplicates (a closing keyframe that
+							// repeats the opening one is NOT consecutive, so it is
+							// kept -- matching a closed loop's genuine keyframe count).
+							std::vector<Pt> dp;
+							for( const Pt& p : pts ) {
+								if( dp.empty() || dp.back().x != p.x || dp.back().y != p.y || dp.back().z != p.z )
+									dp.push_back( p );
+							}
+							if( static_cast<long>( dp.size() ) < minKeyframes )
+								return { false, "param_series_orbit: " + desc + " has " + std::to_string( dp.size() ) +
+									" keyframe(s) after dedupe, need >= " + std::to_string( minKeyframes ) };
+
+							// Center for the angle sweep: centerWithin when given,
+							// else the points' XZ centroid.
+							double sx = 0.0, sz = 0.0;
+							for( const Pt& p : dp ) { sx += p.x; sz += p.z; }
+							const double centroidX = sx / static_cast<double>( dp.size() );
+							const double centroidZ = sz / static_cast<double>( dp.size() );
+							const double cx = hasCenter ? cwx : centroidX;
+							const double cz = hasCenter ? cwz : centroidZ;
+
+							// Per-point angle (deg in [0,360)) + radius from center.
+							std::vector<double> deg;
+							double minDist = -1.0, maxDist = 0.0;
+							for( const Pt& p : dp ) {
+								const double dx = p.x - cx, dz = p.z - cz;
+								double a = std::atan2( dz, dx ) * ( 180.0 / 3.14159265358979323846 );
+								if( a < 0.0 ) a += 360.0;
+								deg.push_back( a );
+								const double d = std::sqrt( dx * dx + dz * dz );
+								if( minDist < 0.0 || d < minDist ) minDist = d;
+								if( d > maxDist ) maxDist = d;
+							}
+							std::sort( deg.begin(), deg.end() );
+							double largestGap = 0.0;
+							for( std::size_t i = 1; i < deg.size(); ++i )
+								largestGap = std::max( largestGap, deg[i] - deg[i - 1] );
+							largestGap = std::max( largestGap, ( deg.front() + 360.0 ) - deg.back() );   // wrap gap
+							const double spread = 360.0 - largestGap;
+							if( spread < minSpread )
+								return { false, "param_series_orbit: " + desc + " angular spread " + std::to_string( spread ) +
+									" deg < required " + std::to_string( minSpread ) + " (" + std::to_string( dp.size() ) + " keyframes)" };
+
+							if( hasCenter ) {
+								const double cd = std::sqrt( ( centroidX - cwx ) * ( centroidX - cwx ) +
+									( centroidZ - cwz ) * ( centroidZ - cwz ) );
+								if( cd > cwr )
+									return { false, "param_series_orbit: " + desc + " XZ centroid distance " + std::to_string( cd ) +
+										" from center exceeds radius " + std::to_string( cwr ) };
+							}
+							if( hasRatio ) {
+								if( minDist <= 1e-6 )
+									return { false, "param_series_orbit: " + desc + " degenerate -- a keyframe coincides with the "
+										"center (minDist ~0), radius ratio undefined" };
+								const double ratio = maxDist / minDist;
+								if( ratio > maxRatio )
+									return { false, "param_series_orbit: " + desc + " radius ratio " + std::to_string( ratio ) +
+										" exceeds max " + std::to_string( maxRatio ) };
+							}
+							return { true, "param_series_orbit: " + desc + " -- " + std::to_string( dp.size() ) +
+								" keyframes, angular spread " + std::to_string( spread ) + " deg" +
+								( hasRatio ? ( ", radius ratio " + std::to_string( maxDist / minDist ) ) : std::string() ) };
+						};
+						return runAssertion( "param_series_orbit", res, evalChunk );
+					}
+
 					return { false, "document checkpoint: unknown op '" + op + "'" };
 				}
 
@@ -2869,11 +3239,15 @@ namespace RISE
 				}
 
 				//! "objectmap": {legendContains?,pixelCountFor?,pixelCountMin?,
-				//! pixelCountMax?,queryAt?:{x,y,expectName}} -- legendContains/
-				//! pixelCountFor run ONE mode:"objectmap" render (only if
-				//! needed); queryAt runs AgentSession::QueryObjectAt (which does
-				//! its own internal objectmap render regardless).  At least one
-				//! of the three assertions must be present.
+				//! pixelCountMax?,queryAt?:{x,y,expectName,expectGeometryKind?}} --
+				//! legendContains/pixelCountFor run ONE mode:"objectmap" render
+				//! (only if needed); queryAt runs AgentSession::QueryObjectAt
+				//! (which does its own internal objectmap render regardless).  At
+				//! least one of the three assertions must be present.  Optional
+				//! queryAt.expectGeometryKind binds the HIT object's `geometry`
+				//! param to a chunk of the named kind (e.g. "the centered visible
+				//! object is a sphere_geometry"); load-rejected with expectName ""
+				//! (a miss has no geometry).
 				CheckOutcome CheckObjectmapKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "objectmap checkpoint: no live session (run did not complete)" };
@@ -2925,6 +3299,7 @@ namespace RISE
 							const int y = static_cast<int>( qa.get( "y" ).asNumber() );
 							const std::string expectName = qa.get( "expectName" ).asString();
 							const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( x, y );
+							bool identityOk = false;
 							if( qr.outOfRange ) {
 								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") out of range" );
 							} else if( expectName == "*" ) {
@@ -2936,11 +3311,52 @@ namespace RISE
 								if( !qr.hit )
 									failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) +
 										") expected ANY object (\"*\") but got a miss" );
+								else identityOk = true;
 							} else if( expectName.empty() ) {
 								if( qr.hit ) failures.push_back( "queryAt expected a miss but hit '" + qr.name + "'" );
+								else identityOk = true;   // a miss cannot carry a geometry kind (load-rejected combo)
 							} else if( !qr.hit || qr.name != expectName ) {
 								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") expected '" +
 									expectName + "', got " + ( qr.hit ? ( "'" + qr.name + "'" ) : std::string( "a miss" ) ) );
+							} else {
+								identityOk = true;
+							}
+
+							// expectGeometryKind: bind the HIT object's `geometry`
+							// param to a chunk of the named kind -- proves the visible
+							// object is actually (e.g.) a sphere, killing a
+							// detached-geometry + wrong-centered-object dodge.  Only
+							// meaningful on a real hit; load validation rejects it
+							// paired with expectName "" (expect-miss).
+							if( identityOk && qr.hit && qa.has( "expectGeometryKind" ) &&
+							    qa.get( "expectGeometryKind" ).isString() ) {
+								const std::string wantGeomKind = qa.get( "expectGeometryKind" ).asString();
+								const Document odoc = RISE::Cst::ParseToCst( session->ReadDocument() );
+								NodeRef objChunk;
+								const int of = CheckerFindChunk( odoc, std::string(), qr.name, objChunk );
+								if( of != 1 ) {
+									failures.push_back( "queryAt expectGeometryKind: hit object '" + qr.name +
+										"' is not a uniquely-named chunk in the document" );
+								} else {
+									std::string geomName;
+									if( !CheckerChunkParamValue( objChunk, "geometry", geomName ) || geomName.empty() ) {
+										failures.push_back( "queryAt expectGeometryKind: hit object '" + qr.name +
+											"' has no 'geometry' binding" );
+									} else {
+										NodeRef geomChunk;
+										const int gf = CheckerFindChunk( odoc, wantGeomKind, geomName, geomChunk );
+										if( gf < 0 ) {
+											failures.push_back( "queryAt expectGeometryKind: geometry '" + geomName +
+												"' matches more than one '" + wantGeomKind + "' chunk" );
+										} else if( gf == 0 ) {
+											NodeRef anyGeom;
+											const int af = CheckerFindChunk( odoc, std::string(), geomName, anyGeom );
+											const std::string actualKind = ( af == 1 && anyGeom ) ? anyGeom->role : std::string( "<no such chunk>" );
+											failures.push_back( "queryAt expectGeometryKind: hit object '" + qr.name + "' geometry '" +
+												geomName + "' is a '" + actualKind + "', expected a '" + wantGeomKind + "'" );
+										}
+									}
+								}
 							}
 						}
 					}
@@ -3073,6 +3489,58 @@ namespace RISE
 									return nullptr;
 								};
 
+								// Shared between toolOutcomes and
+								// toolCallAfterUserTurn so the two can never diverge on
+								// outcome semantics: "applied" tests result.applied==true;
+								// "staged"/"rejected"/"conflict" test result.status;
+								// "error" tests the envelope carries an "error" object.  An
+								// unrecognized expect never matches.
+								auto satisfiesExpect = [&]( const JsonValue& t, const std::string& expect ) -> bool {
+									const JsonValue env = ExtractToolResponseEnvelope( t );
+									if( !env.isObject() ) return false;
+									if( expect == "error" ) return env.has( "error" );
+									const JsonValue& result = env.get( "result" );
+									if( expect == "applied" )  return result.isObject() && result.get( "applied" ).asBool( false );
+									if( expect == "staged" )   return result.isObject() && result.get( "status" ).asString() == "staged";
+									if( expect == "rejected" ) return result.isObject() && result.get( "status" ).asString() == "rejected";
+									if( expect == "conflict" ) return result.isObject() && result.get( "status" ).asString() == "conflict";
+									return false;
+								};
+
+								// The optional argsContains filter accepts EITHER a single
+								// string OR an ARRAY of strings; a record matches iff EVERY
+								// listed substring occurs in its serialized args (absent ->
+								// vacuously matches).  Shared by both toolOutcomes and
+								// toolCallAfterUserTurn.
+								auto argsContainsMatch = []( const JsonValue& spec, const std::string& haystack ) -> bool {
+									if( !spec.has( "argsContains" ) ) return true;
+									const JsonValue& ac = spec.get( "argsContains" );
+									if( ac.isString() ) return haystack.find( ac.asString() ) != std::string::npos;
+									if( ac.isArray() ) {
+										for( std::size_t i = 0; i < ac.size(); ++i ) {
+											if( !ac.at( i ).isString() ) continue;
+											if( haystack.find( ac.at( i ).asString() ) == std::string::npos ) return false;
+										}
+										return true;
+									}
+									return true;
+								};
+								// The human-readable filter note for a spec's argsContains
+								// (spec-only, independent of any record) -- named in details.
+								auto argsContainsNote = []( const JsonValue& spec ) -> std::string {
+									if( !spec.has( "argsContains" ) ) return std::string();
+									const JsonValue& ac = spec.get( "argsContains" );
+									if( ac.isString() ) return " [args contains '" + ac.asString() + "']";
+									if( ac.isArray() ) {
+										std::string n = " [args contains all of";
+										for( std::size_t i = 0; i < ac.size(); ++i )
+											if( ac.at( i ).isString() ) n += " '" + ac.at( i ).asString() + "'";
+										n += "]";
+										return n;
+									}
+									return std::string();
+								};
+
 								if( cp.has( "noAutonomyRefusal" ) && cp.get( "noAutonomyRefusal" ).isBool() && cp.get( "noAutonomyRefusal" ).asBool() ) {
 									if( const JsonValue* t = firstAutonomyRefusal() )
 										failures.push_back( "an autonomy refusal (-32011) occurred on tool '" + t->get( "name" ).asString() + "'" );
@@ -3110,23 +3578,6 @@ namespace RISE
 								}
 
 								if( cp.has( "toolOutcomes" ) && cp.get( "toolOutcomes" ).isArray() ) {
-									// Per-spec check: "applied" tests result.applied==true;
-									// "staged"/"rejected"/"conflict" test result.status;
-									// "error" tests the envelope carries an "error" object.
-									// An unrecognized expect value never matches (fails
-									// loudly via the caller's !ok check below, not silently).
-									auto satisfiesExpect = [&]( const JsonValue& t, const std::string& expect ) -> bool {
-										const JsonValue env = ExtractToolResponseEnvelope( t );
-										if( !env.isObject() ) return false;
-										if( expect == "error" ) return env.has( "error" );
-										const JsonValue& result = env.get( "result" );
-										if( expect == "applied" )  return result.isObject() && result.get( "applied" ).asBool( false );
-										if( expect == "staged" )   return result.isObject() && result.get( "status" ).asString() == "staged";
-										if( expect == "rejected" ) return result.isObject() && result.get( "status" ).asString() == "rejected";
-										if( expect == "conflict" ) return result.isObject() && result.get( "status" ).asString() == "conflict";
-										return false;
-									};
-
 									const JsonValue& specs = cp.get( "toolOutcomes" );
 									for( std::size_t si = 0; si < specs.size(); ++si ) {
 										const JsonValue& spec = specs.at( si );
@@ -3135,20 +3586,17 @@ namespace RISE
 										const std::string occurrence = spec.has( "occurrence" ) && spec.get( "occurrence" ).isString()
 											? spec.get( "occurrence" ).asString() : "any";
 										const std::string expect = spec.get( "expect" ).asString();
-										// argsContains (optional, load-validated non-empty):
-										// FILTERS which same-named records the spec selects
-										// among -- a record matches iff name matches AND its
-										// serialized args contain the substring.
-										const std::string argsContains = spec.has( "argsContains" ) && spec.get( "argsContains" ).isString()
-											? spec.get( "argsContains" ).asString() : std::string();
-										const std::string filterNote = argsContains.empty()
-											? std::string() : ( " [args contains '" + argsContains + "']" );
+										// argsContains (optional, load-validated non-empty string
+										// OR non-empty array of non-empty strings): FILTERS which
+										// same-named records the spec selects among -- a record
+										// matches iff name matches AND its serialized args contain
+										// EVERY listed substring.
+										const std::string filterNote = argsContainsNote( spec );
 
 										std::vector<const JsonValue*> matches;
 										for( const auto& t : toolRecords ) {
 											if( t.get( "name" ).asString() != wantName ) continue;
-											if( !argsContains.empty() &&
-											    JsonSerialize( t.get( "args" ) ).find( argsContains ) == std::string::npos ) continue;
+											if( !argsContainsMatch( spec, JsonSerialize( t.get( "args" ) ) ) ) continue;
 											matches.push_back( &t );
 										}
 
@@ -3202,12 +3650,14 @@ namespace RISE
 										const bool hasMax = spec.has( "maxUserTurns" ) && spec.get( "maxUserTurns" ).isNumber();
 										const long long minUserTurns = hasMin ? static_cast<long long>( spec.get( "minUserTurns" ).asNumber() ) : 0;
 										const long long maxUserTurns = hasMax ? static_cast<long long>( spec.get( "maxUserTurns" ).asNumber() ) : 0;
-										const std::string argsContains = spec.has( "argsContains" ) && spec.get( "argsContains" ).isString()
-											? spec.get( "argsContains" ).asString() : std::string();
-										const std::string filterNote = argsContains.empty()
-											? std::string() : ( " [args contains '" + argsContains + "']" );
+										const std::string filterNote = argsContainsNote( spec );
+										// Optional expect: the matching call must ALSO satisfy the
+										// outcome (same enum as toolOutcomes) -- an early rejected/
+										// errored edit no longer counts as "the edit happened here".
+										const bool hasExpect = spec.has( "expect" ) && spec.get( "expect" ).isString();
+										const std::string expect = hasExpect ? spec.get( "expect" ).asString() : std::string();
 
-										// PASS iff SOME matching (name + argsContains) tool
+										// PASS iff SOME matching (name + argsContains + expect) tool
 										// record occurs at a running user-turn count that is
 										// >= min (when given) AND <= max (when given).
 										long long userCount = 0;
@@ -3216,10 +3666,10 @@ namespace RISE
 											const std::string rt = v.get( "run_type" ).asString();
 											if( rt == "user" ) { ++userCount; continue; }
 											if( rt != "tool" || v.get( "name" ).asString() != wantName ) continue;
-											if( !argsContains.empty() &&
-											    JsonSerialize( v.get( "args" ) ).find( argsContains ) == std::string::npos ) continue;
+											if( !argsContainsMatch( spec, JsonSerialize( v.get( "args" ) ) ) ) continue;
 											if( hasMin && userCount < minUserTurns ) continue;
 											if( hasMax && userCount > maxUserTurns ) continue;
+											if( hasExpect && !satisfiesExpect( v, expect ) ) continue;
 											found = true;
 											break;
 										}
@@ -3228,6 +3678,7 @@ namespace RISE
 											if( hasMin ) bound += "userTurns >= " + std::to_string( minUserTurns );
 											if( hasMin && hasMax ) bound += " and ";
 											if( hasMax ) bound += "userTurns <= " + std::to_string( maxUserTurns );
+											if( hasExpect ) bound += std::string( bound.empty() ? "" : " " ) + "with outcome '" + expect + "'";
 											failures.push_back( specLabel + ": no tool call '" + wantName + "'" + filterNote +
 												" occurred at " + bound );
 										}

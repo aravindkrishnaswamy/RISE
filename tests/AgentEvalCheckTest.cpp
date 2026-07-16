@@ -604,6 +604,30 @@ static void TestObjectmapCheckpoint()
 	// queryAt missing expectName -- a shape error, not a crash.
 	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12}}]", false,
 		"queryAt missing \"expectName\" fails loudly" );
+
+	// --- Wave C: expectGeometryKind binds the HIT object's geometry to a
+	// chunk kind.  In kScene obj_sph -> sph (a sphere_geometry); obj_emit ->
+	// quad_emit (a clippedplane_geometry).  The centre pixel hits obj_sph.
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"*\",\"expectGeometryKind\":\"sphere_geometry\"}}]",
+		true, "expectGeometryKind: \"*\" hit at centre binds obj_sph->sph, a sphere_geometry -> PASS" );
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"obj_sph\",\"expectGeometryKind\":\"sphere_geometry\"}}]",
+		true, "expectGeometryKind: named obj_sph geometry is a sphere_geometry -> PASS" );
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"obj_sph\",\"expectGeometryKind\":\"clippedplane_geometry\"}}]",
+		false, "expectGeometryKind: obj_sph geometry is NOT a clippedplane_geometry -> FAIL" );
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"*\",\"expectGeometryKind\":\"box_geometry\"}}]",
+		false, "expectGeometryKind: the centred sphere is not a box_geometry -> FAIL" );
+	// The mismatch detail must name the ACTUAL geometry kind (sphere_geometry).
+	{
+		JsonValue cps; std::string perr;
+		JsonParse( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"obj_sph\",\"expectGeometryKind\":\"clippedplane_geometry\"}}]",
+			cps, perr );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		const bool named = r.checkpoints.size() == 1 && !r.checkpoints[0].passed &&
+			r.checkpoints[0].detail.find( "sphere_geometry" ) != std::string::npos;
+		Check( named, "expectGeometryKind mismatch detail names the actual kind 'sphere_geometry' (got: " +
+			( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string( "<no result>" ) ) + ")" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1758,6 +1782,119 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 		Check( !LoadEvalScenario( path, s, err ), "proposal match.valueMin string-array FAILS to load" );
 		Check( err.find( "valueMin" ) != std::string::npos, "the load error names valueMin (got: " + err + ")" );
 	}
+
+	//--- Wave C additions -------------------------------------------------
+
+	// document "where" is any-of-kind only -> rejected with a named target.
+	{
+		const std::string path = writeScenario( "where_with_target",
+			"[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"1 1 1\","
+			"\"where\":[{\"param\":\"name\",\"value\":\"x\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "\"where\" with a named target FAILS to load" );
+		Check( err.find( "where" ) != std::string::npos, "the load error names where (got: " + err + ")" );
+	}
+	// document "where" range entry missing "max" -> rejected.
+	{
+		const std::string path = writeScenario( "where_range_no_max",
+			"[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\",\"param\":\"color\",\"value\":\"1 1 1\","
+			"\"where\":[{\"param\":\"color\",\"min\":[0,0,0]}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "\"where\" range entry missing \"max\" FAILS to load" );
+	}
+	// A well-formed any-of-kind "where" (equality + range entries) loads.
+	{
+		const std::string path = writeScenario( "where_ok",
+			"[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\",\"param\":\"color\",\"value\":\"1 1 1\","
+			"\"where\":[{\"param\":\"name\",\"value\":\"pnt_emit\"},{\"param\":\"color\",\"min\":[0,0,0],\"max\":[2,2,2]}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "well-formed any-of-kind where loads (" + err + ")" );
+	}
+	// param_series_orbit: minKeyframes < 2 -> rejected.
+	{
+		const std::string path = writeScenario( "orbit_minkf_1",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":1,\"minAngularSpreadDeg\":180}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit minKeyframes 1 FAILS to load" );
+		Check( err.find( "minKeyframes" ) != std::string::npos, "the load error names minKeyframes (got: " + err + ")" );
+	}
+	// param_series_orbit: minAngularSpreadDeg out of (0,360] -> rejected.
+	{
+		const std::string path = writeScenario( "orbit_spread_400",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":400}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit minAngularSpreadDeg 400 FAILS to load" );
+	}
+	// param_series_orbit: a named target (not any-of-kind) -> rejected.
+	{
+		const std::string path = writeScenario( "orbit_with_target",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"target\":\"tl\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":180}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit with a named target FAILS to load" );
+	}
+	// param_series_orbit: maxRadiusRatio <= 1 -> rejected; a well-formed one loads.
+	{
+		const std::string path = writeScenario( "orbit_ratio_1",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":180,\"maxRadiusRatio\":1.0}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit maxRadiusRatio 1.0 FAILS to load" );
+	}
+	{
+		const std::string path = writeScenario( "orbit_ok_load",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":240,\"centerWithin\":{\"x\":0,\"z\":0,\"radius\":6},\"maxRadiusRatio\":2.0}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "a well-formed param_series_orbit loads (" + err + ")" );
+	}
+	// objectmap: expectGeometryKind paired with expectName "" (miss) -> rejected.
+	{
+		const std::string path = writeScenario( "geomkind_with_miss",
+			"[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":1,\"y\":1,\"expectName\":\"\",\"expectGeometryKind\":\"sphere_geometry\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "expectGeometryKind with expectName \"\" (miss) FAILS to load" );
+		Check( err.find( "expectGeometryKind" ) != std::string::npos, "the load error names expectGeometryKind (got: " + err + ")" );
+	}
+	// objectmap: expectGeometryKind with a real expectName (or "*") loads.
+	{
+		const std::string path = writeScenario( "geomkind_ok",
+			"[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":1,\"y\":1,\"expectName\":\"*\",\"expectGeometryKind\":\"sphere_geometry\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "expectGeometryKind with expectName \"*\" loads (" + err + ")" );
+	}
+	// trajectory: toolOutcomes argsContains ARRAY with an empty element -> rejected.
+	{
+		const std::string path = writeScenario( "argscontains_arr_empty_elem",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":[\"ok\",\"\"],\"expect\":\"applied\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolOutcomes argsContains array with empty element FAILS to load" );
+		Check( err.find( "argsContains" ) != std::string::npos, "the load error names argsContains (got: " + err + ")" );
+	}
+	// trajectory: toolOutcomes argsContains ARRAY of non-empty strings loads.
+	{
+		const std::string path = writeScenario( "argscontains_arr_ok",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"color\"],\"expect\":\"applied\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "toolOutcomes argsContains array loads (" + err + ")" );
+	}
+	// trajectory: toolCallAfterUserTurn expect with an UNKNOWN enum -> rejected.
+	{
+		const std::string path = writeScenario( "tcaut_expect_bad",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"minUserTurns\":1,\"expect\":\"succeeded\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn expect 'succeeded' FAILS to load" );
+		Check( err.find( "expect" ) != std::string::npos, "the load error names expect (got: " + err + ")" );
+	}
+	// trajectory: toolCallAfterUserTurn with a valid expect + argsContains array loads.
+	{
+		const std::string path = writeScenario( "tcaut_expect_ok",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"color\"],\"minUserTurns\":1,\"expect\":\"applied\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn expect:applied + argsContains array loads (" + err + ")" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1967,6 +2104,37 @@ static void TestToolCallAfterUserTurnArrayForm()
 	checkOne( h, s,
 		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"maxUserTurns\":1}}]",
 		false, "maxUserTurns:1 FAILS the propose_patch that fires at turn 2" );
+
+	// --- Wave C: toolCallAfterUserTurn `expect` + argsContains ARRAY form.
+	// The reject-then-apply fixture makes TWO propose_patch calls in a single
+	// user turn: the first (bogus_target_xyz) is REJECTED, the second
+	// (pnt_albedo) is APPLIED.
+	AgentEvalScenario sr = MakeScenario( "tcaut_expect", kScene, "Recolor the sphere.",
+		"commit", kToolOutcomesRejectThenApplyFixture, dir, "[]" );
+	AgentEvalRunHandle hr = RunScenario( sr, opts );
+	Check( hr.result.toolCalls == 2, "tcaut_expect: two propose_patch calls dispatched" );
+
+	// expect:"applied" filtered to the pnt_albedo call -> that call IS applied -> PASS.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":\"pnt_albedo\",\"minUserTurns\":1,\"expect\":\"applied\"}}]",
+		true, "expect:applied on the pnt_albedo call (which applied) PASSES" );
+	// expect:"applied" filtered to the bogus call -> that call was REJECTED,
+	// so no matching record satisfies expect -> FAIL (the `expect` discriminates).
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":\"bogus_target_xyz\",\"minUserTurns\":1,\"expect\":\"applied\"}}]",
+		false, "expect:applied on the REJECTED bogus call FAILS (outcome discriminates)" );
+	// expect:"rejected" on the bogus call -> that call really is rejected -> PASS.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":\"bogus_target_xyz\",\"minUserTurns\":1,\"expect\":\"rejected\"}}]",
+		true, "expect:rejected on the bogus call (which was rejected) PASSES" );
+	// argsContains ARRAY: both substrings present in the pnt_albedo call -> PASS.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"color\"],\"minUserTurns\":1}}]",
+		true, "argsContains array [pnt_albedo,color] both present in one call PASSES" );
+	// argsContains ARRAY where no single call carries BOTH substrings -> FAIL.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"radius\"],\"minUserTurns\":1}}]",
+		false, "argsContains array [pnt_albedo,radius] -- no call carries both -> FAIL" );
 }
 
 //----------------------------------------------------------------------
@@ -2010,6 +2178,145 @@ static void TestDocumentAnyOfKind()
 	// An empty-of-that-kind document: any-of-kind over a kind with zero chunks fails cleanly.
 	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"chunkKind\":\"no_such_kind_xyz\",\"param\":\"fov\",\"min\":[0],\"max\":[1]}]",
 		false, "any-of-kind over a kind with zero chunks FAILS cleanly" );
+
+	// --- Wave C: the any-of-kind "where" co-binding filter --------------
+	// Two uniformcolor_painters: pnt_albedo (recolored red 0.9 0.1 0.1) and
+	// pnt_emit (1.0 1.0 1.0).  Without a filter, param_equals color
+	// "1.0 1.0 1.0" passes (pnt_emit matches).  A where EQUALITY filter on
+	// name restricts the candidate set to the ONE named painter, so the
+	// same colour assertion now grades only THAT chunk.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"name\",\"value\":\"pnt_emit\"}],\"param\":\"color\",\"value\":\"1.0 1.0 1.0\"}]",
+		true, "where name==pnt_emit narrows to pnt_emit, whose color is 1.0 1.0 1.0 -> PASS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"name\",\"value\":\"pnt_albedo\"}],\"param\":\"color\",\"value\":\"1.0 1.0 1.0\"}]",
+		false, "where name==pnt_albedo narrows to the RED painter, so color 1.0 1.0 1.0 -> FAIL" );
+	// A where RANGE filter (reddish colour band) selects pnt_albedo; the
+	// assertion then reads a DIFFERENT param (name) on the survivor.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"color\",\"min\":[0.5,0,0],\"max\":[1.0,0.45,0.45]}],\"param\":\"name\",\"value\":\"pnt_albedo\"}]",
+		true, "where color-in-reddish-band selects pnt_albedo, whose name is pnt_albedo -> PASS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"color\",\"min\":[0.5,0,0],\"max\":[1.0,0.45,0.45]}],\"param\":\"name\",\"value\":\"pnt_emit\"}]",
+		false, "where color-in-reddish-band excludes the white pnt_emit -> name!=pnt_emit -> FAIL" );
+	// A where filter that NO chunk satisfies -> fails cleanly (the detail
+	// names the where filter, not a per-chunk assertion miss).
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"name\",\"value\":\"no_such_painter\"}],\"param\":\"color\",\"value\":\"1.0 1.0 1.0\"}]",
+		false, "where matching zero chunks FAILS cleanly" );
+}
+
+//----------------------------------------------------------------------
+// Wave C: the "param_series_orbit" document op -- a single timeline's
+// keyframe track must PROVE a camera orbit (>= K keyframes, an angular
+// spread threshold, a radius ratio bound).  Each sub-scene carries ONE
+// timeline (element_type camera / param location) so the any-of-kind op
+// grades it without a where filter; a final where-interplay case rides
+// the orbit scene.
+//----------------------------------------------------------------------
+static void TestParamSeriesOrbit()
+{
+	std::printf( "T2c: document param_series_orbit (camera-orbit proof)...\n" );
+	const std::string dir = ScratchRunDir( "t2c_orbit" );
+
+	auto sceneWithTimeline = []( const std::string& timelineChunk ) -> std::string {
+		return std::string(
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n" ) + timelineChunk;
+	};
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                      bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// --- Orbit track (mirrors the committed camera_orbit fixture): 5
+	// keyframes, 4 distinct at 90-degree spacing, radius ~19.03 from the
+	// origin, XZ centroid ~(0.9, 3.7); the max-gap formula gives spread 270.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.25\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.5\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.75\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\ttime\t\t1.0\n\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_ok", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_ok" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+
+		// The committed scenario's exact checkpoint -> PASS.
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"where\":[{\"param\":\"element_type\",\"value\":\"camera\"},{\"param\":\"param\",\"value\":\"location\"}],"
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,"
+			"\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0},\"maxRadiusRatio\":2.0}]",
+			true, "orbit: 5kf / spread 270 / centroid within 6 / ratio 1 -> PASS" );
+		// A too-strict spread threshold (300 > the measured 270) -> FAIL.
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":300,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0}}]",
+			false, "orbit: minAngularSpreadDeg 300 > measured 270 -> FAIL" );
+		// A too-high minKeyframes (6 > the 5 distinct-after-dedupe) -> FAIL.
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":6,\"minAngularSpreadDeg\":240}]",
+			false, "orbit: minKeyframes 6 > 5 keyframes -> FAIL" );
+		// where interplay: a filter no timeline satisfies -> FAIL (the sole
+		// timeline is element_type camera, not object).
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"where\":[{\"param\":\"element_type\",\"value\":\"object\"}],"
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "orbit: where element_type==object matches no timeline -> FAIL" );
+	}
+
+	// --- Degenerate CONSTANT series: every keyframe is the same point ->
+	// dedupe collapses to ONE keyframe, below any minKeyframes -> FAIL.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t2 3 2\n"
+			"\ttime\t\t0.5\n\tvalue\t\t2 3 2\n"
+			"\ttime\t\t1.0\n\tvalue\t\t2 3 2\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_constant", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_constant" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":2,\"minAngularSpreadDeg\":90}]",
+			false, "constant camera: 1 keyframe after dedupe < minKeyframes 2 -> FAIL" );
+	}
+
+	// --- Radius-ratio track: 4 keyframes at 0/90/180/270 degrees (spread
+	// 270) but radii 5,5,5,20 about the origin (ratio 4).  Passes without a
+	// cap; a maxRadiusRatio:2 rejects the non-circular sweep.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t5 4 0\n"
+			"\ttime\t\t0.33\n\tvalue\t\t0 4 5\n"
+			"\ttime\t\t0.66\n\tvalue\t\t-5 4 0\n"
+			"\ttime\t\t1.0\n\tvalue\t\t0 4 -20\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_ratio", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_ratio" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0}}]",
+			true, "ratio track: spread 270 / centroid within 6 (no ratio cap) -> PASS" );
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0},\"maxRadiusRatio\":2.0}]",
+			false, "ratio track: radius ratio 4 > maxRadiusRatio 2 -> FAIL" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -2337,6 +2644,86 @@ static void TestAdversarialOracleControls()
 			"t_adv_reserved_name_recovery", 5, "none",
 			"reserved_name_recovery/never-attempts-none control" );
 	}
+
+	// (e) camera_orbit_timeline: a fixture that inserts ONE camera/location
+	// timeline whose keyframes are all the SAME point (a constant camera, not
+	// an orbit).  chunk_count still reaches 15 (base scene has 14), the camera
+	// count stays 1, the referenced chunks stay untouched, and diagnostics are
+	// clean -- but param_series_orbit's `where` filter selects that single
+	// constant timeline and it dedupes to ONE keyframe, so the orbit
+	// checkpoint (index 2) is the only failure.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene first.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Adding a (constant) camera timeline.",
+			{ { "insert_chunk", InsertChunkInput(
+				"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+				"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+				"\ttime\t\t0.5\n\tvalue\t\t4.5 4.8 18.5\n"
+				"\ttime\t\t1.0\n\tvalue\t\t4.5 4.8 18.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Done: added a camera timeline.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/camera_orbit_timeline.json", fixture,
+			"t_adv_camera_orbit_timeline", 2, "dedupe",
+			"camera_orbit_timeline/constant-camera control" );
+	}
+
+	// (f) multi_step_build: a fixture that builds a centered BOX object at the
+	// origin (a box_geometry, not a sphere) PLUS a DETACHED sphere_geometry
+	// chunk that no object binds, plus the same area light.  sphere-count
+	// (1, the orphan), object-count (2), the luma band, and diagnostics all
+	// stay green; the objectmap checkpoint (index 3) fails because the CENTRE
+	// pixel's hit object's geometry is a box_geometry, not the required
+	// sphere_geometry.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Grey albedo painter.",
+			{ { "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.6 0.6 0.6\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Lambertian material.",
+			{ { "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname mat_box\n\treflectance pnt_albedo\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "A BOX geometry (not a sphere) for the visible object.",
+			{ { "insert_chunk", InsertChunkInput( "box_geometry\n{\n\tname geo_box\n\twidth 0.9\n\theight 0.9\n\tdepth 0.9\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Placing the box at the origin.",
+			{ { "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname obj_box\n\tgeometry geo_box\n\tmaterial mat_box\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6", "A DETACHED sphere geometry nothing binds.",
+			{ { "insert_chunk", InsertChunkInput( "sphere_geometry\n{\n\tname orphan_sph\n\tradius 0.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_7", "Emission painter.",
+			{ { "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Luminaire material.",
+			{ { "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Emitter quad.",
+			{ { "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Placing the emitter.",
+			{ { "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11", "Built a lit box + a detached sphere.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/multi_step_build.json", fixture,
+			"t_adv_multi_step_build", 3, "box_geometry",
+			"multi_step_build/centered-box + detached-sphere control" );
+	}
+
+	// (g) multi_turn_edit: a fixture whose turn-1 propose_patch is a REJECTED
+	// color patch (a bad target, pnt_albdeo), and whose turn-2 makes the REAL
+	// color + radius edits.  The turn-1 spec (argsContains ["pnt_albedo",
+	// "color"], expect:"applied", userTurns 1..1) no longer matches -- the
+	// rejected typo'd patch neither contains "pnt_albedo" nor applied -- so
+	// the trajectory checkpoint (index 3) fails there, while the end-state
+	// colour/radius bands, diagnostics, and terminal all stay green.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Recoloring (typo'd target).",
+			{ { "propose_patch", ProposePatchInput( "pnt_albdeo", "color", "0.9 0.1 0.1", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "That failed; ending turn 1.", {}, "end_turn" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Recoloring correctly on turn 2.",
+			{ { "propose_patch", ProposePatchInput( "pnt_albedo", "color", "0.9 0.1 0.1", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Enlarging on turn 2.",
+			{ { "propose_patch", ProposePatchInput( "sph", "radius", "0.9", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Recolored and enlarged.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/multi_turn_edit.json", fixture,
+			"t_adv_multi_turn_edit_applied", 3, "applied",
+			"multi_turn_edit/turn-1-rejected-color control" );
+	}
 }
 
 int main()
@@ -2354,6 +2741,7 @@ int main()
 	TestToolOutcomesArgsContainsAndConflict();
 	TestToolCallAfterUserTurnArrayForm();
 	TestDocumentAnyOfKind();
+	TestParamSeriesOrbit();
 	TestProposalCheckpoint();
 	TestRenderChannelBalance();
 	TestFinalTextCheckpoint();

@@ -42,7 +42,8 @@
       "queryAt": {
         "x": 12,
         "y": 12,
-        "expectName": "*"
+        "expectName": "*",
+        "expectGeometryKind": "sphere_geometry"
       }
     },
     {

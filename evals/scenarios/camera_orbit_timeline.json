@@ -19,8 +19,10 @@
   "checkpoints": [
     { "kind": "document", "op": "chunk_count", "chunkKind": "timeline", "min": 15, "max": 15 },
     { "kind": "document", "op": "chunk_count", "chunkKind": "thinlens_camera", "min": 1, "max": 1 },
-    { "kind": "document", "op": "param_equals", "chunkKind": "timeline", "param": "element_type", "value": "camera" },
-    { "kind": "document", "op": "param_equals", "chunkKind": "timeline", "param": "param", "value": "location" },
+    { "kind": "document", "op": "param_series_orbit", "chunkKind": "timeline",
+      "where": [ { "param": "element_type", "value": "camera" }, { "param": "param", "value": "location" } ],
+      "param": "value", "minKeyframes": 4, "minAngularSpreadDeg": 240,
+      "centerWithin": { "x": 0.0, "z": 0.0, "radius": 6.0 }, "maxRadiusRatio": 2.0 },
     {
       "kind": "untouched",
       "chunks": [
