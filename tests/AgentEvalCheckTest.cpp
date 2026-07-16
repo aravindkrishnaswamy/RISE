@@ -588,6 +588,17 @@ static void TestObjectmapCheckpoint()
 	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"definitely_not_it\"}}]", false,
 		"queryAt with a WRONG expectName fails" );
 
+	// expectName "*" = name-AGNOSTIC hit (for open-ended build scenarios): the
+	// centre pixel hits the sphere whatever it is named -> passes.
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"*\"}}]", true,
+		"queryAt \"*\" at the centre matches ANY object (name-agnostic hit)" );
+	// A corner is background: an exact-miss expectName "" passes there (confirms
+	// it is background), and "*" (expect ANY object) correctly FAILS there.
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":0,\"y\":0,\"expectName\":\"\"}}]", true,
+		"queryAt \"\" at a corner correctly expects a miss (confirms corner is background)" );
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":0,\"y\":0,\"expectName\":\"*\"}}]", false,
+		"queryAt \"*\" at a background corner FAILS (no object to match)" );
+
 	// A checkpoint naming none of the three assertions -- a shape error.
 	checkOne( "[{\"kind\":\"objectmap\"}]", false, "objectmap with no assertions fails loudly" );
 	// queryAt missing expectName -- a shape error, not a crash.

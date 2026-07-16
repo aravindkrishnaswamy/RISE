@@ -6,6 +6,7 @@
     "evals/scenarios/remove_object.json",
     "evals/scenarios/material_add_and_bind.json",
     "evals/scenarios/conflict_retry.json",
+    "evals/scenarios/malformed_tool_recovery.json",
     "evals/scenarios/reserved_name_recovery.json",
     "evals/scenarios/reserved_name_clarify.json",
     "evals/scenarios/objectmap_frame_object.json",

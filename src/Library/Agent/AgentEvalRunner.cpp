@@ -2423,6 +2423,15 @@ namespace RISE
 							const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( x, y );
 							if( qr.outOfRange ) {
 								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") out of range" );
+							} else if( expectName == "*" ) {
+								// Name-AGNOSTIC hit: expect ANY non-background object at
+								// (x,y), whatever it is named.  For open-ended "build a
+								// scene" scenarios where the model names entities freely,
+								// this proves an object is actually bound + positioned +
+								// rendered there without pinning a model-chosen name.
+								if( !qr.hit )
+									failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) +
+										") expected ANY object (\"*\") but got a miss" );
 							} else if( expectName.empty() ) {
 								if( qr.hit ) failures.push_back( "queryAt expected a miss but hit '" + qr.name + "'" );
 							} else if( !qr.hit || qr.name != expectName ) {

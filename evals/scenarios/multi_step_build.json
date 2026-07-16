@@ -37,6 +37,14 @@
       "meanLumaMax": 0.2
     },
     {
+      "kind": "objectmap",
+      "queryAt": {
+        "x": 12,
+        "y": 12,
+        "expectName": "*"
+      }
+    },
+    {
       "kind": "diagnostics",
       "expect": "clean"
     },
@@ -44,7 +52,10 @@
       "kind": "trajectory",
       "terminalStatus": "final_text",
       "noMechanicalLoop": true,
-      "requiredToolInOrder": ["read_document", "insert_chunk"]
+      "requiredToolInOrder": [
+        "read_document",
+        "insert_chunk"
+      ]
     }
   ]
 }
