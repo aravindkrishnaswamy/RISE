@@ -115,8 +115,11 @@ make it a supported state everywhere:
   affordance route to the file-picker path; after a successful Save-As the
   scene gains a path, joins recents, and behaves as a normal scene).
 - Untitled scenes never enter the recents list (nothing to reopen).
-- Close Scene with unsaved untitled edits prompts exactly like a dirty named
-  scene (existing dirty-close flow; no new dialog).
+- Close Scene with unsaved edits (scene OR raw editor text, named OR
+  untitled) prompts Save / Discard / Cancel.  (Round-2 review: this flow
+  did not previously exist for ANY scene — implemented on this branch;
+  Save routes untitled scenes to Save-As and a cancelled save aborts the
+  close.)
 - The CST-mirror editor pane works unchanged (it reads the retained Document,
   not the disk file); the editor's "file changed on disk" states are simply
   unreachable while untitled.
@@ -187,6 +190,16 @@ i.e. the same point where `sceneOpened` fires today.  Implement as
   from the scene path, so an untitled scene renders animation frames with
   video output disabled.  Save-As first to get a movie.  (Known v1
   limitation; acceptable — untitled scenes are mid-construction.)
+- **Media paths while untitled**: the bundled starter loads from inside the
+  app bundle, so the `global.options` project-root walk-up finds nothing —
+  relative media paths won't resolve and the core logs a MediaPathLocator
+  warning (harmless for an empty scene).  Save-As re-anchors media paths to
+  the chosen directory (implemented).  LATENT (core, out of scope here):
+  `GlobalOptions()` is a first-call-wins process-lifetime singleton — if the
+  first scene of a session is the bundled starter, options resolve to coded
+  fallbacks for the whole session even after Save-As.  Today's authored
+  global.options values mostly match the fallbacks, so impact is muted; a
+  real fix is core GlobalOptions re-resolution.
 
 ## 9. Phasing
 

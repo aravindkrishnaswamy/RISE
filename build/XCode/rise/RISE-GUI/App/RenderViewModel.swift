@@ -695,8 +695,16 @@ final class RenderViewModel: ObservableObject {
     init() {
         versionString = RISEBridge.versionString()
         recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
-        if let meta = UserDefaults.standard.dictionary(forKey: Self.recentFilesMetaKey) as? [String: Double] {
-            recentFileTimes = meta.mapValues { Date(timeIntervalSince1970: $0) }
+        if let meta = UserDefaults.standard.dictionary(forKey: Self.recentFilesMetaKey) {
+            // Per-entry decode (round-2 review P3): an all-or-nothing
+            // `as? [String: Double]` cast would drop EVERY timestamp if a
+            // single stored value were malformed; tolerate bad entries
+            // individually instead.
+            for (path, value) in meta {
+                if let t = value as? Double {
+                    recentFileTimes[path] = Date(timeIntervalSince1970: t)
+                }
+            }
         }
         showAgentDebugPanel = UserDefaults.standard.bool(forKey: Self.showAgentDebugPanelKey)
         chatStateChangeObserver = chat.objectWillChange.sink { [weak self] _ in
@@ -865,7 +873,12 @@ final class RenderViewModel: ObservableObject {
             let saveResponse = saveAlert.runModal()
             switch saveResponse {
             case .alertFirstButtonReturn:
-                saveEditorFile()
+                // Round-2 P1: for an UNTITLED scene saveEditorFile() was a
+                // silent no-op (nil loadedFilePath) and the flow then
+                // discarded the edits anyway — the user clicked Save and
+                // lost their text.  The helper Save-As-es the raw editor
+                // text when untitled; a cancelled panel aborts the open.
+                guard saveEditorTextEnsuringPath() else { return }
             case .alertSecondButtonReturn:
                 break
             default:
@@ -996,6 +1009,28 @@ final class RenderViewModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Self.recentFilesMetaKey)
     }
 
+    /// Register the media search paths for a scene at `path`: its own
+    /// directory, plus the RISE project root found by walking up to the
+    /// nearest `global.options` (sets RISE_MEDIA_PATH for
+    /// FileRasterizerOutput).  Called on every load AND on Save-As
+    /// (round-2 review P2: an untitled scene loads from the app bundle so
+    /// the walk-up finds nothing; without re-anchoring here at Save-As,
+    /// relative media in the saved scene stayed unresolvable for the rest
+    /// of the session).
+    private func registerMediaPaths(forSceneAt path: String) {
+        let sceneDir = (path as NSString).deletingLastPathComponent
+        bridge.addMediaPath(sceneDir)
+        var searchDir = sceneDir
+        while !searchDir.isEmpty && searchDir != "/" {
+            let candidatePath = (searchDir as NSString).appendingPathComponent("global.options")
+            if FileManager.default.fileExists(atPath: candidatePath) {
+                bridge.setProjectRoot(searchDir)
+                break
+            }
+            searchDir = (searchDir as NSString).deletingLastPathComponent
+        }
+    }
+
     /// Load a scene from `path`.  `untitled` (start-screen create path):
     /// the file is a bundled template — the loaded scene has NO document
     /// path (`loadedFilePath` stays nil, Save routes to Save-As) and never
@@ -1016,22 +1051,7 @@ final class RenderViewModel: ObservableObject {
         progress = 0.0
         cancelFlag.value = false
 
-        // Add the scene file's directory as a media path
-        let sceneDir = (path as NSString).deletingLastPathComponent
-        bridge.addMediaPath(sceneDir)
-
-        // Walk up from the scene directory to find the RISE project root
-        // (identified by the presence of global.options).
-        // This sets RISE_MEDIA_PATH env var needed by FileRasterizerOutput.
-        var searchDir = sceneDir
-        while !searchDir.isEmpty && searchDir != "/" {
-            let candidatePath = (searchDir as NSString).appendingPathComponent("global.options")
-            if FileManager.default.fileExists(atPath: candidatePath) {
-                bridge.setProjectRoot(searchDir)
-                break
-            }
-            searchDir = (searchDir as NSString).deletingLastPathComponent
-        }
+        registerMediaPaths(forSceneAt: path)
 
         let cancelRef = cancelFlag
         let progressDelivery = CoalescedProgressDelivery()
@@ -1839,6 +1859,10 @@ final class RenderViewModel: ObservableObject {
             if path != loadedFilePath {
                 loadedFilePath = path
                 addToRecentFiles(path)
+                // Media paths follow the scene to its new home — vital for
+                // the untitled create path, whose bundle load registered
+                // no project root (round-2 review P2).
+                registerMediaPaths(forSceneAt: path)
             }
             if !isEditorDirty {
                 refreshEditorContents()
@@ -1966,6 +1990,53 @@ final class RenderViewModel: ObservableObject {
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .critical
             alert.runModal()
+        }
+    }
+
+    /// Save the RAW editor text, prompting for a destination when the
+    /// scene is untitled (no loadedFilePath to write to).  Returns false
+    /// when the user cancelled the panel or the write failed — callers in
+    /// a save-then-proceed flow (the "Unsaved Changes" pre-alert, the
+    /// dirty-close prompt) must ABORT their flow on false, otherwise the
+    /// edits the user just asked to save would be discarded anyway.
+    @discardableResult
+    func saveEditorTextEnsuringPath() -> Bool {
+        if let path = loadedFilePath {
+            do {
+                try editorText.write(toFile: path, atomically: true, encoding: .utf8)
+                editorOriginalText = editorText
+                return true
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Failed to save file"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .critical
+                alert.runModal()
+                return false
+            }
+        }
+        // Untitled: choose a destination for the raw text.  Deliberately a
+        // plain write with NO re-anchor: the callers are about to tear the
+        // scene down, so adopting the path would be pointless churn.
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = []
+        panel.nameFieldStringValue = "untitled.RISEscene"
+        panel.title = "Save Scene As"
+        panel.message = "Choose a destination for the editor's scene text."
+        guard panel.runModal() == .OK, let path = panel.url?.path, !path.isEmpty else {
+            return false
+        }
+        do {
+            try editorText.write(toFile: path, atomically: true, encoding: .utf8)
+            editorOriginalText = editorText
+            return true
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Failed to save file"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .critical
+            alert.runModal()
+            return false
         }
     }
 
@@ -2261,7 +2332,16 @@ final class RenderViewModel: ObservableObject {
     /// controls panel's "Clear" button (disabled while rendering,
     /// cancelling, or when there's nothing loaded yet).
     var canCloseScene: Bool {
-        renderState != .rendering && renderState != .cancelling && renderState != .idle
+        // `.loading` excluded (review round 2 P1): Close Scene during an
+        // in-flight load would run bridge.clearAll() on the main thread
+        // while the detached load task is still inside loadAsciiScene on
+        // the SAME Job — Job::ClearAll's pCstDocument.reset() +
+        // DestroyContainers racing the loader's reads is a crash-class
+        // data race (same family the production-render clear path awaits
+        // its task for).  The load is short; the menu re-enables when it
+        // completes.
+        renderState != .rendering && renderState != .cancelling
+            && renderState != .idle && renderState != .loading
     }
 
     /// L5a round-9 — gate for File > Save Rendered Image.  The
@@ -2390,6 +2470,37 @@ final class RenderViewModel: ObservableObject {
     }
 
     func clearScene() {
+        // Dirty-close prompt (spec §5.2, round-2 review: the spec claimed
+        // this flow existed — it didn't, for named OR untitled scenes;
+        // Close silently discarded unsaved work).  Both dirt kinds gate:
+        // unsaved LIVE scene edits (sceneEditsDirty — saveScene routes an
+        // untitled scene to Save-As) and unsaved RAW editor text
+        // (isEditorDirty — saved via the untitled-aware helper).  A
+        // cancelled prompt/panel or a refused save aborts the close.
+        if sceneEditsDirty || isEditorDirty {
+            let alert = NSAlert()
+            alert.messageText = "Unsaved Changes"
+            alert.informativeText = sceneEditsDirty
+                ? "The scene has unsaved changes. Save before closing?"
+                : "The scene editor has unsaved text changes. Save before closing?"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Discard")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                if sceneEditsDirty {
+                    guard saveScene() else { return }
+                } else {
+                    guard saveEditorTextEnsuringPath() else { return }
+                }
+            case .alertSecondButtonReturn:
+                break   // Discard — proceed with the close
+            default:
+                return  // Cancel — keep the scene open
+            }
+        }
+
         // Viewport bridge borrows the underlying job — tear it down
         // BEFORE bridge.clearAll() so the controller's render thread
         // is joined before the scene is destroyed.
