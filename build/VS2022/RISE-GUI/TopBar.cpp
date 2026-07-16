@@ -414,7 +414,11 @@ void TopBar::setSceneEditsDirty(bool dirty)
 void TopBar::updateSaveChip()
 {
     if (!m_saveBtn) return;
-    if (m_loadedFilePath.isEmpty()) {
+    // Untitled scenes (loadedFilePath empty but a bridge exists -- start-
+    // screen create path, docs/gui/START_SCREEN.md §5.2) get the SAME
+    // save affordance: MainWindow::onSaveScene() routes to Save-As for
+    // them, so the pill never leads to a silent no-op.
+    if (m_loadedFilePath.isEmpty() && !m_bridge) {
         m_saveBtn->hide();
         m_saveBtn->setEnabled(false);
         return;
@@ -496,6 +500,17 @@ void TopBar::updateReadoutTooltip()
 void TopBar::updateSceneIdentity()
 {
     if (m_loadedFilePath.isEmpty()) {
+        if (m_bridge) {
+            // Untitled scene (start-screen create path,
+            // docs/gui/START_SCREEN.md §5.2): loaded from the bundled
+            // starter template, not yet on disk.  Gains a real name via
+            // Save-As.
+            m_sceneFileLabel->setText(QStringLiteral("Untitled"));
+            m_sceneFileLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+            m_dirtyDotLabel->setVisible(m_dirty);
+            m_dirtyTextLabel->setVisible(m_dirty);
+            return;
+        }
         m_sceneFileLabel->setText(QStringLiteral("No scene"));
         m_sceneFileLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
         m_dirtyDotLabel->hide();

@@ -1,6 +1,6 @@
 # Start Screen — three-path launch experience
 
-Status: **Mac IMPLEMENTED (branch gui-start-screen, 2026-07-15); Windows in progress**
+Status: **IMPLEMENTED both platforms (branch gui-start-screen, 2026-07-15).**  Mac live-verified; Windows review-verified only (first Windows compile pending, per house convention).
 Owner surfaces: Mac SwiftUI shell, Windows Qt shell, shared core (starter-scene
 load + agent handoff), agent harness (empty-scene construction — parallel
 workstream, out of scope here).

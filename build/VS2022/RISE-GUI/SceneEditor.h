@@ -30,6 +30,17 @@ public:
     bool isDirty() const;
     QString filePath() const { return m_filePath; }
 
+    /// Untitled scene (start-screen create path): the buffer was loaded
+    /// FROM the bundled starter template, but saves must never target that
+    /// file -- clearing the path makes save() a guarded no-op and disables
+    /// the Save pills (with a Save-As hint).  MainWindow calls this right
+    /// after loadFile() on an untitled load.
+    void markUntitled();
+
+    /// The raw buffer text -- used by MainWindow's unsaved-work gate to
+    /// Save-As the text of an untitled scene to a user-chosen file.
+    QString text() const;
+
     /// Reverse source traceability: forward an enablement predicate to the
     /// embedded SceneTextEdit's "Select in Inspector" item.  MainWindow sets
     /// this (folding in its render-transport gate + this editor's dirty

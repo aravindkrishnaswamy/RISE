@@ -636,6 +636,15 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
     if (useLoadedPath) {
         target = m_bridge->loadedFilePath();
     }
+    // The scene is gaining a NEW path via the picker below whenever
+    // `target` is still empty at this point -- true for the Save As
+    // button (useLoadedPath=false unconditionally lands here) AND for a
+    // defensive in-place Save with no loaded path (start-screen untitled
+    // scene; the Save button is normally disabled then, see
+    // onDirtyChanged, but this keeps the flag correct regardless of
+    // caller).  Computed from `target`, not `useLoadedPath` directly, so
+    // it can't drift from which branch actually ran.
+    const bool wasSaveAs = target.isEmpty();
     if (target.isEmpty()) {
         const QString loaded = m_bridge->loadedFilePath();
         QString dir;
@@ -661,7 +670,7 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
         m_bridge->saveSceneTo(target, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
-        emit sceneSavedToPath(target);
+        emit sceneSavedToPath(target, wasSaveAs);
         break;
     case ViewportBridge::SaveStatus::NoOp:
         break;

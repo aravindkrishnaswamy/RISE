@@ -22,6 +22,7 @@
 #include "ViewportProperties.h"
 #include "OutlinerWidget.h"
 #include "EnvironmentPanel.h"
+#include "StartWidget.h"
 #include "Theme.h"
 
 #include <QAction>
@@ -32,9 +33,14 @@
 
 #include <QMenuBar>
 #include <QStatusBar>
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QFileDialog>
+#include <QFile>
+#include <QTextStream>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QLabel>
 #include <QApplication>
 #include <QScreen>
@@ -46,6 +52,7 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QTimer>
+#include <QVariantMap>
 
 #include <algorithm>
 
@@ -58,6 +65,16 @@ MainWindow::MainWindow(QWidget* parent)
     // Load recent files from settings
     QSettings settings;
     m_recentFiles = settings.value("recentSceneFiles").toStringList();
+    // Start-screen spec §5.4: sibling recentSceneMeta key (path -> last-
+    // opened epoch seconds).  A hand-edited/corrupted entry that doesn't
+    // convert to a whole number reads as 0 -- rendered as "no time" by
+    // StartWidget rather than a bogus date.
+    {
+        const QVariantMap meta = settings.value("recentSceneMeta").toMap();
+        for (auto it = meta.constBegin(); it != meta.constEnd(); ++it) {
+            m_recentFilesMeta.insert(it.key(), it.value().toLongLong());
+        }
+    }
 
     // Create the engine
     m_engine = new RenderEngine(this);
@@ -80,11 +97,17 @@ MainWindow::MainWindow(QWidget* parent)
     m_productionPaneStack->addWidget(m_hdrRenderWidget);  // index 1 — HDR
     m_productionPaneStack->setCurrentIndex(0);
 
-    // Stacked widget toggles between the passive render view and the
-    // interactive viewport pane.  The viewport pane is built lazily
-    // when a scene loads (see rebuildViewportForLoadedScene).
+    // Stacked widget toggles between the passive render view, the start
+    // screen, and the interactive viewport pane.  The viewport pane is
+    // built lazily when a scene loads (see rebuildViewportForLoadedScene).
+    // Which of the three is CURRENT is decided in exactly one place --
+    // updateCenterViewStack() -- driven from every render-state / bridge
+    // transition (mirrors macOS ContentView's declarative `viewportBridge
+    // == nil` gate).
     m_viewStack = new QStackedWidget();
     m_viewStack->addWidget(m_productionPaneStack);   // index 0
+    m_startWidget = new StartWidget();
+    m_viewStack->addWidget(m_startWidget);           // index 1
 
     m_topBar = new TopBar();
     m_topBar->setEngine(m_engine);
@@ -181,6 +204,20 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_engine, &RenderEngine::remainingTimeUpdated, m_topBar, &TopBar::updateRemainingTime);
     connect(m_engine, &RenderEngine::errorOccurred, this, [this](const QString& msg) {
         statusBar()->showMessage("Error: " + msg, 5000);
+        // Start screen (spec §8): a failed LOAD (no bridge attached yet --
+        // a render-time failure of an already-loaded scene leaves the
+        // bridge in place and never shows StartWidget at all, see
+        // updateCenterViewStack) lands the user back here with the error
+        // as a banner, and re-enables Create for a retry.
+        if (m_startWidget && !m_viewportBridge) {
+            m_startWidget->setErrorMessage(msg);
+            m_startWidget->setCreateInFlight(false);
+            // A failed STARTER load must not leave its create-prompt staged
+            // (ChatPanel::setViewportBridge never ran to consume it) -- the
+            // next successful open would auto-send it into an unrelated
+            // scene (review P1; exact mirror of the Mac e0c8d823 fix).
+            if (m_chatPanel) m_chatPanel->setPendingFirstPrompt(QString());
+        }
     });
 
     connect(m_topBar, &TopBar::saveClicked, this, &MainWindow::onSaveScene);
@@ -202,6 +239,36 @@ MainWindow::MainWindow(QWidget* parent)
     m_topBar->setChatPanel(m_chatPanel);
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, this, &MainWindow::updateMenuActionStates);
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, m_topBar, &TopBar::onChatRenderOutstandingChanged);
+
+    // ---- Start screen (docs/gui/START_SCREEN.md) -----------------------
+    // StartWidget owns no scene/agent state itself; every signal routes
+    // to the exact code path the equivalent menu/button already uses.
+    connect(m_startWidget, &StartWidget::openPathRequested, this, &MainWindow::onOpenRecentScene);
+    connect(m_startWidget, &StartWidget::removeRecentRequested, this, &MainWindow::removeRecentFile);
+    connect(m_startWidget, &StartWidget::browseRequested, this, &MainWindow::onOpenScene);
+    connect(m_startWidget, &StartWidget::createRequested, this, &MainWindow::onCreateSceneFromPrompt);
+    // "Set up…" (spec §6, unconfigured state): this platform has no
+    // separate provider-settings popover -- the chat panel's own
+    // provider/key row IS the settings surface -- so this just switches
+    // to it, force-showing the left panel (and keeping the View > Left
+    // Panel checkbox honest) in case the user had hidden it.
+    connect(m_startWidget, &StartWidget::setupAgentRequested, this, [this]() {
+        if (m_leftPanelAction) m_leftPanelAction->setChecked(true);
+        if (m_leftPanel) m_leftPanel->setVisible(true);
+        setLeftTab(0);
+    });
+
+    // Start screen readiness (spec §6): mirror ChatPanel's real provider
+    // state into the Create column, live -- reusing ChatPanel's own
+    // check (agentConfigured()) rather than a second source of truth.
+    auto pushAgentReadiness = [this]() {
+        if (m_startWidget && m_chatPanel) {
+            m_startWidget->setAgentReadiness(m_chatPanel->agentConfigured(),
+                                              m_chatPanel->currentProviderDisplayName());
+        }
+    };
+    connect(m_chatPanel, &ChatPanel::agentConfiguredChanged, this, pushAgentReadiness);
+    pushAgentReadiness();
 
     // CST <-> scene-file live sync (item 1).  ~2 Hz, same cadence as
     // TopBar's own refinement-status poll.  Started/stopped alongside
@@ -235,6 +302,12 @@ MainWindow::MainWindow(QWidget* parent)
     // The static probe enumerates all DXGI outputs without needing
     // a swap chain.
     onHDRAvailabilityChanged(HDRRenderWidget::probeAnyAdapterHDRAvailable());
+
+    // Start screen: establish the initial center-stack widget (Idle, no
+    // bridge -> StartWidget) -- every LATER transition is driven from
+    // onStateChanged/teardownViewport, but nothing has fired yet at
+    // construction time.
+    updateCenterViewStack();
 }
 
 // ============================================================
@@ -668,10 +741,10 @@ void MainWindow::createMenuBar()
     // and the bottom log drawer.  Both default on; toggling doesn't
     // persist across launches in slice 1.
     viewMenu->addSeparator();
-    auto* leftPanelAction = viewMenu->addAction("Left Panel");
-    leftPanelAction->setCheckable(true);
-    leftPanelAction->setChecked(true);
-    connect(leftPanelAction, &QAction::toggled, this, [this](bool on) {
+    m_leftPanelAction = viewMenu->addAction("Left Panel");
+    m_leftPanelAction->setCheckable(true);
+    m_leftPanelAction->setChecked(true);
+    connect(m_leftPanelAction, &QAction::toggled, this, [this](bool on) {
         if (m_leftPanel) m_leftPanel->setVisible(on);
     });
 
@@ -1032,6 +1105,12 @@ void MainWindow::onSaveScene()
 {
     // Entry point -- File > Save Scene and the TopBar's Save pill both
     // land here (see TopBar::saveClicked).
+    // Untitled scene (start-screen create path, spec §5.2): nothing on
+    // disk to save in-place -- the first Save IS Save-As.
+    if (m_viewportBridge && m_viewportBridge->loadedFilePath().isEmpty()) {
+        performSceneSaveAs();
+        return;
+    }
     performSceneSave();
 }
 
@@ -1048,7 +1127,9 @@ void MainWindow::onSaveScene()
 bool MainWindow::performSceneSave()
 {
     // Note: no Save-As affordance here — matches the macOS TopBar's
-    // Save pill.  Save-As lives in ViewportProperties (right panel).
+    // Save pill.  Save-As lives in ViewportProperties (right panel) and
+    // in performSceneSaveAs() below (onSaveScene() routes there instead
+    // of here when there's no loaded path).
     if (!m_viewportBridge) return false;
     const QString path = m_viewportBridge->loadedFilePath();
     if (path.isEmpty()) return false;
@@ -1059,11 +1140,74 @@ bool MainWindow::performSceneSave()
     case ViewportBridge::SaveStatus::Saved:
         // Pull the just-written bytes into the scene-editor pane
         // (unless it has its own unsaved text edits) and refresh the
-        // window title.
-        onSceneSavedToPath(path);
+        // window title.  Not a Save-As -- an in-place save doesn't
+        // re-bump the scene's existing recents entry.
+        onSceneSavedToPath(path, /*wasSaveAs=*/false);
         return true;
     case ViewportBridge::SaveStatus::NoOp:
         return true;   // Silent success — file unchanged on disk.
+    case ViewportBridge::SaveStatus::Refused: {
+        const QString message = errMsg.isEmpty()
+            ? tr("The save engine declined to write this file.") : errMsg;
+        QMessageBox::warning(this, "Save Refused", message);
+        return false;
+    }
+    case ViewportBridge::SaveStatus::Failed: {
+        const QString message = errMsg.isEmpty()
+            ? tr("An I/O error occurred while saving the file.") : errMsg;
+        QMessageBox::warning(this, "Save Failed", message);
+        return false;
+    }
+    case ViewportBridge::SaveStatus::Error: {
+        const QString message = tr("Unexpected save state (%1).").arg(errMsg);
+        QMessageBox::warning(this, "Save Failed", message);
+        return false;
+    }
+    }
+    return false;
+}
+
+// Start-screen untitled-scene Save-As fallback (spec §5.2) + the general
+// Save-As entry point onSaveScene() routes to whenever there's no loaded
+// path.  Picks a destination via the native Save dialog, then reuses the
+// SAME ViewportBridge::saveSceneTo/SaveStatus handling as
+// performSceneSave() above -- saveSceneTo() re-anchors
+// RenderEngine::loadedFilePath internally on success (see its doc), so
+// every consumer (TopBar, updateWindowTitle, a subsequent in-place Save)
+// picks up the new path with no further plumbing here.  Returns true on
+// a successful (or no-op) save, false on cancel/refusal/failure.
+bool MainWindow::performSceneSaveAs()
+{
+    if (!m_viewportBridge) return false;
+
+    QSettings settings;
+    QString startDir = settings.value("lastOpenDirectory").toString();
+    QString defaultName = QStringLiteral("untitled.RISEscene");
+    const QString loaded = m_viewportBridge->loadedFilePath();
+    if (!loaded.isEmpty()) {
+        const QFileInfo fi(loaded);
+        startDir = fi.absolutePath();
+        defaultName = fi.fileName();
+    }
+    const QString filePath = QFileDialog::getSaveFileName(
+        this, "Save Scene As",
+        startDir.isEmpty() ? defaultName : (startDir + QLatin1Char('/') + defaultName),
+        "RISE Scene Files (*.RISEscene);;All Files (*)");
+    if (filePath.isEmpty()) return false;   // user cancelled
+    settings.setValue("lastOpenDirectory", QFileInfo(filePath).absolutePath());
+
+    QString errMsg;
+    const ViewportBridge::SaveStatus status = m_viewportBridge->saveSceneTo(filePath, errMsg);
+    switch (status) {
+    case ViewportBridge::SaveStatus::Saved:
+        onSceneSavedToPath(filePath, /*wasSaveAs=*/true);
+        // Media paths follow the scene to its new home -- vital for the
+        // untitled create path, whose template load registered no project
+        // root (review P2; mirrors the Mac registerMediaPaths-on-Save-As).
+        m_engine->setupMediaPaths(filePath);
+        return true;
+    case ViewportBridge::SaveStatus::NoOp:
+        return true;
     case ViewportBridge::SaveStatus::Refused: {
         const QString message = errMsg.isEmpty()
             ? tr("The save engine declined to write this file.") : errMsg;
@@ -1128,11 +1272,20 @@ void MainWindow::onCstSyncTick()
     }
 }
 
-void MainWindow::onSceneSavedToPath(const QString& path)
+void MainWindow::onSceneSavedToPath(const QString& path, bool wasSaveAs)
 {
-    // Shared by TopBar's Save pill (onSaveScene above), the File >
-    // Save Scene menu item, and ViewportProperties' own Save / Save
-    // As… buttons (connected below in rebuildViewportForLoadedScene).
+    // Shared by TopBar's Save pill / performSceneSaveAs() (onSaveScene
+    // above), the File > Save Scene menu item, and ViewportProperties'
+    // own Save / Save As… buttons (connected below in
+    // rebuildViewportForLoadedScene).
+    if (wasSaveAs) {
+        // Start-screen create path (spec §5.2) and any other explicit
+        // Save-As: the scene gains a path and joins Recent Scenes.  An
+        // in-place save of an already-open scene does NOT re-bump its
+        // recents entry (mirrors macOS RenderViewModel's
+        // saveSceneAs()/saveScene() split).
+        addToRecentFiles(path);
+    }
     updateWindowTitle();
     if (!m_sceneEditor) return;
     if (!m_sceneEditor->isDirty()) {
@@ -1328,11 +1481,43 @@ void MainWindow::addToRecentFiles(const QString& filePath)
         m_recentFiles.removeLast();
     }
 
-    // Persist
+    // Start-screen spec §5.4: stamp/refresh this path's last-opened time,
+    // then prune meta for any path that just fell off the capped list so
+    // the sibling key stays bounded too.
+    m_recentFilesMeta.insert(filePath, QDateTime::currentSecsSinceEpoch());
+    for (auto it = m_recentFilesMeta.begin(); it != m_recentFilesMeta.end(); ) {
+        if (m_recentFiles.contains(it.key())) ++it;
+        else it = m_recentFilesMeta.erase(it);
+    }
+
+    persistRecents();
+    updateRecentFilesMenu();
+    if (m_startWidget) m_startWidget->setRecents(m_recentFiles, m_recentFilesMeta);
+}
+
+void MainWindow::removeRecentFile(const QString& filePath)
+{
+    // The start screen's ✕ on a missing row, and onOpenRecentScene's own
+    // missing-file handling below -- unified here so both surfaces
+    // actually persist the removal (the menu-rebuild's prior in-memory-
+    // only pruning did not write QSettings, so a stale entry reappeared
+    // on the next launch).
+    m_recentFiles.removeAll(filePath);
+    m_recentFilesMeta.remove(filePath);
+    persistRecents();
+    updateRecentFilesMenu();
+    if (m_startWidget) m_startWidget->setRecents(m_recentFiles, m_recentFilesMeta);
+}
+
+void MainWindow::persistRecents()
+{
     QSettings settings;
     settings.setValue("recentSceneFiles", m_recentFiles);
-
-    updateRecentFilesMenu();
+    QVariantMap meta;
+    for (auto it = m_recentFilesMeta.constBegin(); it != m_recentFilesMeta.constEnd(); ++it) {
+        meta.insert(it.key(), it.value());
+    }
+    settings.setValue("recentSceneMeta", meta);
 }
 
 void MainWindow::updateRecentFilesMenu()
@@ -1343,16 +1528,16 @@ void MainWindow::updateRecentFilesMenu()
         auto* emptyAction = m_recentFilesMenu->addAction("No Recent Scenes");
         emptyAction->setEnabled(false);
     } else {
-        // Remove stale entries (files that no longer exist)
-        QStringList validFiles;
+        // Existing files only, for the DROPDOWN's display -- unlike the
+        // start screen's Recent scenes list (which shows missing entries
+        // dimmed with a remove affordance, spec §4.1), this menu simply
+        // omits them.  Does NOT mutate/persist m_recentFiles -- that list
+        // is the canonical source both this menu and the start screen
+        // read from; a stale entry stays until removeRecentFile() (the
+        // start screen's ✕, or onOpenRecentScene's click-time removal
+        // below) drops it.
         for (const QString& path : m_recentFiles) {
-            if (QFileInfo::exists(path)) {
-                validFiles.append(path);
-            }
-        }
-        m_recentFiles = validFiles;
-
-        for (const QString& path : m_recentFiles) {
+            if (!QFileInfo::exists(path)) continue;
             QString label = QFileInfo(path).fileName();
             auto* action = m_recentFilesMenu->addAction(label, [this, path]() {
                 onOpenRecentScene(path);
@@ -1367,11 +1552,16 @@ void MainWindow::updateRecentFilesMenu()
 
 void MainWindow::onOpenRecentScene(const QString& filePath)
 {
+    // Shared by File > Open Recent's per-item action and the start
+    // screen's recent-row click (StartWidget::openPathRequested) /
+    // drag-and-drop -- a dropped file that isn't already in recents still
+    // exists by construction (just dragged from Explorer), so this guard
+    // only ever fires for a recents entry whose file moved/was deleted
+    // since the row was last built.
     if (!QFileInfo::exists(filePath)) {
         QMessageBox::warning(this, "File Not Found",
             QString("The file no longer exists:\n%1").arg(filePath));
-        m_recentFiles.removeAll(filePath);
-        updateRecentFilesMenu();
+        removeRecentFile(filePath);
         return;
     }
 
@@ -1381,27 +1571,34 @@ void MainWindow::onOpenRecentScene(const QString& filePath)
 void MainWindow::onClearRecentFiles()
 {
     m_recentFiles.clear();
+    m_recentFilesMeta.clear();
 
     QSettings settings;
-    settings.setValue("recentSceneFiles", m_recentFiles);
+    settings.remove("recentSceneFiles");
+    settings.remove("recentSceneMeta");
 
     updateRecentFilesMenu();
+    if (m_startWidget) m_startWidget->setRecents(m_recentFiles, m_recentFilesMeta);
 }
 
 // ============================================================
 // Scene Loading
 // ============================================================
 
-void MainWindow::loadSceneFile(const QString& filePath)
+bool MainWindow::loadSceneFile(const QString& filePath, bool untitled)
 {
-    // Check for unsaved editor changes
-    if (m_sceneEditor->isDirty()) {
-        auto result = QMessageBox::question(this, "Unsaved Changes",
-            "The editor has unsaved changes. Save before opening a new scene?",
-            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-        if (result == QMessageBox::Cancel) return;
-        if (result == QMessageBox::Save) m_sceneEditor->save();
-    }
+    // A fresh attempt (Browse, a recent row, drag-drop, or Create) clears
+    // any banner left over from a prior failure (spec §8).
+    if (m_startWidget) m_startWidget->setErrorMessage(QString());
+
+    // Unsaved-work gate (mirrors the Mac rounds 2+3 unified helper): covers
+    // LIVE scene edits AND raw editor text, the both-dirty case, and
+    // untitled scenes.  Cancel or a refused save aborts the open.
+    if (!promptToSaveUnsavedWork(tr("loading a new scene"))) return false;
+
+    // A NORMAL open must never inherit a stale create-prompt (async-failure
+    // sibling of the errorOccurred clear above).
+    if (!untitled && m_chatPanel) m_chatPanel->setPendingFirstPrompt(QString());
 
     // If a scene is already loaded, confirm the clear-and-load.
     //
@@ -1428,7 +1625,7 @@ void MainWindow::loadSceneFile(const QString& filePath)
         msgBox.exec();
 
         if (msgBox.clickedButton() != clearBtn) {
-            return; // Cancel
+            return false; // Cancel
         }
         // Cancel + join any in-flight render BEFORE tearing down the
         // viewport bridge: a coordinator-routed production render runs
@@ -1445,15 +1642,26 @@ void MainWindow::loadSceneFile(const QString& filePath)
         m_engine->clearScene();
     }
 
-    addToRecentFiles(filePath);
+    // Start-screen create path (spec §5.2): an untitled scene never
+    // enters recents -- there's no user-facing document path to reopen.
+    if (!untitled) {
+        addToRecentFiles(filePath);
+    }
     if (m_chatPanel) m_chatPanel->setScenePath(filePath);   // E1: session-record scene identity
-    m_engine->loadScene(filePath);
+    m_engine->loadScene(filePath, untitled);
     updateWindowTitle();
 
     // UI redesign: the Scene file tab is always embedded (no Edit
     // toggle) — just refresh its contents from the freshly-loaded
     // file, whichever tab happens to be frontmost.
     m_sceneEditor->loadFile(filePath);
+    // Untitled (start-screen create): the buffer came FROM the bundled
+    // template, but the editor must never SAVE to it -- SceneEditor::save()
+    // with the template's real path actively corrupted the shared asset
+    // (review P1).  Clearing the editor's path makes saves guarded no-ops
+    // and disables its pills with a Save-As hint.
+    if (untitled) m_sceneEditor->markUntitled();
+    return true;
 }
 
 void MainWindow::onOpenScene()
@@ -1475,11 +1683,212 @@ void MainWindow::onOpenScene()
 }
 
 // ============================================================
+// Start screen (docs/gui/START_SCREEN.md)
+// ============================================================
+
+void MainWindow::updateCenterViewStack()
+{
+    // Single point that decides which of {viewport pane, RenderWidget,
+    // StartWidget} the center column shows -- mirrors macOS
+    // ContentView's declarative `viewportBridge == nil` gate.  A bridge
+    // means a scene is loaded (named or untitled); with no bridge, a
+    // load in flight shows the passive loading overlay, and everything
+    // else (fresh launch, after Close Scene, or a failed load) shows the
+    // start screen.  Called from every place the bridge or engine state
+    // can change (onStateChanged's tail, teardownViewport, the
+    // constructor's initial sync).
+    if (!m_viewStack) return;
+    if (m_viewportBridge) {
+        if (m_viewportPane) m_viewStack->setCurrentWidget(m_viewportPane);
+        return;
+    }
+    if (m_engine && m_engine->state() == RenderEngine::Loading) {
+        m_viewStack->setCurrentWidget(m_productionPaneStack);
+        return;
+    }
+    if (m_startWidget) {
+        // "Verified per render of the screen" (spec §4.1): re-stat every
+        // recent path right before it becomes visible, so a file
+        // deleted/moved while some OTHER screen was showing renders
+        // honestly on return here.
+        m_startWidget->setRecents(m_recentFiles, m_recentFilesMeta);
+        m_viewStack->setCurrentWidget(m_startWidget);
+    }
+}
+
+QString MainWindow::resolveStarterScenePath() const
+{
+    // Start-screen create path (spec §5.1/§5.3): the build-output copy
+    // the .vcxproj's post-build step places at $(OutDir)Templates\ next
+    // to the .exe.  Falls back to the repo-relative canonical path for a
+    // dev run from an unusual working directory -- a convenience for
+    // this platform only (there is no notion of a repo-relative fallback
+    // on an end-user install; a missing bundled copy there is a real
+    // packaging bug, surfaced as the error banner below rather than
+    // silently reaching for a source tree that won't exist).
+    const QString bundled = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/Templates/empty_starter.RISEscene");
+    if (QFileInfo::exists(bundled)) return bundled;
+
+    const QString repoRelative = QStringLiteral("scenes/Templates/empty_starter.RISEscene");
+    if (QFileInfo::exists(repoRelative)) return repoRelative;
+
+    return QString();
+}
+
+void MainWindow::onCreateSceneFromPrompt(const QString& prompt)
+{
+    // Start-screen create path (spec §4.3): resolve the bundled starter
+    // template, stash the prompt on the chat panel for its NEXT fresh
+    // bridge attach to consume exactly once (mirrors macOS
+    // ChatViewModel.pendingFirstPrompt / sceneOpened -- see
+    // ChatPanel::setPendingFirstPrompt's doc), switch to the Agent tab,
+    // then load the template as an untitled scene through the SAME
+    // loadSceneFile() path a normal Open uses.
+    const QString templatePath = resolveStarterScenePath();
+    if (templatePath.isEmpty()) {
+        if (m_startWidget) {
+            m_startWidget->setErrorMessage(
+                tr("The starter scene template is missing from the app's install."));
+            m_startWidget->setCreateInFlight(false);
+        }
+        return;
+    }
+
+    if (m_chatPanel) m_chatPanel->setPendingFirstPrompt(prompt);
+
+    // Force the left panel + Agent tab visible so the user watches the
+    // agent build (spec §4.3 step 4), keeping the View > Left Panel
+    // checkbox honest about the panel's actual visibility.
+    if (m_leftPanelAction) m_leftPanelAction->setChecked(true);
+    if (m_leftPanel) m_leftPanel->setVisible(true);
+    setLeftTab(0);
+
+    // No explicit createInFlight reset on an ASYNC failure: a successful
+    // load switches the center stack away from StartWidget entirely (see
+    // updateCenterViewStack), and an async load failure re-enables
+    // Create via the errorOccurred handler above.  A SYNC bail-out is
+    // still possible, though -- Close Scene doesn't clear the SceneEditor
+    // buffer, so a stray unsaved text edit left over from a scene closed
+    // earlier this session can still trigger loadSceneFile()'s "Unsaved
+    // Changes" confirm even with no scene currently loaded; Cancelling
+    // that (or, in principle, the "already loaded" confirm) must reset
+    // the button and drop the stash rather than leaving "Creating…"
+    // stuck and a prompt armed to fire on some later, unrelated load.
+    if (!loadSceneFile(templatePath, /*untitled=*/true)) {
+        if (m_startWidget) m_startWidget->setCreateInFlight(false);
+        if (m_chatPanel) m_chatPanel->setPendingFirstPrompt(QString());
+    }
+}
+
+// ============================================================
 // Render controls
 // ============================================================
 
+// The single unsaved-work gate for destructive scene transitions (Close
+// Scene, load-over) -- mirrors macOS RenderViewModel.promptToSaveUnsavedWork
+// (rounds 2+3): covers unsaved LIVE scene edits (Save routes untitled scenes
+// to Save-As) AND unsaved RAW editor text, including the BOTH-dirty case
+// where the editor buffer is a DIVERGENT variant of the just-saved scene --
+// writing it to the same file would clobber that save, so it gets an
+// explicit offer to save to a SEPARATE file.  Returns true to proceed with
+// the transition, false to abort it.
+bool MainWindow::promptToSaveUnsavedWork(const QString& action)
+{
+    const bool sceneDirty = m_viewportBridge
+        && m_viewportBridge->hasUnsavedSceneChanges();
+    const bool editorDirty = m_sceneEditor && m_sceneEditor->isDirty();
+    if (!sceneDirty && !editorDirty) return true;
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Unsaved Changes"));
+    if (sceneDirty && editorDirty) {
+        box.setText(tr("The scene has unsaved changes, and the scene editor "
+                       "has separate unsaved text changes. Save the scene "
+                       "before %1?").arg(action));
+    } else if (sceneDirty) {
+        box.setText(tr("The scene has unsaved changes. Save before %1?").arg(action));
+    } else {
+        box.setText(tr("The scene editor has unsaved text changes. Save before %1?").arg(action));
+    }
+    QPushButton* saveBtn = box.addButton(tr("Save"), QMessageBox::AcceptRole);
+    box.addButton(tr("Discard"), QMessageBox::DestructiveRole);
+    QPushButton* cancelBtn = box.addButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() == cancelBtn) return false;
+    if (box.clickedButton() != saveBtn) return true;   // Discard
+
+    if (sceneDirty) {
+        const bool untitled = m_viewportBridge->loadedFilePath().isEmpty();
+        const bool ok = untitled ? performSceneSaveAs() : performSceneSave();
+        if (!ok) return false;
+        if (m_sceneEditor && m_sceneEditor->isDirty()) {
+            // Both-dirty follow-up (Mac round-3 parity): the raw editor text
+            // was NOT part of the scene save and would overwrite it if
+            // written to the same file -- offer a separate destination.
+            QMessageBox follow(this);
+            follow.setIcon(QMessageBox::Warning);
+            follow.setWindowTitle(tr("Scene editor text not included"));
+            follow.setText(tr("The scene editor's unsaved text changes were "
+                              "not part of the scene save (writing them to "
+                              "the same file would overwrite it). Save the "
+                              "editor text to a separate file?"));
+            QPushButton* saveAsBtn = follow.addButton(tr("Save As..."), QMessageBox::AcceptRole);
+            follow.addButton(tr("Discard Text"), QMessageBox::DestructiveRole);
+            QPushButton* followCancel = follow.addButton(QMessageBox::Cancel);
+            follow.exec();
+            if (follow.clickedButton() == followCancel) return false;
+            if (follow.clickedButton() == saveAsBtn) {
+                if (!saveEditorTextViaDialog()) return false;
+            }
+        }
+        return true;
+    }
+    // Editor-only dirt.
+    if (!m_sceneEditor->filePath().isEmpty()) {
+        m_sceneEditor->save();
+        return !m_sceneEditor->isDirty();   // save() alerts on IO failure
+    }
+    return saveEditorTextViaDialog();
+}
+
+// Save the raw editor text to a user-chosen path (always dialogs, never the
+// scene's own file).  On success the editor adopts the written file via
+// loadFile() so its dirty baseline resets.  False on cancel / IO error.
+bool MainWindow::saveEditorTextViaDialog()
+{
+    const QString filePath = QFileDialog::getSaveFileName(
+        this, tr("Save Scene As"), QStringLiteral("untitled.RISEscene"),
+        tr("RISE Scene Files (*.RISEscene);;All Files (*)"));
+    if (filePath.isEmpty()) return false;
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Error"),
+                             tr("Could not save file: %1").arg(filePath));
+        return false;
+    }
+    QTextStream out(&file);
+    out << m_sceneEditor->text();
+    file.close();
+    // Adopt so the buffer reads clean (the scene itself stays whatever it
+    // was -- this is a raw-text export, not a scene re-anchor).
+    m_sceneEditor->loadFile(filePath);
+    return true;
+}
+
 void MainWindow::onClear()
 {
+    // Dirty-close prompt (spec §5.2; mirrors the Mac clearScene() fix —
+    // Close previously discarded unsaved work silently for named AND
+    // untitled scenes).  Both dirt kinds gate: unsaved LIVE scene edits
+    // (save routes untitled scenes to Save-As) and unsaved RAW editor
+    // text.  A cancelled prompt or a failed/refused save aborts the close.
+    // Unsaved-work gate (spec §5.2; mirrors the Mac rounds 2+3 unified
+    // helper -- covers both dirt kinds, the both-dirty case, and untitled
+    // scenes).  Cancel or a refused save aborts the close.
+    if (!promptToSaveUnsavedWork(tr("closing"))) return;
+
     // Close Scene is menu-gated off while Rendering/Cancelling, but make
     // the join-before-teardown ordering structural rather than
     // gate-dependent (see loadSceneFile's matching comment): the
@@ -1491,6 +1900,15 @@ void MainWindow::onClear()
     m_engine->clearScene();
     updateWindowTitle();
     updateStatusBar();
+    // Close Scene returns to the start screen (spec §8) -- clear any
+    // stale error banner / in-flight guard from a PRIOR visit so it
+    // doesn't leak into this one.  updateCenterViewStack() (called from
+    // teardownViewport()/the clearScene()-driven state change above)
+    // already refreshes the recents snapshot.
+    if (m_startWidget) {
+        m_startWidget->setErrorMessage(QString());
+        m_startWidget->setCreateInFlight(false);
+    }
 }
 
 void MainWindow::onRender()
@@ -1600,7 +2018,9 @@ void MainWindow::onStateChanged(int newState)
     // the viewport is always visible once a scene is loaded.
     if (state == RenderEngine::SceneLoaded && !m_viewportBridge) {
         rebuildViewportForLoadedScene();
-        if (m_viewportPane) m_viewStack->setCurrentWidget(m_viewportPane);
+        // Which of {RenderWidget, StartWidget, the viewport pane} the
+        // center stack shows is now decided in exactly one place --
+        // updateCenterViewStack(), called at this function's tail.
         if (m_viewportBridge) {
             // Override the scene's authored Film with a screen-appropriate
             // size for the INTERACTIVE preview.  The available render
@@ -1686,6 +2106,11 @@ void MainWindow::onStateChanged(int newState)
 
     updateStatusBar();
     updateWindowTitle();
+    // Start screen: the single place that decides {viewport pane,
+    // RenderWidget, StartWidget} -- covers every transition this
+    // function can produce (bridge built/torn down above, or a bare
+    // state change like Loading/Error with no bridge either way).
+    updateCenterViewStack();
 }
 
 void MainWindow::onSceneSizeDetected(int width, int height)
@@ -1748,6 +2173,12 @@ void MainWindow::updateWindowTitle()
     QString title;
     if (!m_engine->loadedFilePath().isEmpty()) {
         title = QFileInfo(m_engine->loadedFilePath()).fileName();
+    } else if (m_viewportBridge) {
+        // Untitled scene (start-screen create path, spec §5.2): a scene
+        // is loaded (the bundled starter template) but has no path yet
+        // -- Save routes to Save-As.  TopBar infers the same state from
+        // (empty path, bridge present) below.
+        title = "Untitled";
     } else {
         title = "RISE";
     }
@@ -2083,6 +2514,9 @@ void MainWindow::teardownViewport()
     }
     delete m_viewportBridge;
     m_viewportBridge = nullptr;
-    // Fall back to the passive RenderWidget when no scene is loaded.
-    m_viewStack->setCurrentIndex(0);
+    // Fall back to the loading overlay or the start screen, whichever
+    // the current engine state calls for (start screen: no scene loaded
+    // is the common case here -- fresh launch, Close Scene, a failed
+    // load).
+    updateCenterViewStack();
 }

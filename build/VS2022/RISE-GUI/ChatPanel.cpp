@@ -389,6 +389,17 @@ ChatPanel::ChatPanel(QWidget* parent)
             this, &ChatPanel::providerChanged);
     connect(m_modelEdit, &QLineEdit::editingFinished,
             this, &ChatPanel::modelEditingFinished);
+    // Start screen readiness (spec §6): agentConfigured() reads the
+    // applied provider + the key field's live text.  The key field
+    // covers every keystroke; applyProviderToLoop() (below) emits
+    // explicitly for the applied-provider transition itself, since
+    // QLineEdit::setText is a no-op-and-no-signal when the incoming key
+    // happens to match what's already shown (e.g. switching between two
+    // providers that both currently have an empty stashed key) -- that
+    // case must still be able to flip agentConfigured() (Local is
+    // keyless; every other provider isn't).
+    connect(m_apiKeyEdit, &QLineEdit::textChanged,
+            this, [this](const QString&) { emit agentConfiguredChanged(); });
     connect(m_inputEdit, &QLineEdit::returnPressed,
             this, &ChatPanel::sendMessage);
     connect(m_inputEdit, &QLineEdit::textChanged,
@@ -496,6 +507,22 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         // file (skills are set above, so the session record captures the
         // full system prompt on the first user message).
         startTrajectory();
+
+        // Start-screen create path (spec §7): consume the pending first
+        // prompt EXACTLY ONCE, and only here -- after the fresh bridge is
+        // attached and the chat state reset above, the same point a typed
+        // message could first be sent.  Stashing-then-consuming (vs
+        // sending directly from the start screen) is what makes the
+        // handoff immune to the slow-load race: however long the scene
+        // load took, the prompt can neither fire early (no bridge until
+        // now) nor double-fire (cleared before send).  Mirrors macOS
+        // ChatViewModel.sceneOpened's tail.
+        if (!m_pendingFirstPrompt.isEmpty()) {
+            const QString prompt = m_pendingFirstPrompt;
+            m_pendingFirstPrompt.clear();
+            m_inputEdit->setText(prompt);
+            sendMessage();
+        }
     } else {
         m_proposalsPollTimer->stop();
         m_resolvedProposalObservedAt.clear();
@@ -778,6 +805,21 @@ bool ChatPanel::providerRequiresApiKey(Provider provider)
     return provider != Provider::Local;
 }
 
+bool ChatPanel::agentConfigured() const
+{
+    // Start screen readiness (spec §6): the SAME condition sendMessage()
+    // gates a send on, inverted to a positive "ready" reading -- reusing
+    // it rather than a second source of truth.  m_appliedProvider (not
+    // the combo's possibly-mid-edit selection) matches what an actual
+    // send would evaluate right now.
+    return !providerRequiresApiKey(m_appliedProvider) || !m_apiKeyEdit->text().trimmed().isEmpty();
+}
+
+QString ChatPanel::currentProviderDisplayName() const
+{
+    return m_providerCombo ? m_providerCombo->itemText(static_cast<int>(m_appliedProvider)) : QString();
+}
+
 QString ChatPanel::localResolvedEndpoint()
 {
     const QString envUrl = qEnvironmentVariable("RISE_LOCAL_LLM_BASE_URL");
@@ -849,6 +891,13 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     m_appliedProvider = newProvider;
     m_appliedModel = m_modelEdit->text().trimmed();
     clearErrorAffordances();
+
+    // Start screen readiness (spec §6): the applied provider just changed
+    // (or was (re)confirmed) -- explicit emit because the key-field
+    // textChanged connection above can miss this transition (setText is a
+    // no-op-and-no-signal when the incoming key equals what's already
+    // shown).
+    emit agentConfiguredChanged();
 }
 
 void ChatPanel::applyProviderChangeWithConfirmation(bool resetModelToDefault)

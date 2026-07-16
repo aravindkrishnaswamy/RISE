@@ -20,6 +20,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QMap>
 #include <QStringList>
 #include <QtGlobal>
 
@@ -48,6 +49,7 @@ class ViewportTimeline;
 class ViewportProperties;
 class OutlinerWidget;
 class EnvironmentPanel;
+class StartWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -69,7 +71,20 @@ private slots:
     void onStateChanged(int newState);
     void onSceneSizeDetected(int width, int height);
     void onSaveAndReload(const QString& filePath);
-    void onSceneSavedToPath(const QString& path);
+    void onSceneSavedToPath(const QString& path, bool wasSaveAs);
+
+    // ---- Start screen (docs/gui/START_SCREEN.md) ----------------------
+    // StartWidget owns no scene state itself; every one of its signals
+    // routes to the exact code path the equivalent menu/button already
+    // uses (see each slot's doc below).
+    /// The ✕ on a missing recent row, or File > Open Recent's own
+    /// missing-file handling (onOpenRecentScene) -- unified here so both
+    /// surfaces persist the removal (the menu-only prior behavior did
+    /// not write QSettings, so a stale entry reappeared on next launch).
+    void removeRecentFile(const QString& filePath);
+    /// Create clicked with a non-empty, ready prompt (StartWidget already
+    /// validated both -- see StartWidget::createRequested's doc).
+    void onCreateSceneFromPrompt(const QString& prompt);
 
     // L5e — exposure slider.  UI redesign slice B: the slider widget
     // itself now lives inside the per-scene ViewportToolbar's EV chip
@@ -122,7 +137,40 @@ private:
     void updateWindowTitle();
     void updateRecentFilesMenu();
     void addToRecentFiles(const QString& filePath);
-    void loadSceneFile(const QString& filePath);
+    /// Single writer for both the recentSceneFiles path list and the
+    /// sibling recentSceneMeta (path -> last-opened epoch seconds, start
+    /// screen spec §5.4) to QSettings -- addToRecentFiles/removeRecentFile
+    /// both funnel through this so the two keys can never drift out of
+    /// sync with each other.
+    void persistRecents();
+    /// `untitled` (start-screen create path, spec §5.2): loads through the
+    /// SAME path a normal Open uses (dirty-editor guard, already-loaded
+    /// confirm, RenderEngine::loadScene, SceneEditor initial read) except
+    /// it is never added to recents.  See RenderEngine::loadScene's doc
+    /// for how `untitled` propagates to loadedFilePath().  Returns false
+    /// if the user cancelled one of the confirm dialogs (unsaved editor
+    /// changes, or "a scene is already loaded") -- onCreateSceneFromPrompt
+    /// uses this to reset the Create button rather than leaving it stuck
+    /// on "Creating…" for a load that never happened.
+    bool loadSceneFile(const QString& filePath, bool untitled = false);
+    /// Resolves the bundled starter template (start screen create path,
+    /// spec §5.1/§5.3): the build-output copy the .vcxproj's post-build
+    /// step places at $(OutDir)Templates\, falling back to the
+    /// repo-relative canonical path for a dev run from an unusual working
+    /// directory.  Empty return means neither exists -- surfaced as an
+    /// honest error banner rather than a silent no-op.
+    QString resolveStarterScenePath() const;
+    /// Single point that decides which widget the center viewport stack
+    /// shows: the interactive viewport pane while a bridge is attached,
+    /// the passive RenderWidget's loading overlay while a load is in
+    /// flight with no bridge yet, and StartWidget otherwise (fresh
+    /// launch, after Close Scene, or a failed load -- mirrors macOS
+    /// ContentView's `viewportBridge == nil` gate).  Refreshes
+    /// StartWidget's recents snapshot immediately before showing it, so
+    /// missing-file rows are always current ("verified per render of the
+    /// screen", spec §4.1).  Called from every place the bridge or engine
+    /// state can change.
+    void updateCenterViewStack();
 
     QWidget* buildLeftPanel();
     QWidget* buildCenterColumn();
@@ -201,13 +249,38 @@ private:
     QTimer* m_cstSyncTimer = nullptr;
 
     /// Shared implementation behind File > Save Scene and the TopBar's
-    /// Save pill.  Mirrors macOS RenderViewModel.saveScene().
+    /// Save pill for an ALREADY-NAMED scene (in-place, at the currently
+    /// loaded path).  Mirrors macOS RenderViewModel.saveScene().
     /// Explicit-save-only (user decision 2026-07-12): this is the ONLY
     /// place a .RISEscene write ever happens -- there is no debounced
     /// auto-save path to distinguish from, so every outcome (including
     /// refusal / I/O failure) always alerts the user.  Returns true on
-    /// a successful (or no-op) save, false on refusal/failure.
+    /// a successful (or no-op) save, false on refusal/failure.  Callers
+    /// must first check loadedFilePath().isEmpty() and route to
+    /// performSceneSaveAs() instead -- see onSaveScene().
     bool performSceneSave();
+
+    /// Start-screen create path (spec §5.2): the untitled-scene Save-As
+    /// fallback -- onSaveScene() routes here whenever the loaded scene
+    /// has no path yet.  Also reachable any time a normal Save-As is
+    /// wanted (mirrors macOS RenderViewModel.saveSceneAs()).  Opens a
+    /// native picker, then reuses the SAME ViewportBridge::saveSceneTo /
+    /// SaveStatus handling as performSceneSave().  On success the scene
+    /// gains a path (ViewportBridge::saveSceneTo already re-anchors
+    /// RenderEngine::loadedFilePath internally) and joins Recent Scenes
+    /// via onSceneSavedToPath(path, /*wasSaveAs=*/true).  Returns true on
+    /// a successful (or no-op) save, false on cancel/refusal/failure.
+    bool performSceneSaveAs();
+
+    /// The single unsaved-work gate for destructive scene transitions
+    /// (Close Scene, load-over) -- mirrors macOS promptToSaveUnsavedWork
+    /// (rounds 2+3): both dirt kinds, the both-dirty divergent-text case,
+    /// untitled Save-As routing.  True = proceed, false = abort.
+    bool promptToSaveUnsavedWork(const QString& action);
+
+    /// Save the raw editor text to a user-chosen path (always dialogs;
+    /// never writes to the scene's own file).  False on cancel/IO error.
+    bool saveEditorTextViaDialog();
 
     /// "Reveal in scene file" (item 3): resolve (category, name) via
     /// the bridge, switch to the Scene-file tab, and scroll/select/
@@ -278,6 +351,12 @@ private:
 
     // Recent files
     QStringList m_recentFiles;
+    // Start-screen spec §5.4: SIBLING map to m_recentFiles, path -> last-
+    // opened epoch seconds, for the start screen's "2m ago" labels.
+    // Deliberately a separate QSettings key ("recentSceneMeta") from the
+    // shared "recentSceneFiles" path list, so old installs and a path
+    // added before this feature simply render without a time.
+    QMap<QString, qint64> m_recentFilesMeta;
     QMenu* m_recentFilesMenu = nullptr;
     static constexpr int MAX_RECENT_FILES = 10;
 
@@ -285,10 +364,21 @@ private:
     RenderWidget* m_renderWidget = nullptr;
     HDRRenderWidget* m_hdrRenderWidget = nullptr;  // L5b — Windows HDR display
     QStackedWidget* m_productionPaneStack = nullptr;  // SDR / HDR within production
+    // Start screen (docs/gui/START_SCREEN.md): the no-scene launch
+    // surface, persistent like TopBar/ChatPanel -- built once, shown/
+    // hidden by updateCenterViewStack() rather than recreated per scene
+    // load/close.
+    StartWidget*    m_startWidget = nullptr;
     QAction*        m_hdrToggleAction = nullptr;       // View > HDR Preview
     QAction*        m_saveImageAction = nullptr;       // L5d — File > Save Rendered Image…
     QMenu*          m_toneCurveMenu = nullptr;         // L5e — View > Tone Curve
     QActionGroup*   m_toneCurveGroup = nullptr;        // L5e — exclusive group for tone-curve radio
+    // View > Left Panel toggle -- promoted from a createMenuBar()-local
+    // variable so the start screen's Create path (which force-shows the
+    // left panel to reveal the Agent tab, spec §4.3 step 4) can keep this
+    // checkbox in sync; otherwise the next click would incorrectly HIDE
+    // a panel the action itself believes is still closed.
+    QAction*        m_leftPanelAction = nullptr;
 
     // UI redesign: menu actions whose enable state / label text is
     // driven live by updateMenuActionStates() (see its doc above).

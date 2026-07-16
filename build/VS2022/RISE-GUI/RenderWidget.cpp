@@ -101,10 +101,14 @@ void RenderWidget::paintEvent(QPaintEvent* /*event*/)
         font.setPointSize(14);
         painter.setFont(font);
 
+        // The Idle no-scene placeholder that used to live here is gone --
+        // MainWindow now shows StartWidget (the three-path launch screen,
+        // docs/gui/START_SCREEN.md) for that state instead; this widget
+        // is only on screen while state == Loading (see
+        // MainWindow::updateCenterViewStack), where the loading overlay
+        // above already covers the surface.
         QString text;
-        if (m_state == RenderEngine::Idle) {
-            text = "Open a .RISEscene file to begin";
-        } else if (m_state == RenderEngine::SceneLoaded) {
+        if (m_state == RenderEngine::SceneLoaded) {
             text = "Press Render to start";
         }
 

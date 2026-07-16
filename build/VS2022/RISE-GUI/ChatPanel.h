@@ -100,6 +100,32 @@ public:
     // via the chatRenderOutstandingChanged() signal below.
     bool isChatRenderOutstanding() const { return m_outstandingRenderJobId != 0; }
 
+    // ---- Start screen readiness (docs/gui/START_SCREEN.md §6) --------
+    // Reuses the EXACT gate sendMessage() checks before allowing a send
+    // (providerRequiresApiKey(m_appliedProvider) && key empty) rather than
+    // inventing a second source of truth -- a keyless provider (Local/
+    // Ollama) is always configured; every other provider needs a
+    // resolvable key (Keychain-equivalent: in-memory/env-var on this
+    // platform).  Reads the APPLIED provider/key (not necessarily what
+    // the combo is mid-editing to -- see applyProviderChangeWithConfirmation),
+    // matching what an actual send would do right now.
+    bool agentConfigured() const;
+
+    /// The applied provider's display label ("OpenAI", "Anthropic", ...),
+    /// for the start screen's provider chip.  Empty if the combo hasn't
+    /// been built yet (never true after construction).
+    QString currentProviderDisplayName() const;
+
+    /// Start-screen create path (spec §7): stash a prompt to be submitted
+    /// EXACTLY ONCE, the next time setViewportBridge() attaches a fresh
+    /// (non-null) bridge -- mirrors macOS ChatViewModel.pendingFirstPrompt,
+    /// consumed at the tail of sceneOpened.  MainWindow calls this BEFORE
+    /// loading the starter scene so a slow load can neither drop nor
+    /// double-send it.  Passing an empty string clears a stale stash (used
+    /// on a load failure, since setViewportBridge(non-null) never runs
+    /// then).
+    void setPendingFirstPrompt(const QString& prompt) { m_pendingFirstPrompt = prompt; }
+
 public slots:
     void requestStop();
     void resetConversation();
@@ -124,6 +150,11 @@ signals:
     // entirely on this panel's async poll timer rather than through the
     // usual RenderEngine::stateChanged path.
     void chatRenderOutstandingChanged();
+
+    /// Start screen readiness (spec §6): fired whenever agentConfigured()
+    /// may have changed (provider applied, API-key field edited) so the
+    /// Create column can update live without polling.
+    void agentConfiguredChanged();
 
 private slots:
     void sendMessage();
@@ -368,6 +399,11 @@ private:
     // Lazily created on the first async render tool call; reused
     // (started/stopped) for every subsequent one.
     QTimer* m_renderPollTimer = nullptr;
+
+    // Start-screen create path: see setPendingFirstPrompt()'s doc.  Valid
+    // only between a stash and its consumption in setViewportBridge();
+    // empty the rest of the time.
+    QString m_pendingFirstPrompt;
 };
 
 #endif // CHATPANEL_H

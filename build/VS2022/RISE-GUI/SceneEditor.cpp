@@ -231,6 +231,17 @@ void SceneEditor::save()
     updateDirtyState();
 }
 
+void SceneEditor::markUntitled()
+{
+    m_filePath.clear();
+    updateDirtyState();
+}
+
+QString SceneEditor::text() const
+{
+    return m_editor->toPlainText();
+}
+
 void SceneEditor::revert()
 {
     if (isDirty()) {
@@ -354,8 +365,18 @@ void SceneEditor::updateDirtyState()
     const bool dirty = isDirty();
     m_dirtyDot->setVisible(dirty);
     m_revertBtn->setEnabled(dirty);
-    m_saveBtn->setEnabled(dirty);
-    m_saveReloadBtn->setEnabled(dirty);
+    // Untitled scenes (empty m_filePath) have no in-place save target --
+    // save()/saveAndReload() would either no-op or, before markUntitled(),
+    // have CORRUPTED the bundled starter template (review P1).  Disable
+    // honestly with a hint instead.
+    const bool savable = dirty && !m_filePath.isEmpty();
+    m_saveBtn->setEnabled(savable);
+    m_saveReloadBtn->setEnabled(savable);
+    const QString hint = m_filePath.isEmpty()
+        ? tr("Untitled scene -- use the top-bar Save (Save As...) first")
+        : QString();
+    m_saveBtn->setToolTip(hint);
+    m_saveReloadBtn->setToolTip(hint);
 
     if (dirty) {
         m_saveStateLabel->setText(QString::fromUtf8("\xE2\x97\x8F unsaved edits"));   // ● unsaved edits

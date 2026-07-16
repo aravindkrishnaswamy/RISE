@@ -107,6 +107,7 @@
     <ClCompile Include="ProposalCard.cpp" />
     <ClCompile Include="OutlinerWidget.cpp" />
     <ClCompile Include="EnvironmentPanel.cpp" />
+    <ClCompile Include="StartWidget.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
     <ClCompile Include="SceneTextEdit.cpp" />
@@ -129,6 +130,7 @@
     <ClCompile Include="$(QtMocOutDir)moc_ProposalCard.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_OutlinerWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_EnvironmentPanel.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_StartWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneTextEdit.cpp" />
@@ -190,6 +192,12 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="EnvironmentPanel.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="StartWidget.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
@@ -285,11 +293,22 @@
   <PropertyGroup>
     <QtVcpkgInstalled>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\</QtVcpkgInstalled>
   </PropertyGroup>
+  <!-- Start screen (docs/gui/START_SCREEN.md §5.1/§5.3): the canonical
+       starter-scene asset lives at scenes/Templates/empty_starter.RISEscene
+       (repo root, three levels up from this .vcxproj); copied to
+       $(OutDir)Templates\ so MainWindow::resolveStarterScenePath() can
+       find it next to the built .exe at runtime via
+       QCoreApplication::applicationDirPath().  Mirrors the macOS build's
+       bundle-resource copy of the same canonical file. -->
+  <PropertyGroup>
+    <RiseStarterSceneSource>$(ProjectDir)..\..\..\scenes\Templates\empty_starter.RISEscene</RiseStarterSceneSource>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PostBuildEvent>
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
 if not exist "$(OutDir)tls" mkdir "$(OutDir)tls"
+if not exist "$(OutDir)Templates" mkdir "$(OutDir)Templates"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\platforms\qwindowsd.dll" "$(OutDir)platforms\"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qcertonlybackendd.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qopensslbackendd.dll" "$(OutDir)tls\"
@@ -300,6 +319,7 @@ copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Widgetsd.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Networkd.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libcrypto-3-x64.dll" "$(OutDir)"
+copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
       </Command>
       <Message>Copying Qt debug DLLs to output...</Message>
     </PostBuildEvent>
@@ -309,6 +329,7 @@ copy /Y "$(QtVcpkgInstalled)debug\bin\libcrypto-3-x64.dll" "$(OutDir)"
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
 if not exist "$(OutDir)tls" mkdir "$(OutDir)tls"
+if not exist "$(OutDir)Templates" mkdir "$(OutDir)Templates"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\platforms\qwindows.dll" "$(OutDir)platforms\"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qcertonlybackend.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qopensslbackend.dll" "$(OutDir)tls\"
@@ -319,6 +340,7 @@ copy /Y "$(QtVcpkgInstalled)bin\Qt6Widgets.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Network.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libcrypto-3-x64.dll" "$(OutDir)"
+copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
       </Command>
       <Message>Copying Qt release DLLs to output...</Message>
     </PostBuildEvent>

@@ -593,14 +593,19 @@ void RenderEngine::cancelAndJoinInFlightWork()
     m_cancelFlag = false;
 }
 
-void RenderEngine::loadScene(const QString& filePath)
+void RenderEngine::loadScene(const QString& filePath, bool untitled)
 {
     if (!m_job) return;
 
     cancelAndJoinInFlightWork();
 
     setState(Loading);
-    m_loadedFilePath = filePath;
+    // Start-screen create path (spec §5.2): an untitled scene's
+    // loadedFilePath() must read as empty so Save routes to Save-As, the
+    // scene never enters recents, and the window title shows "Untitled" --
+    // see this method's header doc.  The real `filePath` is still used
+    // below to actually read the file.
+    m_loadedFilePath = untitled ? QString() : filePath;
 
     setupMediaPaths(filePath);
 

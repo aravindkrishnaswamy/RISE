@@ -60,9 +60,16 @@ public slots:
 
 signals:
     /// Fired after a successful in-place / Save-As round-trip save.
-    /// MainWindow connects to re-anchor RenderEngine::loadedFilePath
-    /// and refresh the SceneEditor text pane.  Not emitted on NoOp.
-    void sceneSavedToPath(const QString& path);
+    /// `wasSaveAs` distinguishes the two: MainWindow only adds the scene
+    /// to Recent Scenes on an actual Save-As (an in-place save of an
+    /// already-open scene doesn't re-bump its recents entry -- mirrors
+    /// macOS RenderViewModel's saveSceneAs()/saveScene() split, and is
+    /// what makes an untitled scene's first Save join recents, spec
+    /// §5.2).  MainWindow connects to refresh the SceneEditor text pane /
+    /// window title (the loadedFilePath re-anchor itself already happened
+    /// inside ViewportBridge::saveSceneTo before this fires).  Not
+    /// emitted on NoOp.
+    void sceneSavedToPath(const QString& path, bool wasSaveAs);
 
     /// "Reveal in scene file": the header's ⌗ chip was clicked for the
     /// current primary selection.  MainWindow connects this to its own

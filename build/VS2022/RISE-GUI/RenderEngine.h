@@ -152,7 +152,14 @@ public:
     void cancelAndJoinInFlightWork();
 
 public slots:
-    void loadScene(const QString& filePath);
+    /// `untitled` (start-screen create path, docs/gui/START_SCREEN.md §5.2):
+    /// `filePath` still names a real file on disk (the bundled starter
+    /// template) that is actually read -- only `loadedFilePath()` is
+    /// suppressed to empty, so every existing consumer (Save routing,
+    /// recents, the window title, the scene editor's initial read) treats
+    /// this load exactly like a document with no path yet, until a
+    /// Save-As gives it a real one.
+    void loadScene(const QString& filePath, bool untitled = false);
     /// Start a still render at `sceneTime`. Full SetSceneTime, including
     /// photon-map regeneration, runs on the render worker rather than the
     /// UI thread and inside the production-render coordinator.
@@ -214,9 +221,15 @@ public slots:
     /// startRender/startAnimationRender -- see resetProductionPauseState).
     bool isProductionRenderPaused() const;
 
+    /// Register media paths for a scene at `sceneFilePath`: its directory
+    /// + the global.options project-root walk-up.  Public so Save-As can
+    /// re-anchor an UNTITLED (bundle-loaded) scene's media to its new home
+    /// (mirrors the Mac round-2 fix; without it relative media stayed
+    /// unresolvable for the whole session even after Save-As).
+    void setupMediaPaths(const QString& sceneFilePath);
+
 private:
     void setState(State newState);
-    void setupMediaPaths(const QString& sceneFilePath);
     QImage buildImageFromBuffer();
 
     // Called from worker thread via callback adapters
