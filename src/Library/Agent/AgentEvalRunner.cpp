@@ -471,7 +471,10 @@ namespace RISE
 
 			//! "trajectory" (mirrors CheckTrajectoryKind):
 			//! {maxToolCalls?/maxLlmCalls?:number, terminalStatus?:string,
-			//!  noAutonomyRefusal?/noMechanicalLoop?:bool, requiredToolInOrder?:string array}.
+			//!  noAutonomyRefusal?/noMechanicalLoop?/expectAutonomyRefusal?:bool,
+			//!  requiredToolInOrder?:string array,
+			//!  toolOutcomes?:[{name:string, occurrence?:string, expect:string},...],
+			//!  toolCallAfterUserTurn?:{name:string, minUserTurns:number}}.
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				if( !RequireFieldType( cp, "maxToolCalls", JsonValue::Type::Number, scenarioId, idx, "maxToolCalls", err ) ) return false;
@@ -479,7 +482,94 @@ namespace RISE
 				if( !RequireFieldType( cp, "terminalStatus", JsonValue::Type::String, scenarioId, idx, "terminalStatus", err ) ) return false;
 				if( !RequireFieldType( cp, "noAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "noAutonomyRefusal", err ) ) return false;
 				if( !RequireFieldType( cp, "noMechanicalLoop", JsonValue::Type::Bool, scenarioId, idx, "noMechanicalLoop", err ) ) return false;
+				if( !RequireFieldType( cp, "expectAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "expectAutonomyRefusal", err ) ) return false;
 				if( !RequireArrayOfType( cp, "requiredToolInOrder", JsonValue::Type::String, scenarioId, idx, "requiredToolInOrder", err ) ) return false;
+
+				if( cp.has( "toolOutcomes" ) ) {
+					const JsonValue& arr = cp.get( "toolOutcomes" );
+					if( !arr.isArray() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"toolOutcomes\" must be an array (got " +
+						      JsonTypeName( arr.type() ) + ")";
+						return false;
+					}
+					// A present-but-empty array asserts nothing -- reject it loudly
+					// rather than let it vacuously pass at check time.
+					if( arr.size() == 0 ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"toolOutcomes\" must be a NON-EMPTY array (an empty array asserts nothing)";
+						return false;
+					}
+					for( std::size_t i = 0; i < arr.size(); ++i ) {
+						const JsonValue& o = arr.at( i );
+						if( !o.isObject() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"toolOutcomes\"[" +
+							      std::to_string( i ) + "] must be an object (got " + JsonTypeName( o.type() ) + ")";
+							return false;
+						}
+						const std::string label = "toolOutcomes[" + std::to_string( i ) + "]";
+						// name + expect are load-bearing -- REQUIRED (a missing name never
+						// matches; a missing expect never satisfies), not "type-if-present".
+						if( !o.has( "name" ) || !o.get( "name" ).isString() || o.get( "name" ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".name must be a non-empty string";
+							return false;
+						}
+						if( !o.has( "expect" ) || !o.get( "expect" ).isString() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".expect must be a string";
+							return false;
+						}
+						const std::string expect = o.get( "expect" ).asString();
+						if( expect != "applied" && expect != "staged" && expect != "rejected" && expect != "error" ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".expect must be one of applied|staged|rejected|error (got '" + expect + "')";
+							return false;
+						}
+						// occurrence is OPTIONAL (defaults to "any"); if present it must
+						// name a real mode -- a typo like "frist" must NOT silently
+						// downgrade to the weakest "any" check.
+						if( o.has( "occurrence" ) ) {
+							if( !o.get( "occurrence" ).isString() ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+								      ".occurrence must be a string";
+								return false;
+							}
+							const std::string occ = o.get( "occurrence" ).asString();
+							if( occ != "first" && occ != "last" && occ != "any" ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+								      ".occurrence must be one of first|last|any (got '" + occ + "')";
+								return false;
+							}
+						}
+					}
+				}
+
+				if( cp.has( "toolCallAfterUserTurn" ) ) {
+					const JsonValue& tc = cp.get( "toolCallAfterUserTurn" );
+					if( !tc.isObject() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"toolCallAfterUserTurn\" must be an object (got " +
+						      JsonTypeName( tc.type() ) + ")";
+						return false;
+					}
+					// Both fields are load-bearing -- REQUIRED (a missing name never
+					// matches; a missing minUserTurns silently defaults to 0).
+					if( !tc.has( "name" ) || !tc.get( "name" ).isString() || tc.get( "name" ).asString().empty() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].toolCallAfterUserTurn.name must be a non-empty string";
+						return false;
+					}
+					if( !tc.has( "minUserTurns" ) || !tc.get( "minUserTurns" ).isNumber() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].toolCallAfterUserTurn.minUserTurns must be a number";
+						return false;
+					}
+					if( tc.get( "minUserTurns" ).asNumber() < 0.0 ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].toolCallAfterUserTurn.minUserTurns must be >= 0";
+						return false;
+					}
+				}
+
 				return true;
 			}
 
@@ -2296,15 +2386,35 @@ namespace RISE
 					return { false, "diagnostics checkpoint: unknown \"expect\" value '" + expect + "' (must be \"clean\" or \"code\")" };
 				}
 
+				//! ChatTrajectory's EmbedJsonOrString embeds jsonrpc.response as
+				//! a parsed OBJECT when it is valid JSON (every real response
+				//! is), else falls back to a raw string -- handle both, and
+				//! return the parsed JSON-RPC envelope as an object (Null if
+				//! neither form yields one).
+				JsonValue ExtractToolResponseEnvelope( const JsonValue& toolRecord )
+				{
+					const JsonValue& resp = toolRecord.get( "jsonrpc.response" );
+					if( resp.isObject() ) return resp;
+					if( resp.isString() ) {
+						JsonValue parsed; std::string perr;
+						if( JsonParse( resp.asString(), parsed, perr ) && parsed.isObject() ) return parsed;
+					}
+					return JsonValue();
+				}
+
 				//! "trajectory": {maxToolCalls?,maxLlmCalls?,terminalStatus?,
-				//! noAutonomyRefusal?,requiredToolInOrder?,noMechanicalLoop?}
+				//! noAutonomyRefusal?,requiredToolInOrder?,noMechanicalLoop?,
+				//! expectAutonomyRefusal?,toolOutcomes?,toolCallAfterUserTurn?}
 				//! -- maxToolCalls/maxLlmCalls/terminalStatus read straight off
 				//! handle.result (the SAME counters RunScenario wrote into the
 				//! summary line -- no need to re-derive them from the JSONL).
-				//! noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop parse
-				//! handle.trajectoryPath's "tool" records (name/args/
-				//! jsonrpc.response), since those need per-call detail the
-				//! summary doesn't carry.
+				//! noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/
+				//! expectAutonomyRefusal/toolOutcomes parse handle.trajectoryPath's
+				//! "tool" records (name/args/jsonrpc.response), since those need
+				//! per-call detail the summary doesn't carry; toolCallAfterUserTurn
+				//! additionally walks the full ORDERED record stream (interleaving
+				//! "user" and "tool" records) to test a tool call against a running
+				//! user-turn count.
 				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
 				{
 					std::vector<std::string> failures;
@@ -2325,49 +2435,59 @@ namespace RISE
 							failures.push_back( "terminalStatus '" + handle.result.terminalStatus + "' != expected '" + want + "'" );
 					}
 
-					const bool needsRecords = cp.has( "noAutonomyRefusal" ) || cp.has( "requiredToolInOrder" ) || cp.has( "noMechanicalLoop" );
+					const bool needsRecords = cp.has( "noAutonomyRefusal" ) || cp.has( "requiredToolInOrder" ) ||
+						cp.has( "noMechanicalLoop" ) || cp.has( "expectAutonomyRefusal" ) ||
+						cp.has( "toolOutcomes" ) || cp.has( "toolCallAfterUserTurn" );
 					if( needsRecords ) {
 						if( handle.trajectoryPath.empty() ) {
 							failures.push_back( "trajectory file unavailable (run did not complete) -- cannot check "
-								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop" );
+								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/expectAutonomyRefusal/"
+								"toolOutcomes/toolCallAfterUserTurn" );
 						} else {
 							std::ifstream f( handle.trajectoryPath.c_str(), std::ios::binary );
 							if( !f ) {
 								failures.push_back( "trajectory file '" + handle.trajectoryPath + "' could not be opened" );
 							} else {
-								std::vector<JsonValue> toolRecords;
+								// One ordered pass over every record (session/user/
+								// llm/tool/summary, in trajectory order) -- toolRecords
+								// is derived from it so the pre-existing per-tool
+								// checks below are untouched, while
+								// toolCallAfterUserTurn gets the interleaved user/tool
+								// order it needs.
+								std::vector<JsonValue> allRecords;
 								std::string line;
 								while( std::getline( f, line ) ) {
 									if( line.empty() ) continue;
 									JsonValue v; std::string perr;
 									if( !JsonParse( line, v, perr ) ) continue;   // tolerate a stray non-JSON line (never emitted by the recorder)
-									if( v.isObject() && v.get( "run_type" ).asString() == "tool" ) toolRecords.push_back( v );
+									if( v.isObject() ) allRecords.push_back( v );
 								}
+								std::vector<JsonValue> toolRecords;
+								for( const auto& v : allRecords )
+									if( v.get( "run_type" ).asString() == "tool" ) toolRecords.push_back( v );
+
+								// Shared by noAutonomyRefusal (fail if present) and
+								// expectAutonomyRefusal (fail if absent) -- one scan so a
+								// future change to the -32011 detection can't diverge
+								// between the two.  Returns the FIRST refusing tool record,
+								// or nullptr when no -32011 occurred.
+								auto firstAutonomyRefusal = [&]() -> const JsonValue* {
+									for( const auto& t : toolRecords ) {
+										const JsonValue env = ExtractToolResponseEnvelope( t );
+										if( env.isObject() && env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0.0 ) == -32011.0 )
+											return &t;
+									}
+									return nullptr;
+								};
 
 								if( cp.has( "noAutonomyRefusal" ) && cp.get( "noAutonomyRefusal" ).isBool() && cp.get( "noAutonomyRefusal" ).asBool() ) {
-									for( const auto& t : toolRecords ) {
-										// ChatTrajectory's EmbedJsonOrString embeds
-										// jsonrpc.response as a parsed OBJECT when it
-										// is valid JSON (every real response is), else
-										// falls back to a raw string -- handle both.
-										const JsonValue& resp = t.get( "jsonrpc.response" );
-										double code = 0.0;
-										bool hasCode = false;
-										if( resp.isObject() && resp.has( "error" ) ) {
-											code = resp.get( "error" ).get( "code" ).asNumber( 0.0 );
-											hasCode = true;
-										} else if( resp.isString() ) {
-											JsonValue parsed; std::string perr2;
-											if( JsonParse( resp.asString(), parsed, perr2 ) && parsed.isObject() && parsed.has( "error" ) ) {
-												code = parsed.get( "error" ).get( "code" ).asNumber( 0.0 );
-												hasCode = true;
-											}
-										}
-										if( hasCode && code == -32011.0 ) {
-											failures.push_back( "an autonomy refusal (-32011) occurred on tool '" + t.get( "name" ).asString() + "'" );
-											break;
-										}
-									}
+									if( const JsonValue* t = firstAutonomyRefusal() )
+										failures.push_back( "an autonomy refusal (-32011) occurred on tool '" + t->get( "name" ).asString() + "'" );
+								}
+
+								if( cp.has( "expectAutonomyRefusal" ) && cp.get( "expectAutonomyRefusal" ).isBool() && cp.get( "expectAutonomyRefusal" ).asBool() ) {
+									if( firstAutonomyRefusal() == nullptr )
+										failures.push_back( "expectAutonomyRefusal: no tool call's response carried an autonomy refusal (-32011)" );
 								}
 
 								if( cp.has( "requiredToolInOrder" ) && cp.get( "requiredToolInOrder" ).isArray() ) {
@@ -2394,6 +2514,84 @@ namespace RISE
 											break;
 										}
 									}
+								}
+
+								if( cp.has( "toolOutcomes" ) && cp.get( "toolOutcomes" ).isArray() ) {
+									// Per-spec check: "applied" tests result.applied==true;
+									// "staged"/"rejected" test result.status; "error" tests
+									// the envelope carries an "error" object.  An unrecognized
+									// expect value never matches (fails loudly via the caller's
+									// !ok check below, not silently).
+									auto satisfiesExpect = [&]( const JsonValue& t, const std::string& expect ) -> bool {
+										const JsonValue env = ExtractToolResponseEnvelope( t );
+										if( !env.isObject() ) return false;
+										if( expect == "error" ) return env.has( "error" );
+										const JsonValue& result = env.get( "result" );
+										if( expect == "applied" )  return result.isObject() && result.get( "applied" ).asBool( false );
+										if( expect == "staged" )   return result.isObject() && result.get( "status" ).asString() == "staged";
+										if( expect == "rejected" ) return result.isObject() && result.get( "status" ).asString() == "rejected";
+										return false;
+									};
+
+									const JsonValue& specs = cp.get( "toolOutcomes" );
+									for( std::size_t si = 0; si < specs.size(); ++si ) {
+										const JsonValue& spec = specs.at( si );
+										if( !spec.isObject() ) continue;   // load-time-validated shape; defensive skip only
+										const std::string wantName = spec.get( "name" ).asString();
+										const std::string occurrence = spec.has( "occurrence" ) && spec.get( "occurrence" ).isString()
+											? spec.get( "occurrence" ).asString() : "any";
+										const std::string expect = spec.get( "expect" ).asString();
+
+										std::vector<const JsonValue*> matches;
+										for( const auto& t : toolRecords )
+											if( t.get( "name" ).asString() == wantName ) matches.push_back( &t );
+
+										if( matches.empty() ) {
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: no tool call named '" + wantName + "' occurred" );
+											continue;
+										}
+
+										bool ok = false;
+										if( occurrence == "first" )      ok = satisfiesExpect( *matches.front(), expect );
+										else if( occurrence == "last" )  ok = satisfiesExpect( *matches.back(), expect );
+										else if( occurrence == "any" ) {
+											for( const JsonValue* m : matches )
+												if( satisfiesExpect( *m, expect ) ) { ok = true; break; }
+										}
+										else {
+											// Defense-in-depth: LoadEvalScenario rejects any
+											// occurrence outside {first,last,any}, but a hand-built
+											// scenario could reach here -- fail LOUDLY rather than
+											// silently downgrading to the weakest "any" check.
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: unknown occurrence '" +
+												occurrence + "' (must be first|last|any)" );
+											continue;
+										}
+
+										if( !ok )
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: '" + wantName + "' (" + occurrence +
+												") did not satisfy expect:'" + expect + "'" );
+									}
+								}
+
+								if( cp.has( "toolCallAfterUserTurn" ) && cp.get( "toolCallAfterUserTurn" ).isObject() ) {
+									const JsonValue& spec = cp.get( "toolCallAfterUserTurn" );
+									const std::string wantName = spec.get( "name" ).asString();
+									const long long minUserTurns = static_cast<long long>( spec.get( "minUserTurns" ).asNumber( 0.0 ) );
+
+									long long userCount = 0;
+									bool found = false;
+									for( const auto& v : allRecords ) {
+										const std::string rt = v.get( "run_type" ).asString();
+										if( rt == "user" ) { ++userCount; continue; }
+										if( rt == "tool" && v.get( "name" ).asString() == wantName && userCount >= minUserTurns ) {
+											found = true;
+											break;
+										}
+									}
+									if( !found )
+										failures.push_back( "toolCallAfterUserTurn: no tool call '" + wantName + "' occurred at userTurns >= " +
+											std::to_string( minUserTurns ) );
 								}
 							}
 						}

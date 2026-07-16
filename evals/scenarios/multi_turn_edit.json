@@ -42,7 +42,8 @@
       "kind": "trajectory",
       "requiredToolInOrder": ["propose_patch", "propose_patch"],
       "terminalStatus": "final_text",
-      "noMechanicalLoop": true
+      "noMechanicalLoop": true,
+      "toolCallAfterUserTurn": { "name": "propose_patch", "minUserTurns": 2 }
     }
   ]
 }

@@ -32,7 +32,11 @@
       "kind": "trajectory",
       "requiredToolInOrder": ["propose_patch", "propose_patch"],
       "terminalStatus": "final_text",
-      "noMechanicalLoop": true
+      "noMechanicalLoop": true,
+      "toolOutcomes": [
+        { "name": "propose_patch", "occurrence": "first", "expect": "rejected" },
+        { "name": "propose_patch", "occurrence": "last", "expect": "applied" }
+      ]
     }
   ]
 }

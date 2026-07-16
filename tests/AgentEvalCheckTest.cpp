@@ -161,6 +161,58 @@ static const char* const kErrorFixture =
 	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":10,\\\"output_tokens\\\":0}}\"}\n";
 
 //----------------------------------------------------------------------
+// Fixtures for TestTrajectoryNewAssertions (T7c): "toolOutcomes" and
+// "toolCallAfterUserTurn" need specific per-call outcomes/turn placement
+// the existing fixtures above don't exercise.
+//----------------------------------------------------------------------
+
+// propose_patch on a nonexistent target (REJECTED, status="rejected"),
+// then a corrected retry on the real target (APPLIED) -- mirrors
+// evals/fixtures/malformed_tool_recovery.fixture.jsonl's reject-then-apply
+// shape so "occurrence":"first"/expect:"rejected" +
+// "occurrence":"last"/expect:"applied" both have a real call to match.
+static const char* const kToolOutcomesRejectThenApplyFixture =
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"Recoloring.\\\"},{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_ra1\\\",\\\"name\\\":\\\"propose_patch\\\",\\\"input\\\":{\\\"target\\\":\\\"bogus_target_xyz\\\",\\\"param\\\":\\\"color\\\",\\\"value\\\":\\\"0.9 0.1 0.1\\\"}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"Retrying with the correct target.\\\"},{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_ra2\\\",\\\"name\\\":\\\"propose_patch\\\",\\\"input\\\":{\\\"target\\\":\\\"pnt_albedo\\\",\\\"param\\\":\\\"color\\\",\\\"value\\\":\\\"0.9 0.1 0.1\\\"}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_3\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
+
+// Two DIFFERENT, both-valid propose_patch calls (both APPLIED) -- the RED
+// control for "occurrence":"first"/expect:"rejected" (the first call here
+// is applied, not rejected).
+static const char* const kToolOutcomesBothAppliedFixture =
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_ba1\\\",\\\"name\\\":\\\"propose_patch\\\",\\\"input\\\":{\\\"target\\\":\\\"pnt_albedo\\\",\\\"param\\\":\\\"color\\\",\\\"value\\\":\\\"0.9 0.1 0.1\\\"}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_ba2\\\",\\\"name\\\":\\\"propose_patch\\\",\\\"input\\\":{\\\"target\\\":\\\"sph\\\",\\\"param\\\":\\\"radius\\\",\\\"value\\\":\\\"0.9\\\"}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_3\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
+
+// A tool_use naming a verb that does not exist -- the dispatcher's method
+// lookup returns a genuine JSON-RPC "error" envelope (kMethodNotFound,
+// -32601 -- NOT the -32011 autonomy refusal), the substrate for
+// expect:"error".
+static const char* const kToolOutcomesErrorFixture =
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_er1\\\",\\\"name\\\":\\\"totally_bogus_tool_name\\\",\\\"input\\\":{}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"done\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
+
+// Two-user-turn fixture (mirrors evals/fixtures/multi_turn_edit.fixture.jsonl's
+// shape): turn 1 only reads the document (no propose_patch), turn 2 calls
+// propose_patch -- the substrate for toolCallAfterUserTurn's PASS case
+// (minUserTurns:2 is satisfied).
+static const char* const kToolCallAfterUserTurnPassFixture =
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_tc1\\\",\\\"name\\\":\\\"read_document\\\",\\\"input\\\":{}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"Read the scene, no edit yet.\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_3\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_tc2\\\",\\\"name\\\":\\\"propose_patch\\\",\\\"input\\\":{\\\"target\\\":\\\"pnt_albedo\\\",\\\"param\\\":\\\"color\\\",\\\"value\\\":\\\"0.9 0.1 0.1\\\"}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_4\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"Recolored on the second turn.\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
+
+// The RED control: propose_patch fires on turn 1 (userCount==1 at that
+// point) and turn 2 only reads -- no propose_patch call ever occurs at
+// userCount>=2, so toolCallAfterUserTurn{name:"propose_patch",
+// minUserTurns:2} must FAIL.
+static const char* const kToolCallAfterUserTurnFailFixture =
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_1\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_tf1\\\",\\\"name\\\":\\\"propose_patch\\\",\\\"input\\\":{\\\"target\\\":\\\"pnt_albedo\\\",\\\"param\\\":\\\"color\\\",\\\"value\\\":\\\"0.9 0.1 0.1\\\"}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_2\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"Recolored on the first turn.\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_3\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"tool_use\\\",\\\"id\\\":\\\"toolu_tf2\\\",\\\"name\\\":\\\"read_document\\\",\\\"input\\\":{}}],\\\"stop_reason\\\":\\\"tool_use\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":100,\\\"output_tokens\\\":40}}\"}\n"
+	"{\"provider\":\"anthropic\",\"body\":\"{\\\"id\\\":\\\"msg_4\\\",\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"model\\\":\\\"claude-sonnet-5\\\",\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"Just read again.\\\"}],\\\"stop_reason\\\":\\\"end_turn\\\",\\\"stop_sequence\\\":null,\\\"usage\\\":{\\\"input_tokens\\\":30,\\\"output_tokens\\\":8}}\"}\n";
+
+//----------------------------------------------------------------------
 // P1(b)'s MOCK transport -- the SAME minimal IChatHttpTransport seam
 // tests/AgentEvalLiveTransportTest.cpp drives (canned {status,body}
 // responses in sequence).  Needed here only to reach the 5xx-retry path:
@@ -806,6 +858,165 @@ static void TestTrajectoryCheckpoint()
 }
 
 //----------------------------------------------------------------------
+// T7c: "trajectory" checkpoint kind's three NEW assertion fields --
+// expectAutonomyRefusal (the inverse of noAutonomyRefusal: PASS iff a
+// refusal DID occur), toolOutcomes (per-call applied/staged/rejected/error
+// gating, with "first"/"last"/"any" occurrence selection), and
+// toolCallAfterUserTurn (a tool call must occur at/after a given running
+// user-turn count).  Each gets a PASS case and a FAIL case, driven through
+// real RunScenario runs (not hand-built envelopes) so the assertions are
+// proven against the SAME trajectory shape the checker reads in production.
+//----------------------------------------------------------------------
+static void TestTrajectoryNewAssertions()
+{
+	std::printf( "T7c: \"trajectory\" checkpoint kind -- expectAutonomyRefusal / toolOutcomes / toolCallAfterUserTurn...\n" );
+	const std::string dir = ScratchRunDir( "t7c_trajectory_new" );
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                      bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// expectAutonomyRefusal: PASS on the SAME read-autonomy/mutating-attempt
+	// run TestTrajectoryCheckpoint's noAutonomyRefusal RED case drives (a
+	// real -32011 refusal); FAIL on the SAME commit-autonomy/no-refusal run
+	// its GREEN control drives.
+	{
+		AgentEvalScenario sRefused = MakeScenario( "eafr_refused", kScene, "Try to edit", "read", kMutatingAttemptFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( sRefused, opts );
+		Check( h.result.toolCalls == 1, "eafr_refused: exactly 1 (refused) tool call dispatched" );
+		checkOne( h, sRefused, "[{\"kind\":\"trajectory\",\"expectAutonomyRefusal\":true}]", true,
+			"expectAutonomyRefusal PASSES when a -32011 refusal occurred" );
+
+		AgentEvalScenario sClean = MakeScenario( "eafr_clean", kScene, "Recolor", "commit", kParamEditFixture, dir, "[]" );
+		AgentEvalRunHandle hClean = RunScenario( sClean, opts );
+		checkOne( hClean, sClean, "[{\"kind\":\"trajectory\",\"expectAutonomyRefusal\":true}]", false,
+			"expectAutonomyRefusal FAILS when no refusal occurred" );
+	}
+
+	// toolOutcomes: reject-then-apply run -- "first" is rejected, "last" is
+	// applied; both pass.  The "first" spec re-run against the both-applied
+	// run FAILS (its first call is applied, not rejected).
+	{
+		AgentEvalScenario s = MakeScenario( "to_reject_apply", kScene, "Recolor", "commit",
+			kToolOutcomesRejectThenApplyFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.toolCalls == 2, "to_reject_apply: 2 propose_patch calls dispatched" );
+
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"first\",\"expect\":\"rejected\"}]}]",
+			true, "toolOutcomes: first propose_patch is rejected" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"last\",\"expect\":\"applied\"}]}]",
+			true, "toolOutcomes: last propose_patch is applied" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"first\",\"expect\":\"rejected\"},"
+			"{\"name\":\"propose_patch\",\"occurrence\":\"last\",\"expect\":\"applied\"}]}]",
+			true, "toolOutcomes: both specs together pass" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"first\",\"expect\":\"applied\"}]}]",
+			false, "toolOutcomes: asserting the first call is applied FAILS (it was rejected)" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"never_called_tool\",\"expect\":\"applied\"}]}]",
+			false, "toolOutcomes: a tool name that never occurred FAILS" );
+
+		AgentEvalScenario sBoth = MakeScenario( "to_both_applied", kScene, "Recolor and resize", "commit",
+			kToolOutcomesBothAppliedFixture, dir, "[]" );
+		AgentEvalRunHandle hBoth = RunScenario( sBoth, opts );
+		Check( hBoth.result.toolCalls == 2, "to_both_applied: 2 propose_patch calls dispatched" );
+		checkOne( hBoth, sBoth,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"first\",\"expect\":\"rejected\"}]}]",
+			false, "toolOutcomes: RED control -- first call is applied, not rejected, on the both-applied run" );
+		checkOne( hBoth, sBoth,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"any\",\"expect\":\"applied\"}]}]",
+			true, "toolOutcomes: occurrence \"any\" passes when either call is applied" );
+	}
+
+	// toolOutcomes expect:"staged" -- status="staged" only occurs for an
+	// External-authority session with a LIVE controller attached
+	// (AgentSession::ProposePatch's Secure-MCP slice 5a doc); the headless
+	// eval harness's RunScenario never attaches a controller, so
+	// autonomy:"propose" there is External+NO-controller -> REFUSED
+	// status="rejected", never "staged" (the SAME kind of unreachability
+	// T6b documents for a validate-dirty live document).  Proven instead
+	// through a hand-built trajectory file (mirrors T6b's hand-built
+	// WrapJob handle) carrying one "tool" record whose response envelope
+	// is the real staged shape {"applied":false,"status":"staged",...} --
+	// this drives the CHECKER's "staged" branch on the exact wire shape
+	// AgentSession::ProposePatch documents, without needing the live-
+	// controller plumbing this harness doesn't have.
+	{
+		const std::string trajPath = dir + "/staged_probe.trajectory.jsonl";
+		Check( WriteFile( trajPath,
+			"{\"run_type\":\"tool\",\"name\":\"propose_patch\",\"jsonrpc.response\":"
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":false,\"status\":\"staged\","
+			"\"rawCode\":0,\"retriable\":false,\"message\":\"proposalId 7\"}}}\n" ),
+			"wrote the hand-built staged-tool-record trajectory file" );
+
+		AgentEvalRunHandle h;
+		h.result.scenarioId = "staged_probe";
+		h.result.terminalStatus = "final_text";
+		h.trajectoryPath = trajPath;
+		h.resultPath = dir + "/staged_probe.result.jsonl";
+
+		AgentEvalScenario s;
+		s.id = "staged_probe";
+
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"expect\":\"staged\"}]}]",
+			true, "toolOutcomes: expect:\"staged\" passes on a hand-built staged tool response" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"expect\":\"applied\"}]}]",
+			false, "toolOutcomes: expect:\"applied\" FAILS on a staged (not committed) response" );
+	}
+
+	// toolOutcomes expect:"error" -- an unknown tool name is a genuine
+	// JSON-RPC error (-32601), distinct from the -32011 autonomy refusal.
+	{
+		AgentEvalScenario s = MakeScenario( "to_error", kScene, "Do something odd", "commit", kToolOutcomesErrorFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.toolCalls == 1, "to_error: 1 (errored) tool call dispatched" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"totally_bogus_tool_name\",\"expect\":\"error\"}]}]",
+			true, "toolOutcomes: expect:\"error\" passes on an unknown-method JSON-RPC error" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"totally_bogus_tool_name\",\"expect\":\"applied\"}]}]",
+			false, "toolOutcomes: expect:\"applied\" FAILS on an errored call" );
+	}
+
+	// toolCallAfterUserTurn: PASS when the named tool call occurs at/after
+	// the running user-turn count reaches minUserTurns; FAIL when the only
+	// such call happened on an earlier turn.
+	{
+		AgentEvalScenario sPass = MakeScenario( "tcaut_pass", kScene, "First, just read the scene.",
+			"commit", kToolCallAfterUserTurnPassFixture, dir, "[]" );
+		sPass.prompts.push_back( "Now recolor the sphere to red." );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle hPass = RunScenario( sPass, opts );
+		Check( hPass.result.toolCalls == 2, "tcaut_pass: read_document + propose_patch dispatched" );
+		checkOne( hPass, sPass,
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"minUserTurns\":2}}]",
+			true, "toolCallAfterUserTurn: propose_patch after the 2nd user turn PASSES minUserTurns:2" );
+
+		AgentEvalScenario sFail = MakeScenario( "tcaut_fail", kScene, "Recolor the sphere to red.",
+			"commit", kToolCallAfterUserTurnFailFixture, dir, "[]" );
+		sFail.prompts.push_back( "Now just re-read the scene." );
+		AgentEvalRunHandle hFail = RunScenario( sFail, opts );
+		Check( hFail.result.toolCalls == 2, "tcaut_fail: propose_patch + read_document dispatched" );
+		checkOne( hFail, sFail,
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"minUserTurns\":2}}]",
+			false, "toolCallAfterUserTurn: FAILS when the only propose_patch call precedes the 2nd user turn" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T7b: "finalText" checkpoint kind -- asserts on handle.result.finalText
 // (the last FinalText turn's text) rather than tool calls or document
 // state, so refusal/clarification scenarios can check the ask-back
@@ -1319,6 +1530,82 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 		AgentEvalScenario s; std::string err;
 		Check( LoadEvalScenario( path, s, err ), "correctly-typed containsAll (string array) loads (" + err + ")" );
 	}
+
+	// "trajectory".toolOutcomes as a bare NUMBER (not an array) -- must fail
+	// loudly, naming the offending field.
+	{
+		const std::string path = writeScenario( "bad_toolOutcomes_type",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":42}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "wrong-typed toolOutcomes (number 42) FAILS to load" );
+		Check( err.find( "toolOutcomes" ) != std::string::npos,
+			"the load error names the offending field \"toolOutcomes\" (got: " + err + ")" );
+	}
+	// The correctly-typed sibling still loads cleanly.
+	{
+		const std::string path = writeScenario( "good_toolOutcomes_type",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"first\",\"expect\":\"rejected\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "correctly-typed toolOutcomes (array of objects) loads (" + err + ")" );
+	}
+
+	// "trajectory".toolCallAfterUserTurn.minUserTurns as a STRING (not a
+	// number) -- must fail loudly, naming the offending field.
+	{
+		const std::string path = writeScenario( "bad_toolCallAfterUserTurn_type",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"minUserTurns\":\"2\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "wrong-typed toolCallAfterUserTurn.minUserTurns (string \"2\") FAILS to load" );
+		Check( err.find( "toolCallAfterUserTurn.minUserTurns" ) != std::string::npos,
+			"the load error names the offending field \"toolCallAfterUserTurn.minUserTurns\" (got: " + err + ")" );
+	}
+	// The correctly-typed sibling still loads cleanly.
+	{
+		const std::string path = writeScenario( "good_toolCallAfterUserTurn_type",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"minUserTurns\":2}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "correctly-typed toolCallAfterUserTurn loads (" + err + ")" );
+	}
+
+	// A present-but-EMPTY toolOutcomes array asserts nothing -> must be
+	// rejected at load (never a silent vacuous pass at check time).
+	{
+		const std::string path = writeScenario( "empty_toolOutcomes",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "empty toolOutcomes array FAILS to load" );
+		Check( err.find( "NON-EMPTY" ) != std::string::npos, "the load error explains the empty-array rejection (got: " + err + ")" );
+	}
+	// An UNRECOGNIZED occurrence (typo) must be rejected at load -- it must
+	// not silently downgrade to the weakest "any" check.
+	{
+		const std::string path = writeScenario( "bad_occurrence_enum",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"occurrence\":\"frist\",\"expect\":\"applied\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolOutcomes.occurrence typo 'frist' FAILS to load" );
+		Check( err.find( "occurrence" ) != std::string::npos, "the load error names occurrence (got: " + err + ")" );
+	}
+	// An UNRECOGNIZED expect must be rejected at load.
+	{
+		const std::string path = writeScenario( "bad_expect_enum",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"expect\":\"succeeded\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolOutcomes.expect 'succeeded' (not applied|staged|rejected|error) FAILS to load" );
+	}
+	// A toolOutcomes spec MISSING its load-bearing name/expect must be rejected.
+	{
+		const std::string path = writeScenario( "missing_expect",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolOutcomes spec missing \"expect\" FAILS to load" );
+	}
+	// toolCallAfterUserTurn missing minUserTurns must be rejected.
+	{
+		const std::string path = writeScenario( "missing_minUserTurns",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn missing minUserTurns FAILS to load" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1402,6 +1689,7 @@ int main()
 	TestDiagnosticsCheckpointClean();
 	TestDiagnosticsLiveDocInvariant();
 	TestTrajectoryCheckpoint();
+	TestTrajectoryNewAssertions();
 	TestFinalTextCheckpoint();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();
