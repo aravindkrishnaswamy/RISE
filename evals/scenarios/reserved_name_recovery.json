@@ -49,8 +49,38 @@
       "expect": "clean"
     },
     {
-      "kind": "trajectory", "terminalStatus": "final_text",
-      "noMechanicalLoop": true
+      "kind": "document",
+      "op": "param_range",
+      "chunkKind": "pinhole_camera",
+      "param": "location",
+      "min": [
+        -10.0,
+        2.0,
+        -10.0
+      ],
+      "max": [
+        10.0,
+        50.0,
+        10.0
+      ]
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "toolOutcomes": [
+        {
+          "name": "insert_chunk",
+          "argsContains": "none",
+          "occurrence": "first",
+          "expect": "rejected"
+        },
+        {
+          "name": "insert_chunk",
+          "occurrence": "last",
+          "expect": "applied"
+        }
+      ]
     }
   ]
 }

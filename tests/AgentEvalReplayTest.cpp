@@ -192,13 +192,17 @@ static void TestLoadSeedScenarios()
 		       "two_tool_observe.json loads (" + err + ")" );
 		Check( s.id == "two_tool_observe", "two_tool_observe id" );
 		Check( s.budgets.maxToolCalls == 10 && s.budgets.maxLlmCalls == 12, "two_tool_observe budgets parsed" );
-		// Eval-harness slice E3: a render band + a trajectory bound.
-		Check( s.checkpoints.isArray() && s.checkpoints.size() == 2,
-		       "two_tool_observe checkpoints carried opaquely (2 entries, wired by E3)" );
+		// Eval-harness slice E3: a render band + a trajectory bound + a
+		// finalText check (Wave B: requiredToolInOrder/finalText added to
+		// discriminate the zero-tool-call dodge -- see evals/README.md).
+		Check( s.checkpoints.isArray() && s.checkpoints.size() == 3,
+		       "two_tool_observe checkpoints carried opaquely (3 entries, wired by E3)" );
 		Check( s.checkpoints.at( 0 ).get( "kind" ).asString() == "render",
 		       "two_tool_observe checkpoint[0].kind is the render band" );
 		Check( s.checkpoints.at( 1 ).get( "kind" ).asString() == "trajectory",
 		       "two_tool_observe checkpoint[1].kind is the trajectory bound" );
+		Check( s.checkpoints.at( 2 ).get( "kind" ).asString() == "finalText",
+		       "two_tool_observe checkpoint[2].kind is the finalText check" );
 	}
 	{
 		AgentEvalScenario s;

@@ -62,6 +62,10 @@
         "propose_patch",
         "read_document",
         "propose_patch"
+      ],
+      "toolOutcomes": [
+        { "name": "propose_patch", "occurrence": "first", "expect": "conflict" },
+        { "name": "propose_patch", "occurrence": "last", "expect": "applied" }
       ]
     }
   ]
