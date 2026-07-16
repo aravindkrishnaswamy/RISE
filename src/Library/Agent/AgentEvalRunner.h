@@ -79,6 +79,17 @@
 
 namespace RISE
 {
+	//! Fwd-decls for AgentEvalRunHandle's headless propose-mode mock-Owner
+	//! (see RunScenarioDriven / the two owning members on AgentEvalRunHandle).
+	//! Kept as fwd-decls so this header does not pull the heavy IJobPriv /
+	//! SceneEditController includes.  The handle's unique_ptr members over
+	//! these incomplete types are safe ONLY because AgentEvalRunHandle declares
+	//! its destructor + move operations here and DEFINES them out-of-line in
+	//! AgentEvalRunner.cpp, where both types are complete -- so no consuming TU
+	//! ever instantiates a special member over an incomplete SceneEditController.
+	class IJobPriv;
+	class SceneEditController;
+
 	namespace Agent
 	{
 		class AgentRpcDispatcher;
@@ -325,7 +336,46 @@ namespace RISE
 			AgentEvalRunResult result;
 			std::string trajectoryPath;   //!< "" iff terminalStatus == "load_error" (no sink was ever attached)
 			std::string resultPath;       //!< the <id>.result.jsonl this run wrote ("" iff runDir itself was invalid)
+
+			//! Headless propose-mode mock-Owner (see RunScenarioDriven).  Under
+			//! autonomy:"propose" the runner loads the Job itself, wraps a
+			//! (borrowing) External-authority AgentSession around it, and
+			//! attaches an unstarted SceneEditController so ProposePatch has a
+			//! live controller to STAGE proposals against.  Both are empty for a
+			//! read/commit run (there LoadFromFile owns its own Job and no
+			//! controller exists).  These two members are declared IMMEDIATELY
+			//! BEFORE `dispatcher` so C++'s reverse-declaration-order destruction
+			//! tears the handle down as session (inside `dispatcher`) -> controller
+			//! -> Job: the session drains its async render against a still-live
+			//! controller, and the borrowed Job outlives both the controller (whose
+			//! ctor took `IJobPriv&`) and the session (which wraps it owns=false).
+			//! ownedProposeJob's deleter calls IJobPriv::release() (it is
+			//! refcounted -- mirrors AgentSession::LoadFromFile's error path).
+			std::unique_ptr<IJobPriv, void(*)(IJobPriv*)> ownedProposeJob{ nullptr, +[](IJobPriv*){} };
+			std::unique_ptr<SceneEditController>          ownedProposeController;
+
 			std::unique_ptr<AgentRpcDispatcher> dispatcher;
+
+			//! The unique_ptr members above are over INCOMPLETE types in a
+			//! consuming TU (AgentEvalRunner.h fwd-decls SceneEditController /
+			//! IJobPriv / AgentRpcDispatcher without their headers).  Declaring
+			//! these special members here and DEFINING them out-of-line in
+			//! AgentEvalRunner.cpp -- where all three are complete -- is the pimpl
+			//! idiom: every instantiation of the destructor / move ops happens in
+			//! that one TU, so no consumer needs the heavy includes.  Move-only
+			//! (matching the pre-existing unique_ptr `dispatcher` member); never
+			//! copied.
+			AgentEvalRunHandle();
+			~AgentEvalRunHandle();
+			AgentEvalRunHandle( AgentEvalRunHandle&& );
+			//! Move-ASSIGNMENT is DELETED, not defaulted: a defaulted move-assign
+			//! assigns members in DECLARATION order (ownedProposeJob first), which
+			//! would release the borrowed Job BEFORE the session/controller that
+			//! reference it -- the inverse of the reverse-DESTRUCTION order this
+			//! layout relies on.  No call site move-assigns onto a live handle (all
+			//! consumers move-CONSTRUCT into a fresh variable), so deleting it costs
+			//! nothing and turns a future misuse into a compile error, not a UAF.
+			AgentEvalRunHandle& operator=( AgentEvalRunHandle&& ) = delete;
 
 			//! Eval-harness slice E3 (the "untouched" / PASS_TO_PASS
 			//! checkpoint seam): the head's canonical `.RISEscene` text AS
@@ -477,13 +527,15 @@ namespace RISE
 		{
 			int runsExecuted   = 0;   //!< (scenario x provider-with-key x repeat) runs actually driven
 			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset
-			int runsAlreadyComplete = 0; //!< runs SKIPPED because their subdir already held a non-empty <scenarioId>.result.jsonl from a prior invocation into the same runDir -- the cross-invocation resume/idempotency guard (a subdir with NO result.jsonl, i.e. a crash mid-run, is instead wiped and re-run, NOT counted here)
+			int runsAlreadyComplete = 0; //!< runs SKIPPED because their subdir already held a non-empty <scenarioId>.result.jsonl from a prior invocation into the same runDir AND its stamped scenarioContentHash MATCHES the current scenario (still graded under the same oracle) -- the cross-invocation resume/idempotency guard.  A subdir with NO result.jsonl (a crash mid-run), OR one whose stamped hash is missing/different (a STALE cell graded under a since-changed scenario), is instead wiped and re-run, NOT counted here
 			int providersUsed  = 0;   //!< providers whose key resolved (non-empty)
 			int providersSkipped = 0; //!< providers skipped for a missing key
 
 			//! Non-empty iff the matrix REFUSED to run (a fatal config error
-			//! caught before any run executed) -- currently a duplicate
-			//! scenario `id` in the pre-loaded set, which would collide two
+			//! caught before any run executed) -- either a duplicate scenario
+			//! `id` in the pre-loaded set, or a provider/model LEAF COLLISION
+			//! (two distinct (provider, model) pairs that SanitizeForPath maps
+			//! to the same per-run subdir fragment).  Both would collide two
 			//! runs into the same per-run subdir (silent trajectory-append /
 			//! result-overwrite corruption).  When set, all counts are 0.
 			std::string errorMessage;
@@ -508,19 +560,25 @@ namespace RISE
 		//!
 		//! Cross-invocation resume (idempotent completion): before executing
 		//! a run, its target subdir is checked for an already-present,
-		//! NON-EMPTY <scenarioId>.result.jsonl.  If found, the run is
-		//! SKIPPED (counted in result.runsAlreadyComplete) rather than
-		//! re-executed -- re-running the SAME runconfig into an EXISTING
+		//! NON-EMPTY <scenarioId>.result.jsonl.  If found AND its stamped
+		//! scenarioContentHash MATCHES the current scenario's (still graded
+		//! under the same oracle -- checkpoints[], prompts, budgets, scene),
+		//! the run is SKIPPED (counted in result.runsAlreadyComplete) rather
+		//! than re-executed -- re-running the SAME runconfig into an EXISTING
 		//! runDir is therefore a no-op past the first invocation, and adding
 		//! a provider column later (e.g. exporting a new provider's api key
 		//! and re-running) executes ONLY the newly-added runs.  Without this,
 		//! a re-run would reopen each run's trajectory.jsonl in APPEND mode
 		//! (ChatTrajectory's file sink), concatenating two sessions into one
 		//! file, while truncate-overwriting result.jsonl -- silent
-		//! corruption.  A subdir that exists but holds NO (or an empty)
-		//! result.jsonl is treated as a crashed/interrupted run: its
-		//! contents are wiped before re-running so the trajectory sink's
-		//! append can't concatenate onto a partial file.
+		//! corruption.  A subdir whose result.jsonl is present but carries a
+		//! MISSING (old pre-content-hash result) or DIFFERENT stamped hash is
+		//! treated as STALE (the scenario changed since it was graded) and,
+		//! like a subdir that exists but holds NO (or an empty) result.jsonl
+		//! (a crashed/interrupted run), is wiped before re-running so the
+		//! trajectory sink's append can't concatenate onto a partial file and
+		//! the report never keeps publishing a score graded under an old
+		//! oracle.
 		AgentEvalMatrixResult RunEvalMatrix( const AgentEvalRunConfig& config,
 		                                     const std::vector<AgentEvalScenario>& scenarios,
 		                                     const AgentEvalMatrixOptions& options );
@@ -546,13 +604,20 @@ namespace RISE
 		//! checkpoints at all.  `allPassed` is true iff every checkpoint
 		//! passed (equivalently: no failed entries in `checkpoints`,
 		//! independent of weight -- a single failed checkpoint, however
-		//! small its weight, means NOT allPassed).
+		//! small its weight, means NOT allPassed) AND the run met the
+		//! terminal-success precondition: a run that ended on a non-success
+		//! terminal status (anything but "final_text") is forced to
+		//! allPassed=false unless a trajectory checkpoint explicitly asserts
+		//! that status -- so `allPassed` can be false with every checkpoint
+		//! passing (and `checkpointFraction` still 1.0); `terminalGateNote`
+		//! is then non-empty and explains the override.
 		struct AgentEvalCheckResult
 		{
 			std::string scenarioId;
 			std::vector<AgentEvalCheckpointResult> checkpoints;
 			double checkpointFraction = 1.0;
 			bool   allPassed = true;
+			std::string terminalGateNote;   //!< non-empty iff the terminal-success gate forced allPassed=false
 		};
 
 		//! Interpret and run `scenario.checkpoints` (see the file header's
@@ -570,7 +635,8 @@ namespace RISE
 		//! crashes on a malformed checkpoint or a null/incomplete handle
 		//! (e.g. a "load_error" run with a null dispatcher).  As a side
 		//! effect, appends one JSON line (scenarioId, checkpointFraction,
-		//! allPassed, checkpoints[]) to <runDir>/results.jsonl, where
+		//! allPassed, terminalStatus, checkpoints[], and terminalGateNote
+		//! when the terminal gate fired) to <runDir>/results.jsonl, where
 		//! runDir is recovered from handle.trajectoryPath's (or, failing
 		//! that, handle.resultPath's) parent directory -- a no-op when
 		//! neither path is available (nothing was ever written for this

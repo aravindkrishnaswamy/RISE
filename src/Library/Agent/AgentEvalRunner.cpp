@@ -24,9 +24,12 @@
 #include "AgentDiagnostic.h"
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 #include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
+#include "../Interfaces/IJobPriv.h"                // propose-mode mock-Owner: RISE_CreateJobPriv + IJobPriv::release/LoadAsciiSceneViaCst
+#include "../SceneEditor/SceneEditController.h"    // propose-mode mock-Owner: the unstarted headless controller ProposePatch stages against
 
 #include <cctype>
 #include <cmath>     // std::isfinite -- numeric param_equals tolerance
+#include <cstdint>   // std::uint64_t -- ScenarioContentHash's FNV-1a accumulator
 #include <cstdio>
 #include <cstdlib>   // std::strtod -- numeric param_equals token parse
 #include <filesystem>
@@ -41,6 +44,25 @@ namespace RISE
 	{
 		namespace
 		{
+			//----------------------------------------------------------
+			// Headless propose-mode mock-Owner.
+			//----------------------------------------------------------
+
+			//! Headless mock-Owner: a SceneEditController that never renders
+			//! (never Start()ed) -- it exists only so an External-authority
+			//! Propose session has a live controller to STAGE proposals against
+			//! (StageProposal / ListProposals are pure mutex ops; no render
+			//! thread is needed).  DoOneRenderPass is overridden to a no-op
+			//! purely as belt-and-suspenders (it is never called when unstarted).
+			class EvalMockOwnerController : public RISE::SceneEditController
+			{
+			public:
+				explicit EvalMockOwnerController( IJobPriv& job )
+					: SceneEditController( job, /*interactiveRasterizer*/nullptr ) {}
+			protected:
+				void DoOneRenderPass() override {}
+			};
+
 			//----------------------------------------------------------
 			// Small file-IO helpers (kept local -- no other TU needs
 			// them).
@@ -471,7 +493,10 @@ namespace RISE
 
 			//! "trajectory" (mirrors CheckTrajectoryKind):
 			//! {maxToolCalls?/maxLlmCalls?:number, terminalStatus?:string,
-			//!  noAutonomyRefusal?/noMechanicalLoop?:bool, requiredToolInOrder?:string array}.
+			//!  noAutonomyRefusal?/noMechanicalLoop?/expectAutonomyRefusal?:bool,
+			//!  requiredToolInOrder?:string array,
+			//!  toolOutcomes?:[{name:string, occurrence?:string, expect:string},...],
+			//!  toolCallAfterUserTurn?:{name:string, minUserTurns:number}}.
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				if( !RequireFieldType( cp, "maxToolCalls", JsonValue::Type::Number, scenarioId, idx, "maxToolCalls", err ) ) return false;
@@ -479,7 +504,94 @@ namespace RISE
 				if( !RequireFieldType( cp, "terminalStatus", JsonValue::Type::String, scenarioId, idx, "terminalStatus", err ) ) return false;
 				if( !RequireFieldType( cp, "noAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "noAutonomyRefusal", err ) ) return false;
 				if( !RequireFieldType( cp, "noMechanicalLoop", JsonValue::Type::Bool, scenarioId, idx, "noMechanicalLoop", err ) ) return false;
+				if( !RequireFieldType( cp, "expectAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "expectAutonomyRefusal", err ) ) return false;
 				if( !RequireArrayOfType( cp, "requiredToolInOrder", JsonValue::Type::String, scenarioId, idx, "requiredToolInOrder", err ) ) return false;
+
+				if( cp.has( "toolOutcomes" ) ) {
+					const JsonValue& arr = cp.get( "toolOutcomes" );
+					if( !arr.isArray() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"toolOutcomes\" must be an array (got " +
+						      JsonTypeName( arr.type() ) + ")";
+						return false;
+					}
+					// A present-but-empty array asserts nothing -- reject it loudly
+					// rather than let it vacuously pass at check time.
+					if( arr.size() == 0 ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"toolOutcomes\" must be a NON-EMPTY array (an empty array asserts nothing)";
+						return false;
+					}
+					for( std::size_t i = 0; i < arr.size(); ++i ) {
+						const JsonValue& o = arr.at( i );
+						if( !o.isObject() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"toolOutcomes\"[" +
+							      std::to_string( i ) + "] must be an object (got " + JsonTypeName( o.type() ) + ")";
+							return false;
+						}
+						const std::string label = "toolOutcomes[" + std::to_string( i ) + "]";
+						// name + expect are load-bearing -- REQUIRED (a missing name never
+						// matches; a missing expect never satisfies), not "type-if-present".
+						if( !o.has( "name" ) || !o.get( "name" ).isString() || o.get( "name" ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".name must be a non-empty string";
+							return false;
+						}
+						if( !o.has( "expect" ) || !o.get( "expect" ).isString() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".expect must be a string";
+							return false;
+						}
+						const std::string expect = o.get( "expect" ).asString();
+						if( expect != "applied" && expect != "staged" && expect != "rejected" && expect != "error" ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".expect must be one of applied|staged|rejected|error (got '" + expect + "')";
+							return false;
+						}
+						// occurrence is OPTIONAL (defaults to "any"); if present it must
+						// name a real mode -- a typo like "frist" must NOT silently
+						// downgrade to the weakest "any" check.
+						if( o.has( "occurrence" ) ) {
+							if( !o.get( "occurrence" ).isString() ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+								      ".occurrence must be a string";
+								return false;
+							}
+							const std::string occ = o.get( "occurrence" ).asString();
+							if( occ != "first" && occ != "last" && occ != "any" ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+								      ".occurrence must be one of first|last|any (got '" + occ + "')";
+								return false;
+							}
+						}
+					}
+				}
+
+				if( cp.has( "toolCallAfterUserTurn" ) ) {
+					const JsonValue& tc = cp.get( "toolCallAfterUserTurn" );
+					if( !tc.isObject() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"toolCallAfterUserTurn\" must be an object (got " +
+						      JsonTypeName( tc.type() ) + ")";
+						return false;
+					}
+					// Both fields are load-bearing -- REQUIRED (a missing name never
+					// matches; a missing minUserTurns silently defaults to 0).
+					if( !tc.has( "name" ) || !tc.get( "name" ).isString() || tc.get( "name" ).asString().empty() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].toolCallAfterUserTurn.name must be a non-empty string";
+						return false;
+					}
+					if( !tc.has( "minUserTurns" ) || !tc.get( "minUserTurns" ).isNumber() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].toolCallAfterUserTurn.minUserTurns must be a number";
+						return false;
+					}
+					if( tc.get( "minUserTurns" ).asNumber() < 0.0 ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].toolCallAfterUserTurn.minUserTurns must be >= 0";
+						return false;
+					}
+				}
+
 				return true;
 			}
 
@@ -767,6 +879,122 @@ namespace RISE
 				return false;
 			}
 
+			//! Inverse of ParseReplayProviderName -- the canonical provider NAME
+			//! string for a ChatProvider enum value, as written into a
+			//! result.jsonl's "provider" field (see RunScenarioDriven's
+			//! result-summary write) and consumed by tools/eval_report.py, which
+			//! PREFERS this true, un-sanitized field over its lossy dir-name
+			//! parse (a SanitizeForPath leaf can collapse two distinct model ids
+			//! to the same fragment -- see the P2 collision finding).
+			std::string ChatProviderName( ChatProvider p )
+			{
+				switch( p ) {
+					case ChatProvider::Anthropic: return "anthropic";
+					case ChatProvider::Gemini:    return "gemini";
+					case ChatProvider::OpenAI:    return "openai";
+					case ChatProvider::XAI:       return "xai";
+					case ChatProvider::Local:     return "local";
+				}
+				return "";   // unreachable for a valid enum value; keeps -Wreturn-type quiet on all compilers
+			}
+
+			//! Methodology epoch, folded into ScenarioContentHash. BUMP THIS by one whenever
+			//! a harness-side change alters how runs are DRIVEN or GRADED without touching
+			//! any scenario file -- a system-prompt change, a tool-definition change, a
+			//! checker-semantics change, a drive-loop behavior change. Bumping invalidates
+			//! every cached cell in every runDir on the next matrix invocation (they re-run
+			//! under the new methodology), preventing one runDir from silently mixing
+			//! results produced under two methodologies. Scenario-file changes do NOT need
+			//! this -- the hash already covers them.
+			static const int kEvalMethodologyEpoch = 1;
+
+			//! A deterministic content hash of the parts of a scenario that
+			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
+			//! budgets, the scene definition (including a path-backed scene's
+			//! file BYTES, not just its path), the checkpoints[], the
+			//! interventions[], and the harness-side kEvalMethodologyEpoch.
+			//! Two scenario definitions with the same hash produce the same
+			//! run + the same grading, so a cached matrix cell is safe to
+			//! reuse; a different hash means the oracle (or the run, or the
+			//! harness methodology) changed and the cell is STALE (the
+			//! cross-invocation resume guard wipes + re-runs it).  Stamped
+			//! into each result.jsonl (see RunScenarioDriven) so a later
+			//! RunEvalMatrix invocation into the SAME runDir -- and the Python
+			//! reporter -- can tell "graded under the current oracle" from
+			//! "stale cell, re-run me".
+			//!
+			//! v2 (this canonicalization) deliberately changes the hash for
+			//! EVERY scenario relative to v1 (interventions + methodology
+			//! epoch are new inputs; path-backed scenes now fold in file
+			//! bytes) -- every v1-stamped cell in an existing runDir is
+			//! therefore correctly treated as stale and re-run under v2. v1
+			//! was computed under an incomplete canonicalization (it missed
+			//! interventions entirely and hashed a path-backed scene's
+			//! PATH STRING rather than its bytes, so editing the scene file
+			//! in place or the intervention list left a cell wrongly marked
+			//! "current"); that was the bug this version fixes.
+			std::string ScenarioContentHash( const AgentEvalScenario& s )
+			{
+				std::string canon = "v2\n";
+				canon += "epoch=" + std::to_string( kEvalMethodologyEpoch ) + "\n";
+				canon += "autonomy=" + s.autonomy + "\n";
+				// Prompts serialized as a JSON array (like checkpoints below) so the
+				// canonicalization is INJECTIVE: JSON escaping keeps a prompt that
+				// itself contains a delimiter or newline from straddling the field
+				// boundary or colliding ["a\x1fb"] with ["a","b"].
+				JsonValue promptsArr = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < s.prompts.size(); ++i )
+					promptsArr.push_back( JsonValue::MakeString( s.prompts[i] ) );
+				canon += "prompts=" + JsonSerialize( promptsArr ) + "\n";
+				canon += "budgets=" + std::to_string( s.budgets.maxToolCalls ) + "|" +
+				         std::to_string( s.budgets.maxLlmCalls ) + "|" +
+				         std::to_string( s.budgets.maxWallMs ) + "\n";
+				if( s.scenePath.empty() ) {
+					canon += "scene=inline:" + s.sceneInline + "\n";
+				} else {
+					// Hash the file's CONTENTS as well as the path -- either a moved
+					// path or edited-in-place contents must invalidate the cell.  On
+					// an unreadable path we fall back to a fixed marker string: the
+					// run itself will fail with a load_error against an unreadable
+					// scene, so this fallback only needs to be DETERMINISTIC, not
+					// meaningful.
+					std::ifstream sceneFile( s.scenePath, std::ios::binary );
+					if( sceneFile ) {
+						std::ostringstream ss;
+						ss << sceneFile.rdbuf();
+						canon += "scene=path:" + s.scenePath + ":bytes:" + ss.str() + "\n";
+					} else {
+						canon += "scene=path:" + s.scenePath + ":unreadable\n";
+					}
+				}
+				canon += "checkpoints=" + JsonSerialize( s.checkpoints ) + "\n";
+
+				// Interventions serialized as a JSON array (like prompts/checkpoints
+				// above) for the same injectivity reason.
+				JsonValue ivArr = JsonValue::MakeArray();
+				for( const auto& iv : s.interventions ) {
+					JsonValue o = JsonValue::MakeObject();
+					o.set( "afterToolCalls", JsonValue::MakeNumber( static_cast<double>( iv.afterToolCalls ) ) );
+					o.set( "op", JsonValue::MakeString( iv.op ) );
+					o.set( "target", JsonValue::MakeString( iv.target ) );
+					o.set( "param", JsonValue::MakeString( iv.param ) );
+					o.set( "value", JsonValue::MakeString( iv.value ) );
+					ivArr.push_back( o );
+				}
+				canon += "interventions=" + JsonSerialize( ivArr ) + "\n";
+
+				// FNV-1a 64-bit over the canonical byte string.
+				std::uint64_t hash = 14695981039346656037ull;
+				const std::uint64_t prime = 1099511628211ull;
+				for( char ch : canon ) {
+					hash ^= static_cast<unsigned char>( ch );
+					hash *= prime;
+				}
+				char buf[17];
+				std::snprintf( buf, sizeof( buf ), "%016llx", static_cast<unsigned long long>( hash ) );
+				return std::string( buf );
+			}
+
 			//! One round's outcome from a body source (replay OR live
 			//! transport).  `proceed` false STOPS the whole scenario with
 			//! `stopStatus` (and `stopError` for a transport_error).  On
@@ -834,12 +1062,62 @@ namespace RISE
 					scenePathToLoad = tempScenePath;
 				}
 
-				std::unique_ptr<AgentSession> session =
-					AgentSession::LoadFromFile( scenePathToLoad, AuthorityForScenarioAutonomy( scenario.autonomy ) );
+				const AgentAuthority authority = AuthorityForScenarioAutonomy( scenario.autonomy );
+
+				std::unique_ptr<AgentSession> session;
+				if( scenario.autonomy == "propose" ) {
+					// Headless propose-mode mock-Owner: an External-authority
+					// session's ProposePatch STAGES against an attached controller
+					// but REJECTS ("no live controller attached") when
+					// mController==nullptr -- which is exactly what a plain
+					// LoadFromFile session is.  So load the Job ourselves, wrap a
+					// BORROWING (owns=false) session around it, and attach an
+					// UNSTARTED EvalMockOwnerController (StageProposal /
+					// ListProposals are pure mutex ops -- no render thread needed,
+					// so no Start()).  The Job + controller are handed to the
+					// handle (below) so both OUTLIVE the borrowing session; the
+					// handle's member declaration order gives session -> controller
+					// -> Job teardown.  On ANY failure we release the created Job
+					// and leave `session` null -> the existing load_error path.
+					// try/catch honors RunScenarioDriven's "never throws" contract:
+					// the EvalMockOwnerController ctor constructs a std::thread (the
+					// idle agent-render worker), which can throw std::system_error
+					// under thread/resource exhaustion.  Any throw here degrades to a
+					// clean load_error (session stays null) with no Job leak.  The
+					// controller is built into a LOCAL unique_ptr BEFORE the Job is
+					// handed to the handle, so an exception releases the still-local
+					// Job in the catch, never a double-release.
+					IJobPriv* job = nullptr;
+					try {
+						if( RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( scenePathToLoad.c_str() ) ) {
+							std::unique_ptr<AgentSession> wrapped = AgentSession::WrapJob( job, authority );
+							if( wrapped ) {
+								std::unique_ptr<SceneEditController> ctrl( new EvalMockOwnerController( *job ) );   // may throw
+								wrapped->AttachController( ctrl.get() );
+								handle.ownedProposeJob = std::unique_ptr<IJobPriv, void(*)(IJobPriv*)>(
+									job, +[]( IJobPriv* j ){ if( j ) j->release(); } );
+								job = nullptr;   // ownership transferred to the handle
+								handle.ownedProposeController = std::move( ctrl );
+								session = std::move( wrapped );
+							} else {
+								job->release(); job = nullptr;   // WrapJob refused -- release the created Job
+							}
+						} else if( job ) {
+							job->release(); job = nullptr;        // created, but LoadAsciiSceneViaCst failed
+						}
+					} catch( ... ) {
+						if( job ) { job->release(); job = nullptr; }   // not yet handle-owned -> release here
+						handle.ownedProposeController.reset();
+						handle.ownedProposeJob.reset();                // handle-owned (if set) -> deleter releases
+						session.reset();
+					}
+				} else {
+					session = AgentSession::LoadFromFile( scenePathToLoad, authority );
+				}
 
 				// Hygiene: clean up the throwaway inline-scene temp file
 				// regardless of load outcome -- the Job has already parsed its
-				// content by the time LoadFromFile returns.
+				// content by the time the load returns.
 				if( !tempScenePath.empty() ) std::remove( tempScenePath.c_str() );
 
 				if( !session ) {
@@ -1102,6 +1380,23 @@ namespace RISE
 				if( !handle.result.errorMessage.empty() )
 					r.set( "errorMessage", JsonValue::MakeString( handle.result.errorMessage ) );
 
+				// Content-aware-resume + report-side staleness stamp (P1): the
+				// scenario's oracle/drive hash + its raw checkpoint count let a
+				// later RunEvalMatrix into the SAME runDir tell "still valid,
+				// skip" from "oracle changed, STALE -- wipe + re-run", and let
+				// tools/eval_report.py flag results graded under a since-changed
+				// scenario version.  The TRUE (un-sanitized) provider/model are
+				// stamped too (P2): the reporter prefers these over its lossy
+				// dir-name parse, where two distinct model ids can sanitize to
+				// one leaf.  On the replay path (modelId=="") these carry the
+				// replay-fixture's provider + an empty model -- harmless; only
+				// matrix cells (RunScenarioLive) carry the values P2 needs.
+				r.set( "scenarioContentHash", JsonValue::MakeString( ScenarioContentHash( scenario ) ) );
+				r.set( "scenarioCheckpointCount",
+					JsonValue::MakeNumber( static_cast<double>( scenario.checkpoints.isArray() ? scenario.checkpoints.size() : 0 ) ) );
+				r.set( "provider", JsonValue::MakeString( ChatProviderName( provider ) ) );
+				r.set( "model", JsonValue::MakeString( modelId ) );
+
 				const std::string resultPath = JoinPath( runDir, scenario.id + ".result.jsonl" );
 				{
 					std::error_code ec;
@@ -1115,6 +1410,15 @@ namespace RISE
 				return handle;
 			}
 		}
+
+		// AgentEvalRunHandle's special members, DEFINED HERE (not defaulted in
+		// the header) so every instantiation over its incomplete-in-a-consumer
+		// unique_ptr members (SceneEditController / IJobPriv / AgentRpcDispatcher)
+		// happens in THIS TU, where all three are complete -- the pimpl idiom.
+		AgentEvalRunHandle::AgentEvalRunHandle() = default;
+		AgentEvalRunHandle::~AgentEvalRunHandle() = default;
+		AgentEvalRunHandle::AgentEvalRunHandle( AgentEvalRunHandle&& ) = default;
+		// move-assignment is =delete'd in the header (see its doc) -- no def here.
 
 		AgentEvalRunHandle RunScenario( const AgentEvalScenario& scenario, const AgentEvalRunOptions& options )
 		{
@@ -1410,6 +1714,46 @@ namespace RISE
 				}
 			}
 
+			// REFUSE LOUDLY on a provider/model leaf collision.  A cell's
+			// subdir leaf embeds SanitizeForPath(provider)[__SanitizeForPath(model)]
+			// -- any char outside [A-Za-z0-9._-] maps to '_'.  Two DIFFERENT
+			// (provider, model) pairs can therefore sanitize to the SAME leaf
+			// fragment (e.g. models "a:b" and "a b" both -> "a_b"), silently
+			// colliding into one cell + one report row -- the exact
+			// trajectory-append / result-overwrite corruption the duplicate-id
+			// guard above prevents, but on the provider axis.  Catch it here,
+			// before any run executes (needs only config.providers, no key
+			// resolution); all counts stay 0, same style as the id guard.  Two
+			// entries with the IDENTICAL original (provider, model) are just
+			// redundant config, NOT a collision -- only flag when the ORIGINAL
+			// pairs differ yet the SANITIZED fragment matches.
+			{
+				auto leafFragment = []( const AgentEvalProviderConfig& p ) {
+					std::string frag = SanitizeForPath( p.provider );
+					if( !p.model.empty() ) frag += "__" + SanitizeForPath( p.model );
+					return frag;
+				};
+				for( std::size_t a = 0; a < config.providers.size(); ++a ) {
+					for( std::size_t b = a + 1; b < config.providers.size(); ++b ) {
+						const AgentEvalProviderConfig& pa = config.providers[a];
+						const AgentEvalProviderConfig& pb = config.providers[b];
+						const bool sameOriginal = ( pa.provider == pb.provider && pa.model == pb.model );
+						if( !sameOriginal && leafFragment( pa ) == leafFragment( pb ) ) {
+							result.errorMessage =
+								"RunEvalMatrix: provider/model leaf collision -- (provider '" +
+								pa.provider + "', model '" + pa.model + "') and (provider '" +
+								pb.provider + "', model '" + pb.model + "') both sanitize to the "
+								"same per-run subdir fragment '" + leafFragment( pa ) +
+								"' (refusing to run: two distinct providers/models would collide "
+								"into one cell + one report row, silently appending trajectories "
+								"and overwriting results)";
+							logLine( result.errorMessage );
+							return result;
+						}
+					}
+				}
+			}
+
 			const int reps = config.repeats > 0 ? config.repeats : 0;
 
 			for( std::size_t pj = 0; pj < config.providers.size(); ++pj ) {
@@ -1473,15 +1817,27 @@ namespace RISE
 						// Cross-invocation idempotent-resume guard.  A run
 						// whose subdir already carries a NON-EMPTY
 						// <scenarioId>.result.jsonl completed in a PRIOR
-						// invocation into this same runDir -- SKIP it rather
-						// than re-executing, which would reopen
-						// trajectory.jsonl in APPEND mode (concatenating two
-						// sessions into one file) while truncate-overwriting
-						// result.jsonl.  A subdir that exists but holds no
-						// (or an empty) result.jsonl is a crashed/interrupted
-						// run: wipe its contents first so the trajectory
-						// sink's append can't concatenate onto a partial
-						// file, then fall through and re-run it normally.
+						// invocation into this same runDir.  But "completed"
+						// is not enough to reuse it: the cell was graded under
+						// whatever oracle (checkpoints[]) / drive spec the
+						// scenario had THEN, and if the scenario changed since,
+						// the cached score is STALE.  So we stamp each result
+						// with a ScenarioContentHash and compare:
+						//   * result present, non-empty, parses, and its
+						//     scenarioContentHash EQUALS the current scenario's
+						//     hash -> genuinely still valid: SKIP (rather than
+						//     re-executing, which would reopen trajectory.jsonl
+						//     in APPEND mode -- concatenating two sessions into
+						//     one file -- while truncate-overwriting result.jsonl).
+						//   * result present + non-empty but the stamped hash is
+						//     MISSING (an old pre-content-hash result) or DIFFERS
+						//     (the scenario's oracle/prompts/budgets/scene
+						//     changed) -> STALE: wipe the subdir and fall through
+						//     to re-run, exactly like a crashed run below.
+						//   * result missing/empty -> crashed/interrupted run:
+						//     wipe its contents first so the trajectory sink's
+						//     append can't concatenate onto a partial file, then
+						//     fall through and re-run it normally.
 						const std::string resultPath =
 							( std::filesystem::path( runDir ) / ( scenario.id + ".result.jsonl" ) ).string();
 						{
@@ -1489,15 +1845,38 @@ namespace RISE
 							const bool resultExists = std::filesystem::exists( resultPath, ec ) && !ec;
 							const std::uintmax_t resultSize =
 								resultExists ? std::filesystem::file_size( resultPath, ec ) : 0;
+							bool completeAndCurrent = false;
 							if( resultExists && !ec && resultSize > 0 ) {
+								// Read the one-line summary and compare its
+								// stamped hash against the CURRENT scenario's.
+								std::ifstream rf( resultPath.c_str(), std::ios::binary );
+								std::string firstLine;
+								std::getline( rf, firstLine );
+								JsonValue parsed;
+								std::string perr;
+								if( JsonParse( firstLine, parsed, perr ) && parsed.isObject() ) {
+									const JsonValue* stamped = parsed.find( "scenarioContentHash" );
+									if( stamped && stamped->isString() &&
+									    stamped->asString() == ScenarioContentHash( scenario ) ) {
+										completeAndCurrent = true;
+									}
+								}
+							}
+							if( completeAndCurrent ) {
 								++result.runsAlreadyComplete;
 								logLine( "RunEvalMatrix: SKIP " + leaf +
 									" -- already completed -- skipping (delete the subdir to re-run)" );
 								continue;
 							}
+							if( resultExists && !ec && resultSize > 0 ) {
+								// Present but stale (hash missing/different): the
+								// scenario changed since this cell was graded.
+								logLine( "RunEvalMatrix: STALE " + leaf +
+									" -- scenario changed since it was recorded (hash mismatch) -- re-running" );
+							}
 							ec.clear();
 							if( std::filesystem::exists( runDir, ec ) && !ec ) {
-								std::filesystem::remove_all( runDir, ec );   // wipe a crashed/partial run's leftovers
+								std::filesystem::remove_all( runDir, ec );   // wipe a stale OR crashed/partial run's leftovers
 							}
 						}
 
@@ -1518,22 +1897,31 @@ namespace RISE
 				}
 			}
 
-			//! Emit the per-run reproducibility MANIFEST: one file,
-			//! <config.runDir>/run.manifest.json, capturing enough of the
-			//! run's conditions -- git commit, RISE build, the config that
-			//! was fed in, the resolved scenario/provider set, and the run
-			//! outcome counts -- that a committed run directory can be
-			//! traced back to "what code, what config, what commit produced
-			//! this."  It fires once the matrix reaches this point (i.e. past
-			//! the fatal pre-flight refusals -- no transport, no envLookup, a
-			//! duplicate scenario id -- which return early ABOVE and leave no
-			//! manifest), covering every run OUTCOME from here: it is emitted
-			//! even when every provider column was key-skipped or every run was
-			//! already-complete, so the manifest still records what WAS
-			//! configured and why nothing ran.  OVERWRITE semantics: it
-			//! TRUNCATES any manifest already on disk from a prior invocation
-			//! into the same runDir -- it always reflects the MOST RECENT
-			//! invocation, not an append log.
+			//! Emit the per-run reproducibility MANIFEST: an APPEND-ONLY
+			//! provenance LOG at <config.runDir>/run.manifest.jsonl, one JSON
+			//! object per line, appended once per RunEvalMatrix invocation
+			//! into this runDir.  Each record captures enough of the run's
+			//! conditions -- git commit, RISE build, the config that was fed
+			//! in, the resolved scenario/provider set, and the run outcome
+			//! counts -- that a committed run directory can be traced back to
+			//! "what code, what config, what commit produced this."  It fires
+			//! once the matrix reaches this point (i.e. past the fatal
+			//! pre-flight refusals -- no transport, no envLookup, a duplicate
+			//! scenario id -- which return early ABOVE and leave no manifest
+			//! record), covering every run OUTCOME from here: a record is
+			//! appended even when every provider column was key-skipped or
+			//! every run was already-complete, so the log still records what
+			//! WAS configured and why nothing ran.  APPEND semantics: the LAST
+			//! line is the most-recent invocation; the full file is the
+			//! provenance CHAIN across incremental/selective re-invocations
+			//! into the same runDir (resume-to-add-a-provider, a targeted
+			//! re-measurement) -- a selective run no longer erases the
+			//! full-matrix record.  The usage model is SERIAL (one matrix
+			//! invocation at a time, matching the resume guard's design); the
+			//! append is a single unlocked write per invocation, so two TRULY
+			//! concurrent matrices into one runDir could interleave records --
+			//! out of scope, and still strictly safer than the prior
+			//! truncate-overwrite it replaced.
 			if( !config.runDir.empty() ) {
 				const GitRevision git = CaptureGitRevision();
 
@@ -1602,13 +1990,13 @@ namespace RISE
 
 				std::error_code ec;
 				std::filesystem::create_directories( config.runDir, ec );
-				const std::string manifestPath = ( std::filesystem::path( config.runDir ) / "run.manifest.json" ).string();
-				std::ofstream f( manifestPath.c_str(), std::ios::binary | std::ios::trunc );
+				const std::string manifestPath = ( std::filesystem::path( config.runDir ) / "run.manifest.jsonl" ).string();
+				std::ofstream f( manifestPath.c_str(), std::ios::binary | std::ios::app );
 				if( f ) { f << JsonSerialize( root ) << "\n"; }
 				// Best-effort artifact: a write failure (permissions, disk full,
 				// runDir colliding with a non-directory) never fails the matrix,
-				// but log it so the missing manifest isn't a silent mystery.
-				else    { logLine( "RunEvalMatrix: WARNING -- could not write run manifest to " + manifestPath ); }
+				// but log it so the missing manifest record isn't a silent mystery.
+				else    { logLine( "RunEvalMatrix: WARNING -- could not append run manifest record to " + manifestPath ); }
 			}
 
 			return result;
@@ -2244,6 +2632,15 @@ namespace RISE
 							const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( x, y );
 							if( qr.outOfRange ) {
 								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") out of range" );
+							} else if( expectName == "*" ) {
+								// Name-AGNOSTIC hit: expect ANY non-background object at
+								// (x,y), whatever it is named.  For open-ended "build a
+								// scene" scenarios where the model names entities freely,
+								// this proves an object is actually bound + positioned +
+								// rendered there without pinning a model-chosen name.
+								if( !qr.hit )
+									failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) +
+										") expected ANY object (\"*\") but got a miss" );
 							} else if( expectName.empty() ) {
 								if( qr.hit ) failures.push_back( "queryAt expected a miss but hit '" + qr.name + "'" );
 							} else if( !qr.hit || qr.name != expectName ) {
@@ -2287,15 +2684,35 @@ namespace RISE
 					return { false, "diagnostics checkpoint: unknown \"expect\" value '" + expect + "' (must be \"clean\" or \"code\")" };
 				}
 
+				//! ChatTrajectory's EmbedJsonOrString embeds jsonrpc.response as
+				//! a parsed OBJECT when it is valid JSON (every real response
+				//! is), else falls back to a raw string -- handle both, and
+				//! return the parsed JSON-RPC envelope as an object (Null if
+				//! neither form yields one).
+				JsonValue ExtractToolResponseEnvelope( const JsonValue& toolRecord )
+				{
+					const JsonValue& resp = toolRecord.get( "jsonrpc.response" );
+					if( resp.isObject() ) return resp;
+					if( resp.isString() ) {
+						JsonValue parsed; std::string perr;
+						if( JsonParse( resp.asString(), parsed, perr ) && parsed.isObject() ) return parsed;
+					}
+					return JsonValue();
+				}
+
 				//! "trajectory": {maxToolCalls?,maxLlmCalls?,terminalStatus?,
-				//! noAutonomyRefusal?,requiredToolInOrder?,noMechanicalLoop?}
+				//! noAutonomyRefusal?,requiredToolInOrder?,noMechanicalLoop?,
+				//! expectAutonomyRefusal?,toolOutcomes?,toolCallAfterUserTurn?}
 				//! -- maxToolCalls/maxLlmCalls/terminalStatus read straight off
 				//! handle.result (the SAME counters RunScenario wrote into the
 				//! summary line -- no need to re-derive them from the JSONL).
-				//! noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop parse
-				//! handle.trajectoryPath's "tool" records (name/args/
-				//! jsonrpc.response), since those need per-call detail the
-				//! summary doesn't carry.
+				//! noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/
+				//! expectAutonomyRefusal/toolOutcomes parse handle.trajectoryPath's
+				//! "tool" records (name/args/jsonrpc.response), since those need
+				//! per-call detail the summary doesn't carry; toolCallAfterUserTurn
+				//! additionally walks the full ORDERED record stream (interleaving
+				//! "user" and "tool" records) to test a tool call against a running
+				//! user-turn count.
 				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
 				{
 					std::vector<std::string> failures;
@@ -2316,49 +2733,59 @@ namespace RISE
 							failures.push_back( "terminalStatus '" + handle.result.terminalStatus + "' != expected '" + want + "'" );
 					}
 
-					const bool needsRecords = cp.has( "noAutonomyRefusal" ) || cp.has( "requiredToolInOrder" ) || cp.has( "noMechanicalLoop" );
+					const bool needsRecords = cp.has( "noAutonomyRefusal" ) || cp.has( "requiredToolInOrder" ) ||
+						cp.has( "noMechanicalLoop" ) || cp.has( "expectAutonomyRefusal" ) ||
+						cp.has( "toolOutcomes" ) || cp.has( "toolCallAfterUserTurn" );
 					if( needsRecords ) {
 						if( handle.trajectoryPath.empty() ) {
 							failures.push_back( "trajectory file unavailable (run did not complete) -- cannot check "
-								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop" );
+								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/expectAutonomyRefusal/"
+								"toolOutcomes/toolCallAfterUserTurn" );
 						} else {
 							std::ifstream f( handle.trajectoryPath.c_str(), std::ios::binary );
 							if( !f ) {
 								failures.push_back( "trajectory file '" + handle.trajectoryPath + "' could not be opened" );
 							} else {
-								std::vector<JsonValue> toolRecords;
+								// One ordered pass over every record (session/user/
+								// llm/tool/summary, in trajectory order) -- toolRecords
+								// is derived from it so the pre-existing per-tool
+								// checks below are untouched, while
+								// toolCallAfterUserTurn gets the interleaved user/tool
+								// order it needs.
+								std::vector<JsonValue> allRecords;
 								std::string line;
 								while( std::getline( f, line ) ) {
 									if( line.empty() ) continue;
 									JsonValue v; std::string perr;
 									if( !JsonParse( line, v, perr ) ) continue;   // tolerate a stray non-JSON line (never emitted by the recorder)
-									if( v.isObject() && v.get( "run_type" ).asString() == "tool" ) toolRecords.push_back( v );
+									if( v.isObject() ) allRecords.push_back( v );
 								}
+								std::vector<JsonValue> toolRecords;
+								for( const auto& v : allRecords )
+									if( v.get( "run_type" ).asString() == "tool" ) toolRecords.push_back( v );
+
+								// Shared by noAutonomyRefusal (fail if present) and
+								// expectAutonomyRefusal (fail if absent) -- one scan so a
+								// future change to the -32011 detection can't diverge
+								// between the two.  Returns the FIRST refusing tool record,
+								// or nullptr when no -32011 occurred.
+								auto firstAutonomyRefusal = [&]() -> const JsonValue* {
+									for( const auto& t : toolRecords ) {
+										const JsonValue env = ExtractToolResponseEnvelope( t );
+										if( env.isObject() && env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0.0 ) == -32011.0 )
+											return &t;
+									}
+									return nullptr;
+								};
 
 								if( cp.has( "noAutonomyRefusal" ) && cp.get( "noAutonomyRefusal" ).isBool() && cp.get( "noAutonomyRefusal" ).asBool() ) {
-									for( const auto& t : toolRecords ) {
-										// ChatTrajectory's EmbedJsonOrString embeds
-										// jsonrpc.response as a parsed OBJECT when it
-										// is valid JSON (every real response is), else
-										// falls back to a raw string -- handle both.
-										const JsonValue& resp = t.get( "jsonrpc.response" );
-										double code = 0.0;
-										bool hasCode = false;
-										if( resp.isObject() && resp.has( "error" ) ) {
-											code = resp.get( "error" ).get( "code" ).asNumber( 0.0 );
-											hasCode = true;
-										} else if( resp.isString() ) {
-											JsonValue parsed; std::string perr2;
-											if( JsonParse( resp.asString(), parsed, perr2 ) && parsed.isObject() && parsed.has( "error" ) ) {
-												code = parsed.get( "error" ).get( "code" ).asNumber( 0.0 );
-												hasCode = true;
-											}
-										}
-										if( hasCode && code == -32011.0 ) {
-											failures.push_back( "an autonomy refusal (-32011) occurred on tool '" + t.get( "name" ).asString() + "'" );
-											break;
-										}
-									}
+									if( const JsonValue* t = firstAutonomyRefusal() )
+										failures.push_back( "an autonomy refusal (-32011) occurred on tool '" + t->get( "name" ).asString() + "'" );
+								}
+
+								if( cp.has( "expectAutonomyRefusal" ) && cp.get( "expectAutonomyRefusal" ).isBool() && cp.get( "expectAutonomyRefusal" ).asBool() ) {
+									if( firstAutonomyRefusal() == nullptr )
+										failures.push_back( "expectAutonomyRefusal: no tool call's response carried an autonomy refusal (-32011)" );
 								}
 
 								if( cp.has( "requiredToolInOrder" ) && cp.get( "requiredToolInOrder" ).isArray() ) {
@@ -2385,6 +2812,84 @@ namespace RISE
 											break;
 										}
 									}
+								}
+
+								if( cp.has( "toolOutcomes" ) && cp.get( "toolOutcomes" ).isArray() ) {
+									// Per-spec check: "applied" tests result.applied==true;
+									// "staged"/"rejected" test result.status; "error" tests
+									// the envelope carries an "error" object.  An unrecognized
+									// expect value never matches (fails loudly via the caller's
+									// !ok check below, not silently).
+									auto satisfiesExpect = [&]( const JsonValue& t, const std::string& expect ) -> bool {
+										const JsonValue env = ExtractToolResponseEnvelope( t );
+										if( !env.isObject() ) return false;
+										if( expect == "error" ) return env.has( "error" );
+										const JsonValue& result = env.get( "result" );
+										if( expect == "applied" )  return result.isObject() && result.get( "applied" ).asBool( false );
+										if( expect == "staged" )   return result.isObject() && result.get( "status" ).asString() == "staged";
+										if( expect == "rejected" ) return result.isObject() && result.get( "status" ).asString() == "rejected";
+										return false;
+									};
+
+									const JsonValue& specs = cp.get( "toolOutcomes" );
+									for( std::size_t si = 0; si < specs.size(); ++si ) {
+										const JsonValue& spec = specs.at( si );
+										if( !spec.isObject() ) continue;   // load-time-validated shape; defensive skip only
+										const std::string wantName = spec.get( "name" ).asString();
+										const std::string occurrence = spec.has( "occurrence" ) && spec.get( "occurrence" ).isString()
+											? spec.get( "occurrence" ).asString() : "any";
+										const std::string expect = spec.get( "expect" ).asString();
+
+										std::vector<const JsonValue*> matches;
+										for( const auto& t : toolRecords )
+											if( t.get( "name" ).asString() == wantName ) matches.push_back( &t );
+
+										if( matches.empty() ) {
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: no tool call named '" + wantName + "' occurred" );
+											continue;
+										}
+
+										bool ok = false;
+										if( occurrence == "first" )      ok = satisfiesExpect( *matches.front(), expect );
+										else if( occurrence == "last" )  ok = satisfiesExpect( *matches.back(), expect );
+										else if( occurrence == "any" ) {
+											for( const JsonValue* m : matches )
+												if( satisfiesExpect( *m, expect ) ) { ok = true; break; }
+										}
+										else {
+											// Defense-in-depth: LoadEvalScenario rejects any
+											// occurrence outside {first,last,any}, but a hand-built
+											// scenario could reach here -- fail LOUDLY rather than
+											// silently downgrading to the weakest "any" check.
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: unknown occurrence '" +
+												occurrence + "' (must be first|last|any)" );
+											continue;
+										}
+
+										if( !ok )
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: '" + wantName + "' (" + occurrence +
+												") did not satisfy expect:'" + expect + "'" );
+									}
+								}
+
+								if( cp.has( "toolCallAfterUserTurn" ) && cp.get( "toolCallAfterUserTurn" ).isObject() ) {
+									const JsonValue& spec = cp.get( "toolCallAfterUserTurn" );
+									const std::string wantName = spec.get( "name" ).asString();
+									const long long minUserTurns = static_cast<long long>( spec.get( "minUserTurns" ).asNumber( 0.0 ) );
+
+									long long userCount = 0;
+									bool found = false;
+									for( const auto& v : allRecords ) {
+										const std::string rt = v.get( "run_type" ).asString();
+										if( rt == "user" ) { ++userCount; continue; }
+										if( rt == "tool" && v.get( "name" ).asString() == wantName && userCount >= minUserTurns ) {
+											found = true;
+											break;
+										}
+									}
+									if( !found )
+										failures.push_back( "toolCallAfterUserTurn: no tool call '" + wantName + "' occurred at userTurns >= " +
+											std::to_string( minUserTurns ) );
 								}
 							}
 						}
@@ -2551,6 +3056,33 @@ namespace RISE
 				result.allPassed = true;
 				for( const auto& c : result.checkpoints ) if( !c.passed ) { result.allPassed = false; break; }
 
+				// Terminal-success precondition: a run that ended on a non-success terminal
+				// status (a budget stop, provider/transport error, load error, replay
+				// exhaustion -- anything but "final_text") is NOT a success regardless of
+				// checkpoint state, UNLESS the scenario explicitly expects that status (a
+				// trajectory checkpoint asserting terminalStatus == the actual status -- an
+				// intentional budget/refusal test). Every current scenario asserts
+				// terminalStatus:"final_text", so a passing run already ends final_text and
+				// this changes nothing for them; it guards a FUTURE scenario that omits the
+				// assertion from silently scoring a budget/provider-killed run as a success.
+				const std::string ts = handle.result.terminalStatus;
+				if( result.allPassed && ts != "final_text" ) {
+					bool expected = false;
+					if( scenario.checkpoints.isArray() ) {
+						for( std::size_t i = 0; i < scenario.checkpoints.size(); ++i ) {
+							const JsonValue& cp = scenario.checkpoints.at( i );
+							if( !cp.isObject() ) continue;
+							if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() || cp.get( "kind" ).asString() != "trajectory" ) continue;
+							if( !cp.has( "terminalStatus" ) || !cp.get( "terminalStatus" ).isString() ) continue;
+							if( cp.get( "terminalStatus" ).asString() == ts ) { expected = true; break; }
+						}
+					}
+					if( !expected ) {
+						result.allPassed = false;
+						result.terminalGateNote = "run ended on non-success terminal status '" + ts + "' with no checkpoint asserting it -- scored as failure";
+					}
+				}
+
 				// Write the results ledger alongside the trajectory.  runDir is
 				// recovered from trajectoryPath (or, failing that, resultPath)
 				// rather than taken as a parameter -- CheckScenario's signature
@@ -2566,12 +3098,14 @@ namespace RISE
 					root.set( "scenarioId", JsonValue::MakeString( result.scenarioId ) );
 					root.set( "checkpointFraction", JsonValue::MakeNumber( result.checkpointFraction ) );
 					root.set( "allPassed", JsonValue::MakeBool( result.allPassed ) );
-					// RECORDED, not gated: pass/fail stays checkpoint-fraction-based
-					// (final-scene-state) -- terminalStatus just lets a reviewer see
-					// that a run which passed every checkpoint nonetheless ended on
-					// a non-clean status (e.g. a budget stop that still landed the
-					// edit).  handle.result is the same summary line RunScenario/
-					// RunScenarioLive already wrote to <id>.result.jsonl.
+					if( !result.terminalGateNote.empty() ) root.set( "terminalGateNote", JsonValue::MakeString( result.terminalGateNote ) );
+					// RECORDED either way: terminalStatus lets a reviewer see what the
+					// run actually ended on.  Pass/fail stays checkpoint-fraction-based
+					// (final-scene-state) UNLESS the terminal-success gate above forced
+					// allPassed=false for a non-"final_text" status the scenario never
+					// asserted -- in that case terminalGateNote (set above) explains why.
+					// handle.result is the same summary line RunScenario/RunScenarioLive
+					// already wrote to <id>.result.jsonl.
 					root.set( "terminalStatus", JsonValue::MakeString( handle.result.terminalStatus ) );
 					JsonValue arr = JsonValue::MakeArray();
 					for( const auto& c : result.checkpoints ) {

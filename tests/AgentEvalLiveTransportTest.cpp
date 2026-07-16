@@ -1033,15 +1033,20 @@ static void TestRunEvalMatrix()
 }
 
 //----------------------------------------------------------------------
-// T7b: RunEvalMatrix emits <runDir>/run.manifest.json -- the per-run
-//      reproducibility manifest.  Proves the injected clock feeds
-//      createdUtcMs, the git/build/config/scenario/provider/result fields
-//      are all present and correctly shaped, and -- the key-hygiene
-//      red-prove -- the fake key never lands in the manifest text.
+// T7b: RunEvalMatrix emits <runDir>/run.manifest.jsonl -- the per-run
+//      reproducibility manifest, an APPEND-ONLY provenance log (one JSON
+//      record per line per RunEvalMatrix invocation into a runDir).
+//      Proves the injected clock feeds createdUtcMs, the
+//      git/build/config/scenario/provider/result fields are all present
+//      and correctly shaped in the LAST record, the key-hygiene red-prove
+//      (the fake key never lands in the manifest text), and -- the
+//      provenance regression proof -- that a SECOND invocation into the
+//      SAME runDir APPENDS a second record rather than overwriting the
+//      first.
 //----------------------------------------------------------------------
 static void TestRunEvalMatrixManifest()
 {
-	std::printf( "T7b: RunEvalMatrix emits run.manifest.json...\n" );
+	std::printf( "T7b: RunEvalMatrix emits run.manifest.jsonl...\n" );
 
 	AgentEvalScenario scenario;
 	std::string err;
@@ -1073,8 +1078,22 @@ static void TestRunEvalMatrixManifest()
 	AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
 	Check( mr.runsExecuted == 1, "manifest test: the one configured run executed" );
 
-	const std::string manifestPath = ( std::filesystem::path( cfg.runDir ) / "run.manifest.json" ).string();
-	Check( std::filesystem::exists( manifestPath ), "run.manifest.json exists under runDir" );
+	const std::string manifestPath = ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string();
+	Check( std::filesystem::exists( manifestPath ), "run.manifest.jsonl exists under runDir" );
+
+	// Split into non-empty lines; each line is one appended provenance record.
+	auto readNonEmptyLines = [&]( const std::string& path ) -> std::vector<std::string> {
+		std::vector<std::string> lines;
+		std::ifstream f( path.c_str(), std::ios::binary );
+		std::string line;
+		while( std::getline( f, line ) ) {
+			if( !line.empty() ) lines.push_back( line );
+		}
+		return lines;
+	};
+
+	std::vector<std::string> lines1 = readNonEmptyLines( manifestPath );
+	Check( lines1.size() == 1, "run.manifest.jsonl has exactly 1 record after the first invocation" );
 
 	std::string manifestText;
 	{
@@ -1084,7 +1103,7 @@ static void TestRunEvalMatrixManifest()
 	}
 
 	JsonValue root; std::string perr;
-	Check( JsonParse( manifestText, root, perr ), "run.manifest.json parses as JSON: " + perr );
+	Check( JsonParse( lines1.back(), root, perr ), "run.manifest.jsonl last record parses as JSON: " + perr );
 
 	Check( root.get( "schemaVersion" ).asNumber( -1 ) == 1, "manifest schemaVersion == 1" );
 	Check( static_cast<int64_t>( root.get( "createdUtcMs" ).asNumber( -1 ) ) == 1234567890000,
@@ -1139,7 +1158,25 @@ static void TestRunEvalMatrixManifest()
 	Check( !AnyFileUnderContains( cfg.runDir, kFakeKey ),
 	       "manifest test: the fake key appears in NO output file under runDir" );
 	Check( manifestText.find( kFakeKey ) == std::string::npos,
-	       "run.manifest.json text does NOT contain the fake key" );
+	       "run.manifest.jsonl text does NOT contain the fake key" );
+
+	// Provenance regression proof: a SECOND invocation into the SAME runDir
+	// with the SAME config must APPEND a second record, not overwrite the
+	// first.  The resume guard will skip the already-complete run (its
+	// result.jsonl is non-empty from the first invocation), so this second
+	// call executes zero NEW runs but still appends its own manifest record.
+	AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+
+	std::vector<std::string> lines2 = readNonEmptyLines( manifestPath );
+	Check( lines2.size() == 2,
+	       "run.manifest.jsonl has exactly 2 records after a second invocation into the same runDir "
+	       "(the first record was preserved, not overwritten)" );
+
+	JsonValue root2; std::string perr2;
+	Check( JsonParse( lines2.back(), root2, perr2 ), "run.manifest.jsonl second record parses as JSON: " + perr2 );
+	Check( root2.get( "result" ).get( "runsAlreadyComplete" ).asNumber( -1 ) >= 1,
+	       "run.manifest.jsonl second record's result.runsAlreadyComplete >= 1 (the resume happened)" );
+	Check( mr2.runsAlreadyComplete >= 1, "second RunEvalMatrix invocation actually resumed (runsAlreadyComplete >= 1)" );
 }
 
 //----------------------------------------------------------------------
@@ -1346,6 +1383,273 @@ static void TestRunEvalMatrixResumeRerunsPartial()
 	       "trajectory.jsonl holds exactly ONE session record after the re-run (old partial content was WIPED, not appended-to)" );
 }
 
+//----------------------------------------------------------------------
+// T11: RunEvalMatrix's resume guard is CONTENT-AWARE.  A cell completed under
+//     one oracle is only reusable while the scenario that produced it is
+//     UNCHANGED.  Three invocations into the SAME runDir:
+//       (1) fresh -> executes.
+//       (2) same scenario again -> skipped-as-complete, transport untouched
+//           (the hash matched).
+//       (3) the scenario's checkpoints[] MUTATED (a different content hash) ->
+//           the stale cell is wiped and RE-EXECUTED, transport called again.
+//     Without the hash comparison, (3) would keep publishing the score graded
+//     under the OLD oracle.
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixResumeContentAware()
+{
+	std::printf( "T11: RunEvalMatrix resume is content-aware (re-runs a changed oracle)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t11_matrix_resume_content_aware" );
+
+	const std::string kFakeKey = "sk-ant-CONTENTAWARE-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalMatrixOptions mo;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	// (1) First invocation: completes normally.
+	{
+		MockTransport mock1;
+		mock1.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock1.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock1.repeatLast = true;
+		mo.transport = &mock1;
+
+		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr1.runsExecuted == 1 && mr1.runsAlreadyComplete == 0,
+		       "first invocation: the run executes (nothing to resume yet)" );
+		Check( !mock1.seenRequests.empty(), "first invocation: the transport WAS called" );
+	}
+
+	// (2) Second invocation, SAME (unmodified) scenario: the stamped hash
+	// matches -> skipped-as-complete, transport NEVER touched.
+	{
+		MockTransport mock2;   // must NEVER be called
+		mo.transport = &mock2;
+
+		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr2.runsExecuted == 0, "second invocation (unchanged scenario): 0 runs executed" );
+		Check( mr2.runsAlreadyComplete == 1, "second invocation: 1 run skipped as already-complete (hash matched)" );
+		Check( mock2.seenRequests.empty(), "second invocation: the transport was NEVER called" );
+	}
+
+	// (3) MUTATE the scenario's checkpoints[] so its content hash differs, then
+	// re-run into the SAME runDir.  The cell must be treated as STALE, wiped,
+	// and RE-EXECUTED.  (We only exercise the resume guard's hash comparison
+	// here, not full grading -- a plausible array-of-objects shape suffices.)
+	{
+		JsonValue newCheckpoints = JsonValue::MakeArray();
+		JsonValue extra = JsonValue::MakeObject();
+		extra.set( "kind", JsonValue::MakeString( "trajectory" ) );
+		extra.set( "terminalStatus", JsonValue::MakeString( "final_text" ) );
+		newCheckpoints.push_back( extra );
+		scenarios[0].checkpoints = newCheckpoints;
+
+		MockTransport mock3;
+		mock3.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock3.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock3.repeatLast = true;
+		mo.transport = &mock3;
+
+		AgentEvalMatrixResult mr3 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr3.runsExecuted == 1,
+		       "third invocation (mutated oracle): the stale cell IS re-executed" );
+		Check( mr3.runsAlreadyComplete == 0,
+		       "third invocation: NOT counted as already-complete (hash mismatch => stale)" );
+		Check( !mock3.seenRequests.empty(),
+		       "third invocation: the transport WAS called (genuine re-run, not a stale-count accident)" );
+	}
+
+	// (4) Mutate a NON-checkpoint field (a budget) -- the hash must ALSO change,
+	// proving ScenarioContentHash covers autonomy/prompts/budgets/scene, not
+	// just checkpoints[].  Re-run into the same runDir -> stale -> re-executed.
+	{
+		scenarios[0].budgets.maxToolCalls = 7;   // was param_edit's 10 -> hash differs
+		MockTransport mock4;
+		mock4.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock4.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock4.repeatLast = true;
+		mo.transport = &mock4;
+
+		AgentEvalMatrixResult mr4 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr4.runsExecuted == 1 && mr4.runsAlreadyComplete == 0,
+		       "fourth invocation (mutated BUDGET, checkpoints unchanged): re-executed (hash covers non-checkpoint fields)" );
+	}
+
+	// (5) Determinism across a fresh RELOAD of the SAME file: re-loading the
+	// unchanged scenario from disk must reproduce a byte-identical canonical
+	// string -> identical hash -> skip.  Guards against a future JsonSerialize
+	// non-determinism (e.g. a switch to sorted keys) silently forcing spurious
+	// full re-runs.
+	{
+		const std::string dir2 = ScratchRunDir( "t11_reload_determinism" );
+		AgentEvalRunConfig cfg2 = cfg; cfg2.runDir = dir2;
+
+		AgentEvalScenario s2a; std::string e2a;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", s2a, e2a ), "param_edit reloads (a)" );
+		std::vector<AgentEvalScenario> v2a; v2a.push_back( s2a );
+		MockTransport m5a;
+		m5a.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		m5a.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		m5a.repeatLast = true;
+		mo.transport = &m5a;
+		RunEvalMatrix( cfg2, v2a, mo );
+
+		AgentEvalScenario s2b; std::string e2b;   // FRESH reload -> independent in-memory object
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", s2b, e2b ), "param_edit reloads (b)" );
+		std::vector<AgentEvalScenario> v2b; v2b.push_back( s2b );
+		MockTransport m5b;   // must NEVER be called
+		mo.transport = &m5b;
+		AgentEvalMatrixResult mr5 = RunEvalMatrix( cfg2, v2b, mo );
+		Check( mr5.runsAlreadyComplete == 1 && mr5.runsExecuted == 0,
+		       "a reloaded-from-disk unchanged scenario hashes IDENTICALLY -> skipped (determinism)" );
+		Check( m5b.seenRequests.empty(), "reload-determinism: transport never called on the skip" );
+	}
+
+	// (6) Mutate the scenario's interventions[] -- must ALSO change the hash
+	// and force re-execution.  Before the v2 ScenarioContentHash, this field
+	// was omitted from the canonicalization entirely, so this mutation left
+	// a cached cell wrongly marked "current".
+	{
+		AgentEvalIntervention iv;
+		iv.afterToolCalls = 1;
+		iv.op = "param_edit";
+		iv.target = "pnt_albedo";
+		iv.param = "color";
+		iv.value = "0.7 0.1 0.1";
+		scenarios[0].interventions.push_back( iv );
+
+		MockTransport mock6;
+		mock6.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock6.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock6.repeatLast = true;
+		mo.transport = &mock6;
+
+		AgentEvalMatrixResult mr6 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr6.runsExecuted == 1 && mr6.runsAlreadyComplete == 0,
+		       "sixth invocation (mutated interventions[], everything else unchanged): "
+		       "re-executed (hash covers interventions[])" );
+		Check( !mock6.seenRequests.empty(), "sixth invocation: the transport WAS called" );
+	}
+
+	// (7) A PATH-backed scene hashes the file's BYTES, not just the pathname.
+	// Build a fresh scenario whose scene is scenePath (not sceneInline),
+	// pointing at a throwaway temp file written with param_edit's own inline
+	// scene text (a known-loadable v7 scene, taken from the ORIGINAL `scenario`
+	// local -- unmutated by cases (1)-(6) above, which only touched the
+	// `scenarios[0]` copy). Run once (executes), then edit the temp file's
+	// BYTES in place (append a harmless '#'-comment line -- '#' starts a
+	// to-end-of-line comment in the CST tokenizer, so the scene stays
+	// loadable) and re-run into the SAME runDir -> must be re-executed, not
+	// skipped-as-complete.  Before this fix, ScenarioContentHash hashed only
+	// `s.scenePath` (the path STRING), so an in-place edit like this left the
+	// cached cell wrongly marked "current".
+	{
+		const std::string dir7 = ScratchRunDir( "t11_path_scene_bytes" );
+		const std::string scenePath = dir7 + "_scene/param_edit_copy.RISEscene";
+		Check( WriteFile( scenePath, scenario.sceneInline ), "path-scene: wrote the temp scene file" );
+
+		AgentEvalScenario pathScenario = scenario;   // fresh copy of the ORIGINAL (unmutated) param_edit load
+		pathScenario.scenePath = scenePath;
+		pathScenario.sceneInline.clear();
+
+		AgentEvalRunConfig cfg7;
+		cfg7.providers.push_back( p );
+		cfg7.repeats = 1;
+		cfg7.runDir = dir7;
+
+		std::vector<AgentEvalScenario> scenarios7;
+		scenarios7.push_back( pathScenario );
+
+		MockTransport mock7a;
+		mock7a.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock7a.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock7a.repeatLast = true;
+		mo.transport = &mock7a;
+		AgentEvalMatrixResult mr7a = RunEvalMatrix( cfg7, scenarios7, mo );
+		Check( mr7a.runsExecuted == 1 && mr7a.runsAlreadyComplete == 0,
+		       "path-scene first invocation: executes" );
+		Check( !mock7a.seenRequests.empty(), "path-scene first invocation: the transport WAS called" );
+
+		// MUTATE the temp scene file's bytes IN PLACE -- the path string is
+		// unchanged, only the file's contents.
+		Check( WriteFile( scenePath, scenario.sceneInline + "\n# mutated for T11(7)\n" ),
+		       "path-scene: mutated the temp scene file's bytes" );
+
+		MockTransport mock7b;
+		mock7b.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock7b.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock7b.repeatLast = true;
+		mo.transport = &mock7b;
+		AgentEvalMatrixResult mr7b = RunEvalMatrix( cfg7, scenarios7, mo );
+		Check( mr7b.runsExecuted == 1 && mr7b.runsAlreadyComplete == 0,
+		       "path-scene second invocation (mutated FILE BYTES, same path): re-executed "
+		       "(hash covers a path-backed scene's bytes, not just its path)" );
+		Check( !mock7b.seenRequests.empty(), "path-scene second invocation: the transport WAS called" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T12: RunEvalMatrix REFUSES a provider/model leaf collision (P2).  Two
+//     DISTINCT (provider, model) pairs whose SanitizeForPath fragments are
+//     identical would collide into ONE cell + ONE report row.  The two models
+//     below -- "a:b" and "a b" -- both sanitize to "a_b" per the documented
+//     rule (any char outside [A-Za-z0-9._-] -> '_'; verified by inspection,
+//     since SanitizeForPath is file-local to AgentEvalRunner.cpp and cannot be
+//     called from here).  The refusal must fire BEFORE any run executes.
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixProviderModelCollision()
+{
+	std::printf( "T12: RunEvalMatrix refuses a provider/model leaf collision...\n" );
+
+	AgentEvalScenario s;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", s, err ), "param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( s );
+
+	AgentEvalRunConfig cfg;
+	// Same provider, DIFFERENT models that sanitize identically: "a:b" and
+	// "a b" both -> "a_b".
+	AgentEvalProviderConfig p1; p1.provider = "anthropic"; p1.model = "a:b"; p1.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	AgentEvalProviderConfig p2; p2.provider = "anthropic"; p2.model = "a b"; p2.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p1 );
+	cfg.providers.push_back( p2 );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t12_provider_model_collision" );
+
+	const std::string kFakeKey = "sk-ant-COLLIDE-FAKEKEY-DO-NOT-LEAK";
+	MockTransport mock;   // must NEVER be called -- the refusal precedes the run loop
+
+	AgentEvalMatrixOptions mo;
+	mo.transport = &mock;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+	Check( !mr.errorMessage.empty(), "the matrix REFUSED loudly (non-empty errorMessage)" );
+	Check( mr.errorMessage.find( "a:b" ) != std::string::npos &&
+	       mr.errorMessage.find( "a b" ) != std::string::npos,
+	       "the refusal names BOTH colliding original models" );
+	Check( mr.errorMessage.find( "a_b" ) != std::string::npos,
+	       "the refusal names the colliding sanitized fragment" );
+	Check( mr.runsExecuted == 0 && mr.runsSkipped == 0 &&
+	       mr.providersUsed == 0 && mr.providersSkipped == 0,
+	       "the refusal fired BEFORE the provider/run loop (all counts 0)" );
+	Check( mock.seenRequests.empty(), "the transport was NEVER called on a refused matrix" );
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalLiveTransportTest (Eval-harness slice E4: live headless runner) ===\n" );
@@ -1370,6 +1674,8 @@ int main()
 	TestRunEvalMatrixDuplicateId();
 	TestRunEvalMatrixResumeSkipsCompleted();
 	TestRunEvalMatrixResumeRerunsPartial();
+	TestRunEvalMatrixResumeContentAware();
+	TestRunEvalMatrixProviderModelCollision();
 
 	std::printf( "=== AgentEvalLiveTransportTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

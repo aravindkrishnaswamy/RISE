@@ -260,13 +260,16 @@ an explanatory `detail` — never a silent skip.
 | `document` | `op:"param_references_kind"` — `target`, `param`, `referencedKind` **or** `referencedKinds:[...]` (exactly one), `chunkKind?` | `target.param`'s value names an existing chunk of `referencedKind`, or of ANY kind in the `referencedKinds` any-of array — grades a correctly-typed binding without caring what name the model chose or which of several equivalent material kinds it picked |
 | `untouched` | `chunks:[{chunkKind?, name}, ...]` | every listed chunk is byte-identical between the scene AS LOADED (before the first turn) and the POST-run document — the PASS_TO_PASS "didn't touch unrelated stuff" guard |
 | `render` | `width?`, `height?` (both or neither), `seed?` (accepted, no effect — no RNG pinning is exposed), `meanLumaMin?/Max?`, `meanRMin?/Max?`, `meanGMin?/Max?`, `meanBMin?/Max?` | a fresh render's mean channel values (and Rec.709-weighted mean luma) fall within the given `[min,max]` bands — bands must be wide enough to absorb ordinary MC noise; **never** an exact-pixel match |
-| `objectmap` | `legendContains?`, `pixelCountFor?` + `pixelCountMin?/Max?`, `queryAt?:{x,y,expectName}` (at least one of the three) | `legendContains`/`pixelCountFor` run one `mode:"objectmap"` render; `queryAt` calls `AgentSession::QueryObjectAt` (`expectName:""` means expect a miss) |
+| `objectmap` | `legendContains?`, `pixelCountFor?` + `pixelCountMin?/Max?`, `queryAt?:{x,y,expectName}` (at least one of the three) | `legendContains`/`pixelCountFor` run one `mode:"objectmap"` render; `queryAt` calls `AgentSession::QueryObjectAt`. `expectName:""` means expect a MISS; `expectName:"*"` means expect ANY non-background object (name-agnostic — for open-ended "build a scene" scenarios where the model names entities freely); any other string expects a hit with that exact name |
 | `diagnostics` | `expect:"clean"` | `AgentSession::ValidateText` on the post-run document returns zero diagnostics |
 | `diagnostics` | `expect:"code"`, `code` | at least one diagnostic with that `code` is present |
 | `trajectory` | `maxToolCalls?`, `maxLlmCalls?`, `terminalStatus?` | read straight off the run result's own counters (`handle.result`) |
 | `trajectory` | `noAutonomyRefusal?:true` | no dispatched tool call's JSON-RPC response carried error code `-32011` (an autonomy refusal) |
 | `trajectory` | `requiredToolInOrder:[names...]` | the trajectory's `tool` records contain these names as an (not-necessarily-contiguous) **subsequence** in order |
 | `trajectory` | `noMechanicalLoop:true` | no two consecutive `tool` records have the same name AND byte-identical args (a "stuck repeating itself" guard) |
+| `trajectory` | `expectAutonomyRefusal:true` | at least one dispatched tool call's JSON-RPC response carried error code `-32011` (the inverse of `noAutonomyRefusal` — proves a read-mode mutation was actually refused) |
+| `trajectory` | `toolOutcomes:[{name, occurrence?, expect}, ...]` | each spec selects the `first`/`last`/`any` (default `any`) `tool` record named `name` and asserts its result outcome `expect` ∈ `applied` (result.applied==true) / `staged` (status=="staged") / `rejected` (status=="rejected") / `error` (response has an error). Proves a specific call was rejected/applied — e.g. malformed-then-recovered. Load-rejects an empty array, an unknown occurrence/expect, or a missing name/expect |
+| `trajectory` | `toolCallAfterUserTurn:{name, minUserTurns}` | a `tool` record named `name` occurs after at least `minUserTurns` `user` records — proves real turn separation (a later edit happened AFTER the Nth user prompt, not batched into an earlier turn) |
 | `finalText` | `containsAll?:[...]`, `containsAny?:[...]`, `absent?:[...]`, `caseSensitive?:false` | keyword assertions over the agent's final assistant message (`handle.result.finalText`): every `containsAll` substring present, at least one `containsAny` present, no `absent` substring present — all present conditions must hold. Case-insensitive (ASCII) unless `caseSensitive:true`. Empty/missing needles assert nothing; a checkpoint with NO meaningful needle fails loudly (never a silent vacuous pass). Grades a refusal/clarification that must SURFACE something (e.g. `reserved_name_clarify` asserts the ask-back names the conflict) without an LLM judge |
 
 `conflict_retry`'s checkpoints show `param_range` (grading "close enough to
@@ -337,9 +340,11 @@ against that fixture (`CheckScenario`'s `allPassed` and
 `checkpointFraction == 1.0`). This is what keeps a scenario honest: it
 proves the checkpoints are true of the canned session that's supposed to
 satisfy them, not just plausible-looking JSON that happens to parse. It
-covers all 8 committed scenarios (`param_edit`, `two_tool_observe`,
-`error_path`, `camera_orbit_timeline`, `remove_object`,
-`material_add_and_bind`, `conflict_retry`, `reserved_name_recovery`) and runs
-as part of the normal test suite (`./run_all_tests.sh` /
-`run_all_tests.ps1`), so adding a new scenario+fixture pair without wiring it
-into T10's `ids[]` array leaves it unverified by CI.
+**dynamically enumerates every committed `evals/scenarios/*.json`** (via a
+`std::filesystem::directory_iterator`, sorted for determinism — there is no
+hard-coded id list), so a new scenario is covered by CI automatically the
+moment its `.json` lands alongside a matching `evals/fixtures/*.fixture.jsonl`.
+It runs as part of the normal test suite (`./run_all_tests.sh` /
+`run_all_tests.ps1`). The one requirement is the paired fixture: a scenario
+whose `replay.fixture` file is missing or whose own checkpoints aren't all
+true of that fixture fails T10 loudly.

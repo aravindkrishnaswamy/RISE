@@ -38,9 +38,16 @@
     {
       "kind": "trajectory",
       "noAutonomyRefusal": true,
-      "requiredToolInOrder": ["read_document", "propose_patch"],
+      "requiredToolInOrder": ["read_document", "propose_patch", "list_proposals"],
       "terminalStatus": "final_text",
-      "noMechanicalLoop": true
+      "noMechanicalLoop": true,
+      "toolOutcomes": [
+        { "name": "propose_patch", "expect": "staged" }
+      ]
+    },
+    {
+      "kind": "finalText",
+      "containsAny": ["staged", "proposal", "approval"]
     }
   ]
 }
