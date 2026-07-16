@@ -591,7 +591,14 @@ final class RenderViewModel: ObservableObject {
     /// Lazily constructed when a scene successfully loads; torn down on
     /// clearScene().  The viewport bridge borrows `bridge`'s job — its
     /// lifetime must not exceed `bridge`'s.
-    private(set) var viewportBridge: RISEViewportBridge? = nil {
+    ///
+    /// @Published (menu-decoupling hardening, review P3): MenuBarState's
+    /// snapshot derives hasBridge/canUseSceneTransport from this — before,
+    /// its freshness relied on every assignment site COINCIDENTALLY
+    /// co-publishing some other @Published write in the same tick.  True
+    /// today at all four sites, but a future isolated assignment would
+    /// have silently staled the menu bar.  Publish it directly.
+    @Published private(set) var viewportBridge: RISEViewportBridge? = nil {
         didSet {
             refinementPollTimer?.invalidate()
             refinementPollTimer = nil
