@@ -1680,12 +1680,25 @@ final class RenderViewModel: ObservableObject {
     /// Called once immediately on bridge attach, then every 0.5 s by
     /// `refinementPollTimer` — see `viewportBridge`'s didSet.
     private func pollRefinementState(_ vb: RISEViewportBridge) {
+        // PUBLISH-ON-CHANGE ONLY (menu-flyout fix, 2026-07-16): this poll
+        // fires every 0.5s for as long as a scene is loaded, and @Published
+        // fires objectWillChange on EVERY assignment — equal or not.  The
+        // App's .commands menus observe this model, and every
+        // objectWillChange rebuilds the menu bar, which dismisses any OPEN
+        // flyout — so unconditional writes here made native menus unusable
+        // whenever a scene was loaded ("flies out then instantly closes").
+        // With equality guards, a settled scene publishes NOTHING and menus
+        // behave normally.  (During an active render, progress/elapsed
+        // updates still legitimately publish — menu use mid-render remains
+        // limited; a dedicated menu-state model would be the deeper fix.)
         var divisor: UInt32 = 1
         let phase = vb.refinementPhase(withScaleDivisor: &divisor)
-        refinementPhase = Int(phase)
-        refinementScaleDivisor = divisor
-        undoLabel = vb.undoActionLabel()
-        redoLabel = vb.redoActionLabel()
+        if refinementPhase != Int(phase) { refinementPhase = Int(phase) }
+        if refinementScaleDivisor != divisor { refinementScaleDivisor = divisor }
+        let newUndo = vb.undoActionLabel()
+        if undoLabel != newUndo { undoLabel = newUndo }
+        let newRedo = vb.redoActionLabel()
+        if redoLabel != newRedo { redoLabel = newRedo }
 
         // Design brief A4 — mirror the active region (full-res
         // film-pixel space).  The core clears this automatically
@@ -1696,10 +1709,11 @@ final class RenderViewModel: ObservableObject {
             // `right`/`bottom` are INCLUSIVE (see RISEViewportBridge.h)
             // — +1 so width/height reflect the pixel COUNT restricted,
             // matching ViewportView.commitRegionDrag's convention.
-            activeRegion = CGRect(x: CGFloat(left), y: CGFloat(top),
-                                  width: CGFloat(right) - CGFloat(left) + 1,
-                                  height: CGFloat(bottom) - CGFloat(top) + 1)
-        } else {
+            let region = CGRect(x: CGFloat(left), y: CGFloat(top),
+                                width: CGFloat(right) - CGFloat(left) + 1,
+                                height: CGFloat(bottom) - CGFloat(top) + 1)
+            if activeRegion != region { activeRegion = region }
+        } else if activeRegion != nil {
             activeRegion = nil
         }
 
@@ -1727,12 +1741,12 @@ final class RenderViewModel: ObservableObject {
                     editorOriginalText = text
                     lastSyncedSceneTextVersion = currentVersion
                 }
-                editorBehindLiveScene = false
+                if editorBehindLiveScene { editorBehindLiveScene = false }
             } else if currentVersion != lastSyncedSceneTextVersion {
                 // The user has unsaved buffer edits AND the live scene
                 // has moved on since the last sync — don't clobber the
                 // buffer; just flag that it's stale.
-                editorBehindLiveScene = true
+                if !editorBehindLiveScene { editorBehindLiveScene = true }
             }
         }
     }
