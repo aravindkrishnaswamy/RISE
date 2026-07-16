@@ -421,15 +421,25 @@ struct SceneEditorPanel: View {
             // raw editor buffer instead of saving the rendered image the
             // menu item's label promises.  The pill stays clickable —
             // only the keyboard binding is gone.
-            editorPill("Save", disabled: !viewModel.isEditorDirty,
-                       help: "Save changes to disk") {
+            // Untitled scenes (start-screen create path) have no disk file
+            // yet — both raw-text writes below target `loadedFilePath`, so
+            // they'd silently no-op.  Disable honestly and point at
+            // Save-As (the top-bar Save routes there for untitled scenes).
+            editorPill("Save", disabled: !viewModel.isEditorDirty
+                                         || viewModel.loadedFilePath == nil,
+                       help: viewModel.loadedFilePath == nil
+                             ? "Untitled scene — use the top-bar Save (Save As…) first"
+                             : "Save changes to disk") {
                 viewModel.saveEditorFile()
             }
 
             editorPill("Save & Reload",
                        disabled: viewModel.renderState == .cancelling
-                                 || viewModel.renderState == .loading,
-                       help: "Save to disk, clear the loaded scene, and reload from disk") {
+                                 || viewModel.renderState == .loading
+                                 || viewModel.loadedFilePath == nil,
+                       help: viewModel.loadedFilePath == nil
+                             ? "Untitled scene — use the top-bar Save (Save As…) first"
+                             : "Save to disk, clear the loaded scene, and reload from disk") {
                 viewModel.saveAndReloadScene()
             }
 

@@ -883,7 +883,14 @@ final class RenderViewModel: ObservableObject {
         // button could only ever end in the load-failure alert.  If scene
         // merging is ever wanted, it is a CST-document-level feature, not
         // a second parser pass over the live Job.
-        if loadedFilePath != nil {
+        // "A scene is loaded" must be judged by the LIVE BRIDGE, not the
+        // document path: an UNTITLED scene (start-screen create path) has
+        // loadedFilePath == nil but a fully-loaded Job.  Gating on the path
+        // alone skipped this whole teardown branch and fell through to a
+        // second loadAsciiScene on the same Job — refused by the load-once
+        // guard, invisibly (the viewport stays on the old scene and the
+        // error state never surfaces because the bridge is non-nil).
+        if loadedFilePath != nil || viewportBridge != nil {
             let alert = NSAlert()
             alert.messageText = "A scene is already loaded"
             alert.informativeText = "Clear the current scene and load the new one?"
@@ -998,6 +1005,11 @@ final class RenderViewModel: ObservableObject {
     func loadScene(at path: String, untitled: Bool = false) {
         if !untitled {
             addToRecentFiles(path)
+            // A NORMAL open must never inherit a stale create-prompt: if a
+            // previous starter load failed (its sceneOpened never fired to
+            // consume the stash), the prompt would otherwise auto-send into
+            // this unrelated scene.
+            chat.pendingFirstPrompt = nil
         }
         renderState = .loading
         renderedImage = nil
@@ -1110,6 +1122,12 @@ final class RenderViewModel: ObservableObject {
                     }
                 } else {
                     self.renderState = .error("Failed to load scene")
+                    // A failed STARTER load must not leave its create-prompt
+                    // staged (sceneOpened never fired to consume it) — the
+                    // next successful open would auto-send it into an
+                    // unrelated scene.  Cleared here AND defensively at the
+                    // top of every non-untitled load.
+                    self.chat.pendingFirstPrompt = nil
                 }
                 self.refreshEditorContents()
                 if !success {

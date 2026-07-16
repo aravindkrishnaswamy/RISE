@@ -1,6 +1,6 @@
 # Start Screen — three-path launch experience
 
-Status: **DESIGN — ratified 2026-07-15, not yet implemented**
+Status: **Mac IMPLEMENTED (branch gui-start-screen, 2026-07-15); Windows in progress**
 Owner surfaces: Mac SwiftUI shell, Windows Qt shell, shared core (starter-scene
 load + agent handoff), agent harness (empty-scene construction — parallel
 workstream, out of scope here).
@@ -183,6 +183,10 @@ i.e. the same point where `sceneOpened` fires today.  Implement as
 - **Prompt length**: cap at the chat input's existing limit; no new rule.
 - **Close Scene returns here**: the start screen re-renders with updated
   recents (the just-closed scene now first).
+- **Render Animation while untitled**: the movie output path is derived
+  from the scene path, so an untitled scene renders animation frames with
+  video output disabled.  Save-As first to get a movie.  (Known v1
+  limitation; acceptable — untitled scenes are mid-construction.)
 
 ## 9. Phasing
 

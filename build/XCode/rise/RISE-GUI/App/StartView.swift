@@ -221,11 +221,17 @@ struct StartView: View {
         }
     }
 
+    /// Shared formatter — hoisted so it isn't re-allocated per row per
+    /// render (review P3).
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
     private func relativeTime(for path: String) -> String {
         guard let date = viewModel.recentFileTimes[path] else { return "" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     // MARK: - Right column: create with the agent

@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <iterator>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -116,6 +117,33 @@ int main()
 	       "no -ffast-math-foldable NaN/Inf sentinels in tests/ (use a finite "
 	       "poison or an explicit existence Check; see docs/skills/"
 	       "red-proof-and-test-integrity.md)" );
+
+	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)
+	// The canonical scenes/Templates/empty_starter.RISEscene is copied into
+	// each GUI build's resources (Mac: build/XCode/rise/RISE-GUI/Resources/).
+	// The asset headers CLAIM a test keeps the copies identical -- this is
+	// that test.  A one-sided edit would otherwise silently desync what the
+	// create-with-agent path actually loads from what the repo documents.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path canonical =
+			repoRoot / "scenes" / "Templates" / "empty_starter.RISEscene";
+		const fs::path macCopy = repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "Resources" / "empty_starter.RISEscene";
+		auto slurp = []( const fs::path& f ) -> std::string {
+			std::ifstream in( f, std::ios::binary );
+			return std::string( std::istreambuf_iterator<char>( in ),
+			                    std::istreambuf_iterator<char>() );
+		};
+		const std::string canonicalBytes = slurp( canonical );
+		Check( !canonicalBytes.empty(),
+		       "canonical starter template exists (scenes/Templates/empty_starter.RISEscene)" );
+		const std::string macBytes = slurp( macCopy );
+		Check( !macBytes.empty(),
+		       "Mac bundle copy of the starter template exists (RISE-GUI/Resources)" );
+		Check( canonicalBytes == macBytes,
+		       "starter-template copies are byte-identical (edit the canonical, re-copy to Resources)" );
+	}
 
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "

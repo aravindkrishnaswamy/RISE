@@ -326,7 +326,12 @@ struct TopBar: View {
                 }
                 .buttonStyle(.plain)
                 .help("Write the scene file to disk (⌥⌘S) — edits are never auto-saved")
-            } else {
+            } else if viewModel.loadedFilePath != nil {
+                // Only a NAMED scene can honestly claim "saved" — an
+                // untitled clean scene has never touched disk (review P2:
+                // showing "✓ saved" there falsely promises persistence).
+                // Untitled + clean = the pristine starter template; show
+                // nothing until there is something to save.
                 Text("✓ saved")
                     .font(Theme.mono(10))
                     .foregroundColor(Theme.textDim)

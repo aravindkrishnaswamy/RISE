@@ -646,6 +646,11 @@ struct ContentView: View {
         if let path = viewModel.loadedFilePath {
             return (path as NSString).lastPathComponent
         }
+        if viewModel.viewportBridge != nil {
+            // Untitled scene (start-screen create path) — keep the window
+            // title consistent with the TopBar chip.
+            return "Untitled"
+        }
         return "RISE"
     }
 }
