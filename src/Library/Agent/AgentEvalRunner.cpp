@@ -27,6 +27,8 @@
 #include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
 #include "../Interfaces/IJobPriv.h"                // propose-mode mock-Owner: RISE_CreateJobPriv + IJobPriv::release/LoadAsciiSceneViaCst
 #include "../SceneEditor/SceneEditController.h"    // propose-mode mock-Owner: the unstarted headless controller ProposePatch stages against
+#include "../Interfaces/IRasterImageReader.h"      // image-reconstruction Wave 2: render "compareToImage" decodes a reference PNG (brings RISEColor + COLOR_SPACE via Color.h)
+#include "../RISE_API.h"                           // image-reconstruction Wave 2: RISE_API_CreatePNGReader / RISE_API_CreateCompatibleMemoryBuffer -- decode a PNG through RISE's OWN reader (png_painter's decoder)
 
 #include <algorithm> // std::max / std::min -- render channelBalanceMax ratio
 #include <cctype>
@@ -605,7 +607,7 @@ namespace RISE
 			bool ValidateRenderCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				static const char* const kNumFields[] = {
-					"width", "height",
+					"width", "height", "samples",
 					"meanLumaMin", "meanLumaMax",
 					"meanRMin", "meanRMax", "meanGMin", "meanGMax", "meanBMin", "meanBMax",
 					"channelBalanceMax"
@@ -617,6 +619,107 @@ namespace RISE
 					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 					      "].\"channelBalanceMax\" must be > 1.0 (a ratio of 1.0 is unreachable under MC noise)";
 					return false;
+				}
+				// Image-reconstruction Wave 2: `samples` (when present) is the
+				// grading render's SPP override -- must be a whole count >= 1.
+				if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() &&
+				    cp.get( "samples" ).asNumber() < 1.0 ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+					      "].\"samples\" must be >= 1";
+					return false;
+				}
+
+				// Image-reconstruction Wave 2: the `camera` pose override.
+				// location+lookat are REQUIRED (each an array of exactly 3
+				// numbers); up is OPTIONAL (same shape); fov is OPTIONAL (a
+				// positive number strictly < 180 degrees).  ObjectMap camera
+				// support is explicitly out of scope here -- this validator is
+				// the render kind only.
+				if( cp.has( "camera" ) ) {
+					const JsonValue& cam = cp.get( "camera" );
+					if( !cam.isObject() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"camera\" must be an object (got " + JsonTypeName( cam.type() ) + ")";
+						return false;
+					}
+					auto requireVec3 = [&]( const char* key, bool required ) -> bool {
+						if( !cam.has( key ) ) {
+							if( required ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+								      "].\"camera." + key + "\" is required (an array of 3 numbers)";
+								return false;
+							}
+							return true;
+						}
+						const JsonValue& a = cam.get( key );
+						if( !a.isArray() || a.size() != 3 ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"camera." + key + "\" must be an array of exactly 3 numbers";
+							return false;
+						}
+						for( std::size_t i = 0; i < 3; ++i ) {
+							if( !a.at( i ).isNumber() ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+								      "].\"camera." + key + "\"[" + std::to_string( i ) + "] must be a number";
+								return false;
+							}
+						}
+						return true;
+					};
+					if( !requireVec3( "location", true ) ) return false;
+					if( !requireVec3( "lookat", true ) ) return false;
+					if( !requireVec3( "up", false ) ) return false;
+					if( cam.has( "fov" ) ) {
+						if( !cam.get( "fov" ).isNumber() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"camera.fov\" must be a number (degrees)";
+							return false;
+						}
+						const double fov = cam.get( "fov" ).asNumber();
+						if( !( fov > 0.0 && fov < 180.0 ) ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"camera.fov\" must be > 0 and < 180 degrees";
+							return false;
+						}
+					}
+				}
+
+				// Image-reconstruction Wave 2: compareToImage + rmseMax.  Both
+				// or neither.  The path is a non-empty repo-relative string that
+				// must not contain ".." (same containment rule the prompt
+				// reference-images use); rmseMax is a number in (0,1].  The
+				// path's existence / PNG-ness / dims are checked at RUNTIME
+				// (CheckRenderKind) -- the load validator cannot open the file.
+				const bool hasCompare = cp.has( "compareToImage" );
+				const bool hasRmse    = cp.has( "rmseMax" );
+				if( hasCompare != hasRmse ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+					      "].\"compareToImage\" and \"rmseMax\" must be supplied together (both or neither)";
+					return false;
+				}
+				if( hasCompare ) {
+					if( !cp.get( "compareToImage" ).isString() || cp.get( "compareToImage" ).asString().empty() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"compareToImage\" must be a non-empty repo-relative .png path string";
+						return false;
+					}
+					if( cp.get( "compareToImage" ).asString().find( ".." ) != std::string::npos ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"compareToImage\" must not contain \"..\" (got '" +
+						      cp.get( "compareToImage" ).asString() + "')";
+						return false;
+					}
+					if( !cp.get( "rmseMax" ).isNumber() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"rmseMax\" must be a number";
+						return false;
+					}
+					const double rmseMax = cp.get( "rmseMax" ).asNumber();
+					if( !( rmseMax > 0.0 && rmseMax <= 1.0 ) ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"rmseMax\" must be in (0,1]";
+						return false;
+					}
 				}
 				return true;
 			}
@@ -3365,18 +3468,139 @@ namespace RISE
 					return { true, "all " + std::to_string( chunksArr.size() ) + " named chunk(s) byte-identical to the initial scene" };
 				}
 
-				//! "render": {width?,height?,seed?,meanLumaMin?/Max?,meanRMin?/Max?,
-				//! meanGMin?/Max?,meanBMin?/Max?} -- a FRESH render through the
-				//! live session (AgentSession::Render, bypassing the JSON-RPC
-				//! layer -- the checker is a privileged verifier), asserted
-				//! against generous [min,max] bands.  `seed` is accepted (never
-				//! rejected -- an author may want to note the seed a fixture
-				//! was authored against) but has NO EFFECT: AgentSession::Render
-				//! exposes no seed/RNG-pinning control (see AgentRenderParams --
-				//! samples/width/height/camera/pinned/quality/mode only), so
-				//! per the plan's tolerance-banded rule, bands MUST be wide
-				//! enough to absorb ordinary MC noise between runs, not narrow
-				//! enough to require a pinned seed.  NEVER an exact-pixel match.
+				//! Image-reconstruction Wave 2: format an author-supplied
+				//! [x,y,z] JSON number array (load-validated to be exactly 3
+				//! numbers) into the "x y z" string form AgentCameraOverride's
+				//! Vec3 fields accept (the same form CameraIntrospection::
+				//! SetProperty parses).  %.10g keeps full double precision
+				//! without a trailing exponent for ordinary scene coordinates.
+				std::string CameraVec3String( const JsonValue& arr )
+				{
+					char b[128];
+					std::snprintf( b, sizeof( b ), "%.10g %.10g %.10g",
+						arr.at( 0 ).asNumber(), arr.at( 1 ).asNumber(), arr.at( 2 ).asNumber() );
+					return std::string( b );
+				}
+
+				//! Image-reconstruction Wave 2: decode PNG bytes already in
+				//! memory into a tightly-packed 8-bit RGB pixel buffer (row-
+				//! major, 3 bytes/pixel, alpha dropped) through RISE's OWN
+				//! PNGReader -- the SAME decoder png_painter uses.  We decode
+				//! with eColorSpace_Rec709RGB_Linear (the reader's "do nothing"
+				//! branch: byte/255 in) and re-Integerize<Rec709RGBPel> (·255
+				//! out) so the EXACT stored 8-bit byte the writer emitted comes
+				//! back verbatim -- a pure linear round-trip with NO gamma step,
+				//! so no quantization drift is introduced by the read side.
+				//! This is why "compareToImage" compares like-with-like: the
+				//! candidate is decode(rr.png) where rr.png is byte-identical to
+				//! what read_image returns (InMemoryRasterizerOutput::ToPng),
+				//! and the reference was itself written by that same ToPng path.
+				//! Returns false (populating `err`) on any decode failure --
+				//! empty buffer (missing/unreadable file), non-PNG bytes, or
+				//! degenerate dims -- never throws or crashes.  `bytes` must
+				//! outlive the call (the MemoryBuffer does NOT take ownership).
+				bool DecodePngToRgb8( char* bytes, unsigned int byteCount,
+					std::vector<unsigned char>& outRgb, unsigned int& outW, unsigned int& outH,
+					std::string& err )
+				{
+					outRgb.clear();
+					outW = 0;
+					outH = 0;
+					if( !bytes || byteCount == 0 ) {
+						err = "empty PNG buffer (missing or unreadable reference)";
+						return false;
+					}
+
+					IMemoryBuffer* buffer = nullptr;
+					if( !RISE_API_CreateCompatibleMemoryBuffer( &buffer, bytes, byteCount, /*bTakeOwnership=*/false ) || !buffer ) {
+						err = "could not wrap PNG bytes in a read buffer";
+						return false;
+					}
+
+					IRasterImageReader* reader = nullptr;
+					if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+						buffer->release();
+						err = "could not create a PNG reader";
+						return false;
+					}
+
+					unsigned int w = 0, h = 0;
+					if( !reader->BeginRead( w, h ) || w == 0 || h == 0 ) {
+						reader->EndRead();
+						reader->release();
+						buffer->release();
+						err = "PNG decode failed (not a valid PNG, or zero dimensions)";
+						return false;
+					}
+
+					outRgb.resize( static_cast<std::size_t>( w ) * h * 3 );
+					for( unsigned int y = 0; y < h; ++y ) {
+						for( unsigned int x = 0; x < w; ++x ) {
+							RISEColor c;
+							reader->ReadColor( c, x, y );
+							// eColorSpace_Rec709RGB_Linear ⟶ Integerize<Rec709RGBPel>
+							// is an exact byte round-trip (see the function doc).
+							const RGBA_T<unsigned char> enc = c.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
+							const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 3;
+							outRgb[idx + 0] = enc.r;
+							outRgb[idx + 1] = enc.g;
+							outRgb[idx + 2] = enc.b;
+						}
+					}
+
+					reader->EndRead();
+					reader->release();
+					buffer->release();
+					outW = w;
+					outH = h;
+					return true;
+				}
+
+				//! "render": {width?,height?,samples?,seed?,camera?,
+				//! meanLumaMin?/Max?,meanRMin?/Max?,meanGMin?/Max?,meanBMin?/Max?,
+				//! channelBalanceMax?,compareToImage?,rmseMax?} -- a FRESH render
+				//! through the live session (AgentSession::Render, bypassing the
+				//! JSON-RPC layer -- the checker is a privileged verifier),
+				//! asserted against generous [min,max] bands.
+				//!
+				//! Image-reconstruction Wave 2 additions:
+				//!  * `camera` {location:[x,y,z], lookat:[x,y,z], up?:[x,y,z]
+				//!    (default [0,1,0]), fov?:degrees} overrides the ACTIVE
+				//!    camera's pose for THIS grading render only (via
+				//!    AgentRenderParams::camera) so the render is taken from a
+				//!    KNOWN pose regardless of the scene's authored camera.
+				//!    location+lookat are required when `camera` is present; fov
+				//!    absent = keep the camera's current fov.  Composes with
+				//!    width/height/samples and every band above.
+				//!  * `samples` (>=1, load-validated) is wired to
+				//!    AgentRenderParams::samples so a grading render can use
+				//!    enough SPP to stabilise a compareToImage RMSE (honoured by
+				//!    the pixel-based rasterizer family; see AgentRenderParams).
+				//!  * `compareToImage` (repo-relative .png path) + `rmseMax`
+				//!    (in (0,1], both-or-neither) assert an IMAGE similarity:
+				//!    RMSE = sqrt(mean over all pixels·RGB of ((a-b)/255)^2) of
+				//!    THIS render vs the committed reference PNG, failing iff it
+				//!    exceeds rmseMax.  The candidate is decode(rr.png) where
+				//!    rr.png is byte-identical to what read_image returns, and
+				//!    the reference was written by that SAME render->PNG path, so
+				//!    tonemap/clamp/quantization are IDENTICAL on both sides (see
+				//!    DecodePngToRgb8's doc).  The render is forced to the
+				//!    reference's EXACT dimensions: if width/height are also
+				//!    given they MUST equal the reference's dims (a RUNTIME check
+				//!    -- the load validator cannot open the file), else the
+				//!    reference's dims are adopted.  The measured RMSE is ALWAYS
+				//!    reported in the detail (pass or fail) so a calibration run
+				//!    can read the actual noise floor.  A missing / non-PNG
+				//!    reference is a FAILED checkpoint with a clear detail, never
+				//!    a crash.
+				//!
+				//! `seed` is accepted (never rejected -- an author may want to
+				//! note the seed a fixture was authored against) but has NO
+				//! EFFECT: AgentSession::Render exposes no seed/RNG-pinning
+				//! control, so per the plan's tolerance-banded rule, bands (and
+				//! rmseMax) MUST be wide enough to absorb ordinary MC noise
+				//! between runs, not narrow enough to require a pinned seed.
+				//! NEVER an exact-pixel match.
 				CheckOutcome CheckRenderKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "render checkpoint: no live session (run did not complete)" };
@@ -3389,6 +3613,78 @@ namespace RISE
 						rp.height = static_cast<unsigned int>( cp.get( "height" ).asNumber() );
 					} else if( haveW != haveH ) {
 						return { false, "render checkpoint: \"width\"/\"height\" must both be supplied together" };
+					}
+
+					// Image-reconstruction Wave 2: samples override (load-validated >=1).
+					if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() ) {
+						rp.samples = static_cast<int>( cp.get( "samples" ).asNumber() );
+					}
+
+					// Image-reconstruction Wave 2: camera-pose override.  The
+					// shape (location+lookat required, up/fov typed) is
+					// load-validated by ValidateRenderCheckpointTypes; here we
+					// only translate the JSON arrays into the "x y z" strings
+					// AgentCameraOverride accepts.  `up` defaults to [0,1,0]
+					// (the +Y-up convention) when omitted; `fov` omitted keeps
+					// the camera's current fov (hasFov stays false).
+					if( cp.has( "camera" ) && cp.get( "camera" ).isObject() ) {
+						const JsonValue& cam = cp.get( "camera" );
+						rp.camera.hasLocation = true;
+						rp.camera.location    = CameraVec3String( cam.get( "location" ) );
+						rp.camera.hasLookAt   = true;
+						rp.camera.lookAt      = CameraVec3String( cam.get( "lookat" ) );
+						rp.camera.hasUp       = true;
+						rp.camera.up          = cam.has( "up" ) ? CameraVec3String( cam.get( "up" ) )
+						                                        : std::string( "0 1 0" );
+						if( cam.has( "fov" ) && cam.get( "fov" ).isNumber() ) {
+							char fbuf[64];
+							std::snprintf( fbuf, sizeof( fbuf ), "%.10g", cam.get( "fov" ).asNumber() );
+							rp.camera.hasFov = true;
+							rp.camera.fov    = fbuf;
+						}
+					}
+
+					// Image-reconstruction Wave 2: decode the compareToImage
+					// reference FIRST -- its dims drive the grading render (the
+					// candidate must be produced at EXACTLY the reference's
+					// dimensions).  Both fields are load-validated present-together
+					// with rmseMax in (0,1] and a non-".." non-empty path.
+					const bool haveCompare = cp.has( "compareToImage" ) && cp.get( "compareToImage" ).isString() &&
+					                         cp.has( "rmseMax" ) && cp.get( "rmseMax" ).isNumber();
+					std::vector<unsigned char> refRgb;
+					unsigned int refW = 0, refH = 0;
+					std::string  refPath;
+					double       rmseMax = 0.0;
+					if( haveCompare ) {
+						refPath = cp.get( "compareToImage" ).asString();
+						rmseMax = cp.get( "rmseMax" ).asNumber();
+						std::string refBytes, readErr;
+						if( !ReadWholeFile( refPath, refBytes, readErr ) ) {
+							return { false, "render checkpoint: compareToImage reference '" + refPath +
+								"' could not be read (" + readErr + ")" };
+						}
+						std::string decErr;
+						if( !DecodePngToRgb8( refBytes.empty() ? nullptr : &refBytes[0],
+						                      static_cast<unsigned int>( refBytes.size() ),
+						                      refRgb, refW, refH, decErr ) ) {
+							return { false, "render checkpoint: compareToImage reference '" + refPath +
+								"' could not be decoded (" + decErr + ")" };
+						}
+						// Dimension rule (RUNTIME -- the load validator cannot
+						// open the file): an explicit width/height must MATCH the
+						// reference; otherwise adopt the reference's dims.
+						if( haveW && haveH ) {
+							if( rp.width != refW || rp.height != refH ) {
+								char db[320];
+								std::snprintf( db, sizeof( db ),
+									"render checkpoint: compareToImage requested %ux%u but reference '%s' is %ux%u -- dims must match",
+									rp.width, rp.height, refPath.c_str(), refW, refH );
+								return { false, std::string( db ) };
+							}
+						} else {
+							rp.width  = refW;
+							rp.height = refH;
+						}
 					}
 
 					const AgentRenderResult rr = session->Render( rp );
@@ -3438,15 +3734,63 @@ namespace RISE
 						}
 					}
 
+					// Image-reconstruction Wave 2: compareToImage RMSE.  The
+					// candidate is decode(rr.png) -- rr.png is byte-identical to
+					// what read_image returns, so decoding it back guarantees
+					// the same tonemap/clamp/quantization the reference carries.
+					// `rmseNote` is built whenever the RMSE is actually computed
+					// and is appended to the final detail on BOTH pass and fail
+					// (the calibration workflow reads the measured value either
+					// way).
+					std::string rmseNote;
+					if( haveCompare ) {
+						std::vector<unsigned char> candBytes = rr.png;   // mutable copy (rr is const; MemoryBuffer wants char*)
+						std::vector<unsigned char> candRgb;
+						unsigned int candW = 0, candH = 0;
+						std::string  decErr;
+						if( !DecodePngToRgb8( candBytes.empty() ? nullptr : reinterpret_cast<char*>( &candBytes[0] ),
+						                      static_cast<unsigned int>( candBytes.size() ),
+						                      candRgb, candW, candH, decErr ) ) {
+							failures.push_back( "compareToImage: candidate render PNG could not be decoded (" + decErr + ")" );
+						} else if( candW != refW || candH != refH ) {
+							char db[320];
+							std::snprintf( db, sizeof( db ),
+								"compareToImage dimension mismatch: render is %ux%u but reference '%s' is %ux%u",
+								candW, candH, refPath.c_str(), refW, refH );
+							failures.push_back( std::string( db ) );
+						} else {
+							const std::size_t n = static_cast<std::size_t>( candW ) * candH * 3;
+							double sumSq = 0.0;
+							for( std::size_t i = 0; i < n; ++i ) {
+								const double diff = ( static_cast<double>( candRgb[i] ) - static_cast<double>( refRgb[i] ) ) / 255.0;
+								sumSq += diff * diff;
+							}
+							const double rmse = ( n > 0 ) ? std::sqrt( sumSq / static_cast<double>( n ) ) : 0.0;
+							char nb[256];
+							std::snprintf( nb, sizeof( nb ), "compareToImage RMSE=%.6f (max %.6f, ref '%s')",
+								rmse, rmseMax, refPath.c_str() );
+							rmseNote = nb;
+							if( rmse > rmseMax ) {
+								char fb[256];
+								std::snprintf( fb, sizeof( fb ), "compareToImage RMSE %.6f > max %.6f vs reference '%s'",
+									rmse, rmseMax, refPath.c_str() );
+								failures.push_back( std::string( fb ) );
+							}
+						}
+					}
+
 					if( !failures.empty() ) {
 						std::string detail = "render band(s) violated: ";
 						for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
+						if( !rmseNote.empty() ) detail += " [" + rmseNote + "]";
 						return { false, detail };
 					}
 					char buf[256];
 					std::snprintf( buf, sizeof( buf ), "render bands satisfied (meanR=%.4f meanG=%.4f meanB=%.4f meanLuma=%.4f)",
 						rr.meanR, rr.meanG, rr.meanB, meanLuma );
-					return { true, std::string( buf ) };
+					std::string detail( buf );
+					if( !rmseNote.empty() ) detail += "; " + rmseNote;
+					return { true, detail };
 				}
 
 				//! "objectmap": {legendContains?,pixelCountFor?,pixelCountMin?,

@@ -2557,6 +2557,194 @@ static void TestRenderChannelBalance()
 }
 
 //----------------------------------------------------------------------
+// T4c: render "camera" override + "compareToImage"/"rmseMax" (image-
+// reconstruction Wave 2).  Camera: a render taken from a FAR pose frames
+// the sphere+emitter tiny -> mean luma DROPS below the near pose, and a
+// luma band midway between the two distinguishes them -> proves the
+// checkpoint's grading render actually honours the override.
+// compareToImage: a self-render written to a scratch file compares to a
+// FRESH render of the same scene (MC noise only) within a loose rmseMax
+// but not a sub-floor one; a different-framing reference fails; a dims
+// mismatch and a missing file each fail with a clear detail.  Plus the
+// load-validator reject cases.
+//----------------------------------------------------------------------
+
+// Write raw bytes to a file (the reference PNGs the compareToImage cases
+// decode) -- returns false on any I/O failure.
+static bool WriteBytes( const std::string& path, const std::vector<unsigned char>& bytes )
+{
+	std::error_code ec;
+	std::filesystem::path p( path );
+	if( p.has_parent_path() ) std::filesystem::create_directories( p.parent_path(), ec );
+	std::ofstream f( path.c_str(), std::ios::binary );
+	if( !f ) return false;
+	if( !bytes.empty() ) f.write( reinterpret_cast<const char*>( &bytes[0] ), static_cast<std::streamsize>( bytes.size() ) );
+	return true;
+}
+
+static void TestRenderCameraCompareToImage()
+{
+	std::printf( "T4c: render camera override + compareToImage/rmseMax...\n" );
+	const std::string dir = ScratchRunDir( "t4c_camera_compare" );
+
+	AgentEvalScenario s = MakeScenario( "camcmp_probe", kScene, "Render it", "commit", kNoLoopFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "camcmp_probe run reached final_text" );
+	Check( h.dispatcher != nullptr && h.dispatcher->Session() != nullptr, "camcmp_probe has a live session" );
+	AgentSession* sess = h.dispatcher->Session();
+	if( !sess ) return;
+
+	auto checkResult = [&]( const std::string& cpJson, const std::string& label ) -> AgentEvalCheckResult {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		return CheckScenario( h, s2 );
+	};
+	auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) -> std::string {
+		AgentEvalCheckResult r = checkResult( cpJson, label );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			return r.checkpoints[0].detail;
+		}
+		Check( false, label + ": expected exactly one checkpoint result" );
+		return std::string();
+	};
+
+	// --- Camera override: measure near vs far framing directly, then pin a
+	// distinguishing luma band through the checkpoint path. ---
+	auto measureLuma = [&]( const char* loc, const char* look ) -> double {
+		AgentRenderParams rp;
+		rp.camera.hasLocation = true; rp.camera.location = loc;
+		rp.camera.hasLookAt   = true; rp.camera.lookAt   = look;
+		rp.camera.hasUp       = true; rp.camera.up       = "0 1 0";
+		AgentRenderResult rr = sess->Render( rp );
+		return 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
+	};
+	const double lumaNear = measureLuma( "0 0 3.5", "0 0 0" );
+	const double lumaFar  = measureLuma( "0 0 30",  "0 0 0" );
+	std::printf( "  [measured] near-camera meanLuma=%.5f  far-camera meanLuma=%.5f\n", lumaNear, lumaFar );
+	Check( lumaFar < lumaNear,
+		"far camera frames the sphere small -> mean luma drops below near (near=" +
+		std::to_string( lumaNear ) + " far=" + std::to_string( lumaFar ) + ")" );
+	const double midLuma = 0.5 * ( lumaNear + lumaFar );
+	{
+		char cp[320];
+		std::snprintf( cp, sizeof( cp ),
+			"[{\"kind\":\"render\",\"camera\":{\"location\":[0,0,3.5],\"lookat\":[0,0,0]},\"meanLumaMin\":%.6f}]", midLuma );
+		checkOne( cp, true, "near-camera override render clears the mid-luma floor" );
+	}
+	{
+		char cp[320];
+		std::snprintf( cp, sizeof( cp ),
+			"[{\"kind\":\"render\",\"camera\":{\"location\":[0,0,30],\"lookat\":[0,0,0]},\"meanLumaMin\":%.6f}]", midLuma );
+		checkOne( cp, false, "far-camera override render falls BELOW the mid-luma floor (override really moved the camera)" );
+	}
+
+	// --- compareToImage self-consistency. ---
+	// Write a self-reference from the session's OWN render+PNG path (the
+	// exact bytes read_image would return), then compare a FRESH render.
+	AgentRenderParams rpRef;                       // default scene camera + dims (24x24)
+	AgentRenderResult rrRef = sess->Render( rpRef );
+	Check( rrRef.ok && !rrRef.png.empty(), "session render produced PNG bytes for the self-reference" );
+	const std::string refPath = dir + "/self_ref.png";
+	Check( WriteBytes( refPath, rrRef.png ), "wrote the self-reference PNG to scratch" );
+
+	// A loose (rmseMax 1.0) pass first, purely to surface the measured
+	// self-RMSE noise floor in the detail.
+	{
+		const std::string d = checkOne(
+			"[{\"kind\":\"render\",\"compareToImage\":\"" + refPath + "\",\"rmseMax\":1.0}]",
+			true, "compareToImage self-consistency clears a rmseMax=1.0 ceiling" );
+		std::printf( "  [measured] self-compare detail: %s\n", d.c_str() );
+	}
+	// The Wave-2 calibration bounds: MC noise between two fresh renders of
+	// the same scene sits well under 0.06 but well above 0.0005.
+	checkOne( "[{\"kind\":\"render\",\"compareToImage\":\"" + refPath + "\",\"rmseMax\":0.06}]",
+		true, "compareToImage self-consistency PASSES at rmseMax=0.06 (MC noise only)" );
+	checkOne( "[{\"kind\":\"render\",\"compareToImage\":\"" + refPath + "\",\"rmseMax\":0.0005}]",
+		false, "compareToImage self-consistency FAILS at rmseMax=0.0005 (below the MC noise floor)" );
+
+	// A DIFFERENT scene state: a far-camera reference vs a default-camera
+	// grading render -> wildly different framing -> RMSE >> 0.06 -> FAIL at
+	// the passing threshold.
+	AgentRenderParams rpFar;
+	rpFar.camera.hasLocation = true; rpFar.camera.location = "0 0 30";
+	rpFar.camera.hasLookAt   = true; rpFar.camera.lookAt   = "0 0 0";
+	rpFar.camera.hasUp       = true; rpFar.camera.up       = "0 1 0";
+	AgentRenderResult rrFar = sess->Render( rpFar );
+	const std::string farRefPath = dir + "/far_ref.png";
+	Check( WriteBytes( farRefPath, rrFar.png ), "wrote the far-camera reference PNG to scratch" );
+	checkOne( "[{\"kind\":\"render\",\"compareToImage\":\"" + farRefPath + "\",\"rmseMax\":0.06}]",
+		false, "compareToImage against a different-framing reference FAILS at rmseMax=0.06" );
+
+	// Dimension mismatch: reference is 24x24; ask for a 32x32 grading render.
+	{
+		const std::string d = checkOne(
+			"[{\"kind\":\"render\",\"width\":32,\"height\":32,\"compareToImage\":\"" + refPath + "\",\"rmseMax\":0.06}]",
+			false, "compareToImage width/height mismatch vs reference dims FAILS" );
+		Check( d.find( "dims must match" ) != std::string::npos,
+			"the dims-mismatch detail is clear (got: " + d + ")" );
+	}
+	// Missing reference file -> failed checkpoint with a clear detail.
+	{
+		const std::string d = checkOne(
+			"[{\"kind\":\"render\",\"compareToImage\":\"" + dir + "/no_such_reference.png\",\"rmseMax\":0.06}]",
+			false, "compareToImage against a missing file FAILS" );
+		Check( d.find( "could not be read" ) != std::string::npos,
+			"the missing-file detail is clear (got: " + d + ")" );
+	}
+
+	// --- Load-validator reject cases (image-reconstruction Wave 2). ---
+	auto writeScenario = [&]( const std::string& id, const std::string& checkpointsJson ) -> std::string {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses (" + perr + ")" );
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		return path;
+	};
+	auto rejects = [&]( const std::string& id, const std::string& cpJson, const std::string& mustNameField ) {
+		AgentEvalScenario sc; std::string err;
+		Check( !LoadEvalScenario( writeScenario( id, cpJson ), sc, err ), id + ": load-rejected" );
+		Check( err.find( mustNameField ) != std::string::npos,
+			id + ": load error names \"" + mustNameField + "\" (got: " + err + ")" );
+	};
+
+	rejects( "cmp_no_rmse", "[{\"kind\":\"render\",\"compareToImage\":\"a.png\"}]", "rmseMax" );
+	rejects( "rmse_no_cmp", "[{\"kind\":\"render\",\"rmseMax\":0.05}]", "compareToImage" );
+	rejects( "rmse_hi", "[{\"kind\":\"render\",\"compareToImage\":\"a.png\",\"rmseMax\":1.5}]", "rmseMax" );
+	rejects( "rmse_zero", "[{\"kind\":\"render\",\"compareToImage\":\"a.png\",\"rmseMax\":0}]", "rmseMax" );
+	rejects( "cmp_dotdot", "[{\"kind\":\"render\",\"compareToImage\":\"../secret.png\",\"rmseMax\":0.05}]", "compareToImage" );
+	rejects( "cam_no_location", "[{\"kind\":\"render\",\"camera\":{\"lookat\":[0,0,0]}}]", "camera.location" );
+	rejects( "cam_short_vec", "[{\"kind\":\"render\",\"camera\":{\"location\":[0,0],\"lookat\":[0,0,0]}}]", "camera.location" );
+	rejects( "cam_fov_hi", "[{\"kind\":\"render\",\"camera\":{\"location\":[0,0,3.5],\"lookat\":[0,0,0],\"fov\":200}}]", "camera.fov" );
+	rejects( "samples_zero", "[{\"kind\":\"render\",\"samples\":0}]", "samples" );
+
+	// A fully-formed Wave-2 render checkpoint (camera + samples +
+	// compareToImage + rmseMax) LOADS cleanly (the file need not exist at
+	// load time -- the validator never opens it).
+	{
+		AgentEvalScenario sc; std::string err;
+		Check( LoadEvalScenario( writeScenario( "cmp_good",
+			"[{\"kind\":\"render\",\"samples\":16,\"camera\":{\"location\":[0,0,3.5],\"lookat\":[0,0,0],\"up\":[0,1,0],\"fov\":40},"
+			"\"compareToImage\":\"refs/target.png\",\"rmseMax\":0.05}]" ), sc, err ),
+			"a fully-formed Wave-2 render checkpoint loads cleanly (" + err + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
 // TestAdversarialOracleControls: T10 (above) only proves committed
 // scenarios' checkpoints are TRUE of their OWN fixture -- it never
 // proves a WRONG-behavior session actually fails them.  This test loads
@@ -2911,6 +3099,7 @@ int main()
 	TestParamSeriesOrbit();
 	TestProposalCheckpoint();
 	TestRenderChannelBalance();
+	TestRenderCameraCompareToImage();
 	TestFinalTextCheckpoint();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();
