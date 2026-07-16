@@ -1596,6 +1596,20 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 		Check( LoadEvalScenario( path, s, err ), "correctly-typed param_range min/max arrays load (" + err + ")" );
 	}
 
+	// (g) "document".op:"param_series_orbit".timeParam as a bare NUMBER (not
+	// a string) -- must fail loudly, naming the offending field.  The
+	// kStringFields type check runs before the op-specific required-field
+	// checks, so this fails on "timeParam" alone without needing the op's
+	// other mandatory fields (chunkKind/param/minKeyframes/...) present.
+	{
+		const std::string path = writeScenario( "bad_orbit_timeparam_type",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"timeParam\":5}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "wrong-typed timeParam (number 5) FAILS to load" );
+		Check( err.find( "timeParam" ) != std::string::npos,
+			"the load error names the offending field \"timeParam\" (got: " + err + ")" );
+	}
+
 	// "finalText".containsAll as a bare NUMBER (not a string array) -- must
 	// fail loudly, naming the offending field.
 	{
@@ -2241,6 +2255,25 @@ static void TestParamSeriesOrbit()
 		} else Check( false, label + ": expected exactly one checkpoint result" );
 	};
 
+	// As checkOne, but also asserts the resulting detail string CONTAINS
+	// `detailSubstr` -- used by the time-axis cases below to pin the
+	// specific failure detail (count mismatch vs malformed vs
+	// non-monotonic) rather than just the pass/fail bit.
+	auto checkDetail = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                         bool expectPass, const std::string& detailSubstr, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[0].detail.find( detailSubstr ) != std::string::npos,
+				label + ": detail contains '" + detailSubstr + "' (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
 	// --- Orbit track (mirrors the committed camera_orbit fixture): 5
 	// keyframes, 4 distinct at 90-degree spacing, radius ~19.03 from the
 	// origin, XZ centroid ~(0.9, 3.7); the max-gap formula gives spread 270.
@@ -2257,12 +2290,15 @@ static void TestParamSeriesOrbit()
 		AgentEvalRunHandle h = RunScenario( s, opts );
 		Check( h.result.terminalStatus != "load_error", std::string( "orbit_ok" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
 
-		// The committed scenario's exact checkpoint -> PASS.
-		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+		// The committed scenario's exact checkpoint -> PASS.  (e) The pass
+		// detail now also mentions the time span 0..1 (the checkpoint's
+		// implicit default `timeParam` "time" paired against the 5 strictly-
+		// increasing 0.0/0.25/0.5/0.75/1.0 keyframe times).
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
 			"\"where\":[{\"param\":\"element_type\",\"value\":\"camera\"},{\"param\":\"param\",\"value\":\"location\"}],"
 			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,"
 			"\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0},\"maxRadiusRatio\":2.0}]",
-			true, "orbit: 5kf / spread 270 / centroid within 6 / ratio 1 -> PASS" );
+			true, "time span", "orbit: 5kf / spread 270 / centroid within 6 / ratio 1 -> PASS, detail mentions time span" );
 		// A too-strict spread threshold (300 > the measured 270) -> FAIL.
 		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
 			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":300,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0}}]",
@@ -2316,6 +2352,111 @@ static void TestParamSeriesOrbit()
 		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
 			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0},\"maxRadiusRatio\":2.0}]",
 			false, "ratio track: radius ratio 4 > maxRadiusRatio 2 -> FAIL" );
+	}
+
+	// --- Time-axis cases: an orbit-SHAPED value track (same 5 keyframes as
+	// orbit_ok) that fails on the TIME axis rather than the geometry axis.
+	// Time progression is intrinsic to the op -- always enforced.
+
+	// (a) All times equal: geometry is a perfect 270-degree, 5-keyframe
+	// orbit, but every `time` line reads 0.0 -- the runtime timeline range
+	// is degenerate.  Must FAIL with the monotonicity detail.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_allequal", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_allequal" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "not strictly increasing", "orbit-shaped but all times 0.0 -> FAIL (monotonicity)" );
+	}
+
+	// (b) Times omitted entirely: the same 5 orbit-shaped `value` keyframes,
+	// but no `time` lines at all (the parser defaults every missing time to
+	// 0.0 -- geometry alone would still pass).  Must FAIL with the raw
+	// count-mismatch detail (5 values, 0 times).
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\tvalue\t\t4.5 4.8 18.5\n"
+			"\tvalue\t\t-18.5 4.8 4.5\n"
+			"\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\tvalue\t\t18.5 4.8 -4.5\n"
+			"\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_omitted", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_omitted" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "5 'value' value(s) but 0 'time' entrie(s)", "orbit-shaped but times omitted entirely -> FAIL (count mismatch)" );
+	}
+
+	// (c) Times decreasing: same geometry, times run 1.0 -> 0.0.  Must FAIL
+	// with the monotonicity detail (first offending pair reported).
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t1.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.75\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.5\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.25\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_decreasing", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_decreasing" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "not strictly increasing", "orbit-shaped but times decreasing -> FAIL (monotonicity)" );
+	}
+
+	// (d) Times count != values count: one `time` line missing (4 times for
+	// 5 values).  Must FAIL with the raw count-mismatch detail.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.25\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.5\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.75\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_undercount", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_undercount" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "5 'value' value(s) but 4 'time' entrie(s)", "orbit-shaped but one time missing (4 vs 5) -> FAIL (count mismatch)" );
+	}
+
+	// (f) A custom `timeParam` name: the timeline uses `interpolator_params`
+	// (a legal repeatable string field on the `timeline` chunk descriptor,
+	// unused here for its usual spline-tangent purpose) as the stand-in
+	// time series, paired 1:1 and strictly increasing; the checkpoint names
+	// it via `"timeParam":"interpolator_params"`.  Must PASS.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\tvalue\t\t4.5 4.8 18.5\n\tinterpolator_params\t0.0\n"
+			"\tvalue\t\t-18.5 4.8 4.5\n\tinterpolator_params\t0.25\n"
+			"\tvalue\t\t-4.5 4.8 -18.5\n\tinterpolator_params\t0.5\n"
+			"\tvalue\t\t18.5 4.8 -4.5\n\tinterpolator_params\t0.75\n"
+			"\tvalue\t\t4.5 4.8 18.5\n\tinterpolator_params\t1.0\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_customtimeparam", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_customtimeparam" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"timeParam\":\"interpolator_params\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			true, "time span", "orbit-shaped, custom timeParam 'interpolator_params' strictly increasing -> PASS" );
 	}
 }
 
@@ -2666,6 +2807,32 @@ static void TestAdversarialOracleControls()
 		RunAdversarialControl( "evals/scenarios/camera_orbit_timeline.json", fixture,
 			"t_adv_camera_orbit_timeline", 2, "dedupe",
 			"camera_orbit_timeline/constant-camera control" );
+	}
+
+	// (e2) camera_orbit_timeline, sibling control: a fixture that inserts an
+	// orbit-SHAPED camera/location timeline (same 5 keyframes / 270-degree
+	// spread as the committed fixture's real orbit) but whose `time` lines
+	// are ALL 0.0 -- geometry alone would pass, but the timeline never
+	// actually animates.  chunk_count, camera count, untouched, and
+	// diagnostics all stay green exactly as in (e); param_series_orbit
+	// (index 2) is again the only failure, this time on the TIME axis
+	// rather than the dedupe/geometry axis.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene first.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Adding an orbit-shaped camera timeline (times all 0.0).",
+			{ { "insert_chunk", InsertChunkInput(
+				"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+				"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t-18.5 4.8 4.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t-4.5 4.8 -18.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t18.5 4.8 -4.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Done: added a camera timeline.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/camera_orbit_timeline.json", fixture,
+			"t_adv_camera_orbit_timeline_zerotime", 2, "strictly increasing",
+			"camera_orbit_timeline/orbit-shaped-but-zero-time control" );
 	}
 
 	// (f) multi_step_build: a fixture that builds a centered BOX object at the

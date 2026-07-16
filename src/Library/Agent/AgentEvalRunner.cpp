@@ -427,10 +427,11 @@ namespace RISE
 			//! entries) is validated here and rejected on the named-target form;
 			//! the "param_series_orbit" op is validated as any-of-kind-only with
 			//! bounded thresholds (minKeyframes>=2, minAngularSpreadDeg in
-			//! (0,360], maxRadiusRatio>1, centerWithin={x,z,radius}).
+			//! (0,360], maxRadiusRatio>1, centerWithin={x,z,radius}), plus an
+			//! optional non-empty "timeParam" (defaults to "time" at check time).
 			bool ValidateDocumentCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
-				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind" };
+				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind", "timeParam" };
 				for( const char* f : kStringFields )
 					if( !RequireFieldType( cp, f, JsonValue::Type::String, scenarioId, idx, f, err ) ) return false;
 				if( !RequireFieldType( cp, "numeric", JsonValue::Type::Bool, scenarioId, idx, "numeric", err ) ) return false;
@@ -496,6 +497,9 @@ namespace RISE
 							err = pfx + " \"centerWithin\" requires numeric \"x\",\"z\",\"radius\""; return false;
 						}
 						if( cw.get( "radius" ).asNumber() < 0.0 ) { err = pfx + " \"centerWithin.radius\" must be >= 0"; return false; }
+					}
+					if( cp.has( "timeParam" ) && cp.get( "timeParam" ).asString().empty() ) {
+						err = pfx + " \"timeParam\" must be a non-empty string when present"; return false;
 					}
 				}
 
@@ -2996,17 +3000,25 @@ namespace RISE
 					}
 
 					// param_series_orbit: ANY-OF-KIND only.  Per candidate chunk
-					// (post-`where`), collect EVERY `param` occurrence in order,
-					// parse each as 3 floats (skip malformed), dedupe consecutive
-					// duplicates, and grade the resulting XZ point track as an
-					// ORBIT: >= minKeyframes points, an angular spread (about the
-					// centerWithin point when given, else the points' XZ centroid)
-					// of >= minAngularSpreadDeg, the centroid within centerWithin's
-					// radius (when given), and a max/min radius ratio <=
-					// maxRadiusRatio (when given).  This binds a single timeline to
-					// PROVE a camera orbit rather than accepting two independent
-					// existentials.  Angular spread = 360 minus the largest gap
-					// between circularly-sorted per-point angles (a full sweep of N
+					// (post-`where`), FIRST prove time progression is intrinsic to
+					// the op (always enforced, not opt-in): collect every `param`
+					// occurrence AND every `timeParam` occurrence (default "time")
+					// in document order, require the RAW counts to match 1:1, every
+					// time token to parse as a single float, and the time sequence
+					// to be STRICTLY increasing (subsumes an all-equal/degenerate
+					// range -- no epsilon needed).  THEN collect every `param`
+					// occurrence in order, parse each as 3 floats (skip malformed),
+					// dedupe consecutive duplicates, and grade the resulting XZ
+					// point track as an ORBIT: >= minKeyframes points, an angular
+					// spread (about the centerWithin point when given, else the
+					// points' XZ centroid) of >= minAngularSpreadDeg, the centroid
+					// within centerWithin's radius (when given), and a max/min
+					// radius ratio <= maxRadiusRatio (when given).  This binds a
+					// single timeline to PROVE a camera orbit -- both in SHAPE and
+					// in TIME -- rather than accepting two independent existentials
+					// or a geometry-only track that never actually animates.
+					// Angular spread = 360 minus the largest gap between
+					// circularly-sorted per-point angles (a full sweep of N
 					// evenly-spaced points measures 360 - 360/N).
 					if( op == "param_series_orbit" ) {
 						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
@@ -3015,6 +3027,8 @@ namespace RISE
 						// minAngularSpreadDeg in (0,360], maxRadiusRatio > 1); these
 						// reads are defensive against a hand-built checkpoint.
 						const std::string param = cp.get( "param" ).asString();
+						const std::string timeParam = ( cp.has( "timeParam" ) && cp.get( "timeParam" ).isString() &&
+							!cp.get( "timeParam" ).asString().empty() ) ? cp.get( "timeParam" ).asString() : std::string( "time" );
 						const long minKeyframes = ( cp.has( "minKeyframes" ) && cp.get( "minKeyframes" ).isNumber() )
 							? static_cast<long>( cp.get( "minKeyframes" ).asNumber() ) : 2;
 						const double minSpread = ( cp.has( "minAngularSpreadDeg" ) && cp.get( "minAngularSpreadDeg" ).isNumber() )
@@ -3034,11 +3048,46 @@ namespace RISE
 						if( !res.ok ) return { false, res.detail };
 
 						auto evalChunk = [&]( const NodeRef& chunk, const std::string& desc ) -> CheckOutcome {
+							// Time progression is INTRINSIC to this op -- always
+							// enforced, never opt-in.  Collect the RAW `param` and
+							// `timeParam` occurrence lists (before any parsing or
+							// dedupe) and require them to pair up 1:1: a timeline
+							// that omits `time` lines (parser defaults a missing
+							// time to 0.0) or carries extras fails right here.
+							const std::vector<std::string> rawValues = CheckerChunkParamValues( chunk, param );
+							const std::vector<std::string> rawTimes  = CheckerChunkParamValues( chunk, timeParam );
+							if( rawTimes.size() != rawValues.size() )
+								return { false, "param_series_orbit: " + desc + " has " + std::to_string( rawValues.size() ) +
+									" '" + param + "' value(s) but " + std::to_string( rawTimes.size() ) + " '" + timeParam +
+									"' entrie(s) -- every keyframe value needs a paired time" };
+
+							// Every time token must parse as a single float.
+							std::vector<double> times;
+							times.reserve( rawTimes.size() );
+							for( std::size_t i = 0; i < rawTimes.size(); ++i ) {
+								std::vector<double> tf;
+								if( !CheckerParseFloatTokens( rawTimes[i], tf ) || tf.size() != 1 )
+									return { false, "param_series_orbit: " + desc + " '" + timeParam + "'[" + std::to_string( i ) +
+										"] = \"" + rawTimes[i] + "\" does not parse as a single float" };
+								times.push_back( tf[0] );
+							}
+
+							// The time sequence must be STRICTLY increasing.  This
+							// subsumes the degenerate all-equal-timestamp case (no
+							// epsilon needed) and catches duplicate/decreasing/
+							// non-progressing sequences alike.
+							for( std::size_t i = 1; i < times.size(); ++i ) {
+								if( !( times[i - 1] < times[i] ) )
+									return { false, "param_series_orbit: " + desc + " '" + timeParam + "' is not strictly "
+										"increasing at index " + std::to_string( i - 1 ) + "->" + std::to_string( i ) + " (" +
+										std::to_string( times[i - 1] ) + " -> " + std::to_string( times[i] ) + ")" };
+							}
+
 							// Collect every `param` value; parse each as an XYZ
 							// triple (skip malformed); we grade in the XZ plane.
 							struct Pt { double x, y, z; };
 							std::vector<Pt> pts;
-							for( const std::string& s : CheckerChunkParamValues( chunk, param ) ) {
+							for( const std::string& s : rawValues ) {
 								std::vector<double> f;
 								if( !CheckerParseFloatTokens( s, f ) || f.size() != 3 ) continue;
 								pts.push_back( { f[0], f[1], f[2] } );
@@ -3104,7 +3153,8 @@ namespace RISE
 							}
 							return { true, "param_series_orbit: " + desc + " -- " + std::to_string( dp.size() ) +
 								" keyframes, angular spread " + std::to_string( spread ) + " deg" +
-								( hasRatio ? ( ", radius ratio " + std::to_string( maxDist / minDist ) ) : std::string() ) };
+								( hasRatio ? ( ", radius ratio " + std::to_string( maxDist / minDist ) ) : std::string() ) +
+								", time span " + std::to_string( times.front() ) + ".." + std::to_string( times.back() ) };
 						};
 						return runAssertion( "param_series_orbit", res, evalChunk );
 					}
