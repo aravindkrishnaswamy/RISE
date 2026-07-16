@@ -707,9 +707,20 @@ final class RenderViewModel: ObservableObject {
             }
         }
         showAgentDebugPanel = UserDefaults.standard.bool(forKey: Self.showAgentDebugPanelKey)
-        chatStateChangeObserver = chat.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
+        // NARROWED forwarder (menu-flyout fix follow-up): the old
+        // chat.objectWillChange -> objectWillChange.send() forwarded EVERY
+        // chat mutation — every streamed token, transcript row, and 1 Hz
+        // proposals-poll write invalidated the entire RenderViewModel view
+        // tree (an earlier review flagged this as over-invalidation).  The
+        // view model's own consumers only derive from three chat facts:
+        // isChatRenderOutstanding (the scene-editable gates), and the
+        // provider/key state (StartView's Create-column readiness, read
+        // through viewModel.chat).  Forward exactly those, deduplicated.
+        chatStateChangeObserver = Publishers.Merge3(
+            chat.$chatRenderWorkerOccupied.removeDuplicates().map { _ in () },
+            chat.$keyStateEpoch.removeDuplicates().map { _ in () },
+            chat.$provider.removeDuplicates().map { _ in () })
+            .sink { [weak self] _ in self?.objectWillChange.send() }
         // B2 review round 1: the chat driver re-checks this predicate
         // after every await and before each tool call, so a turn
         // resuming from its HTTP suspension can never mutate the
@@ -1044,7 +1055,10 @@ final class RenderViewModel: ObservableObject {
                     guard let update = progressDelivery.takeLatest() else { return }
                     guard let self = self else { return }
                     self.progress = update.total > 0 ? update.progress / update.total : 0
-                    self.progressTitle = update.title
+                    // Publish-on-change (menu/invalidation hygiene): the
+                    // title rarely changes between ticks; progress itself
+                    // legitimately does.
+                    if self.progressTitle != update.title { self.progressTitle = update.title }
                 }
             }
             return !cancelRef.value
@@ -1278,7 +1292,10 @@ final class RenderViewModel: ObservableObject {
                     guard let update = progressDelivery.takeLatest() else { return }
                     guard let self = self else { return }
                     self.progress = update.total > 0 ? update.progress / update.total : 0
-                    self.progressTitle = update.title
+                    // Publish-on-change (menu/invalidation hygiene): the
+                    // title rarely changes between ticks; progress itself
+                    // legitimately does.
+                    if self.progressTitle != update.title { self.progressTitle = update.title }
                 }
             }
             return !cancelRef.value
@@ -1462,7 +1479,10 @@ final class RenderViewModel: ObservableObject {
                     guard let update = progressDelivery.takeLatest() else { return }
                     guard let self = self else { return }
                     self.progress = update.total > 0 ? update.progress / update.total : 0
-                    self.progressTitle = update.title
+                    // Publish-on-change (menu/invalidation hygiene): the
+                    // title rarely changes between ticks; progress itself
+                    // legitimately does.
+                    if self.progressTitle != update.title { self.progressTitle = update.title }
                 }
             }
             return !cancelRef.value

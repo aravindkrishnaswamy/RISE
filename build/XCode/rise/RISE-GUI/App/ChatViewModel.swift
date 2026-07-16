@@ -398,7 +398,7 @@ final class ChatViewModel: ObservableObject {
     /// remove_chunk) — kept for any plain-text use; the diff-card
     /// presentation (ProposalDiffCard) instead renders the structured
     /// fields below directly, matching the RISE UI redesign comp.
-    struct ProposalEntry: Identifiable {
+    struct ProposalEntry: Identifiable, Equatable {
         let id: UInt64
         let kind: String
         let sessionLabel: String
@@ -443,8 +443,8 @@ final class ChatViewModel: ObservableObject {
     /// A no-op (clears the list) when there is no live viewport bridge.
     func refreshProposals() {
         guard let vb = viewportBridge else {
-            pendingProposals = []
-            resolvedProposalObservedAt = [:]
+            if !pendingProposals.isEmpty { pendingProposals = [] }
+            if !resolvedProposalObservedAt.isEmpty { resolvedProposalObservedAt = [:] }
             return
         }
         // Field fix (2026-07-11 "production render hangs the app"):
@@ -522,8 +522,14 @@ final class ChatViewModel: ObservableObject {
                 target: target, entityKind: entityKind, param: param, value: value,
                 chunkText: chunkText, truncated: truncated))
         }
-        pendingProposals = next
-        resolvedProposalObservedAt = nextObservedAt
+        // Publish-on-change: this poll runs at 1 Hz and the list is
+        // usually IDENTICAL tick to tick — unconditional assignment
+        // invalidated every observer (including, pre-decoupling, the
+        // whole menu bar) once a second.
+        if pendingProposals != next { pendingProposals = next }
+        if resolvedProposalObservedAt != nextObservedAt {
+            resolvedProposalObservedAt = nextObservedAt
+        }
     }
 
     /// Approve or reject proposal `id` through the OWNER dispatcher (the
@@ -691,7 +697,7 @@ final class ChatViewModel: ObservableObject {
     /// this published state to every control that relies on its single scene
     /// edit gate, preventing a synchronous bridge call from blocking on the
     /// worker's mutex during cancellation drain.
-    @Published private var chatRenderWorkerOccupied: Bool = false
+    @Published private(set) var chatRenderWorkerOccupied: Bool = false
     private var chatRenderOccupancyJobId: UInt64 = 0
     private var chatRenderDrainTask: Task<Void, Never>? = nil
 
