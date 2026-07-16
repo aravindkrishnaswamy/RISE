@@ -64,7 +64,9 @@ import glob
 import json
 import math
 import os
+import shutil
 import sys
+import tempfile
 from collections import Counter, defaultdict
 
 # ---------------------------------------------------------------------------
@@ -439,6 +441,22 @@ def scan_run_dir(run_dir, warnings):
         result_lines = load_jsonl(result_path, warnings)
         if result_lines:
             rec.result = result_lines[-1]
+            # Prefer the TRUE (un-sanitized) provider/model stamped inside the
+            # result over the lossy dir-name parse (P2): SanitizeForPath maps
+            # any char outside [A-Za-z0-9._-] to '_', so two distinct model ids
+            # can collapse to one leaf fragment -- the stamped field is the
+            # authoritative source of what actually ran. Fall back to the
+            # dir-parsed value when the field is absent (a pre-P1 result file).
+            # provider is never legitimately empty (a run always has one), so a
+            # present+truthy check is right for it; model CAN be legitimately
+            # empty ("" => the codec default), which is meaningfully different
+            # from "unknown", so a present-only check (which lets an explicit
+            # "" override the dir-parsed value) is right for it.
+            if isinstance(rec.result, dict):
+                if rec.result.get("provider"):
+                    rec.provider = rec.result["provider"]
+                if "model" in rec.result:
+                    rec.model = rec.result["model"]
         else:
             rec.notes.append("missing .result.jsonl")
 
@@ -482,6 +500,78 @@ def scan_run_dir(run_dir, warnings):
 
         out.append(rec)
     return out
+
+
+def check_staleness(records, warnings):
+    """Cross-check each record's stamped scenarioContentHash /
+    scenarioCheckpointCount (written by AgentEvalRunner.cpp's
+    RunScenarioDriven -- see the P1 content-aware-resume-guard finding)
+    against the CURRENT evals/scenarios/<id>.json on disk, and against each
+    other within a scenario group, appending a warning wherever a cell looks
+    to have been graded under a since-changed scenario version. Non-fatal --
+    appends to `warnings`, never raises: the report still prints exactly as
+    before, just with more warnings when a cell is stale.
+
+    ADVISORY ONLY -- and blind to one class of edit. This function cannot
+    recompute the C++ FNV ScenarioContentHash from the on-disk scenario (the
+    canonicalization is not replicated in Python), so its on-disk cross-check is
+    only the raw checkpoint COUNT. An edit that changes a checkpoint's VALUE (or a
+    prompt/budget/scene) WITHOUT changing the count is invisible here if you run
+    the report against old result files without re-running the matrix. The
+    AUTHORITATIVE staleness protection is the C++ matrix resume guard, which
+    hashes the full content and RE-RUNS a changed cell; re-run the matrix and this
+    report then reflects the current oracle. This pass is a best-effort heads-up,
+    not that guarantee."""
+    by_scenario = defaultdict(list)
+    for r in records:
+        by_scenario[r.scenario_id].append(r)
+
+    for scenario_id, recs in by_scenario.items():
+        hashes = set()
+        for r in recs:
+            if r.result is None:
+                continue
+            h = r.result.get("scenarioContentHash")
+            if not h:
+                warnings.append(
+                    f"warning: unversioned result (pre-content-hash) -- may have "
+                    f"been graded under a different scenario version: {r.dir_path}"
+                )
+                continue
+            hashes.add(h)
+
+            # A cheaper, filesystem-anchored cross-check: the stamped raw
+            # checkpoint count vs the scenario file's CURRENT checkpoint count.
+            # A mismatch is a definite oracle change even if the hash alone
+            # can't say which direction.
+            stored_count = r.result.get("scenarioCheckpointCount")
+            # Key the file lookup on the AUTHORITATIVE scenarioId stamped in the
+            # result (the raw scenario id), not the dir-parsed (sanitized) group
+            # key, so a scenario id that SanitizeForPath would rewrite still
+            # resolves to its file. Falls back to the group key for old results.
+            file_id = r.result.get("scenarioId") or scenario_id
+            scenario_path = os.path.join("evals", "scenarios", f"{file_id}.json")
+            try:
+                with open(scenario_path, "r", encoding="utf-8") as f:
+                    current = json.load(f)
+                current_count = len(current.get("checkpoints", []))
+            except (OSError, ValueError):
+                continue  # scenario file not found / unreadable -- skip the count check
+            if isinstance(stored_count, (int, float)) and int(stored_count) != current_count:
+                warnings.append(
+                    f"warning: STALE result: {r.dir_path} was graded with "
+                    f"{int(stored_count)} checkpoints but evals/scenarios/{scenario_id}.json "
+                    f"now has {current_count} -- re-run to refresh"
+                )
+
+        # Two cells in the same group with different stamped hashes means the
+        # sweep straddled a scenario change -- some rows are stale regardless of
+        # whether the current on-disk file matches either.
+        if len(hashes) > 1:
+            warnings.append(
+                f"warning: mixed scenario versions in group {scenario_id} -- "
+                f"some cells are stale; re-run"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -742,6 +832,7 @@ def render_json_report(stats_list, warnings):
 def cmd_report(args):
     warnings = []
     records = scan_run_dir(args.runDir, warnings)
+    check_staleness(records, warnings)
     groups = build_groups(records)
 
     stats_list = [
@@ -1146,6 +1237,89 @@ def selftest():
             "pooled OVERALL rollup must differ from the naive mean-of-"
             "per-group-pass@1 when group sizes differ (test is degenerate)"
         )
+
+    # --- P1 report-side staleness surfacing (check_staleness) + P2 provider/
+    # model preference (scan_run_dir). See the content-aware-resume-guard and
+    # lossy-model-id findings. ---
+
+    # Anchor the STALE cross-check to a REAL committed scenario's actual
+    # checkpoint count (read from disk, so this test never rots if that
+    # scenario's checkpoints[] later change).
+    _param_edit_path = os.path.join("evals", "scenarios", "param_edit.json")
+    with open(_param_edit_path, "r", encoding="utf-8") as _f:
+        _param_edit_count = len(json.load(_f).get("checkpoints", []))
+
+    # (1) a stamped count that does NOT match the scenario file's real count ->
+    # a STALE warning naming the scenario.
+    _rec_stale = RunRecord()
+    _rec_stale.scenario_id = "param_edit"
+    _rec_stale.dir_path = "fake/param_edit__anthropic__r1"
+    _rec_stale.result = {"scenarioContentHash": "deadbeef",
+                         "scenarioCheckpointCount": _param_edit_count + 1}
+    _w = []
+    check_staleness([_rec_stale], _w)
+    if not any("STALE" in m and "param_edit" in m for m in _w):
+        raise AssertionError(f"check_staleness should flag a wrong checkpoint count as STALE; got {_w}")
+
+    # (2) a MATCHING count + a present hash -> no staleness / mixed-version noise.
+    _rec_ok = RunRecord()
+    _rec_ok.scenario_id = "param_edit"
+    _rec_ok.dir_path = "fake/param_edit__anthropic__r1"
+    _rec_ok.result = {"scenarioContentHash": "cafef00d",
+                      "scenarioCheckpointCount": _param_edit_count}
+    _w = []
+    check_staleness([_rec_ok], _w)
+    if any("STALE" in m or "mixed scenario versions" in m for m in _w):
+        raise AssertionError(f"a current, matching-count result must not warn STALE/mixed; got {_w}")
+
+    # (3) a result missing scenarioContentHash entirely -> an "unversioned" warning.
+    _rec_unver = RunRecord()
+    _rec_unver.scenario_id = "param_edit"
+    _rec_unver.dir_path = "fake/param_edit__anthropic__r1"
+    _rec_unver.result = {"terminalStatus": "final_text"}  # no hash stamped (pre-P1 result)
+    _w = []
+    check_staleness([_rec_unver], _w)
+    if not any("unversioned" in m for m in _w):
+        raise AssertionError(f"a result with no scenarioContentHash must warn 'unversioned'; got {_w}")
+
+    # (4) two records in one scenario group with DIFFERENT hashes -> a
+    # "mixed scenario versions" warning. Point them at a nonexistent scenario id
+    # so the per-file count cross-check is skipped and ONLY the intra-group hash
+    # divergence fires.
+    _rec_h1 = RunRecord()
+    _rec_h1.scenario_id = "no_such_scenario_xyz"
+    _rec_h1.dir_path = "fake/a__anthropic__r1"
+    _rec_h1.result = {"scenarioContentHash": "1111111111111111"}
+    _rec_h2 = RunRecord()
+    _rec_h2.scenario_id = "no_such_scenario_xyz"
+    _rec_h2.dir_path = "fake/a__anthropic__r2"
+    _rec_h2.result = {"scenarioContentHash": "2222222222222222"}
+    _w = []
+    check_staleness([_rec_h1, _rec_h2], _w)
+    if not any("mixed scenario versions" in m for m in _w):
+        raise AssertionError(f"two differing hashes in one group must warn 'mixed scenario versions'; got {_w}")
+
+    # (5) scan_run_dir prefers the TRUE stamped provider/model over the lossy
+    # dir-name parse (P2). Build a leaf with NO model segment (so the dir parse
+    # alone yields model=="") but stamp a real model inside result.jsonl.
+    _tmp = tempfile.mkdtemp(prefix="eval_report_selftest_")
+    try:
+        _leaf_dir = os.path.join(_tmp, "myScenario__anthropic__r1")
+        os.makedirs(_leaf_dir)
+        with open(os.path.join(_leaf_dir, "myScenario.result.jsonl"), "w", encoding="utf-8") as _f:
+            _f.write(json.dumps({"scenarioId": "myScenario", "provider": "anthropic",
+                                 "model": "claude-sonnet-5-true-name"}) + "\n")
+        _recs = scan_run_dir(_tmp, [])
+        if len(_recs) != 1:
+            raise AssertionError(f"scan_run_dir should find exactly 1 record; got {len(_recs)}")
+        if _recs[0].model != "claude-sonnet-5-true-name":
+            raise AssertionError(
+                "scan_run_dir must prefer the stamped model over the (model-less) "
+                f"dir-name parse; got {_recs[0].model!r}")
+        if _recs[0].provider != "anthropic":
+            raise AssertionError(f"scan_run_dir provider wrong; got {_recs[0].provider!r}")
+    finally:
+        shutil.rmtree(_tmp, ignore_errors=True)
 
     print("eval_report selftest: ALL PASS")
     return 0

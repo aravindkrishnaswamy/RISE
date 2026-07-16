@@ -527,13 +527,15 @@ namespace RISE
 		{
 			int runsExecuted   = 0;   //!< (scenario x provider-with-key x repeat) runs actually driven
 			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset
-			int runsAlreadyComplete = 0; //!< runs SKIPPED because their subdir already held a non-empty <scenarioId>.result.jsonl from a prior invocation into the same runDir -- the cross-invocation resume/idempotency guard (a subdir with NO result.jsonl, i.e. a crash mid-run, is instead wiped and re-run, NOT counted here)
+			int runsAlreadyComplete = 0; //!< runs SKIPPED because their subdir already held a non-empty <scenarioId>.result.jsonl from a prior invocation into the same runDir AND its stamped scenarioContentHash MATCHES the current scenario (still graded under the same oracle) -- the cross-invocation resume/idempotency guard.  A subdir with NO result.jsonl (a crash mid-run), OR one whose stamped hash is missing/different (a STALE cell graded under a since-changed scenario), is instead wiped and re-run, NOT counted here
 			int providersUsed  = 0;   //!< providers whose key resolved (non-empty)
 			int providersSkipped = 0; //!< providers skipped for a missing key
 
 			//! Non-empty iff the matrix REFUSED to run (a fatal config error
-			//! caught before any run executed) -- currently a duplicate
-			//! scenario `id` in the pre-loaded set, which would collide two
+			//! caught before any run executed) -- either a duplicate scenario
+			//! `id` in the pre-loaded set, or a provider/model LEAF COLLISION
+			//! (two distinct (provider, model) pairs that SanitizeForPath maps
+			//! to the same per-run subdir fragment).  Both would collide two
 			//! runs into the same per-run subdir (silent trajectory-append /
 			//! result-overwrite corruption).  When set, all counts are 0.
 			std::string errorMessage;
@@ -558,19 +560,25 @@ namespace RISE
 		//!
 		//! Cross-invocation resume (idempotent completion): before executing
 		//! a run, its target subdir is checked for an already-present,
-		//! NON-EMPTY <scenarioId>.result.jsonl.  If found, the run is
-		//! SKIPPED (counted in result.runsAlreadyComplete) rather than
-		//! re-executed -- re-running the SAME runconfig into an EXISTING
+		//! NON-EMPTY <scenarioId>.result.jsonl.  If found AND its stamped
+		//! scenarioContentHash MATCHES the current scenario's (still graded
+		//! under the same oracle -- checkpoints[], prompts, budgets, scene),
+		//! the run is SKIPPED (counted in result.runsAlreadyComplete) rather
+		//! than re-executed -- re-running the SAME runconfig into an EXISTING
 		//! runDir is therefore a no-op past the first invocation, and adding
 		//! a provider column later (e.g. exporting a new provider's api key
 		//! and re-running) executes ONLY the newly-added runs.  Without this,
 		//! a re-run would reopen each run's trajectory.jsonl in APPEND mode
 		//! (ChatTrajectory's file sink), concatenating two sessions into one
 		//! file, while truncate-overwriting result.jsonl -- silent
-		//! corruption.  A subdir that exists but holds NO (or an empty)
-		//! result.jsonl is treated as a crashed/interrupted run: its
-		//! contents are wiped before re-running so the trajectory sink's
-		//! append can't concatenate onto a partial file.
+		//! corruption.  A subdir whose result.jsonl is present but carries a
+		//! MISSING (old pre-content-hash result) or DIFFERENT stamped hash is
+		//! treated as STALE (the scenario changed since it was graded) and,
+		//! like a subdir that exists but holds NO (or an empty) result.jsonl
+		//! (a crashed/interrupted run), is wiped before re-running so the
+		//! trajectory sink's append can't concatenate onto a partial file and
+		//! the report never keeps publishing a score graded under an old
+		//! oracle.
 		AgentEvalMatrixResult RunEvalMatrix( const AgentEvalRunConfig& config,
 		                                     const std::vector<AgentEvalScenario>& scenarios,
 		                                     const AgentEvalMatrixOptions& options );

@@ -29,6 +29,7 @@
 
 #include <cctype>
 #include <cmath>     // std::isfinite -- numeric param_equals tolerance
+#include <cstdint>   // std::uint64_t -- ScenarioContentHash's FNV-1a accumulator
 #include <cstdio>
 #include <cstdlib>   // std::strtod -- numeric param_equals token parse
 #include <filesystem>
@@ -878,6 +879,70 @@ namespace RISE
 				return false;
 			}
 
+			//! Inverse of ParseReplayProviderName -- the canonical provider NAME
+			//! string for a ChatProvider enum value, as written into a
+			//! result.jsonl's "provider" field (see RunScenarioDriven's
+			//! result-summary write) and consumed by tools/eval_report.py, which
+			//! PREFERS this true, un-sanitized field over its lossy dir-name
+			//! parse (a SanitizeForPath leaf can collapse two distinct model ids
+			//! to the same fragment -- see the P2 collision finding).
+			std::string ChatProviderName( ChatProvider p )
+			{
+				switch( p ) {
+					case ChatProvider::Anthropic: return "anthropic";
+					case ChatProvider::Gemini:    return "gemini";
+					case ChatProvider::OpenAI:    return "openai";
+					case ChatProvider::XAI:       return "xai";
+					case ChatProvider::Local:     return "local";
+				}
+				return "";   // unreachable for a valid enum value; keeps -Wreturn-type quiet on all compilers
+			}
+
+			//! A deterministic content hash of the parts of a scenario that
+			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
+			//! budgets, the scene definition, and the checkpoints[].  Two
+			//! scenario definitions with the same hash produce the same run + the
+			//! same grading, so a cached matrix cell is safe to reuse; a
+			//! different hash means the oracle (or the run) changed and the cell
+			//! is STALE (the cross-invocation resume guard wipes + re-runs it).
+			//! Stamped into each result.jsonl (see RunScenarioDriven) so a later
+			//! RunEvalMatrix invocation into the SAME runDir -- and the Python
+			//! reporter -- can tell "graded under the current oracle" from "stale
+			//! cell, re-run me".  (A scene given by PATH hashes the path string,
+			//! not the file's bytes -- the committed eval scenarios use inline
+			//! scenes, which ARE hashed in full.)
+			std::string ScenarioContentHash( const AgentEvalScenario& s )
+			{
+				std::string canon = "v1\n";
+				canon += "autonomy=" + s.autonomy + "\n";
+				// Prompts serialized as a JSON array (like checkpoints below) so the
+				// canonicalization is INJECTIVE: JSON escaping keeps a prompt that
+				// itself contains a delimiter or newline from straddling the field
+				// boundary or colliding ["a\x1fb"] with ["a","b"].
+				JsonValue promptsArr = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < s.prompts.size(); ++i )
+					promptsArr.push_back( JsonValue::MakeString( s.prompts[i] ) );
+				canon += "prompts=" + JsonSerialize( promptsArr ) + "\n";
+				canon += "budgets=" + std::to_string( s.budgets.maxToolCalls ) + "|" +
+				         std::to_string( s.budgets.maxLlmCalls ) + "|" +
+				         std::to_string( s.budgets.maxWallMs ) + "\n";
+				canon += "scene=";
+				canon += s.scenePath.empty() ? ( "inline:" + s.sceneInline ) : ( "path:" + s.scenePath );
+				canon += "\n";
+				canon += "checkpoints=" + JsonSerialize( s.checkpoints );
+
+				// FNV-1a 64-bit over the canonical byte string.
+				std::uint64_t hash = 14695981039346656037ull;
+				const std::uint64_t prime = 1099511628211ull;
+				for( char ch : canon ) {
+					hash ^= static_cast<unsigned char>( ch );
+					hash *= prime;
+				}
+				char buf[17];
+				std::snprintf( buf, sizeof( buf ), "%016llx", static_cast<unsigned long long>( hash ) );
+				return std::string( buf );
+			}
+
 			//! One round's outcome from a body source (replay OR live
 			//! transport).  `proceed` false STOPS the whole scenario with
 			//! `stopStatus` (and `stopError` for a transport_error).  On
@@ -1263,6 +1328,23 @@ namespace RISE
 				if( !handle.result.errorMessage.empty() )
 					r.set( "errorMessage", JsonValue::MakeString( handle.result.errorMessage ) );
 
+				// Content-aware-resume + report-side staleness stamp (P1): the
+				// scenario's oracle/drive hash + its raw checkpoint count let a
+				// later RunEvalMatrix into the SAME runDir tell "still valid,
+				// skip" from "oracle changed, STALE -- wipe + re-run", and let
+				// tools/eval_report.py flag results graded under a since-changed
+				// scenario version.  The TRUE (un-sanitized) provider/model are
+				// stamped too (P2): the reporter prefers these over its lossy
+				// dir-name parse, where two distinct model ids can sanitize to
+				// one leaf.  On the replay path (modelId=="") these carry the
+				// replay-fixture's provider + an empty model -- harmless; only
+				// matrix cells (RunScenarioLive) carry the values P2 needs.
+				r.set( "scenarioContentHash", JsonValue::MakeString( ScenarioContentHash( scenario ) ) );
+				r.set( "scenarioCheckpointCount",
+					JsonValue::MakeNumber( static_cast<double>( scenario.checkpoints.isArray() ? scenario.checkpoints.size() : 0 ) ) );
+				r.set( "provider", JsonValue::MakeString( ChatProviderName( provider ) ) );
+				r.set( "model", JsonValue::MakeString( modelId ) );
+
 				const std::string resultPath = JoinPath( runDir, scenario.id + ".result.jsonl" );
 				{
 					std::error_code ec;
@@ -1580,6 +1662,46 @@ namespace RISE
 				}
 			}
 
+			// REFUSE LOUDLY on a provider/model leaf collision.  A cell's
+			// subdir leaf embeds SanitizeForPath(provider)[__SanitizeForPath(model)]
+			// -- any char outside [A-Za-z0-9._-] maps to '_'.  Two DIFFERENT
+			// (provider, model) pairs can therefore sanitize to the SAME leaf
+			// fragment (e.g. models "a:b" and "a b" both -> "a_b"), silently
+			// colliding into one cell + one report row -- the exact
+			// trajectory-append / result-overwrite corruption the duplicate-id
+			// guard above prevents, but on the provider axis.  Catch it here,
+			// before any run executes (needs only config.providers, no key
+			// resolution); all counts stay 0, same style as the id guard.  Two
+			// entries with the IDENTICAL original (provider, model) are just
+			// redundant config, NOT a collision -- only flag when the ORIGINAL
+			// pairs differ yet the SANITIZED fragment matches.
+			{
+				auto leafFragment = []( const AgentEvalProviderConfig& p ) {
+					std::string frag = SanitizeForPath( p.provider );
+					if( !p.model.empty() ) frag += "__" + SanitizeForPath( p.model );
+					return frag;
+				};
+				for( std::size_t a = 0; a < config.providers.size(); ++a ) {
+					for( std::size_t b = a + 1; b < config.providers.size(); ++b ) {
+						const AgentEvalProviderConfig& pa = config.providers[a];
+						const AgentEvalProviderConfig& pb = config.providers[b];
+						const bool sameOriginal = ( pa.provider == pb.provider && pa.model == pb.model );
+						if( !sameOriginal && leafFragment( pa ) == leafFragment( pb ) ) {
+							result.errorMessage =
+								"RunEvalMatrix: provider/model leaf collision -- (provider '" +
+								pa.provider + "', model '" + pa.model + "') and (provider '" +
+								pb.provider + "', model '" + pb.model + "') both sanitize to the "
+								"same per-run subdir fragment '" + leafFragment( pa ) +
+								"' (refusing to run: two distinct providers/models would collide "
+								"into one cell + one report row, silently appending trajectories "
+								"and overwriting results)";
+							logLine( result.errorMessage );
+							return result;
+						}
+					}
+				}
+			}
+
 			const int reps = config.repeats > 0 ? config.repeats : 0;
 
 			for( std::size_t pj = 0; pj < config.providers.size(); ++pj ) {
@@ -1643,15 +1765,27 @@ namespace RISE
 						// Cross-invocation idempotent-resume guard.  A run
 						// whose subdir already carries a NON-EMPTY
 						// <scenarioId>.result.jsonl completed in a PRIOR
-						// invocation into this same runDir -- SKIP it rather
-						// than re-executing, which would reopen
-						// trajectory.jsonl in APPEND mode (concatenating two
-						// sessions into one file) while truncate-overwriting
-						// result.jsonl.  A subdir that exists but holds no
-						// (or an empty) result.jsonl is a crashed/interrupted
-						// run: wipe its contents first so the trajectory
-						// sink's append can't concatenate onto a partial
-						// file, then fall through and re-run it normally.
+						// invocation into this same runDir.  But "completed"
+						// is not enough to reuse it: the cell was graded under
+						// whatever oracle (checkpoints[]) / drive spec the
+						// scenario had THEN, and if the scenario changed since,
+						// the cached score is STALE.  So we stamp each result
+						// with a ScenarioContentHash and compare:
+						//   * result present, non-empty, parses, and its
+						//     scenarioContentHash EQUALS the current scenario's
+						//     hash -> genuinely still valid: SKIP (rather than
+						//     re-executing, which would reopen trajectory.jsonl
+						//     in APPEND mode -- concatenating two sessions into
+						//     one file -- while truncate-overwriting result.jsonl).
+						//   * result present + non-empty but the stamped hash is
+						//     MISSING (an old pre-content-hash result) or DIFFERS
+						//     (the scenario's oracle/prompts/budgets/scene
+						//     changed) -> STALE: wipe the subdir and fall through
+						//     to re-run, exactly like a crashed run below.
+						//   * result missing/empty -> crashed/interrupted run:
+						//     wipe its contents first so the trajectory sink's
+						//     append can't concatenate onto a partial file, then
+						//     fall through and re-run it normally.
 						const std::string resultPath =
 							( std::filesystem::path( runDir ) / ( scenario.id + ".result.jsonl" ) ).string();
 						{
@@ -1659,15 +1793,38 @@ namespace RISE
 							const bool resultExists = std::filesystem::exists( resultPath, ec ) && !ec;
 							const std::uintmax_t resultSize =
 								resultExists ? std::filesystem::file_size( resultPath, ec ) : 0;
+							bool completeAndCurrent = false;
 							if( resultExists && !ec && resultSize > 0 ) {
+								// Read the one-line summary and compare its
+								// stamped hash against the CURRENT scenario's.
+								std::ifstream rf( resultPath.c_str(), std::ios::binary );
+								std::string firstLine;
+								std::getline( rf, firstLine );
+								JsonValue parsed;
+								std::string perr;
+								if( JsonParse( firstLine, parsed, perr ) && parsed.isObject() ) {
+									const JsonValue* stamped = parsed.find( "scenarioContentHash" );
+									if( stamped && stamped->isString() &&
+									    stamped->asString() == ScenarioContentHash( scenario ) ) {
+										completeAndCurrent = true;
+									}
+								}
+							}
+							if( completeAndCurrent ) {
 								++result.runsAlreadyComplete;
 								logLine( "RunEvalMatrix: SKIP " + leaf +
 									" -- already completed -- skipping (delete the subdir to re-run)" );
 								continue;
 							}
+							if( resultExists && !ec && resultSize > 0 ) {
+								// Present but stale (hash missing/different): the
+								// scenario changed since this cell was graded.
+								logLine( "RunEvalMatrix: STALE " + leaf +
+									" -- scenario changed since it was recorded (hash mismatch) -- re-running" );
+							}
 							ec.clear();
 							if( std::filesystem::exists( runDir, ec ) && !ec ) {
-								std::filesystem::remove_all( runDir, ec );   // wipe a crashed/partial run's leftovers
+								std::filesystem::remove_all( runDir, ec );   // wipe a stale OR crashed/partial run's leftovers
 							}
 						}
 
