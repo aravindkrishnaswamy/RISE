@@ -22,6 +22,7 @@
 #include "AgentSession.h"
 #include "AgentRpc.h"
 #include "AgentDiagnostic.h"
+#include "Base64.h"   // image-reconstruction Wave 1: Base64Encode for reference-image attachments
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 #include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
 #include "../Interfaces/IJobPriv.h"                // propose-mode mock-Owner: RISE_CreateJobPriv + IJobPriv::release/LoadAsciiSceneViaCst
@@ -114,6 +115,23 @@ namespace RISE
 				std::filesystem::path p( dir );
 				p /= leaf;
 				return p.string();
+			}
+
+			//! Lower-cased file extension (including the leading '.'), or ""
+			//! when `path` has no extension -- the DOT past the last path
+			//! separator, so a directory component containing '.' (e.g.
+			//! "evals/refs.d/foo") never misparses as an extension.  Used by
+			//! RunScenarioDriven's reference-image pre-flight to pick a
+			//! ChatAttachment mimeType from a prompt's images[] path.
+			std::string FileExtensionLower( const std::string& path )
+			{
+				const std::size_t slash = path.find_last_of( "/\\" );
+				const std::size_t dot = path.find_last_of( '.' );
+				if( dot == std::string::npos || ( slash != std::string::npos && dot < slash ) )
+					return std::string();
+				std::string ext = path.substr( dot );
+				for( char& c : ext ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+				return ext;
 			}
 
 			//----------------------------------------------------------
@@ -1043,11 +1061,55 @@ namespace RISE
 			{
 				const JsonValue& prompts = root.get( "prompts" );
 				for( std::size_t i = 0; i < prompts.size(); ++i ) {
-					if( !prompts.at( i ).isString() ) {
-						err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) + "] must be a string";
+					const JsonValue& p = prompts.at( i );
+					AgentEvalPrompt prompt;
+					if( p.isString() ) {
+						// The pre-Wave-1 shape: a bare string, unchanged.
+						prompt.text = p.asString();
+					} else if( p.isObject() ) {
+						// Image-reconstruction Wave 1: {"text"?, "images"?}.
+						if( p.has( "text" ) ) {
+							if( !p.get( "text" ).isString() ) {
+								err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+									"].text must be a string";
+								return false;
+							}
+							prompt.text = p.get( "text" ).asString();
+						}
+						if( p.has( "images" ) ) {
+							const JsonValue& images = p.get( "images" );
+							if( !images.isArray() || images.size() == 0 ) {
+								err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+									"].images must be a non-empty array of repo-relative path strings";
+								return false;
+							}
+							for( std::size_t j = 0; j < images.size(); ++j ) {
+								if( !images.at( j ).isString() || images.at( j ).asString().empty() ) {
+									err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+										"].images[" + std::to_string( j ) + "] must be a non-empty string";
+									return false;
+								}
+								const std::string imgPath = images.at( j ).asString();
+								if( imgPath.find( ".." ) != std::string::npos ) {
+									err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+										"].images[" + std::to_string( j ) + "] must not contain \"..\" (got '" +
+										imgPath + "')";
+									return false;
+								}
+								prompt.imagePaths.push_back( imgPath );
+							}
+						}
+						if( prompt.text.empty() && prompt.imagePaths.empty() ) {
+							err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+								"] object must carry a non-empty \"text\", a non-empty \"images\", or both";
+							return false;
+						}
+					} else {
+						err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+							"] must be a string or an object {text?, images?}";
 						return false;
 					}
-					out.prompts.push_back( prompts.at( i ).asString() );
+					out.prompts.push_back( prompt );
 				}
 			}
 
@@ -1306,9 +1368,36 @@ namespace RISE
 				// canonicalization is INJECTIVE: JSON escaping keeps a prompt that
 				// itself contains a delimiter or newline from straddling the field
 				// boundary or colliding ["a\x1fb"] with ["a","b"].
+				//
+				// Image-reconstruction Wave 1: a TEXT-ONLY prompt (imagePaths
+				// empty) still serializes as a bare JSON string -- BYTE-IDENTICAL
+				// to the pre-Wave-1 canonicalization, so no existing scenario's
+				// hash (and therefore no cached matrix cell) changes.  An
+				// image-bearing prompt serializes as an object instead, folding
+				// each referenced image's BYTES (via FnvHexOfFile, "unreadable"
+				// on an unreadable path -- deterministic either way) into the
+				// hash, so editing a reference image in place invalidates cached
+				// cells exactly like the path-backed scene-bytes rule below.
 				JsonValue promptsArr = JsonValue::MakeArray();
-				for( std::size_t i = 0; i < s.prompts.size(); ++i )
-					promptsArr.push_back( JsonValue::MakeString( s.prompts[i] ) );
+				for( std::size_t i = 0; i < s.prompts.size(); ++i ) {
+					const AgentEvalPrompt& prompt = s.prompts[i];
+					if( prompt.imagePaths.empty() ) {
+						promptsArr.push_back( JsonValue::MakeString( prompt.text ) );
+					} else {
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "text", JsonValue::MakeString( prompt.text ) );
+						JsonValue imgs = JsonValue::MakeArray();
+						for( std::size_t j = 0; j < prompt.imagePaths.size(); ++j ) {
+							JsonValue io = JsonValue::MakeObject();
+							io.set( "path", JsonValue::MakeString( prompt.imagePaths[j] ) );
+							const std::string h = FnvHexOfFile( prompt.imagePaths[j] );
+							io.set( "fnv", JsonValue::MakeString( h.empty() ? std::string( "unreadable" ) : h ) );
+							imgs.push_back( io );
+						}
+						o.set( "images", imgs );
+						promptsArr.push_back( o );
+					}
+				}
 				canon += "prompts=" + JsonSerialize( promptsArr ) + "\n";
 				canon += "budgets=" + std::to_string( s.budgets.maxToolCalls ) + "|" +
 				         std::to_string( s.budgets.maxLlmCalls ) + "|" +
@@ -1482,6 +1571,47 @@ namespace RISE
 					return handle;
 				}
 
+				// Image-reconstruction Wave 1: pre-flight-load EVERY prompt's
+				// reference images UP FRONT, right after the scene loads and
+				// BEFORE any LLM round runs -- an unreadable path or an
+				// unsupported image type must never burn a partial run (some
+				// prompts' turns already driven, tool calls already dispatched)
+				// before the run discovers the broken path.  One entry per
+				// scenario.prompts[i], parallel-indexed; empty for a text-only
+				// prompt.
+				std::vector<std::vector<ChatAttachment>> promptAttachments( scenario.prompts.size() );
+				for( std::size_t pi = 0; pi < scenario.prompts.size(); ++pi ) {
+					const AgentEvalPrompt& prompt = scenario.prompts[pi];
+					for( std::size_t ii = 0; ii < prompt.imagePaths.size(); ++ii ) {
+						const std::string& imgPath = prompt.imagePaths[ii];
+						std::string mimeType;
+						const std::string ext = FileExtensionLower( imgPath );
+						if( ext == ".png" ) mimeType = "image/png";
+						else if( ext == ".jpg" || ext == ".jpeg" ) mimeType = "image/jpeg";
+						else {
+							handle.result.terminalStatus = "load_error";
+							handle.result.errorMessage =
+								"scenario '" + scenario.id + "' prompts[" + std::to_string( pi ) +
+								"].images[" + std::to_string( ii ) + "] '" + imgPath +
+								"': unsupported reference-image type";
+							return handle;
+						}
+						std::string bytes, readErr;
+						if( !ReadWholeFile( imgPath, bytes, readErr ) ) {
+							handle.result.terminalStatus = "load_error";
+							handle.result.errorMessage =
+								"scenario '" + scenario.id + "' prompts[" + std::to_string( pi ) +
+								"].images[" + std::to_string( ii ) + "]: could not read reference image '" +
+								imgPath + "'";
+							return handle;
+						}
+						ChatAttachment att;
+						att.mimeType = mimeType;
+						att.base64Data = Base64Encode( std::vector<unsigned char>( bytes.begin(), bytes.end() ) );
+						promptAttachments[pi].push_back( att );
+					}
+				}
+
 				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
 				handle.result.headVersionStart = headVersionStart;
 				handle.result.headVersionFinal = headVersionStart;
@@ -1521,7 +1651,13 @@ namespace RISE
 				//    dispatcher -> AddToolResult -> repeat, exactly like
 				//    tests/AgentChatLoopTest.cpp drives it by hand.
 				for( std::size_t pi = 0; pi < scenario.prompts.size() && terminalStatus.empty(); ++pi ) {
-					loop.AddUserMessage( scenario.prompts[pi] );
+					// Image-reconstruction Wave 1: the attachments overload only
+					// when this turn actually carries reference images --
+					// byte-identical behavior for every text-only scenario.
+					if( promptAttachments[pi].empty() )
+						loop.AddUserMessage( scenario.prompts[pi].text );
+					else
+						loop.AddUserMessage( scenario.prompts[pi].text, promptAttachments[pi] );
 
 					bool turnDone = false;
 					while( !turnDone ) {
@@ -1767,6 +1903,31 @@ namespace RISE
 				if( !scenario.scenePath.empty() ) {
 					const std::string h = FnvHexOfFile( scenario.scenePath );
 					if( !h.empty() ) r.set( "sceneFileFnv", JsonValue::MakeString( h ) );
+				}
+
+				// Image-reconstruction Wave 1: report-side staleness parity for
+				// reference images, mirroring scenarioFileFnv/sceneFileFnv above.
+				// "refImageFnvs" maps each DISTINCT referenced image path to the
+				// FNV-1a 64 of its current bytes (recomputable by
+				// tools/eval_report.py's fnv1a64_hex) -- omitted entirely (not an
+				// empty object) when no prompt carries images, so absence still
+				// means "no check" rather than "zero images verified".  By this
+				// point every path was already proven readable by the pre-flight
+				// above, so FnvHexOfFile is expected non-empty here; the same
+				// omit-on-empty guard as scenarioFileFnv/sceneFileFnv is kept
+				// anyway (defense-in-depth against a file removed mid-run).
+				{
+					JsonValue refImageFnvs = JsonValue::MakeObject();
+					for( std::size_t pi = 0; pi < scenario.prompts.size(); ++pi ) {
+						for( std::size_t ii = 0; ii < scenario.prompts[pi].imagePaths.size(); ++ii ) {
+							const std::string& imgPath = scenario.prompts[pi].imagePaths[ii];
+							if( refImageFnvs.has( imgPath ) ) continue;   // dedupe a path reused across prompts
+							const std::string h = FnvHexOfFile( imgPath );
+							if( !h.empty() ) refImageFnvs.set( imgPath, JsonValue::MakeString( h ) );
+						}
+					}
+					if( !refImageFnvs.members().empty() )
+						r.set( "refImageFnvs", refImageFnvs );
 				}
 
 				const std::string resultPath = JoinPath( runDir, scenario.id + ".result.jsonl" );

@@ -1080,7 +1080,7 @@ static void TestTrajectoryNewAssertions()
 	{
 		AgentEvalScenario sPass = MakeScenario( "tcaut_pass", kScene, "First, just read the scene.",
 			"commit", kToolCallAfterUserTurnPassFixture, dir, "[]" );
-		sPass.prompts.push_back( "Now recolor the sphere to red." );
+		sPass.prompts.push_back( std::string( "Now recolor the sphere to red." ) );
 		AgentEvalRunOptions opts; opts.runDir = dir;
 		AgentEvalRunHandle hPass = RunScenario( sPass, opts );
 		Check( hPass.result.toolCalls == 2, "tcaut_pass: read_document + propose_patch dispatched" );
@@ -1090,7 +1090,7 @@ static void TestTrajectoryNewAssertions()
 
 		AgentEvalScenario sFail = MakeScenario( "tcaut_fail", kScene, "Recolor the sphere to red.",
 			"commit", kToolCallAfterUserTurnFailFixture, dir, "[]" );
-		sFail.prompts.push_back( "Now just re-read the scene." );
+		sFail.prompts.push_back( std::string( "Now just re-read the scene." ) );
 		AgentEvalRunHandle hFail = RunScenario( sFail, opts );
 		Check( hFail.result.toolCalls == 2, "tcaut_fail: propose_patch + read_document dispatched" );
 		checkOne( hFail, sFail,
@@ -1228,7 +1228,7 @@ static void TestUnknownKindAndMalformedShape()
 	bad.id = "load_error_probe";
 	bad.title = "t";
 	bad.sceneInline = "not a valid scene at all";
-	bad.prompts.push_back( "hi" );
+	bad.prompts.push_back( std::string( "hi" ) );
 	bad.replayFixturePath = dir + "/load_error_probe.fixture.jsonl";
 	WriteFile( bad.replayFixturePath, kErrorFixture );
 	AgentEvalRunOptions opts2; opts2.runDir = dir;
@@ -2088,7 +2088,7 @@ static void TestToolCallAfterUserTurnArrayForm()
 	// turn 2 propose_patch (userCount==2 at that tool).
 	AgentEvalScenario s = MakeScenario( "tcaut_arr", kScene, "First, just read the scene.",
 		"commit", kToolCallAfterUserTurnPassFixture, dir, "[]" );
-	s.prompts.push_back( "Now recolor the sphere to red." );
+	s.prompts.push_back( std::string( "Now recolor the sphere to red." ) );
 	AgentEvalRunOptions opts; opts.runDir = dir;
 	AgentEvalRunHandle h = RunScenario( s, opts );
 	Check( h.result.toolCalls == 2, "tcaut_arr: read_document + propose_patch dispatched" );

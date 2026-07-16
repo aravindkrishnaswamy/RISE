@@ -189,7 +189,7 @@ A scenario is one `evals/scenarios/<id>.json`. Required top-level fields
 | `title` | non-empty string |
 | `scene` | object with **exactly one** of `path` (loaded as-is) or `inline` (scene-language text, written to a throwaway temp file under `<runDir>/tmp/`, deleted immediately after load) |
 | `autonomy` | optional, default `"commit"`; one of `"commit"` / `"propose"` / `"read"` |
-| `prompts` | non-empty array of strings — sequential user turns |
+| `prompts` | non-empty array of sequential user turns — each entry is either a bare string (text only) or an object `{"text"?, "images"?}` (see below) |
 | `budgets` | optional `{maxToolCalls?, maxLlmCalls?, maxWallMs?}`, each an honest stop: the call that would exceed the budget is never dispatched/sent |
 | `replay.fixture` | path to an `evals/fixtures/*.fixture.jsonl` (required for the replay path unless the caller supplies `replaySourceOverride`) |
 | `checkpoints` | optional array of checkpoint objects (see below) |
@@ -219,6 +219,36 @@ Example — `evals/scenarios/material_add_and_bind.json` (elided scene text):
   ]
 }
 ```
+
+### Reference-image prompts (image-reconstruction Wave 1)
+
+A `prompts[i]` entry may carry reference images instead of (or alongside)
+plain text, for scenarios that ask the agent to reconstruct or match a scene
+from a photo:
+
+```jsonc
+{ "text": "Match this reference photo.", "images": [ "evals/refs/example.png" ] }
+```
+
+- `text` is optional when `images` is non-empty (an attachment-only turn);
+  at least one of `text` / `images` is required.
+- `images` is a non-empty array of repo-relative (or absolute) paths,
+  resolved against the CWD exactly like `scene.path`. `..` and empty path
+  strings are rejected at load time.
+- Only `.png`, `.jpg`, and `.jpeg` are supported; any other extension is a
+  loud `load_error` (`unsupported reference-image type`) before any LLM
+  round runs.
+- Every referenced file is pre-flight-loaded UP FRONT, right after the
+  scene loads and before any prompt's turn is driven — an unreadable path
+  in prompt 3 is caught before prompt 1 ever runs, so a run never burns
+  partial progress on a scenario that was going to fail to load anyway.
+- The image's bytes are folded into `scenarioContentHash` (the matrix
+  resume/staleness guard) and into a `refImageFnvs` map stamped on
+  `<id>.result.jsonl` — editing a reference image in place invalidates a
+  cached matrix cell and marks past results STALE (`tools/eval_report.py`
+  `check_staleness`), exactly like editing the scene file in place.
+- Text-only scenarios are completely unaffected: a bare-string `prompts[i]`
+  entry (the pre-Wave-1 shape) still parses and hashes byte-identically.
 
 ### The raw fixture format
 

@@ -188,6 +188,29 @@ namespace RISE
 			std::string value;                //!< the new value as scene-language text
 		};
 
+		//! One SEQUENTIAL USER TURN (evals/scenarios/*.json `prompts[i]`).
+		//! Either the bare-string shape (`text` only, `imagePaths` empty --
+		//! the pre-Wave-1 shape, unchanged) or the object shape
+		//! `{"text"?, "images"?}` (image-reconstruction Wave 1): `text` may
+		//! be empty when `imagePaths` is non-empty (an attachment-only
+		//! turn -- AgentChatLoop::AddUserMessage's documented NO-OP rule
+		//! only fires when BOTH are empty, so LoadEvalScenario requires at
+		//! least one of the two).  `imagePaths` are REPO-RELATIVE (or
+		//! absolute) paths, resolved against the CWD exactly like
+		//! `scene.path` -- RunScenarioDriven pre-flight-loads each file's
+		//! bytes before any LLM round runs (see AgentEvalRunner.cpp).  The
+		//! single-argument (implicit) constructor from a bare `std::string`
+		//! keeps every pre-Wave-1 `prompts.push_back("...")` call site
+		//! compiling unchanged.
+		struct AgentEvalPrompt
+		{
+			std::string text;
+			std::vector<std::string> imagePaths;   //!< reference-image paths for this turn ("" = text-only, the pre-Wave-1 shape)
+
+			AgentEvalPrompt() = default;
+			AgentEvalPrompt( std::string t ) : text( std::move( t ) ) {}
+		};
+
 		//! One parsed evals/scenarios/*.json.  See the file header for the
 		//! schema; `checkpoints` is carried OPAQUELY (E3's job to
 		//! interpret).
@@ -217,10 +240,12 @@ namespace RISE
 			std::string autonomy = "commit";
 
 			//! Sequential user turns (evals/scenarios/*.json `prompts`).
-			//! At least one, each a non-empty-typed (but possibly blank
-			//! text is still a valid JSON string -- AgentChatLoop's own
-			//! whitespace-only no-op rule applies at run time) string.
-			std::vector<std::string> prompts;
+			//! At least one.  Each entry is EITHER a bare JSON string (the
+			//! pre-Wave-1 shape -- possibly blank text is still a valid
+			//! JSON string; AgentChatLoop's own whitespace-only no-op rule
+			//! applies at run time) OR an image-bearing object
+			//! `{"text"?, "images"?}` (see AgentEvalPrompt).
+			std::vector<AgentEvalPrompt> prompts;
 
 			AgentEvalBudgets budgets;
 
@@ -255,9 +280,14 @@ namespace RISE
 		//! any malformed shape (unreadable path, non-object root, a
 		//! missing/wrong-typed required field, scene naming zero or both
 		//! of path/inline, an unrecognized autonomy string, an empty
-		//! prompts array or a non-string prompt element, a non-object
-		//! budgets/replay field, a non-array checkpoints field, or a
-		//! non-object checkpoints element).
+		//! prompts array, a non-object budgets/replay field, a non-array
+		//! checkpoints field, or a non-object checkpoints element).  Each
+		//! prompts[i] (image-reconstruction Wave 1) is EITHER a JSON
+		//! string (unchanged) OR an object {"text"?, "images"?} --
+		//! rejected LOUDLY when it is neither string nor object, when
+		//! both text and images are absent/empty, when images is present
+		//! but not a non-empty array, or when any images[j] is not a
+		//! non-empty string or contains "..".
 		bool LoadEvalScenario( const std::string& path, AgentEvalScenario& out, std::string& err );
 
 		//----------------------------------------------------------------

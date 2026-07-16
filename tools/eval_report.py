@@ -654,7 +654,15 @@ def check_staleness(records, warnings):
     protection remains the C++ matrix resume guard, which hashes the full
     semantic content and RE-RUNS a changed cell; re-run the matrix and this
     report then reflects the current oracle. This pass is a best-effort
-    heads-up, not that guarantee."""
+    heads-up, not that guarantee.
+
+    Image-reconstruction Wave 1 extends the same raw-byte pattern to
+    scenario prompts[] carrying reference images: "refImageFnvs" (present
+    only when at least one prompt carried images) maps each referenced image
+    PATH to the FNV-1a 64 of its bytes at grading time; a mismatch against
+    the CURRENT file on disk means the reference image was edited in place
+    since this cell was graded, and warns/tags "stale" exactly like
+    scenarioFileFnv/sceneFileFnv above."""
     by_scenario = defaultdict(list)
     for r in records:
         by_scenario[r.scenario_id].append(r)
@@ -752,6 +760,33 @@ def check_staleness(records, warnings):
                                 f"re-run to refresh"
                             )
                             _mark_stale(r, "stale")
+
+            # Image-reconstruction Wave 1: "refImageFnvs" maps each reference
+            # image PATH a scenario's prompts[] carried at grading time to the
+            # FNV-1a 64 of its bytes then (stamped by RunScenarioDriven,
+            # AgentEvalRunner.cpp) -- mirrors scenarioFileFnv/sceneFileFnv
+            # above, one entry per distinct path instead of a single hash.
+            # Omitted entirely (not an empty object) when no prompt carried
+            # images, so absence means "no check", never "stale". A path that
+            # is now unreadable (e.g. moved/deleted) is skipped SILENTLY, like
+            # the scene/scenario file checks above -- only an actual bytes
+            # mismatch on a still-readable file warns.
+            ref_image_fnvs = r.result.get("refImageFnvs")
+            if isinstance(ref_image_fnvs, dict):
+                for img_path, stamped_fnv in ref_image_fnvs.items():
+                    if not stamped_fnv:
+                        continue
+                    try:
+                        with open(img_path, "rb") as f:
+                            current_img_bytes = f.read()
+                    except OSError:
+                        continue  # unreadable -- skip silently
+                    if fnv1a64_hex(current_img_bytes) != stamped_fnv:
+                        warnings.append(
+                            f"warning: STALE result: {r.dir_path} -- reference image {img_path} "
+                            f"changed since this cell was graded -- re-run to refresh"
+                        )
+                        _mark_stale(r, "stale")
 
         # Two cells in the same group with different stamped hashes means the
         # sweep straddled a scenario change -- some rows are stale regardless of
@@ -1664,6 +1699,58 @@ def selftest():
         if _rec_fnv_mismatch.stale_marker != "stale":
             raise AssertionError(
                 f"a mismatching scenarioFileFnv must be tagged stale; got {_rec_fnv_mismatch.stale_marker!r}")
+
+        # (7b) Image-reconstruction Wave 1: "refImageFnvs" staleness cross-check.
+        # Same two branches as (7) above, but keyed on a reference-image path
+        # instead of the scenario/scene file.  Still inside the _tmp_fnv chdir
+        # so the path resolves cwd-relative exactly like the C++ runner does.
+        _img_path = os.path.join("evals", "refs", "ref_test.png")
+        os.makedirs(os.path.dirname(_img_path), exist_ok=True)
+        _img_bytes = b"not a real png, just some bytes to hash"
+        with open(_img_path, "wb") as _f:
+            _f.write(_img_bytes)
+        _correct_img_fnv = fnv1a64_hex(_img_bytes)
+
+        _rec_img_match = RunRecord()
+        _rec_img_match.scenario_id = "fnv_test_scenario"
+        _rec_img_match.dir_path = "fake/fnv_test_scenario__anthropic__r1"
+        _rec_img_match.result = {"scenarioId": "fnv_test_scenario", "scenarioContentHash": "somehash",
+                                 "refImageFnvs": {_img_path: _correct_img_fnv}}
+        _w = []
+        check_staleness([_rec_img_match], _w)
+        if any("STALE" in m for m in _w):
+            raise AssertionError(f"a matching refImageFnvs entry must not warn STALE; got {_w}")
+        if _rec_img_match.stale_marker != "":
+            raise AssertionError(
+                f"a matching refImageFnvs entry must not be stale-tagged; got {_rec_img_match.stale_marker!r}")
+
+        _rec_img_mismatch = RunRecord()
+        _rec_img_mismatch.scenario_id = "fnv_test_scenario"
+        _rec_img_mismatch.dir_path = "fake/fnv_test_scenario__anthropic__r1"
+        _rec_img_mismatch.result = {"scenarioId": "fnv_test_scenario", "scenarioContentHash": "somehash",
+                                    "refImageFnvs": {_img_path: "0" * 16}}
+        _w = []
+        check_staleness([_rec_img_mismatch], _w)
+        if not any("STALE" in m and "reference image" in m for m in _w):
+            raise AssertionError(
+                f"a mismatching refImageFnvs entry must warn STALE (reference image changed); got {_w}")
+        if _rec_img_mismatch.stale_marker != "stale":
+            raise AssertionError(
+                f"a mismatching refImageFnvs entry must be tagged stale; got {_rec_img_mismatch.stale_marker!r}")
+
+        # A record with NO refImageFnvs key (the common, no-images case) must
+        # never warn/tag on account of images -- absence means "no check".
+        _rec_no_images = RunRecord()
+        _rec_no_images.scenario_id = "fnv_test_scenario"
+        _rec_no_images.dir_path = "fake/fnv_test_scenario__anthropic__r1"
+        _rec_no_images.result = {"scenarioId": "fnv_test_scenario", "scenarioContentHash": "somehash"}
+        _w = []
+        check_staleness([_rec_no_images], _w)
+        if any("reference image" in m for m in _w):
+            raise AssertionError(f"a record with no refImageFnvs must never warn about reference images; got {_w}")
+        if _rec_no_images.stale_marker != "":
+            raise AssertionError(
+                f"a record with no refImageFnvs must not be stale-tagged; got {_rec_no_images.stale_marker!r}")
     finally:
         os.chdir(_orig_cwd)
         shutil.rmtree(_tmp_fnv, ignore_errors=True)

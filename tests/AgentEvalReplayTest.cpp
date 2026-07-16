@@ -164,8 +164,9 @@ static void TestLoadSeedScenarios()
 		Check( !s.title.empty(), "param_edit title" );
 		Check( s.scenePath.empty() && !s.sceneInline.empty(), "param_edit carries scene.inline (not path)" );
 		Check( s.autonomy == "commit", "param_edit autonomy default is commit" );
-		Check( s.prompts.size() == 1 && s.prompts[0] == "Recolor the sphere albedo to red",
-		       "param_edit single prompt captured verbatim" );
+		Check( s.prompts.size() == 1 && s.prompts[0].text == "Recolor the sphere albedo to red" &&
+		       s.prompts[0].imagePaths.empty(),
+		       "param_edit single prompt captured verbatim (text-only, no images)" );
 		Check( s.budgets.maxToolCalls == 10 && s.budgets.maxLlmCalls == 12,
 		       "param_edit budgets parsed" );
 		Check( s.replayFixturePath == "evals/fixtures/param_edit.fixture.jsonl",
@@ -333,6 +334,70 @@ static void TestLoadScenarioGates()
 			Check( s.interventions[0].target == "pnt_albedo" && s.interventions[0].param == "color" &&
 				s.interventions[0].value == "0.9 0.9 0.1", "iv_ok: target/param/value parsed" );
 		}
+	}
+
+	// Image-reconstruction Wave 1: prompts[] object-form loud-failure gates
+	// + the two accepted object shapes (text+images, images-only).
+	tryLoad( "prompt_images_empty_array.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+		"\"prompts\":[{\"text\":\"look\",\"images\":[]}]}",
+		"prompt object: images present but empty array" );
+	tryLoad( "prompt_images_empty_path.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+		"\"prompts\":[{\"text\":\"look\",\"images\":[\"\"]}]}",
+		"prompt object: images[] contains an empty path string" );
+	tryLoad( "prompt_images_traversal.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+		"\"prompts\":[{\"text\":\"look\",\"images\":[\"../evil.png\"]}]}",
+		"prompt object: images[] path contains \"..\"" );
+	tryLoad( "prompt_neither_string_nor_object.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[42]}",
+		"prompt array element is neither a string nor an object" );
+	tryLoad( "prompt_object_neither_text_nor_images.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[{}]}",
+		"prompt object carries neither \"text\" nor \"images\"" );
+	tryLoad( "prompt_object_blank_text_no_images.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[{\"text\":\"\"}]}",
+		"prompt object: empty \"text\" and no \"images\" is equivalent to neither" );
+
+	// Positive: the object form with BOTH text and images loads and is
+	// parsed into AgentEvalPrompt as expected.  The referenced paths need
+	// not exist on disk -- LoadEvalScenario validates shape only; existence
+	// is RunScenarioDriven's pre-flight job (see TestPromptImagesEndToEnd
+	// in AgentEvalLiveTransportTest.cpp).
+	{
+		const std::string path = dir + "/prompt_text_and_images.json";
+		Check( WriteFile( path,
+			"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+			"\"prompts\":[{\"text\":\"Match this reference photo.\","
+			"\"images\":[\"evals/refs/a.png\",\"evals/refs/b.jpg\"]}]}" ),
+			"prompt_text_and_images: wrote the scenario file" );
+		AgentEvalScenario s;
+		std::string err;
+		Check( LoadEvalScenario( path, s, err ),
+			"prompt_text_and_images: text+images object form loads (" + err + ")" );
+		Check( s.prompts.size() == 1 && s.prompts[0].text == "Match this reference photo." &&
+			s.prompts[0].imagePaths.size() == 2 &&
+			s.prompts[0].imagePaths[0] == "evals/refs/a.png" &&
+			s.prompts[0].imagePaths[1] == "evals/refs/b.jpg",
+			"prompt_text_and_images: text + both image paths parsed" );
+	}
+
+	// Positive: the object form with images ONLY (no "text" key) -- an
+	// attachment-only turn.
+	{
+		const std::string path = dir + "/prompt_images_only.json";
+		Check( WriteFile( path,
+			"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+			"\"prompts\":[{\"images\":[\"evals/refs/a.png\"]}]}" ),
+			"prompt_images_only: wrote the scenario file" );
+		AgentEvalScenario s;
+		std::string err;
+		Check( LoadEvalScenario( path, s, err ),
+			"prompt_images_only: images-only object form loads (" + err + ")" );
+		Check( s.prompts.size() == 1 && s.prompts[0].text.empty() &&
+			s.prompts[0].imagePaths.size() == 1 && s.prompts[0].imagePaths[0] == "evals/refs/a.png",
+			"prompt_images_only: blank text + one image path parsed" );
 	}
 }
 

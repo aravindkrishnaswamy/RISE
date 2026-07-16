@@ -35,6 +35,7 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
+#include "../src/Library/Agent/Base64.h"   // image-reconstruction Wave 1: Base64Encode/Decode for the reference-image tests
 
 #include <algorithm>
 #include <cstdio>
@@ -1650,6 +1651,180 @@ static void TestRunEvalMatrixProviderModelCollision()
 	Check( mock.seenRequests.empty(), "the transport was NEVER called on a refused matrix" );
 }
 
+//----------------------------------------------------------------------
+// Image-reconstruction Wave 1, T13: a scenario prompt carrying a
+// reference image reaches the model as a REAL ChatAttachment --
+// end-to-end through RunScenarioLive over the mock transport (the same
+// seam T2/TestLiveRunViaMock drives), proving the pre-flight load +
+// base64 encode + AddUserMessage attachments overload + trajectory
+// recording all wire together.
+//----------------------------------------------------------------------
+static void TestPromptImagesEndToEnd()
+{
+	std::printf( "T13: a prompt carrying a reference image reaches the wire as a real attachment...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+	       "T13: param_edit loads (" + err + ")" );
+
+	// Attach a real, small, COMMITTED PNG (textures/cel.png, 319 bytes) to
+	// the scenario's single prompt -- read-only, no scratch-file synthesis
+	// needed for this end-to-end check (TestPromptImagesMatrixResume below
+	// needs a MUTABLE file, so it decodes its own scratch PNG instead).
+	const std::string pngPath = "textures/cel.png";
+	std::string pngBytes;
+	{
+		std::ifstream f( pngPath.c_str(), std::ios::binary );
+		Check( static_cast<bool>( f ), "T13: textures/cel.png is readable from the repo-root cwd" );
+		std::ostringstream ss; ss << f.rdbuf();
+		pngBytes = ss.str();
+	}
+	Check( !pngBytes.empty(), "T13: textures/cel.png is non-empty" );
+	Check( scenario.prompts.size() == 1, "T13: param_edit carries exactly 1 prompt to attach to" );
+	scenario.prompts[0].imagePaths.push_back( pngPath );
+
+	// A single final-text turn is enough to prove the attachment reached
+	// the wire -- no tool call is needed for this check.
+	MockTransport mock;
+	mock.responses.push_back( { 200, kBodyFinal, "", 5 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t13_prompt_images_e2e" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T13: run reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 1, "T13: exactly 1 llm round (no tool calls)" );
+	Check( mock.seenRequests.size() == 1, "T13: exactly 1 POST reached the mock transport" );
+
+	// The BUILT request body carries the base64 payload -- proving the
+	// pre-flight-loaded bytes actually reached the wire, not just the
+	// attachment COUNT.
+	const std::vector<unsigned char> rawBytes( pngBytes.begin(), pngBytes.end() );
+	const std::string expectedB64 = Base64Encode( rawBytes );
+	Check( !mock.seenRequests.empty() &&
+	       mock.seenRequests[0].body.find( expectedB64 ) != std::string::npos,
+	       "T13: the request body sent to the transport contains the reference image's base64 payload" );
+
+	// The trajectory's `user` record reflects the attachment.
+	// ChatTrajectory's TrajectoryUserRecord.attachments is a COUNT, never
+	// the bytes -- ChatAttachment's doc comment forbids ever logging
+	// base64Data -- so this is the honest field to assert on.  A
+	// sub-assert on the recorded llm round's requestParamsJson containing
+	// the base64 was considered and SKIPPED: AgentChatLoop::
+	// ExtractRequestParams (AgentChatLoop.cpp) deliberately strips the
+	// "messages"/"contents" array -- where an image block/part would live
+	// -- before a request is ever handed to the trajectory recorder, so no
+	// image byte reaches ANY recorded/logged field by design (verified by
+	// reading ExtractRequestParams; this assert would always vacuously
+	// fail-to-find, proving nothing).
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	bool sawUserAttachment = false;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "user" ) continue;
+		if( recs[i].get( "attachments" ).asNumber( -1.0 ) == 1.0 ) sawUserAttachment = true;
+	}
+	Check( sawUserAttachment, "T13: the trajectory's user record carries attachments==1" );
+}
+
+// A minimal, well-formed 1x1 transparent PNG (67 bytes decoded) -- the
+// widely-used smallest-valid-PNG literal.  Used ONLY by
+// TestPromptImagesMatrixResume, which needs a file it can MUTATE between
+// matrix invocations (textures/cel.png above is a real committed asset
+// and must never be touched by a test).
+static const char* kMinimalPngBase64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+//----------------------------------------------------------------------
+// Image-reconstruction Wave 1, T14: RunEvalMatrix resume is content-aware
+// for a referenced image's BYTES, mirroring T11(7)'s path-backed-scene-
+// bytes case above -- editing the image file in place (same path,
+// different bytes) must invalidate the cached cell and force a re-run.
+//----------------------------------------------------------------------
+static void TestPromptImagesMatrixResume()
+{
+	std::printf( "T14: RunEvalMatrix resume is content-aware for a referenced image's BYTES...\n" );
+
+	AgentEvalScenario base;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", base, err ),
+	       "T14: param_edit loads (for its scene text)" );
+
+	const std::string dir = ScratchRunDir( "t14_prompt_images_matrix_resume" );
+	const std::string pngPath = dir + "_img/ref.png";
+
+	std::vector<unsigned char> pngBytes;
+	Check( Base64Decode( kMinimalPngBase64, pngBytes ), "T14: the embedded minimal PNG base64 decodes" );
+	Check( WriteFile( pngPath, std::string( pngBytes.begin(), pngBytes.end() ) ),
+	       "T14: wrote the initial reference image" );
+
+	AgentEvalScenario scenario;
+	scenario.id = "t14_img_resume";
+	scenario.title = "t14_img_resume";
+	scenario.sceneInline = base.sceneInline;
+	scenario.autonomy = "commit";
+	AgentEvalPrompt prompt;
+	prompt.text = "Match this reference photo.";
+	prompt.imagePaths.push_back( pngPath );
+	scenario.prompts.push_back( prompt );
+
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = dir;
+
+	const std::string kFakeKey = "sk-ant-T14-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalMatrixOptions mo;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	// (1) First invocation: executes.
+	{
+		MockTransport mock1;
+		mock1.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock1;
+		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr1.runsExecuted == 1 && mr1.runsAlreadyComplete == 0, "T14: first invocation executes" );
+		Check( !mock1.seenRequests.empty(), "T14: first invocation calls the transport" );
+	}
+
+	// (2) Second invocation, unchanged image bytes: skipped as complete.
+	{
+		MockTransport mock2;   // must NEVER be called
+		mo.transport = &mock2;
+		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr2.runsExecuted == 0 && mr2.runsAlreadyComplete == 1,
+		       "T14: second invocation (unchanged image) is skipped as already-complete" );
+		Check( mock2.seenRequests.empty(), "T14: second invocation never calls the transport" );
+	}
+
+	// (3) MUTATE the referenced image's BYTES in place (same path) -- the
+	// cell must be treated as stale and re-executed.
+	{
+		std::vector<unsigned char> mutated = pngBytes;
+		mutated.push_back( 0x00 );   // appended byte -- content differs, path unchanged
+		Check( WriteFile( pngPath, std::string( mutated.begin(), mutated.end() ) ),
+		       "T14: mutated the reference image's bytes in place" );
+
+		MockTransport mock3;
+		mock3.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock3;
+		AgentEvalMatrixResult mr3 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr3.runsExecuted == 1 && mr3.runsAlreadyComplete == 0,
+		       "T14: third invocation (mutated image BYTES, same path) is RE-EXECUTED" );
+		Check( !mock3.seenRequests.empty(), "T14: third invocation calls the transport (genuine re-run)" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalLiveTransportTest (Eval-harness slice E4: live headless runner) ===\n" );
@@ -1676,6 +1851,8 @@ int main()
 	TestRunEvalMatrixResumeRerunsPartial();
 	TestRunEvalMatrixResumeContentAware();
 	TestRunEvalMatrixProviderModelCollision();
+	TestPromptImagesEndToEnd();
+	TestPromptImagesMatrixResume();
 
 	std::printf( "=== AgentEvalLiveTransportTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
