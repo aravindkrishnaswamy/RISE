@@ -460,9 +460,188 @@ unaffected by the retier.
 exercises checkpoints 1-3.** It builds the anchor (f) flat-cutout hero
 above (verbatim GT stage/lights/env, only `herogeom`'s part lines
 replaced) and asserts `checkpoints[1]`, `[2]`, `[3]` (view2/view3/view4)
-each FAIL with `"RMSE"` in the detail — the load-bearing, re-rendered-in-CI
-proof that the relaxed 0.04 caps reject this defect class, rather than
-that claim resting solely on this document's prose. `checkpoints[0]`
-(view1) is deliberately NOT asserted either way, since anchor (f)'s view1
-number (0.05302) is itself above the strict 0.015 cap and whether a
-different flattening tune could clear it is not the property under test.
+each FAIL with `"RMSE"` in the detail — proof, re-rendered in CI rather
+than resting solely on this document's prose, that the relaxed 0.04 caps
+reject a maximally-flat billboard. `checkpoints[0]` (view1) is
+deliberately NOT asserted either way, since anchor (f)'s view1 number
+(0.05302) is itself above the strict 0.015 cap and whether a different
+flattening tune could clear it is not the property under test — **which
+is exactly why anchor (f)/control (k) alone do not establish that the
+withheld views are NECESSARY to catch a view1-passing wrong-volume
+reconstruction.** §11 below runs that necessity check directly: it
+searches for a wrong-volume construction that *does* pass view1's strict
+cap, to see whether the withheld-view caps then catch it. Outcome (see
+§11 for the full data): a measured **partial-necessity witness** was
+found — anchor (g), a bas-relief that passes view1, view2, AND view4 and
+is rejected ONLY by view3's withheld gate — pinned in CI by control
+(k2); full three-view necessity was honestly refuted. Read §11 before
+citing either control's evidentiary weight. (Control (k)'s fixture was
+also brought in line with the required `read_skill → … → render →
+read_image` workflow alongside this section so its trajectory checkpoint
+passes and the render compares are its only failures — previously the
+fixture skipped those tool calls entirely, so the trajectory checkpoint
+failed alongside the compares for an unrelated reason.)
+
+## 11. Necessity check for the withheld-view relaxed caps (2026-07-17)
+
+**Question:** does the billboard control (k) actually establish that the
+withheld views (2-4) are *necessary* to catch a wrong-volume
+reconstruction — i.e. does there exist a wrong-volume construction that
+PASSES view1's own strict 0.015 cap on its own (so view1 alone would wave
+it through), and that the relaxed 0.04 withheld-view caps then catch? The
+anchor (f) flat-cutout used by control (k) does NOT answer this: at
+0.05302 it already FAILS view1's own strict cap, so it never exercises the
+scenario the withheld-view defense is supposed to be needed for — a
+front-matching wrong-volume solution that gets past view1 and is caught
+ONLY by the views the model was never shown.
+
+**Method:** build the strongest view1-passing wrong-volume candidate
+findable — a bas-relief. Unlike anchor (f) (which SQUASHES all 4 GT parts
+along the camera axis to near-zero thickness), this construction keeps
+`herogeom`'s 4 GT parts byte-for-byte UNCHANGED and APPENDS a 5th part: a
+`box intersect` half-space cut that removes the geometry on the far side
+of a plane perpendicular to view1's camera direction, while leaving the
+near (camera-facing) side fully intact. This should, in principle, be a
+*milder* defect than anchor (f) — the visible-from-view1 surface keeps its
+exact GT curvature and shading rather than being uniformly flattened — so
+if anything it is a more dangerous "nearly passes" case, not a weaker one.
+
+The box's rotation uses the SAME exact camera-direction solve as anchor
+(f)'s closed-form terms (`ey = atan2(dx,dz) = 39.14°`, `ex = asin(-dy) =
+-13.63°` on the normalized view1 camera-direction vector `(0.6129, 0.2357,
+0.7542)`), verified directly against `SDFGeometry::RecomputePartDerived`'s
+column formula (`src/Library/Geometry/SDFGeometry.cpp`): with `ez=0`, the
+local-Z column reduces to `(sin(ey)*cos(ex), -sin(ex), cos(ey)*cos(ex))`,
+which equals the camera-direction vector at this exact `(ex,ey)` pair —
+i.e. the box's local +Z axis is verified to face the camera, per the P1
+instruction. The box is centered at an approximate hero centroid `(0,
+0.94, 0)` (the object's y-extent is `[0, 1.88]`; x/z are ~0 ignoring the
+notch), offset along the camera-direction axis by a tunable `t`, with a
+half-extent `c=3` along that axis (so the box's FRONT face sits ~5.8 units
+beyond the object, never clipping the visible side; the box's BACK face —
+the actual cut plane — sits at `t-c` along the camera axis from the hero
+centroid) and large half-extents `a=b=3` in the other two local axes (so
+the cut never clips the silhouette's width/height, only its depth). `k=0`
+(hard cut, no smoothing), matching the P1 instruction. The single free
+parameter iterated below is `cutDepth = t-c`, the signed position of the
+cut plane along the camera axis relative to the hero centroid (more
+negative = cuts less / keeps more of the back; `cutDepth=0` cuts through
+the centroid, i.e. removes roughly the back half).
+
+All renders at grading spp (64), CLI pipeline (box filter, oidn off),
+matching every other anchor in this document. Driver script (throwaway,
+not committed): `bas_relief.py` in the session scratch dir, reusing the
+same `rmse.py` pure-python PNG-RMSE decoder anchor (f) used.
+
+**Iteration history (view1 RMSE vs. cutDepth):**
+
+| cutDepth | box part line (`part box intersect …`) | view1 RMSE | vs. 0.015 cap |
+|---|---|---|---|
+| 0.00 (~half the object removed) | `pos (1.8387,1.6471,2.2626)` | 0.03344 | FAIL |
+| -0.05 | `pos (1.8081,1.6353,2.2249)` | 0.02494 | FAIL |
+| -0.10 | `pos (1.7774,1.6235,2.1872)` | 0.01903 | FAIL |
+| -0.15 | `pos (1.7468,1.6117,2.1495)` | 0.01486 | PASS (razor-thin, 0.00014 margin — unsafe to rely on) |
+| -0.18 | `pos (1.7284,1.6047,2.1268)` | 0.01264 | PASS |
+| -0.19 | `pos (1.7222,1.6023,2.1193)` | 0.01198 | PASS |
+| -0.20 | `pos (1.7161,1.6000,2.1118)` | 0.01132 | PASS (24.5% safe margin — chosen as anchor (g)) |
+| -0.25 | `pos (1.6855,1.5882,2.0740)` | 0.00853 | PASS (cut barely engaged) |
+| -0.30 | `pos (1.6548,1.5764,2.0363)` | 0.00638 | PASS (cut barely engaged) |
+| -0.35 | `pos (1.6242,1.5646,1.9986)` | 0.00513 | PASS (cut barely engaged) |
+| -0.40 | `pos (1.5935,1.5528,1.9609)` | 0.00454 | PASS (≈ anchor (a) noise floor — essentially no cut) |
+
+(All rows: `euler (-13.63, 39.14, 0), scale (1,1,1), a=b=c=3, round=0, k=0`.)
+
+11 depths were swept — well past the "~4-5 honest attempts" bar — bisecting
+toward the view1 pass/fail boundary. The transition is sharp: at
+`cutDepth<=-0.35` the box doesn't yet reach the object's own back extent
+along the camera axis (no real cut, view1 sits at the noise floor); by
+`cutDepth=-0.1` view1 is already over the cap. The usable "passes view1
+with real margin" band is narrow: `cutDepth` in roughly `[-0.25, -0.18]`.
+
+**All four views at the three candidate depths nearest the boundary:**
+
+| cutDepth | view1 | view2 | view3 | view4 | full 3-view necessity? |
+|---|---|---|---|---|---|
+| -0.15 (unsafe margin) | 0.01486 | 0.03490 | 0.08124 | 0.02009 | NO — view2, view4 < 0.04 (view3 alone catches it) |
+| -0.19 | 0.01198 | 0.02707 | 0.07181 | 0.01581 | NO — view2, view4 < 0.04 (view3 alone catches it) |
+| **-0.20 (anchor (g), chosen)** | **0.01132** | **0.02520** | **0.06937** | **0.01479** | **NO — view2, view4 < 0.04 (view3 alone catches it)** |
+
+At every depth tested that safely clears view1's strict cap, only view3
+clears the 0.04 relaxed cap; view2 and view4 stay comfortably under it
+(view2 at 63-87% of the 0.04 cap, view4 at 37-50% of it). Pushing the cut
+deeper to try to raise view2/view4 past 0.04 also raises view1 past 0.015
+at a comparable rate (compare the -0.15 vs -0.20 rows: Δview1 = +0.0035,
+Δview2 = +0.0097, Δview4 = +0.0053 — view2/view4 grow faster than view1,
+but not fast enough: linearly extrapolating view2 to 0.04 lands at
+`cutDepth≈-0.12`, where view1 is already ≈0.017-0.019, well past its own
+cap). The bottleneck matches the P1 instruction's predicted obstacle: even
+a cut that leaves view1's directly-visible surface untouched still thins
+the object's silhouette as seen from the up-front-left key light, which
+narrows the cast shadow on the ground — and the ground/shadow region is
+visible in view1 too, so view1's RMSE tracks the cut almost as tightly as
+the withheld views do. This is a real geometric coupling (the key light's
+position, not view1's camera, sets the shadow silhouette), not a search
+failure — a wider search of the *same* half-space-cut construction is not
+expected to find a gap.
+
+**Outcome — a two-part conclusion.** No box-intersect cut depth
+simultaneously clears view1 (<=0.015) and fails all three withheld views
+(>0.04) — full three-view necessity is refuted for this construction
+family. But the search DID produce something stronger than a null result:
+anchor (g) — `cutDepth=-0.20`, part line
+`part box intersect 0 1.7161 1.6000 2.1118 -13.63 39.14 0 1 1 1 3 3 3 0`
+appended to the GT's 4 unchanged herogeom parts — measures **view1
+0.01132 (PASS, 24.5% headroom under the 0.015 strict cap), view2 0.02520
+(PASS, 37% under the 0.04 relaxed cap), view4 0.01479 (PASS, 63% under
+it), view3 0.06937 (FAIL, 73% above it)**. Every other gate in the
+scenario also passes for this variant (it is a genuine full-workflow
+reconstruction whose only defect is missing hidden-side volume). That is
+a **measured partial-necessity witness**: WITHOUT the withheld-view tier,
+this wrong-volume reconstruction would pass the ENTIRE eval — and view3's
+withheld gate alone rejects it.
+
+**Revised justification for the two-tier design (supersedes the
+implication in §10 that control (k) alone proves necessity):**
+
+1. **view3's withheld gate has a measured NECESSITY WITNESS.** Anchor (g)
+   passes view1's strict cap, view2's and view4's relaxed caps, and every
+   non-render checkpoint; view3 is the sole gate that rejects it. This is
+   pinned as a re-rendered-in-CI adversarial control — **control (k2)** in
+   `TestAdversarialOracleControls` (`tests/AgentEvalCheckTest.cpp`), which
+   asserts checkpoints 0/1/3 (view1/view2/view4 compares) PASS, checkpoint
+   2 (view3) FAILS with an RMSE detail, and the trajectory / objectmap /
+   document / diagnostics checkpoints all PASS. The PASS margins (24.5% /
+   37% / 63%) sit well above the ~0.002 run-to-run noise scale of these
+   RMSE measurements, so the control is not margin-flaky by construction.
+   It is not a coincidence that view3 is the catcher: it is the most
+   back-facing pose (back-3/4), i.e. the one that looks most directly at
+   the removed volume.
+2. **view2's and view4's withheld gates remain DEFENSE-IN-DEPTH, not
+   proven-necessary.** The depth sweep above is the evidence: at every
+   cut depth that clears view1, view2/view4 stay under their 0.04 caps
+   (view2 at 63-87% of cap, view4 at 37-50%), and pushing the cut deep
+   enough to change that breaks view1 first. No view1-passing wrong-volume
+   construction was found that view2 or view4 rejects. They demonstrably
+   reject the maximally-flat billboard class (anchor (f)/control (k)) —
+   but view3 also rejects that class on its own, so (f) does not make
+   view2/view4 load-bearing either.
+
+The full-necessity refutation stands, with its scope stated honestly:
+this is empirically bounded evidence from one construction family
+(half-space cuts aligned to the camera axis), not a formal proof of
+non-existence. A cleverer construction — e.g. one that decouples the
+key-light shadow silhouette from the camera-axis depth cut (a cut plane
+aligned to the shadow-casting silhouette instead of the viewing
+direction), or one that exploits the object's asymmetric notch
+specifically, or one aimed at hiding from view3 in particular (which
+would convert view2/view4 from defense-in-depth to load-bearing if it
+simultaneously evaded view3) — might still shift this picture, and is
+flagged for a future session rather than assumed away.
+
+Control (k) is left as-is (the anchor (f) maximally-flat billboard, not
+replaced by anchor (g)'s bas-relief) — the two controls are complements,
+not substitutes: (k) proves the withheld tier fires on gross flatness
+(all three withheld gates), (k2) proves the tier is load-bearing (a
+variant every other gate passes is caught only there). Control (k)'s
+P1-era comment block and P2 fixture workflow gap are both fixed alongside
+this section (see §10's closing note and `tests/AgentEvalCheckTest.cpp`).

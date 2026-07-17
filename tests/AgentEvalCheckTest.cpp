@@ -3303,61 +3303,100 @@ static void TestAdversarialOracleControls()
 	// mushroom silhouette but has near-zero real depth. This is the measured
 	// anchor (f) in CALIBRATION.md Sec 3/10: at 64 spp, view1 RMSE 0.053, view2
 	// 0.087, view3 0.131, view4 0.073 -- all three withheld views land well above
-	// the 0.04 relaxed cap (view1's own strict 0.015 cap is not asserted here;
-	// only the withheld-view rejection is the claim under test). This is the
-	// load-bearing control the P1 review demanded: it proves the relaxed 0.04
-	// caps on checkpoints 1-3 actually FIRE against a billboard/flat-cutout
-	// class of defect, re-rendered in CI rather than merely asserted in prose.
+	// the 0.04 relaxed cap. This control demonstrates that the relaxed 0.04
+	// caps on checkpoints 1-3 DO fire against a maximally-flat billboard, re-
+	// rendered in CI rather than merely asserted in prose. Per CALIBRATION.md
+	// Sec 11, a follow-up necessity investigation (2026-07-17) found no
+	// box-intersect-cut construction that clears view1 (<=0.015) AND fails
+	// all THREE withheld views (>0.04) simultaneously -- but its best attempt
+	// (anchor (g): the -0.20 bas-relief) PASSES view1, view2, AND view4 while
+	// failing ONLY view3, which makes anchor (g) a measured PARTIAL-NECESSITY
+	// WITNESS for the withheld tier: without the withheld gates that
+	// wrong-volume solution would pass the whole eval, and view3's gate alone
+	// rejects it. Control (k2) below pins that witness in CI; this control
+	// (k) remains the defense-in-depth complement (the caps reject the
+	// maximally-flat class outright) -- see CALIBRATION.md Sec 11 for the
+	// full iteration history and the two-part conclusion. view1's own strict
+	// 0.015 cap is not asserted here; only the withheld-view rejection is the
+	// claim under test. The fixture below follows the full required workflow
+	// (read_skill -> ... -> render -> read_image, matching the committed
+	// image_reconstruct_single fixture) so the trajectory checkpoint PASSES
+	// and the compares are the ONLY failures -- an isolated "only geometry is
+	// wrong" probe, not a probe that also happens to skip required tool calls.
 	{
 		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_flat_cutout" );
 		AgentEvalScenario s; std::string err;
 		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
 			"image_reconstruct_single/flat-cutout control: committed scenario loads (" + err + ")" );
 
+		// Tool calls are BATCHED multiple-per-message (mirroring
+		// evals/fixtures/image_reconstruct_single.fixture.jsonl's grouping),
+		// not one-per-message -- AgentEvalRunner enforces a 20-tool-round
+		// iteration cap per turn, and one-per-message for this many chunks
+		// (18 inserts/patches + render + read_image = 20 rounds) trips that
+		// cap and turns the run into a `provider_error` before it ever
+		// reaches the render/read_image calls, defeating the P2 fix below.
 		std::string fixture;
-		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the modeling-from-image-captures skill before touching the scene.",
+			{ { "read_skill", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "name", JsonValue::MakeString( "modeling-from-image-captures" ) );
+				return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Checking the starting scaffold.",
 			{ { "read_document", EmptyInput() } }, "tool_use" ) );
-		int msgIdx = 2;
-		auto insertMsg = [&]( const std::string& text, const std::string& chunkText ) {
-			fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ), text,
-				{ { "insert_chunk", InsertChunkInput( chunkText ) } }, "tool_use" ) );
-		};
-		insertMsg( "Teal albedo painter.", "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" );
-		insertMsg( "Ground albedo painter.", "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" );
-		insertMsg( "Backdrop albedo painter.", "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" );
-		insertMsg( "Key light exitance painter -- correct warm colour (only the hero shape is wrong here).",
-			"uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 0.82 0.58\n}" );
-		// pnt_env is NOT inserted -- the scaffold already declares it (wired into
-		// the rasterizer's radiance_map; the rasterizer chunk is unnamed and
-		// singleton, so it cannot be re-targeted after load). Recolour the
-		// scaffold's placeholder instead, matching the other controls' approach.
-		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ),
-			"Recolouring the scaffold's placeholder environment-tint painter.",
-			{ { "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } }, "tool_use" ) );
-		insertMsg( "Hero material.", "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" );
-		insertMsg( "Ground material.", "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" );
-		insertMsg( "Backdrop material.", "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" );
-		insertMsg( "Key luminaire material -- same scale 42.0 as GT.",
-			"lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" );
-		insertMsg( "Ground geometry.",
-			"clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" );
-		insertMsg( "Backdrop geometry.",
-			"clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" );
-		insertMsg( "Key light geometry.",
-			"clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" );
-		insertMsg( "Hero SDF geometry -- FLAT-CUTOUT variant: same 4 parts, rotated (ex=-20, ey=39.14) so each "
-			"part's local Z axis points at view1's camera and squashed to scale.z=0.15 on that axis.",
-			"sdf_geometry\n{\n\tname herogeom\n"
-			"\tpart capsule union 0 0 0.75 0 -20 39.14 0 1 1 0.15 0.30 0.45 0 0\n"
-			"\tpart sphere smin 0.15 0 1.50 0 -20 39.14 0 1 0.62 0.15 0.62 0 0 0\n"
-			"\tpart torus smin 0.12 0 1.20 0 -20 39.14 0 1 1 0.15 0.36 0.12 0 0\n"
-			"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 -20 39.14 0 1 1 0.15 0.22 0.17 0.17 0.04\n}" );
-		insertMsg( "Ground object.", "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" );
-		insertMsg( "Backdrop object.", "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" );
-		insertMsg( "Key light object.", "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" );
-		insertMsg( "Hero object.", "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" );
-		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
-		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx ),
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3",
+			"Adding the four albedo/exitance painters (hero teal, ground, backdrop, warm key -- only the "
+			"hero shape is wrong here), and recolouring the scaffold's placeholder pnt_env painter to the "
+			"observed dim blue-grey environment tint.",
+			{	{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 0.82 0.58\n}" ) },
+				// pnt_env is NOT inserted -- the scaffold already declares it (wired
+				// into the rasterizer's radiance_map; the rasterizer chunk is
+				// unnamed and singleton, so it cannot be re-targeted after load).
+				// Recolour the scaffold's placeholder instead.
+				{ "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4",
+			"Adding the lambertian materials for the hero/ground/backdrop, plus the key light's luminaire material.",
+			{	{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
+			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
+			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6",
+			"The hero SDF -- FLAT-CUTOUT variant: same 4 primitives (capsule stem, sphere cap, torus collar, "
+			"roundbox notch), each rotated (ex=-20, ey=39.14 degrees) so its local Z axis aligns with view1's "
+			"camera direction and squashed to scale.z=0.15 on that axis.",
+			{ { "insert_chunk", InsertChunkInput(
+				"sdf_geometry\n{\n\tname herogeom\n"
+				"\tpart capsule union 0 0 0.75 0 -20 39.14 0 1 1 0.15 0.30 0.45 0 0\n"
+				"\tpart sphere smin 0.15 0 1.50 0 -20 39.14 0 1 0.62 0.15 0.62 0 0 0\n"
+				"\tpart torus smin 0.12 0 1.20 0 -20 39.14 0 1 1 0.15 0.36 0.12 0 0\n"
+				"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 -20 39.14 0 1 1 0.15 0.22 0.17 0.17 0.04\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_7",
+			"Placing the ground, backdrop, key-light, and hero objects.",
+			{	{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Rendering to check the composition.",
+			{ { "render", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Looking at the render.",
+			{ { "read_image", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11",
 			"Built the scene; hero is a flat cutout facing view1.", {}, "end_turn" ) );
 
 		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
@@ -3387,6 +3426,182 @@ static void TestAdversarialOracleControls()
 					"image_reconstruct_single/flat-cutout control: checkpoints[" + std::to_string( i ) +
 					"] detail names RMSE (detail: " + r.checkpoints[i].detail + ")" );
 			}
+		}
+		// P2 isolation assertions: with the full required workflow now present
+		// (read_skill -> ... -> render -> read_image -> end_turn), this control
+		// is an isolated "only geometry is wrong" probe -- every non-render
+		// checkpoint must PASS, so the render compares above are the ONLY
+		// failures. checkpoints[4] (objectmap expectGeometryKind) and [5]
+		// (document chunk_count) stay green because herogeom is still a single
+		// sdf_geometry chunk (only its part lines changed, per the class
+		// comment on expectGeometryKind: a bas-relief-class hero would pass the
+		// same way, since it too is sdf_geometry -- this control just uses the
+		// squash-billboard construction instead, see CALIBRATION.md Sec 11).
+		if( r.checkpoints.size() > 7 ) {
+			Check( r.checkpoints[4].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[4] (objectmap expectGeometryKind) still PASSES -- herogeom is still sdf_geometry (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[5].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[5] (document sdf chunk_count) still PASSES (detail: " +
+				r.checkpoints[5].detail + ")" );
+			Check( r.checkpoints[6].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[6] (diagnostics) still PASSES (detail: " +
+				r.checkpoints[6].detail + ")" );
+			Check( r.checkpoints[7].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[7] (trajectory) PASSES now that the fixture follows the full required workflow (detail: " +
+				r.checkpoints[7].detail + ")" );
+		}
+	}
+
+	// (k2) image_reconstruct_single: the PARTIAL-NECESSITY WITNESS for the
+	// withheld-view tier (CALIBRATION.md Sec 11 anchor (g), 2026-07-17). The
+	// hero keeps the GT's 4 SDF parts byte-for-byte UNCHANGED and appends a
+	// 5th part: a `box intersect` half-space cut whose local +Z axis exactly
+	// faces view1's camera (ex=-13.63, ey=39.14 -- the closed-form solve, NOT
+	// control (k)'s searched ex=-20), positioned so the cut plane sits 0.20
+	// units behind the hero centroid along the camera axis -- a bas-relief
+	// that preserves view1's visible surface, silhouette, and curvature
+	// exactly and removes only far-side volume. Measured (64 spp, Sec 11):
+	// view1 0.01132, view2 0.02520, view3 0.06937, view4 0.01479. Against the
+	// two-tier caps that means view1 PASSES (24.5% headroom under its strict
+	// 0.015 cap), view2 PASSES (37% under the relaxed 0.04 cap), view4 PASSES
+	// (63% under it), and ONLY view3 FAILS (73% ABOVE the 0.04 cap) -- i.e.
+	// WITHOUT the withheld-view gates this wrong-volume reconstruction would
+	// pass the ENTIRE eval, and view3's gate alone rejects it. That is the
+	// measured partial-necessity proof for the withheld tier, re-rendered in
+	// CI; the PASS margins (view1 24.5%, view2 37%, view4 63%) all sit well
+	// above the ~0.002 run-to-run MC noise scale implied by CALIBRATION.md's
+	// Sec 3 noise floors (0.0039-0.0045 total vs a shared 256-spp reference),
+	// so if this control ever flakes, suspect a pipeline change, not noise.
+	// Workflow shape is identical to (k): read_skill -> read_document ->
+	// batched inserts -> draft render -> read_image -> final text, so the
+	// trajectory/objectmap/document/diagnostics checkpoints all PASS and the
+	// view3 compare is the ONLY failure.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_bas_relief" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/bas-relief control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the modeling-from-image-captures skill before touching the scene.",
+			{ { "read_skill", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "name", JsonValue::MakeString( "modeling-from-image-captures" ) );
+				return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Checking the starting scaffold.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3",
+			"Adding the four albedo/exitance painters (hero teal, ground, backdrop, warm key -- only the "
+			"hero's hidden-side volume is wrong here), and recolouring the scaffold's placeholder pnt_env "
+			"painter to the observed dim blue-grey environment tint.",
+			{	{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 0.82 0.58\n}" ) },
+				// pnt_env is NOT inserted -- the scaffold already declares it (wired
+				// into the rasterizer's radiance_map); recolour the placeholder.
+				{ "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4",
+			"Adding the lambertian materials for the hero/ground/backdrop, plus the key light's luminaire material.",
+			{	{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
+			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
+			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6",
+			"The hero SDF -- BAS-RELIEF variant: the GT's 4 parts unchanged, plus a box-intersect half-space "
+			"cut facing view1's camera (ex=-13.63, ey=39.14) that removes the far-side volume 0.20 units "
+			"behind the hero centroid (CALIBRATION.md Sec 11 anchor (g), verbatim part lines).",
+			{ { "insert_chunk", InsertChunkInput(
+				"sdf_geometry\n{\n\tname herogeom\n"
+				"\tpart capsule union 0 0 0.75 0 0 0 0 1 1 1 0.30 0.45 0 0\n"
+				"\tpart sphere smin 0.15 0 1.50 0 0 0 0 1 0.62 1 0.62 0 0 0\n"
+				"\tpart torus smin 0.12 0 1.20 0 0 0 0 1 1 1 0.36 0.12 0 0\n"
+				"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 0 0 0 1 1 1 0.22 0.17 0.17 0.04\n"
+				"\tpart box intersect 0 1.7161 1.6000 2.1118 -13.63 39.14 0 1 1 1 3 3 3 0\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_7",
+			"Placing the ground, backdrop, key-light, and hero objects.",
+			{	{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Draft check of the composition.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Looking at the draft.",
+			{ { "read_image", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11",
+			"Built the scene; the hero's visible surface matches the photo, with a plausible-looking "
+			"(but wrong) hidden side.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/bas-relief control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/bas-relief control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/bas-relief control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/bas-relief control: allPassed is FALSE against the bas-relief hero" );
+		// The partial-necessity witness assertions: every OTHER gate waves this
+		// wrong-volume reconstruction through -- view1's strict cap (24.5%
+		// headroom), view2's and view4's relaxed caps (37% / 63% headroom) all
+		// PASS -- and view3's withheld gate ALONE rejects it (73% above its
+		// 0.04 cap), with an RMSE detail.
+		if( r.checkpoints.size() > 3 ) {
+			Check( r.checkpoints[0].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[0] (view1 STRICT compare) PASSES -- the front surface is exact (detail: " +
+				r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[1].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[1] (view2 compare) PASSES under the relaxed cap (detail: " +
+				r.checkpoints[1].detail + ")" );
+			Check( !r.checkpoints[2].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[2] (view3 compare) FAILS -- the ONE gate that catches the missing volume (detail: " +
+				r.checkpoints[2].detail + ")" );
+			Check( r.checkpoints[2].detail.find( "RMSE" ) != std::string::npos,
+				"image_reconstruct_single/bas-relief control: checkpoints[2] detail names RMSE (detail: " +
+				r.checkpoints[2].detail + ")" );
+			Check( r.checkpoints[3].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[3] (view4 compare) PASSES under the relaxed cap (detail: " +
+				r.checkpoints[3].detail + ")" );
+		}
+		// Isolation: the non-render checkpoints all PASS (full required
+		// workflow present; herogeom is still one sdf_geometry chunk; clean
+		// diagnostics) -- the view3 compare is the ONLY failing checkpoint.
+		if( r.checkpoints.size() > 7 ) {
+			Check( r.checkpoints[4].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[4] (objectmap expectGeometryKind) PASSES -- the bas-relief hero is still sdf_geometry (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[5].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[5] (document sdf chunk_count) PASSES (detail: " +
+				r.checkpoints[5].detail + ")" );
+			Check( r.checkpoints[6].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[6] (diagnostics) PASSES (detail: " +
+				r.checkpoints[6].detail + ")" );
+			Check( r.checkpoints[7].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[7] (trajectory) PASSES (detail: " +
+				r.checkpoints[7].detail + ")" );
 		}
 	}
 }
