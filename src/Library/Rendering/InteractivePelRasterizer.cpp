@@ -832,9 +832,15 @@ public:
 			return true;
 		}
 
-		// case (2b): span changed by > 30%
+		// case (2b): span changed by > 30%.  Skip when the NEW span is
+		// itself degenerate (same cutoff PreparePass uses to refuse the
+		// snapshot): a near-flat view with a tiny-but-positive span would
+		// otherwise report "shrunk >30%" against the retained old window
+		// on EVERY pass -- a persistent 2x re-render for a scene the
+		// window guard deliberately leaves unchanged (review 2026-07-17).
 		const double newSpan = accMax - accMin;
-		if( newSpan > 0.0 )
+		const double newScale = accMax > 1.0 ? accMax : 1.0;
+		if( newSpan > 1e-9 * newScale )
 		{
 			const double spanRatio = newSpan / oldSpan;
 			if( spanRatio > 1.30 || spanRatio < 0.70 ) {
