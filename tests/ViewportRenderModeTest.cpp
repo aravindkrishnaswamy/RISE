@@ -32,6 +32,12 @@
 //    R8  A whole-scene re-derive (scene_variant switch, which calls
 //        RebindEditorToJob) resets an active view mode back to "preview" --
 //        the ratified "every scene load/reload opens in preview" rule.
+//    R9  X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"):
+//        SceneEditController::{Set,Get}ViewportXray in skeleton mode
+//        (refuses), live round-trip (stored while "preview" is active,
+//        rebuilds the caster in place while a data mode is active, survives
+//        a mode switch), the C-ABI wrappers, and reset-to-false alongside
+//        the mode reset on a whole-scene re-derive.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -238,6 +244,13 @@ namespace
 		Check( !RISE_API_SceneEditController_SetViewportRenderMode( nullptr, "depth" ), "Set wrapper refuses null controller" );
 		Check( std::string( RISE_API_SceneEditController_GetViewportRenderMode( nullptr ) ) == "preview",
 			"Get wrapper reports \"preview\" on a null controller" );
+
+		// X-ray axis C-ABI wrappers on a null controller.
+		Check( !RISE_API_SceneEditController_SetViewportXray( nullptr, true ), "xray Set wrapper refuses null controller" );
+		bool xraySentinel = true;
+		Check( !RISE_API_SceneEditController_GetViewportXray( nullptr, &xraySentinel ), "xray Get wrapper refuses null controller" );
+		Check( xraySentinel == true, "xray Get wrapper leaves *out untouched on refusal" );
+		Check( !RISE_API_SceneEditController_GetViewportXray( nullptr, nullptr ), "xray Get wrapper refuses null out-param too" );
 	}
 
 	//------------------------------------------------------------------
@@ -436,6 +449,101 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+
+	//------------------------------------------------------------------
+	// R9: X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") -- skeleton
+	// refusal, live round-trip (stored-while-preview / rebuild-while-
+	// active), and reset-on-rebind alongside the mode reset.
+	//------------------------------------------------------------------
+	void TestXrayAxis()
+	{
+		std::printf( "R9: X-ray axis set/get round-trip + reset-on-rebind...\n" );
+
+		// Skeleton mode: refused, not crashing; getter still reports false.
+		{
+			const std::string tmp = TempPath( "vrm_r9_skeleton.RISEscene" );
+			Job* pJob = LoadScene( kPlainScene, tmp );
+			Check( pJob != nullptr, "R9 skeleton fixture loads" );
+			if( pJob )
+			{
+				SceneEditController ctrl( *pJob, nullptr );   // skeleton: no interactive rasterizer
+				Check( !ctrl.GetViewportXray(), "GetViewportXray reports false by default (skeleton)" );
+				Check( !ctrl.SetViewportXray( true ), "SetViewportXray refused in skeleton mode" );
+				Check( !ctrl.GetViewportXray(), "xray flag stays false after a refused skeleton-mode call" );
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+
+		// Live controller: round-trip + compose with the render-mode switch.
+		{
+			const std::string tmp = TempPath( "vrm_r9_live.RISEscene" );
+			Job* pJob = LoadScene( kVariantScene, tmp );
+			Check( pJob != nullptr, "R9 live fixture loads" );
+			if( !pJob ) return;
+
+			IRasterizer* pRasterizer = nullptr;
+			IRayCaster*  pPreview    = nullptr;
+			IRayCaster*  pPolish     = nullptr;
+			Check( CreateInteractiveMaterialPreviewPipeline( &pRasterizer, &pPreview, &pPolish ), "R9 pipeline builds" );
+			if( !pRasterizer ) { pJob->release(); std::remove( tmp.c_str() ); return; }
+
+			{
+				SceneEditController ctrl( *pJob, pRasterizer );
+				using Cat = SceneEditController::Category;
+
+				Check( !ctrl.GetViewportXray(), "starts at xray=false" );
+
+				// Set while "preview" is active: just stored, no data-mode
+				// caster to rebuild -- still succeeds.
+				Check( ctrl.SetViewportXray( true ), "SetViewportXray(true) succeeds while \"preview\" is active" );
+				Check( ctrl.GetViewportXray(), "GetViewportXray reports true after the set" );
+
+				// Same-value call is a documented no-op that still succeeds.
+				Check( ctrl.SetViewportXray( true ), "re-setting the SAME xray value succeeds (no-op)" );
+				Check( ctrl.GetViewportXray(), "still true after the no-op call" );
+
+				// Switching to a data mode picks up the ALREADY-stored xray
+				// flag (InstallViewModeCaster_ reads mViewportXray at caster-
+				// build time) -- no separate re-apply needed.
+				Check( ctrl.SetViewportRenderMode( "depth" ), "switch to \"depth\" with xray already true" );
+				Check( std::string( ctrl.GetViewportRenderMode() ) == "depth", "mode is \"depth\"" );
+				Check( ctrl.GetViewportXray(), "xray flag survives the mode switch" );
+
+				// Flip xray OFF while a data mode is active: rebuilds the
+				// caster in place (same InstallViewModeCaster_ path).
+				Check( ctrl.SetViewportXray( false ), "SetViewportXray(false) succeeds while \"depth\" is active" );
+				Check( !ctrl.GetViewportXray(), "GetViewportXray reports false after the flip" );
+				Check( std::string( ctrl.GetViewportRenderMode() ) == "depth", "mode stays \"depth\" across the xray flip" );
+
+				// Flip back ON for the reset-on-rebind check below.
+				Check( ctrl.SetViewportXray( true ), "SetViewportXray(true) again" );
+				Check( ctrl.GetViewportXray(), "xray true again pre-reset" );
+
+				// A whole-scene re-derive resets BOTH the mode AND the xray
+				// flag (RebindEditorToJob's doc: "alongside the mode reset").
+				Check( ctrl.SetSelection( Cat::SceneVariant, String( "night" ) ), "R9 SetSelection(night) re-derives clean" );
+				Check( std::string( ctrl.GetViewportRenderMode() ) == "preview", "mode reset to \"preview\" by the re-derive" );
+				Check( !ctrl.GetViewportXray(),
+					"MONEY ASSERTION: xray flag reset to false by the SAME whole-scene re-derive" );
+
+				// C-ABI round-trip through the live controller.
+				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, true ), "C-ABI SetViewportXray succeeds" );
+				bool abiOut = false;
+				Check( RISE_API_SceneEditController_GetViewportXray( &ctrl, &abiOut ), "C-ABI GetViewportXray succeeds" );
+				Check( abiOut == true, "C-ABI GetViewportXray reflects the C-ABI set" );
+				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, false ), "C-ABI SetViewportXray(false) restores" );
+
+				Check( ctrl.SetViewportRenderMode( "preview" ), "restore \"preview\" before teardown" );
+			}
+
+			pRasterizer->release();
+			pPreview->release();
+			pPolish->release();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
 }   // anonymous namespace
 
 int main()
@@ -449,6 +557,7 @@ int main()
 	TestSkeletonMode();
 	TestLiveModeSwitching();
 	TestSceneReloadResetsToPreview();
+	TestXrayAxis();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

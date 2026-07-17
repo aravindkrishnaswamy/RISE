@@ -3671,6 +3671,23 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		const char** name, const char** title, const char** question,
 		bool* viewportSelectable );
 
+	//! -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") --------
+	//! An orthogonal boolean that composes with all four data modes
+	//! (Normals/Depth/Facets/Wireframe): resolves each hit THROUGH
+	//! transmissive surfaces to the first OPAQUE hit, straight-line, no
+	//! refraction bending.  Same refusal contract as the render-mode
+	//! wrappers above (null controller, render-owns-scene, skeleton mode).
+
+	//! Set the x-ray flag.  Returns false on a null controller or the
+	//! documented controller-level refusals.
+	bool RISE_API_SceneEditController_SetViewportXray(
+		SceneEditController* p, bool xray );
+
+	//! Read the CURRENT x-ray flag into `*out`.  Returns false (and
+	//! leaves `*out` untouched) on a null controller or a null `out`.
+	bool RISE_API_SceneEditController_GetViewportXray(
+		SceneEditController* p, bool* out );
+
 	//! Pointer events from the platform UI.  Coordinates are in the
 	//! preview surface's pixel space.
 	bool RISE_API_SceneEditController_OnPointerDown(

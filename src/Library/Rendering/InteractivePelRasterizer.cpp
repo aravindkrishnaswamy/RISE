@@ -528,6 +528,56 @@ private:
 	}
 };
 
+//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): resolves `ri`
+//! THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit --
+//! a STRAIGHT-LINE continuation of the ORIGINAL ray direction, with NO
+//! refraction bending.  Deliberately an x-ray, not an optics simulation:
+//! it answers "what's under/inside this transmissive geometry", not
+//! "what would actually be seen looking through it".  Bounded to 16
+//! skips so a stack of nested transmissive shells can't loop forever.
+//! A miss partway through the chain KEEPS the last transmissive hit
+//! rather than reporting a miss -- shading something honest beats a
+//! black hole.  Shared by all four data-mode shaders (Normals / Depth /
+//! Facets / Wireframe); each applies it at the top of Shade/ShadeNM
+//! when constructed with xray=true.
+void ResolveXrayHit( RayIntersection& ri, const IRayCaster& caster )
+{
+	for( int skip = 0; skip < 16; ++skip )
+	{
+		if( !ri.geometric.bHit || !ri.pMaterial || !ri.pMaterial->CouldLightPassThrough() )
+		{
+			return;
+		}
+
+		const IScene* scene = caster.GetAttachedScene();
+		if( !scene || !scene->GetObjects() )
+		{
+			return;
+		}
+
+		const Vector3 dir = ri.geometric.ray.Dir();
+		// Nudge off the surface along the SAME direction (no bending) --
+		// scaled by the hit's own range so it means something at both
+		// tabletop and kilometre scale, floored so it's never a no-op at
+		// near-zero range.
+		Scalar eps = ri.geometric.range * 1.0e-4;
+		if( eps < 1.0e-6 ) {
+			eps = 1.0e-6;
+		}
+		const Point3 origin = Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * eps );
+
+		RayIntersection next( Ray( origin, dir ), ri.geometric.rast );
+		next.geometric.PropagateCastInputs( ri.geometric );   // wireframe edge requests etc. survive the skip
+		scene->GetObjects()->IntersectRay( next, /*bHitFrontFaces*/true, /*bHitBackFaces*/true, /*bComputeExitInfo*/false );
+
+		if( !next.geometric.bHit )
+		{
+			return;   // keep `ri` -- the last transmissive hit, an honest answer over a black hole
+		}
+		ri = next;
+	}
+}
+
 //! GUI render modes P1 (docs/gui/RENDER_MODES.md): world-space shading-
 //! normal false colour -- c = 0.5*(N+1).  Deliberately NOT flipped
 //! toward the viewer: a back-facing normal renders in the "negative"
@@ -538,7 +588,10 @@ class NormalsViewShader :
 	public Reference
 {
 public:
-	NormalsViewShader() {}
+	//! `xray` (docs/gui/RENDER_MODES.md "X-ray axis", default false):
+	//! resolve through transmissive surfaces to the first opaque hit
+	//! before computing the normal.  See ResolveXrayHit above.
+	explicit NormalsViewShader( bool xray = false ) : mXray( xray ) {}
 
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
@@ -548,12 +601,15 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
-		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		Vector3 n = ri.geometric.vNormal;
-		Vector3Ops::NormalizeMag( n );
-		c = RISEPel( 0.5 * ( n.x + 1.0 ), 0.5 * ( n.y + 1.0 ), 0.5 * ( n.z + 1.0 ) );
+		if( !mXray ) {
+			c = NormalColor( ri );
+			return;
+		}
+		RayIntersection resolved( ri );
+		ResolveXrayHit( resolved, caster );
+		c = NormalColor( resolved );
 	}
 
 	Scalar ShadeNM( const RuntimeContext& rc,
@@ -573,6 +629,16 @@ public:
 
 protected:
 	~NormalsViewShader() override {}
+
+private:
+	bool mXray;
+
+	static RISEPel NormalColor( const RayIntersection& ri )
+	{
+		Vector3 n = ri.geometric.vNormal;
+		Vector3Ops::NormalizeMag( n );
+		return RISEPel( 0.5 * ( n.x + 1.0 ), 0.5 * ( n.y + 1.0 ), 0.5 * ( n.z + 1.0 ) );
+	}
 };
 
 //! Headlamp-shaded GEOMETRIC normal (flat face normal -- no Phong
@@ -583,7 +649,10 @@ class FacetsViewShader :
 	public Reference
 {
 public:
-	FacetsViewShader() {}
+	//! `xray` (docs/gui/RENDER_MODES.md "X-ray axis", default false):
+	//! resolve through transmissive surfaces to the first opaque hit
+	//! before facet-shading.  See ResolveXrayHit above.
+	explicit FacetsViewShader( bool xray = false ) : mXray( xray ) {}
 
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
@@ -593,10 +662,15 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
-		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		c = FacetShade( ri );
+		if( !mXray ) {
+			c = FacetShade( ri );
+			return;
+		}
+		RayIntersection resolved( ri );
+		ResolveXrayHit( resolved, caster );
+		c = FacetShade( resolved );
 	}
 
 	Scalar ShadeNM( const RuntimeContext& rc,
@@ -607,11 +681,17 @@ public:
 					const IORStack& ior_stack ) const override
 	{
 		(void)rc;
-		(void)caster;
 		(void)rs;
 		(void)nm;
 		(void)ior_stack;
-		const RISEPel c = FacetShade( ri );
+		RISEPel c;
+		if( !mXray ) {
+			c = FacetShade( ri );
+		} else {
+			RayIntersection resolved( ri );
+			ResolveXrayHit( resolved, caster );
+			c = FacetShade( resolved );
+		}
 		return ( c[0] + c[1] + c[2] ) / 3.0;
 	}
 
@@ -637,26 +717,96 @@ public:
 
 protected:
 	~FacetsViewShader() override {}
+
+private:
+	bool mXray;
 };
 
-//! Scene-scale-normalized hit distance, near = bright:
-//! t = 1 / (1 + 3 d / D) with D = the scene's world bounding-box
-//! diagonal, captured ONCE per AttachScene (single-threaded, before the
-//! parallel workers start) by InteractiveViewModeRayCaster below.  The
-//! fixed scene-scale mapping is deliberate: brightness IS distance in
-//! scene units, stable while navigating (an adaptive per-frame window
-//! would re-mean the image every camera move).  D == 0 (no bounded
-//! objects) falls back to t = 1 / (1 + d).
+//! Per-pass AUTO-WINDOWED hit distance, near = bright.  FIXES the earlier
+//! fixed scene-diagonal normalization, which flattened staged scenes (a
+//! subject scaled ~50 units, camera at ~95, background studio panels at
+//! ~400) into a ~1% brightness band -- the whole subject read as a blank
+//! near-uniform grey.
+//!
+//! Calibration: `mAccMin`/`mAccMax` are atomic accumulators (CAS-loop
+//! min/max on std::atomic<double>, seeded with FINITE sentinels --
+//! 1e300 / -1e300, NEVER infinity; an inf-seeded reduction miscompiles
+//! under this repo's -ffast-math + LTO build, see CLAUDE.md) that every
+//! Shade/ShadeNM call on the CURRENT pass folds its hit distance into.
+//! `PreparePass`, called once per pass (single-threaded, BEFORE the
+//! parallel block workers dispatch -- see InteractiveViewModeRayCaster::
+//! AttachScene below) snapshots the PREVIOUS pass's accumulators into the
+//! active window {mWinMin, mWinMax, mWinValid} that THIS pass shades
+//! against, then resets the accumulators to sentinels for this pass to
+//! fill.  The snapshot is skipped (mWinValid left at whatever it already
+//! was) when the previous pass saw no samples, or its range was
+//! degenerate (max-min not more than 1e-9 of scale) -- e.g. a single flat
+//! plane filling the frame.  The interactive cancel-restart loop means a
+//! stale first-pass window converges within one more repaint, and mild
+//! recalibration while navigating is intended, exactly like camera
+//! auto-exposure.
+//!
+//! With a valid window: t = 0.08 + 0.92 * clamp01((winMax-d)/(winMax-
+//! winMin)), d outside the window clamps to the nearest edge.  With no
+//! valid window yet (first pass ever, or a degenerate range), FALLS BACK
+//! to the original fixed scene-diagonal formula, keyed off the scene
+//! bounding-box diagonal `mSceneDiagonal` (captured the same way as
+//! before -- see AttachScene).
+//!
+//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): with `mXray` set,
+//! the shader resolves through transmissive surfaces first (see
+//! ResolveXrayHit) and uses the TOTAL distance from the ORIGINAL ray's
+//! origin to the resolved hit point -- NOT the resolved hit's own
+//! (last-segment) range, and NOT a sum of per-segment ranges.
 class DepthViewShader :
 	public IShader,
 	public Reference
 {
 public:
-	DepthViewShader() : mSceneDiagonal( 0.0 ) {}
+	//! `xray` (default false): see the class doc's "X-ray axis" section.
+	explicit DepthViewShader( bool xray = false )
+	: mSceneDiagonal( 0.0 )
+	, mXray( xray )
+	, mWinValid( false )
+	, mWinMin( 0.0 )
+	, mWinMax( 0.0 )
+	, mAccMin( kSentinelMin )
+	, mAccMax( kSentinelMax )
+	{}
 
-	//! Called from AttachScene only -- single-threaded by the render
-	//! setup contract; read-only during the parallel render.
-	void SetSceneDiagonal( const Scalar d ) { mSceneDiagonal = d; }
+	//! Per-pass calibration hook -- see the class doc.  Called once per
+	//! RasterizeScene pass, single-threaded, BEFORE the parallel block
+	//! workers dispatch (InteractiveViewModeRayCaster::AttachScene runs
+	//! at the top of every pass).  `d` is the scene bounding-box diagonal
+	//! (0 if unbounded/empty) -- the fallback formula's input.
+	void PreparePass( const Scalar d )
+	{
+		mSceneDiagonal = d;
+
+		const double accMin = mAccMin.load( std::memory_order_relaxed );
+		const double accMax = mAccMax.load( std::memory_order_relaxed );
+		// accMin <= kAlmostSentinel is the "did any sample land last pass"
+		// test -- compared against a large FINITE threshold rather than
+		// std::isfinite, per the class doc's -ffast-math note (value-level
+		// isfinite guards are unreliable under -ffast-math/LTO in this repo).
+		if( accMin <= kAlmostSentinel )
+		{
+			const double range = accMax - accMin;
+			const double scale = accMax > 1.0 ? accMax : 1.0;
+			if( range > 1.0e-9 * scale )
+			{
+				mWinMin = accMin;
+				mWinMax = accMax;
+				mWinValid = true;
+			}
+			// else: degenerate range (e.g. a single flat plane filling the
+			// frame) -- leave whatever window was already active (or none)
+			// rather than collapsing to a zero-width window.
+		}
+		// Reset the accumulators for THIS pass to fill, regardless.
+		mAccMin.store( kSentinelMin, std::memory_order_relaxed );
+		mAccMax.store( kSentinelMax, std::memory_order_relaxed );
+	}
 
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
@@ -666,10 +816,11 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
-		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		const Scalar t = DepthValue( ri );
+		const Scalar d = ResolveDistance( ri, caster );
+		RecordSample( d );
+		const Scalar t = DepthValue( d );
 		c = RISEPel( t, t, t );
 	}
 
@@ -681,11 +832,12 @@ public:
 					const IORStack& ior_stack ) const override
 	{
 		(void)rc;
-		(void)caster;
 		(void)rs;
 		(void)nm;
 		(void)ior_stack;
-		return DepthValue( ri );
+		const Scalar d = ResolveDistance( ri, caster );
+		RecordSample( d );
+		return DepthValue( d );
 	}
 
 	void ResetRuntimeData() const override {}
@@ -694,11 +846,61 @@ protected:
 	~DepthViewShader() override {}
 
 private:
-	Scalar mSceneDiagonal;
+	// CAS-loop atomic min/max seeds -- large FINITE sentinels, never
+	// infinity (see the class doc's -ffast-math note).
+	static constexpr double kSentinelMin    = 1.0e300;
+	static constexpr double kSentinelMax    = -1.0e300;
+	static constexpr double kAlmostSentinel = 1.0e299;
 
-	Scalar DepthValue( const RayIntersection& ri ) const
+	Scalar                       mSceneDiagonal;
+	bool                         mXray;
+	bool                         mWinValid;
+	double                       mWinMin;
+	double                       mWinMax;
+	mutable std::atomic<double>  mAccMin;
+	mutable std::atomic<double>  mAccMax;
+
+	static void AtomicMin( std::atomic<double>& slot, const double v )
 	{
-		const Scalar d = ri.geometric.range;
+		double cur = slot.load( std::memory_order_relaxed );
+		while( v < cur && !slot.compare_exchange_weak( cur, v, std::memory_order_relaxed ) ) {}
+	}
+	static void AtomicMax( std::atomic<double>& slot, const double v )
+	{
+		double cur = slot.load( std::memory_order_relaxed );
+		while( v > cur && !slot.compare_exchange_weak( cur, v, std::memory_order_relaxed ) ) {}
+	}
+
+	void RecordSample( const Scalar d ) const
+	{
+		AtomicMin( mAccMin, static_cast<double>( d ) );
+		AtomicMax( mAccMax, static_cast<double>( d ) );
+	}
+
+	//! Without xray: the primary hit's own range.  With xray: the TOTAL
+	//! distance from the ORIGINAL ray's origin to the resolved (possibly
+	//! skipped-through) hit point -- see the class doc's "X-ray axis"
+	//! section for why this must not be the resolved hit's own range nor
+	//! a sum of per-segment ranges.  A non-static member (reads mXray).
+	Scalar ResolveDistance( const RayIntersection& ri, const IRayCaster& caster ) const
+	{
+		if( !mXray ) {
+			return ri.geometric.range;
+		}
+		RayIntersection resolved( ri );
+		ResolveXrayHit( resolved, caster );
+		return Point3Ops::Distance( resolved.geometric.ptIntersection, ri.geometric.ray.origin );
+	}
+
+	Scalar DepthValue( const Scalar d ) const
+	{
+		if( mWinValid )
+		{
+			Scalar t = ( mWinMax - mWinMin ) > 0.0 ? ( mWinMax - d ) / ( mWinMax - mWinMin ) : 1.0;
+			if( t < 0.0 ) t = 0.0;
+			if( t > 1.0 ) t = 1.0;
+			return 0.08 + 0.92 * t;
+		}
 		if( mSceneDiagonal > 0.0 ) {
 			return 1.0 / ( 1.0 + 3.0 * d / mSceneDiagonal );
 		}
@@ -721,7 +923,10 @@ class WireframeViewShader :
 	public Reference
 {
 public:
-	WireframeViewShader() {}
+	//! `xray` (docs/gui/RENDER_MODES.md "X-ray axis", default false):
+	//! resolve through transmissive surfaces to the first opaque hit
+	//! before wire-shading.  See ResolveXrayHit above.
+	explicit WireframeViewShader( bool xray = false ) : mXray( xray ) {}
 
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
@@ -731,10 +936,15 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
-		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		c = WirePel( ri );
+		if( !mXray ) {
+			c = WirePel( ri );
+			return;
+		}
+		RayIntersection resolved( ri );
+		ResolveXrayHit( resolved, caster );
+		c = WirePel( resolved );
 	}
 
 	Scalar ShadeNM( const RuntimeContext& rc,
@@ -745,11 +955,17 @@ public:
 					const IORStack& ior_stack ) const override
 	{
 		(void)rc;
-		(void)caster;
 		(void)rs;
 		(void)nm;
 		(void)ior_stack;
-		const RISEPel c = WirePel( ri );
+		RISEPel c;
+		if( !mXray ) {
+			c = WirePel( ri );
+		} else {
+			RayIntersection resolved( ri );
+			ResolveXrayHit( resolved, caster );
+			c = WirePel( resolved );
+		}
 		return ( c[0] + c[1] + c[2] ) / 3.0;
 	}
 
@@ -759,6 +975,8 @@ protected:
 	~WireframeViewShader() override {}
 
 private:
+	bool mXray;
+
 	//! Fraction of the hit distance that reads as one line half-width;
 	//! ~2.5 apparent pixels at 800 px / 40 degree fov.  A constant is a
 	//! deliberate simplification -- the shader has no fov/raster-height
@@ -845,13 +1063,17 @@ public:
 		// extent walk is cached keyed on (scene, spatial generation):
 		// GetSpatialStructureGeneration() advances exactly when object
 		// bounds can have changed (spatial edits / TLAS invalidation) and
-		// stays put for material/painter edits and camera motion.
+		// stays put for material/painter edits and camera motion.  The
+		// diagonal is fed into DepthViewShader::PreparePass, which ALSO
+		// runs the depth auto-window snapshot/reset -- see that method's
+		// doc; this is the "top of every pass, single-threaded" call site
+		// its doc refers to.
 		Scalar diag = 0.0;
 		if( pScene_ && pScene_->GetObjects() ) {
 			const IObjectManager* objs = pScene_->GetObjects();
 			const unsigned long long gen = objs->GetSpatialStructureGeneration();
 			if( pScene_ == mExtentScene && gen == mExtentGeneration ) {
-				mpDepthListener->SetSceneDiagonal( mExtentDiagonal );
+				mpDepthListener->PreparePass( mExtentDiagonal );
 				return;
 			}
 			SceneExtentEnum extent;
@@ -864,7 +1086,7 @@ public:
 			mExtentGeneration = gen;
 			mExtentDiagonal = diag;
 		}
-		mpDepthListener->SetSceneDiagonal( diag );
+		mpDepthListener->PreparePass( diag );
 	}
 
 private:
@@ -1035,7 +1257,8 @@ RISE::Implementation::FindViewportRenderModeInfo( ViewportRenderMode mode )
 
 bool RISE::Implementation::CreateInteractiveViewModeCaster(
 	ViewportRenderMode mode,
-	IRayCaster** ppCaster )
+	IRayCaster** ppCaster,
+	bool xray )
 {
 	if( ppCaster ) {
 		*ppCaster = 0;
@@ -1049,20 +1272,20 @@ bool RISE::Implementation::CreateInteractiveViewModeCaster(
 	bool wantsWireEdges = false;
 	switch( mode ) {
 	case ViewportRenderMode::Normals:
-		pShader = new NormalsViewShader();
+		pShader = new NormalsViewShader( xray );
 		break;
 	case ViewportRenderMode::Depth:
 	{
-		DepthViewShader* pDepth = new DepthViewShader();
+		DepthViewShader* pDepth = new DepthViewShader( xray );
 		pShader = pDepth;
 		pDepthListener = pDepth;
 		break;
 	}
 	case ViewportRenderMode::Facets:
-		pShader = new FacetsViewShader();
+		pShader = new FacetsViewShader( xray );
 		break;
 	case ViewportRenderMode::Wireframe:
-		pShader = new WireframeViewShader();
+		pShader = new WireframeViewShader( xray );
 		wantsWireEdges = true;
 		break;
 	default:
@@ -1081,7 +1304,8 @@ bool RISE::Implementation::CreateInteractiveViewModeCaster(
 bool RISE::Implementation::CreateInteractiveViewModePipeline(
 	ViewportRenderMode mode,
 	IRasterizer** ppRasterizer,
-	IRayCaster** ppCaster )
+	IRayCaster** ppCaster,
+	bool xray )
 {
 	if( ppRasterizer ) {
 		*ppRasterizer = 0;
@@ -1094,7 +1318,7 @@ bool RISE::Implementation::CreateInteractiveViewModePipeline(
 	}
 
 	IRayCaster* pCaster = 0;
-	if( !CreateInteractiveViewModeCaster( mode, &pCaster ) ) {
+	if( !CreateInteractiveViewModeCaster( mode, &pCaster, xray ) ) {
 		// Preview / ObjectMap (own factories above) or an unrecognized mode.
 		return false;
 	}

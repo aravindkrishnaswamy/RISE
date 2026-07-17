@@ -2786,7 +2786,7 @@ namespace RISE
 				IRayCaster*  viewCaster    = nullptr;
 				if( !viewModeInfo ||
 					!Implementation::CreateInteractiveViewModePipeline(
-						params.viewMode, &ephemeralRast, &viewCaster ) )
+						params.viewMode, &ephemeralRast, &viewCaster, params.xray ) )
 				{
 					return;   // rendered/renderRan stay false -- shared tail reports "render failed"
 				}
@@ -2838,6 +2838,32 @@ namespace RISE
 
 				const IScenePriv* scenePriv = mJob->GetScene();
 				if( scenePriv ) {
+					// Depth auto-windowing (docs/gui/RENDER_MODES.md "X-ray
+					// axis" / InteractivePelRasterizer.cpp's DepthViewShader
+					// doc): the shader calibrates its active brightness
+					// window FROM THE PREVIOUS pass's accumulated hit-
+					// distance range.  The interactive viewport gets this
+					// for free from its own cancel-restart repaint loop, but
+					// this agent path renders exactly ONE RasterizeScene
+					// call per Render(), which would ship the STALE
+					// (sentinel / scene-diagonal-fallback) window the whole
+					// time.  Run Depth mode TWICE: pass 1 populates the
+					// accumulators (rendered at the fallback window, its
+					// image discarded), pass 2's AttachScene snapshots pass
+					// 1's accumulators into the active window and renders
+					// the calibrated image that actually ships.  Trivial
+					// extra cost at the mandatory 1 spp / single-ray-per-
+					// pixel exactness invariant this pipeline already
+					// enforces.
+					if( viewModeInfo && viewModeInfo->mode == Implementation::ViewportRenderMode::Depth ) {
+						IRasterizeSequence* pWarmupSeq = nullptr;
+						if( mController ) {
+							RISE_API_CreateMortonRasterizeSequence( &pWarmupSeq, 32 );
+						}
+						ephemeralRast->RasterizeScene( *scenePriv, 0, pWarmupSeq );
+						safe_release( pWarmupSeq );
+					}
+
 					IRasterizeSequence* pSeq = nullptr;
 					if( mController ) {
 						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
@@ -3564,6 +3590,20 @@ namespace RISE
 					if( wantSamplesOverride && res.ok ) {
 						res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
 					}
+				}
+			}
+
+			// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): honest note
+			// about whether `xray` actually took effect.  It only applies to
+			// the view-mode pipeline (Normals/Depth/Facets/Wireframe) --
+			// Beauty/Draft/ObjectMap all silently ignore it, matching the
+			// quality/samples-ignored precedent used throughout this
+			// function.
+			if( res.ok && params.xray ) {
+				if( isViewMode ) {
+					res.message += " (xray: transmissive surfaces skipped (straight-line))";
+				} else {
+					res.message += " (xray is ignored outside the view-mode diagnostics -- mode:\"normals\"|\"depth\"|\"facets\"|\"wireframe\")";
 				}
 			}
 

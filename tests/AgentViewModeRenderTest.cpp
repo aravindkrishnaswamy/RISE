@@ -137,6 +137,23 @@ static const char* const kSceneMeshAndSphere =
 	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
 
 //----------------------------------------------------------------------
+// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") coverage scene:
+// kSceneMeshAndSphere PLUS a transmissive glass sphere (dielectric_material,
+// CouldLightPassThrough() == true) positioned IN FRONT of mesh_obj (same x,
+// closer z to the camera at (0,0,6)) -- big enough on screen to fully
+// occlude mesh_obj's own silhouette, small enough and far enough away not to
+// touch mesh_obj or bleed into sph_obj's region.  A SEPARATE scene from
+// kSceneMeshAndSphere (rather than extending it in place) so the existing
+// per-mode end-to-end test's reference-objectmap mesh bbox lookup above is
+// untouched by the new occluder.
+//----------------------------------------------------------------------
+static const std::string kSceneMeshSphereGlass =
+	std::string( kSceneMeshAndSphere ) +
+	"sphere_geometry\n{\n\tname glass_geo\n\tradius 0.6\n}\n\n"
+	"dielectric_material\n{\n\tname glass_mat\n\ttau 1.0 1.0 1.0\n\tior 1.5\n}\n\n"
+	"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition -1.3 0 1.7\n}\n";
+
+//----------------------------------------------------------------------
 // Helpers (mirrors tests/AgentObjectMapTest.cpp's idioms).
 //----------------------------------------------------------------------
 
@@ -365,13 +382,28 @@ static void RunPerModeEndToEndTest()
 		} else if( modeName == "depth" ) {
 			bool allGray = true;
 			std::set<unsigned char> distinctGray;
+			unsigned char grayMin = 255, grayMax = 0;
 			for( std::size_t px = 0; px < dec.px.size(); ++px ) {
 				const Px& q = dec.px[px];
 				if( q[0] != q[1] || q[1] != q[2] ) { allGray = false; }
 				distinctGray.insert( q[0] );
+				if( q[0] < grayMin ) grayMin = q[0];
+				if( q[0] > grayMax ) grayMax = q[0];
 			}
 			Check( allGray, "depth: MONEY ASSERTION -- every pixel is exactly grayscale (r==g==b)" );
-			Check( distinctGray.size() > 1, "depth: more than one distinct gray value (a real depth gradient, not a flat image)" );
+			// Depth auto-windowing (docs/gui/RENDER_MODES.md "Depth auto-
+			// windowing"): the active window is calibrated to the VISIBLE
+			// hit-distance range in THIS frame, so a scene whose visible depth
+			// span is a small fraction of the whole-scene extent (like this
+			// mesh+sphere fixture) should show STRONG contrast, not the ~1%
+			// band the old fixed-scene-diagonal normalization produced.
+			const bool strongContrast =
+				distinctGray.size() >= 30 ||
+				( (unsigned int)( grayMax - grayMin ) > (unsigned int)( 0.3 * 255 ) );
+			Check( strongContrast,
+			       "depth: MONEY ASSERTION -- auto-windowed depth render shows strong contrast "
+			       "(>=30 distinct gray levels, or a min/max spread > 0.3 in byte terms), not a "
+			       "near-flat band" );
 		} else if( modeName == "facets" ) {
 			bool allGrayish = true;
 			unsigned int hitCount = 0;
@@ -631,6 +663,114 @@ static void RunMcpAdapterModeParityTest()
 	       "MCP render tool's mode names (DescribeViewModes filters correctly, doesn't leak the whole registry)" );
 }
 
+//----------------------------------------------------------------------
+// (5) X-ray axis coverage (docs/gui/RENDER_MODES.md "X-ray axis"): facets
+// and depth with vs without xray over a transmissive glass sphere placed IN
+// FRONT of the mesh, plus the honest-ignored-under-beauty note.
+//----------------------------------------------------------------------
+static void RunXrayCoverageTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (5) X-ray axis coverage ===\n" );
+	const std::string scenePath = WriteTemp( "rise_viewmode_xray.RISEscene", kSceneMeshSphereGlass );
+	Check( !scenePath.empty(), "wrote the mesh+sphere+glass scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "xray scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "xray session wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	// Reference objectmap render (no xray -- objectmap doesn't support it)
+	// to locate glass_obj's own pixel bounding box: since glass_obj sits IN
+	// FRONT of mesh_obj, it should fully occlude mesh_obj's silhouette here.
+	AgentRenderParams objP;
+	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult objR = session->Render( objP );
+	Check( objR.ok && objR.renderMode == "objectmap", "xray-scene reference objectmap render succeeds" );
+	Decoded objDec;
+	Check( DecodePng( objR.png, objDec ), "xray-scene reference objectmap PNG decodes" );
+	const LegendEntry* glassLegend = FindLegend( objR, "glass_obj" );
+	Check( glassLegend != nullptr, "reference objectmap legend carries glass_obj" );
+	BBox glassBBox{ 0, 0, 0, 0, 0 };
+	if( glassLegend ) {
+		unsigned char cb[3];
+		Check( HexToBytes( glassLegend->colorHex, cb ), "glass_obj colorHex parses" );
+		glassBBox = ScanBBoxForColor( objDec, cb );
+		Check( glassBBox.found > 0, "glass_obj occupies a nonzero pixel region (occludes the mesh from the camera)" );
+	}
+
+	// (a) facets WITHOUT xray -- shows the glass sphere's own surface.
+	AgentRenderParams facetsNoXray;
+	facetsNoXray.renderTarget = AgentRenderTarget::ViewMode;
+	facetsNoXray.viewMode     = Implementation::ViewportRenderMode::Facets;
+	AgentRenderResult rFacetsNo = session->Render( facetsNoXray );
+	Check( rFacetsNo.ok, "facets without xray succeeds" );
+	Decoded decFacetsNo;
+	Check( DecodePng( rFacetsNo.png, decFacetsNo ), "facets-without-xray PNG decodes" );
+
+	// (b) facets WITH xray:true -- should show the mesh through the glass.
+	AgentRenderParams facetsXray = facetsNoXray;
+	facetsXray.xray = true;
+	AgentRenderResult rFacetsXray = session->Render( facetsXray );
+	Check( rFacetsXray.ok, "facets with xray succeeds" );
+	Check( rFacetsXray.message.find( "xray" ) != std::string::npos,
+	       "facets-with-xray message notes xray is active" );
+	Decoded decFacetsXray;
+	Check( DecodePng( rFacetsXray.png, decFacetsXray ), "facets-with-xray PNG decodes" );
+
+	if( glassBBox.found > 0 &&
+	    decFacetsNo.w == decFacetsXray.w && decFacetsNo.h == decFacetsXray.h ) {
+		unsigned int differing = 0;
+		for( unsigned int y = glassBBox.minY; y <= glassBBox.maxY; ++y ) {
+			for( unsigned int x = glassBBox.minX; x <= glassBBox.maxX; ++x ) {
+				const Px& a = decFacetsNo.at( x, y );
+				const Px& b = decFacetsXray.at( x, y );
+				if( a[0] != b[0] || a[1] != b[1] || a[2] != b[2] ) ++differing;
+			}
+		}
+		Check( differing > 0,
+		       "MONEY ASSERTION (a/b): facets WITH xray shows DIFFERENT pixels than WITHOUT, over "
+		       "the glass sphere's own screen region -- the mesh shows through the glass" );
+	}
+
+	// (c) depth WITH vs WITHOUT xray -- should differ (xray sees through to
+	// the mesh, which is farther away than the glass sphere's own surface).
+	AgentRenderParams depthNoXray;
+	depthNoXray.renderTarget = AgentRenderTarget::ViewMode;
+	depthNoXray.viewMode     = Implementation::ViewportRenderMode::Depth;
+	AgentRenderResult rDepthNo = session->Render( depthNoXray );
+	Check( rDepthNo.ok, "depth without xray succeeds" );
+	Decoded decDepthNo;
+	Check( DecodePng( rDepthNo.png, decDepthNo ), "depth-without-xray PNG decodes" );
+
+	AgentRenderParams depthXray = depthNoXray;
+	depthXray.xray = true;
+	AgentRenderResult rDepthXray = session->Render( depthXray );
+	Check( rDepthXray.ok, "depth with xray succeeds" );
+	Decoded decDepthXray;
+	Check( DecodePng( rDepthXray.png, decDepthXray ), "depth-with-xray PNG decodes" );
+
+	if( decDepthNo.w == decDepthXray.w && decDepthNo.h == decDepthXray.h ) {
+		unsigned int differing = 0;
+		for( std::size_t px = 0; px < decDepthNo.px.size(); ++px ) {
+			if( decDepthNo.px[px][0] != decDepthXray.px[px][0] ) ++differing;
+		}
+		Check( differing > 0,
+		       "MONEY ASSERTION (c): depth WITH xray differs from depth WITHOUT xray somewhere in the frame" );
+	}
+
+	// (d) xray:true with mode:"beauty" (the default renderTarget) is
+	// ACCEPTED, not rejected, and carries the honest ignored note.
+	AgentRenderParams beautyXray;
+	beautyXray.xray = true;   // renderTarget stays Beauty (the default)
+	AgentRenderResult rBeautyXray = session->Render( beautyXray );
+	Check( rBeautyXray.ok, "xray:true with mode:beauty is accepted (not rejected)" );
+	Check( rBeautyXray.message.find( "ignored" ) != std::string::npos,
+	       "MONEY ASSERTION (d): xray:true under mode:beauty carries an honest 'ignored' note in the message" );
+
+	pJob->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -639,6 +779,7 @@ int main()
 	RunNoRenderOnInvalidModeTest();
 	RunChatCodecModeParityTest();
 	RunMcpAdapterModeParityTest();
+	RunXrayCoverageTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

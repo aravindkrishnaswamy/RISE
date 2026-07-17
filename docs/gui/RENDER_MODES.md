@@ -46,7 +46,7 @@ sibling) · **T2** beauty-variant (real integrator + config overrides) ·
 |---|---|---|
 | `objectmap` | T0 | Flat per-object identity segmentation (`ObjectIdShader`), exactness invariant, legend + `query_object_at`. Already an agent mode. |
 | `normals` | T1 | World-space shading normal → RGB false color (`0.5·(N+1)`). Also the honest wiring for the declared-but-unfilled `FrameStore` Normal channel. |
-| `depth` | T1 | Primary-hit distance, normalized to the frame's [near, far] percentile window, grayscale (near = bright). |
+| `depth` | T1 | Primary-hit distance, AUTO-WINDOWED per pass to the frame's VISIBLE min/max hit-distance range (grayscale, near = bright); falls back to the scene bounding-box diagonal on the first pass or a degenerate range. See "Depth auto-windowing" below (2026-07-17 fix — the original fixed scene-diagonal normalization flattened staged scenes into a near-blank image). |
 | `facets` | T1 | Headlamp-shaded **geometric** normal (no smoothing, no bump) — reveals tessellation and shading-normal divergence. |
 | `wireframe` | T1 | First-hit edge shader: barycentric distance to nearest triangle edge under a screen-space width heuristic; non-edge pixels get a dim facet shade so form reads. Analytic (non-mesh) primitives render facet-shade only (documented honestly — no synthetic tessellation lines). |
 | UV checker | T3 | Needs UV plumbing at the hit record. Deferred (P4 candidate). |
@@ -163,6 +163,65 @@ GetViewportRenderMode() for UI state.
   Windows: TopBar combobox). Persisted per-session only; every scene opens in
   `preview` (a scene silently opening in depth mode would read as a broken
   render).
+
+### Depth auto-windowing (2026-07-17 fix)
+
+`depth` originally normalized brightness by the scene's world bounding-box
+diagonal — fine for a single object filling the frame, but on a staged scene
+(subject ~50 units, camera ~95, background studio panels at ~400) the whole
+subject landed in a ~1% brightness band and read as a flat, near-blank image.
+Replaced with per-pass visible-range calibration: `DepthViewShader` accumulates
+the min/max hit distance actually seen during the CURRENT pass (atomic
+CAS-loop min/max, seeded with finite sentinels — never infinity, per the
+repo's `-ffast-math` rule), then `InteractiveViewModeRayCaster::AttachScene`
+(which already runs single-threaded at the top of every `RasterizeScene` pass,
+before the parallel block workers dispatch) snapshots that range into the
+ACTIVE window for the pass about to run, and resets the accumulators. A
+degenerate previous pass (no samples, or a near-zero range) leaves whatever
+window was already active — the mode falls back to the fixed scene-diagonal
+formula only on the very first pass or when nothing meaningful was visible.
+Brightness therefore reflects the VISIBLE depth range, not a fixed world-scale
+band: the previous pass calibrates the next, the interactive cancel-restart
+loop converges this within one repaint, and mild recalibration while
+navigating is intended — exactly like camera auto-exposure. The one-shot
+agent `render{mode:"depth"}` path (which gets no repaint loop) compensates by
+running the pass twice: a discarded warm-up pass populates the accumulators,
+and the second pass ships the calibrated image.
+
+### X-ray axis
+
+An orthogonal **boolean axis**, not a fifth mode — it composes with all four
+data modes (`normals` / `depth` / `facets` / `wireframe`). When on, each
+mode's shader resolves each hit THROUGH transmissive (glass-like) surfaces to
+the first OPAQUE hit: a straight-line continuation of the original ray
+direction, deliberately with NO refraction bending (an x-ray, not an optics
+simulation — it answers "what's under/inside this transmissive geometry", not
+"what would actually be seen looking through it"). Bounded to 16 skips so a
+stack of nested transmissive shells can't loop forever; a miss partway
+through the chain keeps the LAST transmissive hit rather than reporting a
+miss (shading something honest beats a black hole). `depth` under x-ray uses
+the TOTAL distance from the original ray's origin to the resolved hit point,
+not the resolved hit's own (last-segment) range and not a sum of per-segment
+ranges — otherwise a skip chain would under-report depth.
+
+- Core: `ResolveXrayHit(RayIntersection&, const IRayCaster&)`
+  (`InteractivePelRasterizer.cpp`, anonymous namespace), shared by all four
+  data-mode shaders, each taking an `xray` constructor flag (default false).
+- Factories: `CreateInteractiveViewModeCaster` / `CreateInteractiveViewModePipeline`
+  gain a trailing `bool xray = false` parameter (default keeps existing
+  callers compiling).
+- Controller: `SceneEditController::{Set,Get}ViewportXray(bool)` — same
+  lock/park/rebuild discipline as `{Set,Get}ViewportRenderMode`; setting it
+  while a data mode is active rebuilds that mode's caster immediately, while
+  "preview" is active it's just stored for the next data-mode selection.
+  Reset to `false` on every `RebindEditorToJob` (scene load/reload/variant
+  switch), alongside the mode reset.
+- C-ABI: `RISE_API_SceneEditController_{Set,Get}ViewportXray`.
+- Agent: `render` gains an optional boolean `xray` param — meaningful ONLY
+  under a view-mode `mode` (silently ignored, honestly noted in the result
+  message, under `beauty`/`objectmap` — same precedent as `quality`/`samples`
+  under those targets). Toggle lives in the viewport chrome next to the mode
+  dropdown on both GUIs.
 
 ## 6. Per-render config overrides (P2 prerequisite)
 

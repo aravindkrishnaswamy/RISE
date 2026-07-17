@@ -2254,6 +2254,29 @@ namespace RISE
 		//! mode ("preview" by default and after every reset).  Never null.
 		const char* GetViewportRenderMode() const;
 
+		//! -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") --------
+		//!
+		//! An orthogonal boolean axis that COMPOSES with all four data modes
+		//! (Normals/Depth/Facets/Wireframe): when on, each mode's shader
+		//! resolves THROUGH transmissive (glass-like) surfaces to the first
+		//! OPAQUE hit -- a straight-line continuation of the original ray,
+		//! deliberately with NO refraction bending (an x-ray, not an optics
+		//! simulation).  Same lock/park/rebuild discipline as
+		//! SetViewportRenderMode above.
+
+		//! Set the x-ray flag.  If a data mode is CURRENTLY active, its caster
+		//! is immediately rebuilt with the new flag (same caster-swap path
+		//! SetViewportRenderMode uses).  If "preview" is active, the flag is
+		//! just stored -- it takes effect the next time a data mode is
+		//! selected.  No-op (returns true) when `xray` already matches the
+		//! current flag.  Returns false while a production/agent render owns
+		//! the scene, or in skeleton mode (no interactive rasterizer).
+		bool SetViewportXray( bool xray );
+
+		//! The CURRENT x-ray flag (false by default and after every
+		//! RebindEditorToJob reset).
+		bool GetViewportXray() const;
+
 		//! -------- Environment / IBL section (GUI Environment panel) --------
 		//!
 		//! The image-based-lighting environment is a scene-level singleton
@@ -2548,6 +2571,17 @@ namespace RISE
 		// even an atomic no-op composite undo (didWork == false).
 		void DropStaleSelection_();
 
+		// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): shared by
+		// SetViewportRenderMode and SetViewportXray -- builds `mode`'s
+		// view-mode caster (with the CURRENT mViewportXray flag) and
+		// installs it via InteractivePelRasterizer::SetViewModeCaster.
+		// `mode` must be a casterFactory mode (Normals/Depth/Facets/
+		// Wireframe); callers already hold mMutex with the render parked.
+		// Returns false (nothing installed) on the "shouldn't happen"
+		// caster-factory failure -- same fail-closed contract
+		// SetViewportRenderMode had inline before this was factored out.
+		bool InstallViewModeCaster_( Implementation::ViewportRenderMode mode );
+
 		IJobPriv&                   mJob;
 		IRasterizer*                mInteractiveRasterizer;  // borrowed
 		// Cached downcast of mInteractiveRasterizer for the polish-pass
@@ -2559,6 +2593,11 @@ namespace RISE
 		// SetViewportRenderMode and by RebindEditorToJob's every-scene-load
 		// reset-to-Preview); Preview at construction and after every reset.
 		Implementation::ViewportRenderMode mViewportRenderMode;
+		// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): the currently
+		// active x-ray flag.  Mutated ONLY under mMutex (by SetViewportXray
+		// and by RebindEditorToJob's every-scene-load reset-to-false);
+		// false at construction and after every reset.
+		bool                                mViewportXray;
 		SceneEditor                 mEditor;
 		Tool                        mTool;
 		//! Photoshop-style per-category "last-used" sub-tool memory.

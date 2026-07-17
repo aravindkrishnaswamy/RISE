@@ -374,6 +374,15 @@ namespace RISE
 			//! (Normals) is harmless precisely because it is never consulted
 			//! unless a caller also sets renderTarget = ViewMode.
 			RISE::Implementation::ViewportRenderMode viewMode = RISE::Implementation::ViewportRenderMode::Normals;
+			//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): default
+			//! false = today's exact behaviour.  Meaningful ONLY when
+			//! renderTarget == ViewMode -- routes the ephemeral view-mode
+			//! pipeline's shader through ResolveXrayHit (resolve through
+			//! transmissive surfaces to the first opaque hit, straight-line,
+			//! no refraction bending) before shading.  Silently IGNORED
+			//! under Beauty/ObjectMap (honestly noted in the result
+			//! message), matching the quality/samples-ignored precedent.
+			bool                 xray = false;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides

@@ -190,6 +190,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mInteractiveRasterizer( interactiveRasterizer )
 , mInteractiveImpl( dynamic_cast<Implementation::InteractivePelRasterizer*>( interactiveRasterizer ) )
 , mViewportRenderMode( Implementation::ViewportRenderMode::Preview )
+, mViewportXray( false )
 , mEditor( *job.GetScene() )
 , mTool( Tool::Select )
 // Photoshop-style per-category memory.  Initialize each slot to
@@ -325,6 +326,12 @@ void SceneEditController::RebindEditorToJob()
 		mInteractiveImpl->SetViewModeCaster( nullptr );
 		mViewportRenderMode = Implementation::ViewportRenderMode::Preview;
 	}
+	// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): reset alongside
+	// the mode reset above, UNCONDITIONALLY -- the flag can be true while
+	// "preview" is active (it's just stored, waiting for a data mode to be
+	// selected), so it must be cleared even when the mode branch above was
+	// already a no-op.
+	mViewportXray = false;
 }
 
 namespace {
@@ -6962,6 +6969,27 @@ bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
 
 // ===================== Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) =====
 
+// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): shared by
+// SetViewportRenderMode and SetViewportXray -- see the header doc.
+// Callers must already hold mMutex with the render parked, and must have
+// already checked `mode` is a valid casterFactory mode.
+bool SceneEditController::InstallViewModeCaster_( Implementation::ViewportRenderMode mode )
+{
+	IRayCaster* caster = 0;
+	if( !Implementation::CreateInteractiveViewModeCaster( mode, &caster, mViewportXray ) )
+	{
+		// Shouldn't happen for a viewportSelectable, non-Preview mode --
+		// the factory covers exactly {Normals,Depth,Facets,Wireframe} --
+		// but fail closed rather than install nothing silently.
+		return false;
+	}
+	const Implementation::ViewportRenderModeInfo* info =
+		Implementation::FindViewportRenderModeInfo( mode );
+	mInteractiveImpl->SetViewModeCaster( caster, info && info->wantsDenoise );
+	caster->release();   // rasterizer addref'd it; drop our local ref
+	return true;
+}
+
 bool SceneEditController::SetViewportRenderMode( const char* name )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
@@ -6993,26 +7021,20 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 	}
 	CancelAndParkRender_( lk );
 
-	IRayCaster* caster = 0;
 	if( info->mode != Implementation::ViewportRenderMode::Preview )
 	{
-		if( !Implementation::CreateInteractiveViewModeCaster( info->mode, &caster ) )
+		if( !InstallViewModeCaster_( info->mode ) )
 		{
-			// Shouldn't happen for a viewportSelectable, non-Preview mode
-			// -- the factory covers exactly {Normals,Depth,Facets,
-			// Wireframe} -- but fail closed rather than install nothing
-			// silently.  lk unlocks; render thread was parked but nothing
-			// was mutated, so no repaint kick is needed.
+			// lk unlocks; render thread was parked but nothing was
+			// mutated, so no repaint kick is needed.
 			return false;
 		}
 	}
-
-	// nullptr for Preview -- SetViewModeCaster restores the platform-
-	// installed preview/polish casters (see its own doc).
-	mInteractiveImpl->SetViewModeCaster( caster, info->wantsDenoise );
-	if( caster )
+	else
 	{
-		caster->release();   // rasterizer addref'd it; drop our local ref
+		// nullptr for Preview -- SetViewModeCaster restores the platform-
+		// installed preview/polish casters (see its own doc).
+		mInteractiveImpl->SetViewModeCaster( nullptr );
 	}
 	mViewportRenderMode = info->mode;
 
@@ -7036,6 +7058,54 @@ const char* SceneEditController::GetViewportRenderMode() const
 	const Implementation::ViewportRenderModeInfo* info =
 		Implementation::FindViewportRenderModeInfo( mode );
 	return info ? info->name : "preview";
+}
+
+// ===================== X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") ======
+
+bool SceneEditController::SetViewportXray( bool xray )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	if( !mInteractiveImpl ) return false;   // skeleton mode -- no interactive rasterizer wired up
+
+	// Same lock/park discipline as SetViewportRenderMode above.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( xray == mViewportXray )
+	{
+		return true;   // no-op -- already the current flag
+	}
+	CancelAndParkRender_( lk );
+
+	mViewportXray = xray;
+
+	// If a data mode is CURRENTLY active, rebuild its caster with the new
+	// flag right away (reuses SetViewportRenderMode's own install path).
+	// If "preview" is active, just store the flag above -- it applies the
+	// next time a data mode is selected (see header doc).
+	if( mViewportRenderMode != Implementation::ViewportRenderMode::Preview )
+	{
+		if( !InstallViewModeCaster_( mViewportRenderMode ) )
+		{
+			// Shouldn't happen (same reasoning as SetViewportRenderMode) --
+			// leave mViewportXray at its new value (it's just a stored
+			// flag; nothing was installed to roll back) but skip the
+			// repaint kick since nothing actually changed on screen.
+			return false;
+		}
+	}
+
+	// Kick a repaint -- same inline store-then-notify SetViewportRenderMode
+	// uses.
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::GetViewportXray() const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mViewportXray;
 }
 
 // ===================== Axis snaps + Home (Tier 2 §4.2) =========================

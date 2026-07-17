@@ -7644,6 +7644,21 @@ namespace RISE
 		return true;
 	}
 
+	// -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") ----
+
+	bool RISE_API_SceneEditController_SetViewportXray( SceneEditController* p, bool xray )
+	{
+		if( !p ) return false;
+		return p->SetViewportXray( xray );
+	}
+
+	bool RISE_API_SceneEditController_GetViewportXray( SceneEditController* p, bool* out )
+	{
+		if( !p || !out ) return false;
+		*out = p->GetViewportXray();
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_OnPointerDown(
 		SceneEditController* p, Scalar x, Scalar y )
 	{

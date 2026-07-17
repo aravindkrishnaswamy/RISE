@@ -1263,6 +1263,23 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'mode' must be a string" );
 					}
 
+					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")
+					// ADDITIVE param: {"xray":true} -> AgentRenderParams::xray.
+					// Absent or false -> today's exact behaviour.  Meaningful
+					// ONLY under a view-mode `mode` (normals/depth/facets/
+					// wireframe) -- supplying it under "beauty"/"objectmap" is
+					// ACCEPTED and silently ignored (same precedent as quality/
+					// samples under those targets), honestly noted in the
+					// result message by AgentSession::Render.  A non-bool,
+					// non-null value is a clean -32602.
+					if( const JsonValue* xv = params.find( "xray" ) ) {
+						if( xv->isBool() ) {
+							rparams.xray = xv->asBool();
+						}
+						else if( !xv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'xray' must be a boolean" );
+					}
+
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
 						JsonValue result = JsonValue::MakeObject();

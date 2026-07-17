@@ -43,7 +43,7 @@ exact mode name that ran.
 | `beauty` (default) | What does the scene actually look like -- materials, lighting honored? | The real image (or the draft preview under `quality:"draft"`) | No |
 | `objectmap` | Which object is at which pixel? | Flat per-object identity colour, byte-exact `colorHex` match | Yes |
 | `normals` | Which way do surfaces face? | World-space shading normal as false colour (`0.5*(N+1)`) | No |
-| `depth` | How far away is everything? | Grayscale, near = bright, normalized to the SCENE's bounding-box diagonal (see limitation below) | No |
+| `depth` | How far away is everything? | Grayscale, near = bright, AUTO-WINDOWED per render to the VISIBLE hit-distance range in that frame (see limitation below) | No |
 | `facets` | What does the actual tessellation look like -- where does shading disagree with geometry? | Headlamp-shaded GEOMETRIC normal -- no smoothing, no bump, no shading-normal interpolation | No |
 | `wireframe` | Where are the polygon edges? | Triangle-mesh edges over dim facet shading (see mesh-only limitation below) | No |
 
@@ -74,6 +74,12 @@ exact mode name that ran.
    depth or just dim shading?")** -- `depth`. Read brightness as
    RELATIVE distance within this one frame, not an absolute unit scale
    (see the normalization limitation below).
+5. **"What's under/inside that glass / crystal / transparent cover?"**
+   -- add `xray:true` to `depth` or `facets` (any view mode, really).
+   It resolves the ray straight through transmissive surfaces to the
+   first opaque hit (no refraction bending -- deliberately an x-ray,
+   not an optics simulation) so you can see the mechanism instead of
+   the glass surface. See "X-ray axis" below.
 
 ### Known limitations (read before reporting a "bug")
 
@@ -82,19 +88,49 @@ exact mode name that ran.
    tessellation to draw an edge FROM -- they render as dim facet
    shading with no lines. That is correct, documented behaviour, not a
    missing feature -- see docs/gui/RENDER_MODES.md §10.
-2. **`depth` brightness is normalized to the SCENE's bounding-box
-   diagonal, not a fixed distance unit.** A single close-up object in
-   an otherwise-empty scene can read almost uniformly bright (its own
-   depth range is a tiny fraction of the whole-scene diagonal used to
-   normalize) -- that is expected, not a broken render. Compare depth
-   RELATIVE to other objects in the SAME frame, never across two
-   different scenes' depth renders as if they shared a scale.
+2. **`depth` brightness is AUTO-WINDOWED per render to the VISIBLE
+   hit-distance range in THAT frame, not a fixed distance unit.** Two
+   renders of the same scene from different camera framings (a wide
+   shot vs. a close-up) use DIFFERENT brightness scales -- never compare
+   two `depth` renders as if they shared one absolute scale, only read
+   brightness RELATIVE to other pixels in the SAME image. (The engine
+   falls back to a fixed scene-bounding-box-diagonal scale only on a
+   degenerate render -- an empty frame or a single flat plane filling
+   it -- so a mostly-flat scene can still read as unusually uniform;
+   that is expected, not a broken render.)
 3. **All five non-`beauty` modes (`objectmap` + the four view modes)
    ignore `quality` and `samples` unconditionally.** Each has exactly
    one fidelity by design (an exact single-pass diagnostic image) --
    requesting a higher sample count or `quality:"draft"` under any of
    them is a silent no-op, honestly noted in the result `message`, not
    an error.
+4. **`xray` is a straight line, not real refraction.** It follows the
+   ORIGINAL ray direction through every transmissive surface it skips
+   -- no bending, no lensing. It answers "what's under/inside this
+   transmissive geometry", not "what would actually be seen looking
+   through it". A miss after 16 skipped surfaces shows the LAST
+   transmissive surface instead of a black hole -- an honest partial
+   answer, not a bug.
+
+### X-ray axis: seeing through transmissive geometry
+
+`xray` is an optional boolean param on `render`, ORTHOGONAL to `mode` --
+it composes with all four view modes (`normals`/`depth`/`facets`/
+`wireframe`), not a mode of its own. When `xray:true`, the shader
+resolves each ray THROUGH transmissive (glass-like) surfaces to the
+first OPAQUE hit, following the ORIGINAL ray's straight line with NO
+refraction bending -- deliberately an x-ray, not an optics simulation.
+Up to 16 transmissive surfaces are skipped per ray.
+
+Recipe: **"what's under/inside the glass/crystal/transparent cover?"**
+-- `render {mode:"depth", xray:true}` or `render {mode:"facets",
+xray:true}` to see the mechanism underneath instead of the glass
+surface itself. Compare against the SAME render with `xray:false`
+(the default) to confirm what the glass was hiding.
+
+`xray:true` is silently ignored (honestly noted in the result
+`message`) under `mode:"beauty"` or `mode:"objectmap"` -- it only
+means something for the four view-mode diagnostics.
 
 ## Escalation ladder (cost, cheapest first)
 

@@ -142,7 +142,7 @@ namespace RISE
 			Preview,    //!< today's studio material preview (the platform-installed pipeline)
 			ObjectMap,  //!< per-object identity segmentation (agent surface; own factory above)
 			Normals,    //!< world-space shading-normal false colour
-			Depth,      //!< scene-scale-normalized hit distance (near = bright)
+			Depth,      //!< per-pass AUTO-WINDOWED hit distance (near = bright) -- calibrates to the visible depth range, see DepthViewShader
 			Facets,     //!< headlamp-shaded GEOMETRIC normal (reveals tessellation)
 			Wireframe   //!< first-hit triangle edges over dim facet shading
 		};
@@ -170,9 +170,18 @@ namespace RISE
 		//! release; the caster owns its shader.  Returns false for
 		//! Preview (restore the platform-installed casters instead) and
 		//! ObjectMap (its own factory above -- palette lifecycle).
+		//!
+		//! `xray` (default false, docs/gui/RENDER_MODES.md "X-ray axis"):
+		//! when true, the built shader resolves each hit THROUGH transmissive
+		//! (glass-like) surfaces to the first OPAQUE hit -- a straight-line
+		//! continuation of the original ray direction, deliberately with NO
+		//! refraction bending (an x-ray, not an optics simulation).  Composes
+		//! with all four data modes.  See the anonymous-namespace
+		//! ResolveXrayHit in the .cpp for the shared resolver.
 		bool CreateInteractiveViewModeCaster(
 			ViewportRenderMode mode,
-			IRayCaster** ppCaster );
+			IRayCaster** ppCaster,
+			bool xray = false );
 
 		//! GUI render modes P1 (docs/gui/RENDER_MODES.md): sibling of
 		//! CreateInteractiveObjectMapPipeline for the four ShaderPipeline
@@ -188,10 +197,13 @@ namespace RISE
 		//! for any non-casterFactory mode.  Returned pointers are
 		//! refcounted ownership references for the caller to release,
 		//! exactly like the other pipeline factories.
+		//! `xray` (default false): forwarded verbatim to
+		//! CreateInteractiveViewModeCaster above -- see its doc.
 		bool CreateInteractiveViewModePipeline(
 			ViewportRenderMode mode,
 			IRasterizer** ppRasterizer,
-			IRayCaster** ppCaster );
+			IRayCaster** ppCaster,
+			bool xray = false );
 
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{
