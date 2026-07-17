@@ -1825,6 +1825,132 @@ static void TestPromptImagesMatrixResume()
 	}
 }
 
+//----------------------------------------------------------------------
+// P1-1, T15: RunEvalMatrix resume is content-aware for a render
+// checkpoint's compareToImage reference image's BYTES, mirroring T14's
+// prompt-image resume case above -- editing the referenced PNG in place
+// (same path, different bytes) must invalidate the cached cell and force
+// a re-run, even though the checkpoints[] JSON itself (the "compareToImage"
+// PATH STRING) never changes.  Before P1-1, ScenarioContentHash's
+// checkpoints= line only hashed that path string, so this exact mutation
+// left the cell wrongly "current" -- the bug this test proves fixed.
+//----------------------------------------------------------------------
+static void TestCompareToImageMatrixResume()
+{
+	std::printf( "T15: RunEvalMatrix resume is content-aware for a compareToImage reference's BYTES...\n" );
+
+	AgentEvalScenario base;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", base, err ),
+	       "T15: param_edit loads (for its scene text)" );
+
+	const std::string dir = ScratchRunDir( "t15_compare_image_matrix_resume" );
+	const std::string pngPath = dir + "_img/cmp_ref.png";
+
+	// Render a genuine reference PNG from the SAME scene (via a throwaway
+	// live probe run, reusing THIS file's own MockTransport/RunScenarioLive
+	// plumbing rather than a replay fixture) so the compareToImage
+	// checkpoint decodes a well-formed PNG on every invocation -- a clean
+	// decode keeps this test from masking a genuine crash behind a
+	// "PNG decode failed" no-op.  No explicit width/height is requested
+	// below, so the grading render adopts the reference's dims (the
+	// scene's authored 24x24 film) -- self-consistent, like T4c's
+	// compareToImage self-consistency case in AgentEvalCheckTest.cpp.
+	{
+		AgentEvalScenario probe = base;
+		probe.id = "t15_probe";
+		probe.title = "t15_probe";
+		probe.checkpoints = JsonValue::MakeArray();
+
+		AgentEvalLiveRunOptions plo;
+		plo.runDir = dir + "_probe";
+		MockTransport probeMock;
+		probeMock.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		plo.transport = &probeMock;
+		plo.provider  = ChatProvider::Anthropic;
+		plo.modelId   = "claude-sonnet-5";
+		plo.apiKey    = "sk-ant-T15-PROBE-FAKEKEY-DO-NOT-LEAK";
+
+		AgentEvalRunHandle ph = RunScenarioLive( probe, plo );
+		Check( ph.dispatcher != nullptr && ph.dispatcher->Session() != nullptr,
+		       "T15: probe run has a live session to render the reference" );
+		if( ph.dispatcher && ph.dispatcher->Session() ) {
+			AgentRenderParams rp;   // no overrides -- the scene's authored 24x24 film
+			AgentRenderResult rr = ph.dispatcher->Session()->Render( rp );
+			Check( rr.ok && !rr.png.empty(), "T15: probe render produced PNG bytes for the reference image" );
+			Check( WriteFile( pngPath, std::string( rr.png.begin(), rr.png.end() ) ),
+			       "T15: wrote the initial compareToImage reference" );
+		}
+	}
+
+	AgentEvalScenario scenario = base;
+	scenario.id = "t15_cmp_resume";
+	scenario.title = "t15_cmp_resume";
+	{
+		JsonValue cp = JsonValue::MakeObject();
+		cp.set( "kind", JsonValue::MakeString( "render" ) );
+		cp.set( "compareToImage", JsonValue::MakeString( pngPath ) );
+		cp.set( "rmseMax", JsonValue::MakeNumber( 1.0 ) );   // generous -- pass/fail is irrelevant to resume mechanics
+		JsonValue cps = JsonValue::MakeArray();
+		cps.push_back( cp );
+		scenario.checkpoints = cps;
+	}
+
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = dir;
+
+	const std::string kFakeKey = "sk-ant-T15-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalMatrixOptions mo;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	// (1) First invocation: executes.
+	{
+		MockTransport mock1;
+		mock1.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock1;
+		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr1.runsExecuted == 1 && mr1.runsAlreadyComplete == 0, "T15: first invocation executes" );
+		Check( !mock1.seenRequests.empty(), "T15: first invocation calls the transport" );
+	}
+
+	// (2) Second invocation, unchanged reference bytes: skipped as complete.
+	{
+		MockTransport mock2;   // must NEVER be called
+		mo.transport = &mock2;
+		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr2.runsExecuted == 0 && mr2.runsAlreadyComplete == 1,
+		       "T15: second invocation (unchanged reference) is skipped as already-complete" );
+		Check( mock2.seenRequests.empty(), "T15: second invocation never calls the transport" );
+	}
+
+	// (3) MUTATE the compareToImage reference's BYTES in place (same path,
+	// checkpoints[] JSON byte-identical) -- P1-1's fix means the cell must
+	// be treated as stale and re-executed.
+	{
+		std::ifstream rf( pngPath.c_str(), std::ios::binary );
+		std::string bytes( ( std::istreambuf_iterator<char>( rf ) ), std::istreambuf_iterator<char>() );
+		rf.close();
+		bytes.push_back( '\0' );   // appended byte -- content differs, path unchanged
+		Check( WriteFile( pngPath, bytes ), "T15: mutated the reference image's bytes in place" );
+
+		MockTransport mock3;
+		mock3.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock3;
+		AgentEvalMatrixResult mr3 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr3.runsExecuted == 1 && mr3.runsAlreadyComplete == 0,
+		       "T15: third invocation (mutated compareToImage BYTES, same path) is RE-EXECUTED" );
+		Check( !mock3.seenRequests.empty(), "T15: third invocation calls the transport (genuine re-run)" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalLiveTransportTest (Eval-harness slice E4: live headless runner) ===\n" );
@@ -1853,6 +1979,7 @@ int main()
 	TestRunEvalMatrixProviderModelCollision();
 	TestPromptImagesEndToEnd();
 	TestPromptImagesMatrixResume();
+	TestCompareToImageMatrixResume();
 
 	std::printf( "=== AgentEvalLiveTransportTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

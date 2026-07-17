@@ -1462,6 +1462,19 @@ namespace RISE
 			//! PATH STRING rather than its bytes, so editing the scene file
 			//! in place or the intervention list left a cell wrongly marked
 			//! "current"); that was the bug this version fixes.
+			//!
+			//! P1-1 (still v2): the checkpoints= line serializes the raw
+			//! checkpoint JSON, and for a "render" checkpoint that carries
+			//! "compareToImage" that JSON is only the reference PNG's PATH
+			//! STRING -- editing evals/references/*.png in place left a cached
+			//! cell wrongly "current", the same bug class v1 had for
+			//! path-backed scenes.  A conditional "compareImages=" section
+			//! (below, mirroring the prompts= image-hashing) folds in each
+			//! distinct compareToImage path's FnvHexOfFile.  It is appended
+			//! ONLY when at least one render checkpoint carries compareToImage,
+			//! so every scenario without one hashes byte-identically to before
+			//! this fix -- no version bump, no blanket cache invalidation; only
+			//! compareToImage-bearing scenarios get a new hash.
 			std::string ScenarioContentHash( const AgentEvalScenario& s )
 			{
 				std::string canon = "v2\n";
@@ -1524,6 +1537,38 @@ namespace RISE
 					}
 				}
 				canon += "checkpoints=" + JsonSerialize( s.checkpoints ) + "\n";
+
+				// P1-1: the checkpoints= line above hashes the checkpoint JSON
+				// itself, which for a "render" checkpoint's "compareToImage"
+				// field only pins the reference image's PATH STRING, not its
+				// bytes -- editing evals/references/*.png in place (the same
+				// failure mode prompt reference images had pre-Wave-1) left a
+				// cached matrix cell wrongly "current".  Mirror the prompts=
+				// image-hashing above: walk the render checkpoints in order,
+				// fold in FnvHexOfFile of each DISTINCT compareToImage path
+				// (first-seen order; a path reused across checkpoints is
+				// hashed once), "unreadable" on an unreadable path (matches
+				// the promptsArr fallback -- deterministic either way).
+				if( s.checkpoints.isArray() ) {
+					JsonValue compareImages = JsonValue::MakeArray();
+					std::vector<std::string> seenPaths;
+					for( std::size_t ci = 0; ci < s.checkpoints.size(); ++ci ) {
+						const JsonValue& cp = s.checkpoints.at( ci );
+						if( !cp.isObject() ) continue;
+						if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() || cp.get( "kind" ).asString() != "render" ) continue;
+						if( !cp.has( "compareToImage" ) || !cp.get( "compareToImage" ).isString() ) continue;
+						const std::string& path = cp.get( "compareToImage" ).asString();
+						if( std::find( seenPaths.begin(), seenPaths.end(), path ) != seenPaths.end() ) continue;
+						seenPaths.push_back( path );
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "path", JsonValue::MakeString( path ) );
+						const std::string h = FnvHexOfFile( path );
+						o.set( "fnv", JsonValue::MakeString( h.empty() ? std::string( "unreadable" ) : h ) );
+						compareImages.push_back( o );
+					}
+					if( compareImages.size() > 0 )
+						canon += "compareImages=" + JsonSerialize( compareImages ) + "\n";
+				}
 
 				// Interventions serialized as a JSON array (like prompts/checkpoints
 				// above) for the same injectivity reason.
@@ -2008,23 +2053,42 @@ namespace RISE
 					if( !h.empty() ) r.set( "sceneFileFnv", JsonValue::MakeString( h ) );
 				}
 
-				// Image-reconstruction Wave 1: report-side staleness parity for
-				// reference images, mirroring scenarioFileFnv/sceneFileFnv above.
-				// "refImageFnvs" maps each DISTINCT referenced image path to the
+				// Image-reconstruction Wave 1 (+ P1-1): report-side staleness
+				// parity for reference images, mirroring
+				// scenarioFileFnv/sceneFileFnv above.  "refImageFnvs" maps each
+				// DISTINCT referenced image path -- a prompt attachment OR a
+				// render checkpoint's "compareToImage" reference -- to the
 				// FNV-1a 64 of its current bytes (recomputable by
-				// tools/eval_report.py's fnv1a64_hex) -- omitted entirely (not an
-				// empty object) when no prompt carries images, so absence still
-				// means "no check" rather than "zero images verified".  By this
-				// point every path was already proven readable by the pre-flight
-				// above, so FnvHexOfFile is expected non-empty here; the same
-				// omit-on-empty guard as scenarioFileFnv/sceneFileFnv is kept
-				// anyway (defense-in-depth against a file removed mid-run).
+				// tools/eval_report.py's fnv1a64_hex, which just walks the map
+				// generically; it does not care which source populated a given
+				// key).  Stamped whenever prompts carry images OR any
+				// checkpoint carries compareToImage; omitted entirely (not an
+				// empty object) when neither applies, so absence still means
+				// "no check" rather than "zero images verified".  By this
+				// point every path was already proven readable by the
+				// pre-flight above (prompts) / by CheckRenderKind (compare
+				// images, at grading time), so FnvHexOfFile is expected
+				// non-empty here; the same omit-on-empty guard as
+				// scenarioFileFnv/sceneFileFnv is kept anyway (defense-in-depth
+				// against a file removed mid-run).
 				{
 					JsonValue refImageFnvs = JsonValue::MakeObject();
 					for( std::size_t pi = 0; pi < scenario.prompts.size(); ++pi ) {
 						for( std::size_t ii = 0; ii < scenario.prompts[pi].imagePaths.size(); ++ii ) {
 							const std::string& imgPath = scenario.prompts[pi].imagePaths[ii];
 							if( refImageFnvs.has( imgPath ) ) continue;   // dedupe a path reused across prompts
+							const std::string h = FnvHexOfFile( imgPath );
+							if( !h.empty() ) refImageFnvs.set( imgPath, JsonValue::MakeString( h ) );
+						}
+					}
+					if( scenario.checkpoints.isArray() ) {
+						for( std::size_t ci = 0; ci < scenario.checkpoints.size(); ++ci ) {
+							const JsonValue& cp = scenario.checkpoints.at( ci );
+							if( !cp.isObject() ) continue;
+							if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() || cp.get( "kind" ).asString() != "render" ) continue;
+							if( !cp.has( "compareToImage" ) || !cp.get( "compareToImage" ).isString() ) continue;
+							const std::string& imgPath = cp.get( "compareToImage" ).asString();
+							if( refImageFnvs.has( imgPath ) ) continue;   // dedupe a path reused across checkpoints (or with a prompt image)
 							const std::string h = FnvHexOfFile( imgPath );
 							if( !h.empty() ) refImageFnvs.set( imgPath, JsonValue::MakeString( h ) );
 						}

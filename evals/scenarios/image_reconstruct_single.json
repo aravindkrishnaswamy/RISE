@@ -7,7 +7,7 @@
   "autonomy": "commit",
   "prompts": [
     {
-      "text": "The attached photo shows a small object staged in a studio. Reproduce the ENTIRE setup in the current scene: the object itself (use SDF geometry -- it is a single smooth organic form), its material, the stage (ground plane + backdrop), the lighting (how many lights, their direction, and their colour temperature), and the environment tint. The scene camera already matches the photo's viewpoint exactly -- do not move it. The scene already carries a painter named `pnt_env` wired into the renderer's environment map (currently black) -- set its colour to match the environment tint you observe; you cannot and need not touch the rasterizer itself. First read the modeling-from-image-captures skill and follow its multi-view verification loop. Iterate (render, inspect, adjust) until your renders match the photo.",
+      "text": "The attached photo shows a small object staged in a studio. Reproduce the ENTIRE setup in the current scene: the object itself (use SDF geometry -- it is a single smooth organic form), its material, the stage (ground plane + backdrop), the lighting (how many lights, their direction, and their colour temperature), and the environment tint. The scene camera already matches the photo's viewpoint exactly -- do not move it. The scene already carries a painter named `pnt_env` wired into the renderer's environment map (currently black) -- set its colour to match the environment tint you observe; you cannot and need not touch the rasterizer itself. You are only given this ONE view: for surfaces not visible in the photo, model a plausible smooth continuation of the visible form rather than guessing at unseen detail. First read the modeling-from-image-captures skill and follow its multi-view verification loop. Iterate (render, inspect, adjust) until your renders match the photo.",
       "images": [
         "evals/references/view1.png"
       ]
@@ -68,7 +68,7 @@
         "fov": 40.0
       },
       "compareToImage": "evals/references/view2.png",
-      "rmseMax": 0.012
+      "rmseMax": 0.04
     },
     {
       "kind": "render",
@@ -92,7 +92,7 @@
         "fov": 40.0
       },
       "compareToImage": "evals/references/view3.png",
-      "rmseMax": 0.012
+      "rmseMax": 0.04
     },
     {
       "kind": "render",
@@ -116,7 +116,7 @@
         "fov": 45.0
       },
       "compareToImage": "evals/references/view4.png",
-      "rmseMax": 0.015
+      "rmseMax": 0.04
     },
     {
       "kind": "objectmap",

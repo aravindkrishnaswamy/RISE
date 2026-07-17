@@ -324,3 +324,68 @@ now goes through the identical ACES pipeline the §3 anchor (c) 0.033–0.048
 was measured on), so the checkpoint keeps its discriminating power. Because
 the two pipelines are now identical, the §5/§7 CLI-calibrated thresholds are
 reachable as designed; the §8 caveat is retired.
+
+## 10. `image_reconstruct_single` two-tier grading (2026-07-17)
+
+`image_reconstruct_single.json` supplies the model only `view1.png` (see its
+single prompt attachment) but, before this change, graded ALL FOUR
+`compareToImage` checkpoints at the §5/§7 CLI-calibrated caps
+(view1=0.015, view2=view3=0.012, view4=0.015). Those caps were derived to
+also reject a *shape* defect (anchor (b), the notch) on views 2/3 — geometry
+that is genuinely UNOBSERVABLE from the single supplied view1 photo. Grading
+the hidden side that strictly meant a correct, honest reconstruction that
+plausibly continues the unseen surface (rather than guessing the exact
+notch position/depth) could fail views 2-4 for guessing "wrong" on geometry
+it was never shown — i.e. the strict caps were partly measuring priors/luck
+on the hidden side, not reconstruction fidelity of what's actually visible.
+`image_reconstruct_multi.json` (which supplies all four views) is UNCHANGED
+and keeps the full §5/§7 strict caps on every view — every checkpoint stays
+fully observable there.
+
+**Fix: two-tier caps for `image_reconstruct_single` only.**
+
+- **view1 stays STRICT: `rmseMax` 0.015** (unchanged from §5/§7) — it is the
+  ONE fully-observable view (the model's own attached photo), so nothing
+  about its grading is relaxed.
+- **views 2/3/4 become SHAPE-PLAUSIBILITY caps: `rmseMax` 0.04 each**
+  (relaxed from 0.012/0.012/0.015). This admits a reconstruction whose
+  hidden-side geometry is a *plausible smooth continuation* of the visible
+  form (no notch guessed, or a differently-shaped smooth backside) while
+  still rejecting a materially wrong reconstruction (empty stage, a
+  billboard/flat-cutout hero, wrong material, wrong lighting).
+
+**Anchor arithmetic for the 0.04 relaxed cap** (reusing the §3 anchor
+measurements, all in RMSE):
+
+| anchor | view2 | view3 | view4 | vs. 0.04 cap |
+|---|---|---|---|---|
+| (b) shape-detail, no notch (the "hidden side, honestly plausible" proxy) | 0.01663 | 0.01587 | 0.00967 | **ADMITTED** — all three sit at ≥2.4x margin below 0.04 (0.04/0.01663 = 2.4x, 0.04/0.01587 = 2.5x, 0.04/0.00967 = 4.1x) |
+| (e) gross failure, empty stage | 0.13346 | 0.17000 | 0.12647 | **REJECTED** — 3.2-4.5x ABOVE the cap |
+| billboard / silhouette-collapse class | ≈ empty-stage magnitude (side-on views of a flat cutout lose nearly all silhouette agreement with a 3-D reference, the same failure shape as anchor (e)) | — | — | **REJECTED**, same margin as (e) |
+
+Anchor (c) lighting (0.0325-0.0479) and (d) material (0.0460-0.0872) remain
+ABOVE 0.04 on view3/view4 and straddle it closely on view2 (0.0325 <
+0.04) — this is intentional and harmless: those defects are also caught by
+view1's own strict 0.015 cap (lighting/material are observable in the
+single supplied photo), so views 2-4 do not need to be the ones catching
+them. The two-tier split's job is narrowly to stop penalizing UNOBSERVABLE
+hidden-side shape guesses, not to re-derive every anchor's separation on
+every view.
+
+Why not just drop the view2-4 checkpoints instead of relaxing them: dropping
+them entirely would re-admit a billboard/flat-cutout reconstruction that
+happens to match view1 face-on but has no real volume from any other
+angle — the multi-view compares are still load-bearing for that class of
+defect, just at a plausibility threshold instead of a fidelity threshold.
+
+Adversarial controls (`TestAdversarialOracleControls` in
+`tests/AgentEvalCheckTest.cpp`) (h) (empty stage) and (i) (neutral-key
+lighting) only assert against `checkpoints[0]` (view1, still strict at
+0.015) and the non-render checkpoints — neither hardcodes an expectation
+against checkpoints 1-3, so neither needed a code change for this retier;
+verified by reading both control blocks. Control (h)'s empty-stage anchor
+(e) is 0.118-0.170 across every view, comfortably above BOTH the 0.015
+strict cap (view1) and the 0.04 relaxed cap (views 2-4) it would also fail
+if it were asserted. Control (i)'s neutral-key anchor (c) view1 value
+(0.0381) is above the unchanged 0.015 strict cap, so its lone assertion is
+unaffected by the retier.

@@ -365,6 +365,113 @@ static void RunNoFrameYet()
 	std::remove( scenePath.c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// P2: ResolveBeautyDisplayTransform_ must scan ALL declared
+//   file_rasterizeroutput chunks and adopt the FIRST **LDR** one's
+//   declared curve+exposure, not just the first output of any kind.
+//   Before the fix, a scene declaring an HDR output FIRST and an LDR
+//   output with `display_transform none` SECOND wrongly fell back to
+//   the ACES default (the HDR chunk's unconditional `break`) instead of
+//   honouring the LDR chunk it never looked past the HDR one to find.
+//   Exercised directly via the ForTest_ResolveBeautyDisplayTransform
+//   hook (added alongside this fix) rather than round-tripping through
+//   a full render + PNG decode -- the RESOLVED (exposureEV,
+//   displayTransform) pair is exactly what the bug and the fix are
+//   about.
+//////////////////////////////////////////////////////////////////////
+
+// DISPLAY_TRANSFORM enum values, mirrored here (kept as plain ints in
+// ResolveBeautyDisplayTransform_'s signature to keep AgentSession.h off
+// the DisplayTransform.h dependency -- see its doc).
+static const int kDT_None  = 0;
+static const int kDT_ACES  = 2;
+
+static void RunDisplayTransformOrdering()
+{
+	std::printf( "=== ResolveBeautyDisplayTransform_: HDR-first / LDR-second ordering (P2) ===\n" );
+
+	// (1) THE BUG CASE: an HDR (EXR) output declared FIRST, an LDR (PNG)
+	// output with an EXPLICIT `display_transform none` declared SECOND.
+	// Pre-fix this resolved to the ACES default (kDT_ACES); post-fix it
+	// must resolve to the LDR output's own declared "none" (kDT_None).
+	{
+		const std::string scene =
+			std::string( kScene ) +
+			"\nfile_rasterizeroutput\n{\n\tpattern out.exr\n\ttype EXR\n\tcolor_space Rec709RGB_Linear\n}\n\n"
+			"file_rasterizeroutput\n{\n\tpattern out.png\n\ttype PNG\n\tdisplay_transform none\n}\n";
+		const std::string scenePath = WriteTemp( "agent_viewport_dt_hdr_first.RISEscene", scene );
+		Check( !scenePath.empty(), "HDR-first: scratch scene file written" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "HDR-first: scene loads via the CST path" );
+		{
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			Check( session != nullptr, "HDR-first: AgentSession::WrapJob wraps the Job" );
+
+			double exposureEV = -999.0;
+			int    dt         = -999;
+			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt );
+			Check( dt == kDT_None,
+				"HDR-first: resolves to the LATER LDR output's \"none\" transform, "
+				"not the ACES default the FIRST (HDR) output would wrongly trigger "
+				"(got " + std::to_string( dt ) + ", want " + std::to_string( kDT_None ) + ")" );
+			Check( exposureEV == 0.0, "HDR-first: exposureEV is 0 (no camera EV, no declared exposure)" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// (2) CONTROL, reversed order: the SAME two chunks, LDR declared
+	// FIRST this time.  Must resolve identically to (1) -- proving the
+	// fix is genuinely "first LDR wins", not merely "last chunk wins" or
+	// some other accidental reordering.
+	{
+		const std::string scene =
+			std::string( kScene ) +
+			"\nfile_rasterizeroutput\n{\n\tpattern out.png\n\ttype PNG\n\tdisplay_transform none\n}\n\n"
+			"file_rasterizeroutput\n{\n\tpattern out.exr\n\ttype EXR\n\tcolor_space Rec709RGB_Linear\n}\n";
+		const std::string scenePath = WriteTemp( "agent_viewport_dt_ldr_first.RISEscene", scene );
+		Check( !scenePath.empty(), "LDR-first: scratch scene file written" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "LDR-first: scene loads via the CST path" );
+		{
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			double exposureEV = -999.0;
+			int    dt         = -999;
+			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt );
+			Check( dt == kDT_None, "LDR-first: resolves to \"none\" (the LDR output's own declaration)" );
+			Check( exposureEV == 0.0, "LDR-first: exposureEV is 0" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// (3) CONTROL, HDR-only: no LDR output exists anywhere -- must fall
+	// back to the ACES/0EV default (the pre-loop initial values), never
+	// crash or silently adopt the HDR chunk's own (ignored) settings.
+	{
+		const std::string scene =
+			std::string( kScene ) +
+			"\nfile_rasterizeroutput\n{\n\tpattern out.exr\n\ttype EXR\n\tcolor_space Rec709RGB_Linear\n}\n";
+		const std::string scenePath = WriteTemp( "agent_viewport_dt_hdr_only.RISEscene", scene );
+		Check( !scenePath.empty(), "HDR-only: scratch scene file written" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "HDR-only: scene loads via the CST path" );
+		{
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			double exposureEV = -999.0;
+			int    dt         = -999;
+			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt );
+			Check( dt == kDT_ACES, "HDR-only: no LDR output anywhere -> falls back to the ACES default" );
+			Check( exposureEV == 0.0, "HDR-only: exposureEV falls back to 0" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentViewportReadTest ===\n" );
@@ -372,6 +479,7 @@ int main()
 	RunPositiveAndIsolation();
 	RunNoController();
 	RunNoFrameYet();
+	RunDisplayTransformOrdering();
 
 	std::printf( "=== AgentViewportReadTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

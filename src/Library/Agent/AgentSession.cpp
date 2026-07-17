@@ -2274,26 +2274,33 @@ namespace RISE
 						if( !node || node->kind != RISE::Cst::NodeKind::Chunk ) continue;
 						if( node->role != "file_rasterizeroutput" ) continue;
 
-						// FIRST declared file output wins (matches the CLI, whose
-						// first PNG output produced these references).
+						// P2 fix: scan ALL file_rasterizeroutput chunks in document
+						// order and adopt the FIRST **LDR** one's declared curve +
+						// exposure (matches the CLI, whose first PNG output produced
+						// these references) -- an HDR output is SKIPPED, not stopped
+						// on, so a LATER LDR output's transform is still found. The
+						// pre-fix code `break`-ed after the FIRST output regardless
+						// of kind: a scene declaring an HDR output first and an LDR
+						// output with, say, `display_transform none` second wrongly
+						// fell back to the ACES/0EV default (set above the loop)
+						// instead of honouring the LDR output's declared curve.
 						const std::string type = paramValue( node, "type" );
 						const bool typeIsHDR = ( type == "HDR" || type == "RGBEA" || type == "EXR" );
-						if( !typeIsHDR ) {
-							// LDR: adopt its declared curve (default ACES) + exposure.
-							const std::string dtStr = paramValue( node, "display_transform" );
-							if     ( dtStr == "none"     ) dt = 0;
-							else if( dtStr == "reinhard" ) dt = 1;
-							else if( dtStr == "aces"     ) dt = 2;
-							else if( dtStr == "agx"      ) dt = 3;
-							else if( dtStr == "hable"    ) dt = 4;
-							// (absent/unknown -> keep the ACES default)
-							const std::string exStr = paramValue( node, "exposure" );
-							if( !exStr.empty() ) {
-								exposureEV = std::strtod( exStr.c_str(), nullptr );
-							}
+						if( typeIsHDR ) continue;   // keep scanning -- a linear archival curve would blow out the 8-bit PNG preview anyway
+
+						// LDR: adopt its declared curve (default ACES) + exposure,
+						// then stop -- this is the "first LDR output wins" output.
+						const std::string dtStr = paramValue( node, "display_transform" );
+						if     ( dtStr == "none"     ) dt = 0;
+						else if( dtStr == "reinhard" ) dt = 1;
+						else if( dtStr == "aces"     ) dt = 2;
+						else if( dtStr == "agx"      ) dt = 3;
+						else if( dtStr == "hable"    ) dt = 4;
+						// (absent/unknown -> keep the ACES default)
+						const std::string exStr = paramValue( node, "exposure" );
+						if( !exStr.empty() ) {
+							exposureEV = std::strtod( exStr.c_str(), nullptr );
 						}
-						// HDR output: keep the ACES preview default (a linear
-						// archival curve would blow out the 8-bit PNG preview).
 						break;
 					}
 				}

@@ -656,13 +656,14 @@ def check_staleness(records, warnings):
     report then reflects the current oracle. This pass is a best-effort
     heads-up, not that guarantee.
 
-    Image-reconstruction Wave 1 extends the same raw-byte pattern to
-    scenario prompts[] carrying reference images: "refImageFnvs" (present
-    only when at least one prompt carried images) maps each referenced image
-    PATH to the FNV-1a 64 of its bytes at grading time; a mismatch against
-    the CURRENT file on disk means the reference image was edited in place
-    since this cell was graded, and warns/tags "stale" exactly like
-    scenarioFileFnv/sceneFileFnv above."""
+    Image-reconstruction Wave 1 (+ P1-1) extends the same raw-byte pattern to
+    every reference image a scenario touches: "refImageFnvs" (present when
+    at least one prompt carried images OR at least one render checkpoint
+    carried "compareToImage") maps each referenced image PATH -- prompt
+    attachment or compareToImage reference alike -- to the FNV-1a 64 of its
+    bytes at grading time; a mismatch against the CURRENT file on disk means
+    the reference image was edited in place since this cell was graded, and
+    warns/tags "stale" exactly like scenarioFileFnv/sceneFileFnv above."""
     by_scenario = defaultdict(list)
     for r in records:
         by_scenario[r.scenario_id].append(r)
@@ -761,15 +762,18 @@ def check_staleness(records, warnings):
                             )
                             _mark_stale(r, "stale")
 
-            # Image-reconstruction Wave 1: "refImageFnvs" maps each reference
-            # image PATH a scenario's prompts[] carried at grading time to the
-            # FNV-1a 64 of its bytes then (stamped by RunScenarioDriven,
-            # AgentEvalRunner.cpp) -- mirrors scenarioFileFnv/sceneFileFnv
-            # above, one entry per distinct path instead of a single hash.
-            # Omitted entirely (not an empty object) when no prompt carried
-            # images, so absence means "no check", never "stale". A path that
-            # is now unreadable (e.g. moved/deleted) is skipped SILENTLY, like
-            # the scene/scenario file checks above -- only an actual bytes
+            # Image-reconstruction Wave 1 (+ P1-1): "refImageFnvs" maps each
+            # reference image PATH a scenario touched at grading time --
+            # either a prompt attachment or a render checkpoint's
+            # "compareToImage" -- to the FNV-1a 64 of its bytes then (stamped
+            # by RunScenarioDriven, AgentEvalRunner.cpp) -- mirrors
+            # scenarioFileFnv/sceneFileFnv above, one entry per distinct path
+            # instead of a single hash. This block treats every entry
+            # identically regardless of which source populated it. Omitted
+            # entirely (not an empty object) when neither source applied, so
+            # absence means "no check", never "stale". A path that is now
+            # unreadable (e.g. moved/deleted) is skipped SILENTLY, like the
+            # scene/scenario file checks above -- only an actual bytes
             # mismatch on a still-readable file warns.
             ref_image_fnvs = r.result.get("refImageFnvs")
             if isinstance(ref_image_fnvs, dict):
@@ -1737,6 +1741,41 @@ def selftest():
         if _rec_img_mismatch.stale_marker != "stale":
             raise AssertionError(
                 f"a mismatching refImageFnvs entry must be tagged stale; got {_rec_img_mismatch.stale_marker!r}")
+
+        # (7c) P1-1: refImageFnvs is source-agnostic -- the C++ side stamps a
+        # prompt attachment path and a render checkpoint's compareToImage
+        # path into the SAME map (see AgentEvalRunner.cpp RunScenarioDriven),
+        # and this reporter's check above just walks path->fnv generically
+        # with no idea which source populated a given key.  Assert a MIXED
+        # map (one entry standing in for a prompt image, one for a
+        # compareToImage reference) is handled correctly: the matching entry
+        # is silent, the mismatching entry still warns/tags stale, and
+        # neither entry masks the other.
+        _cmp_path = os.path.join("evals", "references", "cmp_test.png")
+        os.makedirs(os.path.dirname(_cmp_path), exist_ok=True)
+        _cmp_bytes = b"a different set of not-a-real-png bytes"
+        with open(_cmp_path, "wb") as _f:
+            _f.write(_cmp_bytes)
+        _correct_cmp_fnv = fnv1a64_hex(_cmp_bytes)
+
+        _rec_mixed = RunRecord()
+        _rec_mixed.scenario_id = "fnv_test_scenario"
+        _rec_mixed.dir_path = "fake/fnv_test_scenario__anthropic__r1"
+        _rec_mixed.result = {"scenarioId": "fnv_test_scenario", "scenarioContentHash": "somehash",
+                              "refImageFnvs": {_img_path: _correct_img_fnv, _cmp_path: "0" * 16}}
+        _w = []
+        check_staleness([_rec_mixed], _w)
+        if not any("STALE" in m and "reference image" in m and _cmp_path in m for m in _w):
+            raise AssertionError(
+                f"a mixed refImageFnvs map must still flag the mismatching (compareToImage-style) "
+                f"entry as STALE; got {_w}")
+        if any(_img_path in m for m in _w):
+            raise AssertionError(
+                f"a mixed refImageFnvs map must not flag the matching (prompt-image-style) entry; got {_w}")
+        if _rec_mixed.stale_marker != "stale":
+            raise AssertionError(
+                f"a mixed refImageFnvs map with one mismatching entry must be tagged stale; "
+                f"got {_rec_mixed.stale_marker!r}")
 
         # A record with NO refImageFnvs key (the common, no-images case) must
         # never warn/tag on account of images -- absence means "no check".

@@ -1378,6 +1378,19 @@ namespace RISE
 				unsigned int& outMinDistanceUsed,
 				unsigned int forTestGoldenTries = 4096 );
 
+			//! P2 test hook: exercise ResolveBeautyDisplayTransform_ directly
+			//! against the currently-loaded head, without going through a full
+			//! Render()/PNG-encode round trip.  Lets a unit test assert on the
+			//! RESOLVED (exposureEV, displayTransform) pair itself -- e.g. that
+			//! an HDR `file_rasterizeroutput` declared FIRST no longer shadows
+			//! a LATER LDR output's declared `display_transform`/`exposure` --
+			//! rather than only observing it indirectly through pixel bytes.
+			void ForTest_ResolveBeautyDisplayTransform( double& outExposureEV,
+			                                            int& outDisplayTransform ) const
+			{
+				ResolveBeautyDisplayTransform_( outExposureEV, outDisplayTransform );
+			}
+
 		private:
 			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );
 			AgentSession( const AgentSession& );             // deleted
@@ -1413,9 +1426,18 @@ namespace RISE
 			//! `exposureEV` when the head declares one, otherwise the LDR
 			//! default (ACES filmic, 0 EV) -- an agent render is always an
 			//! 8-bit PNG preview, so even an HDR-only or output-less head gets
-			//! a viewable tone curve.  The active camera's
-			//! GetExposureCompensationEV() is stacked additively onto the
-			//! exposure, matching FileRasterizerOutput's camera-EV stacking.
+			//! a viewable tone curve.  P2 fix: scans ALL `file_rasterizeroutput`
+			//! chunks in document order and adopts the FIRST **LDR** one's
+			//! declared curve+exposure -- an HDR output earlier in document
+			//! order is SKIPPED (not stopped on), so a LATER LDR output's
+			//! transform is still found; only when NO LDR output exists
+			//! anywhere does the ACES/0EV default stand.  (Pre-fix, the first
+			//! `file_rasterizeroutput` of ANY kind won unconditionally, so an
+			//! HDR-output-first, LDR-output-second head wrongly fell back to
+			//! the ACES default instead of the LDR output's own declared
+			//! transform.)  The active camera's GetExposureCompensationEV() is
+			//! stacked additively onto the exposure, matching
+			//! FileRasterizerOutput's camera-EV stacking.
 			//! `outDisplayTransform` uses the DISPLAY_TRANSFORM enum values
 			//! (int to keep this header off the DisplayTransform.h dependency).
 			//! Never applied to the OBJECTMAP identity sink (which must emit
