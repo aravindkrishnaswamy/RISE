@@ -840,14 +840,29 @@ public:
 		if( !mpDepthListener ) {
 			return;
 		}
+		// AttachScene runs at the top of EVERY RasterizeScene pass (the
+		// interactive hot path -- every live-drag frame), so the O(N)
+		// extent walk is cached keyed on (scene, spatial generation):
+		// GetSpatialStructureGeneration() advances exactly when object
+		// bounds can have changed (spatial edits / TLAS invalidation) and
+		// stays put for material/painter edits and camera motion.
 		Scalar diag = 0.0;
 		if( pScene_ && pScene_->GetObjects() ) {
+			const IObjectManager* objs = pScene_->GetObjects();
+			const unsigned long long gen = objs->GetSpatialStructureGeneration();
+			if( pScene_ == mExtentScene && gen == mExtentGeneration ) {
+				mpDepthListener->SetSceneDiagonal( mExtentDiagonal );
+				return;
+			}
 			SceneExtentEnum extent;
-			pScene_->GetObjects()->EnumerateObjects( static_cast<IEnumCallback<IObject>&>( extent ) );
+			objs->EnumerateObjects( static_cast<IEnumCallback<IObject>&>( extent ) );
 			if( extent.any ) {
 				diag = Vector3Ops::Magnitude(
 					Vector3Ops::mkVector3( extent.box.ur, extent.box.ll ) );
 			}
+			mExtentScene = pScene_;
+			mExtentGeneration = gen;
+			mExtentDiagonal = diag;
 		}
 		mpDepthListener->SetSceneDiagonal( diag );
 	}
@@ -856,6 +871,12 @@ private:
 	// Borrowed: the SAME object as the caster's default shader, kept
 	// alive by the caster's own shader reference.
 	DepthViewShader* mpDepthListener;
+	// Extent cache -- see AttachScene.  mExtentScene is an identity key
+	// only (never dereferenced), so a dangling pointer can at worst force
+	// one spurious recompute after a scene teardown/rebuild.
+	const IScene*             mExtentScene = nullptr;
+	unsigned long long        mExtentGeneration = 0;
+	Scalar                    mExtentDiagonal = 0.0;
 };
 
 }

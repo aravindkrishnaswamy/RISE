@@ -156,11 +156,12 @@ GetViewportRenderMode() for UI state.
 - Object picking, gizmos, region-of-interest, camera nav all keep working in
   every mode (they don't depend on shading).
 - C-ABI: `RISE_API_SceneEditController_{Set,Get}ViewportRenderMode(name)` +
-  `RISE_API_ListViewportRenderModes` (names + titles + questions, for UI and
-  agent listing).
+  registry enumeration via `RISE_API_GetViewportRenderModeCount()` /
+  `RISE_API_GetViewportRenderModeInfo(index, …)` (names + titles + questions,
+  for UI and agent listing).
 - GUI: a compact mode dropdown in the viewport chrome (Mac: viewport toolbar;
   Windows: TopBar combobox). Persisted per-session only; every scene opens in
-  `beauty` (a scene silently opening in depth mode would read as a broken
+  `preview` (a scene silently opening in depth mode would read as a broken
   render).
 
 ## 6. Per-render config overrides (P2 prerequisite)

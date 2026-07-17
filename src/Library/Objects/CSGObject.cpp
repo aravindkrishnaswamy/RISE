@@ -551,6 +551,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
 		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
 
+		// The child's Object::IntersectRay landed ptWireNearestEdge in
+		// THIS CSG object's local frame (it transforms by the child's own
+		// forward matrix, exactly like ptIntersection) -- promote it to
+		// world with the same transform ptIntersection gets above, or the
+		// wireframe shader would measure a distance between two points in
+		// different frames on any placed csg_object.
+		if( ri.geometric.bHasWireEdgeInfo ) {
+			ri.geometric.ptWireNearestEdge = Point3Ops::Transform(
+				m_mxFinalTrans, ri.geometric.ptWireNearestEdge );
+		}
+
 		// Re-compute the ranges in world space
 		ri.geometric.range = Vector3Ops::Magnitude( Vector3Ops::mkVector3( ri.geometric.ptIntersection, orig.origin ) );
 
