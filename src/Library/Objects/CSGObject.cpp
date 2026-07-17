@@ -381,6 +381,10 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.range = riObjB.geometric.range2;
 					ri.geometric.vNormal = riObjB.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal2;
+					// EXIT-designated boundary (union, origin inside an
+					// operand): the wire-edge point belongs to the ENTRY
+					// face -- clear, matching the SUBTRACTION exit case.
+					ri.geometric.bHasWireEdgeInfo = false;
 				} else {
 					ri = riObjA;
 				}
@@ -396,6 +400,10 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.range = riObjA.geometric.range2;
 					ri.geometric.vNormal = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal2;
+					// EXIT-designated boundary (union, origin inside an
+					// operand): the wire-edge point belongs to the ENTRY
+					// face -- clear, matching the SUBTRACTION exit case.
+					ri.geometric.bHasWireEdgeInfo = false;
 				} else {
 					ri = riObjB;
 				}

@@ -7075,22 +7075,29 @@ bool SceneEditController::SetViewportXray( bool xray )
 	}
 	CancelAndParkRender_( lk );
 
-	mViewportXray = xray;
-
-	// If a data mode is CURRENTLY active, rebuild its caster with the new
-	// flag right away (reuses SetViewportRenderMode's own install path).
-	// If "preview" is active, just store the flag above -- it applies the
-	// next time a data mode is selected (see header doc).
+	// Commit the member ONLY after any required caster rebuild succeeds --
+	// mirroring SetViewportRenderMode's discipline (state untouched on
+	// failure), so GetViewportXray can never report a flag the installed
+	// caster does not reflect.  (The failure branch is dead code today --
+	// the factory covers every selectable data mode -- but a future
+	// registry change could make it live.)
 	if( mViewportRenderMode != Implementation::ViewportRenderMode::Preview )
 	{
+		// InstallViewModeCaster_ reads mViewportXray for the rebuild, so
+		// stage the new value across the call and restore on failure.
+		const bool prior = mViewportXray;
+		mViewportXray = xray;
 		if( !InstallViewModeCaster_( mViewportRenderMode ) )
 		{
-			// Shouldn't happen (same reasoning as SetViewportRenderMode) --
-			// leave mViewportXray at its new value (it's just a stored
-			// flag; nothing was installed to roll back) but skip the
-			// repaint kick since nothing actually changed on screen.
+			mViewportXray = prior;
 			return false;
 		}
+	}
+	else
+	{
+		// "preview" active: just store the flag -- it applies the next
+		// time a data mode is selected (see header doc).
+		mViewportXray = xray;
 	}
 
 	// Kick a repaint -- same inline store-then-notify SetViewportRenderMode

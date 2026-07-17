@@ -559,8 +559,13 @@ void ResolveXrayHit( RayIntersection& ri, const IRayCaster& caster )
 		// Nudge off the surface along the SAME direction (no bending) --
 		// scaled by the hit's own range so it means something at both
 		// tabletop and kilometre scale, floored so it's never a no-op at
-		// near-zero range.
-		Scalar eps = ri.geometric.range * 1.0e-4;
+		// near-zero range.  1e-5 keeps the overshoot bound tight (an
+		// opaque surface closer behind the glass than range*1e-5 is
+		// stepped over -- ~1mm at 100 units); double-precision hit error
+		// is orders of magnitude below the 1e-6 floor, and a too-small
+		// nudge merely re-hits the same surface and consumes one of the
+		// 16 bounded skips.
+		Scalar eps = ri.geometric.range * 1.0e-5;
 		if( eps < 1.0e-6 ) {
 			eps = 1.0e-6;
 		}
@@ -573,6 +578,16 @@ void ResolveXrayHit( RayIntersection& ri, const IRayCaster& caster )
 		if( !next.geometric.bHit )
 		{
 			return;   // keep `ri` -- the last transmissive hit, an honest answer over a black hole
+		}
+		// The primary hit had its bump/normal-map modifier applied by
+		// RayCaster::CastRay BEFORE Shade; this continuation bypasses the
+		// caster, so apply it here or Normals mode would show UNPERTURBED
+		// normals for exactly the surfaces x-ray exists to inspect (a
+		// bump-mapped dial under its crystal).  Same call ordering as
+		// RayCaster::CastRay's modifier site.
+		if( next.pModifier )
+		{
+			next.pModifier->Modify( next.geometric );
 		}
 		ri = next;
 	}
