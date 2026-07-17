@@ -3079,6 +3079,211 @@ static void TestAdversarialOracleControls()
 			"t_adv_multi_turn_edit_applied", 3, "applied",
 			"multi_turn_edit/turn-1-rejected-color control" );
 	}
+
+	// (h)/(i)/(j) below exercise the Wave-5 image_reconstruct_* scenarios.
+	// Their checkpoint arrays are 4 render compares + objectmap + document +
+	// diagnostics + trajectory (indices 0-3 = view1..view4 compares, 4 =
+	// objectmap, 5 = document chunk_count, 6 = diagnostics, 7 = trajectory).
+	// Unlike (a)-(g), an empty-stage or wrong-lighting reconstruction fails
+	// MULTIPLE checkpoints at once (all four compares share the same root
+	// cause), so RunAdversarialControl's "every OTHER checkpoint must stay
+	// green" rule does not apply here -- these three controls are written by
+	// hand instead, asserting only the SPECIFIC checkpoints the task calls
+	// out, exactly as CALIBRATION.md's anchor measurements predict.
+
+	// (h) image_reconstruct_single: a fixture that inserts NOTHING (reads the
+	// skill and the document, renders and looks, then ends the turn on an
+	// empty stage). CALIBRATION.md anchor (e) (gross failure -- hero object
+	// deleted entirely) measures RMSE 0.118-0.170 across all four views,
+	// versus caps of 0.012-0.015 -- every compare checkpoint fails, and the
+	// objectmap/document checkpoints miss too (nothing was ever built). Only
+	// the view1 compare (checkpoint 0) is asserted here, per the task's
+	// explicit carve-out: an empty scene legitimately fails several
+	// checkpoints at once, so there is no single "attributable" failure to
+	// isolate the way (a)-(g) do.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_empty" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/empty-stage control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the modeling skill first.",
+			{ { "read_skill", ( []{ JsonValue in = JsonValue::MakeObject();
+			                         in.set( "name", JsonValue::MakeString( "modeling-from-image-captures" ) );
+			                         return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Checking the scaffold.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Rendering as-is.",
+			{ { "render", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Looking at it.",
+			{ { "read_image", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Done.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/empty-stage control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/empty-stage control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/empty-stage control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/empty-stage control: allPassed is FALSE against an empty stage" );
+		if( r.checkpoints.size() > 0 ) {
+			Check( !r.checkpoints[0].passed,
+				"image_reconstruct_single/empty-stage control: checkpoints[0] (view1 compare) failed (detail: " +
+				r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[0].detail.find( "RMSE" ) != std::string::npos,
+				"image_reconstruct_single/empty-stage control: checkpoints[0] detail names RMSE (detail: " +
+				r.checkpoints[0].detail + ")" );
+		}
+	}
+
+	// (i) image_reconstruct_single: every GT chunk lifted verbatim EXCEPT the
+	// key light's exitance colour, which is recoloured neutral white (1 1 1,
+	// same scale/power) instead of the warm (1.0 0.82 0.58) ground truth.
+	// CALIBRATION.md anchor (c) measures RMSE 0.033-0.048 across all four
+	// views against caps of 0.012-0.015 -- every compare checkpoint fails on
+	// lighting colour alone -- while the object/stage/geometry are otherwise
+	// exactly right, so the objectmap and sdf chunk_count checkpoints stay
+	// green: the failure is attributable to lighting, not shape or a missing
+	// object.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_neutral_key" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/neutral-key control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		int msgIdx = 2;
+		auto insertMsg = [&]( const std::string& text, const std::string& chunkText ) {
+			fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ), text,
+				{ { "insert_chunk", InsertChunkInput( chunkText ) } }, "tool_use" ) );
+		};
+		insertMsg( "Teal albedo painter.", "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" );
+		insertMsg( "Ground albedo painter.", "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" );
+		insertMsg( "Backdrop albedo painter.", "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" );
+		insertMsg( "Key light exitance painter -- NEUTRAL WHITE, not the GT warm colour.",
+			"uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 1.0 1.0\n}" );
+		// pnt_env is NOT inserted -- the scaffold already declares it (wired into
+		// the rasterizer's radiance_map; the rasterizer chunk is unnamed and
+		// singleton, so it cannot be re-targeted after load). Recolour the
+		// scaffold's placeholder instead, matching the committed fixture's
+		// approach.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ),
+			"Recolouring the scaffold's placeholder environment-tint painter.",
+			{ { "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } }, "tool_use" ) );
+		insertMsg( "Hero material.", "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" );
+		insertMsg( "Ground material.", "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" );
+		insertMsg( "Backdrop material.", "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" );
+		insertMsg( "Key luminaire material -- same scale 42.0 as GT, only colour changed.",
+			"lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" );
+		insertMsg( "Ground geometry.",
+			"clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" );
+		insertMsg( "Backdrop geometry.",
+			"clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" );
+		insertMsg( "Key light geometry.",
+			"clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" );
+		insertMsg( "Hero SDF geometry, verbatim from the ground truth.",
+			"sdf_geometry\n{\n\tname herogeom\n"
+			"\tpart capsule union 0 0 0.75 0 0 0 0 1 1 1 0.30 0.45 0 0\n"
+			"\tpart sphere smin 0.15 0 1.50 0 0 0 0 1 0.62 1 0.62 0 0 0\n"
+			"\tpart torus smin 0.12 0 1.20 0 0 0 0 1 1 1 0.36 0.12 0 0\n"
+			"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 0 0 0 1 1 1 0.22 0.17 0.17 0.04\n}" );
+		insertMsg( "Ground object.", "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" );
+		insertMsg( "Backdrop object.", "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" );
+		insertMsg( "Key light object.", "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" );
+		insertMsg( "Hero object.", "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" );
+		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx ),
+			"Built the scene; key light is neutral white.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/neutral-key control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/neutral-key control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/neutral-key control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/neutral-key control: allPassed is FALSE against a neutral-white key light" );
+		if( r.checkpoints.size() > 7 ) {
+			Check( !r.checkpoints[0].passed,
+				"image_reconstruct_single/neutral-key control: checkpoints[0] (view1 compare) failed on lighting alone (detail: " +
+				r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[4].passed,
+				"image_reconstruct_single/neutral-key control: checkpoints[4] (objectmap) still PASSES -- attributable to lighting, not shape (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[5].passed,
+				"image_reconstruct_single/neutral-key control: checkpoints[5] (sdf chunk_count) still PASSES (detail: " +
+				r.checkpoints[5].detail + ")" );
+		}
+	}
+
+	// (j) image_reconstruct_single: the hero is built as a plain
+	// sphere_geometry instead of an sdf_geometry (a non-SDF shape at roughly
+	// the object's centre). The objectmap checkpoint's expectGeometryKind
+	// binds the hit object's geometry chunk and requires it to be
+	// 'sdf_geometry' -- it fails with a detail naming the ACTUAL kind
+	// ('sphere_geometry'). The render compares also fail (a sphere silhouette
+	// does not match the reference photo's mushroom/rocket silhouette) but
+	// that is not the assertion under test here.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_mesh_geom" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/non-sdf-geometry control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Teal albedo painter.",
+			{ { "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Hero material.",
+			{ { "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Hero geometry -- a SPHERE, not an SDF.",
+			{ { "insert_chunk", InsertChunkInput( "sphere_geometry\n{\n\tname herogeom\n\tradius 0.8\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Placing the hero near the object's centre.",
+			{ { "insert_chunk", InsertChunkInput(
+				"standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0.9 0\n\tmaterial teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6", "Built the hero as a sphere.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/non-sdf-geometry control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/non-sdf-geometry control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/non-sdf-geometry control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/non-sdf-geometry control: allPassed is FALSE against a sphere hero" );
+		if( r.checkpoints.size() > 4 ) {
+			Check( !r.checkpoints[4].passed,
+				"image_reconstruct_single/non-sdf-geometry control: checkpoints[4] (objectmap expectGeometryKind) failed (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[4].detail.find( "sphere_geometry" ) != std::string::npos,
+				"image_reconstruct_single/non-sdf-geometry control: checkpoints[4] detail names the actual kind 'sphere_geometry' (detail: " +
+				r.checkpoints[4].detail + ")" );
+		}
+	}
 }
 
 int main()

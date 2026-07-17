@@ -1,0 +1,155 @@
+{
+  "id": "image_reconstruct_multi",
+  "title": "Reconstruct a studio object + stage + lighting from four multi-view reference photos",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\nuniformcolor_painter\n{\n\tname pnt_env\n\tcolor 0 0 0\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n}\n\nfilm\n{\n\twidth 256\n\theight 256\n}\n\npinhole_camera\n{\n\tlocation 2.6 1.8 3.2\n\tlookat 0 0.8 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    {
+      "text": "The four attached photos show the same small object staged in a studio, captured from four viewpoints: a front-3/4 view, a right-side view, a back-3/4 view, and an elevated view. Reproduce the ENTIRE setup in the current scene: the object itself (use SDF geometry -- it is a single smooth organic form), its material, the stage (ground plane + backdrop), the lighting (how many lights, their direction, and their colour temperature), and the environment tint. The scene camera already matches the first (front-3/4) photo's viewpoint exactly -- do not move it. The scene already carries a painter named `pnt_env` wired into the renderer's environment map (currently black) -- set its colour to match the environment tint you observe; you cannot and need not touch the rasterizer itself. First read the modeling-from-image-captures skill and follow its multi-view verification loop. Iterate (render, inspect, adjust) until your renders match all four photos.",
+      "images": [
+        "evals/references/view1.png",
+        "evals/references/view2.png",
+        "evals/references/view3.png",
+        "evals/references/view4.png"
+      ]
+    }
+  ],
+  "budgets": {
+    "maxToolCalls": 60,
+    "maxLlmCalls": 40,
+    "maxWallMs": 1500000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/image_reconstruct_multi.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "render",
+      "samples": 64,
+      "camera": {
+        "location": [
+          2.6,
+          1.8,
+          3.2
+        ],
+        "lookat": [
+          0.0,
+          0.8,
+          0.0
+        ],
+        "up": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "fov": 40.0
+      },
+      "compareToImage": "evals/references/view1.png",
+      "rmseMax": 0.015
+    },
+    {
+      "kind": "render",
+      "samples": 64,
+      "camera": {
+        "location": [
+          4.0,
+          1.5,
+          0.2
+        ],
+        "lookat": [
+          0.0,
+          0.9,
+          0.0
+        ],
+        "up": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "fov": 40.0
+      },
+      "compareToImage": "evals/references/view2.png",
+      "rmseMax": 0.012
+    },
+    {
+      "kind": "render",
+      "samples": 64,
+      "camera": {
+        "location": [
+          2.0,
+          1.8,
+          -3.2
+        ],
+        "lookat": [
+          0.0,
+          0.8,
+          0.0
+        ],
+        "up": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "fov": 40.0
+      },
+      "compareToImage": "evals/references/view3.png",
+      "rmseMax": 0.012
+    },
+    {
+      "kind": "render",
+      "samples": 64,
+      "camera": {
+        "location": [
+          1.4,
+          4.6,
+          1.7
+        ],
+        "lookat": [
+          0.0,
+          0.7,
+          0.0
+        ],
+        "up": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "fov": 45.0
+      },
+      "compareToImage": "evals/references/view4.png",
+      "rmseMax": 0.015
+    },
+    {
+      "kind": "objectmap",
+      "queryAt": {
+        "x": 128,
+        "y": 128,
+        "expectName": "*",
+        "expectGeometryKind": "sdf_geometry"
+      }
+    },
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "sdf_geometry",
+      "min": 1,
+      "max": 4
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": [
+        "read_skill",
+        "render",
+        "read_image"
+      ]
+    }
+  ]
+}

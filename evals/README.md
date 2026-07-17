@@ -250,6 +250,17 @@ from a photo:
 - Text-only scenarios are completely unaffected: a bare-string `prompts[i]`
   entry (the pre-Wave-1 shape) still parses and hashes byte-identically.
 
+The two seed scenarios that exercise this end-to-end,
+`evals/scenarios/image_reconstruct_single.json` (one reference photo) and
+`evals/scenarios/image_reconstruct_multi.json` (four multi-view reference
+photos, ground truth + poses + calibration under `evals/references/`), live
+in their **own** runconfig, `evals/runconfigs/image_reconstruct.json`,
+rather than in `full_baseline`/`local_shootout`: this repo's local (Ollama)
+shootout models are text-only, so mixing a vision-required scenario into a
+runconfig that includes `local` columns would silently starve those columns
+of usable input. `image_reconstruct.json` targets the 4 hosted vision
+providers only.
+
 ### The raw fixture format
 
 `evals/fixtures/*.fixture.jsonl` is JSONL, one canned LLM response per line:
