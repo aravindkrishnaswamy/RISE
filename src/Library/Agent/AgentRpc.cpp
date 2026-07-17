@@ -1204,15 +1204,26 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'quality' must be a string" );
 					}
 
-					// Toolkit slice 3a ADDITIVE param: {"mode":"beauty"|
-					// "objectmap"} -> AgentRenderParams::renderTarget.  Absent
-					// or "beauty" is today's EXACT behaviour (strictly
-					// additive); "objectmap" routes this ONE render through the
-					// ephemeral identity pipeline and returns a per-object
-					// `legend` in the result -- see AgentRenderTarget's doc.
-					// `quality`/`samples` are ignored under objectmap (noted in
-					// the result message).  Any other string (or a non-string,
-					// non-null value) is a clean -32602.
+					// Toolkit slice 3a / GUI render modes P1 (docs/gui/RENDER_MODES.md
+					// §8) ADDITIVE param: {"mode":"beauty"|"objectmap"|<a
+					// casterFactory registry mode -- "normals"|"depth"|"facets"|
+					// "wireframe"} -> AgentRenderParams::renderTarget (+ ::viewMode
+					// for the registry modes).  Absent or "beauty" is today's EXACT
+					// behaviour (strictly additive); "objectmap" routes this ONE
+					// render through the ephemeral identity pipeline and returns a
+					// per-object `legend` in the result -- see AgentRenderTarget's
+					// doc.  A registry data-mode name routes through the SAME kind
+					// of ephemeral pipeline (CreateInteractiveViewModePipeline) but
+					// has no legend.  `quality`/`samples` are ignored under any of
+					// these (noted in the result message).  The accepted-name set
+					// is built FROM Implementation::GetViewportRenderModes -- NOT a
+					// hardcoded list -- filtered to `casterFactory` entries, so a
+					// future mode is agent-visible by construction the moment it's
+					// added to the registry (docs/gui/RENDER_MODES.md §4's parity
+					// promise).  Any other string (or a non-string, non-null value)
+					// is a clean -32602; the error message enumerates every
+					// accepted name dynamically so it never drifts from the
+					// registry.
 					if( const JsonValue* mv = params.find( "mode" ) ) {
 						if( mv->isString() ) {
 							const std::string ms = mv->asString();
@@ -1221,8 +1232,31 @@ namespace RISE
 							} else if( ms == "beauty" ) {
 								rparams.renderTarget = AgentRenderTarget::Beauty;
 							} else {
-								return MakeError( idValue, kInvalidParams,
-									"Invalid params: 'mode' must be \"beauty\" or \"objectmap\"" );
+								unsigned int modeCount = 0;
+								const Implementation::ViewportRenderModeInfo* modes =
+									Implementation::GetViewportRenderModes( modeCount );
+								const Implementation::ViewportRenderModeInfo* found = nullptr;
+								for( unsigned int i = 0; i < modeCount; ++i ) {
+									if( modes[i].casterFactory && ms == modes[i].name ) {
+										found = &modes[i];
+										break;
+									}
+								}
+								if( found ) {
+									rparams.renderTarget = AgentRenderTarget::ViewMode;
+									rparams.viewMode     = found->mode;
+								} else {
+									std::string accepted = "\"beauty\", \"objectmap\"";
+									for( unsigned int i = 0; i < modeCount; ++i ) {
+										if( modes[i].casterFactory ) {
+											accepted += ", \"";
+											accepted += modes[i].name;
+											accepted += "\"";
+										}
+									}
+									return MakeError( idValue, kInvalidParams,
+										"Invalid params: 'mode' must be one of " + accepted );
+								}
 							}
 						}
 						else if( !mv->isNull() )

@@ -126,6 +126,34 @@ namespace RISE
 					props, std::vector<std::string>() );
 			}
 
+			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §8): build the
+			//! `mode` = "normals"|"depth"|"facets"|"wireframe" portion of the
+			//! render tool's `mode` description FROM
+			//! Implementation::GetViewportRenderModes -- filtered to
+			//! `casterFactory` entries, each rendered as `"name" (question)` --
+			//! so the wording can never drift from the registry the C-ABI, both
+			//! GUI dropdowns, and AgentRpc.cpp's mode parser all share (single
+			//! source of truth, docs/gui/RENDER_MODES.md §4).
+			std::string DescribeViewModes()
+			{
+				unsigned int modeCount = 0;
+				const Implementation::ViewportRenderModeInfo* modes =
+					Implementation::GetViewportRenderModes( modeCount );
+				std::string out;
+				bool first = true;
+				for( unsigned int i = 0; i < modeCount; ++i ) {
+					if( !modes[i].casterFactory ) continue;
+					if( !first ) out += ", ";
+					first = false;
+					out += "\"";
+					out += modes[i].name;
+					out += "\" (";
+					out += modes[i].question;
+					out += ")";
+				}
+				return out;
+			}
+
 			//! The `camera` override object shared by `render` -- an
 			//! EPHEMERAL one-render-only pose override, captured and
 			//! restored around the render so the active camera's properties
@@ -368,7 +396,11 @@ namespace RISE
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "pinned", BoolProp( "OPTIONAL, default false. When true, this render cannot be silently superseded by a later render submission while it is in flight (it still responds to an explicit cancel or teardown) -- meaningful only against a live in-app GUI session's controller; has no effect in headless `rise --agent-stdio`." ) );
 					props.set( "quality", StringProp( "OPTIONAL, \"draft\" or \"production\" (default \"production\" -- today's exact behaviour). \"draft\" renders through a wholly SEPARATE, cheap studio-preview pipeline (the SAME fixed preview shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting entirely -- geometry, composition, and camera framing are representative; materials, lighting, exposure, and colour are NOT. NEVER judge materials/lighting/exposure/colour from a draft image -- use quality:\"production\" (or read_viewport) for that. A draft render CAPS samples at 4 regardless of the requested `samples` value. Check the result's `renderMode` field (\"production\"/\"draft\") to see which pipeline actually ran -- `integrator` always names the head's active PRODUCTION rasterizer regardless of `quality`, so it is NOT the field to check for this." ) );
-					props.set( "mode", StringProp( "OPTIONAL, \"beauty\" (default) or \"objectmap\". \"objectmap\" renders a flat per-object IDENTITY segmentation -- each scene object painted a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about WHICH object is at WHICH pixel and how much of the frame each covers (occlusion, placement, framing). IMPORTANT: read the objectmap image at NATIVE size -- do NOT pass read_image's maxEdge, since box-downscaling blends the identity colours and corrupts colorHex matching. `quality` and `samples` are IGNORED under objectmap (it has exactly one fidelity: 1 sample/pixel for exact per-pixel identity). Check renderMode==\"objectmap\" in the result to confirm. Orthogonal to `quality`: objectmap is about geometry identity, draft is about cheap shading. INSTANCE NAMES: a generator-synthesized legend name (e.g. \"grid[0,1]\" from an instance_array) identifies the instance in the map but is NOT a CST chunk -- to EDIT it, target the GENERATOR chunk (strip the \"[i,j]\" suffix, e.g. \"grid\"), since propose_patch/remove_chunk on the instance name will fail." ) );
+					props.set( "mode", StringProp( std::string(
+						"OPTIONAL, \"beauty\" (default), \"objectmap\", or one of the view-mode diagnostic names below. "
+						"\"objectmap\" renders a flat per-object IDENTITY segmentation -- each scene object painted a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about WHICH object is at WHICH pixel and how much of the frame each covers (occlusion, placement, framing). IMPORTANT: read the objectmap image at NATIVE size -- do NOT pass read_image's maxEdge, since box-downscaling blends the identity colours and corrupts colorHex matching. "
+						"The view-mode names, each a single-pass false-colour diagnostic render (no `legend`, unlike objectmap): " ) + DescribeViewModes() + std::string(
+						". `quality` and `samples` are IGNORED under objectmap or any view mode (each has exactly one fidelity: 1 sample/pixel). Check the result's `renderMode` field to confirm which one actually ran -- it echoes back the exact mode name (e.g. \"normals\"), distinguishing it from \"objectmap\"/\"draft\"/\"production\". Orthogonal to `quality`: these modes are about geometry/segmentation, draft is about cheap studio shading. Known limitation (wireframe): triangle-mesh edges only -- analytic primitives (sphere/box/SDF) and unmeshed geometry render as dim facet shading with no lines, which is correct behaviour, not a bug. Known limitation (depth): brightness is normalized to the SCENE's bounding-box diagonal, not a fixed distance scale -- a lone close-up object can read almost uniformly bright. INSTANCE NAMES (objectmap only): a generator-synthesized legend name (e.g. \"grid[0,1]\" from an instance_array) identifies the instance in the map but is NOT a CST chunk -- to EDIT it, target the GENERATOR chunk (strip the \"[i,j]\" suffix, e.g. \"grid\"), since propose_patch/remove_chunk on the instance name will fail." ) ) );
 					tools.push_back( MakeTool( "render",
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"

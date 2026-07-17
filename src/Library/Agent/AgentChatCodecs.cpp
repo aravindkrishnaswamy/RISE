@@ -42,6 +42,15 @@ namespace RISE
 			// schema -- input_schema is mandatory there -- while Gemini
 			// omits `parameters` entirely).  Descriptions are PRESCRIPTIVE:
 			// they say WHEN to call, not just what the verb does.
+			//
+			// KEEP IN SYNC BY HAND: `render`'s "mode" enum below is a raw
+			// string literal (these are `const char*`, not built at runtime),
+			// so unlike AgentMcpAdapter.cpp's DescribeViewModes() helper it
+			// CANNOT be generated from the registry.  The accepted set is
+			// RISE::Implementation::GetViewportRenderModes' casterFactory
+			// entries + "beauty"/"objectmap" (docs/gui/RENDER_MODES.md §8) --
+			// when a mode is added there, update this literal's enum array
+			// and description by hand.
 			//------------------------------------------------------------------
 			struct NeutralToolDef
 			{
@@ -252,8 +261,8 @@ namespace RISE
 						"},\"required\":[\"location\",\"lookat\"]},"
 						"\"quality\":{\"type\":\"string\",\"enum\":[\"draft\",\"production\"],\"description\":"
 						"\"Optional, default \\\"production\\\" (today's exact behaviour). \\\"draft\\\" renders through a wholly SEPARATE, cheap studio-preview pipeline (same fixed shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting -- geometry/composition/camera framing are representative, materials/lighting/exposure/colour are NOT. Samples are capped at 4 under draft. Check the result's `renderMode` field to see which pipeline ran; `integrator` does not change with `quality`.\"},"
-						"\"mode\":{\"type\":\"string\",\"enum\":[\"beauty\",\"objectmap\"],\"description\":"
-						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result. A generator-synthesized legend name (e.g. grid[0,1] from an instance_array) identifies the instance but is NOT a CST chunk -- to EDIT it, target the generator chunk (strip the [i,j] suffix, e.g. grid), not the instance name.\"}"
+						"\"mode\":{\"type\":\"string\",\"enum\":[\"beauty\",\"objectmap\",\"normals\",\"depth\",\"facets\",\"wireframe\"],\"description\":"
+						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result. A generator-synthesized legend name (e.g. grid[0,1] from an instance_array) identifies the instance but is NOT a CST chunk -- to EDIT it, target the generator chunk (strip the [i,j] suffix, e.g. grid), not the instance name. The other four are single-pass false-colour DIAGNOSTIC modes, no legend: \\\"normals\\\" (which way do surfaces face -- world-space shading normal as RGB), \\\"depth\\\" (how far away is everything -- grayscale, near=bright, brightness normalized to the SCENE's bounding-box diagonal so a lone close-up object can read almost uniformly bright), \\\"facets\\\" (what does the actual tessellation look like -- headlamp-shaded GEOMETRIC normal, no smoothing), \\\"wireframe\\\" (where are the polygon edges -- triangle-mesh edges only; analytic primitives like sphere/box/SDF render as dim facet shading with no lines, which is correct, not a bug). quality/samples are ignored under all of them too; check renderMode for the exact name that ran (e.g. \\\"normals\\\").\"}"
 					"}}"
 				},
 				{

@@ -40,6 +40,7 @@
 #include "AgentDiagnostic.h"
 
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: RISE::Cst::CstHeadVersion (the (uuid,revision) optimistic-concurrency identity)
+#include "../Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: RISE::Implementation::ViewportRenderMode (AgentRenderTarget::ViewMode's payload -- needs the complete enum for AgentRenderParams::viewMode's default member initializer)
 
 namespace RISE
 {
@@ -286,7 +287,19 @@ namespace RISE
 		enum class AgentRenderTarget
 		{
 			Beauty,     //!< radiance / studio-preview shading (default)
-			ObjectMap   //!< flat per-object identity segmentation + legend
+			ObjectMap,  //!< flat per-object identity segmentation + legend
+			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §8): one of
+			//! the ShaderPipeline data/diagnostic modes -- Normals / Depth /
+			//! Facets / Wireframe (the registry's casterFactory modes).
+			//! WHICH one is carried in AgentRenderParams::viewMode below.
+			//! Routes through CreateInteractiveViewModePipeline (a sibling of
+			//! CreateInteractiveObjectMapPipeline), never the production
+			//! rasterizer; `quality`/`samples` are IGNORED exactly as under
+			//! ObjectMap (same single-fidelity, single-ray-per-pixel
+			//! reasoning), and `res.renderMode` is the registry's wire name
+			//! (e.g. "normals") so a caller can distinguish it from
+			//! "objectmap"/"draft"/"production".
+			ViewMode
 		};
 
 		//! Preview-render params (all optional; every field at its default
@@ -355,6 +368,12 @@ namespace RISE
 			//! level state); `quality` and `samples` are IGNORED under
 			//! ObjectMap (honestly noted in the result message).
 			AgentRenderTarget    renderTarget = AgentRenderTarget::Beauty;
+			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §8): which
+			//! ShaderPipeline data mode to render when renderTarget ==
+			//! ViewMode.  Meaningless (and ignored) otherwise -- the default
+			//! (Normals) is harmless precisely because it is never consulted
+			//! unless a caller also sets renderTarget = ViewMode.
+			RISE::Implementation::ViewportRenderMode viewMode = RISE::Implementation::ViewportRenderMode::Normals;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides
@@ -507,7 +526,14 @@ namespace RISE
 			//! Toolkit slice 3a adds a THIRD value "objectmap" (set when
 			//! params.renderTarget == ObjectMap) -- a flat per-object
 			//! identity segmentation, distinct from both beauty modes; the
-			//! `legend` below is populated only for this mode.
+			//! `legend` below is populated only for this mode.  GUI render
+			//! modes P1 (docs/gui/RENDER_MODES.md §8) adds a FOURTH family
+			//! (set when params.renderTarget == ViewMode): the registry's wire
+			//! name for params.viewMode -- "normals" / "depth" / "facets" /
+			//! "wireframe" -- so a caller can tell exactly which data mode
+			//! produced this image without cross-referencing the request.
+			//! `legend` stays empty for these (view modes have no per-object
+			//! identity registry -- that is ObjectMap's own thing).
 			std::string                renderMode;
 			//! Toolkit slice 3a: the object-colour legend of an OBJECTMAP
 			//! render -- one LegendEntry per registered scene object,

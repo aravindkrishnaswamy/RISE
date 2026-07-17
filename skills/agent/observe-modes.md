@@ -1,13 +1,22 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
-There are exactly FOUR ways to look at the scene through the agent
-surface.  They are not interchangeable, and three of the four are
-CHEAP PRECISELY BECAUSE they answer a narrower question than "what
-does this look like" -- reaching for the wrong one either gets you a
-confidently wrong answer (judging colour from a draft render) or pays
-full production cost for a question a free/near-free call already
-answers (checking whether an edit landed by re-rendering production).
+There are exactly FOUR FAMILIES of call for looking at the scene
+through the agent surface.  They are not interchangeable, and three of
+the four are CHEAP PRECISELY BECAUSE they answer a narrower question
+than "what does this look like" -- reaching for the wrong one either
+gets you a confidently wrong answer (judging colour from a draft
+render) or pays full production cost for a question a free/near-free
+call already answers (checking whether an edit landed by re-rendering
+production).
+
+Within the third family (`render{mode:}`), GUI render modes P1
+(docs/gui/RENDER_MODES.md) widens the mode value from a single choice
+(`objectmap`) to SIX: `beauty` (default), `objectmap`, and four
+structural DIAGNOSTIC modes -- `normals`, `depth`, `facets`,
+`wireframe` -- each answering one narrow structural question with the
+SAME exact, single-pass, 1-spp cost profile as `objectmap`.  See "View
+modes" below for the per-mode decision table.
 
 ## The decision table
 
@@ -19,18 +28,89 @@ answers (checking whether an edit landed by re-rendering production).
 | "Does it actually look right -- materials, lighting, exposure?" | `render` (no `quality`, i.e. production) + `read_image`, or `read_viewport` if a GUI is attached AND its integrator is what you care about | The real cost -- the scene's actual configured integrator at its actual sample count | The ONLY mode where colour/shading/exposure judgments are honest | Nothing withheld -- it's simply the expensive one; don't make it your only feedback loop mid-edit |
 | "Verify after an edit." | The cheap loop first (draft and/or objectmap/query at small dims), production LAST once confident | Escalating -- cheap checks first, one production pass at the end | Catching gross breakage (wrong object, black frame, object moved to the wrong side) cheaply, repeatedly | Calling it "done" off a cheap check alone -- ship the final judgment on one production render |
 
+## View modes: which `render{mode:}` value answers which question
+
+`objectmap` answers "which object is where"; the other four are
+structural DIAGNOSTIC modes that answer a narrower question still --
+not identity, but geometry.  All six share ONE call shape
+(`render {mode:"..."}`) and ONE cost profile (fixed 1 spp, single
+exact pass, `quality`/`samples` both honestly ignored -- noted in the
+result `message`).  `renderMode` in the result always echoes back the
+exact mode name that ran.
+
+| mode | Question it answers | Read it as | `legend`? |
+|---|---|---|---|
+| `beauty` (default) | What does the scene actually look like -- materials, lighting honored? | The real image (or the draft preview under `quality:"draft"`) | No |
+| `objectmap` | Which object is at which pixel? | Flat per-object identity colour, byte-exact `colorHex` match | Yes |
+| `normals` | Which way do surfaces face? | World-space shading normal as false colour (`0.5*(N+1)`) | No |
+| `depth` | How far away is everything? | Grayscale, near = bright, normalized to the SCENE's bounding-box diagonal (see limitation below) | No |
+| `facets` | What does the actual tessellation look like -- where does shading disagree with geometry? | Headlamp-shaded GEOMETRIC normal -- no smoothing, no bump, no shading-normal interpolation | No |
+| `wireframe` | Where are the polygon edges? | Triangle-mesh edges over dim facet shading (see mesh-only limitation below) | No |
+
+### Recipes: matching a symptom to a mode
+
+1. **Placement check ("is X where I think it is / did the move land?")**
+   -- `render {mode:"objectmap"}` for the whole-frame survey, then
+   `query_object_at {x,y}` to confirm a specific pixel. Same recipe the
+   decision table above already gives for identity questions.
+2. **Orientation or smoothing artifact ("this looks shaded wrong / the
+   normal looks flipped / there's a facet crease that shouldn't be
+   there")** -- reach for `normals` first (world-space shading normal
+   as false colour -- catches flipped windings, bad tangent frames,
+   inverted normal maps at a glance). If `normals` looks plausible but
+   the SILHOUETTE still creases oddly, switch to `facets` (the
+   GEOMETRIC normal, bypassing any shading-normal smoothing/bump) to
+   tell apart "the mesh itself is faceted" from "the shading normal is
+   wrong" -- `normals` can look smooth over a low-poly mesh (smoothed
+   shading normals hiding the facets) while `facets` reveals the true
+   tessellation underneath.
+3. **Tessellation / edge layout ("how is this mesh actually
+   triangulated? where are the UV seams likely to fall? is this
+   polycount too coarse for that curve?")** -- `wireframe`. Remember
+   the mesh-only limitation below before reaching for it on an analytic
+   primitive or SDF.
+4. **Scale or occlusion sanity ("is this object actually behind that
+   wall, or does the camera clip through geometry, or is that gap real
+   depth or just dim shading?")** -- `depth`. Read brightness as
+   RELATIVE distance within this one frame, not an absolute unit scale
+   (see the normalization limitation below).
+
+### Known limitations (read before reporting a "bug")
+
+1. **`wireframe` draws edges on triangle meshes only.** Analytic
+   primitives (sphere, box, cylinder, ...) and SDF geometry have no
+   tessellation to draw an edge FROM -- they render as dim facet
+   shading with no lines. That is correct, documented behaviour, not a
+   missing feature -- see docs/gui/RENDER_MODES.md §10.
+2. **`depth` brightness is normalized to the SCENE's bounding-box
+   diagonal, not a fixed distance unit.** A single close-up object in
+   an otherwise-empty scene can read almost uniformly bright (its own
+   depth range is a tiny fraction of the whole-scene diagonal used to
+   normalize) -- that is expected, not a broken render. Compare depth
+   RELATIVE to other objects in the SAME frame, never across two
+   different scenes' depth renders as if they shared a scale.
+3. **All five non-`beauty` modes (`objectmap` + the four view modes)
+   ignore `quality` and `samples` unconditionally.** Each has exactly
+   one fidelity by design (an exact single-pass diagnostic image) --
+   requesting a higher sample count or `quality:"draft"` under any of
+   them is a silent no-op, honestly noted in the result `message`, not
+   an error.
+
 ## Escalation ladder (cost, cheapest first)
 
 1. **`read_viewport`** -- free, no render at all; only works when a live
    GUI controller is attached and has produced at least one frame.
-2. **`query_object_at` / `render {mode:"objectmap"}`** -- about one
-   identity render at the EFFECTIVE dims (the scene's authored dims
-   unless you pass paired `width`/`height` -- do pass small ones, e.g.
-   128x128, or a large authored film makes this step needlessly
-   expensive); fixed single-fidelity, no samples/quality to tune. Use
-   `query_object_at` for a single pixel's answer, the full
-   `mode:"objectmap"` render when you need the whole-frame survey (the
-   legend for every visible object at once).
+2. **`query_object_at` / `render {mode:"objectmap"|"normals"|"depth"|
+   "facets"|"wireframe"}`** -- about one identity-or-diagnostic render
+   at the EFFECTIVE dims (the scene's authored dims unless you pass
+   paired `width`/`height` -- do pass small ones, e.g. 128x128, or a
+   large authored film makes this step needlessly expensive); fixed
+   single-fidelity, no samples/quality to tune, for ALL five mode
+   values. Use `query_object_at` for a single pixel's identity, the
+   full `mode:"objectmap"` render for a whole-frame identity survey, or
+   one of the four structural view modes (see "View modes" above) when
+   the question is about geometry/normals/tessellation rather than
+   identity.
 3. **`render {quality:"draft"}`** -- a real render through a cheap
    separate pipeline, samples capped at 4; tiny `width`/`height` keep
    it fast. Both this and step 2 work on a head with NO active
@@ -56,10 +136,11 @@ mention (viewport, objectmap/query).
    and lighting entirely.** Geometry, composition, and camera framing
    are representative; materials, lighting, exposure, and colour are
    NOT. NEVER judge those from a draft image. Check the result's
-   `renderMode` field ("production"/"draft"/"objectmap") to see which
-   pipeline actually ran -- `integrator` always names the head's
-   active PRODUCTION rasterizer regardless of `quality`, so it is NOT
-   the field that tells you which shading produced THIS image.
+   `renderMode` field ("production"/"draft"/"objectmap"/"normals"/
+   "depth"/"facets"/"wireframe") to see which pipeline actually ran --
+   `integrator` always names the head's active PRODUCTION rasterizer
+   regardless of `quality`, so it is NOT the field that tells you which
+   shading produced THIS image.
 2. **Objectmap/`query_object_at` colours are identity ids, not
    appearance.** Match by exact `colorHex` byte, never "by eye" --
    when the palette is exhausted the result's `message` says so
@@ -89,12 +170,13 @@ mention (viewport, objectmap/query).
    clamped `[16,512]`, and confirm the override took by reading
    `previewWidth`/`previewHeight` (`render`) or `width`/`height`
    (`query_object_at`) back from the result.
-6. **Draft and objectmap/query_object_at work on a rasterizer-less
-   head; production does not.** Both cheap-render paths run their own
-   ephemeral pipeline and never touch the production rasterizer, so
-   they succeed even before any `*_rasterizer` chunk exists in the
-   scene -- a production `render` call on the same head fails honestly
-   instead.
+6. **Draft, objectmap/query_object_at, AND every view mode
+   (`normals`/`depth`/`facets`/`wireframe`) all work on a
+   rasterizer-less head; production does not.** Every cheap-render path
+   runs its own ephemeral pipeline and never touches the production
+   rasterizer, so all of them succeed even before any `*_rasterizer`
+   chunk exists in the scene -- a production `render` call on the same
+   head fails honestly instead.
 
 ## Worked example: locating an object, cheaply, before editing it
 
@@ -244,6 +326,13 @@ at once:
 {"method": "render", "params": {"mode": "objectmap"}}
 ```
 
+If instead the box looked like it had a shading crease along one edge,
+reach for a view mode rather than staring at the beauty render harder:
+
+```json
+{"method": "render", "params": {"mode": "facets"}}
+```
+
 Step 3 -- once the edit is confirmed cheaply, the ONE production render
 that actually judges the result (materials, lighting, exposure are
 only honest here):
@@ -255,10 +344,11 @@ only honest here):
 ## Traps
 
 1. **`renderMode` vs `integrator` -- read the right field.** `renderMode`
-   ("production"/"draft"/"objectmap") tells you which pipeline made
-   THIS image; `integrator` always names the head's active PRODUCTION
-   rasterizer chunk regardless of `quality`. Checking `integrator` to
-   see if a draft render "used PT" is a category error -- it always
+   ("production"/"draft"/"objectmap"/"normals"/"depth"/"facets"/
+   "wireframe") tells you which pipeline made THIS image; `integrator`
+   always names the head's active PRODUCTION rasterizer chunk
+   regardless of `quality`. Checking `integrator` to see if a draft
+   render "used PT" is a category error -- it always
    answers a different question.
 2. **A draft render's `samples` request is honestly capped, not
    silently honored.** Ask for `samples:64` under `quality:"draft"`

@@ -83,6 +83,18 @@
 //                                            EDIT it, target the GENERATOR chunk
 //                                            (strip the "[i,j]" suffix: "grid"), not
 //                                            the instance name.
+//                                           (GUI render modes P1 (docs/gui/
+//                                            RENDER_MODES.md §8): `mode` also
+//                                            accepts every casterFactory entry in
+//                                            Implementation::GetViewportRenderModes --
+//                                            "normals"|"depth"|"facets"|"wireframe" --
+//                                            single-pass false-colour DIAGNOSTIC
+//                                            renders (no `legend`; renderMode echoes
+//                                            the exact mode name); `quality`/`samples`
+//                                            are ignored under these too, same as
+//                                            objectmap.  The accepted-name set is NOT
+//                                            hardcoded -- see AgentRpc.cpp's `mode`
+//                                            parsing block.)
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.

@@ -2290,7 +2290,22 @@ namespace RISE
 			// takes priority over the beauty renderMode string, and `quality`
 			// / `samples` are honestly ignored under it (noted below).
 			const bool isObjectMap = ( params.renderTarget == AgentRenderTarget::ObjectMap );
-			res.renderMode = isObjectMap ? "objectmap" : ( isDraft ? "draft" : "production" );
+			// GUI render modes P1 (docs/gui/RENDER_MODES.md §8): the fourth,
+			// orthogonal render target -- one of the ShaderPipeline data modes
+			// (Normals/Depth/Facets/Wireframe).  Structurally a sibling of
+			// isObjectMap: its own ephemeral pipeline, one fidelity, quality/
+			// samples ignored.  `viewModeInfo` resolves the registry entry ONCE
+			// so both the renderMode string below and doViewModeRenderWork's
+			// factory call use the SAME lookup (a null result -- an out-of-
+			// range enum value reaching here, which the RPC layer already
+			// refuses -- degrades to the render-failed tail via
+			// CreateInteractiveViewModePipeline's own false return).
+			const bool isViewMode = ( params.renderTarget == AgentRenderTarget::ViewMode );
+			const Implementation::ViewportRenderModeInfo* viewModeInfo =
+				isViewMode ? Implementation::FindViewportRenderModeInfo( params.viewMode ) : nullptr;
+			res.renderMode = isObjectMap ? "objectmap"
+				: isViewMode ? ( viewModeInfo ? viewModeInfo->name : "" )
+				: ( isDraft ? "draft" : "production" );
 
 			// Round-3 additive wire field: report the ACTIVE rasterizer's
 			// registered type name (= its scene-file chunk keyword, e.g.
@@ -2316,12 +2331,13 @@ namespace RISE
 			// non-null whenever isDraft is false -- or (b) is made
 			// null-tolerant explicitly (origSamples just below).
 			IRasterizer* rast = mJob->GetRasterizer();
-			// Round-2 P2-A / Toolkit slice 3a: the "!rast" bail-out applies
-			// ONLY to the production BEAUTY branch -- both the draft and the
-			// objectmap paths run through their own ephemeral pipelines and
-			// never dereference the production rasterizer, so a rasterizer-
-			// less head must still be able to run either.
-			if( !isDraft && !isObjectMap && !rast ) {
+			// Round-2 P2-A / Toolkit slice 3a / GUI render modes P1: the
+			// "!rast" bail-out applies ONLY to the production BEAUTY branch --
+			// the draft, objectmap, AND view-mode paths all run through their
+			// own ephemeral pipelines and never dereference the production
+			// rasterizer, so a rasterizer-less head must still be able to run
+			// any of them.
+			if( !isDraft && !isObjectMap && !isViewMode && !rast ) {
 				res.ok = false;
 				res.message = "no active rasterizer";
 				return res;
@@ -2754,10 +2770,100 @@ namespace RISE
 				restoreGuard.Disarm();
 			};
 
+			// GUI render modes P1 (docs/gui/RENDER_MODES.md §8): the EPHEMERAL
+			// view-mode render body.  Structurally a sibling of
+			// doObjectMapRenderWork -- a fresh throwaway pipeline, the agent's
+			// own sink, shared film/camera overrides, controller-owned cancel
+			// wiring -- but there is no identity palette/legend to build (a
+			// view mode has no per-object registry) and it NEVER installs a
+			// sampling kernel or a samples override, matching the objectmap
+			// EXACTNESS INVARIANT: a diagnostic image is a single exact 1-spp
+			// pass.  Never references the production rasterizer, its
+			// FrameStore, or mJob->RemoveRasterizerOutputs().
+			auto doViewModeRenderWork = [&]()
+			{
+				IRasterizer* ephemeralRast = nullptr;
+				IRayCaster*  viewCaster    = nullptr;
+				if( !viewModeInfo ||
+					!Implementation::CreateInteractiveViewModePipeline(
+						params.viewMode, &ephemeralRast, &viewCaster ) )
+				{
+					return;   // rendered/renderRan stay false -- shared tail reports "render failed"
+				}
+				// RAII release of the two factory refs (each an owning reference
+				// the caller must release exactly once) -- runs on every exit,
+				// including an exception unwinding out of RasterizeScene() below.
+				// No production state is touched.
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); }
+				} pipelineGuard{ ephemeralRast, viewCaster };
+
+				// Film-dims / camera-pose overrides compose exactly as in the
+				// other ephemeral branches.  No FrameStore-identity constraint here.
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				sink = new InMemoryRasterizerOutput();
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				applyFilmOverride();
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as the other branches.
+					return;
+				}
+
+				// EXACTNESS INVARIANT: deliberately NO SetSampleCountOverride and
+				// NO sampling kernel -- CreateInteractiveViewModePipeline already
+				// builds a freshly constructed InteractivePelRasterizer with
+				// pSampling == null, so every pixel takes the single-ray (no
+				// jitter, no filter) branch.  `params.samples`/`params.quality`
+				// are intentionally ignored (honestly noted in the result message
+				// in RenderCore_'s tail).
+
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared contract with the other branches).
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (view-mode path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
 			auto doRenderWork = [&]()
 			{
 				if( isObjectMap ) {
 					doObjectMapRenderWork();
+					return;
+				}
+				if( isViewMode ) {
+					doViewModeRenderWork();
 					return;
 				}
 				if( isDraft ) {
@@ -3421,6 +3527,20 @@ namespace RISE
 					e.colorHex   = ObjectMapColorHex( objectMapPalette.unknownBytes );
 					e.pixelCount = unknownCount;
 					res.legend.push_back( e );
+				}
+			} else if( isViewMode ) {
+				// GUI render modes P1: a view-mode render has exactly ONE
+				// fidelity, the SAME EXACTNESS INVARIANT reasoning as objectmap
+				// above -- a single ray per pixel, `samples`/`quality` both
+				// honestly ignored.  No legend (view modes have no per-object
+				// identity registry).
+				res.samplesOverridden = false;
+				res.effectiveSamples  = 1;
+				if( res.ok && ( wantSamplesOverride || params.quality == AgentRenderQuality::Draft ) ) {
+					const char* modeName = viewModeInfo ? viewModeInfo->name : "view";
+					res.message += " (mode:";
+					res.message += modeName;
+					res.message += " is a single-pass diagnostic render; quality/samples ignored)";
 				}
 			} else if( isDraft ) {
 				res.samplesOverridden = draftSamplesApplied;
