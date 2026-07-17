@@ -75,11 +75,12 @@ exact mode name that ran.
    RELATIVE distance within this one frame, not an absolute unit scale
    (see the normalization limitation below).
 5. **"What's under/inside that glass / crystal / transparent cover?"**
-   -- add `xray:true` to `depth` or `facets` (any view mode, really).
-   It resolves the ray straight through transmissive surfaces to the
-   first opaque hit (no refraction bending -- deliberately an x-ray,
-   not an optics simulation) so you can see the mechanism instead of
-   the glass surface. See "X-ray axis" below.
+   -- any view mode already sees through it: `xray` defaults to `true`,
+   so `render {mode:"depth"}` or `render {mode:"facets"}` already
+   resolve the ray straight through transmissive surfaces to the first
+   opaque hit (no refraction bending -- deliberately an x-ray, not an
+   optics simulation). Add `xray:false` to see the glass surface itself
+   instead of what's underneath it. See "X-ray axis" below.
 
 ### Known limitations (read before reporting a "bug")
 
@@ -93,11 +94,13 @@ exact mode name that ran.
    renders of the same scene from different camera framings (a wide
    shot vs. a close-up) use DIFFERENT brightness scales -- never compare
    two `depth` renders as if they shared one absolute scale, only read
-   brightness RELATIVE to other pixels in the SAME image. (The engine
-   falls back to a fixed scene-bounding-box-diagonal scale only on a
-   degenerate render -- an empty frame or a single flat plane filling
-   it -- so a mostly-flat scene can still read as unusually uniform;
-   that is expected, not a broken render.)
+   brightness RELATIVE to other pixels in the SAME image. The window
+   self-calibrates within a single `render` call, so you always get a
+   windowed (not flat/fallback) image. (The engine falls back to a fixed
+   scene-bounding-box-diagonal scale only for a genuinely degenerate
+   scene -- an empty frame or a single flat plane filling it -- so a
+   mostly-flat scene can still read as unusually uniform; that is
+   expected, not a broken render.)
 3. **All five non-`beauty` modes (`objectmap` + the four view modes)
    ignore `quality` and `samples` unconditionally.** Each has exactly
    one fidelity by design (an exact single-pass diagnostic image) --
@@ -116,21 +119,22 @@ exact mode name that ran.
 
 `xray` is an optional boolean param on `render`, ORTHOGONAL to `mode` --
 it composes with all four view modes (`normals`/`depth`/`facets`/
-`wireframe`), not a mode of its own. When `xray:true`, the shader
-resolves each ray THROUGH transmissive (glass-like) surfaces to the
-first OPAQUE hit, following the ORIGINAL ray's straight line with NO
-refraction bending -- deliberately an x-ray, not an optics simulation.
-Up to 16 transmissive surfaces are skipped per ray.
+`wireframe`), not a mode of its own. **Defaults to `true`** (2026-07-17):
+a view-mode render already resolves each ray THROUGH transmissive
+(glass-like) surfaces to the first OPAQUE hit, following the ORIGINAL
+ray's straight line with NO refraction bending -- deliberately an
+x-ray, not an optics simulation. Up to 16 transmissive surfaces are
+skipped per ray.
 
 Recipe: **"what's under/inside the glass/crystal/transparent cover?"**
--- `render {mode:"depth", xray:true}` or `render {mode:"facets",
-xray:true}` to see the mechanism underneath instead of the glass
-surface itself. Compare against the SAME render with `xray:false`
-(the default) to confirm what the glass was hiding.
+-- just `render {mode:"depth"}` or `render {mode:"facets"}`, no extra
+param needed. Add `xray:false` to see the glass/crystal surface itself
+instead of what's underneath it -- e.g. to inspect a cover's own
+tessellation or normals rather than the mechanism inside.
 
-`xray:true` is silently ignored (honestly noted in the result
-`message`) under `mode:"beauty"` or `mode:"objectmap"` -- it only
-means something for the four view-mode diagnostics.
+`xray` is silently ignored (honestly noted in the result `message`)
+under `mode:"beauty"` or `mode:"objectmap"` -- it only means something
+for the four view-mode diagnostics.
 
 ## Escalation ladder (cost, cheapest first)
 

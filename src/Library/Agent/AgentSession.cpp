@@ -2838,32 +2838,16 @@ namespace RISE
 
 				const IScenePriv* scenePriv = mJob->GetScene();
 				if( scenePriv ) {
-					// Depth auto-windowing (docs/gui/RENDER_MODES.md "X-ray
-					// axis" / InteractivePelRasterizer.cpp's DepthViewShader
-					// doc): the shader calibrates its active brightness
-					// window FROM THE PREVIOUS pass's accumulated hit-
-					// distance range.  The interactive viewport gets this
-					// for free from its own cancel-restart repaint loop, but
-					// this agent path renders exactly ONE RasterizeScene
-					// call per Render(), which would ship the STALE
-					// (sentinel / scene-diagonal-fallback) window the whole
-					// time.  Run Depth mode TWICE: pass 1 populates the
-					// accumulators (rendered at the fallback window, its
-					// image discarded), pass 2's AttachScene snapshots pass
-					// 1's accumulators into the active window and renders
-					// the calibrated image that actually ships.  Trivial
-					// extra cost at the mandatory 1 spp / single-ray-per-
-					// pixel exactness invariant this pipeline already
-					// enforces.
-					if( viewModeInfo && viewModeInfo->mode == Implementation::ViewportRenderMode::Depth ) {
-						IRasterizeSequence* pWarmupSeq = nullptr;
-						if( mController ) {
-							RISE_API_CreateMortonRasterizeSequence( &pWarmupSeq, 32 );
-						}
-						ephemeralRast->RasterizeScene( *scenePriv, 0, pWarmupSeq );
-						safe_release( pWarmupSeq );
-					}
-
+					// Depth auto-windowing (docs/gui/RENDER_MODES.md "Depth
+					// axis" self-calibration): InteractivePelRasterizer::
+					// RasterizeScene now self-calibrates WITHIN one call --
+					// if the pass it just ran recorded samples but the
+					// window is still pending, it re-runs its base pass
+					// once more before returning, so a single call here
+					// already ships the calibrated image.  No warmup pass
+					// needed on this side (a second RasterizeScene call
+					// here would just be wasted work on top of the one the
+					// rasterizer now performs internally).
 					IRasterizeSequence* pSeq = nullptr;
 					if( mController ) {
 						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
@@ -3598,13 +3582,18 @@ namespace RISE
 			// the view-mode pipeline (Normals/Depth/Facets/Wireframe) --
 			// Beauty/Draft/ObjectMap all silently ignore it, matching the
 			// quality/samples-ignored precedent used throughout this
-			// function.
-			if( res.ok && params.xray ) {
-				if( isViewMode ) {
+			// function.  Default is now TRUE (see AgentRenderParams::xray),
+			// so the common case notes "active"; an explicit xray:false is
+			// noted too, so a caller can tell "inactive by request" apart
+			// from "not a view-mode render at all" (no note either way).
+			if( res.ok && isViewMode ) {
+				if( params.xray ) {
 					res.message += " (xray: transmissive surfaces skipped (straight-line))";
 				} else {
-					res.message += " (xray is ignored outside the view-mode diagnostics -- mode:\"normals\"|\"depth\"|\"facets\"|\"wireframe\")";
+					res.message += " (xray:false -- transmissive surfaces shown, not skipped)";
 				}
+			} else if( res.ok && params.xray ) {
+				res.message += " (xray is ignored outside the view-mode diagnostics -- mode:\"normals\"|\"depth\"|\"facets\"|\"wireframe\")";
 			}
 
 			// Cache for ReadImage() ONLY on a successful, non-empty encode --

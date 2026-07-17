@@ -870,7 +870,10 @@ void TopBar::refreshRenderModeCombo()
     // data-mode selection), so exposing an always-on toggle there would
     // read as a control that does nothing.
     if (m_xrayBtn) {
-        const bool xrayEnabled = !disabled && activeName != QLatin1String("preview");
+        // X-ray applies to EVERY mode including the shaded preview
+        // (caster-layer resolve, default ON; user decision 2026-07-17) --
+        // no data-mode gating.
+        const bool xrayEnabled = !disabled;
         m_xrayBtn->setEnabled(xrayEnabled);
 
         // Re-read the CURRENT flag -- never assume the button's checked

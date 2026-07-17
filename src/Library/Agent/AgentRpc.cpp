@@ -1264,14 +1264,16 @@ namespace RISE
 					}
 
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")
-					// ADDITIVE param: {"xray":true} -> AgentRenderParams::xray.
-					// Absent or false -> today's exact behaviour.  Meaningful
-					// ONLY under a view-mode `mode` (normals/depth/facets/
-					// wireframe) -- supplying it under "beauty"/"objectmap" is
-					// ACCEPTED and silently ignored (same precedent as quality/
-					// samples under those targets), honestly noted in the
-					// result message by AgentSession::Render.  A non-bool,
-					// non-null value is a clean -32602.
+					// ADDITIVE param: {"xray":false} -> AgentRenderParams::xray.
+					// DEFAULT TRUE (2026-07-17 user decision) -- absent means
+					// see-through, matching the viewport's own default; pass
+					// {"xray":false} to inspect the transmissive surface
+					// itself.  Meaningful ONLY under a view-mode `mode`
+					// (normals/depth/facets/wireframe) -- supplying it under
+					// "beauty"/"objectmap" is ACCEPTED and silently ignored
+					// (same precedent as quality/samples under those targets),
+					// honestly noted in the result message by AgentSession::
+					// Render.  A non-bool, non-null value is a clean -32602.
 					if( const JsonValue* xv = params.find( "xray" ) ) {
 						if( xv->isBool() ) {
 							rparams.xray = xv->asBool();

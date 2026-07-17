@@ -103,7 +103,8 @@ RayCaster::RayCaster(
   builtLightGeneration( 0 ),
   bTransparentShadows( false ),
   dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
-  bWantsWireEdgeInfo( false )
+  bWantsWireEdgeInfo( false ),
+  bXrayViewResolve( false )
 {
 	pDefaultShader.addref();
 }
@@ -317,6 +318,67 @@ void RayCaster::RebuildLightSamplers()
 unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount.load( std::memory_order_relaxed ); }
 void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount.store( 0, std::memory_order_relaxed ); }
 
+void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
+{
+	// Original primary ray + origin, needed only if at least one skip
+	// happens (see the total-distance recompute below).
+	const Ray originalRay = ri.geometric.ray;
+	const Point3 originalOrigin = originalRay.origin;
+	bool bAnySkip = false;
+
+	for( int skip = 0; skip < 16; ++skip )
+	{
+		if( !ri.geometric.bHit || !ri.pMaterial || !ri.pMaterial->CouldLightPassThrough() )
+		{
+			break;
+		}
+
+		if( !pScene || !pScene->GetObjects() )
+		{
+			break;
+		}
+
+		const Vector3 dir = ri.geometric.ray.Dir();
+		// Nudge off the surface along the SAME direction (no bending) --
+		// scaled by the hit's own range so it means something at both
+		// tabletop and kilometre scale, floored so it's never a no-op at
+		// near-zero range.  1e-5 keeps the overshoot bound tight (an
+		// opaque surface closer behind the glass than range*1e-5 is
+		// stepped over -- ~1mm at 100 units); double-precision hit error
+		// is orders of magnitude below the 1e-6 floor, and a too-small
+		// nudge merely re-hits the same surface and consumes one of the
+		// 16 bounded skips.
+		Scalar eps = ri.geometric.range * 1.0e-5;
+		if( eps < 1.0e-6 ) {
+			eps = 1.0e-6;
+		}
+		const Point3 origin = Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * eps );
+
+		RayIntersection next( Ray( origin, dir ), ri.geometric.rast );
+		next.geometric.PropagateCastInputs( ri.geometric );   // wireframe edge requests etc. survive the skip
+		pScene->GetObjects()->IntersectRay( next, /*bHitFrontFaces*/true, /*bHitBackFaces*/true, /*bComputeExitInfo*/false );
+
+		if( !next.geometric.bHit )
+		{
+			break;   // keep `ri` -- the last transmissive hit, an honest answer over a black hole
+		}
+
+		bAnySkip = true;
+		ri = next;
+	}
+
+	if( bAnySkip )
+	{
+		// Depth (and any other range-reading consumer) must see the TOTAL
+		// distance from the ORIGINAL ray's origin to the resolved hit --
+		// not the resolved hit's own last-segment range, and not a sum of
+		// per-segment ranges.  Restoring the original ray here means every
+		// downstream consumer (shader, depth accumulator, etc.) gets this
+		// for free with no x-ray-specific knowledge.
+		ri.geometric.ray = originalRay;
+		ri.geometric.range = Point3Ops::Distance( ri.geometric.ptIntersection, originalOrigin );
+	}
+}
 
 bool RayCaster::CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
@@ -382,6 +444,16 @@ bool RayCaster::CastRay(
 		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
 		}
+	}
+
+	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): resolve
+	// through transmissive surfaces to the first opaque hit BEFORE medium
+	// transport / the modifier site / shading, so every consumer past
+	// this point (including depth) sees the resolved hit with zero
+	// x-ray-specific knowledge.  Production casters never set the flag.
+	if( bXrayViewResolve && bHit ) {
+		ResolveXrayView_( ri );
+		bHit = ri.geometric.bHit;
 	}
 
 	// ----------------------------------------------------------------
@@ -1076,6 +1148,13 @@ bool RayCaster::CastRayNM(
 		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
 		}
+	}
+
+	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): see
+	// CastRay's identical call site for the rationale.
+	if( bXrayViewResolve && bHit ) {
+		ResolveXrayView_( ri );
+		bHit = ri.geometric.bHit;
 	}
 
 	bool bReturn = false;
@@ -1967,6 +2046,16 @@ bool RayCaster::CastRayHWSS(
 		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
 		}
+	}
+
+	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): same
+	// pre-shade structure as CastRay/CastRayNM, so the resolve is wired
+	// here too for completeness -- though in practice no HWSS caster is
+	// ever a view-mode/preview caster (those are Pel-only), so
+	// bXrayViewResolve is never set on a caster that reaches this path.
+	if( bXrayViewResolve && bHit ) {
+		ResolveXrayView_( ri );
+		bHit = ri.geometric.bHit;
 	}
 
 	bool bReturn = false;

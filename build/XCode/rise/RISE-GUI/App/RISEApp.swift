@@ -362,16 +362,15 @@ private struct AppMenus: Commands {
                     }
                 }
                 // X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): an
-                // orthogonal boolean, not a fifth mode — shown only while
-                // a DATA mode is active (meaningless under "preview").
-                // Same toggle the viewport chip offers (ContentView's
-                // `viewportRenderModeChip`); menus read only `menu.snap`.
-                if menu.snap.viewportRenderMode != "preview" {
-                    Divider()
-                    Toggle("See Through Glass", isOn: Binding(
-                        get: { menu.snap.viewportXray },
-                        set: { actions.setViewportXray($0) }))
-                }
+                // orthogonal boolean, not a fifth mode — applies to EVERY
+                // mode including the shaded preview (default ON; user
+                // decision 2026-07-17).  Same toggle the viewport chip
+                // offers (ContentView's `viewportRenderModeChip`); menus
+                // read only `menu.snap`.
+                Divider()
+                Toggle("See Through Glass", isOn: Binding(
+                    get: { menu.snap.viewportXray },
+                    set: { actions.setViewportXray($0) }))
             }
             .disabled(!menu.snap.canUseSceneTransport || menu.snap.viewportRenderModes.isEmpty)
 

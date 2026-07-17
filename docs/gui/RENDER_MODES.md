@@ -46,7 +46,7 @@ sibling) · **T2** beauty-variant (real integrator + config overrides) ·
 |---|---|---|
 | `objectmap` | T0 | Flat per-object identity segmentation (`ObjectIdShader`), exactness invariant, legend + `query_object_at`. Already an agent mode. |
 | `normals` | T1 | World-space shading normal → RGB false color (`0.5·(N+1)`). Also the honest wiring for the declared-but-unfilled `FrameStore` Normal channel. |
-| `depth` | T1 | Primary-hit distance, AUTO-WINDOWED per pass to the frame's VISIBLE min/max hit-distance range (grayscale, near = bright); falls back to the scene bounding-box diagonal on the first pass or a degenerate range. See "Depth auto-windowing" below (2026-07-17 fix — the original fixed scene-diagonal normalization flattened staged scenes into a near-blank image). |
+| `depth` | T1 | Primary-hit distance, AUTO-WINDOWED per pass to the frame's VISIBLE min/max hit-distance range (grayscale, near = bright); falls back to the scene bounding-box diagonal on a degenerate/empty scene. SELF-CALIBRATES WITHIN A SINGLE RENDER CALL (2026-07-17 fix). See "Depth auto-windowing" below (2026-07-17 fix — the original fixed scene-diagonal normalization flattened staged scenes into a near-blank image). |
 | `facets` | T1 | Headlamp-shaded **geometric** normal (no smoothing, no bump) — reveals tessellation and shading-normal divergence. |
 | `wireframe` | T1 | First-hit edge shader: barycentric distance to nearest triangle edge under a screen-space width heuristic; non-edge pixels get a dim facet shade so form reads. Analytic (non-mesh) primitives render facet-shade only (documented honestly — no synthetic tessellation lines). |
 | UV checker | T3 | Needs UV plumbing at the hit record. Deferred (P4 candidate). |
@@ -181,19 +181,35 @@ degenerate previous pass (no samples, or a near-zero range) leaves whatever
 window was already active — the mode falls back to the fixed scene-diagonal
 formula only on the very first pass or when nothing meaningful was visible.
 Brightness therefore reflects the VISIBLE depth range, not a fixed world-scale
-band: the previous pass calibrates the next, the interactive cancel-restart
-loop converges this within one repaint, and mild recalibration while
-navigating is intended — exactly like camera auto-exposure. The one-shot
-agent `render{mode:"depth"}` path (which gets no repaint loop) compensates by
-running the pass twice: a discarded warm-up pass populates the accumulators,
-and the second pass ships the calibrated image.
+band: the previous pass calibrates the next, and the interactive cancel-restart
+loop converges this within one repaint (mild recalibration while navigating
+is intended — exactly like camera auto-exposure).
+
+**Self-calibration within a single call (2026-07-17 fix).** The above was
+originally accurate only for the INTERACTIVE multi-frame loop — a single
+SETTLED `RasterizeScene` call (a GUI mode switch, or any one-shot render like
+the agent `render{mode:"depth"}` path) got exactly one pass, which shipped
+the flat scene-diagonal fallback because no *previous* pass had ever
+populated the window (the reported "depth renders nothing" bug).
+`InteractivePelRasterizer::RasterizeScene` now overrides the base: it runs
+the base pass, then — if the active caster is a Depth view-mode caster whose
+window is still pending (recorded samples this pass, but not yet snapshotted
+into a valid window — `InteractiveViewModeRayCaster::DepthWindowPending` /
+`DepthViewShader::WindowPending`) and the pass was not cancelled — runs the
+base pass ONCE more. The second pass's `AttachScene` call snapshots the
+first pass's accumulators into the window, so the SAME `RasterizeScene` call
+returns a windowed image. Guarded structurally to at most one extra pass per
+call (the re-run calls the base class method directly, not virtually, so
+there is no re-entrancy into the override). The agent path no longer needs
+its own warm-up pass — a single `RasterizeScene` call already self-corrects.
 
 ### X-ray axis
 
 An orthogonal **boolean axis**, not a fifth mode — it composes with all four
-data modes (`normals` / `depth` / `facets` / `wireframe`). When on, each
-mode's shader resolves each hit THROUGH transmissive (glass-like) surfaces to
-the first OPAQUE hit: a straight-line continuation of the original ray
+data modes (`normals` / `depth` / `facets` / `wireframe`) AND applies to
+`preview` (the studio material-preview pipeline) too. When on, the resolved
+primary hit is walked THROUGH transmissive (glass-like) surfaces to the
+first OPAQUE hit: a straight-line continuation of the original ray
 direction, deliberately with NO refraction bending (an x-ray, not an optics
 simulation — it answers "what's under/inside this transmissive geometry", not
 "what would actually be seen looking through it"). Bounded to 16 skips so a
@@ -204,24 +220,57 @@ the TOTAL distance from the original ray's origin to the resolved hit point,
 not the resolved hit's own (last-segment) range and not a sum of per-segment
 ranges — otherwise a skip chain would under-report depth.
 
-- Core: `ResolveXrayHit(RayIntersection&, const IRayCaster&)`
-  (`InteractivePelRasterizer.cpp`, anonymous namespace), shared by all four
-  data-mode shaders, each taking an `xray` constructor flag (default false).
+**Caster-layer implementation (2026-07-17 refactor).** Resolution used to
+live in the four view-mode SHADERS (`InteractivePelRasterizer.cpp`,
+anonymous-namespace `ResolveXrayHit`, called per-shader with an `xray`
+constructor flag) — which meant `preview` could never see through glass, and
+every new shader had to remember to wire it in. It now lives in the CASTER
+layer instead, so every shader benefits automatically:
+
+- Core: `RayCaster::ResolveXrayView_(RayIntersection&)` (private,
+  `RayCaster.{h,cpp}`) — same 16-skip loop, called from `CastRay` / `CastRayNM`
+  (and, for pre-shade-structure completeness, `CastRayHWSS`) immediately
+  after the intersection + emitter-visibility check, BEFORE medium transport
+  / the modifier site / shading. When at least one skip happens, it restores
+  the ORIGINAL primary ray onto `ri.geometric.ray` and recomputes
+  `ri.geometric.range` as the TOTAL distance from the original ray's origin
+  — so `depth` (and any other range-reading consumer) is correct with ZERO
+  x-ray-specific shader knowledge. Deliberately does not apply
+  `ri.pModifier` itself — the caller's EXISTING modifier site runs
+  immediately after, covering whatever `ri` ends up being.
+- Toggle: `RayCaster::{Set,Get}XrayViewResolve(bool)` — protected member
+  `bXrayViewResolve`, default `false`; production casters never set it (cost
+  when off is one bool test).
 - Factories: `CreateInteractiveViewModeCaster` / `CreateInteractiveViewModePipeline`
-  gain a trailing `bool xray = false` parameter (default keeps existing
-  callers compiling).
+  keep their trailing `bool xray = false` parameter, but now implement it by
+  calling `SetXrayViewResolve` on the built caster instead of threading a
+  constructor flag through each shader.
+- Rasterizer: `InteractivePelRasterizer::{Set,Get}XrayView(bool)` stamps the
+  flag onto every `RayCaster` it can currently reach (active caster, polish
+  caster, and both saved-caster slots, via `dynamic_cast<RayCaster*>`,
+  null-tolerant) — including the studio preview caster, which is how
+  `preview` gets x-ray for free. Every caster-swap site
+  (`SetViewModeCaster` install/switch/restore, `SetPolishRayCaster`,
+  `SetSampleCount`'s polish swap) re-stamps the current flag onto whatever
+  caster becomes active, so a caster installed after `SetXrayView` was
+  called still reflects it.
 - Controller: `SceneEditController::{Set,Get}ViewportXray(bool)` — same
-  lock/park/rebuild discipline as `{Set,Get}ViewportRenderMode`; setting it
-  while a data mode is active rebuilds that mode's caster immediately, while
-  "preview" is active it's just stored for the next data-mode selection.
-  Reset to `false` on every `RebindEditorToJob` (scene load/reload/variant
-  switch), alongside the mode reset.
-- C-ABI: `RISE_API_SceneEditController_{Set,Get}ViewportXray`.
-- Agent: `render` gains an optional boolean `xray` param — meaningful ONLY
-  under a view-mode `mode` (silently ignored, honestly noted in the result
-  message, under `beauty`/`objectmap` — same precedent as `quality`/`samples`
-  under those targets). Toggle lives in the viewport chrome next to the mode
-  dropdown on both GUIs.
+  lock/park discipline as `{Set,Get}ViewportRenderMode`, but NO caster
+  rebuild — it just calls `InteractivePelRasterizer::SetXrayView`, which
+  applies uniformly across every mode INCLUDING `preview`. **Default ON**
+  (2026-07-17 user decision): `true` at construction and after every
+  `RebindEditorToJob` reset (scene load/reload/variant switch), which also
+  stamps the interactive rasterizer directly so it starts see-through before
+  any render happens.
+- C-ABI: `RISE_API_SceneEditController_{Set,Get}ViewportXray` (signature
+  unchanged).
+- Agent: `render` gains an optional boolean `xray` param (`AgentRenderParams::
+  xray`, **default TRUE**) — meaningful ONLY under a view-mode `mode`
+  (silently ignored, honestly noted in the result message, under
+  `beauty`/`objectmap` — same precedent as `quality`/`samples` under those
+  targets); pass `xray:false` to inspect the transmissive surface itself.
+  Toggle lives in the viewport chrome next to the mode dropdown on both
+  GUIs, defaulting to ON.
 
 ## 6. Per-render config overrides (P2 prerequisite)
 

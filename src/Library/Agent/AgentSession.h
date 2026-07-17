@@ -374,15 +374,18 @@ namespace RISE
 			//! (Normals) is harmless precisely because it is never consulted
 			//! unless a caller also sets renderTarget = ViewMode.
 			RISE::Implementation::ViewportRenderMode viewMode = RISE::Implementation::ViewportRenderMode::Normals;
-			//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): default
-			//! false = today's exact behaviour.  Meaningful ONLY when
-			//! renderTarget == ViewMode -- routes the ephemeral view-mode
-			//! pipeline's shader through ResolveXrayHit (resolve through
-			//! transmissive surfaces to the first opaque hit, straight-line,
-			//! no refraction bending) before shading.  Silently IGNORED
-			//! under Beauty/ObjectMap (honestly noted in the result
+			//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): DEFAULT
+			//! TRUE (2026-07-17 user decision) -- an agent view-mode render
+			//! is see-through by default, matching the viewport's own
+			//! default.  Meaningful ONLY when renderTarget == ViewMode --
+			//! stamps RayCaster::SetXrayViewResolve(true) on the ephemeral
+			//! view-mode caster (resolve through transmissive surfaces to
+			//! the first opaque hit, straight-line, no refraction bending)
+			//! before shading.  Pass xray:false to inspect the transmissive
+			//! surface itself instead of what's inside/behind it.  Silently
+			//! IGNORED under Beauty/ObjectMap (honestly noted in the result
 			//! message), matching the quality/samples-ignored precedent.
-			bool                 xray = false;
+			bool                 xray = true;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides

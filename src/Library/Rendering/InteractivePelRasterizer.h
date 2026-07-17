@@ -172,12 +172,15 @@ namespace RISE
 		//! ObjectMap (its own factory above -- palette lifecycle).
 		//!
 		//! `xray` (default false, docs/gui/RENDER_MODES.md "X-ray axis"):
-		//! when true, the built shader resolves each hit THROUGH transmissive
+		//! when true, stamps RayCaster::SetXrayViewResolve(true) on the
+		//! built caster so it resolves each hit THROUGH transmissive
 		//! (glass-like) surfaces to the first OPAQUE hit -- a straight-line
 		//! continuation of the original ray direction, deliberately with NO
 		//! refraction bending (an x-ray, not an optics simulation).  Composes
-		//! with all four data modes.  See the anonymous-namespace
-		//! ResolveXrayHit in the .cpp for the shared resolver.
+		//! with all four data modes.  The resolver itself lives in the
+		//! caster layer (RayCaster::ResolveXrayView_ in RayCaster.cpp), not
+		//! here -- so it applies uniformly to every shader, including the
+		//! studio material-preview shader.
 		bool CreateInteractiveViewModeCaster(
 			ViewportRenderMode mode,
 			IRayCaster** ppCaster,
@@ -334,6 +337,43 @@ namespace RISE
 			//! called with a non-null `p`, no matching clear yet).
 			bool HasViewModeCaster() const { return mViewModeCasterInstalled; }
 
+			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			//! sets the viewport-wide x-ray see-through toggle and stamps
+			//! it onto every RayCaster this rasterizer can currently reach
+			//! -- the active `pCaster`, the polish caster, and both saved-
+			//! caster slots (dynamic_cast<RayCaster*>, null-tolerant so a
+			//! non-RayCaster caster silently no-ops).  Applies uniformly
+			//! across every viewport render mode INCLUDING Preview -- the
+			//! resolver lives in the caster layer, so the studio material-
+			//! preview caster benefits with no per-shader plumbing.  Every
+			//! caster-swap site (SetViewModeCaster install/switch/restore,
+			//! SetPolishRayCaster, SetSampleCount's polish swap) also stamps
+			//! the CURRENT `mXrayView` onto whatever caster becomes active,
+			//! so a caster installed after SetXrayView is called still
+			//! reflects the right flag.  Called only under the controller's
+			//! parked-render discipline (SceneEditController::SetViewportXray).
+			void SetXrayView( bool on );
+
+			//! Current viewport-wide x-ray toggle (default false at
+			//! construction; SceneEditController defaults it to true and
+			//! applies it on first attach -- see its own doc).
+			bool GetXrayView() const { return mXrayView; }
+
+			//! Part B (docs/gui/RENDER_MODES.md "Depth axis" self-
+			//! calibration): overrides the base RasterizeScene to run the
+			//! base pass, then -- if the ACTIVE caster is a view-mode
+			//! Depth caster whose auto-window is still pending (see
+			//! InteractiveViewModeRayCaster::DepthWindowPending) and the
+			//! pass was not cancelled -- runs the base pass ONCE more so
+			//! the window arms and this SAME RasterizeScene call returns a
+			//! windowed image.  Without this, a GUI mode switch (a single
+			//! settled RasterizeScene call, not the interactive multi-
+			//! frame cancel-restart loop) would show the flat scene-
+			//! diagonal fallback for one full pass before the next repaint
+			//! self-corrects -- the reported "depth renders nothing" bug.
+			//! Guarded to at most one extra pass per call.
+			virtual void RasterizeScene( const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const override;
+
 		protected:
 			virtual ~InteractivePelRasterizer();
 
@@ -412,6 +452,18 @@ namespace RISE
 			// SetViewModeCaster); meaningful only while installed.
 			bool                  mViewModeCasterAllowsDenoise;
 			IRayCaster*           mSavedPreviewCasterForViewMode;
+
+			// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			// current viewport-wide x-ray toggle -- see SetXrayView.
+			bool                  mXrayView;
+
+			//! Stamps `mXrayView` onto `c` via dynamic_cast<RayCaster*>;
+			//! no-op if `c` is null or not a RayCaster.  Shared by
+			//! SetXrayView and every caster-swap site so a caster that
+			//! becomes active AFTER SetXrayView was called still reflects
+			//! the current toggle.
+			void ApplyXrayViewToCaster_( IRayCaster* c ) const;
+
 		};
 	}
 }

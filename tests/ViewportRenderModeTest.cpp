@@ -32,12 +32,14 @@
 //    R8  A whole-scene re-derive (scene_variant switch, which calls
 //        RebindEditorToJob) resets an active view mode back to "preview" --
 //        the ratified "every scene load/reload opens in preview" rule.
-//    R9  X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"):
-//        SceneEditController::{Set,Get}ViewportXray in skeleton mode
-//        (refuses), live round-trip (stored while "preview" is active,
-//        rebuilds the caster in place while a data mode is active, survives
-//        a mode switch), the C-ABI wrappers, and reset-to-false alongside
-//        the mode reset on a whole-scene re-derive.
+//    R9  X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT ON
+//        (2026-07-17): SceneEditController::{Set,Get}ViewportXray in
+//        skeleton mode (refuses; getter still reports the TRUE default),
+//        live round-trip (applies immediately with NO caster rebuild --
+//        including while "preview" is active, stamping the studio preview
+//        caster itself -- survives a mode switch), the C-ABI wrappers, and
+//        reset-to-TRUE (the default) alongside the mode reset on a
+//        whole-scene re-derive.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -58,6 +60,7 @@
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
+#include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 
 using namespace RISE;
@@ -451,15 +454,18 @@ namespace
 	}
 
 	//------------------------------------------------------------------
-	// R9: X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") -- skeleton
-	// refusal, live round-trip (stored-while-preview / rebuild-while-
-	// active), and reset-on-rebind alongside the mode reset.
+	// R9: X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT ON
+	// (2026-07-17) -- skeleton refusal (getter still reports the TRUE
+	// default), live round-trip with NO caster rebuild (applies to
+	// "preview" too -- verified by reading the actual preview caster's
+	// RayCaster::GetXrayViewResolve()), and reset-to-TRUE on rebind.
 	//------------------------------------------------------------------
 	void TestXrayAxis()
 	{
 		std::printf( "R9: X-ray axis set/get round-trip + reset-on-rebind...\n" );
 
-		// Skeleton mode: refused, not crashing; getter still reports false.
+		// Skeleton mode: refused, not crashing; getter still reports the
+		// DEFAULT (true -- x-ray is default-ON).
 		{
 			const std::string tmp = TempPath( "vrm_r9_skeleton.RISEscene" );
 			Job* pJob = LoadScene( kPlainScene, tmp );
@@ -467,9 +473,9 @@ namespace
 			if( pJob )
 			{
 				SceneEditController ctrl( *pJob, nullptr );   // skeleton: no interactive rasterizer
-				Check( !ctrl.GetViewportXray(), "GetViewportXray reports false by default (skeleton)" );
-				Check( !ctrl.SetViewportXray( true ), "SetViewportXray refused in skeleton mode" );
-				Check( !ctrl.GetViewportXray(), "xray flag stays false after a refused skeleton-mode call" );
+				Check( ctrl.GetViewportXray(), "GetViewportXray reports TRUE by default (skeleton) -- x-ray is default-ON" );
+				Check( !ctrl.SetViewportXray( false ), "SetViewportXray refused in skeleton mode" );
+				Check( ctrl.GetViewportXray(), "xray flag stays true after a refused skeleton-mode call" );
 				pJob->release();
 				std::remove( tmp.c_str() );
 			}
@@ -488,51 +494,64 @@ namespace
 			Check( CreateInteractiveMaterialPreviewPipeline( &pRasterizer, &pPreview, &pPolish ), "R9 pipeline builds" );
 			if( !pRasterizer ) { pJob->release(); std::remove( tmp.c_str() ); return; }
 
+			RayCaster* pPreviewRC = dynamic_cast<RayCaster*>( pPreview );
+			Check( pPreviewRC != nullptr, "R9 preview caster downcasts to RayCaster" );
+
 			{
 				SceneEditController ctrl( *pJob, pRasterizer );
 				using Cat = SceneEditController::Category;
 
-				Check( !ctrl.GetViewportXray(), "starts at xray=false" );
+				Check( ctrl.GetViewportXray(), "starts at xray=true (default-ON)" );
+				if( pPreviewRC ) {
+					Check( pPreviewRC->GetXrayViewResolve(), "constructing the controller stamps the DEFAULT true onto the preview caster (first-attach stamp)" );
+				}
 
-				// Set while "preview" is active: just stored, no data-mode
-				// caster to rebuild -- still succeeds.
-				Check( ctrl.SetViewportXray( true ), "SetViewportXray(true) succeeds while \"preview\" is active" );
-				Check( ctrl.GetViewportXray(), "GetViewportXray reports true after the set" );
+				// Set OFF while "preview" is active: x-ray now applies to
+				// EVERY mode including preview (caster-layer resolution,
+				// no per-mode caster rebuild) -- so this is a plain flag
+				// stamp that still succeeds and is immediately visible on
+				// the actual preview caster.
+				Check( ctrl.SetViewportXray( false ), "SetViewportXray(false) succeeds while \"preview\" is active" );
+				Check( !ctrl.GetViewportXray(), "GetViewportXray reports false after the set" );
+				if( pPreviewRC ) {
+					Check( !pPreviewRC->GetXrayViewResolve(), "the studio preview caster itself reflects the flip -- x-ray composes with \"preview\" now" );
+				}
 
 				// Same-value call is a documented no-op that still succeeds.
-				Check( ctrl.SetViewportXray( true ), "re-setting the SAME xray value succeeds (no-op)" );
-				Check( ctrl.GetViewportXray(), "still true after the no-op call" );
+				Check( ctrl.SetViewportXray( false ), "re-setting the SAME xray value succeeds (no-op)" );
+				Check( !ctrl.GetViewportXray(), "still false after the no-op call" );
 
-				// Switching to a data mode picks up the ALREADY-stored xray
-				// flag (InstallViewModeCaster_ reads mViewportXray at caster-
-				// build time) -- no separate re-apply needed.
-				Check( ctrl.SetViewportRenderMode( "depth" ), "switch to \"depth\" with xray already true" );
+				// Switching to a data mode: the newly-built caster is
+				// immediately re-stamped with the CURRENT flag by
+				// InteractivePelRasterizer::SetViewModeCaster -- no
+				// separate re-apply needed on the controller side.
+				Check( ctrl.SetViewportRenderMode( "depth" ), "switch to \"depth\" with xray already false" );
 				Check( std::string( ctrl.GetViewportRenderMode() ) == "depth", "mode is \"depth\"" );
-				Check( ctrl.GetViewportXray(), "xray flag survives the mode switch" );
+				Check( !ctrl.GetViewportXray(), "xray flag survives the mode switch" );
 
-				// Flip xray OFF while a data mode is active: rebuilds the
-				// caster in place (same InstallViewModeCaster_ path).
-				Check( ctrl.SetViewportXray( false ), "SetViewportXray(false) succeeds while \"depth\" is active" );
-				Check( !ctrl.GetViewportXray(), "GetViewportXray reports false after the flip" );
+				// Flip xray ON while a data mode is active: no caster
+				// rebuild, just InteractivePelRasterizer::SetXrayView
+				// stamping every caster the rasterizer holds.
+				Check( ctrl.SetViewportXray( true ), "SetViewportXray(true) succeeds while \"depth\" is active" );
+				Check( ctrl.GetViewportXray(), "GetViewportXray reports true after the flip" );
 				Check( std::string( ctrl.GetViewportRenderMode() ) == "depth", "mode stays \"depth\" across the xray flip" );
 
-				// Flip back ON for the reset-on-rebind check below.
-				Check( ctrl.SetViewportXray( true ), "SetViewportXray(true) again" );
-				Check( ctrl.GetViewportXray(), "xray true again pre-reset" );
-
 				// A whole-scene re-derive resets BOTH the mode AND the xray
-				// flag (RebindEditorToJob's doc: "alongside the mode reset").
+				// flag to their DEFAULTS ("preview" / true).
 				Check( ctrl.SetSelection( Cat::SceneVariant, String( "night" ) ), "R9 SetSelection(night) re-derives clean" );
 				Check( std::string( ctrl.GetViewportRenderMode() ) == "preview", "mode reset to \"preview\" by the re-derive" );
-				Check( !ctrl.GetViewportXray(),
-					"MONEY ASSERTION: xray flag reset to false by the SAME whole-scene re-derive" );
+				Check( ctrl.GetViewportXray(),
+					"MONEY ASSERTION: xray flag reset to TRUE (the default) by the SAME whole-scene re-derive" );
+				if( pPreviewRC ) {
+					Check( pPreviewRC->GetXrayViewResolve(), "the re-derive's reset is stamped onto the preview caster too" );
+				}
 
 				// C-ABI round-trip through the live controller.
-				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, true ), "C-ABI SetViewportXray succeeds" );
-				bool abiOut = false;
+				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, false ), "C-ABI SetViewportXray succeeds" );
+				bool abiOut = true;
 				Check( RISE_API_SceneEditController_GetViewportXray( &ctrl, &abiOut ), "C-ABI GetViewportXray succeeds" );
-				Check( abiOut == true, "C-ABI GetViewportXray reflects the C-ABI set" );
-				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, false ), "C-ABI SetViewportXray(false) restores" );
+				Check( abiOut == false, "C-ABI GetViewportXray reflects the C-ABI set" );
+				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, true ), "C-ABI SetViewportXray(true) restores" );
 
 				Check( ctrl.SetViewportRenderMode( "preview" ), "restore \"preview\" before teardown" );
 			}

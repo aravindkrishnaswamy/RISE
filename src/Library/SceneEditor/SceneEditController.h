@@ -2256,25 +2256,31 @@ namespace RISE
 
 		//! -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") --------
 		//!
-		//! An orthogonal boolean axis that COMPOSES with all four data modes
-		//! (Normals/Depth/Facets/Wireframe): when on, each mode's shader
-		//! resolves THROUGH transmissive (glass-like) surfaces to the first
-		//! OPAQUE hit -- a straight-line continuation of the original ray,
-		//! deliberately with NO refraction bending (an x-ray, not an optics
-		//! simulation).  Same lock/park/rebuild discipline as
-		//! SetViewportRenderMode above.
+		//! An orthogonal boolean axis that applies to EVERY viewport render
+		//! mode, INCLUDING Preview (the studio material-preview pipeline):
+		//! when on, the resolved primary hit is walked THROUGH transmissive
+		//! (glass-like) surfaces to the first OPAQUE hit -- a straight-line
+		//! continuation of the original ray, deliberately with NO refraction
+		//! bending (an x-ray, not an optics simulation).  Resolution lives in
+		//! the CASTER layer (RayCaster::ResolveXrayView_ / SetXrayViewResolve),
+		//! so no per-mode caster rebuild is needed: SetViewportXray just
+		//! stamps InteractivePelRasterizer::SetXrayView on the flag change,
+		//! which propagates to every caster the rasterizer currently holds
+		//! (active, polish, and both saved-caster slots) -- see that method's
+		//! doc.  DEFAULT ON (2026-07-17 user decision): the viewport and
+		//! agent view-mode renders start see-through; a user/agent that wants
+		//! to inspect the transmissive surface itself passes xray:false.
 
-		//! Set the x-ray flag.  If a data mode is CURRENTLY active, its caster
-		//! is immediately rebuilt with the new flag (same caster-swap path
-		//! SetViewportRenderMode uses).  If "preview" is active, the flag is
-		//! just stored -- it takes effect the next time a data mode is
-		//! selected.  No-op (returns true) when `xray` already matches the
+		//! Set the x-ray flag.  Applies immediately regardless of which mode
+		//! is active (including Preview).  Same lock/park discipline as
+		//! SetViewportRenderMode above, but with NO caster rebuild -- just a
+		//! flag stamp.  No-op (returns true) when `xray` already matches the
 		//! current flag.  Returns false while a production/agent render owns
 		//! the scene, or in skeleton mode (no interactive rasterizer).
 		bool SetViewportXray( bool xray );
 
-		//! The CURRENT x-ray flag (false by default and after every
-		//! RebindEditorToJob reset).
+		//! The CURRENT x-ray flag (true by default and after every
+		//! RebindEditorToJob reset -- see the axis doc above).
 		bool GetViewportXray() const;
 
 		//! -------- Environment / IBL section (GUI Environment panel) --------
@@ -2571,15 +2577,18 @@ namespace RISE
 		// even an atomic no-op composite undo (didWork == false).
 		void DropStaleSelection_();
 
-		// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): shared by
-		// SetViewportRenderMode and SetViewportXray -- builds `mode`'s
-		// view-mode caster (with the CURRENT mViewportXray flag) and
-		// installs it via InteractivePelRasterizer::SetViewModeCaster.
-		// `mode` must be a casterFactory mode (Normals/Depth/Facets/
-		// Wireframe); callers already hold mMutex with the render parked.
-		// Returns false (nothing installed) on the "shouldn't happen"
-		// caster-factory failure -- same fail-closed contract
-		// SetViewportRenderMode had inline before this was factored out.
+		// Builds `mode`'s view-mode caster and installs it via
+		// InteractivePelRasterizer::SetViewModeCaster.  `mode` must be a
+		// casterFactory mode (Normals/Depth/Facets/Wireframe); callers
+		// already hold mMutex with the render parked.  Returns false
+		// (nothing installed) on the "shouldn't happen" caster-factory
+		// failure -- same fail-closed contract SetViewportRenderMode had
+		// inline before this was factored out.  No x-ray argument -- the
+		// built caster starts at the factory default (false) and
+		// SetViewModeCaster immediately re-stamps it with the rasterizer's
+		// CURRENT x-ray flag (InteractivePelRasterizer::SetXrayView /
+		// ApplyXrayViewToCaster_), so this stays correct with no plumbing
+		// here.
 		bool InstallViewModeCaster_( Implementation::ViewportRenderMode mode );
 
 		IJobPriv&                   mJob;
@@ -2595,8 +2604,11 @@ namespace RISE
 		Implementation::ViewportRenderMode mViewportRenderMode;
 		// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): the currently
 		// active x-ray flag.  Mutated ONLY under mMutex (by SetViewportXray
-		// and by RebindEditorToJob's every-scene-load reset-to-false);
-		// false at construction and after every reset.
+		// and by RebindEditorToJob's every-scene-load reset-to-true).
+		// DEFAULT ON (2026-07-17 user decision): true at construction and
+		// after every reset -- the viewport starts see-through.  Mirrored
+		// onto the interactive rasterizer via
+		// InteractivePelRasterizer::SetXrayView at both of those sites.
 		bool                                mViewportXray;
 		SceneEditor                 mEditor;
 		Tool                        mTool;

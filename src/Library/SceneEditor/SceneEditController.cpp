@@ -190,7 +190,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mInteractiveRasterizer( interactiveRasterizer )
 , mInteractiveImpl( dynamic_cast<Implementation::InteractivePelRasterizer*>( interactiveRasterizer ) )
 , mViewportRenderMode( Implementation::ViewportRenderMode::Preview )
-, mViewportXray( false )
+, mViewportXray( true )   // DEFAULT ON (2026-07-17 user decision) -- see the header doc
 , mEditor( *job.GetScene() )
 , mTool( Tool::Select )
 // Photoshop-style per-category memory.  Initialize each slot to
@@ -327,11 +327,21 @@ void SceneEditController::RebindEditorToJob()
 		mViewportRenderMode = Implementation::ViewportRenderMode::Preview;
 	}
 	// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): reset alongside
-	// the mode reset above, UNCONDITIONALLY -- the flag can be true while
-	// "preview" is active (it's just stored, waiting for a data mode to be
-	// selected), so it must be cleared even when the mode branch above was
-	// already a no-op.
-	mViewportXray = false;
+	// the mode reset above, UNCONDITIONALLY -- runs every whole-scene
+	// (re)bind, not just the mode-was-non-Preview branch above.  DEFAULT
+	// ON (2026-07-17 user decision): reset to true, and stamp it onto the
+	// interactive rasterizer directly (same "inline the equivalent raw
+	// state mutation" rationale as the SetViewModeCaster call above -- the
+	// public SetXrayView setter itself just does the propagation, no
+	// locking, so calling it here is safe under the same parked-render
+	// contract).  This is also the "first attach" stamp: RebindEditorToJob
+	// runs once in the constructor, immediately after mInteractiveImpl is
+	// set, so the interactive rasterizer starts see-through before any
+	// render ever happens.
+	mViewportXray = true;
+	if( mInteractiveImpl ) {
+		mInteractiveImpl->SetXrayView( mViewportXray );
+	}
 }
 
 namespace {
@@ -6969,14 +6979,13 @@ bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
 
 // ===================== Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) =====
 
-// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): shared by
-// SetViewportRenderMode and SetViewportXray -- see the header doc.
-// Callers must already hold mMutex with the render parked, and must have
-// already checked `mode` is a valid casterFactory mode.
+// See the header doc.  Callers must already hold mMutex with the render
+// parked, and must have already checked `mode` is a valid casterFactory
+// mode.
 bool SceneEditController::InstallViewModeCaster_( Implementation::ViewportRenderMode mode )
 {
 	IRayCaster* caster = 0;
-	if( !Implementation::CreateInteractiveViewModeCaster( mode, &caster, mViewportXray ) )
+	if( !Implementation::CreateInteractiveViewModeCaster( mode, &caster ) )
 	{
 		// Shouldn't happen for a viewportSelectable, non-Preview mode --
 		// the factory covers exactly {Normals,Depth,Facets,Wireframe} --
@@ -7075,30 +7084,11 @@ bool SceneEditController::SetViewportXray( bool xray )
 	}
 	CancelAndParkRender_( lk );
 
-	// Commit the member ONLY after any required caster rebuild succeeds --
-	// mirroring SetViewportRenderMode's discipline (state untouched on
-	// failure), so GetViewportXray can never report a flag the installed
-	// caster does not reflect.  (The failure branch is dead code today --
-	// the factory covers every selectable data mode -- but a future
-	// registry change could make it live.)
-	if( mViewportRenderMode != Implementation::ViewportRenderMode::Preview )
-	{
-		// InstallViewModeCaster_ reads mViewportXray for the rebuild, so
-		// stage the new value across the call and restore on failure.
-		const bool prior = mViewportXray;
-		mViewportXray = xray;
-		if( !InstallViewModeCaster_( mViewportRenderMode ) )
-		{
-			mViewportXray = prior;
-			return false;
-		}
-	}
-	else
-	{
-		// "preview" active: just store the flag -- it applies the next
-		// time a data mode is selected (see header doc).
-		mViewportXray = xray;
-	}
+	// X-ray resolution lives in the caster layer now -- no caster rebuild,
+	// just stamp the flag onto every caster the rasterizer holds (applies
+	// uniformly across every mode, INCLUDING Preview).
+	mInteractiveImpl->SetXrayView( xray );
+	mViewportXray = xray;
 
 	// Kick a repaint -- same inline store-then-notify SetViewportRenderMode
 	// uses.
@@ -7110,7 +7100,10 @@ bool SceneEditController::SetViewportXray( bool xray )
 
 bool SceneEditController::GetViewportXray() const
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	// render-owns-scene guard -- report the DEFAULT (x-ray is default-ON;
+	// see the header doc), not a stale false, while a production/agent
+	// render transiently owns the scene.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return true;
 	std::lock_guard<std::mutex> lk( mMutex );
 	return mViewportXray;
 }

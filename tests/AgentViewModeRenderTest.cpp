@@ -664,9 +664,10 @@ static void RunMcpAdapterModeParityTest()
 }
 
 //----------------------------------------------------------------------
-// (5) X-ray axis coverage (docs/gui/RENDER_MODES.md "X-ray axis"): facets
-// and depth with vs without xray over a transmissive glass sphere placed IN
-// FRONT of the mesh, plus the honest-ignored-under-beauty note.
+// (5) X-ray axis coverage (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT
+// ON (2026-07-17): facets and depth with the DEFAULT (see-through) vs an
+// EXPLICIT xray:false over a transmissive glass sphere placed IN FRONT of
+// the mesh, plus the honest-ignored-under-beauty note.
 //----------------------------------------------------------------------
 static void RunXrayCoverageTest()
 {
@@ -699,74 +700,83 @@ static void RunXrayCoverageTest()
 		Check( glassBBox.found > 0, "glass_obj occupies a nonzero pixel region (occludes the mesh from the camera)" );
 	}
 
-	// (a) facets WITHOUT xray -- shows the glass sphere's own surface.
-	AgentRenderParams facetsNoXray;
-	facetsNoXray.renderTarget = AgentRenderTarget::ViewMode;
-	facetsNoXray.viewMode     = Implementation::ViewportRenderMode::Facets;
-	AgentRenderResult rFacetsNo = session->Render( facetsNoXray );
-	Check( rFacetsNo.ok, "facets without xray succeeds" );
-	Decoded decFacetsNo;
-	Check( DecodePng( rFacetsNo.png, decFacetsNo ), "facets-without-xray PNG decodes" );
+	// (a) facets at the DEFAULT (xray defaults TRUE -- 2026-07-17) --
+	// should show the mesh through the glass with NO extra param.
+	AgentRenderParams facetsDefault;
+	facetsDefault.renderTarget = AgentRenderTarget::ViewMode;
+	facetsDefault.viewMode     = Implementation::ViewportRenderMode::Facets;
+	AgentRenderResult rFacetsDefault = session->Render( facetsDefault );
+	Check( rFacetsDefault.ok, "facets at the default (xray implicitly true) succeeds" );
+	Check( rFacetsDefault.message.find( "xray" ) != std::string::npos,
+	       "facets-at-default message notes xray is active" );
+	Decoded decFacetsDefault;
+	Check( DecodePng( rFacetsDefault.png, decFacetsDefault ), "facets-at-default PNG decodes" );
 
-	// (b) facets WITH xray:true -- should show the mesh through the glass.
-	AgentRenderParams facetsXray = facetsNoXray;
-	facetsXray.xray = true;
-	AgentRenderResult rFacetsXray = session->Render( facetsXray );
-	Check( rFacetsXray.ok, "facets with xray succeeds" );
-	Check( rFacetsXray.message.find( "xray" ) != std::string::npos,
-	       "facets-with-xray message notes xray is active" );
-	Decoded decFacetsXray;
-	Check( DecodePng( rFacetsXray.png, decFacetsXray ), "facets-with-xray PNG decodes" );
+	// (b) facets with an EXPLICIT xray:false -- shows the glass sphere's
+	// own surface instead of the mesh underneath it.
+	AgentRenderParams facetsNoXray = facetsDefault;
+	facetsNoXray.xray = false;
+	AgentRenderResult rFacetsNo = session->Render( facetsNoXray );
+	Check( rFacetsNo.ok, "facets with explicit xray:false succeeds" );
+	Decoded decFacetsNo;
+	Check( DecodePng( rFacetsNo.png, decFacetsNo ), "facets-xray-false PNG decodes" );
 
 	if( glassBBox.found > 0 &&
-	    decFacetsNo.w == decFacetsXray.w && decFacetsNo.h == decFacetsXray.h ) {
+	    decFacetsNo.w == decFacetsDefault.w && decFacetsNo.h == decFacetsDefault.h ) {
 		unsigned int differing = 0;
 		for( unsigned int y = glassBBox.minY; y <= glassBBox.maxY; ++y ) {
 			for( unsigned int x = glassBBox.minX; x <= glassBBox.maxX; ++x ) {
 				const Px& a = decFacetsNo.at( x, y );
-				const Px& b = decFacetsXray.at( x, y );
+				const Px& b = decFacetsDefault.at( x, y );
 				if( a[0] != b[0] || a[1] != b[1] || a[2] != b[2] ) ++differing;
 			}
 		}
 		Check( differing > 0,
-		       "MONEY ASSERTION (a/b): facets WITH xray shows DIFFERENT pixels than WITHOUT, over "
-		       "the glass sphere's own screen region -- the mesh shows through the glass" );
+		       "MONEY ASSERTION (a/b): facets at the DEFAULT shows DIFFERENT pixels than an explicit "
+		       "xray:false, over the glass sphere's own screen region -- the mesh shows through the glass "
+		       "by default, and xray:false switches back to the glass surface itself" );
 	}
 
-	// (c) depth WITH vs WITHOUT xray -- should differ (xray sees through to
-	// the mesh, which is farther away than the glass sphere's own surface).
-	AgentRenderParams depthNoXray;
-	depthNoXray.renderTarget = AgentRenderTarget::ViewMode;
-	depthNoXray.viewMode     = Implementation::ViewportRenderMode::Depth;
+	// (c) depth at the DEFAULT vs an EXPLICIT xray:false -- should differ
+	// (the default sees through to the mesh, which is farther away than
+	// the glass sphere's own surface).
+	AgentRenderParams depthDefault;
+	depthDefault.renderTarget = AgentRenderTarget::ViewMode;
+	depthDefault.viewMode     = Implementation::ViewportRenderMode::Depth;
+	AgentRenderResult rDepthDefault = session->Render( depthDefault );
+	Check( rDepthDefault.ok, "depth at the default (xray implicitly true) succeeds" );
+	Decoded decDepthDefault;
+	Check( DecodePng( rDepthDefault.png, decDepthDefault ), "depth-at-default PNG decodes" );
+
+	AgentRenderParams depthNoXray = depthDefault;
+	depthNoXray.xray = false;
 	AgentRenderResult rDepthNo = session->Render( depthNoXray );
-	Check( rDepthNo.ok, "depth without xray succeeds" );
+	Check( rDepthNo.ok, "depth with explicit xray:false succeeds" );
 	Decoded decDepthNo;
-	Check( DecodePng( rDepthNo.png, decDepthNo ), "depth-without-xray PNG decodes" );
+	Check( DecodePng( rDepthNo.png, decDepthNo ), "depth-xray-false PNG decodes" );
 
-	AgentRenderParams depthXray = depthNoXray;
-	depthXray.xray = true;
-	AgentRenderResult rDepthXray = session->Render( depthXray );
-	Check( rDepthXray.ok, "depth with xray succeeds" );
-	Decoded decDepthXray;
-	Check( DecodePng( rDepthXray.png, decDepthXray ), "depth-with-xray PNG decodes" );
-
-	if( decDepthNo.w == decDepthXray.w && decDepthNo.h == decDepthXray.h ) {
+	if( decDepthNo.w == decDepthDefault.w && decDepthNo.h == decDepthDefault.h ) {
 		unsigned int differing = 0;
 		for( std::size_t px = 0; px < decDepthNo.px.size(); ++px ) {
-			if( decDepthNo.px[px][0] != decDepthXray.px[px][0] ) ++differing;
+			if( decDepthNo.px[px][0] != decDepthDefault.px[px][0] ) ++differing;
 		}
 		Check( differing > 0,
-		       "MONEY ASSERTION (c): depth WITH xray differs from depth WITHOUT xray somewhere in the frame" );
+		       "MONEY ASSERTION (c): depth at the DEFAULT differs from depth with explicit xray:false "
+		       "somewhere in the frame" );
 	}
 
-	// (d) xray:true with mode:"beauty" (the default renderTarget) is
-	// ACCEPTED, not rejected, and carries the honest ignored note.
+	// (d) xray at the default (true) with mode:"beauty" (the default
+	// renderTarget) is ACCEPTED, not rejected, and carries the honest
+	// ignored note.
 	AgentRenderParams beautyXray;
-	beautyXray.xray = true;   // renderTarget stays Beauty (the default)
+	// renderTarget stays Beauty (the default); xray stays at its own
+	// default (true) -- deliberately NOT set here, to prove the default
+	// itself (not just an explicit xray:true) is honestly ignored under
+	// mode:beauty.
 	AgentRenderResult rBeautyXray = session->Render( beautyXray );
-	Check( rBeautyXray.ok, "xray:true with mode:beauty is accepted (not rejected)" );
+	Check( rBeautyXray.ok, "xray (default true) with mode:beauty is accepted (not rejected)" );
 	Check( rBeautyXray.message.find( "ignored" ) != std::string::npos,
-	       "MONEY ASSERTION (d): xray:true under mode:beauty carries an honest 'ignored' note in the message" );
+	       "MONEY ASSERTION (d): xray (default true) under mode:beauty carries an honest 'ignored' note in the message" );
 
 	pJob->release();
 }

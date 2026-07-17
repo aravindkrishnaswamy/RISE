@@ -528,85 +528,23 @@ private:
 	}
 };
 
-//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): resolves `ri`
-//! THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit --
-//! a STRAIGHT-LINE continuation of the ORIGINAL ray direction, with NO
-//! refraction bending.  Deliberately an x-ray, not an optics simulation:
-//! it answers "what's under/inside this transmissive geometry", not
-//! "what would actually be seen looking through it".  Bounded to 16
-//! skips so a stack of nested transmissive shells can't loop forever.
-//! A miss partway through the chain KEEPS the last transmissive hit
-//! rather than reporting a miss -- shading something honest beats a
-//! black hole.  Shared by all four data-mode shaders (Normals / Depth /
-//! Facets / Wireframe); each applies it at the top of Shade/ShadeNM
-//! when constructed with xray=true.
-void ResolveXrayHit( RayIntersection& ri, const IRayCaster& caster )
-{
-	for( int skip = 0; skip < 16; ++skip )
-	{
-		if( !ri.geometric.bHit || !ri.pMaterial || !ri.pMaterial->CouldLightPassThrough() )
-		{
-			return;
-		}
-
-		const IScene* scene = caster.GetAttachedScene();
-		if( !scene || !scene->GetObjects() )
-		{
-			return;
-		}
-
-		const Vector3 dir = ri.geometric.ray.Dir();
-		// Nudge off the surface along the SAME direction (no bending) --
-		// scaled by the hit's own range so it means something at both
-		// tabletop and kilometre scale, floored so it's never a no-op at
-		// near-zero range.  1e-5 keeps the overshoot bound tight (an
-		// opaque surface closer behind the glass than range*1e-5 is
-		// stepped over -- ~1mm at 100 units); double-precision hit error
-		// is orders of magnitude below the 1e-6 floor, and a too-small
-		// nudge merely re-hits the same surface and consumes one of the
-		// 16 bounded skips.
-		Scalar eps = ri.geometric.range * 1.0e-5;
-		if( eps < 1.0e-6 ) {
-			eps = 1.0e-6;
-		}
-		const Point3 origin = Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * eps );
-
-		RayIntersection next( Ray( origin, dir ), ri.geometric.rast );
-		next.geometric.PropagateCastInputs( ri.geometric );   // wireframe edge requests etc. survive the skip
-		scene->GetObjects()->IntersectRay( next, /*bHitFrontFaces*/true, /*bHitBackFaces*/true, /*bComputeExitInfo*/false );
-
-		if( !next.geometric.bHit )
-		{
-			return;   // keep `ri` -- the last transmissive hit, an honest answer over a black hole
-		}
-		// The primary hit had its bump/normal-map modifier applied by
-		// RayCaster::CastRay BEFORE Shade; this continuation bypasses the
-		// caster, so apply it here or Normals mode would show UNPERTURBED
-		// normals for exactly the surfaces x-ray exists to inspect (a
-		// bump-mapped dial under its crystal).  Same call ordering as
-		// RayCaster::CastRay's modifier site.
-		if( next.pModifier )
-		{
-			next.pModifier->Modify( next.geometric );
-		}
-		ri = next;
-	}
-}
-
 //! GUI render modes P1 (docs/gui/RENDER_MODES.md): world-space shading-
 //! normal false colour -- c = 0.5*(N+1).  Deliberately NOT flipped
 //! toward the viewer: a back-facing normal renders in the "negative"
 //! half of the colour cube, which is exactly the orientation defect
 //! the mode exists to reveal.
+//!
+//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): resolution now
+//! lives in the CASTER layer (RayCaster::ResolveXrayView_, enabled via
+//! RayCaster::SetXrayViewResolve) rather than here -- by the time `ri`
+//! reaches Shade/ShadeNM it is already the resolved hit, so this shader
+//! is x-ray-agnostic.
 class NormalsViewShader :
 	public IShader,
 	public Reference
 {
 public:
-	//! `xray` (docs/gui/RENDER_MODES.md "X-ray axis", default false):
-	//! resolve through transmissive surfaces to the first opaque hit
-	//! before computing the normal.  See ResolveXrayHit above.
-	explicit NormalsViewShader( bool xray = false ) : mXray( xray ) {}
+	NormalsViewShader() {}
 
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
@@ -616,15 +554,10 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
+		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		if( !mXray ) {
-			c = NormalColor( ri );
-			return;
-		}
-		RayIntersection resolved( ri );
-		ResolveXrayHit( resolved, caster );
-		c = NormalColor( resolved );
+		c = NormalColor( ri );
 	}
 
 	Scalar ShadeNM( const RuntimeContext& rc,
@@ -646,8 +579,6 @@ protected:
 	~NormalsViewShader() override {}
 
 private:
-	bool mXray;
-
 	static RISEPel NormalColor( const RayIntersection& ri )
 	{
 		Vector3 n = ri.geometric.vNormal;
@@ -659,15 +590,14 @@ private:
 //! Headlamp-shaded GEOMETRIC normal (flat face normal -- no Phong
 //! smoothing, no bump/normal-map perturbation).  Reveals the actual
 //! tessellation and any shading-normal divergence.
+//! X-ray axis: resolution lives in the caster layer -- see
+//! NormalsViewShader's class doc.
 class FacetsViewShader :
 	public IShader,
 	public Reference
 {
 public:
-	//! `xray` (docs/gui/RENDER_MODES.md "X-ray axis", default false):
-	//! resolve through transmissive surfaces to the first opaque hit
-	//! before facet-shading.  See ResolveXrayHit above.
-	explicit FacetsViewShader( bool xray = false ) : mXray( xray ) {}
+	FacetsViewShader() {}
 
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
@@ -677,15 +607,10 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
+		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		if( !mXray ) {
-			c = FacetShade( ri );
-			return;
-		}
-		RayIntersection resolved( ri );
-		ResolveXrayHit( resolved, caster );
-		c = FacetShade( resolved );
+		c = FacetShade( ri );
 	}
 
 	Scalar ShadeNM( const RuntimeContext& rc,
@@ -696,17 +621,11 @@ public:
 					const IORStack& ior_stack ) const override
 	{
 		(void)rc;
+		(void)caster;
 		(void)rs;
 		(void)nm;
 		(void)ior_stack;
-		RISEPel c;
-		if( !mXray ) {
-			c = FacetShade( ri );
-		} else {
-			RayIntersection resolved( ri );
-			ResolveXrayHit( resolved, caster );
-			c = FacetShade( resolved );
-		}
+		const RISEPel c = FacetShade( ri );
 		return ( c[0] + c[1] + c[2] ) / 3.0;
 	}
 
@@ -732,9 +651,6 @@ public:
 
 protected:
 	~FacetsViewShader() override {}
-
-private:
-	bool mXray;
 };
 
 //! Per-pass AUTO-WINDOWED hit distance, near = bright.  FIXES the earlier
@@ -768,20 +684,21 @@ private:
 //! bounding-box diagonal `mSceneDiagonal` (captured the same way as
 //! before -- see AttachScene).
 //!
-//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): with `mXray` set,
-//! the shader resolves through transmissive surfaces first (see
-//! ResolveXrayHit) and uses the TOTAL distance from the ORIGINAL ray's
-//! origin to the resolved hit point -- NOT the resolved hit's own
-//! (last-segment) range, and NOT a sum of per-segment ranges.
+//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): resolution lives
+//! in the CASTER layer (RayCaster::ResolveXrayView_, enabled via
+//! RayCaster::SetXrayViewResolve) -- when it fires, the caster already
+//! recomputes `ri.geometric.range` as the TOTAL distance from the
+//! ORIGINAL ray's origin to the resolved hit point (NOT the resolved
+//! hit's own last-segment range, and NOT a sum of per-segment ranges)
+//! before this shader ever sees `ri`.  So ResolveDistance below simply
+//! reads `ri.geometric.range` -- no x-ray-specific knowledge needed here.
 class DepthViewShader :
 	public IShader,
 	public Reference
 {
 public:
-	//! `xray` (default false): see the class doc's "X-ray axis" section.
-	explicit DepthViewShader( bool xray = false )
+	DepthViewShader()
 	: mSceneDiagonal( 0.0 )
-	, mXray( xray )
 	, mWinValid( false )
 	, mWinMin( 0.0 )
 	, mWinMax( 0.0 )
@@ -831,9 +748,10 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
+		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		const Scalar d = ResolveDistance( ri, caster );
+		const Scalar d = ri.geometric.range;
 		RecordSample( d );
 		const Scalar t = DepthValue( d );
 		c = RISEPel( t, t, t );
@@ -847,12 +765,31 @@ public:
 					const IORStack& ior_stack ) const override
 	{
 		(void)rc;
+		(void)caster;
 		(void)rs;
 		(void)nm;
 		(void)ior_stack;
-		const Scalar d = ResolveDistance( ri, caster );
+		const Scalar d = ri.geometric.range;
 		RecordSample( d );
 		return DepthValue( d );
+	}
+
+	//! Query for the InteractivePelRasterizer's Part-B self-calibration
+	//! re-run (docs/gui/RENDER_MODES.md "Depth axis"): true when the pass
+	//! that just ran RECORDED at least one sample (so the accumulators
+	//! have real data to arm the window from) but the window is not yet
+	//! VALID (first pass ever, or the previous pass was degenerate) --
+	//! i.e. the pass that just rendered used the flat scene-diagonal
+	//! fallback instead of the auto-window, and a second pass would now
+	//! shade windowed.  Mirrors the "did any sample land" test in
+	//! PreparePass so the two stay in lockstep.
+	bool WindowPending() const
+	{
+		if( mWinValid ) {
+			return false;
+		}
+		const double accMin = mAccMin.load( std::memory_order_relaxed );
+		return accMin <= kAlmostSentinel;
 	}
 
 	void ResetRuntimeData() const override {}
@@ -868,7 +805,6 @@ private:
 	static constexpr double kAlmostSentinel = 1.0e299;
 
 	Scalar                       mSceneDiagonal;
-	bool                         mXray;
 	bool                         mWinValid;
 	double                       mWinMin;
 	double                       mWinMax;
@@ -890,21 +826,6 @@ private:
 	{
 		AtomicMin( mAccMin, static_cast<double>( d ) );
 		AtomicMax( mAccMax, static_cast<double>( d ) );
-	}
-
-	//! Without xray: the primary hit's own range.  With xray: the TOTAL
-	//! distance from the ORIGINAL ray's origin to the resolved (possibly
-	//! skipped-through) hit point -- see the class doc's "X-ray axis"
-	//! section for why this must not be the resolved hit's own range nor
-	//! a sum of per-segment ranges.  A non-static member (reads mXray).
-	Scalar ResolveDistance( const RayIntersection& ri, const IRayCaster& caster ) const
-	{
-		if( !mXray ) {
-			return ri.geometric.range;
-		}
-		RayIntersection resolved( ri );
-		ResolveXrayHit( resolved, caster );
-		return Point3Ops::Distance( resolved.geometric.ptIntersection, ri.geometric.ray.origin );
 	}
 
 	Scalar DepthValue( const Scalar d ) const
@@ -933,15 +854,14 @@ private:
 //! perspective).  Geometries without polygon edges (analytical
 //! primitives, SDFs) never stamp the info -- they render as dim facet
 //! shading with no lines, which is the honest answer.
+//! X-ray axis: resolution lives in the caster layer -- see
+//! NormalsViewShader's class doc.
 class WireframeViewShader :
 	public IShader,
 	public Reference
 {
 public:
-	//! `xray` (docs/gui/RENDER_MODES.md "X-ray axis", default false):
-	//! resolve through transmissive surfaces to the first opaque hit
-	//! before wire-shading.  See ResolveXrayHit above.
-	explicit WireframeViewShader( bool xray = false ) : mXray( xray ) {}
+	WireframeViewShader() {}
 
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
@@ -951,15 +871,10 @@ public:
 				const IORStack& ior_stack ) const override
 	{
 		(void)rc;
+		(void)caster;
 		(void)rs;
 		(void)ior_stack;
-		if( !mXray ) {
-			c = WirePel( ri );
-			return;
-		}
-		RayIntersection resolved( ri );
-		ResolveXrayHit( resolved, caster );
-		c = WirePel( resolved );
+		c = WirePel( ri );
 	}
 
 	Scalar ShadeNM( const RuntimeContext& rc,
@@ -970,17 +885,11 @@ public:
 					const IORStack& ior_stack ) const override
 	{
 		(void)rc;
+		(void)caster;
 		(void)rs;
 		(void)nm;
 		(void)ior_stack;
-		RISEPel c;
-		if( !mXray ) {
-			c = WirePel( ri );
-		} else {
-			RayIntersection resolved( ri );
-			ResolveXrayHit( resolved, caster );
-			c = WirePel( resolved );
-		}
+		const RISEPel c = WirePel( ri );
 		return ( c[0] + c[1] + c[2] ) / 3.0;
 	}
 
@@ -990,8 +899,6 @@ protected:
 	~WireframeViewShader() override {}
 
 private:
-	bool mXray;
-
 	//! Fraction of the hit distance that reads as one line half-width;
 	//! ~2.5 apparent pixels at 800 px / 40 degree fov.  A constant is a
 	//! deliberate simplification -- the shader has no fov/raster-height
@@ -1102,6 +1009,15 @@ public:
 			mExtentDiagonal = diag;
 		}
 		mpDepthListener->PreparePass( diag );
+	}
+
+	//! Part B (docs/gui/RENDER_MODES.md "Depth axis" self-calibration):
+	//! forwards to the depth listener's WindowPending() query, or false
+	//! when this caster has no depth listener (every non-Depth view
+	//! mode).  See InteractivePelRasterizer::RasterizeScene.
+	bool DepthWindowPending() const
+	{
+		return mpDepthListener && mpDepthListener->WindowPending();
 	}
 
 private:
@@ -1287,20 +1203,20 @@ bool RISE::Implementation::CreateInteractiveViewModeCaster(
 	bool wantsWireEdges = false;
 	switch( mode ) {
 	case ViewportRenderMode::Normals:
-		pShader = new NormalsViewShader( xray );
+		pShader = new NormalsViewShader();
 		break;
 	case ViewportRenderMode::Depth:
 	{
-		DepthViewShader* pDepth = new DepthViewShader( xray );
+		DepthViewShader* pDepth = new DepthViewShader();
 		pShader = pDepth;
 		pDepthListener = pDepth;
 		break;
 	}
 	case ViewportRenderMode::Facets:
-		pShader = new FacetsViewShader( xray );
+		pShader = new FacetsViewShader();
 		break;
 	case ViewportRenderMode::Wireframe:
-		pShader = new WireframeViewShader( xray );
+		pShader = new WireframeViewShader();
 		wantsWireEdges = true;
 		break;
 	default:
@@ -1309,9 +1225,14 @@ bool RISE::Implementation::CreateInteractiveViewModeCaster(
 		return false;
 	}
 
-	IRayCaster* pCaster = new InteractiveViewModeRayCaster(
+	InteractiveViewModeRayCaster* pCaster = new InteractiveViewModeRayCaster(
 		*pShader, wantsWireEdges, pDepthListener );
 	pShader->release();
+	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): x-ray
+	// resolution now lives in the caster layer -- see RayCaster::
+	// ResolveXrayView_.  This composes with all four data modes with no
+	// per-shader plumbing.
+	pCaster->SetXrayViewResolve( xray );
 	*ppCaster = pCaster;
 	return true;
 }
@@ -1373,6 +1294,7 @@ InteractivePelRasterizer::InteractivePelRasterizer( IRayCaster* pCaster, const C
 , mViewModeCasterInstalled( false )
 , mViewModeCasterAllowsDenoise( false )
 , mSavedPreviewCasterForViewMode( 0 )
+, mXrayView( false )
 {
 }
 
@@ -1435,7 +1357,32 @@ void InteractivePelRasterizer::SetPolishRayCaster( IRayCaster* polishCaster )
 	mPolishCaster = polishCaster;
 	if( mPolishCaster ) {
 		mPolishCaster->addref();
+		ApplyXrayViewToCaster_( mPolishCaster );
 	}
+}
+
+void InteractivePelRasterizer::ApplyXrayViewToCaster_( IRayCaster* c ) const
+{
+	if( RayCaster* rc = dynamic_cast<RayCaster*>( c ) ) {
+		rc->SetXrayViewResolve( mXrayView );
+	}
+}
+
+void InteractivePelRasterizer::SetXrayView( bool on )
+{
+	mXrayView = on;
+	// Stamp every caster this rasterizer can currently reach -- the
+	// active caster plus both saved-caster slots (whichever of the two
+	// nesting swaps, polish or view-mode, is in effect right now) and
+	// the polish caster itself.  A caster this rasterizer doesn't
+	// currently hold a reference to (e.g. one built later by
+	// CreateInteractiveViewModeCaster) picks up the flag at ITS OWN
+	// install point via the same stamping this method uses -- see
+	// SetPolishRayCaster / SetViewModeCaster / SetSampleCount.
+	ApplyXrayViewToCaster_( pCaster );
+	ApplyXrayViewToCaster_( mPolishCaster );
+	ApplyXrayViewToCaster_( mSavedPreviewCaster );
+	ApplyXrayViewToCaster_( mSavedPreviewCasterForViewMode );
 }
 
 void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p, bool allowsDenoise )
@@ -1476,6 +1423,7 @@ void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p, bool allowsDeno
 		}
 		pCaster = p;
 		pCaster->addref();
+		ApplyXrayViewToCaster_( pCaster );
 		mViewModeCasterAllowsDenoise = allowsDenoise;
 		return;
 	}
@@ -1487,6 +1435,7 @@ void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p, bool allowsDeno
 	mSavedPreviewCasterForViewMode = 0;
 	mViewModeCasterInstalled = false;
 	mViewModeCasterAllowsDenoise = false;
+	ApplyXrayViewToCaster_( pCaster );
 }
 
 void InteractivePelRasterizer::SetIdleMode( bool idle ) const
@@ -1524,6 +1473,7 @@ void InteractivePelRasterizer::SetSampleCount( unsigned int n )
 			safe_release( pCaster );
 			pCaster = mSavedPreviewCaster;
 			mSavedPreviewCaster = 0;
+			ApplyXrayViewToCaster_( pCaster );
 		}
 		return;
 	}
@@ -1572,6 +1522,7 @@ void InteractivePelRasterizer::SetSampleCount( unsigned int n )
 		mSavedPreviewCaster = pCaster;   // keep its refcount on the saved slot
 		pCaster = mPolishCaster;
 		pCaster->addref();
+		ApplyXrayViewToCaster_( pCaster );
 	}
 }
 
@@ -1584,6 +1535,38 @@ void InteractivePelRasterizer::PrepareImageForNewRender( IRasterImage& /*img*/, 
 	// tiles overwrite them, so we skip the clear.  Our viewport sink
 	// also ignores OutputIntermediateImage (it only dispatches at
 	// end-of-pass), so skipping the notification is harmless.
+}
+
+void InteractivePelRasterizer::RasterizeScene(
+	const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const
+{
+	PixelBasedRasterizerHelper::RasterizeScene( pScene, pRect, pRasterSequence );
+
+	// Part B (docs/gui/RENDER_MODES.md "Depth axis" self-calibration): a
+	// Depth view-mode caster's auto-window arms from the PREVIOUS pass's
+	// accumulated min/max (DepthViewShader::PreparePass, called from
+	// InteractiveViewModeRayCaster::AttachScene at the top of every
+	// pass).  The interactive live-drag/idle-refine loop calls
+	// RasterizeScene repeatedly, so it self-corrects within a couple of
+	// repaints -- but a single SETTLED call (a GUI mode switch, or any
+	// one-shot render like the agent view-mode path) only gets ONE pass,
+	// which shows the flat scene-diagonal fallback because no previous
+	// pass ever populated the window.  If the pass we just ran recorded
+	// samples but the window is still pending, re-run the base pass
+	// exactly once more: AttachScene's PreparePass call at the top of
+	// that second pass snapshots the just-finished pass's accumulators
+	// into a valid window, and the second pass shades against it -- so
+	// THIS SAME RasterizeScene call returns a windowed image.  Calling
+	// the base method directly (not through the vtable) means there is
+	// no re-entrancy into this override, so at most one extra pass ever
+	// runs per call with no separate guard needed.
+	InteractiveViewModeRayCaster* pViewCaster =
+		dynamic_cast<InteractiveViewModeRayCaster*>( pCaster );
+	const bool bCancelled = pProgressFunc && pProgressFunc->IsCancelled();
+	if( pViewCaster && !bCancelled && pViewCaster->DepthWindowPending() )
+	{
+		PixelBasedRasterizerHelper::RasterizeScene( pScene, pRect, pRasterSequence );
+	}
 }
 
 void InteractivePelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const

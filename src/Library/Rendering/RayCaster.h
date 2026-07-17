@@ -106,6 +106,19 @@ namespace RISE
 			//! caster (InteractivePelRasterizer.cpp).
 			bool						bWantsWireEdgeInfo;
 
+			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			//! when true, CastRay/CastRayNM resolve the primary hit THROUGH
+			//! transmissive (glass-like) surfaces to the first OPAQUE hit --
+			//! a straight-line continuation of the ORIGINAL ray direction,
+			//! deliberately with NO refraction bending (an x-ray, not an
+			//! optics simulation).  Moved into the caster layer (was
+			//! previously shader-side, InteractivePelRasterizer-only) so
+			//! EVERY shader benefits -- including the studio material-
+			//! preview shader -- with no per-shader plumbing.  Default
+			//! false; production casters never set it (cost when off is
+			//! one bool test).  Set via SetXrayViewResolve.
+			bool						bXrayViewResolve;
+
 			virtual ~RayCaster();
 
 			//! Selects the shader used for a surface hit.  The default
@@ -113,6 +126,24 @@ namespace RISE
 			//! caster's default shader.  Interactive preview casters can
 			//! override this policy without mutating scene objects.
 			virtual const IShader& SelectShader( const RayIntersection& ri ) const;
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			//! the caster-layer x-ray resolver.  Bounded to 16 skips so a
+			//! stack of nested transmissive shells can't loop forever.  A
+			//! miss partway through the chain KEEPS the last transmissive
+			//! hit rather than reporting a miss -- shading something
+			//! honest beats a black hole.  When at least one skip
+			//! happened, restores the ORIGINAL primary ray onto
+			//! `ri.geometric.ray` and recomputes `ri.geometric.range` as
+			//! the TOTAL distance from the original ray's origin to the
+			//! resolved hit point -- NOT the resolved hit's own (last-
+			//! segment) range -- so depth and every other range-reading
+			//! consumer is correct with zero shader-side knowledge of
+			//! x-ray.  Deliberately does NOT apply `ri.pModifier` --
+			//! CastRay/CastRayNM's existing modifier site runs
+			//! immediately after this returns and covers whatever `ri`
+			//! ends up being.
+			void ResolveXrayView_( RayIntersection& ri ) const;
 
 		public:
 			RayCaster(
@@ -326,6 +357,15 @@ namespace RISE
 			/// \return The current radiance-scale override, or a negative
 			/// value when no override is set.
 			Scalar GetRadianceScale() const { return dRadianceScaleOverride; }
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			//! enables/disables the caster-layer x-ray resolver (see
+			//! `ResolveXrayView_`).  Off by default; production casters
+			//! never call this.
+			void SetXrayViewResolve( const bool enable ) { bXrayViewResolve = enable; }
+
+			/// \return Whether the caster-layer x-ray resolver is enabled.
+			bool GetXrayViewResolve() const { return bXrayViewResolve; }
 
 			/// See IRayCaster::IsRadianceMapVisibleAsBackground.
 			/// (No `override` — RayCaster matches the file's existing
