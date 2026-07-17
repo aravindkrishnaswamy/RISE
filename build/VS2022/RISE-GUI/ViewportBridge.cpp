@@ -579,6 +579,45 @@ QString ViewportBridge::promoteNamedView(int idx, const QString& proposedName)
     return QString::fromUtf8(name);
 }
 
+// -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) ------
+
+QVector<ViewportRenderModeInfo> ViewportBridge::viewportRenderModes()
+{
+    QVector<ViewportRenderModeInfo> out;
+    const unsigned int n = RISE_API_GetViewportRenderModeCount();
+    for (unsigned int i = 0; i < n; ++i) {
+        const char* name = nullptr;
+        const char* title = nullptr;
+        const char* question = nullptr;
+        bool selectable = false;
+        if (!RISE_API_GetViewportRenderModeInfo(i, &name, &title, &question, &selectable)) {
+            continue;
+        }
+        if (!selectable) {
+            continue;   // e.g. "objectmap" -- own palette-lifecycle pipeline, not a combo entry
+        }
+        ViewportRenderModeInfo info;
+        info.name     = QString::fromUtf8(name);
+        info.title    = QString::fromUtf8(title);
+        info.question = QString::fromUtf8(question);
+        out.push_back(info);
+    }
+    return out;
+}
+
+QString ViewportBridge::viewportRenderMode() const
+{
+    if (!m_controller) return QStringLiteral("preview");
+    return QString::fromUtf8(RISE_API_SceneEditController_GetViewportRenderMode(m_controller));
+}
+
+bool ViewportBridge::setViewportRenderMode(const QString& name)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetViewportRenderMode(
+        m_controller, name.toUtf8().constData());
+}
+
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }
 void ViewportBridge::pointerMove(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerMove(m_controller, x, y); }
 void ViewportBridge::pointerUp(double x, double y)   { if (m_controller) RISE_API_SceneEditController_OnPointerUp(m_controller, x, y); }

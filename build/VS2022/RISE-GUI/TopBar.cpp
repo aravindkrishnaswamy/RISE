@@ -18,6 +18,8 @@
 #include <QLabel>
 #include <QToolButton>
 #include <QPushButton>
+#include <QComboBox>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QPainter>
 #include <QLinearGradient>
@@ -126,7 +128,8 @@ int RefinementRung(unsigned int scaleDivisor)
 RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
                                           bool isProduction, bool isCancelling,
                                           double productionProgress,
-                                          bool isProductionPaused = false)
+                                          bool isProductionPaused = false,
+                                          const QString& viewportRenderMode = QStringLiteral("preview"))
 {
     // Label policy (user feedback 2026-07-16, mirrors the Mac formatter):
     // the small tracked label shows ONLY when it adds information the
@@ -155,7 +158,15 @@ RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
     case 4: return { QStringLiteral("Paused"), QString(), r / 6.0 };
     case 2: return { QStringLiteral("Refining · rung %1/6").arg(r), QString(), r / 6.0 };
     case 1: return { QStringLiteral("Rendering"), QString(), r / 6.0 };
-    case 3: return { QStringLiteral("Polishing"), QStringLiteral("DENOISED — NOT FINAL"), 1.0 };
+    // Data view modes (normals/depth/facets/wireframe) never denoise --
+    // InteractivePelRasterizer::ShouldDenoise is gated off while a
+    // view-mode caster is installed -- so claiming DENOISED there would
+    // lie.  Mirrors RefinementStatusFormatter.swift's identical gate.
+    case 3: return { QStringLiteral("Polishing"),
+                     viewportRenderMode == QLatin1String("preview")
+                         ? QStringLiteral("DENOISED — NOT FINAL")
+                         : QString(),
+                     1.0 };
     case 0: return { QStringLiteral("Settled"), QString(), 1.0 };
     default: return { QStringLiteral("—"), QString(), 0.0 };
     }
@@ -282,6 +293,39 @@ TopBar::TopBar(QWidget* parent)
     m_integratorChip->setFont(Theme::mono(10));
     m_integratorChip->setStyleSheet(QStringLiteral("color: %1; padding: 0 4px;").arg(Theme::hex(Theme::textDim)));
     clusterLayout->addWidget(m_integratorChip);
+
+    // P1 (docs/gui/RENDER_MODES.md §5): viewport render-mode combo --
+    // "TopBar combobox" per §5's GUI bullet.  Always visible (never
+    // hidden -- matches m_restartBtn's disable-not-hide convention, not
+    // m_saveBtn's hide-when-nothing-loaded convention); enabled state
+    // and current index are entirely owned by refreshRenderModeCombo().
+    m_renderModeSep = new QFrame(cluster);
+    m_renderModeSep->setFrameShape(QFrame::VLine);
+    m_renderModeSep->setFixedHeight(22);
+    m_renderModeSep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    clusterLayout->addWidget(m_renderModeSep);
+
+    m_renderModeCombo = new QComboBox(cluster);
+    m_renderModeCombo->setFont(Theme::mono(10));
+    m_renderModeCombo->setStyleSheet(QStringLiteral(
+        "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 2px 6px; }")
+        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight)));
+    // Fixed built-in mode set (RENDER_MODES.md decision 2) -- populated
+    // ONCE from the controller-independent registry; refreshRenderModeCombo()
+    // only ever moves the current-index pointer afterward, never touches
+    // the item list.  Each item's UserRole data is the wire name
+    // (RISE_API_SceneEditController_SetViewportRenderMode's `name` arg);
+    // ToolTipRole is the mode's question string.
+    for (const ViewportRenderModeInfo& info : ViewportBridge::viewportRenderModes()) {
+        const int idx = m_renderModeCombo->count();
+        m_renderModeCombo->addItem(info.title);
+        m_renderModeCombo->setItemData(idx, info.name, Qt::UserRole);
+        m_renderModeCombo->setItemData(idx, info.question, Qt::ToolTipRole);
+    }
+    m_renderModeCombo->setEnabled(false);   // no bridge yet -- refreshRenderModeCombo() re-enables on scene load
+    connect(m_renderModeCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+            this, &TopBar::onRenderModeComboChanged);
+    clusterLayout->addWidget(m_renderModeCombo);
 
     layout->addWidget(cluster);
     layout->addStretch(1);
@@ -668,7 +712,8 @@ void TopBar::updateReadout()
 
     const RefinementStatus s = ComputeRefinementStatus(
         m_refinementPhase, m_refinementScaleDivisor, isProduction, isCancelling, m_productionProgress,
-        isProductionPaused);
+        isProductionPaused,
+        m_bridge ? m_bridge->viewportRenderMode() : QStringLiteral("preview"));
 
     m_statusRowLabel->setText(s.text);
     m_statusTagLabel->setText(s.label);
@@ -744,7 +789,69 @@ void TopBar::updateControlsEnabled()
         || (m_chatPanel && m_chatPanel->isChatRenderOutstanding());
     m_restartBtn->setEnabled(!refinementDisabled);
 
+    // P1 (docs/gui/RENDER_MODES.md §5): this is the single choke point
+    // updateControlsEnabled() already has for every render-owns-scene
+    // transition (engine state changes, chat-render outstanding changes,
+    // a bridge attach/detach) AND, via pollRefinementState()'s own tail
+    // call to this method, the 500ms poll tick -- so the combo's current
+    // index also gets re-read from the bridge on that cadence, which is
+    // the safety net for a controller-side reset-to-"preview" that
+    // doesn't route through setViewportBridge (e.g. a scene_variant
+    // switch or CST full re-derive that reuses the SAME bridge/controller
+    // instance -- see SceneEditController::RebindEditorToJob's doc).
+    refreshRenderModeCombo();
+
     updateTransportButton();
+}
+
+void TopBar::refreshRenderModeCombo()
+{
+    if (!m_renderModeCombo) return;
+
+    // Same render-owns-scene / refinement-disabled predicate as
+    // m_restartBtn just above -- SetViewportRenderMode itself refuses
+    // under the identical guard (render-owns-scene) plus skeleton mode,
+    // so disabling here just keeps the UI honest about a set that would
+    // be refused anyway rather than inventing a second source of truth.
+    const bool disabled = !m_bridge
+        || m_engineState == RenderEngine::Rendering
+        || m_engineState == RenderEngine::Cancelling
+        || (m_chatPanel && m_chatPanel->isChatRenderOutstanding());
+    m_renderModeCombo->setEnabled(!disabled);
+
+    if (!m_bridge) {
+        return;   // nothing to resync the current index against
+    }
+
+    // Re-read the ACTIVE mode -- never assume the combo's current index
+    // still matches what the controller actually holds (see this
+    // method's doc for the reset paths that don't go through
+    // setViewportBridge).
+    const QString activeName = m_bridge->viewportRenderMode();
+    const int wantIndex = m_renderModeCombo->findData(activeName, Qt::UserRole);
+    if (wantIndex < 0 || wantIndex == m_renderModeCombo->currentIndex()) {
+        return;   // unknown name (shouldn't happen -- registry mismatch) or already in sync
+    }
+    // QSignalBlocker so this programmatic sync never re-enters
+    // onRenderModeComboChanged (mirrors ChatPanel::revertProviderModelWidgets'
+    // identical pattern for m_providerCombo).
+    const QSignalBlocker blocker(m_renderModeCombo);
+    m_renderModeCombo->setCurrentIndex(wantIndex);
+}
+
+void TopBar::onRenderModeComboChanged(int index)
+{
+    if (!m_bridge || !m_renderModeCombo) return;
+    if (index < 0) return;
+    const QString name = m_renderModeCombo->itemData(index, Qt::UserRole).toString();
+    if (name.isEmpty()) return;
+    // The set CAN fail (render-owns-scene, unknown/non-selectable name,
+    // skeleton mode) -- never assume it took effect.  Re-read the
+    // EFFECTIVE mode unconditionally so a refusal snaps the combo back
+    // to whatever's actually active instead of showing the user's
+    // rejected pick as if it had landed.
+    m_bridge->setViewportRenderMode(name);
+    refreshRenderModeCombo();
 }
 
 void TopBar::setCanStartProductionRender(bool canStart)

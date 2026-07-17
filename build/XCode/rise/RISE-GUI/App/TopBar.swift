@@ -372,7 +372,8 @@ struct TopBar: View {
             isProduction: isProduction,
             isCancelling: isCancelling,
             productionProgress: viewModel.progress,
-            isProductionPaused: viewModel.isProductionRenderPaused)
+            isProductionPaused: viewModel.isProductionRenderPaused,
+            viewportRenderMode: viewModel.viewportRenderMode)
     }
 
     /// The failure message when `renderState == .error(msg)`, else nil.

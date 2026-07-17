@@ -23,6 +23,7 @@
 class QLabel;
 class QToolButton;
 class QPushButton;
+class QComboBox;
 class QTimer;
 class RenderEngine;
 class ViewportBridge;
@@ -130,6 +131,16 @@ private slots:
     /// -- so there is exactly one cancel code path, not a duplicated
     /// one.  Works while paused too: the pause gate observes cancel.
     void onCancelClicked();
+    /// User picked an item in the render-mode combo (P1, docs/gui/
+    /// RENDER_MODES.md §5).  Looks up the picked item's wire name and
+    /// calls ViewportBridge::setViewportRenderMode -- the set CAN fail
+    /// (render-owns-scene, unknown mode, skeleton mode), so this always
+    /// re-reads the effective mode afterward via refreshRenderModeCombo()
+    /// rather than trusting the click.  Never re-entrant with the
+    /// programmatic sync in refreshRenderModeCombo() -- that method
+    /// wraps its setCurrentIndex in a QSignalBlocker, so this slot only
+    /// ever fires from an actual user pick.
+    void onRenderModeComboChanged(int index);
     void pollRefinementState();
     void onEngineStateChanged(int newState);
     void onEngineProgress(double fraction, const QString& title);
@@ -164,6 +175,24 @@ private:
     /// engine-state change, pause toggle, and chat/bridge transition --
     /// the same set of triggers the pause/restart buttons already use.
     void updateTransportButton();
+    /// P1 (docs/gui/RENDER_MODES.md §5): re-read the ACTIVE mode from the
+    /// bridge and resync m_renderModeCombo's current index (QSignalBlocker-
+    /// guarded so the programmatic sync never re-fires
+    /// onRenderModeComboChanged), plus its enabled state.  The combo's
+    /// item list itself is populated ONCE at construction (the mode set
+    /// is fixed-registry, docs/gui/RENDER_MODES.md decision 2) --
+    /// this only ever moves the current-index pointer.  Called from
+    /// updateControlsEnabled() (its single call site), which is itself
+    /// called from setViewportBridge (scene load/reload/close -- directly,
+    /// AND indirectly via that method's own pollRefinementState() call
+    /// while attaching a bridge), every render-owns-scene transition, AND
+    /// the 500ms pollRefinementState tick -- the LAST one is the safety
+    /// net for resets this bridge has no dedicated signal for
+    /// (SceneEditController resets to "preview" on every whole-scene
+    /// rebind, including scene_variant switches and CST full re-derives
+    /// that reuse the SAME ViewportBridge/controller instance -- see
+    /// SceneEditController::RebindEditorToJob's doc).
+    void refreshRenderModeCombo();
 
     RenderEngine*   m_engine = nullptr;
     ViewportBridge* m_bridge = nullptr;
@@ -193,6 +222,19 @@ private:
     // when there's no resolved integrator to show, instead of always
     // rendering next to a misleading static "AUTO" placeholder.
     QFrame*      m_integratorSep = nullptr;
+
+    // P1 (docs/gui/RENDER_MODES.md §5): compact viewport render-mode
+    // combo -- "the viewport chrome ... Windows: TopBar combobox" per
+    // §5's GUI bullet.  Lives in the center cluster, right of the
+    // integrator chip.  Populated ONCE at construction from the
+    // controller-independent registry (ViewportBridge::viewportRenderModes,
+    // a pure/static function); its enabled state and current index are
+    // resynced by refreshRenderModeCombo() at every scene load/reload/
+    // close and on the 500ms refinement poll (session-only, no QSettings
+    // persistence -- every fresh scene load reads back "preview" from the
+    // controller's own reset, never assumed locally).
+    QFrame*      m_renderModeSep = nullptr;
+    QComboBox*   m_renderModeCombo = nullptr;
 
     // Right: render transport (Render -> Pause -> Resume, + Cancel) -------
     // One slot that morphs with the production render's lifecycle -- see

@@ -341,6 +341,8 @@ struct ContentView: View {
 
             regionChip(vb)
 
+            viewportRenderModeChip
+
             Spacer(minLength: 0)
 
             evChip
@@ -481,6 +483,58 @@ struct ContentView: View {
                   : (interacting
                      ? "Toggle region refinement — drag in the viewport to draw a box"
                      : "Unavailable while a render is in flight"))
+    }
+
+    /// P1 render modes (docs/gui/RENDER_MODES.md §5): the viewport's
+    /// mode dropdown — "what does the interactive viewport render right
+    /// now" (Shaded Preview / Normals / Depth / Facets / Wireframe).
+    /// Deliberately kept OUT of the evChip/edrChip cluster on the right:
+    /// §4 ratified decision 1 draws a hard line between render MODES
+    /// (what gets rendered — this chip) and view TRANSFORMS (exposure /
+    /// tone curve / EDR — framebuffer re-transforms of whatever was
+    /// rendered); grouping them visually would blur a distinction the
+    /// design doc is explicit about.  Hidden entirely until the
+    /// registry list has loaded (`viewModel.viewportBridge`'s didSet
+    /// populates it once per scene open) rather than flashing an empty
+    /// menu for one frame.
+    @ViewBuilder
+    private var viewportRenderModeChip: some View {
+        if !viewModel.viewportRenderModes.isEmpty {
+            let activeMode = viewModel.viewportRenderModes.first { $0.name == viewModel.viewportRenderMode }
+            Menu {
+                ForEach(viewModel.viewportRenderModes) { mode in
+                    Button {
+                        viewModel.setViewportRenderMode(mode.name)
+                    } label: {
+                        if mode.name == viewModel.viewportRenderMode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Text(mode.title)
+                        }
+                    }
+                    .help(mode.question)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(activeMode?.title ?? viewModel.viewportRenderMode)
+                    Image(systemName: "chevron.down").font(.system(size: 8))
+                }
+                .font(Theme.mono(11))
+                .foregroundColor(Theme.textPrimary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Theme.bgPanel, in: RoundedRectangle(cornerRadius: Theme.radiusMedium))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                        .stroke(Theme.borderHairline, lineWidth: 1)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(!interacting)
+            .opacity(interacting ? 1.0 : 0.4)
+            .help(activeMode?.question ?? "Viewport render mode")
+        }
     }
 
     /// Compact "EV +0.3" readout; click pops a popover with the full

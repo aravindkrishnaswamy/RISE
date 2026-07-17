@@ -192,6 +192,18 @@ final class CoalescedImageDelivery: @unchecked Sendable {
     }
 }
 
+/// One entry from `RISEViewportBridge.viewportRenderModes()` (docs/gui/
+/// RENDER_MODES.md §5) — a viewport-selectable mode's wire name, UI
+/// title, and the question it answers (used as the dropdown row label
+/// + tooltip).  Equatable so it can sit in `MenuBarSnapshot` (which
+/// diffs on every field to decide whether the native menu bar rebuilds).
+struct ViewportRenderModeInfo: Equatable, Identifiable {
+    var id: String { name }
+    let name: String
+    let title: String
+    let question: String
+}
+
 @MainActor
 final class RenderViewModel: ObservableObject {
     @Published var renderState: RenderState = .idle
@@ -531,6 +543,22 @@ final class RenderViewModel: ObservableObject {
     @Published var undoLabel: String = ""
     @Published var redoLabel: String = ""
 
+    /// P1 render modes (docs/gui/RENDER_MODES.md §5): the viewport's
+    /// currently-active render mode wire name ("preview", "normals",
+    /// "depth", "facets", "wireframe").  Refreshed from the bridge on
+    /// scene open/reload (`viewportBridge`'s didSet) and by
+    /// `setViewportRenderMode` after every attempted switch — NEVER
+    /// assumed, because `SceneEditController` resets to "preview" on
+    /// every rebind and a switch can fail (render-owns-scene, unknown
+    /// name).  Session-only: no persistence across scene loads or app
+    /// launches.
+    @Published var viewportRenderMode: String = "preview"
+    /// The dropdown/menu's offered modes (viewportSelectable == true
+    /// registry entries), loaded once per scene open alongside
+    /// `viewportRenderMode` — the registry is a fixed built-in set (§4
+    /// ratified decision 2), so there is nothing to re-poll mid-session.
+    @Published var viewportRenderModes: [ViewportRenderModeInfo] = []
+
     /// Entity-creation slice: bumped after a successful `addEntity` /
     /// `duplicateSelectedOrNamed` / `removeEntity`.  `OutlinerView`
     /// observes it via `@EnvironmentObject` and force-repulls its
@@ -610,6 +638,8 @@ final class RenderViewModel: ObservableObject {
                 activeRegion = nil
                 lastSyncedSceneTextVersion = nil
                 editorBehindLiveScene = false
+                viewportRenderMode = "preview"
+                viewportRenderModes = []
                 return
             }
             // CST <-> scene-file live sync (item 1): a freshly-attached
@@ -627,6 +657,17 @@ final class RenderViewModel: ObservableObject {
             // rather than assuming that invariant holds forever.
             lastSyncedSceneTextVersion = isSceneEditableForAgents ? currentSceneTextVersion(vb) : nil
             editorBehindLiveScene = false
+            // P1 render modes: load the registry list once for this scene
+            // and read the controller's ACTUAL current mode rather than
+            // assuming "preview" — RebindEditorToJob resets it on every
+            // load/reload, but reading it here (instead of hardcoding)
+            // keeps this correct even if that reset rule ever changes.
+            viewportRenderModes = vb.viewportRenderModes().map {
+                ViewportRenderModeInfo(name: $0["name"] ?? "",
+                                        title: $0["title"] ?? "",
+                                        question: $0["question"] ?? "")
+            }
+            viewportRenderMode = vb.viewportRenderMode
             pollRefinementState(vb)
             // Re-read `self.viewportBridge` inside the Task rather than
             // capturing the local `vb` across the closure boundary —
@@ -1796,6 +1837,21 @@ final class RenderViewModel: ObservableObject {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.stop()
         vb.start()
+    }
+
+    // MARK: - Viewport render modes (P1, docs/gui/RENDER_MODES.md §5)
+
+    /// Switch the viewport's render mode.  Calls the bridge, then
+    /// re-reads the EFFECTIVE mode from it rather than optimistically
+    /// assuming `name` stuck — the switch is refused while a
+    /// production/agent render owns the scene, for an unknown name, or
+    /// in skeleton mode.  No-op with no bridge or while the scene isn't
+    /// editable (same gate as every other viewport transport call).
+    func setViewportRenderMode(_ name: String) {
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
+        _ = vb.setViewportRenderMode(name)
+        let effective = vb.viewportRenderMode
+        if viewportRenderMode != effective { viewportRenderMode = effective }
     }
 
     // MARK: - UI redesign: undo/redo passthrough (Edit menu)

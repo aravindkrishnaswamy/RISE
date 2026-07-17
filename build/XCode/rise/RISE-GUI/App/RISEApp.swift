@@ -340,6 +340,30 @@ private struct AppMenus: Commands {
             }
             .disabled(menu.snap.edrEnabled)
 
+            // P1 render modes (docs/gui/RENDER_MODES.md §5): the same
+            // registry list + setter the viewport's own dropdown chip
+            // uses (ContentView's `viewportRenderModeChip`) — kept as a
+            // SEPARATE menu from "Tone Curve" just above on purpose (§4
+            // ratified decision 1: render modes and view transforms are
+            // different concepts and must never be presented as one
+            // control surface). Disabled with no bridge / no modes
+            // loaded yet / while the scene isn't editable, same gate as
+            // the Insert-menu submenus above.
+            Menu("Viewport Rendering") {
+                ForEach(menu.snap.viewportRenderModes) { mode in
+                    Button {
+                        actions.setViewportRenderMode(mode.name)
+                    } label: {
+                        if mode.name == menu.snap.viewportRenderMode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Text(mode.title)
+                        }
+                    }
+                }
+            }
+            .disabled(!menu.snap.canUseSceneTransport || menu.snap.viewportRenderModes.isEmpty)
+
             Divider()
 
             // UI redesign: show/hide the left panel (Agent / Scene

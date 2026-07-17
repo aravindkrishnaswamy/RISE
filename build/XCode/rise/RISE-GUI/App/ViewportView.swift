@@ -441,7 +441,8 @@ struct ViewportView: View {
             isProduction: isProduction,
             isCancelling: isCancelling,
             productionProgress: viewModel.progress,
-            isProductionPaused: viewModel.isProductionRenderPaused)
+            isProductionPaused: viewModel.isProductionRenderPaused,
+            viewportRenderMode: viewModel.viewportRenderMode)
         return HStack(spacing: 9) {
             Text(status.text)
                 .font(Theme.mono(10.5))

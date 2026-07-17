@@ -43,7 +43,8 @@ enum RefinementStatusFormatter {
                         isProduction: Bool,
                         isCancelling: Bool,
                         productionProgress: Double,
-                        isProductionPaused: Bool = false) -> Status {
+                        isProductionPaused: Bool = false,
+                        viewportRenderMode: String = "preview") -> Status {
         // Label policy (user feedback 2026-07-16: "why does the rendering
         // text say things in double?"): the small tracked label is shown
         // ONLY when it adds information the primary text doesn't already
@@ -72,7 +73,18 @@ enum RefinementStatusFormatter {
         case 4: return Status(text: "Paused", label: "", fraction: CGFloat(r) / 6.0)
         case 2: return Status(text: "Refining · rung \(r)/6", label: "", fraction: CGFloat(r) / 6.0)
         case 1: return Status(text: "Rendering", label: "", fraction: CGFloat(r) / 6.0)
-        case 3: return Status(text: "Polishing", label: "DENOISED — NOT FINAL", fraction: 1.0)
+        case 3:
+            // docs/gui/RENDER_MODES.md §4 denoise policy: data modes
+            // (normals/depth/facets/wireframe) are wantsDenoise=false —
+            // the caster-swap machinery never queues a polish/denoise
+            // pass for them, so Polishing shouldn't normally even be
+            // reachable outside "preview". Gate the honesty label on the
+            // mode anyway rather than trusting that invariant blindly:
+            // labeling a non-denoised data-mode pass "DENOISED" would be
+            // exactly the kind of lying status chrome this pill exists
+            // to avoid.
+            let label = viewportRenderMode == "preview" ? "DENOISED — NOT FINAL" : ""
+            return Status(text: "Polishing", label: label, fraction: 1.0)
         case 0: return Status(text: "Settled", label: "", fraction: 1.0)
         default: return Status(text: "—", label: "", fraction: 0)
         }

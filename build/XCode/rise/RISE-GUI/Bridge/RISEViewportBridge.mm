@@ -988,6 +988,42 @@ private:
     return [NSString stringWithUTF8String:name];
 }
 
+#pragma mark - Viewport render modes (P1, docs/gui/RENDER_MODES.md §5)
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)viewportRenderModes {
+    if (!_controller) return @[];
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *out = [NSMutableArray array];
+    const unsigned int n = RISE_API_GetViewportRenderModeCount();
+    for (unsigned int i = 0; i < n; ++i) {
+        const char* name = nullptr;
+        const char* title = nullptr;
+        const char* question = nullptr;
+        bool selectable = false;
+        if (!RISE_API_GetViewportRenderModeInfo(i, &name, &title, &question, &selectable)) {
+            continue;
+        }
+        if (!selectable) continue;   // e.g. "objectmap" -- its own palette-lifecycle pipeline
+        [out addObject:@{
+            @"name":     name     ? [NSString stringWithUTF8String:name]     : @"",
+            @"title":    title    ? [NSString stringWithUTF8String:title]    : @"",
+            @"question": question ? [NSString stringWithUTF8String:question] : @"",
+        }];
+    }
+    return out;
+}
+
+- (NSString *)viewportRenderMode {
+    if (!_controller) return @"preview";
+    const char* name = RISE_API_SceneEditController_GetViewportRenderMode(_controller);
+    return name ? [NSString stringWithUTF8String:name] : @"preview";
+}
+
+- (BOOL)setViewportRenderMode:(NSString *)name {
+    if (!_controller || !name) return NO;
+    return RISE_API_SceneEditController_SetViewportRenderMode(
+        _controller, [name UTF8String]) ? YES : NO;
+}
+
 #pragma mark - Pointer events
 
 - (void)pointerDownX:(double)x y:(double)y {

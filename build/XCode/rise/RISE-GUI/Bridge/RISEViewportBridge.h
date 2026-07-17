@@ -262,6 +262,32 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (nullable NSString *)promoteNamedView:(NSInteger)idx name:(NSString *)proposedName
     NS_SWIFT_NAME(promoteNamedView(_:name:));
 
+#pragma mark - Viewport render modes (P1, docs/gui/RENDER_MODES.md §5)
+
+/// Registry entries with `viewportSelectable == true`, in registry
+/// (UI) order — the set the mode dropdown / View menu offers.  Each
+/// dictionary has string values for keys "name" ("preview", "normals",
+/// ...), "title" ("Shaded Preview", ...), and "question" (the tooltip
+/// text).  Registry-level (not controller-scoped) but still guarded on
+/// `_controller` for consistency with every other bridge accessor —
+/// empty array when no controller is attached.
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)viewportRenderModes;
+
+/// The registry wire name of the CURRENTLY active viewport render mode
+/// ("preview" when no controller is attached, matching the C-ABI's own
+/// null-controller default).
+@property (nonatomic, readonly, copy) NSString *viewportRenderMode;
+
+/// Switch the interactive viewport to render-mode `name` (a wire name
+/// from -viewportRenderModes).  Returns NO on a null controller/name,
+/// an unknown or non-selectable name, or the documented controller-
+/// level refusals (render-owns-scene, skeleton mode) — see
+/// SceneEditController::SetViewportRenderMode.  On success the
+/// controller kicks its own repaint; callers should re-read
+/// -viewportRenderMode afterward rather than assuming `name` stuck.
+- (BOOL)setViewportRenderMode:(NSString *)name
+    NS_SWIFT_NAME(setViewportRenderMode(_:));
+
 #pragma mark - Pointer events
 //
 // Coordinates are in the viewport surface's pixel space.  Bridge

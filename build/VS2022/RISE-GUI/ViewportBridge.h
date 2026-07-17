@@ -82,6 +82,20 @@ struct EnvironmentInfo {
     bool    background     = true;    ///< map visible behind geometry
 };
 
+/// One viewport render mode entry (P1, docs/gui/RENDER_MODES.md §4/§5) --
+/// ONLY the viewportSelectable subset of the registry (today: "preview",
+/// "normals", "depth", "facets", "wireframe" -- NOT "objectmap", which has
+/// its own palette-lifecycle pipeline).  Mirrors the UI-facing fields of
+/// RISE::Implementation::ViewportRenderModeInfo; `name` is the wire
+/// identifier (C-ABI / agent tool / persistence), `title` is the combo
+/// box label, `question` is the tooltip ("the question this mode
+/// answers" -- see RENDER_MODES.md §3).
+struct ViewportRenderModeInfo {
+    QString name;
+    QString title;
+    QString question;
+};
+
 class ViewportBridge : public QObject
 {
     Q_OBJECT
@@ -278,6 +292,35 @@ public:
     /// canonicalization of `proposedName`; becomes active). Returns the
     /// created camera's name, or empty on refusal.
     QString promoteNamedView(int idx, const QString& proposedName);
+
+    // -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) --
+    // Mirrors the RISE_API_SceneEditController_{Set,Get}ViewportRenderMode /
+    // RISE_API_GetViewportRenderMode{Count,Info} C exports.  The registry
+    // itself is controller-independent (static strings, no allocation) --
+    // `viewportRenderModes()` is a pure function, like `categoryForTool`
+    // above, safe to call before any scene loads.  The current-mode
+    // getter/setter DO need a live controller and mirror that C-ABI's own
+    // null-controller fallback ("preview").
+
+    /// All viewportSelectable modes, in registry order.  Pure function --
+    /// no bridge state, callable with no scene loaded.
+    static QVector<ViewportRenderModeInfo> viewportRenderModes();
+
+    /// The registry wire name of the CURRENTLY active viewport render
+    /// mode ("preview" when no controller is attached, or after every
+    /// scene load/reload -- SceneEditController resets to Preview on
+    /// every whole-scene rebind; this bridge never assumes that stays
+    /// true and always re-reads).
+    QString viewportRenderMode() const;
+
+    /// Switch the interactive viewport to render-mode `name` (a wire
+    /// name from `viewportRenderModes()`).  Returns false on a null
+    /// controller, an unknown/non-selectable name, or a controller-level
+    /// refusal (a production/agent render owns the scene, or skeleton
+    /// mode with no interactive rasterizer) -- the set CAN fail, so
+    /// callers must re-read `viewportRenderMode()` afterward rather than
+    /// assume the requested mode took effect.
+    bool setViewportRenderMode(const QString& name);
 
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);

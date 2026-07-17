@@ -54,6 +54,13 @@ struct MenuBarSnapshot: Equatable {
     /// snapshot differ exactly when the template set can have changed.
     var hasBridge = false
     var entityListEpoch = 0
+    /// P1 render modes (docs/gui/RENDER_MODES.md §5) — the View > Viewport
+    /// Rendering submenu's checkmark target + item list.  Unlike the
+    /// Insert templates above, these are cheap enough (a handful of static
+    /// strings, changes at most once per scene open) to snapshot directly
+    /// rather than re-reading at render time.
+    var viewportRenderMode = "preview"
+    var viewportRenderModes: [ViewportRenderModeInfo] = []
 }
 
 @MainActor
@@ -111,6 +118,8 @@ final class MenuBarState: ObservableObject {
         s.showLogDrawer = m.showLogDrawer
         s.hasBridge = (m.viewportBridge != nil)
         s.entityListEpoch = m.entityListEpoch
+        s.viewportRenderMode = m.viewportRenderMode
+        s.viewportRenderModes = m.viewportRenderModes
         return s
     }
 }
