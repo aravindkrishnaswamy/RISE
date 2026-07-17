@@ -173,7 +173,7 @@ int main()
 		Check( applied == (int)closure.size() && applied > 0, "spatial-geom: whole closure applied" );
 		Check( oAfter == oBefore, "spatial-geom: object RE-POINTED in place (address stable)" );
 		Check( !bbeq( bbBefore, oAfter->getBoundingBox() ), "spatial-geom: object bbox CHANGED (radius 1->2)" );
-		Check( om->GetSpatialStructureGeneration() == genBefore + 1, "spatial-geom: TLAS invalidated exactly once" );
+		Check( om->GetSpatialStructureGeneration() == genBefore + 1 /* exactly-once; NOTE: generations draw from a PROCESS-WIDE counter (2026-07-16), so this holds only while nothing else constructs an ObjectManager or invalidates spatially between capture and check -- true single-threaded here */, "spatial-geom: TLAS invalidated exactly once" );
 
 		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
 		Check( DumpJob( *j ) == DumpJob( *jf ), "spatial-geom: re-pointed Job == fresh full derive" );
