@@ -71,6 +71,12 @@ void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ ele
 	// fresh construction defaults them off (wireframe view mode would
 	// silently never receive its edge info through the BVH leaf path).
 	myRI.geometric.bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
+	// glossyFilterWidth is a per-cast INPUT too (stamped by the integrators
+	// BEFORE IntersectRay, consumed by the SPFs AFTER) -- without this line
+	// the whole-struct copy-back below zeroes it on every hit and
+	// StabilityConfig's glossy filter is silently dead (pre-existing bug,
+	// found while adding the wire flag; same clobber pattern).
+	myRI.geometric.glossyFilterWidth = ri.geometric.glossyFilterWidth;
 	elem->IntersectRay( myRI, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 		ri = myRI;
@@ -88,6 +94,7 @@ void ObjectManager::RayElementIntersection( RayIntersectionGeometric& ri, const 
 	RayIntersection myRI( ri.ray, ri.rast );
 	myRI.geometric.range = ri.range;
 	myRI.geometric.bWantsWireEdgeInfo = ri.bWantsWireEdgeInfo;
+	myRI.geometric.glossyFilterWidth = ri.glossyFilterWidth;
 	elem->IntersectRay( myRI, ri.range, bHitFrontFaces, bHitBackFaces, false );
 	if( myRI.geometric.bHit && myRI.geometric.range < ri.range ) {
 		ri = myRI.geometric;
@@ -281,6 +288,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 			{
 				RayIntersection		this_ri( ri.geometric.ray, ri.geometric.rast );
 				this_ri.geometric.bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
+				this_ri.geometric.glossyFilterWidth = ri.geometric.glossyFilterWidth;
 				i->second.first->IntersectRay( this_ri, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 
 				if( this_ri.geometric.bHit && this_ri.geometric.range < ri.geometric.range ) {
