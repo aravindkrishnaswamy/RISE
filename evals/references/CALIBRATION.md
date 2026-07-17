@@ -170,6 +170,18 @@ which is what actually matters for those two views.
 
 ## 8. Wave 5 finding: `AgentSession::Render` diverges from the CLI batch pipeline (2026-07-16)
 
+> **RESOLVED — see §9.** Root cause was the agent render path missing the
+> file-output display transform (ACES): fixed at source in
+> `InMemoryRasterizerOutput`/`AgentSession` (commit `0251c62d`), after which the
+> pristine ground-truth scene grades at RMSE 0.0045 through `AgentSession` —
+> equal to the §3 CLI noise floor — at the UNCHANGED §5 thresholds, and the
+> neutral-key adversarial control fails the caps again. The §8 text below is
+> kept as the historical record of the discovery and localization; its
+> "UNREACHABLE" framing no longer applies. The TLAS/BVH boundary hypothesis
+> flagged below was tested and REFUTED (rendering the CLI with
+> `display_transform none` collapsed the difference to RMSE 0.0023 — the tone
+> curve was the entire divergence).
+
 **These thresholds (§5/§7) are correct for CLI-vs-CLI comparisons but are
 currently UNREACHABLE through the `render` checkpoint's actual grading path**
 (`AgentSession::Render`, used by `evals/scenarios/image_reconstruct_single.json`
