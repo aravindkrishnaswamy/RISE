@@ -141,6 +141,16 @@ private slots:
     /// wraps its setCurrentIndex in a QSignalBlocker, so this slot only
     /// ever fires from an actual user pick.
     void onRenderModeComboChanged(int index);
+    /// User clicked the X-Ray toggle (docs/gui/RENDER_MODES.md "X-ray
+    /// axis").  Same click-then-reread discipline as
+    /// onRenderModeComboChanged: the set CAN fail (render-owns-scene,
+    /// skeleton mode), so this always calls refreshRenderModeCombo()
+    /// afterward to snap the button back to the effective value rather
+    /// than trusting the click.  Connected to QToolButton::clicked (not
+    /// toggled), so this never fires from refreshRenderModeCombo()'s own
+    /// programmatic setChecked() -- matching m_renderModeCombo's
+    /// QSignalBlocker-guarded sync not re-entering onRenderModeComboChanged.
+    void onXrayButtonToggled(bool checked);
     void pollRefinementState();
     void onEngineStateChanged(int newState);
     void onEngineProgress(double fraction, const QString& title);
@@ -192,6 +202,13 @@ private:
     /// rebind, including scene_variant switches and CST full re-derives
     /// that reuse the SAME ViewportBridge/controller instance -- see
     /// SceneEditController::RebindEditorToJob's doc).
+    ///
+    /// ALSO resyncs m_xrayBtn's enabled + checked state (docs/gui/
+    /// RENDER_MODES.md "X-ray axis") in the same pass, since it shares
+    /// the identical render-owns-scene gate plus the identical
+    /// controller-side reset-on-rebind hazard the mode combo already
+    /// guards against -- one poll-driven self-heal for both controls
+    /// rather than a second bespoke one.
     void refreshRenderModeCombo();
 
     RenderEngine*   m_engine = nullptr;
@@ -235,6 +252,15 @@ private:
     // controller's own reset, never assumed locally).
     QFrame*      m_renderModeSep = nullptr;
     QComboBox*   m_renderModeCombo = nullptr;
+
+    // P1 (docs/gui/RENDER_MODES.md "X-ray axis"): compact checkable
+    // toggle, right of the render-mode combo -- an orthogonal boolean
+    // that composes with the four data modes (normals/depth/facets/
+    // wireframe).  Enabled state and checked state are entirely owned by
+    // refreshRenderModeCombo() (same treatment as m_renderModeCombo
+    // above); no separate construction-time item list since it's a
+    // single toggle, not a registry-backed combo.
+    QToolButton* m_xrayBtn = nullptr;
 
     // Right: render transport (Render -> Pause -> Resume, + Cancel) -------
     // One slot that morphs with the production render's lifecycle -- see

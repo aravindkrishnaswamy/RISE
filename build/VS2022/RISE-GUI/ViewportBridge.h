@@ -322,6 +322,27 @@ public:
     /// assume the requested mode took effect.
     bool setViewportRenderMode(const QString& name);
 
+    // -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") -------
+    // Mirrors the RISE_API_SceneEditController_{Set,Get}ViewportXray C
+    // exports.  An orthogonal boolean that composes with the four data
+    // modes (normals/depth/facets/wireframe) -- it has no visible effect
+    // under "preview", but the controller still stores the flag for the
+    // next data-mode selection.  Resets to false on every whole-scene
+    // rebind, same as the render mode above.
+
+    /// The CURRENT x-ray flag ("false" when no controller is attached --
+    /// same null-controller fallback convention as `viewportRenderMode()`
+    /// -- or while a render owns the scene, per the C-ABI's documented
+    /// never-blocks contract).
+    bool viewportXray() const;
+
+    /// Set the x-ray flag.  Returns false on a null controller or a
+    /// controller-level refusal (a production/agent render owns the
+    /// scene, or skeleton mode) -- the set CAN fail, so callers must
+    /// re-read `viewportXray()` afterward rather than assume the
+    /// requested value took effect.
+    bool setViewportXray(bool on);
+
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);
     void pointerMove(double x, double y);

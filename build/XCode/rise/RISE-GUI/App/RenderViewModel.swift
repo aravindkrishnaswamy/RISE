@@ -558,6 +558,17 @@ final class RenderViewModel: ObservableObject {
     /// `viewportRenderMode` — the registry is a fixed built-in set (§4
     /// ratified decision 2), so there is nothing to re-poll mid-session.
     @Published var viewportRenderModes: [ViewportRenderModeInfo] = []
+    /// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): whether the
+    /// active data mode (normals/depth/facets/wireframe) resolves hits
+    /// through transmissive surfaces to the first opaque hit.  Ignored
+    /// under "preview".  Same staleness class as `viewportRenderMode` —
+    /// the controller resets it to false on every scene rebind WITHOUT
+    /// replacing the bridge, and `GetViewportXray` reports false
+    /// (transiently, not sticky) while a render owns the scene — so
+    /// it's refreshed alongside the mode both on bridge attach and by
+    /// every `pollRefinementState` tick, equality-guarded like every
+    /// other field written there.
+    @Published var viewportXray: Bool = false
 
     /// Entity-creation slice: bumped after a successful `addEntity` /
     /// `duplicateSelectedOrNamed` / `removeEntity`.  `OutlinerView`
@@ -640,6 +651,7 @@ final class RenderViewModel: ObservableObject {
                 editorBehindLiveScene = false
                 viewportRenderMode = "preview"
                 viewportRenderModes = []
+                viewportXray = false
                 return
             }
             // CST <-> scene-file live sync (item 1): a freshly-attached
@@ -668,6 +680,7 @@ final class RenderViewModel: ObservableObject {
                                         question: $0["question"] ?? "")
             }
             viewportRenderMode = vb.viewportRenderMode
+            viewportXray = vb.viewportXray()
             pollRefinementState(vb)
             // Re-read `self.viewportBridge` inside the Task rather than
             // capturing the local `vb` across the closure boundary —
@@ -1778,6 +1791,10 @@ final class RenderViewModel: ObservableObject {
         // else here.
         let engineMode = vb.viewportRenderMode
         if viewportRenderMode != engineMode { viewportRenderMode = engineMode }
+        // X-ray axis — same staleness class as the mode above (a whole-
+        // scene rebind resets it without replacing the bridge object).
+        let engineXray = vb.viewportXray()
+        if viewportXray != engineXray { viewportXray = engineXray }
 
         // Design brief A4 — mirror the active region (full-res
         // film-pixel space).  The core clears this automatically
@@ -1863,6 +1880,18 @@ final class RenderViewModel: ObservableObject {
         _ = vb.setViewportRenderMode(name)
         let effective = vb.viewportRenderMode
         if viewportRenderMode != effective { viewportRenderMode = effective }
+    }
+
+    /// Toggle the X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis").
+    /// Calls the bridge, then re-reads the EFFECTIVE flag rather than
+    /// optimistically assuming `on` stuck — same refusal contract as
+    /// `setViewportRenderMode`.  Meaningful only while a data mode is
+    /// active; harmless (stored, not applied) under "preview".
+    func setViewportXray(_ on: Bool) {
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
+        _ = vb.setViewportXray(on)
+        let effective = vb.viewportXray()
+        if viewportXray != effective { viewportXray = effective }
     }
 
     // MARK: - UI redesign: undo/redo passthrough (Edit menu)

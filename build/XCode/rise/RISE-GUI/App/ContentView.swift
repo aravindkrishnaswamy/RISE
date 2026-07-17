@@ -514,6 +514,19 @@ struct ContentView: View {
                     }
                     .help(mode.question)
                 }
+                // X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): an
+                // orthogonal boolean, not a fifth mode — shown/enabled
+                // only while a DATA mode is active (meaningless under
+                // "preview", per the doc).
+                if viewModel.viewportRenderMode != "preview" {
+                    Divider()
+                    Toggle(isOn: Binding(
+                        get: { viewModel.viewportXray },
+                        set: { viewModel.setViewportXray($0) })) {
+                        Text("See Through Glass")
+                    }
+                    .help("X-ray: skip transmissive surfaces (straight-line) and show the first opaque hit")
+                }
             } label: {
                 HStack(spacing: 5) {
                     Text(activeMode?.title ?? viewModel.viewportRenderMode)

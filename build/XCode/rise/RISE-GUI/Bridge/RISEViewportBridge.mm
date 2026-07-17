@@ -1024,6 +1024,20 @@ private:
         _controller, [name UTF8String]) ? YES : NO;
 }
 
+#pragma mark - Viewport X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis")
+
+- (BOOL)viewportXray {
+    if (!_controller) return NO;
+    bool out = false;
+    if (!RISE_API_SceneEditController_GetViewportXray(_controller, &out)) return NO;
+    return out ? YES : NO;
+}
+
+- (BOOL)setViewportXray:(BOOL)on {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SetViewportXray(_controller, on ? true : false) ? YES : NO;
+}
+
 #pragma mark - Pointer events
 
 - (void)pointerDownX:(double)x y:(double)y {

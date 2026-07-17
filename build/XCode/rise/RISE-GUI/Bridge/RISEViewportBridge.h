@@ -288,6 +288,26 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (BOOL)setViewportRenderMode:(NSString *)name
     NS_SWIFT_NAME(setViewportRenderMode(_:));
 
+#pragma mark - Viewport X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis")
+
+/// Whether the interactive viewport currently resolves the four data
+/// modes' (normals/depth/facets/wireframe) hits THROUGH transmissive
+/// surfaces to the first opaque hit.  Ignored while "preview" is
+/// active.  NO on a null controller (matching the C-ABI's own
+/// null-controller default), and also NO while a production/agent
+/// render owns the scene (RISE_API_SceneEditController_GetViewportXray's
+/// documented transient) or right after a scene rebind (the controller
+/// resets the flag to false on every RebindEditorToJob).
+- (BOOL)viewportXray;
+
+/// Set the x-ray flag.  Returns NO on a null controller or the
+/// documented controller-level refusals (render-owns-scene, skeleton
+/// mode).  On success the controller rebuilds the active data mode's
+/// caster immediately; callers should re-read -viewportXray afterward
+/// rather than assuming `on` stuck.
+- (BOOL)setViewportXray:(BOOL)on
+    NS_SWIFT_NAME(setViewportXray(_:));
+
 #pragma mark - Pointer events
 //
 // Coordinates are in the viewport surface's pixel space.  Bridge

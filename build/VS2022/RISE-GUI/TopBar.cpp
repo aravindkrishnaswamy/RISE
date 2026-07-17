@@ -327,6 +327,28 @@ TopBar::TopBar(QWidget* parent)
             this, &TopBar::onRenderModeComboChanged);
     clusterLayout->addWidget(m_renderModeCombo);
 
+    // P1 (docs/gui/RENDER_MODES.md "X-ray axis"): compact checkable
+    // toggle, right of the mode combo.  Meaningful only under a data
+    // mode -- refreshRenderModeCombo() disables it whenever the combo's
+    // active mode is "preview" (in addition to the combo's own render-
+    // owns-scene / no-bridge gate).  Style mirrors m_renderModeCombo's
+    // bordered chip look, with an accent-tinted `:checked` state so the
+    // toggle reads clearly at a glance (same pattern as LogWidget's
+    // severity filter pills).
+    m_xrayBtn = new QToolButton(cluster);
+    m_xrayBtn->setText(QStringLiteral("X-Ray"));
+    m_xrayBtn->setFont(Theme::mono(10));
+    m_xrayBtn->setCheckable(true);
+    m_xrayBtn->setToolTip(QStringLiteral(
+        "See through transmissive surfaces (straight-line) — data modes only"));
+    m_xrayBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 2px 6px; }"
+        "QToolButton:checked { color: %3; border-color: %3; }")
+        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight), Theme::hex(Theme::accent)));
+    m_xrayBtn->setEnabled(false);   // no bridge yet -- refreshRenderModeCombo() re-enables on scene load
+    connect(m_xrayBtn, &QToolButton::clicked, this, &TopBar::onXrayButtonToggled);
+    clusterLayout->addWidget(m_xrayBtn);
+
     layout->addWidget(cluster);
     layout->addStretch(1);
 
@@ -820,6 +842,7 @@ void TopBar::refreshRenderModeCombo()
     m_renderModeCombo->setEnabled(!disabled);
 
     if (!m_bridge) {
+        if (m_xrayBtn) m_xrayBtn->setEnabled(false);   // nothing to resync against either
         return;   // nothing to resync the current index against
     }
 
@@ -829,14 +852,39 @@ void TopBar::refreshRenderModeCombo()
     // setViewportBridge).
     const QString activeName = m_bridge->viewportRenderMode();
     const int wantIndex = m_renderModeCombo->findData(activeName, Qt::UserRole);
-    if (wantIndex < 0 || wantIndex == m_renderModeCombo->currentIndex()) {
-        return;   // unknown name (shouldn't happen -- registry mismatch) or already in sync
+    if (wantIndex >= 0 && wantIndex != m_renderModeCombo->currentIndex()) {
+        // QSignalBlocker so this programmatic sync never re-enters
+        // onRenderModeComboChanged (mirrors ChatPanel::revertProviderModelWidgets'
+        // identical pattern for m_providerCombo).
+        const QSignalBlocker blocker(m_renderModeCombo);
+        m_renderModeCombo->setCurrentIndex(wantIndex);
     }
-    // QSignalBlocker so this programmatic sync never re-enters
-    // onRenderModeComboChanged (mirrors ChatPanel::revertProviderModelWidgets'
-    // identical pattern for m_providerCombo).
-    const QSignalBlocker blocker(m_renderModeCombo);
-    m_renderModeCombo->setCurrentIndex(wantIndex);
+    // (wantIndex < 0 means an unknown name -- shouldn't happen, registry
+    // mismatch -- and wantIndex == currentIndex() means already in sync;
+    // either way the combo's index is left alone.)
+
+    // X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): enabled under
+    // the SAME render-owns-scene gate as the combo above, further gated
+    // on the active mode actually being a data mode -- "preview" ignores
+    // the flag entirely (the controller just holds it for the next
+    // data-mode selection), so exposing an always-on toggle there would
+    // read as a control that does nothing.
+    if (m_xrayBtn) {
+        const bool xrayEnabled = !disabled && activeName != QLatin1String("preview");
+        m_xrayBtn->setEnabled(xrayEnabled);
+
+        // Re-read the CURRENT flag -- never assume the button's checked
+        // state still matches the controller (same reset-on-rebind
+        // hazard as the mode combo; the "never blocks" C-ABI contract
+        // means this is safe to call unconditionally, even mid-render).
+        const bool activeXray = m_bridge->viewportXray();
+        if (activeXray != m_xrayBtn->isChecked()) {
+            // QSignalBlocker so this programmatic sync never re-enters
+            // onXrayButtonToggled (same pattern as the combo above).
+            const QSignalBlocker blocker(m_xrayBtn);
+            m_xrayBtn->setChecked(activeXray);
+        }
+    }
 }
 
 void TopBar::onRenderModeComboChanged(int index)
@@ -851,6 +899,18 @@ void TopBar::onRenderModeComboChanged(int index)
     // to whatever's actually active instead of showing the user's
     // rejected pick as if it had landed.
     m_bridge->setViewportRenderMode(name);
+    refreshRenderModeCombo();
+}
+
+void TopBar::onXrayButtonToggled(bool checked)
+{
+    if (!m_bridge || !m_xrayBtn) return;
+    // The set CAN fail (render-owns-scene, skeleton mode) -- never
+    // assume it took effect.  Re-read the EFFECTIVE flag unconditionally
+    // so a refusal snaps the button back to whatever's actually active
+    // instead of showing the user's rejected click as if it had landed
+    // (mirrors onRenderModeComboChanged's identical discipline).
+    m_bridge->setViewportXray(checked);
     refreshRenderModeCombo();
 }
 

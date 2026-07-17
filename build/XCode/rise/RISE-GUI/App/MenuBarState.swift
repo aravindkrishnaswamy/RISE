@@ -61,6 +61,10 @@ struct MenuBarSnapshot: Equatable {
     /// rather than re-reading at render time.
     var viewportRenderMode = "preview"
     var viewportRenderModes: [ViewportRenderModeInfo] = []
+    /// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") — the submenu's
+    /// checkmark target.  Gating (shown only while a data mode is active)
+    /// reuses `viewportRenderMode` above rather than a separate field.
+    var viewportXray = false
 }
 
 @MainActor
@@ -120,6 +124,7 @@ final class MenuBarState: ObservableObject {
         s.entityListEpoch = m.entityListEpoch
         s.viewportRenderMode = m.viewportRenderMode
         s.viewportRenderModes = m.viewportRenderModes
+        s.viewportXray = m.viewportXray
         return s
     }
 }

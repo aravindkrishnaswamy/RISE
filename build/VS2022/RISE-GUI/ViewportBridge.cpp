@@ -618,6 +618,22 @@ bool ViewportBridge::setViewportRenderMode(const QString& name)
         m_controller, name.toUtf8().constData());
 }
 
+// -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") -----------
+
+bool ViewportBridge::viewportXray() const
+{
+    if (!m_controller) return false;
+    bool out = false;
+    RISE_API_SceneEditController_GetViewportXray(m_controller, &out);
+    return out;
+}
+
+bool ViewportBridge::setViewportXray(bool on)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetViewportXray(m_controller, on);
+}
+
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }
 void ViewportBridge::pointerMove(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerMove(m_controller, x, y); }
 void ViewportBridge::pointerUp(double x, double y)   { if (m_controller) RISE_API_SceneEditController_OnPointerUp(m_controller, x, y); }
