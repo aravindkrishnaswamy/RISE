@@ -864,11 +864,9 @@ void TopBar::refreshRenderModeCombo()
     // either way the combo's index is left alone.)
 
     // X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): enabled under
-    // the SAME render-owns-scene gate as the combo above, further gated
-    // on the active mode actually being a data mode -- "preview" ignores
-    // the flag entirely (the controller just holds it for the next
-    // data-mode selection), so exposing an always-on toggle there would
-    // read as a control that does nothing.
+    // X-ray applies to EVERY mode including the shaded preview
+    // (caster-layer resolve, default ON) -- enabled whenever the
+    // scene/render gating allows the mode combo itself.
     if (m_xrayBtn) {
         // X-ray applies to EVERY mode including the shaded preview
         // (caster-layer resolve, default ON; user decision 2026-07-17) --

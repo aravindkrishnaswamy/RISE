@@ -690,7 +690,7 @@ protected:
 //! recomputes `ri.geometric.range` as the TOTAL distance from the
 //! ORIGINAL ray's origin to the resolved hit point (NOT the resolved
 //! hit's own last-segment range, and NOT a sum of per-segment ranges)
-//! before this shader ever sees `ri`.  So ResolveDistance below simply
+//! before this shader ever sees `ri`.  So Shade/ShadeNM simply
 //! reads `ri.geometric.range` -- no x-ray-specific knowledge needed here.
 class DepthViewShader :
 	public IShader,
