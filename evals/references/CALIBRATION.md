@@ -68,6 +68,19 @@ session scratch dir, not in the repo (see §5 for how to reproduce).
 | (c) lighting | key light color `1.0 0.82 0.58` → `1.0 1.0 1.0` (neutral white) | 0.03810 | 0.03250 | 0.03639 | 0.04790 |
 | (d) material | object color `0.05 0.55 0.5` (teal) → `0.5 0.5 0.5` (grey) | 0.07710 | 0.05766 | 0.04600 | 0.08724 |
 | (e) gross failure | `hero` object deleted entirely (empty stage) | 0.11840 | 0.13346 | 0.17000 | 0.12647 |
+| (f) flat cutout (billboard class) | `herogeom`'s 4 parts rotated (ex=-20°, ey=39.14°, aligning each part's local Z axis with view1's camera direction) and squashed to `scale.z=0.15` on that axis -- see §10 for the exact part lines and derivation | 0.05302 | 0.08665 | 0.13101 | 0.07264 |
+
+Anchor (f) differs from (a)-(e) in kind: it is not a single-line edit to
+the truth scene but a from-scratch geometric construction (a plausible
+best-effort attempt at matching view1 face-on with near-zero real
+depth), tuned by iterating render + RMSE-against-view1 a handful of
+times (thin factors 0.08 through 0.5, rotation searched around the
+computed camera-facing angle) and taking the best view1 result found
+that still reads as genuinely flat. Unlike (a)-(e), it is not
+expected to be small on view1 either -- it is included here for
+completeness and because it is the anchor that motivates the
+`image_reconstruct_single` two-tier cap's design (§10), not because it
+fits the (a)-(e) monotonic-severity narrative below.
 
 Observations:
 
@@ -361,7 +374,60 @@ measurements, all in RMSE):
 |---|---|---|---|---|
 | (b) shape-detail, no notch (the "hidden side, honestly plausible" proxy) | 0.01663 | 0.01587 | 0.00967 | **ADMITTED** — all three sit at ≥2.4x margin below 0.04 (0.04/0.01663 = 2.4x, 0.04/0.01587 = 2.5x, 0.04/0.00967 = 4.1x) |
 | (e) gross failure, empty stage | 0.13346 | 0.17000 | 0.12647 | **REJECTED** — 3.2-4.5x ABOVE the cap |
-| billboard / silhouette-collapse class | ≈ empty-stage magnitude (side-on views of a flat cutout lose nearly all silhouette agreement with a 3-D reference, the same failure shape as anchor (e)) | — | — | **REJECTED**, same margin as (e) |
+| (f) billboard / flat-cutout class (MEASURED, not approximated — see below) | 0.08665 | 0.13101 | 0.07264 | **REJECTED** — 1.8-3.3x ABOVE the cap on every withheld view |
+
+**Anchor (f) is now a measured control, not an approximation.** An earlier
+draft of this section only asserted "billboard ≈ empty-stage" by analogy,
+without building or rendering an actual flat-cutout reconstruction. That gap
+is closed here: §3's anchor (f) row is a real construction --
+`herogeom`'s 4 SDF parts (capsule stem, sphere cap, torus collar, roundbox
+notch), each given an EXTRA rotation `euler = (ex=-20, ey=39.14, ez=0)` on
+top of its ground-truth euler (all 0 0 0), and each part's `scale.z`
+multiplied down to `0.15`. The `ey=39.14°` term is the azimuth of view1's
+camera direction from the object `atan2(2.6, 3.2)` (view1 `location`
+`(2.6,1.8,3.2)` minus `lookat` `(0,0.8,0)`, projected to the XZ plane); the
+`ex=-20°` term tilts that flattening axis up toward the camera's actual
+elevation (the exact elevation-only solve is `ex=-13.63°` via
+`asin(-ny)` on the normalized camera-direction vector `(0.6129, 0.2357,
+0.7542)` -- `ex=-20°` scored marginally better on view1 in the search
+below and was kept). Because `SDFGeometry`'s part transform applies
+`scale` AFTER the euler rotation (`ls = Rinv*(p-pos)/scale`, per
+`src/Library/Geometry/SDFGeometry.h`'s `Part` comment), this makes each
+part paper-thin specifically along the direction pointing at view1's
+camera, i.e. a genuine near-zero-depth cutout that best-faces view1 and
+presents its thin edge to every other camera. The exact part lines
+(identical to what `tests/AgentEvalCheckTest.cpp` control (k) inserts):
+
+```
+part capsule union 0 0 0.75 0 -20 39.14 0 1 1 0.15 0.30 0.45 0 0
+part sphere smin 0.15 0 1.50 0 -20 39.14 0 1 0.62 0.15 0.62 0 0 0
+part torus smin 0.12 0 1.20 0 -20 39.14 0 1 1 0.15 0.36 0.12 0 0
+part roundbox subtract 0.05 0.52 1.55 -0.08 -20 39.14 0 1 1 0.15 0.22 0.17 0.17 0.04
+```
+
+Derivation/search (all at grading spp 64, same pipeline as every other
+anchor in this document): the `ey` azimuth term is closed-form (derived
+above, not searched). The flattening factor (`scale.z`) was swept
+0.08/0.15/0.20/0.25/0.30/0.40/0.50 at a fixed rotation and the elevation
+term (`ex`) was swept -8/-13.63/-20/-25 at a fixed `scale.z=0.15` -- both
+sweeps minimizing view1 RMSE while keeping the object visibly a thin
+cutout (thickness fraction well under half the original primitive radii;
+`scale.z` >= 0.3 starts reading as a genuinely 3-D squashed object rather
+than a billboard, so it was excluded from the final pick even though it
+scores lower view1 RMSE). `scale.z=0.15, ex=-20, ey=39.14` was the best
+result in the "clearly still a cutout" regime: view1 RMSE **0.05302**
+(reported for completeness -- view1 is NOT part of anchor (f)'s claim and
+the eval's own view1 checkpoint is not asserted against it, see control (k)
+below). The three WITHHELD views at that same configuration: **view2
+0.08665, view3 0.13101, view4 0.07264** -- all three land at 1.8-3.3x
+ABOVE the 0.04 relaxed cap, confirming the tier design's premise (this is
+the EXPECTED outcome per the task; anchor (f) did not land below 0.04 on
+any withheld view, so no design decision was falsified). Visually,
+view2/view3 (the most oblique poses relative to view1) render as a
+narrow blade -- the cutout's thin edge -- rather than any recognizable
+approximation of the mushroom silhouette, confirming the failure mode is
+exactly "flat cutout collapses from off-axis views," not an unrelated
+render artifact.
 
 Anchor (c) lighting (0.0325-0.0479) and (d) material (0.0460-0.0872) remain
 ABOVE 0.04 on view3/view4 and straddle it closely on view2 (0.0325 <
@@ -389,3 +455,14 @@ strict cap (view1) and the 0.04 relaxed cap (views 2-4) it would also fail
 if it were asserted. Control (i)'s neutral-key anchor (c) view1 value
 (0.0381) is above the unchanged 0.015 strict cap, so its lone assertion is
 unaffected by the retier.
+
+**Control (k) (added alongside this measurement) is the one that actually
+exercises checkpoints 1-3.** It builds the anchor (f) flat-cutout hero
+above (verbatim GT stage/lights/env, only `herogeom`'s part lines
+replaced) and asserts `checkpoints[1]`, `[2]`, `[3]` (view2/view3/view4)
+each FAIL with `"RMSE"` in the detail — the load-bearing, re-rendered-in-CI
+proof that the relaxed 0.04 caps reject this defect class, rather than
+that claim resting solely on this document's prose. `checkpoints[0]`
+(view1) is deliberately NOT asserted either way, since anchor (f)'s view1
+number (0.05302) is itself above the strict 0.015 cap and whether a
+different flattening tune could clear it is not the property under test.

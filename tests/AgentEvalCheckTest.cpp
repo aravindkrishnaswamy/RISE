@@ -3080,22 +3080,27 @@ static void TestAdversarialOracleControls()
 			"multi_turn_edit/turn-1-rejected-color control" );
 	}
 
-	// (h)/(i)/(j) below exercise the Wave-5 image_reconstruct_* scenarios.
+	// (h)/(i)/(j)/(k) below exercise the Wave-5 image_reconstruct_* scenarios.
 	// Their checkpoint arrays are 4 render compares + objectmap + document +
 	// diagnostics + trajectory (indices 0-3 = view1..view4 compares, 4 =
 	// objectmap, 5 = document chunk_count, 6 = diagnostics, 7 = trajectory).
-	// Unlike (a)-(g), an empty-stage or wrong-lighting reconstruction fails
-	// MULTIPLE checkpoints at once (all four compares share the same root
-	// cause), so RunAdversarialControl's "every OTHER checkpoint must stay
-	// green" rule does not apply here -- these three controls are written by
-	// hand instead, asserting only the SPECIFIC checkpoints the task calls
-	// out, exactly as CALIBRATION.md's anchor measurements predict.
+	// checkpoint 0 (view1) grades at the STRICT 0.015 cap; checkpoints 1-3
+	// (view2/view3/view4) grade at the RELAXED 0.04 cap (CALIBRATION.md Sec 10 --
+	// image_reconstruct_single's two-tier rubric, since only view1 is an
+	// observable reference photo). Unlike (a)-(g), an empty-stage, wrong-
+	// lighting, or flat-cutout reconstruction fails MULTIPLE checkpoints at
+	// once (the four compares share root causes), so RunAdversarialControl's
+	// "every OTHER checkpoint must stay green" rule does not apply here --
+	// these four controls are written by hand instead, asserting only the
+	// SPECIFIC checkpoints the task calls out, exactly as CALIBRATION.md's
+	// anchor measurements predict.
 
 	// (h) image_reconstruct_single: a fixture that inserts NOTHING (reads the
 	// skill and the document, renders and looks, then ends the turn on an
 	// empty stage). CALIBRATION.md anchor (e) (gross failure -- hero object
 	// deleted entirely) measures RMSE 0.118-0.170 across all four views,
-	// versus caps of 0.012-0.015 -- every compare checkpoint fails, and the
+	// comfortably above BOTH view1's strict 0.015 cap and views 2-4's relaxed
+	// 0.04 cap -- every compare checkpoint fails, and the
 	// objectmap/document checkpoints miss too (nothing was ever built). Only
 	// the view1 compare (checkpoint 0) is asserted here, per the task's
 	// explicit carve-out: an empty scene legitimately fails several
@@ -3146,9 +3151,13 @@ static void TestAdversarialOracleControls()
 	// (i) image_reconstruct_single: every GT chunk lifted verbatim EXCEPT the
 	// key light's exitance colour, which is recoloured neutral white (1 1 1,
 	// same scale/power) instead of the warm (1.0 0.82 0.58) ground truth.
-	// CALIBRATION.md anchor (c) measures RMSE 0.033-0.048 across all four
-	// views against caps of 0.012-0.015 -- every compare checkpoint fails on
-	// lighting colour alone -- while the object/stage/geometry are otherwise
+	// CALIBRATION.md anchor (c) measures RMSE 0.0325-0.0479 across the four
+	// views. Under the two-tier caps this does NOT fail every compare: view1
+	// (0.0381) is above its strict 0.015 cap and view4 (0.0479) is above the
+	// relaxed 0.04 cap, but view2 (0.0325) and view3 (0.0364) sit BELOW the
+	// relaxed 0.04 cap and pass -- exactly why the checkpoint that must catch
+	// this defect is view1's own strict cap (asserted below), not the relaxed
+	// withheld-view caps. The object/stage/geometry are otherwise
 	// exactly right, so the objectmap and sdf chunk_count checkpoints stay
 	// green: the failure is attributable to lighting, not shape or a missing
 	// object.
@@ -3282,6 +3291,102 @@ static void TestAdversarialOracleControls()
 			Check( r.checkpoints[4].detail.find( "sphere_geometry" ) != std::string::npos,
 				"image_reconstruct_single/non-sdf-geometry control: checkpoints[4] detail names the actual kind 'sphere_geometry' (detail: " +
 				r.checkpoints[4].detail + ")" );
+		}
+	}
+
+	// (k) image_reconstruct_single: every GT chunk lifted verbatim EXCEPT
+	// herogeom's part lines, which are replaced with a FLAT-CUTOUT ("billboard")
+	// reconstruction -- the SAME primitives (capsule stem, sphere cap, torus
+	// collar, roundbox notch), each rotated (ex=-20, ey=39.14 degrees) so its
+	// LOCAL Z axis aligns with view1's camera direction and squashed to 15% scale
+	// on that axis, so from view1 it reads as a plausible face-on match to the
+	// mushroom silhouette but has near-zero real depth. This is the measured
+	// anchor (f) in CALIBRATION.md Sec 3/10: at 64 spp, view1 RMSE 0.053, view2
+	// 0.087, view3 0.131, view4 0.073 -- all three withheld views land well above
+	// the 0.04 relaxed cap (view1's own strict 0.015 cap is not asserted here;
+	// only the withheld-view rejection is the claim under test). This is the
+	// load-bearing control the P1 review demanded: it proves the relaxed 0.04
+	// caps on checkpoints 1-3 actually FIRE against a billboard/flat-cutout
+	// class of defect, re-rendered in CI rather than merely asserted in prose.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_flat_cutout" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/flat-cutout control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		int msgIdx = 2;
+		auto insertMsg = [&]( const std::string& text, const std::string& chunkText ) {
+			fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ), text,
+				{ { "insert_chunk", InsertChunkInput( chunkText ) } }, "tool_use" ) );
+		};
+		insertMsg( "Teal albedo painter.", "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" );
+		insertMsg( "Ground albedo painter.", "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" );
+		insertMsg( "Backdrop albedo painter.", "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" );
+		insertMsg( "Key light exitance painter -- correct warm colour (only the hero shape is wrong here).",
+			"uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 0.82 0.58\n}" );
+		// pnt_env is NOT inserted -- the scaffold already declares it (wired into
+		// the rasterizer's radiance_map; the rasterizer chunk is unnamed and
+		// singleton, so it cannot be re-targeted after load). Recolour the
+		// scaffold's placeholder instead, matching the other controls' approach.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ),
+			"Recolouring the scaffold's placeholder environment-tint painter.",
+			{ { "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } }, "tool_use" ) );
+		insertMsg( "Hero material.", "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" );
+		insertMsg( "Ground material.", "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" );
+		insertMsg( "Backdrop material.", "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" );
+		insertMsg( "Key luminaire material -- same scale 42.0 as GT.",
+			"lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" );
+		insertMsg( "Ground geometry.",
+			"clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" );
+		insertMsg( "Backdrop geometry.",
+			"clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" );
+		insertMsg( "Key light geometry.",
+			"clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" );
+		insertMsg( "Hero SDF geometry -- FLAT-CUTOUT variant: same 4 parts, rotated (ex=-20, ey=39.14) so each "
+			"part's local Z axis points at view1's camera and squashed to scale.z=0.15 on that axis.",
+			"sdf_geometry\n{\n\tname herogeom\n"
+			"\tpart capsule union 0 0 0.75 0 -20 39.14 0 1 1 0.15 0.30 0.45 0 0\n"
+			"\tpart sphere smin 0.15 0 1.50 0 -20 39.14 0 1 0.62 0.15 0.62 0 0 0\n"
+			"\tpart torus smin 0.12 0 1.20 0 -20 39.14 0 1 1 0.15 0.36 0.12 0 0\n"
+			"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 -20 39.14 0 1 1 0.15 0.22 0.17 0.17 0.04\n}" );
+		insertMsg( "Ground object.", "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" );
+		insertMsg( "Backdrop object.", "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" );
+		insertMsg( "Key light object.", "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" );
+		insertMsg( "Hero object.", "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" );
+		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx ),
+			"Built the scene; hero is a flat cutout facing view1.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/flat-cutout control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/flat-cutout control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/flat-cutout control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/flat-cutout control: allPassed is FALSE against a flat-cutout hero" );
+		// The load-bearing assertion: the withheld-view relaxed-cap compares
+		// (checkpoints 1-3 = view2/view3/view4) must each fail with an RMSE
+		// detail. view1's outcome (checkpoint 0) is deliberately NOT asserted --
+		// a crude billboard tuned to face view1 may or may not clear the strict
+		// 0.015 cap there, and that is not the claim under test.
+		if( r.checkpoints.size() > 3 ) {
+			for( std::size_t i = 1; i <= 3; ++i ) {
+				Check( !r.checkpoints[i].passed,
+					"image_reconstruct_single/flat-cutout control: checkpoints[" + std::to_string( i ) +
+					"] (withheld-view compare) failed (detail: " + r.checkpoints[i].detail + ")" );
+				Check( r.checkpoints[i].detail.find( "RMSE" ) != std::string::npos,
+					"image_reconstruct_single/flat-cutout control: checkpoints[" + std::to_string( i ) +
+					"] detail names RMSE (detail: " + r.checkpoints[i].detail + ")" );
+			}
 		}
 	}
 }
