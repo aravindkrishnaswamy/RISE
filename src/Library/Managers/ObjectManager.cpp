@@ -16,10 +16,33 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
+#include <atomic>
 #include <cstdint>
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace {
+
+// Process-wide monotonic source for spatial-structure generation values.
+// Each ObjectManager seeds its generation here at construction and draws
+// every InvalidateSpatialStructure advance from the same counter, so a
+// generation value is NEVER repeated across manager instances.  This is
+// what makes (Scene*, generation) a safe identity key for consumers that
+// cache scene-derived state across whole-scene rebuilds (the interactive
+// depth view's extent cache): Job::ClearAll can hand back a recycled
+// Scene address whose fresh manager would otherwise restart at 0 and
+// falsely validate the stale cache.  The IObjectManager contract
+// ("advanced every time InvalidateSpatialStructure() runs", equality
+// stable across non-spatial edits) is preserved -- consumers compare for
+// equality/inequality, never arithmetic.
+unsigned long long NextSpatialGeneration()
+{
+	static std::atomic<unsigned long long> sCounter{ 0 };
+	return sCounter.fetch_add( 1, std::memory_order_relaxed ) + 1;
+}
+
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -119,7 +142,7 @@ ObjectManager::ObjectManager(
 			) :
   pBVH( 0 ),
   pOctree( 0 ),
-  mSpatialGen( 0 ),
+  mSpatialGen( NextSpatialGeneration() ),
   bUseBSPtree( bUseBSPtree_ ),
   bUseOctree( bUseOctree_ ),
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
@@ -403,7 +426,7 @@ void ObjectManager::PrepareForRendering() const
 
 void ObjectManager::InvalidateSpatialStructure() const
 {
-	++mSpatialGen;   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
+	mSpatialGen = NextSpatialGeneration();   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
 	if( pBVH ) {
 		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
 		safe_release( pBVH );
