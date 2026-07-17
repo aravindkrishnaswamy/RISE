@@ -92,6 +92,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 
 #include <array>
 #include <cstdint>
@@ -1082,6 +1083,240 @@ static void RunDepthWindowStaleSelfCorrectTest()
 	pJobFar->release();
 }
 
+//----------------------------------------------------------------------
+// (8) External review P2 coverage: InteractivePelRasterizer's depth
+// auto-window must treat a DEGENERATE (min==max) visible depth range as
+// a first-class "Flat" window, not refuse to arm at all.  Two bugs
+// this closes (see InteractivePelRasterizer.cpp's DepthViewShader class
+// doc, "External review P2 fix"):
+//
+//   (a) a view that NEVER arms (every pass is degenerate) used to stay
+//       Unarmed forever, and WindowStale()'s "still on the fallback"
+//       case is unconditionally true for Unarmed -- so a permanently-
+//       flat scene re-ran the self-correcting extra pass on EVERY call,
+//       forever, instead of settling.
+//   (b) a jump from a genuinely-ranged view to a flat one used to leave
+//       the OLD ranged window active (PreparePass's old refusal doesn't
+//       touch it) -- WindowStale()'s span-ratio check was explicitly
+//       SKIPPED for a degenerate new span, so the stale ranged window
+//       could survive indefinitely, clamping the whole (now-flat) frame
+//       through a window that no longer describes the scene.
+//
+// A TRULY degenerate (bit-identical, not just near-flat) depth field
+// needs a camera whose primary rays are PARALLEL (a perspective camera
+// facing a flat wall still has a small but genuine per-pixel depth
+// gradient off-axis) -- so these scenes use an `orthographic_camera`
+// facing a large, FINITE (deliberately NOT `infiniteplane_geometry`,
+// whose bounding box is a genuine infinity -- see CLAUDE.md's
+// "-ffast-math: no infinity" note; this codebase's fast-math build
+// miscompiles arithmetic seeded from a true infinity) flat box face.
+// Every ortho ray's origin offset from the central ray lies entirely
+// WITHIN the box face's plane (perpendicular to the shared ray
+// direction), so every pixel's hit distance is the identical floating-
+// point value -- a genuinely zero-variance depth field, not an
+// approximation of one.
+//
+// The Flat-window constant (DepthViewShader::DepthValue, 0.6) is
+// cross-checked via the SAME sRGB transfer function PNGWriter's
+// Integerize path applies (RISE::ColorUtils::SRGBTransferFunction),
+// rather than a hand-computed/guessed byte target -- this stays correct
+// if the transfer curve is ever retuned, and (more importantly) is
+// numerically FAR from what either buggy alternative would produce for
+// this scene (the Unarmed scene-diagonal fallback, or a stale Ranged-
+// window clamp to its near/far edge), so an exact-byte (+/-1 rounding)
+// match is a tight, non-coincidental discriminator between "the Flat
+// branch actually ran" and either bug.
+//----------------------------------------------------------------------
+
+// A large, flat, FINITE box face under an orthographic camera -- every
+// visible pixel is the SAME distance from the camera (see the block
+// comment above).  `film` intentionally matches kSceneDepthNear/Far's
+// 64x64 so RenderOnPersistentCaster's decoded images are directly
+// comparable in size.
+static const char* const kSceneDepthFlat =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"orthographic_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 3 3\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname geo\n\twidth 100\n\theight 100\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+// The exact 8-bit sRGB byte DepthViewShader's Flat-window constant (0.6
+// linear) encodes to, via the SAME transfer function PNGWriter's
+// Integerize path uses -- see the block comment above.
+static unsigned char ExpectedFlatDepthByte()
+{
+	double encoded = RISE::ColorUtils::SRGBTransferFunction( 0.6 );
+	double byte = encoded * 255.0 + 0.5;
+	if( byte < 0.0 )   byte = 0.0;
+	if( byte > 255.0 ) byte = 255.0;
+	return static_cast<unsigned char>( byte );
+}
+
+// True iff every HIT pixel's red channel is within `tol` of `expected`
+// (8-bit rounding slack -- a couple of ULPs across the sRGB encode).
+// Requires at least one hit pixel.
+static bool AllHitPixelsNear( const Decoded& d, unsigned char expected, int tol = 1 )
+{
+	if( d.px.empty() ) return false;
+	bool anyHit = false;
+	for( std::size_t px = 0; px < d.px.size(); ++px ) {
+		const Px& q = d.px[px];
+		if( q[3] == 0 ) continue;   // background miss
+		anyHit = true;
+		const int diff = static_cast<int>( q[0] ) - static_cast<int>( expected );
+		if( diff < -tol || diff > tol ) return false;
+	}
+	return anyHit;
+}
+
+static void RunDepthFlatWindowSettlesTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (8a) flat scene settles to the constant mid-gray, no perpetual re-run ===\n" );
+
+	const std::string flatPath = WriteTemp( "rise_viewmode_depthflat.RISEscene", kSceneDepthFlat );
+	Check( !flatPath.empty(), "wrote the flat-wall scene" );
+
+	Job* pJobFlat = new Job();
+	Check( pJobFlat->LoadAsciiSceneViaCst( flatPath.c_str() ), "flat-wall scene loads" );
+	const IScenePriv* sceneFlat = pJobFlat->GetScene();
+	Check( sceneFlat != nullptr, "job exposes a Scene" );
+	if( !sceneFlat ) { pJobFlat->release(); return; }
+
+	IRasterizer* rast = nullptr;
+	IRayCaster*  previewCaster = nullptr;
+	IRayCaster*  polishCaster  = nullptr;
+	Check( Implementation::CreateInteractiveMaterialPreviewPipeline( &rast, &previewCaster, &polishCaster ),
+	       "persistent preview pipeline builds" );
+	if( !rast ) { pJobFlat->release(); return; }
+
+	Implementation::InteractivePelRasterizer* impl = dynamic_cast<Implementation::InteractivePelRasterizer*>( rast );
+	Check( impl != nullptr, "rasterizer downcasts to InteractivePelRasterizer" );
+
+	IRayCaster* depthCaster = nullptr;
+	Check( Implementation::CreateInteractiveViewModeCaster(
+	           Implementation::ViewportRenderMode::Depth, &depthCaster ), "depth caster builds" );
+
+	if( impl && depthCaster )
+	{
+		impl->SetViewModeCaster( depthCaster );
+
+		const unsigned char expected = ExpectedFlatDepthByte();
+
+		// Call 1: NEVER armed yet (bug (a)'s first-ever-pass case).  The
+		// override's own internal self-correction (WindowStale() case
+		// "Unarmed -> *: always stale") must fire WITHIN this single call
+		// -- the fix makes the second internal pass arm a Flat window and
+		// shade the constant, so even THIS FIRST call already returns the
+		// settled result.
+		Decoded decCall1;
+		Check( RenderOnPersistentCaster( *rast, *sceneFlat, decCall1 ), "flat-wall pass 1 decodes" );
+		Check( AllHitPixelsNear( decCall1, expected ),
+		       "MONEY ASSERTION: pass 1 already shows the constant Flat mid-gray (0.6, self-corrected within "
+		       "this call) -- NOT the Unarmed scene-diagonal fallback a still-refusing PreparePass would leave it at" );
+
+		// Call 2: SAME persistent caster, SAME (unchanged) scene.  Bug (a)
+		// was "re-runs the extra pass on EVERY call forever" -- the
+		// observable symptom of THAT bug is indistinguishable from the fix
+		// by output alone (both reach the same fallback value every time,
+		// since a perpetually-refusing PreparePass is deterministic too),
+		// so the real assertion is the SAME exact-byte check again: only
+		// an ARMED Flat window produces the constant 0.6, and Flat -> Flat
+		// is classified NOT stale, so this call also settles in exactly
+		// one internal pass.
+		Decoded decCall2;
+		Check( RenderOnPersistentCaster( *rast, *sceneFlat, decCall2 ), "flat-wall pass 2 decodes" );
+		Check( AllHitPixelsNear( decCall2, expected ),
+		       "pass 2 (Flat -> Flat, not stale) still shows the constant Flat mid-gray" );
+
+		// Stability: repeated renders of an unchanged flat scene produce
+		// pixel-identical output -- no oscillation between the fallback
+		// and the Flat constant across calls.
+		Check( decCall1.w == decCall2.w && decCall1.h == decCall2.h && decCall1.px == decCall2.px,
+		       "pass 1 and pass 2 are pixel-identical" );
+
+		impl->SetViewModeCaster( nullptr );   // restore, mirrors R5's teardown order
+	}
+
+	safe_release( depthCaster );
+	safe_release( rast );
+	safe_release( previewCaster );
+	safe_release( polishCaster );
+	pJobFlat->release();
+}
+
+static void RunDepthRangedToFlatSelfCorrectTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (8b) ranged -> flat self-corrects within one call ===\n" );
+
+	const std::string nearPath = WriteTemp( "rise_viewmode_depthnear2.RISEscene", kSceneDepthNear );
+	const std::string flatPath = WriteTemp( "rise_viewmode_depthflat2.RISEscene", kSceneDepthFlat );
+	Check( !nearPath.empty() && !flatPath.empty(), "wrote the ranged/flat scene pair" );
+
+	Job* pJobNear = new Job();
+	Check( pJobNear->LoadAsciiSceneViaCst( nearPath.c_str() ), "near-camera (ranged) scene loads" );
+	Job* pJobFlat = new Job();
+	Check( pJobFlat->LoadAsciiSceneViaCst( flatPath.c_str() ), "flat-wall scene loads" );
+	const IScenePriv* sceneNear = pJobNear->GetScene();
+	const IScenePriv* sceneFlat = pJobFlat->GetScene();
+	Check( sceneNear != nullptr && sceneFlat != nullptr, "both jobs expose a Scene" );
+	if( !sceneNear || !sceneFlat ) { pJobNear->release(); pJobFlat->release(); return; }
+
+	IRasterizer* rast = nullptr;
+	IRayCaster*  previewCaster = nullptr;
+	IRayCaster*  polishCaster  = nullptr;
+	Check( Implementation::CreateInteractiveMaterialPreviewPipeline( &rast, &previewCaster, &polishCaster ),
+	       "persistent preview pipeline builds" );
+	if( !rast ) { pJobNear->release(); pJobFlat->release(); return; }
+
+	Implementation::InteractivePelRasterizer* impl = dynamic_cast<Implementation::InteractivePelRasterizer*>( rast );
+	Check( impl != nullptr, "rasterizer downcasts to InteractivePelRasterizer" );
+
+	IRayCaster* depthCaster = nullptr;
+	Check( Implementation::CreateInteractiveViewModeCaster(
+	           Implementation::ViewportRenderMode::Depth, &depthCaster ), "depth caster builds" );
+
+	if( impl && depthCaster )
+	{
+		impl->SetViewModeCaster( depthCaster );
+
+		// Pass 1: near camera (ranged) -- arms a Ranged window (via its
+		// own "never armed yet" self-correction), same warm-up idiom as
+		// RunDepthWindowStaleSelfCorrectTest above.
+		Decoded decNear;
+		Check( RenderOnPersistentCaster( *rast, *sceneNear, decNear ), "near-camera (ranged) pass decodes" );
+		Check( DepthStrongContrast( decNear ), "near-camera pass shows windowed (high-contrast) depth" );
+
+		// Pass 2: SAME rasterizer/caster, scene jumps to the flat wall.
+		// External review P2 bug (b): a stale Ranged window would clamp
+		// this pass to whichever extreme the flat depth happens to land
+		// nearest, and WindowStale()'s old span-ratio check explicitly
+		// SKIPPED reacting to a degenerate new span -- so the stale
+		// window could survive indefinitely.  The fix's Ranged->Flat
+		// transition is UNCONDITIONALLY stale, so THIS SAME call must
+		// self-correct to the Flat constant before returning.
+		Decoded decFlat;
+		Check( RenderOnPersistentCaster( *rast, *sceneFlat, decFlat ), "ranged-to-flat pass decodes" );
+		Check( AllHitPixelsNear( decFlat, ExpectedFlatDepthByte() ),
+		       "MONEY ASSERTION: the flat-wall pass, on the SAME persistent caster right after the ranged "
+		       "near-camera pass, ALREADY shows the constant Flat mid-gray within this single call -- not a "
+		       "stale ranged-window clamp to the near or far edge" );
+
+		impl->SetViewModeCaster( nullptr );   // restore, mirrors R5's teardown order
+	}
+
+	safe_release( depthCaster );
+	safe_release( rast );
+	safe_release( previewCaster );
+	safe_release( polishCaster );
+	pJobNear->release();
+	pJobFlat->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -1093,6 +1328,8 @@ int main()
 	RunXrayCoverageTest();
 	RunPreviewResolvedLuminaireSuppressionTest();
 	RunDepthWindowStaleSelfCorrectTest();
+	RunDepthFlatWindowSettlesTest();
+	RunDepthRangedToFlatSelfCorrectTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

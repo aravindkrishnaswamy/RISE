@@ -96,7 +96,9 @@
 #include <cmath>
 #include <iostream>
 
+#include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersection.h"
@@ -810,6 +812,245 @@ void TestUnion_TransformedCsgDerivativesMatchStandaloneRotated()
 	std::cout << "  Passed." << std::endl;
 }
 
+//
+// Test 9 (P1, direction-independent factor): CSGObject::IntersectRay_
+// IntersectionOnly's world-to-local distance factor must be the
+// magnitude of the TRANSFORMED RAY DIRECTION, not an arbitrary +X-axis
+// probe.  Apply a NON-UNIFORM stretch to the CSG object itself (sx=0.01,
+// sy=1, sz=100) and fire a shadow-style query along world +Z -- a
+// direction the old +X-based factor scales completely wrong.  Ground
+// truth (the always-correct full IntersectRay, called with dHowFar=
+// RISE_INFINITY per the `Hit()` helper) puts the occluder's entry at
+// world range ~100; querying IntersectRay_IntersectionOnly with
+// dHowFar=90 (a "light" CLOSER than the occluder) must report NOT
+// occluded.  The old +X-axis factor (=100, wildly wrong for a +Z ray
+// here) inflates dHowFar2 enough that the occluder's local-frame range
+// still passes the check, reporting a false shadow.
+//
+void TestIntersectionOnly_NonUniformScale_DirectionTrueFactor()
+{
+	std::cout << "IntersectRay_IntersectionOnly: non-uniform CSG scale, direction-true factor (P1, item 1)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2
+	Object* oA = new Object( gA );
+	safe_release( gA );
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oA->FinalizeTransformations();
+
+	// Far-away second operand -- never hit.
+	SphereGeometry* gB = new SphereGeometry( 1.0 );
+	Object* oB = new Object( gB );
+	safe_release( gB );
+	oB->SetPosition( Point3( 100000, 100000, 100000 ) );
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	assert( csg->AssignObjects( oA, oB ) );
+	// Non-uniform stretch on the CSG object itself: tiny in X, huge in Z.
+	// World span of A (local half-extent 2, box[-2,2]) becomes
+	// x in [-0.02,0.02], y in [-2,2], z in [-200,200].
+	csg->SetStretch( Vector3( 0.01, 1.0, 100.0 ) );
+	csg->FinalizeTransformations();
+
+	// Ray travels along world +Z -- NOT the axis the old buggy factor
+	// probed (+X).
+	Ray r( Point3( 0, 0, -300 ), Vector3( 0, 0, 1 ) );
+
+	// Ground truth: full IntersectRay (always direction-correct -- it
+	// never scales dHowFar at all, and Hit() always passes RISE_INFINITY)
+	// puts the entry at world z=-200, i.e. range ~100 from z=-300.
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	assert( ri.geometric.bHit );
+	assert( ri.geometric.range > 95.0 && ri.geometric.range < 105.0 );
+
+	// A "light" at world distance 90 is CLOSER than the occluder's entry
+	// (~100) -- the occluder must NOT report as blocking it.
+	const Scalar dHowFarTest = 90.0;
+	const bool occluded = csg->IntersectRay_IntersectionOnly( r, dHowFarTest, true, true );
+	assert( !occluded );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+	std::cout << "  Passed." << std::endl;
+}
+
+//
+// Test 10 (P2, item 2): CSGObject::IntersectRay's final onb-construction
+// block must honour bShadingTangentFromGeometry exactly like
+// Object::IntersectRay does, instead of always calling CreateFromW.
+// Build a flat heightfield SDF disk (SDFGeometry heightfield mode,
+// scale=0.0 -- an exactly-flat z=0 surface, so the shading normal is
+// world +Z everywhere on it: the same degenerate "cartesian_disk" case
+// the flag exists for, see the flag's set site in SDFGeometry.cpp) both
+// standalone and as one operand of a CSG_UNION whose other operand is
+// never hit (forcing the simplest `ri = riObjA` passthrough into the
+// CSG's own final promotion block, same pattern as Test 8/P2-d).  The
+// CSG hit's onb must match the standalone hit's onb exactly.
+//
+void TestUnion_CsgHonoursShadingTangentFromGeometry()
+{
+	std::cout << "CSG_UNION: onb honours bShadingTangentFromGeometry through CSG (P2, item 2)..." << std::endl;
+
+	ConstantFunction2D* fieldStandalone = new ConstantFunction2D( 0.0 );
+	SDFGeometry* gStandalone = new SDFGeometry( fieldStandalone, 2.0, 0.0, 256, 0.0, 8 );
+	safe_release( fieldStandalone );
+
+	ConstantFunction2D* fieldOperand = new ConstantFunction2D( 0.0 );
+	SDFGeometry* gOperand = new SDFGeometry( fieldOperand, 2.0, 0.0, 256, 0.0, 8 );
+	safe_release( fieldOperand );
+
+	Object* standalone = new Object( gStandalone );
+	safe_release( gStandalone );
+	standalone->FinalizeTransformations();
+
+	Object* aOperand = new Object( gOperand );
+	safe_release( gOperand );
+	aOperand->FinalizeTransformations();
+
+	// Far-away second operand -- never hit (same trick as Test 8/P2-d).
+	SphereGeometry* gB = new SphereGeometry( 1.0 );
+	Object* farB = new Object( gB );
+	safe_release( gB );
+	farB->SetPosition( Point3( 10000, 10000, 10000 ) );
+	farB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	assert( csg->AssignObjects( aOperand, farB ) );
+	csg->FinalizeTransformations();
+
+	Ray r( Point3( 0.3, 0.2, 5.0 ), Vector3( 0, 0, -1 ) );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	assert( ri.geometric.bHit );
+	assert( ri.geometric.bShadingTangentFromGeometry );
+
+	RayIntersection refRi( r, nullRasterizerState );
+	Hit( standalone, r, refRi );
+	assert( refRi.geometric.bHit );
+	assert( refRi.geometric.bShadingTangentFromGeometry );
+
+	// Sanity: the flag really does route to the WORLD-X-PROJECTED branch
+	// (CreateFromWU), not the default CreateFromW axis -- for an exact +Z
+	// normal, CreateFromW picks U=(-1,0,0) (cross(W,canonicalV)), while
+	// the geometry-aware branch picks U=(+1,0,0) (world-X projected into
+	// the normal plane, which for n=(0,0,1) is just world-X itself).  If
+	// these coincided the test wouldn't discriminate.
+	assert( VecClose( refRi.geometric.onb.u(), Vector3( 1, 0, 0 ) ) );
+	assert( !VecClose( refRi.geometric.onb.u(), Vector3( -1, 0, 0 ) ) );
+
+	assert( VecClose( ri.geometric.onb.u(), refRi.geometric.onb.u() ) );
+	assert( VecClose( ri.geometric.onb.v(), refRi.geometric.onb.v() ) );
+	assert( VecClose( ri.geometric.onb.w(), refRi.geometric.onb.w() ) );
+
+	safe_release( csg );
+	safe_release( aOperand );
+	safe_release( farB );
+	safe_release( standalone );
+	std::cout << "  Passed." << std::endl;
+}
+
+//
+// Test 11 (P2, item 3): the exit-face reverse probe's margin must be
+// derived from the OPERAND's own world bounding-box diagonal, not the
+// camera range, or a long-range shadow/exit query can overshoot past a
+// DIFFERENT lobe of a multi-lobe operand and adopt the wrong face's
+// payload.  `nestedB` is a CSG_UNION of two disjoint box "lobes":
+// `realLobe` (matching the P2-e test's own B geometry, spans z in
+// [-6,-2], carving A's near wall) and a `decoyLobe` just 0.3 units
+// beyond the real exit face (z in [-1.7,-1.3]).  From far away the outer
+// SUBTRACTION only ever sees `nestedB` report the nearer, disjoint
+// `realLobe` interval (union's own "outside both, disjoint" algebra) --
+// the decoy is invisible to the outer entry/exit algebra and reachable
+// ONLY by the reverse probe.  At a LONG camera range, the OLD margin
+// (exitRangeCsgLocal * 1e-6) grows past the 0.3-unit gap and the probe's
+// short search finds the decoy INSTEAD of the real exit face; the NEW
+// diagonal-derived margin stays camera-independent and finds the real
+// face regardless of range.
+//
+void TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin doesn't overshoot to a different lobe at long camera range (P2, item 3)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );          // half-extent 3, spans z in [-3,3]
+	BoxGeometry* gRealLobe = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent (2,2,2)
+	BoxGeometry* gDecoyLobe = new BoxGeometry( 3.6, 3.6, 0.4 );  // half-extent (1.8,1.8,0.2) -- narrower in X/Y than realLobe so their ptCoord mappings differ too
+
+	Object* oA = new Object( gA );
+	Object* realLobe = new Object( gRealLobe );
+	Object* decoyLobe = new Object( gDecoyLobe );
+	safe_release( gA );
+	safe_release( gRealLobe );
+	safe_release( gDecoyLobe );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oA->FinalizeTransformations();
+
+	realLobe->SetPosition( Point3( 0, 0, -4 ) );     // spans z in [-6,-2]: overlaps A's near wall (same as the P2-e test's B)
+	realLobe->FinalizeTransformations();
+
+	// A decoy lobe just OUTSIDE the real exit face (z=-2), separated by a
+	// 0.3-unit gap.
+	decoyLobe->SetPosition( Point3( 0, 0, -1.5 ) );  // spans z in [-1.7,-1.3]
+	decoyLobe->FinalizeTransformations();
+
+	CSGObject* nestedB = new CSGObject( CSG_UNION );
+	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	nestedB->FinalizeTransformations();
+
+	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
+	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	outerCsg->FinalizeTransformations();
+
+	// LONG camera range: exitRangeCsgLocal (the CSG-local distance from
+	// the ray origin to the exit-designated boundary) scales with this
+	// distance -- the OLD margin formula grows right along with it,
+	// eventually exceeding the 0.3-unit gap to the decoy lobe.  The NEW
+	// margin (operand bbox diagonal * 1e-6) does not move with camera
+	// range at all.
+	const Scalar D = 1000000.0;
+	Ray r( Point3( 0.1, 0.05, -D ), Vector3( 0, 0, 1 ) );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( outerCsg, r, ri );
+	assert( ri.geometric.bHit );
+
+	// Ground truth: the REAL exit face, probed directly (independent of
+	// production code) -- exactly the P2-e test's own oracle pattern.
+	Ray probeRefReal( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
+	Hit( realLobe, probeRefReal, refRealExit );
+	assert( refRealExit.geometric.bHit );
+
+	// The WRONG answer an overshooting probe lands on: the decoy lobe's
+	// near face, probed directly.
+	Ray probeDecoy( Point3( 0.1, 0.05, -1.0 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
+	Hit( decoyLobe, probeDecoy, refDecoy );
+	assert( refDecoy.geometric.bHit );
+
+	// Sanity: the two candidate faces produce distinct UV / object-space
+	// points, so this test is discriminating.
+	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
+	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+
+	// The composite's recovered payload must be the REAL exit face, never
+	// the decoy.
+	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
+	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
+	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
+	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+
+	safe_release( outerCsg );
+	safe_release( oA );
+	safe_release( nestedB );
+	safe_release( realLobe );
+	safe_release( decoyLobe );
+	std::cout << "  Passed." << std::endl;
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -820,6 +1061,9 @@ int main()
 	TestSubtraction_DisjointBothSides_CompositeIsAAlone();
 	TestIntersectionOnly_ScaledOperandNoShadowLeak();
 	TestUnion_TransformedCsgDerivativesMatchStandaloneRotated();
+	TestIntersectionOnly_NonUniformScale_DirectionTrueFactor();
+	TestUnion_CsgHonoursShadingTangentFromGeometry();
+	TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe();
 	std::cout << "\nAll CsgSurfacePayloadTest cases passed." << std::endl;
 	return 0;
 }

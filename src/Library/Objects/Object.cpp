@@ -377,7 +377,14 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	const Ray orig = ri.geometric.ray;
 
 	ri.geometric.ray.origin = Point3Ops::Transform( m_mxInvFinalTrans, orig.origin );
-	ri.geometric.ray.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, orig.Dir() ) ));
+
+	// Capture the UNNORMALIZED transformed direction's magnitude before
+	// normalizing it into the local-frame ray -- this is the direction-true
+	// world-to-local distance factor used below (P1 fix: was a +X-axis
+	// probe, see the `factor` comment further down).
+	const Vector3 dirLocalUnnorm = Vector3Ops::Transform( m_mxInvFinalTrans, orig.Dir() );
+	const Scalar dirLocalMag = Vector3Ops::Magnitude( dirLocalUnnorm );
+	ri.geometric.ray.SetDir( Vector3Ops::Normalize( dirLocalUnnorm ) );
 
 	// Landing 2: transform ray differentials into object space alongside
 	// origin/dir, otherwise ComputeTextureFootprint would project
@@ -421,10 +428,28 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		ri.geometric.ray.hasDifferentials = true;
 	}
 
-	const Scalar factor = Vector3Ops::Magnitude( Vector3Ops::Transform( m_mxInvFinalTrans, Vector3(1,0,0) ) );
-	Scalar dHowFar2 = dHowFar; 
+	// factor converts a WORLD-frame distance limit (dHowFar) into the
+	// local-frame traversal limit used by the box pre-test and the
+	// dHowFar2-comparisons below.  MUST be the magnitude of the
+	// TRANSFORMED RAY DIRECTION (dirLocalMag, captured above before it was
+	// normalized into ray.dir) -- NOT an arbitrary +X-axis probe (P1 fix).
+	// Under non-uniform scale, |M^-1 * v| depends on which direction v
+	// points; a +X-only factor mis-scales the limit for every ray not
+	// travelling along local +X (e.g. a shadow ray leaking past the light,
+	// or a valid hit truncated short of it).  Guard a degenerate transform
+	// that collapses this direction to ~0 (singular along this direction)
+	// by falling back to an unscaled factor of 1.0.
+	const Scalar factor = (dirLocalMag > NEARZERO) ? dirLocalMag : Scalar(1.0);
+	Scalar dHowFar2 = dHowFar;
 
-	// We can't go farther than infinity, so in this case only reduce thelength, never extend
+	// We can't go farther than infinity, so in this case only reduce the
+	// length, never extend: dHowFar==RISE_INFINITY is a large FINITE
+	// sentinel (not IEEE inf -- see the ffast-math/no-infinity convention),
+	// so scaling it by factor>=1 would overflow into a real infinity for
+	// no benefit (there's nothing to shrink); only factor<1 is worth
+	// applying.  This reasoning is about the sentinel's magnitude, not
+	// about how `factor` itself is derived -- unchanged now that factor is
+	// direction-true rather than +X-axis-based.
 	if( (dHowFar != RISE_INFINITY) || (factor < 1.0) ) {
 		dHowFar2 = factor*dHowFar;
 	}
@@ -592,16 +617,32 @@ bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar
 	Ray		orig = ray;
 
 	orig.origin = Point3Ops::Transform( m_mxInvFinalTrans, ray.origin );
-	orig.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, ray.Dir() ) ));
 
-	const Scalar factor = Vector3Ops::Magnitude( Vector3Ops::Transform( m_mxInvFinalTrans, Vector3(1,0,0) ) );
-	Scalar dHowFar2 = dHowFar; 
+	// Capture the UNNORMALIZED transformed direction's magnitude before
+	// normalizing it into the local-frame ray -- the direction-true
+	// world-to-local distance factor used below (P1 fix, mirrors
+	// Object::IntersectRay above).
+	const Vector3 dirLocalUnnorm = Vector3Ops::Transform( m_mxInvFinalTrans, ray.Dir() );
+	const Scalar dirLocalMag = Vector3Ops::Magnitude( dirLocalUnnorm );
+	orig.SetDir( Vector3Ops::Normalize( dirLocalUnnorm ) );
 
-	// We can't go farther than infinity, so in this case only reduce thelength, never extend
+	// factor converts a WORLD-frame distance limit (dHowFar) into the
+	// local-frame traversal limit.  MUST be the magnitude of the
+	// TRANSFORMED RAY DIRECTION (dirLocalMag, captured above) -- NOT an
+	// arbitrary +X-axis probe (P1 fix); see Object::IntersectRay above for
+	// the full rationale.  Guard a degenerate transform that collapses
+	// this direction to ~0 by falling back to an unscaled factor of 1.0.
+	const Scalar factor = (dirLocalMag > NEARZERO) ? dirLocalMag : Scalar(1.0);
+	Scalar dHowFar2 = dHowFar;
+
+	// We can't go farther than infinity, so in this case only reduce the
+	// length, never extend -- see Object::IntersectRay above for why this
+	// guard is about the RISE_INFINITY sentinel's magnitude and stays
+	// correct regardless of how `factor` is derived.
 	if( (dHowFar != RISE_INFINITY) || (factor < 1.0) ) {
 		dHowFar2 = factor*dHowFar;
 	}
-	
+
 	// Do bounding box check first
 	if( pGeometry->DoPreHitTest() ) {
 		// Compute ray intersection with box

@@ -6023,23 +6023,27 @@ void SceneEditController::RenderLoop()
 
 		// Polish-pass configuration.  Only meaningful when the
 		// rasterizer is the InteractivePelRasterizer (mInteractiveImpl
-		// is null in test mode).  We snapshot the polish state BEFORE
-		// the pass so the post-pass logic can see what we ran.
-		const PolishState polishStateBefore =
-			static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
-		const bool isPolishPass = ( polishStateBefore == PolishState::PolishQueued );
-		if( mInteractiveImpl ) {
-			Implementation::InteractivePelRasterizer::PreviewDenoiseMode denoiseMode =
-				Implementation::InteractivePelRasterizer::PreviewDenoise_Off;
-			if( isPolishPass ) {
-				denoiseMode = Implementation::InteractivePelRasterizer::PreviewDenoise_Balanced;
-			} else if( mInRefinementPass &&
-			           mPreviewScale.load( std::memory_order_acquire ) <= 2 ) {
-				denoiseMode = Implementation::InteractivePelRasterizer::PreviewDenoise_Fast;
-			}
-			mInteractiveImpl->SetPreviewDenoiseMode( denoiseMode );
-			mInteractiveImpl->SetSampleCount( isPolishPass ? kPolishSampleCount : 1 );
-		}
+		// is null in test mode).  `polishStateBefore` / `isPolishPass`
+		// are snapshotted -- and APPLIED to mInteractiveImpl via
+		// SetPreviewDenoiseMode/SetSampleCount -- inside the mint lock
+		// below, not here.  External review P1: this used to run
+		// UNLOCKED at this exact spot, but mRendering is FALSE for this
+		// entire pre-mint window (it only flips true inside that lock),
+		// so a concurrent SetViewportRenderMode / SetViewportXray --
+		// which take mMutex then call CancelAndParkRender_, whose wait
+		// returns IMMEDIATELY when mRendering is already false -- could
+		// mutate the SAME InteractivePelRasterizer (SetViewModeCaster /
+		// SetXrayView) concurrently with an unlocked SetPreviewDenoiseMode
+		// / SetSampleCount call here.  InteractivePelRasterizer has no
+		// internal synchronization of its own (every Set* is documented
+		// as "called only under the controller's parked-render
+		// discipline") so that was a genuine data race on its plain
+		// (non-atomic) fields.  See the mint-lock block below for where
+		// this now runs and why moving it there also closes the P2
+		// stale-PolishQueued-across-mode-switch bug (SetViewportRenderMode
+		// / SetViewportXray's own mPolishState reset).
+		PolishState polishStateBefore = PolishState::None;
+		bool isPolishPass = false;
 
 		// Fix-round-4 P2 RED-PROVE test seam -- no-op in production (see
 		// the declaration doc).  Sits at the END of the unlocked window
@@ -6134,6 +6138,33 @@ void SceneEditController::RenderLoop()
 					mEditPending.store( true, std::memory_order_release );
 				}
 				continue;
+			}
+			// External review P1 fix: snapshot mPolishState and apply it
+			// to mInteractiveImpl HERE, inside the SAME mMutex hold
+			// SetViewportRenderMode / SetViewportXray take before calling
+			// CancelAndParkRender_ -- see the (now-empty) snapshot site
+			// above this block for the race this closes.  Serialising the
+			// read AND the mutate under this one lock also closes the P2
+			// sibling bug: a mode/x-ray switch's own mPolishState reset
+			// (see those setters) can no longer race a stale unlocked
+			// isPolishPass snapshot taken just before it -- whichever
+			// thread wins this mMutex acquisition runs its read+mutate to
+			// completion before the other can observe or change any of
+			// this state.
+			polishStateBefore =
+				static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
+			isPolishPass = ( polishStateBefore == PolishState::PolishQueued );
+			if( mInteractiveImpl ) {
+				Implementation::InteractivePelRasterizer::PreviewDenoiseMode denoiseMode =
+					Implementation::InteractivePelRasterizer::PreviewDenoise_Off;
+				if( isPolishPass ) {
+					denoiseMode = Implementation::InteractivePelRasterizer::PreviewDenoise_Balanced;
+				} else if( mInRefinementPass &&
+				           mPreviewScale.load( std::memory_order_acquire ) <= 2 ) {
+					denoiseMode = Implementation::InteractivePelRasterizer::PreviewDenoise_Fast;
+				}
+				mInteractiveImpl->SetPreviewDenoiseMode( denoiseMode );
+				mInteractiveImpl->SetSampleCount( isPolishPass ? kPolishSampleCount : 1 );
 			}
 			mCancelProgress.Reset();
 			mRendering.store( true, std::memory_order_release );
@@ -6233,10 +6264,22 @@ void SceneEditController::RenderLoop()
 		//   3. Anything else: leave state alone.
 		if( isPolishPass )
 		{
-			if( mInteractiveImpl ) {
-				mInteractiveImpl->SetSampleCount( 1 );
-				mInteractiveImpl->SetPreviewDenoiseMode(
-					Implementation::InteractivePelRasterizer::PreviewDenoise_Off );
+			// External review P1 sibling fix: this ALSO mutates the
+			// shared InteractivePelRasterizer, and it runs after
+			// ActiveFlipGuard's destructor has already flipped
+			// mRendering back to false -- the identical unlocked-window
+			// hazard as the pre-pass snapshot block above, just on the
+			// completion side.  Take mMutex for this short configuration
+			// section (NOT across DoOneRenderPass -- that already ran)
+			// so it can't interleave with SetViewportRenderMode /
+			// SetViewportXray's own mInteractiveImpl mutations.
+			{
+				std::lock_guard<std::mutex> lk( mMutex );
+				if( mInteractiveImpl ) {
+					mInteractiveImpl->SetSampleCount( 1 );
+					mInteractiveImpl->SetPreviewDenoiseMode(
+						Implementation::InteractivePelRasterizer::PreviewDenoise_Off );
+				}
 			}
 			// Don't blindly clobber state to None — KickRender (user
 			// edit during polish) may have already reset it.  Only
@@ -7030,6 +7073,23 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 	}
 	CancelAndParkRender_( lk );
 
+	// External review P2 fix: retire any queued/in-flight polish pass
+	// BEFORE swapping the caster -- otherwise a polish pass queued for
+	// the OLD mode (mPolishState == PolishQueued) survives the switch,
+	// and the render loop's NEXT pass runs a 4-SPP Balanced-denoise
+	// "polish" of the NEW mode/x-ray state, then completes the state
+	// machine against a pass it never configured for.  Same retirement
+	// idiom KickRender / OnTimeScrub / the object-motion edit path use
+	// (store PolishState::None) -- see those sites -- plus an explicit
+	// SetSampleCount(1) here (mirroring the render loop's own post-
+	// polish restore) so the sticky multi-SPP kernel/polish-caster
+	// state on mInteractiveImpl doesn't linger into the caster swap
+	// below.  Both run while we still hold `lk`, so this is atomic
+	// with the mode switch itself -- no window for the render loop to
+	// observe a stale PolishQueued for this mode.
+	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+	mInteractiveImpl->SetSampleCount( 1 );
+
 	if( info->mode != Implementation::ViewportRenderMode::Preview )
 	{
 		if( !InstallViewModeCaster_( info->mode ) )
@@ -7083,6 +7143,15 @@ bool SceneEditController::SetViewportXray( bool xray )
 		return true;   // no-op -- already the current flag
 	}
 	CancelAndParkRender_( lk );
+
+	// External review P2 fix: same stale-PolishQueued retirement as
+	// SetViewportRenderMode above -- an x-ray toggle mid-polish must
+	// not let the queued polish pass survive to run (at the old x-ray
+	// state) against a state machine that no longer expects it.  See
+	// that function's comment for the full rationale; both stores run
+	// under this SAME `lk` hold, atomic with the flag flip below.
+	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+	mInteractiveImpl->SetSampleCount( 1 );
 
 	// X-ray resolution lives in the caster layer now -- no caster rebuild,
 	// just stamp the flag onto every caster the rasterizer holds (applies

@@ -326,14 +326,16 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	const Point3 originalOrigin = originalRay.origin;
 	bool bAnySkip = false;
 
-	// Adaptive skip epsilon.  Start tight -- range * 1e-7, floored at
-	// 1e-9 -- so a thin opaque surface hugging the glass at large camera
-	// distances isn't stepped over (the old flat range*1e-5/1e-6 floor
-	// could overshoot such a surface at kilometre scale).  `curEps` is
+	// Adaptive skip epsilon.  Scaled from the HIT OBJECT's own world
+	// bounding-box diagonal (not the camera-to-hit range -- see the
+	// external-review P2 comment at the computation site below), floored
+	// at 1e-9 so a thin opaque surface hugging the glass isn't stepped
+	// over regardless of how far the camera sits from it.  `curEps` is
 	// the nudge actually used for the pending step; it is recomputed
-	// fresh from `ri.geometric.range` at the start of every NEW step and
-	// only carried over (doubled) across loop iterations that are
-	// retries of the SAME step -- see the degenerate-rehit check below.
+	// fresh from `ri.pObject`'s bounding box at the start of every NEW
+	// step and only carried over (doubled) across loop iterations that
+	// are retries of the SAME step -- see the degenerate-rehit check
+	// below.
 	Scalar curEps = 0;
 	bool bRetryStep = false;
 
@@ -352,10 +354,23 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 		if( !bRetryStep )
 		{
 			// Nudge off the surface along the SAME direction (no bending) --
-			// scaled by the hit's own range so it means something at both
-			// tabletop and kilometre scale, floored so it's never a no-op
-			// at near-zero range.
-			curEps = ri.geometric.range * 1.0e-7;
+			// scaled by the HIT OBJECT's own world bounding-box diagonal, not
+			// the camera-to-hit range.  External review P2: a camera-range-
+			// derived eps (range * 1e-7) skipped near-behind-glass geometry
+			// at long camera range -- a thin opaque surface just behind a
+			// glass pane, viewed from far away, needs a nudge sized to the
+			// pane/surface's OWN scale, not the (much larger) camera
+			// distance; the old formula could produce a nudge many times the
+			// local feature size and step clean over it.  `ri.pObject` here
+			// is the transmissive object just hit (the one we're nudging off
+			// of) -- its world bbox diagonal is camera-independent and
+			// locally scaled to that geometry, floored so it's never a
+			// no-op on a degenerate (point-like) bounding box.
+			Scalar objDiag = 0.0;
+			if( ri.pObject ) {
+				objDiag = Vector3Ops::Magnitude( ri.pObject->getBoundingBox().GetExtents() );
+			}
+			curEps = objDiag * 1.0e-6;
 			if( curEps < 1.0e-9 ) {
 				curEps = 1.0e-9;
 			}
@@ -367,19 +382,38 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 
 		RayIntersection next( Ray( origin, dir ), ri.geometric.rast );
 		next.geometric.PropagateCastInputs( ri.geometric );   // wireframe edge requests etc. survive the skip
-		// Screen-space differentials (Landing 2, Igehy 1999): a straight-
-		// line skip doesn't bend the ray, so the auxiliary-ray DIRECTION
-		// offsets carry over exactly.  The origin offsets are defined as
-		// ABSOLUTE offsets from the central ray's origin (RayDifferentials.h)
-		// and are correct to first order under a pure origin translation
-		// along the shared direction -- the dropped term is second-order
-		// (nudge distance x angular offset), the same approximation the
-		// specular reflection/refraction differential propagation makes.
-		// Without this, textured/normal-mapped geometry resolved behind
-		// x-ray glass would fall back to hasDifferentials=false (base-level
-		// texture sampling, no mip/footprint selection).
+		// Screen-space differentials (Landing 2, Igehy 1999) -- external
+		// review P2: a straight-line skip doesn't bend the ray, so the
+		// auxiliary-ray DIRECTION offsets (rxDir/ryDir) carry over exactly,
+		// but the ORIGIN offsets do NOT -- they are ABSOLUTE offsets from
+		// the CENTRAL ray's own origin (RayDifferentials.h), and the
+		// central ray's origin just moved by `t` (the full distance from
+		// ri's ray origin to this nudge point, i.e. its hit range plus the
+		// nudge itself -- NOT just curEps).  First-order transfer along a
+		// straight segment (Igehy 1999 Section 3.1, the same formula PBRT
+		// uses to propagate a RayDifferential through free space): the
+		// auxiliary ray advances by `t` along ITS OWN (offset) direction,
+		// so re-expressed relative to the new central origin,
+		// rxOrigin_new = rxOrigin_old + t * rxDir_old (ditto for ry); the
+		// direction offsets themselves are unchanged by a pure translation.
+		// A verbatim copy (the previous code here) is only correct when
+		// `t` is negligible -- true for a specular bounce's own nudge, but
+		// NOT here, where `t` includes the full hit range, which can be
+		// arbitrarily large.  Without this, textured/normal-mapped geometry
+		// resolved behind x-ray glass would either fall back to
+		// hasDifferentials=false (no transfer at all) or -- worse -- carry
+		// a stale, wrong footprint silently.
 		next.geometric.ray.hasDifferentials = ri.geometric.ray.hasDifferentials;
-		next.geometric.ray.diffs = ri.geometric.ray.diffs;
+		if( next.geometric.ray.hasDifferentials )
+		{
+			const Scalar t = ri.geometric.range + curEps;
+			next.geometric.ray.diffs.rxOrigin =
+				ri.geometric.ray.diffs.rxOrigin + ri.geometric.ray.diffs.rxDir * t;
+			next.geometric.ray.diffs.ryOrigin =
+				ri.geometric.ray.diffs.ryOrigin + ri.geometric.ray.diffs.ryDir * t;
+			next.geometric.ray.diffs.rxDir = ri.geometric.ray.diffs.rxDir;
+			next.geometric.ray.diffs.ryDir = ri.geometric.ray.diffs.ryDir;
+		}
 		pScene->GetObjects()->IntersectRay( next, /*bHitFrontFaces*/true, /*bHitBackFaces*/true, /*bComputeExitInfo*/false );
 
 		if( !next.geometric.bHit )

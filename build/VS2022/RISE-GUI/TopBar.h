@@ -255,11 +255,13 @@ private:
 
     // P1 (docs/gui/RENDER_MODES.md "X-ray axis"): compact checkable
     // toggle, right of the render-mode combo -- an orthogonal boolean
-    // that composes with the four data modes (normals/depth/facets/
-    // wireframe).  Enabled state and checked state are entirely owned by
-    // refreshRenderModeCombo() (same treatment as m_renderModeCombo
-    // above); no separate construction-time item list since it's a
-    // single toggle, not a registry-backed combo.
+    // that composes with EVERY render mode, including the shaded
+    // preview (default ON; user decision 2026-07-17), not just the four
+    // data modes (normals/depth/facets/wireframe).  Enabled state and
+    // checked state are entirely owned by refreshRenderModeCombo() (same
+    // treatment as m_renderModeCombo above); no separate construction-
+    // time item list since it's a single toggle, not a registry-backed
+    // combo.
     QToolButton* m_xrayBtn = nullptr;
 
     // Right: render transport (Render -> Pause -> Resume, + Cancel) -------

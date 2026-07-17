@@ -40,6 +40,13 @@
 //        caster itself -- survives a mode switch), the C-ABI wrappers, and
 //        reset-to-TRUE (the default) alongside the mode reset on a
 //        whole-scene re-derive.
+//    R10 External review P2: SetViewportRenderMode / SetViewportXray
+//        reset a QUEUED polish pass (PolishState::FinalRegularRunning,
+//        reached synchronously via a camera-orbit gesture's OnPointerUp
+//        -- no render thread ever started) rather than leaving it stale
+//        for the next pass to run as a 4-SPP polish of the NEW mode/
+//        x-ray state.  Observed via the public GetRefinementStatus()
+//        (Polishing -> Idle across the switch).
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -563,6 +570,127 @@ namespace
 			std::remove( tmp.c_str() );
 		}
 	}
+
+	//------------------------------------------------------------------
+	// R10: external-review P2 -- a mode/x-ray switch mid-polish must NOT
+	// leave `mPolishState` stale.  Reachable ENTIRELY SYNCHRONOUSLY, with
+	// no render thread ever started (ctrl.Start() is never called): a
+	// camera-motion gesture's OnPointerUp stores PolishState::
+	// FinalRegularRunning directly (SceneEditController.cpp, "wasMotion"
+	// branch) -- reaching the LATER PolishState::PolishQueued value needs
+	// the render loop thread to actually run a pass (RenderLoop's post-
+	// roll transition), which is NOT reachable without starting that
+	// thread and racing it, so THIS test is honestly scoped to the
+	// FinalRegularRunning entry point. That is still full coverage of the
+	// actual fix: SetViewportRenderMode / SetViewportXray's new reset
+	// (`mPolishState.store( PolishState::None, ... )`) is UNCONDITIONAL --
+	// the exact same store statement retires FinalRegularRunning and
+	// PolishQueued alike, so there is no separate code path for the
+	// PolishQueued case this test would miss.
+	//
+	// GetRefinementStatus() is the observation point: with `mRendering`
+	// false (no thread) and the preview scale already at its minimum
+	// (which OnPointerUp sets right before queuing the polish state),
+	// `polish != PolishState::None` alone is enough for it to report
+	// RefinementPhase::Polishing (SceneEditController.cpp ~line 858) --
+	// so this is a real, documented, public-API-observable symptom of
+	// the bug, not a peek at the private state machine.
+	//------------------------------------------------------------------
+	void TestPolishStateResetOnSwitch()
+	{
+		std::printf( "R10: mode/x-ray switch resets a queued polish pass (external review P2)...\n" );
+
+		auto driveOrbitGesture = []( SceneEditController& ctrl )
+		{
+			// A plain camera orbit: no object selection needed, and
+			// camera edits apply immediately (no cancel-and-park wait --
+			// see OnPointerMove's own doc), so this is safe to drive with
+			// no render thread running.
+			ctrl.SetTool( SceneEditController::Tool::OrbitCamera );
+			ctrl.OnPointerDown( Point2( 10, 10 ) );
+			ctrl.OnPointerMove( Point2( 18, 14 ) );   // a real (dx,dy) != (0,0)
+			ctrl.OnPointerUp( Point2( 18, 14 ) );
+		};
+
+		// Sub-test (a): SetViewportRenderMode.
+		{
+			const std::string tmp = TempPath( "vrm_r10_mode.RISEscene" );
+			Job* pJob = LoadScene( kPlainScene, tmp );
+			Check( pJob != nullptr, "R10a fixture loads" );
+			if( pJob )
+			{
+				IRasterizer* pRasterizer = nullptr;
+				IRayCaster*  pPreview    = nullptr;
+				IRayCaster*  pPolish     = nullptr;
+				Check( CreateInteractiveMaterialPreviewPipeline( &pRasterizer, &pPreview, &pPolish ),
+				       "R10a pipeline builds" );
+				if( pRasterizer )
+				{
+					{
+						SceneEditController ctrl( *pJob, pRasterizer );
+						driveOrbitGesture( ctrl );
+
+						unsigned int divisor = 0;
+						Check( ctrl.GetRefinementStatus( divisor ) == SceneEditController::RefinementPhase::Polishing,
+						       "orbit gesture's OnPointerUp queues a polish pass (Polishing, no thread running)" );
+
+						Check( ctrl.SetViewportRenderMode( "depth" ), "switch to \"depth\" while polish is queued" );
+
+						unsigned int divisorAfter = 0;
+						Check( ctrl.GetRefinementStatus( divisorAfter ) == SceneEditController::RefinementPhase::Idle,
+						       "MONEY ASSERTION: the mode switch retires the queued polish -- Idle, not still Polishing "
+						       "(external review P2: the FIRST post-switch pass must not run as a 4-SPP polish "
+						       "pass of the NEW mode)" );
+						Check( std::string( ctrl.GetViewportRenderMode() ) == "depth", "mode is \"depth\" after the switch" );
+					}
+					pRasterizer->release();
+					pPreview->release();
+					pPolish->release();
+				}
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+
+		// Sub-test (b): SetViewportXray -- same fix, same assertion shape.
+		{
+			const std::string tmp = TempPath( "vrm_r10_xray.RISEscene" );
+			Job* pJob = LoadScene( kPlainScene, tmp );
+			Check( pJob != nullptr, "R10b fixture loads" );
+			if( pJob )
+			{
+				IRasterizer* pRasterizer = nullptr;
+				IRayCaster*  pPreview    = nullptr;
+				IRayCaster*  pPolish     = nullptr;
+				Check( CreateInteractiveMaterialPreviewPipeline( &pRasterizer, &pPreview, &pPolish ),
+				       "R10b pipeline builds" );
+				if( pRasterizer )
+				{
+					{
+						SceneEditController ctrl( *pJob, pRasterizer );
+						driveOrbitGesture( ctrl );
+
+						unsigned int divisor = 0;
+						Check( ctrl.GetRefinementStatus( divisor ) == SceneEditController::RefinementPhase::Polishing,
+						       "orbit gesture's OnPointerUp queues a polish pass (Polishing, no thread running)" );
+
+						// Toggle the CURRENT flag off (default is ON) so this is a
+						// real flip, not the same-value no-op short-circuit.
+						Check( ctrl.SetViewportXray( !ctrl.GetViewportXray() ), "flip x-ray while polish is queued" );
+
+						unsigned int divisorAfter = 0;
+						Check( ctrl.GetRefinementStatus( divisorAfter ) == SceneEditController::RefinementPhase::Idle,
+						       "MONEY ASSERTION: the x-ray flip retires the queued polish -- Idle, not still Polishing" );
+					}
+					pRasterizer->release();
+					pPreview->release();
+					pPolish->release();
+				}
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+	}
 }   // anonymous namespace
 
 int main()
@@ -577,6 +705,7 @@ int main()
 	TestLiveModeSwitching();
 	TestSceneReloadResetsToPreview();
 	TestXrayAxis();
+	TestPolishStateResetOnSwitch();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

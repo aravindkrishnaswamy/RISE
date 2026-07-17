@@ -559,9 +559,10 @@ final class RenderViewModel: ObservableObject {
     /// ratified decision 2), so there is nothing to re-poll mid-session.
     @Published var viewportRenderModes: [ViewportRenderModeInfo] = []
     /// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): whether the
-    /// active data mode (normals/depth/facets/wireframe) resolves hits
-    /// through transmissive surfaces to the first opaque hit.  Ignored
-    /// under "preview".  Same staleness class as `viewportRenderMode` —
+    /// viewport resolves hits through transmissive surfaces to the first
+    /// opaque hit.  Applies to EVERY render mode, INCLUDING the shaded
+    /// "preview" pipeline (default ON; user decision 2026-07-17) — not
+    /// just the four data modes.  Same staleness class as `viewportRenderMode` —
     /// the controller resets it to false on every scene rebind WITHOUT
     /// replacing the bridge, and `GetViewportXray` reports false
     /// (transiently, not sticky) while a render owns the scene — so
@@ -1885,8 +1886,8 @@ final class RenderViewModel: ObservableObject {
     /// Toggle the X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis").
     /// Calls the bridge, then re-reads the EFFECTIVE flag rather than
     /// optimistically assuming `on` stuck — same refusal contract as
-    /// `setViewportRenderMode`.  Meaningful only while a data mode is
-    /// active; harmless (stored, not applied) under "preview".
+    /// `setViewportRenderMode`.  Applies to EVERY render mode, INCLUDING
+    /// "preview" (default ON) — not gated to the data modes.
     func setViewportXray(_ on: Bool) {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         _ = vb.setViewportXray(on)

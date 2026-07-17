@@ -328,19 +328,20 @@ TopBar::TopBar(QWidget* parent)
     clusterLayout->addWidget(m_renderModeCombo);
 
     // P1 (docs/gui/RENDER_MODES.md "X-ray axis"): compact checkable
-    // toggle, right of the mode combo.  Meaningful only under a data
-    // mode -- refreshRenderModeCombo() disables it whenever the combo's
-    // active mode is "preview" (in addition to the combo's own render-
-    // owns-scene / no-bridge gate).  Style mirrors m_renderModeCombo's
-    // bordered chip look, with an accent-tinted `:checked` state so the
-    // toggle reads clearly at a glance (same pattern as LogWidget's
-    // severity filter pills).
+    // toggle, right of the mode combo.  Applies to EVERY viewport render
+    // mode, INCLUDING the shaded preview (caster-layer resolve, default
+    // ON; user decision 2026-07-17) -- refreshRenderModeCombo() enables
+    // it under the same gate as the mode combo itself (scene loaded,
+    // render-owns-scene / bridge available), with no per-mode gating.
+    // Style mirrors m_renderModeCombo's bordered chip look, with an
+    // accent-tinted `:checked` state so the toggle reads clearly at a
+    // glance (same pattern as LogWidget's severity filter pills).
     m_xrayBtn = new QToolButton(cluster);
     m_xrayBtn->setText(QStringLiteral("X-Ray"));
     m_xrayBtn->setFont(Theme::mono(10));
     m_xrayBtn->setCheckable(true);
     m_xrayBtn->setToolTip(QStringLiteral(
-        "See through transmissive surfaces (straight-line) — data modes only"));
+        "See through transmissive surfaces (straight-line) — applies to every view mode, on by default"));
     m_xrayBtn->setStyleSheet(QStringLiteral(
         "QToolButton { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 2px 6px; }"
         "QToolButton:checked { color: %3; border-color: %3; }")

@@ -237,11 +237,18 @@ namespace
 	//! try to fabricate exit-face UVs/derivatives/tangents here.
 	//!
 	//! NOT copied (out of scope for this invariant): `ptObjExit` has no
-	//! consumers today; `pCustom` / `glossyFilterWidth` / `ambientIOR`
-	//! are stamped by the integrator/ray-caster layer above CSGObject
-	//! (or, for glossyFilterWidth, simply never propagated into the
-	//! freshly-constructed `riObjA` / `riObjB` records at all) and are
-	//! unaffected by which operand owns the reported surface.
+	//! consumers today; `glossyFilterWidth` / `ambientIOR` are stamped by
+	//! the integrator/ray-caster layer above CSGObject (or, for
+	//! glossyFilterWidth, simply never propagated into the freshly-
+	//! constructed `riObjA` / `riObjB` records at all) and are unaffected
+	//! by which operand owns the reported surface.
+	//!
+	//! `pCustom` (the legacy 3DS-shader refcounted payload) IS copied
+	//! (P2-4 fix) -- the same per-surface, child-geometry-stamped payload
+	//! category as the fields above, previously left as whichever operand
+	//! `dst` started life as a whole-record copy of.  Mirrors
+	//! RayIntersectionGeometric::operator='s own pCustom handling: release
+	//! the old reference, take the new one, addref if non-null.
 	void AdoptCsgSurfacePayload( RayIntersectionGeometric& dst, const RayIntersectionGeometric& src )
 	{
 		dst.ptCoord = src.ptCoord;
@@ -276,6 +283,14 @@ namespace
 		// or not -- that is a separate, pre-existing frame-semantics gap,
 		// not something this adoption fixes or worsens.
 		dst.ptObjIntersec = src.ptObjIntersec;
+
+		// P2-4: pCustom is refcounted (legacy 3DS-shader payload) -- mirror
+		// RayIntersectionGeometric::operator='s own handling exactly.
+		safe_release( dst.pCustom );
+		dst.pCustom = src.pCustom;
+		if( dst.pCustom ) {
+			dst.pCustom->addref();
+		}
 	}
 
 	//! Adopt the RayIntersection-LEVEL binding pointers -- material,
@@ -337,9 +352,11 @@ namespace
 	//! exactly that field set, including possibly-valid wire-edge info --
 	//! no need to clear it, unlike the entry-face-payload fallback) and
 	//! returns true.  On a probe miss (grazing ray / numeric edge at the
-	//! ε-margin), leaves `dst` untouched and returns false; the caller
-	//! falls back to the previous behavior (the operand's own entry-hit
-	//! payload already sitting in `dst`, with wire-edge info cleared).
+	//! ε-margin) OR a hit that lands too far away to be the SAME face
+	//! (P2-3, see the range-gate comment below), leaves `dst` untouched
+	//! and returns false; the caller falls back to the previous behavior
+	//! (the operand's own entry-hit payload already sitting in `dst`, with
+	//! wire-edge info cleared).
 	bool AdoptCsgExitFacePayloadViaProbe(
 		RayIntersectionGeometric& dst,
 		IObjectPriv* operand,
@@ -352,11 +369,18 @@ namespace
 		const Vector3 dir = dst.ray.Dir();
 		const Point3 ptExitLocal = dst.ray.PointAtLength( exitRangeCsgLocal );
 
-		// Margin scaled to the exit range so the probe origin clears the
-		// surface at any scene scale -- dst.ray's direction is unit
-		// length, so exitRangeCsgLocal IS a physical local-frame
-		// distance, not an arbitrary parametric unit.
-		const Scalar margin = std::max( Scalar(1e-5), std::fabs( exitRangeCsgLocal ) * Scalar(1e-6) );
+		// Margin from the OPERAND's own world bounding-box diagonal, NOT
+		// the camera range (P2-3 fix).  The prior `exitRangeCsgLocal *
+		// 1e-6` formula grows with how far the CAMERA is from the object,
+		// not with the object's own size -- at long camera range the
+		// probe origin can overshoot past a DIFFERENT lobe of the operand
+		// (e.g. a torus' far wall) and the probe would adopt THAT lobe's
+		// payload instead of the intended face's.  A diagonal-derived
+		// margin stays proportional to the operand itself and is
+		// camera-independent.
+		const BoundingBox opBBox = operand->getBoundingBox();
+		const Scalar diag = Point3Ops::Distance( opBBox.ll, opBBox.ur );
+		const Scalar margin = std::max( diag * Scalar(1e-6), Scalar(1e-9) );
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
 			ptExitLocal.y + dir.y * margin,
@@ -367,11 +391,44 @@ namespace
 		RayIntersection probe( probeRay, nullRasterizerState );
 		probe.geometric.PropagateCastInputs( dst );
 
-		// Short probe: only needs to travel back the `margin` distance to
-		// land on the exit point again -- 4x margin is ample headroom.
-		operand->IntersectRay( probe, margin * Scalar(4.0), true, true, false );
+		// Screen-space differentials (Landing 2 / Igehy 1999): without
+		// this the probe's hasDifferentials defaults to false and the
+		// recovered payload's txFootprint stays invalid (base-mip
+		// fallback) -- see RayCaster::ResolveXrayView_ for the sibling
+		// copy-diffs-onto-a-continuation-ray pattern.  Origin deltas
+		// (rxOrigin/ryOrigin) are plain translational offsets, not tied to
+		// a direction sign -- carried through unchanged is the same order
+		// of approximation ResolveXrayView_ makes for its own (non-
+		// reversed) continuation rays, valid here because the probe
+		// origin sits within `margin` of a point on dst.ray.  Direction
+		// deltas (rxDir/ryDir) are offsets added to the ray's OWN Dir()
+		// (see TextureFootprintCompute.h) -- since the probe's central
+		// direction is REVERSED (-dir, not dir), the deltas must be
+		// negated too, or they'd describe a near-antipodal auxiliary ray
+		// instead of a small angular perturbation around the probe's own
+		// direction.
+		probe.geometric.ray.hasDifferentials = dst.ray.hasDifferentials;
+		if( dst.ray.hasDifferentials ) {
+			probe.geometric.ray.diffs.rxOrigin = dst.ray.diffs.rxOrigin;
+			probe.geometric.ray.diffs.ryOrigin = dst.ray.diffs.ryOrigin;
+			probe.geometric.ray.diffs.rxDir = Vector3( -dst.ray.diffs.rxDir.x, -dst.ray.diffs.rxDir.y, -dst.ray.diffs.rxDir.z );
+			probe.geometric.ray.diffs.ryDir = Vector3( -dst.ray.diffs.ryDir.x, -dst.ray.diffs.ryDir.y, -dst.ray.diffs.ryDir.z );
+		}
 
-		if( !probe.geometric.bHit ) {
+		// Bound the accepted probe hit to the SAME face (P2-3 fix): the
+		// probe only needs to travel back ~margin to re-land on the exit
+		// point, so a hit much farther than that is a DIFFERENT lobe of
+		// the operand, not the intended face.  `slack` is deliberately an
+		// order of magnitude below `margin` itself (both diagonal-
+		// derived) so it absorbs surface curvature near the probe without
+		// opening the gate to another lobe.  This also bounds the search:
+		// no reason to trace past the acceptance radius.
+		const Scalar slack = diag * Scalar(1e-7);
+		const Scalar maxAcceptRange = margin * Scalar(2.0) + slack;
+
+		operand->IntersectRay( probe, maxAcceptRange, true, true, false );
+
+		if( !probe.geometric.bHit || probe.geometric.range > maxAcceptRange ) {
 			return false;
 		}
 
@@ -812,7 +869,29 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		ri.geometric.vGeomNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal ));
 		ri.geometric.vGeomNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal2 ));
 
-		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
+		// Shading ONB (P2, mirrors Object::IntersectRay's own honouring of
+		// bShadingTangentFromGeometry).  A child geometry (currently only
+		// SDFGeometry heightfield mode) can request a COHERENT,
+		// world-X-aligned tangent instead of the arbitrary axis
+		// `CreateFromW` picks -- see Object::IntersectRay for the full
+		// rationale.  Before this fix, CSGObject unconditionally called
+		// CreateFromW here regardless of the flag, so an anisotropic
+		// `tangent_rotation` on a heightfield SDF wrapped in CSG rotated
+		// from a DIFFERENT base tangent than the same geometry rendered
+		// standalone.  Project world-X into the now-world-space shading-
+		// normal plane and hand it to CreateFromWU, falling back to
+		// world-Y when world-X is (near-)parallel to the normal so the
+		// projection never degenerates.
+		if( ri.geometric.bShadingTangentFromGeometry ) {
+			const Vector3& n = ri.geometric.vNormal;
+			Vector3 t( 1.0 - n.x*n.x, -n.x*n.y, -n.x*n.z );	// (1,0,0) - n*dot(n,(1,0,0))
+			if( Vector3Ops::SquaredModulus( t ) < NEARZERO ) {
+				t = Vector3( -n.y*n.x, 1.0 - n.y*n.y, -n.y*n.z );	// (0,1,0) - n*dot(n,(0,1,0))
+			}
+			ri.geometric.onb.CreateFromWU( n, t );	// W = n (fixed); V = norm(W x t), U = V x W
+		} else {
+			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
+		}
 
 		// Transform the per-vertex tangent (P2-d) from THIS CSG object's
 		// local frame to world space -- exactly like vNormal above, and
@@ -912,12 +991,32 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	Ray		orig = ray;
 
 	orig.origin = Point3Ops::Transform( m_mxInvFinalTrans, ray.origin );
-	orig.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, ray.Dir() )));
 
-	const Scalar factor = Vector3Ops::Magnitude( Vector3Ops::Transform( m_mxInvFinalTrans, Vector3(1,0,0) ) );
+	// Capture the UNNORMALIZED transformed direction's magnitude before
+	// normalizing it into the local-frame ray -- the direction-true
+	// world-to-local distance factor used below (P1 fix, mirrors
+	// Object::IntersectRay / Object::IntersectRay_IntersectionOnly).
+	const Vector3 dirLocalUnnorm = Vector3Ops::Transform( m_mxInvFinalTrans, ray.Dir() );
+	const Scalar dirLocalMag = Vector3Ops::Magnitude( dirLocalUnnorm );
+	orig.SetDir( Vector3Ops::Normalize( dirLocalUnnorm ) );
+
+	// factor converts a WORLD-frame distance limit (dHowFar) into the
+	// local-frame traversal limit used by the switch below.  MUST be the
+	// magnitude of the TRANSFORMED RAY DIRECTION (dirLocalMag, captured
+	// above) -- NOT an arbitrary +X-axis probe (P1 fix).  Under
+	// non-uniform scale, |M^-1 * v| depends on which direction v points; a
+	// +X-only factor mis-scales the limit for every ray not travelling
+	// along local +X, letting a CSG shadow ray leak past the light (or
+	// wrongly occlude beyond it) whenever the composite carries a
+	// non-uniform scale.  Guard a degenerate transform that collapses this
+	// direction to ~0 by falling back to an unscaled factor of 1.0.
+	const Scalar factor = (dirLocalMag > NEARZERO) ? dirLocalMag : Scalar(1.0);
 	Scalar dHowFar2 = RISE_INFINITY;
 
-	// We can't go farther than infinity, so in this case only reduce thelength, never extend
+	// We can't go farther than infinity, so in this case only reduce the
+	// length, never extend -- see Object::IntersectRay for why this guard
+	// is about the RISE_INFINITY sentinel's magnitude and stays correct
+	// regardless of how `factor` is derived.
 	if( (dHowFar != RISE_INFINITY) || (factor < 1.0) ) {
 		dHowFar2 = factor*dHowFar;
 	}

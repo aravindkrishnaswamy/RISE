@@ -62,8 +62,10 @@ struct MenuBarSnapshot: Equatable {
     var viewportRenderMode = "preview"
     var viewportRenderModes: [ViewportRenderModeInfo] = []
     /// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") — the submenu's
-    /// checkmark target.  Gating (shown only while a data mode is active)
-    /// reuses `viewportRenderMode` above rather than a separate field.
+    /// checkmark target.  Applies to EVERY render mode, INCLUDING
+    /// "preview" (default ON); the submenu's own `.disabled` gate is the
+    /// same scene/bridge availability gate the mode list above uses, not
+    /// a per-mode restriction.
     var viewportXray = false
 }
 

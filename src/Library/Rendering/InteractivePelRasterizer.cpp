@@ -667,22 +667,43 @@ protected:
 //! `PreparePass`, called once per pass (single-threaded, BEFORE the
 //! parallel block workers dispatch -- see InteractiveViewModeRayCaster::
 //! AttachScene below) snapshots the PREVIOUS pass's accumulators into the
-//! active window {mWinMin, mWinMax, mWinValid} that THIS pass shades
+//! active window {mWinMin, mWinMax, mWinKind} that THIS pass shades
 //! against, then resets the accumulators to sentinels for this pass to
-//! fill.  The snapshot is skipped (mWinValid left at whatever it already
-//! was) when the previous pass saw no samples, or its range was
-//! degenerate (max-min not more than 1e-9 of scale) -- e.g. a single flat
-//! plane filling the frame.  The interactive cancel-restart loop means a
-//! stale first-pass window converges within one more repaint, and mild
-//! recalibration while navigating is intended, exactly like camera
-//! auto-exposure.
+//! fill.
 //!
-//! With a valid window: t = 0.08 + 0.92 * clamp01((winMax-d)/(winMax-
+//! External review P2 fix (2026-07): the window is a THREE-state
+//! `WindowKind` -- Unarmed / Ranged / Flat -- not a `bool mWinValid`.
+//! The degenerate-span cutoff (max-min not more than 1e-9 of scale --
+//! e.g. a single flat plane, or a wall, filling the frame) used to be a
+//! REFUSAL: PreparePass left the window exactly as it was (Unarmed if
+//! it had never armed, or the STALE previous Ranged window if it had).
+//! That produced two bugs. (a) A view that NEVER arms (a scene that is
+//! degenerate from the very first pass) stayed Unarmed forever, and
+//! WindowStale()'s "still on the fallback" case is unconditionally true
+//! for Unarmed -- so a permanently-flat scene re-ran the Part-B
+//! self-calibration extra pass on EVERY single call, forever, not just
+//! the first. (b) A jump from a genuinely-ranged view to a flat one (camera
+//! swings to look straight at a wall) left the OLD Ranged window active
+//! (PreparePass's refusal doesn't touch it), so DepthValue kept remapping
+//! the new, single depth value through a window that no longer describes
+//! the scene -- an arbitrary, usually-wrong clamp across the whole frame
+//! instead of an honest "this view is flat" answer.
+//!
+//! The fix makes Flat a FIRST-CLASS armed state: PreparePass arms it
+//! (mWinMin == mWinMax == the pass's single depth value) instead of
+//! refusing, using the SAME 1e-9-relative cutoff as the classification
+//! test rather than a reason to skip.  DepthValue shades a constant
+//! mid-gray for a Flat window (see its own doc for why).  WindowStale
+//! walks all four Ranged/Flat x Ranged/Flat transitions explicitly (see
+//! its own doc) instead of only ever comparing against a Ranged window.
+//!
+//! With a Ranged window: t = 0.08 + 0.92 * clamp01((winMax-d)/(winMax-
 //! winMin)), d outside the window clamps to the nearest edge.  With no
-//! valid window yet (first pass ever, or a degenerate range), FALLS BACK
-//! to the original fixed scene-diagonal formula, keyed off the scene
-//! bounding-box diagonal `mSceneDiagonal` (captured the same way as
-//! before -- see AttachScene).
+//! armed window yet (Unarmed -- first pass ever, and every pass has
+//! remained degenerate since, until Flat arms on the SECOND such pass)
+//! FALLS BACK to the original fixed scene-diagonal formula, keyed off
+//! the scene bounding-box diagonal `mSceneDiagonal` (captured the same
+//! way as before -- see AttachScene).
 //!
 //! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): resolution lives
 //! in the CASTER layer (RayCaster::ResolveXrayView_, enabled via
@@ -697,9 +718,19 @@ class DepthViewShader :
 	public Reference
 {
 public:
+	//! Three-state calibration window -- see the class doc's external-
+	//! review P2 fix note.  Unarmed: no window has ever armed (or every
+	//! pass since construction has been degenerate) -- DepthValue uses
+	//! the flat scene-diagonal fallback.  Ranged: a genuine [min,max]
+	//! depth extent is active.  Flat: the scene IS a single depth value
+	//! (within the degenerate-span tolerance) -- DepthValue shades a
+	//! constant mid-gray rather than remapping through a meaningless
+	//! zero-width window.
+	enum class WindowKind { Unarmed, Ranged, Flat };
+
 	DepthViewShader()
 	: mSceneDiagonal( 0.0 )
-	, mWinValid( false )
+	, mWinKind( WindowKind::Unarmed )
 	, mWinMin( 0.0 )
 	, mWinMax( 0.0 )
 	, mAccMin( kSentinelMin )
@@ -729,12 +760,26 @@ public:
 			{
 				mWinMin = accMin;
 				mWinMax = accMax;
-				mWinValid = true;
+				mWinKind = WindowKind::Ranged;
 			}
-			// else: degenerate range (e.g. a single flat plane filling the
-			// frame) -- leave whatever window was already active (or none)
-			// rather than collapsing to a zero-width window.
+			else
+			{
+				// External review P2 fix: ARM a first-class Flat window
+				// (min==max, this pass's own single depth value) instead
+				// of refusing to arm at all.  A permanently-degenerate
+				// scene (a single flat plane filling the frame) now
+				// settles into Flat on the pass immediately after the
+				// one that discovers it, rather than staying Unarmed --
+				// and therefore "still on the fallback" -- forever.  See
+				// the class doc's bug (a).
+				mWinMin = accMin;
+				mWinMax = accMin;
+				mWinKind = WindowKind::Flat;
+			}
 		}
+		// else: no samples landed last pass -- leave whatever window was
+		// already active (Unarmed / Ranged / Flat) unchanged.
+
 		// Reset the accumulators for THIS pass to fill, regardless.
 		mAccMin.store( kSentinelMin, std::memory_order_relaxed );
 		mAccMax.store( kSentinelMax, std::memory_order_relaxed );
@@ -776,38 +821,67 @@ public:
 
 	//! Query for the InteractivePelRasterizer's Part-B self-calibration
 	//! re-run (docs/gui/RENDER_MODES.md "Depth axis").  True whenever a
-	//! second pass would meaningfully change what got shaded THIS pass:
+	//! second pass would meaningfully change what got shaded THIS pass.
+	//! At-most-one-re-run + cancellation behaviour (the caller site,
+	//! InteractiveViewModeRayCaster::DepthWindowStale /
+	//! InteractivePelRasterizer::RasterizeScene) is UNCHANGED by this
+	//! fix -- only the classification below changed.
 	//!
-	//!   (1) No active window yet (first pass ever, or the previous pass
-	//!       was degenerate) -- the pass that just ran used the flat
-	//!       scene-diagonal fallback instead of the auto-window, and a
-	//!       second pass would now shade windowed.  Mirrors the "did any
-	//!       sample land" test in PreparePass so the two stay in lockstep.
+	//! External review P2 fix: walks all four WindowKind x new-pass-kind
+	//! transitions explicitly (`mWinKind` is the window the pass that
+	//! just ran was SHADED AGAINST; `newIsFlat` classifies the pass's
+	//! OWN accumulated min/max -- not yet folded into mWinMin/mWinMax,
+	//! since that only happens at the START of the NEXT pass via
+	//! PreparePass -- using the identical 1e-9-relative cutoff
+	//! PreparePass uses to classify Ranged vs Flat):
 	//!
-	//!   (2) An active window WAS used, but THIS pass's own accumulated
-	//!       min/max (mAccMin/mAccMax -- not yet folded into mWinMin/
-	//!       mWinMax, since that only happens at the START of the NEXT
-	//!       pass via PreparePass) have drifted away from it: either a
-	//!       new endpoint lands outside the old window by more than 15%
-	//!       of the old window's span (the window no longer covers what
-	//!       is actually visible -- e.g. a camera jump/crop/edit revealed
-	//!       geometry the old window never saw), or the span itself
-	//!       changed by more than 30% (the visible depth range got a lot
-	//!       tighter or a lot looser, e.g. zooming from a wide establishing
-	//!       shot into a close-up).  These thresholds are picked so mild
-	//!       per-pass drift during smooth interactive navigation (dolly,
-	//!       orbit) stays under them -- no re-run, no extra interactive
-	//!       cost -- while a hard jump (camera teleport, crop change, a
-	//!       scene edit that moves the visible depth extent) trips one of
-	//!       them and forces the single settled pass to self-correct
-	//!       instead of shading against the STALE window, which is the
-	//!       same single-pass-staleness class as the original blank-depth
-	//!       bug this Part-B re-run was built to fix.
+	//!   Unarmed -> *      : always stale.  The pass that just ran used
+	//!                       the flat scene-diagonal fallback (no window
+	//!                       armed yet); a second pass now shades
+	//!                       against a real (Ranged or Flat) window.
+	//!                       Mirrors PreparePass's "did any sample land"
+	//!                       test so the two stay in lockstep.
 	//!
-	//! Called once, after the base pass finishes, by the caster's
-	//! DepthWindowStale() forwarder -- so mAccMin/mAccMax at call time
-	//! hold exactly the pass that just ran (PreparePass for the NEXT pass
-	//! hasn't executed yet).
+	//!   Ranged -> Ranged  : stale if either (2a) a new endpoint lands
+	//!                       outside the old window by more than 15% of
+	//!                       the old window's span (the window no longer
+	//!                       covers what is visible -- e.g. a camera
+	//!                       jump/crop/edit revealed geometry the old
+	//!                       window never saw), or (2b) the span itself
+	//!                       changed by more than 30% (zooming from a
+	//!                       wide shot into a close-up, or back out).
+	//!                       Thresholds are picked so mild per-pass drift
+	//!                       during smooth navigation (dolly, orbit)
+	//!                       stays under them.
+	//!
+	//!   Ranged -> Flat    : always stale.  The view collapsed to a
+	//!                       single depth (e.g. camera now looking
+	//!                       straight at a wall) -- the pass that just
+	//!                       ran shaded windowed against a range that no
+	//!                       longer exists; the Flat window needs to arm
+	//!                       before this pass's own output (a stale
+	//!                       windowed clamp, the class doc's bug (b)) is
+	//!                       trustworthy.
+	//!
+	//!   Flat -> Ranged    : always stale.  The view gained genuine
+	//!                       depth extent (e.g. camera panned off the
+	//!                       wall) -- the flat mid-gray this pass shaded
+	//!                       is no longer an honest answer.
+	//!
+	//!   Flat -> Flat      : NOT stale as long as the new flat value sits
+	//!                       within a small tolerance of the old one --
+	//!                       same 15%-of-span SHAPE as the Ranged->Ranged
+	//!                       2a check, but a Flat window's own span is
+	//!                       ~0 by construction (mWinMin == mWinMax), so
+	//!                       a literal `0.15 * oldSpan` tolerance would
+	//!                       be zero and flag every Flat pass as "moved"
+	//!                       from float noise alone.  Uses a NOMINAL span
+	//!                       -- max(oldSpan, 1e-9 * scale), the same
+	//!                       degenerate-cutoff scale PreparePass uses --
+	//!                       as the tolerance base instead: float noise
+	//!                       stays under it, a real shift (dolly along
+	//!                       the flat wall, an edit that moves the plane)
+	//!                       exceeds it and re-arms.
 	bool WindowStale() const
 	{
 		const double accMin = mAccMin.load( std::memory_order_relaxed );
@@ -817,37 +891,58 @@ public:
 			return false;   // nothing rendered this pass -- nothing to react to
 		}
 
-		if( !mWinValid ) {
-			return true;   // case (1): still on the flat fallback
+		if( mWinKind == WindowKind::Unarmed ) {
+			return true;   // Unarmed -> *: still on the flat fallback
 		}
 
-		const double oldSpan = mWinMax - mWinMin;
-		if( oldSpan <= 0.0 ) {
-			return false;   // degenerate active window -- nothing meaningful to compare against
-		}
-
-		// case (2a): new endpoints outside the OLD window by > 15% of its span
-		const double tolExpand = 0.15 * oldSpan;
-		if( accMin < mWinMin - tolExpand || accMax > mWinMax + tolExpand ) {
-			return true;
-		}
-
-		// case (2b): span changed by > 30%.  Skip when the NEW span is
-		// itself degenerate (same cutoff PreparePass uses to refuse the
-		// snapshot): a near-flat view with a tiny-but-positive span would
-		// otherwise report "shrunk >30%" against the retained old window
-		// on EVERY pass -- a persistent 2x re-render for a scene the
-		// window guard deliberately leaves unchanged (review 2026-07-17).
-		const double newSpan = accMax - accMin;
+		const double newSpan  = accMax - accMin;
 		const double newScale = accMax > 1.0 ? accMax : 1.0;
-		if( newSpan > 1e-9 * newScale )
+		// Same degenerate-span classification PreparePass uses to pick
+		// Ranged vs Flat when it next arms.
+		const bool newIsFlat = !( newSpan > 1.0e-9 * newScale );
+
+		if( mWinKind == WindowKind::Ranged )
 		{
+			const double oldSpan = mWinMax - mWinMin;
+			if( oldSpan <= 0.0 ) {
+				return false;   // shouldn't happen (Ranged implies span > eps) -- defensive
+			}
+
+			if( newIsFlat ) {
+				return true;   // Ranged -> Flat: always stale
+			}
+
+			// Ranged -> Ranged: case (2a) new endpoints outside the OLD
+			// window by > 15% of its span.
+			const double tolExpand = 0.15 * oldSpan;
+			if( accMin < mWinMin - tolExpand || accMax > mWinMax + tolExpand ) {
+				return true;
+			}
+
+			// case (2b): span changed by > 30%.
 			const double spanRatio = newSpan / oldSpan;
 			if( spanRatio > 1.30 || spanRatio < 0.70 ) {
 				return true;
 			}
+
+			return false;
 		}
 
+		// mWinKind == WindowKind::Flat
+		if( !newIsFlat ) {
+			return true;   // Flat -> Ranged: always stale
+		}
+
+		// Flat -> Flat: tolerance against a NOMINAL span -- see the
+		// method doc's transition table for why a literal `oldSpan`
+		// (~0 for a Flat window) can't be used directly.
+		const double oldSpan = mWinMax - mWinMin;   // ~0 for a Flat window
+		const double oldScale = mWinMax > 1.0 ? mWinMax : 1.0;
+		const double nominalSpan = oldSpan > ( 1.0e-9 * oldScale ) ? oldSpan : ( 1.0e-9 * oldScale );
+		const double tolExpand = 0.15 * nominalSpan;
+		if( accMin < mWinMin - tolExpand || accMax > mWinMax + tolExpand ) {
+			return true;
+		}
 		return false;
 	}
 
@@ -864,7 +959,7 @@ private:
 	static constexpr double kAlmostSentinel = 1.0e299;
 
 	Scalar                       mSceneDiagonal;
-	bool                         mWinValid;
+	WindowKind                   mWinKind;
 	double                       mWinMin;
 	double                       mWinMax;
 	mutable std::atomic<double>  mAccMin;
@@ -887,14 +982,31 @@ private:
 		AtomicMax( mAccMax, static_cast<double>( d ) );
 	}
 
+	//! Ranged: t = 0.08 + 0.92 * clamp01((winMax-d)/(winMax-winMin)).
+	//! Flat: a constant mid-gray (0.6) -- NOT the ranged formula's near
+	//! edge (0.08, would read as "very far", wrong) or far edge (1.0,
+	//! "very near", also wrong), and NOT the Unarmed fallback (which
+	//! keys off the SCENE diagonal, not this view's actual, known-flat
+	//! depth).  With mWinMin == mWinMax, (winMax-d)/(winMax-winMin) is a
+	//! 0/0 that has no principled value -- there is no gradient to
+	//! display when every visible pixel is (within tolerance) the same
+	//! distance from the camera.  0.6 is a deliberately neutral value
+	//! roughly mid-way up the Ranged formula's own [0.08, 1.0] range, so
+	//! a Flat view reads as visually DISTINCT from both ends of the
+	//! ranged palette -- "this view is uniform depth", not a guess at a
+	//! near or far distance.
 	Scalar DepthValue( const Scalar d ) const
 	{
-		if( mWinValid )
+		if( mWinKind == WindowKind::Ranged )
 		{
 			Scalar t = ( mWinMax - mWinMin ) > 0.0 ? ( mWinMax - d ) / ( mWinMax - mWinMin ) : 1.0;
 			if( t < 0.0 ) t = 0.0;
 			if( t > 1.0 ) t = 1.0;
 			return 0.08 + 0.92 * t;
+		}
+		if( mWinKind == WindowKind::Flat )
+		{
+			return 0.6;
 		}
 		if( mSceneDiagonal > 0.0 ) {
 			return 1.0 / ( 1.0 + 3.0 * d / mSceneDiagonal );
