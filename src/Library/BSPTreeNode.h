@@ -334,6 +334,7 @@ public:
 					pChildren[0]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bba, child_base_type );
 					if( !ri.bHit || (ri.range > hb.dRange) ) {
 						RayIntersectionGeometric myRI( ri.ray, ri.rast );
+						myRI.PropagateCastInputs( ri );
 
 						pChildren[1]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bbb, child_base_type+1 );
 
@@ -346,6 +347,7 @@ public:
 					pChildren[1]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bbb, child_base_type+1 );
 					if( !ri.bHit || (ri.range > ha.dRange) ) {
 						RayIntersectionGeometric myRI( ri.ray, ri.rast );
+						myRI.PropagateCastInputs( ri );
 
 						pChildren[0]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bba, child_base_type );
 
@@ -356,6 +358,7 @@ public:
 				} else {
 					// Do both
 					RayIntersectionGeometric ri_temp( ri.ray, ri.rast );
+					ri_temp.PropagateCastInputs( ri );
 					pChildren[0]->IntersectRay( ep, ri_temp, bHitFrontFaces, bHitBackFaces, bba, child_base_type );
 					pChildren[1]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bbb, child_base_type+1 );
 
@@ -391,6 +394,7 @@ public:
 				const Element& p = (*i);
 
 				RayIntersectionGeometric myRI( ri.ray, ri.rast );
+				myRI.PropagateCastInputs( ri );
 
 				ep.RayElementIntersection( myRI, p, bHitFrontFaces, bHitBackFaces );
 
@@ -441,6 +445,7 @@ public:
 					pChildren[0]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bba, child_base_type );
 					if( !ri.geometric.bHit || (ri.geometric.range > hb.dRange) ) {
 						RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
+						myRI.geometric.PropagateCastInputs( ri.geometric );
 
 						pChildren[1]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bbb, child_base_type+1 );
 
@@ -453,6 +458,7 @@ public:
 					pChildren[1]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bbb, child_base_type+1 );
 					if( !ri.geometric.bHit || (ri.geometric.range > ha.dRange) ) {
 						RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
+						myRI.geometric.PropagateCastInputs( ri.geometric );
 
 						pChildren[0]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bba, child_base_type );
 
@@ -463,6 +469,7 @@ public:
 				} else {
 					// Do both
 					RayIntersection ri_temp( ri.geometric.ray, ri.geometric.rast );
+					ri_temp.geometric.PropagateCastInputs( ri.geometric );
 					pChildren[0]->IntersectRay( ep, ri_temp, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bba, child_base_type );
 					pChildren[1]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bbb, child_base_type+1 );
 
@@ -497,6 +504,7 @@ public:
 			{
 				const Element& p = (*i);
 				RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
+				myRI.geometric.PropagateCastInputs( ri.geometric );
 
 				ep.RayElementIntersection( myRI, p, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 

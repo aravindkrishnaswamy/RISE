@@ -67,16 +67,9 @@ void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ ele
 	// of the call and restores at exit, but the call may early-return
 	// without restore on the box-prehit miss path).
 	RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
-	// Propagate per-cast INPUT request flags into the fresh record --
-	// fresh construction defaults them off (wireframe view mode would
-	// silently never receive its edge info through the BVH leaf path).
-	myRI.geometric.bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
-	// glossyFilterWidth is a per-cast INPUT too (stamped by the integrators
-	// BEFORE IntersectRay, consumed by the SPFs AFTER) -- without this line
-	// the whole-struct copy-back below zeroes it on every hit and
-	// StabilityConfig's glossy filter is silently dead (pre-existing bug,
-	// found while adding the wire flag; same clobber pattern).
-	myRI.geometric.glossyFilterWidth = ri.geometric.glossyFilterWidth;
+	// Per-cast inputs (glossyFilterWidth, wire-edge request) must survive
+	// the fresh-record dance -- see PropagateCastInputs' doc.
+	myRI.geometric.PropagateCastInputs( ri.geometric );
 	elem->IntersectRay( myRI, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 		ri = myRI;
@@ -93,8 +86,7 @@ void ObjectManager::RayElementIntersection( RayIntersectionGeometric& ri, const 
 	// Same closest-hit semantics as the full overload above.
 	RayIntersection myRI( ri.ray, ri.rast );
 	myRI.geometric.range = ri.range;
-	myRI.geometric.bWantsWireEdgeInfo = ri.bWantsWireEdgeInfo;
-	myRI.geometric.glossyFilterWidth = ri.glossyFilterWidth;
+	myRI.geometric.PropagateCastInputs( ri );
 	elem->IntersectRay( myRI, ri.range, bHitFrontFaces, bHitBackFaces, false );
 	if( myRI.geometric.bHit && myRI.geometric.range < ri.range ) {
 		ri = myRI.geometric;
@@ -287,8 +279,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 			if( i->second.first->IsWorldVisible() )
 			{
 				RayIntersection		this_ri( ri.geometric.ray, ri.geometric.rast );
-				this_ri.geometric.bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
-				this_ri.geometric.glossyFilterWidth = ri.geometric.glossyFilterWidth;
+				this_ri.geometric.PropagateCastInputs( ri.geometric );
 				i->second.first->IntersectRay( this_ri, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 
 				if( this_ri.geometric.bHit && this_ri.geometric.range < ri.geometric.range ) {

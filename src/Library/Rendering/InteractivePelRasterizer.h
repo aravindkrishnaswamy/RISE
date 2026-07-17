@@ -310,7 +310,13 @@ namespace RISE
 			//! Clear (`p` is nullptr): restores the saved preview caster
 			//! and resumes normal SetSampleCount / polish-caster / denoise
 			//! behaviour.  No-op if no view-mode caster is installed.
-			void SetViewModeCaster( IRayCaster* p );
+			//! `allowsDenoise` is the installed mode's registry
+			//! ViewportRenderModeInfo::wantsDenoise -- false for every P1
+			//! data mode (denoising a normals/depth/facets/wireframe image
+			//! is meaningless), plumbed rather than hardcoded so a future
+			//! beauty-variant mode that DOES want OIDN can install a caster
+			//! without a second edit here.  Ignored when `p` is null.
+			void SetViewModeCaster( IRayCaster* p, bool allowsDenoise = false );
 
 			//! True while a view-mode caster is installed (SetViewModeCaster
 			//! called with a non-null `p`, no matching clear yet).
@@ -390,6 +396,9 @@ namespace RISE
 			// comments), so mSavedPreviewCaster never becomes non-null
 			// during that window.
 			bool                  mViewModeCasterInstalled;
+			// The installed view mode's registry wantsDenoise (see
+			// SetViewModeCaster); meaningful only while installed.
+			bool                  mViewModeCasterAllowsDenoise;
 			IRayCaster*           mSavedPreviewCasterForViewMode;
 		};
 	}

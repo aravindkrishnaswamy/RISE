@@ -192,8 +192,10 @@ Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
 - `render{mode:}` widens from `beauty|objectmap` to the full registry
   (decision 4). Data modes ignore `quality`/`samples` exactly as `objectmap`
   does today (honestly noted in the result message).
-- `render` gains optional `view:"<named view>"` so the agent composes its own
-  "N-up" as sequential renders from saved vantages (no layout tool needed).
+- **Deferred (P2, not yet implemented):** `render` gaining an optional
+  `view:"<named view>"` so the agent composes its own "N-up" as sequential
+  renders from saved vantages (no layout tool needed). Deliberately cut from
+  the P1 agent-surface wave to keep its scope to mode widening.
 - Mode list + questions discoverable via the render tool's schema description
   (generated from the registry — single source of truth).
 - `skills/agent/observe-modes.md` extends with the question → mode decision
@@ -208,9 +210,10 @@ Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
 
 - **P1 (now)**: registry + T1 shaders (`normals`, `depth`, `facets`,
   `wireframe`) + controller caster-swap + C-ABI + both bridges + viewport
-  dropdown + agent `render{mode}` widening + `view:` arg + skill update +
-  parity/shader tests.
-- **P2**: config-override mechanism (§6), then `deep_reflect`, `direct`,
+  dropdown + agent `render{mode}` widening + skill update + parity/shader
+  tests.
+- **P2**: config-override mechanism (§6) + the agent `view:` arg (§8), then
+  `deep_reflect`, `direct`,
   `indirect`, `clay_lights`, light solo.
 - **P3**: N-up (layouts, per-pane mode+vantage, round-robin scheduler,
   primary-pane semantics).

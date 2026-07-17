@@ -1768,6 +1768,17 @@ final class RenderViewModel: ObservableObject {
         let newRedo = vb.redoActionLabel()
         if redoLabel != newRedo { redoLabel = newRedo }
 
+        // Viewport render mode — the core resets it to "preview" on every
+        // whole-scene rebind (scene_variant switch, CST full re-derive)
+        // WITHOUT the bridge object changing, so the didSet one-time read
+        // never fires again and the chip/menu/DENOISED gate would all go
+        // stale claiming a data mode the engine is no longer rendering.
+        // This poll re-read is the Mac twin of Windows TopBar's
+        // refreshRenderModeCombo-on-poll; equality-guarded like everything
+        // else here.
+        let engineMode = vb.viewportRenderMode
+        if viewportRenderMode != engineMode { viewportRenderMode = engineMode }
+
         // Design brief A4 — mirror the active region (full-res
         // film-pixel space).  The core clears this automatically
         // before any production render, so this poll is also how the

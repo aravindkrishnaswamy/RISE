@@ -243,7 +243,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	}
 
 	RayIntersection		riObjA( ri.geometric.ray, ri.geometric.rast );
+	riObjA.geometric.PropagateCastInputs( ri.geometric );
 	RayIntersection		riObjB( ri.geometric.ray, ri.geometric.rast );
+	riObjB.geometric.PropagateCastInputs( ri.geometric );
 
 	pObjectA->IntersectRay( riObjA, dHowFar, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar, true, true, true );

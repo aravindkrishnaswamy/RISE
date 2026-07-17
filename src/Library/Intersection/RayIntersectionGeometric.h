@@ -233,6 +233,22 @@ namespace RISE
 		bool						bHasWireEdgeInfo;
 		bool						bWantsWireEdgeInfo;
 
+		//! Copies the per-cast INPUT fields -- values stamped by the
+		//! integrator/caster BEFORE intersection and consumed AFTER --
+		//! onto a freshly-constructed scratch record.  Traversal and
+		//! composition code that builds a per-candidate record (top-level
+		//! BVH leaf, octree/BSP branch merges, CSG children) MUST call
+		//! this before dispatching: the whole-struct copy-back on a hit
+		//! otherwise silently clobbers the inputs (the glossyFilterWidth
+		//! bug, 2026-07-16 -- StabilityConfig's glossy filter was dead on
+		//! those paths).  Add future per-cast inputs HERE, not at the
+		//! ~27 call sites.
+		inline void PropagateCastInputs( const RayIntersectionGeometric& src )
+		{
+			glossyFilterWidth = src.glossyFilterWidth;
+			bWantsWireEdgeInfo = src.bWantsWireEdgeInfo;
+		}
+
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
 		  ray( ray_ ),
 		  rast( rast_ ),

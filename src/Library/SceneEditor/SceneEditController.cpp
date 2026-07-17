@@ -7009,7 +7009,7 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 
 	// nullptr for Preview -- SetViewModeCaster restores the platform-
 	// installed preview/polish casters (see its own doc).
-	mInteractiveImpl->SetViewModeCaster( caster );
+	mInteractiveImpl->SetViewModeCaster( caster, info->wantsDenoise );
 	if( caster )
 	{
 		caster->release();   // rasterizer addref'd it; drop our local ref

@@ -446,6 +446,7 @@ public:
 				typename ElementListType::const_iterator i, e;
 				for( i=node->pElements->begin(), e=node->pElements->end(); i!=e; i++ ) {
 					RayIntersectionGeometric myRI( ri.ray, ri.rast );
+					myRI.PropagateCastInputs( ri );
 					ep.RayElementIntersection( myRI, *i, bHitFrontFaces, bHitBackFaces );
 					if( myRI.bHit && myRI.range < ri.range ) {
 						ri = myRI;
@@ -524,6 +525,7 @@ public:
 				typename ElementListType::const_iterator i, e;
 				for( i=node->pElements->begin(), e=node->pElements->end(); i!=e; i++ ) {
 					RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
+					myRI.geometric.PropagateCastInputs( ri.geometric );
 					ep.RayElementIntersection( myRI, *i, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 					if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 						ri = myRI;

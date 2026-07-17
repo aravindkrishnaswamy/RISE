@@ -1111,6 +1111,7 @@ InteractivePelRasterizer::InteractivePelRasterizer( IRayCaster* pCaster, const C
 , mPolishCaster( 0 )
 , mSavedPreviewCaster( 0 )
 , mViewModeCasterInstalled( false )
+, mViewModeCasterAllowsDenoise( false )
 , mSavedPreviewCasterForViewMode( 0 )
 {
 }
@@ -1177,7 +1178,7 @@ void InteractivePelRasterizer::SetPolishRayCaster( IRayCaster* polishCaster )
 	}
 }
 
-void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p )
+void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p, bool allowsDenoise )
 {
 	if( p )
 	{
@@ -1215,6 +1216,7 @@ void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p )
 		}
 		pCaster = p;
 		pCaster->addref();
+		mViewModeCasterAllowsDenoise = allowsDenoise;
 		return;
 	}
 
@@ -1224,6 +1226,7 @@ void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p )
 	pCaster = mSavedPreviewCasterForViewMode;
 	mSavedPreviewCasterForViewMode = 0;
 	mViewModeCasterInstalled = false;
+	mViewModeCasterAllowsDenoise = false;
 }
 
 void InteractivePelRasterizer::SetIdleMode( bool idle ) const
@@ -1347,14 +1350,14 @@ bool InteractivePelRasterizer::ShouldDenoise() const
 	// of whatever samples landed before the next restart, instead of
 	// raw MC noise.
 	//
-	// GUI render modes P1: never denoise while a view-mode caster is
-	// installed -- denoising a normals/depth/facets/wireframe image is
-	// meaningless (docs/gui/RENDER_MODES.md §4 "Denoise / display
-	// policy"; ViewportRenderModeInfo::wantsDenoise is false for every
-	// data mode).
+	// GUI render modes P1: denoise policy follows the installed mode's
+	// registry wantsDenoise (plumbed through SetViewModeCaster) -- false
+	// for every P1 data mode, so normals/depth/facets/wireframe never
+	// OIDN (docs/gui/RENDER_MODES.md §4 "Denoise / display policy");
+	// a future beauty-variant mode that wants denoise just declares it.
 	return PixelBasedPelRasterizer::ShouldDenoise() &&
 		mPreviewDenoiseMode != PreviewDenoise_Off &&
-		!mViewModeCasterInstalled;
+		( !mViewModeCasterInstalled || mViewModeCasterAllowsDenoise );
 }
 
 unsigned int InteractivePelRasterizer::GetDenoiseAOVSamplesPerPixel() const
