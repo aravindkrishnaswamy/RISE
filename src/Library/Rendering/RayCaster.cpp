@@ -326,6 +326,17 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	const Point3 originalOrigin = originalRay.origin;
 	bool bAnySkip = false;
 
+	// Adaptive skip epsilon.  Start tight -- range * 1e-7, floored at
+	// 1e-9 -- so a thin opaque surface hugging the glass at large camera
+	// distances isn't stepped over (the old flat range*1e-5/1e-6 floor
+	// could overshoot such a surface at kilometre scale).  `curEps` is
+	// the nudge actually used for the pending step; it is recomputed
+	// fresh from `ri.geometric.range` at the start of every NEW step and
+	// only carried over (doubled) across loop iterations that are
+	// retries of the SAME step -- see the degenerate-rehit check below.
+	Scalar curEps = 0;
+	bool bRetryStep = false;
+
 	for( int skip = 0; skip < 16; ++skip )
 	{
 		if( !ri.geometric.bHit || !ri.pMaterial || !ri.pMaterial->CouldLightPassThrough() )
@@ -338,29 +349,57 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 			break;
 		}
 
-		const Vector3 dir = ri.geometric.ray.Dir();
-		// Nudge off the surface along the SAME direction (no bending) --
-		// scaled by the hit's own range so it means something at both
-		// tabletop and kilometre scale, floored so it's never a no-op at
-		// near-zero range.  1e-5 keeps the overshoot bound tight (an
-		// opaque surface closer behind the glass than range*1e-5 is
-		// stepped over -- ~1mm at 100 units); double-precision hit error
-		// is orders of magnitude below the 1e-6 floor, and a too-small
-		// nudge merely re-hits the same surface and consumes one of the
-		// 16 bounded skips.
-		Scalar eps = ri.geometric.range * 1.0e-5;
-		if( eps < 1.0e-6 ) {
-			eps = 1.0e-6;
+		if( !bRetryStep )
+		{
+			// Nudge off the surface along the SAME direction (no bending) --
+			// scaled by the hit's own range so it means something at both
+			// tabletop and kilometre scale, floored so it's never a no-op
+			// at near-zero range.
+			curEps = ri.geometric.range * 1.0e-7;
+			if( curEps < 1.0e-9 ) {
+				curEps = 1.0e-9;
+			}
 		}
-		const Point3 origin = Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * eps );
+		bRetryStep = false;
+
+		const Vector3 dir = ri.geometric.ray.Dir();
+		const Point3 origin = Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * curEps );
 
 		RayIntersection next( Ray( origin, dir ), ri.geometric.rast );
 		next.geometric.PropagateCastInputs( ri.geometric );   // wireframe edge requests etc. survive the skip
+		// Screen-space differentials (Landing 2, Igehy 1999): a straight-
+		// line skip doesn't bend the ray, so the auxiliary-ray DIRECTION
+		// offsets carry over exactly.  The origin offsets are defined as
+		// ABSOLUTE offsets from the central ray's origin (RayDifferentials.h)
+		// and are correct to first order under a pure origin translation
+		// along the shared direction -- the dropped term is second-order
+		// (nudge distance x angular offset), the same approximation the
+		// specular reflection/refraction differential propagation makes.
+		// Without this, textured/normal-mapped geometry resolved behind
+		// x-ray glass would fall back to hasDifferentials=false (base-level
+		// texture sampling, no mip/footprint selection).
+		next.geometric.ray.hasDifferentials = ri.geometric.ray.hasDifferentials;
+		next.geometric.ray.diffs = ri.geometric.ray.diffs;
 		pScene->GetObjects()->IntersectRay( next, /*bHitFrontFaces*/true, /*bHitBackFaces*/true, /*bComputeExitInfo*/false );
 
 		if( !next.geometric.bHit )
 		{
 			break;   // keep `ri` -- the last transmissive hit, an honest answer over a black hole
+		}
+
+		// Degenerate re-hit: the continuation ray landed back on the SAME
+		// object at a range shorter than the nudge that was supposed to
+		// clear it -- a grazing-angle / coplanar epsilon straddle, not a
+		// genuine second surface.  Double the nudge and retry the SAME
+		// step (same `ri`) rather than accepting the spurious self-hit.
+		// The retry consumes one of the 16 bounded skip iterations (no
+		// separate retry budget), so a pathological surface still bails
+		// out deterministically.
+		if( next.pObject == ri.pObject && next.geometric.range < curEps )
+		{
+			curEps *= 2.0;
+			bRetryStep = true;
+			continue;
 		}
 
 		bAnySkip = true;
@@ -454,6 +493,17 @@ bool RayCaster::CastRay(
 	if( bXrayViewResolve && bHit ) {
 		ResolveXrayView_( ri );
 		bHit = ri.geometric.bHit;
+
+		// Re-apply the same luminaire-suppression check to the RESOLVED
+		// hit: the check above only ran on the ORIGINAL hit, so an
+		// emitter sitting behind the glass would otherwise escape
+		// eRayView's "hide luminaires" preview setting even though a
+		// directly-visible emitter at the same spot would be suppressed.
+		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
+			if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+				bHit = bShowLuminaires;
+			}
+		}
 	}
 
 	// ----------------------------------------------------------------
@@ -1155,6 +1205,14 @@ bool RayCaster::CastRayNM(
 	if( bXrayViewResolve && bHit ) {
 		ResolveXrayView_( ri );
 		bHit = ri.geometric.bHit;
+
+		// Re-apply the same luminaire-suppression check to the RESOLVED
+		// hit -- see CastRay's identical call site for the rationale.
+		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
+			if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+				bHit = bShowLuminaires;
+			}
+		}
 	}
 
 	bool bReturn = false;
@@ -2056,6 +2114,14 @@ bool RayCaster::CastRayHWSS(
 	if( bXrayViewResolve && bHit ) {
 		ResolveXrayView_( ri );
 		bHit = ri.geometric.bHit;
+
+		// Re-apply the same luminaire-suppression check to the RESOLVED
+		// hit -- see CastRay's identical call site for the rationale.
+		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
+			if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+				bHit = bShowLuminaires;
+			}
+		}
 	}
 
 	bool bReturn = false;

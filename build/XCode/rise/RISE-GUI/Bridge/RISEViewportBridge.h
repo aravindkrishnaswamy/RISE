@@ -290,21 +290,25 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 
 #pragma mark - Viewport X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis")
 
-/// Whether the interactive viewport currently resolves the four data
-/// modes' (normals/depth/facets/wireframe) hits THROUGH transmissive
-/// surfaces to the first opaque hit.  Ignored while "preview" is
-/// active.  NO on a null controller (matching the C-ABI's own
-/// null-controller default), and also NO while a production/agent
-/// render owns the scene (RISE_API_SceneEditController_GetViewportXray's
-/// documented transient) or right after a scene rebind (the controller
-/// resets the flag to false on every RebindEditorToJob).
+/// Whether the interactive viewport currently resolves the primary hit
+/// THROUGH transmissive surfaces to the first opaque hit.  Applies to
+/// EVERY viewport render mode, INCLUDING the shaded "preview" pipeline
+/// (not just the four data modes) -- resolution lives in the caster
+/// layer, so it is orthogonal to which mode is active.  DEFAULT ON: the
+/// viewport starts see-through, and the controller resets the flag back
+/// to ON on every scene rebind (RebindEditorToJob).  NO on a null
+/// controller (matching the C-ABI's own null-controller default), and
+/// also NO while a production/agent render owns the scene
+/// (RISE_API_SceneEditController_GetViewportXray's documented
+/// transient).
 - (BOOL)viewportXray;
 
-/// Set the x-ray flag.  Returns NO on a null controller or the
+/// Set the x-ray flag.  Applies immediately regardless of which mode is
+/// active (including preview).  Returns NO on a null controller or the
 /// documented controller-level refusals (render-owns-scene, skeleton
-/// mode).  On success the controller rebuilds the active data mode's
-/// caster immediately; callers should re-read -viewportXray afterward
-/// rather than assuming `on` stuck.
+/// mode) -- no caster rebuild happens either way, just a flag stamp.
+/// Callers should re-read -viewportXray afterward rather than assuming
+/// `on` stuck.
 - (BOOL)setViewportXray:(BOOL)on
     NS_SWIFT_NAME(setViewportXray(_:));
 

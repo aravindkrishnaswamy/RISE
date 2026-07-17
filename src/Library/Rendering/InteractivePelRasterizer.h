@@ -362,16 +362,23 @@ namespace RISE
 			//! Part B (docs/gui/RENDER_MODES.md "Depth axis" self-
 			//! calibration): overrides the base RasterizeScene to run the
 			//! base pass, then -- if the ACTIVE caster is a view-mode
-			//! Depth caster whose auto-window is still pending (see
-			//! InteractiveViewModeRayCaster::DepthWindowPending) and the
+			//! Depth caster whose auto-window is STALE for the pass that
+			//! just ran (see InteractiveViewModeRayCaster::
+			//! DepthWindowStale / DepthViewShader::WindowStale) and the
 			//! pass was not cancelled -- runs the base pass ONCE more so
-			//! the window arms and this SAME RasterizeScene call returns a
-			//! windowed image.  Without this, a GUI mode switch (a single
-			//! settled RasterizeScene call, not the interactive multi-
-			//! frame cancel-restart loop) would show the flat scene-
-			//! diagonal fallback for one full pass before the next repaint
-			//! self-corrects -- the reported "depth renders nothing" bug.
-			//! Guarded to at most one extra pass per call.
+			//! the window (re-)arms and this SAME RasterizeScene call
+			//! returns a correctly-windowed image.  "Stale" covers two
+			//! cases: no window has ever armed (first pass ever -- shows
+			//! the flat scene-diagonal fallback, the original "depth
+			//! renders nothing" bug), and a window WAS armed but a camera
+			//! jump / crop / scene edit moved the visible depth range far
+			//! enough that this pass's own accumulated min/max no longer
+			//! match it (the same single-pass-staleness class, triggered
+			//! after a settled navigation jump rather than only on the
+			//! very first pass).  Mild per-pass drift during smooth
+			//! interactive navigation stays under the staleness
+			//! thresholds, so no extra pass runs during ordinary
+			//! dolly/orbit.  Guarded to at most one extra pass per call.
 			virtual void RasterizeScene( const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const override;
 
 		protected:

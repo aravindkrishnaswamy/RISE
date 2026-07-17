@@ -77,6 +77,7 @@
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/AgentMcpAdapter.h"
 #include "../src/Library/Agent/AgentChatCodecs.h"
+#include "../src/Library/Agent/InMemoryRasterizerOutput.h"
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
@@ -84,7 +85,10 @@
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
+#include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Color/Color.h"
@@ -781,6 +785,303 @@ static void RunXrayCoverageTest()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// (6) Review P2 coverage: RayCaster::CastRay{,NM,HWSS}'s eRayView
+// luminaire-suppression check (`bShowLuminaires`) must re-apply to the
+// RESOLVED hit after ResolveXrayView_, not just the ORIGINAL hit -- a
+// resolved emitter behind glass must be suppressed exactly like a
+// directly-visible one on a showLuminaires=false caster.  Every x-ray
+// render exercised elsewhere in this file goes through AgentSession's
+// ViewMode path, which ALWAYS uses a showLuminaires=TRUE caster
+// (InteractiveViewModeRayCaster -- see its class doc); AgentSession
+// never wires x-ray onto the showLuminaires=false studio-preview/draft
+// pipeline (CreateInteractiveMaterialPreviewPipeline) at all -- the
+// `xray` param's C-ABI/agent surface only reaches
+// CreateInteractiveViewModeCaster.  So the fix is exercised one level
+// BELOW AgentSession here, directly against the showLuminaires=false
+// preview caster, reusing two idioms already proven elsewhere in this
+// suite: the RayCaster downcast + direct SetXrayViewResolve call
+// (ViewportRenderModeTest.cpp's R9), and the raw
+// InMemoryRasterizerOutput + IRasterizer::RasterizeScene render path
+// (AgentObjectMapTest.cpp's RenderPipeline helper).
+//----------------------------------------------------------------------
+
+// An emissive "lamp" sphere at screen centre, occluded by a smaller
+// transmissive glass sphere positioned IN FRONT of it (closer to the
+// camera, same optical axis) -- big enough on screen that the exact
+// centre pixel (32,32 on this 64x64 frame) always lands on the glass
+// sphere's own surface before any x-ray resolve.
+static const char* const kSceneLampBehindGlass =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit\n\tcolor 1 1 1\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lampmat\n\texitance emit\n\tmaterial mat\n\tscale 1.0\n}\n\n"
+	"sphere_geometry\n{\n\tname lamp_geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname lamp\n\tgeometry lamp_geo\n\tmaterial lampmat\n\tposition 0 0 0\n}\n\n"
+	"sphere_geometry\n{\n\tname glass_geo\n\tradius 0.5\n}\n\n"
+	"dielectric_material\n{\n\tname glass_mat\n\ttau 1.0 1.0 1.0\n\tior 1.5\n}\n\n"
+	"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition 0 0 1.7\n}\n";
+
+// Render one pass through the studio-preview (showLuminaires=false)
+// pipeline, with x-ray resolve stamped directly onto the returned
+// RayCaster via the downcast idiom (no SceneEditController needed for a
+// single one-shot render).  Returns false on any setup/decode failure.
+static bool RenderPreviewPipeline( const IScenePriv& scene, bool xray, Decoded& out )
+{
+	IRasterizer* rast = nullptr;
+	IRayCaster*  preview = nullptr;
+	IRayCaster*  polish = nullptr;
+	if( !Implementation::CreateInteractiveMaterialPreviewPipeline( &rast, &preview, &polish ) ||
+	    !rast || !preview ) {
+		safe_release( rast );
+		safe_release( preview );
+		safe_release( polish );
+		return false;
+	}
+
+	Implementation::RayCaster* rc = dynamic_cast<Implementation::RayCaster*>( preview );
+	if( !rc ) {
+		rast->release();
+		preview->release();
+		safe_release( polish );
+		return false;
+	}
+	rc->SetXrayViewResolve( xray );
+
+	Agent::InMemoryRasterizerOutput* sink = new Agent::InMemoryRasterizerOutput();
+	rast->AddRasterizerOutput( sink );
+	rast->RasterizeScene( scene, 0, nullptr );
+	const std::vector<unsigned char> png = sink->ToPng();
+	const bool decoded = DecodePng( png, out );
+	safe_release( sink );
+	preview->release();
+	safe_release( polish );
+	rast->release();
+	return decoded;
+}
+
+static void RunPreviewResolvedLuminaireSuppressionTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (6) resolved-luminaire suppression under x-ray ===\n" );
+	const std::string scenePath = WriteTemp( "rise_viewmode_lampglass.RISEscene", kSceneLampBehindGlass );
+	Check( !scenePath.empty(), "wrote the lamp-behind-glass scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "lamp-behind-glass scene loads via the CST path" );
+	const IScenePriv* scenePriv = pJob->GetScene();
+	Check( scenePriv != nullptr, "lamp-behind-glass job has a Scene" );
+	if( !scenePriv ) { pJob->release(); return; }
+
+	// xray:false -- the preview caster shades the glass sphere's OWN
+	// surface (its own studio-preview AO/albedo look): the centre pixel
+	// is an opaque real hit, not background.  This is the control: it
+	// proves the render pipeline itself produces a real (non-background)
+	// hit here absent any resolve.
+	Decoded decNoXray;
+	Check( RenderPreviewPipeline( *scenePriv, /*xray*/false, decNoXray ), "preview render (xray off) decodes" );
+	bool noXrayCenterOpaque = false;
+	if( decNoXray.w == 64 && decNoXray.h == 64 ) {
+		noXrayCenterOpaque = decNoXray.at( 32, 32 )[3] != 0;
+	}
+	Check( noXrayCenterOpaque, "xray off: the glass sphere's own surface renders opaque at screen centre" );
+
+	// xray:true -- resolves THROUGH the glass to the emissive lamp behind
+	// it.  Fix under test: bShowLuminaires (false on this caster) must be
+	// re-checked against the RESOLVED hit, so the centre pixel is
+	// background -- exactly as a directly-visible lamp would be suppressed
+	// on this same showLuminaires=false caster (see AgentObjectMapTest.cpp
+	// RunEmissiveVisibilityTest's analogous draft-render assertion).
+	// BEFORE the fix, the resolved lamp hit escaped the check entirely
+	// (it only ever ran against the original glass hit) and rendered as
+	// an opaque shaded lamp surface instead.
+	Decoded decXray;
+	Check( RenderPreviewPipeline( *scenePriv, /*xray*/true, decXray ), "preview render (xray on) decodes" );
+	if( decXray.w == 64 && decXray.h == 64 ) {
+		const Px& center = decXray.at( 32, 32 );
+		Check( center[3] == 0,
+		       "MONEY ASSERTION: x-ray resolved through the glass to the emissive lamp is STILL SUPPRESSED "
+		       "(background/transparent centre pixel) on the showLuminaires=false preview caster -- the "
+		       "suppression check re-runs on the RESOLVED hit, not just the original glass hit" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (7) Review P2 coverage: InteractivePelRasterizer's depth auto-window
+// self-correction must fire not only on the FIRST pass EVER (the
+// original "depth renders nothing" fix, DepthViewShader's old
+// WindowPending -- "never armed yet") but also when an ALREADY-VALID
+// window (armed by an EARLIER render through the SAME persistent
+// caster/DepthViewShader) has gone STALE because the view changed, e.g.
+// a camera jump to a wildly different depth range (WindowStale's new
+// case (2)).
+//
+// This case is architecturally UNREACHABLE through AgentSession's
+// ViewMode path: EVERY AgentSession::Render(ViewMode) call builds a
+// brand-new EPHEMERAL InteractivePelRasterizer + InteractiveViewModeRayCaster
+// (see AgentSession.cpp's doViewModeRenderWork / CreateInteractiveViewModePipeline),
+// so no window ever survives across two separate agent render calls --
+// each call independently starts from mWinValid=false and only ever
+// exercises the "never armed yet" trigger, regardless of any
+// AgentCameraOverride passed in.  The GUI's ACTUAL interactive viewport,
+// by contrast, uses ONE PERSISTENT InteractivePelRasterizer across many
+// RasterizeScene calls (SceneEditController::SetViewportRenderMode
+// installs a data-mode caster ONCE; repeated camera drags/jumps all
+// render through that SAME instance) -- so this test reproduces THAT
+// shape directly: ViewportRenderModeTest.cpp R5's persistent-pipeline
+// idiom (CreateInteractiveMaterialPreviewPipeline + SetViewModeCaster)
+// plus a direct RasterizeScene/InMemoryRasterizerOutput render (this
+// file's RenderPreviewPipeline / AgentObjectMapTest.cpp's RenderPipeline),
+// called TWICE on the SAME rasterizer against two scenes whose visible
+// depth ranges do not overlap at all -- the "camera jump" stand-in.
+//----------------------------------------------------------------------
+
+// A sphere close to the camera: visible depth range ~[4, 5.7].
+static const char* const kSceneDepthNear =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 2.0\n}\n\n"
+	"standard_object\n{\n\tname obj\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+// SAME sphere, SAME dims/fov -- camera moved FAR away: visible depth
+// range ~[58, 60], entirely non-overlapping with kSceneDepthNear's.
+static const char* const kSceneDepthFar =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 60\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 2.0\n}\n\n"
+	"standard_object\n{\n\tname obj\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+// Render one pass on an ALREADY-CONSTRUCTED, persistent rasterizer --
+// unlike RenderPreviewPipeline above, this does not build/tear down a
+// pipeline per call, so caster-owned state (the depth window) survives
+// across successive calls against the SAME `rast`.
+static bool RenderOnPersistentCaster( IRasterizer& rast, const IScenePriv& scene, Decoded& out )
+{
+	Agent::InMemoryRasterizerOutput* sink = new Agent::InMemoryRasterizerOutput();
+	rast.AddRasterizerOutput( sink );
+	rast.RasterizeScene( scene, 0, nullptr );
+	const std::vector<unsigned char> png = sink->ToPng();
+	const bool decoded = DecodePng( png, out );
+	// Detach before the next call reuses `rast` -- avoids accumulating a
+	// growing outs list across repeated calls on the same instance.
+	rast.FreeRasterizerOutputs();
+	safe_release( sink );
+	return decoded;
+}
+
+// Same "strongContrast" shape as RunPerModeEndToEndTest's depth
+// assertion (>= distinct gray levels, or a wide min/max spread) --
+// evaluated over hit pixels only.
+static bool DepthStrongContrast( const Decoded& d )
+{
+	if( d.px.empty() ) return false;
+	std::set<unsigned char> distinctGray;
+	unsigned char grayMin = 255, grayMax = 0;
+	bool anyHit = false;
+	for( std::size_t px = 0; px < d.px.size(); ++px ) {
+		const Px& q = d.px[px];
+		if( q[3] == 0 ) continue;   // background miss
+		anyHit = true;
+		distinctGray.insert( q[0] );
+		if( q[0] < grayMin ) grayMin = q[0];
+		if( q[0] > grayMax ) grayMax = q[0];
+	}
+	if( !anyHit ) return false;
+	return distinctGray.size() >= 10 ||
+	       (unsigned int)( grayMax - grayMin ) > (unsigned int)( 0.3 * 255 );
+}
+
+static void RunDepthWindowStaleSelfCorrectTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (7) depth stale-window self-correct across a camera jump ===\n" );
+
+	const std::string nearPath = WriteTemp( "rise_viewmode_depthnear.RISEscene", kSceneDepthNear );
+	const std::string farPath  = WriteTemp( "rise_viewmode_depthfar.RISEscene",  kSceneDepthFar );
+	Check( !nearPath.empty() && !farPath.empty(), "wrote the near/far depth-jump scenes" );
+
+	Job* pJobNear = new Job();
+	Check( pJobNear->LoadAsciiSceneViaCst( nearPath.c_str() ), "near-camera scene loads" );
+	Job* pJobFar = new Job();
+	Check( pJobFar->LoadAsciiSceneViaCst( farPath.c_str() ), "far-camera scene loads" );
+	const IScenePriv* sceneNear = pJobNear->GetScene();
+	const IScenePriv* sceneFar  = pJobFar->GetScene();
+	Check( sceneNear != nullptr && sceneFar != nullptr, "both jobs expose a Scene" );
+	if( !sceneNear || !sceneFar ) { pJobNear->release(); pJobFar->release(); return; }
+
+	IRasterizer* rast = nullptr;
+	IRayCaster*  previewCaster = nullptr;
+	IRayCaster*  polishCaster  = nullptr;
+	Check( Implementation::CreateInteractiveMaterialPreviewPipeline( &rast, &previewCaster, &polishCaster ),
+	       "persistent preview pipeline builds" );
+	if( !rast ) { pJobNear->release(); pJobFar->release(); return; }
+
+	Implementation::InteractivePelRasterizer* impl = dynamic_cast<Implementation::InteractivePelRasterizer*>( rast );
+	Check( impl != nullptr, "rasterizer downcasts to InteractivePelRasterizer" );
+
+	IRayCaster* depthCaster = nullptr;
+	Check( Implementation::CreateInteractiveViewModeCaster(
+	           Implementation::ViewportRenderMode::Depth, &depthCaster ), "depth caster builds" );
+
+	if( impl && depthCaster )
+	{
+		impl->SetViewModeCaster( depthCaster );
+
+		// Pass 1: near camera.  Arms a valid window from this call's own
+		// internal self-correction (case (1), "never armed yet" -- not
+		// what's under test here, but exercising it is a harmless and
+		// realistic warm-up matching how the GUI viewport actually starts).
+		Decoded decNear;
+		Check( RenderOnPersistentCaster( *rast, *sceneNear, decNear ), "near-camera depth render decodes" );
+
+		// Pass 2: SAME rasterizer/caster, camera jumps to a FAR, entirely
+		// non-overlapping visible distance range.  Fix under test: the
+		// base pass starts by shading against the now-STALE near window
+		// (armed by pass 1) -- every far pixel clamps to the SAME extreme
+		// (near-window's far edge), which is what "depth renders nothing"
+		// for the new view looks like.  WindowStale() must detect that
+		// deviation and trigger the self-correcting extra pass, so THIS
+		// SAME call still returns a properly windowed (high-contrast)
+		// image for the far view.
+		Decoded decFar;
+		Check( RenderOnPersistentCaster( *rast, *sceneFar, decFar ), "far-camera depth render decodes" );
+
+		Check( DepthStrongContrast( decNear ), "near-camera pass shows windowed (high-contrast) depth" );
+		Check( DepthStrongContrast( decFar ),
+		       "MONEY ASSERTION: far-camera pass, on the SAME persistent caster right after the near-camera "
+		       "pass, STILL shows windowed (high-contrast) depth -- WindowStale() detected the camera jump "
+		       "and re-armed the window for the new view within this single RasterizeScene call, instead of "
+		       "shading the far view against the stale near-camera window (which would clamp every far hit "
+		       "pixel to the SAME extreme value -- zero contrast)" );
+
+		impl->SetViewModeCaster( nullptr );   // restore, mirrors R5's teardown order
+	}
+
+	safe_release( depthCaster );
+	safe_release( rast );
+	safe_release( previewCaster );
+	safe_release( polishCaster );
+	pJobNear->release();
+	pJobFar->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -790,6 +1091,8 @@ int main()
 	RunChatCodecModeParityTest();
 	RunMcpAdapterModeParityTest();
 	RunXrayCoverageTest();
+	RunPreviewResolvedLuminaireSuppressionTest();
+	RunDepthWindowStaleSelfCorrectTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

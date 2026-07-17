@@ -324,20 +324,24 @@ public:
 
     // -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") -------
     // Mirrors the RISE_API_SceneEditController_{Set,Get}ViewportXray C
-    // exports.  An orthogonal boolean that composes with the four data
-    // modes (normals/depth/facets/wireframe) -- it has no visible effect
-    // under "preview", but the controller still stores the flag for the
-    // next data-mode selection.  Resets to false on every whole-scene
-    // rebind, same as the render mode above.
+    // exports.  An orthogonal boolean that applies to EVERY viewport
+    // render mode, INCLUDING "preview" (not just the four data modes:
+    // normals/depth/facets/wireframe) -- resolution lives in the caster
+    // layer, so it composes with whichever mode is active rather than
+    // being scoped to the data modes.  DEFAULT ON: the viewport starts
+    // see-through, and SceneEditController resets the flag back to ON
+    // on every whole-scene rebind (RebindEditorToJob).
 
     /// The CURRENT x-ray flag ("false" when no controller is attached --
     /// same null-controller fallback convention as `viewportRenderMode()`
     /// -- or while a render owns the scene, per the C-ABI's documented
-    /// never-blocks contract).
+    /// never-blocks contract).  Otherwise true by default and after every
+    /// scene rebind.
     bool viewportXray() const;
 
-    /// Set the x-ray flag.  Returns false on a null controller or a
-    /// controller-level refusal (a production/agent render owns the
+    /// Set the x-ray flag.  Applies immediately regardless of which mode
+    /// is active (including preview).  Returns false on a null controller
+    /// or a controller-level refusal (a production/agent render owns the
     /// scene, or skeleton mode) -- the set CAN fail, so callers must
     /// re-read `viewportXray()` afterward rather than assume the
     /// requested value took effect.

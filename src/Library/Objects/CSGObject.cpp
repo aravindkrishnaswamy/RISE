@@ -277,6 +277,107 @@ namespace
 		// not something this adoption fixes or worsens.
 		dst.ptObjIntersec = src.ptObjIntersec;
 	}
+
+	//! Adopt the RayIntersection-LEVEL binding pointers -- material,
+	//! modifier, shader, radiance map -- from the operand that actually
+	//! OWNS the reported boundary surface.  These are siblings of
+	//! AdoptCsgSurfacePayload's geometric-payload fields but live one
+	//! level up, on RayIntersection rather than RayIntersectionGeometric
+	//! (see RayIntersection.h), so they need their own tiny helper.
+	//!
+	//! Same contamination pattern: a CSG_INTERSECTION "outside both"
+	//! branch starts with an efficient whole-record `ri = riObjA` copy,
+	//! then (via AdoptCsgSurfacePayload) re-adopts the geometric payload
+	//! from riObjB when the algebra attributes the reported boundary to
+	//! B -- but without this helper the four binding pointers silently
+	//! stayed A's.  Per-operand-material CSG (e.g. `csg_object` combining
+	//! two objects with different materials) then shaded B's boundary
+	//! with A's material.  The CSGObject's OWN bindings (if it has any)
+	//! still take final precedence -- see the conditional overrides at
+	//! the bottom of IntersectRay -- this helper only fixes which
+	//! OPERAND's binding is the fallback.
+	void AdoptCsgSurfaceBindings( RayIntersection& dst, const RayIntersection& src )
+	{
+		dst.pMaterial = src.pMaterial;
+		dst.pModifier = src.pModifier;
+		dst.pShader = src.pShader;
+		dst.pRadianceMap = src.pRadianceMap;
+	}
+
+	//! EXIT-designated boundary payload recovery (P2-e).  A CSG branch
+	//! that reports operand `operand`'s EXIT face as the composite's
+	//! boundary has only that operand's ENTRY-hit auxiliary payload
+	//! available -- no RISE geometry computes a second UV / derivatives /
+	//! tangent / vertex-color / wire-edge set for an exit hit, only the
+	//! exit NORMAL (vNormal2 / vGeomNormal2).  Recover the REAL payload
+	//! for the exit face with a reverse probe: a short ray starting just
+	//! beyond the exit point (along the ORIGINAL ray direction, so the
+	//! origin sits just outside the operand's solid) and travelling in
+	//! the REVERSED direction back toward the exit point.  Its first hit
+	//! lands on the exact same geometric face, approached from the
+	//! outside, with a fully-stamped ENTRY payload for THAT face -- and
+	//! by construction (entering the solid from just outside it), that
+	//! probe entry NORMAL should equal the branch's already-computed
+	//! reversed exit normal (-vNormal2 / -vGeomNormal2); the caller keeps
+	//! its own normal fields and this helper only ever touches the
+	//! auxiliary payload, so that equality is never load-bearing, just a
+	//! sanity invariant worth noting for anyone instrumenting this path.
+	//!
+	//! `exitRangeCsgLocal` must already be in CSG-LOCAL units (i.e.
+	//! `riObjX.geometric.range2` computed with bComputeExitInfo=true --
+	//! see the P1-c fix).  `dst.ray` is read as the CSG-local ray (every
+	//! child restores its `ray` field to what was passed in, so any
+	//! `riObjA`/`riObjB`/`ri` record mid-switch carries the same local
+	//! ray) and `dst`'s pre-mutation glossyFilterWidth /
+	//! bWantsWireEdgeInfo are propagated onto the probe so it honours the
+	//! same cast-time inputs as the main children did.
+	//!
+	//! On success, adopts the probe's payload into `dst` (via
+	//! AdoptCsgSurfacePayload -- the probe IS an entry hit, so it carries
+	//! exactly that field set, including possibly-valid wire-edge info --
+	//! no need to clear it, unlike the entry-face-payload fallback) and
+	//! returns true.  On a probe miss (grazing ray / numeric edge at the
+	//! ε-margin), leaves `dst` untouched and returns false; the caller
+	//! falls back to the previous behavior (the operand's own entry-hit
+	//! payload already sitting in `dst`, with wire-edge info cleared).
+	bool AdoptCsgExitFacePayloadViaProbe(
+		RayIntersectionGeometric& dst,
+		IObjectPriv* operand,
+		Scalar exitRangeCsgLocal )
+	{
+		if( !operand || exitRangeCsgLocal <= 0 || exitRangeCsgLocal == RISE_INFINITY ) {
+			return false;
+		}
+
+		const Vector3 dir = dst.ray.Dir();
+		const Point3 ptExitLocal = dst.ray.PointAtLength( exitRangeCsgLocal );
+
+		// Margin scaled to the exit range so the probe origin clears the
+		// surface at any scene scale -- dst.ray's direction is unit
+		// length, so exitRangeCsgLocal IS a physical local-frame
+		// distance, not an arbitrary parametric unit.
+		const Scalar margin = std::max( Scalar(1e-5), std::fabs( exitRangeCsgLocal ) * Scalar(1e-6) );
+		const Point3 probeOrigin(
+			ptExitLocal.x + dir.x * margin,
+			ptExitLocal.y + dir.y * margin,
+			ptExitLocal.z + dir.z * margin );
+
+		const Ray probeRay( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+
+		RayIntersection probe( probeRay, nullRasterizerState );
+		probe.geometric.PropagateCastInputs( dst );
+
+		// Short probe: only needs to travel back the `margin` distance to
+		// land on the exit point again -- 4x margin is ample headroom.
+		operand->IntersectRay( probe, margin * Scalar(4.0), true, true, false );
+
+		if( !probe.geometric.bHit ) {
+			return false;
+		}
+
+		AdoptCsgSurfacePayload( dst, probe.geometric );
+		return true;
+	}
 }
 
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
@@ -382,9 +483,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.vNormal = riObjB.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal2;
 					// EXIT-designated boundary (union, origin inside an
-					// operand): the wire-edge point belongs to the ENTRY
-					// face -- clear, matching the SUBTRACTION exit case.
-					ri.geometric.bHasWireEdgeInfo = false;
+					// operand): recover B's real payload for this exit face
+					// via a reverse probe (P2-e); on a probe miss, fall back
+					// to B's entry-hit payload with wire-edge info cleared
+					// (it belongs to the wrong face in that fallback).
+					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2 ) ) {
+						ri.geometric.bHasWireEdgeInfo = false;
+					}
 				} else {
 					ri = riObjA;
 				}
@@ -401,9 +506,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.vNormal = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal2;
 					// EXIT-designated boundary (union, origin inside an
-					// operand): the wire-edge point belongs to the ENTRY
-					// face -- clear, matching the SUBTRACTION exit case.
-					ri.geometric.bHasWireEdgeInfo = false;
+					// operand): recover A's real payload for this exit face
+					// via a reverse probe (P2-e); on a probe miss, fall back
+					// to A's entry-hit payload with wire-edge info cleared
+					// (it belongs to the wrong face in that fallback).
+					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectA, riObjA.geometric.range2 ) ) {
+						ri.geometric.bHasWireEdgeInfo = false;
+					}
 				} else {
 					ri = riObjB;
 				}
@@ -523,6 +632,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// even though `ri` started as A's whole record above.
 					ri = riObjA;
 					AdoptCsgSurfacePayload( ri.geometric, riObjB.geometric );
+					AdoptCsgSurfaceBindings( ri, riObjB );
 					ri.geometric.range = riObjB.geometric.range;
 					ri.geometric.vNormal = riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal;
@@ -545,6 +655,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// even though `ri` started as B's whole record above.
 					ri = riObjB;
 					AdoptCsgSurfacePayload( ri.geometric, riObjA.geometric );
+					AdoptCsgSurfaceBindings( ri, riObjA );
 					ri.geometric.range = riObjA.geometric.range;
 					ri.geometric.vNormal = riObjA.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal;
@@ -598,14 +709,46 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 				}
 			} else {
-				// If we never hit B, or if B begins after A ends, or if B ends before A can begin
-				// then we only have A
+				// Neither A nor B contains the ray origin -- both hits are
+				// plain entry/exit interval pairs [range, range2].
 				if( !riObjB.geometric.bHit ) {
+					// Never hit B at all -- composite is just A.
 					ri = riObjA;
 				} else {
-					// We hit bit as well
-					if( riObjA.geometric.range < riObjB.geometric.range )
+					// We hit B too.  Test DISJOINTNESS FIRST (P1-b): B's
+					// interval [range, range2] either doesn't overlap A's
+					// interval at all (B begins after A ends, or B ends
+					// before A begins), in which case nothing is carved out
+					// of A's visible span and the composite is exactly A --
+					// or it does overlap, in which case exactly one of the
+					// two overlap branches below applies.  The two overlap
+					// conditions were PREVIOUSLY tested before disjointness,
+					// so a disjoint B could still satisfy one of them by
+					// accident and produce a phantom surface (see the two
+					// bugs documented at each branch below, both now
+					// unreachable once disjointness is excluded up front).
+					if( (riObjB.geometric.range >= riObjA.geometric.range2) ||
+						(riObjB.geometric.range2 <= riObjA.geometric.range) )
 					{
+						ri = riObjA;
+					}
+					else if( riObjA.geometric.range < riObjB.geometric.range )
+					{
+						// A enters first and (excluded disjoint above) B's
+						// interval overlaps A's -- so B's entry necessarily
+						// lands strictly inside A's span.  The carve's near
+						// wall (B's entry) becomes the visible surface's
+						// exit; this covers B fully contained in A AND B
+						// overhanging A's tail (B.range2 > A.range2) --
+						// either way the visible portion of A-minus-B still
+						// starts at A's entry and ends at B's entry.
+						//
+						// PRE-FIX BUG: without the disjointness test above,
+						// this branch's condition (`A.range < B.range`) is
+						// trivially true whenever B is wholly AFTER A ends
+						// too, which set range2 = B.range regardless -- an
+						// extended phantom interval reaching all the way out
+						// to a B that never touches A.
 						ri = riObjA;
 						ri.geometric.range2 = riObjB.geometric.range;
 						ri.geometric.vNormal2 = -riObjB.geometric.vNormal;
@@ -613,17 +756,30 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					}
 					else if( riObjB.geometric.range2 < riObjA.geometric.range2 )
 					{
-						// EXIT-designated boundary: the composite's entry here is
-						// B's EXIT face (B.vNormal2), not B's entry face.  `ri =
-						// riObjB` still carries B's auxiliary payload (ptCoord /
-						// derivatives / tangent / vertex color / ptObjIntersec)
-						// from B's ENTRY hit -- no RISE geometry computes a second
-						// payload set for the exit hit, only the exit NORMAL is
-						// available.  So this reported entry surface is honestly
-						// the wrong face of the right operand (B); leaving B's
-						// entry-hit payload in place (the existing shipped
-						// behavior) is the best available answer -- do not
-						// fabricate exit-face UVs/derivatives/tangent here.
+						// B enters first (or at the same range as A) and
+						// (excluded disjoint above) overlaps A's interval,
+						// AND exits before A does -- so B's exit necessarily
+						// lands strictly inside A's span (B doesn't swallow
+						// A whole).  The carve's far wall (B's exit) is the
+						// visible surface's entry, extending to A's exit.
+						//
+						// PRE-FIX BUG: without the disjointness test above,
+						// this branch's condition (`B.range2 < A.range2`) is
+						// trivially true whenever B is wholly BEFORE A
+						// begins too (B ends long before A even starts) --
+						// reporting a phantom surface at B's back face in
+						// empty space, nowhere near A.
+						//
+						// EXIT-designated boundary: the composite's entry
+						// here is B's EXIT face (B.vNormal2), not B's entry
+						// face.  `ri = riObjB` still carries B's auxiliary
+						// payload from B's ENTRY hit -- no RISE geometry
+						// computes a second payload set for the exit hit,
+						// only the exit NORMAL is available.  Recover B's
+						// REAL exit-face payload via a reverse probe (P2-e);
+						// on a probe miss, fall back to B's entry-hit
+						// payload with wire-edge info cleared (it belongs to
+						// the wrong face in that fallback).
 						ri = riObjB;
 						ri.geometric.range = riObjB.geometric.range2;
 						ri.geometric.range2 = riObjA.geometric.range2;
@@ -632,17 +788,16 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
-						// The wire-edge point (if stamped) belongs to B's ENTRY
-						// face; drawing it on this EXIT-designated surface would
-						// place another face's edges here.  Clear -- honest
-						// no-lines, matching the entry-only stamp contract.
-						ri.geometric.bHasWireEdgeInfo = false;
+						if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2 ) ) {
+							ri.geometric.bHasWireEdgeInfo = false;
+						}
 					}
-					else if( (riObjB.geometric.range >= riObjA.geometric.range2) ||
-							 (riObjB.geometric.range2 <= riObjA.geometric.range) )
-					{
-						ri = riObjA;
-					}
+					// else: B enters at/before A AND does not exit before A
+					// (range2B >= range2A) -- B fully contains A's interval,
+					// so A-minus-B is empty across this whole span.  Leave
+					// `ri` unhit (matches the pre-existing fallthrough: none
+					// of the branches assign `ri`, so `ri.geometric.bHit`
+					// stays false from the top of IntersectRay).
 				}
 			}
 		}
@@ -658,6 +813,45 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		ri.geometric.vGeomNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal2 ));
 
 		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
+
+		// Transform the per-vertex tangent (P2-d) from THIS CSG object's
+		// local frame to world space -- exactly like vNormal above, and
+		// mirroring Object::IntersectRay's own tangent-promotion block.
+		// A child's Object::IntersectRay already promoted its tangent from
+		// ITS OWN local frame up to the frame it was called in (this CSG's
+		// local frame), the same way it already promotes vNormal / vTangent
+		// / derivatives one level per nesting -- so by the time any switch
+		// branch above copies a child record into `ri` (directly via
+		// `ri = riObjX`, or re-adopted via AdoptCsgSurfacePayload / the
+		// exit-face probe), vTangent/derivatives sit in THIS CSG's local
+		// frame, one promotion short of world space.  Tangents transform
+		// with the forward matrix (like positions / dpdu), NOT inverse-
+		// transpose, since they are surface-tangent directions, not
+		// normals.  bitangentSign picks up THIS CSG object's own
+		// orientation-reversal sign (m_tangentFrameSign, computed once in
+		// FinalizeTransformations), composing with whatever sign flip each
+		// nested child already applied for its own transform.
+		if( ri.geometric.bHasTangent ) {
+			ri.geometric.vTangent = Vector3Ops::Normalize(
+				Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.vTangent ) );
+			ri.geometric.bitangentSign *= m_tangentFrameSign;
+		}
+
+		// Transform surface derivatives (P2-d) from THIS CSG object's local
+		// frame to world space -- mirrors Object::IntersectRay's
+		// derivatives block exactly.  dpdu / dpdv are tangent vectors
+		// (forward transform); dndu / dndv are normal-like quantities at
+		// first order (inverse-transpose).
+		if( ri.geometric.derivatives.valid ) {
+			ri.geometric.derivatives.dpdu = Vector3Ops::Transform(
+				m_mxFinalTrans, ri.geometric.derivatives.dpdu );
+			ri.geometric.derivatives.dpdv = Vector3Ops::Transform(
+				m_mxFinalTrans, ri.geometric.derivatives.dpdv );
+			ri.geometric.derivatives.dndu = Vector3Ops::Transform(
+				m_mxInvTranspose, ri.geometric.derivatives.dndu );
+			ri.geometric.derivatives.dndv = Vector3Ops::Transform(
+				m_mxInvTranspose, ri.geometric.derivatives.dndv );
+		}
 
 		// Compute the intersection in world space
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
@@ -732,9 +926,25 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	RayIntersection		riObjB( orig, nullRasterizerState );
 
 	// For CSG objects, we still need the ranges, even if it is for intersection only!
-
-	pObjectA->IntersectRay( riObjA, dHowFar, true, true, false );
-	pObjectB->IntersectRay( riObjB, dHowFar, true, true, false );
+	//
+	// bComputeExitInfo MUST be true (P1-c): a child Object::IntersectRay
+	// only re-expresses range2 in the CALLER's frame (via ptExit -> world
+	// -> magnitude-from-origin) inside its `if( bComputeExitInfo )` block
+	// -- with bComputeExitInfo=false, range2 is left exactly as the
+	// underlying IGeometry wrote it, which is a raw parametric distance
+	// in the CHILD's own local-frame ray-parameter units.  The switch
+	// below compares that value directly against `range` (which IS
+	// always re-expressed in the caller's/CSG-local frame, unconditionally)
+	// and against the OTHER child's range/range2 -- a mismatch of units
+	// whenever the operand carries a non-uniform or non-unit uniform
+	// scale.  The range2==0 "origin is inside" sentinel is unaffected
+	// either way (set directly by the geometry, untouched by the
+	// bComputeExitInfo-gated re-expression), so this fix costs the extra
+	// exit-normal/exit-point computation but changes no sentinel
+	// semantics.  Matches the main IntersectRay above, which already
+	// passes true for both children.
+	pObjectA->IntersectRay( riObjA, dHowFar, true, true, true );
+	pObjectB->IntersectRay( riObjB, dHowFar, true, true, true );
 
 	// Do different things depending on the type of CSG operation
 	switch( op )

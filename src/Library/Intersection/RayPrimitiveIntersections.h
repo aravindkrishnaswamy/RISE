@@ -54,6 +54,17 @@ namespace RISE
 	//! the result on the intersection record and Object::IntersectRay
 	//! transforms it to world space alongside ptIntersection (see
 	//! RayIntersectionGeometric::bWantsWireEdgeInfo).
+	//!
+	//! KNOWN LIMITATION (documented, deliberately unfixed): the nearest-of-
+	//! three-edges choice happens in OBJECT space; under a non-uniform
+	//! object scale the object-space-nearest edge need not be the world-
+	//! space-nearest, so wire lines near triangle corners can attach to the
+	//! "wrong" (second-nearest) edge on non-uniformly-scaled meshes.  The
+	//! chosen point itself still world-transforms exactly, so lines are
+	//! merely mis-attributed near corners, never geometrically wrong on an
+	//! edge.  A true fix needs all three candidate points on the (hot) hit
+	//! record or transform access here -- both judged disproportionate for
+	//! a diagnostic view mode.
 	inline Point3 WireClosestPointOnSegment(
 		const Point3& p,
 		const Point3& a,

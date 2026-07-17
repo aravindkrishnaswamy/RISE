@@ -775,21 +775,74 @@ public:
 	}
 
 	//! Query for the InteractivePelRasterizer's Part-B self-calibration
-	//! re-run (docs/gui/RENDER_MODES.md "Depth axis"): true when the pass
-	//! that just ran RECORDED at least one sample (so the accumulators
-	//! have real data to arm the window from) but the window is not yet
-	//! VALID (first pass ever, or the previous pass was degenerate) --
-	//! i.e. the pass that just rendered used the flat scene-diagonal
-	//! fallback instead of the auto-window, and a second pass would now
-	//! shade windowed.  Mirrors the "did any sample land" test in
-	//! PreparePass so the two stay in lockstep.
-	bool WindowPending() const
+	//! re-run (docs/gui/RENDER_MODES.md "Depth axis").  True whenever a
+	//! second pass would meaningfully change what got shaded THIS pass:
+	//!
+	//!   (1) No active window yet (first pass ever, or the previous pass
+	//!       was degenerate) -- the pass that just ran used the flat
+	//!       scene-diagonal fallback instead of the auto-window, and a
+	//!       second pass would now shade windowed.  Mirrors the "did any
+	//!       sample land" test in PreparePass so the two stay in lockstep.
+	//!
+	//!   (2) An active window WAS used, but THIS pass's own accumulated
+	//!       min/max (mAccMin/mAccMax -- not yet folded into mWinMin/
+	//!       mWinMax, since that only happens at the START of the NEXT
+	//!       pass via PreparePass) have drifted away from it: either a
+	//!       new endpoint lands outside the old window by more than 15%
+	//!       of the old window's span (the window no longer covers what
+	//!       is actually visible -- e.g. a camera jump/crop/edit revealed
+	//!       geometry the old window never saw), or the span itself
+	//!       changed by more than 30% (the visible depth range got a lot
+	//!       tighter or a lot looser, e.g. zooming from a wide establishing
+	//!       shot into a close-up).  These thresholds are picked so mild
+	//!       per-pass drift during smooth interactive navigation (dolly,
+	//!       orbit) stays under them -- no re-run, no extra interactive
+	//!       cost -- while a hard jump (camera teleport, crop change, a
+	//!       scene edit that moves the visible depth extent) trips one of
+	//!       them and forces the single settled pass to self-correct
+	//!       instead of shading against the STALE window, which is the
+	//!       same single-pass-staleness class as the original blank-depth
+	//!       bug this Part-B re-run was built to fix.
+	//!
+	//! Called once, after the base pass finishes, by the caster's
+	//! DepthWindowStale() forwarder -- so mAccMin/mAccMax at call time
+	//! hold exactly the pass that just ran (PreparePass for the NEXT pass
+	//! hasn't executed yet).
+	bool WindowStale() const
 	{
-		if( mWinValid ) {
-			return false;
-		}
 		const double accMin = mAccMin.load( std::memory_order_relaxed );
-		return accMin <= kAlmostSentinel;
+		const double accMax = mAccMax.load( std::memory_order_relaxed );
+		const bool bHasSamples = accMin <= kAlmostSentinel;
+		if( !bHasSamples ) {
+			return false;   // nothing rendered this pass -- nothing to react to
+		}
+
+		if( !mWinValid ) {
+			return true;   // case (1): still on the flat fallback
+		}
+
+		const double oldSpan = mWinMax - mWinMin;
+		if( oldSpan <= 0.0 ) {
+			return false;   // degenerate active window -- nothing meaningful to compare against
+		}
+
+		// case (2a): new endpoints outside the OLD window by > 15% of its span
+		const double tolExpand = 0.15 * oldSpan;
+		if( accMin < mWinMin - tolExpand || accMax > mWinMax + tolExpand ) {
+			return true;
+		}
+
+		// case (2b): span changed by > 30%
+		const double newSpan = accMax - accMin;
+		if( newSpan > 0.0 )
+		{
+			const double spanRatio = newSpan / oldSpan;
+			if( spanRatio > 1.30 || spanRatio < 0.70 ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	void ResetRuntimeData() const override {}
@@ -1012,12 +1065,12 @@ public:
 	}
 
 	//! Part B (docs/gui/RENDER_MODES.md "Depth axis" self-calibration):
-	//! forwards to the depth listener's WindowPending() query, or false
+	//! forwards to the depth listener's WindowStale() query, or false
 	//! when this caster has no depth listener (every non-Depth view
 	//! mode).  See InteractivePelRasterizer::RasterizeScene.
-	bool DepthWindowPending() const
+	bool DepthWindowStale() const
 	{
-		return mpDepthListener && mpDepthListener->WindowPending();
+		return mpDepthListener && mpDepthListener->WindowStale();
 	}
 
 private:
@@ -1547,23 +1600,32 @@ void InteractivePelRasterizer::RasterizeScene(
 	// accumulated min/max (DepthViewShader::PreparePass, called from
 	// InteractiveViewModeRayCaster::AttachScene at the top of every
 	// pass).  The interactive live-drag/idle-refine loop calls
-	// RasterizeScene repeatedly, so it self-corrects within a couple of
-	// repaints -- but a single SETTLED call (a GUI mode switch, or any
-	// one-shot render like the agent view-mode path) only gets ONE pass,
-	// which shows the flat scene-diagonal fallback because no previous
-	// pass ever populated the window.  If the pass we just ran recorded
-	// samples but the window is still pending, re-run the base pass
-	// exactly once more: AttachScene's PreparePass call at the top of
-	// that second pass snapshots the just-finished pass's accumulators
-	// into a valid window, and the second pass shades against it -- so
-	// THIS SAME RasterizeScene call returns a windowed image.  Calling
-	// the base method directly (not through the vtable) means there is
-	// no re-entrancy into this override, so at most one extra pass ever
-	// runs per call with no separate guard needed.
+	// RasterizeScene repeatedly, so mild per-pass drift self-corrects
+	// within a couple of repaints -- but a single SETTLED call (a GUI
+	// mode switch, or any one-shot render like the agent view-mode path)
+	// only gets ONE pass.  Two distinct staleness cases both need that
+	// one pass to self-correct rather than ship a stale result:
+	//   (a) no window has ever armed (first pass ever) -- shows the flat
+	//       scene-diagonal fallback;
+	//   (b) a window WAS armed from an earlier pass, but a camera jump /
+	//       crop / scene edit between calls means THIS pass's actual
+	//       accumulated min/max no longer match it -- shades against a
+	//       window calibrated for a different view.
+	// DepthWindowStale() (see InteractiveViewModeRayCaster /
+	// DepthViewShader::WindowStale) detects both.  If it fires, re-run
+	// the base pass exactly once more: AttachScene's PreparePass call at
+	// the top of that second pass snapshots the just-finished pass's
+	// accumulators into a freshly-valid window, and the second pass
+	// shades against it -- so THIS SAME RasterizeScene call returns a
+	// correctly-windowed image.  Calling the base method directly (not
+	// through the vtable) means there is no re-entrancy into this
+	// override, so at most one extra pass ever runs per call -- the
+	// second pass's own possible staleness is not re-checked, which
+	// bounds the cost and respects cancellation exactly as before.
 	InteractiveViewModeRayCaster* pViewCaster =
 		dynamic_cast<InteractiveViewModeRayCaster*>( pCaster );
 	const bool bCancelled = pProgressFunc && pProgressFunc->IsCancelled();
-	if( pViewCaster && !bCancelled && pViewCaster->DepthWindowPending() )
+	if( pViewCaster && !bCancelled && pViewCaster->DepthWindowStale() )
 	{
 		PixelBasedRasterizerHelper::RasterizeScene( pScene, pRect, pRasterSequence );
 	}
