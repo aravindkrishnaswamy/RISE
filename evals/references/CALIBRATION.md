@@ -167,3 +167,148 @@ which is what actually matters for those two views.
   "rmseMax": { "view1": 0.015, "view2": 0.012, "view3": 0.012, "view4": 0.015 }
 }
 ```
+
+## 8. Wave 5 finding: `AgentSession::Render` diverges from the CLI batch pipeline (2026-07-16)
+
+**These thresholds (§5/§7) are correct for CLI-vs-CLI comparisons but are
+currently UNREACHABLE through the `render` checkpoint's actual grading path**
+(`AgentSession::Render`, used by `evals/scenarios/image_reconstruct_single.json`
+/ `image_reconstruct_multi.json`), because that path renders the SAME scene
+content measurably differently from the `./bin/rise scene.RISEscene` CLI
+pipeline this document's anchors were derived through. This is a genuine,
+reproducible discrepancy in the shared eval-harness rendering
+infrastructure (`src/Library/Agent/AgentSession.cpp`'s `Render`), **not** a
+defect in the Wave 5 `image_reconstruct_*` scenarios/fixtures — the
+reconstruction fixtures lift the ground-truth scene's chunks correctly (see
+below). Recorded here because the render-checkpoint calibration and
+recalibration procedure both live in this file, and this needs to be known
+before either scenario's `rmseMax` is ever touched again.
+
+**Reproduction (no reconstruction involved at all):** load
+`sdf_reconstruct_truth.RISEscene` directly (`scene.path`, no edits) through
+`RunScenario`/`AgentSession`, exactly as `CheckRenderKind` does for a
+`compareToImage` checkpoint (samples=64, camera=viewN, width=height=256),
+and compare the resulting PNG against the SAME committed `viewN.png`
+`CheckRenderKind` compares against:
+
+| view | CLI-pipeline RMSE (§3 anchor a) | `AgentSession`-pipeline RMSE (same file, same pose, same spp) |
+|---|---|---|
+| view1 | 0.00453 | **0.0616** |
+| view2 | 0.00393 | **0.0566** |
+| view3 | 0.00447 | **0.0611** |
+| view4 | 0.00419 | **0.0770** |
+
+~13-18x the CLI floor, for the byte-identical scene. Ruled out as the cause:
+
+- **Not sample count / the `samples` override mechanism.** Re-rendering
+  view1 through `AgentSession` at the scene's AUTHORED 256 spp (no
+  `AgentRenderParams::samples` override at all, `samplesOverridden=false`,
+  `effectiveSamples=256`) gives the identical linear mean (`meanR=0.09691`)
+  and RMSE (0.0616) as the 64-spp override render. If this were a
+  convergence/override-plumbing issue it would close at full authored spp;
+  it does not.
+- **Not environment/`radiance_map` handling specifically.** Stripping
+  `radiance_map`/`radiance_scale` from the scene entirely and comparing an
+  `AgentSession` render against a CLI render of that SAME no-env variant
+  (so both sides get zero env contribution) still diverges by RMSE 0.0552
+  — essentially the same magnitude as the with-env case. The discrepancy is
+  present with or without env, so it is not an env-sampler caching issue
+  (the known `SetEnvironmentSampler`-after-`Prepare()` class of bug
+  documented elsewhere in this codebase does not explain it).
+- **Not simple noise, and not even monotonic with a real defect.**
+  Recolouring the key light neutral white (§3 anchor c: this scene's actual
+  committed adversarial control, `TestAdversarialOracleControls` control
+  (i) in `tests/AgentEvalCheckTest.cpp`) measures RMSE 0.0428-0.0533 across
+  all four views through `AgentSession` — LOWER than the correct
+  reconstruction's own 0.0566-0.0770 floor, in every view. Through the CLI
+  pipeline the same edit (§3 anchor c) is unambiguously ABOVE the floor
+  (0.033-0.048 vs a 0.0039-0.0045 floor, 8-11x). So under the CLI pipeline
+  RMSE is monotonic in reconstruction correctness (wrong lighting scores
+  worse than right lighting) but under the `AgentSession` pipeline it is
+  NOT (this specific wrong-lighting variant scores BETTER than the
+  admittedly-correct reconstruction). This means naively recalibrating
+  `rmseMax` upward to accommodate the `AgentSession` floor would not just
+  weaken the checkpoint — it would make the neutral-key adversarial control
+  it's supposed to catch score AS PASSING, which is worse than the
+  checkpoint currently failing loudly. That is why this is being
+  documented and flagged rather than "fixed" by loosening the caps.
+  Suspected root cause (untested, flagged for the follow-up
+  investigation): the largest per-block RMSE concentrates on the ground
+  plane under the key area light's soft shadow (not the background/sky
+  region), which is consistent with a soft-shadow/area-light sampling
+  difference between whatever acceleration/traversal path `AgentSession`'s
+  session-based `Job` construction ends up using for this exact 4-object
+  scene and the CLI's fresh single-shot parse — `sdf_reconstruct_truth`
+  has EXACTLY 4 top-level objects (ground/backdrop/key/hero), which per
+  `docs/ARCHITECTURE.md`'s top-level BVH description sits right at the
+  `items.size() > nMaxObjectsPerNode` boundary that decides whether the
+  linear-loop fallback or the BVH is used — worth checking first.
+- **Reconstruction fidelity is not the cause.** The Wave 5 fixtures'
+  reconstructed document, rendered through `AgentSession`, reproduces the
+  pristine ground-truth-via-`AgentSession` baseline within measurement
+  noise (Δ ≈ 0.0001 RMSE on view1: 0.061698 reconstructed vs 0.061618
+  pristine-direct-load) — i.e. the chunk-lifting is correct; 100% of the
+  residual against the committed reference is the pipeline discrepancy
+  above.
+
+**Consequence for Wave 5**: `evals/scenarios/image_reconstruct_single.json`
+and `image_reconstruct_multi.json`'s four `compareToImage` checkpoints are
+correctly calibrated against the CLI pipeline (§5/§7) and correctly
+implemented, but currently FAIL in `T10`
+(`TestSeedScenariosCheckpointsAreTrue`, `tests/AgentEvalCheckTest.cpp`) for
+every committed fixture — including a byte-for-byte-correct
+reconstruction — because of this upstream `AgentSession::Render` bug, not
+because of a fixture defect. Per the explicit instruction not to silently
+loosen `rmseMax` (and given the monotonicity failure above shows loosening
+would silently break the neutral-key adversarial control's whole point),
+these two scenarios' render checkpoints are left at their CLI-calibrated
+values, and this failure mode is expected until `AgentSession::Render` is
+fixed to match the CLI pipeline's output for the same scene. A follow-up
+session should: (1) confirm/refute the BVH-vs-linear-loop hypothesis above,
+(2) compare `AgentSession`'s `Job` construction / prepare sequence against
+`Job::LoadAsciiSceneAuto` + the CLI's render entry point for a
+divergence, (3) re-run this section's reproduction table to confirm a fix,
+then (4) leave `rmseMax` untouched (it will simply start passing).
+
+## 9. RESOLVED (2026-07-16): the divergence was a missing display transform
+
+The Wave-5 finding above is now **fixed**. Root cause: the CLI
+`file_rasterizeroutput` PNG pipeline applies a **display transform**
+(exposure + tone curve, defaulting to **ACES filmic** for LDR formats — see
+`DisplayTransformWriter` / `FrameEncoders.cpp`) between the linear film and
+the sRGB OETF, but the agent-facing sink `InMemoryRasterizerOutput::ToPng`
+applied only the sRGB OETF with an **identity tone curve**. So every agent
+render (`AgentSession::Render` → `read_image` / `compareToImage`; also
+`read_viewport`, whose interactive-frame copy is likewise raw linear) was a
+raw linear→sRGB image while the committed references were ACES-tonemapped.
+That is a *pure encode* difference, not a sampler/BVH/env issue — the
+hypotheses in §8 (BVH-vs-linear-loop, `Job` construction) were all wrong.
+
+**Localization that pinned it:** a session render of the pristine truth
+scene vs. a CLI render with `display_transform none` added matched at
+RMSE **0.0023** (zero mean diff), while vs. the default (ACES) CLI/reference
+it was RMSE **0.0616** with a systematic darkening skewed toward blue/green
+(A−B ≈ R−4, G−9, B−11 in 8-bit) — the ACES contrast/roll-off, not noise.
+
+**Fix (source, not thresholds):** `InMemoryRasterizerOutput` gained a
+`SetDisplayTransform(exposureEV, toneCurve)` that wraps the encode in the
+SAME `DisplayTransformWriter` the CLI uses; `AgentSession` resolves the
+effective transform per head (`ResolveBeautyDisplayTransform_`: a declared
+LDR `file_rasterizeroutput`'s `display_transform` + `exposure`, else the LDR
+default ACES, plus the active camera's exposure-compensation EV) and installs
+it on the **beauty** sinks (production + draft + `read_viewport`). The
+**objectmap** identity sink is deliberately left at the identity transform so
+its per-pixel identity bytes pass through un-tonemapped. `MeanChannels` /
+`GetPixelColor` still report the stored **linear** pixels (an
+encode-independent signature; the luma-band scenarios that consume them are
+unaffected).
+
+**Re-verified against the EXISTING references (no recalibration, `rmseMax`
+untouched):** a pristine-truth session render now scores RMSE **0.0045** on
+view1 (== the §3 anchor-(a) CLI floor of 0.00451), and `T10`'s eight
+`compareToImage` checkpoints pass. The neutral-key adversarial control
+(`TestAdversarialOracleControls` control (i)) still **fails** the caps (it
+now goes through the identical ACES pipeline the §3 anchor (c) 0.033–0.048
+was measured on), so the checkpoint keeps its discriminating power. Because
+the two pipelines are now identical, the §5/§7 CLI-calibrated thresholds are
+reachable as designed; the §8 caveat is retired.

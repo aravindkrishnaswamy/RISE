@@ -2225,6 +2225,95 @@ namespace RISE
 			return RenderCore_( params );
 		}
 
+		void AgentSession::ResolveBeautyDisplayTransform_( double& outExposureEV,
+		                                                   int& outDisplayTransform ) const
+		{
+			// LDR defaults, matching the CLI file-output pipeline: ACES filmic,
+			// 0 EV.  An agent render is always an 8-bit PNG preview, so even a
+			// head with NO file output (the image_reconstruct scaffolds) or an
+			// HDR-only output still gets a viewable tone curve.
+			double exposureEV = 0.0;
+			int    dt         = 2 /*eDisplayTransform_ACES*/;
+
+			// Honour a declared LDR file_rasterizeroutput's tone curve +
+			// exposure so a compareToImage grading render (and read_image of a
+			// scene the author configured with, say, `display_transform none`)
+			// is BYTE-IDENTICAL to a CLI PNG render of that same scene.  Read
+			// straight from the retained CST (the source of truth; the parsed
+			// file outputs carry no post-load accessor and are stripped from
+			// the rasterizer by the render itself).
+			if( mJob ) {
+				const RISE::Cst::Document* doc = mJob->GetCstDocument();
+				if( doc ) {
+					// Concatenate a chunk param's pvalue tokens (space-joined);
+					// empty when the param is absent or valueless.
+					auto paramValue = []( const RISE::Cst::NodeRef& chunk,
+					                      const char* pname ) -> std::string {
+						if( !chunk ) return std::string();
+						for( const auto& kid : chunk->kids ) {
+							if( kid->kind != RISE::Cst::NodeKind::Param ) continue;
+							std::string name;
+							std::string value;
+							for( const auto& tk : kid->kids ) {
+								if( tk->kind != RISE::Cst::NodeKind::Token ) continue;
+								if( tk->role == "pname" ) name = tk->text;
+								else if( tk->role == "pvalue" ) {
+									if( !value.empty() ) value += ' ';
+									value += tk->text;
+								}
+							}
+							if( name == pname ) return value;
+						}
+						return std::string();
+					};
+
+					const int n = RISE::Cst::DocItemCount( *doc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( *doc, i );
+						const RISE::Cst::NodeRef node = id ? RISE::Cst::DocResolveNodeId( *doc, id ) : RISE::Cst::NodeRef();
+						if( !node || node->kind != RISE::Cst::NodeKind::Chunk ) continue;
+						if( node->role != "file_rasterizeroutput" ) continue;
+
+						// FIRST declared file output wins (matches the CLI, whose
+						// first PNG output produced these references).
+						const std::string type = paramValue( node, "type" );
+						const bool typeIsHDR = ( type == "HDR" || type == "RGBEA" || type == "EXR" );
+						if( !typeIsHDR ) {
+							// LDR: adopt its declared curve (default ACES) + exposure.
+							const std::string dtStr = paramValue( node, "display_transform" );
+							if     ( dtStr == "none"     ) dt = 0;
+							else if( dtStr == "reinhard" ) dt = 1;
+							else if( dtStr == "aces"     ) dt = 2;
+							else if( dtStr == "agx"      ) dt = 3;
+							else if( dtStr == "hable"    ) dt = 4;
+							// (absent/unknown -> keep the ACES default)
+							const std::string exStr = paramValue( node, "exposure" );
+							if( !exStr.empty() ) {
+								exposureEV = std::strtod( exStr.c_str(), nullptr );
+							}
+						}
+						// HDR output: keep the ACES preview default (a linear
+						// archival curve would blow out the 8-bit PNG preview).
+						break;
+					}
+				}
+
+				// Stack the active camera's exposure compensation, exactly as
+				// FileRasterizerOutput stacks Meta().cameraExposureEV onto the
+				// static exposure at encode time (FrameEncoders.cpp totalEV).
+				ICameraManager* cams = mJob->GetCameras();
+				const std::string activeName = mJob->GetActiveCameraName();
+				const ICamera* cam = ( cams && !activeName.empty() )
+					? cams->GetItem( activeName.c_str() ) : nullptr;
+				if( cam ) {
+					exposureEV += static_cast<double>( cam->GetExposureCompensationEV() );
+				}
+			}
+
+			outExposureEV       = exposureEV;
+			outDisplayTransform = dt;
+		}
+
 		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params,
 		                                              bool assumeParked,
 		                                              std::uint64_t forcedJobId )
@@ -2511,6 +2600,20 @@ namespace RISE
 				}
 			};
 
+			// The effective BEAUTY display transform (exposure + tone curve)
+			// the in-memory PNG encode must apply so this render mirrors the
+			// CLI file-output / viewport pipeline instead of emitting a raw
+			// linear->sRGB image (see ResolveBeautyDisplayTransform_ +
+			// InMemoryRasterizerOutput::SetDisplayTransform).  Resolved ONCE
+			// here and installed on the beauty sinks (production + draft)
+			// below; the OBJECTMAP sink deliberately leaves it at identity so
+			// its per-pixel identity bytes pass through un-tonemapped.
+			double beautyExposureEV       = 0.0;
+			int    beautyDisplayTransform = 2 /*eDisplayTransform_ACES*/;
+			if( !isObjectMap ) {
+				ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform );
+			}
+
 			// Toolkit slice 2 (quality:"draft"): the EPHEMERAL preview-
 			// pipeline render body.  Never references `rast` (the production
 			// rasterizer), its FrameStore, or mJob->RemoveRasterizerOutputs()
@@ -2575,6 +2678,10 @@ namespace RISE
 				// no reason; this fresh instance starts with an empty outs
 				// list of its own).
 				sink = new InMemoryRasterizerOutput();
+				// Beauty preview: encode through the scene's effective display
+				// transform (see the resolve above) so a draft render mirrors
+				// the file/viewport look, not a raw linear->sRGB image.
+				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
 				ephemeralRast->AddRasterizerOutput( sink );
 
 				applyFilmOverride();
@@ -2868,6 +2975,12 @@ namespace RISE
 				// OUR ref via safe_release(sink) after this lambda returns --
 				// no extra addref here.
 				sink = new InMemoryRasterizerOutput();
+				// Beauty render: encode through the scene's effective display
+				// transform (exposure + tone curve) so decode(rr.png) matches
+				// the CLI file-output / viewport pipeline for the SAME head --
+				// the divergence the image_reconstruct compareToImage grading
+				// depends on being closed (see ResolveBeautyDisplayTransform_).
+				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
 				rast->AddRasterizerOutput( sink );
 
 				// ---- Film-dims override: capture -> set -> (render happens
@@ -3908,6 +4021,17 @@ namespace RISE
 			// aspect-preserving downscale).  Scoped: released before return.
 			InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
 			sink->AdoptCoherentSnapshot( std::move( pixels ), w, h );
+			// The interactive FrameStore is copied out LINEAR (a raw beauty
+			// DumpImage, no view transform); apply the scene's effective
+			// display transform at encode time so read_viewport shows the SAME
+			// tonemapped image a human watching the viewport sees, matching
+			// read_image (see ResolveBeautyDisplayTransform_).
+			{
+				double vExposureEV = 0.0;
+				int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
+				ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform );
+				sink->SetDisplayTransform( vExposureEV, vDisplayTransform );
+			}
 
 			std::vector<unsigned char> png;
 			if( maxEdge > 0 ) {

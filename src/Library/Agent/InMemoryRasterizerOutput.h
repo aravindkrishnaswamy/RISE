@@ -109,10 +109,40 @@ namespace RISE
 			//! captured buffer.
 			bool GetPixelColor( unsigned int x, unsigned int y, RISEColor& out ) const;
 
+			//! Set the DISPLAY TRANSFORM (exposure + tone curve) applied at
+			//! encode time by ToPng()/ToPngDownscaled(), BEFORE the sRGB
+			//! Integerize the PNGWriter performs.  This is the SAME stage the
+			//! CLI `file_rasterizeroutput` PNG pipeline applies via
+			//! `DisplayTransformWriter` (exposure multiply by 2^EV, then the
+			//! selected `DISPLAY_TRANSFORM` tone curve) -- so a beauty sink
+			//! configured with the scene's effective (exposure, tone-curve)
+			//! encodes BYTE-IDENTICAL bytes to a CLI PNG render of the same
+			//! scene.  Without this the sink encoded a raw linear->sRGB image
+			//! (identity tone curve), which for RISE's default LDR output
+			//! (ACES filmic) diverged systematically from every CLI / file /
+			//! viewport render the agent's read_image / read_viewport is meant
+			//! to mirror.
+			//!
+			//! `displayTransform` uses the `DISPLAY_TRANSFORM` enum values
+			//! (0=none, 1=reinhard, 2=aces, 3=agx, 4=hable); it is a plain int
+			//! here only so this header stays free of the DisplayTransform.h /
+			//! Color.h dependency chain.  Default (unset) is IDENTITY
+			//! (exposure 0, tone curve none) so any caller that does NOT set it
+			//! -- e.g. the OBJECTMAP identity-render sink, whose per-pixel
+			//! bytes must pass through un-tonemapped -- keeps the exact raw
+			//! linear->sRGB behaviour this sink always had.  Affects ONLY the
+			//! encoded PNG output; MeanChannels()/GetPixelColor() continue to
+			//! report the stored LINEAR pixels (a display-independent image
+			//! signature, per their own docs).
+			void SetDisplayTransform( double exposureEV, int displayTransform );
+
 			//! Serialize the captured frame to 8-bit sRGB PNG bytes, reusing
 			//! the tree's `PNGWriter` (sRGB Integerize + libpng) targeting a
-			//! `MemoryBuffer` rather than a file.  Returns an EMPTY vector
-			//! when no frame has been captured yet.  Const: encoding does not
+			//! `MemoryBuffer` rather than a file.  When a non-identity display
+			//! transform has been set (see SetDisplayTransform), the exposure +
+			//! tone curve are applied first (same `DisplayTransformWriter`
+			//! stage the CLI PNG pipeline uses).  Returns an EMPTY vector when
+			//! no frame has been captured yet.  Const: encoding does not
 			//! mutate the captured pixels.
 			std::vector<unsigned char> ToPng() const;
 
@@ -144,6 +174,12 @@ namespace RISE
 			unsigned int           mWidth;
 			unsigned int           mHeight;
 			bool                   mHasImage;
+
+			//! Encode-time display transform (see SetDisplayTransform).  0 EV
+			//! + tone curve 0 (none) is the identity default -- ToPng() then
+			//! emits the raw linear->sRGB bytes it always did.
+			double                 mExposureEV;
+			int                    mDisplayTransform;
 		};
 	}
 }

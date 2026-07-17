@@ -1403,6 +1403,26 @@ namespace RISE
 			                                bool assumeParked = false,
 			                                std::uint64_t forcedJobId = 0 );
 
+			//! Resolve the effective BEAUTY display transform (exposure EV +
+			//! tone-curve enum) the agent's in-memory PNG encode must apply so
+			//! read_image / read_viewport / a compareToImage grading render
+			//! reproduce what the CLI file-output pipeline (and the viewport a
+			//! human watches) produce for the SAME head -- rather than a raw
+			//! linear->sRGB image.  Mirrors the CLI defaults: an LDR
+			//! `file_rasterizeroutput` chunk's declared `display_transform` +
+			//! `exposureEV` when the head declares one, otherwise the LDR
+			//! default (ACES filmic, 0 EV) -- an agent render is always an
+			//! 8-bit PNG preview, so even an HDR-only or output-less head gets
+			//! a viewable tone curve.  The active camera's
+			//! GetExposureCompensationEV() is stacked additively onto the
+			//! exposure, matching FileRasterizerOutput's camera-EV stacking.
+			//! `outDisplayTransform` uses the DISPLAY_TRANSFORM enum values
+			//! (int to keep this header off the DisplayTransform.h dependency).
+			//! Never applied to the OBJECTMAP identity sink (which must emit
+			//! un-tonemapped per-pixel identity bytes).
+			void ResolveBeautyDisplayTransform_( double& outExposureEV,
+			                                     int& outDisplayTransform ) const;
+
 			//! Fix-round-1 P1-A / round-2 P1-1: cancel + wait, UNBOUNDED, for
 			//! any OUTSTANDING async render submitted against the
 			//! controller CURRENTLY attached (mController, read/captured
