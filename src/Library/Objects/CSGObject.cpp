@@ -197,6 +197,88 @@ void CSGObject::SetOperation( const CSG_OP& op_ )
 	op = op_;
 }
 
+namespace
+{
+	//! Adopt the FULL per-surface payload from `src` into `dst` -- every
+	//! field a child geometry stamps at intersection time OTHER than the
+	//! boundary-identifying range/normal fields (range, range2, vNormal,
+	//! vNormal2, vGeomNormal, vGeomNormal2), which each CSG branch below
+	//! computes explicitly per the CSG algebra.
+	//!
+	//! INVARIANT: the reported boundary surface's auxiliary payload --
+	//! texture coordinates, surface derivatives, texture footprint, vertex
+	//! color, tangent frame, and the object-space intersection point used
+	//! by solid-texturing consumers -- must come WHOLLY from the operand
+	//! that owns that surface.  CSGObject::IntersectRay starts most
+	//! branches with an efficient whole-record `ri = riObjA` (or `riObjB`)
+	//! copy and then overrides only the boundary-identifying fields per
+	//! the CSG algebra.  When the algebra attributes the reported boundary
+	//! to the OTHER operand, the auxiliary fields must be re-adopted from
+	//! the record that actually owns that surface -- otherwise the hit
+	//! ships with, e.g., operand B's normal paired with operand A's
+	//! UV / derivatives / tangent / vertex color, a mixed-surface payload
+	//! that silently corrupts texturing, bump mapping, mip LOD, and any
+	//! solid-texturing painter keyed off the object-space hit point
+	//! downstream.  Call sites pass `riObjA` or `riObjB` -- whichever
+	//! operand's entry face the branch is about to report -- even when
+	//! that happens to already be `dst`'s current owner (a harmless
+	//! self-copy that keeps every boundary-defining branch going through
+	//! the same explicit, reviewable adoption).
+	//!
+	//! EXIT-DESIGNATED BOUNDARIES: `src`'s auxiliary payload was computed
+	//! by the child geometry for `src`'s ENTRY hit only -- no RISE
+	//! geometry computes a second UV / derivatives / tangent / vertex-
+	//! color set for the exit hit (only the exit NORMAL is available, via
+	//! vNormal2 / vGeomNormal2).  So when a branch reports an operand's
+	//! EXIT face as the composite's entry boundary (SUBTRACTION's "the
+	//! carve's near wall is B's exit face" case), the adopted payload is
+	//! honestly the wrong face of the RIGHT operand.  That is a real,
+	//! documented limitation of the intersection data model -- do not
+	//! try to fabricate exit-face UVs/derivatives/tangents here.
+	//!
+	//! NOT copied (out of scope for this invariant): `ptObjExit` has no
+	//! consumers today; `pCustom` / `glossyFilterWidth` / `ambientIOR`
+	//! are stamped by the integrator/ray-caster layer above CSGObject
+	//! (or, for glossyFilterWidth, simply never propagated into the
+	//! freshly-constructed `riObjA` / `riObjB` records at all) and are
+	//! unaffected by which operand owns the reported surface.
+	void AdoptCsgSurfacePayload( RayIntersectionGeometric& dst, const RayIntersectionGeometric& src )
+	{
+		dst.ptCoord = src.ptCoord;
+		dst.ptCoord1 = src.ptCoord1;
+		dst.bHasTexCoord1 = src.bHasTexCoord1;
+		dst.derivatives = src.derivatives;
+		dst.txFootprint = src.txFootprint;
+		dst.vColor = src.vColor;
+		dst.bHasVertexColor = src.bHasVertexColor;
+		dst.vTangent = src.vTangent;
+		dst.bitangentSign = src.bitangentSign;
+		dst.bHasTangent = src.bHasTangent;
+		dst.bShadingTangentFromGeometry = src.bShadingTangentFromGeometry;
+
+		// Wireframe view-mode edge info is per-surface payload too (GUI
+		// render modes P1): the closest-edge point belongs to the SAME
+		// triangle/operand as the reported boundary, or the wireframe
+		// shader measures a cross-operand distance.
+		dst.ptWireNearestEdge = src.ptWireNearestEdge;
+		dst.bHasWireEdgeInfo = src.bHasWireEdgeInfo;
+
+		// Same contamination pattern as the fields above (a per-surface
+		// value baked in by the child geometry at intersection time,
+		// silently stale after `ri = riObj<other>` when the boundary
+		// crosses operand identity), and it has live consumers
+		// (GlintModifier::FindFacet, Voronoi3DPainter) that key solid
+		// texturing off it.  Note this is still the CHILD object's own
+		// local-frame point (Object::IntersectRay computes it before the
+		// CSG-level transform); CSGObject reports `this` as `ri.pObject`
+		// for IOR-stack/shading identity, so ptObjIntersec's frame does
+		// not match ri.pObject's transform for ANY CSG hit, buggy branch
+		// or not -- that is a separate, pre-existing frame-semantics gap,
+		// not something this adoption fixes or worsens.
+		dst.ptObjIntersec = src.ptObjIntersec;
+	}
+}
+
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
 {
 	// The hitting of front and back faces are IGNORED for CSG objects!
@@ -428,8 +510,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					(riObjA.geometric.range <= riObjB.geometric.range) &&
 					(riObjB.geometric.range <= riObjA.geometric.range2) )
 				{
-					// A enters first, B enters while inside A
+					// A enters first, B enters while inside A -- the
+					// composite's entry boundary is wholly B's surface,
+					// even though `ri` started as A's whole record above.
 					ri = riObjA;
+					AdoptCsgSurfacePayload( ri.geometric, riObjB.geometric );
 					ri.geometric.range = riObjB.geometric.range;
 					ri.geometric.vNormal = riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal;
@@ -447,8 +532,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					(riObjB.geometric.range <= riObjA.geometric.range) &&
 					(riObjA.geometric.range <= riObjB.geometric.range2) )
 				{
-					// B enters first, A enters while inside B
+					// B enters first, A enters while inside B -- the
+					// composite's entry boundary is wholly A's surface,
+					// even though `ri` started as B's whole record above.
 					ri = riObjB;
+					AdoptCsgSurfacePayload( ri.geometric, riObjA.geometric );
 					ri.geometric.range = riObjA.geometric.range;
 					ri.geometric.vNormal = riObjA.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal;
@@ -517,6 +605,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					}
 					else if( riObjB.geometric.range2 < riObjA.geometric.range2 )
 					{
+						// EXIT-designated boundary: the composite's entry here is
+						// B's EXIT face (B.vNormal2), not B's entry face.  `ri =
+						// riObjB` still carries B's auxiliary payload (ptCoord /
+						// derivatives / tangent / vertex color / ptObjIntersec)
+						// from B's ENTRY hit -- no RISE geometry computes a second
+						// payload set for the exit hit, only the exit NORMAL is
+						// available.  So this reported entry surface is honestly
+						// the wrong face of the right operand (B); leaving B's
+						// entry-hit payload in place (the existing shipped
+						// behavior) is the best available answer -- do not
+						// fabricate exit-face UVs/derivatives/tangent here.
 						ri = riObjB;
 						ri.geometric.range = riObjB.geometric.range2;
 						ri.geometric.range2 = riObjA.geometric.range2;
@@ -525,6 +624,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
+						// The wire-edge point (if stamped) belongs to B's ENTRY
+						// face; drawing it on this EXIT-designated surface would
+						// place another face's edges here.  Clear -- honest
+						// no-lines, matching the entry-only stamp contract.
+						ri.geometric.bHasWireEdgeInfo = false;
 					}
 					else if( (riObjB.geometric.range >= riObjA.geometric.range2) ||
 							 (riObjB.geometric.range2 <= riObjA.geometric.range) )
