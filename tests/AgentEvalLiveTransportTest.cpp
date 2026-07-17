@@ -835,18 +835,18 @@ static void TestRunConfigLoad()
 		Check( cfg.providers.size() == 4, "all 4 distinct-model 'local' provider rows are captured, none dropped/merged" );
 	}
 
-	// The committed local_shootout.json (5 provider rows: 1 gemini + 4
-	// distinct-model local) loads cleanly end-to-end.
+	// The committed local_shootout.json (8 provider rows: gemini + openai +
+	// xai + 5 distinct-model local) loads cleanly end-to-end.
 	{
 		AgentEvalRunConfig cfg; std::string err;
 		Check( LoadEvalRunConfig( "evals/runconfigs/local_shootout.json", cfg, err ),
 		       "evals/runconfigs/local_shootout.json loads (" + err + ")" );
 		Check( cfg.scenarios.size() == 5, "local_shootout.json: 5 scenarios (reserved_name_recovery + its reserved_name_clarify sibling)" );
-		Check( cfg.providers.size() == 7, "local_shootout.json: 7 providers (gemini + openai + xai + 4 distinct-model local)" );
+		Check( cfg.providers.size() == 8, "local_shootout.json: 8 providers (gemini + openai + xai + 5 distinct-model local)" );
 		int localCount = 0;
 		for( std::size_t i = 0; i < cfg.providers.size(); ++i )
 			if( cfg.providers[i].provider == "local" ) ++localCount;
-		Check( localCount == 4, "local_shootout.json: 4 'local' rows survive loading (not deduped by provider name)" );
+		Check( localCount == 5, "local_shootout.json: 5 'local' rows survive loading (not deduped by provider name)" );
 		Check( cfg.repeats == 3, "local_shootout.json: repeats == 3" );
 		Check( cfg.runDir == "evals/runs/local_shootout", "local_shootout.json: runDir captured" );
 	}

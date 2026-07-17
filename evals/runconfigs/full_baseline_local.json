@@ -17,10 +17,26 @@
     "evals/scenarios/multi_turn_edit.json"
   ],
   "providers": [
-    { "provider": "local", "model": "qwen3:32b" },
-    { "provider": "local", "model": "qwen3.6:27b" },
-    { "provider": "local", "model": "qwen3-coder:30b" },
-    { "provider": "local", "model": "llama3.3:70b-instruct-q4_K_M" }
+    {
+      "provider": "local",
+      "model": "qwen3:32b"
+    },
+    {
+      "provider": "local",
+      "model": "qwen3.6:27b"
+    },
+    {
+      "provider": "local",
+      "model": "qwen3-coder:30b"
+    },
+    {
+      "provider": "local",
+      "model": "glm-4.7-flash"
+    },
+    {
+      "provider": "local",
+      "model": "qwen3-coder-next"
+    }
   ],
   "repeats": 3,
   "runDir": "evals/runs/full_baseline"

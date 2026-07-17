@@ -26,7 +26,11 @@
     },
     {
       "provider": "local",
-      "model": "llama3.3:70b-instruct-q4_K_M"
+      "model": "glm-4.7-flash"
+    },
+    {
+      "provider": "local",
+      "model": "qwen3-coder-next"
     },
     {
       "provider": "openai",

@@ -90,7 +90,7 @@ Fields (`LoadEvalRunConfig`, `AgentEvalRunConfig`/`AgentEvalProviderConfig` in
 | `runDir` | yes, non-empty | e.g. `evals/runs/<stamp>` — gitignored |
 
 `evals/runconfigs/local_shootout.json` shows the full matrix shape: 4
-scenarios × 7 provider/model rows (gemini, four `local` Ollama models, openai,
+scenarios × 8 provider/model rows (gemini, five `local` Ollama models, openai,
 xai) × 3 repeats.
 
 #### Env-var keys per provider
