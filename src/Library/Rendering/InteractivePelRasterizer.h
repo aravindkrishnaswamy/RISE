@@ -131,6 +131,68 @@ namespace RISE
 			IRayCaster** ppCaster,
 			const ObjectMapPalette& palette );
 
+		//! GUI render modes P1 (docs/gui/RENDER_MODES.md): the shared
+		//! viewport render-mode registry.  ONE namespace for the GUI
+		//! mode dropdown, the C-ABI, and the agent `render{mode:}`
+		//! tool, so the skill vocabulary and the UI vocabulary can
+		//! never drift.  `name` strings are the wire format everywhere;
+		//! enum values are never serialized.
+		enum class ViewportRenderMode
+		{
+			Preview,    //!< today's studio material preview (the platform-installed pipeline)
+			ObjectMap,  //!< per-object identity segmentation (agent surface; own factory above)
+			Normals,    //!< world-space shading-normal false colour
+			Depth,      //!< scene-scale-normalized hit distance (near = bright)
+			Facets,     //!< headlamp-shaded GEOMETRIC normal (reveals tessellation)
+			Wireframe   //!< first-hit triangle edges over dim facet shading
+		};
+
+		struct ViewportRenderModeInfo
+		{
+			ViewportRenderMode	mode;
+			const char*			name;               //!< wire name (C-ABI, agent tool, persistence)
+			const char*			title;              //!< UI label
+			const char*			question;           //!< the question this mode answers (skill/UI tooltip)
+			bool				wantsDenoise;       //!< false for data modes (denoising a normal map is meaningless)
+			bool				viewportSelectable; //!< appears in the viewport mode dropdown
+			bool				casterFactory;      //!< CreateInteractiveViewModeCaster can build it
+		};
+
+		//! All modes, in UI order.
+		const ViewportRenderModeInfo* GetViewportRenderModes( unsigned int& outCount );
+		//! nullptr when `name` is not a registered mode.
+		const ViewportRenderModeInfo* FindViewportRenderModeByName( const char* name );
+		const ViewportRenderModeInfo* FindViewportRenderModeInfo( ViewportRenderMode mode );
+
+		//! Build the ephemeral view-mode caster for the casterFactory
+		//! modes (Normals / Depth / Facets / Wireframe).  The returned
+		//! pointer is a refcounted ownership reference for the caller to
+		//! release; the caster owns its shader.  Returns false for
+		//! Preview (restore the platform-installed casters instead) and
+		//! ObjectMap (its own factory above -- palette lifecycle).
+		bool CreateInteractiveViewModeCaster(
+			ViewportRenderMode mode,
+			IRayCaster** ppCaster );
+
+		//! GUI render modes P1 (docs/gui/RENDER_MODES.md): sibling of
+		//! CreateInteractiveObjectMapPipeline for the four ShaderPipeline
+		//! data modes (Normals / Depth / Facets / Wireframe -- the modes
+		//! whose ViewportRenderModeInfo::casterFactory is true).  Builds
+		//! the mode's caster via CreateInteractiveViewModeCaster and
+		//! wraps it in an InteractivePelRasterizer configured exactly
+		//! like the objectmap factory: progressiveOnIdle=false, no
+		//! sampling kernel installed, no polish caster -- a single exact
+		//! 1-spp pass is the whole point of a diagnostic image (data
+		//! modes don't need a sampling kernel for P1).  Returns false
+		//! for Preview and ObjectMap (their own factories above) and
+		//! for any non-casterFactory mode.  Returned pointers are
+		//! refcounted ownership references for the caller to release,
+		//! exactly like the other pipeline factories.
+		bool CreateInteractiveViewModePipeline(
+			ViewportRenderMode mode,
+			IRasterizer** ppRasterizer,
+			IRayCaster** ppCaster );
+
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{
 		public:
@@ -222,6 +284,38 @@ namespace RISE
 			//! clear.
 			void SetPolishRayCaster( IRayCaster* polishCaster );
 
+			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §5): install
+			//! (non-null) or clear (nullptr) an ephemeral view-mode caster
+			//! (Normals / Depth / Facets / Wireframe, built by
+			//! CreateInteractiveViewModeCaster) on the SAME pCaster slot
+			//! SetPolishRayCaster's swap logic manipulates.  Refcounted:
+			//! addref'd on install, released on clear/replace/destruction.
+			//!
+			//! Install (`p` non-null): saves whichever caster pCaster
+			//! currently holds -- the TRUE preview caster, unwinding an
+			//! in-progress polish swap first if one is active, so the save
+			//! is never the transient polish caster -- then swaps pCaster
+			//! to `p`.  Calling this again with a DIFFERENT `p` while a
+			//! view mode is already installed switches directly between
+			//! modes without touching the saved preview caster.  While a
+			//! view-mode caster is installed, SetSampleCount(>1)'s usual
+			//! swap-to-the-polish-caster behaviour is suppressed (see its
+			//! own doc) -- silently flipping the image back to clay
+			//! mid-polish while the user is looking at, say, a depth map
+			//! would be a visible glitch -- but the multi-sample kernel
+			//! installation itself is unaffected.  ShouldDenoise() also
+			//! returns false while installed (denoising a normals/depth/id
+			//! map is meaningless).
+			//!
+			//! Clear (`p` is nullptr): restores the saved preview caster
+			//! and resumes normal SetSampleCount / polish-caster / denoise
+			//! behaviour.  No-op if no view-mode caster is installed.
+			void SetViewModeCaster( IRayCaster* p );
+
+			//! True while a view-mode caster is installed (SetViewModeCaster
+			//! called with a non-null `p`, no matching clear yet).
+			bool HasViewModeCaster() const { return mViewModeCasterInstalled; }
+
 		protected:
 			virtual ~InteractivePelRasterizer();
 
@@ -283,6 +377,20 @@ namespace RISE
 			// us — addref on install, release on destruction.
 			IRayCaster*           mPolishCaster;
 			IRayCaster*           mSavedPreviewCaster;
+
+			// GUI render modes P1 (docs/gui/RENDER_MODES.md §5): true while
+			// SetViewModeCaster installed a Normals/Depth/Facets/Wireframe
+			// caster on pCaster.  mSavedPreviewCasterForViewMode holds the
+			// TRUE preview caster to restore to on clear -- refcounted,
+			// released on restore/destruction.  Kept SEPARATE from
+			// mSavedPreviewCaster (the polish-swap's own save slot above)
+			// because the two swaps nest independently: SetSampleCount
+			// suppresses its OWN pCaster swap entirely while
+			// mViewModeCasterInstalled is true (see SetSampleCount's .cpp
+			// comments), so mSavedPreviewCaster never becomes non-null
+			// during that window.
+			bool                  mViewModeCasterInstalled;
+			IRayCaster*           mSavedPreviewCasterForViewMode;
 		};
 	}
 }

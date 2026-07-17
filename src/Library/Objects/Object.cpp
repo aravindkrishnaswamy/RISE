@@ -544,6 +544,13 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 				m_mxInvTranspose, ri.geometric.derivatives.dndv );
 		}
 
+		// Wireframe view-mode closest-edge point transforms like a
+		// position (forward transform) -- exactly as ptIntersection.
+		if( ri.geometric.bHasWireEdgeInfo ) {
+			ri.geometric.ptWireNearestEdge = Point3Ops::Transform(
+				m_mxFinalTrans, ri.geometric.ptWireNearestEdge );
+		}
+
 		if( bComputeExitInfo ) {
 			ri.geometric.vNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal2 ) );
 			ri.geometric.vGeomNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal2 ) );

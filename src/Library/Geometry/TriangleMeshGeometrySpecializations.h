@@ -152,6 +152,18 @@ namespace RISE
 				ri.bHit = true;
 				ri.range = h.dRange;
 
+				// Wireframe view-mode closest-edge info -- see the indexed
+				// specialization for the full rationale; only the data
+				// access differs (by-value .vertices here).
+				if( ri.bWantsWireEdgeInfo ) {
+					ri.ptWireNearestEdge = WireClosestPointOnTriangleEdges(
+						ri.ray.PointAtLength( h.dRange ),
+						thisTri.vertices[0],
+						thisTri.vertices[1],
+						thisTri.vertices[2] );
+					ri.bHasWireEdgeInfo = true;
+				}
+
 				const Scalar&	a = h.alpha;
 				const Scalar&	b = h.beta;
 

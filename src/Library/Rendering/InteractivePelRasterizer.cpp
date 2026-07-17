@@ -31,6 +31,9 @@
 #include "../RISE_API.h"
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/Reference.h"
+#include <cstring>
+#include "../Interfaces/IEnumCallback.h"
+#include "../Interfaces/IObjectManager.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -525,6 +528,336 @@ private:
 	}
 };
 
+//! GUI render modes P1 (docs/gui/RENDER_MODES.md): world-space shading-
+//! normal false colour -- c = 0.5*(N+1).  Deliberately NOT flipped
+//! toward the viewer: a back-facing normal renders in the "negative"
+//! half of the colour cube, which is exactly the orientation defect
+//! the mode exists to reveal.
+class NormalsViewShader :
+	public IShader,
+	public Reference
+{
+public:
+	NormalsViewShader() {}
+
+	void Shade( const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)ior_stack;
+		Vector3 n = ri.geometric.vNormal;
+		Vector3Ops::NormalizeMag( n );
+		c = RISEPel( 0.5 * ( n.x + 1.0 ), 0.5 * ( n.y + 1.0 ), 0.5 * ( n.z + 1.0 ) );
+	}
+
+	Scalar ShadeNM( const RuntimeContext& rc,
+					const RayIntersection& ri,
+					const IRayCaster& caster,
+					const IRayCaster::RAY_STATE& rs,
+					const Scalar nm,
+					const IORStack& ior_stack ) const override
+	{
+		(void)nm;
+		RISEPel c;
+		Shade( rc, ri, caster, rs, c, ior_stack );
+		return ( c[0] + c[1] + c[2] ) / 3.0;
+	}
+
+	void ResetRuntimeData() const override {}
+
+protected:
+	~NormalsViewShader() override {}
+};
+
+//! Headlamp-shaded GEOMETRIC normal (flat face normal -- no Phong
+//! smoothing, no bump/normal-map perturbation).  Reveals the actual
+//! tessellation and any shading-normal divergence.
+class FacetsViewShader :
+	public IShader,
+	public Reference
+{
+public:
+	FacetsViewShader() {}
+
+	void Shade( const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)ior_stack;
+		c = FacetShade( ri );
+	}
+
+	Scalar ShadeNM( const RuntimeContext& rc,
+					const RayIntersection& ri,
+					const IRayCaster& caster,
+					const IRayCaster::RAY_STATE& rs,
+					const Scalar nm,
+					const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)nm;
+		(void)ior_stack;
+		const RISEPel c = FacetShade( ri );
+		return ( c[0] + c[1] + c[2] ) / 3.0;
+	}
+
+	void ResetRuntimeData() const override {}
+
+	//! Shared with WireframeViewShader (its non-edge base shade).
+	static RISEPel FacetShade( const RayIntersection& ri )
+	{
+		Vector3 gn = ri.geometric.vGeomNormal;
+		Vector3Ops::NormalizeMag( gn );
+		Vector3 v = -ri.geometric.ray.Dir();
+		Vector3Ops::NormalizeMag( v );
+		Scalar ndv = Vector3Ops::Dot( gn, v );
+		if( ndv < 0.0 ) {
+			ndv = -ndv;
+		}
+		if( ndv > 1.0 ) {
+			ndv = 1.0;
+		}
+		const Scalar shade = 0.12 + 0.88 * ndv;
+		return RISEPel( 0.78 * shade, 0.78 * shade, 0.80 * shade );
+	}
+
+protected:
+	~FacetsViewShader() override {}
+};
+
+//! Scene-scale-normalized hit distance, near = bright:
+//! t = 1 / (1 + 3 d / D) with D = the scene's world bounding-box
+//! diagonal, captured ONCE per AttachScene (single-threaded, before the
+//! parallel workers start) by InteractiveViewModeRayCaster below.  The
+//! fixed scene-scale mapping is deliberate: brightness IS distance in
+//! scene units, stable while navigating (an adaptive per-frame window
+//! would re-mean the image every camera move).  D == 0 (no bounded
+//! objects) falls back to t = 1 / (1 + d).
+class DepthViewShader :
+	public IShader,
+	public Reference
+{
+public:
+	DepthViewShader() : mSceneDiagonal( 0.0 ) {}
+
+	//! Called from AttachScene only -- single-threaded by the render
+	//! setup contract; read-only during the parallel render.
+	void SetSceneDiagonal( const Scalar d ) { mSceneDiagonal = d; }
+
+	void Shade( const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)ior_stack;
+		const Scalar t = DepthValue( ri );
+		c = RISEPel( t, t, t );
+	}
+
+	Scalar ShadeNM( const RuntimeContext& rc,
+					const RayIntersection& ri,
+					const IRayCaster& caster,
+					const IRayCaster::RAY_STATE& rs,
+					const Scalar nm,
+					const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)nm;
+		(void)ior_stack;
+		return DepthValue( ri );
+	}
+
+	void ResetRuntimeData() const override {}
+
+protected:
+	~DepthViewShader() override {}
+
+private:
+	Scalar mSceneDiagonal;
+
+	Scalar DepthValue( const RayIntersection& ri ) const
+	{
+		const Scalar d = ri.geometric.range;
+		if( mSceneDiagonal > 0.0 ) {
+			return 1.0 / ( 1.0 + 3.0 * d / mSceneDiagonal );
+		}
+		return 1.0 / ( 1.0 + d );
+	}
+};
+
+//! First-hit triangle edges over dim facet shading.  Consumes the
+//! closest-edge point the mesh intersectors stamp when the caster
+//! requests it (RayIntersectionGeometric::bWantsWireEdgeInfo); the
+//! world-space distance |ptIntersection - ptWireNearestEdge| is exact
+//! under any affine transform because Object::IntersectRay transforms
+//! the edge point exactly like ptIntersection.  Line width is range-
+//! proportional (approximately constant apparent width under
+//! perspective).  Geometries without polygon edges (analytical
+//! primitives, SDFs) never stamp the info -- they render as dim facet
+//! shading with no lines, which is the honest answer.
+class WireframeViewShader :
+	public IShader,
+	public Reference
+{
+public:
+	WireframeViewShader() {}
+
+	void Shade( const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)ior_stack;
+		c = WirePel( ri );
+	}
+
+	Scalar ShadeNM( const RuntimeContext& rc,
+					const RayIntersection& ri,
+					const IRayCaster& caster,
+					const IRayCaster::RAY_STATE& rs,
+					const Scalar nm,
+					const IORStack& ior_stack ) const override
+	{
+		(void)rc;
+		(void)caster;
+		(void)rs;
+		(void)nm;
+		(void)ior_stack;
+		const RISEPel c = WirePel( ri );
+		return ( c[0] + c[1] + c[2] ) / 3.0;
+	}
+
+	void ResetRuntimeData() const override {}
+
+protected:
+	~WireframeViewShader() override {}
+
+private:
+	//! Fraction of the hit distance that reads as one line half-width;
+	//! ~2.5 apparent pixels at 800 px / 40 degree fov.  A constant is a
+	//! deliberate simplification -- the shader has no fov/raster-height
+	//! access; thread the real pixel footprint through if that ever
+	//! becomes worth it.
+	static Scalar LineWidthScale() { return 0.0035; }
+
+	static RISEPel WirePel( const RayIntersection& ri )
+	{
+		RISEPel base = FacetsViewShader::FacetShade( ri );
+		base = base * 0.30;
+		if( !ri.geometric.bHasWireEdgeInfo ) {
+			return base;
+		}
+		const Scalar dist = Vector3Ops::Magnitude( Vector3Ops::mkVector3(
+			ri.geometric.ptIntersection, ri.geometric.ptWireNearestEdge ) );
+		const Scalar width = ri.geometric.range * LineWidthScale();
+		if( width <= 0.0 || dist >= width ) {
+			return base;
+		}
+		const Scalar t = 1.0 - dist / width;
+		const RISEPel line( 0.92, 0.96, 1.0 );
+		return base + ( line - base ) * t;
+	}
+};
+
+//! Unions the world bounding boxes of all bounded objects; unbounded
+//! objects (infinite planes report infinite boxes) are skipped by
+//! threshold compare rather than isfinite (-ffast-math makes value-
+//! level isfinite guards unreliable; see the repo FP notes).
+class SceneExtentEnum : public IEnumCallback<IObject>
+{
+public:
+	BoundingBox box;
+	bool        any;
+
+	SceneExtentEnum() : box( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) ), any( false ) {}
+
+	bool operator()( const IObject& obj ) override
+	{
+		const BoundingBox b = obj.getBoundingBox();
+		const Scalar kHuge = 1.0e30;
+		if( fabs( b.ll.x ) > kHuge || fabs( b.ll.y ) > kHuge || fabs( b.ll.z ) > kHuge ||
+			fabs( b.ur.x ) > kHuge || fabs( b.ur.y ) > kHuge || fabs( b.ur.z ) > kHuge ) {
+			return true;
+		}
+		if( !any ) {
+			box = b;
+			any = true;
+		} else {
+			box.Include( b.ll );
+			box.Include( b.ur );
+		}
+		return true;
+	}
+};
+
+//! View-mode caster: material-preview caster behaviour with luminaires
+//! visible (an emissive object is a real, world-visible object whose
+//! normals / depth / facets / edges must render -- same rationale as
+//! the objectmap caster), plus the wireframe edge-info request flag and
+//! the scene-extent capture the depth shader normalizes against.
+class InteractiveViewModeRayCaster :
+	public InteractiveMaterialPreviewRayCaster
+{
+public:
+	InteractiveViewModeRayCaster( const IShader& shader,
+	                              const bool wantsWireEdges,
+	                              DepthViewShader* pDepthListener )
+	: InteractiveMaterialPreviewRayCaster( shader, /*showLuminaires*/true )
+	, mpDepthListener( pDepthListener )
+	{
+		bWantsWireEdgeInfo = wantsWireEdges;
+	}
+
+	void AttachScene( const IScene* pScene_ ) override
+	{
+		InteractiveMaterialPreviewRayCaster::AttachScene( pScene_ );
+		if( !mpDepthListener ) {
+			return;
+		}
+		Scalar diag = 0.0;
+		if( pScene_ && pScene_->GetObjects() ) {
+			SceneExtentEnum extent;
+			pScene_->GetObjects()->EnumerateObjects( static_cast<IEnumCallback<IObject>&>( extent ) );
+			if( extent.any ) {
+				diag = Vector3Ops::Magnitude(
+					Vector3Ops::mkVector3( extent.box.ur, extent.box.ll ) );
+			}
+		}
+		mpDepthListener->SetSceneDiagonal( diag );
+	}
+
+private:
+	// Borrowed: the SAME object as the caster's default shader, kept
+	// alive by the caster's own shader reference.
+	DepthViewShader* mpDepthListener;
+};
+
 }
 
 bool RISE::Implementation::CreateInteractiveMaterialPreviewPipeline(
@@ -621,6 +954,145 @@ bool RISE::Implementation::CreateInteractiveObjectMapPipeline(
 	return true;
 }
 
+// ---------------------------------------------------------------------
+// GUI render modes P1 (docs/gui/RENDER_MODES.md): the shared viewport
+// render-mode registry + the ephemeral view-mode caster factory.
+// ---------------------------------------------------------------------
+
+namespace {
+
+const RISE::Implementation::ViewportRenderModeInfo kViewportRenderModes[] =
+{
+	{ RISE::Implementation::ViewportRenderMode::Preview,   "preview",   "Shaded Preview",
+	  "What does the scene roughly look like?",       true,  true,  false },
+	{ RISE::Implementation::ViewportRenderMode::ObjectMap, "objectmap", "Object Map",
+	  "Which object is where?",                       false, false, false },
+	{ RISE::Implementation::ViewportRenderMode::Normals,   "normals",   "Normals",
+	  "Which way do surfaces face?",                  false, true,  true  },
+	{ RISE::Implementation::ViewportRenderMode::Depth,     "depth",     "Depth",
+	  "How far away is everything?",                  false, true,  true  },
+	{ RISE::Implementation::ViewportRenderMode::Facets,    "facets",    "Facets",
+	  "What does the actual tessellation look like?", false, true,  true  },
+	{ RISE::Implementation::ViewportRenderMode::Wireframe, "wireframe", "Wireframe",
+	  "Where are the polygon edges?",                 false, true,  true  },
+};
+
+}
+
+const RISE::Implementation::ViewportRenderModeInfo*
+RISE::Implementation::GetViewportRenderModes( unsigned int& outCount )
+{
+	outCount = static_cast<unsigned int>(
+		sizeof( kViewportRenderModes ) / sizeof( kViewportRenderModes[0] ) );
+	return kViewportRenderModes;
+}
+
+const RISE::Implementation::ViewportRenderModeInfo*
+RISE::Implementation::FindViewportRenderModeByName( const char* name )
+{
+	if( !name ) {
+		return 0;
+	}
+	for( unsigned int i = 0; i < sizeof( kViewportRenderModes ) / sizeof( kViewportRenderModes[0] ); ++i ) {
+		if( strcmp( kViewportRenderModes[i].name, name ) == 0 ) {
+			return &kViewportRenderModes[i];
+		}
+	}
+	return 0;
+}
+
+const RISE::Implementation::ViewportRenderModeInfo*
+RISE::Implementation::FindViewportRenderModeInfo( ViewportRenderMode mode )
+{
+	for( unsigned int i = 0; i < sizeof( kViewportRenderModes ) / sizeof( kViewportRenderModes[0] ); ++i ) {
+		if( kViewportRenderModes[i].mode == mode ) {
+			return &kViewportRenderModes[i];
+		}
+	}
+	return 0;
+}
+
+bool RISE::Implementation::CreateInteractiveViewModeCaster(
+	ViewportRenderMode mode,
+	IRayCaster** ppCaster )
+{
+	if( ppCaster ) {
+		*ppCaster = 0;
+	}
+	if( !ppCaster ) {
+		return false;
+	}
+
+	IShader* pShader = 0;
+	DepthViewShader* pDepthListener = 0;
+	bool wantsWireEdges = false;
+	switch( mode ) {
+	case ViewportRenderMode::Normals:
+		pShader = new NormalsViewShader();
+		break;
+	case ViewportRenderMode::Depth:
+	{
+		DepthViewShader* pDepth = new DepthViewShader();
+		pShader = pDepth;
+		pDepthListener = pDepth;
+		break;
+	}
+	case ViewportRenderMode::Facets:
+		pShader = new FacetsViewShader();
+		break;
+	case ViewportRenderMode::Wireframe:
+		pShader = new WireframeViewShader();
+		wantsWireEdges = true;
+		break;
+	default:
+		// Preview restores the platform-installed casters; ObjectMap has
+		// its own factory (palette lifecycle).  Neither is built here.
+		return false;
+	}
+
+	IRayCaster* pCaster = new InteractiveViewModeRayCaster(
+		*pShader, wantsWireEdges, pDepthListener );
+	pShader->release();
+	*ppCaster = pCaster;
+	return true;
+}
+
+bool RISE::Implementation::CreateInteractiveViewModePipeline(
+	ViewportRenderMode mode,
+	IRasterizer** ppRasterizer,
+	IRayCaster** ppCaster )
+{
+	if( ppRasterizer ) {
+		*ppRasterizer = 0;
+	}
+	if( ppCaster ) {
+		*ppCaster = 0;
+	}
+	if( !ppRasterizer || !ppCaster ) {
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	if( !CreateInteractiveViewModeCaster( mode, &pCaster ) ) {
+		// Preview / ObjectMap (own factories above) or an unrecognized mode.
+		return false;
+	}
+
+	// Same "single exact pass" config as CreateInteractiveObjectMapPipeline:
+	// progressiveOnIdle OFF, no polish caster, no sampling kernel installed --
+	// every pixel takes IntegratePixel's single-ray (no jitter, no filter)
+	// branch.  These are data/diagnostic images; a sampling kernel buys
+	// nothing for P1.
+	InteractivePelRasterizer::Config cfg;
+	cfg.progressiveOnIdle = false;
+
+	InteractivePelRasterizer* interactive = new InteractivePelRasterizer( pCaster, cfg );
+
+	*ppRasterizer = interactive;
+	*ppCaster = pCaster;
+	return true;
+}
+
 InteractivePelRasterizer::InteractivePelRasterizer( IRayCaster* pCaster, const Config& cfg , RISE::Implementation::FrameStore* frameStore)
 :
   Rasterizer( frameStore ),
@@ -638,6 +1110,8 @@ InteractivePelRasterizer::InteractivePelRasterizer( IRayCaster* pCaster, const C
 , mPolishKernel( 0 )
 , mPolishCaster( 0 )
 , mSavedPreviewCaster( 0 )
+, mViewModeCasterInstalled( false )
+, mSavedPreviewCasterForViewMode( 0 )
 {
 }
 
@@ -651,6 +1125,17 @@ InteractivePelRasterizer::~InteractivePelRasterizer()
 		safe_release( pCaster );
 		pCaster = mSavedPreviewCaster;
 		mSavedPreviewCaster = 0;
+	}
+	// GUI render modes P1: same defensive unwind for a still-installed
+	// view-mode caster (shouldn't happen -- SceneEditController::
+	// RebindEditorToJob resets to Preview on every scene load/reload, and
+	// the controller resets before teardown -- but be defensive exactly
+	// like the polish case above).
+	if( mViewModeCasterInstalled ) {
+		safe_release( pCaster );
+		pCaster = mSavedPreviewCasterForViewMode;
+		mSavedPreviewCasterForViewMode = 0;
+		mViewModeCasterInstalled = false;
 	}
 	safe_release( mPolishKernel );
 	safe_release( mPolishCaster );
@@ -692,6 +1177,55 @@ void InteractivePelRasterizer::SetPolishRayCaster( IRayCaster* polishCaster )
 	}
 }
 
+void InteractivePelRasterizer::SetViewModeCaster( IRayCaster* p )
+{
+	if( p )
+	{
+		if( !mViewModeCasterInstalled )
+		{
+			// First install: capture the TRUE original preview caster to
+			// restore to later.  If a polish-caster swap is currently in
+			// effect (SetSampleCount's own mechanism -- mSavedPreviewCaster
+			// non-null means pCaster currently holds mPolishCaster, not the
+			// real preview caster), unwind it here so we save the REAL
+			// original, not the transient polish caster.  The polish
+			// reference pCaster held is simply dropped -- mPolishCaster's
+			// own long-lived reference (held by the mPolishCaster member
+			// itself, set up by SetPolishRayCaster) is untouched.
+			if( mSavedPreviewCaster )
+			{
+				mSavedPreviewCasterForViewMode = mSavedPreviewCaster;
+				mSavedPreviewCaster = 0;
+				safe_release( pCaster );   // drop the transient polish reference
+			}
+			else
+			{
+				mSavedPreviewCasterForViewMode = pCaster;   // transfer pCaster's own reference
+				pCaster = 0;
+			}
+			mViewModeCasterInstalled = true;
+		}
+		else
+		{
+			// Switching directly between two view modes: drop the
+			// currently-installed one's pCaster reference.  The saved
+			// original preview caster (mSavedPreviewCasterForViewMode)
+			// is untouched -- it was captured on the FIRST install.
+			safe_release( pCaster );
+		}
+		pCaster = p;
+		pCaster->addref();
+		return;
+	}
+
+	// p == nullptr: restore.  No-op if no view-mode caster is installed.
+	if( !mViewModeCasterInstalled ) return;
+	safe_release( pCaster );
+	pCaster = mSavedPreviewCasterForViewMode;
+	mSavedPreviewCasterForViewMode = 0;
+	mViewModeCasterInstalled = false;
+}
+
 void InteractivePelRasterizer::SetIdleMode( bool idle ) const
 {
 	mIdleMode = idle;
@@ -716,7 +1250,14 @@ void InteractivePelRasterizer::SetSampleCount( unsigned int n )
 		// caster.  pCaster currently holds an addref'd polish caster;
 		// release that and adopt the saved preview caster (whose
 		// refcount we preserved at swap time).
-		if( mSavedPreviewCaster ) {
+		//
+		// GUI render modes P1: suppressed entirely while a view-mode
+		// caster is installed -- pCaster holds the view-mode caster,
+		// not the polish caster, and mSavedPreviewCaster is guaranteed
+		// null in that window (SetViewModeCaster's install unwinds any
+		// in-progress polish swap before installing) -- so this branch
+		// would never fire anyway; the guard documents the invariant.
+		if( !mViewModeCasterInstalled && mSavedPreviewCaster ) {
 			safe_release( pCaster );
 			pCaster = mSavedPreviewCaster;
 			mSavedPreviewCaster = 0;
@@ -755,7 +1296,16 @@ void InteractivePelRasterizer::SetSampleCount( unsigned int n )
 	// pipeline uses this to spend extra work on pointer-up AO while
 	// keeping live drag cheap.  Idempotent: if we've already swapped,
 	// leave the existing state in place.
-	if( mPolishCaster && !mSavedPreviewCaster ) {
+	//
+	// GUI render modes P1: suppressed entirely while a view-mode caster
+	// is installed -- swapping pCaster to mPolishCaster here would
+	// silently flip the image back to clay-preview shading mid-polish
+	// while the user is looking at a normals/depth/facets/wireframe
+	// view (docs/gui/RENDER_MODES.md §4 "Denoise / display policy" and
+	// SetViewModeCaster's own doc).  The sampling-kernel install above
+	// (pSampling / ProgressiveConfig) is UNAFFECTED by this guard --
+	// only the pCaster swap is suppressed.
+	if( !mViewModeCasterInstalled && mPolishCaster && !mSavedPreviewCaster ) {
 		mSavedPreviewCaster = pCaster;   // keep its refcount on the saved slot
 		pCaster = mPolishCaster;
 		pCaster->addref();
@@ -796,8 +1346,15 @@ bool InteractivePelRasterizer::ShouldDenoise() const
 	// denoising the partial image so the user sees a smoothed preview
 	// of whatever samples landed before the next restart, instead of
 	// raw MC noise.
+	//
+	// GUI render modes P1: never denoise while a view-mode caster is
+	// installed -- denoising a normals/depth/facets/wireframe image is
+	// meaningless (docs/gui/RENDER_MODES.md §4 "Denoise / display
+	// policy"; ViewportRenderModeInfo::wantsDenoise is false for every
+	// data mode).
 	return PixelBasedPelRasterizer::ShouldDenoise() &&
-		mPreviewDenoiseMode != PreviewDenoise_Off;
+		mPreviewDenoiseMode != PreviewDenoise_Off &&
+		!mViewModeCasterInstalled;
 }
 
 unsigned int InteractivePelRasterizer::GetDenoiseAOVSamplesPerPixel() const

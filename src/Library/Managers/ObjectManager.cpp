@@ -67,6 +67,10 @@ void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ ele
 	// of the call and restores at exit, but the call may early-return
 	// without restore on the box-prehit miss path).
 	RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
+	// Propagate per-cast INPUT request flags into the fresh record --
+	// fresh construction defaults them off (wireframe view mode would
+	// silently never receive its edge info through the BVH leaf path).
+	myRI.geometric.bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
 	elem->IntersectRay( myRI, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 		ri = myRI;
@@ -83,6 +87,7 @@ void ObjectManager::RayElementIntersection( RayIntersectionGeometric& ri, const 
 	// Same closest-hit semantics as the full overload above.
 	RayIntersection myRI( ri.ray, ri.rast );
 	myRI.geometric.range = ri.range;
+	myRI.geometric.bWantsWireEdgeInfo = ri.bWantsWireEdgeInfo;
 	elem->IntersectRay( myRI, ri.range, bHitFrontFaces, bHitBackFaces, false );
 	if( myRI.geometric.bHit && myRI.geometric.range < ri.range ) {
 		ri = myRI.geometric;
@@ -275,6 +280,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 			if( i->second.first->IsWorldVisible() )
 			{
 				RayIntersection		this_ri( ri.geometric.ray, ri.geometric.rast );
+				this_ri.geometric.bWantsWireEdgeInfo = ri.geometric.bWantsWireEdgeInfo;
 				i->second.first->IntersectRay( this_ri, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 
 				if( this_ri.geometric.bHit && this_ri.geometric.range < ri.geometric.range ) {

@@ -47,6 +47,12 @@ namespace RISE
 {
 	namespace Implementation { class InteractivePelRasterizer; }
 	namespace Implementation { class FrameStore; }
+	//! GUI render modes P1 (docs/gui/RENDER_MODES.md §5).  Opaque-enum
+	//! forward declaration (implicit `int` underlying type, matching the
+	//! full definition in InteractivePelRasterizer.h) -- gives this header
+	//! a complete-enough type for the `mViewportRenderMode` data member
+	//! below without pulling in the full interactive-rasterizer header.
+	namespace Implementation { enum class ViewportRenderMode; }
 
 	class SceneEditController
 	{
@@ -2218,6 +2224,36 @@ namespace RISE
 		//! skipped.
 		AgentCommitResult RemoveEntity( Category cat, const String& name );
 
+		//! -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) --------
+		//!
+		//! Mode switch = caster swap on the interactive rasterizer, coordinated
+		//! the SAME way SetViewportPose (above) swaps mViewportOverrideCamera:
+		//! check the render-owns-scene guard first (no-op while a production/
+		//! agent render is in flight), take mMutex, CancelAndParkRender_ so the
+		//! swap never races DoOneRenderPass's in-flight RasterizeScene call,
+		//! mutate, then release the lock and kick a repaint.  See
+		//! InteractivePelRasterizer::SetViewModeCaster for the caster-swap
+		//! mechanics (which preview/polish invariants it preserves) and
+		//! RebindEditorToJob for the "every scene load/reload resets to
+		//! preview" rule (a scene silently opening in depth mode would read
+		//! as a broken render).
+
+		//! Switch the interactive viewport to render-mode `name` (a registry
+		//! wire name -- "preview", "normals", "depth", "facets", "wireframe";
+		//! NOT "objectmap", which is `viewportSelectable=false`: it has its
+		//! own palette-lifecycle pipeline, not a plain caster swap -- see
+		//! docs/gui/RENDER_MODES.md §4).  No-op (returns true, nothing
+		//! mutated) when `name` already names the active mode.  Returns false
+		//! for an unknown name, a non-viewport-selectable mode, while a
+		//! production/agent render owns the scene, or in skeleton mode (no
+		//! interactive rasterizer wired up -- see the constructor's
+		//! test-harness note).
+		bool SetViewportRenderMode( const char* name );
+
+		//! The registry wire name of the CURRENTLY active viewport render
+		//! mode ("preview" by default and after every reset).  Never null.
+		const char* GetViewportRenderMode() const;
+
 		//! -------- Environment / IBL section (GUI Environment panel) --------
 		//!
 		//! The image-based-lighting environment is a scene-level singleton
@@ -2518,6 +2554,11 @@ namespace RISE
 		// path (SetSampleCount).  Null if the rasterizer isn't an
 		// InteractivePelRasterizer (e.g. test mode with no rasterizer).
 		Implementation::InteractivePelRasterizer* mInteractiveImpl;
+		// GUI render modes P1 (docs/gui/RENDER_MODES.md §5): the currently
+		// active viewport render mode.  Mutated ONLY under mMutex (by
+		// SetViewportRenderMode and by RebindEditorToJob's every-scene-load
+		// reset-to-Preview); Preview at construction and after every reset.
+		Implementation::ViewportRenderMode mViewportRenderMode;
 		SceneEditor                 mEditor;
 		Tool                        mTool;
 		//! Photoshop-style per-category "last-used" sub-tool memory.

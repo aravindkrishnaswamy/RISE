@@ -48,6 +48,53 @@ namespace RISE
 		TRIANGLE_HIT( ) : alpha( 0 ), beta( 0 ) {}
 	};
 
+	//! GUI render modes P1 (wireframe view mode): closest point on a
+	//! segment, then on the nearest of a triangle's three edges to a
+	//! point on the triangle.  Object-space; the mesh intersectors store
+	//! the result on the intersection record and Object::IntersectRay
+	//! transforms it to world space alongside ptIntersection (see
+	//! RayIntersectionGeometric::bWantsWireEdgeInfo).
+	inline Point3 WireClosestPointOnSegment(
+		const Point3& p,
+		const Point3& a,
+		const Point3& b )
+	{
+		const Vector3 ab = Vector3Ops::mkVector3( b, a );
+		const Scalar len2 = Vector3Ops::SquaredModulus( ab );
+		if( len2 <= 0.0 ) {
+			return a;
+		}
+		Scalar t = Vector3Ops::Dot( Vector3Ops::mkVector3( p, a ), ab ) / len2;
+		t = t < 0.0 ? 0.0 : ( t > 1.0 ? 1.0 : t );
+		return Point3Ops::mkPoint3( a, ab * t );
+	}
+
+	inline Point3 WireClosestPointOnTriangleEdges(
+		const Point3& p,
+		const Point3& v0,
+		const Point3& v1,
+		const Point3& v2 )
+	{
+		const Point3 c0 = WireClosestPointOnSegment( p, v0, v1 );
+		const Point3 c1 = WireClosestPointOnSegment( p, v1, v2 );
+		const Point3 c2 = WireClosestPointOnSegment( p, v2, v0 );
+		const Scalar d0 = Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( p, c0 ) );
+		const Scalar d1 = Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( p, c1 ) );
+		const Scalar d2 = Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( p, c2 ) );
+		// Seed the reduction from the first candidate, never from an
+		// infinity sentinel (-ffast-math; see the repo threading/FP notes).
+		Point3 best = c0;
+		Scalar bestD2 = d0;
+		if( d1 < bestD2 ) {
+			best = c1;
+			bestD2 = d1;
+		}
+		if( d2 < bestD2 ) {
+			best = c2;
+		}
+		return best;
+	}
+
 	struct BEZIER_HIT : public HIT
 	{
 		Scalar		u;

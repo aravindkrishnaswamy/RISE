@@ -189,6 +189,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 : mJob( job )
 , mInteractiveRasterizer( interactiveRasterizer )
 , mInteractiveImpl( dynamic_cast<Implementation::InteractivePelRasterizer*>( interactiveRasterizer ) )
+, mViewportRenderMode( Implementation::ViewportRenderMode::Preview )
 , mEditor( *job.GetScene() )
 , mTool( Tool::Select )
 // Photoshop-style per-category memory.  Initialize each slot to
@@ -305,6 +306,25 @@ void SceneEditController::RebindEditorToJob()
 	mEditor.SetPainterManager( mJob.GetPainters() );            // Phase 4: painter-name -> IPainter*/IScalarPainter*
 	mEditor.SetScalarPainterManager( mJob.GetScalarPainters() );
 	mEditor.SetJob( &mJob );                                    // medium-name resolution (IJobPriv : IJob)
+
+	// GUI render modes P1 (docs/gui/RENDER_MODES.md §5): every whole-scene
+	// (re)bind resets the viewport to Preview.  A scene silently opening
+	// (or a scene_variant switch silently landing) in depth/normals/etc.
+	// would read as a broken render -- the ratified rule is "every scene
+	// opens in preview".  Callers of this method already hold the
+	// cancel-and-parked mMutex (or, at construction, there is no render
+	// thread yet to race) -- see this method's own doc -- so mutating the
+	// interactive rasterizer's caster here is safe by the SAME contract
+	// SetViewportRenderMode itself relies on.  This does NOT call the
+	// public setter (which re-takes mMutex; RebindEditorToJob's
+	// non-constructor callers already hold it, so re-entering would
+	// deadlock on the non-recursive mutex) -- it inlines the equivalent
+	// raw state mutation instead.
+	if( mInteractiveImpl && mViewportRenderMode != Implementation::ViewportRenderMode::Preview )
+	{
+		mInteractiveImpl->SetViewModeCaster( nullptr );
+		mViewportRenderMode = Implementation::ViewportRenderMode::Preview;
+	}
 }
 
 namespace {
@@ -6938,6 +6958,84 @@ bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
 	if( !mViewportPoseActive ) return false;
 	out = mViewportPose;
 	return true;
+}
+
+// ===================== Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) =====
+
+bool SceneEditController::SetViewportRenderMode( const char* name )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	if( !mInteractiveImpl ) return false;   // skeleton mode -- no interactive rasterizer wired up
+
+	const Implementation::ViewportRenderModeInfo* info =
+		Implementation::FindViewportRenderModeByName( name );
+	if( !info || !info->viewportSelectable )
+	{
+		// Unknown name, OR a registered-but-not-selectable mode (today:
+		// only "objectmap" -- its own palette-lifecycle pipeline, not a
+		// plain caster swap; see docs/gui/RENDER_MODES.md §4).
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::SetViewportRenderMode: unknown or non-selectable mode name \"%s\"",
+			name ? name : "(null)" );
+		return false;
+	}
+
+	// Cancel-and-park: the render thread's DoOneRenderPass reads pCaster
+	// (via mInteractiveImpl) at RasterizeScene time; we must swap it while
+	// no pass is in flight.  Read mViewportRenderMode under the SAME lock
+	// that guards every OTHER mutation of it (SetViewportRenderMode /
+	// RebindEditorToJob) -- no unsynchronized read of the member, mirroring
+	// SetViewportPose's mViewportOverrideCamera contract above.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( info->mode == mViewportRenderMode )
+	{
+		return true;   // no-op -- already the active mode
+	}
+	CancelAndParkRender_( lk );
+
+	IRayCaster* caster = 0;
+	if( info->mode != Implementation::ViewportRenderMode::Preview )
+	{
+		if( !Implementation::CreateInteractiveViewModeCaster( info->mode, &caster ) )
+		{
+			// Shouldn't happen for a viewportSelectable, non-Preview mode
+			// -- the factory covers exactly {Normals,Depth,Facets,
+			// Wireframe} -- but fail closed rather than install nothing
+			// silently.  lk unlocks; render thread was parked but nothing
+			// was mutated, so no repaint kick is needed.
+			return false;
+		}
+	}
+
+	// nullptr for Preview -- SetViewModeCaster restores the platform-
+	// installed preview/polish casters (see its own doc).
+	mInteractiveImpl->SetViewModeCaster( caster );
+	if( caster )
+	{
+		caster->release();   // rasterizer addref'd it; drop our local ref
+	}
+	mViewportRenderMode = info->mode;
+
+	// Kick a repaint -- same inline store-then-notify SetViewportPose uses
+	// (KickRender() takes mMutex itself, so it can't be called while we
+	// still hold `lk`).
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+const char* SceneEditController::GetViewportRenderMode() const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return "preview";  // render-owns-scene guard
+	Implementation::ViewportRenderMode mode;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mode = mViewportRenderMode;
+	}
+	const Implementation::ViewportRenderModeInfo* info =
+		Implementation::FindViewportRenderModeInfo( mode );
+	return info ? info->name : "preview";
 }
 
 // ===================== Axis snaps + Home (Tier 2 §4.2) =========================

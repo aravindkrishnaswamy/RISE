@@ -7338,6 +7338,7 @@ namespace RISE
 
 #include "RISE_API.h"
 #include "SceneEditor/SceneEditController.h"
+#include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
 
 namespace RISE
 {
@@ -7601,6 +7602,46 @@ namespace RISE
 	{
 		if( !p ) return false;
 		return p->HasHomeView();
+	}
+
+	// -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) ----
+
+	bool RISE_API_SceneEditController_SetViewportRenderMode(
+		SceneEditController* p, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetViewportRenderMode( name );
+	}
+
+	const char* RISE_API_SceneEditController_GetViewportRenderMode( SceneEditController* p )
+	{
+		if( !p ) return "preview";
+		return p->GetViewportRenderMode();
+	}
+
+	unsigned int RISE_API_GetViewportRenderModeCount()
+	{
+		unsigned int count = 0;
+		Implementation::GetViewportRenderModes( count );
+		return count;
+	}
+
+	bool RISE_API_GetViewportRenderModeInfo(
+		unsigned int index,
+		const char** name, const char** title, const char** question,
+		bool* viewportSelectable )
+	{
+		unsigned int count = 0;
+		const Implementation::ViewportRenderModeInfo* modes =
+			Implementation::GetViewportRenderModes( count );
+		if( !modes || index >= count ) return false;
+
+		const Implementation::ViewportRenderModeInfo& info = modes[index];
+		if( name )               *name               = info.name;
+		if( title )              *title              = info.title;
+		if( question )           *question           = info.question;
+		if( viewportSelectable ) *viewportSelectable = info.viewportSelectable;
+		return true;
 	}
 
 	bool RISE_API_SceneEditController_OnPointerDown(

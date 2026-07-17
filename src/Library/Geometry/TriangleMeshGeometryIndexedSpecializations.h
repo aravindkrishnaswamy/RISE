@@ -173,6 +173,21 @@ namespace RISE
 				ri.bHit = true;
 				ri.range = h.dRange;
 
+				// Wireframe view-mode closest-edge info (GUI render modes
+				// P1).  Object-space closest point on the nearest of the
+				// three triangle edges to the hit point; Object::
+				// IntersectRay transforms it to world space alongside
+				// ptIntersection.  Gated on the caster's request flag so
+				// ordinary renders skip the extra work entirely.
+				if( ri.bWantsWireEdgeInfo ) {
+					ri.ptWireNearestEdge = WireClosestPointOnTriangleEdges(
+						ri.ray.PointAtLength( h.dRange ),
+						*thisTri.pVertices[0],
+						*thisTri.pVertices[1],
+						*thisTri.pVertices[2] );
+					ri.bHasWireEdgeInfo = true;
+				}
+
 				const Scalar&	a = h.alpha;
 				const Scalar&	b = h.beta;
 

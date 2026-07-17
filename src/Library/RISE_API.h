@@ -3636,6 +3636,41 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p );
 	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p );
 
+	//! -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) --------
+	//! Mode switch = a caster swap on the interactive rasterizer; see
+	//! SceneEditController::SetViewportRenderMode for the full contract
+	//! (unknown/non-selectable name, render-owns-scene, skeleton-mode
+	//! refusals; every scene load/reload resets to "preview").
+
+	//! Switch the interactive viewport to render-mode `name` (a registry
+	//! wire name -- see RISE_API_GetViewportRenderModeInfo below for the
+	//! full set).  Returns false on a null controller/name, an unknown or
+	//! non-viewport-selectable name (e.g. "objectmap"), or the documented
+	//! controller-level refusals.
+	bool RISE_API_SceneEditController_SetViewportRenderMode(
+		SceneEditController* p, const char* name );
+
+	//! The registry wire name of the CURRENTLY active viewport render mode
+	//! ("preview" on a null controller).  Points at a static registry
+	//! string -- no allocation, do not free.
+	const char* RISE_API_SceneEditController_GetViewportRenderMode(
+		SceneEditController* p );
+
+	//! Registry-level accessors (NOT controller-scoped -- callable before
+	//! any SceneEditController exists, e.g. to populate a mode dropdown or
+	//! an agent tool schema at startup).  Mirror
+	//! RISE::Implementation::GetViewportRenderModes 1:1.
+	unsigned int RISE_API_GetViewportRenderModeCount();
+
+	//! Read registry entry `index`.  All out-parameters are nullable
+	//! (caller may pass null for fields it doesn't need) and point at
+	//! STATIC registry strings -- no allocation, do not free.  Returns
+	//! false (outputs untouched) on an out-of-range index.
+	bool RISE_API_GetViewportRenderModeInfo(
+		unsigned int index,
+		const char** name, const char** title, const char** question,
+		bool* viewportSelectable );
+
 	//! Pointer events from the platform UI.  Coordinates are in the
 	//! preview surface's pixel space.
 	bool RISE_API_SceneEditController_OnPointerDown(

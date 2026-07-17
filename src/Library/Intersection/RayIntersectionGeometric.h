@@ -212,6 +212,27 @@ namespace RISE
 		//! byte-identical.
 		bool						bShadingTangentFromGeometry;
 
+		//! Wireframe view-mode edge info (GUI render modes P1,
+		//! docs/gui/RENDER_MODES.md).  INPUT: `bWantsWireEdgeInfo` is
+		//! stamped onto the record by the ray caster BEFORE the
+		//! intersection (only the interactive wireframe view-mode
+		//! caster sets it), gating the extra per-hit closest-edge
+		//! computation so production renders pay nothing for the
+		//! feature.  OUTPUT: triangle-mesh intersectors that honour
+		//! the request store the closest point on the hit triangle's
+		//! nearest EDGE in `ptWireNearestEdge` (object space at stamp
+		//! time; Object::IntersectRay transforms it to world space
+		//! exactly like `ptIntersection`, so the world-space distance
+		//! |ptIntersection - ptWireNearestEdge| is exact under any
+		//! affine transform, including non-uniform scale) and set
+		//! `bHasWireEdgeInfo`.  Geometries without polygon edges
+		//! (analytical primitives, SDFs) leave it false -- the
+		//! wireframe shader falls back to facet shading there,
+		//! honestly drawing no lines.
+		Point3						ptWireNearestEdge;
+		bool						bHasWireEdgeInfo;
+		bool						bWantsWireEdgeInfo;
+
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
 		  ray( ray_ ),
 		  rast( rast_ ),
@@ -225,7 +246,9 @@ namespace RISE
 		  bHasVertexColor( false ),
 		  bitangentSign( 1.0 ),
 		  bHasTangent( false ),
-		  bShadingTangentFromGeometry( false )
+		  bShadingTangentFromGeometry( false ),
+		  bHasWireEdgeInfo( false ),
+		  bWantsWireEdgeInfo( false )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -261,7 +284,10 @@ namespace RISE
 		  vTangent( r.vTangent ),
 		  bitangentSign( r.bitangentSign ),
 		  bHasTangent( r.bHasTangent ),
-		  bShadingTangentFromGeometry( r.bShadingTangentFromGeometry )
+		  bShadingTangentFromGeometry( r.bShadingTangentFromGeometry ),
+		  ptWireNearestEdge( r.ptWireNearestEdge ),
+		  bHasWireEdgeInfo( r.bHasWireEdgeInfo ),
+		  bWantsWireEdgeInfo( r.bWantsWireEdgeInfo )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -297,6 +323,9 @@ namespace RISE
 			bitangentSign = r.bitangentSign;
 			bHasTangent = r.bHasTangent;
 			bShadingTangentFromGeometry = r.bShadingTangentFromGeometry;
+			ptWireNearestEdge = r.ptWireNearestEdge;
+			bHasWireEdgeInfo = r.bHasWireEdgeInfo;
+			bWantsWireEdgeInfo = r.bWantsWireEdgeInfo;
 
 			safe_release( pCustom );
 			pCustom = r.pCustom;

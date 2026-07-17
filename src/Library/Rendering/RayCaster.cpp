@@ -102,7 +102,8 @@ RayCaster::RayCaster(
   iPendingRISCandidates( -1 ),
   builtLightGeneration( 0 ),
   bTransparentShadows( false ),
-  dRadianceScaleOverride( -1.0 )		// negative = no override (use the map's own scale)
+  dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
+  bWantsWireEdgeInfo( false )
 {
 	pDefaultShader.addref();
 }
@@ -372,6 +373,7 @@ bool RayCaster::CastRay(
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
 
 	bool bHit = ri.geometric.bHit;
@@ -1065,6 +1067,7 @@ bool RayCaster::CastRayNM(
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
 
 	bool bHit = ri.geometric.bHit;
@@ -1955,6 +1958,7 @@ bool RayCaster::CastRayHWSS(
 	// Single scene intersection shared by all wavelengths
 	RayIntersection ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
 
 	bool bHit = ri.geometric.bHit;

@@ -98,6 +98,14 @@ namespace RISE
 			//! a render (single-threaded); the next AttachScene applies it.
 			Scalar						dRadianceScaleOverride;
 
+			//! When true, every intersection record this caster produces
+			//! requests wireframe closest-edge info from triangle-mesh
+			//! intersectors (RayIntersectionGeometric::bWantsWireEdgeInfo).
+			//! Default false -- production renders never pay for the
+			//! feature.  Set only by the interactive wireframe view-mode
+			//! caster (InteractivePelRasterizer.cpp).
+			bool						bWantsWireEdgeInfo;
+
 			virtual ~RayCaster();
 
 			//! Selects the shader used for a surface hit.  The default
