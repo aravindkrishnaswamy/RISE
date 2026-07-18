@@ -3081,13 +3081,18 @@ static void TestAdversarialOracleControls()
 	}
 
 	// (h)/(i)/(j)/(k) below exercise the Wave-5 image_reconstruct_* scenarios.
-	// Their checkpoint arrays are 4 render compares + objectmap + document +
-	// diagnostics + trajectory (indices 0-3 = view1..view4 compares, 4 =
-	// objectmap, 5 = document chunk_count, 6 = diagnostics, 7 = trajectory).
-	// checkpoint 0 (view1) grades at the STRICT 0.015 cap; checkpoints 1-3
-	// (view2/view3/view4) grade at the RELAXED 0.04 cap (CALIBRATION.md Sec 10 --
-	// image_reconstruct_single's two-tier rubric, since only view1 is an
-	// observable reference photo). Unlike (a)-(g), an empty-stage, wrong-
+	// Their checkpoint arrays are 4 STRICT/RELAXED render compares + objectmap +
+	// document + diagnostics + trajectory + 4 GRADED render compares (indices
+	// 0-3 = view1..view4 structural compares, 4 = objectmap, 5 = document
+	// chunk_count, 6 = diagnostics, 7 = trajectory, 8-11 = view1..view4 GRADED
+	// compares -- weight 0.5 each, CALIBRATION.md Sec 12). checkpoint 0 (view1)
+	// grades at the STRICT 0.015 cap; checkpoints 1-3 (view2/view3/view4) grade
+	// at the RELAXED 0.04 cap (CALIBRATION.md Sec 10 -- image_reconstruct_single's
+	// two-tier rubric, since only view1 is an observable reference photo).
+	// checkpoints 8-11 grade at the GRADED tier's 0.9x-anchor(e) caps
+	// (0.105/0.12/0.15/0.115) -- loose enough that a normal PASS also clears
+	// them trivially, tight enough that an empty/near-empty stage still fails
+	// them (CALIBRATION.md Sec 12). Unlike (a)-(g), an empty-stage, wrong-
 	// lighting, or flat-cutout reconstruction fails MULTIPLE checkpoints at
 	// once (the four compares share root causes), so RunAdversarialControl's
 	// "every OTHER checkpoint must stay green" rule does not apply here --
@@ -3105,7 +3110,12 @@ static void TestAdversarialOracleControls()
 	// the view1 compare (checkpoint 0) is asserted here, per the task's
 	// explicit carve-out: an empty scene legitimately fails several
 	// checkpoints at once, so there is no single "attributable" failure to
-	// isolate the way (a)-(g) do.
+	// isolate the way (a)-(g) do. The GRADED tier (checkpoints 8-11) is also
+	// asserted below: its caps sit at 0.9x anchor (e) BY CONSTRUCTION, so the
+	// empty-stage fixture -- which literally IS anchor (e) -- fails all four
+	// of them too. That is the graded tier's margin proof, re-rendered in CI:
+	// the tier's whole purpose is to fail an empty/near-empty stage while
+	// giving partial credit for genuine engagement short of full fidelity.
 	{
 		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_empty" );
 		AgentEvalScenario s; std::string err;
@@ -3145,6 +3155,21 @@ static void TestAdversarialOracleControls()
 			Check( r.checkpoints[0].detail.find( "RMSE" ) != std::string::npos,
 				"image_reconstruct_single/empty-stage control: checkpoints[0] detail names RMSE (detail: " +
 				r.checkpoints[0].detail + ")" );
+		}
+		// GRADED-tier margin proof (CALIBRATION.md Sec 12): checkpoints 8-11
+		// (the appended weight-0.5 graded compares) cap at 0.9x anchor (e), and
+		// this fixture's empty stage IS anchor (e) -- so all four MUST fail too,
+		// confirming the graded tier does not silently admit an empty/near-empty
+		// stage that the structural tier already rejects.
+		if( r.checkpoints.size() > 11 ) {
+			for( std::size_t i = 8; i <= 11; ++i ) {
+				Check( !r.checkpoints[i].passed,
+					"image_reconstruct_single/empty-stage control: checkpoints[" + std::to_string( i ) +
+					"] (graded compare) failed (detail: " + r.checkpoints[i].detail + ")" );
+				Check( r.checkpoints[i].detail.find( "RMSE" ) != std::string::npos,
+					"image_reconstruct_single/empty-stage control: checkpoints[" + std::to_string( i ) +
+					"] detail names RMSE (detail: " + r.checkpoints[i].detail + ")" );
+			}
 		}
 	}
 
@@ -3602,6 +3627,26 @@ static void TestAdversarialOracleControls()
 			Check( r.checkpoints[7].passed,
 				"image_reconstruct_single/bas-relief control: checkpoints[7] (trajectory) PASSES (detail: " +
 				r.checkpoints[7].detail + ")" );
+		}
+		// GRADED-tier admission (CALIBRATION.md Sec 12): checkpoints 8-11 (the
+		// appended weight-0.5 graded compares, caps 0.105/0.12/0.15/0.115) all
+		// PASS for the bas-relief -- its measured RMSEs (view1 0.01132, view2
+		// 0.02520, view3 0.06937, view4 0.01479) sit well under every graded
+		// cap, INCLUDING view3's 0.06937, which fails the structural relaxed
+		// 0.04 cap (checkpoints[2] above) but clears the graded tier's looser
+		// 0.15 cap with room to spare. This is exactly the graded tier's design
+		// intent: it admits engaged-but-imperfect volume work (a bas-relief
+		// that nails three of four views and only misses hidden depth on the
+		// most back-facing pose) rather than scoring it identically to an empty
+		// stage on the progress meter, even though the STRUCTURAL gate (which
+		// stays authoritative for allPassed/pass-fail) still correctly rejects
+		// it.
+		if( r.checkpoints.size() > 11 ) {
+			for( std::size_t i = 8; i <= 11; ++i ) {
+				Check( r.checkpoints[i].passed,
+					"image_reconstruct_single/bas-relief control: checkpoints[" + std::to_string( i ) +
+					"] (graded compare) PASSES under the graded cap (detail: " + r.checkpoints[i].detail + ")" );
+			}
 		}
 	}
 }
