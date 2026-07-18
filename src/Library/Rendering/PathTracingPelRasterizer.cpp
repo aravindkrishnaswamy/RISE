@@ -52,6 +52,13 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	pIntegrator->addref();
 }
 
+void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetMaxPathDepth( n );
+	}
+}
+
 PathTracingPelRasterizer::~PathTracingPelRasterizer()
 {
 	safe_release( pIntegrator );

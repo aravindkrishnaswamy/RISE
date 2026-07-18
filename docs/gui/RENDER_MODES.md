@@ -57,7 +57,7 @@ sibling) · **T2** beauty-variant (real integrator + config overrides) ·
 |---|---|---|
 | `clay` | T0 | The existing studio material preview (`InteractiveMaterialPreviewShader`: clay + AO + headlamp). Already the GUI draft preview and the agent `quality:"draft"`. |
 | `clay_lights` | T2 | Clay albedo but the scene's REAL lights (the classic "is lighting right independent of materials" check). **P2b, not yet shipped** — needs a clay-albedo-substituting integrator variant, not just a config delta on the real materials (see §9). |
-| `direct` | T2 | **SHIPPED P2a (2026-07-18)** as a BeautyVariant pipeline: direct lighting only (`maxBounces=1`, forces the PT rasterizer to terminate after the first bounce — no `directlighting_shaderop` substrate needed), half-res, 8 spp, OIDN on. See §6. |
+| `direct` | T2 | **SHIPPED P2a (2026-07-18)** as a BeautyVariant pipeline: direct lighting only (`maxBounces=1`, wired via `PathTracingIntegrator::SetMaxPathDepth` so the PT main loop genuinely stops after the camera-hit vertex — no `directlighting_shaderop` substrate needed), half-res, 8 spp, OIDN on. See §6. |
 | `indirect` | T2 | Beauty minus direct. **P2b, not yet shipped** — needs a real subtraction (two renders + a diff) or a dedicated indirect-only integrator mode, neither of which the BeautyVariant config-delta mechanism supports on its own (see §9). |
 | light solo | T2 | Render with exactly one light enabled. Needs a light-selector arg; P2b design detail. |
 
@@ -275,6 +275,21 @@ layer instead, so every shader benefits automatically:
   targets); pass `xray:false` to inspect the transmissive surface itself.
   Toggle lives in the viewport chrome next to the mode dropdown on both
   GUIs, defaulting to ON.
+- **P2a review fix (2026-07-18)**: while the ACTIVE mode is a §6
+  BeautyVariant row (`deep_reflect`/`direct`), the x-ray toggle is DISABLED
+  on both GUIs — those modes drive `mVariantRasterizer`, a wholly separate
+  ephemeral PT pipeline that never reads the x-ray flag/caster
+  `InteractivePelRasterizer::SetXrayView` stamps, so toggling it while a
+  variant mode is active would silently no-op. New registry-level C-ABI
+  `RISE_API_GetViewportRenderModeIsVariant(index, bool* out)` (additive
+  sibling of `RISE_API_GetViewportRenderModeWantsDenoise`, wraps
+  `IsBeautyVariantMode`) is what both GUIs key the disable off of — Mac's
+  `viewportRenderModeChip` Toggle gets `.disabled(activeMode?.isVariant ==
+  true)`, Windows' `TopBar::refreshRenderModeCombo` reads the active combo
+  item's stashed `isVariant` flag (`Qt::UserRole + 1`). This does NOT change
+  `{Set,Get}ViewportXray`'s own behaviour or the stored flag — only the
+  UI-facing enablement — so returning to a non-variant mode picks the flag
+  right back up.
 
 ## 6. BeautyVariant pipelines (P2a — SHIPPED 2026-07-18)
 
@@ -283,9 +298,10 @@ carry (a `ViewportConfigOverride` struct applied at RasterizeScene time, the
 "config sibling of `SetViewportCameraOverride`"). That sketch assumed the
 *existing* interactive/production rasterizer could be re-parameterized
 per-render; in practice a BeautyVariant mode needs a materially different
-rasterizer (different maxR, different spp, different denoise policy) built
-against the SAME scene — cheaper and more honest as a wholly separate,
-ephemeral pipeline than as a config knob threaded through the existing one.
+rasterizer (different max path depth, different spp, different denoise
+policy) built against the SAME scene — cheaper and more honest as a wholly
+separate, ephemeral pipeline than as a config knob threaded through the
+existing one.
 
 **BeautyVariant is a pipeline kind**, alongside `BeautyConfig` and
 `ShaderPipeline` (§4): an ephemeral, controller/agent-**owned** production-class
@@ -311,17 +327,27 @@ schemas, tests) — no hardcoded mode-name lists.
 
 `InteractivePelRasterizer.{h,cpp}` — mirrors the **minimal production-real**
 path `Job::SetPathTracingPelRasterizer` takes: a plain `RayCaster`
-(`seeRadianceMap=true`, `showLuminaires=true`, `maxR` = the mode's
-`variantMaxBounces` — **not** the `InteractiveMaterialPreviewRayCaster`
-subclass, so shading resolves through each object's own real `IMaterial`
-exactly like a production render) + `RISE_API_CreatePathTracingPelRasterizer`
-with a multijittered sampler at `variantSamplesPerPass`, a box reconstruction
-filter, SMS off, OIDN on (quality `Auto`), default (disabled) path
-guiding/adaptive sampling/stability configs, no Z-Sobol. The caster's
-`pDefaultShader` constructor argument is a throwaway placeholder — it's dead
-code on the PT transport path (`RayCaster::SelectShader` is never called by
-production path tracing; per-object shading is driven entirely by each
-`IObject`'s own material), so the factory needs no Job/shader-manager access.
+(`seeRadianceMap=true`, `showLuminaires=true` — **not** the
+`InteractiveMaterialPreviewRayCaster` subclass, so shading resolves through
+each object's own real `IMaterial` exactly like a production render) +
+`RISE_API_CreatePathTracingPelRasterizer` with a multijittered sampler at
+`variantSamplesPerPass`, a box reconstruction filter, SMS off, OIDN on
+(quality `Auto`), default (disabled) path guiding/adaptive sampling/stability
+configs, no Z-Sobol. The caster's `pDefaultShader` constructor argument is a
+throwaway placeholder — it's dead code on the PT transport path
+(`RayCaster::SelectShader` is never called by production path tracing;
+per-object shading is driven entirely by each `IObject`'s own material), so
+the factory needs no Job/shader-manager access.  **P2a review fix
+(2026-07-18)**: the caster's `maxR` (reused as `variantMaxBounces` for
+convenience) is only a harmless SSS/BSSRDF recursion cap
+(`RayCaster::CastRay`'s `nMaxRecursions`) — it never bounded the PT main
+loop's bounce depth, which is iterative (not recursive) and was hardcoded to
+128 regardless.  The factory now calls the new
+`PathTracingPelRasterizer::SetMaxPathDepth(variantMaxBounces)` right after
+construction, which forwards to `PathTracingIntegrator::SetMaxPathDepth` —
+the loop's REAL cap (see that method's doc for the exact depth-accounting:
+`n==1` for `direct` means the camera-hit vertex's emission + NEE only, no
+continuation bounce ever traced).
 
 ### Controller: `mVariantRasterizer` + the render-loop dispatch
 
@@ -365,9 +391,17 @@ ladder, and every gesture-driven reset (`OnPointerDown/Move/Up`,
 `OnTimeScrubBegin/End`, `Begin/EndPropertyScrub`) — each now routes through
 `SetPreviewScaleIfUnpinned_` (or an inline pin check) instead of a bare
 `mPreviewScale.store(...)`. `SetViewportRenderMode` sets the pin (and stores
-the mode's divisor) on entry to a variant mode, and clears it on exit —
-`RebindEditorToJob` also clears it on scene reload, matching the "release the
-variant pipeline on scene reload" reset.
+the mode's divisor) on entry to a variant mode, and on exit clears BOTH the
+pin AND `mPreviewScale` itself (restored to `kPreviewScaleMin`) — **P2 review
+fix (2026-07-18)**: the original exit branch cleared only
+`mPreviewScalePinned`, leaving the pinned divisor (e.g. quarter-res for
+`deep_reflect`) sitting in `mPreviewScale`, so the viewport stayed at that
+stale resolution after leaving the mode until an unrelated pointer gesture
+happened to overwrite it. `RebindEditorToJob` also clears both on scene
+reload (gated on a variant having actually been active, so a reload that was
+never in a variant mode doesn't disturb whatever adaptive scale a live
+gesture already set), matching the "release the variant pipeline on scene
+reload" reset.
 
 ### Agent surface
 

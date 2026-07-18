@@ -94,6 +94,7 @@
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Color/ColorUtils.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -591,6 +592,185 @@ static void RunBeautyVariantEndToEndTest()
 		Check( r.ok, "deep_reflect with a width/height override succeeds" );
 		Check( r.width == 16 && r.height == 12,
 		       "MONEY ASSERTION: the divisor (4) applies to the OVERRIDE dims (64x48 -> 16x12), not the scene-authored ones" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// P1 review fix (variantMaxBounces was inert -- "direct" rendered full GI):
+// a Cornell-corner colour-bleed scene, white floor abutting a red wall, lit
+// by a single white omni light that hits BOTH surfaces directly.  A floor
+// patch immediately next to the wall base only picks up a RED tint via an
+// INDIRECT bounce off the wall (classic radiosity colour bleed) -- under
+// direct lighting alone the floor patch is lit by the (white) light only,
+// so it stays neutral (R roughly == G roughly == B, modulated only by the
+// floor's own grey reflectance).  This is the empirical proof the review
+// demanded: "direct" (variantMaxBounces=1) must show (a) a MEANINGFULLY
+// lower whole-frame mean than "deep_reflect" (missing multi-bounce indirect
+// energy) and (b) no material red contamination in the near-wall floor
+// patch, while "deep_reflect" (variantMaxBounces=24) shows both.  Before
+// the fix (PathTracingIntegrator's main loop hardcoded 128 bounces
+// regardless of variantMaxBounces), "direct" ran the SAME full-GI transport
+// as "deep_reflect" and both assertions below fail.
+//----------------------------------------------------------------------
+static const char* const kSceneColorBleedCornellCorner =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 96\n\theight 96\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0.6 1.7 5.2\n\tlookat -1.0 1.0 -0.6\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname white_pnt\n\tcolor 0.85 0.85 0.85\n}\n\n"
+	"uniformcolor_painter\n{\n\tname red_pnt\n\tcolor 0.85 0.05 0.05\n}\n\n"
+	"lambertian_material\n{\n\tname white_mat\n\treflectance white_pnt\n}\n\n"
+	"lambertian_material\n{\n\tname red_mat\n\treflectance red_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial white_mat\n\tposition 0 -0.1 0\n}\n\n"
+	"box_geometry\n{\n\tname ceil_geo\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
+	"standard_object\n{\n\tname ceil_obj\n\tgeometry ceil_geo\n\tmaterial white_mat\n\tposition 0 3.1 0\n}\n\n"
+	"box_geometry\n{\n\tname back_geo\n\twidth 8\n\theight 3.2\n\tdepth 0.2\n}\n\n"
+	"standard_object\n{\n\tname back_obj\n\tgeometry back_geo\n\tmaterial white_mat\n\tposition 0 1.5 -2.1\n}\n\n"
+	"box_geometry\n{\n\tname wall_geo\n\twidth 0.2\n\theight 3.2\n\tdepth 8\n}\n\n"
+	"standard_object\n{\n\tname wall_obj\n\tgeometry wall_geo\n\tmaterial red_mat\n\tposition -2.0 1.5 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 7.0\n\tcolor 1 1 1\n\tposition -0.3 2.7 -0.5\n}\n";
+
+static void RunDirectModeMissingIndirectBleedTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: P1 fix -- \"direct\" excludes indirect colour bleed \"deep_reflect\" shows ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_colorbleed_corner.RISEscene", kSceneColorBleedCornellCorner );
+	Check( !scenePath.empty(), "wrote the Cornell-corner colour-bleed scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "colour-bleed scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "colour-bleed session wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	// Reference objectmap render (full authored res, divisor 1) locates
+	// wall_obj's and floor_obj's own screen-space silhouettes.
+	AgentRenderParams objP;
+	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult objR = session->Render( objP );
+	Check( objR.ok && objR.renderMode == "objectmap", "reference objectmap render succeeds" );
+	Decoded objDec;
+	Check( DecodePng( objR.png, objDec ), "reference objectmap PNG decodes" );
+	const LegendEntry* wallLegend  = FindLegend( objR, "wall_obj" );
+	const LegendEntry* floorLegend = FindLegend( objR, "floor_obj" );
+	Check( wallLegend  != nullptr, "reference objectmap legend carries wall_obj" );
+	Check( floorLegend != nullptr, "reference objectmap legend carries floor_obj" );
+	BBox wallBBox{ 0, 0, 0, 0, 0 }, floorBBox{ 0, 0, 0, 0, 0 };
+	if( wallLegend && floorLegend )
+	{
+		unsigned char wallCb[3], floorCb[3];
+		Check( HexToBytes( wallLegend->colorHex, wallCb ), "wall_obj colorHex parses" );
+		Check( HexToBytes( floorLegend->colorHex, floorCb ), "floor_obj colorHex parses" );
+		wallBBox  = ScanBBoxForColor( objDec, wallCb );
+		floorBBox = ScanBBoxForColor( objDec, floorCb );
+		Check( wallBBox.found  > 0, "wall_obj occupies a nonzero pixel region" );
+		Check( floorBBox.found > 0, "floor_obj occupies a nonzero pixel region" );
+	}
+	if( wallBBox.found == 0 || floorBBox.found == 0 || objDec.w == 0 ) { pJob->release(); return; }
+
+	// The "near-wall floor patch" in FULL-RES (divisor-1) pixel space: a
+	// strip just to the right of the wall's own silhouette (the wall
+	// stands at world x=-2, floor extends toward +x on camera-right), 3px
+	// wide, restricted to rows inside the floor's own bbox so the patch is
+	// unambiguously floor pixels, never wall or background.
+	const unsigned int patchX0 = wallBBox.maxX + 2;
+	const unsigned int patchX1 = wallBBox.maxX + 9;   // 7px wide (full-res) -- wide enough to still map to a few px after the /4 divisor
+	const unsigned int patchY0 = std::max( floorBBox.minY, wallBBox.minY ) + 2;
+	const unsigned int patchY1 = std::min( floorBBox.maxY, wallBBox.maxY ) - 2;
+	const bool patchSane = patchX1 < objDec.w && patchY0 < patchY1 && patchY1 < objDec.h;
+	Check( patchSane, "near-wall floor patch geometry is sane in full-res pixel space (camera framing produced a usable corner)" );
+	if( !patchSane ) { pJob->release(); return; }
+
+	// Average (R, G, B) and luminance over a pixel rectangle in an image of
+	// width `w`/height `h` at resolution divisor `divisor` relative to the
+	// full-res coordinates above -- both variant renders share the SAME
+	// camera/FOV, so dividing the full-res patch rectangle by the mode's
+	// own scale divisor lands on the spatially-corresponding patch in its
+	// downsampled frame.  Skips background (alpha==0) pixels.  Returns
+	// false if the mapped patch is empty/degenerate.
+	struct PatchAvg { double r = 0, g = 0, b = 0; unsigned int n = 0; };
+	auto averagePatch = [&]( const Decoded& d, unsigned int divisor ) -> PatchAvg
+	{
+		PatchAvg out;
+		const unsigned int x0 = patchX0 / divisor, x1 = patchX1 / divisor;
+		const unsigned int y0 = patchY0 / divisor, y1 = patchY1 / divisor;
+		if( x1 >= d.w || y1 >= d.h || x0 > x1 || y0 > y1 ) return out;
+		for( unsigned int y = y0; y <= y1; ++y ) {
+			for( unsigned int x = x0; x <= x1; ++x ) {
+				const Px& q = d.at( x, y );
+				if( q[3] == 0 ) continue;   // background miss
+				out.r += q[0]; out.g += q[1]; out.b += q[2];
+				++out.n;
+			}
+		}
+		if( out.n > 0 ) { out.r /= out.n; out.g /= out.n; out.b /= out.n; }
+		return out;
+	};
+
+	struct VariantRun { Decoded dec; double meanLuminance = 0; PatchAvg patch; bool valid = false; };
+	auto runVariant = [&]( Implementation::ViewportRenderMode mode, unsigned int divisor ) -> VariantRun
+	{
+		VariantRun out;
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) return out;
+		if( !DecodePng( r.png, out.dec ) ) return out;
+		double sum = 0; unsigned int n = 0;
+		for( std::size_t px = 0; px < out.dec.px.size(); ++px )
+		{
+			const Px& q = out.dec.px[px];
+			if( q[3] == 0 ) continue;
+			sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+			++n;
+		}
+		if( n == 0 ) return out;
+		out.meanLuminance = sum / n;
+		out.patch = averagePatch( out.dec, divisor );
+		out.valid = true;
+		return out;
+	};
+
+	const VariantRun deepReflect = runVariant( Implementation::ViewportRenderMode::DeepReflect, 4 );
+	const VariantRun direct      = runVariant( Implementation::ViewportRenderMode::Direct,       2 );
+	Check( deepReflect.valid, "deep_reflect render decodes and has real (non-background) pixels" );
+	Check( direct.valid,      "direct render decodes and has real (non-background) pixels" );
+	if( !deepReflect.valid || !direct.valid ) { pJob->release(); return; }
+
+	std::printf( "  deep_reflect: meanLuminance=%.2f patch(r=%.2f,g=%.2f,b=%.2f,n=%u)\n",
+		deepReflect.meanLuminance, deepReflect.patch.r, deepReflect.patch.g, deepReflect.patch.b, deepReflect.patch.n );
+	std::printf( "  direct:       meanLuminance=%.2f patch(r=%.2f,g=%.2f,b=%.2f,n=%u)\n",
+		direct.meanLuminance, direct.patch.r, direct.patch.g, direct.patch.b, direct.patch.n );
+
+	// (a) MONEY ASSERTION: direct-only transport is missing the wall's
+	// multi-bounce indirect contribution across the WHOLE frame (the floor
+	// and wall both lose their indirect self-illumination top-up), so its
+	// mean luminance is meaningfully below deep_reflect's full-GI mean.
+	Check( direct.meanLuminance < deepReflect.meanLuminance - 8.0,
+	       "MONEY ASSERTION (a): \"direct\" mean luminance is MEANINGFULLY below \"deep_reflect\"'s -- "
+	       "indirect energy is genuinely missing, not just noise" );
+
+	// (b) MONEY ASSERTION: the near-wall floor patch. deep_reflect's red
+	// wall bounces red light onto it (R clearly above G/B); direct's SAME
+	// patch is lit by the white light alone, so R stays close to G/B.
+	Check( deepReflect.patch.n > 0 && direct.patch.n > 0, "both variants' near-wall floor patches contain real (non-background) pixels" );
+	if( deepReflect.patch.n > 0 && direct.patch.n > 0 )
+	{
+		const double deepReflectRedBias = deepReflect.patch.r - 0.5 * ( deepReflect.patch.g + deepReflect.patch.b );
+		const double directRedBias      = direct.patch.r      - 0.5 * ( direct.patch.g      + direct.patch.b );
+		std::printf( "  redBias: deep_reflect=%.2f direct=%.2f\n", deepReflectRedBias, directRedBias );
+		Check( deepReflectRedBias > 12.0,
+		       "MONEY ASSERTION (b1): deep_reflect's near-wall floor patch shows a MATERIAL red bias (R noticeably above G/B) -- "
+		       "the indirect bounce off the red wall reaches the floor" );
+		Check( directRedBias < 6.0,
+		       "MONEY ASSERTION (b2): direct's near-wall floor patch shows NO material red bias -- "
+		       "direct lighting alone is neutral (white light on grey/red surfaces), the red only ever arrives via a "
+		       "bounce that \"direct\" must NOT trace" );
 	}
 
 	pJob->release();
@@ -1987,6 +2167,7 @@ int main()
 	RunPerModeEndToEndTest();
 	RunFilmRestoreTest();
 	RunBeautyVariantEndToEndTest();
+	RunDirectModeMissingIndirectBleedTest();
 	RunViewArgEndToEndTest();
 	RunRpcModeParityTest();
 	RunNoRenderOnInvalidModeTest();

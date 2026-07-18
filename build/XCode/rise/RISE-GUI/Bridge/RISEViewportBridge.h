@@ -268,13 +268,16 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 /// (UI) order — the set the mode dropdown / View menu offers.  Each
 /// dictionary has string values for keys "name" ("preview", "normals",
 /// ...), "title" ("Shaded Preview", ...), "question" (the tooltip
-/// text), and "wantsDenoise" ("1"/"0" — GUI render modes P2a: the
-/// registry's `wantsDenoise` flag, added so the DENOISED-label formatter
-/// can key off it instead of a hardcoded `mode == "preview"` check now
-/// that BeautyVariant modes genuinely denoise too).  Registry-level (not
-/// controller-scoped) but still guarded on `_controller` for consistency
-/// with every other bridge accessor — empty array when no controller is
-/// attached.
+/// text), "wantsDenoise" ("1"/"0" — GUI render modes P2a: the registry's
+/// `wantsDenoise` flag, added so the DENOISED-label formatter can key off
+/// it instead of a hardcoded `mode == "preview"` check now that
+/// BeautyVariant modes genuinely denoise too), and "isVariant" ("1"/"0" —
+/// P2a review fix: `RISE::Implementation::IsBeautyVariantMode`, so the
+/// x-ray toggle can disable itself while the active mode is a
+/// BeautyVariant row — see RISE_API_GetViewportRenderModeIsVariant's doc).
+/// Registry-level (not controller-scoped) but still guarded on
+/// `_controller` for consistency with every other bridge accessor — empty
+/// array when no controller is attached.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)viewportRenderModes;
 
 /// The registry wire name of the CURRENTLY active viewport render mode

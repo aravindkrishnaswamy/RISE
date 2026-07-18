@@ -63,11 +63,48 @@ namespace RISE
 			const bool			bSMSEnabled;
 			StabilityConfig		stabilityConfig;
 
+			//! GUI render modes P2a fix (docs/gui/RENDER_MODES.md §6): the hard
+			//! cap on path-vertex loop iterations, replacing what used to be a
+			//! hardcoded `const unsigned int maxDepth = 128;` literal in both
+			//! the Pel/NM templated loop (IntegrateFromHitTemplated) and the
+			//! standalone HWSS loop (IntegrateFromHitHWSS).  See SetMaxPathDepth
+			//! below for the exact depth-accounting mapping.  Defaults to 128 so
+			//! every existing caller (nothing called the setter before this fix)
+			//! gets byte-identical behavior.
+			unsigned int		mMaxPathDepth;
+
 		public:
 			PathTracingIntegrator(
 				const ManifoldSolverConfig& smsConfig,
 				const StabilityConfig& stabilityCfg
 				);
+
+			//! Configure the path-vertex loop cap (see mMaxPathDepth's doc).
+			//! DEPTH ACCOUNTING: the main loop is
+			//! `for (depth = startDepth; depth < mMaxPathDepth; depth++)`.
+			//! `depth` is 0-based and counts LOOP ITERATIONS = VERTICES
+			//! PROCESSED, not "bounces past the camera hit": iteration
+			//! `depth == startDepth` (startDepth is 0 for every camera-ray
+			//! entry point -- IntegrateRay/IntegrateRayNM/IntegrateRayHWSS all
+			//! pass 0) is the camera-hit vertex ITSELF -- its emission + NEE
+			//! contribution is "direct lighting", not an indirect bounce. Only
+			//! at the TOP of the NEXT iteration does the loop re-intersect the
+			//! scene along the continuation ray sampled during the previous
+			//! iteration's BSDF-sample step -- THAT re-intersection is bounce 1.
+			//! So:
+			//!   n == 1  -> only the camera-hit vertex is processed (emission +
+			//!              NEE at that hit); a continuation ray IS sampled at
+			//!              the end of that iteration (harmless wasted RNG/BSDF
+			//!              work) but the loop exits before it is ever traced --
+			//!              genuinely "direct lighting only, zero bounces".
+			//!              This is the mapping the "direct" BeautyVariant mode
+			//!              (variantMaxBounces=1) relies on.
+			//!   n == 2  -> camera hit + exactly one indirect bounce.
+			//!   n == 128 (default) -> byte-identical to the pre-fix hardcoded
+			//!              behavior.
+			//! `n == 0` maps to 128 (the historical default) rather than a cap
+			//! that would process zero vertices and return black.
+			void SetMaxPathDepth( unsigned int n ) { mMaxPathDepth = ( n == 0 ) ? 128 : n; }
 
 			/// Traces one complete path from a camera ray and returns
 			/// the estimated radiance (RGB).  Optionally populates

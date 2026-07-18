@@ -1005,11 +1005,14 @@ private:
         if (!selectable) continue;   // e.g. "objectmap" -- its own palette-lifecycle pipeline
         bool wantsDenoise = false;
         RISE_API_GetViewportRenderModeWantsDenoise(i, &wantsDenoise);   // additive C-ABI; false on failure is a safe default
+        bool isVariant = false;
+        RISE_API_GetViewportRenderModeIsVariant(i, &isVariant);   // additive C-ABI; false on failure is a safe default
         [out addObject:@{
             @"name":         name     ? [NSString stringWithUTF8String:name]     : @"",
             @"title":        title    ? [NSString stringWithUTF8String:title]    : @"",
             @"question":     question ? [NSString stringWithUTF8String:question] : @"",
             @"wantsDenoise": wantsDenoise ? @"1" : @"0",
+            @"isVariant":    isVariant    ? @"1" : @"0",
         }];
     }
     return out;

@@ -67,7 +67,15 @@
 //        echoes the name) and the preview-scale divisor PINS to the mode's
 //        variantScaleDivisor -- surviving a gesture (OnPointerDown/Up) that
 //        would otherwise reset it -- then UNPINS (a gesture's reset takes
-//        effect again) after switching to a non-variant mode.
+//        effect again) after switching to a non-variant mode.  ALSO (P2
+//        review fix): the divisor is restored to kPreviewScaleMin
+//        IMMEDIATELY on leaving a variant mode, with no gesture required --
+//        both via SetViewportRenderMode's exit branch (R14) and via
+//        RebindEditorToJob's whole-scene re-derive reset (R8).
+//    R15 P3 review fix: RISE_API_GetViewportRenderModeIsVariant matches
+//        IsBeautyVariantMode 1:1 per registry row, plus out-of-range/
+//        null-out refusal -- the C-ABI the viewport x-ray toggle's
+//        disable-under-a-variant-mode logic (both GUIs) reads.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -471,6 +479,26 @@ namespace
 			// The reset didn't wedge the controller -- a fresh mode switch still works.
 			Check( ctrl.SetViewportRenderMode( "facets" ), "mode switch still works after the re-derives" );
 			Check( std::string( ctrl.GetViewportRenderMode() ) == "facets", "GetViewportRenderMode reports \"facets\"" );
+
+			// P2 review fix regression test (RebindEditorToJob side): a
+			// whole-scene re-derive while a BeautyVariant mode is pinned must
+			// ALSO restore mPreviewScale itself, not just clear the pin --
+			// otherwise the viewport stays at the (now-orphaned) variant
+			// divisor after the reset-to-"preview".
+			Check( ctrl.SetViewportRenderMode( "deep_reflect" ), "switch to \"deep_reflect\" before a second variant switch" );
+			unsigned int divisorPinned = 0;
+			ctrl.GetRefinementStatus( divisorPinned );
+			Check( divisorPinned == 4, "deep_reflect pins the divisor to 4 before the re-derive" );
+			Check( ctrl.SetSelection( Cat::SceneVariant, String( "night" ) ), "SetSelection(night) re-derives clean while a variant mode was pinned" );
+			Check( std::string( ctrl.GetViewportRenderMode() ) == "preview",
+				"viewport render mode reset to \"preview\" by the re-derive (variant case)" );
+			unsigned int divisorAfterRederive = 0;
+			ctrl.GetRefinementStatus( divisorAfterRederive );
+			Check( divisorAfterRederive == 1,
+			       "MONEY ASSERTION (P2 fix): RebindEditorToJob's re-derive restores the divisor to kPreviewScaleMin "
+			       "IMMEDIATELY, not just the pin flag" );
+			Check( ctrl.SetSelection( Cat::SceneVariant, String( "(base)" ) ), "switch back to (base) re-derives clean (cleanup)" );
+
 			Check( ctrl.SetViewportRenderMode( "preview" ), "restore \"preview\" before teardown" );
 		}
 
@@ -831,6 +859,38 @@ namespace
 	}
 
 	//------------------------------------------------------------------
+	// R15 (P3 review fix): RISE_API_GetViewportRenderModeIsVariant matches
+	// IsBeautyVariantMode 1:1, plus out-of-range/null-out refusal -- the
+	// registry-driven honesty check the viewport x-ray toggle's disable
+	// logic (both GUIs) relies on.
+	//------------------------------------------------------------------
+	void TestIsVariantCAbi()
+	{
+		std::printf( "R15: RISE_API_GetViewportRenderModeIsVariant parity...\n" );
+		unsigned int count = 0;
+		const ViewportRenderModeInfo* modes = GetViewportRenderModes( count );
+
+		bool sawVariantTrue = false, sawVariantFalse = false;
+		for( unsigned int i = 0; i < count; ++i )
+		{
+			const bool expected = IsBeautyVariantMode( modes[i].mode );
+			bool isVariant = !expected;   // start inverted so a no-op is detectable
+			Check( RISE_API_GetViewportRenderModeIsVariant( i, &isVariant ),
+			       "RISE_API_GetViewportRenderModeIsVariant succeeds in range" );
+			Check( isVariant == expected,
+			       std::string( modes[i].name ) + ": isVariant matches IsBeautyVariantMode" );
+			if( expected ) sawVariantTrue = true; else sawVariantFalse = true;
+		}
+		Check( sawVariantTrue, "at least one registry row reports isVariant true (deep_reflect/direct)" );
+		Check( sawVariantFalse, "at least one registry row reports isVariant false (e.g. preview)" );
+
+		bool sentinel = true;
+		Check( !RISE_API_GetViewportRenderModeIsVariant( count, &sentinel ), "out-of-range index refused" );
+		Check( sentinel == true, "out-param untouched on refusal" );
+		Check( !RISE_API_GetViewportRenderModeIsVariant( 0, nullptr ), "null out-param refused" );
+	}
+
+	//------------------------------------------------------------------
 	// R14: controller variant-mode lifecycle -- skeleton refusal, live
 	// reachability, and the preview-scale pin surviving a gesture.
 	//------------------------------------------------------------------
@@ -912,6 +972,20 @@ namespace
 				// resets the divisor (proving the pin was actually lifted,
 				// not that OnPointerUp coincidentally leaves it alone).
 				Check( ctrl.SetViewportRenderMode( "normals" ), "switch \"direct\" -> \"normals\" (non-variant) succeeds" );
+
+				// P2 review fix regression test: the divisor must already be
+				// back at kPreviewScaleMin (1) RIGHT HERE, with NO gesture in
+				// between.  Before the fix, SetViewportRenderMode's exit
+				// branch cleared mPreviewScalePinned but never reset
+				// mPreviewScale itself, so the viewport stayed at the
+				// variant's pinned divisor (2, from "direct") until some
+				// unrelated pointer gesture happened to overwrite it.
+				unsigned int divisorImmediatelyAfterExit = 0;
+				ctrl.GetRefinementStatus( divisorImmediatelyAfterExit );
+				Check( divisorImmediatelyAfterExit == 1,
+				       "MONEY ASSERTION (P2 fix): leaving a variant mode restores the divisor to kPreviewScaleMin "
+				       "IMMEDIATELY -- no pointer gesture required" );
+
 				driveOrbitGesture( ctrl );
 				unsigned int divisorAfterUnpin = 0;
 				ctrl.GetRefinementStatus( divisorAfterUnpin );
@@ -948,6 +1022,7 @@ int main()
 	TestVariantRegistryRows();
 	TestBeautyVariantPipelineFactory();
 	TestWantsDenoiseCAbi();
+	TestIsVariantCAbi();
 	TestControllerVariantModeLifecycle();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );

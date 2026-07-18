@@ -338,6 +338,17 @@ void SceneEditController::RebindEditorToJob()
 	{
 		mVariantRasterizer->release();
 		mVariantRasterizer = 0;
+		// P2 review fix: also restore mPreviewScale itself, not just the
+		// pin below -- leaving a variant mode's pinned divisor (e.g.
+		// quarter-res) in place left the viewport stuck at that resolution
+		// until the next gesture-driven mPreviewScale mutation
+		// (OnPointerDown/Move/Up etc.) happened to overwrite it.  Gated on
+		// "a variant WAS active" (not unconditional) so a whole-scene
+		// rebind that was never in a variant mode doesn't disturb whatever
+		// adaptive scale a live gesture already set.  Same fix as
+		// SetViewportRenderMode's non-variant branch below -- see that
+		// site's comment.
+		mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
 	}
 	mPreviewScalePinned.store( false, std::memory_order_release );
 	// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): reset alongside
@@ -7188,6 +7199,17 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 		{
 			mVariantRasterizer->release();
 			mVariantRasterizer = 0;
+			// P2 review fix: restore mPreviewScale itself, not just the pin
+			// -- previously only mPreviewScalePinned was cleared here, so a
+			// variant mode's pinned divisor (e.g. quarter-res for
+			// deep_reflect) stayed in mPreviewScale after leaving the mode,
+			// and the viewport rendered at that stale resolution until a
+			// pointer gesture (OnPointerDown/Move/Up etc.) happened to
+			// overwrite it.  Gated on "a variant WAS active" so a plain
+			// non-variant-to-non-variant switch (e.g. normals -> depth)
+			// doesn't disturb whatever adaptive scale a live gesture
+			// already set.
+			mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
 		}
 		mPreviewScalePinned.store( false, std::memory_order_release );
 

@@ -89,6 +89,19 @@ namespace RISE
 				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
+			/// GUI render modes P2a fix (docs/gui/RENDER_MODES.md §6):
+			/// post-construction setter forwarding to
+			/// PathTracingIntegrator::SetMaxPathDepth -- see that method's doc
+			/// for the exact depth-accounting mapping ("direct" == 1 means
+			/// camera-hit + NEE only, no continuation bounce traced).  n==0
+			/// maps to the historical default (128).  No render-in-flight
+			/// synchronization here -- deliberately NOT part of the C-ABI
+			/// factory signature (see RISE_API.h's abi-preserving-api-evolution
+			/// discipline); CreateBeautyVariantPipeline is the only caller
+			/// today, and it calls this immediately after construction, before
+			/// the pipeline is ever handed to the render loop.
+			void SetMaxPathDepth( unsigned int n );
+
 			/// Runs the one-time SMS photon-aided seeding pass when
 			/// smsConfig.photonCount > 0.  Inherited from
 			/// PixelBasedRasterizerHelper; invoked by the base

@@ -3683,6 +3683,27 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_GetViewportRenderModeWantsDenoise(
 		unsigned int index, bool* out );
 
+	//! GUI render modes P2a review fix (docs/gui/RENDER_MODES.md §6):
+	//! registry entry `index`'s "is this a BeautyVariant row" flag
+	//! (`RISE::Implementation::IsBeautyVariantMode`) — ADDITIVE sibling of
+	//! RISE_API_GetViewportRenderModeInfo, same pattern as
+	//! RISE_API_GetViewportRenderModeWantsDenoise above.  Registry-driven
+	//! honesty for the viewport x-ray toggle: while the ACTIVE mode is a
+	//! BeautyVariant row (`deep_reflect`/`direct`), x-ray has no effect —
+	//! those modes drive an entirely separate ephemeral PT pipeline
+	//! (`mVariantRasterizer`) that never reads the x-ray flag/caster the
+	//! toggle stamps (see SetViewportXray's doc); only
+	//! `mInteractiveImpl`'s own caster(s) are stamped.  Both GUIs use this
+	//! to DISABLE the x-ray control while a variant mode is active, so the
+	//! control never silently no-ops.  This does NOT change
+	//! SetViewportXray/GetViewportXray's own behaviour: the stored flag is
+	//! set/read exactly as before and still applies immediately the moment
+	//! the user returns to a non-variant mode — only the UI-facing
+	//! enablement is additive here.  Returns false (out untouched) on an
+	//! out-of-range index or a null `out`.
+	bool RISE_API_GetViewportRenderModeIsVariant(
+		unsigned int index, bool* out );
+
 	//! -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") --------
 	//! An orthogonal boolean that composes with all four data modes
 	//! (Normals/Depth/Facets/Wireframe): resolves each hit THROUGH

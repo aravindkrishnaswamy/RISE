@@ -7656,6 +7656,18 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_GetViewportRenderModeIsVariant(
+		unsigned int index, bool* out )
+	{
+		if( !out ) return false;
+		unsigned int count = 0;
+		const Implementation::ViewportRenderModeInfo* modes =
+			Implementation::GetViewportRenderModes( count );
+		if( !modes || index >= count ) return false;
+		*out = Implementation::IsBeautyVariantMode( modes[index].mode );
+		return true;
+	}
+
 	// -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") ----
 
 	bool RISE_API_SceneEditController_SetViewportXray( SceneEditController* p, bool xray )

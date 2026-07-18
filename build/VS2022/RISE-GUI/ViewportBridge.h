@@ -102,6 +102,13 @@ struct ViewportRenderModeInfo {
     /// `mode == "preview"` comparison now that BeautyVariant modes
     /// (deep_reflect/direct) genuinely denoise too.
     bool wantsDenoise = false;
+    /// P2a review fix: the registry's `IsBeautyVariantMode` flag, read via
+    /// the additive RISE_API_GetViewportRenderModeIsVariant.  True for
+    /// `deep_reflect`/`direct` -- those modes drive a wholly separate
+    /// ephemeral PT pipeline (`mVariantRasterizer`) that never reads the
+    /// x-ray flag, so TopBar disables `m_xrayBtn` while the active mode has
+    /// this set (see TopBar::refreshRenderModeCombo).
+    bool isVariant = false;
 };
 
 class ViewportBridge : public QObject

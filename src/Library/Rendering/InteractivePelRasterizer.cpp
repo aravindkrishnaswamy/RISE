@@ -18,6 +18,7 @@
 
 #include "pch.h"
 #include "InteractivePelRasterizer.h"
+#include "PathTracingPelRasterizer.h"
 #include "BlockRasterizeSequence.h"
 #include "RayCaster.h"
 #include "MortonRasterizeSequence.h"
@@ -1534,10 +1535,16 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	}
 
 	// Minimal production-real caster -- mirrors Job::SetPathTracingPelRasterizer's
-	// caster construction: seeRadianceMap=true, showLuminaires=true, maxR from
-	// the mode's variantMaxBounces.  Not the InteractiveMaterialPreviewRayCaster
-	// subclass -- a PLAIN RayCaster, so shading resolves through each object's
-	// own real IMaterial exactly like a production render.
+	// caster construction: seeRadianceMap=true, showLuminaires=true.  `maxR`
+	// here is a harmless SSS/BSSRDF recursion cap (RayCaster::CastRay's
+	// nMaxRecursions), NOT the PT transport depth limit -- reusing
+	// variantMaxBounces for it is a convenient (and harmless) shared value,
+	// not the mechanism that bounds bounce depth.  The REAL cap is stamped
+	// below via PathTracingPelRasterizer::SetMaxPathDepth (P2a fix -- see
+	// PathTracingIntegrator::SetMaxPathDepth's doc).  Not the
+	// InteractiveMaterialPreviewRayCaster subclass -- a PLAIN RayCaster, so
+	// shading resolves through each object's own real IMaterial exactly like
+	// a production render.
 	IShader* pShader = new BeautyVariantPlaceholderShader();
 	IRayCaster* pCaster = 0;
 	RISE_API_CreateRayCaster( &pCaster, /*seeRadianceMap*/true, info->variantMaxBounces, *pShader, /*showLuminaires*/true );
@@ -1572,6 +1579,27 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	if( !pRaster ) {
 		safe_release( pCaster );
 		return false;
+	}
+
+	// GUI render modes P2a fix (docs/gui/RENDER_MODES.md §6): the caster's
+	// `maxR` above is a harmless recursion cap on the SSS/BSSRDF sub-path
+	// (RayCaster::CastRay's nMaxRecursions check) -- it does NOT bound the PT
+	// main loop's bounce depth, which is iterative (not recursive) and used to
+	// be hardcoded to 128 regardless of `maxR`.  Stamp variantMaxBounces onto
+	// the REAL cap now that PathTracingIntegrator exposes one (n==1 for
+	// `direct` means camera-hit + NEE only, no continuation bounce -- see
+	// PathTracingIntegrator::SetMaxPathDepth's doc for the exact mapping).
+	{
+		// dynamic_cast, not static_cast: IRasterizer is a virtual base
+		// (PathTracingPelRasterizer multiply-inherits through
+		// PixelBasedRasterizerHelper / PixelBasedPelRasterizer), so a
+		// static downcast through it doesn't compile.  The factory above
+		// always returns a PathTracingPelRasterizer* on success -- this
+		// is a defensive check, not an expected-null path.
+		PathTracingPelRasterizer* pPT = dynamic_cast<PathTracingPelRasterizer*>( pRaster );
+		if( pPT ) {
+			pPT->SetMaxPathDepth( info->variantMaxBounces );
+		}
 	}
 
 	// `pCaster` is NOT released here -- unlike Job::SetPathTracingPelRasterizer

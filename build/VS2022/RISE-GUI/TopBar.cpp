@@ -325,6 +325,10 @@ TopBar::TopBar(QWidget* parent)
         m_renderModeCombo->addItem(info.title);
         m_renderModeCombo->setItemData(idx, info.name, Qt::UserRole);
         m_renderModeCombo->setItemData(idx, info.question, Qt::ToolTipRole);
+        // P2a review fix: stash isVariant per item (Qt::UserRole + 1) so
+        // refreshRenderModeCombo() can gate m_xrayBtn's enabled state on the
+        // ACTIVE mode without a second registry round-trip per refresh.
+        m_renderModeCombo->setItemData(idx, info.isVariant, Qt::UserRole + 1);
     }
     m_renderModeCombo->setEnabled(false);   // no bridge yet -- refreshRenderModeCombo() re-enables on scene load
     connect(m_renderModeCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
@@ -875,8 +879,16 @@ void TopBar::refreshRenderModeCombo()
     if (m_xrayBtn) {
         // X-ray applies to EVERY mode including the shaded preview
         // (caster-layer resolve, default ON; user decision 2026-07-17) --
-        // no data-mode gating.
-        const bool xrayEnabled = !disabled;
+        // no data-mode gating.  P2a review fix: EXCEPT the BeautyVariant
+        // rows (deep_reflect/direct) -- those drive a wholly separate
+        // ephemeral PT pipeline that never reads the x-ray flag/caster, so
+        // toggling it there would silently no-op.  Read the ACTIVE combo
+        // item's stashed isVariant flag (Qt::UserRole + 1, set once at
+        // construction) rather than re-querying the registry here.
+        const int activeIndex = m_renderModeCombo->currentIndex();
+        const bool activeIsVariant = activeIndex >= 0
+            && m_renderModeCombo->itemData(activeIndex, Qt::UserRole + 1).toBool();
+        const bool xrayEnabled = !disabled && !activeIsVariant;
         m_xrayBtn->setEnabled(xrayEnabled);
 
         // Re-read the CURRENT flag -- never assume the button's checked

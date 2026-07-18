@@ -175,7 +175,7 @@ namespace RISE
 			//! variantSamplesPerPass > 0, so these three fields are read ONLY
 			//! after that check passes.
 			unsigned int		variantScaleDivisor;   //!< preview-resolution divisor while this mode is active (e.g. 4 = quarter-res)
-			unsigned int		variantMaxBounces;     //!< the variant PT rasterizer's maxR
+			unsigned int		variantMaxBounces;     //!< P2a fix: PathTracingIntegrator::SetMaxPathDepth's cap on the PT main loop (NOT the caster's maxR -- that's a separate, harmless SSS-recursion limit)
 			unsigned int		variantSamplesPerPass; //!< the variant PT rasterizer's fixed samples/pixel
 		};
 
@@ -242,13 +242,18 @@ namespace RISE
 		//! PT pipeline (real per-object materials, real lights, real OIDN),
 		//! not a diagnostic first-hit shader -- it mirrors the MINIMAL
 		//! production-real path Job::SetPathTracingPelRasterizer takes: a
-		//! plain RayCaster (seeRadianceMap=true, showLuminaires=true,
-		//! maxR=the mode's variantMaxBounces) + RISE_API_CreatePathTracingPelRasterizer
+		//! plain RayCaster (seeRadianceMap=true, showLuminaires=true, maxR is
+		//! a fixed harmless SSS-recursion cap -- NOT the transport depth
+		//! limit, see variantMaxBounces's doc) + RISE_API_CreatePathTracingPelRasterizer
 		//! with a multijittered sampler at the mode's variantSamplesPerPass,
 		//! a box reconstruction filter, SMS off, OIDN ON (quality Auto),
 		//! default (disabled) path guiding / adaptive sampling / stability
-		//! configs, and no Z-Sobol.  The caster's own default IShader is an
-		//! internal never-invoked placeholder (RayCaster::SelectShader / the
+		//! configs, and no Z-Sobol, followed by a post-construction
+		//! PathTracingPelRasterizer::SetMaxPathDepth(variantMaxBounces) call --
+		//! THAT is what actually bounds the PT main loop's bounce depth (P2a
+		//! fix; see PathTracingIntegrator::SetMaxPathDepth's doc for the exact
+		//! accounting).  The caster's own default IShader is an internal
+		//! never-invoked placeholder (RayCaster::SelectShader / the
 		//! pDefaultShader ctor argument is dead code on every PT-family
 		//! transport path -- per-object shading comes entirely from each
 		//! IObject's own IMaterial, never through the caster's default

@@ -208,6 +208,13 @@ struct ViewportRenderModeInfo: Equatable, Identifiable {
     /// `mode == "preview"` check now that BeautyVariant modes (deep_reflect/
     /// direct) genuinely denoise too.
     let wantsDenoise: Bool
+    /// P2a review fix: the registry's `IsBeautyVariantMode` flag
+    /// (`RISE_API_GetViewportRenderModeIsVariant`).  True for `deep_reflect`/
+    /// `direct` — those modes drive a wholly separate ephemeral PT pipeline
+    /// (`mVariantRasterizer`) that never reads the x-ray flag, so the x-ray
+    /// toggle is disabled while the active mode has this set (see
+    /// `viewportRenderModeChip`'s Toggle `.disabled(...)`).
+    let isVariant: Bool
 }
 
 @MainActor
@@ -697,7 +704,8 @@ final class RenderViewModel: ObservableObject {
                 ViewportRenderModeInfo(name: $0["name"] ?? "",
                                         title: $0["title"] ?? "",
                                         question: $0["question"] ?? "",
-                                        wantsDenoise: $0["wantsDenoise"] == "1")
+                                        wantsDenoise: $0["wantsDenoise"] == "1",
+                                        isVariant: $0["isVariant"] == "1")
             }
             viewportRenderMode = vb.viewportRenderMode
             viewportXray = vb.viewportXray()

@@ -524,6 +524,14 @@ struct ContentView: View {
                     set: { viewModel.setViewportXray($0) })) {
                     Text("See Through Glass")
                 }
+                // P2a review fix: while the active mode is a BeautyVariant
+                // row (deep_reflect/direct), this toggle would silently
+                // no-op -- those modes drive a wholly separate ephemeral PT
+                // pipeline that never reads the x-ray flag/caster.  Disable
+                // rather than let it stamp a flag with no visible effect;
+                // tooltip/help text unchanged (still accurate once the
+                // user is back on a mode where it applies).
+                .disabled(activeMode?.isVariant == true)
                 .help("X-ray: skip transmissive surfaces (straight-line) and show the first opaque hit")
             } label: {
                 HStack(spacing: 5) {

@@ -1361,7 +1361,8 @@ PathTracingIntegrator::PathTracingIntegrator(
 	) :
   pSolver( 0 ),
   bSMSEnabled( smsConfig.enabled ),
-  stabilityConfig( stabilityCfg )
+  stabilityConfig( stabilityCfg ),
+  mMaxPathDepth( 128 )
 {
 	if( smsConfig.enabled )
 	{
@@ -1487,7 +1488,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	PTIGuidingPathScope guidingPathScope( guidingRecorder, rc.pGuidingField, guidingRootRay );
 #endif
 
-	const unsigned int maxDepth = 128;
+	// GUI render modes P2a fix: was a hardcoded literal 128; now the
+	// configurable cap (see SetMaxPathDepth's doc for the exact depth
+	// accounting).  Default 128 preserves byte-identical behavior for every
+	// caller that never calls the setter.
+	const unsigned int maxDepth = mMaxPathDepth;
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
@@ -3648,7 +3653,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
 
 	const LightSampler* pLS = caster.GetLightSampler();
-	const unsigned int maxDepth = 128;
+	// GUI render modes P2a fix: HWSS's twin of the Pel/NM loop cap above --
+	// was also a hardcoded literal 128; see SetMaxPathDepth's doc.
+	const unsigned int maxDepth = mMaxPathDepth;
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{

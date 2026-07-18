@@ -603,6 +603,9 @@ QVector<ViewportRenderModeInfo> ViewportBridge::viewportRenderModes()
         bool wantsDenoise = false;
         RISE_API_GetViewportRenderModeWantsDenoise(i, &wantsDenoise);   // additive C-ABI; false on failure is a safe default
         info.wantsDenoise = wantsDenoise;
+        bool isVariant = false;
+        RISE_API_GetViewportRenderModeIsVariant(i, &isVariant);   // additive C-ABI; false on failure is a safe default
+        info.isVariant = isVariant;
         out.push_back(info);
     }
     return out;
