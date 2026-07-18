@@ -55,6 +55,9 @@
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
 #include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image
+#include "../Interfaces/IRasterImageReader.h"   // compare_to_reference: decode a registered reference PNG through RISE's OWN reader (brings RISEColor + COLOR_SPACE via Color.h)
+#include "../Interfaces/IRasterImageWriter.h"   // compare_to_reference: encode the composite [render|reference|heatmap] diff PNG
+#include "../Utilities/MemoryBuffer.h"          // compare_to_reference: Implementation::MemoryBuffer, the in-memory IWriteBuffer the composite PNG encodes into
 #include "../Interfaces/ILog.h"   // P1-A: RenderOverrideRestoreGuard's defensive log-and-swallow
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
@@ -3876,6 +3879,390 @@ namespace RISE
 			res.hit  = true;
 			res.name = "";
 			res.message = "hit an unregistered/unmapped object -- no legend name available for this pixel";
+			return res;
+		}
+
+		// compare_to_reference ----------------------------------------------------
+
+		namespace
+		{
+			//! compare_to_reference: decode PNG bytes already in memory into a
+			//! tightly-packed 8-bit RGB pixel buffer (row-major, 3 bytes/pixel,
+			//! alpha dropped) through RISE's OWN PNGReader -- the SAME decoder
+			//! png_painter / read_image use.  A DELIBERATE, MINIMAL duplicate of
+			//! AgentEvalRunner.cpp's DecodePngToRgb8 (that copy is a file-local
+			//! helper in an anonymous namespace in a DIFFERENT translation unit
+			//! -- not exported -- and the two call sites are small enough that
+			//! factoring a shared header adds more indirection than it saves;
+			//! keep the two in lockstep if the decode contract ever changes).
+			//! Decodes with eColorSpace_Rec709RGB_Linear (the reader's "do
+			//! nothing" branch: byte/255 in) and re-Integerizes<Rec709RGBPel>
+			//! (*255 out) so the EXACT stored 8-bit byte the writer emitted
+			//! comes back verbatim -- a pure pass-through with NO gamma step.
+			//! This is why compare_to_reference compares like-with-like: the
+			//! candidate is decode(rr.png) where rr.png is byte-identical to
+			//! what read_image returns, and a registered reference was authored
+			//! by that same PNG family.  Returns false (populating `err`) on
+			//! any decode failure -- empty buffer, non-PNG bytes, or degenerate
+			//! dims -- never throws.
+			bool DecodeReferencePngToRgb8_( const unsigned char* bytes, std::size_t byteCount,
+				std::vector<unsigned char>& outRgb, unsigned int& outW, unsigned int& outH,
+				std::string& err )
+			{
+				outRgb.clear();
+				outW = 0;
+				outH = 0;
+				if( !bytes || byteCount == 0 ) {
+					err = "empty PNG buffer";
+					return false;
+				}
+
+				IMemoryBuffer* buffer = nullptr;
+				if( !RISE_API_CreateCompatibleMemoryBuffer( &buffer,
+					const_cast<char*>( reinterpret_cast<const char*>( bytes ) ),
+					static_cast<unsigned int>( byteCount ), /*bTakeOwnership=*/false ) || !buffer )
+				{
+					err = "could not wrap PNG bytes in a read buffer";
+					return false;
+				}
+
+				IRasterImageReader* reader = nullptr;
+				if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+					buffer->release();
+					err = "could not create a PNG reader";
+					return false;
+				}
+
+				unsigned int w = 0, h = 0;
+				if( !reader->BeginRead( w, h ) || w == 0 || h == 0 ) {
+					reader->EndRead();
+					reader->release();
+					buffer->release();
+					err = "PNG decode failed (not a valid PNG, or zero dimensions)";
+					return false;
+				}
+
+				outRgb.resize( static_cast<std::size_t>( w ) * h * 3 );
+				for( unsigned int y = 0; y < h; ++y ) {
+					for( unsigned int x = 0; x < w; ++x ) {
+						RISEColor c;
+						reader->ReadColor( c, x, y );
+						// eColorSpace_Rec709RGB_Linear read + Integerize<Rec709RGBPel>
+						// write is an exact byte round-trip (see the function doc).
+						const RGBA_T<unsigned char> enc = c.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
+						const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 3;
+						outRgb[idx + 0] = enc.r;
+						outRgb[idx + 1] = enc.g;
+						outRgb[idx + 2] = enc.b;
+					}
+				}
+
+				reader->EndRead();
+				reader->release();
+				buffer->release();
+				outW = w;
+				outH = h;
+				return true;
+			}
+
+			//! compare_to_reference visual=true: encode `w`x`h` RISEColor
+			//! pixels -- whose base.r/g/b already hold a DISPLAY-READY 8-bit
+			//! byte value scaled to [0,1] (as DecodeReferencePngToRgb8_ above
+			//! produces; NOT true HDR linear radiance) -- to 8-bit PNG bytes
+			//! via the tree's PNGWriter using eColorSpace_Rec709RGB_Linear: the
+			//! SAME "no further gamma" branch DecodeReferencePngToRgb8_ reads
+			//! with (PNGWriter::WriteColor -> Integerize<Rec709RGBPel>), so
+			//! byte N in -> byte N out, an exact pass-through rather than a
+			//! re-gamma-encode.  Mirrors InMemoryRasterizerOutput.cpp's
+			//! EncodePng helper (not exported / not reusable here -- a
+			//! different translation unit's anonymous-namespace helper --
+			//! and deliberately simpler: no display-transform wrapper, since
+			//! the composite's bytes are already final display values).
+			//! Returns an empty vector on a writer-creation failure or zero
+			//! dims.
+			std::vector<unsigned char> EncodeLinearPassthroughPng_(
+				const std::vector<RISEColor>& pels, unsigned int w, unsigned int h )
+			{
+				std::vector<unsigned char> out;
+				if( w == 0 || h == 0 ) return out;
+
+				// `new` yields refcount 1 (Reference starts at 1) -- our owning
+				// ref; PNGWriter addrefs it internally.  safe_release both at
+				// the end (no extra addref taken here).
+				Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer();
+
+				IRasterImageWriter* writer = nullptr;
+				if( !RISE_API_CreatePNGWriter( &writer, *buffer, /*bpp=*/8, eColorSpace_Rec709RGB_Linear ) || !writer ) {
+					safe_release( buffer );
+					return out;
+				}
+
+				writer->BeginWrite( w, h );
+				for( unsigned int y = 0; y < h; ++y ) {
+					for( unsigned int x = 0; x < w; ++x ) {
+						writer->WriteColor( pels[ static_cast<std::size_t>( y ) * w + x ], x, y );
+					}
+				}
+				writer->EndWrite();   // flushes the encoded PNG bytes into `buffer`
+
+				const unsigned int nBytes = buffer->getCurPos();
+				const char* p = buffer->Pointer();
+				if( p && nBytes > 0 ) {
+					out.assign(
+						reinterpret_cast<const unsigned char*>( p ),
+						reinterpret_cast<const unsigned char*>( p ) + nBytes );
+				}
+
+				safe_release( writer );
+				safe_release( buffer );
+				return out;
+			}
+
+			//! compare_to_reference visual=true: map a per-pixel mean |delta|
+			//! in [0,1] to an RGB byte triple through a simple 4-stop ramp:
+			//! black (no difference) -> red -> yellow -> white (maximum
+			//! difference).  Deliberately inline (~20 lines) rather than
+			//! pulling in a general-purpose colour-ramp utility for this one
+			//! call site.
+			void HeatmapRampByte_( double t, unsigned char& r, unsigned char& g, unsigned char& b )
+			{
+				if( t < 0.0 ) t = 0.0;
+				if( t > 1.0 ) t = 1.0;
+				struct Stop { double r, g, b; };
+				static const Stop kStops[4] = {
+					{   0.0,   0.0,   0.0 },   // black  -- t=0
+					{ 255.0,   0.0,   0.0 },   // red    -- t=1/3
+					{ 255.0, 255.0,   0.0 },   // yellow -- t=2/3
+					{ 255.0, 255.0, 255.0 }    // white  -- t=1
+				};
+				const double scaled = t * 3.0;
+				int seg = static_cast<int>( scaled );
+				if( seg > 2 ) seg = 2;
+				const double f = scaled - seg;
+				const Stop& a = kStops[seg];
+				const Stop& c = kStops[seg + 1];
+				r = static_cast<unsigned char>( a.r + ( c.r - a.r ) * f + 0.5 );
+				g = static_cast<unsigned char>( a.g + ( c.g - a.g ) * f + 0.5 );
+				b = static_cast<unsigned char>( a.b + ( c.b - a.b ) * f + 0.5 );
+			}
+
+			//! compare_to_reference: the human label for 3x3 grid cell
+			//! `index` (0=top-left .. 8=bottom-right, row-major -- row =
+			//! index/3, col = index%3).
+			const char* GridCellLabel_( int index )
+			{
+				static const char* const kLabels[9] = {
+					"top-left",    "top-center",    "top-right",
+					"middle-left", "center",        "middle-right",
+					"bottom-left", "bottom-center", "bottom-right"
+				};
+				return ( index >= 0 && index < 9 ) ? kLabels[index] : "unknown";
+			}
+		}
+
+		AgentCompareToReferenceResult AgentSession::CompareToReference(
+			const AgentCompareToReferenceParams& params )
+		{
+			AgentCompareToReferenceResult res;
+			res.reference = params.reference;
+
+			if( !mJob ) {
+				res.error = "no head loaded";
+				return res;
+			}
+
+			if( params.reference.empty() ) {
+				res.error = "'reference' must be a non-empty name";
+				res.badReference = true;
+				return res;
+			}
+
+			const AgentReferenceImage* found = nullptr;
+			for( const AgentReferenceImage& img : mReferenceImages ) {
+				if( img.name == params.reference ) { found = &img; break; }
+			}
+			if( !found ) {
+				std::string names;
+				for( std::size_t i = 0; i < mReferenceImages.size(); ++i ) {
+					if( i ) names += ", ";
+					names += mReferenceImages[i].name;
+				}
+				res.error = "unknown reference '" + params.reference + "' -- registered reference(s): " +
+					( names.empty() ? std::string( "(none registered)" ) : names );
+				res.badReference = true;
+				return res;
+			}
+
+			std::vector<unsigned char> refRgb;
+			unsigned int refW = 0, refH = 0;
+			std::string decErr;
+			if( !DecodeReferencePngToRgb8_(
+				reinterpret_cast<const unsigned char*>( found->pngBytes.data() ), found->pngBytes.size(),
+				refRgb, refW, refH, decErr ) )
+			{
+				res.error = "reference '" + params.reference + "' could not be decoded (" + decErr + ")";
+				return res;
+			}
+
+			// Render at the reference's EXACT dims, through the SAME pipeline
+			// read_image / the eval checker's compareToImage use -- see
+			// AgentCompareToReferenceParams' doc for the Draft/Production
+			// quality tradeoff `samples` selects.
+			AgentRenderParams rparams;
+			rparams.width  = refW;
+			rparams.height = refH;
+			rparams.camera = params.camera;
+			if( params.samples >= 1 ) {
+				rparams.quality = AgentRenderQuality::Production;
+				rparams.samples = params.samples;
+			} else {
+				rparams.quality = AgentRenderQuality::Draft;
+			}
+
+			const AgentRenderResult rr = Render( rparams );
+			if( !rr.ok ) {
+				res.error = "comparison render failed: " + rr.message;
+				return res;
+			}
+
+			std::vector<unsigned char> candRgb;
+			unsigned int candW = 0, candH = 0;
+			if( !DecodeReferencePngToRgb8_(
+				rr.png.empty() ? nullptr : rr.png.data(), rr.png.size(), candRgb, candW, candH, decErr ) )
+			{
+				res.error = "comparison render's PNG could not be decoded (" + decErr + ")";
+				return res;
+			}
+
+			if( candW != refW || candH != refH ) {
+				// Defensive only -- Render is forced to the reference's own
+				// dims above, so this should be unreachable in practice; kept
+				// so a future rasterizer quirk fails loud rather than reading
+				// past either buffer's end.
+				char db[320];
+				std::snprintf( db, sizeof( db ),
+					"comparison render is %ux%u but reference '%s' is %ux%u -- dims must match",
+					candW, candH, params.reference.c_str(), refW, refH );
+				res.error = db;
+				return res;
+			}
+
+			res.width  = refW;
+			res.height = refH;
+
+			// Overall RMSE + per-channel mean signed delta -- THE SAME
+			// FORMULA the eval checker's "render" checkpoint compareToImage
+			// assertion uses (AgentEvalRunner.cpp's CheckRenderKind): this IS
+			// the grader's own objective function, computed before the
+			// grader ever runs.
+			const std::size_t nPixels = static_cast<std::size_t>( refW ) * refH;
+			double sumSq = 0.0;
+			double sumDR = 0.0, sumDG = 0.0, sumDB = 0.0;
+			for( std::size_t i = 0; i < nPixels; ++i ) {
+				const double dr = ( static_cast<double>( candRgb[i*3+0] ) - static_cast<double>( refRgb[i*3+0] ) ) / 255.0;
+				const double dg = ( static_cast<double>( candRgb[i*3+1] ) - static_cast<double>( refRgb[i*3+1] ) ) / 255.0;
+				const double db = ( static_cast<double>( candRgb[i*3+2] ) - static_cast<double>( refRgb[i*3+2] ) ) / 255.0;
+				sumSq += dr*dr + dg*dg + db*db;
+				sumDR += dr; sumDG += dg; sumDB += db;
+			}
+			const std::size_t nSamples = nPixels * 3;
+			res.rmse = ( nSamples > 0 ) ? std::sqrt( sumSq / static_cast<double>( nSamples ) ) : 0.0;
+			res.channelDeltaR = ( nPixels > 0 ) ? sumDR / static_cast<double>( nPixels ) : 0.0;
+			res.channelDeltaG = ( nPixels > 0 ) ? sumDG / static_cast<double>( nPixels ) : 0.0;
+			res.channelDeltaB = ( nPixels > 0 ) ? sumDB / static_cast<double>( nPixels ) : 0.0;
+
+			// 3x3 spatial grid: split into 3 columns / 3 rows (the last
+			// column/row absorbs any remainder when width/height isn't a
+			// multiple of 3); bounds are clamped monotonic-non-decreasing so
+			// a degenerately small dim (width < 3, say) still yields
+			// well-formed (possibly empty) cell ranges rather than inverted
+			// ones.
+			res.grid.assign( 9, AgentCompareGridCell() );
+			unsigned int colBounds[4] = { 0, refW / 3, ( refW * 2 ) / 3, refW };
+			unsigned int rowBounds[4] = { 0, refH / 3, ( refH * 2 ) / 3, refH };
+			for( int i = 1; i < 4; ++i ) {
+				if( colBounds[i] < colBounds[i-1] ) colBounds[i] = colBounds[i-1];
+				if( rowBounds[i] < rowBounds[i-1] ) rowBounds[i] = rowBounds[i-1];
+			}
+			int worstIdx = 0;
+			double worstRmse = -1.0;
+			for( int gr = 0; gr < 3; ++gr ) {
+				for( int gc = 0; gc < 3; ++gc ) {
+					const int idx = gr * 3 + gc;
+					double cellSumSq = 0.0, cellDR = 0.0, cellDG = 0.0, cellDB = 0.0;
+					std::size_t cellN = 0;
+					for( unsigned int y = rowBounds[gr]; y < rowBounds[gr+1]; ++y ) {
+						for( unsigned int x = colBounds[gc]; x < colBounds[gc+1]; ++x ) {
+							const std::size_t i = static_cast<std::size_t>( y ) * refW + x;
+							const double dr = ( static_cast<double>( candRgb[i*3+0] ) - static_cast<double>( refRgb[i*3+0] ) ) / 255.0;
+							const double dg = ( static_cast<double>( candRgb[i*3+1] ) - static_cast<double>( refRgb[i*3+1] ) ) / 255.0;
+							const double db = ( static_cast<double>( candRgb[i*3+2] ) - static_cast<double>( refRgb[i*3+2] ) ) / 255.0;
+							cellSumSq += dr*dr + dg*dg + db*db;
+							cellDR += dr; cellDG += dg; cellDB += db;
+							++cellN;
+						}
+					}
+					AgentCompareGridCell& cell = res.grid[idx];
+					if( cellN > 0 ) {
+						cell.rmse = std::sqrt( cellSumSq / static_cast<double>( cellN * 3 ) );
+						cell.dr = cellDR / static_cast<double>( cellN );
+						cell.dg = cellDG / static_cast<double>( cellN );
+						cell.db = cellDB / static_cast<double>( cellN );
+					}
+					if( cell.rmse > worstRmse ) {
+						worstRmse = cell.rmse;
+						worstIdx = idx;
+					}
+				}
+			}
+			res.worstCell = GridCellLabel_( worstIdx );
+
+			// Human summary.
+			{
+				const double overallDelta = ( res.channelDeltaR + res.channelDeltaG + res.channelDeltaB ) / 3.0;
+				char buf[512];
+				std::snprintf( buf, sizeof( buf ),
+					"RMSE %.4f vs reference '%s'; mean channel delta dR=%+.3f dG=%+.3f dB=%+.3f "
+					"(render is on average %s the reference by %.3f); worst region %s (RMSE %.4f)%s",
+					res.rmse, params.reference.c_str(),
+					res.channelDeltaR, res.channelDeltaG, res.channelDeltaB,
+					( overallDelta >= 0.0 ? "brighter than" : "darker than" ), std::fabs( overallDelta ),
+					res.worstCell.c_str(), worstRmse,
+					( rr.renderMode == "draft"
+						? " [draft mode -- materials/lighting ignored; this RMSE reflects geometry/composition only, not colour/material match -- pass samples>=1 for a production-quality reading]"
+						: "" ) );
+				res.summary = buf;
+			}
+
+			// Optional composite [render | reference | |delta| heatmap],
+			// side-by-side, each panel at the reference's own dims.
+			if( params.visual ) {
+				const unsigned int compW = refW * 3;
+				std::vector<RISEColor> composite( static_cast<std::size_t>( compW ) * refH );
+				for( unsigned int y = 0; y < refH; ++y ) {
+					for( unsigned int x = 0; x < refW; ++x ) {
+						const std::size_t i = static_cast<std::size_t>( y ) * refW + x;
+						composite[ static_cast<std::size_t>( y ) * compW + x ] =
+							RISEColor( candRgb[i*3+0] / 255.0, candRgb[i*3+1] / 255.0, candRgb[i*3+2] / 255.0, 1.0 );
+						composite[ static_cast<std::size_t>( y ) * compW + refW + x ] =
+							RISEColor( refRgb[i*3+0] / 255.0, refRgb[i*3+1] / 255.0, refRgb[i*3+2] / 255.0, 1.0 );
+						const double dr = std::fabs( static_cast<double>( candRgb[i*3+0] ) - static_cast<double>( refRgb[i*3+0] ) ) / 255.0;
+						const double dg = std::fabs( static_cast<double>( candRgb[i*3+1] ) - static_cast<double>( refRgb[i*3+1] ) ) / 255.0;
+						const double db = std::fabs( static_cast<double>( candRgb[i*3+2] ) - static_cast<double>( refRgb[i*3+2] ) ) / 255.0;
+						unsigned char hr, hg, hb;
+						HeatmapRampByte_( ( dr + dg + db ) / 3.0, hr, hg, hb );
+						composite[ static_cast<std::size_t>( y ) * compW + 2*refW + x ] =
+							RISEColor( hr / 255.0, hg / 255.0, hb / 255.0, 1.0 );
+					}
+				}
+				res.compositePng = EncodeLinearPassthroughPng_( composite, compW, refH );
+				if( !res.compositePng.empty() ) {
+					res.compositeWidth  = compW;
+					res.compositeHeight = refH;
+				}
+			}
+
+			res.ok = true;
 			return res;
 		}
 

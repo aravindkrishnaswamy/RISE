@@ -472,6 +472,218 @@ static void RunDisplayTransformOrdering()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// compare_to_reference: the reconstruction feedback instrument.
+//
+//   1. NOISE FLOOR (draft): register a draft-rendered PNG as "view1",
+//      then compare_to_reference (default -- draft) against the SAME,
+//      unchanged scene -> rmse near 0 (measures the draft-vs-draft MC
+//      noise floor; draft's fixed studio-preview shading is far more
+//      deterministic than a stochastic PT render, so this floor is
+//      expected to be tiny).
+//   2. UNKNOWN REFERENCE -> a JSON-RPC error naming the registered set.
+//   3. CAMERA OVERRIDE aimed away from the sphere raises the rmse well
+//      above the noise floor.
+//   4. VISUAL: visual:true (the default) returns a composite PNG 3x the
+//      reference's width; visual:false returns none.
+//   5. PRODUCTION + RECOLOR: register a PRODUCTION reference, confirm a
+//      same-scene production self-compare rmse near ITS OWN (noisier)
+//      floor, then recolor the sphere's material and confirm the rmse
+//      rises far beyond that floor with channelDelta signs pointing in
+//      the recolor's direction (production quality is REQUIRED for this
+//      -- draft ignores materials/lighting entirely, so a recolor is
+//      invisible to a draft-mode comparison by design).
+//////////////////////////////////////////////////////////////////////
+static void RunCompareToReference()
+{
+	std::printf( "=== compare_to_reference: the reconstruction feedback instrument ===\n" );
+
+	const std::string scenePath = WriteTemp( "agent_compare_to_reference.RISEscene", kScene );
+	Check( !scenePath.empty(), "compare_to_reference: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "compare_to_reference: scene loads via the CST path" );
+
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "compare_to_reference: AgentSession::WrapJob wraps the Job" );
+
+		AgentRpcDispatcher rpc( std::move( session ) );
+		AgentSession* s = rpc.Session();
+		Check( s != nullptr, "compare_to_reference: dispatcher exposes the wrapped session" );
+
+		// ---- (1) register a DRAFT reference + same-scene draft self-compare (noise floor) ----
+		double draftNoiseFloor = 0.0;
+		{
+			AgentRenderParams rp;
+			rp.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult rr = s->Render( rp );
+			Check( rr.ok && !rr.png.empty(), "compare_to_reference: draft reference render succeeded" );
+
+			std::vector<AgentReferenceImage> refs( 1 );
+			refs[0].name = "view1";
+			refs[0].pngBytes.assign( rr.png.begin(), rr.png.end() );
+			s->SetReferenceImages( std::move( refs ) );
+		}
+
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "view1" ) );
+			const std::string resp = rpc.HandleLine( Req( 1, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 1 );
+			Check( env.has( "result" ), "compare_to_reference(view1, draft): structured success" );
+			const JsonValue& r = env.get( "result" );
+			draftNoiseFloor = r.get( "rmse" ).asNumber();
+			std::printf( "  measured draft-vs-draft self-compare rmse = %.6f\n", draftNoiseFloor );
+			// Measured empirically at 0.000000 on this scene (the draft
+			// preview pipeline's fixed studio shading has no stochastic
+			// sampling to disagree with itself run-to-run, unlike a real PT
+			// render) -- 0.01 is a generous margin above that measured
+			// floor, honest rather than a round guess.
+			Check( draftNoiseFloor < 0.01,
+				"compare_to_reference: same-scene draft self-compare rmse is near 0 (< 0.01 draft-vs-draft MC noise; measured 0.000000)" );
+			Check( static_cast<unsigned int>( r.get( "width"  ).asNumber() ) == 32 &&
+			       static_cast<unsigned int>( r.get( "height" ).asNumber() ) == 24,
+				"compare_to_reference: reports the reference's 32x24 dims" );
+			Check( r.get( "reference" ).asString() == "view1", "compare_to_reference: echoes the reference name" );
+			Check( r.get( "grid" ).isArray() && r.get( "grid" ).size() == 9,
+				"compare_to_reference: grid has 9 cells" );
+			Check( !r.get( "worstCell" ).asString().empty(), "compare_to_reference: worstCell is non-empty" );
+			Check( !r.get( "summary" ).asString().empty(), "compare_to_reference: summary is non-empty" );
+		}
+
+		// ---- (2) UNKNOWN REFERENCE ----
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "no_such_view" ) );
+			const std::string resp = rpc.HandleLine( Req( 2, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 2 );
+			Check( env.has( "error" ), "compare_to_reference(unknown name): a JSON-RPC error" );
+			Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+				"compare_to_reference(unknown name): -32602 (bad reference is a usage error)" );
+			const std::string msg = env.get( "error" ).get( "message" ).asString();
+			Check( msg.find( "view1" ) != std::string::npos,
+				"compare_to_reference(unknown name): error message names the registered reference(s)" );
+		}
+
+		// ---- (3) CAMERA OVERRIDE raises the rmse ----
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "view1" ) );
+			JsonValue camera = JsonValue::MakeObject();
+			camera.set( "location", JsonValue::MakeString( "0 0 -3.5" ) );
+			camera.set( "lookat",   JsonValue::MakeString( "0 0 -10" ) );
+			camera.set( "up",       JsonValue::MakeString( "0 1 0" ) );
+			params.set( "camera", camera );
+			const std::string resp = rpc.HandleLine( Req( 3, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 3 );
+			Check( env.has( "result" ), "compare_to_reference(camera override): structured success" );
+			const double rmseAway = env.get( "result" ).get( "rmse" ).asNumber();
+			std::printf( "  measured rmse looking away from the sphere = %.6f\n", rmseAway );
+			Check( rmseAway > draftNoiseFloor + 0.02,
+				"compare_to_reference: an aimed-away camera override raises the rmse well above the noise floor" );
+		}
+
+		// ---- (4) VISUAL true (default) / false ----
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "view1" ) );
+			const std::string resp = rpc.HandleLine( Req( 4, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 4 );
+			const JsonValue& r = env.get( "result" );
+			const std::string b64 = r.get( "png_base64" ).asString();
+			Check( !b64.empty(), "compare_to_reference(visual default true): png_base64 is non-empty" );
+			std::vector<unsigned char> decoded;
+			Check( Base64Decode( b64, decoded ) && StartsWithPngSignature( decoded ),
+				"compare_to_reference(visual default true): decodes to a \\x89PNG" );
+			Check( static_cast<unsigned int>( r.get( "compositeWidth" ).asNumber() ) == 32u * 3,
+				"compare_to_reference(visual default true): compositeWidth == 3x the reference width" );
+			Check( static_cast<unsigned int>( r.get( "compositeHeight" ).asNumber() ) == 24u,
+				"compare_to_reference(visual default true): compositeHeight == the reference height" );
+		}
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "view1" ) );
+			params.set( "visual", JsonValue::MakeBool( false ) );
+			const std::string resp = rpc.HandleLine( Req( 5, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 5 );
+			const JsonValue& r = env.get( "result" );
+			Check( r.get( "png_base64" ).asString().empty(),
+				"compare_to_reference(visual:false): no composite image returned" );
+		}
+
+		// ---- (5) PRODUCTION self-compare noise floor + recolor ----
+		double productionNoiseFloor = 0.0;
+		{
+			AgentRenderParams rp;
+			rp.samples = 16;
+			const AgentRenderResult rr = s->Render( rp );
+			Check( rr.ok && !rr.png.empty(), "compare_to_reference: production reference render succeeded" );
+
+			std::vector<AgentReferenceImage> refs( 1 );
+			refs[0].name = "view2";
+			refs[0].pngBytes.assign( rr.png.begin(), rr.png.end() );
+			s->SetReferenceImages( std::move( refs ) );   // REPLACES the set -- "view1" no longer registered
+		}
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "view2" ) );
+			params.set( "samples", JsonValue::MakeNumber( 16.0 ) );
+			const std::string resp = rpc.HandleLine( Req( 6, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 6 );
+			Check( env.has( "result" ), "compare_to_reference(view2, production): structured success" );
+			productionNoiseFloor = env.get( "result" ).get( "rmse" ).asNumber();
+			// Measured empirically ~0.0053 at samples=16 on this scene
+			// (real PT sampling noise, unlike draft's 0.0 floor above).
+			std::printf( "  measured production-vs-production self-compare rmse = %.6f\n", productionNoiseFloor );
+
+			// "view1" was superseded by the SetReferenceImages replace above.
+			JsonValue oldRef = JsonValue::MakeObject();
+			oldRef.set( "reference", JsonValue::MakeString( "view1" ) );
+			const std::string oldResp = rpc.HandleLine( Req( 60, "compare_to_reference", oldRef ) );
+			JsonValue oldEnv = ParseResponse( oldResp, 60 );
+			Check( oldEnv.has( "error" ),
+				"compare_to_reference: SetReferenceImages REPLACES the set -- the superseded \"view1\" name is now unknown" );
+		}
+
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "target", JsonValue::MakeString( "pnt_albedo" ) );
+			params.set( "param",  JsonValue::MakeString( "color" ) );
+			params.set( "value",  JsonValue::MakeString( "0.9 0.05 0.05" ) );
+			const std::string resp = rpc.HandleLine( Req( 7, "propose_patch", params ) );
+			JsonValue env = ParseResponse( resp, 7 );
+			Check( env.get( "result" ).get( "applied" ).asBool(), "compare_to_reference: recolor propose_patch applied" );
+		}
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "view2" ) );
+			params.set( "samples", JsonValue::MakeNumber( 16.0 ) );
+			const std::string resp = rpc.HandleLine( Req( 8, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 8 );
+			Check( env.has( "result" ), "compare_to_reference(view2, post-recolor): structured success" );
+			const JsonValue& r = env.get( "result" );
+			const double rmseAfter = r.get( "rmse" ).asNumber();
+			std::printf( "  measured rmse after recolor = %.6f\n", rmseAfter );
+			Check( rmseAfter > productionNoiseFloor + 0.05,
+				"compare_to_reference: recolor raises rmse well beyond the production self-compare noise floor" );
+			const double dR = r.get( "channelDelta" ).get( "r" ).asNumber();
+			const double dG = r.get( "channelDelta" ).get( "g" ).asNumber();
+			const double dB = r.get( "channelDelta" ).get( "b" ).asNumber();
+			std::printf( "  channelDelta after recolor: dR=%.4f dG=%.4f dB=%.4f\n", dR, dG, dB );
+			Check( dR > 0.0,
+				"compare_to_reference: channelDelta.r is POSITIVE after recolor toward red (render redder than the gray reference)" );
+			Check( dG < 0.0,
+				"compare_to_reference: channelDelta.g is NEGATIVE after recolor away from the gray reference's green" );
+			Check( dB < 0.0,
+				"compare_to_reference: channelDelta.b is NEGATIVE after recolor away from the gray reference's blue" );
+		}
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentViewportReadTest ===\n" );
@@ -480,6 +692,7 @@ int main()
 	RunNoController();
 	RunNoFrameYet();
 	RunDisplayTransformOrdering();
+	RunCompareToReference();
 
 	std::printf( "=== AgentViewportReadTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

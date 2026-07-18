@@ -127,7 +127,13 @@ namespace RISE
 				       // captured and restored) -- available under every
 				       // autonomy posture, including Read, exactly like
 				       // render itself.
-				       method == "query_object_at";
+				       method == "query_object_at" ||
+				       // compare_to_reference is a PURE READ -- it renders
+				       // (never mutates the retained Document, exactly like
+				       // render itself) and grades against a HOST-registered
+				       // reference image; available under every autonomy
+				       // posture, including Read.
+				       method == "compare_to_reference";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
@@ -1609,6 +1615,107 @@ namespace RISE
 					result.set( "width",   JsonValue::MakeNumber( static_cast<double>( qr.width ) ) );
 					result.set( "height",  JsonValue::MakeNumber( static_cast<double>( qr.height ) ) );
 					result.set( "message", JsonValue::MakeString( qr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// compare_to_reference {reference,camera?,visual?,samples?} ->
+				//   {rmse,channelDelta:{r,g,b},grid:[{rmse,dr,dg,db},x9],
+				//    worstCell,width,height,reference,summary,
+				//    png_base64?,compositeWidth?,compositeHeight?}
+				//   The reconstruction feedback instrument: see AgentRpc.h's
+				//   file-header doc for the full contract.  `reference`
+				//   (REQUIRED, non-empty string) names a HOST-registered
+				//   image (AgentSession::SetReferenceImages) -- an unknown
+				//   name is a clean -32602 naming every registered
+				//   reference (AgentSession::AgentCompareToReferenceResult::
+				//   badReference distinguishes this from every other
+				//   failure, which maps to -32603).  `camera`/`visual`/
+				//   `samples` compose exactly as AgentCompareToReferenceParams
+				//   documents.  The composite image, when present, is
+				//   returned under the SAME "png_base64" field name
+				//   read_image uses -- deliberately, so the chat-loop's
+				//   image retention/elision policy (which keys off that
+				//   literal field name) applies to it identically.
+				//--------------------------------------------------------------
+				if( m == "compare_to_reference" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+
+					const JsonValue* refVal = params.find( "reference" );
+					if( !refVal || !refVal->isString() || refVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'reference' (a non-empty string) is required" );
+					}
+
+					AgentCompareToReferenceParams cparams;
+					cparams.reference = refVal->asString();
+
+					if( const JsonValue* vv = params.find( "visual" ) ) {
+						if( vv->isBool() ) cparams.visual = vv->asBool();
+						else if( !vv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'visual' must be a boolean" );
+					}
+
+					if( const JsonValue* sv = params.find( "samples" ) ) {
+						if( sv->isNumber() ) {
+							// Same explicit finite-range guard idiom as every
+							// other numeric parse in this file (NOT
+							// std::isfinite -- dead code under
+							// -ffinite-math-only; see the 'samples' parse in
+							// the render dispatch above).
+							const double sd = sv->asNumber();
+							if( !( sd >= -2147483648.0 && sd <= 2147483647.0 ) )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
+							int samples = static_cast<int>( sd );
+							if( samples < 1 ) samples = 1;
+							else if( samples > 65536 ) samples = 65536;
+							cparams.samples = samples;
+						}
+						else if( !sv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
+					}
+
+					AgentCameraOverride crCamOverride;
+					std::string crCamErr;
+					const int crCamPresent = ParseCameraOverrideParam( params, crCamOverride, crCamErr );
+					if( crCamPresent < 0 ) return MakeError( idValue, kInvalidParams, crCamErr );
+					if( crCamPresent == 1 ) cparams.camera = crCamOverride;
+
+					const AgentCompareToReferenceResult cr = s->CompareToReference( cparams );
+					if( !cr.ok ) {
+						return MakeError( idValue, cr.badReference ? kInvalidParams : kInternalError,
+							cr.error.empty() ? "compare_to_reference failed" : cr.error );
+					}
+
+					JsonValue channelDelta = JsonValue::MakeObject();
+					channelDelta.set( "r", JsonValue::MakeNumber( cr.channelDeltaR ) );
+					channelDelta.set( "g", JsonValue::MakeNumber( cr.channelDeltaG ) );
+					channelDelta.set( "b", JsonValue::MakeNumber( cr.channelDeltaB ) );
+
+					JsonValue grid = JsonValue::MakeArray();
+					for( const AgentCompareGridCell& cell : cr.grid ) {
+						JsonValue cj = JsonValue::MakeObject();
+						cj.set( "rmse", JsonValue::MakeNumber( cell.rmse ) );
+						cj.set( "dr",   JsonValue::MakeNumber( cell.dr ) );
+						cj.set( "dg",   JsonValue::MakeNumber( cell.dg ) );
+						cj.set( "db",   JsonValue::MakeNumber( cell.db ) );
+						grid.push_back( cj );
+					}
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "rmse",         JsonValue::MakeNumber( cr.rmse ) );
+					result.set( "channelDelta", channelDelta );
+					result.set( "grid",         grid );
+					result.set( "worstCell",    JsonValue::MakeString( cr.worstCell ) );
+					result.set( "width",        JsonValue::MakeNumber( static_cast<double>( cr.width ) ) );
+					result.set( "height",       JsonValue::MakeNumber( static_cast<double>( cr.height ) ) );
+					result.set( "reference",    JsonValue::MakeString( cr.reference ) );
+					result.set( "summary",      JsonValue::MakeString( cr.summary ) );
+					if( !cr.compositePng.empty() ) {
+						result.set( "png_base64",       JsonValue::MakeString( Base64Encode( cr.compositePng ) ) );
+						result.set( "compositeWidth",   JsonValue::MakeNumber( static_cast<double>( cr.compositeWidth ) ) );
+						result.set( "compositeHeight",  JsonValue::MakeNumber( static_cast<double>( cr.compositeHeight ) ) );
+					}
 					return MakeSuccess( idValue, result );
 				}
 

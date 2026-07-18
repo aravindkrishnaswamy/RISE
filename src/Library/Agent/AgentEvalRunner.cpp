@@ -1839,6 +1839,16 @@ namespace RISE
 				// scenario.prompts[i], parallel-indexed; empty for a text-only
 				// prompt.
 				std::vector<std::vector<ChatAttachment>> promptAttachments( scenario.prompts.size() );
+				// compare_to_reference naming contract: every prompt-attachment
+				// image, in prompt-then-attachment order (the SAME order the
+				// promptAttachments loop below walks), is ALSO registered on
+				// the session as an AgentSession::AgentReferenceImage named
+				// "view1", "view2", ... -- the Nth image attached across ALL
+				// prompts is viewN.  Raw file bytes (not base64) -- compare_to_
+				// reference decodes them itself.  Scenarios/skills reference
+				// these names; keep this contract in sync with AgentSession.h's
+				// SetReferenceImages doc if it ever changes.
+				std::vector<AgentReferenceImage> referenceImages;
 				for( std::size_t pi = 0; pi < scenario.prompts.size(); ++pi ) {
 					const AgentEvalPrompt& prompt = scenario.prompts[pi];
 					for( std::size_t ii = 0; ii < prompt.imagePaths.size(); ++ii ) {
@@ -1868,8 +1878,14 @@ namespace RISE
 						att.mimeType = mimeType;
 						att.base64Data = Base64Encode( std::vector<unsigned char>( bytes.begin(), bytes.end() ) );
 						promptAttachments[pi].push_back( att );
+
+						AgentReferenceImage refImg;
+						refImg.name     = "view" + std::to_string( referenceImages.size() + 1 );
+						refImg.pngBytes = bytes;   // raw file bytes verbatim (compare_to_reference decodes non-PNG types honestly, per its own PNG-only decode contract)
+						referenceImages.push_back( std::move( refImg ) );
 					}
 				}
+				session->SetReferenceImages( std::move( referenceImages ) );
 
 				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
 				handle.result.headVersionStart = headVersionStart;

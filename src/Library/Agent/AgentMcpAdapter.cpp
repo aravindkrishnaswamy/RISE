@@ -555,6 +555,39 @@ namespace RISE
 						ObjectProp( "", props, required ) ) );
 				}
 
+				// compare_to_reference (the reconstruction feedback instrument)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "reference", StringProp( "REQUIRED. The name of a HOST-registered reference image (e.g. the eval harness's \"view1\", \"view2\", ... prompt-attachment naming contract, in prompt-then-attachment order). An unknown name is an error listing every registered reference name -- there is no way to compare against an arbitrary path; only images the host explicitly registered are reachable." ) );
+					props.set( "camera", CameraOverrideSchema() );
+					props.set( "visual", BoolProp( "OPTIONAL, default true. When true, ALSO returns a composite [render | reference | abs-diff heatmap] side-by-side PNG (3x the reference's width) as a real image content block, using the SAME mechanism read_image uses. Set false once you only need the numeric feedback (rmse/channelDelta/grid) -- saves the encode cost and the response's token footprint." ) );
+					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,65536]. IMPORTANT QUALITY TRADEOFF: omit this (the default) and the comparison renders at quality:\"draft\" -- cheap, but the draft pipeline IGNORES the scene's authored materials and lighting entirely, so a low draft-mode RMSE only confirms geometry/composition/camera alignment, NOT colour or material match. Supplying `samples` switches the comparison to quality:\"production\" at that sample count -- the real, grader-equivalent RMSE reading, and materially more expensive. Recommended workflow: iterate cheaply under the draft default while getting composition/placement right, then pass `samples` (e.g. 16-64) for the real measurement once composition looks plausible." ) );
+					std::vector<std::string> required; required.push_back( "reference" );
+					tools.push_back( MakeTool( "compare_to_reference",
+						"Measure how closely the current scene's render matches a reference photo -- "
+						"the SAME RMSE objective function an image-reconstruction grader uses, handed "
+						"to you directly instead of leaving you to render-then-eyeball. Renders the "
+						"live scene at the NAMED reference's exact pixel dimensions (no width/height "
+						"override -- the comparison needs pixel-for-pixel alignment) and returns "
+						"{rmse, channelDelta:{r,g,b}, grid, worstCell, width, height, reference, "
+						"summary}. `rmse` = sqrt(mean((render-reference)/255)^2) over all pixels -- "
+						"lower is better, 0 is a perfect match; treat this as the primary objective "
+						"to minimize, not a vague color the render \"looks close\". `channelDelta` is "
+						"the mean SIGNED per-channel difference (render minus reference, [-1,1]) -- "
+						"positive means your render runs brighter than the reference on that channel "
+						"(e.g. channelDelta.b > 0 means your render is too blue). `grid` is a 3x3 "
+						"ROW-MAJOR array (index 0 = top-left ... index 8 = bottom-right; row = "
+						"index/3, col = index%3) of {rmse,dr,dg,db} giving the SAME two measures "
+						"broken down spatially -- use this to find WHICH region of the frame is "
+						"worst (background/environment staging is the most common weak spot) rather "
+						"than guessing from the single overall number; `worstCell` names that "
+						"region directly (e.g. \"top-right\"). `summary` is a one-line human-readable "
+						"synthesis of all of the above. See the `samples` parameter's own description "
+						"for the draft-vs-production quality tradeoff -- read it before relying on a "
+						"reading for anything beyond composition/geometry.",
+						ObjectProp( "", props, required ) ) );
+				}
+
 				// list_proposals (Secure-MCP slice 5b)
 				{
 					tools.push_back( MakeTool( "list_proposals",
@@ -637,7 +670,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 16 tool names this adapter recognizes --
+			//! The list of the 17 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -646,6 +679,7 @@ namespace RISE
 					"propose_patch", "insert_chunk", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
+					"compare_to_reference",
 					"list_proposals", "resolve_proposal"
 				};
 				for( const char* n : kNames ) if( name == n ) return true;
@@ -791,7 +825,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 16 verbs as MCP tools.
+				// tools/list -> the 17 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();
@@ -867,7 +901,19 @@ namespace RISE
 					// available:true; when available:false the field is "" and
 					// the image block is simply skipped (the text block still
 					// carries {available,reason,...} so the client learns why).
-					if( toolName == "read_image" || toolName == "read_viewport" ) {
+					// compare_to_reference joins this set too: when visual
+					// (the default) was requested, its result carries the
+					// SAME "png_base64" field name read_image does (the
+					// composite [render|reference|heatmap] diff PNG) --
+					// deliberately, so this one image-surfacing branch
+					// covers it without a separate case. When visual:false
+					// was requested there is no png_base64 field at all, so
+					// the `!b64.empty()` guard below simply skips the image
+					// block and only the text block (rmse/grid/summary/...)
+					// is returned -- no special-casing needed here.
+					if( toolName == "read_image" || toolName == "read_viewport" ||
+					    toolName == "compare_to_reference" )
+					{
 						JsonValue content = JsonValue::MakeArray();
 						const std::string b64 = innerResult.get( "png_base64" ).asString();
 						if( !b64.empty() ) {

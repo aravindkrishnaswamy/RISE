@@ -5,7 +5,7 @@
 //    slice B1).
 //
 //    OWNS conversation state and translates between LLM provider wire
-//    formats (via AgentChatCodecs) and the ten JSON-RPC verbs the
+//    formats (via AgentChatCodecs) and the eleven JSON-RPC verbs the
 //    AgentRpcDispatcher speaks -- but performs NO I/O.  The caller (the
 //    Swift GUI in slice B2; C++ tests today) drives the loop:
 //

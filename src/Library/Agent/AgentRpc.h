@@ -307,6 +307,76 @@
 //                                            READ-SAFE: available under every
 //                                            autonomy posture, including Read (a pure
 //                                            read, exactly like render itself).)
+//      compare_to_reference {reference,camera?,visual?,samples?}
+//                                        -> {ok,error?,badReference?,rmse,
+//                                            channelDelta:{r,g,b},
+//                                            grid:[{rmse,dr,dg,db},x9],worstCell,
+//                                            width,height,reference,summary,
+//                                            png_base64?,compositeWidth?,
+//                                            compositeHeight?}
+//                                           (the reconstruction feedback instrument:
+//                                            hands an agent the SAME RMSE objective
+//                                            function an image-reconstruction eval
+//                                            grader uses, plus a visual diff, instead
+//                                            of leaving it to render-then-eyeball.
+//                                            `reference` (REQUIRED) names a HOST-
+//                                            registered image (AgentSession::
+//                                            SetReferenceImages -- e.g. the eval
+//                                            harness's "view1".."viewN" prompt-
+//                                            attachment naming contract); an unknown
+//                                            name is a clean -32602 listing every
+//                                            registered name.  Renders the live head
+//                                            at the reference's EXACT pixel dims
+//                                            (there is no width/height override --
+//                                            the RMSE/grid math needs pixel-for-pixel
+//                                            alignment) through the SAME PNG pipeline
+//                                            read_image / the eval checker's
+//                                            compareToImage assertion use.  `camera`
+//                                            composes exactly like render's own
+//                                            override (ephemeral, captured+restored).
+//                                            QUALITY TRADEOFF: absent `samples`
+//                                            (default), renders quality:"draft" --
+//                                            cheap, but IGNORES materials/lighting
+//                                            (good for composition/geometry
+//                                            iteration only); `samples` (>=1)
+//                                            switches to quality:"production" at
+//                                            that SPP for a real grader-equivalent
+//                                            reading.  `rmse` is
+//                                            sqrt(mean((render-reference)/255)^2)
+//                                            over all pixels*RGB -- the exact
+//                                            formula AgentEvalRunner.cpp's
+//                                            CheckRenderKind compareToImage
+//                                            assertion uses.  `channelDelta` is the
+//                                            mean SIGNED per-channel delta (render
+//                                            minus reference, [-1,1]) -- positive
+//                                            means the render runs brighter on that
+//                                            channel.  `grid` is a 3x3 ROW-MAJOR
+//                                            (index 0=top-left..8=bottom-right)
+//                                            spatial breakdown of the same two
+//                                            measures, letting a caller localize
+//                                            WHERE the reconstruction is worst (the
+//                                            vision baseline's dominant failure mode
+//                                            was background/env staging, ~60% of
+//                                            pixels); `worstCell` names the
+//                                            highest-RMSE cell. `visual` (default
+//                                            true) additionally builds a
+//                                            [render|reference|abs-diff heatmap]
+//                                            side-by-side composite PNG (3x the
+//                                            reference's width) -- returned as
+//                                            `png_base64` (+ compositeWidth/
+//                                            compositeHeight), mirroring read_image's
+//                                            OWN image-return field name/shape
+//                                            EXACTLY so the chat-loop's image
+//                                            retention/elision policy applies to it
+//                                            identically; set `visual:false` once
+//                                            only the numeric feedback is needed, to
+//                                            save the encode cost and the response's
+//                                            token footprint. Never mutates the
+//                                            retained Document; the comparison
+//                                            render is cached for read_image exactly
+//                                            like any other successful render.
+//                                            READ-SAFE: available under every
+//                                            autonomy posture, including Read.)
 //      list_proposals {}                 -> {proposals:[{id,kind,target,entityKind,
 //                                            param,value,chunkText,truncated,
 //                                            baseVersion:{uuid,revision},
@@ -422,7 +492,8 @@
 //    DENY-BY-DEFAULT: `Read` allows ONLY the read-safe allowlist
 //    (read_document, read_schema, read_skill, validate, render,
 //    render_status, render_wait, render_cancel, read_image,
-//    list_proposals, read_viewport, query_object_at -- IsReadSafeVerb in
+//    list_proposals, read_viewport, query_object_at, compare_to_reference --
+//    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
 //    including the 3 known-
@@ -541,7 +612,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 3 mutating
 			//! verbs (propose_patch/insert_chunk/remove_chunk) dispatch -- but
 			//! dispatching only reaches AgentSession, whose OWN Owner/External
