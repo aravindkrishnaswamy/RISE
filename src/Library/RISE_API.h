@@ -3671,6 +3671,18 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		const char** name, const char** title, const char** question,
 		bool* viewportSelectable );
 
+	//! GUI render modes P2a (docs/gui/RENDER_MODES.md §6): registry entry
+	//! `index`'s `wantsDenoise` flag -- ADDITIVE sibling of
+	//! RISE_API_GetViewportRenderModeInfo above (that function's signature
+	//! is left unchanged for ABI stability; a new accessor is added instead
+	//! of widening it).  Now that the BeautyVariant modes (deep_reflect,
+	//! direct) genuinely denoise, the "DENOISED — NOT FINAL" polish-status
+	//! label should key off THIS flag rather than a hardcoded
+	//! `mode == "preview"` check.  Returns false (out untouched) on an
+	//! out-of-range index or a null `out`.
+	bool RISE_API_GetViewportRenderModeWantsDenoise(
+		unsigned int index, bool* out );
+
 	//! -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") --------
 	//! An orthogonal boolean that composes with all four data modes
 	//! (Normals/Depth/Facets/Wireframe): resolves each hit THROUGH

@@ -189,6 +189,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 : mJob( job )
 , mInteractiveRasterizer( interactiveRasterizer )
 , mInteractiveImpl( dynamic_cast<Implementation::InteractivePelRasterizer*>( interactiveRasterizer ) )
+, mVariantRasterizer( 0 )
 , mViewportRenderMode( Implementation::ViewportRenderMode::Preview )
 , mViewportXray( true )   // DEFAULT ON (2026-07-17 user decision) -- see the header doc
 , mEditor( *job.GetScene() )
@@ -259,6 +260,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mFullResW( 0 )
 , mFullResH( 0 )
 , mPreviewScale( 1 )
+, mPreviewScalePinned( false )
 , mLastEditTimeMs( 0 )
 , mInRefinementPass( false )
 , mPolishState( static_cast<int>( PolishState::None ) )
@@ -326,6 +328,18 @@ void SceneEditController::RebindEditorToJob()
 		mInteractiveImpl->SetViewModeCaster( nullptr );
 		mViewportRenderMode = Implementation::ViewportRenderMode::Preview;
 	}
+	// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): a whole-scene
+	// (re)bind also leaves any active BeautyVariant mode -- release the
+	// ephemeral pipeline (it was built against the OLD scene) and unpin the
+	// preview-scale divisor, exactly like the caster-swap reset above.  Same
+	// safety contract: callers already hold the cancel-and-parked mMutex (or,
+	// at construction, there is no render thread yet).
+	if( mVariantRasterizer )
+	{
+		mVariantRasterizer->release();
+		mVariantRasterizer = 0;
+	}
+	mPreviewScalePinned.store( false, std::memory_order_release );
 	// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): reset alongside
 	// the mode reset above, UNCONDITIONALLY -- runs every whole-scene
 	// (re)bind, not just the mode-was-non-Preview branch above.  DEFAULT
@@ -699,6 +713,17 @@ SceneEditController::~SceneEditController()
 	{
 		mInteractiveRasterizer->release();
 		mInteractiveRasterizer = 0;
+	}
+	// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): release the
+	// ephemeral BeautyVariant pipeline if one is still installed.  Stop()
+	// already joined the render thread above, so DoOneRenderPass is not
+	// reading mVariantRasterizer by the time we reach here.  This dtor
+	// never touches mJob (see the NOTE just above) -- releasing an
+	// IRasterizer is pure rasterizer/caster refcounting, no Job access.
+	if( mVariantRasterizer )
+	{
+		mVariantRasterizer->release();
+		mVariantRasterizer = 0;
 	}
 	// L6e-3 — release our per-pass FrameStore.  Stop() already joined
 	// the render thread, so no DoOneRenderPass is in flight by the
@@ -1597,7 +1622,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 
 	if( isMotionTool )
 	{
-		mPreviewScale.store( kPreviewScaleMotionStart, std::memory_order_release );
+		SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 	}
 }
 
@@ -1619,7 +1644,7 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		const unsigned int s = mPreviewScale.load( std::memory_order_acquire );
 		if( s < kPreviewScaleMotionStart )
 		{
-			mPreviewScale.store( kPreviewScaleMotionStart, std::memory_order_release );
+			SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 		}
 	}
 
@@ -1999,7 +2024,7 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	// the polish pass: KickRender resets polish state to None, so we
 	// store FinalRegularRunning AFTER kicking — RenderLoop's post-pass
 	// logic will see this state and chain the 4-SPP polish pass.
-	mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
+	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 	KickRender();
 	if( wasMotion ) {
 		mPolishState.store( static_cast<int>( PolishState::FinalRegularRunning ),
@@ -2021,7 +2046,7 @@ void SceneEditController::OnTimeScrubBegin()
 	}
 	mEditor.BeginComposite( "Scrub" );
 	mScrubOpenedComposite = true;
-	mPreviewScale.store( kPreviewScaleMotionStart, std::memory_order_release );
+	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 }
 
 void SceneEditController::OnTimeScrub( Scalar t )
@@ -2110,7 +2135,7 @@ void SceneEditController::OnTimeScrubEnd()
 		mEditor.EndComposite();
 		mScrubOpenedComposite = false;
 	}
-	mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
+	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 	KickRender();
 }
 
@@ -2127,7 +2152,7 @@ void SceneEditController::BeginPropertyScrub()
 	// mPointerDown is false, even though the user's mouse is still
 	// down on the viewport.
 	mScrubInProgress.store( true, std::memory_order_release );
-	mPreviewScale.store( kPreviewScaleMotionStart, std::memory_order_release );
+	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 }
 
@@ -2141,7 +2166,7 @@ void SceneEditController::EndPropertyScrub()
 	// so the worst case is a brief preview-quality dip, not a
 	// permanent stuck-low-quality state.
 	mScrubInProgress.store( false, std::memory_order_release );
-	mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
+	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 	KickRender();
 }
 
@@ -5987,6 +6012,11 @@ void SceneEditController::RenderLoop()
 			const long long sinceEdit = now - mLastEditTimeMs.load( std::memory_order_acquire );
 			if( sinceEdit < kRefineIdleMs ) continue;
 
+			// GUI render modes P2a: a BeautyVariant mode's PINNED divisor
+			// must never be walked down toward 1 -- see mPreviewScalePinned's
+			// header doc.
+			if( mPreviewScalePinned.load( std::memory_order_acquire ) ) continue;
+
 			unsigned int s = mPreviewScale.load( std::memory_order_acquire );
 			if( s <= kPreviewScaleMin ) continue;
 			// Review-round-1 P2: CAS, not a blind store.  A gesture-end
@@ -6154,7 +6184,17 @@ void SceneEditController::RenderLoop()
 			polishStateBefore =
 				static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
 			isPolishPass = ( polishStateBefore == PolishState::PolishQueued );
-			if( mInteractiveImpl ) {
+			// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): SKIP this
+			// InteractivePelRasterizer-specific config entirely while a
+			// BeautyVariant mode is active -- mInteractiveImpl is not the
+			// rasterizer DoOneRenderPass will drive this pass (mVariantRasterizer
+			// is), and the variant pipeline's OIDN/sample-count are FIXED at
+			// construction (CreateBeautyVariantPipeline), not per-pass tunable.
+			// A variant pass is a plain full pass at that fixed config; the
+			// polish/denoise state machine (isPolishPass, mPolishState) is left
+			// running as-is (it's a no-op against mVariantRasterizer either way)
+			// so leaving the mode later finds it in a consistent state.
+			if( mInteractiveImpl && !mVariantRasterizer ) {
 				Implementation::InteractivePelRasterizer::PreviewDenoiseMode denoiseMode =
 					Implementation::InteractivePelRasterizer::PreviewDenoise_Off;
 				if( isPolishPass ) {
@@ -7020,6 +7060,17 @@ bool SceneEditController::GetViewportPose( CameraSnapshot& out ) const
 	return true;
 }
 
+// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): see mPreviewScalePinned's
+// header doc.  Every gesture-driven mPreviewScale mutation site (OnPointerDown/
+// Move/Up, OnTimeScrubBegin/End, Begin/EndPropertyScrub) and the render loop's
+// own idle-refinement/during-motion adaptation route through this instead of a
+// bare `mPreviewScale.store(...)`.
+void SceneEditController::SetPreviewScaleIfUnpinned_( unsigned int v )
+{
+	if( mPreviewScalePinned.load( std::memory_order_acquire ) ) return;
+	mPreviewScale.store( v, std::memory_order_release );
+}
+
 // ===================== Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) =====
 
 // See the header doc.  Callers must already hold mMutex with the render
@@ -7090,20 +7141,71 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
 	mInteractiveImpl->SetSampleCount( 1 );
 
-	if( info->mode != Implementation::ViewportRenderMode::Preview )
+	// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): a BeautyVariant
+	// target (deep_reflect/direct) is a SEPARATE ephemeral pipeline the
+	// render loop drives instead of mInteractiveRasterizer -- NOT a caster
+	// swap on it.  mInteractiveImpl's own caster is deliberately left
+	// UNTOUCHED while a variant mode is active (still whatever Preview/data-
+	// mode caster was installed before we entered it), so switching AWAY
+	// from a variant mode later finds it exactly as it was.
+	if( Implementation::IsBeautyVariantMode( info->mode ) )
 	{
-		if( !InstallViewModeCaster_( info->mode ) )
+		IRasterizer* variantRast   = nullptr;
+		IRayCaster*  variantCaster = nullptr;
+		if( !Implementation::CreateBeautyVariantPipeline( info->mode, &variantRast, &variantCaster ) )
 		{
 			// lk unlocks; render thread was parked but nothing was
 			// mutated, so no repaint kick is needed.
 			return false;
 		}
+		// The rasterizer holds its own addref'd reference to the caster
+		// internally (see the factory's doc) -- our local caster handle is
+		// not needed once construction succeeds.
+		safe_release( variantCaster );
+		// Fail-closed order: the NEW pipeline built successfully above
+		// BEFORE we release any PRIOR one, so a failed build (handled
+		// above) never leaves the controller without its old variant
+		// pipeline mid-switch.
+		if( mVariantRasterizer )
+		{
+			mVariantRasterizer->release();
+		}
+		mVariantRasterizer = variantRast;   // ownership transferred
+		// Pin the preview-scale divisor to the mode's fixed resolution --
+		// see mPreviewScalePinned's header doc for why every other
+		// mPreviewScale mutation site respects this flag.
+		mPreviewScale.store(
+			info->variantScaleDivisor > 0 ? info->variantScaleDivisor : 1,
+			std::memory_order_release );
+		mPreviewScalePinned.store( true, std::memory_order_release );
 	}
 	else
 	{
-		// nullptr for Preview -- SetViewModeCaster restores the platform-
-		// installed preview/polish casters (see its own doc).
-		mInteractiveImpl->SetViewModeCaster( nullptr );
+		// Leaving a variant mode (if one was active): release the ephemeral
+		// pipeline and unpin the resolution ladder so it resumes its normal
+		// adaptive behaviour.
+		if( mVariantRasterizer )
+		{
+			mVariantRasterizer->release();
+			mVariantRasterizer = 0;
+		}
+		mPreviewScalePinned.store( false, std::memory_order_release );
+
+		if( info->mode != Implementation::ViewportRenderMode::Preview )
+		{
+			if( !InstallViewModeCaster_( info->mode ) )
+			{
+				// lk unlocks; render thread was parked but nothing was
+				// mutated, so no repaint kick is needed.
+				return false;
+			}
+		}
+		else
+		{
+			// nullptr for Preview -- SetViewModeCaster restores the platform-
+			// installed preview/polish casters (see its own doc).
+			mInteractiveImpl->SetViewModeCaster( nullptr );
+		}
 	}
 	mViewportRenderMode = info->mode;
 
@@ -7263,12 +7365,18 @@ bool SceneEditController::HasHomeView() const
 	return mHasHomeView;
 }
 
-// ===================== Named Views (Tier 2 §3) =================================
+// ===================== Named Views (Tier 2 §3, + P2a `render{view:}`) ==========
 //
-// Session/UI bookmarks; mNamedViews is UI-thread-only (never read by the render
-// thread) so the vector itself needs no lock.  Capturing the CURRENT view does
-// need the cancel-and-park when it reads the active camera's fields (they tear
-// under a concurrent orbit-drag), same as SetHomeView / CloneActiveCamera.
+// Session/UI bookmarks.  Originally UI-thread-only (never read by the render
+// thread), so mNamedViews needed no lock of its own.  GUI render modes P2a's
+// `render{view:}` surface (FindNamedViewPose, below) added the FIRST reader
+// reachable from a non-UI thread -- the agent-render worker
+// (SubmitAgentRenderAsync's dedicated thread) -- so mNamedViewsMutex now
+// guards every touch of the vector.  Capturing the CURRENT view separately
+// needs the cancel-and-park when it reads the active camera's fields (they
+// tear under a concurrent orbit-drag), same as SetHomeView / CloneActiveCamera
+// -- that capture happens OUTSIDE mNamedViewsMutex (CaptureCurrentView takes
+// mMutex itself), so no two locks are ever held at once here.
 
 bool SceneEditController::CaptureCurrentView( CameraSnapshot& out )
 {
@@ -7305,12 +7413,14 @@ bool SceneEditController::CaptureNamedView( const String& name )
 	NamedView v;
 	v.name = name;
 	v.pose = snap;
+	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
 	mNamedViews.push_back( v );
 	return true;
 }
 
 unsigned int SceneEditController::NamedViewCount() const
 {
+	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
 	return static_cast<unsigned int>( mNamedViews.size() );
 }
 
@@ -7318,6 +7428,7 @@ bool SceneEditController::NamedViewName( unsigned int idx, char* out, unsigned i
 {
 	if( !out || outLen == 0 ) return false;
 	out[0] = '\0';
+	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
 	if( idx >= mNamedViews.size() ) return false;
 	const String& nm = mNamedViews[ idx ].name;
 	if( nm.size() > outLen ) return false;   // RString size() includes the NUL
@@ -7329,24 +7440,50 @@ bool SceneEditController::NamedViewName( unsigned int idx, char* out, unsigned i
 
 bool SceneEditController::RestoreNamedView( unsigned int idx )
 {
-	if( idx >= mNamedViews.size() ) return false;
-	return SetViewportPose( mNamedViews[ idx ].pose );   // non-destructive; parks + realizes
+	CameraSnapshot pose;
+	{
+		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
+		if( idx >= mNamedViews.size() ) return false;
+		pose = mNamedViews[ idx ].pose;
+	}
+	return SetViewportPose( pose );   // non-destructive; parks + realizes -- takes mMutex itself
 }
 
 bool SceneEditController::UpdateNamedView( unsigned int idx )
 {
-	if( idx >= mNamedViews.size() ) return false;
+	{
+		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
+		if( idx >= mNamedViews.size() ) return false;
+	}
 	CameraSnapshot snap;
 	if( !CaptureCurrentView( snap ) ) return false;
+	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
+	// Re-check: CaptureCurrentView released mNamedViewsMutex while it parked
+	// (mMutex), so a concurrent DeleteNamedView could have shrunk the vector
+	// (or shifted indices) in the meantime.
+	if( idx >= mNamedViews.size() ) return false;
 	mNamedViews[ idx ].pose = snap;
 	return true;
 }
 
 bool SceneEditController::DeleteNamedView( unsigned int idx )
 {
+	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
 	if( idx >= mNamedViews.size() ) return false;
 	mNamedViews.erase( mNamedViews.begin() + idx );
 	return true;
+}
+
+bool SceneEditController::FindNamedViewPose( const String& name, CameraSnapshot& outPose ) const
+{
+	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
+	for( std::size_t i = 0; i < mNamedViews.size(); ++i ) {
+		if( mNamedViews[i].name == name.c_str() ) {
+			outPose = mNamedViews[i].pose;
+			return true;
+		}
+	}
+	return false;
 }
 
 bool SceneEditController::PromoteNamedViewToCamera(
@@ -7355,8 +7492,12 @@ bool SceneEditController::PromoteNamedViewToCamera(
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
-	if( idx >= mNamedViews.size() ) return false;
-	const CameraSnapshot snapshot = mNamedViews[ idx ].pose;   // copy before park
+	CameraSnapshot snapshot;
+	{
+		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
+		if( idx >= mNamedViews.size() ) return false;
+		snapshot = mNamedViews[ idx ].pose;   // copy before park
+	}
 
 	IScene* scene = mJob.GetScene();
 	if( !scene ) return false;
@@ -8601,9 +8742,9 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 // `RasterizeScene`).  `SetFrameStore` is single-threaded relative to
 // `RasterizeScene` per the Rasterizer threading contract — same as
 // Job's `PushJobFrameStoreToRasterizers`.
-void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsigned int height )
+void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsigned int height, IRasterizer* activeRast )
 {
-	if( !mInteractiveRasterizer ) return;
+	if( !activeRast ) return;
 	if( width == 0 || height == 0 ) return;
 
 	// Same-dim short-circuit: reuse the existing FrameStore.
@@ -8622,7 +8763,7 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	    mInteractiveFrameStore->Height() == height )
 	{
 		Implementation::Rasterizer* r =
-			dynamic_cast<Implementation::Rasterizer*>( mInteractiveRasterizer );
+			dynamic_cast<Implementation::Rasterizer*>( activeRast );
 		if( r ) {
 			if( r->GetFrameStore() != mInteractiveFrameStore ) {
 				// Pointer changed (rare; suggests something else
@@ -8708,7 +8849,7 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	// sequenced after the reassign above -- same no-lock-needed reasoning as
 	// the same-dims short-circuit.
 	Implementation::Rasterizer* r =
-		dynamic_cast<Implementation::Rasterizer*>( mInteractiveRasterizer );
+		dynamic_cast<Implementation::Rasterizer*>( activeRast );
 	if( r ) {
 		r->SetFrameStore( mInteractiveFrameStore );
 	}
@@ -8802,12 +8943,27 @@ void SceneEditController::DoOneRenderPass()
 		return;
 	}
 
-	// Install the cancellable progress and preview sink.
-	mInteractiveRasterizer->SetProgressCallback( &mCancelProgress );
+	// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): while a
+	// BeautyVariant mode (deep_reflect/direct) is active, `mVariantRasterizer`
+	// is a wholly SEPARATE, controller-owned production-class PT pipeline the
+	// render loop drives INSTEAD of mInteractiveRasterizer -- not a caster
+	// swap on it.  Race-free by construction: mVariantRasterizer is mutated
+	// only under mMutex with the render parked (SetViewportRenderMode /
+	// RebindEditorToJob), and this function only runs while mRendering is
+	// true (i.e. NOT parked) -- the same contract mInteractiveImpl's own
+	// caster-swap state already relies on.
+	IRasterizer* const activeRast = mVariantRasterizer ? mVariantRasterizer : mInteractiveRasterizer;
+
+	// Install the cancellable progress and preview sink.  DoOnePass re-adds
+	// its sink every pass (FreeRasterizerOutputs then AddRasterizerOutput),
+	// so the variant rasterizer needs the SAME per-pass attachment the
+	// preview rasterizer gets -- it starts every pass with an empty outs
+	// list otherwise.
+	activeRast->SetProgressCallback( &mCancelProgress );
 	if( mPreviewSink )
 	{
-		mInteractiveRasterizer->FreeRasterizerOutputs();
-		mInteractiveRasterizer->AddRasterizerOutput( mPreviewSink );
+		activeRast->FreeRasterizerOutputs();
+		activeRast->AddRasterizerOutput( mPreviewSink );
 	}
 
 	const IScene* scene = mJob.GetScene();
@@ -8937,7 +9093,7 @@ void SceneEditController::DoOneRenderPass()
 		const IFilm* curFilm = scene->GetFilm();
 		const unsigned int passW = curFilm ? curFilm->GetWidth()  : 0;
 		const unsigned int passH = curFilm ? curFilm->GetHeight() : 0;
-		EnsureInteractiveFrameStore_( passW, passH );
+		EnsureInteractiveFrameStore_( passW, passH, activeRast );
 	}
 
 	// ----- Interactive region-of-interest (design brief A4) -----------
@@ -8982,7 +9138,7 @@ void SceneEditController::DoOneRenderPass()
 	// UNCONDITIONALLY set it every pass (override or nullptr), so a stale override
 	// can never leak into a non-free-fly pass.
 	if( Implementation::PixelBasedRasterizerHelper* helper =
-			dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( mInteractiveRasterizer ) )
+			dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( activeRast ) )
 	{
 		const ICamera* overrideCam = ( mViewportPoseActive ? mViewportOverrideCamera : nullptr );
 		if( overrideCam )
@@ -9005,7 +9161,7 @@ void SceneEditController::DoOneRenderPass()
 	}
 
 	const auto t0 = std::chrono::steady_clock::now();
-	mInteractiveRasterizer->RasterizeScene( *scene, pRegion, /*seq*/0 );
+	activeRast->RasterizeScene( *scene, pRegion, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,
@@ -9038,10 +9194,14 @@ void SceneEditController::DoOneRenderPass()
 	// itself is a "we're not keeping up" signal — bump scale UP one
 	// level (when elapsed sits inside the target band; the slow
 	// branches above already handle long elapsed times).
+	// GUI render modes P2a: a BeautyVariant mode's PINNED divisor must
+	// never be adapted away by the during-motion ladder either -- see
+	// mPreviewScalePinned's header doc.
 	const bool gestureActive =
 		mPointerDown.load( std::memory_order_acquire )
 	 || mScrubInProgress.load( std::memory_order_acquire );
-	if( gestureActive && !mInRefinementPass )
+	if( gestureActive && !mInRefinementPass
+	 && !mPreviewScalePinned.load( std::memory_order_acquire ) )
 	{
 		const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>( elapsed ).count();
 		const bool wasCancelled = mCancelProgress.IsCancelRequested();

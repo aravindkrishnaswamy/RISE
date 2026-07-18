@@ -2156,6 +2156,17 @@ namespace RISE
 		bool PromoteNamedViewToCamera( unsigned int idx, const String& proposedName,
 		                               char* outName, unsigned int outLen );
 
+		//! GUI render modes P2a `render{view:}` surface (docs/gui/RENDER_MODES.md
+		//! §8): find a captured named view by NAME and copy its pose out.
+		//! UNLIKE the rest of the Named Views API above (documented UI-thread-
+		//! only, no lock -- see the section comment in the .cpp), this
+		//! accessor IS reachable from the agent-render worker thread (a
+		//! `render{view:"..."}` call can run on SubmitAgentRenderAsync's
+		//! dedicated worker, not the UI thread that owns Capture/Update/
+		//! Delete), so it -- and every other mNamedViews touch -- is guarded
+		//! by mNamedViewsMutex.  Returns false if no view named `name` exists.
+		bool FindNamedViewPose( const String& name, CameraSnapshot& outPose ) const;
+
 		//! Entity-creation slice: number of "Add Entity" templates
 		//! registered for `cat` (see EntityTemplates.h).  0 for
 		//! categories with none (Camera/Rasterizer/Film/Animation/
@@ -2564,7 +2575,12 @@ namespace RISE
 		//! reallocation thrash across passes that don't change scale.
 		//! No-op when `mInteractiveRasterizer` is null (test/skeleton
 		//! mode).  See impl in SceneEditController.cpp.
-		void EnsureInteractiveFrameStore_( unsigned int width, unsigned int height );
+		//! `activeRast` (GUI render modes P2a addition): the rasterizer THIS
+		//! pass is about to drive -- mVariantRasterizer while a BeautyVariant
+		//! mode is active, else mInteractiveRasterizer -- so the FrameStore
+		//! wiring follows whichever rasterizer actually renders the pass
+		//! instead of always targeting mInteractiveRasterizer.
+		void EnsureInteractiveFrameStore_( unsigned int width, unsigned int height, IRasterizer* activeRast );
 
 		//! Re-derive the auto-synced Material / Medium section
 		//! selection names from the currently-pinned Object's bound
@@ -2597,6 +2613,17 @@ namespace RISE
 		// path (SetSampleCount).  Null if the rasterizer isn't an
 		// InteractivePelRasterizer (e.g. test mode with no rasterizer).
 		Implementation::InteractivePelRasterizer* mInteractiveImpl;
+		// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the ephemeral,
+		// CONTROLLER-OWNED BeautyVariant pipeline (deep_reflect / direct) --
+		// a separate IRasterizer the render loop DRIVES while a variant mode
+		// is active, NOT a caster swap on mInteractiveRasterizer.  Owned
+		// (refcounted) reference; null when no variant mode is active.
+		// Mutated ONLY under mMutex with the render parked (SetViewportRenderMode),
+		// released in the destructor and by RebindEditorToJob's every-scene-
+		// load reset.  Never touched from ~SceneEditController-adjacent mJob
+		// access (this member is entirely rasterizer/caster state, no Job
+		// reference held).
+		IRasterizer*                mVariantRasterizer;
 		// GUI render modes P1 (docs/gui/RENDER_MODES.md §5): the currently
 		// active viewport render mode.  Mutated ONLY under mMutex (by
 		// SetViewportRenderMode and by RebindEditorToJob's every-scene-load
@@ -3158,6 +3185,22 @@ namespace RISE
 		std::atomic<unsigned int>   mFullResH;
 
 		std::atomic<unsigned int>   mPreviewScale;
+		// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): true while a
+		// BeautyVariant mode (deep_reflect/direct) is active.  Every site
+		// that would otherwise mutate mPreviewScale (the idle-refinement
+		// walk-down, the during-motion adaptation ladder, and every
+		// gesture-driven reset -- OnPointerDown/Move/Up, OnTimeScrubBegin/End,
+		// Begin/EndPropertyScrub) checks this flag first and no-ops when set,
+		// so a variant mode's fixed resolution divisor (pinned into
+		// mPreviewScale itself by SetViewportRenderMode) can never drift.
+		// Mutated ONLY under mMutex by SetViewportRenderMode / RebindEditorToJob.
+		std::atomic<bool>           mPreviewScalePinned;
+		//! Store `v` into mPreviewScale UNLESS a variant mode has it pinned
+		//! (see mPreviewScalePinned's doc) -- the single choke point every
+		//! gesture-driven reset site uses instead of a bare
+		//! `mPreviewScale.store(...)`, so the pin can never be bypassed by a
+		//! future call site that forgets to check it.
+		void SetPreviewScaleIfUnpinned_( unsigned int v );
 		static constexpr unsigned int kPreviewScaleMin = 1;
 		static constexpr unsigned int kPreviewScaleMax = 32;
 		static constexpr unsigned int kPreviewScaleMotionStart = 4;
@@ -3261,8 +3304,13 @@ namespace RISE
 		CameraSnapshot              mHomeView;
 		bool                        mHasHomeView = false;
 
-		// Named Views (Tier 2 §3): session/UI bookmarks, UI-thread-only state
-		// (never read by the render thread), so no lock guards this vector.
+		// Named Views (Tier 2 §3): session/UI bookmarks.  Originally UI-
+		// thread-only (never read by the render thread), so the vector
+		// needed no lock -- GUI render modes P2a's `render{view:}` surface
+		// (FindNamedViewPose) added the FIRST reader reachable from a
+		// non-UI thread (the agent-render worker), so this mutex now guards
+		// every touch (see the "Named Views" section comment in the .cpp).
+		mutable std::mutex          mNamedViewsMutex;
 		std::vector<NamedView>      mNamedViews;
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).

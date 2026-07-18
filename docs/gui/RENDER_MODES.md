@@ -56,16 +56,16 @@ sibling) · **T2** beauty-variant (real integrator + config overrides) ·
 | Mode | Tier | Notes |
 |---|---|---|
 | `clay` | T0 | The existing studio material preview (`InteractiveMaterialPreviewShader`: clay + AO + headlamp). Already the GUI draft preview and the agent `quality:"draft"`. |
-| `clay_lights` | T2 | Clay albedo but the scene's REAL lights (the classic "is lighting right independent of materials" check). |
-| `direct` | T2 | Direct lighting only (`directlighting_shaderop` exists as the substrate). |
-| `indirect` | T2 | Beauty minus direct. |
-| light solo | T2 | Render with exactly one light enabled. Needs a light-selector arg; P2 design detail. |
+| `clay_lights` | T2 | Clay albedo but the scene's REAL lights (the classic "is lighting right independent of materials" check). **P2b, not yet shipped** — needs a clay-albedo-substituting integrator variant, not just a config delta on the real materials (see §9). |
+| `direct` | T2 | **SHIPPED P2a (2026-07-18)** as a BeautyVariant pipeline: direct lighting only (`maxBounces=1`, forces the PT rasterizer to terminate after the first bounce — no `directlighting_shaderop` substrate needed), half-res, 8 spp, OIDN on. See §6. |
+| `indirect` | T2 | Beauty minus direct. **P2b, not yet shipped** — needs a real subtraction (two renders + a diff) or a dedicated indirect-only integrator mode, neither of which the BeautyVariant config-delta mechanism supports on its own (see §9). |
+| light solo | T2 | Render with exactly one light enabled. Needs a light-selector arg; P2b design detail. |
 
 ### Transport — "what are reflections/refractions doing?"
 
 | Mode | Tier | Notes |
 |---|---|---|
-| `deep_reflect` | T2 | The headline ask: low resolution (¼ default) + deep bounce depth + more spp/pixel, so reflections/refractions resolve. Needs the per-render config-override mechanism (§6). |
+| `deep_reflect` | T2 | **SHIPPED P2a (2026-07-18)** as a BeautyVariant pipeline: quarter-res, 16 spp, 24 bounces, OIDN on. See §6. |
 | specular-only | T3 | Follow only specular lobes (LPE-lite path filter). P4. |
 | caustics-only | T3 | VCM merge-only contribution. P4. |
 
@@ -276,14 +276,183 @@ layer instead, so every shader benefits automatically:
   Toggle lives in the viewport chrome next to the mode dropdown on both
   GUIs, defaulting to ON.
 
-## 6. Per-render config overrides (P2 prerequisite)
+## 6. BeautyVariant pipelines (P2a — SHIPPED 2026-07-18)
 
-Beauty-variant modes need "the real integrator, but with these deltas" without
-rebuilding the scene: a `ViewportConfigOverride { scaleDivisor, maxBounces,
-samplesPerPixel, lightFilter }` applied at RasterizeScene time — the config
-sibling of the existing `SetViewportCameraOverride` (which pays the same way at
-the camera-read site, NOT via wrapper objects — see the Tier-2 pivot lesson).
-Design detail deferred to P2.
+The design that shipped is NOT the config-override sketch this section used to
+carry (a `ViewportConfigOverride` struct applied at RasterizeScene time, the
+"config sibling of `SetViewportCameraOverride`"). That sketch assumed the
+*existing* interactive/production rasterizer could be re-parameterized
+per-render; in practice a BeautyVariant mode needs a materially different
+rasterizer (different maxR, different spp, different denoise policy) built
+against the SAME scene — cheaper and more honest as a wholly separate,
+ephemeral pipeline than as a config knob threaded through the existing one.
+
+**BeautyVariant is a pipeline kind**, alongside `BeautyConfig` and
+`ShaderPipeline` (§4): an ephemeral, controller/agent-**owned** production-class
+PT pipeline with per-mode config deltas — a **separate `IRasterizer`** the
+render loop *drives* while the mode is active, not a caster swap on the
+preview rasterizer, and not a wrapper around it. `deep_reflect` and `direct`
+are the two shipped rows:
+
+| Field | `deep_reflect` | `direct` |
+|---|---|---|
+| `variantScaleDivisor` | 4 (quarter-res) | 2 (half-res) |
+| `variantMaxBounces` | 24 | 1 |
+| `variantSamplesPerPass` | 16 | 8 |
+| `wantsDenoise` | true | true |
+
+`ViewportRenderModeInfo` carries these three `variant*` fields (0/0/0 for every
+non-variant mode); `IsBeautyVariantMode(mode)` (keyed off
+`variantSamplesPerPass > 0`) is the single source of truth for "is this mode a
+BeautyVariant row" everywhere the registry is consulted (controller, agent
+schemas, tests) — no hardcoded mode-name lists.
+
+### Factory: `CreateBeautyVariantPipeline`
+
+`InteractivePelRasterizer.{h,cpp}` — mirrors the **minimal production-real**
+path `Job::SetPathTracingPelRasterizer` takes: a plain `RayCaster`
+(`seeRadianceMap=true`, `showLuminaires=true`, `maxR` = the mode's
+`variantMaxBounces` — **not** the `InteractiveMaterialPreviewRayCaster`
+subclass, so shading resolves through each object's own real `IMaterial`
+exactly like a production render) + `RISE_API_CreatePathTracingPelRasterizer`
+with a multijittered sampler at `variantSamplesPerPass`, a box reconstruction
+filter, SMS off, OIDN on (quality `Auto`), default (disabled) path
+guiding/adaptive sampling/stability configs, no Z-Sobol. The caster's
+`pDefaultShader` constructor argument is a throwaway placeholder — it's dead
+code on the PT transport path (`RayCaster::SelectShader` is never called by
+production path tracing; per-object shading is driven entirely by each
+`IObject`'s own material), so the factory needs no Job/shader-manager access.
+
+### Controller: `mVariantRasterizer` + the render-loop dispatch
+
+`SceneEditController` owns `IRasterizer* mVariantRasterizer` (refcounted;
+released in the destructor and by `RebindEditorToJob`'s every-scene-load
+reset). `SetViewportRenderMode`, under the SAME cancel-and-park discipline as
+the P1 caster-swap path: on a BeautyVariant target, builds the new pipeline
+FIRST (fail-closed if the factory refuses), then releases any prior variant
+pipeline and installs the new one; on any OTHER target, releases the variant
+pipeline (if one was active) and falls back to the P1 caster-swap logic
+unchanged. `mInteractiveImpl`'s own caster is deliberately left **untouched**
+while a variant mode is active — it still holds whatever Preview/data-mode
+caster was installed before the switch, so leaving the variant mode later
+finds it exactly as it was.
+
+`DoOneRenderPass`'s rasterize site reads
+`IRasterizer* activeRast = mVariantRasterizer ? mVariantRasterizer : mInteractiveRasterizer;`
+and drives `activeRast` everywhere the pass previously hardcoded
+`mInteractiveRasterizer`: progress-callback + preview-sink attachment (every
+pass re-attaches its sink, so the variant rasterizer needs the same
+per-pass attachment the preview one gets), `EnsureInteractiveFrameStore_`
+(now takes `activeRast` as an explicit parameter instead of always targeting
+`mInteractiveRasterizer`), the `SetViewportCameraOverride` free-fly wiring
+(`PixelBasedRasterizerHelper` downcast), and the terminal `RasterizeScene`
+call. The pre-pass config block in `RenderLoop` that calls
+`mInteractiveImpl->SetPreviewDenoiseMode`/`SetSampleCount` is **skipped
+entirely** while a variant mode is active — those are InteractivePelRasterizer-
+specific knobs for a rasterizer this pass isn't driving; a variant pass is a
+plain full pass at its fixed config, and the polish/denoise state machine
+(`mPolishState`) is left running as a no-op against `mVariantRasterizer` so
+leaving the mode later finds it consistent.
+
+### Resolution-divisor pin
+
+A BeautyVariant mode's fixed resolution divisor is pinned into `mPreviewScale`
+itself (the SAME atomic the P1 adaptive preview-scale ladder already uses) so
+no second "current resolution" concept is needed. `mPreviewScalePinned` (bool)
+gates every site that would otherwise mutate `mPreviewScale` away from the
+pinned value: the idle-refinement walk-down, the during-motion adaptation
+ladder, and every gesture-driven reset (`OnPointerDown/Move/Up`,
+`OnTimeScrubBegin/End`, `Begin/EndPropertyScrub`) — each now routes through
+`SetPreviewScaleIfUnpinned_` (or an inline pin check) instead of a bare
+`mPreviewScale.store(...)`. `SetViewportRenderMode` sets the pin (and stores
+the mode's divisor) on entry to a variant mode, and clears it on exit —
+`RebindEditorToJob` also clears it on scene reload, matching the "release the
+variant pipeline on scene reload" reset.
+
+### Agent surface
+
+`AgentRenderParams::renderTarget == ViewMode` covers BOTH the P1 ShaderPipeline
+data modes and the P2a BeautyVariant modes — `AgentSession::RenderCore_`
+branches internally (`IsBeautyVariantMode(viewModeInfo->mode)`) between
+`doViewModeRenderWork` (P1, unchanged) and the new `doBeautyVariantRenderWork`
+(a structural sibling: fresh ephemeral pipeline, the agent's own sink, shared
+film/camera-override plumbing, controller-owned cancel wiring — but a REAL
+shaded+denoised render, so it applies the same beauty display transform the
+production/draft paths use, and its film-dims override divides the EFFECTIVE
+requested dims — the caller's `width`/`height` override if given, else the
+scene's current authored dims — by `variantScaleDivisor`, always, not only
+when an explicit override was requested). `quality`/`samples`/`xray` are all
+honestly ignored under a BeautyVariant mode (noted in the result message);
+`effectiveSamples` reports the mode's REAL fixed spp (16 or 8), not the
+ShaderPipeline exactness invariant's `1`. `AgentRpc.cpp`'s `mode` parser and
+`AgentMcpAdapter.cpp`'s generated schema description both widen their
+registry filter from `casterFactory` alone to `casterFactory ||
+IsBeautyVariantMode(mode)`; `AgentChatCodecs.cpp`'s hand-synced JSON-Schema
+literal (documented KEEP IN SYNC BY HAND — it's a raw string constant, not
+generated) was updated by hand to match.
+
+### `render{view:}` (P2a — the P1-deferred agent arg, now shipped)
+
+Optional string param on `render`, valid with EVERY mode (composes with
+Beauty/ObjectMap/any ShaderPipeline data mode/either BeautyVariant mode).
+Resolves to the SAME ephemeral `camera` override fields the existing
+`camera:{location,lookat,up,fov}` param uses — `AgentSession::RenderCore_`
+builds a local `effectiveCamera` (a copy of `params.camera`, overwritten
+wholesale by the resolved named-view pose when `view` is non-empty) and feeds
+it into the SAME `applyCameraOverride` machinery every render target already
+shares, rather than adding a parallel override mechanism.
+
+Resolution order: (1) a live `SceneEditController`'s in-memory named-view
+store (`SceneEditController::FindNamedViewPose`, Tier 2 B1's `mNamedViews`);
+(2) headless (`AgentSession::WrapJob`, no controller attached), a scene
+**camera** of that exact name (`ICameraManager::GetItem` +
+`CameraIntrospection::CaptureCameraSnapshot`) — the honest fallback, since a
+headless session has no named-view bookmark store at all. An unresolved name
+FAILS the render (`res.ok=false`) with the available-name list (named views
+UNION scene camera names) in `res.message`, rather than silently falling
+through to the active camera.
+
+**Thread-safety note**: `SceneEditController::mNamedViews` was originally
+documented "UI-thread-only, never read by the render thread" (no lock). A
+`render{view:}` call can run on `SubmitAgentRenderAsync`'s dedicated
+agent-render worker thread — the FIRST reader of `mNamedViews` reachable from
+off the UI thread. `mNamedViewsMutex` (new) now guards every touch of the
+vector (Capture/Count/Name/Restore/Update/Delete/Promote/Find), closing that
+hazard rather than leaving it as an accepted gap.
+
+**Units trap (caught by the E2E test, not by inspection)**: `CameraSnapshot::fov`
+is stored in RADIANS (`CameraIntrospection::CaptureCameraSnapshot` /
+`PinholeCamera::GetFovStored`'s convention), but `CameraIntrospection::
+SetProperty("fov", ...)` — and `AgentCameraOverride::fov`'s documented contract
+— both take DEGREES, matching the scene-file `fov` param. The first
+implementation fed the raw radian value straight into the override string,
+which parses as a technically-valid but absurdly narrow FOV (a fraction of a
+degree) — both renders came back essentially black, and only the two-camera
+`render{view:}` end-to-end test's pixel-difference assertion caught it (the
+individual `ok`/`cameraOverridden` flags all read TRUE even with the bug, since
+the override mechanically "succeeded"). Fixed by multiplying by `180/π` in
+`AgentSession.cpp`'s `CameraSnapshotToOverride`, mirroring
+`CameraIntrospection::GetPropertyValue`'s own `RAD_TO_DEG` conversion for the
+SAME field. Lesson: an `ok:true` / `cameraOverridden:true` pair proves the
+override APPLIED, not that it applied a SENSIBLE value — a units mismatch
+still needs a "does the image actually look different" check to catch.
+
+### DENOISED label honesty (both GUIs)
+
+The Mac `RefinementStatusFormatter` / Windows `TopBar::ComputeRefinementStatus`
+"Polishing" label used to gate the "DENOISED — NOT FINAL" honesty tag on
+`viewportRenderMode == "preview"` — correct for P1 (only `preview` ever
+denoised) but wrong now that BeautyVariant modes genuinely denoise too (they'd
+show "Polishing" with NO honesty label, which under-claims). Both formatters
+now key the gate on the registry's `wantsDenoise` flag instead: `RISE_API_
+GetViewportRenderModeWantsDenoise(index, bool*)` (additive C-ABI, sibling of
+`RISE_API_GetViewportRenderModeInfo` — that function's signature is
+unchanged for ABI stability) is read once per mode alongside the existing
+name/title/question fields and cached on each GUI's own `ViewportRenderModeInfo`
+mirror struct (Mac: a new `wantsDenoise: Bool` field on the Swift struct;
+Windows: same on the C++ struct). The formatter functions themselves take a
+`wantsDenoise: Bool` / `bool wantsDenoise` parameter instead of a mode-name
+string comparison.
 
 ## 7. N-up multi-viewport (P3)
 
@@ -302,32 +471,50 @@ Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
 
 ## 8. Agent surface + skills
 
-- `render{mode:}` widens from `beauty|objectmap` to the full registry
-  (decision 4). Data modes ignore `quality`/`samples` exactly as `objectmap`
-  does today (honestly noted in the result message).
-- **Deferred (P2, not yet implemented):** `render` gaining an optional
-  `view:"<named view>"` so the agent composes its own "N-up" as sequential
-  renders from saved vantages (no layout tool needed). Deliberately cut from
-  the P1 agent-surface wave to keep its scope to mode widening.
+- `render{mode:}` widens from `beauty|objectmap` to the full agent-visible
+  registry (decision 4): the P1 `casterFactory` data modes UNION the P2a
+  BeautyVariant modes (`IsBeautyVariantMode`). Data modes ignore
+  `quality`/`samples` exactly as `objectmap` does today (honestly noted in
+  the result message); BeautyVariant modes ALSO ignore `quality`/`samples`
+  (their config is fixed by the registry) plus `xray` (meaningless for a real
+  transport render), all honestly noted — see §6's "Agent surface" for the
+  exact dispatch and honesty-note shape.
+- **SHIPPED P2a (2026-07-18)**: `render` gaining an optional
+  `view:"<named view or scene camera name>"` so the agent composes its own
+  "N-up" as sequential renders from saved vantages (no layout tool needed).
+  See §6's `render{view:}` subsection for the resolution order and the
+  named-view thread-safety fix it required.
 - Mode list + questions discoverable via the render tool's schema description
-  (generated from the registry — single source of truth).
+  (generated from the registry — single source of truth) — widened the same
+  way (`casterFactory || IsBeautyVariantMode`).
 - `skills/agent/observe-modes.md` extends with the question → mode decision
   table and recipes:
   - placement check → `objectmap` top view → `query_object_at`
   - lighting check → `clay` (later `clay_lights`) before touching materials
   - tessellation/smoothing artifact → `facets` / `wireframe`
-  - reflection content → `deep_reflect` at ¼ res (P2)
+  - reflection/refraction content → `deep_reflect` (SHIPPED P2a, ¼ res, 16 spp,
+    24 bounces)
+  - lighting-only check → `direct` (SHIPPED P2a, ½ res, 8 spp, direct only)
   - scale/occlusion sanity → `depth`
+  - several saved angles of the same question → any mode + `view:"<name>"`
+    (SHIPPED P2a)
 
 ## 9. Phasing
 
-- **P1 (now)**: registry + T1 shaders (`normals`, `depth`, `facets`,
+- **P1 (shipped)**: registry + T1 shaders (`normals`, `depth`, `facets`,
   `wireframe`) + controller caster-swap + C-ABI + both bridges + viewport
   dropdown + agent `render{mode}` widening + skill update + parity/shader
   tests.
-- **P2**: config-override mechanism (§6) + the agent `view:` arg (§8), then
-  `deep_reflect`, `direct`,
-  `indirect`, `clay_lights`, light solo.
+- **P2a (shipped 2026-07-18)**: the BeautyVariant pipeline kind (§6) +
+  `deep_reflect` + `direct` + the agent `view:` arg (§8) + the
+  `wantsDenoise`-keyed DENOISED label fix (§6) — see §6 for the full shipped
+  design (supersedes the config-override sketch this section used to carry).
+- **P2b (remaining)**: `indirect` (needs a real subtraction or a dedicated
+  indirect-only integrator mode — the BeautyVariant config-delta mechanism
+  alone doesn't cover it), `clay_lights` (needs a clay-albedo-substituting
+  integrator variant, not just a config delta on the real materials), light
+  solo (needs a light-selector arg). All three need integrator-level work
+  beyond what the P2a config-delta mechanism provides.
 - **P3**: N-up (layouts, per-pane mode+vantage, round-robin scheduler,
   primary-pane semantics).
 - **P4**: specular-only, caustics-only, variance heatmap, UV checker,
@@ -342,3 +529,16 @@ Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
   sampling participates in the interactive pipeline.
 - Windows GUI changes are review-verified only until the next Windows compile
   (standing caveat).
+- **`deep_reflect`/`direct` are seconds-scale, not milliseconds-scale, unlike
+  every other agent-visible mode.** They're real production-class path traces
+  (real materials/lights, real OIDN denoise) at a fixed reduced resolution —
+  cheap relative to a full-res production render, but not free the way
+  `objectmap`/`normals`/`depth`/`facets`/`wireframe` are. `skills/agent/
+  observe-modes.md` calls this out explicitly so an agent doesn't default to
+  `deep_reflect` for a question a free diagnostic mode already answers.
+- While a BeautyVariant mode is active in the interactive VIEWPORT, the
+  preview-scale ladder is PINNED to the mode's fixed divisor — it never
+  refines toward full resolution the way `preview`/data modes do on pointer-up
+  or idle. This is intentional (a variant render at full interactive
+  resolution would defeat its own cost budget), not a bug in the adaptive
+  ladder.

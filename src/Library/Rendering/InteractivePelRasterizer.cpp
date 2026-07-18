@@ -34,6 +34,14 @@
 #include <cstring>
 #include "../Interfaces/IEnumCallback.h"
 #include "../Interfaces/IObjectManager.h"
+// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): CreateBeautyVariantPipeline
+// builds a production-class PT pipeline directly (mirroring
+// Job::SetPathTracingPelRasterizer's minimal path) -- these config structs are
+// its default-constructed ("disabled"/"off") arguments.
+#include "../Utilities/PathGuidingField.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Utilities/StabilityConfig.h"
+#include "../Utilities/OidnConfig.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1309,19 +1317,32 @@ namespace {
 const RISE::Implementation::ViewportRenderModeInfo kViewportRenderModes[] =
 {
 	{ RISE::Implementation::ViewportRenderMode::Preview,   "preview",   "Shaded Preview",
-	  "What does the scene roughly look like?",       true,  true,  false },
+	  "What does the scene roughly look like?",       true,  true,  false, 0, 0, 0 },
 	{ RISE::Implementation::ViewportRenderMode::ObjectMap, "objectmap", "Object Map",
-	  "Which object is where?",                       false, false, false },
+	  "Which object is where?",                       false, false, false, 0, 0, 0 },
 	{ RISE::Implementation::ViewportRenderMode::Normals,   "normals",   "Normals",
-	  "Which way do surfaces face?",                  false, true,  true  },
+	  "Which way do surfaces face?",                  false, true,  true,  0, 0, 0 },
 	{ RISE::Implementation::ViewportRenderMode::Depth,     "depth",     "Depth",
-	  "How far away is everything?",                  false, true,  true  },
+	  "How far away is everything?",                  false, true,  true,  0, 0, 0 },
 	{ RISE::Implementation::ViewportRenderMode::Facets,    "facets",    "Facets",
-	  "What does the actual tessellation look like?", false, true,  true  },
+	  "What does the actual tessellation look like?", false, true,  true,  0, 0, 0 },
 	{ RISE::Implementation::ViewportRenderMode::Wireframe, "wireframe", "Wireframe",
-	  "Where are the polygon edges?",                 false, true,  true  },
+	  "Where are the polygon edges?",                 false, true,  true,  0, 0, 0 },
+	// GUI render modes P2a (docs/gui/RENDER_MODES.md §3 Transport, §6): the
+	// BeautyVariant rows.  casterFactory=false -- these route through
+	// CreateBeautyVariantPipeline, not CreateInteractiveViewModeCaster.
+	{ RISE::Implementation::ViewportRenderMode::DeepReflect, "deep_reflect", "Deep Reflections",
+	  "What do reflections and refractions resolve to?", true, true, false, 4, 24, 16 },
+	{ RISE::Implementation::ViewportRenderMode::Direct,      "direct",       "Direct Lighting",
+	  "What does direct lighting alone contribute?",      true, true, false, 2, 1,  8  },
 };
 
+}
+
+bool RISE::Implementation::IsBeautyVariantMode( ViewportRenderMode mode )
+{
+	const ViewportRenderModeInfo* info = FindViewportRenderModeInfo( mode );
+	return info && info->variantSamplesPerPass > 0;
 }
 
 const RISE::Implementation::ViewportRenderModeInfo*
@@ -1441,6 +1462,127 @@ bool RISE::Implementation::CreateInteractiveViewModePipeline(
 	InteractivePelRasterizer* interactive = new InteractivePelRasterizer( pCaster, cfg );
 
 	*ppRasterizer = interactive;
+	*ppCaster = pCaster;
+	return true;
+}
+
+// ---------------------------------------------------------------------
+// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the BeautyVariant
+// pipeline factory.
+// ---------------------------------------------------------------------
+
+namespace {
+
+//! RayCaster's `pDefaultShader` constructor argument is only ever read by
+//! RayCaster::SelectShader() (RayCaster.cpp), which nothing on the PT
+//! transport path calls -- per-object shading is driven entirely by each
+//! IObject's own IMaterial/BSDF (see RayCaster::AttachScene /
+//! Job::SetPathTracingPelRasterizer, which passes an ordinary scene shader
+//! for the SAME reason: the argument is structurally required but
+//! practically inert for this rasterizer family).  This placeholder exists
+//! only to satisfy that constructor requirement without pulling in a
+//! Job/shader-manager dependency this factory otherwise has no need for.
+class BeautyVariantPlaceholderShader :
+	public IShader,
+	public Reference
+{
+public:
+	BeautyVariantPlaceholderShader() {}
+
+	void Shade( const RuntimeContext&, const RayIntersection&,
+	            const IRayCaster&, const IRayCaster::RAY_STATE&,
+	            RISEPel& c, const IORStack& ) const override
+	{
+		c = RISEPel( 0, 0, 0 );
+	}
+
+	Scalar ShadeNM( const RuntimeContext&, const RayIntersection&,
+	                const IRayCaster&, const IRayCaster::RAY_STATE&,
+	                const Scalar, const IORStack& ) const override
+	{
+		return 0;
+	}
+
+	void ResetRuntimeData() const override {}
+
+protected:
+	~BeautyVariantPlaceholderShader() override {}
+};
+
+}
+
+bool RISE::Implementation::CreateBeautyVariantPipeline(
+	ViewportRenderMode mode,
+	IRasterizer** ppRasterizer,
+	IRayCaster** ppCaster )
+{
+	if( ppRasterizer ) {
+		*ppRasterizer = 0;
+	}
+	if( ppCaster ) {
+		*ppCaster = 0;
+	}
+	if( !ppRasterizer || !ppCaster ) {
+		return false;
+	}
+	if( !IsBeautyVariantMode( mode ) ) {
+		return false;
+	}
+	const ViewportRenderModeInfo* info = FindViewportRenderModeInfo( mode );
+	if( !info ) {
+		return false;
+	}
+
+	// Minimal production-real caster -- mirrors Job::SetPathTracingPelRasterizer's
+	// caster construction: seeRadianceMap=true, showLuminaires=true, maxR from
+	// the mode's variantMaxBounces.  Not the InteractiveMaterialPreviewRayCaster
+	// subclass -- a PLAIN RayCaster, so shading resolves through each object's
+	// own real IMaterial exactly like a production render.
+	IShader* pShader = new BeautyVariantPlaceholderShader();
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, /*seeRadianceMap*/true, info->variantMaxBounces, *pShader, /*showLuminaires*/true );
+	pShader->release();
+	if( !pCaster ) {
+		return false;
+	}
+
+	// Multijittered sampler at the mode's fixed spp + a box reconstruction
+	// filter -- mirrors GetSamplingAndFilterElements' "multijittered"/"box"
+	// branches (Job.cpp) at unit kernel dims (SetNumSamples supplies the
+	// actual count).
+	ISampling2D* pSampler = 0;
+	RISE_API_CreateMultiJitteredSampling2D( &pSampler, 1.0, 1.0 );
+	if( pSampler ) {
+		pSampler->SetNumSamples( info->variantSamplesPerPass );
+	}
+	IPixelFilter* pFilter = 0;
+	RISE_API_CreateBoxPixelFilter( &pFilter, 1.0, 1.0 );
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pSampler, pFilter,
+		/*smsEnabled*/false, /*smsMaxIterations*/0, /*smsThreshold*/0.0, /*smsMaxChainDepth*/0,
+		/*smsBiased*/false, /*smsBernoulliTrials*/0, /*smsMultiTrials*/1, /*smsPhotonCount*/0,
+		/*smsTwoStage*/false, /*smsUseLevenbergMarquardt*/false, SMSSeedingMode::Snell, /*smsTargetBounces*/0,
+		/*oidnDenoise*/true, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
+		PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), /*useZSobol*/false );
+
+	safe_release( pSampler );
+	safe_release( pFilter );
+
+	if( !pRaster ) {
+		safe_release( pCaster );
+		return false;
+	}
+
+	// `pCaster` is NOT released here -- unlike Job::SetPathTracingPelRasterizer
+	// (which discards its own local ref once the rasterizer has addref'd it,
+	// because Job never hands the caster pointer back to anyone), this
+	// factory RETURNS pCaster as an owning reference via `*ppCaster`, exactly
+	// like CreateInteractiveMaterialPreviewPipeline / CreateInteractiveObjectMapPipeline /
+	// CreateInteractiveViewModePipeline above: the rasterizer holds its OWN
+	// addref'd reference internally, so the caller's ref (this one) and the
+	// rasterizer's internal one are independent and both must be released.
+	*ppRasterizer = pRaster;
 	*ppCaster = pCaster;
 	return true;
 }

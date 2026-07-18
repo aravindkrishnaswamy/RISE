@@ -1,10 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ViewportRenderModeTest.cpp - GUI render modes P1 (docs/gui/RENDER_MODES.md
-//    §5): the shared ViewportRenderMode registry, the ephemeral view-mode
+//  ViewportRenderModeTest.cpp - GUI render modes P1+P2a (docs/gui/RENDER_MODES.md
+//    §5, §6): the shared ViewportRenderMode registry, the ephemeral view-mode
 //    caster factory, InteractivePelRasterizer::SetViewModeCaster's caster-
 //    swap mechanics, SceneEditController::{Set,Get}ViewportRenderMode, and
-//    the C-ABI surface (registry accessors + the two controller wrappers).
+//    the C-ABI surface (registry accessors + the two controller wrappers),
+//    PLUS the P2a BeautyVariant pipeline (CreateBeautyVariantPipeline,
+//    IsBeautyVariantMode, the registry's variant* fields + wantsDenoise
+//    C-ABI, and the controller's mVariantRasterizer install/leave +
+//    preview-scale pin lifecycle).
 //
 //    R1  Registry enumeration: count >= 6, names unique, index 0 is
 //        "preview" and viewportSelectable, "objectmap" present but NOT
@@ -47,6 +51,23 @@
 //        for the next pass to run as a 4-SPP polish of the NEW mode/
 //        x-ray state.  Observed via the public GetRefinementStatus()
 //        (Polishing -> Idle across the switch).
+//    R11 P2a registry rows: deep_reflect/direct carry consistent
+//        variant* fields (nonzero, casterFactory=false, viewportSelectable=
+//        true, wantsDenoise=true), IsBeautyVariantMode agrees, and every
+//        P1 (non-variant) row's variant* fields are all zero.
+//    R12 P2a CreateBeautyVariantPipeline succeeds for deep_reflect/direct
+//        (rasterizer + caster both non-null, caster is a plain RayCaster
+//        not InteractiveMaterialPreviewRayCaster/InteractiveViewModeRayCaster)
+//        and refuses for every non-variant mode (Preview/ObjectMap/the four
+//        P1 data modes), out-params zeroed on refusal.
+//    R13 P2a RISE_API_GetViewportRenderModeWantsDenoise matches the core
+//        registry 1:1, plus out-of-range/null-out refusal.
+//    R14 P2a controller lifecycle: skeleton mode refuses a variant-mode
+//        switch; live mode reaches deep_reflect/direct (GetViewportRenderMode
+//        echoes the name) and the preview-scale divisor PINS to the mode's
+//        variantScaleDivisor -- surviving a gesture (OnPointerDown/Up) that
+//        would otherwise reset it -- then UNPINS (a gesture's reset takes
+//        effect again) after switching to a non-variant mode.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -691,6 +712,224 @@ namespace
 			}
 		}
 	}
+	//------------------------------------------------------------------
+	// R11: P2a registry rows -- variant* fields consistent, denoise flags.
+	//------------------------------------------------------------------
+	void TestVariantRegistryRows()
+	{
+		std::printf( "R11: P2a registry variant* fields + wantsDenoise consistency...\n" );
+		unsigned int count = 0;
+		const ViewportRenderModeInfo* modes = GetViewportRenderModes( count );
+
+		bool sawDeepReflect = false, sawDirect = false;
+		for( unsigned int i = 0; i < count; ++i )
+		{
+			const ViewportRenderModeInfo& info = modes[i];
+			const bool isVariant = IsBeautyVariantMode( info.mode );
+			// variant* fields are all-zero for non-variant, all-nonzero for variant.
+			const bool allZero = ( info.variantScaleDivisor == 0
+			                     && info.variantMaxBounces == 0
+			                     && info.variantSamplesPerPass == 0 );
+			const bool allNonZero = ( info.variantScaleDivisor > 0
+			                        && info.variantMaxBounces > 0
+			                        && info.variantSamplesPerPass > 0 );
+			Check( isVariant ? allNonZero : allZero,
+			       std::string( info.name ) + ": variant* fields are all-zero (non-variant) or all-nonzero (variant), never mixed" );
+			// IsBeautyVariantMode is keyed on variantSamplesPerPass > 0 --
+			// cross-check it agrees with the direct field read.
+			Check( isVariant == ( info.variantSamplesPerPass > 0 ),
+			       std::string( info.name ) + ": IsBeautyVariantMode agrees with variantSamplesPerPass > 0" );
+			if( isVariant )
+			{
+				Check( info.wantsDenoise, std::string( info.name ) + ": a variant mode wants denoise" );
+				Check( !info.casterFactory, std::string( info.name ) + ": a variant mode is NOT a casterFactory row (routes through CreateBeautyVariantPipeline)" );
+				Check( info.viewportSelectable, std::string( info.name ) + ": a variant mode is viewport-selectable" );
+			}
+			if( std::string( info.name ) == "deep_reflect" )
+			{
+				sawDeepReflect = true;
+				Check( info.variantScaleDivisor == 4, "deep_reflect: variantScaleDivisor == 4 (quarter-res)" );
+				Check( info.variantMaxBounces == 24, "deep_reflect: variantMaxBounces == 24" );
+				Check( info.variantSamplesPerPass == 16, "deep_reflect: variantSamplesPerPass == 16" );
+			}
+			else if( std::string( info.name ) == "direct" )
+			{
+				sawDirect = true;
+				Check( info.variantScaleDivisor == 2, "direct: variantScaleDivisor == 2 (half-res)" );
+				Check( info.variantMaxBounces == 1, "direct: variantMaxBounces == 1 (direct lighting only)" );
+				Check( info.variantSamplesPerPass == 8, "direct: variantSamplesPerPass == 8" );
+			}
+		}
+		Check( sawDeepReflect, "\"deep_reflect\" is registered" );
+		Check( sawDirect, "\"direct\" is registered" );
+		Check( count >= 8, "at least the 6 P1 + 2 P2a modes are registered" );
+	}
+
+	//------------------------------------------------------------------
+	// R12: CreateBeautyVariantPipeline succeeds for deep_reflect/direct,
+	// refuses for every non-variant mode.
+	//------------------------------------------------------------------
+	void TestBeautyVariantPipelineFactory()
+	{
+		std::printf( "R12: CreateBeautyVariantPipeline success/failure per mode...\n" );
+		const ViewportRenderMode variantModes[2] = {
+			ViewportRenderMode::DeepReflect, ViewportRenderMode::Direct
+		};
+		for( unsigned int i = 0; i < 2; ++i )
+		{
+			IRasterizer* rast   = nullptr;
+			IRayCaster*  caster = nullptr;
+			Check( CreateBeautyVariantPipeline( variantModes[i], &rast, &caster ),
+			       "variant mode pipeline factory succeeds" );
+			Check( rast != nullptr, "variant mode rasterizer is non-null" );
+			Check( caster != nullptr, "variant mode caster is non-null" );
+			// The caster must be a PLAIN RayCaster (production-real shading),
+			// not the studio-preview/view-mode subclasses.
+			RayCaster* concreteRC = dynamic_cast<RayCaster*>( caster );
+			Check( concreteRC != nullptr, "variant mode caster downcasts to the concrete RayCaster" );
+			if( rast )   rast->release();
+			if( caster ) caster->release();
+		}
+
+		const ViewportRenderMode nonVariantModes[6] = {
+			ViewportRenderMode::Preview, ViewportRenderMode::ObjectMap,
+			ViewportRenderMode::Normals, ViewportRenderMode::Depth,
+			ViewportRenderMode::Facets,  ViewportRenderMode::Wireframe
+		};
+		for( unsigned int i = 0; i < 6; ++i )
+		{
+			IRasterizer* rast   = reinterpret_cast<IRasterizer*>( 1 );   // sentinel
+			IRayCaster*  caster = reinterpret_cast<IRayCaster*>( 1 );
+			Check( !CreateBeautyVariantPipeline( nonVariantModes[i], &rast, &caster ),
+			       "non-variant mode refused by CreateBeautyVariantPipeline" );
+			Check( rast == nullptr && caster == nullptr, "out-params zeroed on refusal" );
+		}
+	}
+
+	//------------------------------------------------------------------
+	// R13: RISE_API_GetViewportRenderModeWantsDenoise matches the core
+	// registry 1:1, plus out-of-range/null-out refusal.
+	//------------------------------------------------------------------
+	void TestWantsDenoiseCAbi()
+	{
+		std::printf( "R13: RISE_API_GetViewportRenderModeWantsDenoise parity...\n" );
+		unsigned int count = 0;
+		const ViewportRenderModeInfo* modes = GetViewportRenderModes( count );
+
+		for( unsigned int i = 0; i < count; ++i )
+		{
+			bool wantsDenoise = !modes[i].wantsDenoise;   // start inverted so a no-op is detectable
+			Check( RISE_API_GetViewportRenderModeWantsDenoise( i, &wantsDenoise ),
+			       "RISE_API_GetViewportRenderModeWantsDenoise succeeds in range" );
+			Check( wantsDenoise == modes[i].wantsDenoise, "wantsDenoise matches the core registry" );
+		}
+
+		bool sentinel = true;
+		Check( !RISE_API_GetViewportRenderModeWantsDenoise( count, &sentinel ), "out-of-range index refused" );
+		Check( sentinel == true, "out-param untouched on refusal" );
+		Check( !RISE_API_GetViewportRenderModeWantsDenoise( 0, nullptr ), "null out-param refused" );
+	}
+
+	//------------------------------------------------------------------
+	// R14: controller variant-mode lifecycle -- skeleton refusal, live
+	// reachability, and the preview-scale pin surviving a gesture.
+	//------------------------------------------------------------------
+	void TestControllerVariantModeLifecycle()
+	{
+		std::printf( "R14: SceneEditController BeautyVariant mode lifecycle...\n" );
+
+		// Skeleton mode: refused like every other mode switch.
+		{
+			const std::string tmp = TempPath( "vrm_r14_skeleton.RISEscene" );
+			Job* pJob = LoadScene( kPlainScene, tmp );
+			Check( pJob != nullptr, "R14 skeleton fixture loads" );
+			if( pJob )
+			{
+				SceneEditController ctrl( *pJob, nullptr );
+				Check( !ctrl.SetViewportRenderMode( "deep_reflect" ), "SetViewportRenderMode(\"deep_reflect\") refused in skeleton mode" );
+				Check( std::string( ctrl.GetViewportRenderMode() ) == "preview", "mode stays \"preview\" after the refused call" );
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+
+		// Live controller: reach both variant modes; the preview-scale
+		// divisor pins to each mode's variantScaleDivisor and SURVIVES a
+		// gesture that would otherwise reset it (OnPointerDown bumps to
+		// kPreviewScaleMotionStart, OnPointerUp resets to kPreviewScaleMin
+		// -- see SceneEditController.h's mPreviewScalePinned doc); leaving
+		// the variant mode unpins, and the SAME gesture then DOES reset
+		// the divisor, proving the pin is lifted, not just coincidentally
+		// unaffected.
+		{
+			const std::string tmp = TempPath( "vrm_r14_live.RISEscene" );
+			Job* pJob = LoadScene( kPlainScene, tmp );
+			Check( pJob != nullptr, "R14 live fixture loads" );
+			if( !pJob ) return;
+
+			IRasterizer* pRasterizer = nullptr;
+			IRayCaster*  pPreview    = nullptr;
+			IRayCaster*  pPolish     = nullptr;
+			Check( CreateInteractiveMaterialPreviewPipeline( &pRasterizer, &pPreview, &pPolish ), "R14 pipeline builds" );
+			if( !pRasterizer ) { pJob->release(); std::remove( tmp.c_str() ); return; }
+
+			auto driveOrbitGesture = []( SceneEditController& ctrl )
+			{
+				ctrl.SetTool( SceneEditController::Tool::OrbitCamera );
+				ctrl.OnPointerDown( Point2( 10, 10 ) );
+				ctrl.OnPointerMove( Point2( 18, 14 ) );
+				ctrl.OnPointerUp( Point2( 18, 14 ) );
+			};
+
+			{
+				SceneEditController ctrl( *pJob, pRasterizer );
+
+				Check( ctrl.SetViewportRenderMode( "deep_reflect" ), "switch to \"deep_reflect\" succeeds" );
+				Check( std::string( ctrl.GetViewportRenderMode() ) == "deep_reflect", "GetViewportRenderMode reports \"deep_reflect\"" );
+				unsigned int divisor = 0;
+				ctrl.GetRefinementStatus( divisor );
+				Check( divisor == 4, "deep_reflect pins the preview-scale divisor to 4" );
+
+				driveOrbitGesture( ctrl );
+				unsigned int divisorAfterGesture = 0;
+				ctrl.GetRefinementStatus( divisorAfterGesture );
+				Check( divisorAfterGesture == 4,
+				       "MONEY ASSERTION: the divisor SURVIVES a gesture (OnPointerUp would normally reset it to 1) -- the pin held" );
+
+				Check( ctrl.SetViewportRenderMode( "direct" ), "direct switch deep_reflect -> \"direct\" succeeds" );
+				Check( std::string( ctrl.GetViewportRenderMode() ) == "direct", "GetViewportRenderMode reports \"direct\"" );
+				unsigned int divisorDirect = 0;
+				ctrl.GetRefinementStatus( divisorDirect );
+				Check( divisorDirect == 2, "direct pins the preview-scale divisor to 2" );
+
+				driveOrbitGesture( ctrl );
+				unsigned int divisorDirectAfterGesture = 0;
+				ctrl.GetRefinementStatus( divisorDirectAfterGesture );
+				Check( divisorDirectAfterGesture == 2,
+				       "the divisor SURVIVES a gesture under \"direct\" too" );
+
+				// Leaving the variant mode unpins -- the SAME gesture now
+				// resets the divisor (proving the pin was actually lifted,
+				// not that OnPointerUp coincidentally leaves it alone).
+				Check( ctrl.SetViewportRenderMode( "normals" ), "switch \"direct\" -> \"normals\" (non-variant) succeeds" );
+				driveOrbitGesture( ctrl );
+				unsigned int divisorAfterUnpin = 0;
+				ctrl.GetRefinementStatus( divisorAfterUnpin );
+				// kPreviewScaleMin (1) is private -- OnPointerUp's own doc
+				// says it resets the divisor to that literal value.
+				Check( divisorAfterUnpin == 1,
+				       "MONEY ASSERTION: after leaving the variant mode, a gesture's OnPointerUp reset TAKES EFFECT again -- the pin was lifted" );
+
+				Check( ctrl.SetViewportRenderMode( "preview" ), "restore \"preview\" before teardown" );
+			}
+
+			pRasterizer->release();
+			pPreview->release();
+			pPolish->release();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
 }   // anonymous namespace
 
 int main()
@@ -706,6 +945,10 @@ int main()
 	TestSceneReloadResetsToPreview();
 	TestXrayAxis();
 	TestPolishStateResetOnSwitch();
+	TestVariantRegistryRows();
+	TestBeautyVariantPipelineFactory();
+	TestWantsDenoiseCAbi();
+	TestControllerVariantModeLifecycle();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
