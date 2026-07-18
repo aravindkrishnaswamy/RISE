@@ -808,7 +808,7 @@ static void TestRunEvalMatrixAuthProbe429NotFatal()
 	       "T25: a 429 probe response leaves the column USED (not auth-fatal)" );
 	Check( mr.providersAuthFailed == 0, "T25: providersAuthFailed == 0" );
 	Check( mr.runsExecuted == 1, "T25: the column executed" );
-	Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+	Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "\"ping\"" ) != std::string::npos,
 	       "T25: the FIRST captured request is the auth probe (body contains \"ping\")" );
 	Check( mock.seenRequests.size() == 3,
 	       "T25: exactly 1 probe POST + 2 real-run POSTs reached the transport -- no probe backoff" );
@@ -2188,7 +2188,7 @@ static void TestRunEvalMatrixAuthProbe()
 		       "T12b(A): a passing probe leaves the column USED" );
 		Check( mr.providersAuthFailed == 0, "T12b(A): providersAuthFailed == 0" );
 		Check( mr.runsExecuted == 1, "T12b(A): the column executed" );
-		Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+		Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "\"ping\"" ) != std::string::npos,
 		       "T12b(A): the FIRST captured request is the auth probe (body contains \"ping\")" );
 		Check( mock.seenRequests.size() >= 2,
 		       "T12b(A): the probe AND at least one real run request reached the transport" );
@@ -2350,7 +2350,13 @@ static void TestRunEvalMatrixAuthProbe()
 		Check( mr.runsExecuted == 1, "T12b(E): the local run executes" );
 		Check( mock.seenRequests.size() == 1,
 		       "T12b(E): the transport was called EXACTLY once (the run itself -- no probe)" );
-		Check( mock.seenRequests[0].body.find( "ping" ) == std::string::npos,
+		// Detect a probe by its EXACT JSON payload (the probe sends the
+		// user message "ping", which serializes as the quoted string
+		// "ping") -- a bare substring match false-positives on ordinary
+		// schema/prompt prose like "skipping" or "mapping" (bit us when
+		// the render tool's x-ray description gained "skipping
+		// transmissive surfaces", 2026-07-18).
+		Check( mock.seenRequests[0].body.find( "\"ping\"" ) == std::string::npos,
 		       "T12b(E): the FIRST (and only) captured request is the run, not a probe" );
 
 		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
