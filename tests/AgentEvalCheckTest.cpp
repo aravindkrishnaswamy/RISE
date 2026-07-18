@@ -2837,6 +2837,19 @@ static JsonValue InsertChunkInput( const std::string& chunkText )
 	return in;
 }
 
+// {reference,samples,visual:false} -- the image_reconstruct_* control
+// fixtures' "measure before finishing" round (mirrors the committed
+// evals/fixtures/image_reconstruct_*.fixture.jsonl compare_to_reference
+// round, which the requiredToolInOrder checkpoint now requires).
+static JsonValue CompareToReferenceInput( const std::string& reference, int samples )
+{
+	JsonValue in = JsonValue::MakeObject();
+	in.set( "reference", JsonValue::MakeString( reference ) );
+	in.set( "samples", JsonValue::MakeNumber( samples ) );
+	in.set( "visual", JsonValue::MakeBool( false ) );
+	return in;
+}
+
 // Load `scenarioPath` for real (so the checkpoints under test are the
 // actual committed ones), swap in `fixtureText` as the replay source,
 // run it, and assert the SPECIFIC checkpoint at `expectFailIndex` is
@@ -3344,10 +3357,11 @@ static void TestAdversarialOracleControls()
 	// full iteration history and the two-part conclusion. view1's own strict
 	// 0.015 cap is not asserted here; only the withheld-view rejection is the
 	// claim under test. The fixture below follows the full required workflow
-	// (read_skill -> ... -> render -> read_image, matching the committed
-	// image_reconstruct_single fixture) so the trajectory checkpoint PASSES
-	// and the compares are the ONLY failures -- an isolated "only geometry is
-	// wrong" probe, not a probe that also happens to skip required tool calls.
+	// (read_skill -> ... -> render -> read_image -> compare_to_reference,
+	// matching the committed image_reconstruct_single fixture) so the
+	// trajectory checkpoint PASSES and the compares are the ONLY failures --
+	// an isolated "only geometry is wrong" probe, not a probe that also
+	// happens to skip required tool calls.
 	{
 		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_flat_cutout" );
 		AgentEvalScenario s; std::string err;
@@ -3421,7 +3435,9 @@ static void TestAdversarialOracleControls()
 			{ { "render", EmptyInput() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Looking at the render.",
 			{ { "read_image", EmptyInput() } }, "tool_use" ) );
-		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11",
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11", "Measuring against the reference photo before finishing.",
+			{ { "compare_to_reference", CompareToReferenceInput( "view1", 24 ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_12",
 			"Built the scene; hero is a flat cutout facing view1.", {}, "end_turn" ) );
 
 		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
@@ -3499,9 +3515,9 @@ static void TestAdversarialOracleControls()
 	// Sec 3 noise floors (0.0039-0.0045 total vs a shared 256-spp reference),
 	// so if this control ever flakes, suspect a pipeline change, not noise.
 	// Workflow shape is identical to (k): read_skill -> read_document ->
-	// batched inserts -> draft render -> read_image -> final text, so the
-	// trajectory/objectmap/document/diagnostics checkpoints all PASS and the
-	// view3 compare is the ONLY failure.
+	// batched inserts -> draft render -> read_image -> compare_to_reference ->
+	// final text, so the trajectory/objectmap/document/diagnostics checkpoints
+	// all PASS and the view3 compare is the ONLY failure.
 	{
 		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_bas_relief" );
 		AgentEvalScenario s; std::string err;
@@ -3572,7 +3588,9 @@ static void TestAdversarialOracleControls()
 				return in; } )() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Looking at the draft.",
 			{ { "read_image", EmptyInput() } }, "tool_use" ) );
-		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11",
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11", "Measuring against the reference photo before finishing.",
+			{ { "compare_to_reference", CompareToReferenceInput( "view1", 24 ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_12",
 			"Built the scene; the hero's visible surface matches the photo, with a plausible-looking "
 			"(but wrong) hidden side.", {}, "end_turn" ) );
 

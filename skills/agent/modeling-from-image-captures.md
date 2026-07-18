@@ -334,7 +334,65 @@ centered -- reach for `render {mode:"objectmap"}` or `query_object_at`
 answers "what is actually there" structurally, cheaper than iterating
 on a beauty render's ambiguity.
 
+**Measure every iteration.** When reference images are REGISTERED (a
+reconstruction eval registers its prompt attachments as `view1`,
+`view2`, ... for this purpose; a live chat host may register attached
+images the same way -- check what names are actually registered rather
+than assuming), end EVERY iteration of this loop with
+`compare_to_reference` against the primary view instead of eyeballing
+convergence -- the returned `rmse` IS the graded objective, and the
+job is to make it fall monotonically across iterations, not to feel
+like it's converging:
+
+- Use `channelDelta`'s SIGN to fix global colour/brightness first,
+  before chasing anything structural: `channelDelta.r > 0` means the
+  render is too RED on that channel -- check the environment tint and
+  the key light's colour before touching geometry.
+- Use `worstCell` plus the 3x3 `grid` to LOCALIZE the biggest
+  remaining error before guessing what to fix next -- per the
+  environment-first doctrine (section 6 below), the worst cell is very
+  often the background/environment, not the object.
+- Use the composite `[render | reference | abs-diff heatmap]` image
+  (the default `visual:true`) to SEE the error's structure when the
+  number alone doesn't tell you what changed; set `visual:false` once
+  you only need the number, to save the encode cost and the response's
+  token footprint.
+- Use draft compares (the default -- omit `samples`) for composition
+  passes: cheap, and adequate for silhouette/placement feedback.
+  Switch to a production compare (`samples: 24` or similar) once
+  you're judging colour, lighting, or material fidelity -- draft
+  shading is NOT what the grader renders, so a low draft RMSE only
+  confirms geometry/composition, never colour or material match (see
+  the tool's own `samples` parameter doc for the full tradeoff).
+- If RMSE plateaus above roughly 0.1 across a couple of iterations,
+  the STAGING is wrong, not the object -- go back to
+  environment/light (section 6 below) before touching the object's
+  shape or materials again.
+
 ### 6. Match order: silhouette -> proportions -> surface -> materials -> lighting -> environment
+
+**Stage before object: environment first.** In a photo reconstruction
+the background/environment fills most of the frame's PIXELS -- the
+fastest RMSE reduction is almost always staging, not the object. Work
+in this order before you spend real effort on the hero:
+
+1. **Environment/backdrop tint** -- the single biggest pixel-count
+   lever in the frame.
+2. **Ground tone** -- usually the second-biggest flat region in frame.
+3. **Key-light direction and colour**, read from the shadows (section
+   8 below has the how-to).
+4. **THEN** object silhouette/proportions.
+5. **Materials.**
+6. **Fine shape detail.**
+
+An object-fixated session that nails the hero on a wrong stage scores
+WORSE than an empty correct stage -- this is measured fact from the
+July-2026 baseline. Only once the stage (steps 1-3 above) reads
+correctly does the per-object match order below (silhouette ->
+proportions -> surface -> materials -> lighting -> environment) take
+over for the object itself: that finer-grained order governs HOW to
+build the object once you've started on it, not WHETHER to start on it
+before the stage is right.
 
 Do not add surface detail, bevels, or secondary geometry until the
 blockout's silhouette agrees with the reference from every view in the
