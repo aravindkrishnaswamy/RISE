@@ -334,29 +334,38 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	// `ptIntersection` is proportional to the magnitude of its largest
 	// component, not to any object or camera measurement.
 	//
-	//   eps0 = max(1e-12, kUlpFactor * maxAbsComponent(ptIntersection))
+	// External review round 4, item 1 (P1): the first cut of this fix used
+	// max-abs-COMPONENT (any of x/y/z, regardless of the ray's direction),
+	// which is TRANSVERSE-coordinate-coupled -- a hit point with a huge
+	// coordinate on an axis the ray barely travels along (e.g. an object
+	// sitting at world X=1e12, hit by a ray travelling along Y or Z) still
+	// picks up a nudge sized off that huge transverse X value, even though
+	// escaping self-intersection along the ray's OWN direction needs almost
+	// nothing.  At (1e12,0,0) with dir (0,1,0), the old formula advances
+	// ~1.4e-2 along Y and skips clean over an opaque layer sitting a mere
+	// 1e-3 behind the glass.  The representability bound only needs to
+	// cover ulp error ALONG THE RAY -- so weight each axis's contribution
+	// by how much the ray actually moves along it:
+	//
+	//   eps0 = max( 1e-12, kUlpFactor * ( |P.x|*|dir.x| + |P.y|*|dir.y| + |P.z|*|dir.z| ) )
 	//   kUlpFactor = 64 * DBL_EPSILON ~= 1.4e-14
 	//
-	// This is exactly the right bound in BOTH directions the bbox-diagonal
-	// formula got wrong: a tiny object far from the origin has a small
-	// bbox diagonal but LARGE coordinate magnitudes, so a diagonal-scaled
-	// eps sits at the 1e-9 floor -- many orders of magnitude below the
-	// ulp at that point -- and every step re-lands on the same surface
-	// (burning the whole retry budget on pure FP noise); a huge/unbounded
-	// object has an inf/NaN diagonal and fell back to a CAMERA-range-
-	// scaled eps (reintroducing the exact camera-dependence a prior P2
-	// fix removed), which can skip clean over a nearby opaque layer.
-	// Because it is computed directly from the hit point's own bit
-	// pattern, this bound is camera- and object-independent and exactly
-	// proportional to what double precision can represent there -- the
-	// 64x safety factor over 1 ulp absorbs the rounding error already
-	// accumulated transforming the hit point through however many nested
-	// object-space transforms produced it, without being so large it
-	// reads as a visible offset.  `curEps` is the nudge actually used for
-	// the pending step; it is recomputed fresh at the start of every NEW
-	// step and only carried over (doubled) across loop iterations that
-	// are retries of the SAME step -- see the degenerate-rehit check
-	// below.
+	// A large TRANSVERSE coordinate (orthogonal to travel) now contributes
+	// ~0 to the nudge, exactly matching how little ulp error a step along
+	// the ray actually needs to clear.  The cases where intersection
+	// arithmetic suffers catastrophic cancellation from that large
+	// transverse coordinate (t-error ~ ulp(bigCoord), independent of the
+	// nudge direction) are NOT this formula's job to cover -- they are
+	// absorbed by the degenerate-re-hit retry-doubling below, whose budget
+	// (`kMaxRetries`) was raised from 12 to 40 for exactly this division of
+	// labor: this seed handles the common (ray-aligned ulp) case exactly,
+	// the doubling ladder absorbs the rarer cancellation-dominated cases by
+	// growing past whatever the transverse cancellation actually needs.
+	//
+	// `curEps` is the nudge actually used for the pending step; it is
+	// recomputed fresh at the start of every NEW step and only carried
+	// over (doubled) across loop iterations that are retries of the SAME
+	// step -- see the degenerate-rehit check below.
 	Scalar curEps = 0;
 	bool bRetryStep = false;
 
@@ -365,12 +374,14 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	// surface) are bounded SEPARATELY.  Previously both consumed the same
 	// 16-iteration budget, so a glass stack that needed a couple of
 	// retries per pane could exhaust the budget before reaching the
-	// opaque backstop.  `kMaxRetries` = 12 lets curEps double up to
-	// ~2^12 ~= 4096x from its ulp-scale start, which comfortably covers
-	// the rounding-error range a nested-transform hit point can carry,
-	// while `kMaxSkips` stays at the original 16.
+	// opaque backstop.  `kMaxRetries` = 40 (raised from 12 in review round
+	// 4 -- see the eps0 derivation above) lets curEps double up to
+	// ~2^40 ~= 1e12x from its ulp-scale start, comfortably covering the
+	// transverse-cancellation range a large-coordinate hit point can carry
+	// (each retry is one cheap intersection test, and the cap only binds
+	// in pathological scenes), while `kMaxSkips` stays at the original 16.
 	constexpr int kMaxSkips = 16;
-	constexpr int kMaxRetries = 12;
+	constexpr int kMaxRetries = 40;
 	constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16; // 64 * DBL_EPSILON
 	int skip = 0;
 	int retry = 0;
@@ -387,18 +398,25 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 			break;
 		}
 
+		const Vector3 dir = ri.geometric.ray.Dir();
+
 		if( !bRetryStep )
 		{
 			// Nudge off the surface along the SAME direction (no bending).
-			// See the FP-representability derivation above.
+			// Direction-weighted representability -- see the eps0 derivation
+			// above: each axis's contribution to the ulp bound is scaled by
+			// how much the ray actually travels along it, so a large
+			// TRANSVERSE coordinate (one the ray barely moves along) does
+			// NOT inflate the nudge.
 			const Point3& p = ri.geometric.ptIntersection;
-			const Scalar maxAbsComponent = std::max(
-				std::fabs( p.x ), std::max( std::fabs( p.y ), std::fabs( p.z ) ) );
-			curEps = std::max( Scalar(1e-12), kUlpFactor * maxAbsComponent );
+			const Scalar dirWeightedAbs =
+				std::fabs( p.x ) * std::fabs( dir.x ) +
+				std::fabs( p.y ) * std::fabs( dir.y ) +
+				std::fabs( p.z ) * std::fabs( dir.z );
+			curEps = std::max( Scalar(1e-12), kUlpFactor * dirWeightedAbs );
 		}
 		bRetryStep = false;
 
-		const Vector3 dir = ri.geometric.ray.Dir();
 		const Point3 origin = Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * curEps );
 
 		RayIntersection next( Ray( origin, dir ), ri.geometric.rast );

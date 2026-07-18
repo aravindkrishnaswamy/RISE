@@ -388,10 +388,37 @@ namespace
 		// of the operand's overall size or the camera.  Deleting the bbox
 		// lookup also removes the only remaining consumer of the P2-3
 		// diagonal/safeDiag fallback machinery.
-		const Scalar maxAbsComponent = std::max(
-			std::fabs( ptExitLocal.x ), std::max( std::fabs( ptExitLocal.y ), std::fabs( ptExitLocal.z ) ) );
+		//
+		// External review round 4, item 2 (P2), same disease as the
+		// RayCaster P1 above: max-abs-COMPONENT is TRANSVERSE-coordinate-
+		// coupled -- an exit point with a huge coordinate on an axis the
+		// probe barely travels along inflates the margin (and therefore
+		// the same-face acceptance radius) far past what's needed, wide
+		// enough to reach a decoy face that a tighter, direction-aware
+		// margin would never touch.  Weight each axis's contribution by
+		// how much the PROBE's travel direction moves along it.  The
+		// probe's own ray direction is `-dir` (reversed, see probeRay
+		// below), but the margin displacement that matters here happens
+		// BEFORE that reversal -- probeOrigin is ptExitLocal pushed
+		// forward by `dir * margin` (see immediately below) -- so the
+		// weighting uses the parent ray's own (un-reversed) `dir`, the
+		// direction that displacement actually travels along:
+		//
+		//   margin = max( 1e-12, kUlpFactor * ( |ptExitLocal.x|*|dir.x| + |ptExitLocal.y|*|dir.y| + |ptExitLocal.z|*|dir.z| ) )
+		//
+		// Unlike RayCaster::ResolveXrayView_, this probe is one-shot with a
+		// graceful fallback (return false -> caller keeps the entry-face
+		// payload) rather than a retry ladder -- there is no cancellation-
+		// absorbing follow-up here, by design: a probe miss is already a
+		// handled, non-fatal outcome (see the function's own doc comment
+		// above), so there is nothing a retry would be recovering FROM.
+		// Keep it one-shot.
+		const Scalar dirWeightedAbs =
+			std::fabs( ptExitLocal.x ) * std::fabs( dir.x ) +
+			std::fabs( ptExitLocal.y ) * std::fabs( dir.y ) +
+			std::fabs( ptExitLocal.z ) * std::fabs( dir.z );
 		constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16; // 64 * DBL_EPSILON, see RayCaster::ResolveXrayView_
-		const Scalar margin = std::max( Scalar(1e-12), kUlpFactor * maxAbsComponent );
+		const Scalar margin = std::max( Scalar(1e-12), kUlpFactor * dirWeightedAbs );
 		// NOTE: at the 1e-12 floor (exit faces near the world origin) the
 		// acceptance window (~2.1e-12) shares a magnitude with the operand's
 		// own SURFACE_INTERSEC_ERROR self-hit gate -- marginal cases miss the

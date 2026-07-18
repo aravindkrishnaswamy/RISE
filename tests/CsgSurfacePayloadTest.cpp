@@ -1194,6 +1194,124 @@ void TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest()
 	std::cout << "  Passed." << std::endl;
 }
 
+//
+// Test 14 (external review round 4, item 2 -- P2, same disease as the
+// RayCaster P1): the exit-face reverse probe's margin must be
+// DIRECTION-WEIGHTED, not max-abs-COMPONENT -- a large TRANSVERSE
+// coordinate (one the probe's travel direction barely moves along) must
+// NOT inflate the margin.  Mirrors Test 11's decoy-lobe setup exactly
+// (same A/realLobe/decoyLobe shapes and z-placement), but the whole
+// assembly sits at world X = 1e12 and the ray travels along +Z (dir.x ==
+// dir.y == 0), so the OLD margin (kUlpFactor * max-abs-component of
+// ptExitLocal, which reads the huge X coordinate regardless of travel
+// direction) balloons to ~1.4e-2 -- wide enough to reach a decoy lobe
+// placed just 0.01 units beyond the real exit face -- while the NEW
+// margin (kUlpFactor * direction-weighted-abs, which only sees the small
+// Z-axis component the probe actually travels along) stays at the
+// 1e-12 floor and finds the real face.
+//
+// Numeric derivation (kUlpFactor = 64 * DBL_EPSILON ~= 1.4210854715e-14):
+//   OLD margin ~= kUlpFactor * 1e12                 ~= 0.01421
+//   OLD maxAcceptRange = margin * 2.1                ~= 0.02984
+//   NEW margin ~= max(1e-12, kUlpFactor * |z_exit|)  == 1e-12 (floor; z_exit == -2)
+//   NEW maxAcceptRange = margin * 2.1                == 2.1e-12
+//   decoy gap (real exit face at z=-2, decoy near face at z=-1.99): 0.01
+//     -- inside the OLD accept window (0.01 < 0.02984), outside the NEW
+//     one (0.01 >> 2.1e-12).
+//
+void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin is direction-weighted, not inflated by a large transverse coordinate (review r4, item 2)..." << std::endl;
+
+	const Scalar BIG_X = 1e12;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );           // half-extent 3, spans z in [-3,3]
+	BoxGeometry* gRealLobe = new BoxGeometry( 4.0, 4.0, 4.0 );    // half-extent (2,2,2)
+	BoxGeometry* gDecoyLobe = new BoxGeometry( 3.6, 3.6, 0.005 ); // half-extent (1.8,1.8,0.0025) -- narrower in X/Y than realLobe so their ptCoord mappings differ too
+
+	Object* oA = new Object( gA );
+	Object* realLobe = new Object( gRealLobe );
+	Object* decoyLobe = new Object( gDecoyLobe );
+	safe_release( gA );
+	safe_release( gRealLobe );
+	safe_release( gDecoyLobe );
+
+	oA->SetPosition( Point3( BIG_X, 0, 0 ) );
+	oA->FinalizeTransformations();
+
+	realLobe->SetPosition( Point3( BIG_X, 0, -4 ) );     // spans z in [-6,-2]: overlaps A's near wall (same as Test 4/11's B)
+	realLobe->FinalizeTransformations();
+
+	// Decoy lobe just OUTSIDE the real exit face (z=-2), separated by a
+	// 0.01-unit gap -- inside the OLD margin's inflated accept window
+	// (probe origin at OLD_margin=0.0142 past the exit face, reaching
+	// down to the decoy's near face at z=-1.990 first), outside the NEW
+	// one (see the derivation above).  Near face (largest z, hit FIRST by
+	// a probe travelling in -Z from just past the exit face) at z=-1.990;
+	// far face at z=-1.995 -- entirely on the near side of the real exit
+	// face (z=-2), never overlapping realLobe or A's own carve boundary.
+	decoyLobe->SetPosition( Point3( BIG_X, 0, -1.9925 ) );  // spans z in [-1.995,-1.990]
+	decoyLobe->FinalizeTransformations();
+
+	CSGObject* nestedB = new CSGObject( CSG_UNION );
+	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	nestedB->FinalizeTransformations();
+
+	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
+	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	outerCsg->FinalizeTransformations();
+
+	// Ray travels along +Z (dir.x == dir.y == 0) -- the probe's own
+	// travel direction (see AdoptCsgExitFacePayloadViaProbe) barely moves
+	// along X at all, so the huge X coordinate at BIG_X must NOT inflate
+	// the margin.  Off-centre in Y only (matches Test 4/11's off-centre
+	// idiom) to avoid the degenerate box-UV centre point; X stays exactly
+	// BIG_X so dir.x is exactly 0 for this ray.
+	Ray r( Point3( BIG_X, 0.05, -10 ), Vector3( 0, 0, 1 ) );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( outerCsg, r, ri );
+	assert( ri.geometric.bHit );
+
+	// Ground truth: the REAL exit face, probed directly (independent of
+	// production code) -- same oracle pattern as Test 4/11.
+	Ray probeRefReal( Point3( BIG_X, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
+	Hit( realLobe, probeRefReal, refRealExit );
+	assert( refRealExit.geometric.bHit );
+
+	// The WRONG answer an overshooting (OLD-margin) probe lands on: the
+	// decoy lobe's near face, probed directly.
+	Ray probeDecoy( Point3( BIG_X, 0.05, -1.98 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
+	Hit( decoyLobe, probeDecoy, refDecoy );
+	assert( refDecoy.geometric.bHit );
+
+	// Sanity: the two candidate faces produce distinct UV / object-space
+	// points, so this test is discriminating.
+	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
+	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+
+	// The composite's recovered payload must be the REAL exit face, never
+	// the decoy -- this is the money assertion: it FAILS under the OLD
+	// max-abs-component margin (verified manually during development by
+	// temporarily reintroducing that formula), because the OLD margin at
+	// BIG_X=1e12 (~0.0142) comfortably overshoots the 0.01-unit gap to
+	// the decoy, while the NEW direction-weighted margin (~1e-12, since
+	// dir.x==dir.y==0 here) does not.
+	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
+	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
+	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
+	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+
+	safe_release( outerCsg );
+	safe_release( oA );
+	safe_release( nestedB );
+	safe_release( realLobe );
+	safe_release( decoyLobe );
+	std::cout << "  Passed." << std::endl;
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -1209,6 +1327,7 @@ int main()
 	TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe();
 	TestIntersectionOnly_CompressedCsg_NoShadowLeakThroughOperandPretest();
 	TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest();
+	TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin();
 	std::cout << "\nAll CsgSurfacePayloadTest cases passed." << std::endl;
 	return 0;
 }

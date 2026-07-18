@@ -1317,6 +1317,148 @@ static void RunDepthRangedToFlatSelfCorrectTest()
 	pJobFlat->release();
 }
 
+//----------------------------------------------------------------------
+// (9) External review round 4, item 1 (P1) regression coverage:
+// RayCaster::ResolveXrayView_'s adaptive skip epsilon must NOT be
+// inflated by a large TRANSVERSE world coordinate (one the ray barely
+// travels along).  This scene sits at world X = 1e12 (verified to parse
+// -- RISE's ascii tokenizer already accepts scientific-notation literals
+// elsewhere in the corpus, e.g. scenes/Tests/Materials/
+// dielectric_dispersion.RISEscene) while the camera looks straight down
+// -Z: for the exact optical-axis ray, dir.x == dir.y == 0, so ANY
+// contribution the huge X coordinate makes to a max-abs-COMPONENT
+// epsilon is pure transverse coupling, not genuine representability
+// need along the ray -- exactly the review's own numeric example (hit
+// point (1e12,0,0), dir (0,1,0)), just with the huge axis and the travel
+// axis swapped.  `backstop1` is an opaque layer sitting 1e-3 behind
+// the glass BOX's exit face; `bg` is a much farther opaque plane
+// filling the rest of the frame.  The glass is deliberately a BOX, not
+// a sphere: a sphere's quadratic does (o-c) differencing at 1e12 scale
+// (catastrophic cancellation, t-noise ~ulp(1e12) ~ 1e-4), so a sub-1e-3
+// gap is unresolvable by ANY epsilon scheme there -- while a box's
+// per-axis slab test never mixes the huge X into the Z intersection, so
+// the geometry itself stays exact.  The gap (1e-3) sits well above that
+// noise floor and well below the OLD epsilon (~1.4e-2 at this X
+// magnitude), which skipped clean over backstop1's entire 0.011 extent
+// onto `bg`; the NEW direction-weighted epsilon (~1e-12, since the
+// ray's own Z-axis travel is small) correctly stops at backstop1.
+//
+// Discriminator: NOT a raw depth-byte comparison (the per-pass
+// auto-window in InteractivePelRasterizer.cpp's DepthViewShader
+// renormalizes every render's own [min,max] independently, so an
+// absolute-value comparison across renders is not reliable -- the
+// on-axis centre pixel is always that render's OWN brightest value
+// regardless of which surface it actually resolved to).  Instead this
+// exploits the SILHOUETTE BOUNDARY within a SINGLE render: a reference
+// objectmap render (same idiom as RunXrayCoverageTest above) locates
+// glass_obj's own screen-space disk, and the test reads a pixel pair
+// straddling that boundary (2px inside vs 2px outside).  If the walk
+// stops at backstop1 (fix), the inside pixel is backstop1's own near
+// depth (~4.9 world units) and the outside pixel is bg's much farther
+// depth (~10.5+) -- a huge fraction of the frame's own [min,max] window,
+// however it happens to be normalized THIS render.  If the walk skips to
+// bg (bug), both pixels resolve to the SAME bg plane, only ~1.6 degrees
+// apart in viewing angle -- a negligible smooth gradient, regardless of
+// how tightly the (now bg-only) window is normalized.
+//
+// Verified discriminating (manual step during development, not re-run
+// by this test): with the old max-abs-component epsilon temporarily
+// reintroduced in RayCaster.cpp, this test's boundary-jump assertion
+// fails (delta collapses to single-digit bytes) -- see the review round
+// 4 handoff notes for the exact before/after byte deltas observed.
+//----------------------------------------------------------------------
+
+static const char* const kSceneLargeXGlassBackstop =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 1e12 0 6\n\tlookat 1e12 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bg_pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname bg_mat\n\treflectance bg_pnt\n}\n\n"
+	"box_geometry\n{\n\tname bg_geo\n\twidth 2000\n\theight 2000\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname bg_obj\n\tgeometry bg_geo\n\tmaterial bg_mat\n\tposition 1e12 0 -5\n}\n\n"
+	"box_geometry\n{\n\tname glass_geo\n\twidth 1.2\n\theight 1.2\n\tdepth 1.2\n}\n\n"
+	"dielectric_material\n{\n\tname glass_mat\n\ttau 1.0 1.0 1.0\n\tior 1.5\n}\n\n"
+	"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition 1e12 0 1.7\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bs_pnt\n\tcolor 0.9 0.9 0.9\n}\n\n"
+	"lambertian_material\n{\n\tname bs_mat\n\treflectance bs_pnt\n}\n\n"
+	"box_geometry\n{\n\tname bs_geo\n\twidth 1.0\n\theight 1.0\n\tdepth 0.01\n}\n\n"
+	"standard_object\n{\n\tname bs_obj\n\tgeometry bs_geo\n\tmaterial bs_mat\n\tposition 1e12 0 1.094\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 1e12 3 4\n}\n";
+
+static void RunLargeTransverseCoordinateXrayTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (9) large transverse coordinate does not inflate the x-ray nudge (review r4, item 1) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_viewmode_largex.RISEscene", kSceneLargeXGlassBackstop );
+	Check( !scenePath.empty(), "wrote the large-X glass+backstop+bg scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "large-X scene loads via the CST path (verifies 1e12 literals parse)" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "large-X session wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	// Reference objectmap render locates glass_obj's OWN screen-space
+	// silhouette (objectmap always reports the first-hit object's ID
+	// colour -- unaffected by x-ray resolve, same idiom as
+	// RunXrayCoverageTest above).
+	AgentRenderParams objP;
+	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult objR = session->Render( objP );
+	Check( objR.ok && objR.renderMode == "objectmap", "large-X reference objectmap render succeeds" );
+	Decoded objDec;
+	Check( DecodePng( objR.png, objDec ), "large-X reference objectmap PNG decodes" );
+	const LegendEntry* glassLegend = FindLegend( objR, "glass_obj" );
+	Check( glassLegend != nullptr, "reference objectmap legend carries glass_obj" );
+	BBox glassBBox{ 0, 0, 0, 0, 0 };
+	if( glassLegend ) {
+		unsigned char cb[3];
+		Check( HexToBytes( glassLegend->colorHex, cb ), "glass_obj colorHex parses" );
+		glassBBox = ScanBBoxForColor( objDec, cb );
+		Check( glassBBox.found > 0, "glass_obj occupies a nonzero pixel region" );
+	}
+
+	AgentRenderParams depthP;
+	depthP.renderTarget = AgentRenderTarget::ViewMode;
+	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
+	// xray stays at its own default (true) -- deliberately not set, same
+	// as RunXrayCoverageTest's (d) case, proving the DEFAULT (not just an
+	// explicit override) is what resolves through the glass.
+	AgentRenderResult rDepth = session->Render( depthP );
+	Check( rDepth.ok, "large-X depth render succeeds" );
+	Decoded decDepth;
+	Check( DecodePng( rDepth.png, decDepth ), "large-X depth PNG decodes" );
+
+	if( glassBBox.found > 0 && decDepth.w == 64 && decDepth.h == 64 &&
+	    glassBBox.maxX + 2 < decDepth.w && glassBBox.maxX >= 2 ) {
+		const unsigned int row = ( glassBBox.minY + glassBBox.maxY ) / 2;
+		// INSIDE sample: the silhouette CENTER, not the edge.  The
+		// backstop (1.0 wide) is deliberately SMALLER than the glass box
+		// (1.2 wide): only central through-glass rays are guaranteed
+		// glass-then-backstop, while edge-adjacent ones would pass the
+		// backstop onto bg.  OUTSIDE sample: 2px past the silhouette,
+		// where the undersized backstop cannot be seen directly, so the
+		// ray lands on bg (the original 2x2 backstop ringed the glass and
+		// put the outside sample at backstop depth too -- a self-
+		// defeating comparison).
+		const Px& insideEdge  = decDepth.at( ( glassBBox.minX + glassBBox.maxX ) / 2, row );
+		const Px& outsideEdge = decDepth.at( glassBBox.maxX + 2, row );
+		Check( insideEdge[3] != 0 && outsideEdge[3] != 0,
+		       "both boundary-straddle pixels are real hits (not background misses)" );
+		const int delta = static_cast<int>( insideEdge[0] ) - static_cast<int>( outsideEdge[0] );
+		Check( delta > 40,
+		       "MONEY ASSERTION: the depth byte 2px INSIDE the glass silhouette boundary is far BRIGHTER "
+		       "(nearer) than 2px OUTSIDE it -- the x-ray walk stopped at backstop1 (~4.9 world units away) "
+		       "instead of skipping clean over its 1e-4 gap to bg (~10.5+ world units away, which is what the "
+		       "transverse-coordinate-coupled epsilon used to do at this X magnitude, collapsing this same "
+		       "delta to a handful of bytes from bg's own smooth background gradient alone)" );
+	}
+
+	pJob->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -1330,6 +1472,7 @@ int main()
 	RunDepthWindowStaleSelfCorrectTest();
 	RunDepthFlatWindowSettlesTest();
 	RunDepthRangedToFlatSelfCorrectTest();
+	RunLargeTransverseCoordinateXrayTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
