@@ -400,6 +400,15 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 
 		const Vector3 dir = ri.geometric.ray.Dir();
 
+		// Facing of the face we are TRYING TO LEAVE, captured before the
+		// continuation cast below -- see the degenerate-self-hit predicate
+		// further down (external review round 6, item 1).  `ri` does not
+		// change across retries of the same step, so this is stable for the
+		// whole step; recomputing it each iteration is cheap and keeps the
+		// value tied to whichever `ri` is currently live without a stale
+		// carry-over risk.
+		const Scalar prevFacing = Vector3Ops::Dot( ri.geometric.vGeomNormal, dir );
+
 		if( !bRetryStep )
 		{
 			// Nudge off the surface along the SAME direction (no bending).
@@ -485,15 +494,57 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 		// cannot see.  So a same-object re-hit can legitimately appear at
 		// range >> curEps and still be the SAME face (external review r5:
 		// 10x-stretched glass box -> ~1e-11 re-hit vs 1e-12 eps, accepted
-		// as a "real" skip and looping to the cap).  Widen generously:
-		// misclassifying a genuinely-close SECOND surface of the same
-		// transmissive object costs nothing (the walk would skip it
-		// anyway), while missing a self-hit burns the whole skip budget.
-		// Residual: a stretch >= ~1e9 with small hit coordinates can still
-		// exceed this window; bounded by the skip cap, keeps last
-		// transmissive hit (graceful).
+		// as a "real" skip and looping to the cap).  Widen generously --
+		// BUT a wide range window alone cannot distinguish "re-hit the same
+		// face we tried to leave" from "hit the object's own genuine exit
+		// face, which happens to sit inside that same window" (external
+		// review round 6, item 1): a shell/box THINNER than the window
+		// (e.g. depth ~1e-7, well under the 1e-6 floor) puts its real exit
+		// face inside `selfHitWindow` too.  Treating that exit as a
+		// self-hit and retrying re-anchors the walk at the ENTRY face with
+		// a DOUBLED eps -- which can leap over both the genuine exit AND an
+		// opaque layer sitting just behind it, silently resolving to
+		// whatever is further back (or nothing).
+		//
+		// Facing test: a true re-hit of the face we tried to leave faces
+		// the SAME way we left it (the nudge landed back on its own front,
+		// or bounced straight back off it) -- `next`'s geometric normal and
+		// `ri`'s (captured in `prevFacing` above, before this cast) both
+		// have a NON-ZERO-magnitude dot with `dir` of the SAME SIGN.  A
+		// genuine exit face of a thin shell faces the OPPOSITE way (the ray
+		// is leaving through the far side, so its outward normal points
+		// backward along `dir` relative to how the entry face's normal
+		// did) -- opposite sign.  So only classify as a degenerate self-hit
+		// when the signs agree; an opposite-signed near hit is a real exit
+		// face and falls through to the normal acceptance path below,
+		// re-anchoring the walk there (a SMALL nudge from the exit next
+		// step) instead of leaping from the entry with a doubled eps.
+		//
+		// (a) Geometries that orient normals TOWARD the incoming ray on
+		// their exit face (a rare, non-standard winding) would make that
+		// exit face same-signed with the entry face too -- the facing test
+		// then can't tell them apart and this degrades to the OLD
+		// range-only retry behavior for that geometry.  Never WORSE than
+		// before this fix: the fallback is exactly what round 5 shipped.
+		//
+		// (b) Correction to the round-5 note this replaces: that note
+		// argued misclassifying a genuinely-close SECOND surface as a
+		// self-hit "costs nothing (the walk would skip it anyway)".  That
+		// is only true when the retry's doubled-eps nudge still lands
+		// short of whatever comes next.  For a shell/box thinner than the
+		// nudge, it is NOT free -- the retry re-anchors the origin at the
+		// ENTRY face (not the exit), and the doubled eps can carry the
+		// walk clean past the exit face and past a thin opaque layer
+		// immediately behind it, so the false positive silently discards a
+		// real surface instead of paying for one extra intersection test.
+		// The facing test above closes exactly that gap.
 		const Scalar selfHitWindow = std::max( Scalar(1e-6), curEps * Scalar(16.0) );
-		if( next.pObject == ri.pObject && next.geometric.range < selfHitWindow )
+		const Scalar nextFacing = Vector3Ops::Dot( next.geometric.vGeomNormal, dir );
+		const bool bDegenerateSelfHit =
+			next.pObject == ri.pObject &&
+			next.geometric.range < selfHitWindow &&
+			( prevFacing * nextFacing ) > 0;
+		if( bDegenerateSelfHit )
 		{
 			if( retry < kMaxRetries )
 			{

@@ -418,11 +418,36 @@ namespace
 			std::fabs( ptExitLocal.y ) * std::fabs( dir.y ) +
 			std::fabs( ptExitLocal.z ) * std::fabs( dir.z );
 		constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16; // 64 * DBL_EPSILON, see RayCaster::ResolveXrayView_
-		const Scalar margin = std::max( Scalar(1e-9), kUlpFactor * dirWeightedAbs );   // floor 1e-9: local-backoff amplification, see RayCaster's eps floor note
-		// NOTE: at the 1e-12 floor (exit faces near the world origin) the
-		// acceptance window (~2.1e-12) shares a magnitude with the operand's
-		// own SURFACE_INTERSEC_ERROR self-hit gate -- marginal cases miss the
-		// probe and take the graceful entry-payload fallback (quality only).
+		// Floor 1e-12 (external review round 6, item 2 -- REVERTS the r5
+		// bump to 1e-9): r5 raised this floor to match RayCaster::
+		// ResolveXrayView_'s eps floor "identically", on the theory that
+		// both nudges face the same local->world-stretch-amplified standoff
+		// problem.  They do NOT.  RayCaster's nudge starts from
+		// `ri.geometric.ptIntersection`, which Object::IntersectRay
+		// publishes BACKWARD-biased -- `range - SURFACE_INTERSEC_ERROR`
+		// (Object.cpp, entry-point publication) -- i.e. SHORT of the true
+		// surface, so a stretch amplifies a gap the nudge still has to
+		// cross, and a bigger floor is genuinely load-bearing there.  THIS
+		// probe's `ptExitLocal` instead comes from `exitRangeCsgLocal`
+		// (the operand's own published `range2`), which Object::
+		// IntersectRay publishes FORWARD-biased -- `range2 +
+		// SURFACE_INTERSEC_ERROR` (see `ptObjExit`), then range2 itself is
+		// recomputed from that already-advanced `ptExit` -- i.e. PAST the
+		// true face, in the SAME direction this probe's own margin pushes.
+		// The producer-side bias already clears the amplified standoff
+		// before this function ever runs; stacking a second, much larger
+		// (1e-9) margin on top doesn't clear anything further, it only
+		// inflates the same-face acceptance radius (maxAcceptRange below,
+		// ~2.1e-9 at the r5 floor vs ~2.1e-12 here) far past what the
+		// producer bias needs -- wide enough to re-open decoy-payload
+		// adoption for a second face separated from the true exit by less
+		// than ~2e-9 (exactly the tiny-gap case this floor was supposed to
+		// guard against, now on the WRONG side of the trade).  At 1e-12 the
+		// acceptance window (~2.1e-12) shares a magnitude with the
+		// operand's own SURFACE_INTERSEC_ERROR self-hit gate; marginal
+		// cases miss the probe and take the graceful entry-payload
+		// fallback (quality only, never a decoy-payload correctness bug).
+		const Scalar margin = std::max( Scalar(1e-12), kUlpFactor * dirWeightedAbs );
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
 			ptExitLocal.y + dir.y * margin,

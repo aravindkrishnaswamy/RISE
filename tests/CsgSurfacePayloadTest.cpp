@@ -1312,6 +1312,150 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 	std::cout << "  Passed." << std::endl;
 }
 
+//
+// Test 15 (external review round 6, item 2 -- P2, REVERTS the r5 margin
+// floor bump): AdoptCsgExitFacePayloadViaProbe's margin floor must stay
+// at 1e-12 (SURFACE_INTERSEC_ERROR's own scale), NOT the 1e-9 RayCaster
+// borrowed "identically" in round 5.  Round 5's reasoning does not apply
+// here: RayCaster's consumer-side nudge starts from a point Object::
+// IntersectRay publishes SHORT of the true surface (entry bias,
+// `range - SURFACE_INTERSEC_ERROR`), so a local->world stretch amplifies
+// a real gap the nudge still has to cross.  This probe's `ptExitLocal`
+// instead comes from the operand's own `range2`, which Object::
+// IntersectRay publishes PAST the true surface (exit bias, `range2 +
+// SURFACE_INTERSEC_ERROR`, then `range2` itself is recomputed from that
+// already-advanced point) -- the producer-side bias already clears the
+// standoff before this function runs, so stacking the bigger (1e-9)
+// margin on top doesn't clear anything further; it only inflates the
+// same-face acceptance radius (maxAcceptRange, ~2.1e-9 at the r5 floor)
+// far past what's needed, wide enough to reach a SECOND, decoy face of
+// the operand separated from the true exit by less than ~2e-9 -- exactly
+// the tiny-gap adoption bug this test reproduces.
+//
+// Same nested-CSG-union decoy-lobe idiom as Tests 11/14 (realLobe is
+// byte-identical to those tests' realLobe -- box, half-extent 2, spans
+// z in [-6,-2], exit face at z=-2), but the decoy gap is shrunk to the
+// exact scale that separates the two margin floors: ~5e-10, i.e.
+// smaller than the r5 floor's own acceptance window (~2.1e-9) but
+// larger than the reverted floor's (~2.1e-12).  decoyLobe is a thin
+// (4e-10 deep) slab whose NEAR face (largest z, the one a backward-
+// travelling probe reaches first) sits exactly `gap` past realLobe's
+// exit, narrower in X/Y (3.6 vs realLobe's 4.0) so its UV mapping is
+// provably distinct from realLobe's own (see the discriminating sanity
+// check below, same idiom as Tests 11/14).
+//
+// Numeric derivation (kUlpFactor * dirWeightedAbs ~= 2.8e-14 at this
+// ray's |z|~2 magnitude -- negligible next to either floor, so the
+// floor alone determines the margin):
+//   r5 (buggy) margin    = 1e-9    -> maxAcceptRange ~= 2.1e-9
+//     probeOrigin = exitZ + 1e-9 = -1.999999999, which is PAST
+//     decoyNearZ (-1.9999999995) by 5e-10 -- backward search finds the
+//     DECOY first, well inside the 2.1e-9 acceptance window.  ADOPTS
+//     THE DECOY (wrong).
+//   reverted (fixed) margin = 1e-12 -> maxAcceptRange ~= 2.1e-12
+//     probeOrigin = exitZ + 1e-12 = -1.999999999999, which is BEFORE
+//     decoyNearZ by ~5e-10 -- backward search finds the REAL exit face
+//     first (~1e-12 away, inside the 2.1e-12 window), never reaching
+//     the decoy.  RECOVERS THE REAL FACE (correct).
+//
+// Discrimination proven by temporarily restoring the 1e-9 floor in
+// CSGObject.cpp, rebuilding, and re-running this test: the money
+// assertion (composite payload == real exit face, != decoy) fails --
+// see the review round 6 handoff notes for the exact observed values.
+//
+void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin floor (1e-12) doesn't overshoot a tiny-gap decoy face (review r6, item 2)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );          // half-extent 3, spans z in [-3,3]
+	BoxGeometry* gRealLobe = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent (2,2,2) -- identical to Tests 11/14
+	// Decoy: thin (4e-10 deep) slab, narrower in X/Y than realLobe so
+	// their ptCoord mappings differ too (same discriminating idiom as
+	// Tests 11/14).
+	const Scalar gap = 5e-10;          // real-exit-to-decoy-near-face separation
+	const Scalar decoyDepth = 4e-10;
+	BoxGeometry* gDecoyLobe = new BoxGeometry( 3.6, 3.6, decoyDepth );
+
+	Object* oA = new Object( gA );
+	Object* realLobe = new Object( gRealLobe );
+	Object* decoyLobe = new Object( gDecoyLobe );
+	safe_release( gA );
+	safe_release( gRealLobe );
+	safe_release( gDecoyLobe );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oA->FinalizeTransformations();
+
+	realLobe->SetPosition( Point3( 0, 0, -4 ) );     // spans z in [-6,-2]: overlaps A's near wall (same as Tests 4/11/14)
+	realLobe->FinalizeTransformations();
+
+	// Decoy lobe just OUTSIDE the real exit face (z=-2), separated by the
+	// tiny `gap` -- inside the r5-floor's inflated accept window, outside
+	// the reverted floor's.  Near face (largest z, hit FIRST by a probe
+	// travelling in -Z from just past the exit face) at z = -2 + gap; far
+	// face at z = -2 + gap - decoyDepth -- entirely on the near side of
+	// the real exit face (z=-2), never overlapping realLobe.
+	const Scalar realExitZ = -2.0;
+	const Scalar decoyNearZ = realExitZ + gap;
+	const Scalar decoyCenterZ = decoyNearZ - decoyDepth * 0.5;
+	decoyLobe->SetPosition( Point3( 0, 0, decoyCenterZ ) );
+	decoyLobe->FinalizeTransformations();
+
+	CSGObject* nestedB = new CSGObject( CSG_UNION );
+	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	nestedB->FinalizeTransformations();
+
+	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
+	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	outerCsg->FinalizeTransformations();
+
+	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( outerCsg, r, ri );
+	assert( ri.geometric.bHit );
+
+	// Ground truth: the REAL exit face, probed directly (independent of
+	// production code) -- same oracle pattern as Tests 4/11/14.
+	Ray probeRefReal( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
+	Hit( realLobe, probeRefReal, refRealExit );
+	assert( refRealExit.geometric.bHit );
+
+	// The WRONG answer an overshooting (r5-floor) probe lands on: the
+	// decoy lobe's near face, probed directly.  Probe starts well before
+	// (more positive z than) the decoy -- an ordinary, precision-
+	// insensitive direct intersection, unrelated to the tiny production
+	// margin under test.
+	Ray probeDecoy( Point3( 0.1, 0.05, -1.0 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
+	Hit( decoyLobe, probeDecoy, refDecoy );
+	assert( refDecoy.geometric.bHit );
+
+	// Sanity: the two candidate faces produce distinct UV / object-space
+	// points, so this test is discriminating.
+	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
+	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+
+	// The composite's recovered payload must be the REAL exit face, never
+	// the decoy -- this is the money assertion.  It FAILS with the r5
+	// floor (1e-9) restored (verified manually during development -- see
+	// the derivation above), because that margin's accept window
+	// (~2.1e-9) comfortably overshoots the 5e-10 gap to the decoy, while
+	// the reverted 1e-12 floor's window (~2.1e-12) does not.
+	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
+	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
+	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
+	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+
+	safe_release( outerCsg );
+	safe_release( oA );
+	safe_release( nestedB );
+	safe_release( realLobe );
+	safe_release( decoyLobe );
+	std::cout << "  Passed." << std::endl;
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -1328,6 +1472,7 @@ int main()
 	TestIntersectionOnly_CompressedCsg_NoShadowLeakThroughOperandPretest();
 	TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest();
 	TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin();
+	TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor();
 	std::cout << "\nAll CsgSurfacePayloadTest cases passed." << std::endl;
 	return 0;
 }

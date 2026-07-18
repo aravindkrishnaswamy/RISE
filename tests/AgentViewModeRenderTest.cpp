@@ -1543,6 +1543,133 @@ static void RunScaledGlassStandoffTest()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// (11) External review round 6, item 1 (P1) regression: RayCaster::
+// ResolveXrayView_'s degenerate-self-hit predicate must NOT accept a
+// genuine EXIT face of a shell/box THINNER than `selfHitWindow`
+// (max(1e-6, 16*curEps)) as a self-hit just because it lands inside
+// that range window.  Without the facing test, the walk retries with a
+// DOUBLED eps re-anchored at the ENTRY face -- and because the doubling
+// ladder grows geometrically (1e-9 * 2^n), the retry that finally
+// crosses the glass's own 1e-7 depth threshold overshoots by an amount
+// on the SAME order as that threshold, comfortably clearing a second,
+// thin opaque layer sitting immediately behind the glass too (see the
+// derivation in RayCaster.cpp's own comment at the fix site).  The FIX
+// (facing test: only classify as self-hit when the re-hit faces the
+// SAME way as the face being left) accepts the exit face on the very
+// FIRST check -- zero retries -- and correctly walks onto the opaque
+// backstop next.
+//
+// Scene: `glass_obj` is a box 1.2x1.2 wide with a 1e-7 DEPTH (thinner
+// than the 1e-6 selfHitWindow floor by a full order of magnitude),
+// centred at z=1.7 (entry z~1.70000005, exit z~1.69999995).
+// `bs_obj` ("backstop") is a SMALLER (1.0x1.0, per the review round 4
+// lesson: an undersized backstop keeps the boundary-straddle
+// discriminator below honest) opaque box whose front face sits ~1e-8
+// behind the glass's exit face (bs_obj spans z in
+// [1.69999993, 1.69999994]), and `bg_obj` is a large opaque plane far
+// behind everything (z=-2).  With the fix, the through-glass silhouette
+// centre resolves the NEAR backstop; without it (facing test disabled),
+// the walk's retry ladder leaps clean over both the 1e-7 glass and the
+// 1e-8 gap in one doubling step and resolves the FAR background
+// instead -- see the numeric derivation in RayCaster.cpp's comment.
+//
+// Discriminator: the same silhouette-boundary technique as
+// RunLargeTransverseCoordinateXrayTest / RunScaledGlassStandoffTest
+// (single-render, auto-window-safe): a reference objectmap locates
+// glass_obj's own screen-space disk; the CENTRE of that disk (guaranteed
+// to sit within the smaller, co-centred backstop's silhouette too) is
+// compared against a pixel 2px OUTSIDE the disk (which hits `bg_obj`
+// directly, unaffected by the x-ray resolve bug).  If the walk stops at
+// the near backstop (fix), the centre is much BRIGHTER (nearer) than
+// the outside sample; if the walk leaps to `bg_obj` (bug), both samples
+// resolve to the same background plane and the delta collapses.
+//
+// Verified discriminating (manual step during development, not re-run
+// by this test): with the facing test temporarily removed from
+// RayCaster.cpp (degrading the predicate back to review round 5's
+// range-only check), this test's MONEY ASSERTION fails -- the centre
+// and outside samples both land on bg_obj and the delta collapses to a
+// handful of bytes, exactly the "walk leaps both thin surfaces to bg"
+// symptom the fix closes.  Restoring the facing test passes again.
+//----------------------------------------------------------------------
+
+static const char* const kSceneThinGlassNearBackstop =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bg_pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname bg_mat\n\treflectance bg_pnt\n}\n\n"
+	"box_geometry\n{\n\tname bg_geo\n\twidth 2000\n\theight 2000\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname bg_obj\n\tgeometry bg_geo\n\tmaterial bg_mat\n\tposition 0 0 -2\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bs_pnt\n\tcolor 0.9 0.9 0.9\n}\n\n"
+	"lambertian_material\n{\n\tname bs_mat\n\treflectance bs_pnt\n}\n\n"
+	"box_geometry\n{\n\tname bs_geo\n\twidth 1.0\n\theight 1.0\n\tdepth 0.00000001\n}\n\n"
+	"standard_object\n{\n\tname bs_obj\n\tgeometry bs_geo\n\tmaterial bs_mat\n\tposition 0 0 1.699999935\n}\n\n"
+	"box_geometry\n{\n\tname glass_geo\n\twidth 1.2\n\theight 1.2\n\tdepth 0.0000001\n}\n\n"
+	"dielectric_material\n{\n\tname glass_mat\n\ttau 1.0 1.0 1.0\n\tior 1.5\n}\n\n"
+	"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition 0 0 1.7\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+static void RunThinGlassNearOpaqueDiscriminationTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (11) sub-window-thin glass resolves the NEAR opaque backstop, not a leapt-over far bg (review r6, item 1) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_viewmode_thinglass.RISEscene", kSceneThinGlassNearBackstop );
+	Check( !scenePath.empty(), "wrote the thin-glass+near-backstop+bg scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "thin-glass scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "thin-glass session wraps the Job" );
+	if( !session ) { pJob->release(); return; }
+
+	AgentRenderParams objP;
+	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult objR = session->Render( objP );
+	Check( objR.ok, "thin-glass reference objectmap render succeeds" );
+	Decoded objDec;
+	Check( DecodePng( objR.png, objDec ), "thin-glass objectmap PNG decodes" );
+	const LegendEntry* glassLegend = FindLegend( objR, "glass_obj" );
+	Check( glassLegend != nullptr, "objectmap legend carries glass_obj" );
+	BBox glassBBox{ 0, 0, 0, 0, 0 };
+	if( glassLegend ) {
+		unsigned char cb[3];
+		Check( HexToBytes( glassLegend->colorHex, cb ), "glass_obj colorHex parses" );
+		glassBBox = ScanBBoxForColor( objDec, cb );
+		Check( glassBBox.found > 0, "glass_obj occupies a nonzero pixel region" );
+	}
+
+	AgentRenderParams depthP;
+	depthP.renderTarget = AgentRenderTarget::ViewMode;
+	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
+	// xray stays at its own default (true) -- not set explicitly.
+	AgentRenderResult rDepth = session->Render( depthP );
+	Check( rDepth.ok, "thin-glass depth render succeeds" );
+	Decoded decDepth;
+	Check( DecodePng( rDepth.png, decDepth ), "thin-glass depth PNG decodes" );
+
+	if( glassBBox.found > 0 && decDepth.w == 64 && decDepth.h == 64 &&
+	    glassBBox.maxX + 2 < decDepth.w && glassBBox.minX + glassBBox.maxX > 0 ) {
+		const unsigned int row = ( glassBBox.minY + glassBBox.maxY ) / 2;
+		const Px& center  = decDepth.at( ( glassBBox.minX + glassBBox.maxX ) / 2, row );
+		const Px& outside = decDepth.at( glassBBox.maxX + 2, row );
+		Check( center[3] != 0 && outside[3] != 0, "both thin-glass samples are real hits" );
+		const int delta = static_cast<int>( center[0] ) - static_cast<int>( outside[0] );
+		Check( delta > 40,
+		       "MONEY ASSERTION: through the sub-window-thin glass, the silhouette centre pixel resolves the "
+		       "NEAR opaque backstop (~4.3 world units away), far BRIGHTER than the pixel 2px outside the "
+		       "silhouette which hits the far background directly (~8 world units away) -- the walk's facing "
+		       "test accepted the glass's own exit face on the first check instead of retry-doubling from the "
+		       "entry face and leaping over both the glass and the backstop onto the same far background the "
+		       "outside pixel sees" );
+	}
+
+	pJob->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -1558,6 +1685,7 @@ int main()
 	RunDepthRangedToFlatSelfCorrectTest();
 	RunLargeTransverseCoordinateXrayTest();
 	RunScaledGlassStandoffTest();
+	RunThinGlassNearOpaqueDiscriminationTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
