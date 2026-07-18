@@ -413,7 +413,16 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 				std::fabs( p.x ) * std::fabs( dir.x ) +
 				std::fabs( p.y ) * std::fabs( dir.y ) +
 				std::fabs( p.z ) * std::fabs( dir.z );
-			curEps = std::max( Scalar(1e-12), kUlpFactor * dirWeightedAbs );
+			// Floor 1e-9, NOT SURFACE_INTERSEC_ERROR (1e-12): Object::
+			// IntersectRay publishes hit points backed off by
+			// SURFACE_INTERSEC_ERROR in OBJECT-LOCAL units, so a
+			// local->world stretch along the ray AMPLIFIES the published
+			// point's standoff from the physical surface (10x scale ->
+			// ~1e-11 world gap; external review r5).  A 1e-9 floor clears
+			// the standoff outright for scales up to ~1e3; larger
+			// stretches are caught by the widened degenerate-re-hit
+			// window below and the retry-doubling ladder.
+			curEps = std::max( Scalar(1e-9), kUlpFactor * dirWeightedAbs );
 		}
 		bRetryStep = false;
 
@@ -470,7 +479,21 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 		// above -- so exhausting it here just falls through to accept the
 		// current `ri` as the honest answer, same as the black-hole break
 		// above.
-		if( next.pObject == ri.pObject && next.geometric.range < curEps )
+		// Degenerate self-re-hit window: the published-point standoff is
+		// SURFACE_INTERSEC_ERROR in OBJECT-LOCAL units, amplified by the
+		// object's local->world stretch along the ray -- which this caster
+		// cannot see.  So a same-object re-hit can legitimately appear at
+		// range >> curEps and still be the SAME face (external review r5:
+		// 10x-stretched glass box -> ~1e-11 re-hit vs 1e-12 eps, accepted
+		// as a "real" skip and looping to the cap).  Widen generously:
+		// misclassifying a genuinely-close SECOND surface of the same
+		// transmissive object costs nothing (the walk would skip it
+		// anyway), while missing a self-hit burns the whole skip budget.
+		// Residual: a stretch >= ~1e9 with small hit coordinates can still
+		// exceed this window; bounded by the skip cap, keeps last
+		// transmissive hit (graceful).
+		const Scalar selfHitWindow = std::max( Scalar(1e-6), curEps * Scalar(16.0) );
+		if( next.pObject == ri.pObject && next.geometric.range < selfHitWindow )
 		{
 			if( retry < kMaxRetries )
 			{

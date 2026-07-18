@@ -418,7 +418,7 @@ namespace
 			std::fabs( ptExitLocal.y ) * std::fabs( dir.y ) +
 			std::fabs( ptExitLocal.z ) * std::fabs( dir.z );
 		constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16; // 64 * DBL_EPSILON, see RayCaster::ResolveXrayView_
-		const Scalar margin = std::max( Scalar(1e-12), kUlpFactor * dirWeightedAbs );
+		const Scalar margin = std::max( Scalar(1e-9), kUlpFactor * dirWeightedAbs );   // floor 1e-9: local-backoff amplification, see RayCaster's eps floor note
 		// NOTE: at the 1e-12 floor (exit faces near the world origin) the
 		// acceptance window (~2.1e-12) shares a magnitude with the operand's
 		// own SURFACE_INTERSEC_ERROR self-hit gate -- marginal cases miss the

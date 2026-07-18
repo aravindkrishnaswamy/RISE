@@ -1459,6 +1459,90 @@ static void RunLargeTransverseCoordinateXrayTest()
 	pJob->release();
 }
 
+
+//----------------------------------------------------------------------
+// (10) External review round 5 regression: an object-local SCALE along
+// the ray amplifies Object::IntersectRay's published-point standoff
+// (SURFACE_INTERSEC_ERROR in OBJECT-LOCAL units -> ~1e-11 world at 10x),
+// which used to exceed both the 1e-12 nudge floor AND the `< curEps`
+// degenerate-re-hit window -- the self-hit was accepted as a "real"
+// skip, looping to the cap, and the x-ray walk never reached the opaque
+// backstop.  Scene: glass box scaled 10x along the view axis (Z) with a
+// large opaque backstop plane behind it.  If the walk works, the
+// through-glass center pixel and a beside-the-glass pixel both resolve
+// the SAME backstop plane (similar depth bytes); if the walk sticks at
+// the glass, the center pixel reads the much NEARER glass surface
+// (far brighter).
+//----------------------------------------------------------------------
+static const char* const kSceneScaledGlassBackstop =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bg_pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname bg_mat\n\treflectance bg_pnt\n}\n\n"
+	"box_geometry\n{\n\tname bg_geo\n\twidth 2000\n\theight 2000\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname bg_obj\n\tgeometry bg_geo\n\tmaterial bg_mat\n\tposition 0 0 -2\n}\n\n"
+	"box_geometry\n{\n\tname glass_geo\n\twidth 1.2\n\theight 1.2\n\tdepth 0.2\n}\n\n"
+	"dielectric_material\n{\n\tname glass_mat\n\ttau 1.0 1.0 1.0\n\tior 1.5\n}\n\n"
+	"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition 0 0 1.7\n\tscale 1 1 10\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+static void RunScaledGlassStandoffTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (10) local-scale-amplified published-point standoff does not strand the x-ray walk (review r5) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_viewmode_scaledglass.RISEscene", kSceneScaledGlassBackstop );
+	Check( !scenePath.empty(), "wrote the scaled-glass scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "scaled-glass scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "scaled-glass session wraps the Job" );
+	if( !session ) { pJob->release(); return; }
+
+	AgentRenderParams objP;
+	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult objR = session->Render( objP );
+	Check( objR.ok, "scaled-glass reference objectmap render succeeds" );
+	Decoded objDec;
+	Check( DecodePng( objR.png, objDec ), "scaled-glass objectmap PNG decodes" );
+	const LegendEntry* glassLegend = FindLegend( objR, "glass_obj" );
+	Check( glassLegend != nullptr, "objectmap legend carries glass_obj" );
+	BBox glassBBox{ 0, 0, 0, 0, 0 };
+	if( glassLegend ) {
+		unsigned char cb[3];
+		Check( HexToBytes( glassLegend->colorHex, cb ), "glass_obj colorHex parses" );
+		glassBBox = ScanBBoxForColor( objDec, cb );
+		Check( glassBBox.found > 0, "glass_obj occupies a nonzero pixel region" );
+	}
+
+	AgentRenderParams depthP;
+	depthP.renderTarget = AgentRenderTarget::ViewMode;
+	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
+	AgentRenderResult rDepth = session->Render( depthP );
+	Check( rDepth.ok, "scaled-glass depth render succeeds" );
+	Decoded decDepth;
+	Check( DecodePng( rDepth.png, decDepth ), "scaled-glass depth PNG decodes" );
+
+	if( glassBBox.found > 0 && decDepth.w == 64 && decDepth.h == 64 &&
+	    glassBBox.maxX + 2 < decDepth.w && glassBBox.minX + glassBBox.maxX > 0 ) {
+		const unsigned int row = ( glassBBox.minY + glassBBox.maxY ) / 2;
+		const Px& center  = decDepth.at( ( glassBBox.minX + glassBBox.maxX ) / 2, row );
+		const Px& outside = decDepth.at( glassBBox.maxX + 2, row );
+		Check( center[3] != 0 && outside[3] != 0, "both scaled-glass samples are real hits" );
+		const int delta = static_cast<int>( center[0] ) - static_cast<int>( outside[0] );
+		Check( delta < 30 && delta > -30,
+		       "MONEY ASSERTION: through the 10x-stretched glass, the center pixel resolves the SAME "
+		       "backstop plane as the beside-the-glass pixel (similar depth bytes) -- the walk cleared the "
+		       "local-backoff-amplified standoff instead of self-hitting to the skip cap and reporting the "
+		       "much nearer glass surface" );
+	}
+
+	pJob->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -1473,6 +1557,7 @@ int main()
 	RunDepthFlatWindowSettlesTest();
 	RunDepthRangedToFlatSelfCorrectTest();
 	RunLargeTransverseCoordinateXrayTest();
+	RunScaledGlassStandoffTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
