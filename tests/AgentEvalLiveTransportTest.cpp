@@ -500,6 +500,329 @@ static void TestLiveTransportRetryDoesNotStackWith5xx()
 }
 
 //----------------------------------------------------------------------
+// T19: HTTP 429 (rate-limit) backoff -- a hint-less 429 followed by a
+//      success reaches final_text after exactly 2 POSTs, asking the
+//      injected sleeper for the exponential fallback table's first-attempt
+//      wait (10000ms), and does NOT count the 429 attempt against
+//      llmCalls.
+//----------------------------------------------------------------------
+static void TestLive429RetrySucceeds()
+{
+	std::printf( "T19: HTTP 429 then success -> one retry after a backoff wait, round succeeds...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 429,
+		"{\"error\":{\"message\":\"Rate limit reached for requests. Limit 500000, Used 488104.\"}}", "", 3 } );
+	mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t19_live_429_retry_succeeds" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "a 429-then-200 round still reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( mock.seenRequests.size() == 2, "the transport saw exactly 2 POSTs (the retry rebuilt the SAME round)" );
+	Check( h.result.finalText == "Done: pnt_albedo is now red.", "the retried round's final text is captured" );
+	Check( h.result.llmCalls == 1, "the 429 attempt does not count toward llmCalls -- only the successful POST does" );
+	Check( waits.size() == 1, "exactly one backoff wait was requested" );
+	Check( !waits.empty() && waits[0] == 10000,
+	       "a hint-less 429's first-attempt wait is the exponential fallback's 10000ms (got " +
+	       ( waits.empty() ? std::string( "<none>" ) : std::to_string( waits[0] ) ) + ")" );
+}
+
+//----------------------------------------------------------------------
+// T20: HTTP 429 body-hint parsing -- "try again in <N>s" and
+//      "retry after <N> seconds" (case-insensitive, float N) are parsed
+//      out of the response body and used INSTEAD of the exponential
+//      fallback.
+//----------------------------------------------------------------------
+static void TestLive429BodyHintParsing()
+{
+	std::printf( "T20: HTTP 429 body-hint parsing...\n" );
+
+	// (A) "Please try again in 2.5s." -> ~2500ms.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T20(A): param_edit loads" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limited. Please try again in 2.5s.\"}}", "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+		std::vector<int64_t> waits;
+		AgentEvalLiveRunOptions opts;
+		opts.runDir = ScratchRunDir( "t20a_live_429_hint_try_again_in" );
+		opts.transport = &mock;
+		opts.provider = ChatProvider::Anthropic;
+		opts.apiKey = "unit-test-key-not-real";
+		opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+		AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+		Check( h.result.terminalStatus == "final_text", "T20(A): the hinted-429-then-200 round reaches final_text" );
+		Check( waits.size() == 1 && waits[0] == 2500,
+		       "T20(A): 'try again in 2.5s' parses to a 2500ms wait (got " +
+		       ( waits.empty() ? std::string( "<none>" ) : std::to_string( waits[0] ) ) + ")" );
+	}
+
+	// (B) "Please retry after 5 seconds." -> 5000ms, case-INSENSITIVE
+	//     ("RETRY AFTER") and an integer N.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T20(B): param_edit loads" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limited. Please RETRY AFTER 5 seconds.\"}}", "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+		std::vector<int64_t> waits;
+		AgentEvalLiveRunOptions opts;
+		opts.runDir = ScratchRunDir( "t20b_live_429_hint_retry_after" );
+		opts.transport = &mock;
+		opts.provider = ChatProvider::Anthropic;
+		opts.apiKey = "unit-test-key-not-real";
+		opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+		AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+		Check( h.result.terminalStatus == "final_text", "T20(B): the hinted-429-then-200 round reaches final_text" );
+		Check( waits.size() == 1 && waits[0] == 5000,
+		       "T20(B): 'RETRY AFTER 5 seconds' parses case-insensitively to a 5000ms wait (got " +
+		       ( waits.empty() ? std::string( "<none>" ) : std::to_string( waits[0] ) ) + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T21: HTTP 429 exponential fallback -- two hint-less 429s in a row, then
+//      success, wait 10000ms then 20000ms (the fallback table's first two
+//      entries), not a repeat of the same wait.
+//----------------------------------------------------------------------
+static void TestLive429ExponentialFallback()
+{
+	std::printf( "T21: HTTP 429 exponential fallback (10000ms, then 20000ms)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 499999.\"}}", "", 1 } );
+	mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t21_live_429_exponential_fallback" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text", "two hint-less 429s then 200 still reaches final_text" );
+	Check( mock.seenRequests.size() == 3, "the transport saw exactly 3 POSTs (2 rate-limited + 1 success)" );
+	Check( waits.size() == 2, "exactly 2 backoff waits were requested" );
+	Check( waits.size() > 0 && waits[0] == 10000, "attempt 1's fallback wait is 10000ms" );
+	Check( waits.size() > 1 && waits[1] == 20000, "attempt 2's fallback wait is 20000ms" );
+}
+
+//----------------------------------------------------------------------
+// T22: HTTP 429 attempts are capped at 5 per round -- 5 consecutive 429s
+//      exhaust the retry budget and fail with provider_error naming
+//      "rate limit", having asked the sleeper for a wait after EACH of
+//      the 5 attempts (the trajectory records an honest attempt/retry_of
+//      sibling llm record for every one of them, mirroring the 5xx-retry
+//      convention).
+//----------------------------------------------------------------------
+static void TestLive429ExhaustedAttempts()
+{
+	std::printf( "T22: 5x HTTP 429 -> provider_error naming rate limit, 5 waits recorded...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	for( int i = 0; i < 5; ++i )
+		mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t22_live_429_exhausted" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "provider_error",
+	       "5 consecutive 429s exhaust the retry budget -> provider_error (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.errorMessage.find( "rate limit" ) != std::string::npos,
+	       "the error message names \"rate limit\" (got '" + h.result.errorMessage + "')" );
+	Check( mock.seenRequests.size() == 5, "the transport saw exactly 5 POSTs (the max attempts)" );
+	Check( waits.size() == 5, "exactly 5 backoff waits were requested (one per 429, including the last before giving up)" );
+	Check( h.result.llmCalls == 0, "none of the 5 429 attempts consumed llmCalls" );
+
+	// ChatTrajectory.cpp OMITS "retry_of" entirely when retryOf < 0 (see
+	// ChatTrajectory.h: "-1 = none") -- so attempt 1's record carries NO
+	// retry_of key at all (matching every other retry family's attempt-1
+	// record, e.g. T12's).  Only attempts 2-5 (retryOf >= 0) carry it.
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	std::vector<int> attempts, retryOfs;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		attempts.push_back( static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) ) );
+		retryOfs.push_back( static_cast<int>( recs[i].get( "retry_of" ).asNumber( -1.0 ) ) );
+	}
+	Check( attempts.size() == 5, "the trajectory carries an honest llm record for each of the 5 429 attempts" );
+	if( attempts.size() == 5 && retryOfs.size() == 5 ) {
+		Check( attempts[0] == 1, "attempt 1 (no retry_of key -- first try)" );
+		Check( attempts[1] == 2 && retryOfs[1] == 1, "attempt 2 / retry_of 1" );
+		Check( attempts[2] == 3 && retryOfs[2] == 2, "attempt 3 / retry_of 2" );
+		Check( attempts[3] == 4 && retryOfs[3] == 3, "attempt 4 / retry_of 3" );
+		Check( attempts[4] == 5 && retryOfs[4] == 4, "attempt 5 / retry_of 4" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T23: an HTTP 429 backoff wait that would exceed the scenario's REMAINING
+//      maxWallMs budget stops the run honestly with terminalStatus
+//      "budget_wall_ms" -- never a sleep call longer than what remains
+//      (here: no sleep call at all, since the very first computed wait
+//      already exceeds the budget).
+//----------------------------------------------------------------------
+static void TestLive429WallBudgetStop()
+{
+	std::printf( "T23: HTTP 429 backoff respects the remaining maxWallMs budget...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	scenario.budgets.maxWallMs = 3000;   // well under the 10000ms fallback wait attempt 1 would need
+
+	MockTransport mock;
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+	mock.responses.push_back( { 200, kBodyFinal, "", 4 } );   // never reached
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t23_live_429_wall_budget" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "budget_wall_ms",
+	       "a 429 whose backoff wait would exceed the remaining wall budget stops honestly (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.budgetHit, "budgetHit is set" );
+	Check( mock.seenRequests.size() == 1, "only the original 429 POST was sent -- the retry never happened" );
+	Check( waits.empty(), "no sleep was dispatched -- the wait would have exceeded the remaining budget" );
+}
+
+//----------------------------------------------------------------------
+// T24: HTTP 429 retries do NOT consume maxLlmCalls -- a scenario capped at
+//      exactly the 2 REAL (successful) rounds it needs still reaches
+//      final_text despite an extra 429 attempt ahead of the first one.
+//----------------------------------------------------------------------
+static void TestLive429DoesNotConsumeLlmCallsBudget()
+{
+	std::printf( "T24: HTTP 429 retries do not consume maxLlmCalls...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	scenario.budgets.maxLlmCalls = 2;   // exactly the 2 REAL rounds the scenario needs
+
+	MockTransport mock;
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+	mock.responses.push_back( { 200, kBodyToolUse, "", 3 } );
+	mock.responses.push_back( { 200, kBodyFinal,   "", 4 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t24_live_429_llm_calls_budget" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "a maxLlmCalls:2 scenario survives a 429-then-200 first round + a normal second round (got '" +
+	       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "llmCalls counts only the 2 SUCCESSFUL rounds, not the 429" );
+	Check( mock.seenRequests.size() == 3, "3 POSTs reached the transport (1 rate-limited + 2 successful)" );
+	Check( waits.size() == 1, "exactly one backoff wait for the single 429" );
+}
+
+//----------------------------------------------------------------------
+// T25: RunEvalMatrix pre-flight auth probe: an HTTP 429 probe response is
+//      NOT classified as a dead credential (429 is neither 401/403 nor a
+//      body matching the auth-failure phrases) and the probe itself is
+//      SINGLE-SHOT -- it never backs off, so the column proceeds straight
+//      into its scenario x repeat loop.
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixAuthProbe429NotFatal()
+{
+	std::printf( "T25: RunEvalMatrix auth probe: HTTP 429 is not auth-fatal and is not backed off...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T25: param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	const std::string kFakeKey = "sk-ant-AUTHPROBE-429-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t25_authprobe_429" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 429,
+		"{\"error\":{\"message\":\"Rate limit reached for requests. Limit 500000, Used 488104.\"}}", "", 1 } );   // the auth probe
+	mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+	mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalMatrixOptions mo;
+	mo.transport = &mock;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+	mo.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+	Check( mr.providersUsed == 1 && mr.providersSkipped == 0,
+	       "T25: a 429 probe response leaves the column USED (not auth-fatal)" );
+	Check( mr.providersAuthFailed == 0, "T25: providersAuthFailed == 0" );
+	Check( mr.runsExecuted == 1, "T25: the column executed" );
+	Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+	       "T25: the FIRST captured request is the auth probe (body contains \"ping\")" );
+	Check( mock.seenRequests.size() == 3,
+	       "T25: exactly 1 probe POST + 2 real-run POSTs reached the transport -- no probe backoff" );
+	Check( waits.empty(), "T25: the sleeper was never invoked -- the probe's 429 is not retried" );
+
+	std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+	Check( !manifest.empty(), "T25: run.manifest.jsonl has a record" );
+	if( !manifest.empty() ) {
+		Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "ok",
+		       "T25: manifest records authProbes.anthropic == \"ok\" (a 429 probe is not auth-fatal)" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T5: KEY-HYGIENE red-prove -- a fake key reaches the wire but no output.
 //----------------------------------------------------------------------
 static void TestKeyHygieneRedProve()
@@ -2379,6 +2702,12 @@ int main()
 	TestLiveTransportRetrySucceeds();
 	TestLiveTransportRetryStillFails();
 	TestLiveTransportRetryDoesNotStackWith5xx();
+	TestLive429RetrySucceeds();
+	TestLive429BodyHintParsing();
+	TestLive429ExponentialFallback();
+	TestLive429ExhaustedAttempts();
+	TestLive429WallBudgetStop();
+	TestLive429DoesNotConsumeLlmCallsBudget();
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
 	TestRunEvalMatrixManifest();
@@ -2388,6 +2717,7 @@ int main()
 	TestRunEvalMatrixResumeContentAware();
 	TestRunEvalMatrixProviderModelCollision();
 	TestRunEvalMatrixAuthProbe();
+	TestRunEvalMatrixAuthProbe429NotFatal();
 	TestPromptImagesEndToEnd();
 	TestPromptImagesMatrixResume();
 	TestCompareToImageMatrixResume();

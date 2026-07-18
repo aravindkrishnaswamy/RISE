@@ -478,6 +478,17 @@ namespace RISE
 			//! Optional injected epoch-ms clock (trajectory timestamps + the
 			//! maxWallMs budget check).  Empty uses the real wall clock.
 			std::function<int64_t()> clock;
+
+			//! Optional injected sleep hook for the HTTP 429 (rate-limit)
+			//! backoff (see the RunScenarioLive doc comment below).  Called
+			//! with the chosen wait in MILLISECONDS; empty (the default)
+			//! sleeps for real via std::this_thread::sleep_for.  A test
+			//! injects a recorder that logs the requested wait and advances
+			//! `clock` instead of actually sleeping, so the 429-backoff
+			//! tests run instantly.  Never called for any status other than
+			//! 429 -- the 5xx/transport/image/reasoning-effort retries above
+			//! stay synchronous.
+			std::function<void(int64_t ms)> sleeper;
 		};
 
 		//! Execute one scenario end-to-end through the REAL AgentChatLoop +
@@ -490,6 +501,33 @@ namespace RISE
 		//! still-alive-dispatcher handle for the E3 checker.  A transport
 		//! that returns status 0 (DNS/TLS/timeout, or the Linux unsupported
 		//! stub) terminates the run with terminalStatus == "transport_error".
+		//!
+		//! HTTP 429 (RATE LIMIT) BACKOFF: unlike a 5xx (one same-round
+		//! retry) a 429 is EXPECTED under normal operation -- image-heavy
+		//! scenarios re-send their full multi-image payload every round, so
+		//! hitting a per-minute token window mid-run is routine, not
+		//! terminal.  On a 429, the SAME round is retried up to 5 times
+		//! total, waiting between attempts for a duration chosen by, in
+		//! order: (a) a "try again in <N>s" / "retry after <N> seconds"
+		//! hint parsed from the response body (case-insensitive, float N;
+		//! NOT a response header -- ChatHttpResponse does not carry
+		//! headers); (b) failing that, a fixed exponential backoff table
+		//! (10s, 20s, 40s, 60s, 60s indexed by attempt number).  Any chosen
+		//! wait is capped at 90s.  Before sleeping, the wait is checked
+		//! against the scenario's REMAINING maxWallMs budget: a wait that
+		//! would exceed it stops the run immediately with terminalStatus
+		//! "budget_wall_ms" (never a sleep longer than what remains) rather
+		//! than pretending the round could still succeed.  429 attempts do
+		//! NOT consume maxLlmCalls (the call never succeeded) but the
+		//! elapsed wait DOES count against maxWallMs via the normal clock.
+		//! Each 429 attempt is recorded through RecordHttpRound
+		//! (attempt/retryOf) exactly like the 5xx retry, so the trajectory
+		//! shows the rate-limit stall truthfully.  If the 5th attempt still
+		//! answers 429, the round fails with terminalStatus
+		//! "provider_error" naming "rate limit" and the attempt count.
+		//! Sleeping goes through `options.sleeper` (see its doc comment) so
+		//! tests never actually wait.
+		//!
 		//! Never throws.  Shares its entire drive loop with RunScenario --
 		//! only the per-round body source differs (replay vs. transport).
 		AgentEvalRunHandle RunScenarioLive( const AgentEvalScenario& scenario,
@@ -555,6 +593,14 @@ namespace RISE
 
 			//! Optional injected epoch-ms clock (threaded to each run).
 			std::function<int64_t()> clock;
+
+			//! Optional injected sleep hook (threaded to every column's
+			//! AgentEvalLiveRunOptions.sleeper -- see that field's doc
+			//! comment for the HTTP 429 backoff it drives).  Empty (the
+			//! default) sleeps for real; every matrix run shares this ONE
+			//! hook so a test can inject a single recorder across the whole
+			//! matrix.
+			std::function<void(int64_t ms)> sleeper;
 
 			//! Optional human-progress sink (one line per matrix event:
 			//! provider-skip, run start/finish).  The CLI wires this to

@@ -36,12 +36,15 @@
 #include <cstdint>   // std::uint64_t -- ScenarioContentHash's FNV-1a accumulator
 #include <cstdio>
 #include <cstdlib>   // std::strtod -- numeric param_equals token parse
+#include <cstring>   // std::strlen -- ParseRateLimit429HintMs phrase-length skip
+#include <chrono>    // std::chrono::milliseconds -- the real (non-injected) HTTP 429 backoff sleep
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <thread>    // std::this_thread::sleep_for -- the real (non-injected) HTTP 429 backoff sleep
 
 namespace RISE
 {
@@ -1588,6 +1591,106 @@ namespace RISE
 				return FnvHex( canon );
 			}
 
+			//====================================================================
+			// HTTP 429 (rate-limit) backoff helpers -- LIVE path only (see the
+			// RunScenarioLive doc comment in AgentEvalRunner.h for the full
+			// behavioural contract this backs).
+			//====================================================================
+
+			//! The hard cap on any single computed backoff wait, per the E4
+			//! design: never sleep longer than this for one attempt, no
+			//! matter what a provider hints or the exponential table says.
+			const int64_t kRateLimitMaxWaitMs = 90000;
+
+			//! The total number of HTTP attempts a round will make while it
+			//! keeps seeing 429 before giving up (the original attempt PLUS
+			//! same-round retries).
+			const int kRateLimitMaxAttempts = 5;
+
+			//! The exponential fallback table (seconds, converted to ms
+			//! below), indexed by attempt number (1-based) when the
+			//! response body carries no parseable retry hint: 10s, 20s,
+			//! 40s, 60s, 60s.
+			const int64_t kRateLimitFallbackSecTable[kRateLimitMaxAttempts] = { 10, 20, 40, 60, 60 };
+
+			//! Parse a provider's rate-limit RETRY HINT out of a 429
+			//! response body: a "try again in <N>s" or "retry after <N>
+			//! seconds" phrase (case-insensitive; N a float).  Returns the
+			//! hinted wait in milliseconds (rounded), or -1 if no such
+			//! phrase/number is found -- the caller then falls back to the
+			//! exponential table.  Deliberately NOT a response-HEADER
+			//! parse: ChatHttpResponse (ChatHttpTransport.h) does not
+			//! surface response headers to the runner today, so a
+			//! `Retry-After` header hint is out of scope for this pass
+			//! (plumbing headers through the transport seam would be new
+			//! surface, which the design explicitly says to skip rather
+			//! than add speculatively).
+			int64_t ParseRateLimit429HintMs( const std::string& body )
+			{
+				std::string lower( body );
+				for( char& c : lower ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+
+				static const char* const kPhrases[] = { "try again in", "retry after" };
+				for( std::size_t p = 0; p < sizeof( kPhrases ) / sizeof( kPhrases[0] ); ++p ) {
+					std::size_t pos = lower.find( kPhrases[p] );
+					if( pos == std::string::npos ) continue;
+
+					std::size_t i = pos + std::strlen( kPhrases[p] );
+					while( i < lower.size() && std::isspace( static_cast<unsigned char>( lower[i] ) ) ) ++i;
+
+					const std::size_t numStart = i;
+					bool sawDigit = false;
+					while( i < lower.size() &&
+					       ( std::isdigit( static_cast<unsigned char>( lower[i] ) ) || lower[i] == '.' ) ) {
+						if( std::isdigit( static_cast<unsigned char>( lower[i] ) ) ) sawDigit = true;
+						++i;
+					}
+					if( !sawDigit ) continue;   // phrase matched but no number followed -- try the other phrase
+
+					const std::string numTok = body.substr( numStart, i - numStart );
+					char* endp = nullptr;
+					const double seconds = std::strtod( numTok.c_str(), &endp );
+					if( endp == numTok.c_str() || seconds < 0.0 ) continue;
+
+					// Require a trailing "s"/"sec"/"second(s)" marker so an
+					// unrelated number that happens to follow the phrase
+					// (e.g. an id) is never mistaken for a duration.
+					std::size_t j = i;
+					while( j < lower.size() && std::isspace( static_cast<unsigned char>( lower[j] ) ) ) ++j;
+					if( j < lower.size() && lower[j] == 's' )
+						return static_cast<int64_t>( seconds * 1000.0 + 0.5 );
+				}
+				return -1;
+			}
+
+			//! The wait to use for the `attemptNumber`-th (1-based) 429
+			//! response of a round: the body hint if present, else the
+			//! exponential fallback table (clamped to the table's last
+			//! entry past kRateLimitMaxAttempts), capped at
+			//! kRateLimitMaxWaitMs either way.
+			int64_t ComputeRateLimit429WaitMs( const std::string& body, int attemptNumber )
+			{
+				int64_t ms = ParseRateLimit429HintMs( body );
+				if( ms < 0 ) {
+					int idx = attemptNumber - 1;
+					if( idx < 0 ) idx = 0;
+					if( idx >= kRateLimitMaxAttempts ) idx = kRateLimitMaxAttempts - 1;
+					ms = kRateLimitFallbackSecTable[idx] * 1000;
+				}
+				if( ms > kRateLimitMaxWaitMs ) ms = kRateLimitMaxWaitMs;
+				if( ms < 0 ) ms = 0;
+				return ms;
+			}
+
+			//! The default (non-injected) sleeper: a real wall-clock sleep.
+			//! Every AgentEvalLiveRunOptions/AgentEvalMatrixOptions caller
+			//! that leaves `sleeper` unset gets this -- only tests inject a
+			//! recorder in its place.
+			void RealSleepMs( int64_t ms )
+			{
+				if( ms > 0 ) std::this_thread::sleep_for( std::chrono::milliseconds( ms ) );
+			}
+
 			//! One round's outcome from a body source (replay OR live
 			//! transport).  `proceed` false STOPS the whole scenario with
 			//! `stopStatus` (and `stopError` for a transport_error).  On
@@ -1616,16 +1719,23 @@ namespace RISE
 			//! and the `fetch` callback (canned bodies vs. a real POST).
 			//! Never throws.
 			AgentEvalRunHandle RunScenarioDriven(
-				const AgentEvalScenario&        scenario,
-				const std::string&              runDir,
-				const std::function<int64_t()>& optClock,
-				ChatProvider                    provider,
-				const std::string&              modelId,
-				const std::string&              apiKey,
-				const FetchFn&                  fetch )
+				const AgentEvalScenario&            scenario,
+				const std::string&                  runDir,
+				const std::function<int64_t()>&     optClock,
+				ChatProvider                        provider,
+				const std::string&                  modelId,
+				const std::string&                  apiKey,
+				const FetchFn&                      fetch,
+				const std::function<void(int64_t)>& sleeper )
 			{
 				AgentEvalRunHandle handle;
 				handle.result.scenarioId = scenario.id;
+
+				// The HTTP 429 backoff sleep hook: the caller's injected
+				// sleeper (a test recorder), or a real sleep by default.
+				// Never invoked by the replay path (RunScenario always
+				// synthesizes status 200 -- see replayFetch below).
+				const std::function<void(int64_t)> effectiveSleeper = sleeper ? sleeper : &RealSleepMs;
 
 				// 1. The scene: path as-is, or inline -> a throwaway temp file
 				//    under <runDir>/tmp (never scenes/), deleted immediately
@@ -1888,6 +1998,12 @@ namespace RISE
 						// attempt/retryOf plumbing.
 						ChatStepResult st;
 						bool roundStopped = false;
+						// HTTP 429 (rate-limit) backoff: counts 429 RESPONSES
+						// seen for THIS round (reset per round, unlike
+						// `attempt` which also counts the 5xx/image/
+						// reasoning-effort retries above).  See the 429
+						// branch below and the RunScenarioLive doc comment.
+						int rateLimitAttempts = 0;
 						for( int attempt = 1; ; ++attempt ) {
 							// Re-check the llm-calls budget on EVERY attempt, not
 							// just the first: the outer check above only guards
@@ -1923,8 +2039,13 @@ namespace RISE
 							// CONSEQUENCE: llmCalls is REQUESTS SENT, which can exceed
 							// the number of RECORDED llm rounds (RecordHttpRound fires
 							// only on a received response) by the count of transport-
-							// failed attempts -- the honest cost measure.
-							++llmCalls;
+							// failed attempts -- the honest cost measure.  EXCEPTION:
+							// an HTTP 429 (rate-limit) response is NOT counted here --
+							// see the 429 branch below, which is the one case where a
+							// received response still does not consume the budget
+							// (the call never succeeded; RISE waits it out rather
+							// than billing the scenario for it).
+							if( !( fo.proceed && fo.status == 429 ) ) ++llmCalls;
 							if( !fo.proceed ) {
 								if( attempt == 1 && fo.stopStatus == "transport_error" )
 									continue;   // one same-round retry of a transport failure
@@ -1937,6 +2058,39 @@ namespace RISE
 							loop.RecordHttpRound( fo.status, fo.body, fo.elapsedMs,
 							                      attempt, attempt > 1 ? attempt - 1 : -1 );
 							st = loop.HandleResponse( fo.status, fo.body );
+
+							// HTTP 429 (rate-limit) backoff: an EXPECTED condition
+							// for image-heavy scenarios re-sending a full
+							// multi-image payload every round, not a terminal
+							// failure.  Retry the SAME round up to
+							// kRateLimitMaxAttempts times total, waiting between
+							// attempts.  The wait is checked against the
+							// scenario's REMAINING maxWallMs budget BEFORE it is
+							// dispatched -- a wait that would blow the budget
+							// stops the run honestly (budget_wall_ms) rather than
+							// pretending the round could still finish in time.
+							if( fo.status == 429 ) {
+								++rateLimitAttempts;
+								const int64_t waitMs = ComputeRateLimit429WaitMs( fo.body, rateLimitAttempts );
+								if( scenario.budgets.maxWallMs >= 0 ) {
+									const int64_t remaining =
+										scenario.budgets.maxWallMs - ( clock() - startMs );
+									if( remaining <= 0 || waitMs > remaining ) {
+										terminalStatus = "budget_wall_ms";
+										budgetHit = true;
+										roundStopped = true;
+										break;
+									}
+								}
+								effectiveSleeper( waitMs );
+								if( rateLimitAttempts < kRateLimitMaxAttempts )
+									continue;   // retry the SAME round after the backoff wait
+								terminalStatus = "provider_error";
+								errorMessage = "rate limit: exhausted " + std::to_string( rateLimitAttempts ) +
+									" attempt(s) waiting out HTTP 429 (Too Many Requests) responses";
+								roundStopped = true;
+								break;
+							}
 
 							if( attempt == 1 && fo.status >= 500 && fo.status <= 599 )
 								continue;   // one 5xx retry of this round
@@ -2190,7 +2344,8 @@ namespace RISE
 
 			return RunScenarioDriven( scenario, options.runDir, options.clock,
 			                          provider, /*modelId=*/std::string(),
-			                          /*apiKey=*/std::string(), replayFetch );
+			                          /*apiKey=*/std::string(), replayFetch,
+			                          /*sleeper=*/std::function<void(int64_t)>() );
 		}
 
 		//====================================================================
@@ -2241,7 +2396,7 @@ namespace RISE
 
 			return RunScenarioDriven( scenario, options.runDir, options.clock,
 			                          options.provider, options.modelId,
-			                          options.apiKey, liveFetch );
+			                          options.apiKey, liveFetch, options.sleeper );
 		}
 
 		//====================================================================
@@ -2740,6 +2895,7 @@ namespace RISE
 						lo.modelId  = prov.model;
 						lo.apiKey   = key;   // key stays in this local + BuildRequest; never logged/persisted
 						lo.clock    = options.clock;
+						lo.sleeper  = options.sleeper;   // HTTP 429 backoff hook (see AgentEvalLiveRunOptions.sleeper)
 
 						AgentEvalRunHandle h = RunScenarioLive( scenario, lo );
 						CheckScenario( h, scenario );
