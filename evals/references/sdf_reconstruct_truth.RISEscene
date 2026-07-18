@@ -1,0 +1,212 @@
+RISE ASCII SCENE 7
+# =============================================================================
+# GROUND-TRUTH scene for the RISE image->scene-reconstruction eval (Wave 3).
+#
+# The hero is an SDF "mushroom/rocket": a squashed sphere cap smin-blended onto
+# a capsule stem, with a torus collar at the junction so the whole thing reads
+# as ONE organic form, plus a single off-axis roundbox SUBTRACT notch carved
+# into the cap's +X side.  The notch is the asymmetry that catches single-view
+# guessing -- face-on from the +X side view (view2) and measurably on the
+# silhouette from the notch-side back-3/4 view (view3, +X/-Z), but only
+# faintly from the front-3/4 (view1) and effectively invisible from a pure
+# -X back view (self-occluded on the far side of the object).
+#
+# Material: saturated teal lambertian.  Stage: light-grey ground + darker
+# backdrop.  Env: uniform dim blue-grey.  Lighting: warm area key (up-front-
+# left) + dim cool omni fill (right).  See CALIBRATION.md / POSES.json.
+#
+# The primary (in-scene) camera IS view1.  Renders are 256x256, PT, box filter,
+# OIDN off, 256 spp -> low-noise references.
+# =============================================================================
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+# Uniform dim blue-grey environment (IBL fill + colour signature in reflections)
+uniformcolor_painter
+{
+	name		pnt_env
+	color		0.06 0.08 0.11
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			256
+	pixel_filter	box
+	radiance_map	pnt_env
+	radiance_scale	1.0
+	oidn_denoise	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern		rendered/sdf_reconstruct_truth
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}
+
+film
+{
+	width		256
+	height		256
+}
+
+# view1 -- primary front-3/4
+pinhole_camera
+{
+	location	2.6 1.8 3.2
+	lookat		0 0.8 0
+	up			0 1 0
+	fov			40.0
+}
+
+# --------------------------------------------------------------------------
+# Painters
+# --------------------------------------------------------------------------
+uniformcolor_painter
+{
+	name		pnt_teal
+	color		0.05 0.55 0.5
+}
+
+uniformcolor_painter
+{
+	name		pnt_ground
+	color		0.62 0.62 0.64
+}
+
+uniformcolor_painter
+{
+	name		pnt_backdrop
+	color		0.30 0.31 0.34
+}
+
+uniformcolor_painter
+{
+	name		pnt_key
+	color		1.0 0.82 0.58
+}
+
+# --------------------------------------------------------------------------
+# Materials
+# --------------------------------------------------------------------------
+lambertian_material
+{
+	name		teal
+	reflectance	pnt_teal
+}
+
+lambertian_material
+{
+	name		ground
+	reflectance	pnt_ground
+}
+
+lambertian_material
+{
+	name		backdrop
+	reflectance	pnt_backdrop
+}
+
+lambertian_luminaire_material
+{
+	name		key_mat
+	exitance	pnt_key
+	scale		42.0
+	material	none
+}
+
+# --------------------------------------------------------------------------
+# Geometry
+# --------------------------------------------------------------------------
+
+# Light-grey ground plane at y=0 (large, so every view sees stage not void)
+clippedplane_geometry
+{
+	name		groundgeom
+	pta			 7 0 -7
+	ptb			-7 0 -7
+	ptc			-7 0  7
+	ptd			 7 0  7
+}
+
+# Neutral darker backdrop far behind (behind the object from the +Z front view)
+clippedplane_geometry
+{
+	name		backdropgeom
+	pta			-7 0 -4.5
+	ptb			-7 7 -4.5
+	ptc			 7 7 -4.5
+	ptd			 7 0 -4.5
+}
+
+# Warm area key -- a downward-facing quad up-front-LEFT (world -X, +Z, high).
+# Casts a readable object shadow toward the +X / -Z ground in the primary view.
+clippedplane_geometry
+{
+	name		keygeom
+	pta			-2.1 3.6  1.9
+	ptb			-2.1 3.6  0.7
+	ptc			-0.9 3.6  0.7
+	ptd			-0.9 3.6  1.9
+}
+
+# The hero SDF.  Left-fold: stem(union) -> cap(smin) -> collar(smin) -> notch(subtract)
+#   <prim> <op> <k>  <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>
+# stem   : capsule  radius 0.30, half-height 0.45 -> spans y[0.00,1.50], base on ground
+# cap    : sphere   r 0.62, squashed sy=0.62 -> vertical half 0.384, spans y[1.12,1.88]
+# collar : torus    major 0.36, minor 0.12, ring in XZ at the stem/cap junction
+# notch  : roundbox carved into the cap's +X side (the diagnostic asymmetry)
+sdf_geometry
+{
+	name		herogeom
+	part		capsule union 0        0 0.75 0    0 0 0    1 1 1        0.30 0.45 0     0
+	part		sphere smin 0.15       0 1.50 0    0 0 0    1 0.62 1     0.62 0 0        0
+	part		torus smin 0.12        0 1.20 0    0 0 0    1 1 1        0.36 0.12 0     0
+	part		roundbox subtract 0.05 0.52 1.55 -0.08  0 0 0   1 1 1    0.22 0.17 0.17  0.04
+}
+
+# --------------------------------------------------------------------------
+# Objects
+# --------------------------------------------------------------------------
+standard_object
+{
+	name		ground
+	geometry	groundgeom
+	material	ground
+}
+
+standard_object
+{
+	name		backdrop
+	geometry	backdropgeom
+	material	backdrop
+}
+
+standard_object
+{
+	name		key
+	geometry	keygeom
+	material	key_mat
+}
+
+standard_object
+{
+	name		hero
+	geometry	herogeom
+	position	0 0 0
+	material	teal
+}
+
+# Dim cool omni fill on the right side (world +X), soft blue-ish
+omni_light
+{
+	name		fill
+	power		6.0
+	position	3.4 2.2 1.6
+	color		0.55 0.62 0.78
+}

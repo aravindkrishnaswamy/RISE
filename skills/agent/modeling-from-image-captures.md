@@ -285,15 +285,86 @@ observe loop's multi-angle checks:
    warns about -- a silhouette that matches from the front can still be
    completely wrong in profile.
 
-### 5. Coarse-to-fine, matching 2-3 views before ANY detail pass
+**Compare like-for-like.** When judging progress, render at the SAME
+pose AND the SAME aspect ratio/dims as the reference photo before
+deciding what to fix -- pass matching `width`/`height` on the `render`
+override, not just a small default square.  A pose or crop mismatch
+masquerades as a shape error: don't chase a proportion "fix" for a
+difference that's actually camera framing.  Confirm pose and framing
+agree first, then judge the shape.
+
+### 5. The multi-view verification loop
+
+Every iteration that touches geometry should end with verification
+renders from MULTIPLE TEMPORARY viewpoints, not just the reference
+pose.  Use the `render` tool's `camera` override at `quality:"draft"`,
+small dims (128-160px) -- see observe-modes for why draft is the right
+cost tier here -- to orbit the work-in-progress: at minimum the
+reference pose plus 2-3 offset poses (a side view, a back-3/4, an
+elevated view).  The override is TEMPORARY -- it never edits the
+scene's `pinhole_camera` chunk -- so the scene camera stays pristine
+for the final production comparison against the reference.
+
+```json
+{"method": "render", "params": {"quality": "draft", "width": 128, "height": 128,
+  "camera": {"location": [4, 0.6, 0], "lookat": [0, 0.4, 0], "up": [0, 1, 0], "fov": 45.0}}}
+```
+
+An object that matches the reference view but looks WRONG from an
+offset view has a SHAPE error the reference view was hiding -- the
+same depth/silhouette ambiguity the observe loop's second-angle check
+exists to catch (observe-modes), now applied every iteration instead
+of once at the start.  Fix a shape error the moment an offset view
+reveals it; don't keep polishing materials or detail on a form that's
+about to change underneath them.
+
+If only ONE reference image exists for the object, multi-view
+self-consistency is the ONLY defense against building a billboard --
+geometry that matches the single photo perfectly from its one angle
+and is nonsense from every other.  State this bluntly: a lone
+reference photo cannot confirm depth, back-side shape, or anything
+occluded in that frame -- those parts are being invented, and the
+offset-view renders only check that the invention is plausible, not
+that it's correct.
+
+When an offset view raises a question a beauty render can't answer
+cleanly -- is the notch on the correct side, is the object actually
+centered -- reach for `render {mode:"objectmap"}` or `query_object_at`
+(observe-modes) instead of squinting at colors: one identity render
+answers "what is actually there" structurally, cheaper than iterating
+on a beauty render's ambiguity.
+
+### 6. Match order: silhouette -> proportions -> surface -> materials -> lighting -> environment
 
 Do not add surface detail, bevels, or secondary geometry until the
-blockout's silhouette agrees with the reference from every view you
-have.  Refining a proportion that is about to change wastes the detail
-work.  This is the object-modeling-recipes blockout->refine rule,
-applied per-view instead of per-object.
+blockout's silhouette agrees with the reference from every view in the
+multi-view loop above -- refining a proportion that's about to change
+wastes the detail work (the object-modeling-recipes blockout->refine
+rule, applied per-view instead of per-object).  The full order, and
+why each stage waits for the last:
 
-### 6. Material matching from captures
+1. **Silhouette** -- outline, at draft quality, from every
+   verification view.  Nothing else matters until this holds.
+2. **Proportions** -- relative part sizes/placement, once the outline
+   holds.
+3. **Surface** -- blend radii (`smin` on `sdf_geometry`), bevels,
+   fillets -- only once shape is stable, since a later proportion fix
+   moves the surface you just tuned.
+4. **Materials** -- albedo/roughness per region -- only once shape is
+   fully stable, or you'll re-match color under a silhouette that's
+   about to move.
+5. **Lighting** -- match the reference's key direction/softness (see
+   below) -- only after materials are plausible, so a wrong albedo and
+   a wrong light don't both read as "the color's off" at once.
+6. **Environment** -- background/environment tint -- last, the least
+   pin-downable from a photo, and the most likely to be re-tuned after
+   everything else is locked.
+
+A shape edit invalidates a blend-radius tune; a material edit
+invalidates a lighting match.  Fixing a later stage while an earlier
+one still hasn't settled wastes the work.
+
+### 7. Material matching from captures
 
 Start with `uniformcolor_painter` sampling the DOMINANT color per
 region the user describes (or you can see on the reference plane) --
@@ -303,6 +374,62 @@ supplied an actual capture file AND (b) uniform color has proven
 insufficient (the object has printed detail, wood grain, a label) --
 see materials-and-media-basics for the painter-vs-scalar routing rules
 once you're picking real material parameters.
+
+### 8. Reading lighting from a photo
+
+Once shape and materials are stable (match-order step 5), read the
+reference photo's lighting instead of guessing a `directional_light`
+from scratch:
+
+- **Shadow direction** on the ground names the key light's azimuth --
+  the shadow falls OPPOSITE the light (remember `direction` is FROM
+  the surface TO the light, SCENE_CONVENTIONS.md, so the light chunk's
+  vector points the opposite way from the shadow you see in the
+  photo).
+- **Shadow softness** names the light's angular size -- a hard, crisp
+  edge means a small/distant source; a soft, wide penumbra means a
+  large or close area light.
+- **Warm-vs-cool split** between the lit and shadowed sides names the
+  key color vs the fill/environment color -- warm-lit/cool-shadow
+  usually means a warm key (sun, tungsten) against a cool sky fill, and
+  vice versa for an overcast or studio-strobe reference.
+- **A visible ground contact shadow** anchors the object to the stage
+  -- if the render's object looks pasted-on, either the key is too
+  ambient (soften it toward one dominant direction) or the object's
+  `position` floats above the floor plane instead of resting on it.
+
+### 9. Iteration budgeting + stopping rule
+
+A healthy iteration is about 3-4 tool calls: edit the scene, draft
+render (one or more verification-loop poses), `read_image`.  Rough
+budget across a reconstruction task: blockout 2-3 iterations, shape
+refinement 3-4, materials/lighting 2-3, final verification 1-2.
+
+**When you are working under a hard external budget** (a stated round
+or tool-call cap), treat it as load-bearing: (a) COUNT rounds as you
+spend them; (b) BATCH aggressively -- several `insert_chunk`/
+`propose_patch` calls can go in ONE assistant round, and one round can
+render multiple verification poses back-to-back, so a blockout that
+would naively take six rounds fits in two; (c) reserve the LAST few
+rounds, no matter what state the reconstruction is in, for one final
+verification render and your finished summary.  Running out of budget
+mid-iteration without delivering a final answer scores as a total
+failure even when the scene itself is close -- an honest "here is
+where it stands and what I am least sure of" final message always
+beats being cut off.  STOP
+refining a stage once consecutive iterations stop changing the
+multi-view assessment -- chasing sub-noise differences burns iteration
+budget for no payoff the user can see.  Before calling the task
+finished: confirm the scene's `pinhole_camera` is still the original
+one (the verification loop's `camera` overrides never touch it, but
+confirm rather than assume), do ONE production-quality render (no
+`quality` override) at the reference pose -- the only render whose
+materials/lighting judgment is honest (observe-modes) -- and state
+which aspects of the reconstruction you are LEAST confident about
+(back-side shape inferred from a single photo, absolute scale without
+a stated dimension, a material guessed from a verbal description)
+rather than presenting the result as more certain than the input
+photos support.
 
 ## When to use which geometry
 
@@ -315,6 +442,18 @@ cutout, or subtracted cavity (a mug's hollow, a drilled bracket);
 (a lampshade, a rounded bezel); mesh import only once the shape is
 confirmed at the blockout stage and needs authored detail beyond what
 recipes can reach.
+
+An organic single-form object that photographs as ONE blended mass
+(most hand tools, produce, soft-bodied objects) calls for
+`sdf_geometry` with generous `smin` blends (k 0.1-0.2) rather than
+stacking discrete primitives with a hard union -- a visible crease
+where two parts meet means k is too small, not that a different
+primitive is needed.  Asymmetric features (notches, cutouts) are
+`subtract` parts on the SDF; place them by checking MORE than one
+verification view (section 5 above) -- a notch positioned from the
+front reference view alone can match that view perfectly and still
+sit on the wrong side of the object, invisible until an offset render
+shows the error.
 
 ## Limits (read this before setting expectations with the user)
 

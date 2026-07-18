@@ -42,12 +42,24 @@
       "terminalStatus": "final_text",
       "noMechanicalLoop": true,
       "toolOutcomes": [
-        { "name": "propose_patch", "expect": "staged" }
+        { "name": "propose_patch", "argsContains": "pnt_albedo", "expect": "staged" }
       ]
     },
     {
       "kind": "finalText",
       "containsAny": ["staged", "proposal", "approval"]
+    },
+    {
+      "kind": "proposal",
+      "countMin": 1,
+      "match": {
+        "kindIs": "param_edit",
+        "target": "pnt_albedo",
+        "param": "color",
+        "status": "pending",
+        "valueMin": [0.0, 0.0, 0.5],
+        "valueMax": [0.5, 0.5, 1.0]
+      }
     }
   ]
 }

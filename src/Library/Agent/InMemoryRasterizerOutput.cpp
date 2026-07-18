@@ -10,6 +10,8 @@
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../RISE_API.h"
+#include "../Rendering/DisplayTransform.h"       // DISPLAY_TRANSFORM enum (encode-time tone-curve parity with the CLI PNG path)
+#include "../Rendering/DisplayTransformWriter.h" // exposure + tone-curve stage the CLI file-output pipeline applies before sRGB
 #include "../Utilities/Color/Color.h"           // eColorSpace_sRGB
 #include "../Utilities/MemoryBuffer.h"
 
@@ -22,6 +24,8 @@ InMemoryRasterizerOutput::InMemoryRasterizerOutput()
 	: mWidth( 0 )
 	, mHeight( 0 )
 	, mHasImage( false )
+	, mExposureEV( 0.0 )
+	, mDisplayTransform( eDisplayTransform_None )   // identity until SetDisplayTransform is called
 {
 }
 
@@ -92,14 +96,36 @@ bool InMemoryRasterizerOutput::GetPixelColor( unsigned int x, unsigned int y, RI
 	return true;
 }
 
+void InMemoryRasterizerOutput::SetDisplayTransform( double exposureEV, int displayTransform )
+{
+	mExposureEV = exposureEV;
+	// Clamp to the known DISPLAY_TRANSFORM range [none .. hable]; an unknown
+	// value degrades to identity (none) rather than indexing DisplayTransforms::
+	// Apply's switch default (which is ACES) on a caller typo.
+	mDisplayTransform =
+		( displayTransform >= eDisplayTransform_None && displayTransform <= eDisplayTransform_Hable )
+		? displayTransform : eDisplayTransform_None;
+}
+
 namespace
 {
 	//! Shared PNG-encode tail for ToPng / ToPngDownscaled: write `w`x`h`
 	//! pixels from `pels` (row-major) through the tree's PNGWriter (sRGB
 	//! Integerize + libpng) into an in-memory buffer.  Returns an empty
 	//! vector on a writer-creation failure or zero dims.
+	//!
+	//! When `displayTransform != eDisplayTransform_None` OR `exposureEV != 0`,
+	//! the PNGWriter is wrapped in the SAME `DisplayTransformWriter` the CLI
+	//! `file_rasterizeroutput` LDR pipeline uses (FrameEncoders.cpp gate) --
+	//! exposure multiply by 2^EV then the selected tone curve, applied to the
+	//! LINEAR pels BEFORE the inner PNGWriter's sRGB Integerize.  This is what
+	//! makes an agent beauty render byte-identical to a CLI PNG render of the
+	//! same scene; the identity default (0 EV, curve none) reproduces the raw
+	//! linear->sRGB bytes this sink emitted before the display-transform stage
+	//! was added (and is what the objectmap identity sink relies on).
 	std::vector<unsigned char> EncodePng( const std::vector<RISEColor>& pels,
-	                                      unsigned int w, unsigned int h )
+	                                      unsigned int w, unsigned int h,
+	                                      double exposureEV, int displayTransform )
 	{
 		std::vector<unsigned char> out;
 		if( w == 0 || h == 0 ) return out;
@@ -115,13 +141,27 @@ namespace
 			return out;
 		}
 
-		writer->BeginWrite( w, h );
+		// Interpose the exposure + tone-curve stage when non-identity, exactly
+		// mirroring the LDR-only gate in FrameEncoders.cpp (tone curve != none
+		// OR total EV != 0).  The wrapper addref's `writer`; we keep our own
+		// owning ref on `writer` and release both at the end.
+		const DISPLAY_TRANSFORM dt = static_cast<DISPLAY_TRANSFORM>( displayTransform );
+		IRasterImageWriter* effective = writer;
+		Implementation::DisplayTransformWriter* dtw = nullptr;
+		if( dt != eDisplayTransform_None || exposureEV != 0.0 ) {
+			dtw = new Implementation::DisplayTransformWriter(
+				*writer, static_cast<Scalar>( exposureEV ), dt );
+			effective = dtw;
+		}
+
+		effective->BeginWrite( w, h );
 		for( unsigned int y = 0; y < h; ++y ) {
 			for( unsigned int x = 0; x < w; ++x ) {
-				writer->WriteColor( pels[ static_cast<std::size_t>( y ) * w + x ], x, y );
+				effective->WriteColor( pels[ static_cast<std::size_t>( y ) * w + x ], x, y );
 			}
 		}
-		writer->EndWrite();   // flushes the encoded PNG bytes into `buffer`
+		effective->EndWrite();   // flushes the encoded PNG bytes into `buffer`
+		safe_release( dtw );      // no-op when identity (dtw stayed null)
 
 		// MemoryBuffer::setBytes grows exactly (Resize to cursor+amount), so
 		// the write cursor is the authoritative encoded length; Size() may
@@ -147,7 +187,7 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPng() const
 	}
 	// We do NOT hand-roll gamma or the PNG bytes: 8-bit sRGB matches what
 	// a `png_painter` / file PNG output produces.
-	return EncodePng( mPixels, mWidth, mHeight );
+	return EncodePng( mPixels, mWidth, mHeight, mExposureEV, mDisplayTransform );
 }
 
 std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
@@ -165,7 +205,7 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
 		// (identical bytes to ToPng()).
 		outWidth  = mWidth;
 		outHeight = mHeight;
-		return EncodePng( mPixels, mWidth, mHeight );
+		return EncodePng( mPixels, mWidth, mHeight, mExposureEV, mDisplayTransform );
 	}
 
 	// Aspect-preserving box-filter downscale.  Compute the new dims from
@@ -228,5 +268,5 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
 
 	outWidth  = newW;
 	outHeight = newH;
-	return EncodePng( down, newW, newH );
+	return EncodePng( down, newW, newH, mExposureEV, mDisplayTransform );
 }

@@ -46,6 +46,18 @@
 //        trajectory shape) -- the replayed run reproduces the IDENTICAL
 //        tool-call sequence and the identical scene edit, with zero
 //        access to the original raw fixture file.
+//    T9  RunScenario stamps result.jsonl's scenarioFileFnv, and it equals
+//        an INDEPENDENT FNV-1a64 recompute over the scenario file's raw
+//        bytes (the C++-side half of the cross-language pin against
+//        tools/eval_report.py's --selftest).
+//    T10 The iteration-cap fix, through the eval path: a scenario with
+//        budgets 40/40 raises the loop's per-turn cap to 40 so 25
+//        consecutive single-tool-call rounds (past the GUI-posture
+//        default of 20) all reach final_text (the direct regression for
+//        the live-vision-baseline 24/24 provider_error("iteration cap")
+//        failure); a scenario with NO budgets still trips the compiled-in
+//        default of 20 at round 21 -- the GUI posture survives through
+//        the eval path.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -128,6 +140,50 @@ static bool WriteFile( const std::string& path, const std::string& text )
 	return true;
 }
 
+//! Builds a raw replay fixture (the AgentEvalReplaySource "hand-authored
+//! canned session" shape -- one JSONL line per turn, {"provider":"...",
+//! "body":"..."}) of `nToolRounds` consecutive single-tool-call Anthropic
+//! turns (each one tool_use block naming read_document, stop_reason
+//! tool_use) followed, when `withFinalText` is true, by ONE plain
+//! stop_reason end_turn text turn.  This is the direct shape of the
+//! iteration-cap regression: the fixture drives past the loop's compiled-
+//! in default per-turn cap (AgentChatLoop::kMaxToolRoundsPerTurn == 20) so
+//! the eval-path fix (RunScenarioDriven raising the instance cap to
+//! max(default, budgets.maxLlmCalls, budgets.maxToolCalls)) is exercised
+//! for real, not just at the AgentChatLoop unit level.  Bodies are built
+//! via JsonValue/JsonSerialize so the fixture's outer-line escaping of the
+//! inner (itself-JSON) body string is correct by construction.  Writes the
+//! fixture to `path` and returns it.
+static std::string BuildReadDocumentFixtureFile( const std::string& path, int nToolRounds, bool withFinalText )
+{
+	std::string out;
+	for( int i = 0; i < nToolRounds; ++i ) {
+		const std::string body =
+			"{\"id\":\"msg_" + std::to_string( i ) + "\",\"type\":\"message\",\"role\":\"assistant\","
+			"\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_" +
+			std::to_string( i ) + "\",\"name\":\"read_document\",\"input\":{}}],"
+			"\"stop_reason\":\"tool_use\",\"stop_sequence\":null,"
+			"\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}";
+		JsonValue line = JsonValue::MakeObject();
+		line.set( "provider", JsonValue::MakeString( "anthropic" ) );
+		line.set( "body", JsonValue::MakeString( body ) );
+		out += JsonSerialize( line ) + "\n";
+	}
+	if( withFinalText ) {
+		const std::string body =
+			"{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\","
+			"\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"text\",\"text\":\"Done reading.\"}],"
+			"\"stop_reason\":\"end_turn\",\"stop_sequence\":null,"
+			"\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}";
+		JsonValue line = JsonValue::MakeObject();
+		line.set( "provider", JsonValue::MakeString( "anthropic" ) );
+		line.set( "body", JsonValue::MakeString( body ) );
+		out += JsonSerialize( line ) + "\n";
+	}
+	WriteFile( path, out );
+	return path;
+}
+
 //! Test-local, INDEPENDENT reimplementation of FNV-1a 64 (NOT a call into
 //! AgentEvalRunner.cpp's anonymous-namespace FnvHex, which this TU cannot
 //! see) -- the C++-side half of the Finding-2 cross-language pin. The Python
@@ -164,8 +220,9 @@ static void TestLoadSeedScenarios()
 		Check( !s.title.empty(), "param_edit title" );
 		Check( s.scenePath.empty() && !s.sceneInline.empty(), "param_edit carries scene.inline (not path)" );
 		Check( s.autonomy == "commit", "param_edit autonomy default is commit" );
-		Check( s.prompts.size() == 1 && s.prompts[0] == "Recolor the sphere albedo to red",
-		       "param_edit single prompt captured verbatim" );
+		Check( s.prompts.size() == 1 && s.prompts[0].text == "Recolor the sphere albedo to red" &&
+		       s.prompts[0].imagePaths.empty(),
+		       "param_edit single prompt captured verbatim (text-only, no images)" );
 		Check( s.budgets.maxToolCalls == 10 && s.budgets.maxLlmCalls == 12,
 		       "param_edit budgets parsed" );
 		Check( s.replayFixturePath == "evals/fixtures/param_edit.fixture.jsonl",
@@ -192,13 +249,17 @@ static void TestLoadSeedScenarios()
 		       "two_tool_observe.json loads (" + err + ")" );
 		Check( s.id == "two_tool_observe", "two_tool_observe id" );
 		Check( s.budgets.maxToolCalls == 10 && s.budgets.maxLlmCalls == 12, "two_tool_observe budgets parsed" );
-		// Eval-harness slice E3: a render band + a trajectory bound.
-		Check( s.checkpoints.isArray() && s.checkpoints.size() == 2,
-		       "two_tool_observe checkpoints carried opaquely (2 entries, wired by E3)" );
+		// Eval-harness slice E3: a render band + a trajectory bound + a
+		// finalText check (Wave B: requiredToolInOrder/finalText added to
+		// discriminate the zero-tool-call dodge -- see evals/README.md).
+		Check( s.checkpoints.isArray() && s.checkpoints.size() == 3,
+		       "two_tool_observe checkpoints carried opaquely (3 entries, wired by E3)" );
 		Check( s.checkpoints.at( 0 ).get( "kind" ).asString() == "render",
 		       "two_tool_observe checkpoint[0].kind is the render band" );
 		Check( s.checkpoints.at( 1 ).get( "kind" ).asString() == "trajectory",
 		       "two_tool_observe checkpoint[1].kind is the trajectory bound" );
+		Check( s.checkpoints.at( 2 ).get( "kind" ).asString() == "finalText",
+		       "two_tool_observe checkpoint[2].kind is the finalText check" );
 	}
 	{
 		AgentEvalScenario s;
@@ -329,6 +390,70 @@ static void TestLoadScenarioGates()
 			Check( s.interventions[0].target == "pnt_albedo" && s.interventions[0].param == "color" &&
 				s.interventions[0].value == "0.9 0.9 0.1", "iv_ok: target/param/value parsed" );
 		}
+	}
+
+	// Image-reconstruction Wave 1: prompts[] object-form loud-failure gates
+	// + the two accepted object shapes (text+images, images-only).
+	tryLoad( "prompt_images_empty_array.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+		"\"prompts\":[{\"text\":\"look\",\"images\":[]}]}",
+		"prompt object: images present but empty array" );
+	tryLoad( "prompt_images_empty_path.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+		"\"prompts\":[{\"text\":\"look\",\"images\":[\"\"]}]}",
+		"prompt object: images[] contains an empty path string" );
+	tryLoad( "prompt_images_traversal.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+		"\"prompts\":[{\"text\":\"look\",\"images\":[\"../evil.png\"]}]}",
+		"prompt object: images[] path contains \"..\"" );
+	tryLoad( "prompt_neither_string_nor_object.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[42]}",
+		"prompt array element is neither a string nor an object" );
+	tryLoad( "prompt_object_neither_text_nor_images.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[{}]}",
+		"prompt object carries neither \"text\" nor \"images\"" );
+	tryLoad( "prompt_object_blank_text_no_images.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[{\"text\":\"\"}]}",
+		"prompt object: empty \"text\" and no \"images\" is equivalent to neither" );
+
+	// Positive: the object form with BOTH text and images loads and is
+	// parsed into AgentEvalPrompt as expected.  The referenced paths need
+	// not exist on disk -- LoadEvalScenario validates shape only; existence
+	// is RunScenarioDriven's pre-flight job (see TestPromptImagesEndToEnd
+	// in AgentEvalLiveTransportTest.cpp).
+	{
+		const std::string path = dir + "/prompt_text_and_images.json";
+		Check( WriteFile( path,
+			"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+			"\"prompts\":[{\"text\":\"Match this reference photo.\","
+			"\"images\":[\"evals/refs/a.png\",\"evals/refs/b.jpg\"]}]}" ),
+			"prompt_text_and_images: wrote the scenario file" );
+		AgentEvalScenario s;
+		std::string err;
+		Check( LoadEvalScenario( path, s, err ),
+			"prompt_text_and_images: text+images object form loads (" + err + ")" );
+		Check( s.prompts.size() == 1 && s.prompts[0].text == "Match this reference photo." &&
+			s.prompts[0].imagePaths.size() == 2 &&
+			s.prompts[0].imagePaths[0] == "evals/refs/a.png" &&
+			s.prompts[0].imagePaths[1] == "evals/refs/b.jpg",
+			"prompt_text_and_images: text + both image paths parsed" );
+	}
+
+	// Positive: the object form with images ONLY (no "text" key) -- an
+	// attachment-only turn.
+	{
+		const std::string path = dir + "/prompt_images_only.json";
+		Check( WriteFile( path,
+			"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},"
+			"\"prompts\":[{\"images\":[\"evals/refs/a.png\"]}]}" ),
+			"prompt_images_only: wrote the scenario file" );
+		AgentEvalScenario s;
+		std::string err;
+		Check( LoadEvalScenario( path, s, err ),
+			"prompt_images_only: images-only object form loads (" + err + ")" );
+		Check( s.prompts.size() == 1 && s.prompts[0].text.empty() &&
+			s.prompts[0].imagePaths.size() == 1 && s.prompts[0].imagePaths[0] == "evals/refs/a.png",
+			"prompt_images_only: blank text + one image path parsed" );
 	}
 }
 
@@ -656,6 +781,102 @@ static void TestScenarioFileFnvStamp()
 	Check( !r.has( "sceneFileFnv" ), "param_edit (inline scene) does not stamp sceneFileFnv" );
 }
 
+//----------------------------------------------------------------------
+// T10: the iteration-cap fix, exercised through the eval path (the direct
+// regression for the live-vision-baseline failure: RunScenarioDriven
+// raising the loop's per-turn cap to max(default, budgets.maxLlmCalls,
+// budgets.maxToolCalls) right after loop.SetProvider() in
+// AgentEvalRunner.cpp).
+//----------------------------------------------------------------------
+static void TestIterationCapBudgetRaise()
+{
+	std::printf( "T10: the eval-path iteration-cap raise (25 tool rounds under budgets 40/40; "
+	             "a no-budgets scenario still trips at the default 20)...\n" );
+
+	// (a) budgets 40/40 -> the instance cap is raised to 40, so 25
+	//     consecutive single-tool-call rounds (well past the GUI-posture
+	//     default of 20) all succeed and the scenario reaches final_text.
+	//     Pre-fix (the loop's compiled-in default of 20 governing every
+	//     host unconditionally), this run dies at round 21 with
+	//     terminalStatus provider_error / errorMessage naming "iteration
+	//     cap...20...".
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T10a: param_edit reloads as the scene/session donor (" + err + ")" );
+		scenario.id = "iteration_cap_raised";
+		scenario.prompts.clear();
+		scenario.prompts.push_back( AgentEvalPrompt( "Read the document repeatedly." ) );
+		scenario.budgets.maxToolCalls = 40;
+		scenario.budgets.maxLlmCalls  = 40;
+		scenario.replayFixturePath.clear();   // fed via replaySourceOverride instead
+
+		const std::string dir = ScratchRunDir( "t10a_raised_cap" );
+		const std::string fixturePath =
+			BuildReadDocumentFixtureFile( dir + "/fixture.jsonl", 25, /*withFinalText=*/true );
+
+		AgentEvalReplaySource src;
+		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
+		       "T10a: the 26-line (25 tool + 1 final-text) fixture loads (" + err + ")" );
+		Check( src.Total() == 26, "T10a: fixture carries 26 canned bodies" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = dir;
+		opts.replaySourceOverride = &src;
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+
+		Check( h.result.terminalStatus == "final_text",
+		       "T10a: budgets 40/40 raise the cap enough for all 25 tool rounds to reach final_text (got '" +
+		       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+		Check( h.result.toolCalls == 25, "T10a: exactly 25 tool calls dispatched" );
+		Check( h.result.llmCalls == 26, "T10a: exactly 26 llm rounds (25 tool_use + 1 final text)" );
+		Check( !h.result.budgetHit, "T10a: neither budget tripped (40/40 comfortably covers 25/26)" );
+	}
+
+	// (b) NO budgets object (all three fields at their -1 "unlimited"
+	//     default) -> RunScenarioDriven's cap computes to
+	//     max(20,-1,-1) == the compiled-in default, so the GUI posture is
+	//     PRESERVED through the eval path: 20 tool rounds succeed, round
+	//     21 trips naming the default cap (20), never a raised one.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T10b: param_edit reloads as the scene/session donor (" + err + ")" );
+		scenario.id = "iteration_cap_default";
+		scenario.prompts.clear();
+		scenario.prompts.push_back( AgentEvalPrompt( "Read the document repeatedly." ) );
+		scenario.budgets = AgentEvalBudgets();   // -1/-1/-1: the "no budgets" scenario shape (matches error_path.json)
+		scenario.replayFixturePath.clear();
+
+		const std::string dir = ScratchRunDir( "t10b_default_cap" );
+		const std::string fixturePath =
+			BuildReadDocumentFixtureFile( dir + "/fixture.jsonl", 21, /*withFinalText=*/false );
+
+		AgentEvalReplaySource src;
+		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
+		       "T10b: the 21-tool-round fixture loads (" + err + ")" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = dir;
+		opts.replaySourceOverride = &src;
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+
+		Check( h.result.terminalStatus == "provider_error",
+		       "T10b: a no-budgets scenario still trips the default cap at round 21 (got '" +
+		       h.result.terminalStatus + "')" );
+		Check( h.result.toolCalls == 20,
+		       "T10b: exactly 20 tool calls dispatched before the cap trips" );
+		Check( h.result.errorMessage.find( "iteration cap" ) != std::string::npos,
+		       "T10b: errorMessage names the iteration cap" );
+		Check( h.result.errorMessage.find( "20" ) != std::string::npos,
+		       "T10b: errorMessage names the compiled-in default (20), not a raised cap" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalReplayTest (Eval-harness slice E2: replay backend + scenario runner) ===\n" );
@@ -669,6 +890,7 @@ int main()
 	TestBudgetEnforcementRedProve();
 	TestRecordOnceReplayForeverRedProve();
 	TestScenarioFileFnvStamp();
+	TestIterationCapBudgetRaise();
 
 	std::printf( "=== AgentEvalReplayTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

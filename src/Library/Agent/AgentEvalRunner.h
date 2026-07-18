@@ -188,6 +188,29 @@ namespace RISE
 			std::string value;                //!< the new value as scene-language text
 		};
 
+		//! One SEQUENTIAL USER TURN (evals/scenarios/*.json `prompts[i]`).
+		//! Either the bare-string shape (`text` only, `imagePaths` empty --
+		//! the pre-Wave-1 shape, unchanged) or the object shape
+		//! `{"text"?, "images"?}` (image-reconstruction Wave 1): `text` may
+		//! be empty when `imagePaths` is non-empty (an attachment-only
+		//! turn -- AgentChatLoop::AddUserMessage's documented NO-OP rule
+		//! only fires when BOTH are empty, so LoadEvalScenario requires at
+		//! least one of the two).  `imagePaths` are REPO-RELATIVE (or
+		//! absolute) paths, resolved against the CWD exactly like
+		//! `scene.path` -- RunScenarioDriven pre-flight-loads each file's
+		//! bytes before any LLM round runs (see AgentEvalRunner.cpp).  The
+		//! single-argument (implicit) constructor from a bare `std::string`
+		//! keeps every pre-Wave-1 `prompts.push_back("...")` call site
+		//! compiling unchanged.
+		struct AgentEvalPrompt
+		{
+			std::string text;
+			std::vector<std::string> imagePaths;   //!< reference-image paths for this turn ("" = text-only, the pre-Wave-1 shape)
+
+			AgentEvalPrompt() = default;
+			AgentEvalPrompt( std::string t ) : text( std::move( t ) ) {}
+		};
+
 		//! One parsed evals/scenarios/*.json.  See the file header for the
 		//! schema; `checkpoints` is carried OPAQUELY (E3's job to
 		//! interpret).
@@ -217,10 +240,12 @@ namespace RISE
 			std::string autonomy = "commit";
 
 			//! Sequential user turns (evals/scenarios/*.json `prompts`).
-			//! At least one, each a non-empty-typed (but possibly blank
-			//! text is still a valid JSON string -- AgentChatLoop's own
-			//! whitespace-only no-op rule applies at run time) string.
-			std::vector<std::string> prompts;
+			//! At least one.  Each entry is EITHER a bare JSON string (the
+			//! pre-Wave-1 shape -- possibly blank text is still a valid
+			//! JSON string; AgentChatLoop's own whitespace-only no-op rule
+			//! applies at run time) OR an image-bearing object
+			//! `{"text"?, "images"?}` (see AgentEvalPrompt).
+			std::vector<AgentEvalPrompt> prompts;
 
 			AgentEvalBudgets budgets;
 
@@ -255,9 +280,14 @@ namespace RISE
 		//! any malformed shape (unreadable path, non-object root, a
 		//! missing/wrong-typed required field, scene naming zero or both
 		//! of path/inline, an unrecognized autonomy string, an empty
-		//! prompts array or a non-string prompt element, a non-object
-		//! budgets/replay field, a non-array checkpoints field, or a
-		//! non-object checkpoints element).
+		//! prompts array, a non-object budgets/replay field, a non-array
+		//! checkpoints field, or a non-object checkpoints element).  Each
+		//! prompts[i] (image-reconstruction Wave 1) is EITHER a JSON
+		//! string (unchanged) OR an object {"text"?, "images"?} --
+		//! rejected LOUDLY when it is neither string nor object, when
+		//! both text and images are absent/empty, when images is present
+		//! but not a non-empty array, or when any images[j] is not a
+		//! non-empty string or contains "..".
 		bool LoadEvalScenario( const std::string& path, AgentEvalScenario& out, std::string& err );
 
 		//----------------------------------------------------------------
@@ -448,6 +478,17 @@ namespace RISE
 			//! Optional injected epoch-ms clock (trajectory timestamps + the
 			//! maxWallMs budget check).  Empty uses the real wall clock.
 			std::function<int64_t()> clock;
+
+			//! Optional injected sleep hook for the HTTP 429 (rate-limit)
+			//! backoff (see the RunScenarioLive doc comment below).  Called
+			//! with the chosen wait in MILLISECONDS; empty (the default)
+			//! sleeps for real via std::this_thread::sleep_for.  A test
+			//! injects a recorder that logs the requested wait and advances
+			//! `clock` instead of actually sleeping, so the 429-backoff
+			//! tests run instantly.  Never called for any status other than
+			//! 429 -- the 5xx/transport/image/reasoning-effort retries above
+			//! stay synchronous.
+			std::function<void(int64_t ms)> sleeper;
 		};
 
 		//! Execute one scenario end-to-end through the REAL AgentChatLoop +
@@ -460,6 +501,33 @@ namespace RISE
 		//! still-alive-dispatcher handle for the E3 checker.  A transport
 		//! that returns status 0 (DNS/TLS/timeout, or the Linux unsupported
 		//! stub) terminates the run with terminalStatus == "transport_error".
+		//!
+		//! HTTP 429 (RATE LIMIT) BACKOFF: unlike a 5xx (one same-round
+		//! retry) a 429 is EXPECTED under normal operation -- image-heavy
+		//! scenarios re-send their full multi-image payload every round, so
+		//! hitting a per-minute token window mid-run is routine, not
+		//! terminal.  On a 429, the SAME round is retried up to 5 times
+		//! total, waiting between attempts for a duration chosen by, in
+		//! order: (a) a "try again in <N>s" / "retry after <N> seconds"
+		//! hint parsed from the response body (case-insensitive, float N;
+		//! NOT a response header -- ChatHttpResponse does not carry
+		//! headers); (b) failing that, a fixed exponential backoff table
+		//! (10s, 20s, 40s, 60s, 60s indexed by attempt number).  Any chosen
+		//! wait is capped at 90s.  Before sleeping, the wait is checked
+		//! against the scenario's REMAINING maxWallMs budget: a wait that
+		//! would exceed it stops the run immediately with terminalStatus
+		//! "budget_wall_ms" (never a sleep longer than what remains) rather
+		//! than pretending the round could still succeed.  429 attempts do
+		//! NOT consume maxLlmCalls (the call never succeeded) but the
+		//! elapsed wait DOES count against maxWallMs via the normal clock.
+		//! Each 429 attempt is recorded through RecordHttpRound
+		//! (attempt/retryOf) exactly like the 5xx retry, so the trajectory
+		//! shows the rate-limit stall truthfully.  If the 5th attempt still
+		//! answers 429, the round fails with terminalStatus
+		//! "provider_error" naming "rate limit" and the attempt count.
+		//! Sleeping goes through `options.sleeper` (see its doc comment) so
+		//! tests never actually wait.
+		//!
 		//! Never throws.  Shares its entire drive loop with RunScenario --
 		//! only the per-round body source differs (replay vs. transport).
 		AgentEvalRunHandle RunScenarioLive( const AgentEvalScenario& scenario,
@@ -526,6 +594,14 @@ namespace RISE
 			//! Optional injected epoch-ms clock (threaded to each run).
 			std::function<int64_t()> clock;
 
+			//! Optional injected sleep hook (threaded to every column's
+			//! AgentEvalLiveRunOptions.sleeper -- see that field's doc
+			//! comment for the HTTP 429 backoff it drives).  Empty (the
+			//! default) sleeps for real; every matrix run shares this ONE
+			//! hook so a test can inject a single recorder across the whole
+			//! matrix.
+			std::function<void(int64_t ms)> sleeper;
+
 			//! Optional human-progress sink (one line per matrix event:
 			//! provider-skip, run start/finish).  The CLI wires this to
 			//! stderr; a test may leave it empty.  NEVER receives a key.
@@ -537,10 +613,19 @@ namespace RISE
 		struct AgentEvalMatrixResult
 		{
 			int runsExecuted   = 0;   //!< (scenario x provider-with-key x repeat) runs actually driven
-			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset
+			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset OR the provider's PRE-FLIGHT AUTH PROBE found the credential dead (see providersAuthFailed)
 			int runsAlreadyComplete = 0; //!< runs SKIPPED because their subdir already held a non-empty <scenarioId>.result.jsonl from a prior invocation into the same runDir AND its stamped scenarioContentHash MATCHES the current scenario (still graded under the same oracle) -- the cross-invocation resume/idempotency guard.  A subdir with NO result.jsonl (a crash mid-run), OR one whose stamped hash is missing/different (a STALE cell graded under a since-changed scenario), is instead wiped and re-run, NOT counted here
-			int providersUsed  = 0;   //!< providers whose key resolved (non-empty)
-			int providersSkipped = 0; //!< providers skipped for a missing key
+			int providersUsed  = 0;   //!< providers whose key resolved (non-empty) AND (for a non-"local" provider) whose pre-flight auth probe did not find a dead credential
+			int providersSkipped = 0; //!< providers skipped for a missing key OR a dead credential (see providersAuthFailed for the latter, counted here TOO)
+
+			//! Of `providersSkipped`, how many were skipped specifically because
+			//! the PRE-FLIGHT AUTH PROBE (see RunEvalMatrix's doc comment) found
+			//! the credential PRESENT but DEAD -- an invalid key (401/403, or a
+			//! "incorrect api key"/"invalid api key" 4xx body) or exhausted
+			//! credits (a "credit balance" 4xx body) -- as opposed to the env
+			//! var simply being unset.  Always <= providersSkipped.  0 for a
+			//! "local" provider (keyless columns are never probed).
+			int providersAuthFailed = 0;
 
 			//! Non-empty iff the matrix REFUSED to run (a fatal config error
 			//! caught before any run executed) -- either a duplicate scenario
@@ -568,6 +653,33 @@ namespace RISE
 		//! pre-loaded (the CLI expands globs + LoadEvalScenario before
 		//! calling this, keeping matrix orchestration file-IO-light and
 		//! unit-testable with in-memory scenarios).  Never throws.
+		//!
+		//! PRE-FLIGHT AUTH PROBE: once a column's key resolves (non-empty), and
+		//! BEFORE its scenario x repeat loop runs, RunEvalMatrix sends ONE
+		//! minimal probe request through the exact same codec/transport path a
+		//! real run's first LLM round takes (a fresh AgentChatLoop, one "ping"
+		//! user turn, BuildRequest(key), options.transport->Post) and classifies
+		//! the response: HTTP 401/403, or a 4xx whose body contains (case-
+		//! insensitively) "incorrect api key", "invalid api key", "credit
+		//! balance", "authentication", or "unauthorized", is a DEAD credential --
+		//! the whole column is SKIPPED (counted in BOTH providersSkipped and
+		//! providersAuthFailed; result.runsSkipped grows by scenarios.size() x
+		//! repeats; logged as "RunEvalMatrix: SKIP provider '<name>' --
+		//! credential rejected by the provider (auth probe failed: <short
+		//! reason>)", where the reason is NEVER the key).  Any other outcome --
+		//! a 2xx, a 5xx, a transport failure (timeout/DNS/TLS), or a 4xx that
+		//! matches none of the phrases (e.g. a tool-shaped/reasoning_effort-
+		//! quirk 400) -- is NOT auth-fatal and the column proceeds normally: a
+		//! transient server hiccup must never cost a provider its whole column.
+		//! A keyless "local" provider has no credential to probe and the probe
+		//! is skipped entirely for it.  Each column's outcome ("ok" /
+		//! "auth-failed" / "skipped-keyless") is recorded in the run manifest's
+		//! "authProbes" object (see the manifest write below), keyed by the
+		//! provider's declared name.  This trades one small request per provider
+		//! column per invocation for not burning every (scenario x repeat) cell
+		//! against a credential that was never going to work (the motivating
+		//! incidents: an invalid xAI key burning 45 cells twice at ~0.25s/cell,
+		//! and exhausted Anthropic credits burning a whole vision column).
 		//!
 		//! Cross-invocation resume (idempotent completion): before executing
 		//! a run, its target subdir is checked for an already-present,

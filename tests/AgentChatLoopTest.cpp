@@ -1455,6 +1455,68 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		Check( again.kind == ChatStepResult::Kind::ToolCalls,
 		       "after a new user message the loop runs again" );
 	}
+
+	// Iteration cap, RAISED: SetMaxToolRoundsPerTurn(25) lets a host with
+	// its own honest budget accounting (the eval runner) run past the
+	// GUI-posture default of 20 -- 24 single-tool rounds all succeed,
+	// round 25 still succeeds (the cap itself), round 26 trips and names
+	// the RAISED cap (25), not the compiled-in default (20).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetMaxToolRoundsPerTurn( 25 );
+		loop.AddUserMessage( "loop further" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_spin25\",\"name\":\"read_document\",\"input\":{}}]",
+			"tool_use" );
+		bool allOk = true;
+		for( int i = 0; i < 24; ++i ) {
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.kind != ChatStepResult::Kind::ToolCalls ) allOk = false;
+			if( st.toolCalls.size() == 1 )
+				loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		}
+		Check( allOk, "with a raised cap, 24 tool rounds (past the default-20 cutoff) all succeed" );
+
+		ChatStepResult round25 = loop.HandleResponse( 200, fx );
+		Check( round25.kind == ChatStepResult::Kind::ToolCalls,
+		       "round 25 (the raised cap itself) still succeeds" );
+		if( round25.toolCalls.size() == 1 )
+			loop.AddToolResult( round25.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		Check( loop.ToolRoundCount() == 25, "round counter reads the raised cap" );
+
+		ChatStepResult tripped = loop.HandleResponse( 200, fx );
+		Check( tripped.kind == ChatStepResult::Kind::ProviderError,
+		       "round 26 trips the raised iteration cap" );
+		Check( tripped.errorKind == ChatErrorKind::IterationCap,
+		       "the raised-cap trip -> errorKind IterationCap" );
+		Check( tripped.errorMessage.find( "iteration cap" ) != std::string::npos,
+		       "raised-cap error names the iteration cap" );
+		Check( tripped.errorMessage.find( "25" ) != std::string::npos,
+		       "raised-cap error names the RAISED cap (25), not the compiled-in default (20)" );
+	}
+
+	// Iteration cap, SetMaxToolRoundsPerTurn(0) IGNORED: values < 1 leave
+	// the default (kMaxToolRoundsPerTurn == 20) in effect.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetMaxToolRoundsPerTurn( 0 );
+		loop.AddUserMessage( "loop forever" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_spin0\",\"name\":\"read_document\",\"input\":{}}]",
+			"tool_use" );
+		for( int i = 0; i < AgentChatLoop::kMaxToolRoundsPerTurn; ++i ) {
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.toolCalls.size() == 1 )
+				loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		}
+		ChatStepResult tripped = loop.HandleResponse( 200, fx );
+		Check( tripped.kind == ChatStepResult::Kind::ProviderError,
+		       "SetMaxToolRoundsPerTurn(0) is ignored -- the default cap (20) still trips" );
+		Check( tripped.errorMessage.find( "20" ) != std::string::npos,
+		       "the ignored-zero cap error still names the compiled-in default (20)" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -3785,6 +3847,16 @@ static void TestMultimodalRetry()
 //      detection exactly; the retry is guarded once-per-session/round the
 //      same way.  A different 400 does none of this, and the two sticky
 //      flags (image-elision, reasoning-effort-none) are independent.
+//
+//      PROCESS-WIDE MEMOIZATION (the second-generation fix, from the
+//      vision-baseline eval runs): the 400 lesson is also recorded in a
+//      process-wide (provider, model) capability cache, so every LATER
+//      AgentChatLoop instance against the SAME pair starts pre-armed and
+//      never pays the wasted 400 round-trip at all (see
+//      ReasoningEffortNoneAlreadyKnown in AgentChatLoop.cpp).  The blocks
+//      below therefore use DISTINCT model ids where a fresh un-armed loop
+//      is the precondition, and the final block pins the memoization
+//      itself.
 //----------------------------------------------------------------------
 static void TestReasoningEffortRetry()
 {
@@ -3872,10 +3944,14 @@ static void TestReasoningEffortRetry()
 		       "T34: subsequent rounds stay reasoning_effort:none (sticky)" );
 	}
 
-	// --- A NON-reasoning_effort 400 must NOT trigger the retry / override. ---
+	// --- A NON-reasoning_effort 400 must NOT trigger the retry / override.
+	//     DISTINCT model id: the happy-path block above just taught the
+	//     process-wide cache that the DEFAULT OpenAI model needs the
+	//     override, so a fresh loop on that default would now start
+	//     pre-armed -- this block needs an un-armed loop. ---
 	{
 		AgentChatLoop loop;
-		loop.SetProvider( ChatProvider::OpenAI );
+		loop.SetProvider( ChatProvider::OpenAI, "t34-plain400-model" );
 		loop.AddUserMessage( "hi" );
 		(void)loop.BuildRequest( kApiKey );
 
@@ -3897,10 +3973,13 @@ static void TestReasoningEffortRetry()
 
 	// --- Coexistence: the image-elision and reasoning_effort-none sticky
 	//     flags are independent -- tripping one does not trip or block
-	//     the other later in the SAME session. ---
+	//     the other later in the SAME session.  DISTINCT model id again:
+	//     this block's first Check needs the effort-400 to be a fresh
+	//     DETECTION (retryReasoningEffortNone set), which a cache-pre-
+	//     armed loop deliberately never re-flags. ---
 	{
 		AgentChatLoop loop;
-		loop.SetProvider( ChatProvider::OpenAI );
+		loop.SetProvider( ChatProvider::OpenAI, "t34-coexist-model" );
 		loop.AddUserMessage( "remove the sphere" );
 		(void)loop.BuildRequest( kApiKey );
 		ChatStepResult st1 = loop.HandleResponse( 400, effort400 );
@@ -3925,6 +4004,47 @@ static void TestReasoningEffortRetry()
 		Check( re != nullptr && re->isString() && re->asString() == "none",
 		       "T34: reasoning_effort:none survives a later, independent "
 		       "multimodal-400 retry" );
+	}
+
+	// --- PROCESS-WIDE MEMOIZATION: the happy-path block above taught the
+	//     process-wide capability cache that (openai, <default model>)
+	//     needs the override.  A BRAND-NEW loop instance against that
+	//     SAME pair must now start pre-armed: its very FIRST request
+	//     already carries reasoning_effort:"none" -- no 400, no retry
+	//     dance, the wasted round-trip is gone for every later session in
+	//     this process (the vision-baseline fix: each eval cell is a new
+	//     AgentChatLoop, and only the first one per process should ever
+	//     pay the probe 400).  A DIFFERENT model id must stay unaffected
+	//     (the cache is per (provider, model), never provider-wide). ---
+	{
+		AgentChatLoop armed;
+		armed.SetProvider( ChatProvider::OpenAI );   // default model == the happy-path block's
+		armed.AddUserMessage( "recolor the sphere" );
+		const ChatHttpRequest req = armed.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		const JsonValue* re = root.find( "reasoning_effort" );
+		Check( re != nullptr && re->isString() && re->asString() == "none",
+		       "T34: a NEW loop against the already-proven (provider, model) starts "
+		       "pre-armed -- the FIRST request carries reasoning_effort:\"none\"" );
+
+		// Reset() must NOT lose the process-wide lesson (it re-arms from
+		// the cache rather than blindly clearing the sticky flag).
+		armed.Reset();
+		armed.AddUserMessage( "add a cube" );
+		const ChatHttpRequest req2 = armed.BuildRequest( kApiKey );
+		JsonValue root2 = ParseBody( req2.body );
+		const JsonValue* re2 = root2.find( "reasoning_effort" );
+		Check( re2 != nullptr && re2->isString() && re2->asString() == "none",
+		       "T34: Reset() re-arms from the process-wide cache (same pair stays pre-armed)" );
+
+		AgentChatLoop other;
+		other.SetProvider( ChatProvider::OpenAI, "t34-never-400ed-model" );
+		other.AddUserMessage( "hello" );
+		const ChatHttpRequest oreq = other.BuildRequest( kApiKey );
+		JsonValue oroot = ParseBody( oreq.body );
+		Check( oroot.find( "reasoning_effort" ) == nullptr,
+		       "T34: a model id that never tripped the 400 is NOT pre-armed "
+		       "(the cache is per (provider, model), not provider-wide)" );
 	}
 }
 

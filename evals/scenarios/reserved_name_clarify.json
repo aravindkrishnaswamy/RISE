@@ -54,7 +54,10 @@
       "requiredToolInOrder": [
         "insert_chunk"
       ],
-      "noMechanicalLoop": true
+      "noMechanicalLoop": true,
+      "toolOutcomes": [
+        { "name": "insert_chunk", "argsContains": "none", "occurrence": "first", "expect": "rejected" }
+      ]
     },
     {
       "kind": "finalText",

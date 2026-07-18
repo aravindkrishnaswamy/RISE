@@ -35,6 +35,7 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
+#include "../src/Library/Agent/Base64.h"   // image-reconstruction Wave 1: Base64Encode/Decode for the reference-image tests
 
 #include <algorithm>
 #include <cstdio>
@@ -499,6 +500,329 @@ static void TestLiveTransportRetryDoesNotStackWith5xx()
 }
 
 //----------------------------------------------------------------------
+// T19: HTTP 429 (rate-limit) backoff -- a hint-less 429 followed by a
+//      success reaches final_text after exactly 2 POSTs, asking the
+//      injected sleeper for the exponential fallback table's first-attempt
+//      wait (10000ms), and does NOT count the 429 attempt against
+//      llmCalls.
+//----------------------------------------------------------------------
+static void TestLive429RetrySucceeds()
+{
+	std::printf( "T19: HTTP 429 then success -> one retry after a backoff wait, round succeeds...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 429,
+		"{\"error\":{\"message\":\"Rate limit reached for requests. Limit 500000, Used 488104.\"}}", "", 3 } );
+	mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t19_live_429_retry_succeeds" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "a 429-then-200 round still reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( mock.seenRequests.size() == 2, "the transport saw exactly 2 POSTs (the retry rebuilt the SAME round)" );
+	Check( h.result.finalText == "Done: pnt_albedo is now red.", "the retried round's final text is captured" );
+	Check( h.result.llmCalls == 1, "the 429 attempt does not count toward llmCalls -- only the successful POST does" );
+	Check( waits.size() == 1, "exactly one backoff wait was requested" );
+	Check( !waits.empty() && waits[0] == 10000,
+	       "a hint-less 429's first-attempt wait is the exponential fallback's 10000ms (got " +
+	       ( waits.empty() ? std::string( "<none>" ) : std::to_string( waits[0] ) ) + ")" );
+}
+
+//----------------------------------------------------------------------
+// T20: HTTP 429 body-hint parsing -- "try again in <N>s" and
+//      "retry after <N> seconds" (case-insensitive, float N) are parsed
+//      out of the response body and used INSTEAD of the exponential
+//      fallback.
+//----------------------------------------------------------------------
+static void TestLive429BodyHintParsing()
+{
+	std::printf( "T20: HTTP 429 body-hint parsing...\n" );
+
+	// (A) "Please try again in 2.5s." -> ~2500ms.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T20(A): param_edit loads" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limited. Please try again in 2.5s.\"}}", "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+		std::vector<int64_t> waits;
+		AgentEvalLiveRunOptions opts;
+		opts.runDir = ScratchRunDir( "t20a_live_429_hint_try_again_in" );
+		opts.transport = &mock;
+		opts.provider = ChatProvider::Anthropic;
+		opts.apiKey = "unit-test-key-not-real";
+		opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+		AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+		Check( h.result.terminalStatus == "final_text", "T20(A): the hinted-429-then-200 round reaches final_text" );
+		Check( waits.size() == 1 && waits[0] == 2500,
+		       "T20(A): 'try again in 2.5s' parses to a 2500ms wait (got " +
+		       ( waits.empty() ? std::string( "<none>" ) : std::to_string( waits[0] ) ) + ")" );
+	}
+
+	// (B) "Please retry after 5 seconds." -> 5000ms, case-INSENSITIVE
+	//     ("RETRY AFTER") and an integer N.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T20(B): param_edit loads" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limited. Please RETRY AFTER 5 seconds.\"}}", "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+		std::vector<int64_t> waits;
+		AgentEvalLiveRunOptions opts;
+		opts.runDir = ScratchRunDir( "t20b_live_429_hint_retry_after" );
+		opts.transport = &mock;
+		opts.provider = ChatProvider::Anthropic;
+		opts.apiKey = "unit-test-key-not-real";
+		opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+		AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+		Check( h.result.terminalStatus == "final_text", "T20(B): the hinted-429-then-200 round reaches final_text" );
+		Check( waits.size() == 1 && waits[0] == 5000,
+		       "T20(B): 'RETRY AFTER 5 seconds' parses case-insensitively to a 5000ms wait (got " +
+		       ( waits.empty() ? std::string( "<none>" ) : std::to_string( waits[0] ) ) + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T21: HTTP 429 exponential fallback -- two hint-less 429s in a row, then
+//      success, wait 10000ms then 20000ms (the fallback table's first two
+//      entries), not a repeat of the same wait.
+//----------------------------------------------------------------------
+static void TestLive429ExponentialFallback()
+{
+	std::printf( "T21: HTTP 429 exponential fallback (10000ms, then 20000ms)...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 499999.\"}}", "", 1 } );
+	mock.responses.push_back( { 200, kBodyFinal, "", 4 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t21_live_429_exponential_fallback" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text", "two hint-less 429s then 200 still reaches final_text" );
+	Check( mock.seenRequests.size() == 3, "the transport saw exactly 3 POSTs (2 rate-limited + 1 success)" );
+	Check( waits.size() == 2, "exactly 2 backoff waits were requested" );
+	Check( waits.size() > 0 && waits[0] == 10000, "attempt 1's fallback wait is 10000ms" );
+	Check( waits.size() > 1 && waits[1] == 20000, "attempt 2's fallback wait is 20000ms" );
+}
+
+//----------------------------------------------------------------------
+// T22: HTTP 429 attempts are capped at 5 per round -- 5 consecutive 429s
+//      exhaust the retry budget and fail with provider_error naming
+//      "rate limit", having asked the sleeper for a wait after EACH of
+//      the 5 attempts (the trajectory records an honest attempt/retry_of
+//      sibling llm record for every one of them, mirroring the 5xx-retry
+//      convention).
+//----------------------------------------------------------------------
+static void TestLive429ExhaustedAttempts()
+{
+	std::printf( "T22: 5x HTTP 429 -> provider_error naming rate limit, 5 waits recorded...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+
+	MockTransport mock;
+	for( int i = 0; i < 5; ++i )
+		mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t22_live_429_exhausted" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "provider_error",
+	       "5 consecutive 429s exhaust the retry budget -> provider_error (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.errorMessage.find( "rate limit" ) != std::string::npos,
+	       "the error message names \"rate limit\" (got '" + h.result.errorMessage + "')" );
+	Check( mock.seenRequests.size() == 5, "the transport saw exactly 5 POSTs (the max attempts)" );
+	Check( waits.size() == 5, "exactly 5 backoff waits were requested (one per 429, including the last before giving up)" );
+	Check( h.result.llmCalls == 0, "none of the 5 429 attempts consumed llmCalls" );
+
+	// ChatTrajectory.cpp OMITS "retry_of" entirely when retryOf < 0 (see
+	// ChatTrajectory.h: "-1 = none") -- so attempt 1's record carries NO
+	// retry_of key at all (matching every other retry family's attempt-1
+	// record, e.g. T12's).  Only attempts 2-5 (retryOf >= 0) carry it.
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	std::vector<int> attempts, retryOfs;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "llm" ) continue;
+		attempts.push_back( static_cast<int>( recs[i].get( "attempt" ).asNumber( -1.0 ) ) );
+		retryOfs.push_back( static_cast<int>( recs[i].get( "retry_of" ).asNumber( -1.0 ) ) );
+	}
+	Check( attempts.size() == 5, "the trajectory carries an honest llm record for each of the 5 429 attempts" );
+	if( attempts.size() == 5 && retryOfs.size() == 5 ) {
+		Check( attempts[0] == 1, "attempt 1 (no retry_of key -- first try)" );
+		Check( attempts[1] == 2 && retryOfs[1] == 1, "attempt 2 / retry_of 1" );
+		Check( attempts[2] == 3 && retryOfs[2] == 2, "attempt 3 / retry_of 2" );
+		Check( attempts[3] == 4 && retryOfs[3] == 3, "attempt 4 / retry_of 3" );
+		Check( attempts[4] == 5 && retryOfs[4] == 4, "attempt 5 / retry_of 4" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T23: an HTTP 429 backoff wait that would exceed the scenario's REMAINING
+//      maxWallMs budget stops the run honestly with terminalStatus
+//      "budget_wall_ms" -- never a sleep call longer than what remains
+//      (here: no sleep call at all, since the very first computed wait
+//      already exceeds the budget).
+//----------------------------------------------------------------------
+static void TestLive429WallBudgetStop()
+{
+	std::printf( "T23: HTTP 429 backoff respects the remaining maxWallMs budget...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	scenario.budgets.maxWallMs = 3000;   // well under the 10000ms fallback wait attempt 1 would need
+
+	MockTransport mock;
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+	mock.responses.push_back( { 200, kBodyFinal, "", 4 } );   // never reached
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t23_live_429_wall_budget" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "budget_wall_ms",
+	       "a 429 whose backoff wait would exceed the remaining wall budget stops honestly (got '" + h.result.terminalStatus + "')" );
+	Check( h.result.budgetHit, "budgetHit is set" );
+	Check( mock.seenRequests.size() == 1, "only the original 429 POST was sent -- the retry never happened" );
+	Check( waits.empty(), "no sleep was dispatched -- the wait would have exceeded the remaining budget" );
+}
+
+//----------------------------------------------------------------------
+// T24: HTTP 429 retries do NOT consume maxLlmCalls -- a scenario capped at
+//      exactly the 2 REAL (successful) rounds it needs still reaches
+//      final_text despite an extra 429 attempt ahead of the first one.
+//----------------------------------------------------------------------
+static void TestLive429DoesNotConsumeLlmCallsBudget()
+{
+	std::printf( "T24: HTTP 429 retries do not consume maxLlmCalls...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "param_edit loads" );
+	scenario.budgets.maxLlmCalls = 2;   // exactly the 2 REAL rounds the scenario needs
+
+	MockTransport mock;
+	mock.responses.push_back( { 429, "{\"error\":{\"message\":\"Rate limit reached. Limit 500000, Used 488104.\"}}", "", 1 } );
+	mock.responses.push_back( { 200, kBodyToolUse, "", 3 } );
+	mock.responses.push_back( { 200, kBodyFinal,   "", 4 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t24_live_429_llm_calls_budget" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+	opts.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "a maxLlmCalls:2 scenario survives a 429-then-200 first round + a normal second round (got '" +
+	       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "llmCalls counts only the 2 SUCCESSFUL rounds, not the 429" );
+	Check( mock.seenRequests.size() == 3, "3 POSTs reached the transport (1 rate-limited + 2 successful)" );
+	Check( waits.size() == 1, "exactly one backoff wait for the single 429" );
+}
+
+//----------------------------------------------------------------------
+// T25: RunEvalMatrix pre-flight auth probe: an HTTP 429 probe response is
+//      NOT classified as a dead credential (429 is neither 401/403 nor a
+//      body matching the auth-failure phrases) and the probe itself is
+//      SINGLE-SHOT -- it never backs off, so the column proceeds straight
+//      into its scenario x repeat loop.
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixAuthProbe429NotFatal()
+{
+	std::printf( "T25: RunEvalMatrix auth probe: HTTP 429 is not auth-fatal and is not backed off...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T25: param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	const std::string kFakeKey = "sk-ant-AUTHPROBE-429-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = ScratchRunDir( "t25_authprobe_429" );
+
+	MockTransport mock;
+	mock.responses.push_back( { 429,
+		"{\"error\":{\"message\":\"Rate limit reached for requests. Limit 500000, Used 488104.\"}}", "", 1 } );   // the auth probe
+	mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+	mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+
+	std::vector<int64_t> waits;
+	AgentEvalMatrixOptions mo;
+	mo.transport = &mock;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+	mo.sleeper = [&]( int64_t ms ) { waits.push_back( ms ); };
+
+	AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+	Check( mr.providersUsed == 1 && mr.providersSkipped == 0,
+	       "T25: a 429 probe response leaves the column USED (not auth-fatal)" );
+	Check( mr.providersAuthFailed == 0, "T25: providersAuthFailed == 0" );
+	Check( mr.runsExecuted == 1, "T25: the column executed" );
+	Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+	       "T25: the FIRST captured request is the auth probe (body contains \"ping\")" );
+	Check( mock.seenRequests.size() == 3,
+	       "T25: exactly 1 probe POST + 2 real-run POSTs reached the transport -- no probe backoff" );
+	Check( waits.empty(), "T25: the sleeper was never invoked -- the probe's 429 is not retried" );
+
+	std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+	Check( !manifest.empty(), "T25: run.manifest.jsonl has a record" );
+	if( !manifest.empty() ) {
+		Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "ok",
+		       "T25: manifest records authProbes.anthropic == \"ok\" (a 429 probe is not auth-fatal)" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T5: KEY-HYGIENE red-prove -- a fake key reaches the wire but no output.
 //----------------------------------------------------------------------
 static void TestKeyHygieneRedProve()
@@ -712,6 +1036,16 @@ static void TestLiveReasoningEffort400RetrySucceeds()
 	opts.runDir = ScratchRunDir( "t15_live_reasoning_effort_retry_succeeds" );
 	opts.transport = &mock;
 	opts.provider = ChatProvider::OpenAI;
+	// A model id UNIQUE to this 400-then-retry sequence (T15b uses its own;
+	// T15c REUSES this one on purpose): AgentChatLoop now memoizes "this
+	// (provider,model) needs reasoning_effort:none" in a PROCESS-WIDE
+	// cache (see ReasoningEffortNoneAlreadyKnown in AgentChatLoop.cpp) so
+	// later sessions against the SAME pair skip the 400 entirely --
+	// exactly what T15c below proves against THIS model id.  Reusing the
+	// codec's default model id here would make this test's own
+	// 400-then-retry sequence order-dependent on whatever OTHER test in
+	// this binary touched that model id first.
+	opts.modelId = "gpt-5.6-terra-t15-unit-test";
 	opts.apiKey = "unit-test-key-not-real";
 
 	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
@@ -739,6 +1073,135 @@ static void TestLiveReasoningEffort400RetrySucceeds()
 	}
 	Check( attempt1 == 1, "exactly one attempt-1 llm record (the 400)" );
 	Check( attempt2RetryOf1 == 1, "exactly one attempt-2/retry_of-1 llm record (the successful retry)" );
+}
+
+//----------------------------------------------------------------------
+// T15b: the reasoning_effort-400 retry (T15) must preserve a user-message
+// image attachment across the rebuilt request -- a vision-shaped mirror of
+// T15, combined with T13's attachment setup.  Guards against a retry path
+// that rebuilds the request body WITHOUT the attachments (a live-baseline
+// hypothesis: gpt-5.6-terra vision runs die inconsistently on the reasoning-
+// effort 400, which was traced to confirm the retry genuinely re-sends the
+// SAME transcript, images included -- not a rebuild-from-scratch that could
+// silently drop them).
+//----------------------------------------------------------------------
+static void TestLiveReasoningEffort400RetryPreservesImages()
+{
+	std::printf( "T15b: reasoning_effort-400 retry preserves a user image attachment...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T15b: param_edit loads" );
+
+	// Same committed PNG T13 uses -- read-only, no scratch-file synthesis.
+	const std::string pngPath = "textures/cel.png";
+	std::string pngBytes;
+	{
+		std::ifstream f( pngPath.c_str(), std::ios::binary );
+		Check( static_cast<bool>( f ), "T15b: textures/cel.png is readable from the repo-root cwd" );
+		std::ostringstream ss; ss << f.rdbuf();
+		pngBytes = ss.str();
+	}
+	Check( !pngBytes.empty(), "T15b: textures/cel.png is non-empty" );
+	Check( scenario.prompts.size() == 1, "T15b: param_edit carries exactly 1 prompt to attach to" );
+	scenario.prompts[0].imagePaths.push_back( pngPath );
+
+	MockTransport mock;
+	mock.responses.push_back( { 400,
+		"{\"error\":{\"message\":\"Function tools with reasoning_effort are "
+		"not supported for gpt-5.6-terra in /v1/chat/completions. To use "
+		"function tools, use /v1/responses or set reasoning_effort to "
+		"'none'.\",\"type\":\"invalid_request_error\","
+		"\"param\":\"reasoning_effort\",\"code\":null}}", "", 3 } );
+	mock.responses.push_back( { 200,
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t15b_live_reasoning_effort_retry_preserves_images" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::OpenAI;
+	// UNIQUE model id (see T15's comment): this test's precondition is an
+	// UN-armed session that genuinely receives the 400 -- a model id some
+	// earlier test already 400ed would be pre-armed by the process-wide
+	// capability cache and never see the 400 at all.
+	opts.modelId = "gpt-5.6-terra-t15b-unit-test";
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T15b: a reasoning_effort-400-then-200 vision round still reaches final_text (got '" +
+	       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "T15b: both the 400 attempt and the retry are counted as llm rounds" );
+	Check( mock.seenRequests.size() == 2, "T15b: the transport saw exactly 2 POSTs (the retry rebuilt the SAME round)" );
+
+	const std::vector<unsigned char> rawBytes( pngBytes.begin(), pngBytes.end() );
+	const std::string expectedB64 = Base64Encode( rawBytes );
+
+	Check( mock.seenRequests.size() == 2 &&
+	       mock.seenRequests[0].body.find( expectedB64 ) != std::string::npos,
+	       "T15b: the FIRST (400) request body already carries the reference image's base64 payload" );
+	Check( mock.seenRequests[0].body.find( "reasoning_effort" ) == std::string::npos,
+	       "T15b: the first request carries no reasoning_effort key" );
+
+	Check( mock.seenRequests.size() == 2 &&
+	       mock.seenRequests[1].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
+	       "T15b: the retry request explicitly sets reasoning_effort:\"none\"" );
+	Check( mock.seenRequests.size() == 2 &&
+	       mock.seenRequests[1].body.find( expectedB64 ) != std::string::npos,
+	       "T15b: the RETRY request body STILL carries the reference image's base64 payload -- the "
+	       "rebuild did not drop the attachment" );
+}
+
+//----------------------------------------------------------------------
+// T15c: PROCESS-WIDE reasoning-effort memoization at the RUNNER level --
+// the root-cause fix for the vision-baseline waste.  T15 above already
+// taught the process-wide capability cache (see
+// ReasoningEffortNoneAlreadyKnown in AgentChatLoop.cpp) that its model id
+// needs reasoning_effort:"none"; a SECOND RunScenarioLive against the
+// SAME (provider, model) -- a brand-new AgentChatLoop, exactly like every
+// new eval cell or GUI session -- must now start pre-armed: ONE POST,
+// no 400, the first request already carrying the override.  Before the
+// memoization, EVERY session against a gpt-5.6-terra-class model re-paid
+// the wasted 400 round-trip (re-sending the full image payload on vision
+// scenarios -- the token cost that rate-limited the live baseline).
+// ORDER DEPENDENCY (deliberate): this test MUST run after T15 in main();
+// it shares T15's model id because the shared cache entry IS the thing
+// under test.
+//----------------------------------------------------------------------
+static void TestLiveReasoningEffortMemoizedAcrossSessions()
+{
+	std::printf( "T15c: reasoning_effort lesson is memoized process-wide -- a later session never pays the 400...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T15c: param_edit loads" );
+
+	// ONE canned response only: the run must never receive a 400, so a
+	// single 200 final-text is the whole conversation.
+	MockTransport mock;
+	mock.responses.push_back( { 200,
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t15c_live_reasoning_effort_memoized" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::OpenAI;
+	opts.modelId = "gpt-5.6-terra-t15-unit-test";   // T15's model id -- the shared cache entry under test
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T15c: the pre-armed session reaches final_text (got '" +
+	       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 1, "T15c: exactly ONE llm round -- the wasted 400 round-trip is gone" );
+	Check( mock.seenRequests.size() == 1, "T15c: the transport saw exactly 1 POST" );
+	Check( !mock.seenRequests.empty() &&
+	       mock.seenRequests[0].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
+	       "T15c: the FIRST request already carries reasoning_effort:\"none\" (pre-armed from the cache)" );
 }
 
 //----------------------------------------------------------------------
@@ -834,18 +1297,18 @@ static void TestRunConfigLoad()
 		Check( cfg.providers.size() == 4, "all 4 distinct-model 'local' provider rows are captured, none dropped/merged" );
 	}
 
-	// The committed local_shootout.json (5 provider rows: 1 gemini + 4
-	// distinct-model local) loads cleanly end-to-end.
+	// The committed local_shootout.json (8 provider rows: gemini + openai +
+	// xai + 5 distinct-model local) loads cleanly end-to-end.
 	{
 		AgentEvalRunConfig cfg; std::string err;
 		Check( LoadEvalRunConfig( "evals/runconfigs/local_shootout.json", cfg, err ),
 		       "evals/runconfigs/local_shootout.json loads (" + err + ")" );
 		Check( cfg.scenarios.size() == 5, "local_shootout.json: 5 scenarios (reserved_name_recovery + its reserved_name_clarify sibling)" );
-		Check( cfg.providers.size() == 7, "local_shootout.json: 7 providers (gemini + openai + xai + 4 distinct-model local)" );
+		Check( cfg.providers.size() == 8, "local_shootout.json: 8 providers (gemini + openai + xai + 5 distinct-model local)" );
 		int localCount = 0;
 		for( std::size_t i = 0; i < cfg.providers.size(); ++i )
 			if( cfg.providers[i].provider == "local" ) ++localCount;
-		Check( localCount == 4, "local_shootout.json: 4 'local' rows survive loading (not deduped by provider name)" );
+		Check( localCount == 5, "local_shootout.json: 5 'local' rows survive loading (not deduped by provider name)" );
 		Check( cfg.repeats == 3, "local_shootout.json: repeats == 3" );
 		Check( cfg.runDir == "evals/runs/local_shootout", "local_shootout.json: runDir captured" );
 	}
@@ -915,6 +1378,7 @@ static void TestRunEvalMatrix()
 		cfg.runDir = ScratchRunDir( "t7_matrix_exec" );
 
 		MockTransport mock;
+		mock.responses.push_back( { 200, "{}", "", 1 } );   // the pre-flight auth probe (credential looks live)
 		mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
 		mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
 		mock.repeatLast = true;
@@ -927,6 +1391,7 @@ static void TestRunEvalMatrix()
 
 		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr.providersUsed == 1 && mr.providersSkipped == 0, "provider with a key is USED" );
+		Check( mr.providersAuthFailed == 0, "a passing auth probe leaves providersAuthFailed == 0" );
 		Check( mr.runsExecuted == 1 && mr.runsSkipped == 0, "1 scenario x 1 provider x 1 repeat = 1 run executed" );
 
 		// The documented per-run layout: <runDir>/<id>__anthropic__<model>__r1/.
@@ -1064,6 +1529,7 @@ static void TestRunEvalMatrixManifest()
 	cfg.runDir = ScratchRunDir( "t7b_matrix_manifest" );
 
 	MockTransport mock;
+	mock.responses.push_back( { 200, "{}", "", 1 } );   // the pre-flight auth probe (credential looks live)
 	mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
 	mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
 	mock.repeatLast = true;
@@ -1265,6 +1731,7 @@ static void TestRunEvalMatrixResumeSkipsCompleted()
 	// First invocation: completes normally.
 	{
 		MockTransport mock1;
+		mock1.responses.push_back( { 200, "{}", "", 1 } );   // the pre-flight auth probe
 		mock1.responses.push_back( { 200, kBodyToolUse, "", 2 } );
 		mock1.responses.push_back( { 200, kBodyFinal,   "", 2 } );
 		mock1.repeatLast = true;
@@ -1282,15 +1749,19 @@ static void TestRunEvalMatrixResumeSkipsCompleted()
 	Check( !trajAfterFirst.empty(), "first invocation: trajectory.jsonl has content" );
 
 	// Second invocation into the SAME runDir: must SKIP the already-complete
-	// run and never touch the transport.
+	// run.  The pre-flight auth probe still fires ONCE (unconditionally, per
+	// resolved provider column, before any per-scenario resume check), so
+	// the mock needs exactly one canned probe response.
 	{
-		MockTransport mock2;   // must NEVER be called
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- the resumed cell never re-executes
 		mo.transport = &mock2;
 
 		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr2.runsExecuted == 0, "second invocation: 0 runs executed" );
 		Check( mr2.runsAlreadyComplete == 1, "second invocation: 1 run skipped as already-complete" );
-		Check( mock2.seenRequests.empty(), "second invocation: the transport was NEVER called" );
+		Check( mock2.seenRequests.size() == 1,
+		       "second invocation: the transport is called exactly ONCE (the auth probe, no cell re-executes)" );
 	}
 
 	// The trajectory file is untouched by the second (skipped) invocation --
@@ -1432,15 +1903,20 @@ static void TestRunEvalMatrixResumeContentAware()
 	}
 
 	// (2) Second invocation, SAME (unmodified) scenario: the stamped hash
-	// matches -> skipped-as-complete, transport NEVER touched.
+	// matches -> skipped-as-complete.  The pre-flight auth probe still fires
+	// ONCE (unconditionally, per resolved provider column, before any
+	// per-scenario resume check), so the mock needs exactly one canned
+	// probe response; the resumed cell itself never re-executes.
 	{
-		MockTransport mock2;   // must NEVER be called
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only
 		mo.transport = &mock2;
 
 		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr2.runsExecuted == 0, "second invocation (unchanged scenario): 0 runs executed" );
 		Check( mr2.runsAlreadyComplete == 1, "second invocation: 1 run skipped as already-complete (hash matched)" );
-		Check( mock2.seenRequests.empty(), "second invocation: the transport was NEVER called" );
+		Check( mock2.seenRequests.size() == 1,
+		       "second invocation: the transport is called exactly ONCE (the auth probe, no cell re-executes)" );
 	}
 
 	// (3) MUTATE the scenario's checkpoints[] so its content hash differs, then
@@ -1508,12 +1984,14 @@ static void TestRunEvalMatrixResumeContentAware()
 		AgentEvalScenario s2b; std::string e2b;   // FRESH reload -> independent in-memory object
 		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", s2b, e2b ), "param_edit reloads (b)" );
 		std::vector<AgentEvalScenario> v2b; v2b.push_back( s2b );
-		MockTransport m5b;   // must NEVER be called
+		MockTransport m5b;
+		m5b.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- the resumed cell never re-executes
 		mo.transport = &m5b;
 		AgentEvalMatrixResult mr5 = RunEvalMatrix( cfg2, v2b, mo );
 		Check( mr5.runsAlreadyComplete == 1 && mr5.runsExecuted == 0,
 		       "a reloaded-from-disk unchanged scenario hashes IDENTICALLY -> skipped (determinism)" );
-		Check( m5b.seenRequests.empty(), "reload-determinism: transport never called on the skip" );
+		Check( m5b.seenRequests.size() == 1,
+		       "reload-determinism: the transport is called exactly ONCE (the auth probe) on the skip" );
 	}
 
 	// (6) Mutate the scenario's interventions[] -- must ALSO change the hash
@@ -1650,6 +2128,560 @@ static void TestRunEvalMatrixProviderModelCollision()
 	Check( mock.seenRequests.empty(), "the transport was NEVER called on a refused matrix" );
 }
 
+//----------------------------------------------------------------------
+// T12b: RunEvalMatrix's PRE-FLIGHT AUTH PROBE.  Once a column's key
+// resolves, RunEvalMatrix sends ONE minimal "ping" request through the SAME
+// codec/transport path a real run uses, BEFORE that column's scenario x
+// repeat loop runs, and classifies the response -- see RunEvalMatrix's doc
+// comment in AgentEvalRunner.h.  Five sub-cases:
+//   (A) the probe passes (a plain 200) -> the column executes normally, the
+//       FIRST captured request is the probe (body contains "ping"),
+//       providersAuthFailed == 0, and the manifest records
+//       authProbes.anthropic == "ok".
+//   (B) the probe 401s -> the column is SKIPPED, providersAuthFailed == 1,
+//       runsSkipped == scenarios x reps, the transport is called EXACTLY
+//       once (the probe itself -- no run ever starts), the log line
+//       mentions "auth probe", the manifest records "auth-failed", and the
+//       fake key appears in NO output file.
+//   (C) the probe 400s with an Anthropic-style "credit balance" body -> same
+//       SKIP outcome as (B) (the exhausted-credits case).
+//   (D) the probe 500s -> NOT auth-fatal: the column proceeds and the run
+//       executes against the mock (a transient server hiccup must never
+//       cost a provider its whole column).
+//   (E) a keyless "local" provider is NEVER probed -- the FIRST captured
+//       request is the run itself, and the manifest records
+//       authProbes.local == "skipped-keyless".
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixAuthProbe()
+{
+	std::printf( "T12b: RunEvalMatrix pre-flight auth probe...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T12b: param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	// (A) The probe passes -> the column executes.
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-A-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_ok" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 200, kBodyFinal, "", 1 } );   // the auth probe -- a plain 200
+		mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock.repeatLast = true;
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 1 && mr.providersSkipped == 0,
+		       "T12b(A): a passing probe leaves the column USED" );
+		Check( mr.providersAuthFailed == 0, "T12b(A): providersAuthFailed == 0" );
+		Check( mr.runsExecuted == 1, "T12b(A): the column executed" );
+		Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+		       "T12b(A): the FIRST captured request is the auth probe (body contains \"ping\")" );
+		Check( mock.seenRequests.size() >= 2,
+		       "T12b(A): the probe AND at least one real run request reached the transport" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(A): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "ok",
+			       "T12b(A): manifest records authProbes.anthropic == \"ok\"" );
+		}
+	}
+
+	// (B) The probe 401s -> the column is SKIPPED, the transport is called
+	// EXACTLY once (no run ever starts), and the fake key never leaks.
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-B-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 2;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_401" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 401, "{\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}", "", 1 } );
+
+		std::vector<std::string> logLines;
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+		mo.log = [&]( const std::string& m ) { logLines.push_back( m ); };
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 0, "T12b(B): a 401 probe leaves the column NOT used" );
+		Check( mr.providersSkipped == 1, "T12b(B): providersSkipped == 1" );
+		Check( mr.providersAuthFailed == 1, "T12b(B): providersAuthFailed == 1" );
+		Check( mr.runsSkipped == static_cast<int>( scenarios.size() ) * cfg.repeats,
+		       "T12b(B): runsSkipped == scenarios x repeats" );
+		Check( mr.runsExecuted == 0, "T12b(B): no run ever started" );
+		Check( mock.seenRequests.size() == 1,
+		       "T12b(B): the transport was called EXACTLY once (the probe -- no run ever starts)" );
+
+		bool sawAuthProbeSkip = false;
+		for( std::size_t i = 0; i < logLines.size(); ++i )
+			if( logLines[i].find( "auth probe" ) != std::string::npos ) sawAuthProbeSkip = true;
+		Check( sawAuthProbeSkip, "T12b(B): a log line mentions \"auth probe\"" );
+
+		Check( !AnyFileUnderContains( cfg.runDir, kFakeKey ),
+		       "T12b(B): the fake key appears in NO output file" );
+		for( std::size_t i = 0; i < logLines.size(); ++i )
+			Check( logLines[i].find( kFakeKey ) == std::string::npos,
+			       "T12b(B): no log line contains the fake key" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(B): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "auth-failed",
+			       "T12b(B): manifest records authProbes.anthropic == \"auth-failed\"" );
+			Check( manifest.back().get( "result" ).get( "providersAuthFailed" ).asNumber( -1 ) == 1,
+			       "T12b(B): manifest result.providersAuthFailed == 1" );
+		}
+	}
+
+	// (C) The probe 400s with an Anthropic-style exhausted-credits body ->
+	// the same SKIP outcome as (B).
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-C-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_credit_balance" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 400,
+			"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+			"\"message\":\"Your credit balance is too low to access the Anthropic API. "
+			"Please go to Plans & Billing to upgrade or purchase credits.\"}}", "", 1 } );
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersAuthFailed == 1, "T12b(C): an exhausted-credits 400 body IS classified as a dead credential" );
+		Check( mr.runsExecuted == 0, "T12b(C): no run ever started" );
+		Check( mock.seenRequests.size() == 1, "T12b(C): the transport was called EXACTLY once (the probe)" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(C): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "auth-failed",
+			       "T12b(C): manifest records authProbes.anthropic == \"auth-failed\"" );
+		}
+	}
+
+	// (D) The probe 500s -> NOT auth-fatal: the column proceeds and the run
+	// executes against the mock.
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-D-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_500" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 500, "{\"error\":\"internal server error\"}", "", 1 } );   // the probe -- a transient 5xx
+		mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock.repeatLast = true;
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersAuthFailed == 0, "T12b(D): a transient 5xx probe response is NOT auth-fatal" );
+		Check( mr.providersUsed == 1 && mr.providersSkipped == 0,
+		       "T12b(D): the column proceeds (not skipped) after a 500 probe" );
+		Check( mr.runsExecuted == 1, "T12b(D): the run executes against the mock" );
+		Check( mock.seenRequests.size() >= 2,
+		       "T12b(D): the probe AND at least one real run request reached the transport" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(D): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "ok",
+			       "T12b(D): manifest records authProbes.anthropic == \"ok\" (a 5xx does not count as a dead credential)" );
+		}
+	}
+
+	// (E) A keyless "local" provider is NEVER probed.
+	{
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "local"; p.model = "qwen3:32b";   // keyEnvVar left EMPTY -- keyless by design
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_local_skipped" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 200,
+			"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+			"\"finish_reason\":\"stop\"}],"
+			"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 2 } );
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = []( const std::string& ) -> const char* { return nullptr; };   // never consulted for "local"
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 1 && mr.providersAuthFailed == 0,
+		       "T12b(E): the keyless local column is used, never auth-probed" );
+		Check( mr.runsExecuted == 1, "T12b(E): the local run executes" );
+		Check( mock.seenRequests.size() == 1,
+		       "T12b(E): the transport was called EXACTLY once (the run itself -- no probe)" );
+		Check( mock.seenRequests[0].body.find( "ping" ) == std::string::npos,
+		       "T12b(E): the FIRST (and only) captured request is the run, not a probe" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(E): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "local" ).asString() == "skipped-keyless",
+			       "T12b(E): manifest records authProbes.local == \"skipped-keyless\"" );
+		}
+	}
+}
+
+//----------------------------------------------------------------------
+// Image-reconstruction Wave 1, T13: a scenario prompt carrying a
+// reference image reaches the model as a REAL ChatAttachment --
+// end-to-end through RunScenarioLive over the mock transport (the same
+// seam T2/TestLiveRunViaMock drives), proving the pre-flight load +
+// base64 encode + AddUserMessage attachments overload + trajectory
+// recording all wire together.
+//----------------------------------------------------------------------
+static void TestPromptImagesEndToEnd()
+{
+	std::printf( "T13: a prompt carrying a reference image reaches the wire as a real attachment...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+	       "T13: param_edit loads (" + err + ")" );
+
+	// Attach a real, small, COMMITTED PNG (textures/cel.png, 319 bytes) to
+	// the scenario's single prompt -- read-only, no scratch-file synthesis
+	// needed for this end-to-end check (TestPromptImagesMatrixResume below
+	// needs a MUTABLE file, so it decodes its own scratch PNG instead).
+	const std::string pngPath = "textures/cel.png";
+	std::string pngBytes;
+	{
+		std::ifstream f( pngPath.c_str(), std::ios::binary );
+		Check( static_cast<bool>( f ), "T13: textures/cel.png is readable from the repo-root cwd" );
+		std::ostringstream ss; ss << f.rdbuf();
+		pngBytes = ss.str();
+	}
+	Check( !pngBytes.empty(), "T13: textures/cel.png is non-empty" );
+	Check( scenario.prompts.size() == 1, "T13: param_edit carries exactly 1 prompt to attach to" );
+	scenario.prompts[0].imagePaths.push_back( pngPath );
+
+	// A single final-text turn is enough to prove the attachment reached
+	// the wire -- no tool call is needed for this check.
+	MockTransport mock;
+	mock.responses.push_back( { 200, kBodyFinal, "", 5 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t13_prompt_images_e2e" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::Anthropic;
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T13: run reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 1, "T13: exactly 1 llm round (no tool calls)" );
+	Check( mock.seenRequests.size() == 1, "T13: exactly 1 POST reached the mock transport" );
+
+	// The BUILT request body carries the base64 payload -- proving the
+	// pre-flight-loaded bytes actually reached the wire, not just the
+	// attachment COUNT.
+	const std::vector<unsigned char> rawBytes( pngBytes.begin(), pngBytes.end() );
+	const std::string expectedB64 = Base64Encode( rawBytes );
+	Check( !mock.seenRequests.empty() &&
+	       mock.seenRequests[0].body.find( expectedB64 ) != std::string::npos,
+	       "T13: the request body sent to the transport contains the reference image's base64 payload" );
+
+	// The trajectory's `user` record reflects the attachment.
+	// ChatTrajectory's TrajectoryUserRecord.attachments is a COUNT, never
+	// the bytes -- ChatAttachment's doc comment forbids ever logging
+	// base64Data -- so this is the honest field to assert on.  A
+	// sub-assert on the recorded llm round's requestParamsJson containing
+	// the base64 was considered and SKIPPED: AgentChatLoop::
+	// ExtractRequestParams (AgentChatLoop.cpp) deliberately strips the
+	// "messages"/"contents" array -- where an image block/part would live
+	// -- before a request is ever handed to the trajectory recorder, so no
+	// image byte reaches ANY recorded/logged field by design (verified by
+	// reading ExtractRequestParams; this assert would always vacuously
+	// fail-to-find, proving nothing).
+	std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+	bool sawUserAttachment = false;
+	for( std::size_t i = 0; i < recs.size(); ++i ) {
+		if( recs[i].get( "run_type" ).asString() != "user" ) continue;
+		if( recs[i].get( "attachments" ).asNumber( -1.0 ) == 1.0 ) sawUserAttachment = true;
+	}
+	Check( sawUserAttachment, "T13: the trajectory's user record carries attachments==1" );
+}
+
+// A minimal, well-formed 1x1 transparent PNG (67 bytes decoded) -- the
+// widely-used smallest-valid-PNG literal.  Used ONLY by
+// TestPromptImagesMatrixResume, which needs a file it can MUTATE between
+// matrix invocations (textures/cel.png above is a real committed asset
+// and must never be touched by a test).
+static const char* kMinimalPngBase64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+//----------------------------------------------------------------------
+// Image-reconstruction Wave 1, T14: RunEvalMatrix resume is content-aware
+// for a referenced image's BYTES, mirroring T11(7)'s path-backed-scene-
+// bytes case above -- editing the image file in place (same path,
+// different bytes) must invalidate the cached cell and force a re-run.
+//----------------------------------------------------------------------
+static void TestPromptImagesMatrixResume()
+{
+	std::printf( "T14: RunEvalMatrix resume is content-aware for a referenced image's BYTES...\n" );
+
+	AgentEvalScenario base;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", base, err ),
+	       "T14: param_edit loads (for its scene text)" );
+
+	const std::string dir = ScratchRunDir( "t14_prompt_images_matrix_resume" );
+	const std::string pngPath = dir + "_img/ref.png";
+
+	std::vector<unsigned char> pngBytes;
+	Check( Base64Decode( kMinimalPngBase64, pngBytes ), "T14: the embedded minimal PNG base64 decodes" );
+	Check( WriteFile( pngPath, std::string( pngBytes.begin(), pngBytes.end() ) ),
+	       "T14: wrote the initial reference image" );
+
+	AgentEvalScenario scenario;
+	scenario.id = "t14_img_resume";
+	scenario.title = "t14_img_resume";
+	scenario.sceneInline = base.sceneInline;
+	scenario.autonomy = "commit";
+	AgentEvalPrompt prompt;
+	prompt.text = "Match this reference photo.";
+	prompt.imagePaths.push_back( pngPath );
+	scenario.prompts.push_back( prompt );
+
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = dir;
+
+	const std::string kFakeKey = "sk-ant-T14-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalMatrixOptions mo;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	// (1) First invocation: executes.  The FIRST canned response is the
+	// pre-flight auth probe's (a plain 200 -- credential looks live), THEN
+	// the run's own final-text body.
+	{
+		MockTransport mock1;
+		mock1.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
+		mock1.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock1;
+		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr1.runsExecuted == 1 && mr1.runsAlreadyComplete == 0, "T14: first invocation executes" );
+		Check( !mock1.seenRequests.empty(), "T14: first invocation calls the transport" );
+	}
+
+	// (2) Second invocation, unchanged image bytes: skipped as complete.
+	// The pre-flight auth probe fires UNCONDITIONALLY per resolved provider
+	// column, BEFORE the per-scenario resume check runs (it has no way to
+	// know yet that every cell will resume) -- so the mock still sees
+	// exactly the ONE probe request, even though the resumed cell itself
+	// never re-executes.
+	{
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- no cell re-executes
+		mo.transport = &mock2;
+		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr2.runsExecuted == 0 && mr2.runsAlreadyComplete == 1,
+		       "T14: second invocation (unchanged image) is skipped as already-complete" );
+		Check( mock2.seenRequests.size() == 1,
+		       "T14: second invocation calls the transport exactly ONCE (the auth probe, no cell re-executes)" );
+	}
+
+	// (3) MUTATE the referenced image's BYTES in place (same path) -- the
+	// cell must be treated as stale and re-executed.
+	{
+		std::vector<unsigned char> mutated = pngBytes;
+		mutated.push_back( 0x00 );   // appended byte -- content differs, path unchanged
+		Check( WriteFile( pngPath, std::string( mutated.begin(), mutated.end() ) ),
+		       "T14: mutated the reference image's bytes in place" );
+
+		MockTransport mock3;
+		mock3.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
+		mock3.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock3;
+		AgentEvalMatrixResult mr3 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr3.runsExecuted == 1 && mr3.runsAlreadyComplete == 0,
+		       "T14: third invocation (mutated image BYTES, same path) is RE-EXECUTED" );
+		Check( !mock3.seenRequests.empty(), "T14: third invocation calls the transport (genuine re-run)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// P1-1, T15: RunEvalMatrix resume is content-aware for a render
+// checkpoint's compareToImage reference image's BYTES, mirroring T14's
+// prompt-image resume case above -- editing the referenced PNG in place
+// (same path, different bytes) must invalidate the cached cell and force
+// a re-run, even though the checkpoints[] JSON itself (the "compareToImage"
+// PATH STRING) never changes.  Before P1-1, ScenarioContentHash's
+// checkpoints= line only hashed that path string, so this exact mutation
+// left the cell wrongly "current" -- the bug this test proves fixed.
+//----------------------------------------------------------------------
+static void TestCompareToImageMatrixResume()
+{
+	std::printf( "T15: RunEvalMatrix resume is content-aware for a compareToImage reference's BYTES...\n" );
+
+	AgentEvalScenario base;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", base, err ),
+	       "T15: param_edit loads (for its scene text)" );
+
+	const std::string dir = ScratchRunDir( "t15_compare_image_matrix_resume" );
+	const std::string pngPath = dir + "_img/cmp_ref.png";
+
+	// Render a genuine reference PNG from the SAME scene (via a throwaway
+	// live probe run, reusing THIS file's own MockTransport/RunScenarioLive
+	// plumbing rather than a replay fixture) so the compareToImage
+	// checkpoint decodes a well-formed PNG on every invocation -- a clean
+	// decode keeps this test from masking a genuine crash behind a
+	// "PNG decode failed" no-op.  No explicit width/height is requested
+	// below, so the grading render adopts the reference's dims (the
+	// scene's authored 24x24 film) -- self-consistent, like T4c's
+	// compareToImage self-consistency case in AgentEvalCheckTest.cpp.
+	{
+		AgentEvalScenario probe = base;
+		probe.id = "t15_probe";
+		probe.title = "t15_probe";
+		probe.checkpoints = JsonValue::MakeArray();
+
+		AgentEvalLiveRunOptions plo;
+		plo.runDir = dir + "_probe";
+		MockTransport probeMock;
+		probeMock.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		plo.transport = &probeMock;
+		plo.provider  = ChatProvider::Anthropic;
+		plo.modelId   = "claude-sonnet-5";
+		plo.apiKey    = "sk-ant-T15-PROBE-FAKEKEY-DO-NOT-LEAK";
+
+		AgentEvalRunHandle ph = RunScenarioLive( probe, plo );
+		Check( ph.dispatcher != nullptr && ph.dispatcher->Session() != nullptr,
+		       "T15: probe run has a live session to render the reference" );
+		if( ph.dispatcher && ph.dispatcher->Session() ) {
+			AgentRenderParams rp;   // no overrides -- the scene's authored 24x24 film
+			AgentRenderResult rr = ph.dispatcher->Session()->Render( rp );
+			Check( rr.ok && !rr.png.empty(), "T15: probe render produced PNG bytes for the reference image" );
+			Check( WriteFile( pngPath, std::string( rr.png.begin(), rr.png.end() ) ),
+			       "T15: wrote the initial compareToImage reference" );
+		}
+	}
+
+	AgentEvalScenario scenario = base;
+	scenario.id = "t15_cmp_resume";
+	scenario.title = "t15_cmp_resume";
+	{
+		JsonValue cp = JsonValue::MakeObject();
+		cp.set( "kind", JsonValue::MakeString( "render" ) );
+		cp.set( "compareToImage", JsonValue::MakeString( pngPath ) );
+		cp.set( "rmseMax", JsonValue::MakeNumber( 1.0 ) );   // generous -- pass/fail is irrelevant to resume mechanics
+		JsonValue cps = JsonValue::MakeArray();
+		cps.push_back( cp );
+		scenario.checkpoints = cps;
+	}
+
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	AgentEvalRunConfig cfg;
+	AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+	cfg.providers.push_back( p );
+	cfg.repeats = 1;
+	cfg.runDir = dir;
+
+	const std::string kFakeKey = "sk-ant-T15-FAKEKEY-DO-NOT-LEAK";
+	AgentEvalMatrixOptions mo;
+	mo.envLookup = [&]( const std::string& name ) -> const char* {
+		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+	};
+
+	// (1) First invocation: executes.  The FIRST canned response is the
+	// pre-flight auth probe's (a plain 200), THEN the run's own final-text
+	// body.
+	{
+		MockTransport mock1;
+		mock1.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
+		mock1.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock1;
+		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr1.runsExecuted == 1 && mr1.runsAlreadyComplete == 0, "T15: first invocation executes" );
+		Check( !mock1.seenRequests.empty(), "T15: first invocation calls the transport" );
+	}
+
+	// (2) Second invocation, unchanged reference bytes: skipped as complete.
+	// The pre-flight auth probe still fires ONCE (unconditionally, per
+	// resolved provider column, before any per-scenario resume check), so
+	// the mock needs exactly one canned probe response.
+	{
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- the resumed cell never re-executes
+		mo.transport = &mock2;
+		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr2.runsExecuted == 0 && mr2.runsAlreadyComplete == 1,
+		       "T15: second invocation (unchanged reference) is skipped as already-complete" );
+		Check( mock2.seenRequests.size() == 1,
+		       "T15: second invocation calls the transport exactly ONCE (the auth probe, no cell re-executes)" );
+	}
+
+	// (3) MUTATE the compareToImage reference's BYTES in place (same path,
+	// checkpoints[] JSON byte-identical) -- P1-1's fix means the cell must
+	// be treated as stale and re-executed.
+	{
+		std::ifstream rf( pngPath.c_str(), std::ios::binary );
+		std::string bytes( ( std::istreambuf_iterator<char>( rf ) ), std::istreambuf_iterator<char>() );
+		rf.close();
+		bytes.push_back( '\0' );   // appended byte -- content differs, path unchanged
+		Check( WriteFile( pngPath, bytes ), "T15: mutated the reference image's bytes in place" );
+
+		MockTransport mock3;
+		mock3.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
+		mock3.responses.push_back( { 200, kBodyFinal, "", 2 } );
+		mo.transport = &mock3;
+		AgentEvalMatrixResult mr3 = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr3.runsExecuted == 1 && mr3.runsAlreadyComplete == 0,
+		       "T15: third invocation (mutated compareToImage BYTES, same path) is RE-EXECUTED" );
+		Check( !mock3.seenRequests.empty(), "T15: third invocation calls the transport (genuine re-run)" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalLiveTransportTest (Eval-harness slice E4: live headless runner) ===\n" );
@@ -1665,9 +2697,17 @@ int main()
 	TestLiveHttp5xxRetryStillFails();
 	TestLiveHttp400NotRetried();
 	TestLiveReasoningEffort400RetrySucceeds();
+	TestLiveReasoningEffort400RetryPreservesImages();
+	TestLiveReasoningEffortMemoizedAcrossSessions();   // MUST follow T15 (shares its model id -- see its header)
 	TestLiveTransportRetrySucceeds();
 	TestLiveTransportRetryStillFails();
 	TestLiveTransportRetryDoesNotStackWith5xx();
+	TestLive429RetrySucceeds();
+	TestLive429BodyHintParsing();
+	TestLive429ExponentialFallback();
+	TestLive429ExhaustedAttempts();
+	TestLive429WallBudgetStop();
+	TestLive429DoesNotConsumeLlmCallsBudget();
 	TestRunConfigLoad();
 	TestRunEvalMatrix();
 	TestRunEvalMatrixManifest();
@@ -1676,6 +2716,11 @@ int main()
 	TestRunEvalMatrixResumeRerunsPartial();
 	TestRunEvalMatrixResumeContentAware();
 	TestRunEvalMatrixProviderModelCollision();
+	TestRunEvalMatrixAuthProbe();
+	TestRunEvalMatrixAuthProbe429NotFatal();
+	TestPromptImagesEndToEnd();
+	TestPromptImagesMatrixResume();
+	TestCompareToImageMatrixResume();
 
 	std::printf( "=== AgentEvalLiveTransportTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

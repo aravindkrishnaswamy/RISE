@@ -22,21 +22,29 @@
 #include "AgentSession.h"
 #include "AgentRpc.h"
 #include "AgentDiagnostic.h"
+#include "Base64.h"   // image-reconstruction Wave 1: Base64Encode for reference-image attachments
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 #include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
 #include "../Interfaces/IJobPriv.h"                // propose-mode mock-Owner: RISE_CreateJobPriv + IJobPriv::release/LoadAsciiSceneViaCst
 #include "../SceneEditor/SceneEditController.h"    // propose-mode mock-Owner: the unstarted headless controller ProposePatch stages against
+#include "../Interfaces/IRasterImageReader.h"      // image-reconstruction Wave 2: render "compareToImage" decodes a reference PNG (brings RISEColor + COLOR_SPACE via Color.h)
+#include "../RISE_API.h"                           // image-reconstruction Wave 2: RISE_API_CreatePNGReader / RISE_API_CreateCompatibleMemoryBuffer -- decode a PNG through RISE's OWN reader (png_painter's decoder)
 
+#include <algorithm> // std::max / std::min -- render channelBalanceMax ratio
 #include <cctype>
 #include <cmath>     // std::isfinite -- numeric param_equals tolerance
 #include <cstdint>   // std::uint64_t -- ScenarioContentHash's FNV-1a accumulator
 #include <cstdio>
 #include <cstdlib>   // std::strtod -- numeric param_equals token parse
+#include <cstring>   // std::strlen -- ParseRateLimit429HintMs phrase-length skip
+#include <chrono>    // std::chrono::milliseconds -- the real (non-injected) HTTP 429 backoff sleep
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <thread>    // std::this_thread::sleep_for -- the real (non-injected) HTTP 429 backoff sleep
 
 namespace RISE
 {
@@ -113,6 +121,23 @@ namespace RISE
 				std::filesystem::path p( dir );
 				p /= leaf;
 				return p.string();
+			}
+
+			//! Lower-cased file extension (including the leading '.'), or ""
+			//! when `path` has no extension -- the DOT past the last path
+			//! separator, so a directory component containing '.' (e.g.
+			//! "evals/refs.d/foo") never misparses as an extension.  Used by
+			//! RunScenarioDriven's reference-image pre-flight to pick a
+			//! ChatAttachment mimeType from a prompt's images[] path.
+			std::string FileExtensionLower( const std::string& path )
+			{
+				const std::size_t slash = path.find_last_of( "/\\" );
+				const std::size_t dot = path.find_last_of( '.' );
+				if( dot == std::string::npos || ( slash != std::string::npos && dot < slash ) )
+					return std::string();
+				std::string ext = path.substr( dot );
+				for( char& c : ext ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+				return ext;
 			}
 
 			//----------------------------------------------------------
@@ -415,10 +440,22 @@ namespace RISE
 			//! op ignores them entirely, so an op-less/unknown-op checkpoint
 			//! leaves them unchecked here (an unused stray field is out of
 			//! this fix's scope; CheckDocumentKind still runs and grades the
-			//! actual op normally).
+			//! actual op normally).  The three TARGET-based ops (param_equals /
+			//! param_range / param_references_kind) additionally accept an
+			//! ANY-OF-KIND form -- omit "target" (or leave it empty) and supply
+			//! a non-empty "chunkKind" to grade "ANY chunk of this kind
+			//! satisfies the assertion" existentially.  A target-less op WITHOUT
+			//! a chunkKind is a rubric bug (it addresses no chunk at all) and is
+			//! rejected LOUDLY here rather than deferred to a runtime failure.
+			//! The optional any-of-kind "where" co-binding filter (equality/range
+			//! entries) is validated here and rejected on the named-target form;
+			//! the "param_series_orbit" op is validated as any-of-kind-only with
+			//! bounded thresholds (minKeyframes>=2, minAngularSpreadDeg in
+			//! (0,360], maxRadiusRatio>1, centerWithin={x,z,radius}), plus an
+			//! optional non-empty "timeParam" (defaults to "time" at check time).
 			bool ValidateDocumentCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
-				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind" };
+				static const char* const kStringFields[] = { "op", "target", "param", "value", "name", "chunkKind", "referencedKind", "timeParam" };
 				for( const char* f : kStringFields )
 					if( !RequireFieldType( cp, f, JsonValue::Type::String, scenarioId, idx, f, err ) ) return false;
 				if( !RequireFieldType( cp, "numeric", JsonValue::Type::Bool, scenarioId, idx, "numeric", err ) ) return false;
@@ -431,6 +468,114 @@ namespace RISE
 				} else if( op == "param_range" ) {
 					if( !RequireArrayOfType( cp, "min", JsonValue::Type::Number, scenarioId, idx, "min", err ) ) return false;
 					if( !RequireArrayOfType( cp, "max", JsonValue::Type::Number, scenarioId, idx, "max", err ) ) return false;
+				}
+
+				// ANY-OF-KIND guard: for the three TARGET-based ops, a missing/
+				// empty "target" is legal ONLY when a non-empty "chunkKind" is
+				// present (the existential form).  Reject the target-less,
+				// chunkKind-less shape at load rather than at check time.
+				if( op == "param_equals" || op == "param_range" || op == "param_references_kind" ) {
+					const bool hasTarget = cp.has( "target" ) && cp.get( "target" ).isString() && !cp.get( "target" ).asString().empty();
+					const bool hasChunkKind = cp.has( "chunkKind" ) && cp.get( "chunkKind" ).isString() && !cp.get( "chunkKind" ).asString().empty();
+					if( !hasTarget && !hasChunkKind ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op '" + op +
+						      "' has no \"target\" -- the any-of-kind form REQUIRES a non-empty \"chunkKind\"";
+						return false;
+					}
+				}
+
+				// param_series_orbit is ANY-OF-KIND ONLY: it requires a
+				// non-empty "chunkKind" and a non-empty string "param", takes
+				// NO named "target", and its orbit thresholds have hard bounds
+				// (minKeyframes >= 2; minAngularSpreadDeg in (0,360];
+				// maxRadiusRatio > 1 when present; centerWithin is {x,z,radius}).
+				if( op == "param_series_orbit" ) {
+					const bool hasTarget = cp.has( "target" ) && cp.get( "target" ).isString() && !cp.get( "target" ).asString().empty();
+					const bool hasChunkKind = cp.has( "chunkKind" ) && cp.get( "chunkKind" ).isString() && !cp.get( "chunkKind" ).asString().empty();
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "] op 'param_series_orbit'";
+					if( hasTarget ) { err = pfx + " is any-of-kind only -- it takes no \"target\""; return false; }
+					if( !hasChunkKind ) { err = pfx + " REQUIRES a non-empty \"chunkKind\""; return false; }
+					if( !cp.has( "param" ) || !cp.get( "param" ).isString() || cp.get( "param" ).asString().empty() ) {
+						err = pfx + " REQUIRES a non-empty string \"param\""; return false;
+					}
+					if( !cp.has( "minKeyframes" ) || !cp.get( "minKeyframes" ).isNumber() || cp.get( "minKeyframes" ).asNumber() < 2.0 ) {
+						err = pfx + " REQUIRES a numeric \"minKeyframes\" >= 2"; return false;
+					}
+					if( !cp.has( "minAngularSpreadDeg" ) || !cp.get( "minAngularSpreadDeg" ).isNumber() ) {
+						err = pfx + " REQUIRES a numeric \"minAngularSpreadDeg\""; return false;
+					}
+					const double spreadReq = cp.get( "minAngularSpreadDeg" ).asNumber();
+					if( spreadReq <= 0.0 || spreadReq > 360.0 ) {
+						err = pfx + " \"minAngularSpreadDeg\" must be in (0, 360]"; return false;
+					}
+					if( cp.has( "maxRadiusRatio" ) ) {
+						if( !cp.get( "maxRadiusRatio" ).isNumber() || cp.get( "maxRadiusRatio" ).asNumber() <= 1.0 ) {
+							err = pfx + " \"maxRadiusRatio\" must be a number > 1"; return false;
+						}
+					}
+					if( cp.has( "centerWithin" ) ) {
+						const JsonValue& cw = cp.get( "centerWithin" );
+						if( !cw.isObject() ) { err = pfx + " \"centerWithin\" must be an object {x,z,radius}"; return false; }
+						if( !cw.has( "x" ) || !cw.get( "x" ).isNumber() || !cw.has( "z" ) || !cw.get( "z" ).isNumber() ||
+						    !cw.has( "radius" ) || !cw.get( "radius" ).isNumber() ) {
+							err = pfx + " \"centerWithin\" requires numeric \"x\",\"z\",\"radius\""; return false;
+						}
+						if( cw.get( "radius" ).asNumber() < 0.0 ) { err = pfx + " \"centerWithin.radius\" must be >= 0"; return false; }
+					}
+					if( cp.has( "timeParam" ) && cp.get( "timeParam" ).asString().empty() ) {
+						err = pfx + " \"timeParam\" must be a non-empty string when present"; return false;
+					}
+				}
+
+				// The optional co-binding "where" filter is an ANY-OF-KIND
+				// concept -- it narrows the candidate set of an existential op.
+				// Accept it only on the four any-of-kind-capable ops, and only
+				// in the target-LESS form; every entry is either an equality
+				// entry ({param, value}) or a range entry ({param, min, max}).
+				if( cp.has( "where" ) ) {
+					const bool opTakesWhere = ( op == "param_equals" || op == "param_range" ||
+						op == "param_references_kind" || op == "param_series_orbit" );
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"where\"";
+					if( !opTakesWhere ) {
+						err = pfx + ": op '" + op + "' does not accept a \"where\" filter";
+						return false;
+					}
+					const bool hasTarget = cp.has( "target" ) && cp.get( "target" ).isString() && !cp.get( "target" ).asString().empty();
+					if( hasTarget ) {
+						err = pfx + " is an any-of-kind co-binding filter -- it is not valid with a named \"target\"";
+						return false;
+					}
+					const JsonValue& w = cp.get( "where" );
+					if( !w.isArray() || w.size() == 0 ) {
+						err = pfx + " must be a NON-EMPTY array of filter entries";
+						return false;
+					}
+					for( std::size_t wi = 0; wi < w.size(); ++wi ) {
+						const JsonValue& e = w.at( wi );
+						const std::string el = pfx + "[" + std::to_string( wi ) + "]";
+						if( !e.isObject() ) { err = el + " must be an object"; return false; }
+						if( !e.has( "param" ) || !e.get( "param" ).isString() || e.get( "param" ).asString().empty() ) {
+							err = el + " requires a non-empty string \"param\""; return false;
+						}
+						const bool isRange = e.has( "min" ) || e.has( "max" );
+						if( isRange ) {
+							if( !e.has( "min" ) || !e.get( "min" ).isArray() || !e.has( "max" ) || !e.get( "max" ).isArray() ) {
+								err = el + " range entry requires array \"min\" AND array \"max\""; return false;
+							}
+							const JsonValue& mn = e.get( "min" ); const JsonValue& mx = e.get( "max" );
+							if( mn.size() == 0 || mn.size() != mx.size() ) {
+								err = el + " range entry \"min\"/\"max\" must be non-empty arrays of equal length"; return false;
+							}
+							for( std::size_t k = 0; k < mn.size(); ++k )
+								if( !mn.at( k ).isNumber() ) { err = el + " range \"min\"[" + std::to_string( k ) + "] is not a number"; return false; }
+							for( std::size_t k = 0; k < mx.size(); ++k )
+								if( !mx.at( k ).isNumber() ) { err = el + " range \"max\"[" + std::to_string( k ) + "] is not a number"; return false; }
+						} else {
+							if( !e.has( "value" ) || !e.get( "value" ).isString() ) {
+								err = el + " equality entry requires a string \"value\""; return false;
+							}
+						}
+					}
 				}
 				return true;
 			}
@@ -460,15 +605,126 @@ namespace RISE
 			}
 
 			//! "render" (mirrors CheckRenderKind): every width/height/band field is a number.
+			//! "channelBalanceMax" is a number that must be strictly > 1.0 (a ratio
+			//! of the brightest to the dimmest mean channel -- 1.0 would demand a
+			//! perfectly neutral render, which MC noise makes impossible).
 			bool ValidateRenderCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				static const char* const kNumFields[] = {
-					"width", "height",
+					"width", "height", "samples",
 					"meanLumaMin", "meanLumaMax",
-					"meanRMin", "meanRMax", "meanGMin", "meanGMax", "meanBMin", "meanBMax"
+					"meanRMin", "meanRMax", "meanGMin", "meanGMax", "meanBMin", "meanBMax",
+					"channelBalanceMax"
 				};
 				for( const char* f : kNumFields )
 					if( !RequireFieldType( cp, f, JsonValue::Type::Number, scenarioId, idx, f, err ) ) return false;
+				if( cp.has( "channelBalanceMax" ) && cp.get( "channelBalanceMax" ).isNumber() &&
+				    cp.get( "channelBalanceMax" ).asNumber() <= 1.0 ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+					      "].\"channelBalanceMax\" must be > 1.0 (a ratio of 1.0 is unreachable under MC noise)";
+					return false;
+				}
+				// Image-reconstruction Wave 2: `samples` (when present) is the
+				// grading render's SPP override -- must be a whole count >= 1.
+				if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() &&
+				    cp.get( "samples" ).asNumber() < 1.0 ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+					      "].\"samples\" must be >= 1";
+					return false;
+				}
+
+				// Image-reconstruction Wave 2: the `camera` pose override.
+				// location+lookat are REQUIRED (each an array of exactly 3
+				// numbers); up is OPTIONAL (same shape); fov is OPTIONAL (a
+				// positive number strictly < 180 degrees).  ObjectMap camera
+				// support is explicitly out of scope here -- this validator is
+				// the render kind only.
+				if( cp.has( "camera" ) ) {
+					const JsonValue& cam = cp.get( "camera" );
+					if( !cam.isObject() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"camera\" must be an object (got " + JsonTypeName( cam.type() ) + ")";
+						return false;
+					}
+					auto requireVec3 = [&]( const char* key, bool required ) -> bool {
+						if( !cam.has( key ) ) {
+							if( required ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+								      "].\"camera." + key + "\" is required (an array of 3 numbers)";
+								return false;
+							}
+							return true;
+						}
+						const JsonValue& a = cam.get( key );
+						if( !a.isArray() || a.size() != 3 ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"camera." + key + "\" must be an array of exactly 3 numbers";
+							return false;
+						}
+						for( std::size_t i = 0; i < 3; ++i ) {
+							if( !a.at( i ).isNumber() ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+								      "].\"camera." + key + "\"[" + std::to_string( i ) + "] must be a number";
+								return false;
+							}
+						}
+						return true;
+					};
+					if( !requireVec3( "location", true ) ) return false;
+					if( !requireVec3( "lookat", true ) ) return false;
+					if( !requireVec3( "up", false ) ) return false;
+					if( cam.has( "fov" ) ) {
+						if( !cam.get( "fov" ).isNumber() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"camera.fov\" must be a number (degrees)";
+							return false;
+						}
+						const double fov = cam.get( "fov" ).asNumber();
+						if( !( fov > 0.0 && fov < 180.0 ) ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"camera.fov\" must be > 0 and < 180 degrees";
+							return false;
+						}
+					}
+				}
+
+				// Image-reconstruction Wave 2: compareToImage + rmseMax.  Both
+				// or neither.  The path is a non-empty repo-relative string that
+				// must not contain ".." (same containment rule the prompt
+				// reference-images use); rmseMax is a number in (0,1].  The
+				// path's existence / PNG-ness / dims are checked at RUNTIME
+				// (CheckRenderKind) -- the load validator cannot open the file.
+				const bool hasCompare = cp.has( "compareToImage" );
+				const bool hasRmse    = cp.has( "rmseMax" );
+				if( hasCompare != hasRmse ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+					      "].\"compareToImage\" and \"rmseMax\" must be supplied together (both or neither)";
+					return false;
+				}
+				if( hasCompare ) {
+					if( !cp.get( "compareToImage" ).isString() || cp.get( "compareToImage" ).asString().empty() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"compareToImage\" must be a non-empty repo-relative .png path string";
+						return false;
+					}
+					if( cp.get( "compareToImage" ).asString().find( ".." ) != std::string::npos ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"compareToImage\" must not contain \"..\" (got '" +
+						      cp.get( "compareToImage" ).asString() + "')";
+						return false;
+					}
+					if( !cp.get( "rmseMax" ).isNumber() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"rmseMax\" must be a number";
+						return false;
+					}
+					const double rmseMax = cp.get( "rmseMax" ).asNumber();
+					if( !( rmseMax > 0.0 && rmseMax <= 1.0 ) ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"rmseMax\" must be in (0,1]";
+						return false;
+					}
+				}
 				return true;
 			}
 
@@ -491,6 +747,22 @@ namespace RISE
 					if( !RequireFieldType( qa, "x", JsonValue::Type::Number, scenarioId, idx, "queryAt.x", err ) ) return false;
 					if( !RequireFieldType( qa, "y", JsonValue::Type::Number, scenarioId, idx, "queryAt.y", err ) ) return false;
 					if( !RequireFieldType( qa, "expectName", JsonValue::Type::String, scenarioId, idx, "queryAt.expectName", err ) ) return false;
+					if( !RequireFieldType( qa, "expectGeometryKind", JsonValue::Type::String, scenarioId, idx, "queryAt.expectGeometryKind", err ) ) return false;
+					// expectGeometryKind binds a HIT object's geometry to a chunk
+					// kind; it is meaningless when the query expects a MISS
+					// (expectName ""), so reject that combination at load.
+					if( qa.has( "expectGeometryKind" ) ) {
+						if( !qa.get( "expectGeometryKind" ).isString() || qa.get( "expectGeometryKind" ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"queryAt.expectGeometryKind\" must be a non-empty string";
+							return false;
+						}
+						if( qa.has( "expectName" ) && qa.get( "expectName" ).isString() && qa.get( "expectName" ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"queryAt.expectGeometryKind\" is meaningless with expectName \"\" (expect-miss)";
+							return false;
+						}
+					}
 				}
 				return true;
 			}
@@ -507,8 +779,17 @@ namespace RISE
 			//! {maxToolCalls?/maxLlmCalls?:number, terminalStatus?:string,
 			//!  noAutonomyRefusal?/noMechanicalLoop?/expectAutonomyRefusal?:bool,
 			//!  requiredToolInOrder?:string array,
-			//!  toolOutcomes?:[{name:string, occurrence?:string, expect:string},...],
-			//!  toolCallAfterUserTurn?:{name:string, minUserTurns:number}}.
+			//!  toolOutcomes?:[{name:string, occurrence?:string, expect:string, argsContains?:string|[string]},...],
+			//!  toolCallAfterUserTurn?: {name:string, minUserTurns?:number,
+			//!    maxUserTurns?:number, argsContains?:string|[string], expect?:string}
+			//!    -- OR an ARRAY of such spec objects}.  toolOutcomes.expect (and
+			//!  the optional toolCallAfterUserTurn.expect) is one of
+			//!  applied|staged|rejected|error|conflict; argsContains (when
+			//!  present) is a non-empty string OR a non-empty array of non-empty
+			//!  strings, ALL of which must be substrings of the record's args --
+			//!  it FILTERS which same-named records the spec selects among.  A
+			//!  toolCallAfterUserTurn spec must carry at least one of min/max (a
+			//!  spec with neither asserts nothing).
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				if( !RequireFieldType( cp, "maxToolCalls", JsonValue::Type::Number, scenarioId, idx, "maxToolCalls", err ) ) return false;
@@ -518,6 +799,43 @@ namespace RISE
 				if( !RequireFieldType( cp, "noMechanicalLoop", JsonValue::Type::Bool, scenarioId, idx, "noMechanicalLoop", err ) ) return false;
 				if( !RequireFieldType( cp, "expectAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "expectAutonomyRefusal", err ) ) return false;
 				if( !RequireArrayOfType( cp, "requiredToolInOrder", JsonValue::Type::String, scenarioId, idx, "requiredToolInOrder", err ) ) return false;
+
+				// Shared arg/expect validators so toolOutcomes and
+				// toolCallAfterUserTurn can never diverge.  argsContains accepts
+				// a non-empty string OR a non-empty array of non-empty strings.
+				auto validateArgsContains = [&]( const JsonValue& obj, const std::string& label ) -> bool {
+					if( !obj.has( "argsContains" ) ) return true;
+					const JsonValue& ac = obj.get( "argsContains" );
+					if( ac.isString() ) {
+						if( ac.asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".argsContains must be a non-empty string";
+							return false;
+						}
+						return true;
+					}
+					if( ac.isArray() ) {
+						if( ac.size() == 0 ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+							      ".argsContains array must be non-empty";
+							return false;
+						}
+						for( std::size_t i = 0; i < ac.size(); ++i ) {
+							if( !ac.at( i ).isString() || ac.at( i ).asString().empty() ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+								      ".argsContains[" + std::to_string( i ) + "] must be a non-empty string";
+								return false;
+							}
+						}
+						return true;
+					}
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
+					      ".argsContains must be a string or an array of strings";
+					return false;
+				};
+				auto validExpectValue = []( const std::string& e ) -> bool {
+					return e == "applied" || e == "staged" || e == "rejected" || e == "error" || e == "conflict";
+				};
 
 				if( cp.has( "toolOutcomes" ) ) {
 					const JsonValue& arr = cp.get( "toolOutcomes" );
@@ -554,9 +872,9 @@ namespace RISE
 							return false;
 						}
 						const std::string expect = o.get( "expect" ).asString();
-						if( expect != "applied" && expect != "staged" && expect != "rejected" && expect != "error" ) {
+						if( expect != "applied" && expect != "staged" && expect != "rejected" && expect != "error" && expect != "conflict" ) {
 							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + label +
-							      ".expect must be one of applied|staged|rejected|error (got '" + expect + "')";
+							      ".expect must be one of applied|staged|rejected|error|conflict (got '" + expect + "')";
 							return false;
 						}
 						// occurrence is OPTIONAL (defaults to "any"); if present it must
@@ -575,35 +893,120 @@ namespace RISE
 								return false;
 							}
 						}
+						// argsContains is OPTIONAL; when present it must be a
+						// non-empty string OR a non-empty array of non-empty
+						// strings (an empty needle matches every record, asserting
+						// nothing -- reject rather than silently no-op).
+						if( !validateArgsContains( o, label ) ) return false;
 					}
 				}
 
 				if( cp.has( "toolCallAfterUserTurn" ) ) {
 					const JsonValue& tc = cp.get( "toolCallAfterUserTurn" );
-					if( !tc.isObject() ) {
-						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"toolCallAfterUserTurn\" must be an object (got " +
+					// Back-compat: a single OBJECT is the original one-spec form; an
+					// ARRAY carries several specs (each validated identically).
+					if( !tc.isObject() && !tc.isArray() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].\"toolCallAfterUserTurn\" must be an object or an array of objects (got " +
 						      JsonTypeName( tc.type() ) + ")";
 						return false;
 					}
-					// Both fields are load-bearing -- REQUIRED (a missing name never
-					// matches; a missing minUserTurns silently defaults to 0).
-					if( !tc.has( "name" ) || !tc.get( "name" ).isString() || tc.get( "name" ).asString().empty() ) {
-						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
-						      "].toolCallAfterUserTurn.name must be a non-empty string";
-						return false;
-					}
-					if( !tc.has( "minUserTurns" ) || !tc.get( "minUserTurns" ).isNumber() ) {
-						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
-						      "].toolCallAfterUserTurn.minUserTurns must be a number";
-						return false;
-					}
-					if( tc.get( "minUserTurns" ).asNumber() < 0.0 ) {
-						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
-						      "].toolCallAfterUserTurn.minUserTurns must be >= 0";
-						return false;
+					// One shared per-spec validator so the object and array forms
+					// can never diverge.  `specLabel` names the offending spec.
+					auto validateTcSpec = [&]( const JsonValue& sp, const std::string& specLabel ) -> bool {
+						if( !sp.isObject() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + specLabel +
+							      " must be an object (got " + JsonTypeName( sp.type() ) + ")";
+							return false;
+						}
+						// name is load-bearing -- REQUIRED (a missing name never matches).
+						if( !sp.has( "name" ) || !sp.get( "name" ).isString() || sp.get( "name" ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + specLabel +
+							      ".name must be a non-empty string";
+							return false;
+						}
+						// min/max are each OPTIONAL numbers >= 0, but AT LEAST ONE is
+						// required -- a spec with neither asserts nothing.
+						auto checkTurnBound = [&]( const char* key ) -> bool {
+							if( !sp.has( key ) ) return true;
+							if( !sp.get( key ).isNumber() ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + specLabel +
+								      "." + key + " must be a number";
+								return false;
+							}
+							if( sp.get( key ).asNumber() < 0.0 ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + specLabel +
+								      "." + key + " must be >= 0";
+								return false;
+							}
+							return true;
+						};
+						if( !checkTurnBound( "minUserTurns" ) ) return false;
+						if( !checkTurnBound( "maxUserTurns" ) ) return false;
+						if( !sp.has( "minUserTurns" ) && !sp.has( "maxUserTurns" ) ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + specLabel +
+							      " must carry at least one of \"minUserTurns\"/\"maxUserTurns\" (a spec with neither asserts nothing)";
+							return false;
+						}
+						// argsContains accepts a non-empty string OR a non-empty
+						// array of non-empty strings.
+						if( !validateArgsContains( sp, specLabel ) ) return false;
+						// expect is OPTIONAL; when present the matching call must ALSO
+						// satisfy this outcome (same enum as toolOutcomes).
+						if( sp.has( "expect" ) ) {
+							if( !sp.get( "expect" ).isString() || !validExpectValue( sp.get( "expect" ).asString() ) ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "]." + specLabel +
+								      ".expect must be one of applied|staged|rejected|error|conflict";
+								return false;
+							}
+						}
+						return true;
+					};
+
+					if( tc.isObject() ) {
+						if( !validateTcSpec( tc, "toolCallAfterUserTurn" ) ) return false;
+					} else {
+						if( tc.size() == 0 ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].\"toolCallAfterUserTurn\" must be a NON-EMPTY array (an empty array asserts nothing)";
+							return false;
+						}
+						for( std::size_t i = 0; i < tc.size(); ++i )
+							if( !validateTcSpec( tc.at( i ), "toolCallAfterUserTurn[" + std::to_string( i ) + "]" ) ) return false;
 					}
 				}
 
+				return true;
+			}
+
+			//! "proposal" (mirrors CheckProposalKind):
+			//! {countMin?:number, countMax?:number, match?:{kindIs?:string,
+			//!  target?:string, param?:string, status?:string,
+			//!  valueMin?:number array, valueMax?:number array}} -- at least ONE
+			//! of countMin/countMax/match is required (a checkpoint with none is
+			//! vacuous).
+			bool ValidateProposalCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
+			{
+				if( !RequireFieldType( cp, "countMin", JsonValue::Type::Number, scenarioId, idx, "countMin", err ) ) return false;
+				if( !RequireFieldType( cp, "countMax", JsonValue::Type::Number, scenarioId, idx, "countMax", err ) ) return false;
+				if( !cp.has( "countMin" ) && !cp.has( "countMax" ) && !cp.has( "match" ) ) {
+					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+					      "] \"proposal\" checkpoint must carry at least one of countMin/countMax/match (a checkpoint with none asserts nothing)";
+					return false;
+				}
+				if( cp.has( "match" ) ) {
+					const JsonValue& m = cp.get( "match" );
+					if( !m.isObject() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"match\" must be an object (got " +
+						      JsonTypeName( m.type() ) + ")";
+						return false;
+					}
+					static const char* const kMatchStrings[] = { "kindIs", "target", "param", "status" };
+					for( const char* f : kMatchStrings )
+						if( !RequireFieldType( m, f, JsonValue::Type::String, scenarioId, idx, std::string( "match." ) + f, err ) ) return false;
+					if( !RequireArrayOfType( m, "valueMin", JsonValue::Type::Number, scenarioId, idx, "match.valueMin", err ) ) return false;
+					if( !RequireArrayOfType( m, "valueMax", JsonValue::Type::Number, scenarioId, idx, "match.valueMax", err ) ) return false;
+				}
 				return true;
 			}
 
@@ -637,6 +1040,7 @@ namespace RISE
 				if( kind == "diagnostics" ) return ValidateDiagnosticsCheckpointTypes( cp, idx, scenarioId, err );
 				if( kind == "trajectory" )  return ValidateTrajectoryCheckpointTypes( cp, idx, scenarioId, err );
 				if( kind == "finalText" )   return ValidateFinalTextCheckpointTypes( cp, idx, scenarioId, err );
+				if( kind == "proposal" )    return ValidateProposalCheckpointTypes( cp, idx, scenarioId, err );
 				return true;
 			}
 		}
@@ -764,11 +1168,55 @@ namespace RISE
 			{
 				const JsonValue& prompts = root.get( "prompts" );
 				for( std::size_t i = 0; i < prompts.size(); ++i ) {
-					if( !prompts.at( i ).isString() ) {
-						err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) + "] must be a string";
+					const JsonValue& p = prompts.at( i );
+					AgentEvalPrompt prompt;
+					if( p.isString() ) {
+						// The pre-Wave-1 shape: a bare string, unchanged.
+						prompt.text = p.asString();
+					} else if( p.isObject() ) {
+						// Image-reconstruction Wave 1: {"text"?, "images"?}.
+						if( p.has( "text" ) ) {
+							if( !p.get( "text" ).isString() ) {
+								err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+									"].text must be a string";
+								return false;
+							}
+							prompt.text = p.get( "text" ).asString();
+						}
+						if( p.has( "images" ) ) {
+							const JsonValue& images = p.get( "images" );
+							if( !images.isArray() || images.size() == 0 ) {
+								err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+									"].images must be a non-empty array of repo-relative path strings";
+								return false;
+							}
+							for( std::size_t j = 0; j < images.size(); ++j ) {
+								if( !images.at( j ).isString() || images.at( j ).asString().empty() ) {
+									err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+										"].images[" + std::to_string( j ) + "] must be a non-empty string";
+									return false;
+								}
+								const std::string imgPath = images.at( j ).asString();
+								if( imgPath.find( ".." ) != std::string::npos ) {
+									err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+										"].images[" + std::to_string( j ) + "] must not contain \"..\" (got '" +
+										imgPath + "')";
+									return false;
+								}
+								prompt.imagePaths.push_back( imgPath );
+							}
+						}
+						if( prompt.text.empty() && prompt.imagePaths.empty() ) {
+							err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+								"] object must carry a non-empty \"text\", a non-empty \"images\", or both";
+							return false;
+						}
+					} else {
+						err = "scenario '" + out.id + "': prompts[" + std::to_string( i ) +
+							"] must be a string or an object {text?, images?}";
 						return false;
 					}
-					out.prompts.push_back( prompts.at( i ).asString() );
+					out.prompts.push_back( prompt );
 				}
 			}
 
@@ -1018,6 +1466,19 @@ namespace RISE
 			//! PATH STRING rather than its bytes, so editing the scene file
 			//! in place or the intervention list left a cell wrongly marked
 			//! "current"); that was the bug this version fixes.
+			//!
+			//! P1-1 (still v2): the checkpoints= line serializes the raw
+			//! checkpoint JSON, and for a "render" checkpoint that carries
+			//! "compareToImage" that JSON is only the reference PNG's PATH
+			//! STRING -- editing evals/references/*.png in place left a cached
+			//! cell wrongly "current", the same bug class v1 had for
+			//! path-backed scenes.  A conditional "compareImages=" section
+			//! (below, mirroring the prompts= image-hashing) folds in each
+			//! distinct compareToImage path's FnvHexOfFile.  It is appended
+			//! ONLY when at least one render checkpoint carries compareToImage,
+			//! so every scenario without one hashes byte-identically to before
+			//! this fix -- no version bump, no blanket cache invalidation; only
+			//! compareToImage-bearing scenarios get a new hash.
 			std::string ScenarioContentHash( const AgentEvalScenario& s )
 			{
 				std::string canon = "v2\n";
@@ -1027,9 +1488,36 @@ namespace RISE
 				// canonicalization is INJECTIVE: JSON escaping keeps a prompt that
 				// itself contains a delimiter or newline from straddling the field
 				// boundary or colliding ["a\x1fb"] with ["a","b"].
+				//
+				// Image-reconstruction Wave 1: a TEXT-ONLY prompt (imagePaths
+				// empty) still serializes as a bare JSON string -- BYTE-IDENTICAL
+				// to the pre-Wave-1 canonicalization, so no existing scenario's
+				// hash (and therefore no cached matrix cell) changes.  An
+				// image-bearing prompt serializes as an object instead, folding
+				// each referenced image's BYTES (via FnvHexOfFile, "unreadable"
+				// on an unreadable path -- deterministic either way) into the
+				// hash, so editing a reference image in place invalidates cached
+				// cells exactly like the path-backed scene-bytes rule below.
 				JsonValue promptsArr = JsonValue::MakeArray();
-				for( std::size_t i = 0; i < s.prompts.size(); ++i )
-					promptsArr.push_back( JsonValue::MakeString( s.prompts[i] ) );
+				for( std::size_t i = 0; i < s.prompts.size(); ++i ) {
+					const AgentEvalPrompt& prompt = s.prompts[i];
+					if( prompt.imagePaths.empty() ) {
+						promptsArr.push_back( JsonValue::MakeString( prompt.text ) );
+					} else {
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "text", JsonValue::MakeString( prompt.text ) );
+						JsonValue imgs = JsonValue::MakeArray();
+						for( std::size_t j = 0; j < prompt.imagePaths.size(); ++j ) {
+							JsonValue io = JsonValue::MakeObject();
+							io.set( "path", JsonValue::MakeString( prompt.imagePaths[j] ) );
+							const std::string h = FnvHexOfFile( prompt.imagePaths[j] );
+							io.set( "fnv", JsonValue::MakeString( h.empty() ? std::string( "unreadable" ) : h ) );
+							imgs.push_back( io );
+						}
+						o.set( "images", imgs );
+						promptsArr.push_back( o );
+					}
+				}
 				canon += "prompts=" + JsonSerialize( promptsArr ) + "\n";
 				canon += "budgets=" + std::to_string( s.budgets.maxToolCalls ) + "|" +
 				         std::to_string( s.budgets.maxLlmCalls ) + "|" +
@@ -1054,6 +1542,38 @@ namespace RISE
 				}
 				canon += "checkpoints=" + JsonSerialize( s.checkpoints ) + "\n";
 
+				// P1-1: the checkpoints= line above hashes the checkpoint JSON
+				// itself, which for a "render" checkpoint's "compareToImage"
+				// field only pins the reference image's PATH STRING, not its
+				// bytes -- editing evals/references/*.png in place (the same
+				// failure mode prompt reference images had pre-Wave-1) left a
+				// cached matrix cell wrongly "current".  Mirror the prompts=
+				// image-hashing above: walk the render checkpoints in order,
+				// fold in FnvHexOfFile of each DISTINCT compareToImage path
+				// (first-seen order; a path reused across checkpoints is
+				// hashed once), "unreadable" on an unreadable path (matches
+				// the promptsArr fallback -- deterministic either way).
+				if( s.checkpoints.isArray() ) {
+					JsonValue compareImages = JsonValue::MakeArray();
+					std::vector<std::string> seenPaths;
+					for( std::size_t ci = 0; ci < s.checkpoints.size(); ++ci ) {
+						const JsonValue& cp = s.checkpoints.at( ci );
+						if( !cp.isObject() ) continue;
+						if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() || cp.get( "kind" ).asString() != "render" ) continue;
+						if( !cp.has( "compareToImage" ) || !cp.get( "compareToImage" ).isString() ) continue;
+						const std::string& path = cp.get( "compareToImage" ).asString();
+						if( std::find( seenPaths.begin(), seenPaths.end(), path ) != seenPaths.end() ) continue;
+						seenPaths.push_back( path );
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "path", JsonValue::MakeString( path ) );
+						const std::string h = FnvHexOfFile( path );
+						o.set( "fnv", JsonValue::MakeString( h.empty() ? std::string( "unreadable" ) : h ) );
+						compareImages.push_back( o );
+					}
+					if( compareImages.size() > 0 )
+						canon += "compareImages=" + JsonSerialize( compareImages ) + "\n";
+				}
+
 				// Interventions serialized as a JSON array (like prompts/checkpoints
 				// above) for the same injectivity reason.
 				JsonValue ivArr = JsonValue::MakeArray();
@@ -1069,6 +1589,106 @@ namespace RISE
 				canon += "interventions=" + JsonSerialize( ivArr ) + "\n";
 
 				return FnvHex( canon );
+			}
+
+			//====================================================================
+			// HTTP 429 (rate-limit) backoff helpers -- LIVE path only (see the
+			// RunScenarioLive doc comment in AgentEvalRunner.h for the full
+			// behavioural contract this backs).
+			//====================================================================
+
+			//! The hard cap on any single computed backoff wait, per the E4
+			//! design: never sleep longer than this for one attempt, no
+			//! matter what a provider hints or the exponential table says.
+			const int64_t kRateLimitMaxWaitMs = 90000;
+
+			//! The total number of HTTP attempts a round will make while it
+			//! keeps seeing 429 before giving up (the original attempt PLUS
+			//! same-round retries).
+			const int kRateLimitMaxAttempts = 5;
+
+			//! The exponential fallback table (seconds, converted to ms
+			//! below), indexed by attempt number (1-based) when the
+			//! response body carries no parseable retry hint: 10s, 20s,
+			//! 40s, 60s, 60s.
+			const int64_t kRateLimitFallbackSecTable[kRateLimitMaxAttempts] = { 10, 20, 40, 60, 60 };
+
+			//! Parse a provider's rate-limit RETRY HINT out of a 429
+			//! response body: a "try again in <N>s" or "retry after <N>
+			//! seconds" phrase (case-insensitive; N a float).  Returns the
+			//! hinted wait in milliseconds (rounded), or -1 if no such
+			//! phrase/number is found -- the caller then falls back to the
+			//! exponential table.  Deliberately NOT a response-HEADER
+			//! parse: ChatHttpResponse (ChatHttpTransport.h) does not
+			//! surface response headers to the runner today, so a
+			//! `Retry-After` header hint is out of scope for this pass
+			//! (plumbing headers through the transport seam would be new
+			//! surface, which the design explicitly says to skip rather
+			//! than add speculatively).
+			int64_t ParseRateLimit429HintMs( const std::string& body )
+			{
+				std::string lower( body );
+				for( char& c : lower ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+
+				static const char* const kPhrases[] = { "try again in", "retry after" };
+				for( std::size_t p = 0; p < sizeof( kPhrases ) / sizeof( kPhrases[0] ); ++p ) {
+					std::size_t pos = lower.find( kPhrases[p] );
+					if( pos == std::string::npos ) continue;
+
+					std::size_t i = pos + std::strlen( kPhrases[p] );
+					while( i < lower.size() && std::isspace( static_cast<unsigned char>( lower[i] ) ) ) ++i;
+
+					const std::size_t numStart = i;
+					bool sawDigit = false;
+					while( i < lower.size() &&
+					       ( std::isdigit( static_cast<unsigned char>( lower[i] ) ) || lower[i] == '.' ) ) {
+						if( std::isdigit( static_cast<unsigned char>( lower[i] ) ) ) sawDigit = true;
+						++i;
+					}
+					if( !sawDigit ) continue;   // phrase matched but no number followed -- try the other phrase
+
+					const std::string numTok = body.substr( numStart, i - numStart );
+					char* endp = nullptr;
+					const double seconds = std::strtod( numTok.c_str(), &endp );
+					if( endp == numTok.c_str() || seconds < 0.0 ) continue;
+
+					// Require a trailing "s"/"sec"/"second(s)" marker so an
+					// unrelated number that happens to follow the phrase
+					// (e.g. an id) is never mistaken for a duration.
+					std::size_t j = i;
+					while( j < lower.size() && std::isspace( static_cast<unsigned char>( lower[j] ) ) ) ++j;
+					if( j < lower.size() && lower[j] == 's' )
+						return static_cast<int64_t>( seconds * 1000.0 + 0.5 );
+				}
+				return -1;
+			}
+
+			//! The wait to use for the `attemptNumber`-th (1-based) 429
+			//! response of a round: the body hint if present, else the
+			//! exponential fallback table (clamped to the table's last
+			//! entry past kRateLimitMaxAttempts), capped at
+			//! kRateLimitMaxWaitMs either way.
+			int64_t ComputeRateLimit429WaitMs( const std::string& body, int attemptNumber )
+			{
+				int64_t ms = ParseRateLimit429HintMs( body );
+				if( ms < 0 ) {
+					int idx = attemptNumber - 1;
+					if( idx < 0 ) idx = 0;
+					if( idx >= kRateLimitMaxAttempts ) idx = kRateLimitMaxAttempts - 1;
+					ms = kRateLimitFallbackSecTable[idx] * 1000;
+				}
+				if( ms > kRateLimitMaxWaitMs ) ms = kRateLimitMaxWaitMs;
+				if( ms < 0 ) ms = 0;
+				return ms;
+			}
+
+			//! The default (non-injected) sleeper: a real wall-clock sleep.
+			//! Every AgentEvalLiveRunOptions/AgentEvalMatrixOptions caller
+			//! that leaves `sleeper` unset gets this -- only tests inject a
+			//! recorder in its place.
+			void RealSleepMs( int64_t ms )
+			{
+				if( ms > 0 ) std::this_thread::sleep_for( std::chrono::milliseconds( ms ) );
 			}
 
 			//! One round's outcome from a body source (replay OR live
@@ -1099,16 +1719,23 @@ namespace RISE
 			//! and the `fetch` callback (canned bodies vs. a real POST).
 			//! Never throws.
 			AgentEvalRunHandle RunScenarioDriven(
-				const AgentEvalScenario&        scenario,
-				const std::string&              runDir,
-				const std::function<int64_t()>& optClock,
-				ChatProvider                    provider,
-				const std::string&              modelId,
-				const std::string&              apiKey,
-				const FetchFn&                  fetch )
+				const AgentEvalScenario&            scenario,
+				const std::string&                  runDir,
+				const std::function<int64_t()>&     optClock,
+				ChatProvider                        provider,
+				const std::string&                  modelId,
+				const std::string&                  apiKey,
+				const FetchFn&                      fetch,
+				const std::function<void(int64_t)>& sleeper )
 			{
 				AgentEvalRunHandle handle;
 				handle.result.scenarioId = scenario.id;
+
+				// The HTTP 429 backoff sleep hook: the caller's injected
+				// sleeper (a test recorder), or a real sleep by default.
+				// Never invoked by the replay path (RunScenario always
+				// synthesizes status 200 -- see replayFetch below).
+				const std::function<void(int64_t)> effectiveSleeper = sleeper ? sleeper : &RealSleepMs;
 
 				// 1. The scene: path as-is, or inline -> a throwaway temp file
 				//    under <runDir>/tmp (never scenes/), deleted immediately
@@ -1203,6 +1830,47 @@ namespace RISE
 					return handle;
 				}
 
+				// Image-reconstruction Wave 1: pre-flight-load EVERY prompt's
+				// reference images UP FRONT, right after the scene loads and
+				// BEFORE any LLM round runs -- an unreadable path or an
+				// unsupported image type must never burn a partial run (some
+				// prompts' turns already driven, tool calls already dispatched)
+				// before the run discovers the broken path.  One entry per
+				// scenario.prompts[i], parallel-indexed; empty for a text-only
+				// prompt.
+				std::vector<std::vector<ChatAttachment>> promptAttachments( scenario.prompts.size() );
+				for( std::size_t pi = 0; pi < scenario.prompts.size(); ++pi ) {
+					const AgentEvalPrompt& prompt = scenario.prompts[pi];
+					for( std::size_t ii = 0; ii < prompt.imagePaths.size(); ++ii ) {
+						const std::string& imgPath = prompt.imagePaths[ii];
+						std::string mimeType;
+						const std::string ext = FileExtensionLower( imgPath );
+						if( ext == ".png" ) mimeType = "image/png";
+						else if( ext == ".jpg" || ext == ".jpeg" ) mimeType = "image/jpeg";
+						else {
+							handle.result.terminalStatus = "load_error";
+							handle.result.errorMessage =
+								"scenario '" + scenario.id + "' prompts[" + std::to_string( pi ) +
+								"].images[" + std::to_string( ii ) + "] '" + imgPath +
+								"': unsupported reference-image type";
+							return handle;
+						}
+						std::string bytes, readErr;
+						if( !ReadWholeFile( imgPath, bytes, readErr ) ) {
+							handle.result.terminalStatus = "load_error";
+							handle.result.errorMessage =
+								"scenario '" + scenario.id + "' prompts[" + std::to_string( pi ) +
+								"].images[" + std::to_string( ii ) + "]: could not read reference image '" +
+								imgPath + "'";
+							return handle;
+						}
+						ChatAttachment att;
+						att.mimeType = mimeType;
+						att.base64Data = Base64Encode( std::vector<unsigned char>( bytes.begin(), bytes.end() ) );
+						promptAttachments[pi].push_back( att );
+					}
+				}
+
 				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
 				handle.result.headVersionStart = headVersionStart;
 				handle.result.headVersionFinal = headVersionStart;
@@ -1219,6 +1887,22 @@ namespace RISE
 
 				AgentChatLoop loop;
 				loop.SetProvider( provider, modelId );
+				// The loop's per-turn anti-spin cap (default 20 rounds) is a GUI
+				// posture; THIS host enforces the scenario's own budgets each
+				// round (maxToolCalls/maxLlmCalls -- the honest, accounted
+				// stops), so raise the instance cap to the budget ceiling and
+				// let the budgets govern.  A legitimately iterative single-turn
+				// scenario (image->scene reconstruction runs ~12-15
+				// render-inspect-adjust rounds) would otherwise die at round 21
+				// with provider_error("iteration cap") long before its budgets
+				// -- the first live vision baseline failed 24/24 exactly this
+				// way.  Scenarios with no budgets keep the default cap.
+				{
+					int cap = AgentChatLoop::kMaxToolRoundsPerTurn;
+					if( scenario.budgets.maxLlmCalls  > cap ) cap = scenario.budgets.maxLlmCalls;
+					if( scenario.budgets.maxToolCalls > cap ) cap = scenario.budgets.maxToolCalls;
+					loop.SetMaxToolRoundsPerTurn( cap );
+				}
 				ChatTrajectoryConfig cfg;
 				cfg.clock = optClock;
 				cfg.scenePath = scenario.scenePath.empty() ? std::string( "<inline>" ) : scenario.scenePath;
@@ -1242,7 +1926,13 @@ namespace RISE
 				//    dispatcher -> AddToolResult -> repeat, exactly like
 				//    tests/AgentChatLoopTest.cpp drives it by hand.
 				for( std::size_t pi = 0; pi < scenario.prompts.size() && terminalStatus.empty(); ++pi ) {
-					loop.AddUserMessage( scenario.prompts[pi] );
+					// Image-reconstruction Wave 1: the attachments overload only
+					// when this turn actually carries reference images --
+					// byte-identical behavior for every text-only scenario.
+					if( promptAttachments[pi].empty() )
+						loop.AddUserMessage( scenario.prompts[pi].text );
+					else
+						loop.AddUserMessage( scenario.prompts[pi].text, promptAttachments[pi] );
 
 					bool turnDone = false;
 					while( !turnDone ) {
@@ -1308,6 +1998,12 @@ namespace RISE
 						// attempt/retryOf plumbing.
 						ChatStepResult st;
 						bool roundStopped = false;
+						// HTTP 429 (rate-limit) backoff: counts 429 RESPONSES
+						// seen for THIS round (reset per round, unlike
+						// `attempt` which also counts the 5xx/image/
+						// reasoning-effort retries above).  See the 429
+						// branch below and the RunScenarioLive doc comment.
+						int rateLimitAttempts = 0;
 						for( int attempt = 1; ; ++attempt ) {
 							// Re-check the llm-calls budget on EVERY attempt, not
 							// just the first: the outer check above only guards
@@ -1343,8 +2039,13 @@ namespace RISE
 							// CONSEQUENCE: llmCalls is REQUESTS SENT, which can exceed
 							// the number of RECORDED llm rounds (RecordHttpRound fires
 							// only on a received response) by the count of transport-
-							// failed attempts -- the honest cost measure.
-							++llmCalls;
+							// failed attempts -- the honest cost measure.  EXCEPTION:
+							// an HTTP 429 (rate-limit) response is NOT counted here --
+							// see the 429 branch below, which is the one case where a
+							// received response still does not consume the budget
+							// (the call never succeeded; RISE waits it out rather
+							// than billing the scenario for it).
+							if( !( fo.proceed && fo.status == 429 ) ) ++llmCalls;
 							if( !fo.proceed ) {
 								if( attempt == 1 && fo.stopStatus == "transport_error" )
 									continue;   // one same-round retry of a transport failure
@@ -1357,6 +2058,39 @@ namespace RISE
 							loop.RecordHttpRound( fo.status, fo.body, fo.elapsedMs,
 							                      attempt, attempt > 1 ? attempt - 1 : -1 );
 							st = loop.HandleResponse( fo.status, fo.body );
+
+							// HTTP 429 (rate-limit) backoff: an EXPECTED condition
+							// for image-heavy scenarios re-sending a full
+							// multi-image payload every round, not a terminal
+							// failure.  Retry the SAME round up to
+							// kRateLimitMaxAttempts times total, waiting between
+							// attempts.  The wait is checked against the
+							// scenario's REMAINING maxWallMs budget BEFORE it is
+							// dispatched -- a wait that would blow the budget
+							// stops the run honestly (budget_wall_ms) rather than
+							// pretending the round could still finish in time.
+							if( fo.status == 429 ) {
+								++rateLimitAttempts;
+								const int64_t waitMs = ComputeRateLimit429WaitMs( fo.body, rateLimitAttempts );
+								if( scenario.budgets.maxWallMs >= 0 ) {
+									const int64_t remaining =
+										scenario.budgets.maxWallMs - ( clock() - startMs );
+									if( remaining <= 0 || waitMs > remaining ) {
+										terminalStatus = "budget_wall_ms";
+										budgetHit = true;
+										roundStopped = true;
+										break;
+									}
+								}
+								effectiveSleeper( waitMs );
+								if( rateLimitAttempts < kRateLimitMaxAttempts )
+									continue;   // retry the SAME round after the backoff wait
+								terminalStatus = "provider_error";
+								errorMessage = "rate limit: exhausted " + std::to_string( rateLimitAttempts ) +
+									" attempt(s) waiting out HTTP 429 (Too Many Requests) responses";
+								roundStopped = true;
+								break;
+							}
 
 							if( attempt == 1 && fo.status >= 500 && fo.status <= 599 )
 								continue;   // one 5xx retry of this round
@@ -1490,6 +2224,50 @@ namespace RISE
 					if( !h.empty() ) r.set( "sceneFileFnv", JsonValue::MakeString( h ) );
 				}
 
+				// Image-reconstruction Wave 1 (+ P1-1): report-side staleness
+				// parity for reference images, mirroring
+				// scenarioFileFnv/sceneFileFnv above.  "refImageFnvs" maps each
+				// DISTINCT referenced image path -- a prompt attachment OR a
+				// render checkpoint's "compareToImage" reference -- to the
+				// FNV-1a 64 of its current bytes (recomputable by
+				// tools/eval_report.py's fnv1a64_hex, which just walks the map
+				// generically; it does not care which source populated a given
+				// key).  Stamped whenever prompts carry images OR any
+				// checkpoint carries compareToImage; omitted entirely (not an
+				// empty object) when neither applies, so absence still means
+				// "no check" rather than "zero images verified".  By this
+				// point every path was already proven readable by the
+				// pre-flight above (prompts) / by CheckRenderKind (compare
+				// images, at grading time), so FnvHexOfFile is expected
+				// non-empty here; the same omit-on-empty guard as
+				// scenarioFileFnv/sceneFileFnv is kept anyway (defense-in-depth
+				// against a file removed mid-run).
+				{
+					JsonValue refImageFnvs = JsonValue::MakeObject();
+					for( std::size_t pi = 0; pi < scenario.prompts.size(); ++pi ) {
+						for( std::size_t ii = 0; ii < scenario.prompts[pi].imagePaths.size(); ++ii ) {
+							const std::string& imgPath = scenario.prompts[pi].imagePaths[ii];
+							if( refImageFnvs.has( imgPath ) ) continue;   // dedupe a path reused across prompts
+							const std::string h = FnvHexOfFile( imgPath );
+							if( !h.empty() ) refImageFnvs.set( imgPath, JsonValue::MakeString( h ) );
+						}
+					}
+					if( scenario.checkpoints.isArray() ) {
+						for( std::size_t ci = 0; ci < scenario.checkpoints.size(); ++ci ) {
+							const JsonValue& cp = scenario.checkpoints.at( ci );
+							if( !cp.isObject() ) continue;
+							if( !cp.has( "kind" ) || !cp.get( "kind" ).isString() || cp.get( "kind" ).asString() != "render" ) continue;
+							if( !cp.has( "compareToImage" ) || !cp.get( "compareToImage" ).isString() ) continue;
+							const std::string& imgPath = cp.get( "compareToImage" ).asString();
+							if( refImageFnvs.has( imgPath ) ) continue;   // dedupe a path reused across checkpoints (or with a prompt image)
+							const std::string h = FnvHexOfFile( imgPath );
+							if( !h.empty() ) refImageFnvs.set( imgPath, JsonValue::MakeString( h ) );
+						}
+					}
+					if( !refImageFnvs.members().empty() )
+						r.set( "refImageFnvs", refImageFnvs );
+				}
+
 				const std::string resultPath = JoinPath( runDir, scenario.id + ".result.jsonl" );
 				{
 					std::error_code ec;
@@ -1566,7 +2344,8 @@ namespace RISE
 
 			return RunScenarioDriven( scenario, options.runDir, options.clock,
 			                          provider, /*modelId=*/std::string(),
-			                          /*apiKey=*/std::string(), replayFetch );
+			                          /*apiKey=*/std::string(), replayFetch,
+			                          /*sleeper=*/std::function<void(int64_t)>() );
 		}
 
 		//====================================================================
@@ -1617,7 +2396,7 @@ namespace RISE
 
 			return RunScenarioDriven( scenario, options.runDir, options.clock,
 			                          options.provider, options.modelId,
-			                          options.apiKey, liveFetch );
+			                          options.apiKey, liveFetch, options.sleeper );
 		}
 
 		//====================================================================
@@ -1767,6 +2546,109 @@ namespace RISE
 			}
 		}
 
+		//====================================================================
+		// PRE-FLIGHT AUTH PROBE (RunEvalMatrix) -- see the doc comment on
+		// RunEvalMatrix in AgentEvalRunner.h for the full behavioural
+		// contract.  Kept as free functions in this file-local namespace so
+		// RunEvalMatrix's own body stays a straight-line read of "probe, then
+		// run the column".
+		//====================================================================
+		namespace
+		{
+			//! Lower-cased ASCII copy of `s`.  The ONLY thing this file needs a
+			//! case fold for -- IsAuthProbeFailure's keyword match below.
+			std::string ToLowerAscii( const std::string& s )
+			{
+				std::string o( s );
+				for( char& c : o ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+				return o;
+			}
+
+			//! The auth-probe DEAD-CREDENTIAL body phrases, matched case-
+			//! insensitively as a raw substring.  Deliberately NARROW and
+			//! drawn from real provider error text (Anthropic "Your credit
+			//! balance is too low...", OpenAI/xAI "Incorrect API key
+			//! provided...", generic "authentication"/"unauthorized" wording)
+			//! -- never a bare "error"/"invalid" match, which would also catch
+			//! an ordinary malformed-request 400 and wrongly skip a column
+			//! whose credential is actually fine.
+			const char* const kAuthProbeFailurePhrases[] = {
+				"incorrect api key", "invalid api key", "credit balance",
+				"authentication", "unauthorized"
+			};
+
+			//! True iff (`status`, `body`) is a DEAD-CREDENTIAL response to the
+			//! pre-flight auth probe: a bare 401/403 (any body), or a 4xx body
+			//! containing one of kAuthProbeFailurePhrases (case-insensitive).
+			//! Always false for a 2xx/3xx and for a 5xx (a transient server
+			//! error must never skip a whole provider column) -- and false for
+			//! a 4xx that matches none of the phrases (an ordinary bad-request/
+			//! tool-shaped 400, e.g. the reasoning_effort quirk AgentChatLoop
+			//! already retries around).  On true, `matchedReason` is filled
+			//! with a SHORT, key-free description for the log line/manifest
+			//! (the status code, plus the matched phrase for a keyword hit).
+			bool IsAuthProbeFailure( long status, const std::string& body, std::string& matchedReason )
+			{
+				if( status == 401 ) { matchedReason = "401 Unauthorized"; return true; }
+				if( status == 403 ) { matchedReason = "403 Forbidden"; return true; }
+				if( status < 400 || status >= 500 ) return false;
+				const std::string lowerBody = ToLowerAscii( body );
+				for( std::size_t i = 0; i < sizeof( kAuthProbeFailurePhrases ) / sizeof( kAuthProbeFailurePhrases[0] ); ++i ) {
+					if( lowerBody.find( kAuthProbeFailurePhrases[i] ) != std::string::npos ) {
+						matchedReason = std::to_string( status ) + " (\"" + kAuthProbeFailurePhrases[i] + "\")";
+						return true;
+					}
+				}
+				return false;
+			}
+
+			//! Perform the ONE-ROUND pre-flight auth probe for a resolved,
+			//! non-keyless provider column: build the SAME minimal request
+			//! shape a real run's first LLM round would (a fresh
+			//! AgentChatLoop, one "ping" user turn, BuildRequest(key) -- no
+			//! tool registration or trajectory sink needed; the codecs bake
+			//! their own tool defs in and BuildRequest works off whatever the
+			//! transcript holds) and POST it through the SAME transport a real
+			//! run uses.  Returns true (DEAD credential -- the caller SKIPS
+			//! the whole column) only for IsAuthProbeFailure; a transport-
+			//! level failure (status <= 0: DNS/TLS/timeout) is explicitly NOT
+			//! an auth verdict -- the real runs will hit the same failure
+			//! honestly, per-cell, if it persists.  `reason` is ALWAYS filled
+			//! with a short, KEY-FREE diagnostic (never the raw request/
+			//! response body, never the key -- this function never retains
+			//! `apiKey` past the BuildRequest call, matching every other
+			//! apiKey use in this file).
+			bool RunAuthProbe( IChatHttpTransport* transport, ChatProvider provider,
+			                   const std::string& modelId, const std::string& apiKey,
+			                   std::string& reason )
+			{
+				AgentChatLoop probe;
+				probe.SetProvider( provider, modelId );
+				probe.AddUserMessage( "ping" );
+				const ChatHttpRequest req = probe.BuildRequest( apiKey );
+				if( req.url.empty() ) {
+					// Defensive only -- a real provider codec always builds a
+					// non-empty request for a one-user-turn transcript; never
+					// block a column on an internal builder bug.
+					reason = "probe request build was empty (not attempted)";
+					return false;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( resp.status <= 0 ) {
+					reason = "transport error (not auth-fatal): " +
+						( resp.error.empty() ? std::string( "no detail" ) : resp.error );
+					return false;
+				}
+				std::string matched;
+				if( IsAuthProbeFailure( resp.status, resp.body, matched ) ) {
+					reason = "HTTP " + matched;
+					return true;
+				}
+				reason = "HTTP " + std::to_string( resp.status );
+				return false;
+			}
+		}
+
 		AgentEvalMatrixResult RunEvalMatrix( const AgentEvalRunConfig& config,
 		                                     const std::vector<AgentEvalScenario>& scenarios,
 		                                     const AgentEvalMatrixOptions& options )
@@ -1848,6 +2730,14 @@ namespace RISE
 
 			const int reps = config.repeats > 0 ? config.repeats : 0;
 
+			// PRE-FLIGHT AUTH PROBE outcomes, keyed by the provider's declared
+			// NAME ("anthropic" / "gemini" / ...) -- one entry per provider
+			// column that reaches the probe-eligibility point (i.e. past the
+			// missing-key/empty-keyEnvVar skips below).  Stamped into the run
+			// manifest's "authProbes" object at the end of this function.  See
+			// RunEvalMatrix's doc comment for the full contract.
+			std::map<std::string, std::string> authProbeResults;
+
 			for( std::size_t pj = 0; pj < config.providers.size(); ++pj ) {
 				const AgentEvalProviderConfig& prov = config.providers[pj];
 
@@ -1896,6 +2786,30 @@ namespace RISE
 					logLine( "RunEvalMatrix: SKIP provider '" + prov.provider + "' -- unknown provider name" );
 					continue;
 				}
+
+				// PRE-FLIGHT AUTH PROBE (see RunEvalMatrix's doc comment): a
+				// keyless "local" column has no credential to probe -- skip the
+				// probe entirely so an unreachable local server still surfaces
+				// per-cell, as before this feature.  Every other column's
+				// (now-resolved) key is probed ONCE before its scenario x
+				// repeat loop runs, so a DEAD credential is caught loudly here
+				// instead of burning every cell on the same auth failure.
+				if( prov.provider == "local" ) {
+					authProbeResults[prov.provider] = "skipped-keyless";
+				} else {
+					std::string probeReason;
+					if( RunAuthProbe( options.transport, providerEnum, prov.model, key, probeReason ) ) {
+						++result.providersSkipped;
+						++result.providersAuthFailed;
+						result.runsSkipped += static_cast<int>( scenarios.size() ) * reps;
+						logLine( "RunEvalMatrix: SKIP provider '" + prov.provider +
+							"' -- credential rejected by the provider (auth probe failed: " + probeReason + ")" );
+						authProbeResults[prov.provider] = "auth-failed";
+						continue;
+					}
+					authProbeResults[prov.provider] = "ok";
+				}
+
 				++result.providersUsed;
 
 				for( std::size_t si = 0; si < scenarios.size(); ++si ) {
@@ -1981,6 +2895,7 @@ namespace RISE
 						lo.modelId  = prov.model;
 						lo.apiKey   = key;   // key stays in this local + BuildRequest; never logged/persisted
 						lo.clock    = options.clock;
+						lo.sleeper  = options.sleeper;   // HTTP 429 backoff hook (see AgentEvalLiveRunOptions.sleeper)
 
 						AgentEvalRunHandle h = RunScenarioLive( scenario, lo );
 						CheckScenario( h, scenario );
@@ -2072,12 +2987,26 @@ namespace RISE
 				}
 				root.set( "providers", providersArr );
 
+				// PRE-FLIGHT AUTH PROBE outcomes, keyed by provider name -- "ok"
+				// (probed, credential live), "auth-failed" (probed, credential
+				// dead -- the column was SKIPPED), or "skipped-keyless" (a
+				// "local" column, never probed).  A provider column skipped
+				// BEFORE the probe point (missing/empty keyEnvVar) has no entry
+				// here -- its own SKIP log line already explains why.
+				JsonValue authProbesObj = JsonValue::MakeObject();
+				for( std::map<std::string, std::string>::const_iterator it = authProbeResults.begin();
+				     it != authProbeResults.end(); ++it ) {
+					authProbesObj.set( it->first, JsonValue::MakeString( it->second ) );
+				}
+				root.set( "authProbes", authProbesObj );
+
 				JsonValue resultObj = JsonValue::MakeObject();
 				resultObj.set( "runsExecuted",        JsonValue::MakeNumber( result.runsExecuted ) );
 				resultObj.set( "runsSkipped",         JsonValue::MakeNumber( result.runsSkipped ) );
 				resultObj.set( "runsAlreadyComplete", JsonValue::MakeNumber( result.runsAlreadyComplete ) );
 				resultObj.set( "providersUsed",       JsonValue::MakeNumber( result.providersUsed ) );
 				resultObj.set( "providersSkipped",    JsonValue::MakeNumber( result.providersSkipped ) );
+				resultObj.set( "providersAuthFailed", JsonValue::MakeNumber( result.providersAuthFailed ) );
 				root.set( "result", resultObj );
 
 				std::error_code ec;
@@ -2175,6 +3104,35 @@ namespace RISE
 					return false;
 				}
 
+				//! EVERY value of `paramName` in a chunk, in document order.  A
+				//! repeated same-role param (e.g. a `timeline`'s repeated `value`
+				//! keyframes) is each its OWN NodeKind::Param child, so this
+				//! returns one space-joined string per occurrence -- the sibling
+				//! of CheckerChunkParamValue (which returns only the FIRST) that
+				//! series ops like param_series_orbit need to read a full keyframe
+				//! track.  An occurrence with no pvalue tokens yields an empty
+				//! string entry (kept, so positional callers see the gap).
+				std::vector<std::string> CheckerChunkParamValues( const NodeRef& chunk, const std::string& paramName )
+				{
+					std::vector<std::string> out;
+					if( !chunk ) return out;
+					for( const auto& kid : chunk->kids ) {
+						if( kid->kind != NodeKind::Param ) continue;
+						std::string pname;
+						std::vector<std::string> values;
+						for( const auto& tk : kid->kids ) {
+							if( tk->kind != NodeKind::Token ) continue;
+							if( tk->role == "pname" ) pname = tk->text;
+							else if( tk->role == "pvalue" ) values.push_back( tk->text );
+						}
+						if( pname != paramName ) continue;
+						std::string joined;
+						for( std::size_t i = 0; i < values.size(); ++i ) { if( i ) joined += ' '; joined += values[i]; }
+						out.push_back( joined );
+					}
+					return out;
+				}
+
 				//! Tokenize a space-separated string into finite doubles.
 				//! Returns false the moment ANY token fails to parse as a
 				//! complete number (trailing junk like "1abc" is rejected)
@@ -2193,6 +3151,57 @@ namespace RISE
 						if( end != begin + tok.size() ) return false;   // non-numeric / trailing junk
 						if( !std::isfinite( v ) ) return false;
 						out.push_back( v );
+					}
+					return true;
+				}
+
+				//! Evaluate the optional any-of-kind `where` co-binding filter
+				//! against a single candidate chunk.  Each entry is EITHER an
+				//! EQUALITY entry ({param, value}: the chunk's param value must
+				//! equal `value` -- 1e-4-per-component tolerance when BOTH sides
+				//! tokenize all-numeric, else exact string) OR a RANGE entry
+				//! ({param, min:[...], max:[...]}: the chunk's param float tokens
+				//! must each fall in the matching [min_i, max_i] band, mirroring
+				//! param_range).  A chunk passes ONLY when EVERY entry is
+				//! satisfied.  A missing param, a component-count mismatch, or a
+				//! non-numeric value where numbers are required all fail the entry
+				//! (the chunk is filtered OUT).  Load validation has already
+				//! enforced entry shape; the defensive shape checks here keep a
+				//! hand-built checkpoint from crashing.
+				bool CheckerChunkSatisfiesWhere( const NodeRef& chunk, const JsonValue& whereArr )
+				{
+					if( !whereArr.isArray() ) return true;   // no filter -> every chunk passes
+					for( std::size_t i = 0; i < whereArr.size(); ++i ) {
+						const JsonValue& e = whereArr.at( i );
+						if( !e.isObject() || !e.has( "param" ) || !e.get( "param" ).isString() ) return false;
+						const std::string param = e.get( "param" ).asString();
+						std::string actual;
+						if( !CheckerChunkParamValue( chunk, param, actual ) ) return false;
+						const bool isRange = e.has( "min" ) || e.has( "max" );
+						if( isRange ) {
+							if( !e.has( "min" ) || !e.get( "min" ).isArray() || !e.has( "max" ) || !e.get( "max" ).isArray() )
+								return false;
+							const JsonValue& mn = e.get( "min" );
+							const JsonValue& mx = e.get( "max" );
+							std::vector<double> mins, maxs, av;
+							for( std::size_t k = 0; k < mn.size(); ++k ) { if( !mn.at( k ).isNumber() ) return false; mins.push_back( mn.at( k ).asNumber() ); }
+							for( std::size_t k = 0; k < mx.size(); ++k ) { if( !mx.at( k ).isNumber() ) return false; maxs.push_back( mx.at( k ).asNumber() ); }
+							if( mins.empty() || mins.size() != maxs.size() ) return false;
+							if( !CheckerParseFloatTokens( actual, av ) || av.size() != mins.size() ) return false;
+							for( std::size_t k = 0; k < av.size(); ++k )
+								if( av[k] < mins[k] || av[k] > maxs[k] ) return false;
+						} else {
+							if( !e.has( "value" ) || !e.get( "value" ).isString() ) return false;
+							const std::string expected = e.get( "value" ).asString();
+							std::vector<double> av, ev;
+							if( CheckerParseFloatTokens( expected, ev ) && CheckerParseFloatTokens( actual, av ) &&
+							    av.size() == ev.size() && !ev.empty() ) {
+								for( std::size_t k = 0; k < av.size(); ++k )
+									if( std::fabs( av[k] - ev[k] ) > 1e-4 ) return false;
+							} else if( actual != expected ) {
+								return false;
+							}
+						}
 					}
 					return true;
 				}
@@ -2248,6 +3257,26 @@ namespace RISE
 					return count;
 				}
 
+				//! Collect EVERY top-level chunk whose keyword is EXACTLY `kind`
+				//! (document order).  Backs the ANY-OF-KIND (target-less) form of
+				//! the param_equals / param_range / param_references_kind ops: the
+				//! op passes iff ANY of the returned chunks satisfies the
+				//! per-chunk assertion.
+				std::vector<NodeRef> CheckerCollectChunksOfKind( const Document& doc, const std::string& kind )
+				{
+					std::vector<NodeRef> out;
+					const int n = RISE::Cst::DocItemCount( doc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+						if( !id ) continue;
+						NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+						if( !item || item->kind != NodeKind::Chunk ) continue;
+						if( item->role != kind ) continue;
+						out.push_back( item );
+					}
+					return out;
+				}
+
 				//! The OPTIONAL chunk-kind NARROWING field of a document/untouched
 				//! checkpoint (exact chunk-keyword match; "" = no narrowing).  It is
 				//! deliberately NOT named "kind": that name is already the top-level
@@ -2284,6 +3313,20 @@ namespace RISE
 				//! chunk kinds (e.g. `timeline`) that param_equals/chunk_exists
 				//! cannot address individually -- see CheckerCountChunksOfKind's
 				//! doc.  At least one of min/max is required (both is a band).
+				//! ANY-OF-KIND: param_equals / param_range / param_references_kind
+				//! also accept a TARGET-LESS existential form -- omit "target"
+				//! (or leave it empty) and supply a non-empty "chunkKind"; the op
+				//! then passes iff ANY chunk of that kind satisfies the per-chunk
+				//! assertion (the per-chunk logic is shared with the named form).
+				//! An optional any-of-kind "where":[{param,value}|{param,min,max}]
+				//! CO-BINDING filter narrows the candidate set BEFORE the per-chunk
+				//! assertion (only chunks satisfying every entry are considered) --
+				//! collapsing two independent existentials into one AND'd-on-the-
+				//! same-chunk grade.  {op:"param_series_orbit",chunkKind,where?,
+				//! param,minKeyframes,minAngularSpreadDeg,centerWithin?,
+				//! maxRadiusRatio?} (any-of-kind only) proves a single timeline's
+				//! keyframe track is a camera ORBIT rather than accepting two
+				//! independent existentials.
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -2292,64 +3335,124 @@ namespace RISE
 					const std::string op = cp.get( "op" ).asString();
 					const Document doc = RISE::Cst::ParseToCst( session->ReadDocument() );
 
+					// Shared TARGET resolution for the three target-based ops.
+					// `chunks` is either the single named target (name mode) or
+					// EVERY chunk of chunkKind (any-of-kind mode, when target is
+					// absent/empty).  `ok=false` carries a hard shape/lookup
+					// failure detail the op returns verbatim.
+					struct TargetResolution { bool ok; std::string detail; std::vector<NodeRef> chunks; bool anyOfKind; std::string kind; };
+					auto resolveTargets = [&]( const std::string& opName ) -> TargetResolution {
+						const std::string kind = OptKind( cp );
+						const bool hasTarget = cp.has( "target" ) && cp.get( "target" ).isString() && !cp.get( "target" ).asString().empty();
+						if( hasTarget ) {
+							const std::string target = cp.get( "target" ).asString();
+							NodeRef chunk;
+							const int found = CheckerFindChunk( doc, kind, target, chunk );
+							if( found == 0 )
+								return { false, opName + ": no chunk named '" + target + "' found" +
+									( kind.empty() ? std::string() : ( " (kind '" + kind + "')" ) ), {}, false, kind };
+							if( found < 0 )
+								return { false, opName + ": AMBIGUOUS -- more than one chunk named '" + target +
+									"' -- narrow with \"chunkKind\"", {}, false, kind };
+							return { true, std::string(), { chunk }, false, kind };
+						}
+						// any-of-kind: target absent/empty -> chunkKind REQUIRED
+						// (load-validated; this is a defensive re-check).
+						if( kind.empty() )
+							return { false, opName + ": no \"target\" and no \"chunkKind\" -- the any-of-kind form requires a chunkKind",
+								{}, true, kind };
+						std::vector<NodeRef> chunks = CheckerCollectChunksOfKind( doc, kind );
+						if( chunks.empty() )
+							return { false, opName + " (any-of-kind): no chunk of kind '" + kind + "' found", {}, true, kind };
+						// Optional co-binding "where" filter (any-of-kind ONLY --
+						// load-validated absent on the named-target form): a
+						// candidate survives only when it satisfies EVERY where
+						// entry, so two independent existentials collapse into one
+						// AND'd-on-the-same-chunk assertion.
+						if( cp.has( "where" ) && cp.get( "where" ).isArray() ) {
+							std::vector<NodeRef> filtered;
+							for( const NodeRef& c : chunks )
+								if( CheckerChunkSatisfiesWhere( c, cp.get( "where" ) ) ) filtered.push_back( c );
+							if( filtered.empty() )
+								return { false, opName + " (any-of-kind): " + std::to_string( chunks.size() ) +
+									" chunk(s) of kind '" + kind + "' found, but NONE satisfied the \"where\" co-binding filter",
+									{}, true, kind };
+							chunks.swap( filtered );
+						}
+						return { true, std::string(), chunks, true, kind };
+					};
+
+					// Run a per-chunk assertion across the resolution: name mode
+					// grades the single target; any-of-kind passes iff ANY chunk
+					// satisfies, and reports how many were examined.  `evalChunk`
+					// takes (chunk, humanDescription) -> CheckOutcome.
+					auto runAssertion = [&]( const std::string& opName, const TargetResolution& res, auto&& evalChunk ) -> CheckOutcome {
+						if( !res.anyOfKind )
+							return evalChunk( res.chunks[0], "'" + cp.get( "target" ).asString() + "'" );
+						CheckOutcome lastFail{ false, std::string() };
+						for( std::size_t i = 0; i < res.chunks.size(); ++i ) {
+							const std::string nm = CheckerChunkName( res.chunks[i] );
+							const std::string desc = "chunk '" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) +
+								"' (kind '" + res.kind + "')";
+							CheckOutcome oc = evalChunk( res.chunks[i], desc );
+							if( oc.passed )
+								return { true, opName + " (any-of-kind): " + std::to_string( res.chunks.size() ) +
+									" chunk(s) of kind '" + res.kind + "' examined; " + desc + " satisfies -- " + oc.detail };
+							lastFail = oc;
+						}
+						return { false, opName + " (any-of-kind): none of " + std::to_string( res.chunks.size() ) +
+							" chunk(s) of kind '" + res.kind + "' satisfied the assertion (last: " + lastFail.detail + ")" };
+					};
+
 					if( op == "param_equals" ) {
-						if( !cp.has( "target" ) || !cp.get( "target" ).isString() )
-							return { false, "param_equals missing string \"target\"" };
 						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
 							return { false, "param_equals missing string \"param\"" };
 						if( !cp.has( "value" ) || !cp.get( "value" ).isString() )
 							return { false, "param_equals missing string \"value\"" };
-						const std::string target = cp.get( "target" ).asString();
 						const std::string param  = cp.get( "param" ).asString();
 						const std::string expected = cp.get( "value" ).asString();
-						const std::string kind = OptKind( cp );
-
-						NodeRef chunk;
-						const int found = CheckerFindChunk( doc, kind, target, chunk );
-						if( found == 0 )
-							return { false, "param_equals: no chunk named '" + target + "' found" +
-								( kind.empty() ? std::string() : ( " (kind '" + kind + "')" ) ) };
-						if( found < 0 )
-							return { false, "param_equals: AMBIGUOUS -- more than one chunk named '" + target +
-								"' -- narrow with \"kind\"" };
-						std::string actual;
-						if( !CheckerChunkParamValue( chunk, param, actual ) )
-							return { false, "param_equals: chunk '" + target + "' has no param '" + param + "'" };
-
-						// Optional numeric tolerance: tokenize BOTH sides as
-						// floats and compare within 1e-4 per component, so a
-						// live model's "0.0 0.0 1.0" grades equal to a
-						// fixture's "0 0 1".  Refuses LOUDLY (not a silent
-						// mismatch) when the token counts differ or a token on
-						// either side is non-numeric -- a "numeric" checkpoint
-						// authored against a non-numeric param is a rubric bug
-						// worth surfacing.
 						const bool numeric = cp.has( "numeric" ) && cp.get( "numeric" ).isBool() && cp.get( "numeric" ).asBool();
-						if( numeric ) {
-							std::vector<double> av, ev;
-							if( !CheckerParseFloatTokens( expected, ev ) )
-								return { false, "param_equals(numeric): the checkpoint's \"value\" '" + expected +
-									"' is not all-numeric" };
-							if( !CheckerParseFloatTokens( actual, av ) )
-								return { false, "param_equals(numeric): '" + target + "." + param + "' == '" + actual +
-									"' is not all-numeric (expected numeric '" + expected + "')" };
-							if( av.size() != ev.size() )
-								return { false, "param_equals(numeric): '" + target + "." + param + "' has " +
-									std::to_string( av.size() ) + " component(s), expected " + std::to_string( ev.size() ) +
-									" ('" + actual + "' vs '" + expected + "')" };
-							for( std::size_t i = 0; i < av.size(); ++i ) {
-								if( std::fabs( av[i] - ev[i] ) > 1e-4 )
-									return { false, "param_equals(numeric): '" + target + "." + param + "' == '" + actual +
-										"', expected '" + expected + "' (component " + std::to_string( i ) + " differs)" };
-							}
-							return { true, "param_equals(numeric): '" + target + "." + param + "' == '" + expected +
-								"' (within 1e-4)" };
-						}
 
-						if( actual != expected )
-							return { false, "param_equals: '" + target + "." + param + "' == '" + actual +
-								"', expected '" + expected + "'" };
-						return { true, "param_equals: '" + target + "." + param + "' == '" + expected + "'" };
+						const TargetResolution res = resolveTargets( "param_equals" );
+						if( !res.ok ) return { false, res.detail };
+
+						// Per-chunk assertion, shared between the named form and
+						// the any-of-kind form.  Optional numeric tolerance:
+						// tokenize BOTH sides as floats and compare within 1e-4
+						// per component, so a live model's "0.0 0.0 1.0" grades
+						// equal to a fixture's "0 0 1".  Refuses LOUDLY (not a
+						// silent mismatch) when the token counts differ or a token
+						// on either side is non-numeric.
+						auto evalChunk = [&]( const NodeRef& chunk, const std::string& desc ) -> CheckOutcome {
+							std::string actual;
+							if( !CheckerChunkParamValue( chunk, param, actual ) )
+								return { false, "param_equals: " + desc + " has no param '" + param + "'" };
+							if( numeric ) {
+								std::vector<double> av, ev;
+								if( !CheckerParseFloatTokens( expected, ev ) )
+									return { false, "param_equals(numeric): the checkpoint's \"value\" '" + expected +
+										"' is not all-numeric" };
+								if( !CheckerParseFloatTokens( actual, av ) )
+									return { false, "param_equals(numeric): " + desc + "." + param + " == '" + actual +
+										"' is not all-numeric (expected numeric '" + expected + "')" };
+								if( av.size() != ev.size() )
+									return { false, "param_equals(numeric): " + desc + "." + param + " has " +
+										std::to_string( av.size() ) + " component(s), expected " + std::to_string( ev.size() ) +
+										" ('" + actual + "' vs '" + expected + "')" };
+								for( std::size_t i = 0; i < av.size(); ++i ) {
+									if( std::fabs( av[i] - ev[i] ) > 1e-4 )
+										return { false, "param_equals(numeric): " + desc + "." + param + " == '" + actual +
+											"', expected '" + expected + "' (component " + std::to_string( i ) + " differs)" };
+								}
+								return { true, "param_equals(numeric): " + desc + "." + param + " == '" + expected +
+									"' (within 1e-4)" };
+							}
+							if( actual != expected )
+								return { false, "param_equals: " + desc + "." + param + " == '" + actual +
+									"', expected '" + expected + "'" };
+							return { true, "param_equals: " + desc + "." + param + " == '" + expected + "'" };
+						};
+						return runAssertion( "param_equals", res, evalChunk );
 					}
 
 					if( op == "chunk_exists" || op == "chunk_absent" ) {
@@ -2407,17 +3510,13 @@ namespace RISE
 					// an empty band, a component-count mismatch, or a non-numeric
 					// param value.
 					if( op == "param_range" ) {
-						if( !cp.has( "target" ) || !cp.get( "target" ).isString() )
-							return { false, "param_range missing string \"target\"" };
 						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
 							return { false, "param_range missing string \"param\"" };
 						if( !cp.has( "min" ) || !cp.get( "min" ).isArray() )
 							return { false, "param_range missing array \"min\"" };
 						if( !cp.has( "max" ) || !cp.get( "max" ).isArray() )
 							return { false, "param_range missing array \"max\"" };
-						const std::string target = cp.get( "target" ).asString();
 						const std::string param  = cp.get( "param" ).asString();
-						const std::string kind   = OptKind( cp );
 
 						const JsonValue& minArr = cp.get( "min" );
 						const JsonValue& maxArr = cp.get( "max" );
@@ -2438,34 +3537,33 @@ namespace RISE
 							return { false, "param_range: \"min\" has " + std::to_string( mins.size() ) +
 								" component(s) but \"max\" has " + std::to_string( maxs.size() ) + " -- they must match" };
 
-						NodeRef chunk;
-						const int found = CheckerFindChunk( doc, kind, target, chunk );
-						if( found == 0 )
-							return { false, "param_range: no chunk named '" + target + "' found" +
-								( kind.empty() ? std::string() : ( " (kind '" + kind + "')" ) ) };
-						if( found < 0 )
-							return { false, "param_range: AMBIGUOUS -- more than one chunk named '" + target +
-								"' -- narrow with \"chunkKind\"" };
-						std::string actual;
-						if( !CheckerChunkParamValue( chunk, param, actual ) )
-							return { false, "param_range: chunk '" + target + "' has no param '" + param + "'" };
+						const TargetResolution res = resolveTargets( "param_range" );
+						if( !res.ok ) return { false, res.detail };
 
-						std::vector<double> av;
-						if( !CheckerParseFloatTokens( actual, av ) )
-							return { false, "param_range: '" + target + "." + param + "' == '" + actual +
-								"' is not all-numeric" };
-						if( av.size() != mins.size() )
-							return { false, "param_range: '" + target + "." + param + "' has " +
-								std::to_string( av.size() ) + " component(s), expected " + std::to_string( mins.size() ) +
-								" ('" + actual + "')" };
-						for( std::size_t i = 0; i < av.size(); ++i ) {
-							if( av[i] < mins[i] || av[i] > maxs[i] )
-								return { false, "param_range: '" + target + "." + param + "' == '" + actual +
-									"', component " + std::to_string( i ) + " (" + std::to_string( av[i] ) +
-									") outside [" + std::to_string( mins[i] ) + ", " + std::to_string( maxs[i] ) + "]" };
-						}
-						return { true, "param_range: '" + target + "." + param + "' == '" + actual +
-							"' within all " + std::to_string( av.size() ) + " band(s)" };
+						// Per-chunk assertion, shared between the named form and
+						// the any-of-kind form.
+						auto evalChunk = [&]( const NodeRef& chunk, const std::string& desc ) -> CheckOutcome {
+							std::string actual;
+							if( !CheckerChunkParamValue( chunk, param, actual ) )
+								return { false, "param_range: " + desc + " has no param '" + param + "'" };
+							std::vector<double> av;
+							if( !CheckerParseFloatTokens( actual, av ) )
+								return { false, "param_range: " + desc + "." + param + " == '" + actual +
+									"' is not all-numeric" };
+							if( av.size() != mins.size() )
+								return { false, "param_range: " + desc + "." + param + " has " +
+									std::to_string( av.size() ) + " component(s), expected " + std::to_string( mins.size() ) +
+									" ('" + actual + "')" };
+							for( std::size_t i = 0; i < av.size(); ++i ) {
+								if( av[i] < mins[i] || av[i] > maxs[i] )
+									return { false, "param_range: " + desc + "." + param + " == '" + actual +
+										"', component " + std::to_string( i ) + " (" + std::to_string( av[i] ) +
+										") outside [" + std::to_string( mins[i] ) + ", " + std::to_string( maxs[i] ) + "]" };
+							}
+							return { true, "param_range: " + desc + "." + param + " == '" + actual +
+								"' within all " + std::to_string( av.size() ) + " band(s)" };
+						};
+						return runAssertion( "param_range", res, evalChunk );
 					}
 
 					// param_references_kind: pass iff TARGET's PARAM value
@@ -2484,14 +3582,14 @@ namespace RISE
 					// param_equals); provide EXACTLY ONE of "referencedKind"
 					// (a string) or "referencedKinds" (a non-empty string array).
 					if( op == "param_references_kind" ) {
-						if( !cp.has( "target" ) || !cp.get( "target" ).isString() )
-							return { false, "param_references_kind missing string \"target\"" };
 						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
 							return { false, "param_references_kind missing string \"param\"" };
 
 						// Collect the accepted kinds from EITHER the singular
 						// "referencedKind" (a string) OR the "referencedKinds"
-						// any-of array -- exactly one must be supplied.
+						// any-of array -- exactly one must be supplied.  (This is
+						// the REFERENCED chunk's kind set, distinct from the
+						// TARGET-side any-of-kind form driven by "chunkKind".)
 						std::vector<std::string> acceptedKinds;
 						const bool hasSingular = cp.has( "referencedKind" );
 						const bool hasArray    = cp.has( "referencedKinds" );
@@ -2514,45 +3612,201 @@ namespace RISE
 							}
 						}
 
-						const std::string target = cp.get( "target" ).asString();
 						const std::string param  = cp.get( "param" ).asString();
-						const std::string kind = OptKind( cp );   // narrows the TARGET chunk
-
-						NodeRef chunk;
-						const int found = CheckerFindChunk( doc, kind, target, chunk );
-						if( found == 0 )
-							return { false, "param_references_kind: no chunk named '" + target + "' found" +
-								( kind.empty() ? std::string() : ( " (kind '" + kind + "')" ) ) };
-						if( found < 0 )
-							return { false, "param_references_kind: AMBIGUOUS -- more than one chunk named '" +
-								target + "' -- narrow with \"chunkKind\"" };
-						std::string referencedName;
-						if( !CheckerChunkParamValue( chunk, param, referencedName ) )
-							return { false, "param_references_kind: chunk '" + target + "' has no param '" + param + "'" };
-						if( referencedName.empty() )
-							return { false, "param_references_kind: '" + target + "." + param + "' has an empty value" };
-
-						// ANY-OF: the binding passes as soon as the named chunk
-						// resolves under one accepted kind.  An AMBIGUOUS match
-						// under ANY single kind is a hard rubric failure (the
-						// referenced name is not uniquely a chunk of that kind).
 						std::string joinedKinds;
 						for( std::size_t i = 0; i < acceptedKinds.size(); ++i ) {
 							if( i ) joinedKinds += ", ";
 							joinedKinds += "'" + acceptedKinds[i] + "'";
 						}
-						for( const std::string& refKind : acceptedKinds ) {
-							NodeRef referenced;
-							const int refFound = CheckerFindChunk( doc, refKind, referencedName, referenced );
-							if( refFound < 0 )
-								return { false, "param_references_kind: '" + referencedName +
-									"' matches MORE THAN ONE chunk of kind '" + refKind + "'" };
-							if( refFound == 1 )
-								return { true, "param_references_kind: '" + target + "." + param + "' -> '" +
-									referencedName + "' (a '" + refKind + "')" };
+
+						const TargetResolution res = resolveTargets( "param_references_kind" );
+						if( !res.ok ) return { false, res.detail };
+
+						// Per-chunk assertion, shared between the named form and
+						// the any-of-kind form.  ANY-OF (referenced kinds): the
+						// binding passes as soon as the named chunk resolves under
+						// one accepted kind.  An AMBIGUOUS match under ANY single
+						// kind is a hard rubric failure.
+						auto evalChunk = [&]( const NodeRef& chunk, const std::string& desc ) -> CheckOutcome {
+							std::string referencedName;
+							if( !CheckerChunkParamValue( chunk, param, referencedName ) )
+								return { false, "param_references_kind: " + desc + " has no param '" + param + "'" };
+							if( referencedName.empty() )
+								return { false, "param_references_kind: " + desc + "." + param + " has an empty value" };
+							for( const std::string& refKind : acceptedKinds ) {
+								NodeRef referenced;
+								const int refFound = CheckerFindChunk( doc, refKind, referencedName, referenced );
+								if( refFound < 0 )
+									return { false, "param_references_kind: '" + referencedName +
+										"' matches MORE THAN ONE chunk of kind '" + refKind + "'" };
+								if( refFound == 1 )
+									return { true, "param_references_kind: " + desc + "." + param + " -> '" +
+										referencedName + "' (a '" + refKind + "')" };
+							}
+							return { false, "param_references_kind: " + desc + "." + param + " names '" +
+								referencedName + "', but no chunk of kind(s) " + joinedKinds + " has that name" };
+						};
+						return runAssertion( "param_references_kind", res, evalChunk );
+					}
+
+					// param_series_orbit: ANY-OF-KIND only.  Per candidate chunk
+					// (post-`where`), FIRST prove time progression is intrinsic to
+					// the op (always enforced, not opt-in): collect every `param`
+					// occurrence AND every `timeParam` occurrence (default "time")
+					// in document order, require the RAW counts to match 1:1, every
+					// time token to parse as a single float, and the time sequence
+					// to be STRICTLY increasing (subsumes an all-equal/degenerate
+					// range -- no epsilon needed).  THEN collect every `param`
+					// occurrence in order, parse each as 3 floats (skip malformed),
+					// dedupe consecutive duplicates, and grade the resulting XZ
+					// point track as an ORBIT: >= minKeyframes points, an angular
+					// spread (about the centerWithin point when given, else the
+					// points' XZ centroid) of >= minAngularSpreadDeg, the centroid
+					// within centerWithin's radius (when given), and a max/min
+					// radius ratio <= maxRadiusRatio (when given).  This binds a
+					// single timeline to PROVE a camera orbit -- both in SHAPE and
+					// in TIME -- rather than accepting two independent existentials
+					// or a geometry-only track that never actually animates.
+					// Angular spread = 360 minus the largest gap between
+					// circularly-sorted per-point angles (a full sweep of N
+					// evenly-spaced points measures 360 - 360/N).
+					if( op == "param_series_orbit" ) {
+						if( !cp.has( "param" ) || !cp.get( "param" ).isString() )
+							return { false, "param_series_orbit missing string \"param\"" };
+						// All numeric knobs are load-validated (minKeyframes >= 2,
+						// minAngularSpreadDeg in (0,360], maxRadiusRatio > 1); these
+						// reads are defensive against a hand-built checkpoint.
+						const std::string param = cp.get( "param" ).asString();
+						const std::string timeParam = ( cp.has( "timeParam" ) && cp.get( "timeParam" ).isString() &&
+							!cp.get( "timeParam" ).asString().empty() ) ? cp.get( "timeParam" ).asString() : std::string( "time" );
+						const long minKeyframes = ( cp.has( "minKeyframes" ) && cp.get( "minKeyframes" ).isNumber() )
+							? static_cast<long>( cp.get( "minKeyframes" ).asNumber() ) : 2;
+						const double minSpread = ( cp.has( "minAngularSpreadDeg" ) && cp.get( "minAngularSpreadDeg" ).isNumber() )
+							? cp.get( "minAngularSpreadDeg" ).asNumber() : 0.0;
+						const bool hasCenter = cp.has( "centerWithin" ) && cp.get( "centerWithin" ).isObject();
+						double cwx = 0.0, cwz = 0.0, cwr = 0.0;
+						if( hasCenter ) {
+							const JsonValue& cw = cp.get( "centerWithin" );
+							cwx = cw.get( "x" ).asNumber( 0.0 );
+							cwz = cw.get( "z" ).asNumber( 0.0 );
+							cwr = cw.get( "radius" ).asNumber( 0.0 );
 						}
-						return { false, "param_references_kind: '" + target + "." + param + "' names '" +
-							referencedName + "', but no chunk of kind(s) " + joinedKinds + " has that name" };
+						const bool hasRatio = cp.has( "maxRadiusRatio" ) && cp.get( "maxRadiusRatio" ).isNumber();
+						const double maxRatio = hasRatio ? cp.get( "maxRadiusRatio" ).asNumber() : 0.0;
+
+						const TargetResolution res = resolveTargets( "param_series_orbit" );
+						if( !res.ok ) return { false, res.detail };
+
+						auto evalChunk = [&]( const NodeRef& chunk, const std::string& desc ) -> CheckOutcome {
+							// Time progression is INTRINSIC to this op -- always
+							// enforced, never opt-in.  Collect the RAW `param` and
+							// `timeParam` occurrence lists (before any parsing or
+							// dedupe) and require them to pair up 1:1: a timeline
+							// that omits `time` lines (parser defaults a missing
+							// time to 0.0) or carries extras fails right here.
+							const std::vector<std::string> rawValues = CheckerChunkParamValues( chunk, param );
+							const std::vector<std::string> rawTimes  = CheckerChunkParamValues( chunk, timeParam );
+							if( rawTimes.size() != rawValues.size() )
+								return { false, "param_series_orbit: " + desc + " has " + std::to_string( rawValues.size() ) +
+									" '" + param + "' value(s) but " + std::to_string( rawTimes.size() ) + " '" + timeParam +
+									"' entrie(s) -- every keyframe value needs a paired time" };
+
+							// Every time token must parse as a single float.
+							std::vector<double> times;
+							times.reserve( rawTimes.size() );
+							for( std::size_t i = 0; i < rawTimes.size(); ++i ) {
+								std::vector<double> tf;
+								if( !CheckerParseFloatTokens( rawTimes[i], tf ) || tf.size() != 1 )
+									return { false, "param_series_orbit: " + desc + " '" + timeParam + "'[" + std::to_string( i ) +
+										"] = \"" + rawTimes[i] + "\" does not parse as a single float" };
+								times.push_back( tf[0] );
+							}
+
+							// The time sequence must be STRICTLY increasing.  This
+							// subsumes the degenerate all-equal-timestamp case (no
+							// epsilon needed) and catches duplicate/decreasing/
+							// non-progressing sequences alike.
+							for( std::size_t i = 1; i < times.size(); ++i ) {
+								if( !( times[i - 1] < times[i] ) )
+									return { false, "param_series_orbit: " + desc + " '" + timeParam + "' is not strictly "
+										"increasing at index " + std::to_string( i - 1 ) + "->" + std::to_string( i ) + " (" +
+										std::to_string( times[i - 1] ) + " -> " + std::to_string( times[i] ) + ")" };
+							}
+
+							// Collect every `param` value; parse each as an XYZ
+							// triple (skip malformed); we grade in the XZ plane.
+							struct Pt { double x, y, z; };
+							std::vector<Pt> pts;
+							for( const std::string& s : rawValues ) {
+								std::vector<double> f;
+								if( !CheckerParseFloatTokens( s, f ) || f.size() != 3 ) continue;
+								pts.push_back( { f[0], f[1], f[2] } );
+							}
+							// Dedupe CONSECUTIVE duplicates (a closing keyframe that
+							// repeats the opening one is NOT consecutive, so it is
+							// kept -- matching a closed loop's genuine keyframe count).
+							std::vector<Pt> dp;
+							for( const Pt& p : pts ) {
+								if( dp.empty() || dp.back().x != p.x || dp.back().y != p.y || dp.back().z != p.z )
+									dp.push_back( p );
+							}
+							if( static_cast<long>( dp.size() ) < minKeyframes )
+								return { false, "param_series_orbit: " + desc + " has " + std::to_string( dp.size() ) +
+									" keyframe(s) after dedupe, need >= " + std::to_string( minKeyframes ) };
+
+							// Center for the angle sweep: centerWithin when given,
+							// else the points' XZ centroid.
+							double sx = 0.0, sz = 0.0;
+							for( const Pt& p : dp ) { sx += p.x; sz += p.z; }
+							const double centroidX = sx / static_cast<double>( dp.size() );
+							const double centroidZ = sz / static_cast<double>( dp.size() );
+							const double cx = hasCenter ? cwx : centroidX;
+							const double cz = hasCenter ? cwz : centroidZ;
+
+							// Per-point angle (deg in [0,360)) + radius from center.
+							std::vector<double> deg;
+							double minDist = -1.0, maxDist = 0.0;
+							for( const Pt& p : dp ) {
+								const double dx = p.x - cx, dz = p.z - cz;
+								double a = std::atan2( dz, dx ) * ( 180.0 / 3.14159265358979323846 );
+								if( a < 0.0 ) a += 360.0;
+								deg.push_back( a );
+								const double d = std::sqrt( dx * dx + dz * dz );
+								if( minDist < 0.0 || d < minDist ) minDist = d;
+								if( d > maxDist ) maxDist = d;
+							}
+							std::sort( deg.begin(), deg.end() );
+							double largestGap = 0.0;
+							for( std::size_t i = 1; i < deg.size(); ++i )
+								largestGap = std::max( largestGap, deg[i] - deg[i - 1] );
+							largestGap = std::max( largestGap, ( deg.front() + 360.0 ) - deg.back() );   // wrap gap
+							const double spread = 360.0 - largestGap;
+							if( spread < minSpread )
+								return { false, "param_series_orbit: " + desc + " angular spread " + std::to_string( spread ) +
+									" deg < required " + std::to_string( minSpread ) + " (" + std::to_string( dp.size() ) + " keyframes)" };
+
+							if( hasCenter ) {
+								const double cd = std::sqrt( ( centroidX - cwx ) * ( centroidX - cwx ) +
+									( centroidZ - cwz ) * ( centroidZ - cwz ) );
+								if( cd > cwr )
+									return { false, "param_series_orbit: " + desc + " XZ centroid distance " + std::to_string( cd ) +
+										" from center exceeds radius " + std::to_string( cwr ) };
+							}
+							if( hasRatio ) {
+								if( minDist <= 1e-6 )
+									return { false, "param_series_orbit: " + desc + " degenerate -- a keyframe coincides with the "
+										"center (minDist ~0), radius ratio undefined" };
+								const double ratio = maxDist / minDist;
+								if( ratio > maxRatio )
+									return { false, "param_series_orbit: " + desc + " radius ratio " + std::to_string( ratio ) +
+										" exceeds max " + std::to_string( maxRatio ) };
+							}
+							return { true, "param_series_orbit: " + desc + " -- " + std::to_string( dp.size() ) +
+								" keyframes, angular spread " + std::to_string( spread ) + " deg" +
+								( hasRatio ? ( ", radius ratio " + std::to_string( maxDist / minDist ) ) : std::string() ) +
+								", time span " + std::to_string( times.front() ) + ".." + std::to_string( times.back() ) };
+						};
+						return runAssertion( "param_series_orbit", res, evalChunk );
 					}
 
 					return { false, "document checkpoint: unknown op '" + op + "'" };
@@ -2600,18 +3854,139 @@ namespace RISE
 					return { true, "all " + std::to_string( chunksArr.size() ) + " named chunk(s) byte-identical to the initial scene" };
 				}
 
-				//! "render": {width?,height?,seed?,meanLumaMin?/Max?,meanRMin?/Max?,
-				//! meanGMin?/Max?,meanBMin?/Max?} -- a FRESH render through the
-				//! live session (AgentSession::Render, bypassing the JSON-RPC
-				//! layer -- the checker is a privileged verifier), asserted
-				//! against generous [min,max] bands.  `seed` is accepted (never
-				//! rejected -- an author may want to note the seed a fixture
-				//! was authored against) but has NO EFFECT: AgentSession::Render
-				//! exposes no seed/RNG-pinning control (see AgentRenderParams --
-				//! samples/width/height/camera/pinned/quality/mode only), so
-				//! per the plan's tolerance-banded rule, bands MUST be wide
-				//! enough to absorb ordinary MC noise between runs, not narrow
-				//! enough to require a pinned seed.  NEVER an exact-pixel match.
+				//! Image-reconstruction Wave 2: format an author-supplied
+				//! [x,y,z] JSON number array (load-validated to be exactly 3
+				//! numbers) into the "x y z" string form AgentCameraOverride's
+				//! Vec3 fields accept (the same form CameraIntrospection::
+				//! SetProperty parses).  %.10g keeps full double precision
+				//! without a trailing exponent for ordinary scene coordinates.
+				std::string CameraVec3String( const JsonValue& arr )
+				{
+					char b[128];
+					std::snprintf( b, sizeof( b ), "%.10g %.10g %.10g",
+						arr.at( 0 ).asNumber(), arr.at( 1 ).asNumber(), arr.at( 2 ).asNumber() );
+					return std::string( b );
+				}
+
+				//! Image-reconstruction Wave 2: decode PNG bytes already in
+				//! memory into a tightly-packed 8-bit RGB pixel buffer (row-
+				//! major, 3 bytes/pixel, alpha dropped) through RISE's OWN
+				//! PNGReader -- the SAME decoder png_painter uses.  We decode
+				//! with eColorSpace_Rec709RGB_Linear (the reader's "do nothing"
+				//! branch: byte/255 in) and re-Integerize<Rec709RGBPel> (·255
+				//! out) so the EXACT stored 8-bit byte the writer emitted comes
+				//! back verbatim -- a pure linear round-trip with NO gamma step,
+				//! so no quantization drift is introduced by the read side.
+				//! This is why "compareToImage" compares like-with-like: the
+				//! candidate is decode(rr.png) where rr.png is byte-identical to
+				//! what read_image returns (InMemoryRasterizerOutput::ToPng),
+				//! and the reference was itself written by that same ToPng path.
+				//! Returns false (populating `err`) on any decode failure --
+				//! empty buffer (missing/unreadable file), non-PNG bytes, or
+				//! degenerate dims -- never throws or crashes.  `bytes` must
+				//! outlive the call (the MemoryBuffer does NOT take ownership).
+				bool DecodePngToRgb8( char* bytes, unsigned int byteCount,
+					std::vector<unsigned char>& outRgb, unsigned int& outW, unsigned int& outH,
+					std::string& err )
+				{
+					outRgb.clear();
+					outW = 0;
+					outH = 0;
+					if( !bytes || byteCount == 0 ) {
+						err = "empty PNG buffer (missing or unreadable reference)";
+						return false;
+					}
+
+					IMemoryBuffer* buffer = nullptr;
+					if( !RISE_API_CreateCompatibleMemoryBuffer( &buffer, bytes, byteCount, /*bTakeOwnership=*/false ) || !buffer ) {
+						err = "could not wrap PNG bytes in a read buffer";
+						return false;
+					}
+
+					IRasterImageReader* reader = nullptr;
+					if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+						buffer->release();
+						err = "could not create a PNG reader";
+						return false;
+					}
+
+					unsigned int w = 0, h = 0;
+					if( !reader->BeginRead( w, h ) || w == 0 || h == 0 ) {
+						reader->EndRead();
+						reader->release();
+						buffer->release();
+						err = "PNG decode failed (not a valid PNG, or zero dimensions)";
+						return false;
+					}
+
+					outRgb.resize( static_cast<std::size_t>( w ) * h * 3 );
+					for( unsigned int y = 0; y < h; ++y ) {
+						for( unsigned int x = 0; x < w; ++x ) {
+							RISEColor c;
+							reader->ReadColor( c, x, y );
+							// eColorSpace_Rec709RGB_Linear ⟶ Integerize<Rec709RGBPel>
+							// is an exact byte round-trip (see the function doc).
+							const RGBA_T<unsigned char> enc = c.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
+							const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 3;
+							outRgb[idx + 0] = enc.r;
+							outRgb[idx + 1] = enc.g;
+							outRgb[idx + 2] = enc.b;
+						}
+					}
+
+					reader->EndRead();
+					reader->release();
+					buffer->release();
+					outW = w;
+					outH = h;
+					return true;
+				}
+
+				//! "render": {width?,height?,samples?,seed?,camera?,
+				//! meanLumaMin?/Max?,meanRMin?/Max?,meanGMin?/Max?,meanBMin?/Max?,
+				//! channelBalanceMax?,compareToImage?,rmseMax?} -- a FRESH render
+				//! through the live session (AgentSession::Render, bypassing the
+				//! JSON-RPC layer -- the checker is a privileged verifier),
+				//! asserted against generous [min,max] bands.
+				//!
+				//! Image-reconstruction Wave 2 additions:
+				//!  * `camera` {location:[x,y,z], lookat:[x,y,z], up?:[x,y,z]
+				//!    (default [0,1,0]), fov?:degrees} overrides the ACTIVE
+				//!    camera's pose for THIS grading render only (via
+				//!    AgentRenderParams::camera) so the render is taken from a
+				//!    KNOWN pose regardless of the scene's authored camera.
+				//!    location+lookat are required when `camera` is present; fov
+				//!    absent = keep the camera's current fov.  Composes with
+				//!    width/height/samples and every band above.
+				//!  * `samples` (>=1, load-validated) is wired to
+				//!    AgentRenderParams::samples so a grading render can use
+				//!    enough SPP to stabilise a compareToImage RMSE (honoured by
+				//!    the pixel-based rasterizer family; see AgentRenderParams).
+				//!  * `compareToImage` (repo-relative .png path) + `rmseMax`
+				//!    (in (0,1], both-or-neither) assert an IMAGE similarity:
+				//!    RMSE = sqrt(mean over all pixels·RGB of ((a-b)/255)^2) of
+				//!    THIS render vs the committed reference PNG, failing iff it
+				//!    exceeds rmseMax.  The candidate is decode(rr.png) where
+				//!    rr.png is byte-identical to what read_image returns, and
+				//!    the reference was written by that SAME render->PNG path, so
+				//!    tonemap/clamp/quantization are IDENTICAL on both sides (see
+				//!    DecodePngToRgb8's doc).  The render is forced to the
+				//!    reference's EXACT dimensions: if width/height are also
+				//!    given they MUST equal the reference's dims (a RUNTIME check
+				//!    -- the load validator cannot open the file), else the
+				//!    reference's dims are adopted.  The measured RMSE is ALWAYS
+				//!    reported in the detail (pass or fail) so a calibration run
+				//!    can read the actual noise floor.  A missing / non-PNG
+				//!    reference is a FAILED checkpoint with a clear detail, never
+				//!    a crash.
+				//!
+				//! `seed` is accepted (never rejected -- an author may want to
+				//! note the seed a fixture was authored against) but has NO
+				//! EFFECT: AgentSession::Render exposes no seed/RNG-pinning
+				//! control, so per the plan's tolerance-banded rule, bands (and
+				//! rmseMax) MUST be wide enough to absorb ordinary MC noise
+				//! between runs, not narrow enough to require a pinned seed.
+				//! NEVER an exact-pixel match.
 				CheckOutcome CheckRenderKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "render checkpoint: no live session (run did not complete)" };
@@ -2624,6 +3999,78 @@ namespace RISE
 						rp.height = static_cast<unsigned int>( cp.get( "height" ).asNumber() );
 					} else if( haveW != haveH ) {
 						return { false, "render checkpoint: \"width\"/\"height\" must both be supplied together" };
+					}
+
+					// Image-reconstruction Wave 2: samples override (load-validated >=1).
+					if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() ) {
+						rp.samples = static_cast<int>( cp.get( "samples" ).asNumber() );
+					}
+
+					// Image-reconstruction Wave 2: camera-pose override.  The
+					// shape (location+lookat required, up/fov typed) is
+					// load-validated by ValidateRenderCheckpointTypes; here we
+					// only translate the JSON arrays into the "x y z" strings
+					// AgentCameraOverride accepts.  `up` defaults to [0,1,0]
+					// (the +Y-up convention) when omitted; `fov` omitted keeps
+					// the camera's current fov (hasFov stays false).
+					if( cp.has( "camera" ) && cp.get( "camera" ).isObject() ) {
+						const JsonValue& cam = cp.get( "camera" );
+						rp.camera.hasLocation = true;
+						rp.camera.location    = CameraVec3String( cam.get( "location" ) );
+						rp.camera.hasLookAt   = true;
+						rp.camera.lookAt      = CameraVec3String( cam.get( "lookat" ) );
+						rp.camera.hasUp       = true;
+						rp.camera.up          = cam.has( "up" ) ? CameraVec3String( cam.get( "up" ) )
+						                                        : std::string( "0 1 0" );
+						if( cam.has( "fov" ) && cam.get( "fov" ).isNumber() ) {
+							char fbuf[64];
+							std::snprintf( fbuf, sizeof( fbuf ), "%.10g", cam.get( "fov" ).asNumber() );
+							rp.camera.hasFov = true;
+							rp.camera.fov    = fbuf;
+						}
+					}
+
+					// Image-reconstruction Wave 2: decode the compareToImage
+					// reference FIRST -- its dims drive the grading render (the
+					// candidate must be produced at EXACTLY the reference's
+					// dimensions).  Both fields are load-validated present-together
+					// with rmseMax in (0,1] and a non-".." non-empty path.
+					const bool haveCompare = cp.has( "compareToImage" ) && cp.get( "compareToImage" ).isString() &&
+					                         cp.has( "rmseMax" ) && cp.get( "rmseMax" ).isNumber();
+					std::vector<unsigned char> refRgb;
+					unsigned int refW = 0, refH = 0;
+					std::string  refPath;
+					double       rmseMax = 0.0;
+					if( haveCompare ) {
+						refPath = cp.get( "compareToImage" ).asString();
+						rmseMax = cp.get( "rmseMax" ).asNumber();
+						std::string refBytes, readErr;
+						if( !ReadWholeFile( refPath, refBytes, readErr ) ) {
+							return { false, "render checkpoint: compareToImage reference '" + refPath +
+								"' could not be read (" + readErr + ")" };
+						}
+						std::string decErr;
+						if( !DecodePngToRgb8( refBytes.empty() ? nullptr : &refBytes[0],
+						                      static_cast<unsigned int>( refBytes.size() ),
+						                      refRgb, refW, refH, decErr ) ) {
+							return { false, "render checkpoint: compareToImage reference '" + refPath +
+								"' could not be decoded (" + decErr + ")" };
+						}
+						// Dimension rule (RUNTIME -- the load validator cannot
+						// open the file): an explicit width/height must MATCH the
+						// reference; otherwise adopt the reference's dims.
+						if( haveW && haveH ) {
+							if( rp.width != refW || rp.height != refH ) {
+								char db[320];
+								std::snprintf( db, sizeof( db ),
+									"render checkpoint: compareToImage requested %ux%u but reference '%s' is %ux%u -- dims must match",
+									rp.width, rp.height, refPath.c_str(), refW, refH );
+								return { false, std::string( db ) };
+							}
+						} else {
+							rp.width  = refW;
+							rp.height = refH;
+						}
 					}
 
 					const AgentRenderResult rr = session->Render( rp );
@@ -2654,23 +4101,94 @@ namespace RISE
 					checkBand( "meanGMin", "meanGMax", "meanG", rr.meanG );
 					checkBand( "meanBMin", "meanBMax", "meanB", rr.meanB );
 
+					// channelBalanceMax: a name-agnostic "the render is roughly
+					// neutral/grey" assertion.  The ratio of the brightest to the
+					// dimmest mean channel must not exceed the given cap (> 1.0,
+					// load-validated).  The 1e-6 floor guards a near-black channel
+					// from producing a divide-by-~0 blow-up.
+					if( cp.has( "channelBalanceMax" ) && cp.get( "channelBalanceMax" ).isNumber() ) {
+						const double cap = cp.get( "channelBalanceMax" ).asNumber();
+						const double hi = std::max( rr.meanR, std::max( rr.meanG, rr.meanB ) );
+						const double lo = std::min( rr.meanR, std::min( rr.meanG, rr.meanB ) );
+						const double ratio = hi / std::max( lo, 1e-6 );
+						if( ratio > cap ) {
+							char rbuf[256];
+							std::snprintf( rbuf, sizeof( rbuf ),
+								"channelBalance ratio %.4f > max %.4f (meanR=%.4f meanG=%.4f meanB=%.4f)",
+								ratio, cap, rr.meanR, rr.meanG, rr.meanB );
+							failures.push_back( std::string( rbuf ) );
+						}
+					}
+
+					// Image-reconstruction Wave 2: compareToImage RMSE.  The
+					// candidate is decode(rr.png) -- rr.png is byte-identical to
+					// what read_image returns, so decoding it back guarantees
+					// the same tonemap/clamp/quantization the reference carries.
+					// `rmseNote` is built whenever the RMSE is actually computed
+					// and is appended to the final detail on BOTH pass and fail
+					// (the calibration workflow reads the measured value either
+					// way).
+					std::string rmseNote;
+					if( haveCompare ) {
+						std::vector<unsigned char> candBytes = rr.png;   // mutable copy (rr is const; MemoryBuffer wants char*)
+						std::vector<unsigned char> candRgb;
+						unsigned int candW = 0, candH = 0;
+						std::string  decErr;
+						if( !DecodePngToRgb8( candBytes.empty() ? nullptr : reinterpret_cast<char*>( &candBytes[0] ),
+						                      static_cast<unsigned int>( candBytes.size() ),
+						                      candRgb, candW, candH, decErr ) ) {
+							failures.push_back( "compareToImage: candidate render PNG could not be decoded (" + decErr + ")" );
+						} else if( candW != refW || candH != refH ) {
+							char db[320];
+							std::snprintf( db, sizeof( db ),
+								"compareToImage dimension mismatch: render is %ux%u but reference '%s' is %ux%u",
+								candW, candH, refPath.c_str(), refW, refH );
+							failures.push_back( std::string( db ) );
+						} else {
+							const std::size_t n = static_cast<std::size_t>( candW ) * candH * 3;
+							double sumSq = 0.0;
+							for( std::size_t i = 0; i < n; ++i ) {
+								const double diff = ( static_cast<double>( candRgb[i] ) - static_cast<double>( refRgb[i] ) ) / 255.0;
+								sumSq += diff * diff;
+							}
+							const double rmse = ( n > 0 ) ? std::sqrt( sumSq / static_cast<double>( n ) ) : 0.0;
+							char nb[256];
+							std::snprintf( nb, sizeof( nb ), "compareToImage RMSE=%.6f (max %.6f, ref '%s')",
+								rmse, rmseMax, refPath.c_str() );
+							rmseNote = nb;
+							if( rmse > rmseMax ) {
+								char fb[256];
+								std::snprintf( fb, sizeof( fb ), "compareToImage RMSE %.6f > max %.6f vs reference '%s'",
+									rmse, rmseMax, refPath.c_str() );
+								failures.push_back( std::string( fb ) );
+							}
+						}
+					}
+
 					if( !failures.empty() ) {
 						std::string detail = "render band(s) violated: ";
 						for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
+						if( !rmseNote.empty() ) detail += " [" + rmseNote + "]";
 						return { false, detail };
 					}
 					char buf[256];
 					std::snprintf( buf, sizeof( buf ), "render bands satisfied (meanR=%.4f meanG=%.4f meanB=%.4f meanLuma=%.4f)",
 						rr.meanR, rr.meanG, rr.meanB, meanLuma );
-					return { true, std::string( buf ) };
+					std::string detail( buf );
+					if( !rmseNote.empty() ) detail += "; " + rmseNote;
+					return { true, detail };
 				}
 
 				//! "objectmap": {legendContains?,pixelCountFor?,pixelCountMin?,
-				//! pixelCountMax?,queryAt?:{x,y,expectName}} -- legendContains/
-				//! pixelCountFor run ONE mode:"objectmap" render (only if
-				//! needed); queryAt runs AgentSession::QueryObjectAt (which does
-				//! its own internal objectmap render regardless).  At least one
-				//! of the three assertions must be present.
+				//! pixelCountMax?,queryAt?:{x,y,expectName,expectGeometryKind?}} --
+				//! legendContains/pixelCountFor run ONE mode:"objectmap" render
+				//! (only if needed); queryAt runs AgentSession::QueryObjectAt
+				//! (which does its own internal objectmap render regardless).  At
+				//! least one of the three assertions must be present.  Optional
+				//! queryAt.expectGeometryKind binds the HIT object's `geometry`
+				//! param to a chunk of the named kind (e.g. "the centered visible
+				//! object is a sphere_geometry"); load-rejected with expectName ""
+				//! (a miss has no geometry).
 				CheckOutcome CheckObjectmapKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "objectmap checkpoint: no live session (run did not complete)" };
@@ -2722,6 +4240,7 @@ namespace RISE
 							const int y = static_cast<int>( qa.get( "y" ).asNumber() );
 							const std::string expectName = qa.get( "expectName" ).asString();
 							const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( x, y );
+							bool identityOk = false;
 							if( qr.outOfRange ) {
 								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") out of range" );
 							} else if( expectName == "*" ) {
@@ -2733,11 +4252,52 @@ namespace RISE
 								if( !qr.hit )
 									failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) +
 										") expected ANY object (\"*\") but got a miss" );
+								else identityOk = true;
 							} else if( expectName.empty() ) {
 								if( qr.hit ) failures.push_back( "queryAt expected a miss but hit '" + qr.name + "'" );
+								else identityOk = true;   // a miss cannot carry a geometry kind (load-rejected combo)
 							} else if( !qr.hit || qr.name != expectName ) {
 								failures.push_back( "queryAt(" + std::to_string( x ) + "," + std::to_string( y ) + ") expected '" +
 									expectName + "', got " + ( qr.hit ? ( "'" + qr.name + "'" ) : std::string( "a miss" ) ) );
+							} else {
+								identityOk = true;
+							}
+
+							// expectGeometryKind: bind the HIT object's `geometry`
+							// param to a chunk of the named kind -- proves the visible
+							// object is actually (e.g.) a sphere, killing a
+							// detached-geometry + wrong-centered-object dodge.  Only
+							// meaningful on a real hit; load validation rejects it
+							// paired with expectName "" (expect-miss).
+							if( identityOk && qr.hit && qa.has( "expectGeometryKind" ) &&
+							    qa.get( "expectGeometryKind" ).isString() ) {
+								const std::string wantGeomKind = qa.get( "expectGeometryKind" ).asString();
+								const Document odoc = RISE::Cst::ParseToCst( session->ReadDocument() );
+								NodeRef objChunk;
+								const int of = CheckerFindChunk( odoc, std::string(), qr.name, objChunk );
+								if( of != 1 ) {
+									failures.push_back( "queryAt expectGeometryKind: hit object '" + qr.name +
+										"' is not a uniquely-named chunk in the document" );
+								} else {
+									std::string geomName;
+									if( !CheckerChunkParamValue( objChunk, "geometry", geomName ) || geomName.empty() ) {
+										failures.push_back( "queryAt expectGeometryKind: hit object '" + qr.name +
+											"' has no 'geometry' binding" );
+									} else {
+										NodeRef geomChunk;
+										const int gf = CheckerFindChunk( odoc, wantGeomKind, geomName, geomChunk );
+										if( gf < 0 ) {
+											failures.push_back( "queryAt expectGeometryKind: geometry '" + geomName +
+												"' matches more than one '" + wantGeomKind + "' chunk" );
+										} else if( gf == 0 ) {
+											NodeRef anyGeom;
+											const int af = CheckerFindChunk( odoc, std::string(), geomName, anyGeom );
+											const std::string actualKind = ( af == 1 && anyGeom ) ? anyGeom->role : std::string( "<no such chunk>" );
+											failures.push_back( "queryAt expectGeometryKind: hit object '" + qr.name + "' geometry '" +
+												geomName + "' is a '" + actualKind + "', expected a '" + wantGeomKind + "'" );
+										}
+									}
+								}
 							}
 						}
 					}
@@ -2870,6 +4430,58 @@ namespace RISE
 									return nullptr;
 								};
 
+								// Shared between toolOutcomes and
+								// toolCallAfterUserTurn so the two can never diverge on
+								// outcome semantics: "applied" tests result.applied==true;
+								// "staged"/"rejected"/"conflict" test result.status;
+								// "error" tests the envelope carries an "error" object.  An
+								// unrecognized expect never matches.
+								auto satisfiesExpect = [&]( const JsonValue& t, const std::string& expect ) -> bool {
+									const JsonValue env = ExtractToolResponseEnvelope( t );
+									if( !env.isObject() ) return false;
+									if( expect == "error" ) return env.has( "error" );
+									const JsonValue& result = env.get( "result" );
+									if( expect == "applied" )  return result.isObject() && result.get( "applied" ).asBool( false );
+									if( expect == "staged" )   return result.isObject() && result.get( "status" ).asString() == "staged";
+									if( expect == "rejected" ) return result.isObject() && result.get( "status" ).asString() == "rejected";
+									if( expect == "conflict" ) return result.isObject() && result.get( "status" ).asString() == "conflict";
+									return false;
+								};
+
+								// The optional argsContains filter accepts EITHER a single
+								// string OR an ARRAY of strings; a record matches iff EVERY
+								// listed substring occurs in its serialized args (absent ->
+								// vacuously matches).  Shared by both toolOutcomes and
+								// toolCallAfterUserTurn.
+								auto argsContainsMatch = []( const JsonValue& spec, const std::string& haystack ) -> bool {
+									if( !spec.has( "argsContains" ) ) return true;
+									const JsonValue& ac = spec.get( "argsContains" );
+									if( ac.isString() ) return haystack.find( ac.asString() ) != std::string::npos;
+									if( ac.isArray() ) {
+										for( std::size_t i = 0; i < ac.size(); ++i ) {
+											if( !ac.at( i ).isString() ) continue;
+											if( haystack.find( ac.at( i ).asString() ) == std::string::npos ) return false;
+										}
+										return true;
+									}
+									return true;
+								};
+								// The human-readable filter note for a spec's argsContains
+								// (spec-only, independent of any record) -- named in details.
+								auto argsContainsNote = []( const JsonValue& spec ) -> std::string {
+									if( !spec.has( "argsContains" ) ) return std::string();
+									const JsonValue& ac = spec.get( "argsContains" );
+									if( ac.isString() ) return " [args contains '" + ac.asString() + "']";
+									if( ac.isArray() ) {
+										std::string n = " [args contains all of";
+										for( std::size_t i = 0; i < ac.size(); ++i )
+											if( ac.at( i ).isString() ) n += " '" + ac.at( i ).asString() + "'";
+										n += "]";
+										return n;
+									}
+									return std::string();
+								};
+
 								if( cp.has( "noAutonomyRefusal" ) && cp.get( "noAutonomyRefusal" ).isBool() && cp.get( "noAutonomyRefusal" ).asBool() ) {
 									if( const JsonValue* t = firstAutonomyRefusal() )
 										failures.push_back( "an autonomy refusal (-32011) occurred on tool '" + t->get( "name" ).asString() + "'" );
@@ -2907,22 +4519,6 @@ namespace RISE
 								}
 
 								if( cp.has( "toolOutcomes" ) && cp.get( "toolOutcomes" ).isArray() ) {
-									// Per-spec check: "applied" tests result.applied==true;
-									// "staged"/"rejected" test result.status; "error" tests
-									// the envelope carries an "error" object.  An unrecognized
-									// expect value never matches (fails loudly via the caller's
-									// !ok check below, not silently).
-									auto satisfiesExpect = [&]( const JsonValue& t, const std::string& expect ) -> bool {
-										const JsonValue env = ExtractToolResponseEnvelope( t );
-										if( !env.isObject() ) return false;
-										if( expect == "error" ) return env.has( "error" );
-										const JsonValue& result = env.get( "result" );
-										if( expect == "applied" )  return result.isObject() && result.get( "applied" ).asBool( false );
-										if( expect == "staged" )   return result.isObject() && result.get( "status" ).asString() == "staged";
-										if( expect == "rejected" ) return result.isObject() && result.get( "status" ).asString() == "rejected";
-										return false;
-									};
-
 									const JsonValue& specs = cp.get( "toolOutcomes" );
 									for( std::size_t si = 0; si < specs.size(); ++si ) {
 										const JsonValue& spec = specs.at( si );
@@ -2931,13 +4527,23 @@ namespace RISE
 										const std::string occurrence = spec.has( "occurrence" ) && spec.get( "occurrence" ).isString()
 											? spec.get( "occurrence" ).asString() : "any";
 										const std::string expect = spec.get( "expect" ).asString();
+										// argsContains (optional, load-validated non-empty string
+										// OR non-empty array of non-empty strings): FILTERS which
+										// same-named records the spec selects among -- a record
+										// matches iff name matches AND its serialized args contain
+										// EVERY listed substring.
+										const std::string filterNote = argsContainsNote( spec );
 
 										std::vector<const JsonValue*> matches;
-										for( const auto& t : toolRecords )
-											if( t.get( "name" ).asString() == wantName ) matches.push_back( &t );
+										for( const auto& t : toolRecords ) {
+											if( t.get( "name" ).asString() != wantName ) continue;
+											if( !argsContainsMatch( spec, JsonSerialize( t.get( "args" ) ) ) ) continue;
+											matches.push_back( &t );
+										}
 
 										if( matches.empty() ) {
-											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: no tool call named '" + wantName + "' occurred" );
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: no tool call named '" +
+												wantName + "'" + filterNote + " occurred" );
 											continue;
 										}
 
@@ -2959,29 +4565,65 @@ namespace RISE
 										}
 
 										if( !ok )
-											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: '" + wantName + "' (" + occurrence +
-												") did not satisfy expect:'" + expect + "'" );
+											failures.push_back( "toolOutcomes[" + std::to_string( si ) + "]: '" + wantName + "'" + filterNote +
+												" (" + occurrence + ") did not satisfy expect:'" + expect + "'" );
 									}
 								}
 
-								if( cp.has( "toolCallAfterUserTurn" ) && cp.get( "toolCallAfterUserTurn" ).isObject() ) {
-									const JsonValue& spec = cp.get( "toolCallAfterUserTurn" );
-									const std::string wantName = spec.get( "name" ).asString();
-									const long long minUserTurns = static_cast<long long>( spec.get( "minUserTurns" ).asNumber( 0.0 ) );
+								if( cp.has( "toolCallAfterUserTurn" ) &&
+								    ( cp.get( "toolCallAfterUserTurn" ).isObject() || cp.get( "toolCallAfterUserTurn" ).isArray() ) ) {
+									// Accept the single-OBJECT (back-compat) form or an
+									// ARRAY of specs; normalize into one spec list so the
+									// per-spec walk is identical either way.
+									const JsonValue& raw = cp.get( "toolCallAfterUserTurn" );
+									std::vector<const JsonValue*> tcSpecs;
+									if( raw.isObject() ) tcSpecs.push_back( &raw );
+									else for( std::size_t i = 0; i < raw.size(); ++i ) tcSpecs.push_back( &raw.at( i ) );
 
-									long long userCount = 0;
-									bool found = false;
-									for( const auto& v : allRecords ) {
-										const std::string rt = v.get( "run_type" ).asString();
-										if( rt == "user" ) { ++userCount; continue; }
-										if( rt == "tool" && v.get( "name" ).asString() == wantName && userCount >= minUserTurns ) {
+									for( std::size_t si = 0; si < tcSpecs.size(); ++si ) {
+										const JsonValue& spec = *tcSpecs[si];
+										if( !spec.isObject() ) continue;   // load-time-validated shape; defensive skip only
+										const std::string specLabel = raw.isObject()
+											? std::string( "toolCallAfterUserTurn" )
+											: ( "toolCallAfterUserTurn[" + std::to_string( si ) + "]" );
+										const std::string wantName = spec.get( "name" ).asString();
+										const bool hasMin = spec.has( "minUserTurns" ) && spec.get( "minUserTurns" ).isNumber();
+										const bool hasMax = spec.has( "maxUserTurns" ) && spec.get( "maxUserTurns" ).isNumber();
+										const long long minUserTurns = hasMin ? static_cast<long long>( spec.get( "minUserTurns" ).asNumber() ) : 0;
+										const long long maxUserTurns = hasMax ? static_cast<long long>( spec.get( "maxUserTurns" ).asNumber() ) : 0;
+										const std::string filterNote = argsContainsNote( spec );
+										// Optional expect: the matching call must ALSO satisfy the
+										// outcome (same enum as toolOutcomes) -- an early rejected/
+										// errored edit no longer counts as "the edit happened here".
+										const bool hasExpect = spec.has( "expect" ) && spec.get( "expect" ).isString();
+										const std::string expect = hasExpect ? spec.get( "expect" ).asString() : std::string();
+
+										// PASS iff SOME matching (name + argsContains + expect) tool
+										// record occurs at a running user-turn count that is
+										// >= min (when given) AND <= max (when given).
+										long long userCount = 0;
+										bool found = false;
+										for( const auto& v : allRecords ) {
+											const std::string rt = v.get( "run_type" ).asString();
+											if( rt == "user" ) { ++userCount; continue; }
+											if( rt != "tool" || v.get( "name" ).asString() != wantName ) continue;
+											if( !argsContainsMatch( spec, JsonSerialize( v.get( "args" ) ) ) ) continue;
+											if( hasMin && userCount < minUserTurns ) continue;
+											if( hasMax && userCount > maxUserTurns ) continue;
+											if( hasExpect && !satisfiesExpect( v, expect ) ) continue;
 											found = true;
 											break;
 										}
+										if( !found ) {
+											std::string bound;
+											if( hasMin ) bound += "userTurns >= " + std::to_string( minUserTurns );
+											if( hasMin && hasMax ) bound += " and ";
+											if( hasMax ) bound += "userTurns <= " + std::to_string( maxUserTurns );
+											if( hasExpect ) bound += std::string( bound.empty() ? "" : " " ) + "with outcome '" + expect + "'";
+											failures.push_back( specLabel + ": no tool call '" + wantName + "'" + filterNote +
+												" occurred at " + bound );
+										}
 									}
-									if( !found )
-										failures.push_back( "toolCallAfterUserTurn: no tool call '" + wantName + "' occurred at userTurns >= " +
-											std::to_string( minUserTurns ) );
 								}
 							}
 						}
@@ -3083,6 +4725,107 @@ namespace RISE
 					return { true, "finalText assertion(s) satisfied" };
 				}
 
+				//! "proposal": {countMin?,countMax?,match?:{kindIs?,target?,param?,
+				//! status?,valueMin?:[...],valueMax?:[...]}} -- asserts on the live
+				//! session's staged-proposal queue (AgentSession::ListProposals).
+				//! Under autonomy:"propose" the headless mock-Owner makes this a
+				//! REAL queue; a read/commit run (no controller) returns an empty
+				//! list.  countMin/countMax bound the TOTAL entries; `match`
+				//! requires at least one entry satisfying ALL of its given fields
+				//! (valueMin/valueMax grade the entry's whitespace-tokenized value
+				//! floats component-wise, requiring the token count to equal the
+				//! band length -- the same tolerance shape as param_range).  A
+				//! null session is a FAILED checkpoint (the standard "no live
+				//! session" detail), never a silent pass.
+				CheckOutcome CheckProposalKind( const JsonValue& cp, AgentSession* session )
+				{
+					if( !session ) return { false, "proposal checkpoint: no live session (run did not complete)" };
+					const std::vector<AgentSession::AgentProposalEntry> proposals = session->ListProposals();
+
+					std::vector<std::string> failures;
+
+					// Total-count band.
+					if( cp.has( "countMin" ) && cp.get( "countMin" ).isNumber() ) {
+						const double lo = cp.get( "countMin" ).asNumber();
+						if( static_cast<double>( proposals.size() ) < lo )
+							failures.push_back( "proposal count " + std::to_string( proposals.size() ) + " < countMin " + std::to_string( lo ) );
+					}
+					if( cp.has( "countMax" ) && cp.get( "countMax" ).isNumber() ) {
+						const double hi = cp.get( "countMax" ).asNumber();
+						if( static_cast<double>( proposals.size() ) > hi )
+							failures.push_back( "proposal count " + std::to_string( proposals.size() ) + " > countMax " + std::to_string( hi ) );
+					}
+
+					// match: at least one entry satisfies ALL given fields.
+					if( cp.has( "match" ) && cp.get( "match" ).isObject() ) {
+						const JsonValue& m = cp.get( "match" );
+						auto optStr = [&]( const char* key ) -> std::string {
+							return ( m.has( key ) && m.get( key ).isString() ) ? m.get( key ).asString() : std::string();
+						};
+						const std::string wantKind   = optStr( "kindIs" );
+						const std::string wantTarget = optStr( "target" );
+						const std::string wantParam  = optStr( "param" );
+						const std::string wantStatus = optStr( "status" );
+						const bool hasValueMin = m.has( "valueMin" ) && m.get( "valueMin" ).isArray();
+						const bool hasValueMax = m.has( "valueMax" ) && m.get( "valueMax" ).isArray();
+
+						// Parse the numeric bands up-front (a shape error is a loud
+						// rubric failure, not a silent miss).
+						std::vector<double> vmin, vmax;
+						if( hasValueMin ) {
+							const JsonValue& a = m.get( "valueMin" );
+							for( std::size_t i = 0; i < a.size(); ++i ) {
+								if( !a.at( i ).isNumber() )
+									return { false, "proposal: match.valueMin[" + std::to_string( i ) + "] is not a number" };
+								vmin.push_back( a.at( i ).asNumber() );
+							}
+						}
+						if( hasValueMax ) {
+							const JsonValue& a = m.get( "valueMax" );
+							for( std::size_t i = 0; i < a.size(); ++i ) {
+								if( !a.at( i ).isNumber() )
+									return { false, "proposal: match.valueMax[" + std::to_string( i ) + "] is not a number" };
+								vmax.push_back( a.at( i ).asNumber() );
+							}
+						}
+						if( hasValueMin && hasValueMax && vmin.size() != vmax.size() )
+							return { false, "proposal: match.valueMin has " + std::to_string( vmin.size() ) +
+								" component(s) but match.valueMax has " + std::to_string( vmax.size() ) + " -- they must match" };
+
+						bool anyMatch = false;
+						for( const AgentSession::AgentProposalEntry& p : proposals ) {
+							if( !wantKind.empty()   && p.kind   != wantKind )   continue;
+							if( !wantTarget.empty() && p.target != wantTarget ) continue;
+							if( !wantParam.empty()  && p.param  != wantParam )  continue;
+							if( !wantStatus.empty() && p.status != wantStatus ) continue;
+							if( hasValueMin || hasValueMax ) {
+								std::vector<double> pv;
+								if( !CheckerParseFloatTokens( p.value, pv ) ) continue;
+								const std::size_t bandLen = hasValueMin ? vmin.size() : vmax.size();
+								if( pv.size() != bandLen ) continue;
+								bool inBand = true;
+								for( std::size_t i = 0; i < pv.size(); ++i ) {
+									if( hasValueMin && pv[i] < vmin[i] ) { inBand = false; break; }
+									if( hasValueMax && pv[i] > vmax[i] ) { inBand = false; break; }
+								}
+								if( !inBand ) continue;
+							}
+							anyMatch = true;
+							break;
+						}
+						if( !anyMatch )
+							failures.push_back( "proposal: no staged entry (of " + std::to_string( proposals.size() ) +
+								") satisfied all match fields" );
+					}
+
+					if( !failures.empty() ) {
+						std::string detail = "proposal checkpoint violated: ";
+						for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
+						return { false, detail };
+					}
+					return { true, "proposal assertion(s) satisfied (" + std::to_string( proposals.size() ) + " staged)" };
+				}
+
 				//! Dispatch one checkpoint object by its "kind".  An
 				//! unrecognized kind is a FAILED checkpoint (loud), never a
 				//! silent skip -- see CheckScenario's doc.
@@ -3100,6 +4843,7 @@ namespace RISE
 					if( kind == "diagnostics" ) return CheckDiagnosticsKind( cp, session );
 					if( kind == "trajectory" )  return CheckTrajectoryKind( cp, handle );
 					if( kind == "finalText" )   return CheckFinalTextKind( cp, handle );
+					if( kind == "proposal" )    return CheckProposalKind( cp, session );
 
 					return { false, "unknown checkpoint kind '" + kind + "'" };
 				}

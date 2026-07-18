@@ -604,6 +604,30 @@ static void TestObjectmapCheckpoint()
 	// queryAt missing expectName -- a shape error, not a crash.
 	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12}}]", false,
 		"queryAt missing \"expectName\" fails loudly" );
+
+	// --- Wave C: expectGeometryKind binds the HIT object's geometry to a
+	// chunk kind.  In kScene obj_sph -> sph (a sphere_geometry); obj_emit ->
+	// quad_emit (a clippedplane_geometry).  The centre pixel hits obj_sph.
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"*\",\"expectGeometryKind\":\"sphere_geometry\"}}]",
+		true, "expectGeometryKind: \"*\" hit at centre binds obj_sph->sph, a sphere_geometry -> PASS" );
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"obj_sph\",\"expectGeometryKind\":\"sphere_geometry\"}}]",
+		true, "expectGeometryKind: named obj_sph geometry is a sphere_geometry -> PASS" );
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"obj_sph\",\"expectGeometryKind\":\"clippedplane_geometry\"}}]",
+		false, "expectGeometryKind: obj_sph geometry is NOT a clippedplane_geometry -> FAIL" );
+	checkOne( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"*\",\"expectGeometryKind\":\"box_geometry\"}}]",
+		false, "expectGeometryKind: the centred sphere is not a box_geometry -> FAIL" );
+	// The mismatch detail must name the ACTUAL geometry kind (sphere_geometry).
+	{
+		JsonValue cps; std::string perr;
+		JsonParse( "[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":12,\"y\":12,\"expectName\":\"obj_sph\",\"expectGeometryKind\":\"clippedplane_geometry\"}}]",
+			cps, perr );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		const bool named = r.checkpoints.size() == 1 && !r.checkpoints[0].passed &&
+			r.checkpoints[0].detail.find( "sphere_geometry" ) != std::string::npos;
+		Check( named, "expectGeometryKind mismatch detail names the actual kind 'sphere_geometry' (got: " +
+			( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string( "<no result>" ) ) + ")" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1056,7 +1080,7 @@ static void TestTrajectoryNewAssertions()
 	{
 		AgentEvalScenario sPass = MakeScenario( "tcaut_pass", kScene, "First, just read the scene.",
 			"commit", kToolCallAfterUserTurnPassFixture, dir, "[]" );
-		sPass.prompts.push_back( "Now recolor the sphere to red." );
+		sPass.prompts.push_back( std::string( "Now recolor the sphere to red." ) );
 		AgentEvalRunOptions opts; opts.runDir = dir;
 		AgentEvalRunHandle hPass = RunScenario( sPass, opts );
 		Check( hPass.result.toolCalls == 2, "tcaut_pass: read_document + propose_patch dispatched" );
@@ -1066,7 +1090,7 @@ static void TestTrajectoryNewAssertions()
 
 		AgentEvalScenario sFail = MakeScenario( "tcaut_fail", kScene, "Recolor the sphere to red.",
 			"commit", kToolCallAfterUserTurnFailFixture, dir, "[]" );
-		sFail.prompts.push_back( "Now just re-read the scene." );
+		sFail.prompts.push_back( std::string( "Now just re-read the scene." ) );
 		AgentEvalRunHandle hFail = RunScenario( sFail, opts );
 		Check( hFail.result.toolCalls == 2, "tcaut_fail: propose_patch + read_document dispatched" );
 		checkOne( hFail, sFail,
@@ -1204,7 +1228,7 @@ static void TestUnknownKindAndMalformedShape()
 	bad.id = "load_error_probe";
 	bad.title = "t";
 	bad.sceneInline = "not a valid scene at all";
-	bad.prompts.push_back( "hi" );
+	bad.prompts.push_back( std::string( "hi" ) );
 	bad.replayFixturePath = dir + "/load_error_probe.fixture.jsonl";
 	WriteFile( bad.replayFixturePath, kErrorFixture );
 	AgentEvalRunOptions opts2; opts2.runDir = dir;
@@ -1572,6 +1596,20 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 		Check( LoadEvalScenario( path, s, err ), "correctly-typed param_range min/max arrays load (" + err + ")" );
 	}
 
+	// (g) "document".op:"param_series_orbit".timeParam as a bare NUMBER (not
+	// a string) -- must fail loudly, naming the offending field.  The
+	// kStringFields type check runs before the op-specific required-field
+	// checks, so this fails on "timeParam" alone without needing the op's
+	// other mandatory fields (chunkKind/param/minKeyframes/...) present.
+	{
+		const std::string path = writeScenario( "bad_orbit_timeparam_type",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"timeParam\":5}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "wrong-typed timeParam (number 5) FAILS to load" );
+		Check( err.find( "timeParam" ) != std::string::npos,
+			"the load error names the offending field \"timeParam\" (got: " + err + ")" );
+	}
+
 	// "finalText".containsAll as a bare NUMBER (not a string array) -- must
 	// fail loudly, naming the offending field.
 	{
@@ -1665,6 +1703,212 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 		AgentEvalScenario s; std::string err;
 		Check( !LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn missing minUserTurns FAILS to load" );
 	}
+
+	//--- Wave A additions -------------------------------------------------
+
+	// toolOutcomes.expect:"conflict" is a recognized enum -> loads.
+	{
+		const std::string path = writeScenario( "good_toolOutcomes_conflict",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"expect\":\"conflict\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "toolOutcomes expect:\"conflict\" loads (" + err + ")" );
+	}
+	// toolOutcomes.argsContains present-but-empty must be rejected.
+	{
+		const std::string path = writeScenario( "empty_argsContains",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":\"\",\"expect\":\"applied\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolOutcomes empty argsContains FAILS to load" );
+		Check( err.find( "argsContains" ) != std::string::npos, "the load error names argsContains (got: " + err + ")" );
+	}
+	// toolCallAfterUserTurn ARRAY form loads.
+	{
+		const std::string path = writeScenario( "good_tcaut_array",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":[{\"name\":\"read_document\",\"maxUserTurns\":1},"
+			"{\"name\":\"propose_patch\",\"minUserTurns\":2}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn ARRAY form loads (" + err + ")" );
+	}
+	// A toolCallAfterUserTurn spec with neither min nor max asserts nothing -> rejected.
+	{
+		const std::string path = writeScenario( "tcaut_neither_bound",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":[{\"name\":\"propose_patch\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn array spec with neither min/max FAILS to load" );
+		Check( err.find( "at least one" ) != std::string::npos, "the load error explains the neither-bound rejection (got: " + err + ")" );
+	}
+	// An EMPTY toolCallAfterUserTurn array asserts nothing -> rejected.
+	{
+		const std::string path = writeScenario( "empty_tcaut_array",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":[]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "empty toolCallAfterUserTurn array FAILS to load" );
+	}
+	// document any-of-kind: a target-less param_range WITHOUT a chunkKind is rejected.
+	{
+		const std::string path = writeScenario( "anyofkind_no_chunkkind",
+			"[{\"kind\":\"document\",\"op\":\"param_range\",\"param\":\"fov\",\"min\":[30],\"max\":[50]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "target-less param_range WITHOUT chunkKind FAILS to load" );
+		Check( err.find( "chunkKind" ) != std::string::npos, "the load error names chunkKind (got: " + err + ")" );
+	}
+	// document any-of-kind: a target-less param_range WITH a chunkKind loads.
+	{
+		const std::string path = writeScenario( "anyofkind_with_chunkkind",
+			"[{\"kind\":\"document\",\"op\":\"param_range\",\"chunkKind\":\"pinhole_camera\",\"param\":\"fov\",\"min\":[30],\"max\":[50]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "target-less param_range WITH chunkKind loads (" + err + ")" );
+	}
+	// render channelBalanceMax <= 1.0 is unreachable -> rejected; > 1.0 loads.
+	{
+		const std::string path = writeScenario( "bad_channelbalance",
+			"[{\"kind\":\"render\",\"channelBalanceMax\":1.0}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "channelBalanceMax 1.0 FAILS to load" );
+		Check( err.find( "channelBalanceMax" ) != std::string::npos, "the load error names channelBalanceMax (got: " + err + ")" );
+	}
+	{
+		const std::string path = writeScenario( "good_channelbalance",
+			"[{\"kind\":\"render\",\"channelBalanceMax\":3.0}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "channelBalanceMax 3.0 loads (" + err + ")" );
+	}
+	// proposal: a checkpoint with none of countMin/countMax/match is vacuous -> rejected.
+	{
+		const std::string path = writeScenario( "vacuous_proposal",
+			"[{\"kind\":\"proposal\"}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "a proposal checkpoint with no assertion FAILS to load" );
+	}
+	// proposal: a match with a valid shape loads.
+	{
+		const std::string path = writeScenario( "good_proposal",
+			"[{\"kind\":\"proposal\",\"countMin\":1,\"match\":{\"target\":\"pnt_albedo\",\"param\":\"color\","
+			"\"status\":\"pending\",\"valueMin\":[0.5,0,0],\"valueMax\":[1,0.5,0.5]}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "a well-formed proposal checkpoint loads (" + err + ")" );
+	}
+	// proposal: match.valueMin must be a NUMBER array (not a string array).
+	{
+		const std::string path = writeScenario( "bad_proposal_valuemin",
+			"[{\"kind\":\"proposal\",\"match\":{\"valueMin\":[\"lo\"],\"valueMax\":[1]}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "proposal match.valueMin string-array FAILS to load" );
+		Check( err.find( "valueMin" ) != std::string::npos, "the load error names valueMin (got: " + err + ")" );
+	}
+
+	//--- Wave C additions -------------------------------------------------
+
+	// document "where" is any-of-kind only -> rejected with a named target.
+	{
+		const std::string path = writeScenario( "where_with_target",
+			"[{\"kind\":\"document\",\"op\":\"param_equals\",\"target\":\"pnt_albedo\",\"param\":\"color\",\"value\":\"1 1 1\","
+			"\"where\":[{\"param\":\"name\",\"value\":\"x\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "\"where\" with a named target FAILS to load" );
+		Check( err.find( "where" ) != std::string::npos, "the load error names where (got: " + err + ")" );
+	}
+	// document "where" range entry missing "max" -> rejected.
+	{
+		const std::string path = writeScenario( "where_range_no_max",
+			"[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\",\"param\":\"color\",\"value\":\"1 1 1\","
+			"\"where\":[{\"param\":\"color\",\"min\":[0,0,0]}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "\"where\" range entry missing \"max\" FAILS to load" );
+	}
+	// A well-formed any-of-kind "where" (equality + range entries) loads.
+	{
+		const std::string path = writeScenario( "where_ok",
+			"[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\",\"param\":\"color\",\"value\":\"1 1 1\","
+			"\"where\":[{\"param\":\"name\",\"value\":\"pnt_emit\"},{\"param\":\"color\",\"min\":[0,0,0],\"max\":[2,2,2]}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "well-formed any-of-kind where loads (" + err + ")" );
+	}
+	// param_series_orbit: minKeyframes < 2 -> rejected.
+	{
+		const std::string path = writeScenario( "orbit_minkf_1",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":1,\"minAngularSpreadDeg\":180}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit minKeyframes 1 FAILS to load" );
+		Check( err.find( "minKeyframes" ) != std::string::npos, "the load error names minKeyframes (got: " + err + ")" );
+	}
+	// param_series_orbit: minAngularSpreadDeg out of (0,360] -> rejected.
+	{
+		const std::string path = writeScenario( "orbit_spread_400",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":400}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit minAngularSpreadDeg 400 FAILS to load" );
+	}
+	// param_series_orbit: a named target (not any-of-kind) -> rejected.
+	{
+		const std::string path = writeScenario( "orbit_with_target",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"target\":\"tl\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":180}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit with a named target FAILS to load" );
+	}
+	// param_series_orbit: maxRadiusRatio <= 1 -> rejected; a well-formed one loads.
+	{
+		const std::string path = writeScenario( "orbit_ratio_1",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":180,\"maxRadiusRatio\":1.0}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "param_series_orbit maxRadiusRatio 1.0 FAILS to load" );
+	}
+	{
+		const std::string path = writeScenario( "orbit_ok_load",
+			"[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\",\"param\":\"value\","
+			"\"minKeyframes\":4,\"minAngularSpreadDeg\":240,\"centerWithin\":{\"x\":0,\"z\":0,\"radius\":6},\"maxRadiusRatio\":2.0}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "a well-formed param_series_orbit loads (" + err + ")" );
+	}
+	// objectmap: expectGeometryKind paired with expectName "" (miss) -> rejected.
+	{
+		const std::string path = writeScenario( "geomkind_with_miss",
+			"[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":1,\"y\":1,\"expectName\":\"\",\"expectGeometryKind\":\"sphere_geometry\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "expectGeometryKind with expectName \"\" (miss) FAILS to load" );
+		Check( err.find( "expectGeometryKind" ) != std::string::npos, "the load error names expectGeometryKind (got: " + err + ")" );
+	}
+	// objectmap: expectGeometryKind with a real expectName (or "*") loads.
+	{
+		const std::string path = writeScenario( "geomkind_ok",
+			"[{\"kind\":\"objectmap\",\"queryAt\":{\"x\":1,\"y\":1,\"expectName\":\"*\",\"expectGeometryKind\":\"sphere_geometry\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "expectGeometryKind with expectName \"*\" loads (" + err + ")" );
+	}
+	// trajectory: toolOutcomes argsContains ARRAY with an empty element -> rejected.
+	{
+		const std::string path = writeScenario( "argscontains_arr_empty_elem",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":[\"ok\",\"\"],\"expect\":\"applied\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolOutcomes argsContains array with empty element FAILS to load" );
+		Check( err.find( "argsContains" ) != std::string::npos, "the load error names argsContains (got: " + err + ")" );
+	}
+	// trajectory: toolOutcomes argsContains ARRAY of non-empty strings loads.
+	{
+		const std::string path = writeScenario( "argscontains_arr_ok",
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"color\"],\"expect\":\"applied\"}]}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "toolOutcomes argsContains array loads (" + err + ")" );
+	}
+	// trajectory: toolCallAfterUserTurn expect with an UNKNOWN enum -> rejected.
+	{
+		const std::string path = writeScenario( "tcaut_expect_bad",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"minUserTurns\":1,\"expect\":\"succeeded\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn expect 'succeeded' FAILS to load" );
+		Check( err.find( "expect" ) != std::string::npos, "the load error names expect (got: " + err + ")" );
+	}
+	// trajectory: toolCallAfterUserTurn with a valid expect + argsContains array loads.
+	{
+		const std::string path = writeScenario( "tcaut_expect_ok",
+			"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"color\"],\"minUserTurns\":1,\"expect\":\"applied\"}}]" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( path, s, err ), "toolCallAfterUserTurn expect:applied + argsContains array loads (" + err + ")" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1737,6 +1981,1631 @@ static void TestTerminalSuccessGuard()
 	}
 }
 
+//----------------------------------------------------------------------
+// Wave A: toolOutcomes argsContains filter + expect:"conflict".
+//----------------------------------------------------------------------
+static void TestToolOutcomesArgsContainsAndConflict()
+{
+	std::printf( "T7d: toolOutcomes argsContains filter + expect:\"conflict\"...\n" );
+	const std::string dir = ScratchRunDir( "t7d_tooloutcomes_ext" );
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                      bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// argsContains FILTER over the both-applied run (two propose_patch calls
+	// with DIFFERENT args: one recolors pnt_albedo, one resizes sph.radius).
+	{
+		AgentEvalScenario s = MakeScenario( "to_args", kScene, "Recolor and resize", "commit",
+			kToolOutcomesBothAppliedFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.toolCalls == 2, "to_args: 2 propose_patch calls dispatched" );
+
+		// "radius" appears only in the resize call's args -> selects it -> applied.
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":\"radius\",\"expect\":\"applied\"}]}]",
+			true, "argsContains 'radius' selects the resize call, which is applied" );
+		// A substring no propose_patch call's args carry -> name matches but the
+		// filter excludes every record -> no match -> FAIL.
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":\"no_such_arg_xyz\",\"expect\":\"applied\"}]}]",
+			false, "argsContains a substring no call carries FAILS (name matches, filter excludes)" );
+
+		// The failure detail must NAME the filter substring.
+		{
+			JsonValue cps; std::string perr;
+			JsonParse( "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"argsContains\":\"no_such_arg_xyz\",\"expect\":\"applied\"}]}]",
+				cps, perr );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			const bool named = r.checkpoints.size() == 1 && !r.checkpoints[0].passed &&
+				r.checkpoints[0].detail.find( "no_such_arg_xyz" ) != std::string::npos;
+			Check( named, "argsContains failure detail names the filter substring (got: " +
+				( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string( "<no result>" ) ) + ")" );
+		}
+	}
+
+	// expect:"conflict" -- hand-built trajectory carrying a result whose
+	// status is "conflict" (a baseHeadVersion mismatch), mirroring T7c's
+	// staged_probe hand-built pattern.
+	{
+		const std::string trajPath = dir + "/conflict_probe.trajectory.jsonl";
+		Check( WriteFile( trajPath,
+			"{\"run_type\":\"tool\",\"name\":\"propose_patch\",\"jsonrpc.response\":"
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":false,\"status\":\"conflict\","
+			"\"rawCode\":0,\"retriable\":true,\"message\":\"baseHeadVersion mismatch\"}}}\n" ),
+			"wrote the hand-built conflict-tool-record trajectory file" );
+
+		AgentEvalRunHandle h;
+		h.result.scenarioId = "conflict_probe";
+		h.result.terminalStatus = "final_text";
+		h.trajectoryPath = trajPath;
+		h.resultPath = dir + "/conflict_probe.result.jsonl";
+
+		AgentEvalScenario s;
+		s.id = "conflict_probe";
+
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"expect\":\"conflict\"}]}]",
+			true, "toolOutcomes: expect:\"conflict\" passes on a hand-built conflict tool response" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"propose_patch\",\"expect\":\"applied\"}]}]",
+			false, "toolOutcomes: expect:\"applied\" FAILS on a conflict response" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Wave A: toolCallAfterUserTurn array form + maxUserTurns (+ back-compat
+// single object).
+//----------------------------------------------------------------------
+static void TestToolCallAfterUserTurnArrayForm()
+{
+	std::printf( "T7e: toolCallAfterUserTurn array form + maxUserTurns...\n" );
+	const std::string dir = ScratchRunDir( "t7e_tcaut_array" );
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                      bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// Two user turns: turn 1 only read_document (userCount==1 at that tool),
+	// turn 2 propose_patch (userCount==2 at that tool).
+	AgentEvalScenario s = MakeScenario( "tcaut_arr", kScene, "First, just read the scene.",
+		"commit", kToolCallAfterUserTurnPassFixture, dir, "[]" );
+	s.prompts.push_back( std::string( "Now recolor the sphere to red." ) );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.toolCalls == 2, "tcaut_arr: read_document + propose_patch dispatched" );
+
+	// Back-compat: the single-OBJECT form still works through the new code path.
+	checkOne( h, s,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"minUserTurns\":2}}]",
+		true, "back-compat single-object form still passes (propose_patch at turn 2)" );
+
+	// Array form, both specs satisfied: read_document at turn 1 (<=1) AND
+	// propose_patch at turn 2 (>=2).
+	checkOne( h, s,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":["
+		"{\"name\":\"read_document\",\"maxUserTurns\":1},"
+		"{\"name\":\"propose_patch\",\"minUserTurns\":2}]}]",
+		true, "array form: both specs pass" );
+
+	// Array form where the second spec FAILS: propose_patch occurs at turn 2,
+	// which VIOLATES maxUserTurns:1 -> the whole checkpoint fails.
+	checkOne( h, s,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":["
+		"{\"name\":\"read_document\",\"maxUserTurns\":1},"
+		"{\"name\":\"propose_patch\",\"maxUserTurns\":1}]}]",
+		false, "array form: a call after turn 2 FAILS a maxUserTurns:1 spec" );
+
+	// A lone maxUserTurns:1 spec on propose_patch (which fires at turn 2) fails.
+	checkOne( h, s,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"maxUserTurns\":1}}]",
+		false, "maxUserTurns:1 FAILS the propose_patch that fires at turn 2" );
+
+	// --- Wave C: toolCallAfterUserTurn `expect` + argsContains ARRAY form.
+	// The reject-then-apply fixture makes TWO propose_patch calls in a single
+	// user turn: the first (bogus_target_xyz) is REJECTED, the second
+	// (pnt_albedo) is APPLIED.
+	AgentEvalScenario sr = MakeScenario( "tcaut_expect", kScene, "Recolor the sphere.",
+		"commit", kToolOutcomesRejectThenApplyFixture, dir, "[]" );
+	AgentEvalRunHandle hr = RunScenario( sr, opts );
+	Check( hr.result.toolCalls == 2, "tcaut_expect: two propose_patch calls dispatched" );
+
+	// expect:"applied" filtered to the pnt_albedo call -> that call IS applied -> PASS.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":\"pnt_albedo\",\"minUserTurns\":1,\"expect\":\"applied\"}}]",
+		true, "expect:applied on the pnt_albedo call (which applied) PASSES" );
+	// expect:"applied" filtered to the bogus call -> that call was REJECTED,
+	// so no matching record satisfies expect -> FAIL (the `expect` discriminates).
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":\"bogus_target_xyz\",\"minUserTurns\":1,\"expect\":\"applied\"}}]",
+		false, "expect:applied on the REJECTED bogus call FAILS (outcome discriminates)" );
+	// expect:"rejected" on the bogus call -> that call really is rejected -> PASS.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":\"bogus_target_xyz\",\"minUserTurns\":1,\"expect\":\"rejected\"}}]",
+		true, "expect:rejected on the bogus call (which was rejected) PASSES" );
+	// argsContains ARRAY: both substrings present in the pnt_albedo call -> PASS.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"color\"],\"minUserTurns\":1}}]",
+		true, "argsContains array [pnt_albedo,color] both present in one call PASSES" );
+	// argsContains ARRAY where no single call carries BOTH substrings -> FAIL.
+	checkOne( hr, sr,
+		"[{\"kind\":\"trajectory\",\"toolCallAfterUserTurn\":{\"name\":\"propose_patch\",\"argsContains\":[\"pnt_albedo\",\"radius\"],\"minUserTurns\":1}}]",
+		false, "argsContains array [pnt_albedo,radius] -- no call carries both -> FAIL" );
+}
+
+//----------------------------------------------------------------------
+// Wave A: document ANY-OF-KIND (target-less) matching.
+//----------------------------------------------------------------------
+static void TestDocumentAnyOfKind()
+{
+	std::printf( "T2b: document any-of-kind (target-less) matching...\n" );
+	const std::string dir = ScratchRunDir( "t2b_anyofkind" );
+
+	AgentEvalScenario s = MakeScenario( "anyofkind_doc", kScene, "Recolor", "commit", kParamEditFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+
+	auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// param_range any-of-kind over the single pinhole_camera (fov 40.0).
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"chunkKind\":\"pinhole_camera\",\"param\":\"fov\",\"min\":[30],\"max\":[50]}]",
+		true, "any-of-kind param_range: fov 40 inside [30,50] on the sole pinhole_camera" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"chunkKind\":\"pinhole_camera\",\"param\":\"fov\",\"min\":[100],\"max\":[200]}]",
+		false, "any-of-kind param_range: an impossible fov band FAILS" );
+
+	// param_equals any-of-kind over the TWO uniformcolor_painters (pnt_albedo
+	// recolored to 0.9 0.1 0.1, pnt_emit is 1.0 1.0 1.0): the existential
+	// passes because ONE of them equals the sought value, fails when none do.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\",\"param\":\"color\",\"value\":\"1.0 1.0 1.0\"}]",
+		true, "any-of-kind param_equals: pnt_emit matches 1.0 1.0 1.0" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\",\"param\":\"color\",\"value\":\"0.3 0.3 0.3\"}]",
+		false, "any-of-kind param_equals: no uniformcolor_painter equals 0.3 0.3 0.3 -> FAIL" );
+
+	// An empty-of-that-kind document: any-of-kind over a kind with zero chunks fails cleanly.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_range\",\"chunkKind\":\"no_such_kind_xyz\",\"param\":\"fov\",\"min\":[0],\"max\":[1]}]",
+		false, "any-of-kind over a kind with zero chunks FAILS cleanly" );
+
+	// --- Wave C: the any-of-kind "where" co-binding filter --------------
+	// Two uniformcolor_painters: pnt_albedo (recolored red 0.9 0.1 0.1) and
+	// pnt_emit (1.0 1.0 1.0).  Without a filter, param_equals color
+	// "1.0 1.0 1.0" passes (pnt_emit matches).  A where EQUALITY filter on
+	// name restricts the candidate set to the ONE named painter, so the
+	// same colour assertion now grades only THAT chunk.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"name\",\"value\":\"pnt_emit\"}],\"param\":\"color\",\"value\":\"1.0 1.0 1.0\"}]",
+		true, "where name==pnt_emit narrows to pnt_emit, whose color is 1.0 1.0 1.0 -> PASS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"name\",\"value\":\"pnt_albedo\"}],\"param\":\"color\",\"value\":\"1.0 1.0 1.0\"}]",
+		false, "where name==pnt_albedo narrows to the RED painter, so color 1.0 1.0 1.0 -> FAIL" );
+	// A where RANGE filter (reddish colour band) selects pnt_albedo; the
+	// assertion then reads a DIFFERENT param (name) on the survivor.
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"color\",\"min\":[0.5,0,0],\"max\":[1.0,0.45,0.45]}],\"param\":\"name\",\"value\":\"pnt_albedo\"}]",
+		true, "where color-in-reddish-band selects pnt_albedo, whose name is pnt_albedo -> PASS" );
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"color\",\"min\":[0.5,0,0],\"max\":[1.0,0.45,0.45]}],\"param\":\"name\",\"value\":\"pnt_emit\"}]",
+		false, "where color-in-reddish-band excludes the white pnt_emit -> name!=pnt_emit -> FAIL" );
+	// A where filter that NO chunk satisfies -> fails cleanly (the detail
+	// names the where filter, not a per-chunk assertion miss).
+	checkOne( "[{\"kind\":\"document\",\"op\":\"param_equals\",\"chunkKind\":\"uniformcolor_painter\","
+		"\"where\":[{\"param\":\"name\",\"value\":\"no_such_painter\"}],\"param\":\"color\",\"value\":\"1.0 1.0 1.0\"}]",
+		false, "where matching zero chunks FAILS cleanly" );
+}
+
+//----------------------------------------------------------------------
+// Wave C: the "param_series_orbit" document op -- a single timeline's
+// keyframe track must PROVE a camera orbit (>= K keyframes, an angular
+// spread threshold, a radius ratio bound).  Each sub-scene carries ONE
+// timeline (element_type camera / param location) so the any-of-kind op
+// grades it without a where filter; a final where-interplay case rides
+// the orbit scene.
+//----------------------------------------------------------------------
+static void TestParamSeriesOrbit()
+{
+	std::printf( "T2c: document param_series_orbit (camera-orbit proof)...\n" );
+	const std::string dir = ScratchRunDir( "t2c_orbit" );
+
+	auto sceneWithTimeline = []( const std::string& timelineChunk ) -> std::string {
+		return std::string(
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n" ) + timelineChunk;
+	};
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                      bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// As checkOne, but also asserts the resulting detail string CONTAINS
+	// `detailSubstr` -- used by the time-axis cases below to pin the
+	// specific failure detail (count mismatch vs malformed vs
+	// non-monotonic) rather than just the pass/fail bit.
+	auto checkDetail = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                         bool expectPass, const std::string& detailSubstr, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[0].detail.find( detailSubstr ) != std::string::npos,
+				label + ": detail contains '" + detailSubstr + "' (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// --- Orbit track (mirrors the committed camera_orbit fixture): 5
+	// keyframes, 4 distinct at 90-degree spacing, radius ~19.03 from the
+	// origin, XZ centroid ~(0.9, 3.7); the max-gap formula gives spread 270.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.25\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.5\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.75\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\ttime\t\t1.0\n\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_ok", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_ok" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+
+		// The committed scenario's exact checkpoint -> PASS.  (e) The pass
+		// detail now also mentions the time span 0..1 (the checkpoint's
+		// implicit default `timeParam` "time" paired against the 5 strictly-
+		// increasing 0.0/0.25/0.5/0.75/1.0 keyframe times).
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"where\":[{\"param\":\"element_type\",\"value\":\"camera\"},{\"param\":\"param\",\"value\":\"location\"}],"
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,"
+			"\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0},\"maxRadiusRatio\":2.0}]",
+			true, "time span", "orbit: 5kf / spread 270 / centroid within 6 / ratio 1 -> PASS, detail mentions time span" );
+		// A too-strict spread threshold (300 > the measured 270) -> FAIL.
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":300,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0}}]",
+			false, "orbit: minAngularSpreadDeg 300 > measured 270 -> FAIL" );
+		// A too-high minKeyframes (6 > the 5 distinct-after-dedupe) -> FAIL.
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":6,\"minAngularSpreadDeg\":240}]",
+			false, "orbit: minKeyframes 6 > 5 keyframes -> FAIL" );
+		// where interplay: a filter no timeline satisfies -> FAIL (the sole
+		// timeline is element_type camera, not object).
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"where\":[{\"param\":\"element_type\",\"value\":\"object\"}],"
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "orbit: where element_type==object matches no timeline -> FAIL" );
+	}
+
+	// --- Degenerate CONSTANT series: every keyframe is the same point ->
+	// dedupe collapses to ONE keyframe, below any minKeyframes -> FAIL.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t2 3 2\n"
+			"\ttime\t\t0.5\n\tvalue\t\t2 3 2\n"
+			"\ttime\t\t1.0\n\tvalue\t\t2 3 2\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_constant", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_constant" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":2,\"minAngularSpreadDeg\":90}]",
+			false, "constant camera: 1 keyframe after dedupe < minKeyframes 2 -> FAIL" );
+	}
+
+	// --- Radius-ratio track: 4 keyframes at 0/90/180/270 degrees (spread
+	// 270) but radii 5,5,5,20 about the origin (ratio 4).  Passes without a
+	// cap; a maxRadiusRatio:2 rejects the non-circular sweep.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t5 4 0\n"
+			"\ttime\t\t0.33\n\tvalue\t\t0 4 5\n"
+			"\ttime\t\t0.66\n\tvalue\t\t-5 4 0\n"
+			"\ttime\t\t1.0\n\tvalue\t\t0 4 -20\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_ratio", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_ratio" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0}}]",
+			true, "ratio track: spread 270 / centroid within 6 (no ratio cap) -> PASS" );
+		checkOne( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240,\"centerWithin\":{\"x\":0.0,\"z\":0.0,\"radius\":6.0},\"maxRadiusRatio\":2.0}]",
+			false, "ratio track: radius ratio 4 > maxRadiusRatio 2 -> FAIL" );
+	}
+
+	// --- Time-axis cases: an orbit-SHAPED value track (same 5 keyframes as
+	// orbit_ok) that fails on the TIME axis rather than the geometry axis.
+	// Time progression is intrinsic to the op -- always enforced.
+
+	// (a) All times equal: geometry is a perfect 270-degree, 5-keyframe
+	// orbit, but every `time` line reads 0.0 -- the runtime timeline range
+	// is degenerate.  Must FAIL with the monotonicity detail.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_allequal", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_allequal" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "not strictly increasing", "orbit-shaped but all times 0.0 -> FAIL (monotonicity)" );
+	}
+
+	// (b) Times omitted entirely: the same 5 orbit-shaped `value` keyframes,
+	// but no `time` lines at all (the parser defaults every missing time to
+	// 0.0 -- geometry alone would still pass).  Must FAIL with the raw
+	// count-mismatch detail (5 values, 0 times).
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\tvalue\t\t4.5 4.8 18.5\n"
+			"\tvalue\t\t-18.5 4.8 4.5\n"
+			"\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\tvalue\t\t18.5 4.8 -4.5\n"
+			"\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_omitted", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_omitted" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "5 'value' value(s) but 0 'time' entrie(s)", "orbit-shaped but times omitted entirely -> FAIL (count mismatch)" );
+	}
+
+	// (c) Times decreasing: same geometry, times run 1.0 -> 0.0.  Must FAIL
+	// with the monotonicity detail (first offending pair reported).
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t1.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.75\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.5\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.25\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_decreasing", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_decreasing" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "not strictly increasing", "orbit-shaped but times decreasing -> FAIL (monotonicity)" );
+	}
+
+	// (d) Times count != values count: one `time` line missing (4 times for
+	// 5 values).  Must FAIL with the raw count-mismatch detail.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+			"\ttime\t\t0.25\n\tvalue\t\t-18.5 4.8 4.5\n"
+			"\ttime\t\t0.5\n\tvalue\t\t-4.5 4.8 -18.5\n"
+			"\ttime\t\t0.75\n\tvalue\t\t18.5 4.8 -4.5\n"
+			"\tvalue\t\t4.5 4.8 18.5\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_time_undercount", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_time_undercount" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			false, "5 'value' value(s) but 4 'time' entrie(s)", "orbit-shaped but one time missing (4 vs 5) -> FAIL (count mismatch)" );
+	}
+
+	// (f) A custom `timeParam` name: the timeline uses `interpolator_params`
+	// (a legal repeatable string field on the `timeline` chunk descriptor,
+	// unused here for its usual spline-tangent purpose) as the stand-in
+	// time series, paired 1:1 and strictly increasing; the checkpoint names
+	// it via `"timeParam":"interpolator_params"`.  Must PASS.
+	{
+		const std::string scene = sceneWithTimeline(
+			"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+			"\tvalue\t\t4.5 4.8 18.5\n\tinterpolator_params\t0.0\n"
+			"\tvalue\t\t-18.5 4.8 4.5\n\tinterpolator_params\t0.25\n"
+			"\tvalue\t\t-4.5 4.8 -18.5\n\tinterpolator_params\t0.5\n"
+			"\tvalue\t\t18.5 4.8 -4.5\n\tinterpolator_params\t0.75\n"
+			"\tvalue\t\t4.5 4.8 18.5\n\tinterpolator_params\t1.0\n}" );
+		AgentEvalScenario s = MakeScenario( "orbit_customtimeparam", scene, "inspect", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error", std::string( "orbit_customtimeparam" ) + ": scene+timeline loads (" + h.result.errorMessage + ")" );
+		checkDetail( h, s, "[{\"kind\":\"document\",\"op\":\"param_series_orbit\",\"chunkKind\":\"timeline\","
+			"\"param\":\"value\",\"timeParam\":\"interpolator_params\",\"minKeyframes\":4,\"minAngularSpreadDeg\":240}]",
+			true, "time span", "orbit-shaped, custom timeParam 'interpolator_params' strictly increasing -> PASS" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Wave A: the "proposal" checkpoint kind.
+//----------------------------------------------------------------------
+static void TestProposalCheckpoint()
+{
+	std::printf( "T11: \"proposal\" checkpoint kind...\n" );
+	const std::string dir = ScratchRunDir( "t11_proposal" );
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& s, const std::string& cpJson,
+	                      bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// Real staging: the committed autonomy:"propose" scenario attaches a
+	// headless mock-Owner controller, so propose_patch STAGES a pending edit.
+	{
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/propose_mode_stages.json", s, err ),
+			"propose_mode_stages loads (" + err + ")" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+
+		checkOne( h, s,
+			"[{\"kind\":\"proposal\",\"countMin\":1,\"match\":{\"target\":\"pnt_albedo\",\"param\":\"color\",\"status\":\"pending\"}}]",
+			true, "proposal countMin:1 + matching pnt_albedo/color/pending PASSES" );
+		// A component-wise value band over the staged "0.1 0.1 0.9" (blue).
+		checkOne( h, s,
+			"[{\"kind\":\"proposal\",\"match\":{\"target\":\"pnt_albedo\",\"valueMin\":[0,0,0.5],\"valueMax\":[0.5,0.5,1.0]}}]",
+			true, "proposal match valueMin/valueMax band over the staged blue PASSES" );
+		// A red band excludes the staged blue -> no entry matches.
+		checkOne( h, s,
+			"[{\"kind\":\"proposal\",\"match\":{\"target\":\"pnt_albedo\",\"valueMin\":[0.5,0,0],\"valueMax\":[1.0,0.5,0.5]}}]",
+			false, "proposal match a RED value band FAILS on the staged blue" );
+		// Wrong target -> no entry matches.
+		checkOne( h, s,
+			"[{\"kind\":\"proposal\",\"countMin\":1,\"match\":{\"target\":\"does_not_exist\",\"param\":\"color\",\"status\":\"pending\"}}]",
+			false, "proposal match on a wrong target FAILS" );
+		// countMax below the one staged entry -> fails.
+		checkOne( h, s, "[{\"kind\":\"proposal\",\"countMax\":0}]",
+			false, "proposal countMax:0 FAILS (one entry staged)" );
+	}
+
+	// No controller: a plain commit run has an empty proposal queue, so a
+	// countMin:1 checkpoint fails CLEANLY (the session is alive, just empty).
+	{
+		AgentEvalScenario s = MakeScenario( "prop_none", kScene, "Recolor", "commit", kParamEditFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		checkOne( h, s, "[{\"kind\":\"proposal\",\"countMin\":1}]",
+			false, "proposal countMin:1 FAILS cleanly on a commit run with no staged proposals" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Wave A: the render "channelBalanceMax" (neutral-render) assertion.
+//----------------------------------------------------------------------
+static void TestRenderChannelBalance()
+{
+	std::printf( "T4b: render channelBalanceMax...\n" );
+	const std::string dir = ScratchRunDir( "t4b_channelbalance" );
+
+	AgentEvalScenario s = MakeScenario( "cbal_probe", kScene, "Render it", "commit", kNoLoopFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "cbal_probe run reached final_text" );
+
+	auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// The scene is a grey sphere under a white light -> roughly NEUTRAL, so a
+	// generous ratio cap passes.
+	checkOne( "[{\"kind\":\"render\",\"channelBalanceMax\":5.0}]", true,
+		"a generous channelBalanceMax (5.0) passes on the neutral scene" );
+	// A near-unity cap the MC-noisy per-channel means always exceed -> fails
+	// (exact channel equality is measure-zero under independent MC noise).
+	checkOne( "[{\"kind\":\"render\",\"channelBalanceMax\":1.0000001}]", false,
+		"a near-unity channelBalanceMax fails (means differ by MC noise)" );
+}
+
+//----------------------------------------------------------------------
+// T4c: render "camera" override + "compareToImage"/"rmseMax" (image-
+// reconstruction Wave 2).  Camera: a render taken from a FAR pose frames
+// the sphere+emitter tiny -> mean luma DROPS below the near pose, and a
+// luma band midway between the two distinguishes them -> proves the
+// checkpoint's grading render actually honours the override.
+// compareToImage: a self-render written to a scratch file compares to a
+// FRESH render of the same scene (MC noise only) within a loose rmseMax
+// but not a sub-floor one; a different-framing reference fails; a dims
+// mismatch and a missing file each fail with a clear detail.  Plus the
+// load-validator reject cases.
+//----------------------------------------------------------------------
+
+// Write raw bytes to a file (the reference PNGs the compareToImage cases
+// decode) -- returns false on any I/O failure.
+static bool WriteBytes( const std::string& path, const std::vector<unsigned char>& bytes )
+{
+	std::error_code ec;
+	std::filesystem::path p( path );
+	if( p.has_parent_path() ) std::filesystem::create_directories( p.parent_path(), ec );
+	std::ofstream f( path.c_str(), std::ios::binary );
+	if( !f ) return false;
+	if( !bytes.empty() ) f.write( reinterpret_cast<const char*>( &bytes[0] ), static_cast<std::streamsize>( bytes.size() ) );
+	return true;
+}
+
+static void TestRenderCameraCompareToImage()
+{
+	std::printf( "T4c: render camera override + compareToImage/rmseMax...\n" );
+	const std::string dir = ScratchRunDir( "t4c_camera_compare" );
+
+	AgentEvalScenario s = MakeScenario( "camcmp_probe", kScene, "Render it", "commit", kNoLoopFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "camcmp_probe run reached final_text" );
+	Check( h.dispatcher != nullptr && h.dispatcher->Session() != nullptr, "camcmp_probe has a live session" );
+	AgentSession* sess = h.dispatcher->Session();
+	if( !sess ) return;
+
+	auto checkResult = [&]( const std::string& cpJson, const std::string& label ) -> AgentEvalCheckResult {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		return CheckScenario( h, s2 );
+	};
+	auto checkOne = [&]( const std::string& cpJson, bool expectPass, const std::string& label ) -> std::string {
+		AgentEvalCheckResult r = checkResult( cpJson, label );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			return r.checkpoints[0].detail;
+		}
+		Check( false, label + ": expected exactly one checkpoint result" );
+		return std::string();
+	};
+
+	// --- Camera override: measure near vs far framing directly, then pin a
+	// distinguishing luma band through the checkpoint path. ---
+	auto measureLuma = [&]( const char* loc, const char* look ) -> double {
+		AgentRenderParams rp;
+		rp.camera.hasLocation = true; rp.camera.location = loc;
+		rp.camera.hasLookAt   = true; rp.camera.lookAt   = look;
+		rp.camera.hasUp       = true; rp.camera.up       = "0 1 0";
+		AgentRenderResult rr = sess->Render( rp );
+		return 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
+	};
+	const double lumaNear = measureLuma( "0 0 3.5", "0 0 0" );
+	const double lumaFar  = measureLuma( "0 0 30",  "0 0 0" );
+	std::printf( "  [measured] near-camera meanLuma=%.5f  far-camera meanLuma=%.5f\n", lumaNear, lumaFar );
+	Check( lumaFar < lumaNear,
+		"far camera frames the sphere small -> mean luma drops below near (near=" +
+		std::to_string( lumaNear ) + " far=" + std::to_string( lumaFar ) + ")" );
+	const double midLuma = 0.5 * ( lumaNear + lumaFar );
+	{
+		char cp[320];
+		std::snprintf( cp, sizeof( cp ),
+			"[{\"kind\":\"render\",\"camera\":{\"location\":[0,0,3.5],\"lookat\":[0,0,0]},\"meanLumaMin\":%.6f}]", midLuma );
+		checkOne( cp, true, "near-camera override render clears the mid-luma floor" );
+	}
+	{
+		char cp[320];
+		std::snprintf( cp, sizeof( cp ),
+			"[{\"kind\":\"render\",\"camera\":{\"location\":[0,0,30],\"lookat\":[0,0,0]},\"meanLumaMin\":%.6f}]", midLuma );
+		checkOne( cp, false, "far-camera override render falls BELOW the mid-luma floor (override really moved the camera)" );
+	}
+
+	// --- compareToImage self-consistency. ---
+	// Write a self-reference from the session's OWN render+PNG path (the
+	// exact bytes read_image would return), then compare a FRESH render.
+	AgentRenderParams rpRef;                       // default scene camera + dims (24x24)
+	AgentRenderResult rrRef = sess->Render( rpRef );
+	Check( rrRef.ok && !rrRef.png.empty(), "session render produced PNG bytes for the self-reference" );
+	const std::string refPath = dir + "/self_ref.png";
+	Check( WriteBytes( refPath, rrRef.png ), "wrote the self-reference PNG to scratch" );
+
+	// A loose (rmseMax 1.0) pass first, purely to surface the measured
+	// self-RMSE noise floor in the detail.
+	{
+		const std::string d = checkOne(
+			"[{\"kind\":\"render\",\"compareToImage\":\"" + refPath + "\",\"rmseMax\":1.0}]",
+			true, "compareToImage self-consistency clears a rmseMax=1.0 ceiling" );
+		std::printf( "  [measured] self-compare detail: %s\n", d.c_str() );
+	}
+	// The Wave-2 calibration bounds: MC noise between two fresh renders of
+	// the same scene sits well under 0.06 but well above 0.0005.
+	checkOne( "[{\"kind\":\"render\",\"compareToImage\":\"" + refPath + "\",\"rmseMax\":0.06}]",
+		true, "compareToImage self-consistency PASSES at rmseMax=0.06 (MC noise only)" );
+	checkOne( "[{\"kind\":\"render\",\"compareToImage\":\"" + refPath + "\",\"rmseMax\":0.0005}]",
+		false, "compareToImage self-consistency FAILS at rmseMax=0.0005 (below the MC noise floor)" );
+
+	// A DIFFERENT scene state: a far-camera reference vs a default-camera
+	// grading render -> wildly different framing -> RMSE >> 0.06 -> FAIL at
+	// the passing threshold.
+	AgentRenderParams rpFar;
+	rpFar.camera.hasLocation = true; rpFar.camera.location = "0 0 30";
+	rpFar.camera.hasLookAt   = true; rpFar.camera.lookAt   = "0 0 0";
+	rpFar.camera.hasUp       = true; rpFar.camera.up       = "0 1 0";
+	AgentRenderResult rrFar = sess->Render( rpFar );
+	const std::string farRefPath = dir + "/far_ref.png";
+	Check( WriteBytes( farRefPath, rrFar.png ), "wrote the far-camera reference PNG to scratch" );
+	checkOne( "[{\"kind\":\"render\",\"compareToImage\":\"" + farRefPath + "\",\"rmseMax\":0.06}]",
+		false, "compareToImage against a different-framing reference FAILS at rmseMax=0.06" );
+
+	// Dimension mismatch: reference is 24x24; ask for a 32x32 grading render.
+	{
+		const std::string d = checkOne(
+			"[{\"kind\":\"render\",\"width\":32,\"height\":32,\"compareToImage\":\"" + refPath + "\",\"rmseMax\":0.06}]",
+			false, "compareToImage width/height mismatch vs reference dims FAILS" );
+		Check( d.find( "dims must match" ) != std::string::npos,
+			"the dims-mismatch detail is clear (got: " + d + ")" );
+	}
+	// Missing reference file -> failed checkpoint with a clear detail.
+	{
+		const std::string d = checkOne(
+			"[{\"kind\":\"render\",\"compareToImage\":\"" + dir + "/no_such_reference.png\",\"rmseMax\":0.06}]",
+			false, "compareToImage against a missing file FAILS" );
+		Check( d.find( "could not be read" ) != std::string::npos,
+			"the missing-file detail is clear (got: " + d + ")" );
+	}
+
+	// --- Load-validator reject cases (image-reconstruction Wave 2). ---
+	auto writeScenario = [&]( const std::string& id, const std::string& checkpointsJson ) -> std::string {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses (" + perr + ")" );
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		return path;
+	};
+	auto rejects = [&]( const std::string& id, const std::string& cpJson, const std::string& mustNameField ) {
+		AgentEvalScenario sc; std::string err;
+		Check( !LoadEvalScenario( writeScenario( id, cpJson ), sc, err ), id + ": load-rejected" );
+		Check( err.find( mustNameField ) != std::string::npos,
+			id + ": load error names \"" + mustNameField + "\" (got: " + err + ")" );
+	};
+
+	rejects( "cmp_no_rmse", "[{\"kind\":\"render\",\"compareToImage\":\"a.png\"}]", "rmseMax" );
+	rejects( "rmse_no_cmp", "[{\"kind\":\"render\",\"rmseMax\":0.05}]", "compareToImage" );
+	rejects( "rmse_hi", "[{\"kind\":\"render\",\"compareToImage\":\"a.png\",\"rmseMax\":1.5}]", "rmseMax" );
+	rejects( "rmse_zero", "[{\"kind\":\"render\",\"compareToImage\":\"a.png\",\"rmseMax\":0}]", "rmseMax" );
+	rejects( "cmp_dotdot", "[{\"kind\":\"render\",\"compareToImage\":\"../secret.png\",\"rmseMax\":0.05}]", "compareToImage" );
+	rejects( "cam_no_location", "[{\"kind\":\"render\",\"camera\":{\"lookat\":[0,0,0]}}]", "camera.location" );
+	rejects( "cam_short_vec", "[{\"kind\":\"render\",\"camera\":{\"location\":[0,0],\"lookat\":[0,0,0]}}]", "camera.location" );
+	rejects( "cam_fov_hi", "[{\"kind\":\"render\",\"camera\":{\"location\":[0,0,3.5],\"lookat\":[0,0,0],\"fov\":200}}]", "camera.fov" );
+	rejects( "samples_zero", "[{\"kind\":\"render\",\"samples\":0}]", "samples" );
+
+	// A fully-formed Wave-2 render checkpoint (camera + samples +
+	// compareToImage + rmseMax) LOADS cleanly (the file need not exist at
+	// load time -- the validator never opens it).
+	{
+		AgentEvalScenario sc; std::string err;
+		Check( LoadEvalScenario( writeScenario( "cmp_good",
+			"[{\"kind\":\"render\",\"samples\":16,\"camera\":{\"location\":[0,0,3.5],\"lookat\":[0,0,0],\"up\":[0,1,0],\"fov\":40},"
+			"\"compareToImage\":\"refs/target.png\",\"rmseMax\":0.05}]" ), sc, err ),
+			"a fully-formed Wave-2 render checkpoint loads cleanly (" + err + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
+// TestAdversarialOracleControls: T10 (above) only proves committed
+// scenarios' checkpoints are TRUE of their OWN fixture -- it never
+// proves a WRONG-behavior session actually fails them.  This test loads
+// each of four Wave-B-strengthened committed scenarios via
+// LoadEvalScenario (so it exercises the REAL checkpoints[] shipped in
+// evals/scenarios/*.json, not a hand-copied approximation), swaps in a
+// hand-built canned fixture that dodges the newly-added assertion while
+// otherwise behaving plausibly, runs it through the real replay path,
+// and asserts CheckScenario(...).allPassed == false with the SPECIFIC
+// new checkpoint index the one that failed (every other checkpoint
+// still passes, so the failure is attributable, not a shotgunned wrong
+// fixture) and its detail naming the discriminating field.
+//
+// The wrong-behavior bodies are built with JsonValue/JsonSerialize (the
+// SAME codec the harness itself parses fixtures with) rather than
+// hand-escaped string literals, so there is no way for a typo'd escape
+// to silently produce a differently-wrong fixture than intended.
+//----------------------------------------------------------------------
+
+static std::string JsonlLine( const std::string& provider, const std::string& bodyText )
+{
+	JsonValue line = JsonValue::MakeObject();
+	line.set( "provider", JsonValue::MakeString( provider ) );
+	line.set( "body", JsonValue::MakeString( bodyText ) );
+	return JsonSerialize( line ) + "\n";
+}
+
+struct ToolCallSpec { std::string name; JsonValue input; };
+
+// One Anthropic-shaped assistant message: optional text block, zero or
+// more tool_use blocks (in order), stop_reason ("tool_use" when tools
+// are present, "end_turn" for a plain final message).
+static std::string AnthropicBody( const std::string& id, const std::string& text,
+                                   const std::vector<ToolCallSpec>& tools, const std::string& stopReason )
+{
+	JsonValue body = JsonValue::MakeObject();
+	body.set( "id", JsonValue::MakeString( id ) );
+	body.set( "type", JsonValue::MakeString( "message" ) );
+	body.set( "role", JsonValue::MakeString( "assistant" ) );
+	body.set( "model", JsonValue::MakeString( "claude-sonnet-5" ) );
+
+	JsonValue content = JsonValue::MakeArray();
+	if( !text.empty() ) {
+		JsonValue t = JsonValue::MakeObject();
+		t.set( "type", JsonValue::MakeString( "text" ) );
+		t.set( "text", JsonValue::MakeString( text ) );
+		content.push_back( t );
+	}
+	int idx = 0;
+	for( const ToolCallSpec& tc : tools ) {
+		JsonValue u = JsonValue::MakeObject();
+		u.set( "type", JsonValue::MakeString( "tool_use" ) );
+		u.set( "id", JsonValue::MakeString( "toolu_adv" + std::to_string( idx++ ) ) );
+		u.set( "name", JsonValue::MakeString( tc.name ) );
+		u.set( "input", tc.input );
+		content.push_back( u );
+	}
+	body.set( "content", content );
+	body.set( "stop_reason", JsonValue::MakeString( stopReason ) );
+	body.set( "stop_sequence", JsonValue::MakeNull() );
+	JsonValue usage = JsonValue::MakeObject();
+	usage.set( "input_tokens", JsonValue::MakeNumber( 100 ) );
+	usage.set( "output_tokens", JsonValue::MakeNumber( 40 ) );
+	body.set( "usage", usage );
+	return JsonSerialize( body );
+}
+
+static JsonValue EmptyInput() { return JsonValue::MakeObject(); }
+
+static JsonValue ProposePatchInput( const std::string& target, const std::string& param, const std::string& value,
+                                     bool withBaseHeadVersion )
+{
+	JsonValue in = JsonValue::MakeObject();
+	in.set( "target", JsonValue::MakeString( target ) );
+	in.set( "param", JsonValue::MakeString( param ) );
+	in.set( "value", JsonValue::MakeString( value ) );
+	if( withBaseHeadVersion ) {
+		JsonValue bhv = JsonValue::MakeObject();
+		bhv.set( "uuid", JsonValue::MakeNumber( 0 ) );
+		bhv.set( "revision", JsonValue::MakeNumber( 0 ) );
+		in.set( "baseHeadVersion", bhv );
+	}
+	return in;
+}
+
+static JsonValue InsertChunkInput( const std::string& chunkText )
+{
+	JsonValue in = JsonValue::MakeObject();
+	in.set( "chunkText", JsonValue::MakeString( chunkText ) );
+	return in;
+}
+
+// Load `scenarioPath` for real (so the checkpoints under test are the
+// actual committed ones), swap in `fixtureText` as the replay source,
+// run it, and assert the SPECIFIC checkpoint at `expectFailIndex` is
+// the one (and only one) that fails, with its detail containing
+// `expectedDetailSubstr`.
+static void RunAdversarialControl( const std::string& scenarioPath, const std::string& fixtureText,
+                                    const char* scratchLeaf, std::size_t expectFailIndex,
+                                    const std::string& expectedDetailSubstr, const std::string& label )
+{
+	const std::string dir = ScratchRunDir( scratchLeaf );
+	AgentEvalScenario s; std::string err;
+	Check( LoadEvalScenario( scenarioPath, s, err ), label + ": committed scenario loads (" + err + ")" );
+
+	s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+	Check( WriteFile( s.replayFixturePath, fixtureText ), label + ": wrong-behavior fixture written to scratch" );
+
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus != "load_error", label + ": run did not load_error (" + h.result.errorMessage + ")" );
+
+	AgentEvalCheckResult r = CheckScenario( h, s );
+	Check( r.checkpoints.size() == s.checkpoints.size(), label + ": one check result per committed checkpoint" );
+	Check( !r.allPassed, label + ": allPassed is FALSE against the wrong-behavior fixture" );
+
+	if( expectFailIndex < r.checkpoints.size() ) {
+		Check( !r.checkpoints[expectFailIndex].passed,
+			label + ": checkpoints[" + std::to_string( expectFailIndex ) + "] (" + r.checkpoints[expectFailIndex].kind +
+			") is the one that failed (detail: " + r.checkpoints[expectFailIndex].detail + ")" );
+		Check( r.checkpoints[expectFailIndex].detail.find( expectedDetailSubstr ) != std::string::npos,
+			label + ": failing detail mentions '" + expectedDetailSubstr + "' (detail: " + r.checkpoints[expectFailIndex].detail + ")" );
+		// Every OTHER checkpoint should still pass -- proves the failure is
+		// attributable to the ONE new assertion under test, not a
+		// shotgunned wrong fixture that happens to break everything.
+		for( std::size_t i = 0; i < r.checkpoints.size(); ++i ) {
+			if( i == expectFailIndex ) continue;
+			Check( r.checkpoints[i].passed,
+				label + ": checkpoints[" + std::to_string( i ) + "] (" + r.checkpoints[i].kind +
+				") unexpectedly ALSO failed (detail: " + r.checkpoints[i].detail + ")" );
+		}
+	} else {
+		Check( false, label + ": expectFailIndex " + std::to_string( expectFailIndex ) +
+			" out of range (only " + std::to_string( r.checkpoints.size() ) + " checkpoints)" );
+	}
+}
+
+static void TestAdversarialOracleControls()
+{
+	std::printf( "T-adv: adversarial oracle controls -- wrong behavior must FAIL the strengthened checkpoints...\n" );
+
+	// (a) two_tool_observe: a fixture that emits ONLY final text (zero tool
+	// calls, straight to end_turn) -- the trajectory checkpoint's new
+	// requiredToolInOrder:["render","read_image"] must fail (nothing was
+	// ever dispatched).  The text still names "sphere"/"lit" so the
+	// (also-new) finalText checkpoint and the render checkpoint (which
+	// renders the base scene itself, independent of tool calls) both stay
+	// green -- isolating the failure to requiredToolInOrder.
+	{
+		const std::string body = AnthropicBody( "msg_1",
+			"There is a lit diffuse sphere in the scene, from memory -- no new render was actually dispatched.",
+			{}, "end_turn" );
+		RunAdversarialControl( "evals/scenarios/two_tool_observe.json", JsonlLine( "anthropic", body ),
+			"t_adv_two_tool_observe", 1, "requiredToolInOrder",
+			"two_tool_observe/zero-tool-calls control" );
+	}
+
+	// (b) conflict_retry: a fixture whose FIRST propose_patch omits
+	// baseHeadVersion (so it applies immediately -- no conflict), then
+	// read_document + a second unconditioned propose_patch (also applied).
+	// The scenario's OWN scripted intervention still fires after tool call
+	// 1 (it is unconditional, independent of the fixture), but since
+	// neither propose_patch pins a baseHeadVersion, neither ever conflicts
+	// -- the toolOutcomes "first ... expect:conflict" spec must fail, while
+	// "last ... expect:applied" still holds, requiredToolInOrder still
+	// matches the same 4-call shape, and the final colour still lands blue
+	// (document/untouched/diagnostics stay green).
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading first.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Recoloring blue (no baseHeadVersion pinned).",
+			{ { "propose_patch", ProposePatchInput( "pnt_albedo", "color", "0.1 0.2 0.9", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Reading again.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Recoloring again (still unconditioned).",
+			{ { "propose_patch", ProposePatchInput( "pnt_albedo", "color", "0.1 0.2 0.9", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Done: pnt_albedo is blue.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/conflict_retry.json", fixture,
+			"t_adv_conflict_retry", 3, "conflict",
+			"conflict_retry/never-conflicts control" );
+	}
+
+	// (c) multi_turn_edit: a fixture where turn 1 only reads the document
+	// (no edit) and BOTH propose_patch calls (color, then radius) happen
+	// during turn 2 -- toolCallAfterUserTurn's color spec
+	// (argsContains:"color", maxUserTurns:1) must fail since the color
+	// edit lands at userTurns==2, not <=1.  The radius spec
+	// (minUserTurns:2) still holds, requiredToolInOrder still matches (two
+	// propose_patch calls in order), and both final values stay in-band
+	// (document checkpoints stay green).
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene first.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Just read, no edit yet.", {}, "end_turn" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Recoloring on the second turn.",
+			{ { "propose_patch", ProposePatchInput( "pnt_albedo", "color", "0.9 0.1 0.1", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Enlarging on the second turn too.",
+			{ { "propose_patch", ProposePatchInput( "sph", "radius", "0.9", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Recolored and enlarged, both on turn 2.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/multi_turn_edit.json", fixture,
+			"t_adv_multi_turn_edit", 3, "color",
+			"multi_turn_edit/both-edits-on-turn-2 control" );
+	}
+
+	// (d) reserved_name_recovery: a fixture that NEVER attempts the
+	// reserved `none` name -- it reads the document, then inserts the
+	// overhead camera directly as `overhead_cam`.  The scenario's
+	// toolOutcomes first spec (argsContains:"none", expect:"rejected")
+	// then has no matching record at all and must fail; the "last ...
+	// expect:applied" spec still holds (the one insert_chunk call
+	// succeeds), and every document-side assertion (2 cameras, no chunk
+	// literally named "none", the new camera's location within the
+	// overhead band) stays green.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene first.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Adding the overhead camera directly.",
+			{ { "insert_chunk", InsertChunkInput(
+				"pinhole_camera\n{\n\tname overhead_cam\n\tlocation 0 4 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tfov 40.0\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Done: added overhead_cam.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/reserved_name_recovery.json", fixture,
+			"t_adv_reserved_name_recovery", 5, "none",
+			"reserved_name_recovery/never-attempts-none control" );
+	}
+
+	// (e) camera_orbit_timeline: a fixture that inserts ONE camera/location
+	// timeline whose keyframes are all the SAME point (a constant camera, not
+	// an orbit).  chunk_count still reaches 15 (base scene has 14), the camera
+	// count stays 1, the referenced chunks stay untouched, and diagnostics are
+	// clean -- but param_series_orbit's `where` filter selects that single
+	// constant timeline and it dedupes to ONE keyframe, so the orbit
+	// checkpoint (index 2) is the only failure.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene first.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Adding a (constant) camera timeline.",
+			{ { "insert_chunk", InsertChunkInput(
+				"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+				"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+				"\ttime\t\t0.5\n\tvalue\t\t4.5 4.8 18.5\n"
+				"\ttime\t\t1.0\n\tvalue\t\t4.5 4.8 18.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Done: added a camera timeline.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/camera_orbit_timeline.json", fixture,
+			"t_adv_camera_orbit_timeline", 2, "dedupe",
+			"camera_orbit_timeline/constant-camera control" );
+	}
+
+	// (e2) camera_orbit_timeline, sibling control: a fixture that inserts an
+	// orbit-SHAPED camera/location timeline (same 5 keyframes / 270-degree
+	// spread as the committed fixture's real orbit) but whose `time` lines
+	// are ALL 0.0 -- geometry alone would pass, but the timeline never
+	// actually animates.  chunk_count, camera count, untouched, and
+	// diagnostics all stay green exactly as in (e); param_series_orbit
+	// (index 2) is again the only failure, this time on the TIME axis
+	// rather than the dedupe/geometry axis.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene first.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Adding an orbit-shaped camera timeline (times all 0.0).",
+			{ { "insert_chunk", InsertChunkInput(
+				"timeline\n{\n\telement_type\tcamera\n\tparam\t\tlocation\n"
+				"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t-18.5 4.8 4.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t-4.5 4.8 -18.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t18.5 4.8 -4.5\n"
+				"\ttime\t\t0.0\n\tvalue\t\t4.5 4.8 18.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Done: added a camera timeline.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/camera_orbit_timeline.json", fixture,
+			"t_adv_camera_orbit_timeline_zerotime", 2, "strictly increasing",
+			"camera_orbit_timeline/orbit-shaped-but-zero-time control" );
+	}
+
+	// (f) multi_step_build: a fixture that builds a centered BOX object at the
+	// origin (a box_geometry, not a sphere) PLUS a DETACHED sphere_geometry
+	// chunk that no object binds, plus the same area light.  sphere-count
+	// (1, the orphan), object-count (2), the luma band, and diagnostics all
+	// stay green; the objectmap checkpoint (index 3) fails because the CENTRE
+	// pixel's hit object's geometry is a box_geometry, not the required
+	// sphere_geometry.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the scene.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Grey albedo painter.",
+			{ { "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.6 0.6 0.6\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Lambertian material.",
+			{ { "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname mat_box\n\treflectance pnt_albedo\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "A BOX geometry (not a sphere) for the visible object.",
+			{ { "insert_chunk", InsertChunkInput( "box_geometry\n{\n\tname geo_box\n\twidth 0.9\n\theight 0.9\n\tdepth 0.9\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Placing the box at the origin.",
+			{ { "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname obj_box\n\tgeometry geo_box\n\tmaterial mat_box\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6", "A DETACHED sphere geometry nothing binds.",
+			{ { "insert_chunk", InsertChunkInput( "sphere_geometry\n{\n\tname orphan_sph\n\tradius 0.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_7", "Emission painter.",
+			{ { "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Luminaire material.",
+			{ { "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Emitter quad.",
+			{ { "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Placing the emitter.",
+			{ { "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}" ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11", "Built a lit box + a detached sphere.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/multi_step_build.json", fixture,
+			"t_adv_multi_step_build", 3, "box_geometry",
+			"multi_step_build/centered-box + detached-sphere control" );
+	}
+
+	// (g) multi_turn_edit: a fixture whose turn-1 propose_patch is a REJECTED
+	// color patch (a bad target, pnt_albdeo), and whose turn-2 makes the REAL
+	// color + radius edits.  The turn-1 spec (argsContains ["pnt_albedo",
+	// "color"], expect:"applied", userTurns 1..1) no longer matches -- the
+	// rejected typo'd patch neither contains "pnt_albedo" nor applied -- so
+	// the trajectory checkpoint (index 3) fails there, while the end-state
+	// colour/radius bands, diagnostics, and terminal all stay green.
+	{
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Recoloring (typo'd target).",
+			{ { "propose_patch", ProposePatchInput( "pnt_albdeo", "color", "0.9 0.1 0.1", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "That failed; ending turn 1.", {}, "end_turn" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Recoloring correctly on turn 2.",
+			{ { "propose_patch", ProposePatchInput( "pnt_albedo", "color", "0.9 0.1 0.1", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Enlarging on turn 2.",
+			{ { "propose_patch", ProposePatchInput( "sph", "radius", "0.9", false ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Recolored and enlarged.", {}, "end_turn" ) );
+		RunAdversarialControl( "evals/scenarios/multi_turn_edit.json", fixture,
+			"t_adv_multi_turn_edit_applied", 3, "applied",
+			"multi_turn_edit/turn-1-rejected-color control" );
+	}
+
+	// (h)/(i)/(j)/(k) below exercise the Wave-5 image_reconstruct_* scenarios.
+	// Their checkpoint arrays are 4 render compares + objectmap + document +
+	// diagnostics + trajectory (indices 0-3 = view1..view4 compares, 4 =
+	// objectmap, 5 = document chunk_count, 6 = diagnostics, 7 = trajectory).
+	// checkpoint 0 (view1) grades at the STRICT 0.015 cap; checkpoints 1-3
+	// (view2/view3/view4) grade at the RELAXED 0.04 cap (CALIBRATION.md Sec 10 --
+	// image_reconstruct_single's two-tier rubric, since only view1 is an
+	// observable reference photo). Unlike (a)-(g), an empty-stage, wrong-
+	// lighting, or flat-cutout reconstruction fails MULTIPLE checkpoints at
+	// once (the four compares share root causes), so RunAdversarialControl's
+	// "every OTHER checkpoint must stay green" rule does not apply here --
+	// these four controls are written by hand instead, asserting only the
+	// SPECIFIC checkpoints the task calls out, exactly as CALIBRATION.md's
+	// anchor measurements predict.
+
+	// (h) image_reconstruct_single: a fixture that inserts NOTHING (reads the
+	// skill and the document, renders and looks, then ends the turn on an
+	// empty stage). CALIBRATION.md anchor (e) (gross failure -- hero object
+	// deleted entirely) measures RMSE 0.118-0.170 across all four views,
+	// comfortably above BOTH view1's strict 0.015 cap and views 2-4's relaxed
+	// 0.04 cap -- every compare checkpoint fails, and the
+	// objectmap/document checkpoints miss too (nothing was ever built). Only
+	// the view1 compare (checkpoint 0) is asserted here, per the task's
+	// explicit carve-out: an empty scene legitimately fails several
+	// checkpoints at once, so there is no single "attributable" failure to
+	// isolate the way (a)-(g) do.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_empty" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/empty-stage control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the modeling skill first.",
+			{ { "read_skill", ( []{ JsonValue in = JsonValue::MakeObject();
+			                         in.set( "name", JsonValue::MakeString( "modeling-from-image-captures" ) );
+			                         return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Checking the scaffold.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Rendering as-is.",
+			{ { "render", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Looking at it.",
+			{ { "read_image", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Done.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/empty-stage control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/empty-stage control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/empty-stage control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/empty-stage control: allPassed is FALSE against an empty stage" );
+		if( r.checkpoints.size() > 0 ) {
+			Check( !r.checkpoints[0].passed,
+				"image_reconstruct_single/empty-stage control: checkpoints[0] (view1 compare) failed (detail: " +
+				r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[0].detail.find( "RMSE" ) != std::string::npos,
+				"image_reconstruct_single/empty-stage control: checkpoints[0] detail names RMSE (detail: " +
+				r.checkpoints[0].detail + ")" );
+		}
+	}
+
+	// (i) image_reconstruct_single: every GT chunk lifted verbatim EXCEPT the
+	// key light's exitance colour, which is recoloured neutral white (1 1 1,
+	// same scale/power) instead of the warm (1.0 0.82 0.58) ground truth.
+	// CALIBRATION.md anchor (c) measures RMSE 0.0325-0.0479 across the four
+	// views. Under the two-tier caps this does NOT fail every compare: view1
+	// (0.0381) is above its strict 0.015 cap and view4 (0.0479) is above the
+	// relaxed 0.04 cap, but view2 (0.0325) and view3 (0.0364) sit BELOW the
+	// relaxed 0.04 cap and pass -- exactly why the checkpoint that must catch
+	// this defect is view1's own strict cap (asserted below), not the relaxed
+	// withheld-view caps. The object/stage/geometry are otherwise
+	// exactly right, so the objectmap and sdf chunk_count checkpoints stay
+	// green: the failure is attributable to lighting, not shape or a missing
+	// object.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_neutral_key" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/neutral-key control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		int msgIdx = 2;
+		auto insertMsg = [&]( const std::string& text, const std::string& chunkText ) {
+			fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ), text,
+				{ { "insert_chunk", InsertChunkInput( chunkText ) } }, "tool_use" ) );
+		};
+		insertMsg( "Teal albedo painter.", "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" );
+		insertMsg( "Ground albedo painter.", "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" );
+		insertMsg( "Backdrop albedo painter.", "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" );
+		insertMsg( "Key light exitance painter -- NEUTRAL WHITE, not the GT warm colour.",
+			"uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 1.0 1.0\n}" );
+		// pnt_env is NOT inserted -- the scaffold already declares it (wired into
+		// the rasterizer's radiance_map; the rasterizer chunk is unnamed and
+		// singleton, so it cannot be re-targeted after load). Recolour the
+		// scaffold's placeholder instead, matching the committed fixture's
+		// approach.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ),
+			"Recolouring the scaffold's placeholder environment-tint painter.",
+			{ { "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } }, "tool_use" ) );
+		insertMsg( "Hero material.", "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" );
+		insertMsg( "Ground material.", "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" );
+		insertMsg( "Backdrop material.", "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" );
+		insertMsg( "Key luminaire material -- same scale 42.0 as GT, only colour changed.",
+			"lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" );
+		insertMsg( "Ground geometry.",
+			"clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" );
+		insertMsg( "Backdrop geometry.",
+			"clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" );
+		insertMsg( "Key light geometry.",
+			"clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" );
+		insertMsg( "Hero SDF geometry, verbatim from the ground truth.",
+			"sdf_geometry\n{\n\tname herogeom\n"
+			"\tpart capsule union 0 0 0.75 0 0 0 0 1 1 1 0.30 0.45 0 0\n"
+			"\tpart sphere smin 0.15 0 1.50 0 0 0 0 1 0.62 1 0.62 0 0 0\n"
+			"\tpart torus smin 0.12 0 1.20 0 0 0 0 1 1 1 0.36 0.12 0 0\n"
+			"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 0 0 0 1 1 1 0.22 0.17 0.17 0.04\n}" );
+		insertMsg( "Ground object.", "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" );
+		insertMsg( "Backdrop object.", "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" );
+		insertMsg( "Key light object.", "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" );
+		insertMsg( "Hero object.", "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" );
+		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx ),
+			"Built the scene; key light is neutral white.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/neutral-key control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/neutral-key control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/neutral-key control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/neutral-key control: allPassed is FALSE against a neutral-white key light" );
+		if( r.checkpoints.size() > 7 ) {
+			Check( !r.checkpoints[0].passed,
+				"image_reconstruct_single/neutral-key control: checkpoints[0] (view1 compare) failed on lighting alone (detail: " +
+				r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[4].passed,
+				"image_reconstruct_single/neutral-key control: checkpoints[4] (objectmap) still PASSES -- attributable to lighting, not shape (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[5].passed,
+				"image_reconstruct_single/neutral-key control: checkpoints[5] (sdf chunk_count) still PASSES (detail: " +
+				r.checkpoints[5].detail + ")" );
+		}
+	}
+
+	// (j) image_reconstruct_single: the hero is built as a plain
+	// sphere_geometry instead of an sdf_geometry (a non-SDF shape at roughly
+	// the object's centre). The objectmap checkpoint's expectGeometryKind
+	// binds the hit object's geometry chunk and requires it to be
+	// 'sdf_geometry' -- it fails with a detail naming the ACTUAL kind
+	// ('sphere_geometry'). The render compares also fail (a sphere silhouette
+	// does not match the reference photo's mushroom/rocket silhouette) but
+	// that is not the assertion under test here.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_mesh_geom" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/non-sdf-geometry control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Teal albedo painter.",
+			{ { "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3", "Hero material.",
+			{ { "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4", "Hero geometry -- a SPHERE, not an SDF.",
+			{ { "insert_chunk", InsertChunkInput( "sphere_geometry\n{\n\tname herogeom\n\tradius 0.8\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5", "Placing the hero near the object's centre.",
+			{ { "insert_chunk", InsertChunkInput(
+				"standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0.9 0\n\tmaterial teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6", "Built the hero as a sphere.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/non-sdf-geometry control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/non-sdf-geometry control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/non-sdf-geometry control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/non-sdf-geometry control: allPassed is FALSE against a sphere hero" );
+		if( r.checkpoints.size() > 4 ) {
+			Check( !r.checkpoints[4].passed,
+				"image_reconstruct_single/non-sdf-geometry control: checkpoints[4] (objectmap expectGeometryKind) failed (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[4].detail.find( "sphere_geometry" ) != std::string::npos,
+				"image_reconstruct_single/non-sdf-geometry control: checkpoints[4] detail names the actual kind 'sphere_geometry' (detail: " +
+				r.checkpoints[4].detail + ")" );
+		}
+	}
+
+	// (k) image_reconstruct_single: every GT chunk lifted verbatim EXCEPT
+	// herogeom's part lines, which are replaced with a FLAT-CUTOUT ("billboard")
+	// reconstruction -- the SAME primitives (capsule stem, sphere cap, torus
+	// collar, roundbox notch), each rotated (ex=-20, ey=39.14 degrees) so its
+	// LOCAL Z axis aligns with view1's camera direction and squashed to 15% scale
+	// on that axis, so from view1 it reads as a plausible face-on match to the
+	// mushroom silhouette but has near-zero real depth. This is the measured
+	// anchor (f) in CALIBRATION.md Sec 3/10: at 64 spp, view1 RMSE 0.053, view2
+	// 0.087, view3 0.131, view4 0.073 -- all three withheld views land well above
+	// the 0.04 relaxed cap. This control demonstrates that the relaxed 0.04
+	// caps on checkpoints 1-3 DO fire against a maximally-flat billboard, re-
+	// rendered in CI rather than merely asserted in prose. Per CALIBRATION.md
+	// Sec 11, a follow-up necessity investigation (2026-07-17) found no
+	// box-intersect-cut construction that clears view1 (<=0.015) AND fails
+	// all THREE withheld views (>0.04) simultaneously -- but its best attempt
+	// (anchor (g): the -0.20 bas-relief) PASSES view1, view2, AND view4 while
+	// failing ONLY view3, which makes anchor (g) a measured PARTIAL-NECESSITY
+	// WITNESS for the withheld tier: without the withheld gates that
+	// wrong-volume solution would pass the whole eval, and view3's gate alone
+	// rejects it. Control (k2) below pins that witness in CI; this control
+	// (k) remains the defense-in-depth complement (the caps reject the
+	// maximally-flat class outright) -- see CALIBRATION.md Sec 11 for the
+	// full iteration history and the two-part conclusion. view1's own strict
+	// 0.015 cap is not asserted here; only the withheld-view rejection is the
+	// claim under test. The fixture below follows the full required workflow
+	// (read_skill -> ... -> render -> read_image, matching the committed
+	// image_reconstruct_single fixture) so the trajectory checkpoint PASSES
+	// and the compares are the ONLY failures -- an isolated "only geometry is
+	// wrong" probe, not a probe that also happens to skip required tool calls.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_flat_cutout" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/flat-cutout control: committed scenario loads (" + err + ")" );
+
+		// Tool calls are BATCHED multiple-per-message (mirroring
+		// evals/fixtures/image_reconstruct_single.fixture.jsonl's grouping),
+		// not one-per-message -- AgentEvalRunner enforces a 20-tool-round
+		// iteration cap per turn, and one-per-message for this many chunks
+		// (18 inserts/patches + render + read_image = 20 rounds) trips that
+		// cap and turns the run into a `provider_error` before it ever
+		// reaches the render/read_image calls, defeating the P2 fix below.
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the modeling-from-image-captures skill before touching the scene.",
+			{ { "read_skill", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "name", JsonValue::MakeString( "modeling-from-image-captures" ) );
+				return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Checking the starting scaffold.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3",
+			"Adding the four albedo/exitance painters (hero teal, ground, backdrop, warm key -- only the "
+			"hero shape is wrong here), and recolouring the scaffold's placeholder pnt_env painter to the "
+			"observed dim blue-grey environment tint.",
+			{	{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 0.82 0.58\n}" ) },
+				// pnt_env is NOT inserted -- the scaffold already declares it (wired
+				// into the rasterizer's radiance_map; the rasterizer chunk is
+				// unnamed and singleton, so it cannot be re-targeted after load).
+				// Recolour the scaffold's placeholder instead.
+				{ "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4",
+			"Adding the lambertian materials for the hero/ground/backdrop, plus the key light's luminaire material.",
+			{	{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
+			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
+			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6",
+			"The hero SDF -- FLAT-CUTOUT variant: same 4 primitives (capsule stem, sphere cap, torus collar, "
+			"roundbox notch), each rotated (ex=-20, ey=39.14 degrees) so its local Z axis aligns with view1's "
+			"camera direction and squashed to scale.z=0.15 on that axis.",
+			{ { "insert_chunk", InsertChunkInput(
+				"sdf_geometry\n{\n\tname herogeom\n"
+				"\tpart capsule union 0 0 0.75 0 -20 39.14 0 1 1 0.15 0.30 0.45 0 0\n"
+				"\tpart sphere smin 0.15 0 1.50 0 -20 39.14 0 1 0.62 0.15 0.62 0 0 0\n"
+				"\tpart torus smin 0.12 0 1.20 0 -20 39.14 0 1 1 0.15 0.36 0.12 0 0\n"
+				"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 -20 39.14 0 1 1 0.15 0.22 0.17 0.17 0.04\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_7",
+			"Placing the ground, backdrop, key-light, and hero objects.",
+			{	{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Rendering to check the composition.",
+			{ { "render", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Looking at the render.",
+			{ { "read_image", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11",
+			"Built the scene; hero is a flat cutout facing view1.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/flat-cutout control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/flat-cutout control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/flat-cutout control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/flat-cutout control: allPassed is FALSE against a flat-cutout hero" );
+		// The load-bearing assertion: the withheld-view relaxed-cap compares
+		// (checkpoints 1-3 = view2/view3/view4) must each fail with an RMSE
+		// detail. view1's outcome (checkpoint 0) is deliberately NOT asserted --
+		// a crude billboard tuned to face view1 may or may not clear the strict
+		// 0.015 cap there, and that is not the claim under test.
+		if( r.checkpoints.size() > 3 ) {
+			for( std::size_t i = 1; i <= 3; ++i ) {
+				Check( !r.checkpoints[i].passed,
+					"image_reconstruct_single/flat-cutout control: checkpoints[" + std::to_string( i ) +
+					"] (withheld-view compare) failed (detail: " + r.checkpoints[i].detail + ")" );
+				Check( r.checkpoints[i].detail.find( "RMSE" ) != std::string::npos,
+					"image_reconstruct_single/flat-cutout control: checkpoints[" + std::to_string( i ) +
+					"] detail names RMSE (detail: " + r.checkpoints[i].detail + ")" );
+			}
+		}
+		// P2 isolation assertions: with the full required workflow now present
+		// (read_skill -> ... -> render -> read_image -> end_turn), this control
+		// is an isolated "only geometry is wrong" probe -- every non-render
+		// checkpoint must PASS, so the render compares above are the ONLY
+		// failures. checkpoints[4] (objectmap expectGeometryKind) and [5]
+		// (document chunk_count) stay green because herogeom is still a single
+		// sdf_geometry chunk (only its part lines changed, per the class
+		// comment on expectGeometryKind: a bas-relief-class hero would pass the
+		// same way, since it too is sdf_geometry -- this control just uses the
+		// squash-billboard construction instead, see CALIBRATION.md Sec 11).
+		if( r.checkpoints.size() > 7 ) {
+			Check( r.checkpoints[4].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[4] (objectmap expectGeometryKind) still PASSES -- herogeom is still sdf_geometry (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[5].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[5] (document sdf chunk_count) still PASSES (detail: " +
+				r.checkpoints[5].detail + ")" );
+			Check( r.checkpoints[6].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[6] (diagnostics) still PASSES (detail: " +
+				r.checkpoints[6].detail + ")" );
+			Check( r.checkpoints[7].passed,
+				"image_reconstruct_single/flat-cutout control: checkpoints[7] (trajectory) PASSES now that the fixture follows the full required workflow (detail: " +
+				r.checkpoints[7].detail + ")" );
+		}
+	}
+
+	// (k2) image_reconstruct_single: the PARTIAL-NECESSITY WITNESS for the
+	// withheld-view tier (CALIBRATION.md Sec 11 anchor (g), 2026-07-17). The
+	// hero keeps the GT's 4 SDF parts byte-for-byte UNCHANGED and appends a
+	// 5th part: a `box intersect` half-space cut whose local +Z axis exactly
+	// faces view1's camera (ex=-13.63, ey=39.14 -- the closed-form solve, NOT
+	// control (k)'s searched ex=-20), positioned so the cut plane sits 0.20
+	// units behind the hero centroid along the camera axis -- a bas-relief
+	// that preserves view1's visible surface, silhouette, and curvature
+	// exactly and removes only far-side volume. Measured (64 spp, Sec 11):
+	// view1 0.01132, view2 0.02520, view3 0.06937, view4 0.01479. Against the
+	// two-tier caps that means view1 PASSES (24.5% headroom under its strict
+	// 0.015 cap), view2 PASSES (37% under the relaxed 0.04 cap), view4 PASSES
+	// (63% under it), and ONLY view3 FAILS (73% ABOVE the 0.04 cap) -- i.e.
+	// WITHOUT the withheld-view gates this wrong-volume reconstruction would
+	// pass the ENTIRE eval, and view3's gate alone rejects it. That is the
+	// measured partial-necessity proof for the withheld tier, re-rendered in
+	// CI; the PASS margins (view1 24.5%, view2 37%, view4 63%) all sit well
+	// above the ~0.002 run-to-run MC noise scale implied by CALIBRATION.md's
+	// Sec 3 noise floors (0.0039-0.0045 total vs a shared 256-spp reference),
+	// so if this control ever flakes, suspect a pipeline change, not noise.
+	// Workflow shape is identical to (k): read_skill -> read_document ->
+	// batched inserts -> draft render -> read_image -> final text, so the
+	// trajectory/objectmap/document/diagnostics checkpoints all PASS and the
+	// view3 compare is the ONLY failure.
+	{
+		const std::string dir = ScratchRunDir( "t_adv_image_reconstruct_bas_relief" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/image_reconstruct_single.json", s, err ),
+			"image_reconstruct_single/bas-relief control: committed scenario loads (" + err + ")" );
+
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the modeling-from-image-captures skill before touching the scene.",
+			{ { "read_skill", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "name", JsonValue::MakeString( "modeling-from-image-captures" ) );
+				return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_2", "Checking the starting scaffold.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_3",
+			"Adding the four albedo/exitance painters (hero teal, ground, backdrop, warm key -- only the "
+			"hero's hidden-side volume is wrong here), and recolouring the scaffold's placeholder pnt_env "
+			"painter to the observed dim blue-grey environment tint.",
+			{	{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_teal\n\tcolor 0.05 0.55 0.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_ground\n\tcolor 0.62 0.62 0.64\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_backdrop\n\tcolor 0.30 0.31 0.34\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "uniformcolor_painter\n{\n\tname pnt_key\n\tcolor 1.0 0.82 0.58\n}" ) },
+				// pnt_env is NOT inserted -- the scaffold already declares it (wired
+				// into the rasterizer's radiance_map); recolour the placeholder.
+				{ "propose_patch", ProposePatchInput( "pnt_env", "color", "0.06 0.08 0.11", false ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4",
+			"Adding the lambertian materials for the hero/ground/backdrop, plus the key light's luminaire material.",
+			{	{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname teal\n\treflectance pnt_teal\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname ground\n\treflectance pnt_ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
+			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
+			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname keygeom\n\tpta -2.1 3.6 1.9\n\tptb -2.1 3.6 0.7\n\tptc -0.9 3.6 0.7\n\tptd -0.9 3.6 1.9\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_6",
+			"The hero SDF -- BAS-RELIEF variant: the GT's 4 parts unchanged, plus a box-intersect half-space "
+			"cut facing view1's camera (ex=-13.63, ey=39.14) that removes the far-side volume 0.20 units "
+			"behind the hero centroid (CALIBRATION.md Sec 11 anchor (g), verbatim part lines).",
+			{ { "insert_chunk", InsertChunkInput(
+				"sdf_geometry\n{\n\tname herogeom\n"
+				"\tpart capsule union 0 0 0.75 0 0 0 0 1 1 1 0.30 0.45 0 0\n"
+				"\tpart sphere smin 0.15 0 1.50 0 0 0 0 1 0.62 1 0.62 0 0 0\n"
+				"\tpart torus smin 0.12 0 1.20 0 0 0 0 1 1 1 0.36 0.12 0 0\n"
+				"\tpart roundbox subtract 0.05 0.52 1.55 -0.08 0 0 0 1 1 1 0.22 0.17 0.17 0.04\n"
+				"\tpart box intersect 0 1.7161 1.6000 2.1118 -13.63 39.14 0 1 1 1 3 3 3 0\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_7",
+			"Placing the ground, backdrop, key-light, and hero objects.",
+			{	{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname ground\n\tgeometry groundgeom\n\tmaterial ground\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
+				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Draft check of the composition.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_10", "Looking at the draft.",
+			{ { "read_image", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_11",
+			"Built the scene; the hero's visible surface matches the photo, with a plausible-looking "
+			"(but wrong) hidden side.", {}, "end_turn" ) );
+
+		s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ),
+			"image_reconstruct_single/bas-relief control: fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus != "load_error",
+			"image_reconstruct_single/bas-relief control: run did not load_error (" + h.result.errorMessage + ")" );
+
+		AgentEvalCheckResult r = CheckScenario( h, s );
+		Check( r.checkpoints.size() == s.checkpoints.size(),
+			"image_reconstruct_single/bas-relief control: one check result per committed checkpoint" );
+		Check( !r.allPassed, "image_reconstruct_single/bas-relief control: allPassed is FALSE against the bas-relief hero" );
+		// The partial-necessity witness assertions: every OTHER gate waves this
+		// wrong-volume reconstruction through -- view1's strict cap (24.5%
+		// headroom), view2's and view4's relaxed caps (37% / 63% headroom) all
+		// PASS -- and view3's withheld gate ALONE rejects it (73% above its
+		// 0.04 cap), with an RMSE detail.
+		if( r.checkpoints.size() > 3 ) {
+			Check( r.checkpoints[0].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[0] (view1 STRICT compare) PASSES -- the front surface is exact (detail: " +
+				r.checkpoints[0].detail + ")" );
+			Check( r.checkpoints[1].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[1] (view2 compare) PASSES under the relaxed cap (detail: " +
+				r.checkpoints[1].detail + ")" );
+			Check( !r.checkpoints[2].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[2] (view3 compare) FAILS -- the ONE gate that catches the missing volume (detail: " +
+				r.checkpoints[2].detail + ")" );
+			Check( r.checkpoints[2].detail.find( "RMSE" ) != std::string::npos,
+				"image_reconstruct_single/bas-relief control: checkpoints[2] detail names RMSE (detail: " +
+				r.checkpoints[2].detail + ")" );
+			Check( r.checkpoints[3].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[3] (view4 compare) PASSES under the relaxed cap (detail: " +
+				r.checkpoints[3].detail + ")" );
+		}
+		// Isolation: the non-render checkpoints all PASS (full required
+		// workflow present; herogeom is still one sdf_geometry chunk; clean
+		// diagnostics) -- the view3 compare is the ONLY failing checkpoint.
+		if( r.checkpoints.size() > 7 ) {
+			Check( r.checkpoints[4].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[4] (objectmap expectGeometryKind) PASSES -- the bas-relief hero is still sdf_geometry (detail: " +
+				r.checkpoints[4].detail + ")" );
+			Check( r.checkpoints[5].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[5] (document sdf chunk_count) PASSES (detail: " +
+				r.checkpoints[5].detail + ")" );
+			Check( r.checkpoints[6].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[6] (diagnostics) PASSES (detail: " +
+				r.checkpoints[6].detail + ")" );
+			Check( r.checkpoints[7].passed,
+				"image_reconstruct_single/bas-relief control: checkpoints[7] (trajectory) PASSES (detail: " +
+				r.checkpoints[7].detail + ")" );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -1749,11 +3618,19 @@ int main()
 	TestDiagnosticsLiveDocInvariant();
 	TestTrajectoryCheckpoint();
 	TestTrajectoryNewAssertions();
+	TestToolOutcomesArgsContainsAndConflict();
+	TestToolCallAfterUserTurnArrayForm();
+	TestDocumentAnyOfKind();
+	TestParamSeriesOrbit();
+	TestProposalCheckpoint();
+	TestRenderChannelBalance();
+	TestRenderCameraCompareToImage();
 	TestFinalTextCheckpoint();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();
 	TestScenarioIntervention();
 	TestSeedScenariosCheckpointsAreTrue();
+	TestAdversarialOracleControls();
 	TestBudgetLlmCallsNotBypassedByRetry();
 	TestResultsLedgerRecordsTerminalStatus();
 	TestLoadEvalScenarioStrictCheckpointFieldTypes();

@@ -34,14 +34,16 @@
     {
       "kind": "render",
       "meanLumaMin": 0.015,
-      "meanLumaMax": 0.2
+      "meanLumaMax": 0.2,
+      "channelBalanceMax": 2.0
     },
     {
       "kind": "objectmap",
       "queryAt": {
         "x": 12,
         "y": 12,
-        "expectName": "*"
+        "expectName": "*",
+        "expectGeometryKind": "sphere_geometry"
       }
     },
     {
