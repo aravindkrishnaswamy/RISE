@@ -677,8 +677,15 @@ static void RunDirectModeMissingIndirectBleedTest()
 	// stands at world x=-2, floor extends toward +x on camera-right), 3px
 	// wide, restricted to rows inside the floor's own bbox so the patch is
 	// unambiguously floor pixels, never wall or background.
-	const unsigned int patchX0 = wallBBox.maxX + 2;
-	const unsigned int patchX1 = wallBBox.maxX + 9;   // 7px wide (full-res) -- wide enough to still map to a few px after the /4 divisor
+	// Start 4px off the wall silhouette (was 2): the variant pipeline
+	// forces OIDN on, and at the /4 divisor the near-wall rows land 1-2
+	// downsampled pixels from the directly-lit red wall -- close enough
+	// for denoiser smear to bleed red into the DIRECT-mode patch and
+	// erode the discriminator's headroom (round-2 review P3).  4px keeps
+	// the patch clear of the smear radius while still inside the bleed
+	// gradient deep_reflect must show.
+	const unsigned int patchX0 = wallBBox.maxX + 4;
+	const unsigned int patchX1 = wallBBox.maxX + 11;   // 7px wide (full-res) -- still maps to a few px after the /4 divisor
 	const unsigned int patchY0 = std::max( floorBBox.minY, wallBBox.minY ) + 2;
 	const unsigned int patchY1 = std::min( floorBBox.maxY, wallBBox.maxY ) - 2;
 	const bool patchSane = patchX1 < objDec.w && patchY0 < patchY1 && patchY1 < objDec.h;
