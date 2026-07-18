@@ -98,6 +98,7 @@
 
 #include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/CylinderGeometry.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
@@ -1051,6 +1052,148 @@ void TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe()
 	std::cout << "  Passed." << std::endl;
 }
 
+namespace
+{
+	// Shared scenario for Tests 12-13 (external review round 3, item 1 --
+	// CSG passes the CALLER-FRAME dHowFar straight through to its
+	// operand IntersectRay calls instead of first converting it into
+	// THIS CSG's own local frame).  A CSG_UNION uniformly compresses a
+	// Z-axis cylinder operand by 10x (world span z in [-1,1]), unioned
+	// with a sphere operand far enough away to never be hit (so the
+	// switch statement's algebra reduces to the simplest single-hit
+	// passthrough and the whole test isolates the dHowFar plumbing).
+	// CylinderGeometry is one of the geometries with DoPreHitTest()==true
+	// (see Object::IntersectRay), so its bbox-vs-dHowFar2 early-return is
+	// LIVE and observes exactly whatever `dHowFar` value the CSG hands
+	// it.  The cylinder carries no extra transform of its own (identity
+	// relative to CSG-local), so ITS OWN direction-true factor is 1 and
+	// its pretest compares directly against whatever it was handed --
+	// any conversion error made one level up (by the CSG) is therefore
+	// fully exposed, not masked by a second factor at the operand.
+	//
+	//   World ray: origin (0,0,-100), dir +Z.
+	//   World hit (ground truth, via the always-dHowFar-independent main
+	//   IntersectRay called through `Hit()` with RISE_INFINITY): entry at
+	//   world z=-1, i.e. world range exactly 99.
+	//   Test dHowFar (world units): 99.5 -- strictly farther than the
+	//   true hit, so a CORRECT implementation must find/report it.
+	//
+	//   CSG-local ray: origin (0,0,-1000), dir +Z (unit) -- the CSG's own
+	//   direction-true factor is 10 (1 / 0.1 compress).  Cylinder bbox
+	//   spans local z in [-10,10], so its CSG-local bbox-entry range is
+	//   990.  The CORRECT CSG-local limit is factor(10) * dHowFar(99.5)
+	//   = 995: 990 < 995, so the (correct) pretest does NOT early-return
+	//   and the real intersection is found.  The BUGGY code instead hands
+	//   the operand the RAW world dHowFar (99.5) unconverted: 990 > 99.5,
+	//   so the pretest early-returns and the hit is silently dropped --
+	//   an in-range occluder missed (shadow leak) / a genuinely nearer
+	//   closest-hit culled, exactly the two symptoms item 1 describes.
+	struct CompressedCsgScenario
+	{
+		Object*    oCylinder;
+		Object*    oFarSphere;
+		CSGObject* csg;
+		const Ray  worldRay;
+		const Scalar worldDHowFar;
+
+		CompressedCsgScenario() :
+			worldRay( Point3( 0, 0, -100 ), Vector3( 0, 0, 1 ) ),
+			worldDHowFar( 99.5 )
+		{
+			CylinderGeometry* gCyl = new CylinderGeometry( 'z', 1.0, 20.0, true );   // half-height 10, capped
+			oCylinder = new Object( gCyl );
+			safe_release( gCyl );
+			oCylinder->FinalizeTransformations();   // identity -- no extra transform beyond the CSG's own
+
+			SphereGeometry* gFar = new SphereGeometry( 1.0 );
+			oFarSphere = new Object( gFar );
+			safe_release( gFar );
+			oFarSphere->SetPosition( Point3( 1000000, 1000000, 1000000 ) );
+			oFarSphere->FinalizeTransformations();
+
+			csg = new CSGObject( CSG_UNION );
+			assert( csg->AssignObjects( oCylinder, oFarSphere ) );
+			csg->SetScale( 0.1 );   // uniform 10x compress -- world span z in [-1,1]
+			csg->FinalizeTransformations();
+		}
+
+		~CompressedCsgScenario()
+		{
+			safe_release( csg );
+			safe_release( oCylinder );
+			safe_release( oFarSphere );
+		}
+	};
+}
+
+//
+// Test 12 (external review round 3, item 1a -- shadow-ray light leak):
+// CSGObject::IntersectRay_IntersectionOnly must convert the caller's
+// (world-frame) dHowFar into ITS OWN local frame (dHowFar2) BEFORE
+// handing it to the operand IntersectRay calls -- children expect the
+// limit expressed in THEIR caller's frame.  See CompressedCsgScenario
+// above for the full numeric derivation.  Pre-fix this reports NOT
+// occluded (false negative / light leak) because the operand's own
+// pretest silently drops the in-range hit.
+//
+void TestIntersectionOnly_CompressedCsg_NoShadowLeakThroughOperandPretest()
+{
+	std::cout << "IntersectRay_IntersectionOnly: compressed CSG doesn't leak shadow through operand pre-test (review r3, item 1a)..." << std::endl;
+
+	CompressedCsgScenario s;
+
+	// Ground truth: the always dHowFar-independent full IntersectRay
+	// (Hit() always passes RISE_INFINITY) confirms the occluder really is
+	// within the test light's range.
+	RayIntersection ri( s.worldRay, nullRasterizerState );
+	Hit( s.csg, s.worldRay, ri );
+	assert( ri.geometric.bHit );
+	assert( Close( ri.geometric.range, 99.0, 1e-3 ) );
+	assert( ri.geometric.range < s.worldDHowFar );
+
+	const bool occluded = s.csg->IntersectRay_IntersectionOnly( s.worldRay, s.worldDHowFar, true, true );
+	assert( occluded );
+
+	std::cout << "  Passed." << std::endl;
+}
+
+//
+// Test 13 (external review round 3, item 1b -- closest-hit culled):
+// CSGObject::IntersectRay (the closest-hit path) must apply the SAME
+// caller-frame -> CSG-local conversion before calling its operands.
+// This is live in production: ObjectManager::RayElementIntersection
+// passes the RUNNING closest-hit distance (`ri.geometric.range`,
+// world-frame) as `dHowFar` on every candidate object it tests,
+// including CSG objects -- so a nearer object found earlier in a BVH
+// leaf directly becomes the `dHowFar` a later CSG candidate receives.
+// Exercised directly against CSGObject::IntersectRay (bypassing
+// ObjectManager/BVH -- a direct construction is simpler and exercises
+// exactly the code this item fixes) with a dHowFar standing in for "the
+// current best distance so far": a genuinely nearer hit must not be
+// culled by the operand's own pretest.
+//
+void TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest()
+{
+	std::cout << "IntersectRay: compressed CSG closest hit not culled through operand pre-test (review r3, item 1b)..." << std::endl;
+
+	CompressedCsgScenario s;
+
+	RayIntersection ri( s.worldRay, nullRasterizerState );
+	ri.geometric.bHit = false;
+	ri.geometric.range = RISE_INFINITY;
+	ri.geometric.range2 = RISE_INFINITY;
+	ri.geometric.ray = s.worldRay;
+	// dHowFar stands in for a running "current closest hit so far" that
+	// is farther than the CSG's true hit but closer than a WRONG
+	// (unconverted) local-frame comparison would tolerate.
+	s.csg->IntersectRay( ri, s.worldDHowFar, true, true, true );
+
+	assert( ri.geometric.bHit );
+	assert( Close( ri.geometric.range, 99.0, 1e-3 ) );
+
+	std::cout << "  Passed." << std::endl;
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -1064,6 +1207,8 @@ int main()
 	TestIntersectionOnly_NonUniformScale_DirectionTrueFactor();
 	TestUnion_CsgHonoursShadingTangentFromGeometry();
 	TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe();
+	TestIntersectionOnly_CompressedCsg_NoShadowLeakThroughOperandPretest();
+	TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest();
 	std::cout << "\nAll CsgSurfacePayloadTest cases passed." << std::endl;
 	return 0;
 }

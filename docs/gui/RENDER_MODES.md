@@ -176,10 +176,13 @@ CAS-loop min/max, seeded with finite sentinels — never infinity, per the
 repo's `-ffast-math` rule), then `InteractiveViewModeRayCaster::AttachScene`
 (which already runs single-threaded at the top of every `RasterizeScene` pass,
 before the parallel block workers dispatch) snapshots that range into the
-ACTIVE window for the pass about to run, and resets the accumulators. A
-degenerate previous pass (no samples, or a near-zero range) leaves whatever
-window was already active — the mode falls back to the fixed scene-diagonal
-formula only on the very first pass or when nothing meaningful was visible.
+ACTIVE window for the pass about to run, and resets the accumulators. The
+window is a THREE-state machine (`WindowKind::{Unarmed, Ranged, Flat}`): a
+degenerate span (a flat wall filling the frame) arms a first-class FLAT
+window that shades a constant mid-gray — it is a settled state, not a
+refusal — while `Unarmed` (no samples ever) falls back to the fixed
+scene-diagonal formula. All four transitions (ranged↔ranged, ranged↔flat)
+self-correct via the staleness re-run below.
 Brightness therefore reflects the VISIBLE depth range, not a fixed world-scale
 band: the previous pass calibrates the next, and the interactive cancel-restart
 loop converges this within one repaint (mild recalibration while navigating
@@ -193,10 +196,11 @@ the flat scene-diagonal fallback because no *previous* pass had ever
 populated the window (the reported "depth renders nothing" bug).
 `InteractivePelRasterizer::RasterizeScene` now overrides the base: it runs
 the base pass, then — if the active caster is a Depth view-mode caster whose
-window is still pending (recorded samples this pass, but not yet snapshotted
-into a valid window — `InteractiveViewModeRayCaster::DepthWindowPending` /
-`DepthViewShader::WindowPending`) and the pass was not cancelled — runs the
-base pass ONCE more. The second pass's `AttachScene` call snapshots the
+window is STALE (`InteractiveViewModeRayCaster::DepthWindowStale` /
+`DepthViewShader::WindowStale`: never armed, or this pass's accumulated
+range deviates from the active window beyond tolerance — endpoints past 15%
+of the span, span changed >30%, or a ranged↔flat transition) and the pass
+was not cancelled — runs the base pass ONCE more. The second pass's `AttachScene` call snapshots the
 first pass's accumulators into the window, so the SAME `RasterizeScene` call
 returns a windowed image. Guarded structurally to at most one extra pass per
 call (the re-run calls the base class method directly, not virtually, so

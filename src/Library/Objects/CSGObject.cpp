@@ -369,24 +369,33 @@ namespace
 		const Vector3 dir = dst.ray.Dir();
 		const Point3 ptExitLocal = dst.ray.PointAtLength( exitRangeCsgLocal );
 
-		// Margin from the OPERAND's own world bounding-box diagonal, NOT
-		// the camera range (P2-3 fix).  The prior `exitRangeCsgLocal *
-		// 1e-6` formula grows with how far the CAMERA is from the object,
-		// not with the object's own size -- at long camera range the
-		// probe origin can overshoot past a DIFFERENT lobe of the operand
-		// (e.g. a torus' far wall) and the probe would adopt THAT lobe's
-		// payload instead of the intended face's.  A diagonal-derived
-		// margin stays proportional to the operand itself and is
-		// camera-independent.
-		const BoundingBox opBBox = operand->getBoundingBox();
-		const Scalar diag = Point3Ops::Distance( opBBox.ll, opBBox.ur );
-		// Unbounded operands (infinite/clipped planes) report an infinite
-		// bbox -> inf/NaN diag, and a value-level floor cannot rescue NaN
-		// under -ffast-math.  Threshold-compare and fall back to the
-		// finite exit range (already sentinel-guarded above) as the
-		// scale reference.
-		const Scalar safeDiag = ( diag < 1.0e30 ) ? diag : ( exitRangeCsgLocal * 0.1 );
-		const Scalar margin = std::max( safeDiag * Scalar(1e-6), Scalar(1e-9) );
+		// Margin -- FP-representability-based (P2-4 fix), the same bound
+		// RayCaster::ResolveXrayView_ uses for its adaptive skip epsilon,
+		// NOT a fraction of the operand's world bounding-box diagonal.
+		// The bbox-diagonal formula was wrong the same way the x-ray
+		// nudge's was: a REMOTE lobe on a large or multi-lobed operand
+		// (e.g. a torus' far wall, or any decoy face many units away)
+		// inflates the diagonal, which inflates both this margin and the
+		// same-face acceptance radius (maxAcceptRange below) far past
+		// what's needed to clear ptExitLocal -- large enough for the
+		// probe to reach past the intended face and adopt a nearby DECOY
+		// face's payload instead; an unbounded operand (infinite/clipped
+		// plane) reports an infinite bbox and fell back to an
+		// exit-range-scaled reference, reintroducing camera-range
+		// dependence.  Deriving the margin from ptExitLocal's own
+		// coordinate magnitude sidesteps both: it is proportional only to
+		// what double precision can represent AT THAT POINT, independent
+		// of the operand's overall size or the camera.  Deleting the bbox
+		// lookup also removes the only remaining consumer of the P2-3
+		// diagonal/safeDiag fallback machinery.
+		const Scalar maxAbsComponent = std::max(
+			std::fabs( ptExitLocal.x ), std::max( std::fabs( ptExitLocal.y ), std::fabs( ptExitLocal.z ) ) );
+		constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16; // 64 * DBL_EPSILON, see RayCaster::ResolveXrayView_
+		const Scalar margin = std::max( Scalar(1e-12), kUlpFactor * maxAbsComponent );
+		// NOTE: at the 1e-12 floor (exit faces near the world origin) the
+		// acceptance window (~2.1e-12) shares a magnitude with the operand's
+		// own SURFACE_INTERSEC_ERROR self-hit gate -- marginal cases miss the
+		// probe and take the graceful entry-payload fallback (quality only).
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
 			ptExitLocal.y + dir.y * margin,
@@ -401,35 +410,50 @@ namespace
 		// this the probe's hasDifferentials defaults to false and the
 		// recovered payload's txFootprint stays invalid (base-mip
 		// fallback) -- see RayCaster::ResolveXrayView_ for the sibling
-		// copy-diffs-onto-a-continuation-ray pattern.  Origin deltas
-		// (rxOrigin/ryOrigin) are plain translational offsets, not tied to
-		// a direction sign -- carried through unchanged is the same order
-		// of approximation ResolveXrayView_ makes for its own (non-
-		// reversed) continuation rays, valid here because the probe
-		// origin sits within `margin` of a point on dst.ray.  Direction
-		// deltas (rxDir/ryDir) are offsets added to the ray's OWN Dir()
-		// (see TextureFootprintCompute.h) -- since the probe's central
-		// direction is REVERSED (-dir, not dir), the deltas must be
-		// negated too, or they'd describe a near-antipodal auxiliary ray
+		// copy-diffs-onto-a-continuation-ray pattern.
+		//
+		// Origin deltas (rxOrigin/ryOrigin) are NOT a plain copy (P2-4
+		// fix): dst.ray's diffs are expressed relative to dst.ray's OWN
+		// origin, but the probe's origin sits a free-space distance
+		// `t = exitRangeCsgLocal + margin` FORWARD of dst.ray's origin
+		// along dst.ray's own (un-reversed) direction -- the same
+		// straight-line propagation RayCaster::ResolveXrayView_ applies to
+		// its own continuation rays (Igehy 1999 §3.1): the auxiliary ray
+		// advances alongside the central ray by `t`, so re-expressed
+		// relative to the new origin, dO' = dO + t*dD.  This transfer MUST
+		// use dst's FORWARD rxDir/ryDir (not yet negated) -- the auxiliary
+		// ray genuinely traveled forward, alongside dst.ray, to reach the
+		// probe's origin; only the probe's own central ray (fired FROM
+		// that origin) points backward.
+		//
+		// Direction deltas (rxDir/ryDir) are offsets added to the ray's
+		// OWN Dir() (see TextureFootprintCompute.h) -- since the probe's
+		// central direction is REVERSED (-dir, not dir), the deltas must
+		// be negated, or they'd describe a near-antipodal auxiliary ray
 		// instead of a small angular perturbation around the probe's own
-		// direction.
+		// direction.  This negation applies only to the DIRECTION field;
+		// the origin transfer above already used the un-negated (forward)
+		// values because that's the frame the propagation actually
+		// happened in.
 		probe.geometric.ray.hasDifferentials = dst.ray.hasDifferentials;
 		if( dst.ray.hasDifferentials ) {
-			probe.geometric.ray.diffs.rxOrigin = dst.ray.diffs.rxOrigin;
-			probe.geometric.ray.diffs.ryOrigin = dst.ray.diffs.ryOrigin;
+			const Scalar t = exitRangeCsgLocal + margin;
+			probe.geometric.ray.diffs.rxOrigin = dst.ray.diffs.rxOrigin + dst.ray.diffs.rxDir * t;
+			probe.geometric.ray.diffs.ryOrigin = dst.ray.diffs.ryOrigin + dst.ray.diffs.ryDir * t;
 			probe.geometric.ray.diffs.rxDir = Vector3( -dst.ray.diffs.rxDir.x, -dst.ray.diffs.rxDir.y, -dst.ray.diffs.rxDir.z );
 			probe.geometric.ray.diffs.ryDir = Vector3( -dst.ray.diffs.ryDir.x, -dst.ray.diffs.ryDir.y, -dst.ray.diffs.ryDir.z );
 		}
 
-		// Bound the accepted probe hit to the SAME face (P2-3 fix): the
-		// probe only needs to travel back ~margin to re-land on the exit
-		// point, so a hit much farther than that is a DIFFERENT lobe of
-		// the operand, not the intended face.  `slack` is deliberately an
-		// order of magnitude below `margin` itself (both diagonal-
-		// derived) so it absorbs surface curvature near the probe without
-		// opening the gate to another lobe.  This also bounds the search:
-		// no reason to trace past the acceptance radius.
-		const Scalar slack = safeDiag * Scalar(1e-7);
+		// Bound the accepted probe hit to the SAME face (P2-3/P2-4 fix):
+		// the probe only needs to travel back ~margin to re-land on the
+		// exit point, so a hit much farther than that is a DIFFERENT lobe
+		// of the operand (a decoy face), not the intended one.  `slack` is
+		// deliberately an order of magnitude below `margin` itself (both
+		// now ulp-scale-derived, shrinking together with the tighter
+		// margin above) so it absorbs surface curvature near the probe
+		// without opening the gate to another lobe.  This also bounds the
+		// search: no reason to trace past the acceptance radius.
+		const Scalar slack = margin * Scalar(0.1);
 		const Scalar maxAcceptRange = margin * Scalar(2.0) + slack;
 
 		operand->IntersectRay( probe, maxAcceptRange, true, true, false );
@@ -457,7 +481,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 
 	ri.geometric.bHit = false;
 	ri.geometric.ray.origin = Point3Ops::Transform( m_mxInvFinalTrans, orig.origin );
-	ri.geometric.ray.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, orig.Dir() )));
+
+	// Capture the UNNORMALIZED transformed direction's magnitude before
+	// normalizing it into the local-frame ray -- the direction-true
+	// world-to-local distance factor used below to convert the caller's
+	// dHowFar (expressed in the CALLER's frame) into dHowFar2 (expressed
+	// in THIS CSG's local frame), which is what the operand IntersectRay
+	// calls below expect (P1 fix, mirrors Object::IntersectRay /
+	// CSGObject::IntersectRay_IntersectionOnly).
+	const Vector3 dirLocalUnnorm = Vector3Ops::Transform( m_mxInvFinalTrans, orig.Dir() );
+	const Scalar dirLocalMag = Vector3Ops::Magnitude( dirLocalUnnorm );
+	ri.geometric.ray.SetDir( Vector3Ops::Normalize( dirLocalUnnorm ) );
 
 	// Landing 2: transform ray differentials into object space alongside
 	// origin/dir.  See Object::IntersectRay for the full rationale —
@@ -488,13 +522,31 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		ri.geometric.ray.hasDifferentials = true;
 	}
 
+	// factor converts the caller's-frame distance limit dHowFar into the
+	// CSG-LOCAL traversal limit the operand calls below expect (P1 fix).
+	// The operands' own IntersectRay re-derives their local dHowFar2 from
+	// whatever we pass here by multiplying by THEIR OWN direction-true
+	// factor -- if we hand them the raw caller-frame dHowFar instead of
+	// the CSG-local value, that second multiplication compounds against
+	// the wrong starting frame.  Under a compressing CSG transform this
+	// under-searches (an in-range occluder / closer surface is culled by
+	// a too-small converted limit); under an expanding transform it
+	// over-searches.  Same direction-true-factor convention as
+	// Object::IntersectRay and CSGObject::IntersectRay_IntersectionOnly;
+	// guard a degenerate transform that collapses this direction to ~0.
+	const Scalar factor = (dirLocalMag > NEARZERO) ? dirLocalMag : Scalar(1.0);
+	Scalar dHowFar2 = dHowFar;
+	if( (dHowFar != RISE_INFINITY) || (factor < 1.0) ) {
+		dHowFar2 = factor*dHowFar;
+	}
+
 	RayIntersection		riObjA( ri.geometric.ray, ri.geometric.rast );
 	riObjA.geometric.PropagateCastInputs( ri.geometric );
 	RayIntersection		riObjB( ri.geometric.ray, ri.geometric.rast );
 	riObjB.geometric.PropagateCastInputs( ri.geometric );
 
-	pObjectA->IntersectRay( riObjA, dHowFar, true, true, true );
-	pObjectB->IntersectRay( riObjB, dHowFar, true, true, true );
+	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
+	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
 
 	/* Not necessary, should never happen!
 	if( riObjA.geometric.bHit && riObjA.geometric.range2 == RISE_INFINITY ) {
@@ -1048,8 +1100,18 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	// exit-normal/exit-point computation but changes no sentinel
 	// semantics.  Matches the main IntersectRay above, which already
 	// passes true for both children.
-	pObjectA->IntersectRay( riObjA, dHowFar, true, true, true );
-	pObjectB->IntersectRay( riObjB, dHowFar, true, true, true );
+	//
+	// dHowFar2, NOT dHowFar (P1 fix): dHowFar2 above already converted the
+	// caller's-frame limit into THIS CSG's local frame -- exactly the
+	// frame the operand calls expect their own limit expressed in (see
+	// the `factor` derivation above and the mirrored comment on the main
+	// IntersectRay).  Passing the raw caller-frame dHowFar here silently
+	// skipped that conversion on the shadow-ray path: under a compressing
+	// CSG transform an in-range occluder could be missed (light leak);
+	// under an expanding one, occlusion could wrongly extend past the
+	// light.
+	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
+	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
 
 	// Do different things depending on the type of CSG operation
 	switch( op )

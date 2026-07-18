@@ -326,20 +326,56 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	const Point3 originalOrigin = originalRay.origin;
 	bool bAnySkip = false;
 
-	// Adaptive skip epsilon.  Scaled from the HIT OBJECT's own world
-	// bounding-box diagonal (not the camera-to-hit range -- see the
-	// external-review P2 comment at the computation site below), floored
-	// at 1e-9 so a thin opaque surface hugging the glass isn't stepped
-	// over regardless of how far the camera sits from it.  `curEps` is
-	// the nudge actually used for the pending step; it is recomputed
-	// fresh from `ri.pObject`'s bounding box at the start of every NEW
+	// Adaptive skip epsilon -- FP-representability-based, NOT object- or
+	// camera-scaled (P1 fix).  The minimum offset that reliably escapes
+	// self-intersection at a point is a small multiple of the FP ulp AT
+	// THAT POINT: double precision only represents ~15-17 significant
+	// decimal digits, so the smallest meaningful step away from
+	// `ptIntersection` is proportional to the magnitude of its largest
+	// component, not to any object or camera measurement.
+	//
+	//   eps0 = max(1e-12, kUlpFactor * maxAbsComponent(ptIntersection))
+	//   kUlpFactor = 64 * DBL_EPSILON ~= 1.4e-14
+	//
+	// This is exactly the right bound in BOTH directions the bbox-diagonal
+	// formula got wrong: a tiny object far from the origin has a small
+	// bbox diagonal but LARGE coordinate magnitudes, so a diagonal-scaled
+	// eps sits at the 1e-9 floor -- many orders of magnitude below the
+	// ulp at that point -- and every step re-lands on the same surface
+	// (burning the whole retry budget on pure FP noise); a huge/unbounded
+	// object has an inf/NaN diagonal and fell back to a CAMERA-range-
+	// scaled eps (reintroducing the exact camera-dependence a prior P2
+	// fix removed), which can skip clean over a nearby opaque layer.
+	// Because it is computed directly from the hit point's own bit
+	// pattern, this bound is camera- and object-independent and exactly
+	// proportional to what double precision can represent there -- the
+	// 64x safety factor over 1 ulp absorbs the rounding error already
+	// accumulated transforming the hit point through however many nested
+	// object-space transforms produced it, without being so large it
+	// reads as a visible offset.  `curEps` is the nudge actually used for
+	// the pending step; it is recomputed fresh at the start of every NEW
 	// step and only carried over (doubled) across loop iterations that
 	// are retries of the SAME step -- see the degenerate-rehit check
 	// below.
 	Scalar curEps = 0;
 	bool bRetryStep = false;
 
-	for( int skip = 0; skip < 16; ++skip )
+	// Real skips (successful nudge-and-rehit onto a DIFFERENT surface) and
+	// retries (doubling curEps to escape a degenerate self-hit on the SAME
+	// surface) are bounded SEPARATELY.  Previously both consumed the same
+	// 16-iteration budget, so a glass stack that needed a couple of
+	// retries per pane could exhaust the budget before reaching the
+	// opaque backstop.  `kMaxRetries` = 12 lets curEps double up to
+	// ~2^12 ~= 4096x from its ulp-scale start, which comfortably covers
+	// the rounding-error range a nested-transform hit point can carry,
+	// while `kMaxSkips` stays at the original 16.
+	constexpr int kMaxSkips = 16;
+	constexpr int kMaxRetries = 12;
+	constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16; // 64 * DBL_EPSILON
+	int skip = 0;
+	int retry = 0;
+
+	while( skip < kMaxSkips )
 	{
 		if( !ri.geometric.bHit || !ri.pMaterial || !ri.pMaterial->CouldLightPassThrough() )
 		{
@@ -353,35 +389,12 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 
 		if( !bRetryStep )
 		{
-			// Nudge off the surface along the SAME direction (no bending) --
-			// scaled by the HIT OBJECT's own world bounding-box diagonal, not
-			// the camera-to-hit range.  External review P2: a camera-range-
-			// derived eps (range * 1e-7) skipped near-behind-glass geometry
-			// at long camera range -- a thin opaque surface just behind a
-			// glass pane, viewed from far away, needs a nudge sized to the
-			// pane/surface's OWN scale, not the (much larger) camera
-			// distance; the old formula could produce a nudge many times the
-			// local feature size and step clean over it.  `ri.pObject` here
-			// is the transmissive object just hit (the one we're nudging off
-			// of) -- its world bbox diagonal is camera-independent and
-			// locally scaled to that geometry, floored so it's never a
-			// no-op on a degenerate (point-like) bounding box.
-			Scalar objDiag = 0.0;
-			if( ri.pObject ) {
-				objDiag = Vector3Ops::Magnitude( ri.pObject->getBoundingBox().GetExtents() );
-			}
-			// Unbounded transmissive geometry (an infinite/clipped glass
-			// plane reports an infinite bbox) would make this inf/NaN --
-			// and a value-level floor can't rescue a NaN (-ffast-math).
-			// Threshold-compare like SceneExtentEnum and fall back to the
-			// finite hit-range-based nudge in that case.
-			if( !( objDiag < 1.0e30 ) ) {
-				objDiag = ri.geometric.range * 0.1;
-			}
-			curEps = objDiag * 1.0e-6;
-			if( curEps < 1.0e-9 ) {
-				curEps = 1.0e-9;
-			}
+			// Nudge off the surface along the SAME direction (no bending).
+			// See the FP-representability derivation above.
+			const Point3& p = ri.geometric.ptIntersection;
+			const Scalar maxAbsComponent = std::max(
+				std::fabs( p.x ), std::max( std::fabs( p.y ), std::fabs( p.z ) ) );
+			curEps = std::max( Scalar(1e-12), kUlpFactor * maxAbsComponent );
 		}
 		bRetryStep = false;
 
@@ -434,18 +447,27 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 		// clear it -- a grazing-angle / coplanar epsilon straddle, not a
 		// genuine second surface.  Double the nudge and retry the SAME
 		// step (same `ri`) rather than accepting the spurious self-hit.
-		// The retry consumes one of the 16 bounded skip iterations (no
-		// separate retry budget), so a pathological surface still bails
-		// out deterministically.
+		// Retries are bounded by their OWN budget (kMaxRetries), separate
+		// from the real-skip budget (kMaxSkips) -- see the derivation
+		// above -- so exhausting it here just falls through to accept the
+		// current `ri` as the honest answer, same as the black-hole break
+		// above.
 		if( next.pObject == ri.pObject && next.geometric.range < curEps )
 		{
-			curEps *= 2.0;
-			bRetryStep = true;
-			continue;
+			if( retry < kMaxRetries )
+			{
+				curEps *= 2.0;
+				++retry;
+				bRetryStep = true;
+				continue;
+			}
+			break;
 		}
 
 		bAnySkip = true;
 		ri = next;
+		++skip;
+		retry = 0;   // fresh retry budget for the NEXT step
 	}
 
 	if( bAnySkip )
