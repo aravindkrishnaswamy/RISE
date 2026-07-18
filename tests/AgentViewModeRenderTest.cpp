@@ -1670,6 +1670,126 @@ static void RunThinGlassNearOpaqueDiscriminationTest()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// (12) External review round 7, item 1 (P1) regression: double-sided
+// triangle meshes flip `vGeomNormal` to oppose the incoming ray on EVERY
+// face -- entry AND exit alike (TriangleMeshGeometry::IntersectRay /
+// TriangleMeshGeometryIndexed::IntersectRay).  Round 6's facing test
+// (previous test above) distinguishes a genuine exit from a self-hit by
+// checking the sign of `Dot(vGeomNormal, dir)` relative to the entry
+// face -- but under the double-sided flip, BOTH the entry and the exit
+// face are oriented to face the ray, so the raw dot product is
+// SAME-SIGNED on both, and round 6's fix alone can't tell them apart
+// for THIS geometry (round 6's own "(a)" caveat: non-standard exit-
+// normal orientation degrades to the round-5 range-only behavior).  The
+// round 7 fix recovers the TRUE (pre-flip) facing via
+// RayIntersectionGeometric::bGeomNormalOrientedToRay, which the mesh
+// geometries now set at the exact site they flip `vGeomNormal` --
+// `RayCaster::ResolveXrayView_`'s facing test un-flips before comparing
+// signs, so it regains discrimination power on double-sided meshes too.
+//
+// Scene: identical shape/gap/backstop geometry to
+// kSceneThinGlassNearBackstop above (box 1.2x1.2 wide, 1e-7 depth,
+// centred at z=1.7; an undersized 1.0x1.0 opaque backstop ~1e-8 behind
+// the exit face; a large opaque background plane far behind at z=-2) --
+// but `glass_obj`'s geometry is a `displaced_geometry` wrapping that
+// same thin box (`base_geometry`, no displacement painter -- pure
+// tessellation, matches kSceneMeshAndSphere's own established idiom for
+// "a genuine, self-contained ITriangleMeshGeometryIndexed") with
+// `double_sided true`, so vGeomNormal is genuinely flipped-to-ray on
+// both faces instead of naturally opposite-signed the way an untouched
+// analytic/single-sided box's exit face is.
+//
+// Discriminator: identical silhouette-boundary technique to the round 6
+// test -- the through-mesh silhouette centre pixel (depth view, xray at
+// its default true) must resolve the NEAR backstop (far brighter / less
+// distant than a pixel 2px outside the silhouette, which hits the far
+// background plane directly).  If the round 7 fix's flag-based facing
+// recovery is removed (facing test falls back to the raw, flipped dot
+// product), this MONEY ASSERTION fails: the double-sided flip makes
+// entry and exit same-signed again, round 6's predicate misclassifies
+// the exit as a self-hit, and the retry-doubling ladder leaps the walk
+// clean over the thin mesh AND the undersized backstop onto the same
+// far background the outside pixel sees -- collapsing the delta.
+//----------------------------------------------------------------------
+
+static const char* const kSceneThinDoubleSidedMeshNearBackstop =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bg_pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname bg_mat\n\treflectance bg_pnt\n}\n\n"
+	"box_geometry\n{\n\tname bg_geo\n\twidth 2000\n\theight 2000\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname bg_obj\n\tgeometry bg_geo\n\tmaterial bg_mat\n\tposition 0 0 -2\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bs_pnt\n\tcolor 0.9 0.9 0.9\n}\n\n"
+	"lambertian_material\n{\n\tname bs_mat\n\treflectance bs_pnt\n}\n\n"
+	"box_geometry\n{\n\tname bs_geo\n\twidth 1.0\n\theight 1.0\n\tdepth 0.00000001\n}\n\n"
+	"standard_object\n{\n\tname bs_obj\n\tgeometry bs_geo\n\tmaterial bs_mat\n\tposition 0 0 1.699999935\n}\n\n"
+	"box_geometry\n{\n\tname glass_base_geo\n\twidth 1.2\n\theight 1.2\n\tdepth 0.0000001\n}\n\n"
+	"displaced_geometry\n{\n\tname glass_geo\n\tbase_geometry glass_base_geo\n\tdetail 1\n\tdouble_sided true\n}\n\n"
+	"dielectric_material\n{\n\tname glass_mat\n\ttau 1.0 1.0 1.0\n\tior 1.5\n}\n\n"
+	"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition 0 0 1.7\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+static void RunDoubleSidedThinMeshNearOpaqueDiscriminationTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (12) sub-window-thin DOUBLE-SIDED mesh resolves the NEAR opaque backstop, not a leapt-over far bg (review r7, item 1) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_viewmode_thindsmesh.RISEscene", kSceneThinDoubleSidedMeshNearBackstop );
+	Check( !scenePath.empty(), "wrote the thin-double-sided-mesh+near-backstop+bg scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "thin-double-sided-mesh scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "thin-double-sided-mesh session wraps the Job" );
+	if( !session ) { pJob->release(); return; }
+
+	AgentRenderParams objP;
+	objP.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult objR = session->Render( objP );
+	Check( objR.ok, "thin-double-sided-mesh reference objectmap render succeeds" );
+	Decoded objDec;
+	Check( DecodePng( objR.png, objDec ), "thin-double-sided-mesh objectmap PNG decodes" );
+	const LegendEntry* glassLegend = FindLegend( objR, "glass_obj" );
+	Check( glassLegend != nullptr, "objectmap legend carries glass_obj" );
+	BBox glassBBox{ 0, 0, 0, 0, 0 };
+	if( glassLegend ) {
+		unsigned char cb[3];
+		Check( HexToBytes( glassLegend->colorHex, cb ), "glass_obj colorHex parses" );
+		glassBBox = ScanBBoxForColor( objDec, cb );
+		Check( glassBBox.found > 0, "glass_obj occupies a nonzero pixel region" );
+	}
+
+	AgentRenderParams depthP;
+	depthP.renderTarget = AgentRenderTarget::ViewMode;
+	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
+	// xray stays at its own default (true) -- not set explicitly.
+	AgentRenderResult rDepth = session->Render( depthP );
+	Check( rDepth.ok, "thin-double-sided-mesh depth render succeeds" );
+	Decoded decDepth;
+	Check( DecodePng( rDepth.png, decDepth ), "thin-double-sided-mesh depth PNG decodes" );
+
+	if( glassBBox.found > 0 && decDepth.w == 64 && decDepth.h == 64 &&
+	    glassBBox.maxX + 2 < decDepth.w && glassBBox.minX + glassBBox.maxX > 0 ) {
+		const unsigned int row = ( glassBBox.minY + glassBBox.maxY ) / 2;
+		const Px& center  = decDepth.at( ( glassBBox.minX + glassBBox.maxX ) / 2, row );
+		const Px& outside = decDepth.at( glassBBox.maxX + 2, row );
+		Check( center[3] != 0 && outside[3] != 0, "both thin-double-sided-mesh samples are real hits" );
+		const int delta = static_cast<int>( center[0] ) - static_cast<int>( outside[0] );
+		Check( delta > 40,
+		       "MONEY ASSERTION: through the sub-window-thin DOUBLE-SIDED mesh, the silhouette centre pixel "
+		       "resolves the NEAR opaque backstop, far BRIGHTER than the pixel 2px outside the silhouette which "
+		       "hits the far background directly -- the facing test correctly un-flipped the double-sided "
+		       "orient-to-ray normal (bGeomNormalOrientedToRay) and accepted the mesh's own exit face on the "
+		       "first check instead of retry-doubling from the entry face and leaping over both the mesh and "
+		       "the backstop onto the same far background the outside pixel sees" );
+	}
+
+	pJob->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -1686,6 +1806,7 @@ int main()
 	RunLargeTransverseCoordinateXrayTest();
 	RunScaledGlassStandoffTest();
 	RunThinGlassNearOpaqueDiscriminationTest();
+	RunDoubleSidedThinMeshNearOpaqueDiscriminationTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

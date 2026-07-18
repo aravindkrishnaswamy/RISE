@@ -93,6 +93,10 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	ri.ptCoord        = Point2( bh.u, bh.v );
 	ri.vNormal        = N;
 	ri.vGeomNormal    = N;	// analytical surface: shading == geometric
+	// The flip above orients the normal toward the ray on back-face hits
+	// -- record it so consumers needing the TRUE surface facing
+	// (RayCaster's x-ray self-hit test) can recover the unflipped sign.
+	ri.bGeomNormalOrientedToRay = !bRawFront;
 }
 
 void BezierPatchGeometry::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

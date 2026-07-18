@@ -183,6 +183,10 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	ri.ptIntersection = ri.ray.PointAtLength( ri.range );
 	ri.vNormal = nrm;
 	ri.vGeomNormal = nrm;	// flat plane: shading == geometric
+	// The back-face flip above orients the geometric normal toward the
+	// ray -- record it so consumers needing the TRUE surface facing
+	// (RayCaster's x-ray self-hit test) can recover the unflipped sign.
+	ri.bGeomNormalOrientedToRay = isBackFaceHit;
 	ri.ptCoord = Point2( h.u, h.v );
 
 	if( bComputeExitInfo ) {

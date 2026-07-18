@@ -173,11 +173,18 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 		if( Vector3Ops::Dot(ri.vNormal, ri.ray.Dir()) > 0 ) {
 			ri.vNormal = -ri.vNormal;
 		}
-		// Mirror the flip on the geometric (face) normal — see
-		// TriangleMeshGeometry::IntersectRay companion.
-		if( Vector3Ops::Dot(ri.vGeomNormal, ri.ray.Dir()) > 0 ) {
+		// Mirror the flip on the geometric (face) normal, and record
+		// whether it happened — see TriangleMeshGeometry::IntersectRay
+		// companion (RayIntersectionGeometric::bGeomNormalOrientedToRay
+		// doc comment) for the full rationale.  DisplacedGeometry's
+		// IntersectRay delegates straight into this function on its
+		// internal TriangleMeshGeometryIndexed, so displaced double-
+		// sided meshes get the flag for free.
+		const bool bFlipGeomNormal = Vector3Ops::Dot(ri.vGeomNormal, ri.ray.Dir()) > 0;
+		if( bFlipGeomNormal ) {
 			ri.vGeomNormal = -ri.vGeomNormal;
 		}
+		ri.bGeomNormalOrientedToRay = bFlipGeomNormal;
 	}
 }
 

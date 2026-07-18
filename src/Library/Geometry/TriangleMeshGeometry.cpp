@@ -99,10 +99,23 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 		// Mirror the flip for the geometric (face) normal so the side-
 		// tests using `ri.vGeomNormal` agree with the post-flip shading
 		// orientation (downstream consumers expect the two to match
-		// hemisphere).
-		if( Vector3Ops::Dot(ri.vGeomNormal, ri.ray.Dir()) > 0 ) {
+		// hemisphere).  Record whether the flip actually happened in
+		// `bGeomNormalOrientedToRay` -- consumers that need the TRUE
+		// surface facing (e.g. RayCaster::ResolveXrayView_'s degenerate-
+		// self-hit classifier) recover it via
+		// `oriented ? -Dot(vGeomNormal,dir) : Dot(vGeomNormal,dir)`
+		// (see RayIntersectionGeometric.h).  Set unconditionally here
+		// (not only on the true branch) because `ri` is a fresh per-
+		// object-candidate record (ObjectManager::RayElementIntersection
+		// constructs `myRI` per candidate), so this is the single,
+		// authoritative write for this hit -- a later closer hit on a
+		// DIFFERENT object starts from a fresh record and overwrites
+		// coherently.
+		const bool bFlipGeomNormal = Vector3Ops::Dot(ri.vGeomNormal, ri.ray.Dir()) > 0;
+		if( bFlipGeomNormal ) {
 			ri.vGeomNormal = -ri.vGeomNormal;
 		}
+		ri.bGeomNormalOrientedToRay = bFlipGeomNormal;
 	}
 }
 

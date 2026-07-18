@@ -251,6 +251,15 @@ namespace
 	//! the old reference, take the new one, addref if non-null.
 	void AdoptCsgSurfacePayload( RayIntersectionGeometric& dst, const RayIntersectionGeometric& src )
 	{
+		// Per-surface identity, same category as the fields below:
+		// whether the reported vGeomNormal was oriented to oppose the ray
+		// (double-sided meshes) belongs to whichever operand's surface is
+		// actually being reported, not whichever operand `dst` started
+		// life as a whole-record copy of (external review round 7,
+		// item 4).  See RayIntersectionGeometric::bGeomNormalOrientedToRay's
+		// doc comment.
+		dst.bGeomNormalOrientedToRay = src.bGeomNormalOrientedToRay;
+
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;
 		dst.bHasTexCoord1 = src.bHasTexCoord1;

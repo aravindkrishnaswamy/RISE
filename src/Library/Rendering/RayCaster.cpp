@@ -386,6 +386,22 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 	int skip = 0;
 	int retry = 0;
 
+	// Recovers the TRUE surface facing from a geometric normal that may
+	// have been oriented to oppose the incoming ray (double-sided triangle
+	// meshes -- see RayIntersectionGeometric::bGeomNormalOrientedToRay's
+	// doc comment).  A raw `Dot(vGeomNormal, dir)` on such a hit is always
+	// negative on BOTH a true entry and a true exit of a double-sided
+	// surface, which collapses the facing test below to the same sign on
+	// both -- exactly the case this facing test exists to distinguish.
+	// Un-flip via the recorded per-hit flag before dotting; geometries
+	// that never flip (the flag stays false) get the raw dot back
+	// unchanged.
+	auto trueGeomFacing = []( const RayIntersectionGeometric& g, const Vector3& d ) -> Scalar
+	{
+		const Scalar raw = Vector3Ops::Dot( g.vGeomNormal, d );
+		return g.bGeomNormalOrientedToRay ? -raw : raw;
+	};
+
 	while( skip < kMaxSkips )
 	{
 		if( !ri.geometric.bHit || !ri.pMaterial || !ri.pMaterial->CouldLightPassThrough() )
@@ -402,12 +418,14 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 
 		// Facing of the face we are TRYING TO LEAVE, captured before the
 		// continuation cast below -- see the degenerate-self-hit predicate
-		// further down (external review round 6, item 1).  `ri` does not
-		// change across retries of the same step, so this is stable for the
-		// whole step; recomputing it each iteration is cheap and keeps the
-		// value tied to whichever `ri` is currently live without a stale
-		// carry-over risk.
-		const Scalar prevFacing = Vector3Ops::Dot( ri.geometric.vGeomNormal, dir );
+		// further down (external review round 6, item 1; recovered via
+		// `trueGeomFacing` since round 7, item 1, to see past the double-
+		// sided orient-to-ray flip -- see that helper's comment above).
+		// `ri` does not change across retries of the same step, so this is
+		// stable for the whole step; recomputing it each iteration is cheap
+		// and keeps the value tied to whichever `ri` is currently live
+		// without a stale carry-over risk.
+		const Scalar prevFacing = trueGeomFacing( ri.geometric, dir );
 
 		if( !bRetryStep )
 		{
@@ -520,12 +538,20 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 		// re-anchoring the walk there (a SMALL nudge from the exit next
 		// step) instead of leaping from the entry with a doubled eps.
 		//
-		// (a) Geometries that orient normals TOWARD the incoming ray on
-		// their exit face (a rare, non-standard winding) would make that
-		// exit face same-signed with the entry face too -- the facing test
-		// then can't tell them apart and this degrades to the OLD
-		// range-only retry behavior for that geometry.  Never WORSE than
-		// before this fix: the fallback is exactly what round 5 shipped.
+		// (a) Double-sided triangle meshes DO orient `vGeomNormal` toward
+		// the incoming ray on every face -- entry and exit alike -- which
+		// would make the raw dot-product facing test collapse to the same
+		// sign on both (external review round 7, item 1: this was the r6
+		// degradation case, not a hypothetical).  It is now handled
+		// losslessly: those geometries set `bGeomNormalOrientedToRay` at
+		// the same site they flip `vGeomNormal`, and `trueGeomFacing`
+		// above un-flips before dotting, so `prevFacing` / `nextFacing`
+		// carry the REAL surface facing regardless of the orient-to-ray
+		// convention.  The only remaining degradation case is a
+		// hypothetical geometry that flips its geometric normal to face
+		// the ray WITHOUT setting the flag -- that (undetectable from
+		// here) case still degrades to the OLD range-only retry behavior,
+		// same as round 5's fallback and never worse.
 		//
 		// (b) Correction to the round-5 note this replaces: that note
 		// argued misclassifying a genuinely-close SECOND surface as a
@@ -539,7 +565,7 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 		// real surface instead of paying for one extra intersection test.
 		// The facing test above closes exactly that gap.
 		const Scalar selfHitWindow = std::max( Scalar(1e-6), curEps * Scalar(16.0) );
-		const Scalar nextFacing = Vector3Ops::Dot( next.geometric.vGeomNormal, dir );
+		const Scalar nextFacing = trueGeomFacing( next.geometric, dir );
 		const bool bDegenerateSelfHit =
 			next.pObject == ri.pObject &&
 			next.geometric.range < selfHitWindow &&

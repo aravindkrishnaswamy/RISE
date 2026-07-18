@@ -115,6 +115,32 @@ namespace RISE
 		//! geometric exit normal, not a fabricated `-entry` proxy.
 		Vector3						vGeomNormal;
 		Vector3						vGeomNormal2;
+
+		//! OUTPUT: set by geometries that flip `vGeomNormal` to oppose the
+		//! incoming ray (currently: double-sided triangle meshes -- see
+		//! TriangleMeshGeometry::IntersectRay / TriangleMeshGeometryIndexed::
+		//! IntersectRay).  Default false -- geometries that do not flip
+		//! (single-sided meshes, and every analytical primitive whose
+		//! geometric normal is the true, unmodified surface normal) leave
+		//! this false, so the recovery formula below is a no-op for them.
+		//!
+		//! Consumers that need the TRUE surface facing (which side of the
+		//! actual geometry the ray struck, independent of the double-sided
+		//! shading convention) must NOT read `Dot(vGeomNormal, dir)`
+		//! directly -- that reads the post-flip orientation, which is
+		//! deliberately always negative (facing the ray) on a double-sided
+		//! hit and therefore useless for distinguishing a true entry from a
+		//! true exit.  Recover the real facing as:
+		//!
+		//!     oriented ? -Dot(vGeomNormal, dir) : Dot(vGeomNormal, dir)
+		//!
+		//! (RayCaster::ResolveXrayView_'s degenerate-self-hit classifier is
+		//! the motivating consumer: a thin double-sided mesh's entry and
+		//! genuine exit both face the ray under the flip, which collapses
+		//! the raw dot-product facing test to the same sign on both --
+		//! this flag lets the caster undo the flip losslessly instead.)
+		bool						bGeomNormalOrientedToRay;
+
 		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)
 
 		//! Secondary texture coordinates (TEXCOORD_1 from glTF; NOT the
@@ -255,6 +281,7 @@ namespace RISE
 		  bHit( false ),
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
+		  bGeomNormalOrientedToRay( false ),
 		  bHasTexCoord1( false ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
@@ -282,6 +309,7 @@ namespace RISE
 		  vNormal2( r.vNormal2 ),
 		  vGeomNormal( r.vGeomNormal ),
 		  vGeomNormal2( r.vGeomNormal2 ),
+		  bGeomNormalOrientedToRay( r.bGeomNormalOrientedToRay ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
@@ -321,6 +349,7 @@ namespace RISE
 			vNormal2 = r.vNormal2;
 			vGeomNormal = r.vGeomNormal;
 			vGeomNormal2 = r.vGeomNormal2;
+			bGeomNormalOrientedToRay = r.bGeomNormalOrientedToRay;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;
