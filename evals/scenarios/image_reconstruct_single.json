@@ -7,15 +7,15 @@
   "autonomy": "commit",
   "prompts": [
     {
-      "text": "The attached photo shows a small object staged in a studio. Reproduce the ENTIRE setup in the current scene: the object itself (use SDF geometry -- it is a single smooth organic form), its material, the stage (ground plane + backdrop), the lighting (how many lights, their direction, and their colour temperature), and the environment tint. The scene camera already matches the photo's viewpoint exactly -- do not move it. The scene already carries a painter named `pnt_env` wired into the renderer's environment map (currently black) -- set its colour to match the environment tint you observe; you cannot and need not touch the rasterizer itself. You are only given this ONE view: for surfaces not visible in the photo, model a plausible smooth continuation of the visible form rather than guessing at unseen detail. First read the modeling-from-image-captures skill and follow its multi-view verification loop. Iterate (render, inspect, adjust) until your renders match the photo.",
+      "text": "The attached photo shows a small object staged in a studio. Reproduce the ENTIRE setup in the current scene: the object itself (use SDF geometry -- it is a single smooth organic form), its material, the stage (ground plane + backdrop), the lighting (how many lights, their direction, and their colour temperature), and the environment tint. The scene camera already matches the photo's viewpoint exactly -- do not move it. The scene already carries a painter named `pnt_env` wired into the renderer's environment map (currently black) -- set its colour to match the environment tint you observe; you cannot and need not touch the rasterizer itself. You are only given this ONE view: for surfaces not visible in the photo, model a plausible smooth continuation of the visible form rather than guessing at unseen detail. First read the modeling-from-image-captures skill and follow its multi-view verification loop. Iterate (render, inspect, adjust) until your renders match the photo. You have a hard budget of roughly 60 assistant rounds / 80 tool calls: batch related edits into single rounds, track how much you have used, and ALWAYS reserve the final rounds to do one last verification render and deliver your finished summary -- an attempt that ends mid-iteration without a final answer scores as a failure.",
       "images": [
         "evals/references/view1.png"
       ]
     }
   ],
   "budgets": {
-    "maxToolCalls": 60,
-    "maxLlmCalls": 40,
+    "maxToolCalls": 80,
+    "maxLlmCalls": 60,
     "maxWallMs": 1500000
   },
   "replay": {

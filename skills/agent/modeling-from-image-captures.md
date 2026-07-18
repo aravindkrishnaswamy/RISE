@@ -403,7 +403,20 @@ from scratch:
 A healthy iteration is about 3-4 tool calls: edit the scene, draft
 render (one or more verification-loop poses), `read_image`.  Rough
 budget across a reconstruction task: blockout 2-3 iterations, shape
-refinement 3-4, materials/lighting 2-3, final verification 1-2.  STOP
+refinement 3-4, materials/lighting 2-3, final verification 1-2.
+
+**When you are working under a hard external budget** (a stated round
+or tool-call cap), treat it as load-bearing: (a) COUNT rounds as you
+spend them; (b) BATCH aggressively -- several `insert_chunk`/
+`propose_patch` calls can go in ONE assistant round, and one round can
+render multiple verification poses back-to-back, so a blockout that
+would naively take six rounds fits in two; (c) reserve the LAST few
+rounds, no matter what state the reconstruction is in, for one final
+verification render and your finished summary.  Running out of budget
+mid-iteration without delivering a final answer scores as a total
+failure even when the scene itself is close -- an honest "here is
+where it stands and what I am least sure of" final message always
+beats being cut off.  STOP
 refining a stage once consecutive iterations stop changing the
 multi-view assessment -- chasing sub-noise differences burns iteration
 budget for no payoff the user can see.  Before calling the task
