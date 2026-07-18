@@ -2183,6 +2183,44 @@ namespace RISE
 			}
 		}
 
+		// GUI render modes P2a `render{view:}` surface (docs/gui/
+		// RENDER_MODES.md §8): format a Vector3/Scalar into the SAME string
+		// shape CameraIntrospection::SetProperty accepts, so a resolved
+		// CameraSnapshot (from a live controller's named-view store, or
+		// CameraIntrospection::CaptureCameraSnapshot on a headless scene
+		// camera) can feed straight into the EXISTING AgentCameraOverride /
+		// applyCameraOverride plumbing.
+		std::string Vec3ToOverrideStr( const double v[3] )
+		{
+			char buf[96];
+			std::snprintf( buf, sizeof( buf ), "%.17g %.17g %.17g", v[0], v[1], v[2] );
+			return std::string( buf );
+		}
+
+		// Fill `out`'s location/lookAt/up (always) and fov (only for a
+		// Pinhole snapshot -- GetPropertyValue-style "unreadable" honesty: a
+		// ThinLens/Fisheye/Orthographic view has no single scalar FOV) from
+		// a captured CameraSnapshot.
+		void CameraSnapshotToOverride( const RISE::CameraSnapshot& snap,
+		                                AgentCameraOverride& out )
+		{
+			out.hasLocation = true; out.location = Vec3ToOverrideStr( snap.location );
+			out.hasLookAt   = true; out.lookAt   = Vec3ToOverrideStr( snap.lookat );
+			out.hasUp       = true; out.up       = Vec3ToOverrideStr( snap.up );
+			if( snap.type == RISE::CameraSnapshot::Pinhole ) {
+				// CameraSnapshot::fov is stored in RADIANS (CameraIntrospection.cpp's
+				// own CaptureCameraSnapshot / GetFovStored convention); SetProperty's
+				// "fov" -- and AgentCameraOverride::fov's documented contract -- both
+				// take DEGREES (matching the scene-file `fov` param).  Convert on the
+				// way out, mirroring CameraIntrospection::GetPropertyValue's own
+				// RAD_TO_DEG conversion for the SAME field.
+				static constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+				char buf[48];
+				std::snprintf( buf, sizeof( buf ), "%.17g", snap.fov * kRadToDeg );
+				out.hasFov = true; out.fov = buf;
+			}
+		}
+
 		void AgentSession::ForTest_BuildObjectMapPaletteBytes(
 			std::size_t count,
 			std::vector<std::array<unsigned char, 3> >& outBytes,
@@ -2399,6 +2437,14 @@ namespace RISE
 			const bool isViewMode = ( params.renderTarget == AgentRenderTarget::ViewMode );
 			const Implementation::ViewportRenderModeInfo* viewModeInfo =
 				isViewMode ? Implementation::FindViewportRenderModeInfo( params.viewMode ) : nullptr;
+			// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): a
+			// BeautyVariant target (deep_reflect/direct) is a REAL
+			// production-class PT pipeline, structurally a sibling of
+			// isViewMode's ShaderPipeline data modes but routed to
+			// doBeautyVariantRenderWork instead of doViewModeRenderWork --
+			// see that lambda's doc below.
+			const bool isBeautyVariant =
+				isViewMode && viewModeInfo && Implementation::IsBeautyVariantMode( viewModeInfo->mode );
 			res.renderMode = isObjectMap ? "objectmap"
 				: isViewMode ? ( viewModeInfo ? viewModeInfo->name : "" )
 				: ( isDraft ? "draft" : "production" );
@@ -2441,9 +2487,94 @@ namespace RISE
 
 			const bool wantFilmOverride =
 				( params.width > 0 && params.height > 0 );
+
+			// GUI render modes P2a `render{view:}` surface (docs/gui/
+			// RENDER_MODES.md §8, deferred from P1): resolve an optional
+			// NAMED VIEW into the SAME ephemeral camera-override fields
+			// `params.camera` uses, so it composes for free with EVERY
+			// render target (Beauty/ObjectMap/ViewMode, draft or
+			// production) via the EXISTING applyCameraOverride machinery
+			// below -- no parallel override mechanism.  Resolution order:
+			// (1) a live controller's in-memory named-view store
+			// (SceneEditController::FindNamedViewPose -- reachable from
+			// this thread even when it's the agent-render worker, see that
+			// method's doc); (2) a scene camera of that exact name (the
+			// honest headless fallback -- a WrapJob session has no
+			// named-view store at all).  `view` wins over an explicit
+			// `camera` override when both are supplied (effectiveCamera
+			// starts as a COPY of params.camera, then the resolved pose
+			// overwrites it wholesale).  An unresolved name FAILS the
+			// render (res.ok=false) with the available-name list, rather
+			// than silently falling through to the active camera.
+			AgentCameraOverride effectiveCamera = params.camera;
+			if( !params.view.empty() )
+			{
+				bool resolved = false;
+				CameraSnapshot pose;
+				if( mController && mController->FindNamedViewPose( String( params.view.c_str() ), pose ) )
+				{
+					resolved = true;
+				}
+				else if( ICameraManager* cams = mJob->GetCameras() )
+				{
+					if( const ICamera* namedCam = cams->GetItem( params.view.c_str() ) )
+					{
+						resolved = CameraIntrospection::CaptureCameraSnapshot( *namedCam, pose );
+					}
+				}
+
+				if( !resolved )
+				{
+					std::string available;
+					if( mController )
+					{
+						const unsigned int n = mController->NamedViewCount();
+						for( unsigned int i = 0; i < n; ++i )
+						{
+							char nameBuf[257];
+							if( mController->NamedViewName( i, nameBuf, sizeof( nameBuf ) ) )
+							{
+								if( !available.empty() ) available += ", ";
+								available += "\"";
+								available += nameBuf;
+								available += "\"";
+							}
+						}
+					}
+					if( ICameraManager* cams = mJob->GetCameras() )
+					{
+						struct NameCollector : public IEnumCallback<const char*>
+						{
+							std::string* out;
+							bool operator()( const char* const& n ) override
+							{
+								if( !out->empty() ) *out += ", ";
+								*out += "\"";
+								*out += ( n ? n : "" );
+								*out += "\"";
+								return true;
+							}
+						} collector;
+						collector.out = &available;
+						cams->EnumerateItemNames( collector );
+					}
+					// res.renderMode / res.integrator were already set above
+					// (before this resolution block runs) -- no need to
+					// recompute them here.
+					res.ok = false;
+					res.message = "unknown view \"" + params.view + "\"";
+					res.message += available.empty()
+						? std::string( " -- no named views or scene cameras available" )
+						: ( " -- available: " + available );
+					return res;
+				}
+
+				CameraSnapshotToOverride( pose, effectiveCamera );
+			}
+
 			const bool wantCameraOverride =
-				( params.camera.hasLocation || params.camera.hasLookAt ||
-				  params.camera.hasUp || params.camera.hasFov );
+				( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
+				  effectiveCamera.hasUp || effectiveCamera.hasFov );
 
 			// LIVE-mode safety (see AgentSession.h Render(AgentRenderParams)
 			// doc + CLAUDE.md investigation note): DoOneRenderPass swaps the
@@ -2598,10 +2729,13 @@ namespace RISE
 				// captureAndSet's own bookkeeping so every field ALREADY
 				// applied before the failure is captured and will be
 				// restored by the guard.
-				captureAndSet( params.camera.hasLocation, "location", params.camera.location )
-					&& captureAndSet( params.camera.hasLookAt, "lookat", params.camera.lookAt )
-					&& captureAndSet( params.camera.hasUp,     "up",     params.camera.up )
-					&& captureAndSet( params.camera.hasFov,    "fov",    params.camera.fov );
+				// `effectiveCamera` (params.camera, or the resolved `view`
+				// override -- see its declaration above) is the single
+				// source every camera-override consumer reads from.
+				captureAndSet( effectiveCamera.hasLocation, "location", effectiveCamera.location )
+					&& captureAndSet( effectiveCamera.hasLookAt, "lookat", effectiveCamera.lookAt )
+					&& captureAndSet( effectiveCamera.hasUp,     "up",     effectiveCamera.up )
+					&& captureAndSet( effectiveCamera.hasFov,    "fov",    effectiveCamera.fov );
 				overrodeCamera = !capturedCam.empty();
 			};
 
@@ -2980,6 +3114,114 @@ namespace RISE
 				restoreGuard.Disarm();
 			};
 
+			// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the EPHEMERAL
+			// BeautyVariant render body -- a sibling of doViewModeRenderWork in
+			// SHAPE (fresh throwaway pipeline, the agent's own sink, shared
+			// film/camera overrides, controller-owned cancel wiring, never
+			// touches the production rasterizer) but a REAL production-class PT
+			// render, not a diagnostic first-hit shader: real per-object
+			// materials/lights, OIDN denoise, a fixed multi-sample count.  The
+			// mode's fixed resolution divisor (variantScaleDivisor) is applied
+			// to the EFFECTIVE requested dims (the caller's width/height
+			// override if given, else the scene's current authored Film dims)
+			// -- always applied, since a variant mode ALWAYS renders reduced.
+			auto doBeautyVariantRenderWork = [&]()
+			{
+				if( !viewModeInfo ) {
+					return;   // rendered/renderRan stay false -- shared tail reports "render failed"
+				}
+
+				IRasterizer* ephemeralRast  = nullptr;
+				IRayCaster*  variantCaster  = nullptr;
+				if( !Implementation::CreateBeautyVariantPipeline(
+						params.viewMode, &ephemeralRast, &variantCaster ) )
+				{
+					return;
+				}
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); }
+				} pipelineGuard{ ephemeralRast, variantCaster };
+
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				sink = new InMemoryRasterizerOutput();
+				// A BeautyVariant pass genuinely shades + denoises -- apply the
+				// SAME display transform as production/draft beauty so it isn't
+				// a raw linear image (unlike the data-mode view sinks above,
+				// which stay untonemapped by design).
+				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				// Film dims: the EFFECTIVE requested dims (an explicit
+				// width/height override if the caller supplied one, else the
+				// scene's current authored Film dims) divided by the mode's
+				// fixed resolution divisor.  Deliberately does NOT reuse
+				// applyFilmOverride() (which only resizes when wantFilmOverride
+				// is true) -- a variant pass resizes UNCONDITIONALLY.
+				const IScenePriv* scenePrivForDims = mJob->GetScene();
+				const IFilm* curFilmForDims = scenePrivForDims ? scenePrivForDims->GetFilm() : nullptr;
+				if( curFilmForDims ) {
+					origFilmW   = curFilmForDims->GetWidth();
+					origFilmH   = curFilmForDims->GetHeight();
+					origFilmPAR = curFilmForDims->GetPixelAR();
+				}
+				const unsigned int effW = wantFilmOverride ? params.width  : origFilmW;
+				const unsigned int effH = wantFilmOverride ? params.height : origFilmH;
+				const unsigned int div  = viewModeInfo->variantScaleDivisor > 0
+					? viewModeInfo->variantScaleDivisor : 1;
+				const unsigned int scaledW = ( effW / div ) > 0 ? ( effW / div ) : 1;
+				const unsigned int scaledH = ( effH / div ) > 0 ? ( effH / div ) : 1;
+				if( curFilmForDims && mJob->SetFilm( scaledW, scaledH, origFilmPAR ) ) {
+					overrodeFilm = true;
+				}
+
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as the other branches.
+					return;
+				}
+
+				// `params.quality`/`params.samples`/`params.xray` are all
+				// intentionally ignored -- the mode's spp/bounce-depth/OIDN
+				// config is FIXED by the registry (CreateBeautyVariantPipeline);
+				// honestly noted in the result message in RenderCore_'s tail.
+
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared contract with the other branches).
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (beauty-variant path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
 			auto doRenderWork = [&]()
 			{
 				if( isObjectMap ) {
@@ -2987,7 +3229,11 @@ namespace RISE
 					return;
 				}
 				if( isViewMode ) {
-					doViewModeRenderWork();
+					if( isBeautyVariant ) {
+						doBeautyVariantRenderWork();
+					} else {
+						doViewModeRenderWork();
+					}
 					return;
 				}
 				if( isDraft ) {
@@ -3658,6 +3904,22 @@ namespace RISE
 					e.pixelCount = unknownCount;
 					res.legend.push_back( e );
 				}
+			} else if( isBeautyVariant ) {
+				// GUI render modes P2a: a BeautyVariant render has a FIXED
+				// production-class config (spp/bounces/OIDN, per the
+				// registry) -- `samples`/`quality` are both honestly
+				// ignored, same precedent as the data view-modes above, but
+				// the effective sample count is the mode's REAL fixed spp
+				// (not the ShaderPipeline exactness invariant's 1).  No
+				// legend (no per-object identity registry).
+				res.samplesOverridden = false;
+				res.effectiveSamples  = viewModeInfo ? static_cast<int>( viewModeInfo->variantSamplesPerPass ) : 0;
+				if( res.ok && ( wantSamplesOverride || params.quality == AgentRenderQuality::Draft ) ) {
+					const char* modeName = viewModeInfo ? viewModeInfo->name : "view";
+					res.message += " (mode:";
+					res.message += modeName;
+					res.message += " uses a FIXED production-quality config; quality/samples ignored)";
+				}
 			} else if( isViewMode ) {
 				// GUI render modes P1: a view-mode render has exactly ONE
 				// fidelity, the SAME EXACTNESS INVARIANT reasoning as objectmap
@@ -3706,7 +3968,16 @@ namespace RISE
 			// so the common case notes "active"; an explicit xray:false is
 			// noted too, so a caller can tell "inactive by request" apart
 			// from "not a view-mode render at all" (no note either way).
-			if( res.ok && isViewMode ) {
+			if( res.ok && isBeautyVariant ) {
+				// GUI render modes P2a: xray is meaningless for a
+				// BeautyVariant mode -- it's a real production transport
+				// render, not a first-hit diagnostic; skipping through
+				// transmissive surfaces would defeat deep_reflect's entire
+				// purpose (seeing what reflections/refractions resolve to).
+				res.message += " (xray is ignored under mode:";
+				res.message += viewModeInfo ? viewModeInfo->name : "";
+				res.message += " -- variant modes render fixed production transport)";
+			} else if( res.ok && isViewMode ) {
 				if( params.xray ) {
 					res.message += " (xray: transmissive surfaces skipped (straight-line))";
 				} else {

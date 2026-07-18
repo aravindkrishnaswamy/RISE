@@ -266,8 +266,11 @@ static BBox ScanBBoxForColor( const Decoded& d, const unsigned char rgb[3] )
 // (AgentRpc.cpp's parser, AgentChatCodecs.cpp's hand-synced schema,
 // AgentMcpAdapter.cpp's generated schema) must agree on: "beauty" +
 // "objectmap" (hardcoded in all three) UNION the registry's casterFactory
-// entries (Normals/Depth/Facets/Wireframe today, discovered dynamically so
-// a future 5th mode doesn't silently rot this test into a false pass).
+// entries (Normals/Depth/Facets/Wireframe) UNION its BeautyVariant entries
+// (GUI render modes P2a -- deep_reflect/direct today, discovered via
+// IsBeautyVariantMode so a future variant row doesn't silently rot this
+// test into a false pass, exactly like the casterFactory discovery already
+// does for a future 5th data mode).
 static std::set<std::string> ExpectedAcceptedModes()
 {
 	std::set<std::string> expected;
@@ -276,7 +279,7 @@ static std::set<std::string> ExpectedAcceptedModes()
 	unsigned int count = 0;
 	const Implementation::ViewportRenderModeInfo* modes = Implementation::GetViewportRenderModes( count );
 	for( unsigned int i = 0; i < count; ++i )
-		if( modes[i].casterFactory )
+		if( modes[i].casterFactory || Implementation::IsBeautyVariantMode( modes[i].mode ) )
 			expected.insert( modes[i].name );
 	return expected;
 }
@@ -482,6 +485,195 @@ static void RunFilmRestoreTest()
 	Check( filmAfter != nullptr, "the scene still has a Film after the view-mode render" );
 	Check( filmAfter && filmAfter->GetWidth() == origW && filmAfter->GetHeight() == origH,
 	       "MONEY ASSERTION: Film dims are RESTORED to the pre-override 96x72 after the view-mode render" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): BeautyVariant
+// (deep_reflect/direct) end-to-end.  Uses kSceneMeshAndSphere (same fixture
+// as the P1 per-mode test above) -- both variant modes are REAL
+// production-class renders, so a mesh+sphere+omni-light scene shades
+// non-trivially even without glass/metal materials to specifically probe
+// reflections; the "plausibly shaded" assertion is the honest "basic
+// sanity" fallback the task calls for absent a cheap glass-region
+// comparison.
+//----------------------------------------------------------------------
+static void RunBeautyVariantEndToEndTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: BeautyVariant (deep_reflect/direct) end-to-end ===\n" );
+	const std::string scenePath = WriteTemp( "rise_beautyvariant_e2e.RISEscene", kSceneMeshAndSphere );
+	Check( !scenePath.empty(), "wrote the mesh+sphere scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "beauty-variant scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "beauty-variant session wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	struct VariantExpect
+	{
+		Implementation::ViewportRenderMode mode;
+		const char* name;
+		unsigned int divisor;
+		int          spp;
+	};
+	const VariantExpect variants[2] = {
+		{ Implementation::ViewportRenderMode::DeepReflect, "deep_reflect", 4, 16 },
+		{ Implementation::ViewportRenderMode::Direct,      "direct",       2, 8  },
+	};
+
+	for( unsigned int i = 0; i < 2; ++i )
+	{
+		const VariantExpect& v = variants[i];
+		std::printf( "  -- mode \"%s\" --\n", v.name );
+
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = v.mode;
+		// A positive samples request + explicit draft quality -- both MUST
+		// be ignored (fixed config) and trip the honest note.
+		p.samples = 999;
+
+		AgentRenderResult r = session->Render( p );
+		Check( r.ok, std::string( v.name ) + ": render succeeds" );
+		Check( r.renderMode == v.name, std::string( v.name ) + ": renderMode echoes the registry name" );
+		// No width/height override supplied -- effective dims are the
+		// scene's authored 96x72, divided by the mode's fixed divisor.
+		const unsigned int expectW = 96u / v.divisor;
+		const unsigned int expectH = 72u / v.divisor;
+		Check( r.width == expectW && r.height == expectH,
+		       std::string( v.name ) + ": dims are the authored 96x72 divided by the mode's fixed divisor" );
+		Check( !r.samplesOverridden, std::string( v.name ) + ": samplesOverridden is false (the override is honestly refused)" );
+		Check( r.effectiveSamples == v.spp,
+		       std::string( v.name ) + ": effectiveSamples reports the mode's REAL fixed spp, not the ShaderPipeline exactness invariant's 1" );
+		const std::string expectedNote = std::string( "mode:" ) + v.name + " uses a FIXED production-quality config; quality/samples ignored";
+		Check( r.message.find( expectedNote ) != std::string::npos,
+		       std::string( v.name ) + ": message carries the honest quality/samples-ignored note" );
+		const std::string expectedXrayNote = std::string( "xray is ignored under mode:" ) + v.name;
+		Check( r.message.find( expectedXrayNote ) != std::string::npos,
+		       std::string( v.name ) + ": message carries the honest xray-ignored note" );
+
+		Decoded dec;
+		Check( DecodePng( r.png, dec ), std::string( v.name ) + ": PNG decodes" );
+		if( dec.w != expectW || dec.h != expectH ) continue;
+
+		// Basic sanity: a REAL shaded render of a lit mesh+sphere scene is
+		// not flat -- distinct pixel values across the frame (MONEY
+		// ASSERTION per the task: "nonzero variance, not the flat preview
+		// look").
+		std::set<std::uint32_t> distinctColors;
+		for( std::size_t px = 0; px < dec.px.size(); ++px )
+		{
+			const Px& q = dec.px[px];
+			const std::uint32_t key = ( (std::uint32_t)q[0] << 16 ) | ( (std::uint32_t)q[1] << 8 ) | q[2];
+			distinctColors.insert( key );
+		}
+		Check( distinctColors.size() > 5,
+		       std::string( v.name ) + ": MONEY ASSERTION -- more than 5 distinct colours across the image (plausibly shaded, not flat)" );
+	}
+
+	// Film-dims restore: the SAME contract the P1 view-mode path has.
+	const IScenePriv* scenePriv = pJob->GetScene();
+	const IFilm* film = scenePriv ? scenePriv->GetFilm() : nullptr;
+	Check( film && film->GetWidth() == 96 && film->GetHeight() == 72,
+	       "MONEY ASSERTION: Film dims are RESTORED to the authored 96x72 after both variant renders" );
+
+	// Width/height override composes: the divisor applies to the EFFECTIVE
+	// (caller-supplied) dims, not the scene-authored ones.
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = Implementation::ViewportRenderMode::DeepReflect;
+		p.width  = 64;
+		p.height = 48;
+		AgentRenderResult r = session->Render( p );
+		Check( r.ok, "deep_reflect with a width/height override succeeds" );
+		Check( r.width == 16 && r.height == 12,
+		       "MONEY ASSERTION: the divisor (4) applies to the OVERRIDE dims (64x48 -> 16x12), not the scene-authored ones" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// GUI render modes P2a `render{view:}` surface (docs/gui/RENDER_MODES.md
+// §8, deferred from P1): a headless (WrapJob, no controller) session falls
+// back to resolving `view` against a SCENE CAMERA of that name.  Two
+// cameras positioned so their renders visibly differ (front vs. side view
+// of the same mesh+sphere pair); an unresolvable name fails honestly with
+// the available-name list.
+//----------------------------------------------------------------------
+static const char* const kSceneTwoCameras =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname camFront\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"pinhole_camera\n{\n\tname camSide\n\tlocation 6 0 0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname boxbase\n\twidth 1.3\n\theight 1.3\n\tdepth 1.3\n}\n\n"
+	"standard_object\n{\n\tname mesh_obj\n\tgeometry boxbase\n\tmaterial mat\n\tposition -1.3 0 0\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_geo\n\tradius 0.9\n}\n\n"
+	"standard_object\n{\n\tname sph_obj\n\tgeometry sph_geo\n\tmaterial mat\n\tposition 1.3 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+static void RunViewArgEndToEndTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: render{view:} end-to-end (headless scene-camera fallback) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_view_arg_e2e.RISEscene", kSceneTwoCameras );
+	Check( !scenePath.empty(), "wrote the two-camera scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "two-camera scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "view-arg session wraps the locally-owned Job (headless, no controller)" );
+	if( !session ) { pJob->release(); return; }
+	Check( !session->HasController(), "view-arg session is genuinely headless -- exercises the scene-camera fallback, not the named-view store" );
+
+	AgentRenderParams pFront;
+	pFront.view = "camFront";
+	AgentRenderResult rFront = session->Render( pFront );
+	Check( rFront.ok, "view:\"camFront\" render succeeds" );
+	Check( rFront.cameraOverridden, "view:\"camFront\" applied a camera override" );
+
+	AgentRenderParams pSide;
+	pSide.view = "camSide";
+	AgentRenderResult rSide = session->Render( pSide );
+	Check( rSide.ok, "view:\"camSide\" render succeeds" );
+	Check( rSide.cameraOverridden, "view:\"camSide\" applied a camera override" );
+
+	Decoded decFront, decSide;
+	Check( DecodePng( rFront.png, decFront ), "camFront PNG decodes" );
+	Check( DecodePng( rSide.png, decSide ), "camSide PNG decodes" );
+	if( decFront.w == decSide.w && decFront.h == decSide.h && !decFront.px.empty() )
+	{
+		unsigned int differing = 0;
+		for( std::size_t px = 0; px < decFront.px.size(); ++px )
+		{
+			if( decFront.px[px] != decSide.px[px] ) ++differing;
+		}
+		Check( differing > 0,
+		       "MONEY ASSERTION: camFront and camSide renders DIFFER -- view: actually changed the vantage, "
+		       "not a silent no-op onto the same (implicit) active camera" );
+	}
+
+	// After both view-overridden renders, the active camera + its properties
+	// are unperturbed (the ephemeral-override capture/restore contract).
+	const std::string activeAfter = pJob->GetActiveCameraName();
+	Check( !activeAfter.empty(), "the job still has an active camera after two view-overridden renders" );
+
+	// Invalid name: fails honestly, listing the available (scene camera)
+	// names -- never silently falls back to the active camera.
+	AgentRenderParams pBad;
+	pBad.view = "definitely_not_a_camera_or_view";
+	AgentRenderResult rBad = session->Render( pBad );
+	Check( !rBad.ok, "an unresolvable view name fails the render" );
+	Check( rBad.message.find( "definitely_not_a_camera_or_view" ) != std::string::npos,
+	       "the failure message echoes the requested name" );
+	Check( rBad.message.find( "camFront" ) != std::string::npos && rBad.message.find( "camSide" ) != std::string::npos,
+	       "MONEY ASSERTION: the failure message lists the available scene-camera names" );
 
 	pJob->release();
 }
@@ -1794,6 +1986,8 @@ int main()
 {
 	RunPerModeEndToEndTest();
 	RunFilmRestoreTest();
+	RunBeautyVariantEndToEndTest();
+	RunViewArgEndToEndTest();
 	RunRpcModeParityTest();
 	RunNoRenderOnInvalidModeTest();
 	RunChatCodecModeParityTest();

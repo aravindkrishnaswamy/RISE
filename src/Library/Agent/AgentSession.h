@@ -288,16 +288,26 @@ namespace RISE
 		{
 			Beauty,     //!< radiance / studio-preview shading (default)
 			ObjectMap,  //!< flat per-object identity segmentation + legend
-			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §8): one of
-			//! the ShaderPipeline data/diagnostic modes -- Normals / Depth /
-			//! Facets / Wireframe (the registry's casterFactory modes).
-			//! WHICH one is carried in AgentRenderParams::viewMode below.
-			//! Routes through CreateInteractiveViewModePipeline (a sibling of
-			//! CreateInteractiveObjectMapPipeline), never the production
-			//! rasterizer; `quality`/`samples` are IGNORED exactly as under
-			//! ObjectMap (same single-fidelity, single-ray-per-pixel
-			//! reasoning), and `res.renderMode` is the registry's wire name
-			//! (e.g. "normals") so a caller can distinguish it from
+			//! GUI render modes P1+P2a (docs/gui/RENDER_MODES.md §8): one of
+			//! the registry's OTHER agent-visible modes -- either a
+			//! ShaderPipeline data/diagnostic mode (Normals/Depth/Facets/
+			//! Wireframe, `casterFactory`) or a P2a BeautyVariant mode
+			//! (DeepReflect/Direct, `IsBeautyVariantMode`).  WHICH one is
+			//! carried in AgentRenderParams::viewMode below;
+			//! RenderCore_ branches internally
+			//! (`Implementation::IsBeautyVariantMode(viewModeInfo->mode)`)
+			//! between the two: a ShaderPipeline mode routes through
+			//! CreateInteractiveViewModePipeline (single-ray-per-pixel
+			//! exactness, `quality`/`samples` IGNORED exactly as under
+			//! ObjectMap); a BeautyVariant mode routes through
+			//! CreateBeautyVariantPipeline (a REAL production-class PT
+			//! render at a FIXED reduced resolution + FIXED higher spp --
+			//! `quality`/`samples`/`xray` are ALL ignored, but
+			//! `res.effectiveSamples` reports the mode's real fixed spp, not
+			//! the ShaderPipeline exactness invariant's 1).  Neither ever
+			//! touches the production rasterizer.  `res.renderMode` is the
+			//! registry's wire name either way (e.g. "normals" or
+			//! "deep_reflect") so a caller can distinguish it from
 			//! "objectmap"/"draft"/"production".
 			ViewMode
 		};
@@ -386,6 +396,26 @@ namespace RISE
 			//! IGNORED under Beauty/ObjectMap (honestly noted in the result
 			//! message), matching the quality/samples-ignored precedent.
 			bool                 xray = true;
+			//! GUI render modes P2a (docs/gui/RENDER_MODES.md §8, deferred
+			//! from P1): OPTIONAL named-view vantage override for THIS
+			//! render only -- "" (default) = no override, use the active
+			//! camera / an explicit `camera` override exactly as today.
+			//! Resolves to the SAME ephemeral `camera` override fields above
+			//! (composes for free with every existing camera-override
+			//! consumer) rather than a parallel mechanism.  Valid with EVERY
+			//! render target (Beauty/ObjectMap/ViewMode, draft or
+			//! production).  Resolution order: (1) a live controller's
+			//! in-memory named-view store (SceneEditController::
+			//! FindNamedViewPose); (2) a scene CAMERA of that exact name
+			//! (the honest headless fallback -- a WrapJob session has no
+			//! named-view store at all).  An unresolved name is a FAILED
+			//! render (res.ok=false) with the available-name list in
+			//! res.message, not a silent fall-through to the active camera.
+			//! If BOTH `view` and an explicit `camera` override are
+			//! supplied, `view` wins (camera fields it resolves take
+			//! precedence) -- see AgentSession::RenderCore_'s resolution
+			//! block for the exact precedence.
+			std::string          view;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides

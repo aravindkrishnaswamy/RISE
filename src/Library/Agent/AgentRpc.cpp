@@ -1204,20 +1204,27 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'quality' must be a string" );
 					}
 
-					// Toolkit slice 3a / GUI render modes P1 (docs/gui/RENDER_MODES.md
+					// Toolkit slice 3a / GUI render modes P1+P2a (docs/gui/RENDER_MODES.md
 					// §8) ADDITIVE param: {"mode":"beauty"|"objectmap"|<a
-					// casterFactory registry mode -- "normals"|"depth"|"facets"|
-					// "wireframe"} -> AgentRenderParams::renderTarget (+ ::viewMode
-					// for the registry modes).  Absent or "beauty" is today's EXACT
+					// casterFactory OR BeautyVariant registry mode --
+					// "normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"}
+					// -> AgentRenderParams::renderTarget (+ ::viewMode for the
+					// registry modes).  Absent or "beauty" is today's EXACT
 					// behaviour (strictly additive); "objectmap" routes this ONE
 					// render through the ephemeral identity pipeline and returns a
 					// per-object `legend` in the result -- see AgentRenderTarget's
-					// doc.  A registry data-mode name routes through the SAME kind
-					// of ephemeral pipeline (CreateInteractiveViewModePipeline) but
-					// has no legend.  `quality`/`samples` are ignored under any of
-					// these (noted in the result message).  The accepted-name set
-					// is built FROM Implementation::GetViewportRenderModes -- NOT a
-					// hardcoded list -- filtered to `casterFactory` entries, so a
+					// doc.  A casterFactory data-mode name routes through the
+					// diagnostic ephemeral pipeline (CreateInteractiveViewModePipeline,
+					// no legend); a BeautyVariant name (P2a) routes through the REAL
+					// production-class ephemeral pipeline (CreateBeautyVariantPipeline,
+					// also no legend) -- both still set renderTarget=ViewMode, since
+					// from this parser's perspective they're both "one of the
+					// registry's other agent-visible modes"; AgentSession::RenderCore_
+					// branches internally on IsBeautyVariantMode.  `quality`/`samples`
+					// are ignored under any of these (noted in the result message).
+					// The accepted-name set is built FROM
+					// Implementation::GetViewportRenderModes -- NOT a hardcoded list --
+					// filtered to `casterFactory` OR BeautyVariant entries, so a
 					// future mode is agent-visible by construction the moment it's
 					// added to the registry (docs/gui/RENDER_MODES.md §4's parity
 					// promise).  Any other string (or a non-string, non-null value)
@@ -1237,7 +1244,9 @@ namespace RISE
 									Implementation::GetViewportRenderModes( modeCount );
 								const Implementation::ViewportRenderModeInfo* found = nullptr;
 								for( unsigned int i = 0; i < modeCount; ++i ) {
-									if( modes[i].casterFactory && ms == modes[i].name ) {
+									const bool agentVisible = modes[i].casterFactory
+										|| Implementation::IsBeautyVariantMode( modes[i].mode );
+									if( agentVisible && ms == modes[i].name ) {
 										found = &modes[i];
 										break;
 									}
@@ -1248,7 +1257,7 @@ namespace RISE
 								} else {
 									std::string accepted = "\"beauty\", \"objectmap\"";
 									for( unsigned int i = 0; i < modeCount; ++i ) {
-										if( modes[i].casterFactory ) {
+										if( modes[i].casterFactory || Implementation::IsBeautyVariantMode( modes[i].mode ) ) {
 											accepted += ", \"";
 											accepted += modes[i].name;
 											accepted += "\"";
@@ -1261,6 +1270,23 @@ namespace RISE
 						}
 						else if( !mv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'mode' must be a string" );
+					}
+
+					// GUI render modes P2a `render{view:}` surface (docs/gui/
+					// RENDER_MODES.md §8, deferred from P1) ADDITIVE param:
+					// {"view":"<named view or scene camera name>"} ->
+					// AgentRenderParams::view.  Valid with EVERY mode -- see
+					// AgentRenderParams::view's doc.  Any non-string, non-null
+					// value is a clean -32602; an unresolvable name is NOT
+					// rejected here (that needs a live Job to check against) --
+					// AgentSession::RenderCore_ fails the render itself with the
+					// available-name list.
+					if( const JsonValue* vv = params.find( "view" ) ) {
+						if( vv->isString() ) {
+							rparams.view = vv->asString();
+						}
+						else if( !vv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'view' must be a string" );
 					}
 
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")

@@ -57,7 +57,7 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?}
+//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
 //                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
@@ -92,9 +92,32 @@
 //                                            renders (no `legend`; renderMode echoes
 //                                            the exact mode name); `quality`/`samples`
 //                                            are ignored under these too, same as
-//                                            objectmap.  The accepted-name set is NOT
+//                                            objectmap.  `xray` (OPTIONAL bool,
+//                                            default TRUE) resolves the ray THROUGH
+//                                            transmissive surfaces for these four
+//                                            modes; ignored (honestly noted) under
+//                                            beauty/objectmap/BeautyVariant modes.
+//                                            GUI render modes P2a (§6) adds TWO MORE
+//                                            accepted names, "deep_reflect"|"direct"
+//                                            -- BeautyVariant modes: REAL production-
+//                                            class path-traced renders (real
+//                                            materials/lights/OIDN) at a FIXED
+//                                            reduced resolution + FIXED higher spp
+//                                            (not the ShaderPipeline single-ray
+//                                            exactness invariant); `quality`/
+//                                            `samples`/`xray` are all ignored under
+//                                            these too, honestly noted; check
+//                                            `effectiveSamples` for the REAL spp
+//                                            used.  The accepted-name set is NOT
 //                                            hardcoded -- see AgentRpc.cpp's `mode`
-//                                            parsing block.)
+//                                            parsing block (filters the registry to
+//                                            `casterFactory || IsBeautyVariantMode`).
+//                                            `view` (OPTIONAL string, P2a): a named-
+//                                            view/scene-camera vantage override for
+//                                            THIS render only, composing with EVERY
+//                                            mode -- see AgentSession::
+//                                            AgentRenderParams::view's doc for the
+//                                            resolution order.)
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
