@@ -1776,6 +1776,22 @@ namespace RISE
 
 				AgentChatLoop loop;
 				loop.SetProvider( provider, modelId );
+				// The loop's per-turn anti-spin cap (default 20 rounds) is a GUI
+				// posture; THIS host enforces the scenario's own budgets each
+				// round (maxToolCalls/maxLlmCalls -- the honest, accounted
+				// stops), so raise the instance cap to the budget ceiling and
+				// let the budgets govern.  A legitimately iterative single-turn
+				// scenario (image->scene reconstruction runs ~12-15
+				// render-inspect-adjust rounds) would otherwise die at round 21
+				// with provider_error("iteration cap") long before its budgets
+				// -- the first live vision baseline failed 24/24 exactly this
+				// way.  Scenarios with no budgets keep the default cap.
+				{
+					int cap = AgentChatLoop::kMaxToolRoundsPerTurn;
+					if( scenario.budgets.maxLlmCalls  > cap ) cap = scenario.budgets.maxLlmCalls;
+					if( scenario.budgets.maxToolCalls > cap ) cap = scenario.budgets.maxToolCalls;
+					loop.SetMaxToolRoundsPerTurn( cap );
+				}
 				ChatTrajectoryConfig cfg;
 				cfg.clock = optClock;
 				cfg.scenePath = scenario.scenePath.empty() ? std::string( "<inline>" ) : scenario.scenePath;

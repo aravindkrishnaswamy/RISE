@@ -672,13 +672,13 @@ namespace RISE
 				// the assistant turn -- the transcript stays at its previous
 				// consistent state (no unanswered tool_use on the wire) and
 				// a new AddUserMessage resets the counter.
-				if( mToolRounds >= kMaxToolRoundsPerTurn ) {
+				if( mToolRounds >= mMaxToolRoundsPerTurn ) {
 					ChatStepResult capped;
 					capped.kind = ChatStepResult::Kind::ProviderError;
 					capped.errorKind = ChatErrorKind::IterationCap;
 					capped.errorMessage =
 						"iteration cap: the model requested more than " +
-						std::to_string( kMaxToolRoundsPerTurn ) +
+						std::to_string( mMaxToolRoundsPerTurn ) +
 						" tool rounds in one turn; stopping so the loop cannot spin";
 					return capped;
 				}

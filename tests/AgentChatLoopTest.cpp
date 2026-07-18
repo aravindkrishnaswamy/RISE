@@ -1455,6 +1455,68 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		Check( again.kind == ChatStepResult::Kind::ToolCalls,
 		       "after a new user message the loop runs again" );
 	}
+
+	// Iteration cap, RAISED: SetMaxToolRoundsPerTurn(25) lets a host with
+	// its own honest budget accounting (the eval runner) run past the
+	// GUI-posture default of 20 -- 24 single-tool rounds all succeed,
+	// round 25 still succeeds (the cap itself), round 26 trips and names
+	// the RAISED cap (25), not the compiled-in default (20).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetMaxToolRoundsPerTurn( 25 );
+		loop.AddUserMessage( "loop further" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_spin25\",\"name\":\"read_document\",\"input\":{}}]",
+			"tool_use" );
+		bool allOk = true;
+		for( int i = 0; i < 24; ++i ) {
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.kind != ChatStepResult::Kind::ToolCalls ) allOk = false;
+			if( st.toolCalls.size() == 1 )
+				loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		}
+		Check( allOk, "with a raised cap, 24 tool rounds (past the default-20 cutoff) all succeed" );
+
+		ChatStepResult round25 = loop.HandleResponse( 200, fx );
+		Check( round25.kind == ChatStepResult::Kind::ToolCalls,
+		       "round 25 (the raised cap itself) still succeeds" );
+		if( round25.toolCalls.size() == 1 )
+			loop.AddToolResult( round25.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		Check( loop.ToolRoundCount() == 25, "round counter reads the raised cap" );
+
+		ChatStepResult tripped = loop.HandleResponse( 200, fx );
+		Check( tripped.kind == ChatStepResult::Kind::ProviderError,
+		       "round 26 trips the raised iteration cap" );
+		Check( tripped.errorKind == ChatErrorKind::IterationCap,
+		       "the raised-cap trip -> errorKind IterationCap" );
+		Check( tripped.errorMessage.find( "iteration cap" ) != std::string::npos,
+		       "raised-cap error names the iteration cap" );
+		Check( tripped.errorMessage.find( "25" ) != std::string::npos,
+		       "raised-cap error names the RAISED cap (25), not the compiled-in default (20)" );
+	}
+
+	// Iteration cap, SetMaxToolRoundsPerTurn(0) IGNORED: values < 1 leave
+	// the default (kMaxToolRoundsPerTurn == 20) in effect.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetMaxToolRoundsPerTurn( 0 );
+		loop.AddUserMessage( "loop forever" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_spin0\",\"name\":\"read_document\",\"input\":{}}]",
+			"tool_use" );
+		for( int i = 0; i < AgentChatLoop::kMaxToolRoundsPerTurn; ++i ) {
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.toolCalls.size() == 1 )
+				loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		}
+		ChatStepResult tripped = loop.HandleResponse( 200, fx );
+		Check( tripped.kind == ChatStepResult::Kind::ProviderError,
+		       "SetMaxToolRoundsPerTurn(0) is ignored -- the default cap (20) still trips" );
+		Check( tripped.errorMessage.find( "20" ) != std::string::npos,
+		       "the ignored-zero cap error still names the compiled-in default (20)" );
+	}
 }
 
 //----------------------------------------------------------------------
