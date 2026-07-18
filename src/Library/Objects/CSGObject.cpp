@@ -380,7 +380,13 @@ namespace
 		// camera-independent.
 		const BoundingBox opBBox = operand->getBoundingBox();
 		const Scalar diag = Point3Ops::Distance( opBBox.ll, opBBox.ur );
-		const Scalar margin = std::max( diag * Scalar(1e-6), Scalar(1e-9) );
+		// Unbounded operands (infinite/clipped planes) report an infinite
+		// bbox -> inf/NaN diag, and a value-level floor cannot rescue NaN
+		// under -ffast-math.  Threshold-compare and fall back to the
+		// finite exit range (already sentinel-guarded above) as the
+		// scale reference.
+		const Scalar safeDiag = ( diag < 1.0e30 ) ? diag : ( exitRangeCsgLocal * 0.1 );
+		const Scalar margin = std::max( safeDiag * Scalar(1e-6), Scalar(1e-9) );
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
 			ptExitLocal.y + dir.y * margin,
@@ -423,7 +429,7 @@ namespace
 		// derived) so it absorbs surface curvature near the probe without
 		// opening the gate to another lobe.  This also bounds the search:
 		// no reason to trace past the acceptance radius.
-		const Scalar slack = diag * Scalar(1e-7);
+		const Scalar slack = safeDiag * Scalar(1e-7);
 		const Scalar maxAcceptRange = margin * Scalar(2.0) + slack;
 
 		operand->IntersectRay( probe, maxAcceptRange, true, true, false );

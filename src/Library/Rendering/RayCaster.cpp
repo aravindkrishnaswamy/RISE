@@ -370,6 +370,14 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 			if( ri.pObject ) {
 				objDiag = Vector3Ops::Magnitude( ri.pObject->getBoundingBox().GetExtents() );
 			}
+			// Unbounded transmissive geometry (an infinite/clipped glass
+			// plane reports an infinite bbox) would make this inf/NaN --
+			// and a value-level floor can't rescue a NaN (-ffast-math).
+			// Threshold-compare like SceneExtentEnum and fall back to the
+			// finite hit-range-based nudge in that case.
+			if( !( objDiag < 1.0e30 ) ) {
+				objDiag = ri.geometric.range * 0.1;
+			}
 			curEps = objDiag * 1.0e-6;
 			if( curEps < 1.0e-9 ) {
 				curEps = 1.0e-9;
