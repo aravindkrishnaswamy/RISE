@@ -442,7 +442,7 @@ struct ViewportView: View {
             isCancelling: isCancelling,
             productionProgress: viewModel.progress,
             isProductionPaused: viewModel.isProductionRenderPaused,
-            viewportRenderMode: viewModel.viewportRenderMode)
+            viewportRenderModeWantsDenoise: viewModel.viewportRenderModeWantsDenoise)
         return HStack(spacing: 9) {
             Text(status.text)
                 .font(Theme.mono(10.5))

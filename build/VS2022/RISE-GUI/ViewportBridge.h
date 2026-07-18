@@ -94,6 +94,14 @@ struct ViewportRenderModeInfo {
     QString name;
     QString title;
     QString question;
+    /// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the registry's
+    /// `wantsDenoise` flag, read via the additive
+    /// RISE_API_GetViewportRenderModeWantsDenoise alongside name/title/
+    /// question -- the DENOISED-label formatter (TopBar's
+    /// ComputeRefinementStatus) keys off this instead of a hardcoded
+    /// `mode == "preview"` comparison now that BeautyVariant modes
+    /// (deep_reflect/direct) genuinely denoise too.
+    bool wantsDenoise = false;
 };
 
 class ViewportBridge : public QObject
@@ -312,6 +320,14 @@ public:
     /// every whole-scene rebind; this bridge never assumes that stays
     /// true and always re-reads).
     QString viewportRenderMode() const;
+
+    /// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the CURRENTLY
+    /// active mode's `wantsDenoise` flag, looked up from
+    /// `viewportRenderModes()` by the current `viewportRenderMode()` name.
+    /// Defaults to true (matching "preview"'s own flag and the pre-fix
+    /// behaviour) when the current mode isn't found in the registry list
+    /// (e.g. no controller attached).
+    bool viewportRenderModeWantsDenoise() const;
 
     /// Switch the interactive viewport to render-mode `name` (a wire
     /// name from `viewportRenderModes()`).  Returns false on a null

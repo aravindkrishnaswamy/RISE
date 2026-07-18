@@ -44,7 +44,7 @@ enum RefinementStatusFormatter {
                         isCancelling: Bool,
                         productionProgress: Double,
                         isProductionPaused: Bool = false,
-                        viewportRenderMode: String = "preview") -> Status {
+                        viewportRenderModeWantsDenoise: Bool = true) -> Status {
         // Label policy (user feedback 2026-07-16: "why does the rendering
         // text say things in double?"): the small tracked label is shown
         // ONLY when it adds information the primary text doesn't already
@@ -78,12 +78,17 @@ enum RefinementStatusFormatter {
             // (normals/depth/facets/wireframe) are wantsDenoise=false —
             // the caster-swap machinery never queues a polish/denoise
             // pass for them, so Polishing shouldn't normally even be
-            // reachable outside "preview". Gate the honesty label on the
-            // mode anyway rather than trusting that invariant blindly:
-            // labeling a non-denoised data-mode pass "DENOISED" would be
-            // exactly the kind of lying status chrome this pill exists
-            // to avoid.
-            let label = viewportRenderMode == "preview" ? "DENOISED — NOT FINAL" : ""
+            // reachable outside "preview" and the BeautyVariant modes
+            // (deep_reflect/direct, GUI render modes P2a -- these DO
+            // genuinely denoise, via their own ephemeral pipeline's fixed
+            // OIDN config, not the polish-pass machinery, but the label
+            // should still read DENOISED for them). Gate the honesty label
+            // on the registry's wantsDenoise flag rather than a hardcoded
+            // mode-name comparison: labeling a non-denoised data-mode pass
+            // "DENOISED" would be exactly the kind of lying status chrome
+            // this pill exists to avoid, and the inverse (omitting the
+            // label for a mode that DOES denoise) under-claims.
+            let label = viewportRenderModeWantsDenoise ? "DENOISED — NOT FINAL" : ""
             return Status(text: "Polishing", label: label, fraction: 1.0)
         case 0: return Status(text: "Settled", label: "", fraction: 1.0)
         default: return Status(text: "—", label: "", fraction: 0)

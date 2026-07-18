@@ -600,6 +600,9 @@ QVector<ViewportRenderModeInfo> ViewportBridge::viewportRenderModes()
         info.name     = QString::fromUtf8(name);
         info.title    = QString::fromUtf8(title);
         info.question = QString::fromUtf8(question);
+        bool wantsDenoise = false;
+        RISE_API_GetViewportRenderModeWantsDenoise(i, &wantsDenoise);   // additive C-ABI; false on failure is a safe default
+        info.wantsDenoise = wantsDenoise;
         out.push_back(info);
     }
     return out;
@@ -609,6 +612,15 @@ QString ViewportBridge::viewportRenderMode() const
 {
     if (!m_controller) return QStringLiteral("preview");
     return QString::fromUtf8(RISE_API_SceneEditController_GetViewportRenderMode(m_controller));
+}
+
+bool ViewportBridge::viewportRenderModeWantsDenoise() const
+{
+    const QString current = viewportRenderMode();
+    for (const ViewportRenderModeInfo& info : viewportRenderModes()) {
+        if (info.name == current) return info.wantsDenoise;
+    }
+    return true;   // not found (e.g. no controller) -- default matches "preview"'s own flag
 }
 
 bool ViewportBridge::setViewportRenderMode(const QString& name)

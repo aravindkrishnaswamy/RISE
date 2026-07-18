@@ -202,6 +202,12 @@ struct ViewportRenderModeInfo: Equatable, Identifiable {
     let name: String
     let title: String
     let question: String
+    /// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the registry's
+    /// `wantsDenoise` flag, read once alongside name/title/question so the
+    /// DENOISED-label formatter can key off it instead of a hardcoded
+    /// `mode == "preview"` check now that BeautyVariant modes (deep_reflect/
+    /// direct) genuinely denoise too.
+    let wantsDenoise: Bool
 }
 
 @MainActor
@@ -558,6 +564,18 @@ final class RenderViewModel: ObservableObject {
     /// `viewportRenderMode` — the registry is a fixed built-in set (§4
     /// ratified decision 2), so there is nothing to re-poll mid-session.
     @Published var viewportRenderModes: [ViewportRenderModeInfo] = []
+    /// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the CURRENTLY
+    /// active mode's `wantsDenoise` flag, looked up from the cached
+    /// `viewportRenderModes` list -- the DENOISED-label formatters
+    /// (TopBar, ViewportView's refinement pill) read this instead of
+    /// string-comparing `viewportRenderMode` against `"preview"`.  Defaults
+    /// to `true` (matching `preview`'s own flag and the pre-fix behaviour)
+    /// when the current mode isn't found in the cached list -- e.g. before
+    /// the list has loaded, or "objectmap" (agent-only, never the active
+    /// viewport mode, and not in this list anyway).
+    var viewportRenderModeWantsDenoise: Bool {
+        viewportRenderModes.first(where: { $0.name == viewportRenderMode })?.wantsDenoise ?? true
+    }
     /// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): whether the
     /// viewport resolves hits through transmissive surfaces to the first
     /// opaque hit.  Applies to EVERY render mode, INCLUDING the shaded
@@ -678,7 +696,8 @@ final class RenderViewModel: ObservableObject {
             viewportRenderModes = vb.viewportRenderModes().map {
                 ViewportRenderModeInfo(name: $0["name"] ?? "",
                                         title: $0["title"] ?? "",
-                                        question: $0["question"] ?? "")
+                                        question: $0["question"] ?? "",
+                                        wantsDenoise: $0["wantsDenoise"] == "1")
             }
             viewportRenderMode = vb.viewportRenderMode
             viewportXray = vb.viewportXray()

@@ -267,10 +267,14 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 /// Registry entries with `viewportSelectable == true`, in registry
 /// (UI) order — the set the mode dropdown / View menu offers.  Each
 /// dictionary has string values for keys "name" ("preview", "normals",
-/// ...), "title" ("Shaded Preview", ...), and "question" (the tooltip
-/// text).  Registry-level (not controller-scoped) but still guarded on
-/// `_controller` for consistency with every other bridge accessor —
-/// empty array when no controller is attached.
+/// ...), "title" ("Shaded Preview", ...), "question" (the tooltip
+/// text), and "wantsDenoise" ("1"/"0" — GUI render modes P2a: the
+/// registry's `wantsDenoise` flag, added so the DENOISED-label formatter
+/// can key off it instead of a hardcoded `mode == "preview"` check now
+/// that BeautyVariant modes genuinely denoise too).  Registry-level (not
+/// controller-scoped) but still guarded on `_controller` for consistency
+/// with every other bridge accessor — empty array when no controller is
+/// attached.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)viewportRenderModes;
 
 /// The registry wire name of the CURRENTLY active viewport render mode

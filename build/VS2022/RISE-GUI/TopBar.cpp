@@ -129,7 +129,7 @@ RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
                                           bool isProduction, bool isCancelling,
                                           double productionProgress,
                                           bool isProductionPaused = false,
-                                          const QString& viewportRenderMode = QStringLiteral("preview"))
+                                          bool viewportRenderModeWantsDenoise = true)
 {
     // Label policy (user feedback 2026-07-16, mirrors the Mac formatter):
     // the small tracked label shows ONLY when it adds information the
@@ -161,9 +161,13 @@ RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
     // Data view modes (normals/depth/facets/wireframe) never denoise --
     // InteractivePelRasterizer::ShouldDenoise is gated off while a
     // view-mode caster is installed -- so claiming DENOISED there would
-    // lie.  Mirrors RefinementStatusFormatter.swift's identical gate.
+    // lie.  BeautyVariant modes (deep_reflect/direct, GUI render modes
+    // P2a) DO genuinely denoise (their own ephemeral pipeline's fixed
+    // OIDN config), so the label keys off the registry's wantsDenoise
+    // flag rather than a hardcoded mode-name comparison.  Mirrors
+    // RefinementStatusFormatter.swift's identical gate.
     case 3: return { QStringLiteral("Polishing"),
-                     viewportRenderMode == QLatin1String("preview")
+                     viewportRenderModeWantsDenoise
                          ? QStringLiteral("DENOISED — NOT FINAL")
                          : QString(),
                      1.0 };
@@ -736,7 +740,7 @@ void TopBar::updateReadout()
     const RefinementStatus s = ComputeRefinementStatus(
         m_refinementPhase, m_refinementScaleDivisor, isProduction, isCancelling, m_productionProgress,
         isProductionPaused,
-        m_bridge ? m_bridge->viewportRenderMode() : QStringLiteral("preview"));
+        m_bridge ? m_bridge->viewportRenderModeWantsDenoise() : true);
 
     m_statusRowLabel->setText(s.text);
     m_statusTagLabel->setText(s.label);
