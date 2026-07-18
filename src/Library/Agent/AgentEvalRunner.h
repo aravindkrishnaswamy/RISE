@@ -567,10 +567,19 @@ namespace RISE
 		struct AgentEvalMatrixResult
 		{
 			int runsExecuted   = 0;   //!< (scenario x provider-with-key x repeat) runs actually driven
-			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset
+			int runsSkipped    = 0;   //!< runs skipped because a provider's key env var was unset OR the provider's PRE-FLIGHT AUTH PROBE found the credential dead (see providersAuthFailed)
 			int runsAlreadyComplete = 0; //!< runs SKIPPED because their subdir already held a non-empty <scenarioId>.result.jsonl from a prior invocation into the same runDir AND its stamped scenarioContentHash MATCHES the current scenario (still graded under the same oracle) -- the cross-invocation resume/idempotency guard.  A subdir with NO result.jsonl (a crash mid-run), OR one whose stamped hash is missing/different (a STALE cell graded under a since-changed scenario), is instead wiped and re-run, NOT counted here
-			int providersUsed  = 0;   //!< providers whose key resolved (non-empty)
-			int providersSkipped = 0; //!< providers skipped for a missing key
+			int providersUsed  = 0;   //!< providers whose key resolved (non-empty) AND (for a non-"local" provider) whose pre-flight auth probe did not find a dead credential
+			int providersSkipped = 0; //!< providers skipped for a missing key OR a dead credential (see providersAuthFailed for the latter, counted here TOO)
+
+			//! Of `providersSkipped`, how many were skipped specifically because
+			//! the PRE-FLIGHT AUTH PROBE (see RunEvalMatrix's doc comment) found
+			//! the credential PRESENT but DEAD -- an invalid key (401/403, or a
+			//! "incorrect api key"/"invalid api key" 4xx body) or exhausted
+			//! credits (a "credit balance" 4xx body) -- as opposed to the env
+			//! var simply being unset.  Always <= providersSkipped.  0 for a
+			//! "local" provider (keyless columns are never probed).
+			int providersAuthFailed = 0;
 
 			//! Non-empty iff the matrix REFUSED to run (a fatal config error
 			//! caught before any run executed) -- either a duplicate scenario
@@ -598,6 +607,33 @@ namespace RISE
 		//! pre-loaded (the CLI expands globs + LoadEvalScenario before
 		//! calling this, keeping matrix orchestration file-IO-light and
 		//! unit-testable with in-memory scenarios).  Never throws.
+		//!
+		//! PRE-FLIGHT AUTH PROBE: once a column's key resolves (non-empty), and
+		//! BEFORE its scenario x repeat loop runs, RunEvalMatrix sends ONE
+		//! minimal probe request through the exact same codec/transport path a
+		//! real run's first LLM round takes (a fresh AgentChatLoop, one "ping"
+		//! user turn, BuildRequest(key), options.transport->Post) and classifies
+		//! the response: HTTP 401/403, or a 4xx whose body contains (case-
+		//! insensitively) "incorrect api key", "invalid api key", "credit
+		//! balance", "authentication", or "unauthorized", is a DEAD credential --
+		//! the whole column is SKIPPED (counted in BOTH providersSkipped and
+		//! providersAuthFailed; result.runsSkipped grows by scenarios.size() x
+		//! repeats; logged as "RunEvalMatrix: SKIP provider '<name>' --
+		//! credential rejected by the provider (auth probe failed: <short
+		//! reason>)", where the reason is NEVER the key).  Any other outcome --
+		//! a 2xx, a 5xx, a transport failure (timeout/DNS/TLS), or a 4xx that
+		//! matches none of the phrases (e.g. a tool-shaped/reasoning_effort-
+		//! quirk 400) -- is NOT auth-fatal and the column proceeds normally: a
+		//! transient server hiccup must never cost a provider its whole column.
+		//! A keyless "local" provider has no credential to probe and the probe
+		//! is skipped entirely for it.  Each column's outcome ("ok" /
+		//! "auth-failed" / "skipped-keyless") is recorded in the run manifest's
+		//! "authProbes" object (see the manifest write below), keyed by the
+		//! provider's declared name.  This trades one small request per provider
+		//! column per invocation for not burning every (scenario x repeat) cell
+		//! against a credential that was never going to work (the motivating
+		//! incidents: an invalid xAI key burning 45 cells twice at ~0.25s/cell,
+		//! and exhausted Anthropic credits burning a whole vision column).
 		//!
 		//! Cross-invocation resume (idempotent completion): before executing
 		//! a run, its target subdir is checked for an already-present,

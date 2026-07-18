@@ -38,6 +38,7 @@
 #include <cstdlib>   // std::strtod -- numeric param_equals token parse
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -2390,6 +2391,109 @@ namespace RISE
 			}
 		}
 
+		//====================================================================
+		// PRE-FLIGHT AUTH PROBE (RunEvalMatrix) -- see the doc comment on
+		// RunEvalMatrix in AgentEvalRunner.h for the full behavioural
+		// contract.  Kept as free functions in this file-local namespace so
+		// RunEvalMatrix's own body stays a straight-line read of "probe, then
+		// run the column".
+		//====================================================================
+		namespace
+		{
+			//! Lower-cased ASCII copy of `s`.  The ONLY thing this file needs a
+			//! case fold for -- IsAuthProbeFailure's keyword match below.
+			std::string ToLowerAscii( const std::string& s )
+			{
+				std::string o( s );
+				for( char& c : o ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+				return o;
+			}
+
+			//! The auth-probe DEAD-CREDENTIAL body phrases, matched case-
+			//! insensitively as a raw substring.  Deliberately NARROW and
+			//! drawn from real provider error text (Anthropic "Your credit
+			//! balance is too low...", OpenAI/xAI "Incorrect API key
+			//! provided...", generic "authentication"/"unauthorized" wording)
+			//! -- never a bare "error"/"invalid" match, which would also catch
+			//! an ordinary malformed-request 400 and wrongly skip a column
+			//! whose credential is actually fine.
+			const char* const kAuthProbeFailurePhrases[] = {
+				"incorrect api key", "invalid api key", "credit balance",
+				"authentication", "unauthorized"
+			};
+
+			//! True iff (`status`, `body`) is a DEAD-CREDENTIAL response to the
+			//! pre-flight auth probe: a bare 401/403 (any body), or a 4xx body
+			//! containing one of kAuthProbeFailurePhrases (case-insensitive).
+			//! Always false for a 2xx/3xx and for a 5xx (a transient server
+			//! error must never skip a whole provider column) -- and false for
+			//! a 4xx that matches none of the phrases (an ordinary bad-request/
+			//! tool-shaped 400, e.g. the reasoning_effort quirk AgentChatLoop
+			//! already retries around).  On true, `matchedReason` is filled
+			//! with a SHORT, key-free description for the log line/manifest
+			//! (the status code, plus the matched phrase for a keyword hit).
+			bool IsAuthProbeFailure( long status, const std::string& body, std::string& matchedReason )
+			{
+				if( status == 401 ) { matchedReason = "401 Unauthorized"; return true; }
+				if( status == 403 ) { matchedReason = "403 Forbidden"; return true; }
+				if( status < 400 || status >= 500 ) return false;
+				const std::string lowerBody = ToLowerAscii( body );
+				for( std::size_t i = 0; i < sizeof( kAuthProbeFailurePhrases ) / sizeof( kAuthProbeFailurePhrases[0] ); ++i ) {
+					if( lowerBody.find( kAuthProbeFailurePhrases[i] ) != std::string::npos ) {
+						matchedReason = std::to_string( status ) + " (\"" + kAuthProbeFailurePhrases[i] + "\")";
+						return true;
+					}
+				}
+				return false;
+			}
+
+			//! Perform the ONE-ROUND pre-flight auth probe for a resolved,
+			//! non-keyless provider column: build the SAME minimal request
+			//! shape a real run's first LLM round would (a fresh
+			//! AgentChatLoop, one "ping" user turn, BuildRequest(key) -- no
+			//! tool registration or trajectory sink needed; the codecs bake
+			//! their own tool defs in and BuildRequest works off whatever the
+			//! transcript holds) and POST it through the SAME transport a real
+			//! run uses.  Returns true (DEAD credential -- the caller SKIPS
+			//! the whole column) only for IsAuthProbeFailure; a transport-
+			//! level failure (status <= 0: DNS/TLS/timeout) is explicitly NOT
+			//! an auth verdict -- the real runs will hit the same failure
+			//! honestly, per-cell, if it persists.  `reason` is ALWAYS filled
+			//! with a short, KEY-FREE diagnostic (never the raw request/
+			//! response body, never the key -- this function never retains
+			//! `apiKey` past the BuildRequest call, matching every other
+			//! apiKey use in this file).
+			bool RunAuthProbe( IChatHttpTransport* transport, ChatProvider provider,
+			                   const std::string& modelId, const std::string& apiKey,
+			                   std::string& reason )
+			{
+				AgentChatLoop probe;
+				probe.SetProvider( provider, modelId );
+				probe.AddUserMessage( "ping" );
+				const ChatHttpRequest req = probe.BuildRequest( apiKey );
+				if( req.url.empty() ) {
+					// Defensive only -- a real provider codec always builds a
+					// non-empty request for a one-user-turn transcript; never
+					// block a column on an internal builder bug.
+					reason = "probe request build was empty (not attempted)";
+					return false;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( resp.status <= 0 ) {
+					reason = "transport error (not auth-fatal): " +
+						( resp.error.empty() ? std::string( "no detail" ) : resp.error );
+					return false;
+				}
+				std::string matched;
+				if( IsAuthProbeFailure( resp.status, resp.body, matched ) ) {
+					reason = "HTTP " + matched;
+					return true;
+				}
+				reason = "HTTP " + std::to_string( resp.status );
+				return false;
+			}
+		}
+
 		AgentEvalMatrixResult RunEvalMatrix( const AgentEvalRunConfig& config,
 		                                     const std::vector<AgentEvalScenario>& scenarios,
 		                                     const AgentEvalMatrixOptions& options )
@@ -2471,6 +2575,14 @@ namespace RISE
 
 			const int reps = config.repeats > 0 ? config.repeats : 0;
 
+			// PRE-FLIGHT AUTH PROBE outcomes, keyed by the provider's declared
+			// NAME ("anthropic" / "gemini" / ...) -- one entry per provider
+			// column that reaches the probe-eligibility point (i.e. past the
+			// missing-key/empty-keyEnvVar skips below).  Stamped into the run
+			// manifest's "authProbes" object at the end of this function.  See
+			// RunEvalMatrix's doc comment for the full contract.
+			std::map<std::string, std::string> authProbeResults;
+
 			for( std::size_t pj = 0; pj < config.providers.size(); ++pj ) {
 				const AgentEvalProviderConfig& prov = config.providers[pj];
 
@@ -2519,6 +2631,30 @@ namespace RISE
 					logLine( "RunEvalMatrix: SKIP provider '" + prov.provider + "' -- unknown provider name" );
 					continue;
 				}
+
+				// PRE-FLIGHT AUTH PROBE (see RunEvalMatrix's doc comment): a
+				// keyless "local" column has no credential to probe -- skip the
+				// probe entirely so an unreachable local server still surfaces
+				// per-cell, as before this feature.  Every other column's
+				// (now-resolved) key is probed ONCE before its scenario x
+				// repeat loop runs, so a DEAD credential is caught loudly here
+				// instead of burning every cell on the same auth failure.
+				if( prov.provider == "local" ) {
+					authProbeResults[prov.provider] = "skipped-keyless";
+				} else {
+					std::string probeReason;
+					if( RunAuthProbe( options.transport, providerEnum, prov.model, key, probeReason ) ) {
+						++result.providersSkipped;
+						++result.providersAuthFailed;
+						result.runsSkipped += static_cast<int>( scenarios.size() ) * reps;
+						logLine( "RunEvalMatrix: SKIP provider '" + prov.provider +
+							"' -- credential rejected by the provider (auth probe failed: " + probeReason + ")" );
+						authProbeResults[prov.provider] = "auth-failed";
+						continue;
+					}
+					authProbeResults[prov.provider] = "ok";
+				}
+
 				++result.providersUsed;
 
 				for( std::size_t si = 0; si < scenarios.size(); ++si ) {
@@ -2695,12 +2831,26 @@ namespace RISE
 				}
 				root.set( "providers", providersArr );
 
+				// PRE-FLIGHT AUTH PROBE outcomes, keyed by provider name -- "ok"
+				// (probed, credential live), "auth-failed" (probed, credential
+				// dead -- the column was SKIPPED), or "skipped-keyless" (a
+				// "local" column, never probed).  A provider column skipped
+				// BEFORE the probe point (missing/empty keyEnvVar) has no entry
+				// here -- its own SKIP log line already explains why.
+				JsonValue authProbesObj = JsonValue::MakeObject();
+				for( std::map<std::string, std::string>::const_iterator it = authProbeResults.begin();
+				     it != authProbeResults.end(); ++it ) {
+					authProbesObj.set( it->first, JsonValue::MakeString( it->second ) );
+				}
+				root.set( "authProbes", authProbesObj );
+
 				JsonValue resultObj = JsonValue::MakeObject();
 				resultObj.set( "runsExecuted",        JsonValue::MakeNumber( result.runsExecuted ) );
 				resultObj.set( "runsSkipped",         JsonValue::MakeNumber( result.runsSkipped ) );
 				resultObj.set( "runsAlreadyComplete", JsonValue::MakeNumber( result.runsAlreadyComplete ) );
 				resultObj.set( "providersUsed",       JsonValue::MakeNumber( result.providersUsed ) );
 				resultObj.set( "providersSkipped",    JsonValue::MakeNumber( result.providersSkipped ) );
+				resultObj.set( "providersAuthFailed", JsonValue::MakeNumber( result.providersAuthFailed ) );
 				root.set( "result", resultObj );
 
 				std::error_code ec;

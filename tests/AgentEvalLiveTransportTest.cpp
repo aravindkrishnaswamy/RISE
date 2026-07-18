@@ -713,6 +713,16 @@ static void TestLiveReasoningEffort400RetrySucceeds()
 	opts.runDir = ScratchRunDir( "t15_live_reasoning_effort_retry_succeeds" );
 	opts.transport = &mock;
 	opts.provider = ChatProvider::OpenAI;
+	// A model id UNIQUE to this 400-then-retry sequence (T15b uses its own;
+	// T15c REUSES this one on purpose): AgentChatLoop now memoizes "this
+	// (provider,model) needs reasoning_effort:none" in a PROCESS-WIDE
+	// cache (see ReasoningEffortNoneAlreadyKnown in AgentChatLoop.cpp) so
+	// later sessions against the SAME pair skip the 400 entirely --
+	// exactly what T15c below proves against THIS model id.  Reusing the
+	// codec's default model id here would make this test's own
+	// 400-then-retry sequence order-dependent on whatever OTHER test in
+	// this binary touched that model id first.
+	opts.modelId = "gpt-5.6-terra-t15-unit-test";
 	opts.apiKey = "unit-test-key-not-real";
 
 	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
@@ -740,6 +750,135 @@ static void TestLiveReasoningEffort400RetrySucceeds()
 	}
 	Check( attempt1 == 1, "exactly one attempt-1 llm record (the 400)" );
 	Check( attempt2RetryOf1 == 1, "exactly one attempt-2/retry_of-1 llm record (the successful retry)" );
+}
+
+//----------------------------------------------------------------------
+// T15b: the reasoning_effort-400 retry (T15) must preserve a user-message
+// image attachment across the rebuilt request -- a vision-shaped mirror of
+// T15, combined with T13's attachment setup.  Guards against a retry path
+// that rebuilds the request body WITHOUT the attachments (a live-baseline
+// hypothesis: gpt-5.6-terra vision runs die inconsistently on the reasoning-
+// effort 400, which was traced to confirm the retry genuinely re-sends the
+// SAME transcript, images included -- not a rebuild-from-scratch that could
+// silently drop them).
+//----------------------------------------------------------------------
+static void TestLiveReasoningEffort400RetryPreservesImages()
+{
+	std::printf( "T15b: reasoning_effort-400 retry preserves a user image attachment...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T15b: param_edit loads" );
+
+	// Same committed PNG T13 uses -- read-only, no scratch-file synthesis.
+	const std::string pngPath = "textures/cel.png";
+	std::string pngBytes;
+	{
+		std::ifstream f( pngPath.c_str(), std::ios::binary );
+		Check( static_cast<bool>( f ), "T15b: textures/cel.png is readable from the repo-root cwd" );
+		std::ostringstream ss; ss << f.rdbuf();
+		pngBytes = ss.str();
+	}
+	Check( !pngBytes.empty(), "T15b: textures/cel.png is non-empty" );
+	Check( scenario.prompts.size() == 1, "T15b: param_edit carries exactly 1 prompt to attach to" );
+	scenario.prompts[0].imagePaths.push_back( pngPath );
+
+	MockTransport mock;
+	mock.responses.push_back( { 400,
+		"{\"error\":{\"message\":\"Function tools with reasoning_effort are "
+		"not supported for gpt-5.6-terra in /v1/chat/completions. To use "
+		"function tools, use /v1/responses or set reasoning_effort to "
+		"'none'.\",\"type\":\"invalid_request_error\","
+		"\"param\":\"reasoning_effort\",\"code\":null}}", "", 3 } );
+	mock.responses.push_back( { 200,
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t15b_live_reasoning_effort_retry_preserves_images" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::OpenAI;
+	// UNIQUE model id (see T15's comment): this test's precondition is an
+	// UN-armed session that genuinely receives the 400 -- a model id some
+	// earlier test already 400ed would be pre-armed by the process-wide
+	// capability cache and never see the 400 at all.
+	opts.modelId = "gpt-5.6-terra-t15b-unit-test";
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T15b: a reasoning_effort-400-then-200 vision round still reaches final_text (got '" +
+	       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 2, "T15b: both the 400 attempt and the retry are counted as llm rounds" );
+	Check( mock.seenRequests.size() == 2, "T15b: the transport saw exactly 2 POSTs (the retry rebuilt the SAME round)" );
+
+	const std::vector<unsigned char> rawBytes( pngBytes.begin(), pngBytes.end() );
+	const std::string expectedB64 = Base64Encode( rawBytes );
+
+	Check( mock.seenRequests.size() == 2 &&
+	       mock.seenRequests[0].body.find( expectedB64 ) != std::string::npos,
+	       "T15b: the FIRST (400) request body already carries the reference image's base64 payload" );
+	Check( mock.seenRequests[0].body.find( "reasoning_effort" ) == std::string::npos,
+	       "T15b: the first request carries no reasoning_effort key" );
+
+	Check( mock.seenRequests.size() == 2 &&
+	       mock.seenRequests[1].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
+	       "T15b: the retry request explicitly sets reasoning_effort:\"none\"" );
+	Check( mock.seenRequests.size() == 2 &&
+	       mock.seenRequests[1].body.find( expectedB64 ) != std::string::npos,
+	       "T15b: the RETRY request body STILL carries the reference image's base64 payload -- the "
+	       "rebuild did not drop the attachment" );
+}
+
+//----------------------------------------------------------------------
+// T15c: PROCESS-WIDE reasoning-effort memoization at the RUNNER level --
+// the root-cause fix for the vision-baseline waste.  T15 above already
+// taught the process-wide capability cache (see
+// ReasoningEffortNoneAlreadyKnown in AgentChatLoop.cpp) that its model id
+// needs reasoning_effort:"none"; a SECOND RunScenarioLive against the
+// SAME (provider, model) -- a brand-new AgentChatLoop, exactly like every
+// new eval cell or GUI session -- must now start pre-armed: ONE POST,
+// no 400, the first request already carrying the override.  Before the
+// memoization, EVERY session against a gpt-5.6-terra-class model re-paid
+// the wasted 400 round-trip (re-sending the full image payload on vision
+// scenarios -- the token cost that rate-limited the live baseline).
+// ORDER DEPENDENCY (deliberate): this test MUST run after T15 in main();
+// it shares T15's model id because the shared cache entry IS the thing
+// under test.
+//----------------------------------------------------------------------
+static void TestLiveReasoningEffortMemoizedAcrossSessions()
+{
+	std::printf( "T15c: reasoning_effort lesson is memoized process-wide -- a later session never pays the 400...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T15c: param_edit loads" );
+
+	// ONE canned response only: the run must never receive a 400, so a
+	// single 200 final-text is the whole conversation.
+	MockTransport mock;
+	mock.responses.push_back( { 200,
+		"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+		"\"finish_reason\":\"stop\"}],"
+		"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 4 } );
+
+	AgentEvalLiveRunOptions opts;
+	opts.runDir = ScratchRunDir( "t15c_live_reasoning_effort_memoized" );
+	opts.transport = &mock;
+	opts.provider = ChatProvider::OpenAI;
+	opts.modelId = "gpt-5.6-terra-t15-unit-test";   // T15's model id -- the shared cache entry under test
+	opts.apiKey = "unit-test-key-not-real";
+
+	AgentEvalRunHandle h = RunScenarioLive( scenario, opts );
+	Check( h.result.terminalStatus == "final_text",
+	       "T15c: the pre-armed session reaches final_text (got '" +
+	       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+	Check( h.result.llmCalls == 1, "T15c: exactly ONE llm round -- the wasted 400 round-trip is gone" );
+	Check( mock.seenRequests.size() == 1, "T15c: the transport saw exactly 1 POST" );
+	Check( !mock.seenRequests.empty() &&
+	       mock.seenRequests[0].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
+	       "T15c: the FIRST request already carries reasoning_effort:\"none\" (pre-armed from the cache)" );
 }
 
 //----------------------------------------------------------------------
@@ -916,6 +1055,7 @@ static void TestRunEvalMatrix()
 		cfg.runDir = ScratchRunDir( "t7_matrix_exec" );
 
 		MockTransport mock;
+		mock.responses.push_back( { 200, "{}", "", 1 } );   // the pre-flight auth probe (credential looks live)
 		mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
 		mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
 		mock.repeatLast = true;
@@ -928,6 +1068,7 @@ static void TestRunEvalMatrix()
 
 		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr.providersUsed == 1 && mr.providersSkipped == 0, "provider with a key is USED" );
+		Check( mr.providersAuthFailed == 0, "a passing auth probe leaves providersAuthFailed == 0" );
 		Check( mr.runsExecuted == 1 && mr.runsSkipped == 0, "1 scenario x 1 provider x 1 repeat = 1 run executed" );
 
 		// The documented per-run layout: <runDir>/<id>__anthropic__<model>__r1/.
@@ -1065,6 +1206,7 @@ static void TestRunEvalMatrixManifest()
 	cfg.runDir = ScratchRunDir( "t7b_matrix_manifest" );
 
 	MockTransport mock;
+	mock.responses.push_back( { 200, "{}", "", 1 } );   // the pre-flight auth probe (credential looks live)
 	mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
 	mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
 	mock.repeatLast = true;
@@ -1266,6 +1408,7 @@ static void TestRunEvalMatrixResumeSkipsCompleted()
 	// First invocation: completes normally.
 	{
 		MockTransport mock1;
+		mock1.responses.push_back( { 200, "{}", "", 1 } );   // the pre-flight auth probe
 		mock1.responses.push_back( { 200, kBodyToolUse, "", 2 } );
 		mock1.responses.push_back( { 200, kBodyFinal,   "", 2 } );
 		mock1.repeatLast = true;
@@ -1283,15 +1426,19 @@ static void TestRunEvalMatrixResumeSkipsCompleted()
 	Check( !trajAfterFirst.empty(), "first invocation: trajectory.jsonl has content" );
 
 	// Second invocation into the SAME runDir: must SKIP the already-complete
-	// run and never touch the transport.
+	// run.  The pre-flight auth probe still fires ONCE (unconditionally, per
+	// resolved provider column, before any per-scenario resume check), so
+	// the mock needs exactly one canned probe response.
 	{
-		MockTransport mock2;   // must NEVER be called
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- the resumed cell never re-executes
 		mo.transport = &mock2;
 
 		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr2.runsExecuted == 0, "second invocation: 0 runs executed" );
 		Check( mr2.runsAlreadyComplete == 1, "second invocation: 1 run skipped as already-complete" );
-		Check( mock2.seenRequests.empty(), "second invocation: the transport was NEVER called" );
+		Check( mock2.seenRequests.size() == 1,
+		       "second invocation: the transport is called exactly ONCE (the auth probe, no cell re-executes)" );
 	}
 
 	// The trajectory file is untouched by the second (skipped) invocation --
@@ -1433,15 +1580,20 @@ static void TestRunEvalMatrixResumeContentAware()
 	}
 
 	// (2) Second invocation, SAME (unmodified) scenario: the stamped hash
-	// matches -> skipped-as-complete, transport NEVER touched.
+	// matches -> skipped-as-complete.  The pre-flight auth probe still fires
+	// ONCE (unconditionally, per resolved provider column, before any
+	// per-scenario resume check), so the mock needs exactly one canned
+	// probe response; the resumed cell itself never re-executes.
 	{
-		MockTransport mock2;   // must NEVER be called
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only
 		mo.transport = &mock2;
 
 		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr2.runsExecuted == 0, "second invocation (unchanged scenario): 0 runs executed" );
 		Check( mr2.runsAlreadyComplete == 1, "second invocation: 1 run skipped as already-complete (hash matched)" );
-		Check( mock2.seenRequests.empty(), "second invocation: the transport was NEVER called" );
+		Check( mock2.seenRequests.size() == 1,
+		       "second invocation: the transport is called exactly ONCE (the auth probe, no cell re-executes)" );
 	}
 
 	// (3) MUTATE the scenario's checkpoints[] so its content hash differs, then
@@ -1509,12 +1661,14 @@ static void TestRunEvalMatrixResumeContentAware()
 		AgentEvalScenario s2b; std::string e2b;   // FRESH reload -> independent in-memory object
 		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", s2b, e2b ), "param_edit reloads (b)" );
 		std::vector<AgentEvalScenario> v2b; v2b.push_back( s2b );
-		MockTransport m5b;   // must NEVER be called
+		MockTransport m5b;
+		m5b.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- the resumed cell never re-executes
 		mo.transport = &m5b;
 		AgentEvalMatrixResult mr5 = RunEvalMatrix( cfg2, v2b, mo );
 		Check( mr5.runsAlreadyComplete == 1 && mr5.runsExecuted == 0,
 		       "a reloaded-from-disk unchanged scenario hashes IDENTICALLY -> skipped (determinism)" );
-		Check( m5b.seenRequests.empty(), "reload-determinism: transport never called on the skip" );
+		Check( m5b.seenRequests.size() == 1,
+		       "reload-determinism: the transport is called exactly ONCE (the auth probe) on the skip" );
 	}
 
 	// (6) Mutate the scenario's interventions[] -- must ALSO change the hash
@@ -1649,6 +1803,240 @@ static void TestRunEvalMatrixProviderModelCollision()
 	       mr.providersUsed == 0 && mr.providersSkipped == 0,
 	       "the refusal fired BEFORE the provider/run loop (all counts 0)" );
 	Check( mock.seenRequests.empty(), "the transport was NEVER called on a refused matrix" );
+}
+
+//----------------------------------------------------------------------
+// T12b: RunEvalMatrix's PRE-FLIGHT AUTH PROBE.  Once a column's key
+// resolves, RunEvalMatrix sends ONE minimal "ping" request through the SAME
+// codec/transport path a real run uses, BEFORE that column's scenario x
+// repeat loop runs, and classifies the response -- see RunEvalMatrix's doc
+// comment in AgentEvalRunner.h.  Five sub-cases:
+//   (A) the probe passes (a plain 200) -> the column executes normally, the
+//       FIRST captured request is the probe (body contains "ping"),
+//       providersAuthFailed == 0, and the manifest records
+//       authProbes.anthropic == "ok".
+//   (B) the probe 401s -> the column is SKIPPED, providersAuthFailed == 1,
+//       runsSkipped == scenarios x reps, the transport is called EXACTLY
+//       once (the probe itself -- no run ever starts), the log line
+//       mentions "auth probe", the manifest records "auth-failed", and the
+//       fake key appears in NO output file.
+//   (C) the probe 400s with an Anthropic-style "credit balance" body -> same
+//       SKIP outcome as (B) (the exhausted-credits case).
+//   (D) the probe 500s -> NOT auth-fatal: the column proceeds and the run
+//       executes against the mock (a transient server hiccup must never
+//       cost a provider its whole column).
+//   (E) a keyless "local" provider is NEVER probed -- the FIRST captured
+//       request is the run itself, and the manifest records
+//       authProbes.local == "skipped-keyless".
+//----------------------------------------------------------------------
+static void TestRunEvalMatrixAuthProbe()
+{
+	std::printf( "T12b: RunEvalMatrix pre-flight auth probe...\n" );
+
+	AgentEvalScenario scenario;
+	std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ), "T12b: param_edit loads" );
+	std::vector<AgentEvalScenario> scenarios;
+	scenarios.push_back( scenario );
+
+	// (A) The probe passes -> the column executes.
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-A-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_ok" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 200, kBodyFinal, "", 1 } );   // the auth probe -- a plain 200
+		mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock.repeatLast = true;
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 1 && mr.providersSkipped == 0,
+		       "T12b(A): a passing probe leaves the column USED" );
+		Check( mr.providersAuthFailed == 0, "T12b(A): providersAuthFailed == 0" );
+		Check( mr.runsExecuted == 1, "T12b(A): the column executed" );
+		Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+		       "T12b(A): the FIRST captured request is the auth probe (body contains \"ping\")" );
+		Check( mock.seenRequests.size() >= 2,
+		       "T12b(A): the probe AND at least one real run request reached the transport" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(A): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "ok",
+			       "T12b(A): manifest records authProbes.anthropic == \"ok\"" );
+		}
+	}
+
+	// (B) The probe 401s -> the column is SKIPPED, the transport is called
+	// EXACTLY once (no run ever starts), and the fake key never leaks.
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-B-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 2;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_401" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 401, "{\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}", "", 1 } );
+
+		std::vector<std::string> logLines;
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+		mo.log = [&]( const std::string& m ) { logLines.push_back( m ); };
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 0, "T12b(B): a 401 probe leaves the column NOT used" );
+		Check( mr.providersSkipped == 1, "T12b(B): providersSkipped == 1" );
+		Check( mr.providersAuthFailed == 1, "T12b(B): providersAuthFailed == 1" );
+		Check( mr.runsSkipped == static_cast<int>( scenarios.size() ) * cfg.repeats,
+		       "T12b(B): runsSkipped == scenarios x repeats" );
+		Check( mr.runsExecuted == 0, "T12b(B): no run ever started" );
+		Check( mock.seenRequests.size() == 1,
+		       "T12b(B): the transport was called EXACTLY once (the probe -- no run ever starts)" );
+
+		bool sawAuthProbeSkip = false;
+		for( std::size_t i = 0; i < logLines.size(); ++i )
+			if( logLines[i].find( "auth probe" ) != std::string::npos ) sawAuthProbeSkip = true;
+		Check( sawAuthProbeSkip, "T12b(B): a log line mentions \"auth probe\"" );
+
+		Check( !AnyFileUnderContains( cfg.runDir, kFakeKey ),
+		       "T12b(B): the fake key appears in NO output file" );
+		for( std::size_t i = 0; i < logLines.size(); ++i )
+			Check( logLines[i].find( kFakeKey ) == std::string::npos,
+			       "T12b(B): no log line contains the fake key" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(B): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "auth-failed",
+			       "T12b(B): manifest records authProbes.anthropic == \"auth-failed\"" );
+			Check( manifest.back().get( "result" ).get( "providersAuthFailed" ).asNumber( -1 ) == 1,
+			       "T12b(B): manifest result.providersAuthFailed == 1" );
+		}
+	}
+
+	// (C) The probe 400s with an Anthropic-style exhausted-credits body ->
+	// the same SKIP outcome as (B).
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-C-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_credit_balance" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 400,
+			"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+			"\"message\":\"Your credit balance is too low to access the Anthropic API. "
+			"Please go to Plans & Billing to upgrade or purchase credits.\"}}", "", 1 } );
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersAuthFailed == 1, "T12b(C): an exhausted-credits 400 body IS classified as a dead credential" );
+		Check( mr.runsExecuted == 0, "T12b(C): no run ever started" );
+		Check( mock.seenRequests.size() == 1, "T12b(C): the transport was called EXACTLY once (the probe)" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(C): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "auth-failed",
+			       "T12b(C): manifest records authProbes.anthropic == \"auth-failed\"" );
+		}
+	}
+
+	// (D) The probe 500s -> NOT auth-fatal: the column proceeds and the run
+	// executes against the mock.
+	{
+		const std::string kFakeKey = "sk-ant-AUTHPROBE-D-FAKEKEY-DO-NOT-LEAK";
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "anthropic"; p.model = "claude-sonnet-5"; p.keyEnvVar = "RISE_TEST_FAKE_KEY";
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_500" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 500, "{\"error\":\"internal server error\"}", "", 1 } );   // the probe -- a transient 5xx
+		mock.responses.push_back( { 200, kBodyToolUse, "", 2 } );
+		mock.responses.push_back( { 200, kBodyFinal,   "", 2 } );
+		mock.repeatLast = true;
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = [&]( const std::string& name ) -> const char* {
+			return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
+		};
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersAuthFailed == 0, "T12b(D): a transient 5xx probe response is NOT auth-fatal" );
+		Check( mr.providersUsed == 1 && mr.providersSkipped == 0,
+		       "T12b(D): the column proceeds (not skipped) after a 500 probe" );
+		Check( mr.runsExecuted == 1, "T12b(D): the run executes against the mock" );
+		Check( mock.seenRequests.size() >= 2,
+		       "T12b(D): the probe AND at least one real run request reached the transport" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(D): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "anthropic" ).asString() == "ok",
+			       "T12b(D): manifest records authProbes.anthropic == \"ok\" (a 5xx does not count as a dead credential)" );
+		}
+	}
+
+	// (E) A keyless "local" provider is NEVER probed.
+	{
+		AgentEvalRunConfig cfg;
+		AgentEvalProviderConfig p; p.provider = "local"; p.model = "qwen3:32b";   // keyEnvVar left EMPTY -- keyless by design
+		cfg.providers.push_back( p );
+		cfg.repeats = 1;
+		cfg.runDir = ScratchRunDir( "t12b_authprobe_local_skipped" );
+
+		MockTransport mock;
+		mock.responses.push_back( { 200,
+			"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},"
+			"\"finish_reason\":\"stop\"}],"
+			"\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}", "", 2 } );
+
+		AgentEvalMatrixOptions mo;
+		mo.transport = &mock;
+		mo.envLookup = []( const std::string& ) -> const char* { return nullptr; };   // never consulted for "local"
+
+		AgentEvalMatrixResult mr = RunEvalMatrix( cfg, scenarios, mo );
+		Check( mr.providersUsed == 1 && mr.providersAuthFailed == 0,
+		       "T12b(E): the keyless local column is used, never auth-probed" );
+		Check( mr.runsExecuted == 1, "T12b(E): the local run executes" );
+		Check( mock.seenRequests.size() == 1,
+		       "T12b(E): the transport was called EXACTLY once (the run itself -- no probe)" );
+		Check( mock.seenRequests[0].body.find( "ping" ) == std::string::npos,
+		       "T12b(E): the FIRST (and only) captured request is the run, not a probe" );
+
+		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );
+		Check( !manifest.empty(), "T12b(E): run.manifest.jsonl has a record" );
+		if( !manifest.empty() ) {
+			Check( manifest.back().get( "authProbes" ).get( "local" ).asString() == "skipped-keyless",
+			       "T12b(E): manifest records authProbes.local == \"skipped-keyless\"" );
+		}
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1787,9 +2175,12 @@ static void TestPromptImagesMatrixResume()
 		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
 	};
 
-	// (1) First invocation: executes.
+	// (1) First invocation: executes.  The FIRST canned response is the
+	// pre-flight auth probe's (a plain 200 -- credential looks live), THEN
+	// the run's own final-text body.
 	{
 		MockTransport mock1;
+		mock1.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
 		mock1.responses.push_back( { 200, kBodyFinal, "", 2 } );
 		mo.transport = &mock1;
 		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
@@ -1798,13 +2189,20 @@ static void TestPromptImagesMatrixResume()
 	}
 
 	// (2) Second invocation, unchanged image bytes: skipped as complete.
+	// The pre-flight auth probe fires UNCONDITIONALLY per resolved provider
+	// column, BEFORE the per-scenario resume check runs (it has no way to
+	// know yet that every cell will resume) -- so the mock still sees
+	// exactly the ONE probe request, even though the resumed cell itself
+	// never re-executes.
 	{
-		MockTransport mock2;   // must NEVER be called
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- no cell re-executes
 		mo.transport = &mock2;
 		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr2.runsExecuted == 0 && mr2.runsAlreadyComplete == 1,
 		       "T14: second invocation (unchanged image) is skipped as already-complete" );
-		Check( mock2.seenRequests.empty(), "T14: second invocation never calls the transport" );
+		Check( mock2.seenRequests.size() == 1,
+		       "T14: second invocation calls the transport exactly ONCE (the auth probe, no cell re-executes)" );
 	}
 
 	// (3) MUTATE the referenced image's BYTES in place (same path) -- the
@@ -1816,6 +2214,7 @@ static void TestPromptImagesMatrixResume()
 		       "T14: mutated the reference image's bytes in place" );
 
 		MockTransport mock3;
+		mock3.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
 		mock3.responses.push_back( { 200, kBodyFinal, "", 2 } );
 		mo.transport = &mock3;
 		AgentEvalMatrixResult mr3 = RunEvalMatrix( cfg, scenarios, mo );
@@ -1911,9 +2310,12 @@ static void TestCompareToImageMatrixResume()
 		return name == "RISE_TEST_FAKE_KEY" ? kFakeKey.c_str() : nullptr;
 	};
 
-	// (1) First invocation: executes.
+	// (1) First invocation: executes.  The FIRST canned response is the
+	// pre-flight auth probe's (a plain 200), THEN the run's own final-text
+	// body.
 	{
 		MockTransport mock1;
+		mock1.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
 		mock1.responses.push_back( { 200, kBodyFinal, "", 2 } );
 		mo.transport = &mock1;
 		AgentEvalMatrixResult mr1 = RunEvalMatrix( cfg, scenarios, mo );
@@ -1922,13 +2324,18 @@ static void TestCompareToImageMatrixResume()
 	}
 
 	// (2) Second invocation, unchanged reference bytes: skipped as complete.
+	// The pre-flight auth probe still fires ONCE (unconditionally, per
+	// resolved provider column, before any per-scenario resume check), so
+	// the mock needs exactly one canned probe response.
 	{
-		MockTransport mock2;   // must NEVER be called
+		MockTransport mock2;
+		mock2.responses.push_back( { 200, "{}", "", 1 } );   // auth probe only -- the resumed cell never re-executes
 		mo.transport = &mock2;
 		AgentEvalMatrixResult mr2 = RunEvalMatrix( cfg, scenarios, mo );
 		Check( mr2.runsExecuted == 0 && mr2.runsAlreadyComplete == 1,
 		       "T15: second invocation (unchanged reference) is skipped as already-complete" );
-		Check( mock2.seenRequests.empty(), "T15: second invocation never calls the transport" );
+		Check( mock2.seenRequests.size() == 1,
+		       "T15: second invocation calls the transport exactly ONCE (the auth probe, no cell re-executes)" );
 	}
 
 	// (3) MUTATE the compareToImage reference's BYTES in place (same path,
@@ -1942,6 +2349,7 @@ static void TestCompareToImageMatrixResume()
 		Check( WriteFile( pngPath, bytes ), "T15: mutated the reference image's bytes in place" );
 
 		MockTransport mock3;
+		mock3.responses.push_back( { 200, "{}", "", 1 } );   // auth probe
 		mock3.responses.push_back( { 200, kBodyFinal, "", 2 } );
 		mo.transport = &mock3;
 		AgentEvalMatrixResult mr3 = RunEvalMatrix( cfg, scenarios, mo );
@@ -1966,6 +2374,8 @@ int main()
 	TestLiveHttp5xxRetryStillFails();
 	TestLiveHttp400NotRetried();
 	TestLiveReasoningEffort400RetrySucceeds();
+	TestLiveReasoningEffort400RetryPreservesImages();
+	TestLiveReasoningEffortMemoizedAcrossSessions();   // MUST follow T15 (shares its model id -- see its header)
 	TestLiveTransportRetrySucceeds();
 	TestLiveTransportRetryStillFails();
 	TestLiveTransportRetryDoesNotStackWith5xx();
@@ -1977,6 +2387,7 @@ int main()
 	TestRunEvalMatrixResumeRerunsPartial();
 	TestRunEvalMatrixResumeContentAware();
 	TestRunEvalMatrixProviderModelCollision();
+	TestRunEvalMatrixAuthProbe();
 	TestPromptImagesEndToEnd();
 	TestPromptImagesMatrixResume();
 	TestCompareToImageMatrixResume();
