@@ -645,3 +645,112 @@ not substitutes: (k) proves the withheld tier fires on gross flatness
 variant every other gate passes is caught only there). Control (k)'s
 P1-era comment block and P2 fixture workflow gap are both fixed alongside
 this section (see §10's closing note and `tests/AgentEvalCheckTest.cpp`).
+
+## 12. GRADED middle tier — `checkpointFraction` as a progress meter (2026-07-18)
+
+**Purpose.** Wave 5's definitive baseline (four hosted providers, three runs
+each, `image_reconstruct_{single,multi}`) scored **0/24 allPassed** with best-
+run RMSEs in the **0.24–0.40** range — every run failed the strict §5/§7 /
+§10 caps outright. That is the correct pass/fail verdict (none of those runs
+produced a reconstruction a person would call "the same object staged the
+same way"), but it left `checkpointFraction` nearly uninformative at the 0%
+frontier: a run that never touched the scene and a run that built a
+recognisable-but-imperfect object scored close to the same low fraction,
+because the only render checkpoints in the array were the four strict/
+relaxed structural compares (indices 0-3), each all-or-nothing at a cap tuned
+to reject real defects, not to grade degrees of engagement. This section adds
+a **second, GRADED tier** of render checkpoints — indices 8-11, appended
+after the existing 0-7 (objectmap/document/diagnostics/trajectory keep their
+original indices 4-7; adversarial controls that assert against those fixed
+indices are unaffected) — whose sole job is to make `checkpointFraction` move
+in response to genuine partial progress, without touching the strict pass/
+fail gate at all.
+
+**The 0.9×anchor(e) arithmetic.** Anchor (e) (§3: the ground-truth scene with
+the `hero` object deleted entirely — the empty-stage / "did nothing" failure
+mode) is the natural zero point for a progress meter: any reconstruction that
+doesn't clear it hasn't done meaningfully more than nothing. Each graded
+cap is set to approximately 0.9× the corresponding anchor-(e) RMSE, then
+rounded to a clean 3-decimal number a few percent on the strict side of the
+exact product (so the empty-stage anchor fails with comfortable headroom
+rather than sitting on a knife's edge):
+
+| view | anchor (e) RMSE | 0.9× (exact) | chosen `rmseMax` | margin below anchor (e) |
+|---|---|---|---|---|
+| view1 | 0.11840 | 0.10656 | **0.105** | 11.3% |
+| view2 | 0.13346 | 0.12011 | **0.120** | 10.1% |
+| view3 | 0.17000 | 0.15300 | **0.150** | 11.8% |
+| view4 | 0.12647 | 0.11382 | **0.115** | 9.1% |
+
+Every chosen cap sits strictly below its anchor-(e) RMSE (9-12% margin), so
+an empty or near-empty stage fails all four graded checkpoints exactly as it
+fails the strict ones — the tier can only ever ADD failures on a
+scene that already fails strict, never mask one (see the `allPassed`
+semantics note below). At the same time each cap is 2.5-3.4× looser than its
+strict/relaxed sibling (view1 0.105 vs 0.015 strict; view2 0.120 vs 0.04
+relaxed; view3 0.150 vs 0.04 relaxed; view4 0.115 vs 0.04 relaxed), so a run
+that gets the object's rough shape, stage, and lighting broadly right but
+misses fine fidelity — the kind of output a partially-capable model
+produces — can clear the graded tier and register real credit in
+`checkpointFraction` while still correctly failing `allPassed`.
+
+**Weight-0.5 rationale.** Each graded checkpoint carries `"weight": 0.5`
+(the four strict/relaxed structural compares keep the implicit default
+weight of 1.0, per `AgentEvalRunner.h`'s `AgentEvalCheckpointResult::weight`
+and `CheckScenario`'s weighted-fraction arithmetic: `checkpointFraction =
+passSum / weightSum` over ALL checkpoints, so a change here shifts every
+scenario's fraction, not just failing ones). With 8 unit-weight checkpoints
+(0-7) and 4 half-weight checkpoints (8-11), `weightSum = 8 + 4×0.5 = 10`.
+A run that passes every structural/administrative checkpoint but only
+degrees of the graded tier moves smoothly between `8/10 = 0.80` (graded tier
+entirely failed — indistinguishable in kind from the pre-Sec-12 all-or-
+nothing behaviour, just rescaled) and `10/10 = 1.0` (graded tier entirely
+passed, which for `image_reconstruct_*` only happens when the structural
+compares ALSO passed, since the graded caps are strictly looser supersets of
+the same measurement — see below). Half weight (rather than equal or greater
+weight) was chosen deliberately: the graded tier is a *meter*, not a second
+independent pass/fail axis, so it must never let engagement-without-fidelity
+outweigh the eight checkpoints that already gate the real pass/fail
+decision — a run that fails every structural compare but clears all four
+graded ones still tops out at `4×0.5 / 10 = 0.20`, a small but non-zero
+signal that distinguishes "produced a recognisable staged object" from
+"produced nothing," without ever approaching the 0.5+ range that would read
+as "mostly working."
+
+**`allPassed` semantics are unchanged.** `CheckScenario` (`AgentEvalRunner.cpp`)
+computes `allPassed` as "every checkpoint in the array passed," independent
+of weight — a single failed checkpoint, however small its weight, still
+forces `allPassed = false`. Appending four MORE checkpoints therefore cannot
+turn a failing run into a passing one; it can only add failure modes to a
+scenario that was already going to fail on the strict tier (since every
+graded cap is looser than its structural sibling for the SAME
+`compareToImage`/camera pair, a run that passes the strict/relaxed compare at
+some view necessarily also passes the graded compare at that view — the
+graded checkpoint is redundant-but-harmless whenever the structural one
+already passed, and only does independent work when the structural one
+failed). The pass gate for `image_reconstruct_single`/`image_reconstruct_multi`
+therefore stays exactly as strict as it was before this change; only the
+*fraction* reported for a failing run becomes more informative.
+
+**Honest note on where the July-2026 baseline sits.** The four-provider,
+three-run-each baseline that motivated this section (best-run RMSEs
+0.24-0.40 across all views) fails the GRADED tier too — every observed RMSE
+in that baseline is 1.6-3.8× above even the loosest graded cap (0.150), let
+alone the strict ones. This is not a defect in the tier's calibration: it is
+the expected, honest state of frontier hosted models on this eval as of
+2026-07 — none of them meaningfully engaged with the reconstruction task
+(shape, material, lighting, and environment tint all in the 0.24+ RMSE
+range simultaneously reads as "wrong on every axis," not "close but
+imperfect"). The bas-relief adversarial control (k2) — a hand-built,
+oracle-quality reconstruction that is byte-correct on 3 of 4 views and only
+misses far-side volume on the most back-facing pose — is the concrete
+existence proof that the graded tier is reachable at all: it measures
+view1 0.01132, view2 0.02520, view3 0.06937, view4 0.01479, all comfortably
+under every graded cap. **The first model run to clear the graded tier
+(`checkpointFraction` ≥ 0.80 driven by checkpoints 8-11, even while still
+failing the strict `allPassed` gate) demonstrates "meaningfully engaged
+staging" — a reconstruction that is recognizably the same object, stage, and
+lighting from every angle, better than an empty stage from every angle —
+which no run in the July-2026 baseline achieved.** Until then,
+`checkpointFraction` for this eval should be read as "how far from an empty
+stage," not "how close to passing."
