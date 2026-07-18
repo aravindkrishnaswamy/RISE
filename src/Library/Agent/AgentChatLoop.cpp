@@ -16,6 +16,8 @@
 #include <algorithm> // std::min -- clamping imageContentBytes decrements (context-compaction P1-1 fix)
 #include <cstdlib>   // getenv -- ONLY for RISE_LOCAL_LLM_BASE_URL (config, not a credential; see MakeCodec)
 #include <cstring>   // strlen -- ASCII case-insensitive substring match (multimodal-400 detection)
+#include <mutex>     // process-wide reasoning-effort capability cache (see ReasoningEffortNoneAlreadyKnown)
+#include <set>       // ditto
 
 namespace RISE
 {
@@ -223,6 +225,64 @@ namespace RISE
 				}
 				return std::unique_ptr<IChatProviderCodec>( new AnthropicChatCodec() );
 			}
+
+			//! REASONING-EFFORT CAPABILITY MEMOIZATION (process-wide, cross-
+			//! SESSION): the retry in HandleResponse (mForceReasoningEffortNone)
+			//! learns the tools/reasoning_effort conflict the hard way -- one
+			//! wasted 400 round-trip -- and that knowledge is otherwise scoped
+			//! to a single AgentChatLoop instance (cleared by Reset()/
+			//! SetProvider, never shared).  A host that drives MANY sessions
+			//! against the SAME (provider, model) in one process (the eval
+			//! harness's RunEvalMatrix: repeats x scenarios all reusing one
+			//! gpt-5.6-terra-class model) pays that wasted round-trip on EVERY
+			//! session, even though the very first one already proved the
+			//! answer.  For an attachment-bearing session (reference-image
+			//! prompts) that wasted round-trip re-sends the FULL image payload
+			//! a second time -- real token cost against the provider's rate
+			//! limit, not just latency.  This tiny process-wide cache lets
+			//! every session AFTER the first one that hits the 400 start
+			//! pre-armed, cutting the wasted request instead of re-discovering
+			//! it per session.  Deliberately NOT a hardcoded model-name list --
+			//! entries are learned ONLY from a live 400, exactly like the
+			//! per-session retry it complements; a model that never trips the
+			//! 400 never appears here, and one that does is only ever added
+			//! AFTER the SAME live detection AgentChatLoop::HandleResponse
+			//! already performs.  Mutex-guarded: AgentChatLoop itself is
+			//! single-threaded, but this cache is shared by every instance
+			//! that has ever existed in the process, including ones on other
+			//! threads (e.g. a GUI chat panel and a headless eval run in the
+			//! same process).
+			std::mutex& ReasoningEffortCacheMutex()
+			{
+				static std::mutex m;
+				return m;
+			}
+			std::set<std::string>& ReasoningEffortCacheSet()
+			{
+				static std::set<std::string> s;
+				return s;
+			}
+			std::string ReasoningEffortCacheKey( const char* providerName, const std::string& modelId )
+			{
+				// NUL-separated: neither field can legally contain a NUL, and
+				// this avoids any ambiguity a plain concatenation could have
+				// between e.g. provider "a" model "bc" and provider "ab"
+				// model "c".
+				std::string key( providerName ? providerName : "" );
+				key.push_back( '\0' );
+				key += modelId;
+				return key;
+			}
+			bool ReasoningEffortNoneAlreadyKnown( const char* providerName, const std::string& modelId )
+			{
+				std::lock_guard<std::mutex> lock( ReasoningEffortCacheMutex() );
+				return ReasoningEffortCacheSet().count( ReasoningEffortCacheKey( providerName, modelId ) ) > 0;
+			}
+			void MarkReasoningEffortNoneKnown( const char* providerName, const std::string& modelId )
+			{
+				std::lock_guard<std::mutex> lock( ReasoningEffortCacheMutex() );
+				ReasoningEffortCacheSet().insert( ReasoningEffortCacheKey( providerName, modelId ) );
+			}
 		}
 
 		const char* AgentChatLoop::SystemPrompt()
@@ -304,7 +364,15 @@ namespace RISE
 			mToolRounds( 0 ),
 			mSessionEmitted( false ),
 			mElideAllImages( false ),
-			mForceReasoningEffortNone( false )
+			// REASONING-EFFORT CAPABILITY MEMOIZATION: pre-arm from the
+			// process-wide cache in case an EARLIER AgentChatLoop instance
+			// in this process already proved this (provider, model) pair
+			// needs the override -- see ReasoningEffortNoneAlreadyKnown's
+			// doc comment.  A model this process has never seen 400 for
+			// (the overwhelmingly common case) finds the cache empty and
+			// this is false, byte-identical to the pre-memoization default.
+			mForceReasoningEffortNone(
+				ReasoningEffortNoneAlreadyKnown( mCodec->ProviderName(), mModelId ) )
 		{
 		}
 
@@ -327,8 +395,18 @@ namespace RISE
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
 			// Likewise, a fresh session may target a different model that
-			// has no reasoning-vs-tools conflict at all.
-			mForceReasoningEffortNone = false;
+			// has no reasoning-vs-tools conflict at all -- but re-arm from
+			// the process-wide cache rather than blindly clearing: if THIS
+			// process already proved (mProvider, mModelId) needs the
+			// override (learned by an earlier session, possibly this same
+			// loop instance before this very Reset), a fresh session
+			// against the SAME pair should not have to pay the wasted
+			// round-trip again.  mProvider/mModelId are already the
+			// TARGET pair by the time Reset() runs (SetProvider sets them
+			// before calling Reset(); a direct Reset() keeps the current
+			// pair) -- see ReasoningEffortNoneAlreadyKnown's doc comment.
+			mForceReasoningEffortNone =
+				ReasoningEffortNoneAlreadyKnown( mCodec->ProviderName(), mModelId );
 		}
 
 		void AgentChatLoop::SetProvider( ChatProvider provider, const std::string& modelId )
@@ -656,12 +734,18 @@ namespace RISE
 			// flag the step so the driver re-issues the SAME round once.
 			// The step stays a ProviderError (errorKind Http) so that if the
 			// retry ALSO fails the existing error UX is unchanged; nothing
-			// is recorded either way (the ProviderError contract).
+			// is recorded either way (the ProviderError contract).  ALSO
+			// records the fact into the process-wide capability cache
+			// (ReasoningEffortNoneAlreadyKnown/MarkReasoningEffortNoneKnown)
+			// so every LATER AgentChatLoop instance in this process against
+			// the SAME (provider, model) starts pre-armed and never pays
+			// this wasted round-trip again -- see that cache's doc comment.
 			if( pr.step.kind == ChatStepResult::Kind::ProviderError &&
 			    pr.step.errorKind == ChatErrorKind::Http &&
 			    !mForceReasoningEffortNone &&
 			    IsReasoningEffortToolsUnsupported400( httpStatus, rawBody ) ) {
 				mForceReasoningEffortNone = true;
+				MarkReasoningEffortNoneKnown( mCodec->ProviderName(), mModelId );
 				pr.step.retryReasoningEffortNone = true;
 				return pr.step;
 			}
