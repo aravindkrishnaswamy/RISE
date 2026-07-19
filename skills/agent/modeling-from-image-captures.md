@@ -364,28 +364,43 @@ like it's converging:
   shading is NOT what the grader renders, so a low draft RMSE only
   confirms geometry/composition, never colour or material match (see
   the tool's own `samples` parameter doc for the full tradeoff).
-- If RMSE plateaus above roughly 0.1 across a couple of iterations,
-  the STAGING is wrong, not the object -- go back to
-  environment/light (section 6 below) before touching the object's
-  shape or materials again.
-- Once RMSE plateaus, call `compare_to_reference` with `split:true` to
-  find out WHICH of the two (staging vs object) the plateau actually
-  is, instead of guessing from the grid alone: it returns
-  `objectRmse`/`backgroundRmse` (plus `objectPixelFraction`), an
-  object-vs-background breakdown built from your own candidate's
-  objectmap mask (one extra render). If `backgroundRmse` is already
-  low, STOP tuning the environment/ground/lights -- that stage is
-  done -- and put every remaining iteration into the OBJECT's
-  silhouette and proportions. If `backgroundRmse` is still high, your
-  staging is still the biggest lever; keep working section 6 before
-  touching the object again.
-- Check each figure is `>= 0` BEFORE acting on it. Either one is `-1`
-  when its bucket is empty -- `objectRmse` when no object is visible
-  (camera aimed away, object off-frame), `backgroundRmse` when your
-  objects fill the entire frame. `-1` means "not measured", NOT "zero
-  error": reading a `-1` backgroundRmse as "staging is done" would send
-  you off tuning the object when you have not actually checked the
-  staging at all. If you get a `-1`, fix the framing and re-compare.
+**When RMSE stops falling, MEASURE what is left -- do not guess.**
+This is a rule, not a suggestion, and it has a mechanical trigger so
+you never have to decide whether a "plateau" has happened:
+
+> **From your THIRD `compare_to_reference` onward, pass
+> `split: true`** -- and from then on, whenever the overall `rmse`
+> fails to drop by at least ~10% against your previous compare.
+
+`split:true` costs one extra render and returns `objectRmse`,
+`backgroundRmse` and `objectPixelFraction`: the same RMSE, computed
+separately over the pixels your object covers and everything else,
+using an objectmap mask of your OWN candidate. It answers the one
+question the overall number cannot -- is the error in the STAGING or
+in the OBJECT -- and it replaces the old rule of thumb that a plateau
+above ~0.1 means the staging is wrong. That guess is often wrong;
+this is a measurement, so trust it over the guess and over the 3x3
+grid. Then act on it, decisively:
+
+- **`backgroundRmse` low, `objectRmse` high** -> the stage is DONE.
+  Stop touching the environment, ground and lights entirely. Spend
+  every remaining iteration on the object's silhouette and
+  proportions.
+- **`backgroundRmse` still high** -> staging is your biggest lever
+  regardless of how the object looks. Keep working section 6 and do
+  not touch the object's shape or materials yet.
+- **Both high** -> staging first (section 6). A wrong environment
+  changes how the object is lit, so fixing the object against wrong
+  lighting is work you will redo.
+
+One safety rule before you act on either figure: **check it is
+`>= 0`.** Each sentinels to `-1` when its bucket is empty --
+`objectRmse` when no object is visible (camera aimed away, object
+off-frame), `backgroundRmse` when your objects fill the entire frame.
+`-1` means "not measured", NOT "zero error". Reading a `-1`
+`backgroundRmse` as "staging is done" would send you off tuning the
+object having never checked the staging at all. On a `-1`, fix the
+framing and re-compare before drawing any conclusion.
 
 ### 6. Match order: silhouette -> proportions -> surface -> materials -> lighting -> environment
 

@@ -1440,7 +1440,21 @@ namespace RISE
 			//! under the new methodology), preventing one runDir from silently mixing
 			//! results produced under two methodologies. Scenario-file changes do NOT need
 			//! this -- the hash already covers them.
-			static const int kEvalMethodologyEpoch = 1;
+			//! Epoch history:
+			//!   1 -> initial.
+			//!   2 -> (2026-07-19) compare_to_reference gained the `split`
+			//!        parameter (a TOOL-DEFINITION change) and
+			//!        skills/agent/modeling-from-image-captures.md turned its
+			//!        plateau guidance into a directive rule with a mechanical
+			//!        trigger (a DRIVE-LOOP change).  Note the skill file's
+			//!        bytes are NOT covered by ScenarioContentHash -- only
+			//!        scenario files are -- so a skill edit is precisely the
+			//!        "alters how runs are DRIVEN without touching any
+			//!        scenario file" case this epoch exists for.  Without the
+			//!        bump the pre-split vision cells stay hash-current and
+			//!        get silently reused, so a re-run would measure nothing
+			//!        and the board would mix two methodologies.
+			static const int kEvalMethodologyEpoch = 2;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
