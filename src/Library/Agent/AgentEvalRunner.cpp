@@ -1465,7 +1465,18 @@ namespace RISE
 			//!        object-vs-staging, making the skill's own read of it
 			//!        wrong.  Epoch-2 cells were driven under that broken
 			//!        reading and must not be compared against scoped runs.
-			static const int kEvalMethodologyEpoch = 3;
+			//!   4 -> (2026-07-19) the skill's split guidance was SOFTENED from
+			//!        a mandate ("from your THIRD compare onward") back to an
+			//!        occasional, opt-in diagnostic (drive-loop change).  A
+			//!        controlled A/B (epoch 3, gpt, 2 scenarios x 3 repeats x
+			//!        2 arms, arms differing ONLY in the skill file) measured
+			//!        the mandate's effect on final RMSE at -0.0004, 95% CI
+			//!        [-0.050, +0.050] -- nothing -- while it pushed 5 of 6
+			//!        runs into budget exhaustion vs 1 of 6 without it, since
+			//!        each split costs an extra render and calls are the
+			//!        binding constraint.  Epoch-3 cells were driven under the
+			//!        mandate and are not comparable to softened-guidance runs.
+			static const int kEvalMethodologyEpoch = 4;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,

@@ -364,28 +364,33 @@ like it's converging:
   shading is NOT what the grader renders, so a low draft RMSE only
   confirms geometry/composition, never colour or material match (see
   the tool's own `samples` parameter doc for the full tradeoff).
-**When RMSE stops falling, MEASURE what is left -- do not guess.**
-This is a rule, not a suggestion, and it has a mechanical trigger so
-you never have to decide whether a "plateau" has happened:
 
-> **From your THIRD `compare_to_reference` onward, pass
-> `split: true`, scoped with `splitObjects: ["<your hero object's
-> name>"]`** -- and from then on, whenever the overall `rmse` fails to
-> drop by at least ~10% against your previous compare.
+**If -- and only if -- you need to settle whether the residual is the
+STAGING or the OBJECT, you can measure it instead of guessing.**
+`compare_to_reference` takes `split: true`, which returns
+`objectRmse`, `backgroundRmse` and `objectPixelFraction`: the same
+RMSE computed separately over the pixels your object covers and
+everything else, from an objectmap mask of your OWN candidate.
 
-`split:true` costs one extra render and returns `objectRmse`,
-`backgroundRmse` and `objectPixelFraction`: the same RMSE, computed
-separately over the pixels your object covers and everything else,
-using an objectmap mask of your OWN candidate. It answers the one
-question the overall number cannot -- is the error in the STAGING or
-in the OBJECT -- and it replaces the old rule of thumb that a plateau
-above ~0.1 means the staging is wrong. That guess is often wrong;
-this is a measurement, so trust it over the guess and over the 3x3
-grid.
+**Use it sparingly -- at most once, at a genuine decision point.** It
+costs an EXTRA render every time, and on this task your tool/LLM
+budget, not your information, is the binding constraint. That is
+measured, not cautionary: an earlier version of this skill told you to
+pass it from your third compare onward, and in a controlled A/B that
+mandate changed the final RMSE by -0.0004 (95% CI -0.05..+0.05, i.e.
+nothing at all) while pushing 5 of 6 runs into budget exhaustion,
+versus 1 of 6 without it. Runs that skipped it had budget left to
+finish deliberately. So: if you already know what to fix next, just
+fix it. Reach for the split only when you would otherwise burn
+iterations guessing.
 
-**Pass `splitObjects` -- do not skip it.** Unscoped, "OBJECT" means
-EVERY registered object, and your ground plane and backdrop ARE
-registered objects, so they land in the OBJECT bucket and
+When you do use it, it beats the old rule of thumb that a plateau
+above ~0.1 means the staging is wrong -- that guess is often wrong,
+and this is a measurement.
+
+**If you use it, pass `splitObjects` -- do not skip it.** Unscoped,
+"OBJECT" means EVERY registered object, and your ground plane and
+backdrop ARE registered objects, so they land in the OBJECT bucket and
 "background" shrinks to just the sky. Measured on real runs of this
 task, that put `objectPixelFraction` at ~0.86 and made the split
 report geometry-vs-environment rather than object-vs-staging -- the
