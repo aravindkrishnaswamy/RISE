@@ -4378,13 +4378,38 @@ namespace RISE
 					} else {
 						// The mask: a pixel is OBJECT iff its objectmap
 						// colour matches a REAL (non-"<unmapped>") legend
-						// entry's exact byte.  Background/no-hit and
-						// unregistered-object hits both fall into the
-						// background bucket -- see the struct doc.
+						// entry's exact byte -- UNLESS the caller passed a
+						// non-empty params.splitObjects, in which case the
+						// mask is further scoped to ONLY the named entries
+						// (see AgentCompareToReferenceParams::splitObjects'
+						// doc for why: an unscoped mask counts a scene's own
+						// ground plane / backdrop as OBJECT, since they are
+						// ordinary registered objects too).  Background/
+						// no-hit and unregistered-object hits both fall into
+						// the background bucket either way -- see the struct
+						// doc.
 						std::unordered_set<std::string> objectColorHexes;
-						for( const LegendEntry& e : omr.legend ) {
-							if( e.name == "<unmapped>" ) continue;
-							objectColorHexes.insert( e.colorHex );
+						std::vector<std::string> unknownSplitObjects;
+						if( params.splitObjects.empty() ) {
+							for( const LegendEntry& e : omr.legend ) {
+								if( e.name == "<unmapped>" ) continue;
+								objectColorHexes.insert( e.colorHex );
+							}
+						} else {
+							// Scoped: only legend entries whose name was
+							// explicitly requested count as OBJECT.
+							// "<unmapped>" is never selectable by name -- it
+							// is not a real object -- so it is skipped even
+							// if a caller (mistakenly) names it.
+							for( const std::string& want : params.splitObjects ) {
+								const LegendEntry* match = nullptr;
+								for( const LegendEntry& e : omr.legend ) {
+									if( e.name == "<unmapped>" ) continue;
+									if( e.name == want ) { match = &e; break; }
+								}
+								if( match ) objectColorHexes.insert( match->colorHex );
+								else        unknownSplitObjects.push_back( want );
+							}
 						}
 
 						double objSumSq = 0.0, bgSumSq = 0.0;
@@ -4429,6 +4454,59 @@ namespace RISE
 								"(camera inside/too close to the geometry, or a backdrop object filling the view) -- "
 								"backgroundRmse unavailable, objectRmse covers the whole frame";
 						}
+
+						// Requested-name diagnostics -- ONLY when the caller
+						// scoped the mask (params.splitObjects non-empty).
+						// This MUST override/augment the generic empty-mask
+						// notes above whenever an unknown name is involved:
+						// an empty OBJECT mask caused by a typo'd name is a
+						// completely different failure than a genuinely
+						// off-frame object, and reporting the off-frame
+						// wording in that case would actively mislead a
+						// caller trying to debug why their scoped split
+						// came back empty.
+						if( !params.splitObjects.empty() && !unknownSplitObjects.empty() ) {
+							std::string availableNames;
+							for( const LegendEntry& e : omr.legend ) {
+								if( e.name == "<unmapped>" ) continue;
+								if( !availableNames.empty() ) availableNames += ", ";
+								availableNames += e.name;
+							}
+							if( availableNames.empty() ) availableNames = "(none registered)";
+
+							std::string unknownNames;
+							for( std::size_t i = 0; i < unknownSplitObjects.size(); ++i ) {
+								if( i ) unknownNames += ", ";
+								unknownNames += unknownSplitObjects[i];
+							}
+
+							if( unknownSplitObjects.size() == params.splitObjects.size() ) {
+								// NONE of the requested names matched -- the
+								// mask is empty because the name(s) don't
+								// exist in this scene, NOT because the
+								// object is off-frame/occluded.  Replace
+								// (not append to) the generic empty-mask
+								// note above so the off-frame wording never
+								// appears here.
+								res.split.note = "split: none of the requested splitObjects name(s) [" + unknownNames +
+									"] exist in this scene's objectmap legend -- available object name(s): " +
+									availableNames + " -- objectRmse unavailable";
+							} else {
+								// SOME requested names matched (the split
+								// still computed normally on those) and some
+								// didn't -- surface the unknown ones so a
+								// typo can't silently shrink the mask
+								// unnoticed.  Prepend to (rather than
+								// clobber) any genuine empty-mask note the
+								// blocks above may have already set.
+								std::string unknownNote = "split: requested splitObjects name(s) not found and excluded "
+									"from the OBJECT mask: [" + unknownNames + "] -- available object name(s): " +
+									availableNames;
+								res.split.note = res.split.note.empty()
+									? unknownNote
+									: unknownNote + " | " + res.split.note;
+							}
+						}
 					}
 				}
 			}
@@ -4450,7 +4528,11 @@ namespace RISE
 				res.summary = buf;
 
 				if( res.hasSplit ) {
-					char splitBuf[320];
+					// 1 KiB, not 320: the unknown-splitObjects notes embedded
+					// by the branches below list EVERY available object name,
+					// so a scene with many objects would silently truncate at
+					// the old size.
+					char splitBuf[1024];
 					if( res.split.ok && res.split.objectRmse >= 0.0 && res.split.backgroundRmse >= 0.0 ) {
 						std::snprintf( splitBuf, sizeof( splitBuf ),
 							" | split: object-region RMSE %.4f, background RMSE %.4f, object covers %.0f%% of frame -- %s",
@@ -4458,6 +4540,21 @@ namespace RISE
 							( res.split.backgroundRmse + 0.02 < res.split.objectRmse )
 								? "staging is close; the gap is the object"
 								: "background/staging still carries meaningful error too" );
+						// A note CAN be set even when BOTH buckets are valid: a
+						// partial splitObjects match (some names found, some
+						// unknown) computes fine but must still surface the
+						// typo.  Dropping it would silently shrink the mask
+						// behind the caller's back -- exactly what the
+						// unknown-name diagnostics exist to prevent -- and the
+						// summary is what a model actually reads.  Appended to
+						// the std::string, NOT into splitBuf, because these
+						// notes list every available object name and would
+						// blow the fixed buffer's budget and be truncated.
+						if( !res.split.note.empty() ) {
+							res.summary += splitBuf;
+							res.summary += " [" + res.split.note + "]";
+							splitBuf[0] = '\0';   // already folded in above
+						}
 					} else if( res.split.ok && res.split.backgroundRmse >= 0.0 ) {
 						std::snprintf( splitBuf, sizeof( splitBuf ),
 							" | split: no object visible in the candidate (%s); background RMSE %.4f covers the whole frame",

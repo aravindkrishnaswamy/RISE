@@ -1182,6 +1182,199 @@ static void RunCompareToReferenceSplit()
 		pTwoJob->release();
 		std::remove( twoPath.c_str() );
 	}
+
+	// ---- (7) SCOPED SPLIT: `splitObjects` restricts the OBJECT bucket to
+	// caller-named legend entries -- the fix for the "stage lands in the
+	// OBJECT bucket" problem found in a live eval run.  Reuses the SAME
+	// two-sphere scene as (6): scoping to ["obj_a"] must (a) roughly halve
+	// objectPixelFraction vs the unscoped split (both spheres are equal
+	// size), and (b) the money test -- recolour obj_b (the object EXCLUDED
+	// from the scope) and confirm the error now lands in BACKGROUND, not
+	// OBJECT -- the inverse of test (6), where the exact same recolour
+	// raised objectRmse under the unscoped mask.  Also covers the
+	// unknown-name and partial-match note wording.
+	{
+		const std::string scopedPath = WriteTemp( "agent_compare_split_scoped.RISEscene", kSplitSceneTwoObjects );
+		Check( !scopedPath.empty(), "splitObjects: scoped scratch scene file written" );
+
+		Job* pScopedJob = new Job();
+		Check( pScopedJob->LoadAsciiSceneViaCst( scopedPath.c_str() ), "splitObjects: scoped scene loads via the CST path" );
+		{
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pScopedJob );
+			Check( session != nullptr, "splitObjects: AgentSession::WrapJob wraps the scoped session" );
+
+			AgentRpcDispatcher rpc( std::move( session ) );
+			AgentSession* s = rpc.Session();
+			Check( s != nullptr, "splitObjects: dispatcher exposes the wrapped scoped session" );
+
+			AgentRenderParams rp;
+			rp.samples = 64;
+			const AgentRenderResult rr = s->Render( rp );
+			Check( rr.ok && !rr.png.empty(), "splitObjects: scoped reference render succeeded" );
+
+			std::vector<AgentReferenceImage> refs( 1 );
+			refs[0].name = "viewScoped";
+			refs[0].pngBytes.assign( rr.png.begin(), rr.png.end() );
+			s->SetReferenceImages( std::move( refs ) );
+
+			// (e) BACK-COMPAT: split:true with splitObjects omitted behaves
+			// exactly as the unscoped tests above -- both spheres in the
+			// OBJECT bucket, no note.
+			double unscopedFrac = -1.0;
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "reference", JsonValue::MakeString( "viewScoped" ) );
+				params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+				params.set( "split",     JsonValue::MakeBool( true ) );
+				params.set( "visual",    JsonValue::MakeBool( false ) );
+				const std::string resp = rpc.HandleLine( Req( 10, "compare_to_reference", params ) );
+				JsonValue env = ParseResponse( resp, 10 );
+				Check( env.has( "result" ), "splitObjects: back-compat unscoped: structured success" );
+				const JsonValue& sp = env.get( "result" ).get( "split" );
+				unscopedFrac = sp.get( "objectPixelFraction" ).asNumber();
+				std::printf( "  splitObjects back-compat (omitted): objectPixelFraction=%.4f note=\"%s\"\n",
+					unscopedFrac, sp.get( "note" ).asString().c_str() );
+				Check( sp.get( "ok" ).asBool(), "splitObjects: back-compat unscoped: split ok" );
+				Check( unscopedFrac > 0.0, "splitObjects: back-compat unscoped: mask is non-empty" );
+				Check( sp.get( "note" ).asString().empty(),
+					"splitObjects: back-compat unscoped: no note (both spheres visible, nothing scoped)" );
+			}
+
+			// (a) SCOPED TO obj_a: objectPixelFraction should be roughly
+			// HALF the unscoped fraction (equal-size spheres) -- meaningfully
+			// less, and still > 0.
+			double scopedObjFloor = -1.0, scopedBgFloor = -1.0;
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "reference", JsonValue::MakeString( "viewScoped" ) );
+				params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+				params.set( "split",     JsonValue::MakeBool( true ) );
+				params.set( "visual",    JsonValue::MakeBool( false ) );
+				JsonValue splitObjects = JsonValue::MakeArray();
+				splitObjects.push_back( JsonValue::MakeString( "obj_a" ) );
+				params.set( "splitObjects", splitObjects );
+				const std::string resp = rpc.HandleLine( Req( 11, "compare_to_reference", params ) );
+				JsonValue env = ParseResponse( resp, 11 );
+				Check( env.has( "result" ), "splitObjects: scoped-to-obj_a floor: structured success" );
+				const JsonValue& sp = env.get( "result" ).get( "split" );
+				scopedObjFloor = sp.get( "objectRmse" ).asNumber();
+				scopedBgFloor  = sp.get( "backgroundRmse" ).asNumber();
+				const double scopedFrac = sp.get( "objectPixelFraction" ).asNumber();
+				std::printf( "  splitObjects=[obj_a]: objectPixelFraction=%.4f (unscoped %.4f) objectRmse=%.6f backgroundRmse=%.6f\n",
+					scopedFrac, unscopedFrac, scopedObjFloor, scopedBgFloor );
+				Check( scopedFrac > 0.0, "splitObjects: scoped-to-obj_a: mask is non-empty" );
+				Check( scopedFrac < unscopedFrac * 0.65,
+					"splitObjects: scoped-to-obj_a: objectPixelFraction is meaningfully less than the unscoped fraction" );
+				Check( scopedFrac > unscopedFrac * 0.35,
+					"splitObjects: scoped-to-obj_a: objectPixelFraction is roughly half the unscoped fraction (both spheres are equal size)" );
+				Check( scopedObjFloor >= 0.0 && scopedBgFloor >= 0.0,
+					"splitObjects: scoped-to-obj_a floor: both buckets are real measurements" );
+			}
+
+			// (b) THE MONEY TEST: recolour obj_b -- the object EXCLUDED from
+			// the ["obj_a"] scope -- and confirm the error now lands in
+			// BACKGROUND, the inverse of the unscoped legend-aggregation
+			// test (6) where the exact same recolour raised objectRmse.
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "target", JsonValue::MakeString( "pnt_albedo_b" ) );
+				params.set( "param",  JsonValue::MakeString( "color" ) );
+				params.set( "value",  JsonValue::MakeString( "0.1 0.7 0.1" ) );
+				const std::string resp = rpc.HandleLine( Req( 12, "propose_patch", params ) );
+				JsonValue env = ParseResponse( resp, 12 );
+				Check( env.get( "result" ).get( "applied" ).asBool(), "splitObjects: money-test obj_b recolor propose_patch applied" );
+			}
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "reference", JsonValue::MakeString( "viewScoped" ) );
+				params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+				params.set( "split",     JsonValue::MakeBool( true ) );
+				params.set( "visual",    JsonValue::MakeBool( false ) );
+				JsonValue splitObjects = JsonValue::MakeArray();
+				splitObjects.push_back( JsonValue::MakeString( "obj_a" ) );
+				params.set( "splitObjects", splitObjects );
+				const std::string resp = rpc.HandleLine( Req( 13, "compare_to_reference", params ) );
+				JsonValue env = ParseResponse( resp, 13 );
+				Check( env.has( "result" ), "splitObjects: money-test post-recolor: structured success" );
+				const JsonValue& sp = env.get( "result" ).get( "split" );
+				const double objAfter = sp.get( "objectRmse" ).asNumber();
+				const double bgAfter  = sp.get( "backgroundRmse" ).asNumber();
+				std::printf( "  splitObjects MONEY TEST: BEFORE objectRmse=%.6f backgroundRmse=%.6f -- AFTER obj_b recolor objectRmse=%.6f (floor %.6f) backgroundRmse=%.6f (floor %.6f)\n",
+					scopedObjFloor, scopedBgFloor, objAfter, scopedObjFloor, bgAfter, scopedBgFloor );
+				Check( objAfter < scopedObjFloor + 0.03,
+					"splitObjects: money test: objectRmse (scoped to obj_a) stays near its floor -- obj_b is OUT of scope" );
+				Check( bgAfter > scopedBgFloor + 0.05,
+					"splitObjects: money test: backgroundRmse rises sharply -- obj_b's recolor now lands in BACKGROUND" );
+				Check( bgAfter > objAfter,
+					"splitObjects: money test: the error is now attributed to the BACKGROUND bucket, the inverse of the unscoped case" );
+			}
+
+			// (c) UNKNOWN NAME: objectRmse == -1, note names "nope" and
+			// lists the available legend names, and does NOT claim the
+			// object is off-frame/occluded (that wording is reserved for
+			// the genuinely-empty-mask case, which this is not).
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "reference", JsonValue::MakeString( "viewScoped" ) );
+				params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+				params.set( "split",     JsonValue::MakeBool( true ) );
+				params.set( "visual",    JsonValue::MakeBool( false ) );
+				JsonValue splitObjects = JsonValue::MakeArray();
+				splitObjects.push_back( JsonValue::MakeString( "nope" ) );
+				params.set( "splitObjects", splitObjects );
+				const std::string resp = rpc.HandleLine( Req( 14, "compare_to_reference", params ) );
+				JsonValue env = ParseResponse( resp, 14 );
+				Check( env.has( "result" ), "splitObjects: unknown-name: structured success" );
+				const JsonValue& sp = env.get( "result" ).get( "split" );
+				const double objRmse = sp.get( "objectRmse" ).asNumber();
+				const std::string note = sp.get( "note" ).asString();
+				std::printf( "  splitObjects=[nope]: objectRmse=%.6f note=\"%s\"\n", objRmse, note.c_str() );
+				Check( objRmse == -1.0, "splitObjects: unknown-name: objectRmse sentinels to -1" );
+				Check( note.find( "nope" ) != std::string::npos,
+					"splitObjects: unknown-name: note names the unknown requested object" );
+				Check( note.find( "obj_a" ) != std::string::npos,
+					"splitObjects: unknown-name: note lists the available legend name(s)" );
+				Check( note.find( "off-frame" ) == std::string::npos && note.find( "occluded" ) == std::string::npos,
+					"splitObjects: unknown-name: note does NOT use the off-frame/occluded wording -- the cause is an unknown name, not a missing object" );
+			}
+
+			// (d) PARTIAL MATCH: ["obj_a","nope"] computes normally off the
+			// matched name(s) and the note still names the unknown one, so
+			// a typo can't silently shrink the mask unnoticed.
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "reference", JsonValue::MakeString( "viewScoped" ) );
+				params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+				params.set( "split",     JsonValue::MakeBool( true ) );
+				params.set( "visual",    JsonValue::MakeBool( false ) );
+				JsonValue splitObjects = JsonValue::MakeArray();
+				splitObjects.push_back( JsonValue::MakeString( "obj_a" ) );
+				splitObjects.push_back( JsonValue::MakeString( "nope" ) );
+				params.set( "splitObjects", splitObjects );
+				const std::string resp = rpc.HandleLine( Req( 15, "compare_to_reference", params ) );
+				JsonValue env = ParseResponse( resp, 15 );
+				Check( env.has( "result" ), "splitObjects: partial-match: structured success" );
+				const JsonValue& sp = env.get( "result" ).get( "split" );
+				const double objRmse = sp.get( "objectRmse" ).asNumber();
+				const std::string note = sp.get( "note" ).asString();
+				std::printf( "  splitObjects=[obj_a,nope]: objectRmse=%.6f note=\"%s\"\n", objRmse, note.c_str() );
+				Check( objRmse >= 0.0, "splitObjects: partial-match: objectRmse computes normally off the matched name" );
+				Check( note.find( "nope" ) != std::string::npos,
+					"splitObjects: partial-match: note names the unknown requested object even though obj_a matched" );
+
+				// The summary is what a MODEL actually reads -- a typo that
+				// silently shrank the mask must surface THERE too, not only
+				// in the structured `note` field.  This branch computes both
+				// buckets successfully, so it is the one branch that used to
+				// drop the note on the floor.
+				const std::string summary = env.get( "result" ).get( "summary" ).asString();
+				Check( summary.find( "nope" ) != std::string::npos,
+					"splitObjects: partial-match: the human-readable summary ALSO carries the unknown-name warning" );
+			}
+		}
+		pScopedJob->release();
+		std::remove( scopedPath.c_str() );
+	}
 }
 
 int main()

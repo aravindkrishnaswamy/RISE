@@ -361,7 +361,20 @@ namespace RISE
 					"EMPTY: objectRmse is -1 when no object pixels are visible (camera pointed "
 					"away, object off-frame), backgroundRmse is -1 when registered objects cover "
 					"the ENTIRE frame. Check for >= 0 before trusting either -- -1 means \"not "
-					"measured\", NOT \"perfect match\".",
+					"measured\", NOT \"perfect match\". WARNING: without `splitObjects`, EVERY "
+					"registered object counts as OBJECT -- including a ground plane, backdrop, or "
+					"any other staging geometry you built as a real scene object -- so an unscoped "
+					"split measures \"geometry vs. environment\", not \"hero object vs. staging\" "
+					"(observed averaging 86% of the frame in the OBJECT bucket on scenes with a "
+					"modeled ground plane). Pass `splitObjects` (an array of object names) to scope "
+					"the OBJECT bucket to just your hero object -- every other pixel, including "
+					"other registered geometry, then falls into BACKGROUND instead, giving a true "
+					"hero-object-vs-staging reading. A requested name absent from the candidate's "
+					"objectmap legend is dropped from the mask (not a hard failure) and surfaced in "
+					"split.note along with the names that ARE available, so a typo can't silently "
+					"shrink your mask unnoticed; if NONE of the requested names match, objectRmse "
+					"comes back -1 with a note saying so explicitly (distinct from the ordinary "
+					"\"object off-frame\" -1 case).",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"reference\":{\"type\":\"string\",\"description\":"
 						"\"Required. The name of a host-registered reference image (e.g. view1, view2, ... in prompt-attachment order). An unknown name is an error listing every registered reference.\"},"
@@ -378,7 +391,9 @@ namespace RISE
 						"\"samples\":{\"type\":\"number\",\"description\":"
 						"\"Optional sample-count override, clamped to [1,65536]. Omit for a cheap quality:draft comparison (materials/lighting ignored); supply for a real quality:production RMSE reading -- see the tool description's quality tradeoff.\"},"
 						"\"split\":{\"type\":\"boolean\",\"description\":"
-						"\"Optional, default false. Returns an object-vs-background RMSE breakdown (one extra objectmap render) -- see the tool description's split paragraph.\"}"
+						"\"Optional, default false. Returns an object-vs-background RMSE breakdown (one extra objectmap render) -- see the tool description's split paragraph.\"},"
+						"\"splitObjects\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"Optional array of object names, only meaningful alongside split:true. Scopes the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, including other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Without this, a modeled ground plane/backdrop counts as OBJECT too, inflating the OBJECT bucket -- see the tool description's WARNING. A name not found in the candidate's objectmap legend is dropped from the mask and surfaced in split.note (never a hard failure).\"}"
 					"},\"required\":[\"reference\"]}"
 				},
 			};

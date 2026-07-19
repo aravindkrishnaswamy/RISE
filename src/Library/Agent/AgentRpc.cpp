@@ -1619,7 +1619,7 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// compare_to_reference {reference,camera?,visual?,samples?,split?} ->
+				// compare_to_reference {reference,camera?,visual?,samples?,split?,splitObjects?} ->
 				//   {rmse,channelDelta:{r,g,b},grid:[{rmse,dr,dg,db},x9],
 				//    worstCell,width,height,reference,summary,
 				//    png_base64?,compositeWidth?,compositeHeight?,
@@ -1644,6 +1644,20 @@ namespace RISE
 				//   candidate-objectmap mask mechanism and its honesty
 				//   caveat.  The "split" result key is OMITTED entirely
 				//   when `split` was false or absent (back-compat).
+				//   `splitObjects` (OPTIONAL array of strings, default empty,
+				//   only meaningful alongside `split:true`) SCOPES the
+				//   OBJECT bucket to just the named registered object(s) --
+				//   see AgentCompareToReferenceParams::splitObjects' doc for
+				//   why: WITHOUT it, a scene's own ground plane / backdrop /
+				//   any other staging geometry counts as OBJECT too (they
+				//   are registered objects like any other), so to get a
+				//   true hero-object-vs-staging reading, scope this to the
+				//   hero object's name.  Each element must be a string --
+				//   a non-array or a non-string element is a clean -32602.
+				//   A requested name absent from the candidate's objectmap
+				//   legend is never a hard failure: it is dropped from the
+				//   mask and surfaced in `split.note` instead (see
+				//   AgentSession::CompareToReference's split block).
 				//--------------------------------------------------------------
 				if( m == "compare_to_reference" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -1686,6 +1700,20 @@ namespace RISE
 						if( spv->isBool() ) cparams.split = spv->asBool();
 						else if( !spv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'split' must be a boolean" );
+					}
+
+					if( const JsonValue* sov = params.find( "splitObjects" ) ) {
+						if( sov->isArray() ) {
+							for( std::size_t i = 0; i < sov->size(); ++i ) {
+								const JsonValue& el = sov->at( i );
+								if( !el.isString() )
+									return MakeError( idValue, kInvalidParams,
+										"Invalid params: 'splitObjects' must be an array of strings" );
+								cparams.splitObjects.push_back( el.asString() );
+							}
+						}
+						else if( !sov->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'splitObjects' must be an array of strings" );
 					}
 
 					AgentCameraOverride crCamOverride;

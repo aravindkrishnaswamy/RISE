@@ -95,6 +95,19 @@ namespace RISE
 				return o;
 			}
 
+			//! A JSON Schema `{type:"array", items:{type:"string"}}` leaf,
+			//! optionally with a `description` -- for params AgentRpc.cpp
+			//! parses as an array-of-strings (element-type-checked, non-array
+			//! or non-string elements rejected with -32602).
+			JsonValue StringArrayProp( const std::string& description )
+			{
+				JsonValue o = JsonValue::MakeObject();
+				o.set( "type", JsonValue::MakeString( "array" ) );
+				o.set( "items", StringProp( "" ) );
+				if( !description.empty() ) o.set( "description", JsonValue::MakeString( description ) );
+				return o;
+			}
+
 			JsonValue ObjectProp( const std::string& description, const JsonValue& properties,
 			                      const std::vector<std::string>& required )
 			{
@@ -562,7 +575,8 @@ namespace RISE
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "visual", BoolProp( "OPTIONAL, default true. When true, ALSO returns a composite [render | reference | abs-diff heatmap] side-by-side PNG (3x the reference's width) as a real image content block, using the SAME mechanism read_image uses. Set false once you only need the numeric feedback (rmse/channelDelta/grid) -- saves the encode cost and the response's token footprint." ) );
 					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,65536]. IMPORTANT QUALITY TRADEOFF: omit this (the default) and the comparison renders at quality:\"draft\" -- cheap, but the draft pipeline IGNORES the scene's authored materials and lighting entirely, so a low draft-mode RMSE only confirms geometry/composition/camera alignment, NOT colour or material match. Supplying `samples` switches the comparison to quality:\"production\" at that sample count -- the real, grader-equivalent RMSE reading, and materially more expensive. Recommended workflow: iterate cheaply under the draft default while getting composition/placement right, then pass `samples` (e.g. 16-64) for the real measurement once composition looks plausible." ) );
-					props.set( "split", BoolProp( "OPTIONAL, default false. When true, ALSO returns split:{objectRmse,backgroundRmse,objectPixelFraction,ok,note} -- an object-vs-background RMSE breakdown built from a SECOND, ephemeral mode:\"objectmap\" render of your OWN candidate (an extra render, so it costs more). Use it once your overall `rmse` plateaus across iterations: a high `backgroundRmse` means your staging (ground/environment/lighting) is still the biggest lever; a low `backgroundRmse` with a high `objectRmse` means staging is DONE -- stop tuning it and spend remaining iterations on the object's silhouette/proportions instead. HONESTY CAVEAT: the object mask comes from YOUR candidate only (the reference is a plain PNG with no objectmap of its own) -- it answers \"on the pixels where my object is, how wrong am I\" and \"on my background pixels, how wrong am I\", not \"how wrong is the reference's object region\". A badly misplaced object still shows up: high objectRmse on the candidate's (wrong) object pixels, AND the reference's actual object pixels raise backgroundRmse too, since your candidate has no object there. Both figures sentinel to -1 when their bucket is EMPTY -- objectRmse is -1 when no object pixels are visible (camera pointed away, object off-frame), backgroundRmse is -1 when registered objects cover the ENTIRE frame -- so ALWAYS check for >= 0 before trusting either; -1 means \"not measured\", NOT \"perfect match\"." ) );
+					props.set( "split", BoolProp( "OPTIONAL, default false. When true, ALSO returns split:{objectRmse,backgroundRmse,objectPixelFraction,ok,note} -- an object-vs-background RMSE breakdown built from a SECOND, ephemeral mode:\"objectmap\" render of your OWN candidate (an extra render, so it costs more). Use it once your overall `rmse` plateaus across iterations: a high `backgroundRmse` means your staging (ground/environment/lighting) is still the biggest lever; a low `backgroundRmse` with a high `objectRmse` means staging is DONE -- stop tuning it and spend remaining iterations on the object's silhouette/proportions instead. HONESTY CAVEAT: the object mask comes from YOUR candidate only (the reference is a plain PNG with no objectmap of its own) -- it answers \"on the pixels where my object is, how wrong am I\" and \"on my background pixels, how wrong am I\", not \"how wrong is the reference's object region\". A badly misplaced object still shows up: high objectRmse on the candidate's (wrong) object pixels, AND the reference's actual object pixels raise backgroundRmse too, since your candidate has no object there. Both figures sentinel to -1 when their bucket is EMPTY -- objectRmse is -1 when no object pixels are visible (camera pointed away, object off-frame), backgroundRmse is -1 when registered objects cover the ENTIRE frame -- so ALWAYS check for >= 0 before trusting either; -1 means \"not measured\", NOT \"perfect match\". IMPORTANT CAVEAT ABOUT WHAT COUNTS AS \"OBJECT\": without `splitObjects` (below), EVERY registered object counts as OBJECT -- including a ground plane, backdrop, or any other staging geometry you built as a real scene object. That means an unscoped split measures \"geometry vs. environment\", not \"hero object vs. staging\": a scene with a modeled ground plane can show a huge OBJECT bucket (observed averaging 86% of the frame in practice) that is mostly stage, not your hero object. Pass `splitObjects` naming just your hero object to get a true hero-vs-staging reading." ) );
+					props.set( "splitObjects", StringArrayProp( "OPTIONAL array of object names, only meaningful alongside `split:true`. When non-empty, SCOPES the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, INCLUDING other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Use this to get a true hero-object-vs-staging reading: without it, a ground plane/backdrop you modeled as a scene object counts as OBJECT too (see the `split` parameter's own caveat), which inflates the OBJECT bucket and starves BACKGROUND down to just the sky/environment. Names are matched against the candidate's own objectmap legend; a name not found there is dropped from the mask (never a hard failure) and is instead surfaced in split.note, along with every name that IS available, so a typo doesn't silently shrink your mask unnoticed. If NONE of the requested names match, objectRmse comes back -1 with a note explicitly saying the named object(s) don't exist in this scene -- distinct from the ordinary \"object off-frame\" -1 case." ) );
 					std::vector<std::string> required; required.push_back( "reference" );
 					tools.push_back( MakeTool( "compare_to_reference",
 						"Measure how closely the current scene's render matches a reference photo -- "
@@ -585,9 +599,11 @@ namespace RISE
 						"region directly (e.g. \"top-right\"). `summary` is a one-line human-readable "
 						"synthesis of all of the above. See the `samples` parameter's own description "
 						"for the draft-vs-production quality tradeoff -- read it before relying on a "
-						"reading for anything beyond composition/geometry. See the `split` parameter's "
-						"own description for the object-vs-background RMSE breakdown -- reach for it "
-						"once your RMSE plateaus, to tell whether the residual is staging or the object.",
+						"reading for anything beyond composition/geometry. See the `split` and "
+						"`splitObjects` parameters' own descriptions for the object-vs-background "
+						"RMSE breakdown -- reach for it once your RMSE plateaus, to tell whether the "
+						"residual is staging or the object, and scope it to your hero object's name "
+						"for an accurate reading when your scene has a modeled ground plane/backdrop.",
 						ObjectProp( "", props, required ) ) );
 				}
 

@@ -369,8 +369,9 @@ This is a rule, not a suggestion, and it has a mechanical trigger so
 you never have to decide whether a "plateau" has happened:
 
 > **From your THIRD `compare_to_reference` onward, pass
-> `split: true`** -- and from then on, whenever the overall `rmse`
-> fails to drop by at least ~10% against your previous compare.
+> `split: true`, scoped with `splitObjects: ["<your hero object's
+> name>"]`** -- and from then on, whenever the overall `rmse` fails to
+> drop by at least ~10% against your previous compare.
 
 `split:true` costs one extra render and returns `objectRmse`,
 `backgroundRmse` and `objectPixelFraction`: the same RMSE, computed
@@ -380,7 +381,20 @@ question the overall number cannot -- is the error in the STAGING or
 in the OBJECT -- and it replaces the old rule of thumb that a plateau
 above ~0.1 means the staging is wrong. That guess is often wrong;
 this is a measurement, so trust it over the guess and over the 3x3
-grid. Then act on it, decisively:
+grid.
+
+**Pass `splitObjects` -- do not skip it.** Unscoped, "OBJECT" means
+EVERY registered object, and your ground plane and backdrop ARE
+registered objects, so they land in the OBJECT bucket and
+"background" shrinks to just the sky. Measured on real runs of this
+task, that put `objectPixelFraction` at ~0.86 and made the split
+report geometry-vs-environment rather than object-vs-staging -- the
+reading below would then be nonsense. Naming your hero object (the
+`standard_object` name you gave it, e.g. `obj_subject`) puts the
+ground, the backdrop and the sky all in BACKGROUND, which is the
+split you actually want. Sanity-check `objectPixelFraction`: it
+should be roughly the share of frame your subject covers. If it is
+near 1.0 you almost certainly forgot to scope. Then act, decisively:
 
 - **`backgroundRmse` low, `objectRmse` high** -> the stage is DONE.
   Stop touching the environment, ground and lights entirely. Spend
@@ -396,7 +410,9 @@ grid. Then act on it, decisively:
 One safety rule before you act on either figure: **check it is
 `>= 0`.** Each sentinels to `-1` when its bucket is empty --
 `objectRmse` when no object is visible (camera aimed away, object
-off-frame), `backgroundRmse` when your objects fill the entire frame.
+off-frame, or you named an object that does not exist -- READ the
+`note`, which tells these apart and lists the names actually
+available), `backgroundRmse` when your objects fill the entire frame.
 `-1` means "not measured", NOT "zero error". Reading a `-1`
 `backgroundRmse` as "staging is done" would send you off tuning the
 object having never checked the staging at all. On a `-1`, fix the

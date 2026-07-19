@@ -1454,7 +1454,18 @@ namespace RISE
 			//!        bump the pre-split vision cells stay hash-current and
 			//!        get silently reused, so a re-run would measure nothing
 			//!        and the board would mix two methodologies.
-			static const int kEvalMethodologyEpoch = 2;
+			//!   3 -> (2026-07-19) compare_to_reference gained `splitObjects`
+			//!        (tool-definition change) and the skill now directs the
+			//!        model to SCOPE the split to its hero object
+			//!        (drive-loop change).  Motivated by the epoch-2 gpt run:
+			//!        unscoped, a candidate's ground plane and backdrop are
+			//!        registered objects, so they landed in the OBJECT bucket
+			//!        and objectPixelFraction averaged 0.86 -- the split was
+			//!        reporting geometry-vs-environment, not
+			//!        object-vs-staging, making the skill's own read of it
+			//!        wrong.  Epoch-2 cells were driven under that broken
+			//!        reading and must not be compared against scoped runs.
+			static const int kEvalMethodologyEpoch = 3;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,

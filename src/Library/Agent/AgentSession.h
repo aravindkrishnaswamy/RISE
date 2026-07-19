@@ -631,13 +631,38 @@ namespace RISE
 		//! on the object's silhouette and proportions instead.  Costs one
 		//! EXTRA render (the objectmap pass) on top of the usual comparison
 		//! render.
+		//!
+		//! `splitObjects` (default empty, back-compat) SCOPES the OBJECT
+		//! bucket to a caller-named subset of the objectmap legend -- only
+		//! meaningful when `split` is true; ignored otherwise.  Empty (the
+		//! default) keeps the ORIGINAL, unscoped rule: every registered
+		//! object -- whatever the objectmap legend lists -- counts as
+		//! OBJECT.  That default has a sharp failure mode found in a live
+		//! eval run: models routinely build a ground plane and a backdrop
+		//! as ordinary registered objects to stage the hero object, so the
+		//! STAGE lands in the OBJECT bucket right alongside the hero and
+		//! BACKGROUND shrinks to whatever the sky/environment leaves
+		//! uncovered (observed objectPixelFraction averaging 0.86 across a
+		//! run).  The split then measures "geometry vs. environment", not
+		//! "hero object vs. staging", which is what it is documented and
+		//! used for.  Passing a non-empty `splitObjects` fixes this: ONLY
+		//! legend entries whose `name` (LegendEntry::name -- the scene's own
+		//! object name) appears in this list count as OBJECT; every other
+		//! pixel -- INCLUDING other registered geometry such as a ground
+		//! plane or backdrop -- falls into BACKGROUND.  `"<unmapped>"` is
+		//! never a selectable name here (it is not a real object and is
+		//! always excluded from the OBJECT bucket, scoped or not).  See
+		//! AgentSession::CompareToReference's split block for how an
+		//! unknown/typo'd name is surfaced in AgentCompareSplitResult::note
+		//! rather than silently shrinking the mask.
 		struct AgentCompareToReferenceParams
 		{
-			std::string         reference;
-			AgentCameraOverride camera;
-			bool                visual  = true;
-			int                 samples = -1;   //!< -1 = no override (quality:Draft); >=1 = quality:Production at this SPP
-			bool                split   = false;   //!< see the doc block above this struct
+			std::string              reference;
+			AgentCameraOverride      camera;
+			bool                     visual  = true;
+			int                      samples = -1;   //!< -1 = no override (quality:Draft); >=1 = quality:Production at this SPP
+			bool                     split   = false;   //!< see the doc block above this struct
+			std::vector<std::string> splitObjects;      //!< see the doc block above this struct; empty = unscoped (every registered object)
 		};
 
 		//! One cell of a compare_to_reference 3x3 grid -- see
