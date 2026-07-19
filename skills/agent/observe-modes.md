@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -16,15 +16,15 @@ Within the third family (`render{mode:}`), GUI render modes P1
 structural DIAGNOSTIC modes -- `normals`, `depth`, `facets`,
 `wireframe` -- each answering one narrow structural question with the
 SAME exact, single-pass, 1-spp cost profile as `objectmap`.  GUI render
-modes P2a adds TWO MORE mode values, `deep_reflect` and `direct` -- but
-these are a DIFFERENT cost tier: real production-class path-traced
-renders (real materials, real lights, real OIDN denoise) at a FIXED
-reduced resolution and FIXED higher sample count, not single-pass
-diagnostics. They cost SECONDS, not milliseconds -- more than a
-diagnostic mode, still far cheaper than a full-resolution production
-render because of the resolution divisor. See "View modes" below for
-the per-mode decision table, and "Transport modes" for the two P2a
-additions specifically.
+modes P2a adds TWO MORE mode values, `deep_reflect` and `direct`, and P2b
+adds TWO MORE STILL, `indirect` and `clay_lights` -- all four are a
+DIFFERENT cost tier: real production-class path-traced renders (real
+materials, real lights, real OIDN denoise) at a FIXED reduced resolution
+and FIXED higher sample count, not single-pass diagnostics. They cost
+SECONDS, not milliseconds -- more than a diagnostic mode, still far
+cheaper than a full-resolution production render because of the
+resolution divisor. See "View modes" below for the per-mode decision
+table, and "Transport modes" for all four additions.
 
 ## The decision table
 
@@ -56,28 +56,30 @@ exact mode name that ran.
 | `wireframe` | Where are the polygon edges? | Triangle-mesh edges over dim facet shading (see mesh-only limitation below) | No |
 | `deep_reflect` | What do reflections and refractions resolve to? | REAL path-traced render, quarter-res, 16 spp, 24 bounces, OIDN-denoised | No |
 | `direct` | What does direct lighting alone contribute? | REAL path-traced render, half-res, 8 spp, direct lighting only (1 bounce), OIDN-denoised | No |
+| `indirect` | What does indirect (bounced) light alone contribute? | REAL path-traced render, half-res, 12 spp, 16 bounces; beauty minus the direct/emission contribution at the camera-visible vertex -- a directly-lit surface or directly-visible emitter/env background reads BLACK, energy that arrived after >=1 bounce reads normally, OIDN-denoised | No |
+| `clay_lights` | Is the lighting right, independent of materials? | REAL path-traced render, half-res, 12 spp, 12 bounces; every surface's reflectance replaced by a neutral mid-grey clay Lambertian, real lights/GI untouched, OIDN-denoised | No |
 
-### Transport modes: `deep_reflect` / `direct` (GUI render modes P2a)
+### Transport modes: `deep_reflect` / `direct` / `indirect` / `clay_lights` (GUI render modes P2a + P2b)
 
-Unlike the four false-colour diagnostics above, `deep_reflect` and
-`direct` are REAL renders through the scene's actual materials and
-lights -- an ephemeral, fixed-config production-class path tracer, not
-a first-hit shader. Two consequences that don't apply to
-`normals`/`depth`/`facets`/`wireframe`:
+Unlike the four false-colour diagnostics above, all four transport modes
+are REAL renders through the scene's actual lights (and, except
+`clay_lights`, actual materials) -- an ephemeral, fixed-config
+production-class path tracer, not a first-hit shader. Consequences that
+don't apply to `normals`/`depth`/`facets`/`wireframe`:
 
 - **Cost**: seconds, not milliseconds. Still cheap relative to a
   full-resolution production render (the fixed resolution divisor --
-  quarter-res for `deep_reflect`, half-res for `direct` -- does most of
-  the work), but do not treat them as free the way you'd treat
+  quarter-res for `deep_reflect`, half-res for the other three -- does
+  most of the work), but do not treat them as free the way you'd treat
   `objectmap`/`normals`/etc.
-- **`effectiveSamples` reports the REAL spp used** (16 or 8), not the
-  "1" the false-colour diagnostics report -- `quality`/`samples` are
-  still ignored (the config is fixed by the registry), but check
+- **`effectiveSamples` reports the REAL spp used** (16, 8, 12, or 12),
+  not the "1" the false-colour diagnostics report -- `quality`/`samples`
+  are still ignored (the config is fixed by the registry), but check
   `effectiveSamples` if you want to confirm which mode actually ran at
   what fidelity.
 - **`xray` is ignored** (honestly noted) -- skipping through glass
-  would defeat the whole point of `deep_reflect` (seeing what the glass
-  itself resolves to).
+  would defeat the whole point of any of these four modes (seeing what
+  the glass/material/lighting itself resolves to).
 
 Recipes:
 
@@ -93,6 +95,20 @@ Recipes:
   isolates whether light placement/power/colour looks right before
   indirect bounce and material response are layered on top -- a
   narrower, cheaper question than a full production render.
+- **"Where does bounced light actually land?"** -- `render
+  {mode:"indirect"}`. Beauty minus the direct contribution: a directly-
+  lit wall or a directly-visible light/env background goes black, so
+  whatever remains lit is being reached ONLY through at least one
+  bounce -- useful for spotting where colour bleed, a hidden bounce
+  card, or an indirect-only light leak is landing, without the direct
+  term drowning it out visually.
+- **"Check the lighting rig without material distraction."** -- `render
+  {mode:"clay_lights"}`. Every surface's reflectance is replaced by a
+  shared neutral clay while real lights and real GI stay untouched --
+  the classic "is the lighting right independent of materials" check,
+  one step up from `clay` (which also strips the real lights) when you
+  need to confirm the ACTUAL light rig reads correctly on neutral
+  surfaces before touching material authoring.
 
 ### Recipes: matching a symptom to a mode
 
@@ -136,7 +152,11 @@ Recipes:
    `render {mode:"deep_reflect"}`. See "Transport modes" above.
 7. **"Is the lighting right, independent of materials/indirect
    bounce?"** -- `render {mode:"direct"}`. See "Transport modes" above.
-8. **"Render the same scene from several saved angles."** -- pass
+8. **"Where does bounced light land?"** -- `render {mode:"indirect"}`.
+   See "Transport modes" above.
+9. **"Check the lighting rig without material distraction."** --
+   `render {mode:"clay_lights"}`. See "Transport modes" above.
+10. **"Render the same scene from several saved angles."** -- pass
    `view:"<name>"` on ANY `render` call (composes with every mode
    above). Resolves a live GUI session's Named View bookmark, or --
    headless -- a scene camera of that exact name. See "The `view`
@@ -162,15 +182,16 @@ Recipes:
    mostly-flat scene can still read as unusually uniform; that is
    expected, not a broken render.)
 3. **Every non-`beauty` mode (`objectmap`, the four false-colour view
-   modes, AND the two transport modes) ignores `quality` and `samples`
+   modes, AND the four transport modes) ignores `quality` and `samples`
    unconditionally.** Each has exactly one FIXED fidelity by design --
    an exact single-pass diagnostic image for `objectmap`/`normals`/
    `depth`/`facets`/`wireframe`, a fixed higher-spp production-class
-   render for `deep_reflect`/`direct` -- requesting a different sample
-   count or `quality:"draft"` under any of them is a silent no-op,
-   honestly noted in the result `message`, not an error. Check
-   `effectiveSamples` for the ACTUAL spp used (1 for the false-colour
-   modes, 16/8 for deep_reflect/direct).
+   render for `deep_reflect`/`direct`/`indirect`/`clay_lights` --
+   requesting a different sample count or `quality:"draft"` under any of
+   them is a silent no-op, honestly noted in the result `message`, not
+   an error. Check `effectiveSamples` for the ACTUAL spp used (1 for the
+   false-colour modes, 16/8/12/12 for deep_reflect/direct/indirect/
+   clay_lights).
 4. **`xray` is a straight line, not real refraction.** It follows the
    ORIGINAL ray direction through every transmissive surface it skips
    -- no bending, no lensing. It answers "what's under/inside this
@@ -198,14 +219,14 @@ tessellation or normals rather than the mechanism inside.
 
 `xray` is silently ignored (honestly noted in the result `message`)
 under `mode:"beauty"`, `mode:"objectmap"`, or a transport mode
-(`deep_reflect`/`direct`) -- it only means something for the four
-false-colour view-mode diagnostics.
+(`deep_reflect`/`direct`/`indirect`/`clay_lights`) -- it only means
+something for the four false-colour view-mode diagnostics.
 
 ## The `view` param: rendering from a saved vantage
 
 `view` is an optional string param on `render`, ORTHOGONAL to `mode` --
-it composes with EVERY mode (`beauty`, `objectmap`, any view mode,
-either transport mode). Pass a name instead of raw `camera`
+it composes with EVERY mode (`beauty`, `objectmap`, any view mode, any
+transport mode). Pass a name instead of raw `camera`
 location/lookat/up/fov numbers:
 
 ```json
@@ -245,14 +266,15 @@ actually look from.
    separate pipeline, samples capped at 4; tiny `width`/`height` keep
    it fast. Both this and step 2 work on a head with NO active
    production rasterizer chunk -- neither dereferences one.
-4. **`render {mode:"deep_reflect"|"direct"}`** -- a REAL production-class
-   render (real materials/lights/OIDN) at a fixed reduced resolution and
-   fixed higher sample count -- seconds, not milliseconds, but still far
-   cheaper than full-res production. Reach for this ONLY for the narrow
-   transport/lighting question each answers (see "Transport modes"
-   above); it costs more than every step before it. Also works on a
-   head with NO active production rasterizer chunk (its own ephemeral
-   pipeline, never the production one).
+4. **`render {mode:"deep_reflect"|"direct"|"indirect"|"clay_lights"}`**
+   -- a REAL production-class render (real materials/lights/OIDN, except
+   `clay_lights` which neutralizes materials) at a fixed reduced
+   resolution and fixed higher sample count -- seconds, not
+   milliseconds, but still far cheaper than full-res production. Reach
+   for this ONLY for the narrow transport/lighting question each
+   answers (see "Transport modes" above); it costs more than every step
+   before it. Also works on a head with NO active production rasterizer
+   chunk (its own ephemeral pipeline, never the production one).
 5. **`render` (production)** -- the real integrator at its authored
    (or overridden) sample count. The only step that costs what the
    final image costs; do it last, once the cheap steps already agree
@@ -309,20 +331,22 @@ mention (viewport, objectmap/query).
    `previewWidth`/`previewHeight` (`render`) or `width`/`height`
    (`query_object_at`) back from the result.
 6. **Draft, objectmap/query_object_at, AND every view mode --
-   `normals`/`depth`/`facets`/`wireframe` AND `deep_reflect`/`direct`
+   `normals`/`depth`/`facets`/`wireframe` AND
+   `deep_reflect`/`direct`/`indirect`/`clay_lights`
    -- all work on a rasterizer-less head; production does not.** Every
-   cheap-render path (including the two transport modes) runs its OWN
+   cheap-render path (including the four transport modes) runs its OWN
    ephemeral pipeline and never touches the production rasterizer, so
    all of them succeed even before any `*_rasterizer` chunk exists in
    the scene -- a production `render` call on the same head fails
    honestly instead.
-7. **`deep_reflect`/`direct` are NOT free like the other four view
-   modes.** They cost seconds (a real path-traced render at a fixed
-   reduced resolution/sample count), not milliseconds. Reach for a
-   false-colour diagnostic (`normals`/`depth`/`facets`/`wireframe`) or
-   `objectmap` first if the question is structural rather than about
-   transport/lighting -- don't default to `deep_reflect` for a question
-   `facets` or `depth` already answers for free.
+7. **`deep_reflect`/`direct`/`indirect`/`clay_lights` are NOT free like
+   the other four view modes.** They cost seconds (a real path-traced
+   render at a fixed reduced resolution/sample count), not
+   milliseconds. Reach for a false-colour diagnostic
+   (`normals`/`depth`/`facets`/`wireframe`) or `objectmap` first if the
+   question is structural rather than about transport/lighting --
+   don't default to one of these four for a question `facets` or
+   `depth` already answers for free.
 
 ## Worked example: locating an object, cheaply, before editing it
 
@@ -491,8 +515,8 @@ only honest here):
 
 1. **`renderMode` vs `integrator` -- read the right field.** `renderMode`
    ("production"/"draft"/"objectmap"/"normals"/"depth"/"facets"/
-   "wireframe"/"deep_reflect"/"direct") tells you which pipeline made
-   THIS image; `integrator`
+   "wireframe"/"deep_reflect"/"direct"/"indirect"/"clay_lights") tells
+   you which pipeline made THIS image; `integrator`
    always names the head's active PRODUCTION rasterizer chunk
    regardless of `quality`. Checking `integrator` to see if a draft
    render "used PT" is a category error -- it always

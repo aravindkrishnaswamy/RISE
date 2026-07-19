@@ -46,6 +46,9 @@ namespace RISE
 {
 	struct PixelAOV;
 	class ISampler;
+	class IPainter;
+	class IBSDF;
+	class ISPF;
 
 	namespace Implementation
 	{
@@ -72,6 +75,32 @@ namespace RISE
 			//! every existing caller (nothing called the setter before this fix)
 			//! gets byte-identical behavior.
 			unsigned int		mMaxPathDepth;
+
+			//! GUI render modes P2b `indirect` mode -- see SetIndirectOnly's
+			//! doc for the exact semantics.  Default false.
+			bool				mIndirectOnly;
+
+			//! GUI render modes P2b `clay_lights` mode -- see
+			//! SetClayOverride's doc for the exact semantics.  Default false.
+			bool				mClayOverride;
+
+			//! Shared clay reflectance state for `clay_lights`: a mid-grey
+			//! (~0.5 albedo) UniformColorPainter wrapped by a LambertianBRDF
+			//! and a LambertianSPF, all three built ONCE in the constructor
+			//! and released in the destructor.  Stateless and read-only for
+			//! the lifetime of the integrator (no scene-derived state, no
+			//! mutation after construction), so concurrent reads from every
+			//! render-worker thread are safe with no extra synchronization --
+			//! the same "read-only for the duration of a render" contract
+			//! every other material's IBSDF/ISPF already relies on.  Built
+			//! unconditionally (not lazily) so a mid-render SetClayOverride
+			//! flip -- which the controller/agent factories never actually
+			//! do (the flag is stamped once at pipeline construction, before
+			//! the pipeline is ever handed to the render loop) -- would still
+			//! be safe if it ever happened.
+			const IPainter*		pClayPainter;
+			const IBSDF*		pClayBRDF;
+			const ISPF*			pClaySPF;
 
 		public:
 			PathTracingIntegrator(
@@ -105,6 +134,68 @@ namespace RISE
 			//! `n == 0` maps to 128 (the historical default) rather than a cap
 			//! that would process zero vertices and return black.
 			void SetMaxPathDepth( unsigned int n ) { mMaxPathDepth = ( n == 0 ) ? 128 : n; }
+
+			//! GUI render modes P2b `indirect` mode (docs/gui/RENDER_MODES.md
+			//! §3 Lighting): when true, suppresses the DIRECT contribution --
+			//! emission AND next-event-estimation (NEE) -- evaluated at the
+			//! camera-visible vertex in BOTH the templated Pel/NM loop
+			//! (IntegrateFromHitTemplated) and the standalone HWSS loop
+			//! (IntegrateFromHitHWSS).  A directly-visible env/radiance-map
+			//! background is "direct" light too (for the same reason a
+			//! directly-visible emitter is), but a camera ray that misses
+			//! the scene entirely NEVER enters the path loop -- it returns
+			//! at the top-level primary-miss branch in IntegrateRayTemplated
+			//! / IntegrateRayHWSS (before IntegrateFromHit) -- so THAT is
+			//! where the directly-visible-background suppression lives (an
+			//! `if( mIndirectOnly ) return zero;` there); the loop's own
+			//! env-miss adds are reachable only for CONTINUATION rays
+			//! (depth >= 1 = indirect environment lighting) and are kept.
+			//! The in-loop emission + NEE gates are on the LOOP-LOCAL
+			//! `depth == 0` check, deliberately NOT `depth == startDepth`:
+			//! the HWSS loop mid-path-delegates to IntegrateFromHitNM (the
+			//! "no BSDF" / SSS-fallback branches) by passing its OWN current
+			//! `depth` as the delegated call's `startDepth`, so a `depth ==
+			//! startDepth` check would spuriously read true again at that
+			//! delegated call's first iteration even when the ORIGINAL
+			//! global depth was > 0 (a genuine indirect bounce).  `depth ==
+			//! 0` has no such ambiguity: it is true only at the actual first
+			//! iteration of a call whose OWN startDepth is 0, and every top-
+			//! level camera-ray entry point (IntegrateRay/IntegrateRayNM/
+			//! IntegrateRayHWSS) is the only caller that ever passes 0 --
+			//! every mid-path re-entry (this HWSS delegation, and the
+			//! BSSRDF continuation's recursive caster call) passes the
+			//! CURRENT nonzero depth onward, so `depth` can never return to
+			//! 0 partway through a path.  The continuation ray is STILL
+			//! sampled and traced at every vertex -- only the depth==0
+			//! contribution is zeroed, so every indirect bounce (depth >= 1
+			//! at the true camera-path level) is untouched and full-
+			//! fidelity.  Net effect: a directly-lit diffuse surface (or
+			//! a directly-visible emitter/env background) reads BLACK at the
+			//! camera-visible vertex; any energy that arrives after at least
+			//! one bounce reads normally.  Default false; every existing
+			//! caller is byte-identical.
+			void SetIndirectOnly( bool b ) { mIndirectOnly = b; }
+
+			//! GUI render modes P2b `clay_lights` mode (docs/gui/RENDER_MODES.md
+			//! §3 Lighting): when true, every surface's REFLECTANCE (both the
+			//! BRDF acquired at the top of the surface-hit block and the SPF
+			//! used for the continuation-ray direction) is substituted with a
+			//! SHARED, STATELESS, mid-grey (~0.5 albedo) Lambertian pair --
+			//! see pClayBRDF/pClaySPF below.  Real lights and real global
+			//! illumination stay untouched: the emitter accessor
+			//! (`ri.pMaterial->GetEmitter()`) is NEVER substituted, so
+			//! emissive surfaces still emit exactly as authored, and the
+			//! substituted clay BRDF/SPF still receive real NEE/BSDF-sampled
+			//! illumination from the scene's real lights and real multi-
+			//! bounce GI.  Because the substitution makes EVERY hit report a
+			//! non-null BRDF, the "no-BSDF / pure-SPF" branch (originally
+			//! reached by delta-only materials such as mirrors/glass) is
+			//! never taken under this mode either -- under `clay_lights`
+			//! every surface, including originally-specular ones, scatters
+			//! as clay so the render answers "is the lighting right,
+			//! independent of ANY surface's material," not just diffuse
+			//! ones.  Default false; every existing caller is byte-identical.
+			void SetClayOverride( bool b ) { mClayOverride = b; }
 
 			/// Traces one complete path from a camera ray and returns
 			/// the estimated radiance (RGB).  Optionally populates

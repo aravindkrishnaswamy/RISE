@@ -156,7 +156,18 @@ namespace RISE
 			//! GUI render modes P2a: direct lighting only (fixed maxBounces=1,
 			//! not full transport) at a moderate resolution divisor -- "what
 			//! does direct lighting alone contribute?"
-			Direct
+			Direct,
+			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
+			//! beauty minus the direct (emission + NEE) contribution at the
+			//! camera-visible vertex -- PathTracingIntegrator::SetIndirectOnly --
+			//! "what does indirect light alone contribute?"
+			Indirect,
+			//! GUI render modes P2b: full transport with every surface's
+			//! reflectance substituted for a shared neutral clay Lambertian,
+			//! real lights/GI untouched -- PathTracingIntegrator::
+			//! SetClayOverride -- "is the lighting right, independent of
+			//! materials?"
+			ClayLights
 		};
 
 		struct ViewportRenderModeInfo
@@ -177,6 +188,14 @@ namespace RISE
 			unsigned int		variantScaleDivisor;   //!< preview-resolution divisor while this mode is active (e.g. 4 = quarter-res)
 			unsigned int		variantMaxBounces;     //!< P2a fix: PathTracingIntegrator::SetMaxPathDepth's cap on the PT main loop (NOT the caster's maxR -- that's a separate, harmless SSS-recursion limit)
 			unsigned int		variantSamplesPerPass; //!< the variant PT rasterizer's fixed samples/pixel
+			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
+			//! stamped onto the variant PathTracingIntegrator via SetIndirectOnly/
+			//! SetClayOverride right after SetMaxPathDepth in CreateBeautyVariantPipeline.
+			//! false for every row except Indirect/ClayLights respectively -- read
+			//! ONLY after the IsBeautyVariantMode(mode) check passes, same as the
+			//! three fields above.
+			bool			variantIndirectOnly;   //!< true only for the "indirect" row
+			bool			variantClayOverride;   //!< true only for the "clay_lights" row
 		};
 
 		//! GUI render modes P2a: true for the BeautyVariant rows (today:

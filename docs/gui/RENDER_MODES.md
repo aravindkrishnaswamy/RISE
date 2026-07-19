@@ -56,10 +56,10 @@ sibling) · **T2** beauty-variant (real integrator + config overrides) ·
 | Mode | Tier | Notes |
 |---|---|---|
 | `clay` | T0 | The existing studio material preview (`InteractiveMaterialPreviewShader`: clay + AO + headlamp). Already the GUI draft preview and the agent `quality:"draft"`. |
-| `clay_lights` | T2 | Clay albedo but the scene's REAL lights (the classic "is lighting right independent of materials" check). **P2b, not yet shipped** — needs a clay-albedo-substituting integrator variant, not just a config delta on the real materials (see §9). |
+| `clay_lights` | T2 | **SHIPPED P2b (2026-07-18)** as a BeautyVariant pipeline: full transport, every surface's BRDF/SPF substituted for a shared neutral mid-grey (0.5 albedo) Lambertian pair (`PathTracingIntegrator::SetClayOverride`), real lights/GI untouched — half-res, 12 spp, 12 bounces, OIDN on. See §6. |
 | `direct` | T2 | **SHIPPED P2a (2026-07-18)** as a BeautyVariant pipeline: direct lighting only (`maxBounces=1`, wired via `PathTracingIntegrator::SetMaxPathDepth` so the PT main loop genuinely stops after the camera-hit vertex — no `directlighting_shaderop` substrate needed), half-res, 8 spp, OIDN on. See §6. |
-| `indirect` | T2 | Beauty minus direct. **P2b, not yet shipped** — needs a real subtraction (two renders + a diff) or a dedicated indirect-only integrator mode, neither of which the BeautyVariant config-delta mechanism supports on its own (see §9). |
-| light solo | T2 | Render with exactly one light enabled. Needs a light-selector arg; P2b design detail. |
+| `indirect` | T2 | **SHIPPED P2b (2026-07-18)** as a BeautyVariant pipeline: beauty minus the direct (emission + NEE) contribution at the camera-visible vertex only, all indirect bounces intact (`PathTracingIntegrator::SetIndirectOnly` — a genuine in-loop suppression, not a two-render subtraction) — half-res, 12 spp, 16 bounces, OIDN on. See §6. |
+| light solo | T2 | Render with exactly one light enabled. Needs a light-selector arg; remaining P2b design detail. |
 
 ### Transport — "what are reflections/refractions doing?"
 
@@ -308,17 +308,22 @@ existing one.
 PT pipeline with per-mode config deltas — a **separate `IRasterizer`** the
 render loop *drives* while the mode is active, not a caster swap on the
 preview rasterizer, and not a wrapper around it. `deep_reflect` and `direct`
-are the two shipped rows:
+(P2a) plus `indirect` and `clay_lights` (P2b) are the four shipped rows,
+all built by the SAME `CreateBeautyVariantPipeline` factory:
 
-| Field | `deep_reflect` | `direct` |
-|---|---|---|
-| `variantScaleDivisor` | 4 (quarter-res) | 2 (half-res) |
-| `variantMaxBounces` | 24 | 1 |
-| `variantSamplesPerPass` | 16 | 8 |
-| `wantsDenoise` | true | true |
+| Field | `deep_reflect` | `direct` | `indirect` | `clay_lights` |
+|---|---|---|---|---|
+| `variantScaleDivisor` | 4 (quarter-res) | 2 (half-res) | 2 (half-res) | 2 (half-res) |
+| `variantMaxBounces` | 24 | 1 | 16 | 12 |
+| `variantSamplesPerPass` | 16 | 8 | 12 | 12 |
+| `wantsDenoise` | true | true | true | true |
+| `variantIndirectOnly` | false | false | **true** | false |
+| `variantClayOverride` | false | false | false | **true** |
 
-`ViewportRenderModeInfo` carries these three `variant*` fields (0/0/0 for every
-non-variant mode); `IsBeautyVariantMode(mode)` (keyed off
+`ViewportRenderModeInfo` carries the three P2a `variant*` fields (0/0/0 for
+every non-variant mode) plus the two P2b booleans
+`variantIndirectOnly`/`variantClayOverride` (false for every row except
+`indirect`/`clay_lights` respectively); `IsBeautyVariantMode(mode)` (keyed off
 `variantSamplesPerPass > 0`) is the single source of truth for "is this mode a
 BeautyVariant row" everywhere the registry is consulted (controller, agent
 schemas, tests) — no hardcoded mode-name lists.
@@ -348,6 +353,45 @@ construction, which forwards to `PathTracingIntegrator::SetMaxPathDepth` —
 the loop's REAL cap (see that method's doc for the exact depth-accounting:
 `n==1` for `direct` means the camera-hit vertex's emission + NEE only, no
 continuation bounce ever traced).
+
+**P2b addition (2026-07-18)**: right after the `SetMaxPathDepth` call, the
+factory also stamps `PathTracingPelRasterizer::SetIndirectOnly(info->
+variantIndirectOnly)` and `SetClayOverride(info->variantClayOverride)` —
+both forwarders onto the same `PathTracingIntegrator`, both false for
+`deep_reflect`/`direct` (so those two rows stay byte-identical) and each
+true for exactly one of the two new rows:
+
+- **`SetIndirectOnly`** (the `indirect` row): gates the emission
+  contribution, the NEE direct-lighting contribution, AND the environment/
+  radiance-map contribution a camera ray that misses the scene entirely
+  picks up — all three, but ONLY at the true camera-visible vertex (checked
+  via a loop-local `depth == 0`, not `depth == startDepth`: the HWSS loop's
+  mid-path delegation to the per-wavelength NM path passes its OWN current
+  `depth` as the delegated call's `startDepth`, so a `depth == startDepth`
+  check would spuriously fire again at that delegated call's first
+  iteration even for a genuine indirect bounce — `depth == 0` has no such
+  ambiguity, since only a true top-level camera-ray entry point ever passes
+  `startDepth == 0`). The continuation ray is still sampled and traced at
+  every vertex — only the direct contribution at the primary hit is zeroed,
+  so indirect energy (one bounce onward) is untouched. SMS caustic
+  contributions are deliberately NOT gated (a caustic reaching a vertex
+  through a specular chain is genuinely multi-bounce transport, not the
+  open-air NEE connection).
+- **`SetClayOverride`** (the `clay_lights` row): substitutes a single
+  shared, stateless, mid-grey (0.5 albedo) `LambertianBRDF`/`LambertianSPF`
+  pair (wrapping one `UniformColorPainter`, all three built once in the
+  `PathTracingIntegrator` constructor and released in its destructor) for
+  EVERY surface's real BRDF/SPF, at both the BRDF acquisition and both SPF
+  acquisition sites (the specular/no-BRDF branch and the PART 3
+  continuation) in the templated Pel/NM loop, plus their HWSS twins.
+  Because the substitution makes every hit report a non-null BRDF, the
+  "no-BSDF" branch (previously reached by delta-only materials like
+  mirrors/glass) is never taken under `clay_lights` either — every surface,
+  including originally-specular ones, scatters as clay. The emitter
+  accessor is never substituted, so real lights and real emissive
+  geometry keep emitting exactly as authored, and the clay BRDF/SPF
+  receive real NEE/BSDF-sampled illumination from the scene's actual
+  lights and actual multi-bounce GI.
 
 ### Controller: `mVariantRasterizer` + the render-loop dispatch
 
@@ -524,11 +568,17 @@ Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
 - `skills/agent/observe-modes.md` extends with the question → mode decision
   table and recipes:
   - placement check → `objectmap` top view → `query_object_at`
-  - lighting check → `clay` (later `clay_lights`) before touching materials
+  - lighting check → `clay` before touching materials, `clay_lights` (SHIPPED
+    P2b, ½ res, 12 spp, 12 bounces) once real lights/GI need to be in the
+    picture too
   - tessellation/smoothing artifact → `facets` / `wireframe`
   - reflection/refraction content → `deep_reflect` (SHIPPED P2a, ¼ res, 16 spp,
     24 bounces)
   - lighting-only check → `direct` (SHIPPED P2a, ½ res, 8 spp, direct only)
+  - where does bounced light land? → `indirect` (SHIPPED P2b, ½ res, 12 spp,
+    16 bounces, beauty minus the direct/emission contribution)
+  - check the lighting rig without material distraction → `clay_lights`
+    (SHIPPED P2b — see above)
   - scale/occlusion sanity → `depth`
   - several saved angles of the same question → any mode + `view:"<name>"`
     (SHIPPED P2a)
@@ -543,12 +593,15 @@ Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
   `deep_reflect` + `direct` + the agent `view:` arg (§8) + the
   `wantsDenoise`-keyed DENOISED label fix (§6) — see §6 for the full shipped
   design (supersedes the config-override sketch this section used to carry).
-- **P2b (remaining)**: `indirect` (needs a real subtraction or a dedicated
-  indirect-only integrator mode — the BeautyVariant config-delta mechanism
-  alone doesn't cover it), `clay_lights` (needs a clay-albedo-substituting
-  integrator variant, not just a config delta on the real materials), light
-  solo (needs a light-selector arg). All three need integrator-level work
-  beyond what the P2a config-delta mechanism provides.
+- **P2b (`indirect` + `clay_lights` shipped 2026-07-18; light solo
+  remains)**: `indirect` and `clay_lights` are BOTH new
+  `PathTracingIntegrator` config flags (`SetIndirectOnly`/`SetClayOverride`,
+  the same shape as P2a's `SetMaxPathDepth`) rather than the
+  two-renders-and-diff / re-wired-materials sketches this entry used to
+  carry — see §6's "Factory" subsection for the exact gating/substitution
+  sites. Light solo (needs a light-selector arg) remains open; it needs a
+  genuinely new integrator-level knob (which light(s) NEE/BSDF sampling are
+  allowed to see), not a reachable extension of either flag shipped here.
 - **P3**: N-up (layouts, per-pane mode+vantage, round-robin scheduler,
   primary-pane semantics).
 - **P4**: specular-only, caustics-only, variance heatmap, UV checker,

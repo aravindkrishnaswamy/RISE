@@ -96,6 +96,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -781,6 +782,316 @@ static void RunDirectModeMissingIndirectBleedTest()
 	}
 
 	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// GUI render modes P2b `indirect` (docs/gui/RENDER_MODES.md §3 Lighting):
+// discrimination tests for PathTracingIntegrator::SetIndirectOnly.
+//
+// Scenario (a): a single large diffuse plane fills the ENTIRE frame (no
+// other geometry to bounce light onto, no environment map) -- under
+// "indirect", the depth==0 direct (emission + NEE) contribution at every
+// pixel is suppressed and there is no OTHER surface for a continuation ray
+// to land on, so the whole image should read NEAR-BLACK.  Under a real
+// transport render ("deep_reflect"), the SAME plane reads brightly lit.
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// Scenario (c): directly-visible ENVIRONMENT background under "indirect".
+// The camera-visible background (a primary ray that misses all geometry
+// and sees the radiance map) is a DIRECT contribution -- same as a
+// directly-visible emitter -- so "indirect" must render it BLACK, while
+// "deep_reflect" shows it bright.  This is the P2b review P1 regression:
+// the in-loop env gates were dead (never reached at depth 0); the real
+// suppression lives at the top-level primary-miss return.
+//----------------------------------------------------------------------
+static const char* const kSceneEnvBackground =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"uniformcolor_painter\n{\n\tname env_pnt\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n\tradiance_map env_pnt\n\tradiance_scale 1.0\n\tradiance_background true\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.75 0.75 0.75\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_geo\n\tradius 0.6\n}\n\n"
+	"standard_object\n{\n\tname sph_obj\n\tgeometry sph_geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 6.0\n\tcolor 1 1 1\n\tposition 0 2 4\n}\n";
+
+static void RunIndirectModeEnvBackgroundBlackTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"indirect\" scenario (c) -- directly-visible env background reads BLACK ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_envbg.RISEscene", kSceneEnvBackground );
+	Check( !scenePath.empty(), "wrote the env-background scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "env-background scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "env-background session wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	// Mean luminance of a guaranteed-background corner block (top-left
+	// 12x12) -- the central sphere (radius 0.6 at z=0, fov 45, cam z=5)
+	// never reaches the frame corner, so every corner pixel is a primary
+	// miss into the env map.
+	auto cornerMean = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		if( dec.w < 12 || dec.h < 12 ) { Check( false, "frame large enough to sample a corner" ); return -1.0; }
+		double sum = 0; unsigned int n = 0;
+		for( unsigned int y = 0; y < 12; ++y )
+			for( unsigned int x = 0; x < 12; ++x ) {
+				const Px& q = dec.at( x, y );
+				sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+				++n;
+			}
+		return n > 0 ? sum / n : -1.0;
+	};
+
+	const double indirectCorner    = cornerMean( Implementation::ViewportRenderMode::Indirect );
+	const double deepReflectCorner = cornerMean( Implementation::ViewportRenderMode::DeepReflect );
+	std::printf( "  indirectCorner=%.2f deepReflectCorner=%.2f\n", indirectCorner, deepReflectCorner );
+
+	Check( deepReflectCorner > 120.0,
+	       "deep_reflect: the directly-visible env background reads brightly (sanity -- the fixture's env IS visible)" );
+	Check( indirectCorner >= 0.0 && indirectCorner < 8.0,
+	       "MONEY ASSERTION (c): \"indirect\" renders the directly-visible env background BLACK -- the "
+	       "primary-miss env is a direct contribution and is suppressed (the review P1: in-loop gates were "
+	       "dead; the fix is at the top-level primary-miss return)" );
+
+	pJob->release();
+}
+
+static const char* const kSceneSinglePlaneNoIndirectPath =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.75 0.75 0.75\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname plane_geo\n\twidth 12\n\theight 12\n\tdepth 0.2\n}\n\n"
+	"standard_object\n{\n\tname plane_obj\n\tgeometry plane_geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 6.0\n\tcolor 1 1 1\n\tposition 0 2 4\n}\n";
+
+static void RunIndirectModeNoIndirectPathTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"indirect\" scenario (a) -- single plane, no indirect path -> near-black ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_singleplane.RISEscene", kSceneSinglePlaneNoIndirectPath );
+	Check( !scenePath.empty(), "wrote the single-plane scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "single-plane scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "single-plane session wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	auto meanLuminance = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		double sum = 0; unsigned int n = 0;
+		for( std::size_t px = 0; px < dec.px.size(); ++px )
+		{
+			const Px& q = dec.px[px];
+			if( q[3] == 0 ) continue;
+			sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+			++n;
+		}
+		return n > 0 ? sum / n : -1.0;
+	};
+
+	const double indirectMean    = meanLuminance( Implementation::ViewportRenderMode::Indirect );
+	const double deepReflectMean = meanLuminance( Implementation::ViewportRenderMode::DeepReflect );
+	std::printf( "  indirectMean=%.2f deepReflectMean=%.2f\n", indirectMean, deepReflectMean );
+
+	Check( deepReflectMean > 40.0,
+	       "deep_reflect: the directly-lit plane reads brightly (sanity -- the fixture is actually lit)" );
+	Check( indirectMean >= 0.0 && indirectMean < 8.0,
+	       "MONEY ASSERTION (a): \"indirect\" on a scene with NO possible indirect path reads NEAR-BLACK "
+	       "(mean below a small threshold) -- the direct contribution was genuinely suppressed, not just dimmed" );
+	Check( indirectMean < deepReflectMean - 30.0,
+	       "MONEY ASSERTION (a2): \"indirect\" is MEANINGFULLY below \"deep_reflect\" on the same fixture" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// Scenario (b): reuse the Cornell-corner colour-bleed fixture
+// (kSceneColorBleedCornellCorner, already defined above for the "direct"
+// missing-indirect-bleed test) -- under "indirect", the whole-frame mean is
+// a MEANINGFUL FRACTION below "deep_reflect"'s (the direct contribution at
+// every camera-visible vertex is removed, leaving only bounce energy).
+//----------------------------------------------------------------------
+static void RunIndirectModeColorBleedSceneMeanTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"indirect\" scenario (b) -- colour-bleed scene mean vs deep_reflect ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_colorbleed.RISEscene", kSceneColorBleedCornellCorner );
+	Check( !scenePath.empty(), "wrote the Cornell-corner colour-bleed scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "colour-bleed scene loads via the CST path (indirect test)" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "colour-bleed session wraps the locally-owned Job (indirect test)" );
+	if( !session ) { pJob->release(); return; }
+
+	auto meanLuminance = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		double sum = 0; unsigned int n = 0;
+		for( std::size_t px = 0; px < dec.px.size(); ++px )
+		{
+			const Px& q = dec.px[px];
+			if( q[3] == 0 ) continue;
+			sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+			++n;
+		}
+		return n > 0 ? sum / n : -1.0;
+	};
+
+	const double indirectMean    = meanLuminance( Implementation::ViewportRenderMode::Indirect );
+	const double deepReflectMean = meanLuminance( Implementation::ViewportRenderMode::DeepReflect );
+	std::printf( "  indirectMean=%.2f deepReflectMean=%.2f\n", indirectMean, deepReflectMean );
+
+	Check( indirectMean >= 0.0 && deepReflectMean >= 0.0, "both renders produced real pixels" );
+	Check( indirectMean < deepReflectMean - 8.0,
+	       "MONEY ASSERTION (b): \"indirect\"'s whole-frame mean is a MEANINGFUL FRACTION below "
+	       "\"deep_reflect\"'s on the same Cornell-corner scene -- the direct contribution is genuinely "
+	       "missing, not just noise" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// GUI render modes P2b `clay_lights` (docs/gui/RENDER_MODES.md §3
+// Lighting): albedo-independence discrimination for PathTracingIntegrator::
+// SetClayOverride.  Two scenes identical except ONE floor's reflectance
+// colour (saturated red vs saturated blue) -- under "clay_lights" both
+// floors are substituted for the SAME neutral clay, so the two renders'
+// colour bias should MATCH within a tight tolerance; under a real transport
+// render ("deep_reflect"), the two floors' authored colours dominate and
+// the colour bias differs substantially between the two scenes.
+//----------------------------------------------------------------------
+static const char* const kSceneClayFloorRed =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.9 0.05 0.05\n}\n\n"
+	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -0.1 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 6.0\n\tcolor 1 1 1\n\tposition 0 3 2\n}\n";
+
+static const char* const kSceneClayFloorBlue =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.05 0.05 0.9\n}\n\n"
+	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -0.1 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 6.0\n\tcolor 1 1 1\n\tposition 0 3 2\n}\n";
+
+// Whole-frame (meanR - 0.5*(meanG+meanB)) colour-bias metric -- positive for
+// a red-dominant image, negative for a blue-dominant one, near zero for a
+// neutral-grey (clay) image.  Same idiom as RunDirectModeMissingIndirectBleedTest's
+// per-patch redBias above, applied whole-frame here.
+static double ColorBias( const Decoded& d )
+{
+	double r = 0, g = 0, b = 0; unsigned int n = 0;
+	for( std::size_t px = 0; px < d.px.size(); ++px )
+	{
+		const Px& q = d.px[px];
+		if( q[3] == 0 ) continue;
+		r += q[0]; g += q[1]; b += q[2];
+		++n;
+	}
+	if( n == 0 ) return 0.0;
+	r /= n; g /= n; b /= n;
+	return r - 0.5 * ( g + b );
+}
+
+static void RunClayLightsAlbedoIndependenceTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"clay_lights\" albedo-independence discrimination ===\n" );
+
+	const std::string redPath  = WriteTemp( "rise_clay_floor_red.RISEscene", kSceneClayFloorRed );
+	const std::string bluePath = WriteTemp( "rise_clay_floor_blue.RISEscene", kSceneClayFloorBlue );
+	Check( !redPath.empty() && !bluePath.empty(), "wrote both clay-floor scenes" );
+
+	Job* pRedJob = new Job();
+	Check( pRedJob->LoadAsciiSceneViaCst( redPath.c_str() ), "red-floor scene loads via the CST path" );
+	std::unique_ptr<AgentSession> redSession = AgentSession::WrapJob( pRedJob );
+	Check( redSession != nullptr, "red-floor session wraps" );
+
+	Job* pBlueJob = new Job();
+	Check( pBlueJob->LoadAsciiSceneViaCst( bluePath.c_str() ), "blue-floor scene loads via the CST path" );
+	std::unique_ptr<AgentSession> blueSession = AgentSession::WrapJob( pBlueJob );
+	Check( blueSession != nullptr, "blue-floor session wraps" );
+
+	if( !redSession || !blueSession ) { pRedJob->release(); pBlueJob->release(); return; }
+
+	auto renderBias = [&]( AgentSession& session, Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session.Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return 0.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return 0.0; }
+		return ColorBias( dec );
+	};
+
+	// Under a REAL transport render, the two floors' authored colours
+	// dominate: the red scene reads strongly R-biased, the blue scene
+	// strongly negatively biased -- the two DIFFER substantially.
+	const double beautyBiasRed  = renderBias( *redSession,  Implementation::ViewportRenderMode::DeepReflect );
+	const double beautyBiasBlue = renderBias( *blueSession, Implementation::ViewportRenderMode::DeepReflect );
+	std::printf( "  deep_reflect: biasRed=%.2f biasBlue=%.2f\n", beautyBiasRed, beautyBiasBlue );
+	Check( beautyBiasRed > 10.0,
+	       "deep_reflect: the red floor reads R-dominant (sanity -- authored colour is honored)" );
+	Check( beautyBiasBlue < -10.0,
+	       "deep_reflect: the blue floor reads B-dominant (sanity -- authored colour is honored)" );
+	Check( ( beautyBiasRed - beautyBiasBlue ) > 20.0,
+	       "deep_reflect: the two scenes' colour bias DIFFERS substantially -- materials genuinely drive the image" );
+
+	// Under "clay_lights", BOTH floors are substituted for the same neutral
+	// clay -- the two renders' colour bias should MATCH within a tight
+	// tolerance, both close to zero (no residual material colour).
+	const double clayBiasRed  = renderBias( *redSession,  Implementation::ViewportRenderMode::ClayLights );
+	const double clayBiasBlue = renderBias( *blueSession, Implementation::ViewportRenderMode::ClayLights );
+	std::printf( "  clay_lights: biasRed=%.2f biasBlue=%.2f\n", clayBiasRed, clayBiasBlue );
+	Check( std::abs( clayBiasRed ) < 8.0,
+	       "MONEY ASSERTION: clay_lights on the red-floor scene shows NO material colour bias (neutralized to clay)" );
+	Check( std::abs( clayBiasBlue ) < 8.0,
+	       "MONEY ASSERTION: clay_lights on the blue-floor scene shows NO material colour bias (neutralized to clay)" );
+	Check( std::abs( clayBiasRed - clayBiasBlue ) < 6.0,
+	       "MONEY ASSERTION: clay_lights's colour bias MATCHES within a tight tolerance between the red-floor and "
+	       "blue-floor scenes -- materials are genuinely neutralized, independent of the authored albedo" );
+
+	pRedJob->release();
+	pBlueJob->release();
 }
 
 //----------------------------------------------------------------------
@@ -2175,6 +2486,10 @@ int main()
 	RunFilmRestoreTest();
 	RunBeautyVariantEndToEndTest();
 	RunDirectModeMissingIndirectBleedTest();
+	RunIndirectModeNoIndirectPathTest();
+	RunIndirectModeColorBleedSceneMeanTest();
+	RunIndirectModeEnvBackgroundBlackTest();
+	RunClayLightsAlbedoIndependenceTest();
 	RunViewArgEndToEndTest();
 	RunRpcModeParityTest();
 	RunNoRenderOnInvalidModeTest();

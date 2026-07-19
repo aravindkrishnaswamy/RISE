@@ -749,7 +749,7 @@ namespace
 		unsigned int count = 0;
 		const ViewportRenderModeInfo* modes = GetViewportRenderModes( count );
 
-		bool sawDeepReflect = false, sawDirect = false;
+		bool sawDeepReflect = false, sawDirect = false, sawIndirect = false, sawClayLights = false;
 		for( unsigned int i = 0; i < count; ++i )
 		{
 			const ViewportRenderModeInfo& info = modes[i];
@@ -773,12 +773,28 @@ namespace
 				Check( !info.casterFactory, std::string( info.name ) + ": a variant mode is NOT a casterFactory row (routes through CreateBeautyVariantPipeline)" );
 				Check( info.viewportSelectable, std::string( info.name ) + ": a variant mode is viewport-selectable" );
 			}
+			else
+			{
+				// GUI render modes P2b: the two lighting-diagnostic flags are
+				// meaningful ONLY on variant rows -- every non-variant row
+				// (Preview/ObjectMap/the four T1 data modes) must carry both
+				// false.
+				Check( !info.variantIndirectOnly && !info.variantClayOverride,
+				       std::string( info.name ) + ": non-variant row carries variantIndirectOnly/variantClayOverride both false" );
+			}
+			// GUI render modes P2b: the two lighting-diagnostic flags are
+			// mutually exclusive across the WHOLE registry -- at most one of
+			// them is true for any given row (no row is both "indirect" and
+			// "clay_lights" at once).
+			Check( !( info.variantIndirectOnly && info.variantClayOverride ),
+			       std::string( info.name ) + ": variantIndirectOnly and variantClayOverride are never BOTH true on the same row" );
 			if( std::string( info.name ) == "deep_reflect" )
 			{
 				sawDeepReflect = true;
 				Check( info.variantScaleDivisor == 4, "deep_reflect: variantScaleDivisor == 4 (quarter-res)" );
 				Check( info.variantMaxBounces == 24, "deep_reflect: variantMaxBounces == 24" );
 				Check( info.variantSamplesPerPass == 16, "deep_reflect: variantSamplesPerPass == 16" );
+				Check( !info.variantIndirectOnly && !info.variantClayOverride, "deep_reflect: neither lighting-diagnostic flag is set" );
 			}
 			else if( std::string( info.name ) == "direct" )
 			{
@@ -786,11 +802,32 @@ namespace
 				Check( info.variantScaleDivisor == 2, "direct: variantScaleDivisor == 2 (half-res)" );
 				Check( info.variantMaxBounces == 1, "direct: variantMaxBounces == 1 (direct lighting only)" );
 				Check( info.variantSamplesPerPass == 8, "direct: variantSamplesPerPass == 8" );
+				Check( !info.variantIndirectOnly && !info.variantClayOverride, "direct: neither lighting-diagnostic flag is set" );
+			}
+			else if( std::string( info.name ) == "indirect" )
+			{
+				sawIndirect = true;
+				Check( info.variantScaleDivisor == 2, "indirect: variantScaleDivisor == 2 (half-res)" );
+				Check( info.variantMaxBounces == 16, "indirect: variantMaxBounces == 16" );
+				Check( info.variantSamplesPerPass == 12, "indirect: variantSamplesPerPass == 12" );
+				Check( info.variantIndirectOnly, "indirect: variantIndirectOnly is TRUE" );
+				Check( !info.variantClayOverride, "indirect: variantClayOverride is false" );
+			}
+			else if( std::string( info.name ) == "clay_lights" )
+			{
+				sawClayLights = true;
+				Check( info.variantScaleDivisor == 2, "clay_lights: variantScaleDivisor == 2 (half-res)" );
+				Check( info.variantMaxBounces == 12, "clay_lights: variantMaxBounces == 12" );
+				Check( info.variantSamplesPerPass == 12, "clay_lights: variantSamplesPerPass == 12" );
+				Check( info.variantClayOverride, "clay_lights: variantClayOverride is TRUE" );
+				Check( !info.variantIndirectOnly, "clay_lights: variantIndirectOnly is false" );
 			}
 		}
 		Check( sawDeepReflect, "\"deep_reflect\" is registered" );
 		Check( sawDirect, "\"direct\" is registered" );
-		Check( count >= 8, "at least the 6 P1 + 2 P2a modes are registered" );
+		Check( sawIndirect, "\"indirect\" is registered" );
+		Check( sawClayLights, "\"clay_lights\" is registered" );
+		Check( count >= 10, "at least the 6 P1 + 2 P2a + 2 P2b modes are registered" );
 	}
 
 	//------------------------------------------------------------------
@@ -800,10 +837,11 @@ namespace
 	void TestBeautyVariantPipelineFactory()
 	{
 		std::printf( "R12: CreateBeautyVariantPipeline success/failure per mode...\n" );
-		const ViewportRenderMode variantModes[2] = {
-			ViewportRenderMode::DeepReflect, ViewportRenderMode::Direct
+		const ViewportRenderMode variantModes[4] = {
+			ViewportRenderMode::DeepReflect, ViewportRenderMode::Direct,
+			ViewportRenderMode::Indirect,    ViewportRenderMode::ClayLights
 		};
-		for( unsigned int i = 0; i < 2; ++i )
+		for( unsigned int i = 0; i < 4; ++i )
 		{
 			IRasterizer* rast   = nullptr;
 			IRayCaster*  caster = nullptr;

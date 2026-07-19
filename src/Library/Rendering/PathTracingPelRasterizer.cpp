@@ -59,6 +59,20 @@ void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
 	}
 }
 
+void PathTracingPelRasterizer::SetIndirectOnly( bool b )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetIndirectOnly( b );
+	}
+}
+
+void PathTracingPelRasterizer::SetClayOverride( bool b )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetClayOverride( b );
+	}
+}
+
 PathTracingPelRasterizer::~PathTracingPelRasterizer()
 {
 	safe_release( pIntegrator );

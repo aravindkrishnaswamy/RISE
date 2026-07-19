@@ -102,6 +102,17 @@ namespace RISE
 			/// the pipeline is ever handed to the render loop.
 			void SetMaxPathDepth( unsigned int n );
 
+			/// GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
+			/// post-construction setters forwarding to PathTracingIntegrator::
+			/// SetIndirectOnly / SetClayOverride -- see those methods' doc for
+			/// the exact semantics.  Same discipline as SetMaxPathDepth above:
+			/// no render-in-flight synchronization, not part of the C-ABI
+			/// factory signature, called immediately after construction by
+			/// CreateBeautyVariantPipeline before the pipeline is ever handed
+			/// to the render loop.
+			void SetIndirectOnly( bool b );
+			void SetClayOverride( bool b );
+
 			/// Runs the one-time SMS photon-aided seeding pass when
 			/// smsConfig.photonCount > 0.  Inherited from
 			/// PixelBasedRasterizerHelper; invoked by the base

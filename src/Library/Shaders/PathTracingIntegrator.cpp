@@ -38,6 +38,12 @@
 #ifdef RISE_ENABLE_OPENPGL
 #include "../Utilities/PathGuidingField.h"
 #endif
+// GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting): the shared
+// clay-reflectance state SetClayOverride substitutes in -- a mid-grey
+// UniformColorPainter wrapped by a LambertianBRDF/LambertianSPF pair.
+#include "../Materials/LambertianBRDF.h"
+#include "../Materials/LambertianSPF.h"
+#include "../Painters/UniformColorPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1362,17 +1368,41 @@ PathTracingIntegrator::PathTracingIntegrator(
   pSolver( 0 ),
   bSMSEnabled( smsConfig.enabled ),
   stabilityConfig( stabilityCfg ),
-  mMaxPathDepth( 128 )
+  mMaxPathDepth( 128 ),
+  mIndirectOnly( false ),
+  mClayOverride( false ),
+  pClayPainter( 0 ),
+  pClayBRDF( 0 ),
+  pClaySPF( 0 )
 {
 	if( smsConfig.enabled )
 	{
 		pSolver = new ManifoldSolver( smsConfig );
+	}
+
+	// GUI render modes P2b `clay_lights`: built unconditionally (cheap --
+	// one painter + two thin wrapper objects) rather than lazily on first
+	// SetClayOverride(true), so there is no first-use race to reason about.
+	// A mid-grey (0.5,0.5,0.5) albedo reflectance -- neutral clay, not
+	// pure white (would over-brighten bounce energy) or pure black (would
+	// kill it).  UniformColorPainter's own refcount is released immediately
+	// after the two Lambertian wrappers addref it in their constructors
+	// (LambertianBRDF/LambertianSPF's documented ctor contract).
+	{
+		IPainter* pPainter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		pClayPainter = pPainter;
+		pClayBRDF = new LambertianBRDF( *pPainter );
+		pClaySPF  = new LambertianSPF( *pPainter );
+		pPainter->release();
 	}
 }
 
 PathTracingIntegrator::~PathTracingIntegrator()
 {
 	safe_release( pSolver );
+	safe_release( pClayBRDF );
+	safe_release( pClaySPF );
+	safe_release( pClayPainter );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1778,6 +1808,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				if( pRadianceMap )
 				{
 					Value envRadiance = PTEvalRadianceMap<Tag>( pRadianceMap, currentRay, rast, tag );
+					// A continuation ray (this block is inside `needsIntersection`,
+					// reachable only at depth>=1) reaching the env IS indirect
+					// environment lighting -- KEPT under `indirect`.  The
+					// primary camera-ray miss is a separate, top-level path
+					// (IntegrateRayTemplated) where the direct-background
+					// suppression actually lives -- see SetIndirectOnly's doc.
 					result = result + throughput * envRadiance;
 				}
 				else if( scene.GetGlobalRadianceMap() )
@@ -1822,6 +1858,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						}
 					}
 
+					// Continuation-ray env hit (depth>=1) -- indirect
+					// environment lighting, kept under `indirect`.
 					result = result + throughput * envRadiance;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -1865,7 +1903,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// Update IOR stack
 		iorStack.SetCurrentObject( ri.pObject );
 
-		const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
+		// GUI render modes P2b `clay_lights`: substitute the shared clay
+		// BRDF for EVERY hit when the mode is active -- see mClayOverride's
+		// doc.  This also makes pBRDF non-null for materials that
+		// authored none (pure-specular SPF-only materials), so the
+		// "no-BSDF" branch below is never taken under clay_lights either.
+		const IBSDF* pBRDF = mClayOverride ? pClayBRDF :
+			( ri.pMaterial ? ri.pMaterial->GetBSDF() : 0 );
 
 		// Build a RAY_STATE for utility functions that need it
 		IRayCaster::RAY_STATE rs;
@@ -2030,7 +2074,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					emission = ClampContribution( emission, stabilityConfig.directClamp );
 				}
 
-				result = result + throughput * emission;
+				// GUI render modes P2b `indirect`: suppress the emission
+				// contribution at the camera-visible vertex only -- see
+				// SetIndirectOnly's doc (depth==0, not depth==startDepth --
+				// see that doc for why).  A directly-visible emitter reads
+				// black; emission seen after >=1 bounce is untouched.
+				if( !( mIndirectOnly && depth == 0 ) ) {
+					result = result + throughput * emission;
+				}
 
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -2363,7 +2414,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		if( !pBRDF )
 		{
-			const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+			// GUI render modes P2b `clay_lights`: dead under clay_lights in
+			// practice (pBRDF is never null there -- see the acquisition
+			// above), kept substituted for consistency in case a future
+			// caller reaches this branch some other way.
+			const ISPF* pSPF = mClayOverride ? pClaySPF :
+				( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 			if( !pSPF ) {
 				break;
 			}
@@ -2510,7 +2566,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pLS, ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler,
 				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
-			result = result + throughput * directAll;
+			// GUI render modes P2b `indirect`: suppress NEE's direct-
+			// lighting contribution at the camera-visible vertex only --
+			// see SetIndirectOnly's doc.  Still EVALUATED (same RNG
+			// consumption / shadow-ray cost as every other mode) so the
+			// sampler stream stays in lockstep; only the contribution is
+			// zeroed.
+			if( !( mIndirectOnly && depth == 0 ) ) {
+				result = result + throughput * directAll;
+			}
 			if constexpr ( Traits::is_pel ) {
 				if( ff ) {
 					const RISEPel ct = throughput * directAll;
@@ -2527,7 +2591,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 		}
 
-		// SMS for caustics through specular surfaces
+		// SMS for caustics through specular surfaces.  GUI render modes P2b
+		// `indirect`: deliberately NOT gated on depth==0 -- the
+		// task scope for `indirect` is "beauty minus the emission/NEE direct
+		// contribution", and a caustic reaching this vertex through a
+		// specular chain is a genuinely multi-bounce transport (the light
+		// energy already traveled through >=1 specular scatter to arrive
+		// here), not the open-air direct connection NEE evaluates.
 		if( pSolver )
 		{
 			const Vector3 woOutgoing = Vector3(
@@ -2609,7 +2679,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		// PART 3: BSDF sampling (continue path — iterative)
 		// ============================================================
-		const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+		// GUI render modes P2b `clay_lights`: the continuation-ray SPF --
+		// substituting clay here (rather than only at the acquisition
+		// above) keeps NEE (which reads pBRDF) and the continuation
+		// (which reads pSPF) consistent, so the estimator stays energy-
+		// consistent under clay_lights the same way it does for any real
+		// material's matched BRDF/SPF pair.
+		const ISPF* pSPF = mClayOverride ? pClaySPF :
+			( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 		if( !pSPF ) {
 			break;
 		}
@@ -3399,6 +3476,17 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// No medium, or medium with no scatter and no surface hit
 	if( !ri.geometric.bHit )
 	{
+		// GUI render modes P2b `indirect`: a camera ray that misses all
+		// geometry sees the environment/background DIRECTLY -- a direct
+		// contribution (same as a directly-visible emitter), so indirect-
+		// only returns black here.  Continuation-ray env misses (depth>=1,
+		// inside the IntegrateFromHit loop) are indirect environment
+		// lighting and are kept.  This is the ONLY primary-miss env site;
+		// the in-loop gates were dead (never reached at depth 0).
+		if( mIndirectOnly ) {
+			return Traits::zero();
+		}
+
 		// Camera ray missed all geometry.  Honour the rasterizer's
 		// `radiance_background` / RadianceMapConfig::isBackground
 		// switch: when false (`Mix Shader gated by Light Path.Is
@@ -3832,6 +3920,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							}
 						}
 
+						// Continuation-ray env hit (depth>=1) -- indirect env
+						// lighting, kept under `indirect` (HWSS twin).
 						hwssResult[w] += throughputComp[w] * envRadiance;
 					}
 				}
@@ -3871,7 +3961,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 		iorStack.SetCurrentObject( ri.pObject );
 
-		const IBSDF* pBRDFCur = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
+		// GUI render modes P2b `clay_lights` (HWSS twin of the Pel/NM
+		// acquisition above): substituting clay here also makes the
+		// no-BSDF NM-delegation branch immediately below unreachable
+		// under clay_lights, matching the Pel/NM loop's behaviour.
+		const IBSDF* pBRDFCur = mClayOverride ? pClayBRDF :
+			( ri.pMaterial ? ri.pMaterial->GetBSDF() : 0 );
 
 		// If we hit a material without BSDF mid-path (e.g. entered a
 		// dielectric), fall back to per-wavelength NM for remaining path.
@@ -4025,7 +4120,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					if( depth > 0 ) {
 						emission = ClampContribution( emission, stabilityConfig.directClamp );
 					}
-					hwssResult[w] += throughputComp[w] * emission;
+					// GUI render modes P2b `indirect` (HWSS twin): suppress
+					// the emission contribution at the camera-visible vertex
+					// only -- see SetIndirectOnly's doc.
+					if( !( mIndirectOnly && depth == 0 ) ) {
+						hwssResult[w] += throughputComp[w] * emission;
+					}
 				}
 			}
 		}
@@ -4046,11 +4146,19 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					ri.geometric, *pBRDFCur, ri.pMaterial, swl.lambda[w],
 					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
-				hwssResult[w] += throughputComp[w] * directNM;
+				// GUI render modes P2b `indirect` (HWSS twin): suppress
+				// NEE's direct-lighting contribution at the camera-visible
+				// vertex only -- see SetIndirectOnly's doc.  Still
+				// EVALUATED so the sampler stream stays in lockstep.
+				if( !( mIndirectOnly && depth == 0 ) ) {
+					hwssResult[w] += throughputComp[w] * directNM;
+				}
 			}
 		}
 
-		// SMS (HWSS — per wavelength, since IOR varies)
+		// SMS (HWSS — per wavelength, since IOR varies).  GUI render modes
+		// P2b `indirect`: deliberately NOT gated -- see the Pel/NM loop's
+		// matching SMS comment above.
 		if( pSolver )
 		{
 			const Vector3 woOutgoing = Vector3(
@@ -4090,7 +4198,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// ============================================================
 		// PART 3: BSDF sampling (HWSS — hero drives, companions eval)
 		// ============================================================
-		const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+		// GUI render modes P2b `clay_lights` (HWSS twin of the Pel/NM PART 3
+		// substitution): keeps NEE (pBRDFCur) and the continuation (pSPF)
+		// consistent under clay_lights, same reasoning as the Pel/NM loop.
+		const ISPF* pSPF = mClayOverride ? pClaySPF :
+			( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 		if( !pSPF ) {
 			break;
 		}
@@ -4530,6 +4642,16 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// No medium, or medium with no scatter and no surface hit
 	if( !ri.geometric.bHit )
 	{
+		// GUI render modes P2b `indirect` (HWSS twin): directly-visible
+		// background is a direct contribution -- return black under
+		// indirect-only (see the RGB IntegrateRayTemplated twin).
+		if( mIndirectOnly ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				result[w] = 0;
+			}
+			return;
+		}
+
 		// See RGB IntegrateRay above — when isBackground=false the
 		// camera-visible background stays black; indirect bounces
 		// still pull from the global radiance map elsewhere.

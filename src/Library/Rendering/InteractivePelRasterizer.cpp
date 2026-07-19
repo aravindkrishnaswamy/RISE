@@ -1318,24 +1318,34 @@ namespace {
 const RISE::Implementation::ViewportRenderModeInfo kViewportRenderModes[] =
 {
 	{ RISE::Implementation::ViewportRenderMode::Preview,   "preview",   "Shaded Preview",
-	  "What does the scene roughly look like?",       true,  true,  false, 0, 0, 0 },
+	  "What does the scene roughly look like?",       true,  true,  false, 0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::ObjectMap, "objectmap", "Object Map",
-	  "Which object is where?",                       false, false, false, 0, 0, 0 },
+	  "Which object is where?",                       false, false, false, 0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Normals,   "normals",   "Normals",
-	  "Which way do surfaces face?",                  false, true,  true,  0, 0, 0 },
+	  "Which way do surfaces face?",                  false, true,  true,  0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Depth,     "depth",     "Depth",
-	  "How far away is everything?",                  false, true,  true,  0, 0, 0 },
+	  "How far away is everything?",                  false, true,  true,  0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Facets,    "facets",    "Facets",
-	  "What does the actual tessellation look like?", false, true,  true,  0, 0, 0 },
+	  "What does the actual tessellation look like?", false, true,  true,  0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Wireframe, "wireframe", "Wireframe",
-	  "Where are the polygon edges?",                 false, true,  true,  0, 0, 0 },
+	  "Where are the polygon edges?",                 false, true,  true,  0, 0, 0, false, false },
 	// GUI render modes P2a (docs/gui/RENDER_MODES.md §3 Transport, §6): the
 	// BeautyVariant rows.  casterFactory=false -- these route through
 	// CreateBeautyVariantPipeline, not CreateInteractiveViewModeCaster.
 	{ RISE::Implementation::ViewportRenderMode::DeepReflect, "deep_reflect", "Deep Reflections",
-	  "What do reflections and refractions resolve to?", true, true, false, 4, 24, 16 },
+	  "What do reflections and refractions resolve to?", true, true, false, 4, 24, 16, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Direct,      "direct",       "Direct Lighting",
-	  "What does direct lighting alone contribute?",      true, true, false, 2, 1,  8  },
+	  "What does direct lighting alone contribute?",      true, true, false, 2, 1,  8,  false, false },
+	// GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting, §9 P2b): the
+	// second pair of BeautyVariant rows -- lighting-diagnostic modes built on
+	// the SAME CreateBeautyVariantPipeline factory, distinguished only by the
+	// two trailing variantIndirectOnly/variantClayOverride flags, which
+	// CreateBeautyVariantPipeline stamps onto the PathTracingIntegrator via
+	// SetIndirectOnly/SetClayOverride right after SetMaxPathDepth.
+	{ RISE::Implementation::ViewportRenderMode::Indirect,    "indirect",     "Indirect Only",
+	  "What does indirect light alone contribute?",       true, true, false, 2, 16, 12, true,  false },
+	{ RISE::Implementation::ViewportRenderMode::ClayLights,  "clay_lights",  "Clay + Lights",
+	  "Is the lighting right, independent of materials?", true, true, false, 2, 12, 12, false, true  },
 };
 
 }
@@ -1599,6 +1609,13 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 		PathTracingPelRasterizer* pPT = dynamic_cast<PathTracingPelRasterizer*>( pRaster );
 		if( pPT ) {
 			pPT->SetMaxPathDepth( info->variantMaxBounces );
+			// GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
+			// stamp the two lighting-diagnostic flags.  False for every row
+			// except Indirect/ClayLights respectively, so deep_reflect/direct
+			// stay byte-identical (both flags default false on the
+			// PathTracingIntegrator, and these calls are no-ops for them).
+			pPT->SetIndirectOnly( info->variantIndirectOnly );
+			pPT->SetClayOverride( info->variantClayOverride );
 		}
 	}
 
