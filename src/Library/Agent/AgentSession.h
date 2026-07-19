@@ -513,6 +513,26 @@ namespace RISE
 			//! agent can OBSERVE which integrator is live after a rasterizer
 			//! insert_chunk.  Empty when no rasterizer is active (the no-head /
 			//! no-rasterizer failure paths).
+			//!
+			//! P2 fix (2026-07-19 mutation review): also EMPTY on any render
+			//! that was refused, or threw, BEFORE doRenderWork ever entered the
+			//! park -- concretely, a RunPreviewRenderParked refusal/throw or a
+			//! SubmitAgentRenderSync refusal/throw (AgentSession.cpp's
+			//! RenderCore_).  Those paths deliberately do NOT read
+			//! mJob->GetActiveRasterizerName() on the calling thread, because
+			//! by that point the park has already released (or never started)
+			//! and the interactive render thread may be concurrently mutating
+			//! that Job state -- an unsynchronized std::string read racing a
+			//! concurrent mutation is exactly the class of bug the park fix
+			//! exists to prevent.  An empty `integrator` on a failed render
+			//! (`ok == false`) therefore means one of two things: no rasterizer
+			//! was active, OR the render never resolved far enough to observe
+			//! one (never entered the park) -- callers that need to
+			//! disambiguate should inspect `message`.  Every path where
+			//! doRenderWork DID run (including its own internal failure/
+			//! cancellation returns) still gets a fresh, correctly-synchronized
+			//! read -- doRenderWork sets this field FIRST, unconditionally, at
+			//! its own top, under the park.
 			std::string                integrator;
 			//! Preview-render ADDITIVE wire fields: the dims ACTUALLY used for
 			//! this render (== width/height above; kept as an explicit echo so
@@ -577,10 +597,13 @@ namespace RISE
 			//! Toolkit slice 2 ADDITIVE wire field: "production" (default)
 			//! or "draft" -- which pipeline THIS render actually ran
 			//! through (see AgentRenderParams::quality's doc).  Set
-			//! unconditionally alongside `integrator` above (both are
-			//! filled as soon as this call passes the initial no-head /
-			//! no-active-rasterizer guards, and persist across every later
-			//! return path).  DELIBERATELY DISTINCT from `integrator`:
+			//! unconditionally on the calling thread before any park/dispatch
+			//! decision (it's a pure function of `params`, never live Job
+			//! state) and persists across every later return path.
+			//! `integrator` does NOT share that unconditional timing -- see
+			//! its own field doc above: it is left EMPTY on any render
+			//! refused/thrown before doRenderWork ever entered the park.
+			//! DELIBERATELY DISTINCT from `integrator`:
 			//! `integrator` always names the HEAD's active (production)
 			//! rasterizer, independent of what this call rendered with --
 			//! a draft render still reports the production integrator's

@@ -75,15 +75,21 @@
 #include "../src/Library/Job.h"
 
 #include <algorithm>
+#include <chrono>    // P1 fix test: wall-clock timing proxy for "no full PNG decode ran"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>   // std::memset (WriteSyntheticSolidPng's z_stream init)
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#ifndef NO_PNG_SUPPORT
+	#include <zlib.h>   // P1 fix test: WriteSyntheticSolidPng streams a genuinely valid oversized PNG
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -2706,7 +2712,197 @@ static bool WriteBytes( const std::string& path, const std::vector<unsigned char
 	return true;
 }
 
-// P1 fix (2026-07-19 re-review) test support: the standard zlib/PNG
+// P1 fix (2026-07-19 mutation review) test support: build a GENUINELY VALID
+// PNG (correct IHDR, correctly zlib-deflated IDAT, correct per-chunk CRC32)
+// whose declared dimensions exceed the eval pixel budget -- WITHOUT ever
+// holding the full uncompressed image in memory.  A solid-colour image
+// deflates to a few KB regardless of dimensions, so a single scanline
+// buffer (filter-type byte + width*3 solid-colour bytes) is fed through
+// zlib's streaming deflate() one row at a time; only the tiny compressed
+// output accumulates.  This is deliberately NOT the prior attempt's
+// approach (a hand-patched IHDR lying about dimensions on top of otherwise
+// truncated/inconsistent image data) -- that aborts inside libpng's own
+// "not enough image data" error path before DecodePngToRgb8's guard is
+// ever reached, so it exercises libpng's tolerance of a lying header, not
+// the guard under test.  A real 8200x8200 solid PNG here is a fully valid,
+// standard-conforming file that libpng will happily decode top to bottom
+// if given the chance -- which is exactly the point: it lets the test
+// prove the header-probe guard stops that decode from ever starting.
+static void AppendPngChunk( std::vector<unsigned char>& out, const char type[4], const unsigned char* data, unsigned int len )
+{
+	const unsigned char lenBuf[4] = {
+		static_cast<unsigned char>( ( len >> 24 ) & 0xFF ), static_cast<unsigned char>( ( len >> 16 ) & 0xFF ),
+		static_cast<unsigned char>( ( len >> 8 ) & 0xFF ),  static_cast<unsigned char>( len & 0xFF ) };
+	out.insert( out.end(), lenBuf, lenBuf + 4 );
+	const std::size_t typeStart = out.size();
+	out.insert( out.end(), type, type + 4 );
+	if( len ) out.insert( out.end(), data, data + len );
+	uLong crc = crc32( 0L, Z_NULL, 0 );
+	crc = crc32( crc, &out[typeStart], static_cast<uInt>( 4 + len ) );
+	const unsigned char crcBuf[4] = {
+		static_cast<unsigned char>( ( crc >> 24 ) & 0xFF ), static_cast<unsigned char>( ( crc >> 16 ) & 0xFF ),
+		static_cast<unsigned char>( ( crc >> 8 ) & 0xFF ),  static_cast<unsigned char>( crc & 0xFF ) };
+	out.insert( out.end(), crcBuf, crcBuf + 4 );
+}
+
+static bool WriteSyntheticSolidPng( const std::string& path, unsigned int width, unsigned int height )
+{
+	std::vector<unsigned char> file;
+	static const unsigned char kSig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+	file.insert( file.end(), kSig, kSig + 8 );
+
+	// IHDR: width, height (big-endian uint32 each), bit depth 8, color type
+	// 2 (RGB truecolor, no alpha), compression/filter/interlace all 0.
+	unsigned char ihdr[13];
+	ihdr[0] = static_cast<unsigned char>( ( width >> 24 ) & 0xFF );  ihdr[1] = static_cast<unsigned char>( ( width >> 16 ) & 0xFF );
+	ihdr[2] = static_cast<unsigned char>( ( width >> 8 ) & 0xFF );   ihdr[3] = static_cast<unsigned char>( width & 0xFF );
+	ihdr[4] = static_cast<unsigned char>( ( height >> 24 ) & 0xFF ); ihdr[5] = static_cast<unsigned char>( ( height >> 16 ) & 0xFF );
+	ihdr[6] = static_cast<unsigned char>( ( height >> 8 ) & 0xFF );  ihdr[7] = static_cast<unsigned char>( height & 0xFF );
+	ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+	AppendPngChunk( file, "IHDR", ihdr, 13 );
+
+	// IDAT: stream-deflate one scanline at a time -- the only buffer that's
+	// ever `width`-sized is the single reused row; `compressed` holds only
+	// the (tiny, solid-colour) deflate output.
+	std::vector<unsigned char> compressed;
+	z_stream strm;
+	std::memset( &strm, 0, sizeof( strm ) );
+	Check( deflateInit( &strm, Z_DEFAULT_COMPRESSION ) == Z_OK, "WriteSyntheticSolidPng: deflateInit succeeds" );
+
+	std::vector<unsigned char> row( 1 + static_cast<std::size_t>( width ) * 3 );
+	row[0] = 0;   // filter type: None
+	for( std::size_t i = 1; i < row.size(); i += 3 ) {
+		row[i] = 200; row[i + 1] = 120; row[i + 2] = 40;   // solid colour
+	}
+
+	std::vector<unsigned char> outBuf( 1 << 16 );
+	for( unsigned int y = 0; y < height; ++y ) {
+		strm.next_in  = row.data();
+		strm.avail_in = static_cast<uInt>( row.size() );
+		const int flush = ( y + 1 == height ) ? Z_FINISH : Z_NO_FLUSH;
+		int ret;
+		do {
+			strm.next_out  = outBuf.data();
+			strm.avail_out = static_cast<uInt>( outBuf.size() );
+			ret = deflate( &strm, flush );
+			if( ret == Z_STREAM_ERROR ) { deflateEnd( &strm ); return false; }
+			const std::size_t produced = outBuf.size() - strm.avail_out;
+			if( produced ) compressed.insert( compressed.end(), outBuf.data(), outBuf.data() + produced );
+		} while( strm.avail_out == 0 );
+	}
+	deflateEnd( &strm );
+
+	AppendPngChunk( file, "IDAT", compressed.empty() ? nullptr : compressed.data(), static_cast<unsigned int>( compressed.size() ) );
+	AppendPngChunk( file, "IEND", nullptr, 0 );
+
+	// ScratchRunDir() REMOVES its directory and does not recreate it (the
+	// WriteFile/WriteBytes helpers each create parents themselves), so a raw
+	// ofstream here would fail with "cannot open file" and the fixture would
+	// silently never exist -- which is exactly what happened before this
+	// line: the budget assertion then "failed" against a missing-file error
+	// instead of the pixel-budget refusal it meant to test.
+	{
+		std::error_code ec;
+		const std::filesystem::path fp( path );
+		if( fp.has_parent_path() ) std::filesystem::create_directories( fp.parent_path(), ec );
+	}
+	std::ofstream f( path.c_str(), std::ios::binary );
+	if( !f ) return false;
+	f.write( reinterpret_cast<const char*>( file.data() ), static_cast<std::streamsize>( file.size() ) );
+	return f.good();
+}
+
+// P1 fix (2026-07-19 mutation review): the reference-PNG budget guard used
+// to run AFTER PNGReader::BeginRead -- which allocates the full pixel
+// buffer AND decodes every scanline via png_read_row BEFORE returning w/h
+// (see PNGReader.cpp:66-172).  An oversized-but-under-libpng's-own-2GiB-cap
+// reference therefore fully decoded before being refused.  DecodePngToRgb8
+// now probes width/height straight out of the PNG signature+IHDR bytes
+// (ProbePngDimensions, AgentEvalRunner.cpp) and refuses BEFORE constructing
+// any reader at all.
+//
+// This test builds a REAL 8200x8200 (67,240,000 px, just over the
+// 64,000,000-px budget) solid-colour PNG via WriteSyntheticSolidPng above,
+// then measures wall-clock time for compareToImage to refuse it.  The
+// header probe is a handful of memory compares on 24 bytes; a full decode
+// of an 8200x8200 image (memset + zlib inflate + png_read_row x8200 rows)
+// is not.  kSlowRefuseCeilingMs is picked well below what a full decode of
+// this fixture measurably costs (calibrated during development: a full
+// decode-then-refuse of this exact fixture takes tens of milliseconds; the
+// header-probe refusal is sub-millisecond) but comfortably above ordinary
+// scratch-disk I/O jitter for a several-KB file, so the assertion is not a
+// hardware-speed guess.  Proven to FAIL pre-fix: temporarily reverting the
+// ProbePngDimensions call in DecodePngToRgb8 (leaving only the pre-existing
+// post-BeginRead belt-and-braces gate) makes this same refusal take an
+// order of magnitude longer -- the timing assertion below trips.
+static void TestCompareToImageOversizedReferenceIsRefusedCheaply()
+{
+	std::printf( "P1: compareToImage reference over the pixel budget is refused BEFORE decode (cheaply)...\n" );
+	const std::string dir = ScratchRunDir( "p1_oversized_reference" );
+
+	const unsigned int kWidth = 8200, kHeight = 8200;   // 67,240,000 px > 64,000,000 budget
+	const std::string bigRefPath = dir + "/oversized_ref.png";
+	Check( WriteSyntheticSolidPng( bigRefPath, kWidth, kHeight ),
+		"WriteSyntheticSolidPng writes a genuinely valid oversized PNG fixture" );
+
+	// Sanity: the fixture really is a valid, libpng-decodable PNG (not a
+	// truncated/lying-header fixture) -- confirmed structurally by the PNG
+	// signature + IHDR bytes we just wrote it with; the file-size check
+	// below additionally confirms it stayed a small, real deflate output
+	// not an accidentally-truncated write.  MEASURED size: ~211 KB.  (An
+	// earlier guess of "well under 100 KB" was wrong -- each of the 8200
+	// rows is a 24601-byte repeating pattern, and deflate's per-block
+	// overhead across that many rows adds up.  The claim that matters is
+	// the RATIO, not an absolute byte count: 211 KB is ~0.1% of the
+	// ~192 MiB an uncompressed decode would need, which is what proves the
+	// header probe refuses without materialising the image.)
+	{
+		std::ifstream check( bigRefPath.c_str(), std::ios::binary | std::ios::ate );
+		Check( check.is_open(), "the oversized fixture file was written" );
+		const auto sz = check.tellg();
+		Check( sz > 100 && sz < 2 * 1024 * 1024,
+			"the fixture is a small, real deflate stream (measured ~211 KB, bounded at 2 MB), not the ~192 MiB "
+			"an uncompressed decode would need" );
+	}
+
+	AgentEvalScenario s = MakeScenario( "p1_oversized_probe", kScene, "Render it", "commit", kNoLoopFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "p1_oversized_probe run reached final_text" );
+	Check( h.dispatcher != nullptr && h.dispatcher->Session() != nullptr, "p1_oversized_probe has a live session" );
+	if( !h.dispatcher || !h.dispatcher->Session() ) return;
+
+	JsonValue cps; std::string jerr;
+	const std::string cpJson = "[{\"kind\":\"render\",\"compareToImage\":\"" + bigRefPath + "\",\"rmseMax\":0.5}]";
+	Check( JsonParse( cpJson, cps, jerr ), "oversized-reference checkpoint JSON parses (" + jerr + ")" );
+	AgentEvalScenario s2 = s; s2.checkpoints = cps;
+
+	const auto t0 = std::chrono::steady_clock::now();
+	AgentEvalCheckResult r = CheckScenario( h, s2 );
+	const auto t1 = std::chrono::steady_clock::now();
+	const double elapsedMs = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+	std::printf( "  [measured] oversized-reference refusal took %.3f ms\n", elapsedMs );
+
+	Check( r.checkpoints.size() == 1, "exactly one checkpoint result" );
+	if( r.checkpoints.size() == 1 ) {
+		Check( r.checkpoints[0].passed == false, "the oversized-reference checkpoint FAILS (refused, not silently skipped)" );
+		Check( r.checkpoints[0].detail.find( "exceeds the 64000000-pixel eval render budget" ) != std::string::npos,
+			"the refusal detail names the pixel budget (got: " + r.checkpoints[0].detail + ")" );
+		Check( r.checkpoints[0].detail.find( "67240000" ) != std::string::npos,
+			"the refusal detail names the oversized reference's actual pixel count (got: " + r.checkpoints[0].detail + ")" );
+	}
+
+	// The load-bearing timing assertion: refusal via the header probe is
+	// fast.  Generous ceiling (development measurement: header-probe path
+	// ~0.1-1 ms; a full BeginRead decode-then-refuse of this exact fixture
+	// measured tens of ms) -- this is a coarse but real proxy for "the
+	// pixel-buffer allocation + scanline decode never ran", which is the
+	// actual P1 claim under test.
+	const double kSlowRefuseCeilingMs = 25.0;
+	Check( elapsedMs < kSlowRefuseCeilingMs,
+		"the refusal is fast (" + std::to_string( elapsedMs ) + " ms < " + std::to_string( kSlowRefuseCeilingMs ) +
+		" ms ceiling) -- consistent with a 24-byte header probe, NOT a full BeginRead decode of a ~192 MiB image" );
+}
 
 static void TestRenderCameraCompareToImage()
 {
@@ -2823,18 +3019,12 @@ static void TestRenderCameraCompareToImage()
 			"the missing-file detail is clear (got: " + d + ")" );
 	}
 
-	// NOTE (2026-07-19): a reference-image OVERSIZE case is deliberately NOT
-	// tested by hand-patching a PNG's IHDR to declare huge dimensions.  RISE's
-	// PNG reader routes a truncated/inconsistent IDAT into libpng's error path
-	// DURING BeginRead ("libpng error: Not enough image data"), which aborts
-	// the process before DecodePngToRgb8's budget guard is ever reached -- so
-	// such a fixture exercises libpng's tolerance of a lying header, not our
-	// guard, and merely crashes the suite.  Producing a VALID >64MP PNG cheaply
-	// (a solid-colour image compresses to a few KB) would need streamed zlib
-	// construction; not worth it here.  The kMaxEvalRenderPixels budget IS
-	// covered by the checkpoint-dimension cases above (the real attack surface:
-	// scenario-file numbers), and DecodePngToRgb8 shares that same constant and
-	// checks it from the header before its resize.
+	// The reference-image OVERSIZE case (a GENUINELY VALID >64MP PNG, not a
+	// hand-patched lying header) is covered separately by
+	// TestCompareToImageOversizedReferenceIsRefusedCheaply, which also
+	// times the refusal to prove it happens before any pixel-buffer
+	// decode -- see that function's doc for why a patched-IHDR fixture
+	// doesn't exercise the guard under test.
 
 	// --- Load-validator reject cases (image-reconstruction Wave 2). ---
 	auto writeScenario = [&]( const std::string& id, const std::string& checkpointsJson ) -> std::string {
@@ -3809,6 +3999,7 @@ int main()
 	TestProposalCheckpoint();
 	TestRenderChannelBalance();
 	TestRenderCameraCompareToImage();
+	TestCompareToImageOversizedReferenceIsRefusedCheaply();
 	TestFinalTextCheckpoint();
 	TestUnknownKindAndMalformedShape();
 	TestPartialCreditArithmetic();

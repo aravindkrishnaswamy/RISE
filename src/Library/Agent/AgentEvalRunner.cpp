@@ -3985,6 +3985,49 @@ namespace RISE
 					return true;
 				}
 
+				//! P1 fix (2026-07-19 mutation review): parse width/height
+				//! directly from the PNG signature + IHDR chunk header
+				//! BEFORE any reader is constructed.  PNGReader::BeginRead
+				//! (PNGReader.cpp) does NOT stop at parsing IHDR -- it goes
+				//! on to allocate the FULL pixel buffer (`new unsigned
+				//! char[nBytes]`), memset it, and decode EVERY scanline via
+				//! png_read_row, all before returning w/h to the caller.  A
+				//! kMaxEvalRenderPixels check placed after BeginRead (as the
+				//! prior version of this function did) therefore lets an
+				//! oversized-but-under-libpng's-own-2GiB-cap reference PNG
+				//! fully decode -- allocation and all -- before being
+				//! refused.  The PNG container's first 24 bytes are
+				//! fixed-layout and don't require libpng at all:
+				//!   [0..8)   8-byte PNG signature
+				//!   [8..12)  IHDR chunk length (big-endian uint32; == 13)
+				//!   [12..16) chunk type, must be "IHDR"
+				//!   [16..20) width  (big-endian uint32)
+				//!   [20..24) height (big-endian uint32)
+				//! Returns false (leaving outW/outH at 0) when the buffer is
+				//! too short or the signature/tag don't match -- callers
+				//! fall through to the existing reader-based path so
+				//! non-PNG/malformed/truncated input still produces the
+				//! SAME honest decode-failure diagnostic as before, never a
+				//! new crash or a false refusal.
+				bool ProbePngDimensions( const char* bytes, unsigned int byteCount, unsigned int& outW, unsigned int& outH )
+				{
+					outW = 0;
+					outH = 0;
+					static const unsigned char kPngSig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+					if( !bytes || byteCount < 24 )
+						return false;
+					const unsigned char* u = reinterpret_cast<const unsigned char*>( bytes );
+					if( std::memcmp( u, kPngSig, 8 ) != 0 )
+						return false;
+					if( u[12] != 'I' || u[13] != 'H' || u[14] != 'D' || u[15] != 'R' )
+						return false;
+					outW = ( static_cast<unsigned int>( u[16] ) << 24 ) | ( static_cast<unsigned int>( u[17] ) << 16 ) |
+					       ( static_cast<unsigned int>( u[18] ) << 8 )  |   static_cast<unsigned int>( u[19] );
+					outH = ( static_cast<unsigned int>( u[20] ) << 24 ) | ( static_cast<unsigned int>( u[21] ) << 16 ) |
+					       ( static_cast<unsigned int>( u[22] ) << 8 )  |   static_cast<unsigned int>( u[23] );
+					return true;
+				}
+
 				//! Image-reconstruction Wave 2: decode PNG bytes already in
 				//! memory into a tightly-packed 8-bit RGB pixel buffer (row-
 				//! major, 3 bytes/pixel, alpha dropped) through RISE's OWN
@@ -4014,6 +4057,29 @@ namespace RISE
 						return false;
 					}
 
+					// P1 fix (2026-07-19 mutation review): refuse an
+					// over-budget reference BEFORE constructing a reader at
+					// all, using ProbePngDimensions' header-only parse (see
+					// its doc above for why this must happen ahead of
+					// BeginRead, not after).  A buffer that doesn't parse as
+					// a recognizable PNG header falls through silently --
+					// the reader path below still runs and produces the
+					// existing "not a valid PNG" diagnostic.
+					{
+						unsigned int probeW = 0, probeH = 0;
+						if( ProbePngDimensions( bytes, byteCount, probeW, probeH ) ) {
+							const double totalPixels = static_cast<double>( probeW ) * static_cast<double>( probeH );
+							if( totalPixels > kMaxEvalRenderPixels ) {
+								char pb[192];
+								std::snprintf( pb, sizeof( pb ),
+									"reference PNG is %ux%u = %.0f pixels, exceeds the %.0f-pixel eval render budget",
+									probeW, probeH, totalPixels, kMaxEvalRenderPixels );
+								err = pb;
+								return false;
+							}
+						}
+					}
+
 					IMemoryBuffer* buffer = nullptr;
 					if( !RISE_API_CreateCompatibleMemoryBuffer( &buffer, bytes, byteCount, /*bTakeOwnership=*/false ) || !buffer ) {
 						err = "could not wrap PNG bytes in a read buffer";
@@ -4036,13 +4102,18 @@ namespace RISE
 						return false;
 					}
 
-					// P1 fix (2026-07-19 re-review): total-pixel budget, checked
-					// from the PNG's OWN header dims (BeginRead/png_read_info has
-					// already parsed IHDR without touching pixel data) BEFORE the
-					// pixel-buffer allocation just below.  An oversized reference
-					// PNG (author error, or a hostile/malformed fixture) must not
-					// decode into a multi-GiB buffer -- same kMaxEvalRenderPixels
-					// budget CheckRenderKind enforces on its own render request.
+					// Belt-and-braces SECOND gate (2026-07-19 mutation review):
+					// the PRIMARY guard is the ProbePngDimensions header-only
+					// probe above, which runs before the reader is even
+					// constructed -- by the time control reaches here,
+					// BeginRead has ALREADY allocated the full pixel buffer
+					// and decoded every scanline (see ProbePngDimensions'
+					// doc; this comment previously and incorrectly claimed
+					// BeginRead "has already parsed IHDR without touching
+					// pixel data", which is false).  This check stays as a
+					// harmless redundant catch for any path that bypasses
+					// the header probe (e.g. a PNG whose signature/IHDR the
+					// probe couldn't parse but libpng still accepts).
 					{
 						const double totalPixels = static_cast<double>( w ) * static_cast<double>( h );
 						if( totalPixels > kMaxEvalRenderPixels ) {

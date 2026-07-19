@@ -4072,15 +4072,25 @@ namespace RISE
 					// gesture completes") so a caller sees the identical
 					// wording whether it hit a param edit, a chunk edit, or a
 					// preview render.
+					// P2 fix (2026-07-19 mutation review): doRenderWork never
+					// entered the park on THIS path (RunPreviewRenderParked
+					// refused before running it) -- there is no live-render
+					// state to resolve, and reading mJob->GetActiveRasterizerName()
+					// here would be an unsynchronized read racing the interactive
+					// render thread for nothing.  Leave res.integrator at its
+					// default-constructed empty string; see AgentRenderResult::
+					// integrator's field doc for the "never resolved" contract.
 					res.ok          = false;
-					res.integrator  = mJob->GetActiveRasterizerName();
 					res.renderJobId = renderJobId;   // 0 here -- no render ran, matching the other pre-flight refusal paths in this function
 					res.message     = "editor transaction in progress -- retry after the gesture completes";
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
+					// P2 fix (2026-07-19 mutation review): same reasoning as the
+					// refusal branch just above -- do not read live Job state on
+					// the calling thread here.  See AgentRenderResult::integrator's
+					// field doc.
 					res.ok          = false;
-					res.integrator  = mJob->GetActiveRasterizerName();
 					res.renderJobId = static_cast<std::uint64_t>( controllerJobId );
 					res.message     = "render failed: " + thrownMessage;
 					return res;
@@ -4110,8 +4120,12 @@ namespace RISE
 					// SubmitAgentRenderSync's `pinned` doc).  Honest
 					// failure -- no fallback direct call here, since a
 					// direct call is exactly the race this slice closes.
+					// P2 fix (2026-07-19 mutation review): doRenderWork never
+					// entered the park on THIS path (SubmitAgentRenderSync
+					// refused before running it) -- see the RunPreviewRenderParked
+					// refusal branch above and AgentRenderResult::integrator's
+					// field doc for the same reasoning.
 					res.ok = false;
-					res.integrator = mJob->GetActiveRasterizerName();
 					const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
 					res.message = ( cur.active && cur.pinned )
 						? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
@@ -4119,8 +4133,9 @@ namespace RISE
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
+					// P2 fix (2026-07-19 mutation review): same reasoning --
+					// do not read live Job state on the calling thread here.
 					res.ok          = false;
-					res.integrator  = mJob->GetActiveRasterizerName();
 					res.renderJobId = static_cast<std::uint64_t>( controllerJobId );
 					res.message     = "render failed: " + thrownMessage;
 					return res;
@@ -4187,8 +4202,16 @@ namespace RISE
 			// when this function returns -- no leak, just not this
 			// early-return's job to handle.
 			if( cameraOverrideFailed ) {
+				// P2 fix (2026-07-19 mutation review): NOT a fresh read here --
+				// doRenderWork already ran on this call (cameraOverrideFailed can
+				// only be set from inside applyCameraOverride, which only runs
+				// inside doRenderWork's park) and set res.integrator FIRST,
+				// unconditionally, before doing anything else (see doRenderWork's
+				// own comment at its top).  Re-reading mJob->GetActiveRasterizerName()
+				// here, on the calling thread, AFTER the park has already
+				// released, was both redundant and the exact unsynchronized-
+				// std::string-read race the park fix exists to prevent.
 				res.ok = false;
-				res.integrator = mJob->GetActiveRasterizerName();
 				res.cameraOverridden = false;
 				res.message = "camera override failed: '" + cameraOverrideFailedField +
 					"' did not parse -- render skipped, camera left unchanged";
@@ -4207,8 +4230,12 @@ namespace RISE
 			// SOME pixels got written.
 			if( wasCancelled ) {
 				safe_release( sink );
+				// P2 fix (2026-07-19 mutation review): same reasoning as the
+				// cameraOverrideFailed branch above -- doRenderWork already ran
+				// (wasCancelled is only ever set from inside doRenderWork's park)
+				// and already set res.integrator unconditionally.  Re-reading it
+				// here on the calling thread was redundant and racy.
 				res.ok          = false;
-				res.integrator  = mJob->GetActiveRasterizerName();
 				res.renderJobId = renderJobId;
 				res.message     = "render cancelled";
 				return res;

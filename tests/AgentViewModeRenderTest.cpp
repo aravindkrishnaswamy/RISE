@@ -3213,6 +3213,102 @@ static void RunIndirectPrimaryMediumScatterTest()
 }
 
 //----------------------------------------------------------------------
+// Scenario (g), review-p3: the ENV-SIDE half of the MIS-partner rule.
+//
+// Scenario (f) exercises env suppression at a LAMBERTIAN depth-0 vertex
+// (an env-NEE partner exists there and is suppressed, so the depth-1 env
+// hit must be suppressed too).  But its depth-0 scatter is never delta, so
+// `!bPassedThroughSpecular` is always true and removing the delta term
+// from the ENV gate would NOT move it -- the surviving half of the rule
+// was untested.
+//
+// Here the depth-0 scatter IS delta: a MIRROR floor under a bright uniform
+// environment.  NEE cannot sample through a delta BSDF, so no env-NEE
+// partner was suppressed at depth 0, and the depth-1 env hit is the SOLE
+// estimator of the mirror's env reflection -- it must SURVIVE under
+// `indirect`, exactly as the emitter case in scenario (e) does.
+//
+// Metric: PEAK luminance inside the mirror's own pixels, with the bbox
+// rescaled into each render's resolution (BeautyVariant modes render at
+// their own divisor -- a full-res objectmap bbox applied verbatim to a
+// quarter-res render misses the image entirely).
+//----------------------------------------------------------------------
+static const char* const kSceneMirrorUnderEnv =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"uniformcolor_painter\n{\n\tname env_pnt\n\tcolor 0.9 0.9 0.9\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n\tradiance_map env_pnt\n\tradiance_scale 1.0\n\tradiance_background true\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.95 0.95 0.95\n}\n\n"
+	"perfectreflector_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 12\n\theight 0.2\n\tdepth 12\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -0.1 0\n}\n";
+
+static void RunIndirectModeMirrorKeepsEnvReflectionTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"indirect\" scenario (g), review-p3 -- a MIRROR under a bright env "
+	             "KEEPS its env reflection (delta depth==0 => no suppressed env-NEE partner) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_mirror_env.RISEscene", kSceneMirrorUnderEnv );
+	Check( !scenePath.empty(), "wrote the mirror-under-env scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "mirror-under-env scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "mirror-under-env session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	BBox floorBBox{ 0, 0, 0, 0, 0 };
+	unsigned int objW = 0, objH = 0;
+	{
+		AgentRenderParams objP;
+		objP.renderTarget = AgentRenderTarget::ObjectMap;
+		AgentRenderResult objR = session->Render( objP );
+		Check( objR.ok, "mirror-under-env reference objectmap render succeeds" );
+		Decoded objDec;
+		if( objR.ok && DecodePng( objR.png, objDec ) ) {
+			objW = objDec.w; objH = objDec.h;
+			const LegendEntry* floorLegend = FindLegend( objR, "floor_obj" );
+			Check( floorLegend != nullptr, "objectmap legend carries floor_obj" );
+			if( floorLegend ) {
+				unsigned char cb[3];
+				if( HexToBytes( floorLegend->colorHex, cb ) ) {
+					floorBBox = ScanBBoxForColor( objDec, cb );
+				}
+			}
+		}
+	}
+	Check( floorBBox.found > 0, "the mirror floor occupies a nonzero pixel region" );
+
+	auto peakOnFloor = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		return MaxLuminanceInBBox( dec, floorBBox, objW, objH );
+	};
+
+	const double deepReflectPeak = peakOnFloor( Implementation::ViewportRenderMode::DeepReflect );
+	const double indirectPeak    = peakOnFloor( Implementation::ViewportRenderMode::Indirect );
+	std::printf( "  FLOOR REGION PEAK (env): deep_reflect=%.2f indirect=%.2f\n", deepReflectPeak, indirectPeak );
+
+	Check( deepReflectPeak > 15.0,
+	       "deep_reflect: the mirror floor reflects the bright environment (sanity -- the fixture actually "
+	       "shows an env reflection)" );
+	Check( indirectPeak > deepReflectPeak * 0.5,
+	       "MONEY ASSERTION (g): the mirror's ENV reflection SURVIVES under \"indirect\" -- a delta depth==0 "
+	       "scatter suppresses no env-NEE partner, so the depth==1 env hit is the sole estimator and must be "
+	       "kept.  This is the half of the MIS-partner rule scenario (f) cannot reach (its depth==0 vertex is "
+	       "Lambertian, so the delta term never changes its outcome)." );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
 // review-p2c P2-b: MIS-partner-existence gating regressions for
 // PathTracingIntegrator::SetIndirectOnly.
 //
@@ -3298,7 +3394,9 @@ static void RunIndirectModeMirrorReflectsLightTest()
 	// zeroed under "indirect" regardless of the depth==0 scatter type --
 	// verified by temporarily reverting the `!bPassedThroughSpecular` delta
 	// check (i.e. restoring `depth <= 1` unconditional suppression) and
-	// re-running: indirectMean collapses to ~0.
+	// re-running: the floor-region PEAK drops 246.00 -> 55.33 (MEASURED;
+	// an earlier note claimed "~0", which overstated it -- the assertion
+	// still fails, since the threshold is 0.5 * 250.33 = 125).
 	Check( indirectMean > deepReflectMean * 0.5,
 	       "MONEY ASSERTION (e): the MIRROR FLOOR's PEAK stays bright under \"indirect\" -- the reflected-lamp highlight survives (the floor MEAN legitimately drops: the mirror also reflects a room whose direct lighting indirect removes). A delta depth==0 "
 	       "scatter has no suppressed NEE partner, so its depth==1 BSDF-sampled emission hit is the sole "
@@ -3409,6 +3507,7 @@ int main()
 	RunClayLightsSSSBypassTest();
 	RunIndirectPrimaryMediumScatterTest();
 	RunIndirectModeMirrorReflectsLightTest();
+	RunIndirectModeMirrorKeepsEnvReflectionTest();
 	RunIndirectModeDiffuseUnderEnvSuppressedTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
