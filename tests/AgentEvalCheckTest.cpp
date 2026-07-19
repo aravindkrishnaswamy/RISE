@@ -638,6 +638,15 @@ static void TestRenderCheckpoint()
 	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":\"big\",\"height\":\"big\"}]",
 		"\"width\" must be a number",
 		"a wrong-typed width+height PAIR is refused, not silently defaulted" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"meanLumaMax\":\"bright\"}]",
+		"\"meanLumaMax\" must be a number",
+		"a wrong-typed render band is refused, not silently ignored" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"meanLumaMax\":1e999}]",
+		"\"meanLumaMax\" must be a finite number",
+		"a non-finite render band is refused, not silently made vacuous" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"channelBalanceMax\":1.0}]",
+		"\"channelBalanceMax\" must be > 1.0",
+		"an unreachable channel-balance cap is refused before rendering" );
 
 	// A wrong-typed `samples` is refused too.  Pre-fix,
 	// `cp.has(\"samples\") && cp.get(\"samples\").isNumber()` was false

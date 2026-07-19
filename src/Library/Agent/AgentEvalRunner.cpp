@@ -42,6 +42,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -114,6 +115,35 @@ namespace RISE
 				std::ostringstream ss;
 				ss << f.rdbuf();
 				out = ss.str();
+				return true;
+			}
+
+			//! Explicit-range finiteness test.  The production build uses
+			//! -ffast-math, which can make std::isfinite(x) a constant true.
+			bool IsFiniteEvalNumber( double v )
+			{
+				return v >= -DBL_MAX && v <= DBL_MAX;
+			}
+
+			bool ParseScenarioWholeNumber( const JsonValue& value, const std::string& label,
+			                               long long minValue, long long maxValue,
+			                               long long& out, std::string& err )
+			{
+				if( !value.isNumber() ) {
+					err = label + " must be a number";
+					return false;
+				}
+				const double v = value.asNumber();
+				if( !IsFiniteEvalNumber( v ) || v != std::floor( v ) ||
+				    v < static_cast<double>( minValue ) || v > static_cast<double>( maxValue ) ) {
+					char buf[96];
+					std::snprintf( buf, sizeof( buf ), "%.10g", v );
+					err = label + " must be a finite whole number in [" +
+						std::to_string( minValue ) + "," + std::to_string( maxValue ) +
+						"] (got " + buf + ")";
+					return false;
+				}
+				out = static_cast<long long>( v );
 				return true;
 			}
 
@@ -449,7 +479,7 @@ namespace RISE
 			{
 				if( !obj.has( key ) || !obj.get( key ).isNumber() ) return true;
 				const double v = obj.get( key ).asNumber();
-				if( std::isfinite( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal ) return true;
+				if( IsFiniteEvalNumber( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal ) return true;
 				char vb[64];
 				std::snprintf( vb, sizeof( vb ), "%.10g", v );
 				err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( cpIndex ) + "].\"" + label +
@@ -642,8 +672,14 @@ namespace RISE
 					"meanRMin", "meanRMax", "meanGMin", "meanGMax", "meanBMin", "meanBMax",
 					"channelBalanceMax"
 				};
-				for( const char* f : kNumFields )
+				for( const char* f : kNumFields ) {
 					if( !RequireFieldType( cp, f, JsonValue::Type::Number, scenarioId, idx, f, err ) ) return false;
+					if( cp.has( f ) && !IsFiniteEvalNumber( cp.get( f ).asNumber() ) ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"" +
+							f + "\" must be a finite number";
+						return false;
+					}
+				}
 				if( cp.has( "channelBalanceMax" ) && cp.get( "channelBalanceMax" ).isNumber() &&
 				    cp.get( "channelBalanceMax" ).asNumber() <= 1.0 ) {
 					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
@@ -698,6 +734,11 @@ namespace RISE
 							if( !a.at( i ).isNumber() ) {
 								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 								      "].\"camera." + key + "\"[" + std::to_string( i ) + "] must be a number";
+								return false;
+							}
+							if( !IsFiniteEvalNumber( a.at( i ).asNumber() ) ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+									"].\"camera." + key + "\"[" + std::to_string( i ) + "] must be a finite number";
 								return false;
 							}
 						}
@@ -1261,25 +1302,27 @@ namespace RISE
 				}
 				const JsonValue& b = root.get( "budgets" );
 				if( b.has( "maxToolCalls" ) ) {
-					if( !b.get( "maxToolCalls" ).isNumber() ) {
-						err = "scenario '" + out.id + "': budgets.maxToolCalls must be a number";
-						return false;
-					}
-					out.budgets.maxToolCalls = static_cast<int>( b.get( "maxToolCalls" ).asNumber() );
+					long long value = 0;
+					if( !ParseScenarioWholeNumber( b.get( "maxToolCalls" ),
+						"scenario '" + out.id + "': budgets.maxToolCalls", -1,
+						std::numeric_limits<int>::max(), value, err ) ) return false;
+					out.budgets.maxToolCalls = static_cast<int>( value );
 				}
 				if( b.has( "maxLlmCalls" ) ) {
-					if( !b.get( "maxLlmCalls" ).isNumber() ) {
-						err = "scenario '" + out.id + "': budgets.maxLlmCalls must be a number";
-						return false;
-					}
-					out.budgets.maxLlmCalls = static_cast<int>( b.get( "maxLlmCalls" ).asNumber() );
+					long long value = 0;
+					if( !ParseScenarioWholeNumber( b.get( "maxLlmCalls" ),
+						"scenario '" + out.id + "': budgets.maxLlmCalls", -1,
+						std::numeric_limits<int>::max(), value, err ) ) return false;
+					out.budgets.maxLlmCalls = static_cast<int>( value );
 				}
 				if( b.has( "maxWallMs" ) ) {
-					if( !b.get( "maxWallMs" ).isNumber() ) {
-						err = "scenario '" + out.id + "': budgets.maxWallMs must be a number";
-						return false;
-					}
-					out.budgets.maxWallMs = static_cast<long long>( b.get( "maxWallMs" ).asNumber() );
+					long long value = 0;
+					// Keep a margin below LLONG_MAX because a double at that
+					// magnitude rounds to 2^63, which is outside long long.
+					if( !ParseScenarioWholeNumber( b.get( "maxWallMs" ),
+						"scenario '" + out.id + "': budgets.maxWallMs", -1,
+						9000000000000000000LL, value, err ) ) return false;
+					out.budgets.maxWallMs = value;
 				}
 			}
 
@@ -1338,18 +1381,16 @@ namespace RISE
 						return false;
 					}
 					AgentEvalIntervention it;
-					if( !e.has( "afterToolCalls" ) || !e.get( "afterToolCalls" ).isNumber() ) {
+					if( !e.has( "afterToolCalls" ) ) {
 						err = "scenario '" + out.id + "': interventions[" + idx +
 							"] missing required number field \"afterToolCalls\"";
 						return false;
 					}
-					it.afterToolCalls = static_cast<int>( e.get( "afterToolCalls" ).asNumber() );
-					if( it.afterToolCalls < 1 ) {
-						err = "scenario '" + out.id + "': interventions[" + idx +
-							"].afterToolCalls must be >= 1 (an intervention fires AFTER a tool call; got " +
-							std::to_string( it.afterToolCalls ) + ")";
-						return false;
-					}
+					long long afterToolCalls = 0;
+					if( !ParseScenarioWholeNumber( e.get( "afterToolCalls" ),
+						"scenario '" + out.id + "': interventions[" + idx + "].afterToolCalls",
+						1, std::numeric_limits<int>::max(), afterToolCalls, err ) ) return false;
+					it.afterToolCalls = static_cast<int>( afterToolCalls );
 					if( !e.has( "op" ) || !e.get( "op" ).isString() ) {
 						err = "scenario '" + out.id + "': interventions[" + idx + "] missing string field \"op\"";
 						return false;
@@ -4028,6 +4069,61 @@ namespace RISE
 					return true;
 				}
 
+				//! Bound a compareToImage file before buffering it.  PNG's IHDR is
+				//! also inspected from a fixed 24-byte read so an oversized image
+				//! is refused before any compressed payload enters process memory.
+				bool ReadReferencePngWithinEvalBudget( const std::string& path,
+				                                          std::string& out, std::string& err )
+				{
+					static constexpr std::uintmax_t kMaxReferenceBytes = 256u * 1024u * 1024u;
+					std::error_code ec;
+					const std::uintmax_t size = std::filesystem::file_size( path, ec );
+					if( ec ) {
+						err = "cannot stat file: " + path;
+						return false;
+					}
+					if( size > kMaxReferenceBytes ) {
+						err = "reference PNG is " + std::to_string( size ) +
+							" bytes, exceeds the " + std::to_string( kMaxReferenceBytes ) + "-byte eval input budget";
+						return false;
+					}
+
+					std::ifstream f( path.c_str(), std::ios::binary );
+					if( !f ) {
+						err = "cannot open file: " + path;
+						return false;
+					}
+					char header[24] = {};
+					f.read( header, sizeof( header ) );
+					const std::streamsize headerBytes = f.gcount();
+					unsigned int width = 0, height = 0;
+					if( headerBytes == static_cast<std::streamsize>( sizeof( header ) ) &&
+						ProbePngDimensions( header, sizeof( header ), width, height ) ) {
+						const double pixels = static_cast<double>( width ) * static_cast<double>( height );
+						if( pixels > kMaxEvalRenderPixels ) {
+							char buf[192];
+							std::snprintf( buf, sizeof( buf ),
+								"reference PNG is %ux%u = %.0f pixels, exceeds the %.0f-pixel eval render budget",
+								width, height, pixels, kMaxEvalRenderPixels );
+							err = buf;
+							return false;
+						}
+					}
+
+					f.clear();
+					f.seekg( 0, std::ios::beg );
+					out.resize( static_cast<std::size_t>( size ) );
+					if( !out.empty() ) {
+						f.read( &out[0], static_cast<std::streamsize>( out.size() ) );
+						if( f.gcount() != static_cast<std::streamsize>( out.size() ) ) {
+							err = "could not read complete file: " + path;
+							out.clear();
+							return false;
+						}
+					}
+					return true;
+				}
+
 				//! Image-reconstruction Wave 2: decode PNG bytes already in
 				//! memory into a tightly-packed 8-bit RGB pixel buffer (row-
 				//! major, 3 bytes/pixel, alpha dropped) through RISE's OWN
@@ -4216,7 +4312,7 @@ namespace RISE
 				//! LoadEvalScenario's ValidateRenderCheckpointTypes.
 				bool IsWholeNumberInRange( double v, double minVal, double maxVal )
 				{
-					return std::isfinite( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal;
+					return IsFiniteRenderNumber( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal;
 				}
 
 				//! Format a double for a checkpoint refusal diagnostic (matches
@@ -4234,6 +4330,27 @@ namespace RISE
 					if( !session ) return { false, "render checkpoint: no live session (run did not complete)" };
 
 					AgentRenderParams rp;
+					rp.maxPixelCount = static_cast<std::uint64_t>( kMaxEvalRenderPixels );
+
+					static const char* const kThresholdFields[] = {
+						"meanLumaMin", "meanLumaMax", "meanRMin", "meanRMax",
+						"meanGMin", "meanGMax", "meanBMin", "meanBMax",
+						"channelBalanceMax"
+					};
+					for( const char* field : kThresholdFields ) {
+						if( !cp.has( field ) ) continue;
+						if( !cp.get( field ).isNumber() ) {
+							return { false, "render checkpoint: \"" + std::string( field ) + "\" must be a number (got " +
+								std::string( JsonTypeName( cp.get( field ).type() ) ) + ")" };
+						}
+						if( !IsFiniteRenderNumber( cp.get( field ).asNumber() ) ) {
+							return { false, "render checkpoint: \"" + std::string( field ) + "\" must be a finite number (got " +
+								FormatCheckpointNumber( cp.get( field ).asNumber() ) + ")" };
+						}
+					}
+					if( cp.has( "channelBalanceMax" ) && !( cp.get( "channelBalanceMax" ).asNumber() > 1.0 ) ) {
+						return { false, "render checkpoint: \"channelBalanceMax\" must be > 1.0" };
+					}
 
 					// P2 fix (2026-07-19 re-review): width/height MUST be numbers
 					// when present -- a present-but-wrong-typed field (e.g.
@@ -4311,9 +4428,9 @@ namespace RISE
 					// the shape (location+lookat required, each an array of 3
 					// numbers), TYPE, and FINITENESS of every vector component
 					// and of fov are validated HERE rather than assumed --
-					// ValidateRenderCheckpointTypes's requireVec3 is the loader-
-					// path mirror, but even that one doesn't check finiteness
-					// (ValidateCameraVec3Field's doc has the full rationale for
+					// ValidateRenderCheckpointTypes's requireVec3 mirrors the same
+					// finite-number rule on the loader path (ValidateCameraVec3Field's
+					// doc has the full rationale for
 					// why a non-finite component, e.g. {"location":[0,0,1e999]},
 					// must never reach the renderer's camera-pose parser).
 					if( cp.has( "camera" ) ) {
@@ -4392,7 +4509,7 @@ namespace RISE
 						if( refPath.empty() )
 							return { false, "render checkpoint: \"compareToImage\" must be a non-empty path" };
 						std::string refBytes, readErr;
-						if( !ReadWholeFile( refPath, refBytes, readErr ) ) {
+						if( !ReadReferencePngWithinEvalBudget( refPath, refBytes, readErr ) ) {
 							return { false, "render checkpoint: compareToImage reference '" + refPath +
 								"' could not be read (" + readErr + ")" };
 						}

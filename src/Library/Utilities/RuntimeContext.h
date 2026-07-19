@@ -92,6 +92,16 @@ namespace RISE
 		/// chain.
 		mutable bool											bFastPreview;
 
+		/// Optional per-render transport settings supplied by an ephemeral
+		/// PathTracingPelRasterizer.  Unlike mutating a scene-owned default
+		/// shader, these values travel with each worker context, so an SSS
+		/// continuation dispatched through an arbitrary supplied shader chain
+		/// observes the same depth/lighting/material mode as the root path.
+		bool											hasPathTracingVariantConfig;
+		unsigned int									pathTracingMaxDepth;
+		bool											pathTracingIndirectOnly;
+		bool											pathTracingClayOverride;
+
 		/// Production stability controls (clamps, RR tuning, bounce
 		/// limits, glossy filtering).  Set by the rasterizer before
 		/// rendering.  NULL when no stability config is provided.
@@ -193,6 +203,10 @@ namespace RISE
 		  bThreaded( bThreaded_ ),
 		  pSampler( 0 ),
 		  bFastPreview( false ),
+		  hasPathTracingVariantConfig( false ),
+		  pathTracingMaxDepth( 128 ),
+		  pathTracingIndirectOnly( false ),
+		  pathTracingClayOverride( false ),
 		  pStabilityConfig( 0 ),
 		  pOptimalMIS( 0 ),
 		  pProgressiveFilm( 0 ),
@@ -262,4 +276,3 @@ namespace RISE
 }
 
 #endif
-

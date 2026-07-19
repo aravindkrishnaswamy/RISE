@@ -116,6 +116,7 @@
 #include "../src/Library/Materials/LambertianSPF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Rendering/PathTracingPelRasterizer.h"
+#include "../src/Library/Rendering/PathTracingSpectralRasterizer.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 
 using namespace RISE;
@@ -1278,6 +1279,30 @@ namespace
 			Check( CreateBeautyVariantPipeline( ViewportRenderMode::DeepReflect, &rast, &caster ),
 			       "R18 stress-loop pipeline builds" );
 			safe_release( rast );
+			safe_release( caster );
+		}
+
+		// (b) The spectral PT rasterizer owns the same integrator type but is
+		// not constructed by a BeautyVariant pipeline.  A no-render lifecycle
+		// cycle is enough to pin its ownership path; reuse a real factory
+		// caster so this remains a fully valid rasterizer construction.
+		{
+			IRasterizer* owner = nullptr;
+			IRayCaster* caster = nullptr;
+			const bool built = CreateBeautyVariantPipeline( ViewportRenderMode::DeepReflect, &owner, &caster );
+			Check( built,
+				"R18 spectral PT fixture caster builds" );
+			if( built ) {
+				ManifoldSolverConfig smsConfig;
+				AdaptiveSamplingConfig adaptiveConfig;
+				StabilityConfig stabilityConfig;
+				IRasterizer* spectral = new PathTracingSpectralRasterizer(
+					caster, 380.0, 780.0, 16, 1, smsConfig, adaptiveConfig,
+					stabilityConfig, false, false );
+				Check( spectral != nullptr, "R18 spectral PT rasterizer constructs" );
+				safe_release( spectral );
+			}
+			safe_release( owner );
 			safe_release( caster );
 		}
 

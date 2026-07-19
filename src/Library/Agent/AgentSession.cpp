@@ -49,6 +49,7 @@
 #include "../Interfaces/IRasterizer.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IFilm.h"
+#include "../Interfaces/IRasterImageReader.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
@@ -67,10 +68,12 @@
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Parsers/IAsciiChunkParser.h"
 #include "../Utilities/RString.h"
+#include "../Utilities/MemoryBuffer.h"
 
 #include <algorithm>   // Facet 5 slice S1: std::sort for the deterministic skills index
 #include <cctype>
 #include <cfloat>   // DBL_MAX for the -ffast-math-safe non-finite range test
+#include <climits>
 #include <cmath>
 #include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
 #include <cstdlib>  // Facet 5 slice S1: std::getenv for the skills-root resolution
@@ -2198,16 +2201,30 @@ namespace RISE
 			return std::string( buf );
 		}
 
-		// Fill `out`'s location/lookAt/up (always) and fov (only for a
-		// Pinhole snapshot -- GetPropertyValue-style "unreadable" honesty: a
-		// ThinLens/Fisheye/Orthographic view has no single scalar FOV) from
-		// a captured CameraSnapshot.
+		std::string OrientationToOverrideStr( const double v[3] )
+		{
+			static constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+			double degrees[3] = { v[0] * kRadToDeg, v[1] * kRadToDeg, v[2] * kRadToDeg };
+			return Vec3ToOverrideStr( degrees );
+		}
+
+		// Fill `out`'s complete CameraCommon pose (location/lookAt/up plus
+		// Euler and target orientation) and fov (only for a Pinhole snapshot
+		// -- a ThinLens/Fisheye/Orthographic view has no single scalar FOV)
+		// from a captured CameraSnapshot.
 		void CameraSnapshotToOverride( const RISE::CameraSnapshot& snap,
 		                                AgentCameraOverride& out )
 		{
 			out.hasLocation = true; out.location = Vec3ToOverrideStr( snap.location );
 			out.hasLookAt   = true; out.lookAt   = Vec3ToOverrideStr( snap.lookat );
 			out.hasUp       = true; out.up       = Vec3ToOverrideStr( snap.up );
+			out.hasOrientation = true;
+			out.orientation = OrientationToOverrideStr( snap.orientation );
+			double targetOrientation[3] = {
+				snap.target_orientation[0], snap.target_orientation[1], 0.0
+			};
+			out.hasTargetOrientation = true;
+			out.targetOrientation = OrientationToOverrideStr( targetOrientation );
 			if( snap.type == RISE::CameraSnapshot::Pinhole ) {
 				// CameraSnapshot::fov is stored in RADIANS (CameraIntrospection.cpp's
 				// own CaptureCameraSnapshot / GetFovStored convention); SetProperty's
@@ -2220,6 +2237,42 @@ namespace RISE
 				std::snprintf( buf, sizeof( buf ), "%.17g", snap.fov * kRadToDeg );
 				out.hasFov = true; out.fov = buf;
 			}
+		}
+
+		bool DecodePngRgbAt( const std::vector<unsigned char>& png,
+		                     unsigned int x, unsigned int y,
+		                     unsigned char& outR, unsigned char& outG, unsigned char& outB )
+		{
+			if( png.empty() || png.size() > static_cast<std::size_t>( UINT_MAX ) ) return false;
+			Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(
+				const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+				static_cast<unsigned int>( png.size() ), false );
+			IRasterImageReader* reader = nullptr;
+			if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+				safe_release( buffer );
+				return false;
+			}
+
+			unsigned int width = 0, height = 0;
+			if( !reader->BeginRead( width, height ) || x >= width || y >= height ) {
+				safe_release( reader );
+				safe_release( buffer );
+				return false;
+			}
+			RISEColor pixel;
+			reader->ReadColor( pixel, x, y );
+			reader->EndRead();
+			safe_release( reader );
+			safe_release( buffer );
+
+			auto toByte = []( double value ) -> unsigned char {
+				const int rounded = static_cast<int>( value * 255.0 + 0.5 );
+				return static_cast<unsigned char>( rounded < 0 ? 0 : ( rounded > 255 ? 255 : rounded ) );
+			};
+			outR = toByte( pixel.base.r );
+			outG = toByte( pixel.base.g );
+			outB = toByte( pixel.base.b );
+			return true;
 		}
 
 		// External review P2 fix (ResolveBeautyDisplayTransform_'s exposure-as-
@@ -2727,7 +2780,8 @@ namespace RISE
 			const bool wantCameraOverrideForRouting =
 				!params.view.empty() ||
 				( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
-					effectiveCamera.hasUp || effectiveCamera.hasFov );
+					effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
+					effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov );
 
 			// LIVE-mode safety (see AgentSession.h Render(AgentRenderParams)
 			// doc + CLAUDE.md investigation note): DoOneRenderPass swaps the
@@ -2892,6 +2946,8 @@ namespace RISE
 				captureAndSet( effectiveCamera.hasLocation, "location", effectiveCamera.location )
 					&& captureAndSet( effectiveCamera.hasLookAt, "lookat", effectiveCamera.lookAt )
 					&& captureAndSet( effectiveCamera.hasUp,     "up",     effectiveCamera.up )
+					&& captureAndSet( effectiveCamera.hasOrientation, "orientation", effectiveCamera.orientation )
+					&& captureAndSet( effectiveCamera.hasTargetOrientation, "target_orientation", effectiveCamera.targetOrientation )
 					&& captureAndSet( effectiveCamera.hasFov,    "fov",    effectiveCamera.fov );
 				overrodeCamera = !capturedCam.empty();
 			};
@@ -2932,10 +2988,6 @@ namespace RISE
 			// like the display transform, must stay untouched -- the identity
 			// sink's per-pixel bytes are not colour-managed at all).
 			int    beautyColorSpace       = eColorSpace_sRGB;
-			if( !isObjectMap ) {
-				ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform, beautyColorSpace );
-			}
-
 			// Toolkit slice 2 (quality:"draft"): the EPHEMERAL preview-
 			// pipeline render body.  Never references `rast` (the production
 			// rasterizer), its FrameStore, or mJob->RemoveRasterizerOutputs()
@@ -3426,6 +3478,26 @@ namespace RISE
 				// just resolved fresh here instead of on the calling thread.
 				res.integrator = mJob->GetActiveRasterizerName();
 
+				if( !isObjectMap ) {
+					ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform, beautyColorSpace );
+				}
+
+				if( params.maxPixelCount > 0 ) {
+					const IScenePriv* scenePrivForBudget = mJob->GetScene();
+					const IFilm* filmForBudget = scenePrivForBudget ? scenePrivForBudget->GetFilm() : nullptr;
+					const unsigned int budgetW = wantFilmOverride ? params.width
+						: ( filmForBudget ? filmForBudget->GetWidth() : 0 );
+					const unsigned int budgetH = wantFilmOverride ? params.height
+						: ( filmForBudget ? filmForBudget->GetHeight() : 0 );
+					const std::uint64_t pixels = static_cast<std::uint64_t>( budgetW ) * budgetH;
+					if( budgetW == 0 || budgetH == 0 || pixels > params.maxPixelCount ) {
+						res.ok = false;
+						res.message = "render dimensions exceed the configured pixel budget";
+						specificFailureReported = true;
+						return;
+					}
+				}
+
 				// Fetch the live rasterizer, fresh, under the park.  Same gating
 				// condition and same message as the pre-fix calling-thread check:
 				// the "!rast" bail-out applies ONLY to the production BEAUTY
@@ -3507,11 +3579,11 @@ namespace RISE
 						return;
 					}
 
-					// External review P2 fix: `effectiveCamera` (AgentCameraOverride)
-					// only HAS fields for location/lookAt/up/fov -- the pinhole-only
-					// pose+FOV subset CameraSnapshotToOverride fills in above -- and
-					// applyCameraOverride below only ever SetProperty's those four
-					// names on the ACTIVE camera.  There is no plumbing here (or in
+					// A named view transfers every shared CameraCommon pose field
+					// (location/lookat/up plus Euler and target orientation) and FOV.
+					// It still cannot transfer a non-pinhole camera's own optics:
+					// it only sets those shared fields on the ACTIVE camera.  There
+					// is no plumbing here (or in
 					// CameraIntrospection::SetProperty, which is descriptor-driven by
 					// the camera's OWN chunk type and cannot re-type an ICamera in
 					// place) to carry a ThinLens/Fisheye/Orthographic view's real
@@ -3536,7 +3608,7 @@ namespace RISE
 						res.ok = false;
 						res.message = "view \"" + params.view + "\" is a " + typeName +
 							" camera -- render{view:} can currently only transfer a pinhole "
-							"view's pose+fov onto the active camera (AgentCameraOverride has "
+							"view's shared pose+fov onto the active camera (AgentCameraOverride has "
 							"no thinlens/fisheye/orthographic fields), so rendering it would "
 							"silently use the active camera's own optics under the requested "
 							"pose. Not supported yet: switch the active camera to \"" +
@@ -3574,9 +3646,15 @@ namespace RISE
 						const ICamera* activeCamForFov = !activeNameForFov.empty()
 							? camsForFov->GetItem( activeNameForFov.c_str() ) : nullptr;
 						CameraSnapshot activeSnapForFov;
-						const bool activeAcceptsFov = activeCamForFov
-							&& CameraIntrospection::CaptureCameraSnapshot( *activeCamForFov, activeSnapForFov )
-							&& activeSnapForFov.type == RISE::CameraSnapshot::Pinhole;
+						const bool activeSnapshotted = activeCamForFov
+							&& CameraIntrospection::CaptureCameraSnapshot( *activeCamForFov, activeSnapForFov );
+						if( !activeSnapshotted ) {
+							res.ok = false;
+							res.message = "view \"" + params.view + "\" cannot be transferred to the active camera because its pose cannot be snapshotted";
+							specificFailureReported = true;
+							return;
+						}
+						const bool activeAcceptsFov = activeSnapForFov.type == RISE::CameraSnapshot::Pinhole;
 						if( !activeAcceptsFov && effectiveCamera.hasFov )
 						{
 							effectiveCamera.hasFov = false;
@@ -3587,7 +3665,8 @@ namespace RISE
 
 				wantCameraOverride =
 					( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
-						effectiveCamera.hasUp || effectiveCamera.hasFov );
+						effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
+						effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov );
 
 				if( isObjectMap ) {
 					doObjectMapRenderWork();
@@ -4452,29 +4531,7 @@ namespace RISE
 				return res;
 			}
 
-			// Effective dims: the SAME width/height-override composition
-			// render's own overrides use (AgentRenderParams::width/height's
-			// doc) -- both supplied means "use these transient dims",
-			// otherwise the Document's authored Film dims.  A CHEAP,
-			// read-only Film query -- NO render -- so an out-of-range (x,y)
-			// is rejected BEFORE paying for the ephemeral identity render
-			// below (see QueryObjectAt's header doc).
-			unsigned int effW = params.width;
-			unsigned int effH = params.height;
-			if( effW == 0 || effH == 0 ) {
-				const IScenePriv* scenePriv = mJob->GetScene();
-				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
-				effW = curFilm ? curFilm->GetWidth()  : 0;
-				effH = curFilm ? curFilm->GetHeight() : 0;
-			}
-			res.width  = effW;
-			res.height = effH;
-
-			if( effW == 0 || effH == 0 ||
-			    x < 0 || y < 0 ||
-			    static_cast<unsigned int>( x ) >= effW ||
-			    static_cast<unsigned int>( y ) >= effH )
-			{
+			if( x < 0 || y < 0 ) {
 				res.outOfRange = true;
 				res.message = "x/y out of range for the effective film dims";
 				return res;
@@ -4508,29 +4565,18 @@ namespace RISE
 			res.width  = rr.width;
 			res.height = rr.height;
 
-			// Defensive: the render's OWN effective dims should match the
-			// pre-render computation above (identical composition rule) --
-			// never read out of bounds on a mismatch.  Unreachable in
-			// practice (both derive the same width/height/camera
-			// composition), kept for robustness.
+			// Determine bounds from the completed identity render, not from a
+			// live Film read on the unparked caller thread.  Another render may
+			// legally replace the session cache after Render returns, so decode
+			// this result's own immutable PNG below rather than consulting it.
 			if( res.pixelX >= res.width || res.pixelY >= res.height ) {
 				res.outOfRange = true;
 				res.message = "x/y out of range for the effective film dims";
 				return res;
 			}
 
-			RISEColor pixel;
-			bool gotPixel = false;
-			{
-				// Guarded by mAsyncCacheMutex like every other mLastSink
-				// access (ReadImage/ReadImage(maxEdge)) -- the Render() call
-				// just above already populated it synchronously on THIS
-				// thread, so this is uncontended in practice; the lock costs
-				// nothing and keeps the access pattern uniform.
-				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-				if( mLastSink ) gotPixel = mLastSink->GetPixelColor( res.pixelX, res.pixelY, pixel );
-			}
-			if( !gotPixel ) {
+			unsigned char red = 0, green = 0, blue = 0;
+			if( !DecodePngRgbAt( rr.png, res.pixelX, res.pixelY, red, green, blue ) ) {
 				res.message = "could not read the rendered pixel";
 				return res;
 			}
@@ -4541,10 +4587,9 @@ namespace RISE
 			// identical to what the objectmap PNG's corresponding pixel
 			// carries -- the exact-byte legend match below rides the same
 			// quantizer contract the palette generator guarantees.
-			const RGBA_T<unsigned char> enc = pixel.Integerize<sRGBPel, unsigned char>( 255.0 );
 			char hexBuf[8];
 			std::snprintf( hexBuf, sizeof( hexBuf ), "#%02X%02X%02X",
-				static_cast<unsigned>( enc.r ), static_cast<unsigned>( enc.g ), static_cast<unsigned>( enc.b ) );
+				static_cast<unsigned>( red ), static_cast<unsigned>( green ), static_cast<unsigned>( blue ) );
 			const std::string pixelHex( hexBuf );
 
 			if( pixelHex == "#000000" ) {
@@ -4858,13 +4903,26 @@ namespace RISE
 				return std::vector<unsigned char>();
 			}
 
-			// Copy the live interactive frame out of the controller.  This
-			// call does the cross-thread-safe, tile-locked COHERENT copy
-			// against the render thread (see CopyInteractiveFrame); false
-			// means the interactive render loop has not produced a frame yet.
 			std::vector<RISEColor> pixels;
 			unsigned int w = 0, h = 0;
-			if( !mController->CopyInteractiveFrame( pixels, w, h ) ) {
+			double vExposureEV = 0.0;
+			int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
+			int    vColorSpace = eColorSpace_sRGB;
+			bool copiedFrame = false;
+			const bool parked = mController->RunPreviewRenderParked( [&]() {
+				// Keep the frame copy and its live display-transform lookup in the
+				// same parked interval.  CopyInteractiveFrame itself is tile-safe,
+				// but ResolveBeautyDisplayTransform_ reads the Job's CST/camera.
+				copiedFrame = mController->CopyInteractiveFrame( pixels, w, h );
+				if( copiedFrame ) {
+					ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform, vColorSpace );
+				}
+			} );
+			if( !parked ) {
+				outReason = "editor_transaction_in_progress";
+				return std::vector<unsigned char>();
+			}
+			if( !copiedFrame ) {
 				outReason = "no_frame_yet";
 				return std::vector<unsigned char>();
 			}
@@ -4880,14 +4938,8 @@ namespace RISE
 			// display transform at encode time so read_viewport shows the SAME
 			// tonemapped image a human watching the viewport sees, matching
 			// read_image (see ResolveBeautyDisplayTransform_).
-			{
-				double vExposureEV = 0.0;
-				int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
-				int    vColorSpace = eColorSpace_sRGB;
-				ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform, vColorSpace );
-				sink->SetDisplayTransform( vExposureEV, vDisplayTransform );
-				sink->SetOutputColorSpace( vColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
-			}
+			sink->SetDisplayTransform( vExposureEV, vDisplayTransform );
+			sink->SetOutputColorSpace( vColorSpace );
 
 			std::vector<unsigned char> png;
 			if( maxEdge > 0 ) {

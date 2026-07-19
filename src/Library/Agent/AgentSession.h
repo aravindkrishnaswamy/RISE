@@ -246,6 +246,10 @@ namespace RISE
 			std::string lookAt;      //!< "x y z"
 			bool        hasUp = false;
 			std::string up;          //!< "x y z"
+			bool        hasOrientation = false;
+			std::string orientation; //!< "heading pitch bank" in degrees
+			bool        hasTargetOrientation = false;
+			std::string targetOrientation; //!< "heading pitch 0" in degrees
 			bool        hasFov = false;
 			std::string fov;         //!< degrees, plain number
 		};
@@ -354,6 +358,10 @@ namespace RISE
 		{
 			unsigned int         width = 0;    //!< 0 = no override
 			unsigned int         height = 0;   //!< 0 = no override
+			//! Internal resource ceiling.  Zero leaves the session unrestricted;
+			//! evaluators set a finite cap so an authored Film cannot bypass their
+			//! explicit width/height preflight.
+			std::uint64_t        maxPixelCount = 0;
 			int                  samples = -1;  //!< -1 = no override; else the requested SPP (see EffectiveRenderConfig doc above)
 			AgentCameraOverride  camera;
 			bool                 pinned = false;  //!< false = preview (today's semantics); true = pinned (never silently superseded -- see doc above)
@@ -416,7 +424,8 @@ namespace RISE
 			//! precedence) -- see AgentSession::RenderCore_'s resolution
 			//! block for the exact precedence.
 			//! External review P2 fix: ONLY a PINHOLE view can be applied --
-			//! AgentCameraOverride (above) has fields for pose+fov alone, and
+			//! AgentCameraOverride (above) has fields for the full shared
+			//! position/orbit pose plus fov, and
 			//! applyCameraOverride only ever SetProperty's those onto the
 			//! ACTIVE camera, so a ThinLens/Fisheye/Orthographic named view's
 			//! real optics (sensor/focal-length/fstop/focus-distance/
@@ -438,8 +447,9 @@ namespace RISE
 			//! ONLY and drops the fov, noting the drop honestly in
 			//! res.message (" (view \"...\": FOV not applied -- ...)")
 			//! instead of failing the render.  Net contract: a resolved
-			//! PINHOLE `view` always succeeds (pose always applied; fov
-			//! applied IFF the active camera is also pinhole); a resolved
+			//! PINHOLE `view` succeeds when the active camera can snapshot and
+			//! restore that shared pose (fov is applied IFF the active camera is
+			//! also pinhole); a resolved
 			//! NON-pinhole `view` always fails loudly, regardless of the
 			//! active camera's type -- see RenderCore_'s doRenderWork for
 			//! both checks.
