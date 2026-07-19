@@ -12117,6 +12117,22 @@ std::string FormatRasterizerParam( const Job::RasterizerParams& p, const std::st
 	if( paramName == "show_luminaires" || paramName == "showLuminaires" ) {
 		return p.showLuminaires ? "true" : "false";
 	}
+	// review-p3 P2-c: GET-ONLY -- deliberately no matching case in
+	// ApplyRasterizerParam / SetRasterizerParameter.  This is the resolved
+	// shader NAME the chunk parser looked up at construction time (every
+	// Set*Rasterizer call site stamps `snap.shader` from its own `shader`
+	// parameter before RegisterAndActivateRasterizer -- see Job.cpp), i.e.
+	// the scene's ACTUAL configured default shader, not a hardcoded
+	// "global" guess.  Lets CreateBeautyVariantPipeline callers
+	// (AgentSession.cpp / SceneEditController.cpp) recover the production
+	// rasterizer's real default shader instead of falling back to the
+	// variant pipeline's own generic internal default.  Read-only because
+	// swapping a rasterizer's shader out from under it would need a full
+	// re-instantiation, unlike every other field here which just needs the
+	// registry snapshot mutated.
+	if( paramName == "shader" || paramName == "defaultshader" ) {
+		return p.shader;
+	}
 	if( paramName == "merge_radius" || paramName == "mergeRadius" ) {
 		std::snprintf( buf, sizeof(buf), "%g", p.mergeRadius );
 		return buf;

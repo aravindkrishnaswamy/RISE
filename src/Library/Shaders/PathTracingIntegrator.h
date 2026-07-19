@@ -156,44 +156,71 @@ namespace RISE
 			void SetMaxPathDepth( unsigned int n ) { mMaxPathDepth = ( n == 0 ) ? 128 : n; }
 
 			//! GUI render modes P2b `indirect` mode (docs/gui/RENDER_MODES.md
-			//! §3 Lighting): when true, suppresses the DIRECT contribution --
-			//! emission AND next-event-estimation (NEE) -- evaluated at the
-			//! camera-visible vertex in BOTH the templated Pel/NM loop
-			//! (IntegrateFromHitTemplated) and the standalone HWSS loop
-			//! (IntegrateFromHitHWSS).  A directly-visible env/radiance-map
-			//! background is "direct" light too (for the same reason a
-			//! directly-visible emitter is), but a camera ray that misses
-			//! the scene entirely NEVER enters the path loop -- it returns
-			//! at the top-level primary-miss branch in IntegrateRayTemplated
-			//! / IntegrateRayHWSS (before IntegrateFromHit) -- so THAT is
-			//! where the directly-visible-background suppression lives (an
-			//! `if( mIndirectOnly ) return zero;` there); the loop's own
-			//! env-miss adds are reachable only for CONTINUATION rays
-			//! (depth >= 1 = indirect environment lighting) and are kept.
-			//! The in-loop emission + NEE gates are on the LOOP-LOCAL
-			//! `depth == 0` check, deliberately NOT `depth == startDepth`:
-			//! the HWSS loop mid-path-delegates to IntegrateFromHitNM (the
-			//! "no BSDF" / SSS-fallback branches) by passing its OWN current
-			//! `depth` as the delegated call's `startDepth`, so a `depth ==
-			//! startDepth` check would spuriously read true again at that
+			//! §3 Lighting): when true, suppresses the DIRECT contribution
+			//! evaluated at the camera-visible vertex in BOTH the templated
+			//! Pel/NM loop (IntegrateFromHitTemplated) and the standalone
+			//! HWSS loop (IntegrateFromHitHWSS).  A directly-visible
+			//! env/radiance-map background is "direct" light too (for the
+			//! same reason a directly-visible emitter is), but a camera ray
+			//! that misses the scene entirely NEVER enters the path loop --
+			//! it returns at the top-level primary-miss branch in
+			//! IntegrateRayTemplated / IntegrateRayHWSS (before
+			//! IntegrateFromHit) -- so THAT is where the directly-visible-
+			//! background suppression lives (an `if( mIndirectOnly ) return
+			//! zero;` there); the loop's own env-miss adds are reachable
+			//! only for CONTINUATION rays (depth >= 1 = indirect environment
+			//! lighting) and are kept.
+			//!
+			//! review-p3 P2-a: the direct term at the camera-visible vertex
+			//! is TWO estimator halves, both of which must be suppressed --
+			//! NEE@depth0 (the light-sampling strategy's shadow-ray
+			//! contribution, MIS-weighted) PLUS emission@depth1-from-that-
+			//! vertex (the BSDF/phase-sampled ray fired FROM the camera-
+			//! visible vertex that happens to land directly on an emitter --
+			//! the MIS *partner* of the depth0 NEE, arriving one loop
+			//! iteration later).  Suppressing only the NEE half left
+			//! `indirect` rendering direct x w_bsdf instead of zero
+			//! whenever the BSDF-sampling strategy has non-negligible pdf
+			//! toward the light (a large area light or a bright env -- a
+			//! small/distant lamp has w_bsdf approx 0 and hid the leak).
+			//! So the two gates are NOT symmetric:
+			//!   - NEE gate:      LOOP-LOCAL `depth == 0` only.
+			//!   - emission gate: LOOP-LOCAL `depth <= 1`.
+			//! depth>=2 emission is the MIS partner of NEE at depth>=1
+			//! (genuinely indirect transport) and stays untouched; NEE at
+			//! depth>=1 is genuinely indirect and stays untouched too (no
+			//! gate applies there at all).
+			//!
+			//! Both gates use the raw LOOP-LOCAL `depth`, deliberately NOT
+			//! `depth - startDepth`: the HWSS loop mid-path-delegates to
+			//! IntegrateFromHitNM (the "no BSDF" / SSS-fallback branches,
+			//! and the volume phase-function continuation) by passing its
+			//! OWN current `depth` as the delegated call's `startDepth`, so
+			//! an offset check would spuriously re-trigger at that
 			//! delegated call's first iteration even when the ORIGINAL
-			//! global depth was > 0 (a genuine indirect bounce).  `depth ==
-			//! 0` has no such ambiguity: it is true only at the actual first
-			//! iteration of a call whose OWN startDepth is 0, and every top-
-			//! level camera-ray entry point (IntegrateRay/IntegrateRayNM/
-			//! IntegrateRayHWSS) is the only caller that ever passes 0 --
-			//! every mid-path re-entry (this HWSS delegation, and the
-			//! BSSRDF continuation's recursive caster call) passes the
-			//! CURRENT nonzero depth onward, so `depth` can never return to
-			//! 0 partway through a path.  The continuation ray is STILL
-			//! sampled and traced at every vertex -- only the depth==0
-			//! contribution is zeroed, so every indirect bounce (depth >= 1
-			//! at the true camera-path level) is untouched and full-
-			//! fidelity.  Net effect: a directly-lit diffuse surface (or
-			//! a directly-visible emitter/env background) reads BLACK at the
-			//! camera-visible vertex; any energy that arrives after at least
-			//! one bounce reads normally.  Default false; every existing
-			//! caller is byte-identical.
+			//! global depth was already > 1 (genuine indirect transport).
+			//! A raw `depth <= 1` compare has no such ambiguity: every
+			//! mid-path re-entry (HWSS delegation, the BSSRDF continuation's
+			//! recursive caster call, and the medium phase-sampled
+			//! continuation at startDepth=1) passes the CURRENT nonzero
+			//! depth onward, so the loop-local `depth` can never return to
+			//! 0 or 1 partway through a path that has already gone deeper --
+			//! the ONLY way to observe depth==1 inside the loop is either
+			//! the true camera path's first bounce, or a delegated call
+			//! whose OWN startDepth is 1 (the medium in-scattering
+			//! continuation, which IS the camera-visible vertex's MIS
+			//! partner by construction -- see IntegrateRayTemplated's
+			//! medium-scatter branch, `IntegrateFromHitForTag<Tag>(...,
+			//! /*startDepth*/1, ...)`).  Both cases are correctly direct.
+			//! The continuation ray is STILL sampled and traced at every
+			//! vertex -- only the depth<=1 emission / depth==0 NEE
+			//! contribution is zeroed, so every indirect bounce is
+			//! untouched and full-fidelity.  Net effect: a directly-lit
+			//! diffuse surface (or a directly-visible emitter/env
+			//! background) reads BLACK at the camera-visible vertex, INCLUDING
+			//! its BSDF-sampled MIS partner; energy that arrives via a
+			//! genuine >=2-bounce path reads normally.  Default false;
+			//! every existing caller is byte-identical.
 			void SetIndirectOnly( bool b ) { mIndirectOnly = b; }
 
 			//! GUI render modes P2b `clay_lights` mode (docs/gui/RENDER_MODES.md

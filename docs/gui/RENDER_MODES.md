@@ -338,21 +338,45 @@ each object's own real `IMaterial` exactly like a production render) +
 `RISE_API_CreatePathTracingPelRasterizer` with a multijittered sampler at
 `variantSamplesPerPass`, a box reconstruction filter, SMS off, OIDN on
 (quality `Auto`), default (disabled) path guiding/adaptive sampling/stability
-configs, no Z-Sobol. The caster's `pDefaultShader` constructor argument is a
-throwaway placeholder — it's dead code on the PT transport path
-(`RayCaster::SelectShader` is never called by production path tracing;
-per-object shading is driven entirely by each `IObject`'s own material), so
-the factory needs no Job/shader-manager access.  **P2a review fix
-(2026-07-18)**: the caster's `maxR` (reused as `variantMaxBounces` for
-convenience) is only a harmless SSS/BSSRDF recursion cap
-(`RayCaster::CastRay`'s `nMaxRecursions`) — it never bounded the PT main
-loop's bounce depth, which is iterative (not recursive) and was hardcoded to
-128 regardless.  The factory now calls the new
+configs, no Z-Sobol.  **P2a review fix (2026-07-18)**: the caster's `maxR`
+(reused as `variantMaxBounces` for convenience) is only a harmless
+SSS/BSSRDF recursion cap (`RayCaster::CastRay`'s `nMaxRecursions`) — it never
+bounded the PT main loop's bounce depth, which is iterative (not recursive)
+and was hardcoded to 128 regardless.  The factory now calls the new
 `PathTracingPelRasterizer::SetMaxPathDepth(variantMaxBounces)` right after
 construction, which forwards to `PathTracingIntegrator::SetMaxPathDepth` —
 the loop's REAL cap (see that method's doc for the exact depth-accounting:
 `n==1` for `direct` means the camera-hit vertex's emission + NEE only, no
 continuation bounce ever traced).
+
+**`pDefaultShader` is load-bearing, not dead code (review-p2b P1-b, 2026-07-
+XX)**: the PT main transport loop never calls through it — per-object shading
+there is driven entirely by each `IObject`'s own material — but
+`RayCaster::CastRay`/`CastRayNM` ARE called recursively by the BSSRDF disk-
+projection and random-walk SSS continuation sub-paths
+(`PathTracingIntegrator.cpp`), and those resolve shading via
+`RayCaster::SelectShader`, which falls back to the caster's default shader
+for any hit object with no explicit per-object `IShader` (the common case —
+`AddObject`'s `shader` argument is optional and most scenes only set a
+per-object `IMaterial`).  A null/black default here silently zeroes ALL such
+continuation energy.  When the caller passes null, the factory now builds a
+REAL owned default (`BeautyVariantDefaultShader` — a `StandardShader` over a
+`PathTracingShaderOp`, i.e. a generic `standard_shader { shaderop
+DefaultPathTracing }` chain), not a black placeholder.  **Review-p3 P2-c**:
+both current callers (`SceneEditController::SetViewportRenderMode`,
+`AgentSession`'s `doBeautyVariantRenderWork`) go further and recover the
+*production* rasterizer's own resolved default-shader NAME via
+`job.GetRasterizerParameter(job.GetActiveRasterizerName(), "shader")` — the
+exact name every `Set*Rasterizer` call stamped into its registry snapshot at
+construction time, not a hardcoded `"global"` guess — and pass
+`job.GetShaders()->GetItem(thatName)` as `pDefaultShader`, so a scene's own
+authored default shader is used whenever one can be resolved.  **Residual
+limitation**: the variant pipeline still falls back to the generic
+`DefaultPathTracing` chain above when no rasterizer is active yet or the
+resolved name isn't registered, so a scene relying on that fallback whose
+`global` shader is a CUSTOM shaderop chain can diverge from a CLI render on
+SSS/BSSRDF continuations in that (rare) case — there is no sound way to
+force-resolve a name that doesn't exist.
 
 **P2b addition (2026-07-18)**: right after the `SetMaxPathDepth` call, the
 factory also stamps `PathTracingPelRasterizer::SetIndirectOnly(info->
@@ -361,19 +385,34 @@ both forwarders onto the same `PathTracingIntegrator`, both false for
 `deep_reflect`/`direct` (so those two rows stay byte-identical) and each
 true for exactly one of the two new rows:
 
-- **`SetIndirectOnly`** (the `indirect` row): gates the emission
-  contribution, the NEE direct-lighting contribution, AND the environment/
-  radiance-map contribution a camera ray that misses the scene entirely
-  picks up — all three, but ONLY at the true camera-visible vertex (checked
-  via a loop-local `depth == 0`, not `depth == startDepth`: the HWSS loop's
-  mid-path delegation to the per-wavelength NM path passes its OWN current
-  `depth` as the delegated call's `startDepth`, so a `depth == startDepth`
-  check would spuriously fire again at that delegated call's first
-  iteration even for a genuine indirect bounce — `depth == 0` has no such
-  ambiguity, since only a true top-level camera-ray entry point ever passes
-  `startDepth == 0`). The continuation ray is still sampled and traced at
-  every vertex — only the direct contribution at the primary hit is zeroed,
-  so indirect energy (one bounce onward) is untouched. SMS caustic
+- **`SetIndirectOnly`** (the `indirect` row): gates the NEE direct-lighting
+  contribution, the emission contribution, AND the environment/radiance-map
+  contribution a camera ray that misses the scene entirely picks up.  NEE and
+  the environment/radiance-map miss are gated at the true camera-visible
+  vertex only (a loop-local `depth == 0`, not `depth == startDepth`: the HWSS
+  loop's mid-path delegation to the per-wavelength NM path passes its OWN
+  current `depth` as the delegated call's `startDepth`, so a `depth ==
+  startDepth` check would spuriously fire again at that delegated call's
+  first iteration even for a genuine indirect bounce — `depth == 0` has no
+  such ambiguity, since only a true top-level camera-ray entry point ever
+  passes `startDepth == 0`).  **Review-p3 P2-a fix**: the emission gate is
+  `depth <= 1`, not `depth == 0` — the direct term at the camera-visible
+  vertex is `NEE@depth0` **plus** `emission@depth1-from-that-vertex` (the
+  BSDF/phase-sampled ray fired FROM that vertex that happens to land directly
+  on an emitter, i.e. the MIS *partner* of the depth-0 NEE, arriving one loop
+  iteration later); gating emission at `depth == 0` only suppressed half the
+  direct term and left `indirect` rendering `direct × w_bsdf` on any light
+  where the BSDF-sampling strategy has non-negligible pdf toward it (a small/
+  distant lamp hid this since its `w_bsdf ≈ 0`; a large area light or bright
+  env leaked a large, measurable fraction).  `depth <= 1` has the same no-
+  ambiguity property as `depth == 0` (every mid-path re-entry — the HWSS
+  delegation, the BSSRDF continuation's recursive caster call, and the medium
+  in-scattering continuation's `startDepth = 1` delegate — passes the CURRENT
+  nonzero depth onward, so the loop-local `depth` can never return to 0 or 1
+  partway through a path that has already gone deeper).  The continuation ray
+  is still sampled and traced at every vertex — only the direct contribution
+  at/just past the primary hit is zeroed, so genuinely indirect energy
+  (`depth >= 2` emission, `depth >= 1` NEE) is untouched.  SMS caustic
   contributions are deliberately NOT gated (a caustic reaching a vertex
   through a specular chain is genuinely multi-bounce transport, not the
   open-air NEE connection).

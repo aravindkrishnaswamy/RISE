@@ -1525,7 +1525,16 @@ public:
 			pOp->release();
 			return 0;
 		}
-		return new BeautyVariantDefaultShader( pInner, pOp );
+		BeautyVariantDefaultShader* pWrapper = new BeautyVariantDefaultShader( pInner, pOp );
+		// review-p3 P3 fix: this wrapper is Reference-counted like every
+		// other allocation here (pOp/pInner are already tracked by their
+		// own RISE_API_Create* factories above) -- without a matching
+		// PrintNew, Reference::release's unconditional PrintDelete finds
+		// no matching allocation under LOG_TRACK_MEMORY and prints a
+		// spurious "Specified Allocation does not exist!" on every
+		// teardown, polluting leak reports.
+		GlobalLog()->PrintNew( pWrapper, __FILE__, __LINE__, "beauty-variant default shader" );
+		return pWrapper;
 	}
 
 	void Shade( const RuntimeContext& rc,
@@ -1546,6 +1555,32 @@ public:
 					const IORStack& ior_stack ) const override
 	{
 		return pInner->ShadeNM( rc, ri, caster, rs, nm, ior_stack );
+	}
+
+	// review-p3 P2-b: this is a TRANSPARENT decorator over pInner (a real
+	// StandardShader) -- every IShader virtual must be forwarded, not just
+	// the ones the P1-b fix happened to exercise.  ShadeHWSS has a non-pure
+	// default implementation on IShader (a per-wavelength ShadeNM loop), so
+	// omitting the override here compiles cleanly and is silently WRONG:
+	// StandardShader overrides ShadeHWSS to route through
+	// PerformOperationHWSS (its real HWSS transport path, distinct from
+	// looping ShadeNM), and RayCaster::CastRayHWSS calls
+	// SelectShader(ri).ShadeHWSS -- so without this forward, any
+	// caster-dispatched HWSS continuation through this wrapper (BSSRDF /
+	// SSS on an object with no explicit per-object shader, under an HWSS
+	// rasterizer) would silently fall back to the base class's per-
+	// wavelength loop instead of pInner's real HWSS transport.  Latent
+	// today (CreateBeautyVariantPipeline only builds a Pel rasterizer), but
+	// a decorator that skips a virtual is a landmine for the next caller.
+	void ShadeHWSS( const RuntimeContext& rc,
+					 const RayIntersection& ri,
+					 const IRayCaster& caster,
+					 const IRayCaster::RAY_STATE& rs,
+					 Scalar c[SampledWavelengths::N],
+					 SampledWavelengths& swl,
+					 const IORStack& ior_stack ) const override
+	{
+		pInner->ShadeHWSS( rc, ri, caster, rs, c, swl, ior_stack );
 	}
 
 	void ResetRuntimeData() const override

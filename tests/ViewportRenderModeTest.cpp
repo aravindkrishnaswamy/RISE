@@ -84,8 +84,10 @@
 //    R17 review-p2b P1-b fix: CreateBeautyVariantPipeline's new
 //        `pDefaultShader` parameter is actually wired onto the caster
 //        (RayCaster::SelectShader returns it by address for a no-per-
-//        object-shader hit); omitting it still falls back to the known-
-//        degraded internal placeholder (a different object identity).
+//        object-shader hit); omitting it falls back to a REAL owned
+//        default (BeautyVariantDefaultShader -- a different object
+//        identity, but genuine path-tracing transport, not a black
+//        placeholder -- review-p3 P2-d doc fix).
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -1167,8 +1169,9 @@ namespace
 	// not-yet-migrated callers -- see the header doc for what those two
 	// callers must pass), and both shapes yield the same concrete caster
 	// type.  The PIXEL-LEVEL discrimination proof (a no-per-object-shader
-	// SSS object is black with the placeholder / non-black with the real
-	// shader) is in AgentViewModeRenderTest.cpp, which can drive a full
+	// SSS object's own default shader IS the real BeautyVariantDefaultShader,
+	// so a bbox-restricted mean-luminance comparison against a deliberately-
+	// black test IShader) is in AgentViewModeRenderTest.cpp, which can drive a full
 	// RasterizeScene pass -- RayCaster::SelectShader itself is protected,
 	// so it isn't reachable from a structural test at this layer.
 	//------------------------------------------------------------------
@@ -1201,10 +1204,11 @@ namespace
 			safe_release( caster );
 		}
 
-		// (b) Omitting the shader (the defaulted-parameter shape a not-
-		// yet-migrated caller still compiles against) -- must still build
-		// (source compatibility), falling back to the internal
-		// placeholder documented in InteractivePelRasterizer.cpp.
+		// (b) Omitting the shader (the defaulted-parameter shape a caller
+		// that hasn't recovered the production shader name still compiles
+		// against) -- must still build, falling back to the REAL internal
+		// default (BeautyVariantDefaultShader) documented in
+		// InteractivePelRasterizer.cpp, NOT a black placeholder.
 		{
 			IRasterizer* rast = nullptr;
 			IRayCaster*  caster = nullptr;

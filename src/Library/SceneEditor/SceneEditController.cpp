@@ -7196,9 +7196,32 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 	// from a variant mode later finds it exactly as it was.
 	if( Implementation::IsBeautyVariantMode( info->mode ) )
 	{
+		// review-p3 P2-c: recover the PRODUCTION rasterizer's actual
+		// configured default shader instead of letting
+		// CreateBeautyVariantPipeline fall back to its own generic internal
+		// DefaultPathTracing default -- see AgentSession.cpp's twin of this
+		// fix for the full rationale.  Sound, not a guess:
+		// GetRasterizerParameter's "shader" case reads back the exact
+		// resolved shader NAME every Set*Rasterizer call stamped into its
+		// own registry snapshot at construction time.  Falls back to null
+		// when no rasterizer is active yet or the resolved name doesn't
+		// exist in the shader manager.
+		IShader* pProductionDefaultShader = nullptr;
+		{
+			const std::string activeRastName = mJob.GetActiveRasterizerName();
+			if( !activeRastName.empty() ) {
+				const std::string shaderName = mJob.GetRasterizerParameter(
+					activeRastName.c_str(), "shader" );
+				if( !shaderName.empty() && mJob.GetShaders() ) {
+					pProductionDefaultShader = mJob.GetShaders()->GetItem( shaderName.c_str() );
+				}
+			}
+		}
+
 		IRasterizer* variantRast   = nullptr;
 		IRayCaster*  variantCaster = nullptr;
-		if( !Implementation::CreateBeautyVariantPipeline( info->mode, &variantRast, &variantCaster ) )
+		if( !Implementation::CreateBeautyVariantPipeline(
+				info->mode, &variantRast, &variantCaster, pProductionDefaultShader ) )
 		{
 			// lk unlocks; render thread was parked but nothing was
 			// mutated, so no repaint kick is needed.

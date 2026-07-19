@@ -93,6 +93,7 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Color/ColorUtils.h"
 
@@ -264,6 +265,22 @@ static BBox ScanBBoxForColor( const Decoded& d, const unsigned char rgb[3] )
 		}
 	}
 	return b;
+}
+
+// Whole-frame mean luminance (moved up from its original P1-b/P2-e-local
+// definition, review-p3 P1 fix, so scenario (d) below -- and any other
+// test earlier in the file -- can use it too).
+static double MeanLuminance( const Decoded& d )
+{
+	double sum = 0; unsigned int n = 0;
+	for( std::size_t px = 0; px < d.px.size(); ++px )
+	{
+		const Px& q = d.px[px];
+		if( q[3] == 0 ) continue;
+		sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+		++n;
+	}
+	return n > 0 ? sum / n : -1.0;
 }
 
 // The full accepted-mode-name set every one of the three agent surfaces
@@ -924,6 +941,110 @@ static void RunIndirectModeNoIndirectPathTest()
 	       "(mean below a small threshold) -- the direct contribution was genuinely suppressed, not just dimmed" );
 	Check( indirectMean < deepReflectMean - 30.0,
 	       "MONEY ASSERTION (a2): \"indirect\" is MEANINGFULLY below \"deep_reflect\" on the same fixture" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// Scenario (d), review-p3 P2-a fix: scenario (a)'s omni_light is a DELTA-
+// POSITION light -- LightSampler::EvaluateDirectLighting's delta-position
+// branch means the BSDF-sampled ray can never land exactly on a point
+// light (w_bsdf approx 0 by construction), so scenario (a) cannot
+// discriminate "suppress NEE only" from "suppress NEE AND its BSDF-
+// sampled MIS partner": both give the same near-zero result on a point
+// light regardless of which (buggy or fixed) gate is in effect.
+//
+// This fixture swaps the point light for a LARGE mesh area light
+// centered exactly along the plane's normal direction and placed BEHIND
+// the camera (z=8, camera at z=5 looking toward -z, plane at z=0) --
+// invisible to primary camera rays (camera rays only ever reach z<5) but
+// subtending a large solid angle from the plane's surface, so a
+// Lambertian cosine-weighted BSDF sample has NON-NEGLIGIBLE probability
+// of landing directly on it (the light is centered on the density's own
+// peak direction).  Pre-fix (emission suppressed only at depth==0),
+// "indirect" renders direct x w_bsdf: a large, easily-measured leak, not
+// scenario (a)'s undetectable-by-construction zero.  Post-fix (emission
+// suppressed at depth<=1), the leak is gone -- there is no OTHER
+// geometry for a genuinely-indirect bounce to land on, so "indirect"
+// reads near-black exactly like scenario (a).
+//----------------------------------------------------------------------
+static const char* const kSceneSinglePlaneLargeAreaLight =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 24\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.75 0.75 0.75\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname plane_geo\n\twidth 12\n\theight 12\n\tdepth 0.2\n}\n\n"
+	"standard_object\n{\n\tname plane_obj\n\tgeometry plane_geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit_pnt\n\tcolor 3 3 3\n}\n\n"
+	// `material none` (the canonical pure-emitter idiom -- see
+	// scenes/FeatureBased/BDPT/bdpt_cloister.RISEscene's luminaires): NO
+	// underlying reflectance.  Discovered the hard way -- an earlier draft
+	// reused a bright reflectance (matching the exitance colour) as the
+	// luminaire's substrate material, which gave the light box its own
+	// Lambertian BSDF lobe with albedo 3.0 (unphysical >1, but still a
+	// real scatter event): a depth==1 BSDF-sampled ray landing on the
+	// light (correctly emission-suppressed by the P2-a fix) would then
+	// itself SCATTER a depth==2 continuation off that bright substrate
+	// back toward the plane, which is genuinely-indirect two-bounce
+	// transport, not a residual leak -- but the inflated albedo amplified
+	// it into a large, confounding signal that masked whether the P2-a
+	// fix actually worked.  `material none` removes that confound: the
+	// light box ONLY emits, never scatters, so nothing but the intended
+	// depth<=1 gate governs what reaches the plane.
+	"lambertian_luminaire_material\n{\n\tname emitmat\n\texitance emit_pnt\n\tmaterial none\n\tscale 6.0\n}\n\n"
+	"box_geometry\n{\n\tname lightgeo\n\twidth 8\n\theight 8\n\tdepth 0.2\n}\n\n"
+	// Centered on the plane's normal, BEHIND the camera -- never a primary
+	// hit, but a large solid angle as seen from the plane's surface.
+	"standard_object\n{\n\tname big_light\n\tgeometry lightgeo\n\tmaterial emitmat\n\tposition 0 0 8\n}\n";
+
+static void RunIndirectModeBsdfMisPartnerLeakTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"indirect\" scenario (d), review-p3 P2-a -- BSDF-sampled MIS partner of NEE must ALSO be suppressed ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_largearealight.RISEscene", kSceneSinglePlaneLargeAreaLight );
+	Check( !scenePath.empty(), "wrote the single-plane large-area-light scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "large-area-light scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "large-area-light session wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	auto meanLuminance = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		return MeanLuminance( dec );
+	};
+
+	const double indirectMean    = meanLuminance( Implementation::ViewportRenderMode::Indirect );
+	const double deepReflectMean = meanLuminance( Implementation::ViewportRenderMode::DeepReflect );
+	std::printf( "  indirectMean=%.2f deepReflectMean=%.2f\n", indirectMean, deepReflectMean );
+
+	Check( deepReflectMean > 40.0,
+	       "deep_reflect: the directly-lit plane reads brightly (sanity -- the fixture is actually lit)" );
+	// MONEY ASSERTION (d): with the BSDF-sampled MIS partner of the
+	// suppressed depth==0 NEE ALSO suppressed (depth<=1 emission gate),
+	// "indirect" on a large-solid-angle area light reads NEAR-BLACK, not
+	// direct x w_bsdf.  Pre-fix (emission gate only at depth==0), this
+	// scene's w_bsdf is substantial (the light is centered on the
+	// Lambertian cosine lobe's peak direction) and this assertion FAILS --
+	// verified by temporarily reverting the depth<=1 gate back to
+	// depth==0 and re-running: indirectMean read well above this
+	// threshold (a large, easily-measured leak, unlike scenario (a)'s
+	// undetectable-by-construction delta-light zero).
+	Check( indirectMean >= 0.0 && indirectMean < 8.0,
+	       "MONEY ASSERTION (d): \"indirect\" suppresses BOTH the depth==0 NEE and its depth==1 BSDF-sampled "
+	       "MIS partner on a large area light -- reads NEAR-BLACK, not direct x w_bsdf (review-p3 P2-a)" );
+	Check( indirectMean < deepReflectMean - 30.0,
+	       "MONEY ASSERTION (d2): \"indirect\" is MEANINGFULLY below \"deep_reflect\" on the same fixture" );
 
 	pJob->release();
 }
@@ -2484,18 +2605,18 @@ static void RunDoubleSidedThinMeshNearOpaqueDiscriminationTest()
 
 //----------------------------------------------------------------------
 // review-p2b P1/P2 regression coverage (external review of the P2a/P2b
-// BeautyVariant work): P1-b (BeautyVariantPlaceholderShader UAF-adjacent
+// BeautyVariant work): P1-b (all-black placeholder-default UAF-adjacent
 // energy loss on the BSSRDF/RW-SSS continuation), P1-c (clay_lights MIS
 // material-independence), P2-d (clay_lights bypasses authored SSS), and
 // P2-e (indirect misses the primary-segment medium-scatter NEE).
 //----------------------------------------------------------------------
 
 // Render one pass DIRECTLY through CreateBeautyVariantPipeline (bypassing
-// AgentSession -- AgentSession.cpp's doBeautyVariantRenderWork is owned by
-// another agent this wave and still calls the 3-arg shape, so it does NOT
-// yet exercise the pDefaultShader plumbing; this helper calls the 4-arg
-// factory directly, exactly like ViewportRenderModeTest.cpp's structural
-// R17 does, but through a REAL RasterizeScene pass for pixel-level proof).
+// AgentSession -- this helper calls the 4-arg factory directly, exactly
+// like ViewportRenderModeTest.cpp's structural R17 does and like
+// AgentSession.cpp / SceneEditController.cpp now both do in production
+// (review-p3 P2-c), but through a REAL RasterizeScene pass for pixel-
+// level proof).
 static bool RenderBeautyVariantPipeline(
 	const IScenePriv& scene, Implementation::ViewportRenderMode mode,
 	IShader* pDefaultShader, Decoded& out )
@@ -2518,17 +2639,65 @@ static bool RenderBeautyVariantPipeline(
 	return decoded;
 }
 
-static double MeanLuminance( const Decoded& d )
+// review-p3 P1 fix: mean luminance restricted to a screen-space bbox (the
+// established objectmap-bbox idiom this file uses everywhere else -- see
+// ScanBBoxForColor's callers).  The whole-frame MeanLuminance above is
+// dominated by a directly-visible emissive backwall in the P1-b fixture
+// (PT shades that primary hit itself -- the default shader under test is
+// reached only via the BSSRDF continuation, a small fraction of the
+// frame's energy), so a whole-frame assertion can't discriminate a
+// blackened default shader from a working one.  Restricting to the SSS
+// sphere's own pixel region makes the measurement actually about the
+// thing under test.
+static double MeanLuminanceInBBox( const Decoded& d, const BBox& bbox )
 {
+	if( bbox.found == 0 ) return -1.0;
 	double sum = 0; unsigned int n = 0;
-	for( std::size_t px = 0; px < d.px.size(); ++px )
+	for( unsigned int y = bbox.minY; y <= bbox.maxY; ++y )
 	{
-		const Px& q = d.px[px];
-		if( q[3] == 0 ) continue;
-		sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
-		++n;
+		for( unsigned int x = bbox.minX; x <= bbox.maxX; ++x )
+		{
+			const Px& q = d.at( x, y );
+			if( q[3] == 0 ) continue;
+			sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+			++n;
+		}
 	}
 	return n > 0 ? sum / n : -1.0;
+}
+
+// review-p3 P1 fix: a deliberately-black, TEST-ONLY IShader.  The shipped
+// P1-b fix means BOTH the null-default and the explicitly-supplied-shader
+// paths through CreateBeautyVariantPipeline now build/use a REAL path-
+// tracing shader -- there is no live all-black placeholder left in
+// production to discriminate against, so a test that only compares
+// "no shader supplied" vs "the real global shader supplied" can no longer
+// FAIL if a future regression re-blackens the internal default (both
+// sides would darken together).  This shader is the actual discriminator:
+// passing it as pDefaultShader must measurably darken the SSS sphere's
+// own pixel region relative to the real default, proving
+// CreateBeautyVariantPipeline's `pDefaultShader` plumbing is genuinely
+// wired through to RayCaster::SelectShader's fallback, not silently
+// ignored.
+namespace {
+class TestBlackShader : public IShader, public Implementation::Reference
+{
+public:
+	void Shade( const RuntimeContext&, const RayIntersection&, const IRayCaster&,
+	            const IRayCaster::RAY_STATE&, RISEPel& c, const IORStack& ) const override
+	{
+		c = RISEPel( 0, 0, 0 );
+	}
+	Scalar ShadeNM( const RuntimeContext&, const RayIntersection&, const IRayCaster&,
+	                const IRayCaster::RAY_STATE&, const Scalar, const IORStack& ) const override
+	{
+		return 0;
+	}
+	// ShadeHWSS deliberately NOT overridden: IShader's default impl loops
+	// ShadeNM per wavelength, which is already all-zero above -- correct
+	// for a black test shader with no separate HWSS transport to fake.
+	void ResetRuntimeData() const override {}
+};
 }
 
 //----------------------------------------------------------------------
@@ -2539,11 +2708,13 @@ static double MeanLuminance( const Decoded& d )
 // (called recursively by the BSSRDF disk-projection continuation in
 // PathTracingIntegrator.cpp) resolves shading via RayCaster::SelectShader,
 // which falls back to the caster's OWN default shader for this object.
-// With no shader supplied (the pre-fix / not-yet-migrated-caller shape,
-// still reachable via the defaulted parameter) that default is the
-// internal all-black BeautyVariantPlaceholderShader -- ALL continuation
-// energy is lost.  With the scene's real "global" shader supplied (P1-b's
-// fix), that energy is recovered.
+// review-p3 P1 fix: the shipped P1-b fix means BOTH "no shader supplied"
+// and "the scene's real global shader supplied" now build/use a REAL
+// path-tracing default (BeautyVariantDefaultShader) -- there is no black
+// placeholder left in production, so the MONEY ASSERTIONS below compare
+// against a deliberately-black TEST shader (TestBlackShader, above)
+// instead, restricted to the SSS sphere's own screen-space region (a
+// small fraction of this backlit-backwall-dominated frame).
 //----------------------------------------------------------------------
 static const char* const kSceneSSSNoShaderBacklit =
 	"RISE ASCII SCENE 7\n"
@@ -2577,38 +2748,125 @@ static void RunBeautyVariantSSSDefaultShaderTest()
 	IShader* pGlobal = pJob->GetShaders() ? pJob->GetShaders()->GetItem( "global" ) : nullptr;
 	Check( pGlobal != nullptr, "the fixture's \"global\" shader resolves via the job's shader manager" );
 
-	// PRE-FIX REPRODUCTION: no default shader supplied is EXACTLY what
-	// CreateBeautyVariantPipeline did unconditionally before P1-b (the
-	// only call shape that existed) -- BSSRDF continuation rays landing
-	// on the no-per-object-shader backwall shade black.
+	// review-p3 P1 fix: locate the SSS sphere's OWN screen-space pixel
+	// region via a reference objectmap render (the established
+	// objectmap-bbox idiom this file uses everywhere else) -- restricting
+	// the mean-luminance measurement below to this bbox instead of the
+	// whole frame, which is dominated by the directly-visible emissive
+	// backwall (measured pre-fix: whole-frame meanNoShader=210.25,
+	// meanWithShader=209.65 -- indistinguishable regardless of what the
+	// SSS sphere's own default shader does).  Same film dims/camera as
+	// the beauty-variant renders below (both come from the same scene's
+	// own authored Film chunk, no override on either path).
+	std::unique_ptr<AgentSession> objSession = AgentSession::WrapJob( pJob );
+	Check( objSession != nullptr, "backlit-SSS job wraps for the reference objectmap render" );
+	BBox sphereBBox{ 0, 0, 0, 0, 0 };
+	if( objSession )
+	{
+		AgentRenderParams objP;
+		objP.renderTarget = AgentRenderTarget::ObjectMap;
+		AgentRenderResult objR = objSession->Render( objP );
+		Check( objR.ok && objR.renderMode == "objectmap", "backlit-SSS reference objectmap render succeeds" );
+		Decoded objDec;
+		Check( DecodePng( objR.png, objDec ), "backlit-SSS reference objectmap PNG decodes" );
+		const LegendEntry* sphereLegend = FindLegend( objR, "sss_sphere" );
+		Check( sphereLegend != nullptr, "reference objectmap legend carries sss_sphere" );
+		if( sphereLegend )
+		{
+			unsigned char cb[3];
+			Check( HexToBytes( sphereLegend->colorHex, cb ), "sss_sphere colorHex parses" );
+			sphereBBox = ScanBBoxForColor( objDec, cb );
+			Check( sphereBBox.found > 0, "sss_sphere occupies a nonzero pixel region in the reference objectmap render" );
+		}
+	}
+
+	// "No default shader supplied" -- the shipped P1-b fix builds a REAL
+	// internal default here (BeautyVariantDefaultShader), not a black
+	// placeholder.
 	Decoded decNoShader;
 	Check( RenderBeautyVariantPipeline( *scenePriv, Implementation::ViewportRenderMode::DeepReflect,
 	                                     nullptr, decNoShader ),
 	       "deep_reflect render with NO default shader decodes" );
-	const double meanNoShader = MeanLuminance( decNoShader );
+	const double meanNoShaderSphere = MeanLuminanceInBBox( decNoShader, sphereBBox );
 
-	// POST-FIX: the real production "global" shader supplied.
+	// The scene's real production "global" shader supplied explicitly.
 	Decoded decWithShader;
 	Check( RenderBeautyVariantPipeline( *scenePriv, Implementation::ViewportRenderMode::DeepReflect,
 	                                     pGlobal, decWithShader ),
 	       "deep_reflect render WITH the real default shader decodes" );
-	const double meanWithShader = MeanLuminance( decWithShader );
+	const double meanWithShaderSphere = MeanLuminanceInBBox( decWithShader, sphereBBox );
 
-	std::printf( "  meanNoShader=%.2f meanWithShader=%.2f\n", meanNoShader, meanWithShader );
-	Check( meanNoShader >= 0.0 && meanWithShader >= 0.0, "both renders produced real pixels" );
-	// The shipped P1-b fix removed the all-black placeholder outright:
-	// CreateBeautyVariantPipeline builds a REAL path-tracing default shader
-	// (BeautyVariantDefaultShader) when the caller supplies none, so the
-	// null path and the explicitly-supplied path are now BOTH correct and
-	// must AGREE.  Asserting a delta between them (the shape of this test
-	// when the placeholder still existed) would now assert the bug back in.
-	Check( meanNoShader > 30.0,
-	       "MONEY ASSERTION: the DEFAULT (no pDefaultShader) beauty-variant pipeline carries real BSSRDF "
-	       "continuation energy on an object with no explicit per-object shader -- the all-black placeholder "
-	       "default shader that silently zeroed it is gone (P1-b)" );
-	Check( fabs( meanWithShader - meanNoShader ) < 15.0,
-	       "the built-in default shader MATCHES an explicitly-supplied production shader (both real path "
-	       "tracing) -- no energy gap between the two entry points" );
+	// review-p3 P1 fix: the actual discriminator -- a deliberately-black
+	// TEST shader (TestBlackShader, defined above) passed as
+	// pDefaultShader.  If CreateBeautyVariantPipeline's `pDefaultShader`
+	// plumbing were ever silently ignored (or its internal fallback
+	// re-blackened), this render would read the SAME as the real-shader
+	// renders above instead of measurably darker.
+	IShader* pBlack = new TestBlackShader();
+	Decoded decBlackShader;
+	Check( RenderBeautyVariantPipeline( *scenePriv, Implementation::ViewportRenderMode::DeepReflect,
+	                                     pBlack, decBlackShader ),
+	       "deep_reflect render WITH a deliberately-black test default shader decodes" );
+	const double meanBlackShaderSphere = MeanLuminanceInBBox( decBlackShader, sphereBBox );
+	pBlack->release();
+
+	std::printf( "  sss_sphere bbox=[%u..%u]x[%u..%u] (found=%u)\n",
+		sphereBBox.minX, sphereBBox.maxX, sphereBBox.minY, sphereBBox.maxY, sphereBBox.found );
+	std::printf( "  meanNoShaderSphere=%.2f meanWithShaderSphere=%.2f meanBlackShaderSphere=%.2f\n",
+		meanNoShaderSphere, meanWithShaderSphere, meanBlackShaderSphere );
+	Check( meanNoShaderSphere >= 0.0 && meanWithShaderSphere >= 0.0 && meanBlackShaderSphere >= 0.0,
+	       "all three sphere-bbox renders produced real pixels" );
+
+	// MONEY ASSERTION (a): the DEFAULT (no pDefaultShader) beauty-variant
+	// pipeline carries real BSSRDF continuation energy on the SSS
+	// sphere's own screen region -- the all-black placeholder default
+	// shader that once silently zeroed it is gone (P1-b), and this is
+	// now measured on the region that actually exercises the default
+	// shader instead of the whole (backwall-dominated) frame.  Threshold
+	// is 130.0, NOT a token >0-style floor: the SSS material's PRIMARY-hit
+	// diffusion response alone (independent of any continuation shader --
+	// see assertion (b)'s comment below) already puts a correctly-working
+	// render around 168-174 on this fixture, while a default shader whose
+	// CONTINUATION half is entirely blackened (verified by temporarily
+	// zeroing BeautyVariantDefaultShader::Shade/ShadeNM, simulating the
+	// pre-P1-b all-black placeholder) reads ~100 -- 130 sits with real
+	// margin on both sides of that gap, so this assertion genuinely fails
+	// under that regression instead of trivially passing at a near-zero
+	// floor no real render would ever cross.
+	Check( meanNoShaderSphere > 130.0,
+	       "MONEY ASSERTION (a): the DEFAULT (no pDefaultShader) beauty-variant pipeline carries real BSSRDF "
+	       "continuation energy on the SSS sphere's OWN pixel region" );
+	// MONEY ASSERTION (b): the deliberately-black test shader measurably
+	// DARKENS the sphere region relative to the real default -- proof
+	// pDefaultShader is genuinely wired through RayCaster::SelectShader's
+	// fallback, not silently ignored (the failure mode a same-object-
+	// identity structural check like ViewportRenderModeTest.cpp's R17
+	// cannot catch).  NOT asserted near-black: measured
+	// meanNoShaderSphere=173.84 -> meanBlackShaderSphere=100.47 (a real
+	// run, not a placeholder) -- the SSS material's PRIMARY-hit diffusion
+	// response (BSSRDF NEE sampled locally at the entry point) is a
+	// SEPARATE illumination pathway from the disk-projection/random-walk
+	// CONTINUATION rays that recursively call caster.CastRay and resolve
+	// through the blackened default -- blacking the continuation alone
+	// cannot zero the whole sphere, only measurably darken it.  The
+	// relative + absolute thresholds below have generous margin under
+	// that real measurement (42% relative drop, 73.4 absolute) while
+	// still failing outright if pDefaultShader were silently ignored
+	// (which would leave meanBlackShaderSphere == meanNoShaderSphere,
+	// zero drop).
+	Check( meanBlackShaderSphere < meanNoShaderSphere * 0.8,
+	       "MONEY ASSERTION (b): a deliberately-black default shader reads MEANINGFULLY (>=20%) darker than the "
+	       "real default over the SSS sphere's own region" );
+	Check( meanNoShaderSphere - meanBlackShaderSphere > 30.0,
+	       "MONEY ASSERTION (b2): the black test shader is darker than the real default by a LARGE absolute "
+	       "margin over the same sphere region -- pDefaultShader is actually reaching RayCaster::SelectShader's "
+	       "fallback" );
+	// Consistency check (not the money assertion): the built-in default
+	// and an explicitly-supplied real production shader agree, since both
+	// are genuine path-tracing transport post P1-b.
+	Check( fabs( meanWithShaderSphere - meanNoShaderSphere ) < 15.0,
+	       "the built-in default shader MATCHES an explicitly-supplied production shader over the sphere region "
+	       "(both real path tracing) -- no energy gap between the two entry points" );
 
 	pJob->release();
 }
@@ -2925,6 +3183,7 @@ int main()
 	RunBeautyVariantEndToEndTest();
 	RunDirectModeMissingIndirectBleedTest();
 	RunIndirectModeNoIndirectPathTest();
+	RunIndirectModeBsdfMisPartnerLeakTest();
 	RunIndirectModeColorBleedSceneMeanTest();
 	RunIndirectModeEnvBackgroundBlackTest();
 	RunClayLightsAlbedoIndependenceTest();

@@ -1447,9 +1447,16 @@ PathTracingIntegrator::PathTracingIntegrator(
 	// after the object it points to is freed.
 	{
 		IPainter* pPainter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		// review-p3 P3 fix: all three are Reference-counted and each gets
+		// its own symmetric safe_release in the dtor below -- without a
+		// matching PrintNew, LOG_TRACK_MEMORY prints a spurious "Specified
+		// Allocation does not exist!" for each on teardown.
+		GlobalLog()->PrintNew( pPainter, __FILE__, __LINE__, "clay_lights neutral painter" );
 		pClayPainter = pPainter;
 		pClayBRDF = new LambertianBRDF( *pPainter );
+		GlobalLog()->PrintNew( pClayBRDF, __FILE__, __LINE__, "clay_lights BRDF" );
 		pClaySPF  = new LambertianSPF( *pPainter );
+		GlobalLog()->PrintNew( pClaySPF, __FILE__, __LINE__, "clay_lights SPF" );
 	}
 
 	// P1-c fix: the NEE-material adapter (see ClayNEEMaterial's doc above)
@@ -1463,6 +1470,9 @@ PathTracingIntegrator::PathTracingIntegrator(
 	// destructors dereference each other; ClayNEEMaterial's dtor is a
 	// trivial no-op).
 	pClayMaterial = new ClayNEEMaterial( pClayBRDF, pClaySPF );
+	// review-p3 P3 fix: same tracking-asymmetry fix as the trio above --
+	// safe_release( pClayMaterial ) runs unconditionally in the dtor.
+	GlobalLog()->PrintNew( pClayMaterial, __FILE__, __LINE__, "clay_lights NEE material" );
 }
 
 PathTracingIntegrator::~PathTracingIntegrator()
@@ -2143,12 +2153,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					emission = ClampContribution( emission, stabilityConfig.directClamp );
 				}
 
-				// GUI render modes P2b `indirect`: suppress the emission
-				// contribution at the camera-visible vertex only -- see
-				// SetIndirectOnly's doc (depth==0, not depth==startDepth --
-				// see that doc for why).  A directly-visible emitter reads
-				// black; emission seen after >=1 bounce is untouched.
-				if( !( mIndirectOnly && depth == 0 ) ) {
+				// GUI render modes P2b `indirect` (review-p3 P2-a fix):
+				// suppress emission at depth==0 (the directly-visible
+				// emitter itself) AND depth==1 (the BSDF-sampled MIS
+				// partner of the depth==0 NEE this same loop suppresses
+				// below -- see SetIndirectOnly's doc (depth==0, not
+				// depth==startDepth -- see that doc for why the depth==0
+				// half of this reasoning uses a raw depth compare).  The
+				// direct term at the camera-visible vertex is NEE@depth0
+				// + emission@depth1-from-that-vertex: suppressing only
+				// the NEE half left `indirect` rendering direct x
+				// w_bsdf instead of zero on any light where the BSDF-
+				// sampling strategy has non-negligible pdf (a small lamp
+				// hides this; a large area light or bright env does not).
+				// depth>=2 emission is the MIS partner of NEE at
+				// depth>=1 (genuinely indirect) and stays untouched.
+				if( !( mIndirectOnly && depth <= 1 ) ) {
 					result = result + throughput * emission;
 				}
 
@@ -4236,10 +4256,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					if( depth > 0 ) {
 						emission = ClampContribution( emission, stabilityConfig.directClamp );
 					}
-					// GUI render modes P2b `indirect` (HWSS twin): suppress
-					// the emission contribution at the camera-visible vertex
-					// only -- see SetIndirectOnly's doc.
-					if( !( mIndirectOnly && depth == 0 ) ) {
+					// GUI render modes P2b `indirect` (HWSS twin, review-p3
+					// P2-a fix): suppress emission at depth==0 AND
+					// depth==1 (the BSDF-sampled MIS partner of the
+					// depth==0 NEE this loop suppresses below) -- see the
+					// RGB/NM twin's fuller comment above and
+					// SetIndirectOnly's doc.
+					if( !( mIndirectOnly && depth <= 1 ) ) {
 						hwssResult[w] += throughputComp[w] * emission;
 					}
 				}

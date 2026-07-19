@@ -292,16 +292,29 @@ namespace RISE
 		//! Pass that same shader here so an SSS/BSSRDF object with no
 		//! explicit per-object shader shades correctly instead of resolving
 		//! to a black placeholder.  Defaulted to null so pre-existing callers
-		//! still compile; null falls back to the internal
-		//! BeautyVariantPlaceholderShader (pure black) -- a KNOWN-DEGRADED
-		//! path, not a correct default, kept only for source compatibility
-		//! until every caller is updated to pass a real shader.  Both current
-		//! callers (SceneEditController::SetViewportRenderMode,
-		//! AgentSession's doBeautyVariantRenderWork) hold an IJobPriv
-		//! reference/pointer and should pass
-		//! `job.GetShaders()->GetItem("global")` (borrowed, not addref'd --
-		//! matches Job::SetPathTracingPelRasterizer's own usage; RISE_API_
-		//! CreateRayCaster addrefs it internally).
+		//! still compile.  Null does NOT fall back to a black placeholder:
+		//! this factory builds a REAL owned default (BeautyVariantDefaultShader
+		//! -- a StandardShader over a PathTracingShaderOp, i.e. a generic
+		//! `standard_shader { shaderop DefaultPathTracing }` chain) whenever
+		//! the caller passes null (P1-b fix).  Both current callers
+		//! (SceneEditController::SetViewportRenderMode, AgentSession's
+		//! doBeautyVariantRenderWork) go further (P2-c, review-p3): they
+		//! recover the PRODUCTION rasterizer's own resolved default-shader
+		//! NAME via `job.GetRasterizerParameter(job.GetActiveRasterizerName(),
+		//! "shader")` -- the exact name every Set*Rasterizer call stamped into
+		//! its registry snapshot at construction time, not a hardcoded
+		//! "global" guess -- and pass `job.GetShaders()->GetItem(thatName)`
+		//! (borrowed, not addref'd -- matches Job::SetPathTracingPelRasterizer's
+		//! own usage; RISE_API_CreateRayCaster addrefs it internally), falling
+		//! back to null (this factory's own generic default) only when no
+		//! rasterizer is active yet or the resolved name is unregistered.
+		//! RESIDUAL LIMITATION: the variant pipeline always builds a GENERIC
+		//! DefaultPathTracing chain in that fallback case (or when the resolved
+		//! shader name can't be looked up), so a scene relying on that fallback
+		//! whose `global` shader is a CUSTOM shaderop chain can still diverge
+		//! from a CLI render on SSS/BSSRDF continuations -- documented, not
+		//! solved, since there is no sound way to force-resolve an unregistered
+		//! name.
 		//!
 		//! Returns false for any non-BeautyVariant mode.  Returned pointers
 		//! are refcounted ownership references for the caller to release,

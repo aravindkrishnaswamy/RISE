@@ -3355,10 +3355,35 @@ namespace RISE
 					return;   // rendered/renderRan stay false -- shared tail reports "render failed"
 				}
 
+				// review-p3 P2-c: recover the PRODUCTION rasterizer's actual
+				// configured default shader instead of letting
+				// CreateBeautyVariantPipeline fall back to its own generic
+				// internal DefaultPathTracing default -- a scene whose
+				// `global` shader is a CUSTOM shaderop chain would otherwise
+				// diverge from a CLI render on caster-dispatched SSS/BSSRDF
+				// continuations.  Sound, not a guess: GetRasterizerParameter's
+				// "shader" case reads back the exact resolved shader NAME
+				// every Set*Rasterizer call stamped into its own registry
+				// snapshot at construction time (Job.cpp).  Falls back to
+				// null (CreateBeautyVariantPipeline's own real internal
+				// default) when no rasterizer is active yet or the resolved
+				// name doesn't exist in the shader manager.
+				IShader* pProductionDefaultShader = nullptr;
+				{
+					const std::string activeRastName = mJob->GetActiveRasterizerName();
+					if( !activeRastName.empty() ) {
+						const std::string shaderName = mJob->GetRasterizerParameter(
+							activeRastName.c_str(), "shader" );
+						if( !shaderName.empty() && mJob->GetShaders() ) {
+							pProductionDefaultShader = mJob->GetShaders()->GetItem( shaderName.c_str() );
+						}
+					}
+				}
+
 				IRasterizer* ephemeralRast  = nullptr;
 				IRayCaster*  variantCaster  = nullptr;
 				if( !Implementation::CreateBeautyVariantPipeline(
-						params.viewMode, &ephemeralRast, &variantCaster ) )
+						params.viewMode, &ephemeralRast, &variantCaster, pProductionDefaultShader ) )
 				{
 					return;
 				}
