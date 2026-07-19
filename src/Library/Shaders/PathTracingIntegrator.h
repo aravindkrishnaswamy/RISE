@@ -49,6 +49,7 @@ namespace RISE
 	class IPainter;
 	class IBSDF;
 	class ISPF;
+	class IMaterial;
 
 	namespace Implementation
 	{
@@ -101,6 +102,25 @@ namespace RISE
 			const IPainter*		pClayPainter;
 			const IBSDF*		pClayBRDF;
 			const ISPF*			pClaySPF;
+
+			//! P1-c fix (review-p2b): a lightweight IMaterial adapter that
+			//! wraps pClayBRDF/pClaySPF -- passed to LightSampler::
+			//! EvaluateDirectLighting{,NM} in place of the authored
+			//! ri.pMaterial wherever the NEE eval itself already uses the
+			//! clay BRDF.  GetBSDF()/GetSPF() return pClayBRDF/pClaySPF
+			//! directly (no duplicate Lambertian pair); GetEmitter() is
+			//! always null (clay never lights up -- the surface's own
+			//! emission is handled separately and is never clayed).  Pdf/
+			//! PdfNM are NOT overridden -- they inherit IMaterial's base
+			//! implementation, which delegates to GetSPF()->Pdf(...),
+			//! i.e. pClaySPF's OWN pdf formula.  That is deliberate: it
+			//! guarantees the MIS BSDF-sampling pdf used by NEE is the
+			//! EXACT SAME function as the pdf the continuation ray is
+			//! actually sampled from (pClaySPF::Scatter), by construction,
+			//! with no hand-duplicated cos/PI formula to drift out of
+			//! sync.  Built once alongside the other three clay members;
+			//! same stateless/read-only-after-construction contract.
+			const IMaterial*	pClayMaterial;
 
 		public:
 			PathTracingIntegrator(
@@ -194,7 +214,20 @@ namespace RISE
 			//! every surface, including originally-specular ones, scatters
 			//! as clay so the render answers "is the lighting right,
 			//! independent of ANY surface's material," not just diffuse
-			//! ones.  Default false; every existing caller is byte-identical.
+			//! ones.  NEE's MIS BSDF-sampling pdf is ALSO substituted (see
+			//! ClayNEEMaterial / pClayMaterial in the .cpp) so the eval
+			//! numerator (clay BRDF) and the MIS denominator's BSDF-pdf
+			//! term always agree -- otherwise clay_lights would be biased
+			//! and its output would still depend on the hidden authored
+			//! material's Pdf() (P1-c fix).  The authored material's
+			//! subsurface transport (both the disk-projection diffusion-
+			//! profile path and random-walk SSS) is also BYPASSED under
+			//! this mode (P2-d fix): a surface with SSS parameters shades
+			//! as plain clay Lambertian, not a translucent clay-tinted
+			//! diffuser, so the mode's "independent of ANY surface's
+			//! material" contract extends to volumetric-looking materials
+			//! too, not just BSDF/SPF ones.  Default false; every existing
+			//! caller is byte-identical.
 			void SetClayOverride( bool b ) { mClayOverride = b; }
 
 			/// Traces one complete path from a camera ray and returns

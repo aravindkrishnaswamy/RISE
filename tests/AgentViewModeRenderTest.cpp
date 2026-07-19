@@ -87,6 +87,8 @@
 #include "../src/Library/Interfaces/IRasterImageReader.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
+#include "../src/Library/Interfaces/IShader.h"
+#include "../src/Library/Interfaces/IShaderManager.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
@@ -2480,6 +2482,442 @@ static void RunDoubleSidedThinMeshNearOpaqueDiscriminationTest()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// review-p2b P1/P2 regression coverage (external review of the P2a/P2b
+// BeautyVariant work): P1-b (BeautyVariantPlaceholderShader UAF-adjacent
+// energy loss on the BSSRDF/RW-SSS continuation), P1-c (clay_lights MIS
+// material-independence), P2-d (clay_lights bypasses authored SSS), and
+// P2-e (indirect misses the primary-segment medium-scatter NEE).
+//----------------------------------------------------------------------
+
+// Render one pass DIRECTLY through CreateBeautyVariantPipeline (bypassing
+// AgentSession -- AgentSession.cpp's doBeautyVariantRenderWork is owned by
+// another agent this wave and still calls the 3-arg shape, so it does NOT
+// yet exercise the pDefaultShader plumbing; this helper calls the 4-arg
+// factory directly, exactly like ViewportRenderModeTest.cpp's structural
+// R17 does, but through a REAL RasterizeScene pass for pixel-level proof).
+static bool RenderBeautyVariantPipeline(
+	const IScenePriv& scene, Implementation::ViewportRenderMode mode,
+	IShader* pDefaultShader, Decoded& out )
+{
+	IRasterizer* rast = nullptr;
+	IRayCaster*  caster = nullptr;
+	if( !Implementation::CreateBeautyVariantPipeline( mode, &rast, &caster, pDefaultShader ) || !rast ) {
+		safe_release( rast );
+		safe_release( caster );
+		return false;
+	}
+	Agent::InMemoryRasterizerOutput* sink = new Agent::InMemoryRasterizerOutput();
+	rast->AddRasterizerOutput( sink );
+	rast->RasterizeScene( scene, 0, nullptr );
+	const std::vector<unsigned char> png = sink->ToPng();
+	const bool decoded = DecodePng( png, out );
+	safe_release( sink );
+	safe_release( caster );
+	rast->release();
+	return decoded;
+}
+
+static double MeanLuminance( const Decoded& d )
+{
+	double sum = 0; unsigned int n = 0;
+	for( std::size_t px = 0; px < d.px.size(); ++px )
+	{
+		const Px& q = d.px[px];
+		if( q[3] == 0 ) continue;
+		sum += ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+		++n;
+	}
+	return n > 0 ? sum / n : -1.0;
+}
+
+//----------------------------------------------------------------------
+// P1-b: an SSS sphere with NO explicit per-object shader (standard_object
+// never sets `shader` -- the common authoring case), strongly backlit by
+// a large emissive wall almost touching it so BSSRDF continuation rays
+// reliably escape onto something bright.  RayCaster::CastRay/CastRayNM
+// (called recursively by the BSSRDF disk-projection continuation in
+// PathTracingIntegrator.cpp) resolves shading via RayCaster::SelectShader,
+// which falls back to the caster's OWN default shader for this object.
+// With no shader supplied (the pre-fix / not-yet-migrated-caller shape,
+// still reachable via the defaulted parameter) that default is the
+// internal all-black BeautyVariantPlaceholderShader -- ALL continuation
+// energy is lost.  With the scene's real "global" shader supplied (P1-b's
+// fix), that energy is recovered.
+//----------------------------------------------------------------------
+static const char* const kSceneSSSNoShaderBacklit =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 24\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit_pnt\n\tcolor 3 3 3\n}\n\n"
+	"lambertian_material\n{\n\tname basemat\n\treflectance emit_pnt\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname emitmat\n\texitance emit_pnt\n\tmaterial basemat\n\tscale 4.0\n}\n\n"
+	"box_geometry\n{\n\tname backwallgeo\n\twidth 6\n\theight 6\n\tdepth 0.2\n}\n\n"
+	// standard_object deliberately has NO `shader` line -- the common
+	// authoring shape RayCaster::SelectShader falls back for.
+	"standard_object\n{\n\tname backwall\n\tgeometry backwallgeo\n\tposition 0 0 -1.6\n\tmaterial emitmat\n}\n\n"
+	"subsurfacescattering_material\n{\n\tname wax\n\tior 1.3\n\tabsorption 0.01 0.3 1\n\tscattering 2\n\tg 0.0\n\troughness 0.0\n}\n\n"
+	"sphere_geometry\n{\n\tname spheregeo\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname sss_sphere\n\tgeometry spheregeo\n\tposition 0 0 0\n\tmaterial wax\n}\n";
+
+static void RunBeautyVariantSSSDefaultShaderTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: P1-b BeautyVariant default-shader SSS energy ===\n" );
+	const std::string scenePath = WriteTemp( "rise_beautyvariant_sss_defaultshader.RISEscene", kSceneSSSNoShaderBacklit );
+	Check( !scenePath.empty(), "wrote the backlit-SSS-no-shader scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "backlit-SSS scene loads via the CST path" );
+	const IScenePriv* scenePriv = pJob->GetScene();
+	Check( scenePriv != nullptr, "backlit-SSS job has a Scene" );
+	if( !scenePriv ) { pJob->release(); return; }
+
+	IShader* pGlobal = pJob->GetShaders() ? pJob->GetShaders()->GetItem( "global" ) : nullptr;
+	Check( pGlobal != nullptr, "the fixture's \"global\" shader resolves via the job's shader manager" );
+
+	// PRE-FIX REPRODUCTION: no default shader supplied is EXACTLY what
+	// CreateBeautyVariantPipeline did unconditionally before P1-b (the
+	// only call shape that existed) -- BSSRDF continuation rays landing
+	// on the no-per-object-shader backwall shade black.
+	Decoded decNoShader;
+	Check( RenderBeautyVariantPipeline( *scenePriv, Implementation::ViewportRenderMode::DeepReflect,
+	                                     nullptr, decNoShader ),
+	       "deep_reflect render with NO default shader decodes" );
+	const double meanNoShader = MeanLuminance( decNoShader );
+
+	// POST-FIX: the real production "global" shader supplied.
+	Decoded decWithShader;
+	Check( RenderBeautyVariantPipeline( *scenePriv, Implementation::ViewportRenderMode::DeepReflect,
+	                                     pGlobal, decWithShader ),
+	       "deep_reflect render WITH the real default shader decodes" );
+	const double meanWithShader = MeanLuminance( decWithShader );
+
+	std::printf( "  meanNoShader=%.2f meanWithShader=%.2f\n", meanNoShader, meanWithShader );
+	Check( meanNoShader >= 0.0 && meanWithShader >= 0.0, "both renders produced real pixels" );
+	// The shipped P1-b fix removed the all-black placeholder outright:
+	// CreateBeautyVariantPipeline builds a REAL path-tracing default shader
+	// (BeautyVariantDefaultShader) when the caller supplies none, so the
+	// null path and the explicitly-supplied path are now BOTH correct and
+	// must AGREE.  Asserting a delta between them (the shape of this test
+	// when the placeholder still existed) would now assert the bug back in.
+	Check( meanNoShader > 30.0,
+	       "MONEY ASSERTION: the DEFAULT (no pDefaultShader) beauty-variant pipeline carries real BSSRDF "
+	       "continuation energy on an object with no explicit per-object shader -- the all-black placeholder "
+	       "default shader that silently zeroed it is gone (P1-b)" );
+	Check( fabs( meanWithShader - meanNoShader ) < 15.0,
+	       "the built-in default shader MATCHES an explicitly-supplied production shader (both real path "
+	       "tracing) -- no energy gap between the two entry points" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// P1-c: clay_lights MIS material-independence.  Two scenes identical
+// except the floor's material: one a diffuse Lambertian, one a PERFECT
+// MIRROR (delta reflector -- IMaterial::Pdf() delegates to GetSPF()->Pdf(),
+// and a delta SPF's Pdf() is 0, the exact "near-zero/delta Pdf()" case the
+// P1-c bug targets: LightSampler::EvaluateDirectLighting only applies its
+// MIS weight when `p_bsdf > 0`, so a delta-material's NEE contribution
+// against the CLAY BRDF's eval goes out UNWEIGHTED (full raw weight)
+// while the diffuse-material scene's NEE gets properly power-heuristic
+// weighted -- a material-dependent bias clay_lights must not have).
+//
+// MUST use a MESH area light (a luminaire sphere), NOT a delta omni/spot
+// light: LightSampler::EvaluateDirectLighting's delta-position light
+// branch never calls pMaterial->Pdf() at all ("delta-position light: w=1,
+// no alternative sampling strategy" -- verified by reading the branch),
+// so a scene lit only by an omni_light doesn't exercise the P1-c code
+// path (confirmed empirically: an earlier omni_light-lit revision of
+// this fixture showed NO discrimination between mirror/diffuse pre-fix).
+// Only the MESH LUMINARY branch calls pMaterial->Pdf() for its MIS
+// weight, so the light here must be an emissive object with a CanBeAreaLight
+// geometry (a sphere) positioned so a cosine-sampled BSDF ray from the
+// floor has a real chance of hitting it directly, giving p_bsdf a
+// meaningful (non-negligible) magnitude to be mis-weighted incorrectly
+// against.
+//----------------------------------------------------------------------
+static const char* const kSceneClayFloorDiffuse =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 32\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.9 0.9 0.9\n}\n\n"
+	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -0.1 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit_pnt\n\tcolor 6 6 6\n}\n\n"
+	"lambertian_material\n{\n\tname lampbase\n\treflectance emit_pnt\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lampmat\n\texitance emit_pnt\n\tmaterial lampbase\n\tscale 1.0\n}\n\n"
+	"sphere_geometry\n{\n\tname lampgeo\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname lamp_obj\n\tgeometry lampgeo\n\tmaterial lampmat\n\tposition 0 3 0\n}\n";
+
+static const char* const kSceneClayFloorMirror =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 32\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.9 0.9 0.9\n}\n\n"
+	"perfectreflector_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -0.1 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit_pnt\n\tcolor 6 6 6\n}\n\n"
+	"lambertian_material\n{\n\tname lampbase\n\treflectance emit_pnt\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lampmat\n\texitance emit_pnt\n\tmaterial lampbase\n\tscale 1.0\n}\n\n"
+	"sphere_geometry\n{\n\tname lampgeo\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname lamp_obj\n\tgeometry lampgeo\n\tmaterial lampmat\n\tposition 0 3 0\n}\n";
+
+static void RunClayLightsMaterialIndependenceMirrorTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: P1-c \"clay_lights\" MIS material-independence (mirror vs diffuse) ===\n" );
+
+	const std::string diffusePath = WriteTemp( "rise_clay_floor_diffuse.RISEscene", kSceneClayFloorDiffuse );
+	const std::string mirrorPath  = WriteTemp( "rise_clay_floor_mirror.RISEscene",  kSceneClayFloorMirror );
+	Check( !diffusePath.empty() && !mirrorPath.empty(), "wrote both diffuse/mirror clay-floor scenes" );
+
+	Job* pDiffuseJob = new Job();
+	Check( pDiffuseJob->LoadAsciiSceneViaCst( diffusePath.c_str() ), "diffuse-floor scene loads via the CST path" );
+	std::unique_ptr<AgentSession> diffuseSession = AgentSession::WrapJob( pDiffuseJob );
+	Check( diffuseSession != nullptr, "diffuse-floor session wraps" );
+
+	Job* pMirrorJob = new Job();
+	Check( pMirrorJob->LoadAsciiSceneViaCst( mirrorPath.c_str() ), "mirror-floor scene loads via the CST path" );
+	std::unique_ptr<AgentSession> mirrorSession = AgentSession::WrapJob( pMirrorJob );
+	Check( mirrorSession != nullptr, "mirror-floor session wraps" );
+
+	if( !diffuseSession || !mirrorSession ) { pDiffuseJob->release(); pMirrorJob->release(); return; }
+
+	auto renderMean = [&]( AgentSession& session, Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session.Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		return MeanLuminance( dec );
+	};
+
+	// Sanity: under REAL transport, a mirror floor and a diffuse floor
+	// look substantially different (the mirror mostly shows reflected
+	// surroundings/near-black, not the flat lit diffuse look).
+	const double beautyDiffuse = renderMean( *diffuseSession, Implementation::ViewportRenderMode::DeepReflect );
+	const double beautyMirror  = renderMean( *mirrorSession,  Implementation::ViewportRenderMode::DeepReflect );
+	std::printf( "  deep_reflect: diffuse=%.2f mirror=%.2f\n", beautyDiffuse, beautyMirror );
+	Check( std::abs( beautyDiffuse - beautyMirror ) > 15.0,
+	       "deep_reflect: the diffuse and mirror floors DIFFER substantially -- sanity, materials genuinely "
+	       "drive the image absent clay_lights" );
+
+	// Under clay_lights, both floors are substituted for the SAME clay
+	// lobe: the two renders' mean luminance should MATCH within a tight
+	// tolerance, independent of whether the hidden authored material was
+	// diffuse or a delta mirror.
+	const double clayDiffuse = renderMean( *diffuseSession, Implementation::ViewportRenderMode::ClayLights );
+	const double clayMirror  = renderMean( *mirrorSession,  Implementation::ViewportRenderMode::ClayLights );
+	std::printf( "  clay_lights: diffuse=%.2f mirror=%.2f\n", clayDiffuse, clayMirror );
+	Check( clayDiffuse >= 0.0 && clayMirror >= 0.0, "both clay_lights renders produced real pixels" );
+	// Tolerance 1.5: MC noise alone (post-fix, repeated runs) keeps the
+	// diffuse/mirror gap under ~0.5; the pre-fix bug (verified by
+	// temporarily reverting PathTracingIntegrator.{h,cpp} to HEAD and
+	// re-running this exact test) consistently produces a ~3.0-3.5 gap on
+	// this fixture -- 1.5 sits with clean margin on both sides of that
+	// separation.
+	Check( std::abs( clayDiffuse - clayMirror ) < 1.5,
+	       "MONEY ASSERTION: clay_lights's mean luminance MATCHES within a tight tolerance whether the hidden "
+	       "authored floor material is a diffuse Lambertian or a delta-Pdf() perfect mirror -- the NEE MIS "
+	       "weight now agrees with the clay BRDF's own pdf (ClayNEEMaterial), so the mode's material-"
+	       "independence contract holds even for materials whose OWN Pdf() is zero/delta (P1-c fix)" );
+
+	pDiffuseJob->release();
+	pMirrorJob->release();
+}
+
+//----------------------------------------------------------------------
+// P2-d: clay_lights must bypass the authored material's subsurface
+// transport too, not just its BSDF/SPF.  Two scenes identical in
+// geometry/lighting except the sphere's material: one a diffusion-profile
+// SSS material (translucent, backlit glow under real transport), one a
+// plain opaque Lambertian of a SIMILAR base tone.  Under clay_lights BOTH
+// must reduce to the SAME clay Lambertian look (mean luminance close);
+// under deep_reflect they must differ substantially (the SSS sphere's
+// characteristic glow vs a flat opaque diffuse look).
+//----------------------------------------------------------------------
+// No background/env and no visible emissive surface geometry -- the ONLY
+// light sources are two DELTA omni lights (invisible in-frame), so every
+// background pixel outside the sphere's own silhouette is alpha=0 (no
+// hit) and MeanLuminance's alpha-skip means the whole-frame mean IS,
+// effectively, the sphere's own mean brightness -- no bright backwall to
+// dilute the signal.  One light is front-ish (so the opaque sphere is
+// visibly lit at all, giving clay_lights real NEE to substitute over);
+// the other is directly BEHIND the sphere (drives the SSS backlit-glow
+// signature under real transport).
+static const char* const kSceneClaySSSSphere =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 24\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname lgt_front\n\tpower 1.5\n\tcolor 1 1 1\n\tposition 1.5 1.5 3\n}\n\n"
+	"omni_light\n{\n\tname lgt_back\n\tpower 24.0\n\tcolor 1 1 1\n\tposition 0 0 -3\n}\n\n"
+	"subsurfacescattering_material\n{\n\tname wax\n\tior 1.3\n\tabsorption 0.01 0.3 1\n\tscattering 2\n\tg 0.0\n\troughness 0.0\n}\n\n"
+	"sphere_geometry\n{\n\tname spheregeo\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname the_sphere\n\tgeometry spheregeo\n\tposition 0 0 0\n\tmaterial wax\n}\n";
+
+static const char* const kSceneClayOpaqueSphere =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 24\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname lgt_front\n\tpower 1.5\n\tcolor 1 1 1\n\tposition 1.5 1.5 3\n}\n\n"
+	"omni_light\n{\n\tname lgt_back\n\tpower 24.0\n\tcolor 1 1 1\n\tposition 0 0 -3\n}\n\n"
+	"uniformcolor_painter\n{\n\tname sph_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname opaquemat\n\treflectance sph_pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname spheregeo\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname the_sphere\n\tgeometry spheregeo\n\tposition 0 0 0\n\tmaterial opaquemat\n}\n";
+
+static void RunClayLightsSSSBypassTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: P2-d \"clay_lights\" bypasses authored SSS ===\n" );
+
+	const std::string sssPath    = WriteTemp( "rise_clay_sss_sphere.RISEscene",    kSceneClaySSSSphere );
+	const std::string opaquePath = WriteTemp( "rise_clay_opaque_sphere.RISEscene", kSceneClayOpaqueSphere );
+	Check( !sssPath.empty() && !opaquePath.empty(), "wrote both SSS/opaque clay-sphere scenes" );
+
+	Job* pSssJob = new Job();
+	Check( pSssJob->LoadAsciiSceneViaCst( sssPath.c_str() ), "SSS-sphere scene loads via the CST path" );
+	std::unique_ptr<AgentSession> sssSession = AgentSession::WrapJob( pSssJob );
+	Check( sssSession != nullptr, "SSS-sphere session wraps" );
+
+	Job* pOpaqueJob = new Job();
+	Check( pOpaqueJob->LoadAsciiSceneViaCst( opaquePath.c_str() ), "opaque-sphere scene loads via the CST path" );
+	std::unique_ptr<AgentSession> opaqueSession = AgentSession::WrapJob( pOpaqueJob );
+	Check( opaqueSession != nullptr, "opaque-sphere session wraps" );
+
+	if( !sssSession || !opaqueSession ) { pSssJob->release(); pOpaqueJob->release(); return; }
+
+	auto renderDec = [&]( AgentSession& session, Implementation::ViewportRenderMode mode ) -> Decoded
+	{
+		Decoded dec;
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session.Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return dec; }
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); }
+		return dec;
+	};
+
+	// The discriminating signal is COLOUR, not brightness: the wax SSS
+	// material's absorption is strongly wavelength-selective (R 0.01 ~
+	// transparent, G 0.3 moderate, B 1.0 heavily absorbed), so light that
+	// has actually travelled THROUGH the material (the diffusion-profile
+	// transport P2-d bypasses) comes out warm/red-shifted -- a genuine
+	// SSS signature no amount of relighting reproduces from a neutral-
+	// grey opaque surface.  Reuses ColorBias (defined above for the P1-c
+	// albedo-independence test): positive = red-dominant, ~0 = neutral.
+	const Decoded beautySssDec    = renderDec( *sssSession,    Implementation::ViewportRenderMode::DeepReflect );
+	const Decoded beautyOpaqueDec = renderDec( *opaqueSession, Implementation::ViewportRenderMode::DeepReflect );
+	const double beautySssBias    = ColorBias( beautySssDec );
+	const double beautyOpaqueBias = ColorBias( beautyOpaqueDec );
+	std::printf( "  deep_reflect colour bias: sss=%.2f opaque=%.2f\n", beautySssBias, beautyOpaqueBias );
+	Check( !beautySssDec.px.empty() && !beautyOpaqueDec.px.empty(), "both deep_reflect renders produced real pixels" );
+	Check( beautySssBias > beautyOpaqueBias + 5.0,
+	       "deep_reflect: the SSS sphere reads a MEANINGFULLY warmer/red-shifted colour than the neutral-grey "
+	       "opaque sphere -- sanity, the diffusion-profile transport's wavelength-selective absorption is "
+	       "genuinely visible absent clay_lights" );
+
+	// Under clay_lights, P2-d bypasses the authored SSS transport entirely
+	// (not just the surface BSDF/SPF) -- both spheres reduce to the SAME
+	// neutral clay Lambertian, so neither should carry ANY residual colour
+	// cast, and the two renders' colour bias should match closely.
+	const Decoded claySssDec    = renderDec( *sssSession,    Implementation::ViewportRenderMode::ClayLights );
+	const Decoded clayOpaqueDec = renderDec( *opaqueSession, Implementation::ViewportRenderMode::ClayLights );
+	const double claySssBias    = ColorBias( claySssDec );
+	const double clayOpaqueBias = ColorBias( clayOpaqueDec );
+	std::printf( "  clay_lights colour bias: sss=%.2f opaque=%.2f\n", claySssBias, clayOpaqueBias );
+	Check( !claySssDec.px.empty() && !clayOpaqueDec.px.empty(), "both clay_lights renders produced real pixels" );
+	Check( std::abs( claySssBias ) < 5.0,
+	       "MONEY ASSERTION: clay_lights on the SSS sphere carries NO meaningful residual colour cast -- the "
+	       "wavelength-selective diffusion-profile transport is genuinely bypassed (P2-d fix), not merely "
+	       "relit with the same colour-shifting absorption still active underneath" );
+	Check( std::abs( claySssBias - clayOpaqueBias ) < 5.0,
+	       "MONEY ASSERTION: clay_lights's colour bias MATCHES within a tight tolerance whether the hidden "
+	       "sphere material is diffusion-profile SSS or a plain opaque Lambertian -- both reduce to the exact "
+	       "same clay look" );
+	Check( std::abs( claySssBias - beautySssBias ) > 5.0,
+	       "MONEY ASSERTION: on the SAME SSS-sphere scene, clay_lights's colour bias is SUBSTANTIALLY different "
+	       "from deep_reflect's -- the SSS colour signature visible under real transport is genuinely gone "
+	       "under clay_lights, not just diluted" );
+
+	pSssJob->release();
+	pOpaqueJob->release();
+}
+
+//----------------------------------------------------------------------
+// P2-e: `indirect` must also suppress the in-scattering NEE at a medium
+// scatter event on the PRIMARY camera segment (a camera looking straight
+// into fog, scattering before ever hitting a surface), not just surface
+// NEE at the camera-visible vertex.  A scene-wide `global_medium` fog with
+// an omni light positioned inside it, camera at the origin looking
+// straight at the light -- the primary ray scatters in the fog well
+// before reaching anything else, so any visible glow here is EXCLUSIVELY
+// the primary-segment single-scatter NEE the fix gates.
+//----------------------------------------------------------------------
+static const char* const kSceneFogPrimaryScatter =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 32\n\tpixel_filter box\n\toidn_denoise false\n\tmax_volume_bounce 8\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 0\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"homogeneous_medium\n{\n\tname fog\n\tabsorption 0.02 0.02 0.02\n\tscattering 0.6 0.6 0.6\n\tphase isotropic\n}\n\n"
+	"omni_light\n{\n\tname lamp\n\tpower 8.0\n\tcolor 1 1 1\n\tposition 0 0 2.5\n}\n\n"
+	"global_medium\n{\n\tmedium fog\n}\n";
+
+static void RunIndirectPrimaryMediumScatterTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: P2-e \"indirect\" misses primary-segment medium-scatter NEE ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_fog_primary.RISEscene", kSceneFogPrimaryScatter );
+	Check( !scenePath.empty(), "wrote the fog-with-lamp scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "fog-with-lamp scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "fog-with-lamp session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	auto renderMean = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		return MeanLuminance( dec );
+	};
+
+	const double deepReflectMean = renderMean( Implementation::ViewportRenderMode::DeepReflect );
+	const double indirectMean    = renderMean( Implementation::ViewportRenderMode::Indirect );
+	std::printf( "  deepReflectMean=%.2f indirectMean=%.2f\n", deepReflectMean, indirectMean );
+
+	Check( deepReflectMean >= 0.0 && indirectMean >= 0.0, "both renders produced real pixels" );
+	Check( deepReflectMean > 3.0,
+	       "sanity: deep_reflect shows a real single-scatter glow from the lamp through the fog (not black)" );
+	Check( indirectMean < deepReflectMean - 2.0,
+	       "MONEY ASSERTION: \"indirect\"'s mean luminance is MEANINGFULLY below \"deep_reflect\"'s on this "
+	       "camera-in-fog-with-a-lamp scene -- the primary-segment medium-scatter NEE (the ONLY light path "
+	       "reachable before any surface hit here) is genuinely suppressed under indirect, not just surface "
+	       "NEE (P2-e fix)" );
+
+	pJob->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -2504,6 +2942,10 @@ int main()
 	RunScaledGlassStandoffTest();
 	RunThinGlassNearOpaqueDiscriminationTest();
 	RunDoubleSidedThinMeshNearOpaqueDiscriminationTest();
+	RunBeautyVariantSSSDefaultShaderTest();
+	RunClayLightsMaterialIndependenceMirrorTest();
+	RunClayLightsSSSBypassTest();
+	RunIndirectPrimaryMediumScatterTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

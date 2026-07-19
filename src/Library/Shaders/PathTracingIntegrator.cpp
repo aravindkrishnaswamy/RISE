@@ -1355,6 +1355,54 @@ namespace
 	// so each is reproduced exactly rather than unified.
 	inline RISEPel PTMulDiv( const RISEPel& a, const Scalar b, const Scalar c ) { return a * ( b / c ); }
 	inline Scalar  PTMulDiv( const Scalar  a, const Scalar b, const Scalar c ) { return a * b / c; }
+
+	//! P1-c fix (review-p2b, `clay_lights` MIS inconsistency): a thin
+	//! IMaterial adapter over the integrator's shared pClayBRDF/pClaySPF,
+	//! passed to LightSampler::EvaluateDirectLighting{,NM} in place of
+	//! ri.pMaterial wherever the NEE eval already substitutes the clay
+	//! BRDF for the value/contribution term.  Without this, NEE evaluated
+	//! `f = clayBRDF.value(...)` (numerator) while computing the MIS
+	//! BSDF-sampling pdf from the AUTHORED material's Pdf() (denominator)
+	//! -- a mismatched pair that makes clay_lights biased AND dependent on
+	//! the hidden authored material (mirror/dielectric materials have a
+	//! near-zero or delta Pdf(), which starves or floods the NEE weight
+	//! for a surface that is visually identical clay).  GetBSDF()/GetSPF()
+	//! return the SAME pClayBRDF/pClaySPF instances every other clay call
+	//! site uses (no duplicate Lambertian pair -- see the ctor).
+	//! GetEmitter() is always null: LightSampler::EvaluateDirectLighting
+	//! only ever calls pMaterial->Pdf()/PdfNM() on this parameter (verified
+	//! by reading every pMaterial use in both EvaluateDirectLighting and
+	//! EvaluateDirectLightingNM -- LightSampler.cpp), never
+	//! pMaterial->GetEmitter() -- the surface's own emission is evaluated
+	//! separately (PART 1) against the REAL ri.pMaterial and is never
+	//! substituted, matching SetClayOverride's documented contract.  Pdf/
+	//! PdfNM are deliberately NOT overridden: IMaterial's base
+	//! implementation (Materials/IMaterial.cpp) delegates to
+	//! GetSPF()->Pdf(...)/PdfNM(...), i.e. pClaySPF's OWN pdf formula --
+	//! the EXACT function the continuation ray is actually sampled from
+	//! (pClaySPF::Scatter), so NEE's MIS weight and the BSDF-sampling
+	//! strategy's density can never drift apart.
+	class ClayNEEMaterial :
+		public virtual IMaterial,
+		public virtual Reference
+	{
+	public:
+		ClayNEEMaterial( const IBSDF* brdf, const ISPF* spf ) :
+		  pBRDF( const_cast<IBSDF*>( brdf ) ),
+		  pSPF( const_cast<ISPF*>( spf ) )
+		{}
+
+		IBSDF* GetBSDF() const override { return pBRDF; }
+		ISPF* GetSPF() const override { return pSPF; }
+		IEmitter* GetEmitter() const override { return 0; }
+
+	protected:
+		~ClayNEEMaterial() override {}
+
+	private:
+		IBSDF* pBRDF;
+		ISPF* pSPF;
+	};
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1373,7 +1421,8 @@ PathTracingIntegrator::PathTracingIntegrator(
   mClayOverride( false ),
   pClayPainter( 0 ),
   pClayBRDF( 0 ),
-  pClaySPF( 0 )
+  pClaySPF( 0 ),
+  pClayMaterial( 0 )
 {
 	if( smsConfig.enabled )
 	{
@@ -1385,21 +1434,41 @@ PathTracingIntegrator::PathTracingIntegrator(
 	// SetClayOverride(true), so there is no first-use race to reason about.
 	// A mid-grey (0.5,0.5,0.5) albedo reflectance -- neutral clay, not
 	// pure white (would over-brighten bounce energy) or pure black (would
-	// kill it).  UniformColorPainter's own refcount is released immediately
-	// after the two Lambertian wrappers addref it in their constructors
-	// (LambertianBRDF/LambertianSPF's documented ctor contract).
+	// kill it).  Refcount discipline (verified against LambertianBRDF /
+	// LambertianSPF's actual ctors, both of which addref their painter
+	// argument): `new UniformColorPainter` starts refcount 1; the BRDF
+	// wrapper's ctor addrefs it to 2; the SPF wrapper's ctor addrefs it to
+	// 3.  Deliberately NOT releasing the local `pPainter` here: the third
+	// reference IS `pClayPainter`'s own -- i.e. `new` is the acquisition
+	// for the member, matching every other raw-pointer-member-holds-a-ref
+	// idiom in this file (pSolver, etc).  The three-way symmetric release
+	// in the dtor below (BRDF, then SPF, then pClayPainter) exactly
+	// balances this ctor's three addrefs, so pClayPainter is never touched
+	// after the object it points to is freed.
 	{
 		IPainter* pPainter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
 		pClayPainter = pPainter;
 		pClayBRDF = new LambertianBRDF( *pPainter );
 		pClaySPF  = new LambertianSPF( *pPainter );
-		pPainter->release();
 	}
+
+	// P1-c fix: the NEE-material adapter (see ClayNEEMaterial's doc above)
+	// wraps pClayBRDF/pClaySPF by raw (non-owning) pointer -- it does not
+	// addref them.  This is safe because all four clay members share one
+	// build-once/tear-down-once lifetime scoped to this integrator: nothing
+	// dereferences pClayMaterial's GetBSDF()/GetSPF() results outside of an
+	// active render, and pClayBRDF/pClaySPF are never released before
+	// pClayMaterial in the dtor below (in fact -- release order among the
+	// four is inconsequential here specifically because none of their
+	// destructors dereference each other; ClayNEEMaterial's dtor is a
+	// trivial no-op).
+	pClayMaterial = new ClayNEEMaterial( pClayBRDF, pClaySPF );
 }
 
 PathTracingIntegrator::~PathTracingIntegrator()
 {
 	safe_release( pSolver );
+	safe_release( pClayMaterial );
 	safe_release( pClayBRDF );
 	safe_release( pClaySPF );
 	safe_release( pClayPainter );
@@ -2112,7 +2181,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			ISubSurfaceDiffusionProfile* pProfile =
 				ri.pMaterial ? ri.pMaterial->GetDiffusionProfile() : 0;
 
-			if( pProfile && pBRDF )
+			// P2-d fix (review-p2b): under clay_lights the surface is
+			// purely the clay Lambertian -- the authored material's
+			// diffusion-profile transport must not run (it would leak
+			// scattering parameters through, defeating the mode's
+			// material-independence contract).  See SetClayOverride's doc.
+			if( pProfile && pBRDF && !mClayOverride )
 			{
 				// Front-face gate uses the GEOMETRIC normal — "is the ray
 				// hitting the outside of this surface" is a side-of-surface
@@ -2270,7 +2344,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 			}
 
-			if( pRWParams && pBRDF )
+			// P2-d fix (review-p2b): same clay-independence rule as the
+			// diffusion-profile branch above -- random-walk SSS must not
+			// run under clay_lights either.
+			if( pRWParams && pBRDF && !mClayOverride )
 			{
 				// Front-face gate uses GEOMETRIC normal; Schlick Fresnel
 				// cosine uses SHADING.  See the BSSRDF site above for
@@ -2562,8 +2639,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			IndependentSampler fallbackSampler( rc.random );
 			ISampler& neeSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
+			// P1-c fix (review-p2b): under clay_lights, pBRDF is already
+			// pClayBRDF (see the acquisition above) -- the MIS BSDF-
+			// sampling pdf must come from the SAME clay lobe (pClayMaterial,
+			// whose Pdf()/PdfNM() delegate to pClaySPF), not the authored
+			// ri.pMaterial (whose Pdf() could be near-zero/delta for a
+			// mirror or dielectric, breaking MIS and making clay output
+			// depend on the hidden material).  See ClayNEEMaterial's doc.
 			Value directAll = PTEvaluateDirectLighting<Tag>(
-				pLS, ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler,
+				pLS, ri.geometric, *pBRDF,
+				mClayOverride ? pClayMaterial : ri.pMaterial, caster, neeSampler,
 				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
@@ -3360,7 +3445,24 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 			Value result = Traits::zero();
 
-			// NEE at scatter point
+			// NEE at scatter point.  GUI render modes P2b `indirect` fix
+			// (review-p2b P2-e): this in-scattering NEE is on the PRIMARY
+			// camera-ray segment -- the medium/volumetric analog of the
+			// depth==0 surface vertex the loop's own NEE gate (see
+			// SetIndirectOnly's doc) suppresses.  There is no explicit
+			// `depth` variable at this call site (it runs before the main
+			// loop's first iteration -- IntegrateFromHitForTag below is
+			// invoked with startDepth=1, i.e. the CONTINUATION ray is
+			// already past the camera-visible vertex), so the depth==0
+			// rule applies unconditionally here rather than via a depth
+			// comparison: a camera ray that scatters in fog before ever
+			// reaching a surface is exactly the "direct light at the
+			// camera-visible point" case indirect-only must suppress --
+			// otherwise a camera in fog with a lamp still shows the direct
+			// single-scatter glow.  Still EVALUATED (same RNG consumption/
+			// shadow-ray cost as every other mode, matching the surface
+			// site's lockstep contract) so the sampler stream stays in
+			// lockstep across modes; only the contribution is zeroed.
 			if( pLS )
 			{
 				Value Ld = PTEvaluateInScattering<Tag>(
@@ -3371,7 +3473,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					Value directContrib = medWeight * Ld;
 					directContrib = ClampContribution( directContrib,
 						stabilityConfig.directClamp );
-					result = result + directContrib;
+					if( !mIndirectOnly ) {
+						result = result + directContrib;
+					}
 				}
 			}
 
@@ -3695,7 +3799,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		bool hasRWNM = firstHit.pMaterial &&
 			firstHit.pMaterial->GetRandomWalkSSSParamsNM( swl.HeroLambda(), rwParamsNM );
 
-		if( pProfile || pRWParams || hasRWNM )
+		// P2-d fix (review-p2b): under clay_lights the delegated per-
+		// wavelength path (IntegrateFromHitNM) now bypasses SSS transport
+		// itself (see the diffusion-profile/RW-SSS gates above), so this
+		// routing decision would be numerically harmless either way -- but
+		// gating it here too keeps clay_lights on the more efficient HWSS
+		// hero-bundle path instead of unconditionally falling back to
+		// per-wavelength for a surface that no longer has any SSS behavior
+		// to represent.
+		if( ( pProfile || pRWParams || hasRWNM ) && !mClayOverride )
 		{
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 			{
@@ -4008,7 +4120,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			bool hasRWNM = ri.pMaterial &&
 				ri.pMaterial->GetRandomWalkSSSParamsNM( heroNM, rwParamsNM );
 
-			if( pProfile || pRWParams || hasRWNM )
+			// P2-d fix (review-p2b): same clay-independence reasoning as
+			// the entry-point Fallback 2 routing above -- don't route away
+			// from HWSS for a surface that no longer has SSS behavior
+			// under clay_lights.
+			if( ( pProfile || pRWParams || hasRWNM ) && !mClayOverride )
 			{
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 				{
@@ -4142,8 +4258,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			{
 				if( swl.terminated[w] ) continue;
 
+				// P1-c fix (HWSS twin of the Pel/NM loop's fix above):
+				// pBRDFCur is already pClayBRDF under clay_lights (see its
+				// acquisition above) -- pass the matching clay material so
+				// the MIS BSDF-sampling pdf agrees with it instead of the
+				// authored ri.pMaterial.
 				Scalar directNM = pLS->EvaluateDirectLightingNM(
-					ri.geometric, *pBRDFCur, ri.pMaterial, swl.lambda[w],
+					ri.geometric, *pBRDFCur,
+					mClayOverride ? pClayMaterial : ri.pMaterial, swl.lambda[w],
 					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
@@ -4537,7 +4659,12 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 				if( medWeight <= 0 ) continue;
 
-				// NEE at scatter point
+				// NEE at scatter point.  GUI render modes P2b `indirect`
+				// fix (review-p2b P2-e, HWSS twin of the RGB/NM
+				// IntegrateRayTemplated fix): same primary-camera-segment
+				// depth==0 reasoning -- see that fix's doc for the full
+				// rationale.  Still evaluated for RNG lockstep; only the
+				// contribution is zeroed.
 				if( pLS )
 				{
 					Scalar Ld = MediumTransport::EvaluateInScatteringNM(
@@ -4548,7 +4675,9 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 						Scalar directContrib = medWeight * Ld;
 						directContrib = ClampContribution( directContrib,
 							stabilityConfig.directClamp );
-						result[w] += directContrib;
+						if( !mIndirectOnly ) {
+							result[w] += directContrib;
+						}
 					}
 				}
 

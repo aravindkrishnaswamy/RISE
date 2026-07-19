@@ -550,6 +550,50 @@ static void TestRenderCheckpoint()
 	// A per-channel band, generously wide -- also passes.
 	checkOne( "[{\"kind\":\"render\",\"meanRMin\":0.0,\"meanRMax\":10.0,\"meanGMin\":0.0,\"meanGMax\":10.0,\"meanBMin\":0.0,\"meanBMax\":10.0}]",
 		true, "generous per-channel bands pass" );
+
+	// P2 fix: width/height/samples are narrowed via static_cast<unsigned
+	// int>/static_cast<int> AFTER this validation -- a negative,
+	// fractional, or absurdly large JSON number must be refused LOUDLY
+	// (naming the offending field and value) rather than silently
+	// wrapped/truncated by the cast.  checkOne already proves passed==
+	// false; checkOneDetailContains additionally proves the refusal is
+	// THIS validation firing (an honest diagnostic naming the field),
+	// not some unrelated render crash.
+	auto checkOneDetailContains = [&]( const std::string& cpJson, const std::string& mustContain, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( !r.checkpoints[0].passed, label + ": expected a FAILING checkpoint (honest refusal)" );
+			Check( r.checkpoints[0].detail.find( mustContain ) != std::string::npos,
+				label + ": detail names the offending field/value (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":-32,\"height\":32}]",
+		"\"width\" must be a whole number",
+		"a NEGATIVE width is refused, not silently wrapped by the unsigned cast" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":0,\"height\":32}]",
+		"\"width\" must be a whole number",
+		"a ZERO width is refused (must be >= 1)" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":32,\"height\":32.5}]",
+		"\"height\" must be a whole number",
+		"a FRACTIONAL height is refused, not silently truncated" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":1000000000000,\"height\":32}]",
+		"\"width\" must be a whole number",
+		"an ABSURDLY LARGE width is refused, not left to overflow the narrowing cast" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":32,\"height\":32,\"samples\":1.5}]",
+		"\"samples\" must be a whole number",
+		"a FRACTIONAL samples override is refused, not silently truncated" );
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":32,\"height\":32,\"samples\":-4}]",
+		"\"samples\" must be a whole number",
+		"a NEGATIVE samples override is refused, not silently coerced" );
+
+	// Sanity control: a VALID whole-number override in range still passes
+	// (the new validation doesn't spuriously reject legitimate values).
+	checkOne( "[{\"kind\":\"render\",\"width\":16,\"height\":16,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		true, "a valid whole-number width/height override still passes" );
 }
 
 //----------------------------------------------------------------------

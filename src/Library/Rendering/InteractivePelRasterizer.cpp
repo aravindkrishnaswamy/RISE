@@ -1484,40 +1484,89 @@ bool RISE::Implementation::CreateInteractiveViewModePipeline(
 
 namespace {
 
-//! RayCaster's `pDefaultShader` constructor argument is only ever read by
-//! RayCaster::SelectShader() (RayCaster.cpp), which nothing on the PT
-//! transport path calls -- per-object shading is driven entirely by each
-//! IObject's own IMaterial/BSDF (see RayCaster::AttachScene /
-//! Job::SetPathTracingPelRasterizer, which passes an ordinary scene shader
-//! for the SAME reason: the argument is structurally required but
-//! practically inert for this rasterizer family).  This placeholder exists
-//! only to satisfy that constructor requirement without pulling in a
-//! Job/shader-manager dependency this factory otherwise has no need for.
-class BeautyVariantPlaceholderShader :
+
+//! Owning default shader for the beauty-variant caster: a real
+//! path-tracing StandardShader PLUS the PathTracingShaderOp it runs.
+//!
+//! OWNERSHIP CONTRACT (verified against StandardShader.cpp, not assumed --
+//! this exact assumption is what crashed the first cut of the P1-b fix):
+//! `StandardShader` BORROWS its shaderops.  Its ctor copies the raw
+//! pointer vector without addref'ing, and its dtor releases nothing --
+//! in a normal Job the shaderop MANAGER owns the ops and outlives every
+//! shader built over them.  A standalone construction therefore has to
+//! provide that owner itself, or the op dies at the construction site and
+//! `StandardShader::Shade` dereferences a dangling pointer.
+//!
+//! This wrapper is that owner: it holds a reference to BOTH the inner
+//! shader and the op, forwards shading to the inner shader, and releases
+//! both in its dtor (inner first -- it borrows the op).  The ray caster
+//! addrefs THIS object, so the whole trio dies exactly when the caster
+//! does.
+class BeautyVariantDefaultShader :
 	public IShader,
 	public Reference
 {
 public:
-	BeautyVariantPlaceholderShader() {}
-
-	void Shade( const RuntimeContext&, const RayIntersection&,
-	            const IRayCaster&, const IRayCaster::RAY_STATE&,
-	            RISEPel& c, const IORStack& ) const override
+	//! Returns null if either sub-object could not be created.
+	static BeautyVariantDefaultShader* Create()
 	{
-		c = RISEPel( 0, 0, 0 );
+		IShaderOp* pOp = 0;
+		RISE_API_CreatePathTracingShaderOp( &pOp, /*smsEnabled*/false,
+			/*smsMaxIterations*/0, /*smsThreshold*/0.0,
+			/*smsMaxChainDepth*/0, /*smsBiased*/false );
+		if( !pOp ) {
+			return 0;
+		}
+		std::vector<IShaderOp*> ops;
+		ops.push_back( pOp );
+		IShader* pInner = 0;
+		RISE_API_CreateStandardShader( &pInner, ops );
+		if( !pInner ) {
+			pOp->release();
+			return 0;
+		}
+		return new BeautyVariantDefaultShader( pInner, pOp );
 	}
 
-	Scalar ShadeNM( const RuntimeContext&, const RayIntersection&,
-	                const IRayCaster&, const IRayCaster::RAY_STATE&,
-	                const Scalar, const IORStack& ) const override
+	void Shade( const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack& ior_stack ) const override
 	{
-		return 0;
+		pInner->Shade( rc, ri, caster, rs, c, ior_stack );
 	}
 
-	void ResetRuntimeData() const override {}
+	Scalar ShadeNM( const RuntimeContext& rc,
+					const RayIntersection& ri,
+					const IRayCaster& caster,
+					const IRayCaster::RAY_STATE& rs,
+					const Scalar nm,
+					const IORStack& ior_stack ) const override
+	{
+		return pInner->ShadeNM( rc, ri, caster, rs, nm, ior_stack );
+	}
+
+	void ResetRuntimeData() const override
+	{
+		pInner->ResetRuntimeData();
+	}
 
 protected:
-	~BeautyVariantPlaceholderShader() override {}
+	~BeautyVariantDefaultShader() override
+	{
+		// Inner shader first: it borrows the op.
+		safe_release( pInner );
+		safe_release( pOp );
+	}
+
+private:
+	BeautyVariantDefaultShader( IShader* inner, IShaderOp* op )
+	: pInner( inner ), pOp( op ) {}
+
+	IShader*   pInner;
+	IShaderOp* pOp;
 };
 
 }
@@ -1525,7 +1574,8 @@ protected:
 bool RISE::Implementation::CreateBeautyVariantPipeline(
 	ViewportRenderMode mode,
 	IRasterizer** ppRasterizer,
-	IRayCaster** ppCaster )
+	IRayCaster** ppCaster,
+	IShader* pDefaultShader )
 {
 	if( ppRasterizer ) {
 		*ppRasterizer = 0;
@@ -1555,10 +1605,32 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	// InteractiveMaterialPreviewRayCaster subclass -- a PLAIN RayCaster, so
 	// shading resolves through each object's own real IMaterial exactly like
 	// a production render.
-	IShader* pShader = new BeautyVariantPlaceholderShader();
+	//
+	// P1-b fix: prefer the caller-supplied production default shader (see
+	// pDefaultShader's doc) -- it is a BORROWED reference (not addref'd by
+	// us; RISE_API_CreateRayCaster below addrefs it internally, matching
+	// Job::SetPathTracingPelRasterizer's own usage of a shader-manager
+	// lookup).  Only build (and own) the local placeholder when the caller
+	// passes null.
+	// When the caller supplies nothing, build a REAL path-tracing default
+	// shader (a StandardShader over a PathTracingShaderOp -- exactly what a
+	// scene's own `standard_shader { shaderop DefaultPathTracing }` is), NOT
+	// an all-black placeholder: `RayCaster::SelectShader` hands this default
+	// to every object WITHOUT an explicit per-object shader, and the BSSRDF /
+	// random-walk-SSS continuations DO go through `caster.CastRay`, so a
+	// zero-output default silently blackens their energy (external review
+	// P1-b).  SMS off here, matching the variant rasterizer's own config.
+	IShader* pOwnedShader = 0;
+	if( !pDefaultShader ) {
+		pOwnedShader = BeautyVariantDefaultShader::Create();
+		if( !pOwnedShader ) {
+			return false;
+		}
+	}
+	IShader* pShader = pDefaultShader ? pDefaultShader : pOwnedShader;
 	IRayCaster* pCaster = 0;
 	RISE_API_CreateRayCaster( &pCaster, /*seeRadianceMap*/true, info->variantMaxBounces, *pShader, /*showLuminaires*/true );
-	pShader->release();
+	safe_release( pOwnedShader );
 	if( !pCaster ) {
 		return false;
 	}

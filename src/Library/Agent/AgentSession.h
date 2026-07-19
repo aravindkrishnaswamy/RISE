@@ -415,6 +415,18 @@ namespace RISE
 			//! supplied, `view` wins (camera fields it resolves take
 			//! precedence) -- see AgentSession::RenderCore_'s resolution
 			//! block for the exact precedence.
+			//! External review P2 fix: ONLY a PINHOLE view can be applied --
+			//! AgentCameraOverride (above) has fields for pose+fov alone, and
+			//! applyCameraOverride only ever SetProperty's those onto the
+			//! ACTIVE camera, so a ThinLens/Fisheye/Orthographic named view's
+			//! real optics (sensor/focal-length/fstop/focus-distance/
+			//! aperture/tilt-shift, fisheye scale, ortho viewport scale)
+			//! cannot be transferred -- rendering it would silently borrow
+			//! the active camera's own optics under the requested pose. A
+			//! non-pinhole resolved view is therefore ALSO a FAILED render
+			//! (res.ok=false), naming the unsupported camera type in
+			//! res.message, exactly like an unresolved name -- see
+			//! RenderCore_'s resolution block.
 			std::string          view;
 		};
 
@@ -1453,10 +1465,16 @@ namespace RISE
 			//! an HDR `file_rasterizeroutput` declared FIRST no longer shadows
 			//! a LATER LDR output's declared `display_transform`/`exposure` --
 			//! rather than only observing it indirectly through pixel bytes.
+			//! External review P2 fix: also exposes the resolved output
+			//! COLOUR SPACE (`outColorSpace`, `COLOR_SPACE` enum values, int to
+			//! keep this header off Color.h) -- previously the in-memory PNG
+			//! sink hardcoded eColorSpace_sRGB regardless of the scene's
+			//! declared `file_rasterizeroutput` color_space.
 			void ForTest_ResolveBeautyDisplayTransform( double& outExposureEV,
-			                                            int& outDisplayTransform ) const
+			                                            int& outDisplayTransform,
+			                                            int& outColorSpace ) const
 			{
-				ResolveBeautyDisplayTransform_( outExposureEV, outDisplayTransform );
+				ResolveBeautyDisplayTransform_( outExposureEV, outDisplayTransform, outColorSpace );
 			}
 
 		private:
@@ -1510,8 +1528,17 @@ namespace RISE
 			//! (int to keep this header off the DisplayTransform.h dependency).
 			//! Never applied to the OBJECTMAP identity sink (which must emit
 			//! un-tonemapped per-pixel identity bytes).
+			//! External review P2 fix: also resolves `outColorSpace` (`COLOR_SPACE`
+			//! enum values, int to keep this header off Color.h) from the SAME
+			//! LDR `file_rasterizeroutput`'s declared `color_space` -- default
+			//! `eColorSpace_sRGB` (0) when absent/no LDR output, matching the
+			//! descriptor's own default hint.  Exposure is now resolved via the
+			//! CST v7 `expr(...)`-aware path (see AgentSession.cpp's
+			//! ResolveParamNumeric) instead of a raw std::strtod, so an
+			//! expr(...)-authored `exposure` no longer silently resolves to 0.
 			void ResolveBeautyDisplayTransform_( double& outExposureEV,
-			                                     int& outDisplayTransform ) const;
+			                                     int& outDisplayTransform,
+			                                     int& outColorSpace ) const;
 
 			//! Fix-round-1 P1-A / round-2 P1-1: cancel + wait, UNBOUNDED, for
 			//! any OUTSTANDING async render submitted against the

@@ -878,6 +878,29 @@ SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
 	const PolishState polish =
 		static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
 	const bool rendering = mRendering.load( std::memory_order_acquire );
+	// External review P3 fix: a BeautyVariant mode PINS outScaleDivisor to
+	// its own fixed resolution (mPreviewScalePinned -- see its header doc
+	// and OnPointerUp's matching P2 fix), by design, for the lifetime of
+	// the mode.  That pin is not the ladder's "still walking down toward 1"
+	// signal the `outScaleDivisor > kPreviewScaleMin` tests below encode
+	// for the non-variant case -- there IS no ladder or polish chain for a
+	// variant pass (fixed spp/OIDN baked into CreateBeautyVariantPipeline),
+	// so without this carve-out a fully-settled variant render (divisor
+	// pinned e.g. to 4, mRendering false) would permanently read
+	// divisor(4) > kPreviewScaleMin(1) and report Refining forever.  Derive
+	// the honest two-state phase for a pinned divisor directly from
+	// mRendering instead: Rendering while the pass is in flight, Idle
+	// (RefinementStatusFormatter.swift's "Settled") once it completes.
+	// Both GUIs read this phase as a plain passthrough int (see
+	// RISE_API_SceneEditController_GetRefinementStatus /
+	// RISEViewportBridge.refinementPhaseWithScaleDivisor: /
+	// ViewportBridge.cpp) into RefinementStatusFormatter's case 0/1 --
+	// already-correct text ("Settled"/"Rendering") for this phase, so no
+	// GUI-side change is needed for this fix.
+	if( mPreviewScalePinned.load( std::memory_order_acquire ) )
+	{
+		return rendering ? RefinementPhase::Rendering : RefinementPhase::Idle;
+	}
 	if( rendering )
 	{
 		if( polish == PolishState::PolishQueued )
@@ -2037,7 +2060,19 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	// logic will see this state and chain the 4-SPP polish pass.
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 	KickRender();
-	if( wasMotion ) {
+	// External review P2 fix: a BeautyVariant mode (mPreviewScalePinned --
+	// see its header doc) renders at a FIXED spp/divisor with its own OIDN
+	// policy baked into CreateBeautyVariantPipeline -- there is no 1-SPP-
+	// then-4-SPP-polish refinement ladder for it to chain, so queuing
+	// FinalRegularRunning here would just make RenderLoop's post-roll
+	// (polishStateBefore == FinalRegularRunning) schedule a second,
+	// identical full pass + polish/denoise pass against mVariantRasterizer
+	// for no visual gain -- pure wasted work, and it misreports the pass
+	// as still-refining (see GetRefinementStatus's variant carve-out).
+	// KickRender() just above already reset mPolishState to None (its own
+	// idiom for "no polish is owed"); leave it there instead of overriding
+	// to FinalRegularRunning when a variant mode is active.
+	if( wasMotion && !mPreviewScalePinned.load( std::memory_order_acquire ) ) {
 		mPolishState.store( static_cast<int>( PolishState::FinalRegularRunning ),
 		                    std::memory_order_release );
 	}

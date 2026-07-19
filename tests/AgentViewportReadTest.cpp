@@ -410,12 +410,18 @@ static void RunDisplayTransformOrdering()
 
 			double exposureEV = -999.0;
 			int    dt         = -999;
-			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt );
+			int    cs         = -999;
+			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt, cs );
 			Check( dt == kDT_None,
 				"HDR-first: resolves to the LATER LDR output's \"none\" transform, "
 				"not the ACES default the FIRST (HDR) output would wrongly trigger "
 				"(got " + std::to_string( dt ) + ", want " + std::to_string( kDT_None ) + ")" );
 			Check( exposureEV == 0.0, "HDR-first: exposureEV is 0 (no camera EV, no declared exposure)" );
+			// External review P2 fix: the LDR PNG output declares no
+			// `color_space`, so the resolved colour space must be the
+			// descriptor's default (sRGB == 0), not the HDR output's
+			// Rec709RGB_Linear (== 1) it should have skipped over.
+			Check( cs == 0, "HDR-first: color_space defaults to sRGB (got " + std::to_string( cs ) + ")" );
 		}
 		pJob->release();
 		std::remove( scenePath.c_str() );
@@ -439,9 +445,11 @@ static void RunDisplayTransformOrdering()
 			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
 			double exposureEV = -999.0;
 			int    dt         = -999;
-			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt );
+			int    cs         = -999;
+			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt, cs );
 			Check( dt == kDT_None, "LDR-first: resolves to \"none\" (the LDR output's own declaration)" );
 			Check( exposureEV == 0.0, "LDR-first: exposureEV is 0" );
+			Check( cs == 0, "LDR-first: color_space defaults to sRGB (got " + std::to_string( cs ) + ")" );
 		}
 		pJob->release();
 		std::remove( scenePath.c_str() );
@@ -463,9 +471,11 @@ static void RunDisplayTransformOrdering()
 			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
 			double exposureEV = -999.0;
 			int    dt         = -999;
-			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt );
+			int    cs         = -999;
+			session->ForTest_ResolveBeautyDisplayTransform( exposureEV, dt, cs );
 			Check( dt == kDT_ACES, "HDR-only: no LDR output anywhere -> falls back to the ACES default" );
 			Check( exposureEV == 0.0, "HDR-only: exposureEV falls back to 0" );
+			Check( cs == 0, "HDR-only: color_space falls back to sRGB (got " + std::to_string( cs ) + ")" );
 		}
 		pJob->release();
 		std::remove( scenePath.c_str() );

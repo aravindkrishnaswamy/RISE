@@ -26,6 +26,7 @@ InMemoryRasterizerOutput::InMemoryRasterizerOutput()
 	, mHasImage( false )
 	, mExposureEV( 0.0 )
 	, mDisplayTransform( eDisplayTransform_None )   // identity until SetDisplayTransform is called
+	, mColorSpace( eColorSpace_sRGB )               // matches this sink's pre-fix hardcoded default until SetOutputColorSpace is called
 {
 }
 
@@ -107,25 +108,43 @@ void InMemoryRasterizerOutput::SetDisplayTransform( double exposureEV, int displ
 		? displayTransform : eDisplayTransform_None;
 }
 
+void InMemoryRasterizerOutput::SetOutputColorSpace( int colorSpace )
+{
+	// Clamp to the known COLOR_SPACE range [sRGB .. ProPhotoRGB]; an
+	// unknown value degrades to sRGB (this sink's original hardcoded
+	// behaviour) rather than indexing PNGWriter's COLOR_SPACE switch with
+	// a caller typo -- same defensive shape as SetDisplayTransform above.
+	mColorSpace =
+		( colorSpace >= eColorSpace_sRGB && colorSpace <= eColorSpace_ProPhotoRGB )
+		? colorSpace : eColorSpace_sRGB;
+}
+
 namespace
 {
 	//! Shared PNG-encode tail for ToPng / ToPngDownscaled: write `w`x`h`
-	//! pixels from `pels` (row-major) through the tree's PNGWriter (sRGB
-	//! Integerize + libpng) into an in-memory buffer.  Returns an empty
-	//! vector on a writer-creation failure or zero dims.
+	//! pixels from `pels` (row-major) through the tree's PNGWriter (the
+	//! REQUESTED `colorSpace`'s Integerize + libpng) into an in-memory
+	//! buffer.  Returns an empty vector on a writer-creation failure or
+	//! zero dims.
 	//!
 	//! When `displayTransform != eDisplayTransform_None` OR `exposureEV != 0`,
 	//! the PNGWriter is wrapped in the SAME `DisplayTransformWriter` the CLI
 	//! `file_rasterizeroutput` LDR pipeline uses (FrameEncoders.cpp gate) --
 	//! exposure multiply by 2^EV then the selected tone curve, applied to the
-	//! LINEAR pels BEFORE the inner PNGWriter's sRGB Integerize.  This is what
-	//! makes an agent beauty render byte-identical to a CLI PNG render of the
-	//! same scene; the identity default (0 EV, curve none) reproduces the raw
-	//! linear->sRGB bytes this sink emitted before the display-transform stage
-	//! was added (and is what the objectmap identity sink relies on).
+	//! LINEAR pels BEFORE the inner PNGWriter's colour-space Integerize.  This
+	//! is what makes an agent beauty render byte-identical to a CLI PNG render
+	//! of the same scene; the identity default (0 EV, curve none, sRGB) reproduces
+	//! the raw linear->sRGB bytes this sink emitted before the display-transform
+	//! stage was added (and is what the objectmap identity sink relies on).
+	//!
+	//! External review P2 fix: `colorSpace` (a `COLOR_SPACE` enum value) was
+	//! previously hardcoded to `eColorSpace_sRGB` here regardless of what the
+	//! scene's `file_rasterizeroutput` declared -- now threaded through from
+	//! InMemoryRasterizerOutput::mColorSpace (see SetOutputColorSpace).
 	std::vector<unsigned char> EncodePng( const std::vector<RISEColor>& pels,
 	                                      unsigned int w, unsigned int h,
-	                                      double exposureEV, int displayTransform )
+	                                      double exposureEV, int displayTransform,
+	                                      int colorSpace )
 	{
 		std::vector<unsigned char> out;
 		if( w == 0 || h == 0 ) return out;
@@ -136,7 +155,7 @@ namespace
 		Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer();
 
 		IRasterImageWriter* writer = nullptr;
-		if( !RISE_API_CreatePNGWriter( &writer, *buffer, /*bpp=*/8, eColorSpace_sRGB ) || !writer ) {
+		if( !RISE_API_CreatePNGWriter( &writer, *buffer, /*bpp=*/8, static_cast<COLOR_SPACE>( colorSpace ) ) || !writer ) {
 			safe_release( buffer );
 			return out;
 		}
@@ -187,7 +206,7 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPng() const
 	}
 	// We do NOT hand-roll gamma or the PNG bytes: 8-bit sRGB matches what
 	// a `png_painter` / file PNG output produces.
-	return EncodePng( mPixels, mWidth, mHeight, mExposureEV, mDisplayTransform );
+	return EncodePng( mPixels, mWidth, mHeight, mExposureEV, mDisplayTransform, mColorSpace );
 }
 
 std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
@@ -205,7 +224,7 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
 		// (identical bytes to ToPng()).
 		outWidth  = mWidth;
 		outHeight = mHeight;
-		return EncodePng( mPixels, mWidth, mHeight, mExposureEV, mDisplayTransform );
+		return EncodePng( mPixels, mWidth, mHeight, mExposureEV, mDisplayTransform, mColorSpace );
 	}
 
 	// Aspect-preserving box-filter downscale.  Compute the new dims from
@@ -268,5 +287,5 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
 
 	outWidth  = newW;
 	outHeight = newH;
-	return EncodePng( down, newW, newH, mExposureEV, mDisplayTransform );
+	return EncodePng( down, newW, newH, mExposureEV, mDisplayTransform, mColorSpace );
 }

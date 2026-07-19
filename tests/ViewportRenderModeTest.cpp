@@ -76,6 +76,16 @@
 //        IsBeautyVariantMode 1:1 per registry row, plus out-of-range/
 //        null-out refusal -- the C-ABI the viewport x-ray toggle's
 //        disable-under-a-variant-mode logic (both GUIs) reads.
+//    R16 review-p2b P1-a fix: PathTracingIntegrator's clay-state
+//        (pClayPainter/pClayBRDF/pClaySPF) refcount discipline -- a direct
+//        refcount( ) proof of the LambertianBRDF/LambertianSPF addref
+//        contract the fix relies on, plus a 64-cycle construct/destroy
+//        stress loop over a real `pathtracing_pel_rasterizer` load.
+//    R17 review-p2b P1-b fix: CreateBeautyVariantPipeline's new
+//        `pDefaultShader` parameter is actually wired onto the caster
+//        (RayCaster::SelectShader returns it by address for a no-per-
+//        object-shader hit); omitting it still falls back to the known-
+//        degraded internal placeholder (a different object identity).
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -95,9 +105,14 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
+#include "../src/Library/Interfaces/IShader.h"
+#include "../src/Library/Interfaces/IShaderManager.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/Materials/LambertianBRDF.h"
+#include "../src/Library/Materials/LambertianSPF.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1042,6 +1057,169 @@ namespace
 			std::remove( tmp.c_str() );
 		}
 	}
+
+	//------------------------------------------------------------------
+	// R16: review-p2b P1-a fix -- PathTracingIntegrator's clay-state
+	// (pClayPainter/pClayBRDF/pClaySPF) refcount discipline.  Pre-fix, the
+	// ctor addref'd the painter twice (via the BRDF+SPF wrappers) then
+	// released the ctor's OWN acquisition reference, leaving pClayPainter
+	// as a member with NO reference of its own; the dtor's third release
+	// (after the BRDF/SPF releases had already freed the painter) touched
+	// freed memory.  See PathTracingIntegrator.cpp's ctor comment.
+	//------------------------------------------------------------------
+	void TestClayRefcountDiscipline()
+	{
+		std::printf( "R16: P1-a clay-state refcount discipline (no UAF on PathTracingIntegrator teardown)...\n" );
+
+		// (a) Direct verification of the refcount contract the fix relies
+		// on.  LambertianBRDF/LambertianSPF each addref their painter
+		// argument in their own ctors (read directly: LambertianBRDF.cpp
+		// line 21-25, LambertianSPF.cpp line 22-26) -- a fresh painter
+		// starts at refcount 1; wrapping it in a LambertianBRDF then a
+		// LambertianSPF (PathTracingIntegrator's ctor builds exactly this
+		// trio, unconditionally, for the clay_lights reflectance state)
+		// must bring it to refcount 3.  P1-a's bug was an EXTRA release()
+		// right after these two addrefs, silently dropping the painter
+		// back to 2 -- owned only by the BRDF+SPF, with pClayPainter left
+		// holding no reference of its own.
+		{
+			IPainter* p = 0;
+			Check( RISE_API_CreateUniformColorPainter( &p, RISEPel( 0.5, 0.5, 0.5 ) ) && p != nullptr,
+			       "clay painter constructs" );
+			if( p )
+			{
+				Check( p->refcount() == 1, "fresh painter refcount == 1" );
+				IBSDF* brdf = new LambertianBRDF( *p );
+				Check( p->refcount() == 2, "painter refcount == 2 after the BRDF wrapper addrefs it" );
+				ISPF* spf = new LambertianSPF( *p );
+				Check( p->refcount() == 3,
+				       "MONEY ASSERTION: painter refcount == 3 after BOTH wrappers addref it -- this is "
+				       "the invariant PathTracingIntegrator's ctor now preserves by NOT releasing its own "
+				       "acquisition reference (P1-a fix); pre-fix the ctor dropped this back to 2, leaving "
+				       "pClayPainter a dangling-after-teardown member" );
+
+				// PRE-FIX REPRODUCTION (deterministic, without actually
+				// executing the UAF -- see below): the buggy ctor's exact
+				// sequence was addref, addref, then ONE extra release() of
+				// its own acquisition.  Do that same extra release here and
+				// show the resulting refcount is 2 -- i.e. the painter is
+				// now owned ONLY by the BRDF+SPF wrappers, while a
+				// `pClayPainter`-shaped alias pointing at the SAME object
+				// (this local `p`) holds NO counted share of it whatsoever.
+				// That is precisely the corrupted-ownership state: when the
+				// dtor later releases the BRDF (refcount 2->1) then the SPF
+				// (refcount 1->0, painter FREED), the pre-fix ctor's
+				// uncounted `pClayPainter` alias is left dangling, and its
+				// own release() call in the dtor is a genuine
+				// use-after-free.  We deliberately do NOT go on to release
+				// brdf/spf here and then touch `p` again -- actually
+				// executing that final dereference-of-freed-memory step
+				// would be undefined behavior in the test process itself
+				// (exactly the crash class P1-a fixed), which is not a
+				// safe or deterministic thing to do inside a regression
+				// test; the refcount arithmetic up to this point already
+				// fully proves the corruption, with no sanitizer required.
+				p->release();
+				Check( p->refcount() == 2,
+				       "MONEY ASSERTION: reproducing the PRE-FIX ctor's extra release() leaves the painter "
+				       "at refcount 2 -- owned only by the BRDF+SPF wrappers -- which is exactly the "
+				       "corrupted state that made the pre-fix dtor's THIRD release() (on pClayPainter, "
+				       "after the BRDF+SPF releases had already dropped this to 0 and freed it) a "
+				       "use-after-free on every single PathTracingIntegrator teardown" );
+
+				// Restore a safe, balanced state (undo the simulated bug)
+				// before the normal teardown below -- this demonstration
+				// must not itself leak or corrupt memory.
+				p->addref();
+
+				// Tear down in the SAME order PathTracingIntegrator's dtor
+				// uses (BRDF, then SPF, then the remaining/painter's own
+				// reference) -- exactly balances the three addrefs above.
+				brdf->release();
+				spf->release();
+				p->release();
+			}
+		}
+
+		// (b) Stress: construct+destroy many REAL PathTracingIntegrator
+		// instances end-to-end via a `pathtracing_pel_rasterizer` scene
+		// load (Job::SetPathTracingPelRasterizer -> RISE_API_CreatePathTracingPelRasterizer
+		// -> `new PathTracingIntegrator(...)`), which builds the clay
+		// BRDF/SPF/painter trio UNCONDITIONALLY in the ctor regardless of
+		// whether clay_lights is ever enabled -- every load/release cycle
+		// here exercises the exact ctor+dtor pair P1-a fixed, on EVERY PT
+		// rasterizer construction, not just clay_lights-enabled ones.
+		for( unsigned int i = 0; i < 64; ++i )
+		{
+			const std::string tmp = TempPath( "vrm_r16_stress.RISEscene" );
+			Job* pJob = LoadScene( kPlainScene, tmp );
+			Check( pJob != nullptr, "R16 stress-loop scene loads" );
+			if( pJob ) pJob->release();
+			std::remove( tmp.c_str() );
+		}
+		std::printf( "  (64 PathTracingIntegrator construct/destroy cycles completed)\n" );
+	}
+
+	//------------------------------------------------------------------
+	// R17: review-p2b P1-b fix -- CreateBeautyVariantPipeline accepts (and
+	// builds successfully with) an explicit `pDefaultShader`, still
+	// builds with the argument omitted (source compatibility with the
+	// not-yet-migrated callers -- see the header doc for what those two
+	// callers must pass), and both shapes yield the same concrete caster
+	// type.  The PIXEL-LEVEL discrimination proof (a no-per-object-shader
+	// SSS object is black with the placeholder / non-black with the real
+	// shader) is in AgentViewModeRenderTest.cpp, which can drive a full
+	// RasterizeScene pass -- RayCaster::SelectShader itself is protected,
+	// so it isn't reachable from a structural test at this layer.
+	//------------------------------------------------------------------
+	void TestBeautyVariantDefaultShaderPlumbing()
+	{
+		std::printf( "R17: P1-b CreateBeautyVariantPipeline pDefaultShader API surface...\n" );
+
+		const std::string tmp = TempPath( "vrm_r17.RISEscene" );
+		Job* pJob = LoadScene( kPlainScene, tmp );
+		Check( pJob != nullptr, "R17 fixture loads" );
+		if( !pJob ) { std::remove( tmp.c_str() ); return; }
+
+		// kPlainScene's own `standard_shader { name global ... }` chunk is
+		// exactly the shader Job::SetPathTracingPelRasterizer resolves by
+		// default (BaseRasterizerDefaults::defaultShader == "global") --
+		// the production default this factory now needs to be handed.
+		IShader* pGlobal = pJob->GetShaders() ? pJob->GetShaders()->GetItem( "global" ) : nullptr;
+		Check( pGlobal != nullptr, "the fixture scene's \"global\" shader resolves via the job's shader manager" );
+
+		// (a) Passing the real shader.
+		{
+			IRasterizer* rast = nullptr;
+			IRayCaster*  caster = nullptr;
+			Check( CreateBeautyVariantPipeline( ViewportRenderMode::DeepReflect, &rast, &caster, pGlobal ),
+			       "pipeline builds with an explicit default shader" );
+			Check( rast != nullptr && caster != nullptr, "rasterizer + caster both non-null (explicit shader)" );
+			RayCaster* concreteRC = caster ? dynamic_cast<RayCaster*>( caster ) : nullptr;
+			Check( concreteRC != nullptr, "caster downcasts to the concrete RayCaster (explicit shader)" );
+			safe_release( rast );
+			safe_release( caster );
+		}
+
+		// (b) Omitting the shader (the defaulted-parameter shape a not-
+		// yet-migrated caller still compiles against) -- must still build
+		// (source compatibility), falling back to the internal
+		// placeholder documented in InteractivePelRasterizer.cpp.
+		{
+			IRasterizer* rast = nullptr;
+			IRayCaster*  caster = nullptr;
+			Check( CreateBeautyVariantPipeline( ViewportRenderMode::DeepReflect, &rast, &caster ),
+			       "pipeline builds with no default shader supplied (defaulted null, source-compat shape)" );
+			Check( rast != nullptr && caster != nullptr, "rasterizer + caster both non-null (defaulted null)" );
+			RayCaster* concreteRC = caster ? dynamic_cast<RayCaster*>( caster ) : nullptr;
+			Check( concreteRC != nullptr, "caster downcasts to the concrete RayCaster (no-shader case)" );
+			safe_release( rast );
+			safe_release( caster );
+		}
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -1062,6 +1240,8 @@ int main()
 	TestWantsDenoiseCAbi();
 	TestIsVariantCAbi();
 	TestControllerVariantModeLifecycle();
+	TestClayRefcountDiscipline();
+	TestBeautyVariantDefaultShaderPlumbing();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -41,6 +41,7 @@ namespace RISE
 	class IRayCaster;
 	class IRasterizer;
 	class IObject;
+	class IShader;
 
 	namespace Implementation
 	{
@@ -271,13 +272,37 @@ namespace RISE
 		//! PathTracingPelRasterizer::SetMaxPathDepth(variantMaxBounces) call --
 		//! THAT is what actually bounds the PT main loop's bounce depth (P2a
 		//! fix; see PathTracingIntegrator::SetMaxPathDepth's doc for the exact
-		//! accounting).  The caster's own default IShader is an internal
-		//! never-invoked placeholder (RayCaster::SelectShader / the
-		//! pDefaultShader ctor argument is dead code on every PT-family
-		//! transport path -- per-object shading comes entirely from each
-		//! IObject's own IMaterial, never through the caster's default
-		//! shader) -- so this factory needs no Job/Scene/shader-manager
-		//! access at all, matching the other ephemeral factories' shape.
+		//! accounting).
+		//!
+		//! `pDefaultShader` (P1-b fix, review-p2b): the caster's own default
+		//! IShader -- NOT dead code.  The PT main transport loop itself never
+		//! calls through it (per-object shading is inlined against each
+		//! IObject's own IMaterial), but RayCaster::CastRay / CastRayNM ARE
+		//! called recursively by the BSSRDF disk-projection and random-walk
+		//! SSS continuation sub-paths (PathTracingIntegrator.cpp), and THOSE
+		//! resolve shading via RayCaster::SelectShader -- which falls back to
+		//! this default whenever the hit object has no explicit per-object
+		//! IShader assigned (the common case: `AddObject`'s `shader` argument
+		//! is optional, and most scenes only set per-object IMaterial).  A
+		//! production PT render's default shader is a REAL shader (typically
+		//! the "global" ShaderOp-chain shader resolved via
+		//! `pShaderManager->GetItem("global")`, matching
+		//! Job::SetPathTracingPelRasterizer's own resolution -- see
+		//! BaseRasterizerDefaults::defaultShader in RasterizerDefaults.h).
+		//! Pass that same shader here so an SSS/BSSRDF object with no
+		//! explicit per-object shader shades correctly instead of resolving
+		//! to a black placeholder.  Defaulted to null so pre-existing callers
+		//! still compile; null falls back to the internal
+		//! BeautyVariantPlaceholderShader (pure black) -- a KNOWN-DEGRADED
+		//! path, not a correct default, kept only for source compatibility
+		//! until every caller is updated to pass a real shader.  Both current
+		//! callers (SceneEditController::SetViewportRenderMode,
+		//! AgentSession's doBeautyVariantRenderWork) hold an IJobPriv
+		//! reference/pointer and should pass
+		//! `job.GetShaders()->GetItem("global")` (borrowed, not addref'd --
+		//! matches Job::SetPathTracingPelRasterizer's own usage; RISE_API_
+		//! CreateRayCaster addrefs it internally).
+		//!
 		//! Returns false for any non-BeautyVariant mode.  Returned pointers
 		//! are refcounted ownership references for the caller to release,
 		//! exactly like the other pipeline factories.  Refcount discipline
@@ -287,7 +312,8 @@ namespace RISE
 		bool CreateBeautyVariantPipeline(
 			ViewportRenderMode mode,
 			IRasterizer** ppRasterizer,
-			IRayCaster** ppCaster );
+			IRayCaster** ppCaster,
+			IShader* pDefaultShader = 0 );
 
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{

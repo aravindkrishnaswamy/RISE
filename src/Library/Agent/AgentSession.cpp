@@ -54,7 +54,8 @@
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
-#include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image
+#include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image; transitively pulls in Color.h's COLOR_SPACE enum (external review P2 fix: resolved output colour space)
+#include "../Painters/ExpressionEval.h"     // External review P2 fix: ExpressionProgram -- reuse the SAME public expr(...) evaluator Cst.cpp's derive-time resolver is built on, so ResolveBeautyDisplayTransform_ can resolve an expr(...)-valued `exposure` param instead of silently strtod'ing it to 0
 #include "../Interfaces/ILog.h"   // P1-A: RenderOverrideRestoreGuard's defensive log-and-swallow
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
@@ -2221,6 +2222,139 @@ namespace RISE
 			}
 		}
 
+		// External review P2 fix (ResolveBeautyDisplayTransform_'s exposure-as-
+		// expr(...) gap): a `file_rasterizeroutput` numeric param (e.g.
+		// `exposure`) can be authored as `expr(...)` over the document's `let`
+		// bindings (the CST v7 computed-value grammar -- see the `let` chunk's
+		// doc in Cst.cpp).  DeriveToJob evaluates that GENERICALLY for every
+		// chunk param before the value ever reaches Job::AddFileRasterizerOutput
+		// (Cst.cpp's ResolveChunkParams -> TryEvalExprValue), so the actual
+		// rendered/file-written exposure is the EVALUATED number -- never the
+		// literal "expr(...)" text.  ResolveBeautyDisplayTransform_ necessarily
+		// reads the RAW, PRE-derive CST text instead (Job exposes no post-
+		// derive accessor for a stripped file output -- see that function's own
+		// doc), so a plain std::strtod on an expr(...) value silently parsed to
+		// 0 instead of the real exposure: a materially wrong "CLI parity"
+		// render reported as success.
+		//
+		// Cst.cpp keeps its own let-collection/expr-eval (CollectLetBindings /
+		// TryEvalExprValue / IsExprValue) `static` -- Cst.h exposes no resolved-
+		// numeric-value accessor to call instead (the CST "resolver" that DOES
+		// have a public surface, TraceReferences/BuildReferenceGraph, resolves
+		// NAME references like `material foo`, not arithmetic expr(...)
+		// values -- a different resolver entirely).  Rather than leave the gap
+		// or duplicate the maths, this reuses the SAME public
+		// RISE::Implementation::ExpressionProgram engine Cst.cpp's evaluator is
+		// built on (Painters/ExpressionEval.h) -- only the "walk `let` chunks in
+		// document order, evaluate expr(...) over EARLIER lets" bookkeeping is
+		// repeated (deliberately mirroring Cst.cpp's CollectLetBindings/
+		// TryEvalExprValue shape line-for-line), so the arithmetic result is
+		// byte-identical to what the actual derive already computed when the
+		// head was loaded.
+		typedef std::vector<std::pair<std::string,double> > LocalLetBindings;
+
+		//! Is `value` exactly `expr( <balanced> )`?  If so set `body` to the
+		//! inside.  Mirrors Cst.cpp's IsExprValue exactly (same balanced-paren
+		//! scan), so a value this rejects is ALSO rejected by the derive-time
+		//! evaluator (never a false positive/negative divergence between the
+		//! two).
+		bool LocalIsExprValue( const std::string& value, std::string& body )
+		{
+			if( value.size() < 6 || value.compare( 0, 5, "expr(" ) != 0 || value.back() != ')' ) return false;
+			int depth = 0; std::size_t lastClose = std::string::npos;
+			for( std::size_t k = 4; k < value.size(); ++k ) {
+				if( value[k] == '(' ) ++depth;
+				else if( value[k] == ')' ) { if( --depth == 0 ) { lastClose = k; break; } }
+			}
+			if( lastClose != value.size() - 1 ) return false;
+			body = value.substr( 5, value.size() - 6 );
+			return true;
+		}
+
+		//! Compile + evaluate one expr BODY over the numeric `lets` + PI/E
+		//! (added after the lets, matching Cst.cpp's EvalExprBody so a let
+		//! cannot shadow them either).  u/v are bound to 0 -- a scene-level
+		//! expr (unlike an instance_array component) has no per-instance
+		//! coordinate.  Returns false (never a silent 0) on a compile error or
+		//! a non-finite result.
+		bool LocalEvalExprBody( const std::string& body, const LocalLetBindings& lets, double& outVal )
+		{
+			RISE::Implementation::ExpressionProgram::Builder b;
+			for( const std::pair<std::string,double>& L : lets ) {
+				b.AddParam( L.first, static_cast<RISE::Scalar>( L.second ) );
+			}
+			b.AddParam( "PI", static_cast<RISE::Scalar>( 3.14159265358979323846 ) );
+			b.AddParam( "E",  static_cast<RISE::Scalar>( 2.71828182845904523536 ) );
+			RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
+			if( !b.Finalize( body, prog ) || !prog.IsValid() ) return false;
+			const RISE::Scalar r = prog.Eval( RISE::Scalar( 0 ), RISE::Scalar( 0 ) );
+			if( !RISE::Implementation::ExpressionProgram::IsFinite( r ) ) return false;
+			outVal = static_cast<double>( r );
+			return true;
+		}
+
+		//! Walk `doc`'s top-level `let` chunks in DOCUMENT ORDER, evaluating
+		//! each binding exactly as Cst.cpp's CollectLetBindings does: a literal
+		//! is one finite numeric token; an expr(...) binding evaluates over the
+		//! EARLIER lets only (lexical scope, no forward/cyclic refs -- a
+		//! binding that fails to evaluate is skipped, matching
+		//! CollectLetBindings' diagnose-and-continue).  A scene that loaded
+		//! successfully already passed this same check at derive time, so a
+		//! skip here is unreachable in practice for a live head; defensive
+		//! only.
+		LocalLetBindings CollectLocalLetBindings( const RISE::Cst::Document& doc )
+		{
+			LocalLetBindings out;
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+				const RISE::Cst::NodeRef node = id ? RISE::Cst::DocResolveNodeId( doc, id ) : RISE::Cst::NodeRef();
+				if( !node || node->kind != RISE::Cst::NodeKind::Chunk || node->role != "let" ) continue;
+				for( const auto& kid : node->kids ) {
+					if( kid->kind != RISE::Cst::NodeKind::Param ) continue;
+					std::string name, raw; bool first = true;
+					for( const auto& tk : kid->kids ) {
+						if( tk->kind != RISE::Cst::NodeKind::Token ) continue;
+						if( first ) { name = tk->text; first = false; }
+						else { if( !raw.empty() ) raw += ' '; raw += tk->text; }
+					}
+					if( name.empty() ) continue;
+					std::string body; double val = 0.0;
+					if( LocalIsExprValue( raw, body ) ) {
+						if( !LocalEvalExprBody( body, out, val ) ) continue;
+					} else {
+						char* end = nullptr;
+						val = std::strtod( raw.c_str(), &end );
+						if( raw.empty() || end != raw.c_str() + raw.size() ) continue;
+					}
+					out.push_back( std::make_pair( name, val ) );
+				}
+			}
+			return out;
+		}
+
+		//! Resolve a chunk param's RAW CST text (as `ResolveBeautyDisplayTransform_`'s
+		//! `paramValue` lambda returns it) to its numeric value: a plain finite
+		//! literal parses via std::strtod exactly as before; an expr(...) value
+		//! is evaluated over `doc`'s `let` bindings via the helpers above.
+		//! Returns false (leaving `outVal` untouched) when `raw` is neither a
+		//! plain literal nor a resolvable expr(...) -- the caller keeps its own
+		//! pre-set default in that case (documented at the one call site) rather
+		//! than mis-reporting a parse failure as "the scene authored 0".
+		bool ResolveParamNumeric( const std::string& raw, const RISE::Cst::Document& doc, double& outVal )
+		{
+			if( raw.empty() ) return false;
+			std::string body;
+			if( LocalIsExprValue( raw, body ) ) {
+				return LocalEvalExprBody( body, CollectLocalLetBindings( doc ), outVal );
+			}
+			char* end = nullptr;
+			const double v = std::strtod( raw.c_str(), &end );
+			if( end != raw.c_str() + raw.size() ) return false;   // trailing garbage -- not a plain literal (e.g. a bare let-NAME reference, only valid wrapped in expr(...) per the CST grammar)
+			outVal = v;
+			return true;
+		}
+
 		void AgentSession::ForTest_BuildObjectMapPaletteBytes(
 			std::size_t count,
 			std::vector<std::array<unsigned char, 3> >& outBytes,
@@ -2264,7 +2398,8 @@ namespace RISE
 		}
 
 		void AgentSession::ResolveBeautyDisplayTransform_( double& outExposureEV,
-		                                                   int& outDisplayTransform ) const
+		                                                   int& outDisplayTransform,
+		                                                   int& outColorSpace ) const
 		{
 			// LDR defaults, matching the CLI file-output pipeline: ACES filmic,
 			// 0 EV.  An agent render is always an 8-bit PNG preview, so even a
@@ -2272,6 +2407,13 @@ namespace RISE
 			// HDR-only output still gets a viewable tone curve.
 			double exposureEV = 0.0;
 			int    dt         = 2 /*eDisplayTransform_ACES*/;
+			// External review P2 fix: the resolved OUTPUT COLOUR SPACE, matching
+			// the descriptor's own `defaultValueHint = "sRGB"` for
+			// file_rasterizeroutput's `color_space` param (ChunkParserRegistry.cpp)
+			// -- was previously never read at all; the in-memory PNG sink just
+			// hardcoded eColorSpace_sRGB unconditionally regardless of what the
+			// scene declared.
+			int    cs         = eColorSpace_sRGB;
 
 			// Honour a declared LDR file_rasterizeroutput's tone curve +
 			// exposure so a compareToImage grading render (and read_image of a
@@ -2335,10 +2477,44 @@ namespace RISE
 						else if( dtStr == "agx"      ) dt = 3;
 						else if( dtStr == "hable"    ) dt = 4;
 						// (absent/unknown -> keep the ACES default)
+
+						// External review P2 fix: `exStr` is the RAW pre-derive CST
+						// text -- it may be a plain literal ("1.5") OR an expr(...)
+						// value ("expr( BASE_EV + 0.5 )") the CST v7 `let`/`expr`
+						// grammar supports for ANY chunk param, DeriveToJob evaluates
+						// generically (Cst.cpp's ResolveChunkParams), and the CLI file-
+						// output pipeline therefore honours for real.  The pre-fix
+						// `std::strtod` here silently parsed an expr(...) string to 0
+						// -- a materially wrong exposure reported as a byte-parity
+						// render.  ResolveParamNumeric (above) evaluates expr(...) via
+						// the SAME public ExpressionProgram engine the derive-time
+						// evaluator is built on; a value it still can't resolve (a
+						// malformed literal, or an expr(...) that fails to compile --
+						// unreachable for a scene that loaded successfully, since
+						// DeriveToJob runs the identical evaluator at load time) leaves
+						// exposureEV at its pre-loop default (0 EV) rather than
+						// mis-reporting the failure as "the scene authored exposure 0".
 						const std::string exStr = paramValue( node, "exposure" );
 						if( !exStr.empty() ) {
-							exposureEV = std::strtod( exStr.c_str(), nullptr );
+							double resolvedExposure = 0.0;
+							if( ResolveParamNumeric( exStr, *doc, resolvedExposure ) ) {
+								exposureEV = resolvedExposure;
+							}
 						}
+
+						// External review P2 fix: honour the scene's declared output
+						// colour space instead of the previous hardcoded sRGB.  Always
+						// a plain enum token (never expr(...) -- an expr evaluates to a
+						// NUMBER, which can't match one of these string literals), so a
+						// direct string map is exact; matches ChunkParserRegistry.cpp's
+						// own color_space parsing for this same chunk one-for-one.
+						const std::string csStr = paramValue( node, "color_space" );
+						if     ( csStr == "Rec709RGB_Linear" ) cs = eColorSpace_Rec709RGB_Linear;
+						else if( csStr == "sRGB" )             cs = eColorSpace_sRGB;
+						else if( csStr == "ROMMRGB_Linear" )   cs = eColorSpace_ROMMRGB_Linear;
+						else if( csStr == "ProPhotoRGB" )      cs = eColorSpace_ProPhotoRGB;
+						// (absent/unknown -> keep the sRGB default)
+
 						break;
 					}
 				}
@@ -2357,6 +2533,7 @@ namespace RISE
 
 			outExposureEV       = exposureEV;
 			outDisplayTransform = dt;
+			outColorSpace       = cs;
 		}
 
 		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params,
@@ -2569,6 +2746,44 @@ namespace RISE
 					return res;
 				}
 
+				// External review P2 fix: `effectiveCamera` (AgentCameraOverride)
+				// only HAS fields for location/lookAt/up/fov -- the pinhole-only
+				// pose+FOV subset CameraSnapshotToOverride fills in above -- and
+				// applyCameraOverride below only ever SetProperty's those four
+				// names on the ACTIVE camera.  There is no plumbing here (or in
+				// CameraIntrospection::SetProperty, which is descriptor-driven by
+				// the camera's OWN chunk type and cannot re-type an ICamera in
+				// place) to carry a ThinLens/Fisheye/Orthographic view's real
+				// optics -- sensor/focal-length/fstop/focus-distance/aperture/
+				// tilt-shift, fisheye scale, or ortho viewport scale -- onto
+				// whatever type the active camera happens to be.  Silently
+				// dropping those and rendering with the ACTIVE camera's own
+				// optics under the requested view's pose would be a materially
+				// wrong image reported as success.  Fail loudly instead of
+				// guessing: name the unsupported camera type so the caller knows
+				// exactly why, rather than getting a quietly-wrong PNG.
+				if( pose.type != RISE::CameraSnapshot::Pinhole )
+				{
+					const char* typeName = "unknown";
+					switch( pose.type )
+					{
+					case RISE::CameraSnapshot::ThinLens:     typeName = "thinlens";     break;
+					case RISE::CameraSnapshot::Fisheye:      typeName = "fisheye";      break;
+					case RISE::CameraSnapshot::Orthographic: typeName = "orthographic"; break;
+					default: break;
+					}
+					res.ok = false;
+					res.message = "view \"" + params.view + "\" is a " + typeName +
+						" camera -- render{view:} can currently only transfer a pinhole "
+						"view's pose+fov onto the active camera (AgentCameraOverride has "
+						"no thinlens/fisheye/orthographic fields), so rendering it would "
+						"silently use the active camera's own optics under the requested "
+						"pose. Not supported yet: switch the active camera to \"" +
+						params.view + "\" (if it names a real scene camera) and render "
+						"without `view`, or request a pinhole named view instead.";
+					return res;
+				}
+
 				CameraSnapshotToOverride( pose, effectiveCamera );
 			}
 
@@ -2767,8 +2982,16 @@ namespace RISE
 			// its per-pixel identity bytes pass through un-tonemapped.
 			double beautyExposureEV       = 0.0;
 			int    beautyDisplayTransform = 2 /*eDisplayTransform_ACES*/;
+			// External review P2 fix: the resolved OUTPUT COLOUR SPACE, installed
+			// on the beauty sinks alongside the display transform below (see
+			// InMemoryRasterizerOutput::SetOutputColorSpace) -- default matches
+			// today's pre-fix hardcoded behaviour (sRGB) when there's no LDR
+			// file_rasterizeroutput to read one from, or under objectmap (which,
+			// like the display transform, must stay untouched -- the identity
+			// sink's per-pixel bytes are not colour-managed at all).
+			int    beautyColorSpace       = eColorSpace_sRGB;
 			if( !isObjectMap ) {
-				ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform );
+				ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform, beautyColorSpace );
 			}
 
 			// Toolkit slice 2 (quality:"draft"): the EPHEMERAL preview-
@@ -2839,6 +3062,7 @@ namespace RISE
 				// transform (see the resolve above) so a draft render mirrors
 				// the file/viewport look, not a raw linear->sRGB image.
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
 				ephemeralRast->AddRasterizerOutput( sink );
 
 				applyFilmOverride();
@@ -3155,6 +3379,7 @@ namespace RISE
 				// a raw linear image (unlike the data-mode view sinks above,
 				// which stay untonemapped by design).
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
 				ephemeralRast->AddRasterizerOutput( sink );
 
 				// Film dims: the EFFECTIVE requested dims (an explicit
@@ -3350,6 +3575,7 @@ namespace RISE
 				// the divergence the image_reconstruct compareToImage grading
 				// depends on being closed (see ResolveBeautyDisplayTransform_).
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
 				rast->AddRasterizerOutput( sink );
 
 				// ---- Film-dims override: capture -> set -> (render happens
@@ -4456,8 +4682,10 @@ namespace RISE
 			{
 				double vExposureEV = 0.0;
 				int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
-				ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform );
+				int    vColorSpace = eColorSpace_sRGB;
+				ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform, vColorSpace );
 				sink->SetDisplayTransform( vExposureEV, vDisplayTransform );
+				sink->SetOutputColorSpace( vColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
 			}
 
 			std::vector<unsigned char> png;

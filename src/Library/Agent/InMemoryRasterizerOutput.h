@@ -1,8 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  InMemoryRasterizerOutput.h - an IRasterizerOutput that captures the
-//    final rasterized image into memory and serializes it to an sRGB
-//    PNG byte buffer (Facet 5, the agentic surface -- slice 0b).
+//    final rasterized image into memory and serializes it to an 8-bit
+//    PNG byte buffer (Facet 5, the agentic surface -- slice 0b).  sRGB
+//    by default; SetOutputColorSpace (external review P2 fix) selects
+//    any COLOR_SPACE the underlying PNGWriter supports, matching a
+//    scene's declared `file_rasterizeroutput` `color_space`.
 //
 //    The agent's `render` / `read_image` verbs need the head's rendered
 //    image WITHOUT touching the filesystem: no `file_rasterizeroutput`,
@@ -136,6 +139,26 @@ namespace RISE
 			//! signature, per their own docs).
 			void SetDisplayTransform( double exposureEV, int displayTransform );
 
+			//! External review P2 fix: set the OUTPUT COLOUR SPACE ToPng()/
+			//! ToPngDownscaled() pass to the underlying PNGWriter, BEFORE the
+			//! sRGB Integerize/gamma stage -- the SAME `color_space` a
+			//! `file_rasterizeroutput` PNG chunk applies (RISE_API_CreatePNGWriter's
+			//! `color_space` argument).  Without this the sink always hardcoded
+			//! `eColorSpace_sRGB` regardless of what the scene declared, so a
+			//! scene authored with, say, `color_space Rec709RGB_Linear` diverged
+			//! from a CLI PNG render of the same scene.  Default (unset) stays
+			//! `eColorSpace_sRGB` -- today's pre-fix behaviour, and the
+			//! descriptor's own default hint for an unspecified `color_space`.
+			//!
+			//! `colorSpace` uses the `COLOR_SPACE` enum values (0=sRGB,
+			//! 1=Rec709RGB_Linear, 2=ROMMRGB_Linear, 3=ProPhotoRGB -- see
+			//! Utilities/Color/Color.h); it is a plain int here only so this
+			//! header stays free of the Color.h dependency, matching
+			//! SetDisplayTransform's own `displayTransform` convention.  An
+			//! out-of-range value degrades to `eColorSpace_sRGB` rather than
+			//! indexing PNGWriter with a caller typo.
+			void SetOutputColorSpace( int colorSpace );
+
 			//! Serialize the captured frame to 8-bit sRGB PNG bytes, reusing
 			//! the tree's `PNGWriter` (sRGB Integerize + libpng) targeting a
 			//! `MemoryBuffer` rather than a file.  When a non-identity display
@@ -180,6 +203,12 @@ namespace RISE
 			//! emits the raw linear->sRGB bytes it always did.
 			double                 mExposureEV;
 			int                    mDisplayTransform;
+
+			//! External review P2 fix: encode-time output colour space (see
+			//! SetOutputColorSpace).  `COLOR_SPACE` enum value; defaults to
+			//! eColorSpace_sRGB (0), matching this sink's pre-fix hardcoded
+			//! behaviour.
+			int                    mColorSpace;
 		};
 	}
 }

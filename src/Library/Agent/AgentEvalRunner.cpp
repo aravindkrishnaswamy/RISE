@@ -432,6 +432,31 @@ namespace RISE
 				return true;
 			}
 
+			//! As RequireFieldType, but a PRESENT numeric field must also be a
+			//! FINITE, WHOLE number within [minVal,maxVal].  Guards fields that
+			//! a later stage narrows via static_cast to a smaller/unsigned
+			//! type (e.g. CheckRenderKind's width/height/samples) -- a
+			//! negative, fractional, non-finite, or absurdly large JSON number
+			//! would otherwise reach that cast unchecked and silently wrap,
+			//! truncate, or invoke undefined behaviour.  Absent is always
+			//! legal; RequireFieldType (called first by every caller here) has
+			//! already rejected a present-but-wrong-JSON-TYPE field, so this
+			//! only re-reads a field already known to be a number.
+			bool RequireWholeNumberInRange( const JsonValue& obj, const std::string& key, double minVal, double maxVal,
+			                                 const std::string& scenarioId, std::size_t cpIndex, const std::string& label,
+			                                 std::string& err )
+			{
+				if( !obj.has( key ) || !obj.get( key ).isNumber() ) return true;
+				const double v = obj.get( key ).asNumber();
+				if( std::isfinite( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal ) return true;
+				char vb[64];
+				std::snprintf( vb, sizeof( vb ), "%.10g", v );
+				err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( cpIndex ) + "].\"" + label +
+				      "\" must be a whole number in [" + std::to_string( static_cast<long long>( minVal ) ) + "," +
+				      std::to_string( static_cast<long long>( maxVal ) ) + "] (got " + std::string( vb ) + ")";
+				return false;
+			}
+
 			//! "document" (mirrors CheckDocumentKind): "op"/"target"/"param"/
 			//! "value"/"name"/"chunkKind"/"referencedKind" are strings;
 			//! "numeric" is a bool; "referencedKinds" is a string array.
@@ -624,14 +649,21 @@ namespace RISE
 					      "].\"channelBalanceMax\" must be > 1.0 (a ratio of 1.0 is unreachable under MC noise)";
 					return false;
 				}
+				// `width`/`height` (when present) are narrowed via
+				// static_cast<unsigned int> by CheckRenderKind -- must be
+				// finite whole numbers, bounded the same as Film::
+				// kMaxFilmWidth/kMaxFilmHeight (32768, Film.h) reject an
+				// absurd raster request rather than allocating gigabytes of
+				// frame buffer.
+				if( !RequireWholeNumberInRange( cp, "width",  1.0, 32768.0, scenarioId, idx, "width",  err ) ) return false;
+				if( !RequireWholeNumberInRange( cp, "height", 1.0, 32768.0, scenarioId, idx, "height", err ) ) return false;
 				// Image-reconstruction Wave 2: `samples` (when present) is the
-				// grading render's SPP override -- must be a whole count >= 1.
-				if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() &&
-				    cp.get( "samples" ).asNumber() < 1.0 ) {
-					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
-					      "].\"samples\" must be >= 1";
-					return false;
-				}
+				// grading render's SPP override, narrowed via
+				// static_cast<int> by CheckRenderKind -- must be a finite
+				// whole count, bounded the same as the [1,65536]
+				// samples-override clamp documented in AgentRpc.cpp/
+				// AgentMcpAdapter.cpp.
+				if( !RequireWholeNumberInRange( cp, "samples", 1.0, 65536.0, scenarioId, idx, "samples", err ) ) return false;
 
 				// Image-reconstruction Wave 2: the `camera` pose override.
 				// location+lookat are REQUIRED (each an array of exactly 3
@@ -2071,6 +2103,24 @@ namespace RISE
 							// pretending the round could still finish in time.
 							if( fo.status == 429 ) {
 								++rateLimitAttempts;
+								// The FINAL attempt (rateLimitAttempts reaches
+								// kRateLimitMaxAttempts): no further retry will
+								// follow, so there is nothing left to back off
+								// FOR.  Report exhaustion immediately rather
+								// than computing/checking/waiting out a dead
+								// backoff -- that wasted wait burns wall-clock
+								// for no benefit and can push a legitimate
+								// rate_limited-style exhaustion past the
+								// scenario's wall budget, misreporting it as
+								// budget_wall_ms instead of the honest
+								// provider_error below.
+								if( rateLimitAttempts >= kRateLimitMaxAttempts ) {
+									terminalStatus = "provider_error";
+									errorMessage = "rate limit: exhausted " + std::to_string( rateLimitAttempts ) +
+										" attempt(s) waiting out HTTP 429 (Too Many Requests) responses";
+									roundStopped = true;
+									break;
+								}
 								const int64_t waitMs = ComputeRateLimit429WaitMs( fo.body, rateLimitAttempts );
 								if( scenario.budgets.maxWallMs >= 0 ) {
 									const int64_t remaining =
@@ -2083,13 +2133,7 @@ namespace RISE
 									}
 								}
 								effectiveSleeper( waitMs );
-								if( rateLimitAttempts < kRateLimitMaxAttempts )
-									continue;   // retry the SAME round after the backoff wait
-								terminalStatus = "provider_error";
-								errorMessage = "rate limit: exhausted " + std::to_string( rateLimitAttempts ) +
-									" attempt(s) waiting out HTTP 429 (Too Many Requests) responses";
-								roundStopped = true;
-								break;
+								continue;   // retry the SAME round after the backoff wait
 							}
 
 							if( attempt == 1 && fo.status >= 500 && fo.status <= 599 )
@@ -3987,6 +4031,38 @@ namespace RISE
 				//! rmseMax) MUST be wide enough to absorb ordinary MC noise
 				//! between runs, not narrow enough to require a pinned seed.
 				//! NEVER an exact-pixel match.
+				//! render-checkpoint dimension/sample-count sanity bound: a JSON
+				//! number destined for a NARROWING cast (static_cast<unsigned
+				//! int> for width/height, static_cast<int> for samples, just
+				//! below) must be a FINITE, non-negative, WHOLE number inside
+				//! this range, or the cast is unsafe -- a negative value wraps
+				//! to a huge unsigned width/height, a fractional value silently
+				//! truncates, and an absurdly large value (e.g. a JSON
+				//! double that overflows the target int type) is undefined
+				//! behaviour on the cast itself.  Bounds mirror existing
+				//! conventions elsewhere in the agent surface: Film::
+				//! kMaxFilmWidth/kMaxFilmHeight (32768, Film.h) for width/
+				//! height, and the [1,65536] samples-override clamp documented
+				//! in AgentRpc.cpp/AgentMcpAdapter.cpp for samples.  Checked
+				//! HERE (at the checker, not only at scenario-load time) because
+				//! CheckScenario/CheckOneCheckpoint can be driven directly with
+				//! a hand-built checkpoint that never passed through
+				//! LoadEvalScenario's ValidateRenderCheckpointTypes.
+				bool IsWholeNumberInRange( double v, double minVal, double maxVal )
+				{
+					return std::isfinite( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal;
+				}
+
+				//! Format a double for a checkpoint refusal diagnostic (matches
+				//! the "%.10g" convention CameraVec3String/camera.fov use
+				//! elsewhere in this file for JSON-number values).
+				std::string FormatCheckpointNumber( double v )
+				{
+					char b[64];
+					std::snprintf( b, sizeof( b ), "%.10g", v );
+					return std::string( b );
+				}
+
 				CheckOutcome CheckRenderKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "render checkpoint: no live session (run did not complete)" };
@@ -3995,15 +4071,28 @@ namespace RISE
 					const bool haveW = cp.has( "width" )  && cp.get( "width" ).isNumber();
 					const bool haveH = cp.has( "height" ) && cp.get( "height" ).isNumber();
 					if( haveW && haveH ) {
-						rp.width  = static_cast<unsigned int>( cp.get( "width" ).asNumber() );
-						rp.height = static_cast<unsigned int>( cp.get( "height" ).asNumber() );
+						const double wVal = cp.get( "width" ).asNumber();
+						const double hVal = cp.get( "height" ).asNumber();
+						if( !IsWholeNumberInRange( wVal, 1.0, 32768.0 ) )
+							return { false, "render checkpoint: \"width\" must be a whole number in [1,32768] (got " +
+								FormatCheckpointNumber( wVal ) + ")" };
+						if( !IsWholeNumberInRange( hVal, 1.0, 32768.0 ) )
+							return { false, "render checkpoint: \"height\" must be a whole number in [1,32768] (got " +
+								FormatCheckpointNumber( hVal ) + ")" };
+						rp.width  = static_cast<unsigned int>( wVal );
+						rp.height = static_cast<unsigned int>( hVal );
 					} else if( haveW != haveH ) {
 						return { false, "render checkpoint: \"width\"/\"height\" must both be supplied together" };
 					}
 
-					// Image-reconstruction Wave 2: samples override (load-validated >=1).
+					// Image-reconstruction Wave 2: samples override (>=1, and
+					// bounded/whole -- see IsWholeNumberInRange's doc).
 					if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() ) {
-						rp.samples = static_cast<int>( cp.get( "samples" ).asNumber() );
+						const double sVal = cp.get( "samples" ).asNumber();
+						if( !IsWholeNumberInRange( sVal, 1.0, 65536.0 ) )
+							return { false, "render checkpoint: \"samples\" must be a whole number in [1,65536] (got " +
+								FormatCheckpointNumber( sVal ) + ")" };
+						rp.samples = static_cast<int>( sVal );
 					}
 
 					// Image-reconstruction Wave 2: camera-pose override.  The
