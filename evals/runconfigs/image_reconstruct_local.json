@@ -1,0 +1,7 @@
+{
+  "//": "FREE local-vision validation column for the image-reconstruction eval: qwen3.6:27b is the only vision-capable local model (verified `ollama show` -> Capabilities: vision; it read the ground-truth reference accurately in a smoke test). Keyless (no keyEnvVar). Used to validate harness-assist changes (e.g. the object/background compare split) at $0 before spending hosted API budget. Own runDir so it never mixes with the hosted board.",
+  "scenarios": [ "evals/scenarios/image_reconstruct_single.json", "evals/scenarios/image_reconstruct_multi.json" ],
+  "providers": [ { "provider": "local", "model": "qwen3.6:27b" } ],
+  "repeats": 3,
+  "runDir": "evals/runs/image_reconstruct_local"
+}

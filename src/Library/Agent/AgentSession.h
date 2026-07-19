@@ -616,12 +616,28 @@ namespace RISE
 		//! compositePng) -- set false once only the numeric feedback is
 		//! needed, to save the image-encode cost and the response's token
 		//! footprint.
+		//!
+		//! `split` (default false, back-compat -- see AgentCompareSplitResult's
+		//! doc for the full mechanism): when true, ALSO renders the candidate
+		//! scene a SECOND time as an ephemeral mode:"objectmap" identity
+		//! segmentation (same dims/camera as the comparison render) and uses
+		//! it to partition the SAME candidate-vs-reference pixel pairs into
+		//! an OBJECT bucket (pixels the candidate's own objectmap marks as a
+		//! real registered object) and a BACKGROUND bucket (every other
+		//! pixel), each with its own RMSE.  This is the diagnostic that
+		//! separates "your staging/background is done" from "the residual
+		//! is the object's shape" -- once `backgroundRmse` is low, stop
+		//! tuning ground/environment/lighting and spend remaining iterations
+		//! on the object's silhouette and proportions instead.  Costs one
+		//! EXTRA render (the objectmap pass) on top of the usual comparison
+		//! render.
 		struct AgentCompareToReferenceParams
 		{
 			std::string         reference;
 			AgentCameraOverride camera;
 			bool                visual  = true;
 			int                 samples = -1;   //!< -1 = no override (quality:Draft); >=1 = quality:Production at this SPP
+			bool                split   = false;   //!< see the doc block above this struct
 		};
 
 		//! One cell of a compare_to_reference 3x3 grid -- see
@@ -632,6 +648,64 @@ namespace RISE
 			double dr   = 0.0;   //!< this cell's mean signed R delta (render - reference), in [-1,1]
 			double dg   = 0.0;
 			double db   = 0.0;
+		};
+
+		//! compare_to_reference split:true result -- an OBJECT-vs-BACKGROUND
+		//! RMSE breakdown built from the CANDIDATE's own mode:"objectmap"
+		//! render (see AgentCompareToReferenceParams::split's doc for the
+		//! render mechanics).  A pixel is OBJECT iff the candidate's
+		//! objectmap identity render resolves it to a REAL registered
+		//! object's legend colour (the reserved background/no-hit colour,
+		//! and a hit on an unregistered/"<unmapped>" object, both fall into
+		//! BACKGROUND) -- see AgentSession::CompareToReference's doc for the
+		//! exact mask rule.
+		//!
+		//! HONESTY CAVEAT (read before trusting a number from this struct):
+		//! the mask comes from the CANDIDATE ONLY -- the reference is a
+		//! committed PNG with no objectmap of its own.  This answers "on
+		//! the pixels where MY object currently is, how wrong am I" and
+		//! "on my background pixels, how wrong am I" -- NOT "how wrong is
+		//! the reference's object region".  A badly MISPLACED object is
+		//! still informative under this rule: its pixels show high
+		//! `objectRmse` (the candidate's object doesn't match what the
+		//! reference has there), AND the reference's actual object pixels
+		//! -- now sitting in the candidate's BACKGROUND mask, since the
+		//! candidate's object isn't there -- pull `backgroundRmse` up too,
+		//! rather than silently vanishing into an "object" bucket that
+		//! doesn't cover them.
+		struct AgentCompareSplitResult
+		{
+			//! true iff the candidate's objectmap render succeeded, decoded,
+			//! and matched the comparison's own width/height.  false (with
+			//! `note` explaining why) on ANY failure along that path --
+			//! never crashes, and never fails the OVERALL compare_to_reference
+			//! call (the split is a pure ADD-ON measurement).
+			bool        ok = false;
+			//! RMSE (identical formula to AgentCompareToReferenceResult::rmse)
+			//! restricted to OBJECT-mask pixels.  Left at -1.0 when the mask
+			//! is empty (no object visible in the candidate's objectmap --
+			//! see `note`) so a caller can distinguish "no object pixels" from
+			//! a genuine 0.0 (a pixel-perfect object match).
+			double      objectRmse = -1.0;
+			//! RMSE restricted to every pixel NOT in the object mask
+			//! (background / no-hit / an unregistered-object hit).  Left at
+			//! -1.0 when THAT mask is empty -- registered objects cover the
+			//! entire frame -- for the same reason objectRmse does: a 0.0
+			//! here would read as "the background matches perfectly" when in
+			//! truth no background pixel was ever measured.  Both buckets
+			//! sentinel symmetrically; check `>= 0.0` before trusting either.
+			double      backgroundRmse = -1.0;
+			//! Object-mask pixel count divided by total pixel count, in
+			//! [0,1] -- how much of the frame the candidate's object(s)
+			//! actually cover.
+			double      objectPixelFraction = 0.0;
+			//! Empty on a clean split.  Explains a `!ok` split (the
+			//! objectmap render or its PNG decode failed, or its dims came
+			//! back mismatched) or an ok-but-degenerate split (the object
+			//! mask was empty -- camera pointed away, object off-frame or
+			//! fully occluded -- `objectRmse` stays -1 and `backgroundRmse`
+			//! covers the whole frame).
+			std::string note;
 		};
 
 		//! The structured result of compare_to_reference.  `ok` is false
@@ -702,6 +776,18 @@ namespace RISE
 			std::vector<unsigned char> compositePng;
 			unsigned int compositeWidth  = 0;
 			unsigned int compositeHeight = 0;
+			//! true iff the REQUEST's `split` was true (regardless of
+			//! whether the split itself then succeeded) -- test THIS, not
+			//! `split.ok`, to distinguish "not requested" from "requested
+			//! but failed" (both leave `split.ok == false`).  When false,
+			//! `split` is default-constructed and callers should not read
+			//! it (mirrors the wire contract: the "split" JSON key is
+			//! omitted entirely from the response unless this is true).
+			bool                    hasSplit = false;
+			//! The object-vs-background RMSE breakdown -- see
+			//! AgentCompareSplitResult's doc.  Only meaningfully populated
+			//! when `hasSplit` is true.
+			AgentCompareSplitResult split;
 		};
 
 		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the
@@ -1131,7 +1217,17 @@ namespace RISE
 			//! compare_to_reference call's render is cached for ReadImage()
 			//! exactly like any other successful Render, so a caller CAN
 			//! read_image afterward to see the same frame the comparison
-			//! graded.
+			//! graded.  This holds for `split:true` too: that path runs a
+			//! SECOND, ephemeral objectmap render to build its mask, and
+			//! since Render() caches every success, the implementation
+			//! stashes and restores the beauty cache (under an RAII guard)
+			//! around it, so the objectmap never PERSISTS past the call.
+			//! Precisely: the cache transiently holds the objectmap for the
+			//! width of that internal render, so a ReadImage() issued from
+			//! ANOTHER thread mid-compare can still observe it -- bounded and
+			//! self-healing, unlike the unguarded behaviour it replaced,
+			//! which was permanent.  Single-threaded callers never see it.
+			//! Locked by the "cache-survival" case in AgentViewportReadTest.
 			AgentCompareToReferenceResult CompareToReference( const AgentCompareToReferenceParams& params );
 
 			//! render + read_image (slice 0b): render the current head into an

@@ -562,6 +562,7 @@ namespace RISE
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "visual", BoolProp( "OPTIONAL, default true. When true, ALSO returns a composite [render | reference | abs-diff heatmap] side-by-side PNG (3x the reference's width) as a real image content block, using the SAME mechanism read_image uses. Set false once you only need the numeric feedback (rmse/channelDelta/grid) -- saves the encode cost and the response's token footprint." ) );
 					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,65536]. IMPORTANT QUALITY TRADEOFF: omit this (the default) and the comparison renders at quality:\"draft\" -- cheap, but the draft pipeline IGNORES the scene's authored materials and lighting entirely, so a low draft-mode RMSE only confirms geometry/composition/camera alignment, NOT colour or material match. Supplying `samples` switches the comparison to quality:\"production\" at that sample count -- the real, grader-equivalent RMSE reading, and materially more expensive. Recommended workflow: iterate cheaply under the draft default while getting composition/placement right, then pass `samples` (e.g. 16-64) for the real measurement once composition looks plausible." ) );
+					props.set( "split", BoolProp( "OPTIONAL, default false. When true, ALSO returns split:{objectRmse,backgroundRmse,objectPixelFraction,ok,note} -- an object-vs-background RMSE breakdown built from a SECOND, ephemeral mode:\"objectmap\" render of your OWN candidate (an extra render, so it costs more). Use it once your overall `rmse` plateaus across iterations: a high `backgroundRmse` means your staging (ground/environment/lighting) is still the biggest lever; a low `backgroundRmse` with a high `objectRmse` means staging is DONE -- stop tuning it and spend remaining iterations on the object's silhouette/proportions instead. HONESTY CAVEAT: the object mask comes from YOUR candidate only (the reference is a plain PNG with no objectmap of its own) -- it answers \"on the pixels where my object is, how wrong am I\" and \"on my background pixels, how wrong am I\", not \"how wrong is the reference's object region\". A badly misplaced object still shows up: high objectRmse on the candidate's (wrong) object pixels, AND the reference's actual object pixels raise backgroundRmse too, since your candidate has no object there. Both figures sentinel to -1 when their bucket is EMPTY -- objectRmse is -1 when no object pixels are visible (camera pointed away, object off-frame), backgroundRmse is -1 when registered objects cover the ENTIRE frame -- so ALWAYS check for >= 0 before trusting either; -1 means \"not measured\", NOT \"perfect match\"." ) );
 					std::vector<std::string> required; required.push_back( "reference" );
 					tools.push_back( MakeTool( "compare_to_reference",
 						"Measure how closely the current scene's render matches a reference photo -- "
@@ -584,7 +585,9 @@ namespace RISE
 						"region directly (e.g. \"top-right\"). `summary` is a one-line human-readable "
 						"synthesis of all of the above. See the `samples` parameter's own description "
 						"for the draft-vs-production quality tradeoff -- read it before relying on a "
-						"reading for anything beyond composition/geometry.",
+						"reading for anything beyond composition/geometry. See the `split` parameter's "
+						"own description for the object-vs-background RMSE breakdown -- reach for it "
+						"once your RMSE plateaus, to tell whether the residual is staging or the object.",
 						ObjectProp( "", props, required ) ) );
 				}
 

@@ -16,6 +16,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "pch.h"
 #include "AgentEvalRunner.h"
 
@@ -3887,12 +3888,48 @@ namespace RISE
 				//! Image-reconstruction Wave 2: decode PNG bytes already in
 				//! memory into a tightly-packed 8-bit RGB pixel buffer (row-
 				//! major, 3 bytes/pixel, alpha dropped) through RISE's OWN
+				//! The two decoders below read with eColorSpace_Rec709RGB_Linear and
+				//! treat the resulting pel channel as the stored byte/255 VERBATIM.
+				//! That is only a no-op while RISEPel IS Rec709RGBPel: PNGReader
+				//! hardcodes SetFromIntegerized<Rec709RGBPel,...>, whose ColorBase
+				//! conversion is a plain copy in that case.  If RISEPel is ever
+				//! retyped -- the documented ACEScg migration in
+				//! docs/COLOR_SPACE_MIGRATION.md would do exactly that -- the read
+				//! silently becomes a real primaries conversion and EVERY decoded
+				//! byte shifts, with no compile error and no failing test.  Fail
+				//! loudly at compile time instead.
+				static_assert( std::is_same<RISEPel, Rec709RGBPel>::value,
+					"PNG decode assumes RISEPel == Rec709RGBPel (verbatim byte passthrough). "
+					"RISEPel was retyped -- re-derive the decode path in "
+					"DecodeReferencePngToRgb8_ / DecodePngToRgb8 before flipping the typedef." );
+
+				//! Scale one decoded [0,1] channel back to its stored 8-bit byte,
+				//! ROUNDING to nearest and clamping to [0,255].  Lockstep twin of
+				//! AgentSession.cpp's QuantizeDecodedChannel_, whose doc carries
+				//! the full rationale (the read side's precomputed-reciprocal
+				//! scale makes 24 of the 256 byte values land a hair low, which a
+				//! truncating cast then drops an LSB).  `!( d > 0.0 )` rather than
+				//! `d <= 0.0` so NaN takes the 0 branch instead of reaching the
+				//! cast (casting NaN to an integral type is UB).
+				inline unsigned char QuantizeDecodedChannel_( Scalar v )
+				{
+					const double d = static_cast<double>( v ) * 255.0 + 0.5;
+					if( !( d > 0.0 ) ) return 0;     // also catches NaN
+					if( d >= 255.0 )   return 255;
+					return static_cast<unsigned char>( d );
+				}
+
 				//! PNGReader -- the SAME decoder png_painter uses.  We decode
 				//! with eColorSpace_Rec709RGB_Linear (the reader's "do nothing"
-				//! branch: byte/255 in) and re-Integerize<Rec709RGBPel> (·255
-				//! out) so the EXACT stored 8-bit byte the writer emitted comes
-				//! back verbatim -- a pure linear round-trip with NO gamma step,
-				//! so no quantization drift is introduced by the read side.
+				//! branch: byte/255 in) and scale back out by ·255 so the EXACT
+				//! stored 8-bit byte the writer emitted comes back verbatim --
+				//! a pure linear round-trip with NO gamma step, so no
+				//! quantization drift is introduced by the read side.  That
+				//! last property requires ROUNDING the scale-back (see
+				//! QuantizeDecodedChannel_): Integerize's truncating cast
+				//! silently biased 24 of the 256 possible byte values one LSB
+				//! low, which largely cancels in a candidate-vs-reference
+				//! difference but is still wrong.
 				//! This is why "compareToImage" compares like-with-like: the
 				//! candidate is decode(rr.png) where rr.png is byte-identical to
 				//! what read_image returns (InMemoryRasterizerOutput::ToPng),
@@ -3940,13 +3977,20 @@ namespace RISE
 						for( unsigned int x = 0; x < w; ++x ) {
 							RISEColor c;
 							reader->ReadColor( c, x, y );
-							// eColorSpace_Rec709RGB_Linear ⟶ Integerize<Rec709RGBPel>
-							// is an exact byte round-trip (see the function doc).
-							const RGBA_T<unsigned char> enc = c.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
+							// eColorSpace_Rec709RGB_Linear leaves c.base holding
+							// the stored byte/255 verbatim.  Scale back by *255
+							// with ROUNDING, not Integerize's truncating cast:
+							// the read side scales by a precomputed reciprocal
+							// (1.0/255.0), so b*OVMax*255.0 lands a hair below b
+							// for 24 of the 256 byte values (e.g. 180 ->
+							// 179.99999999999997) and a truncating cast then drops
+							// those an LSB.  Kept in lockstep with
+							// AgentSession.cpp's DecodeReferencePngToRgb8_, whose
+							// doc carries the full rationale and the bad-byte list.
 							const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 3;
-							outRgb[idx + 0] = enc.r;
-							outRgb[idx + 1] = enc.g;
-							outRgb[idx + 2] = enc.b;
+							outRgb[idx + 0] = QuantizeDecodedChannel_( c.base.r );
+							outRgb[idx + 1] = QuantizeDecodedChannel_( c.base.g );
+							outRgb[idx + 2] = QuantizeDecodedChannel_( c.base.b );
 						}
 					}
 

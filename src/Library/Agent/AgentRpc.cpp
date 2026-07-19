@@ -1619,10 +1619,11 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// compare_to_reference {reference,camera?,visual?,samples?} ->
+				// compare_to_reference {reference,camera?,visual?,samples?,split?} ->
 				//   {rmse,channelDelta:{r,g,b},grid:[{rmse,dr,dg,db},x9],
 				//    worstCell,width,height,reference,summary,
-				//    png_base64?,compositeWidth?,compositeHeight?}
+				//    png_base64?,compositeWidth?,compositeHeight?,
+				//    split?:{ok,objectRmse,backgroundRmse,objectPixelFraction,note}}
 				//   The reconstruction feedback instrument: see AgentRpc.h's
 				//   file-header doc for the full contract.  `reference`
 				//   (REQUIRED, non-empty string) names a HOST-registered
@@ -1636,7 +1637,13 @@ namespace RISE
 				//   returned under the SAME "png_base64" field name
 				//   read_image uses -- deliberately, so the chat-loop's
 				//   image retention/elision policy (which keys off that
-				//   literal field name) applies to it identically.
+				//   literal field name) applies to it identically.  `split`
+				//   (OPTIONAL bool, default false) requests the object-vs-
+				//   background RMSE breakdown -- see
+				//   AgentSession::AgentCompareSplitResult's doc for the
+				//   candidate-objectmap mask mechanism and its honesty
+				//   caveat.  The "split" result key is OMITTED entirely
+				//   when `split` was false or absent (back-compat).
 				//--------------------------------------------------------------
 				if( m == "compare_to_reference" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -1673,6 +1680,12 @@ namespace RISE
 						}
 						else if( !sv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
+					}
+
+					if( const JsonValue* spv = params.find( "split" ) ) {
+						if( spv->isBool() ) cparams.split = spv->asBool();
+						else if( !spv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'split' must be a boolean" );
 					}
 
 					AgentCameraOverride crCamOverride;
@@ -1715,6 +1728,22 @@ namespace RISE
 						result.set( "png_base64",       JsonValue::MakeString( Base64Encode( cr.compositePng ) ) );
 						result.set( "compositeWidth",   JsonValue::MakeNumber( static_cast<double>( cr.compositeWidth ) ) );
 						result.set( "compositeHeight",  JsonValue::MakeNumber( static_cast<double>( cr.compositeHeight ) ) );
+					}
+					// split:true -- the object-vs-background RMSE breakdown
+					// (AgentCompareSplitResult).  Omitted entirely when the
+					// request's `split` was false (back-compat) -- see
+					// AgentSession::AgentCompareToReferenceResult::hasSplit's
+					// doc.  Present (with a `note`, possibly `ok:false`) on a
+					// failed/degenerate split -- never a crash, never fails
+					// the overall compare.
+					if( cr.hasSplit ) {
+						JsonValue split = JsonValue::MakeObject();
+						split.set( "ok",                  JsonValue::MakeBool( cr.split.ok ) );
+						split.set( "objectRmse",          JsonValue::MakeNumber( cr.split.objectRmse ) );
+						split.set( "backgroundRmse",      JsonValue::MakeNumber( cr.split.backgroundRmse ) );
+						split.set( "objectPixelFraction", JsonValue::MakeNumber( cr.split.objectPixelFraction ) );
+						split.set( "note",                JsonValue::MakeString( cr.split.note ) );
+						result.set( "split", split );
 					}
 					return MakeSuccess( idValue, result );
 				}

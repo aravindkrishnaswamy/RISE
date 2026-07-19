@@ -52,7 +52,11 @@
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"   // RISEColor
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IMemoryBuffer.h"
+#include "../src/Library/Interfaces/IRasterImageReader.h"
 
+#include <map>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -101,6 +105,102 @@ static const char* const kScene =
 	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// compare_to_reference split:true discriminating scenes -- the SAME sphere
+// + area-light rig as kScene above, PLUS a hosek_wilkie_skylight (visible
+// as the BACKGROUND on every camera ray that misses all geometry -- see
+// RayCaster.cpp's GetGlobalRadianceMap() miss path -- but NOT a registered
+// scene OBJECT, so it never appears in an objectmap legend).  A wider fov
+// than kScene so the sphere leaves a meaningful amount of sky visible
+// around it (a sane, non-0/non-1 objectPixelFraction ~= 0.12).
+//
+// The exact photometric values below are TUNED and load-bearing -- they
+// are what make the BACKGROUND-only perturbation (kSplitSceneBgRecolor)
+// actually read as a background-dominant change.  A skylight is a LIGHT,
+// so any sky change also relights the sphere; whether that relighting
+// out-measures the directly-viewed sky change is decided by where each
+// region sits on the ACES tone curve, NOT by which is "bigger" in linear
+// radiance.  Measured while building this test:
+//   * DIM sphere (albedo 0.15/0.05/0.05) sits on the curve's steep TOE,
+//     so sky spill swings its bytes hard -- objectRmse 0.26 vs
+//     backgroundRmse 0.05, i.e. exactly backwards.
+//   * BRIGHT sphere (albedo 0.85, area light scale 100) sits on the
+//     compressed SHOULDER, so the same sky spill barely moves its bytes.
+//   * DIM sky (sky_intensity_scale 0.05) keeps the background itself on
+//     the steep toe, so its own change registers at full strength.
+// Net: bright-object + dim-sky yields objectRmse 0.33 / backgroundRmse
+// 0.02 for an object-only change and 0.07 / 0.16 for a background-only
+// change -- clean dominance in BOTH directions.  If you retune these,
+// re-measure both directions; raising the sphere's albedo/light or
+// lowering the sky intensity is the axis that preserves the property.
+static const char* const kSplitSceneBase =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 40\n\theight 30\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"hosek_wilkie_skylight\n{\n\tsolar_elevation 45.0\n\tsolar_azimuth 0.0\n\tturbidity 2.0\n\tsky_intensity_scale 0.05\n\tcreate_sun false\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.85 0.85 0.85\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 100.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// Identical to kSplitSceneBase EXCEPT for ONE parameter -- the sky's
+// sky_intensity_scale (0.05 -> 0.35, a 7x brightening entirely inside the
+// tone curve's steep toe).  Turbidity and the solar angles are held FIXED
+// so the sky's angular structure is unchanged and the perturbation is a
+// pure background-brightness change; the sphere's own material is
+// UNTOUCHED.  Used to prove a BACKGROUND-only change is picked up by
+// `backgroundRmse` and mostly not by `objectRmse`.  See kSplitSceneBase's
+// comment for why the tone-curve placement (not the linear magnitude) is
+// what makes this direction come out background-dominant.
+static const char* const kSplitSceneBgRecolor =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 40\n\theight 30\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"hosek_wilkie_skylight\n{\n\tsolar_elevation 45.0\n\tsolar_azimuth 0.0\n\tturbidity 2.0\n\tsky_intensity_scale 0.35\n\tcreate_sun false\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.85 0.85 0.85\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 100.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// A TWO-VISIBLE-OBJECT variant used to prove the object mask unions EVERY
+// registered legend entry, not just the first one.  Two equal spheres side
+// by side (obj_a at x=-0.75, obj_b at x=+0.75; legend order is sorted by
+// name, so obj_a is entry 0).  The discriminating test recolours ONLY
+// obj_b's painter: if the mask were built from a single legend entry --
+// legend[0], or the largest, or the first hit -- obj_b's pixels would fall
+// into the BACKGROUND bucket and the change would show up as a
+// backgroundRmse rise instead of an objectRmse rise.  Same bright-object /
+// dim-sky tone-curve tuning as kSplitSceneBase (see its comment).
+static const char* const kSplitSceneTwoObjects =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 40\n\theight 30\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"hosek_wilkie_skylight\n{\n\tsolar_elevation 45.0\n\tsolar_azimuth 0.0\n\tturbidity 2.0\n\tsky_intensity_scale 0.05\n\tcreate_sun false\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo_a\n\tcolor 0.85 0.85 0.85\n}\n\n"
+	"lambertian_material\n{\n\tname mat_a\n\treflectance pnt_albedo_a\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo_b\n\tcolor 0.85 0.85 0.85\n}\n\n"
+	"lambertian_material\n{\n\tname mat_b\n\treflectance pnt_albedo_b\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_small\n\tradius 0.5\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry sph_small\n\tmaterial mat_a\n\tposition -0.75 0 0\n}\n\n"
+	"standard_object\n{\n\tname obj_b\n\tgeometry sph_small\n\tmaterial mat_b\n\tposition 0.75 0 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 100.0\n\tmaterial none\n}\n\n"
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
 
@@ -684,6 +784,406 @@ static void RunCompareToReference()
 	std::remove( scenePath.c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// compare_to_reference split:true -- the object-vs-background RMSE
+// breakdown (see AgentSession::AgentCompareSplitResult's doc).
+//
+//   1. FLOOR: register a PRODUCTION render of kSplitSceneBase as the
+//      reference, then self-compare split:true against the SAME
+//      unchanged scene -> both objectRmse and backgroundRmse are near
+//      that scene's own production noise floor; objectPixelFraction is
+//      sane (neither 0 nor 1 -- the sphere covers a real chunk of the
+//      wide-fov frame, not all of it).
+//   2. EMPTY OBJECT: an ephemeral camera override aimed away from the
+//      sphere -> split.ok stays true (the objectmap render itself
+//      succeeds), but objectRmse is -1 (no object pixels), note is
+//      non-empty, objectPixelFraction is 0 -- no crash.
+//   3. split:false (the default, omitted) -> the response carries no
+//      "split" key at all (back-compat).
+//   4. THE DISCRIMINATING PROOF (object edit): propose_patch recolors
+//      ONLY the sphere's material (pnt_albedo) -> objectRmse rises far
+//      beyond the floor while backgroundRmse stays close to it (the sky
+//      never changed).
+//   5. THE DISCRIMINATING PROOF (background edit): a SEPARATE session
+//      loads kSplitSceneBgRecolor -- same sphere colour as the
+//      reference, only the sky (turbidity/intensity) changed ->
+//      backgroundRmse rises far beyond the floor while objectRmse stays
+//      much closer to it (the sphere's material never changed; only a
+//      modest indirect-GI shift from the sky is expected).
+//////////////////////////////////////////////////////////////////////
+static void RunCompareToReferenceSplit()
+{
+	std::printf( "=== compare_to_reference split:true: object-vs-background RMSE ===\n" );
+
+	const std::string basePath = WriteTemp( "agent_compare_split_base.RISEscene", kSplitSceneBase );
+	Check( !basePath.empty(), "split: base scratch scene file written" );
+
+	std::vector<unsigned char> refPng;
+
+	Job* pBaseJob = new Job();
+	Check( pBaseJob->LoadAsciiSceneViaCst( basePath.c_str() ), "split: base scene loads via the CST path" );
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pBaseJob );
+		Check( session != nullptr, "split: AgentSession::WrapJob wraps the base Job" );
+
+		AgentRpcDispatcher rpc( std::move( session ) );
+		AgentSession* s = rpc.Session();
+		Check( s != nullptr, "split: dispatcher exposes the wrapped base session" );
+
+		// ---- (1) FLOOR: production reference render + self-compare split:true ----
+		double objFloor = -1.0, bgFloor = -1.0;
+		{
+			AgentRenderParams rp;
+			rp.samples = 64;
+			const AgentRenderResult rr = s->Render( rp );
+			Check( rr.ok && !rr.png.empty(), "split: base production reference render succeeded" );
+			refPng.assign( rr.png.begin(), rr.png.end() );
+
+			std::vector<AgentReferenceImage> refs( 1 );
+			refs[0].name = "viewSplit";
+			refs[0].pngBytes.assign( refPng.begin(), refPng.end() );
+			s->SetReferenceImages( std::move( refs ) );
+		}
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "viewSplit" ) );
+			params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+			params.set( "split",     JsonValue::MakeBool( true ) );
+			params.set( "visual",    JsonValue::MakeBool( false ) );
+			const std::string resp = rpc.HandleLine( Req( 1, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 1 );
+			Check( env.has( "result" ), "split: floor self-compare: structured success" );
+			const JsonValue& r = env.get( "result" );
+			Check( r.has( "split" ), "split: floor self-compare: response carries a \"split\" key when split:true" );
+			const JsonValue& sp = r.get( "split" );
+			Check( sp.get( "ok" ).asBool(), "split: floor self-compare: split.ok is true" );
+			objFloor = sp.get( "objectRmse" ).asNumber();
+			bgFloor  = sp.get( "backgroundRmse" ).asNumber();
+			const double objFrac = sp.get( "objectPixelFraction" ).asNumber();
+			std::printf( "  floor: objectRmse=%.6f backgroundRmse=%.6f objectPixelFraction=%.4f\n",
+				objFloor, bgFloor, objFrac );
+			Check( objFloor >= 0.0, "split: floor self-compare: objectRmse is a real measurement (object IS visible)" );
+			Check( objFloor < 0.05, "split: floor self-compare: objectRmse is near its own production noise floor" );
+			Check( bgFloor  < 0.05, "split: floor self-compare: backgroundRmse is near its own production noise floor" );
+			Check( objFrac > 0.02 && objFrac < 0.85,
+				"split: floor self-compare: objectPixelFraction is sane (sphere covers SOME but not ALL of the wide-fov frame)" );
+			Check( r.get( "summary" ).asString().find( "split:" ) != std::string::npos,
+				"split: floor self-compare: summary mentions the split" );
+		}
+
+		// ---- (2) EMPTY OBJECT: camera aimed away ----
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "viewSplit" ) );
+			params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+			params.set( "split",     JsonValue::MakeBool( true ) );
+			params.set( "visual",    JsonValue::MakeBool( false ) );
+			JsonValue camera = JsonValue::MakeObject();
+			camera.set( "location", JsonValue::MakeString( "0 0 -3.5" ) );
+			camera.set( "lookat",   JsonValue::MakeString( "0 0 -10" ) );
+			camera.set( "up",       JsonValue::MakeString( "0 1 0" ) );
+			params.set( "camera", camera );
+			const std::string resp = rpc.HandleLine( Req( 2, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 2 );
+			Check( env.has( "result" ), "split: empty-object (camera away): structured success, no crash" );
+			const JsonValue& r = env.get( "result" );
+			Check( r.has( "split" ), "split: empty-object: response carries a \"split\" key" );
+			const JsonValue& sp = r.get( "split" );
+			Check( sp.get( "ok" ).asBool(), "split: empty-object: split.ok stays true (the objectmap render itself succeeded)" );
+			Check( sp.get( "objectRmse" ).asNumber() == -1.0, "split: empty-object: objectRmse is -1 (no object pixels)" );
+			Check( sp.get( "objectPixelFraction" ).asNumber() == 0.0, "split: empty-object: objectPixelFraction is 0" );
+			Check( !sp.get( "note" ).asString().empty(), "split: empty-object: note explains the empty mask" );
+		}
+
+		// ---- (2b) EMPTY BACKGROUND: the MIRROR of (2) -- the camera pulled
+		// in so close that the sphere fills the ENTIRE frame, leaving zero
+		// background pixels.  Guards the sentinel SYMMETRY: an empty
+		// background bucket must report -1 ("not measured"), NOT 0.0, which
+		// a model would read as "the background matches perfectly".  The
+		// camera sits at z=1.0, i.e. 0.2 OUTSIDE the r=0.8 sphere, so the
+		// sphere subtends ~106 degrees against a 55-degree fov.
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "viewSplit" ) );
+			params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+			params.set( "split",     JsonValue::MakeBool( true ) );
+			params.set( "visual",    JsonValue::MakeBool( false ) );
+			JsonValue camera = JsonValue::MakeObject();
+			camera.set( "location", JsonValue::MakeString( "0 0 1.0" ) );
+			camera.set( "lookat",   JsonValue::MakeString( "0 0 0" ) );
+			camera.set( "up",       JsonValue::MakeString( "0 1 0" ) );
+			params.set( "camera", camera );
+			const std::string resp = rpc.HandleLine( Req( 22, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 22 );
+			Check( env.has( "result" ), "split: empty-background: structured success, no crash" );
+			const JsonValue& sp = env.get( "result" ).get( "split" );
+			Check( sp.get( "ok" ).asBool(), "split: empty-background: split.ok stays true" );
+			const double bgRmse = sp.get( "backgroundRmse" ).asNumber();
+			const double objFrac = sp.get( "objectPixelFraction" ).asNumber();
+			std::printf( "  empty-background: backgroundRmse=%.6f objectPixelFraction=%.4f\n", bgRmse, objFrac );
+			Check( objFrac == 1.0, "split: empty-background: objectPixelFraction is exactly 1 (object fills the frame)" );
+			Check( bgRmse == -1.0,
+				"split: empty-background: backgroundRmse is the -1 SENTINEL, not a misleading 0.0" );
+			Check( sp.get( "objectRmse" ).asNumber() >= 0.0,
+				"split: empty-background: objectRmse is still a real measurement" );
+			Check( !sp.get( "note" ).asString().empty(),
+				"split: empty-background: note explains the empty background bucket" );
+		}
+
+		// ---- (2c) READ_IMAGE CACHE SURVIVES THE SPLIT ----
+		// CompareToReference documents that read_image afterwards returns the
+		// frame the comparison GRADED, and the modeling-from-image-captures
+		// skill tells models to do exactly that.  split:true runs a second,
+		// ephemeral objectmap render internally, and Render() caches every
+		// success for read_image -- so without an explicit stash/restore the
+		// model would get handed the flat segmentation image instead of its
+		// beauty render.  Discriminator: an objectmap of this scene has only
+		// a handful of flat identity colours, while the graded beauty frame
+		// (lit sphere + sky gradient) has many.
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "viewSplit" ) );
+			params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+			params.set( "split",     JsonValue::MakeBool( true ) );
+			params.set( "visual",    JsonValue::MakeBool( false ) );
+			const std::string resp = rpc.HandleLine( Req( 23, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 23 );
+			Check( env.has( "result" ), "split: cache-survival: the split compare itself succeeded" );
+
+			const std::vector<unsigned char> after = s->ReadImage();
+			Check( !after.empty(), "split: cache-survival: read_image after a split compare returns an image" );
+
+			int distinct = 0;
+			{
+				IMemoryBuffer* buf = nullptr;
+				RISE_API_CreateCompatibleMemoryBuffer( &buf,
+					const_cast<char*>( reinterpret_cast<const char*>( after.data() ) ),
+					(unsigned int)after.size(), false );
+				IRasterImageReader* rd = nullptr;
+				if( buf && RISE_API_CreatePNGReader( &rd, *buf, eColorSpace_Rec709RGB_Linear ) && rd ) {
+					unsigned int w = 0, h = 0;
+					if( rd->BeginRead( w, h ) ) {
+						std::map<std::string,int> hist;
+						for( unsigned int y = 0; y < h; ++y ) {
+							for( unsigned int x = 0; x < w; ++x ) {
+								RISEColor c; rd->ReadColor( c, x, y );
+								char hb[16];
+								std::snprintf( hb, sizeof( hb ), "%d,%d,%d",
+									(int)( c.base.r * 255.0 + 0.5 ),
+									(int)( c.base.g * 255.0 + 0.5 ),
+									(int)( c.base.b * 255.0 + 0.5 ) );
+								hist[hb]++;
+							}
+						}
+						distinct = (int)hist.size();
+						rd->EndRead();
+					}
+					rd->release();
+				}
+				if( buf ) buf->release();
+			}
+			std::printf( "  cache-survival: read_image distinct colours after split compare = %d\n", distinct );
+			Check( distinct > 10,
+				"split: cache-survival: read_image returns the GRADED BEAUTY frame, not the flat objectmap" );
+
+			// The check above only exercises mLastPng.  mLastSink is a
+			// SEPARATE cached pointer, read only by the downscaling
+			// ReadImage(maxEdge) overload and query_object_at -- drop the
+			// `mLastSink = savedSink` restore and everything above still
+			// passes while the sink leaks and those two verbs silently
+			// degrade to "nothing rendered yet".  Lock that half too.
+			{
+				unsigned int dw = 0, dh = 0;
+				const std::vector<unsigned char> scaled = s->ReadImage( 16, dw, dh );
+				Check( !scaled.empty(),
+					"split: cache-survival: ReadImage(maxEdge) still works -- mLastSink was restored, not dropped" );
+				Check( dw > 0 && dh > 0 && dw <= 16 && dh <= 16,
+					"split: cache-survival: the restored sink downscales to the requested bound" );
+			}
+		}
+
+		// ---- (3) split:false (default, omitted) -> no "split" key ----
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "viewSplit" ) );
+			params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+			params.set( "visual",    JsonValue::MakeBool( false ) );
+			const std::string resp = rpc.HandleLine( Req( 3, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 3 );
+			Check( env.has( "result" ), "split: split:false (default): structured success" );
+			Check( !env.get( "result" ).has( "split" ),
+				"split: split:false (default): no \"split\" key at all -- back-compat" );
+		}
+
+		// ---- (4) DISCRIMINATING PROOF: recolor the OBJECT only ----
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "target", JsonValue::MakeString( "pnt_albedo" ) );
+			params.set( "param",  JsonValue::MakeString( "color" ) );
+			params.set( "value",  JsonValue::MakeString( "0.1 0.7 0.1" ) );
+			const std::string resp = rpc.HandleLine( Req( 4, "propose_patch", params ) );
+			JsonValue env = ParseResponse( resp, 4 );
+			Check( env.get( "result" ).get( "applied" ).asBool(), "split: object-recolor propose_patch applied" );
+		}
+		{
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "viewSplit" ) );
+			params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+			params.set( "split",     JsonValue::MakeBool( true ) );
+			params.set( "visual",    JsonValue::MakeBool( false ) );
+			const std::string resp = rpc.HandleLine( Req( 5, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 5 );
+			Check( env.has( "result" ), "split: post-object-recolor: structured success" );
+			const JsonValue& sp = env.get( "result" ).get( "split" );
+			const double objAfter = sp.get( "objectRmse" ).asNumber();
+			const double bgAfter  = sp.get( "backgroundRmse" ).asNumber();
+			std::printf( "  after OBJECT recolor: objectRmse=%.6f (floor %.6f) backgroundRmse=%.6f (floor %.6f)\n",
+				objAfter, objFloor, bgAfter, bgFloor );
+			Check( objAfter > objFloor + 0.1,
+				"split: object recolor: objectRmse rises sharply above the floor" );
+			Check( bgAfter < bgFloor + 0.03,
+				"split: object recolor: backgroundRmse stays close to its floor (the sky never changed)" );
+			Check( objAfter > bgAfter,
+				"split: object recolor: objectRmse is now the dominant error, well above backgroundRmse" );
+		}
+	}
+	pBaseJob->release();
+	std::remove( basePath.c_str() );
+
+	// ---- (5) DISCRIMINATING PROOF: recolor the BACKGROUND only (a SEPARATE session/scene) ----
+	{
+		const std::string bgPath = WriteTemp( "agent_compare_split_bg.RISEscene", kSplitSceneBgRecolor );
+		Check( !bgPath.empty(), "split: background scratch scene file written" );
+
+		Job* pBgJob = new Job();
+		Check( pBgJob->LoadAsciiSceneViaCst( bgPath.c_str() ), "split: background scene loads via the CST path" );
+		{
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pBgJob );
+			Check( session != nullptr, "split: AgentSession::WrapJob wraps the background Job" );
+
+			AgentRpcDispatcher rpc( std::move( session ) );
+			AgentSession* s = rpc.Session();
+			Check( s != nullptr, "split: dispatcher exposes the wrapped background session" );
+
+			// Re-register the ORIGINAL (unchanged-sky) baseline PNG as the
+			// reference -- this session's LIVE scene is the one with the
+			// changed sky.
+			std::vector<AgentReferenceImage> refs( 1 );
+			refs[0].name = "viewSplit";
+			refs[0].pngBytes.assign( refPng.begin(), refPng.end() );
+			s->SetReferenceImages( std::move( refs ) );
+
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "reference", JsonValue::MakeString( "viewSplit" ) );
+			params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+			params.set( "split",     JsonValue::MakeBool( true ) );
+			params.set( "visual",    JsonValue::MakeBool( false ) );
+			const std::string resp = rpc.HandleLine( Req( 6, "compare_to_reference", params ) );
+			JsonValue env = ParseResponse( resp, 6 );
+			Check( env.has( "result" ), "split: background-recolor: structured success" );
+			const JsonValue& sp = env.get( "result" ).get( "split" );
+			const double objAfter = sp.get( "objectRmse" ).asNumber();
+			const double bgAfter  = sp.get( "backgroundRmse" ).asNumber();
+			std::printf( "  after BACKGROUND recolor: objectRmse=%.6f backgroundRmse=%.6f\n", objAfter, bgAfter );
+			Check( bgAfter > 0.05,
+				"split: background recolor: backgroundRmse rises sharply above the baseline floor" );
+			Check( bgAfter > objAfter,
+				"split: background recolor: backgroundRmse is now the dominant error, well above objectRmse" );
+		}
+		pBgJob->release();
+		std::remove( bgPath.c_str() );
+	}
+
+	// ---- (6) LEGEND AGGREGATION: the mask must union EVERY registered
+	// object, not just one.  Two equal spheres are visible; only the SECOND
+	// (obj_b, legend entry 1) is recoloured.  A mask built from a single
+	// legend entry would classify obj_b's pixels as BACKGROUND, so the
+	// change would land in backgroundRmse instead of objectRmse -- this
+	// test fails loudly in that case.
+	{
+		const std::string twoPath = WriteTemp( "agent_compare_split_two.RISEscene", kSplitSceneTwoObjects );
+		Check( !twoPath.empty(), "split: two-object scratch scene file written" );
+
+		Job* pTwoJob = new Job();
+		Check( pTwoJob->LoadAsciiSceneViaCst( twoPath.c_str() ), "split: two-object scene loads via the CST path" );
+		{
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pTwoJob );
+			Check( session != nullptr, "split: AgentSession::WrapJob wraps the two-object Job" );
+
+			AgentRpcDispatcher rpc( std::move( session ) );
+			AgentSession* s = rpc.Session();
+			Check( s != nullptr, "split: dispatcher exposes the wrapped two-object session" );
+
+			// Reference = a production render of the UNCHANGED two-sphere scene.
+			AgentRenderParams rp;
+			rp.samples = 64;
+			const AgentRenderResult rr = s->Render( rp );
+			Check( rr.ok && !rr.png.empty(), "split: two-object reference render succeeded" );
+
+			std::vector<AgentReferenceImage> refs( 1 );
+			refs[0].name = "viewTwo";
+			refs[0].pngBytes.assign( rr.png.begin(), rr.png.end() );
+			s->SetReferenceImages( std::move( refs ) );
+
+			// Floor first, so the post-recolor rise is measured against this
+			// scene's OWN production noise -- and confirm BOTH spheres are in
+			// the mask (a single-entry mask would report roughly half this).
+			double objFloor = -1.0, bgFloor = -1.0, twoObjFrac = -1.0;
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "reference", JsonValue::MakeString( "viewTwo" ) );
+				params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+				params.set( "split",     JsonValue::MakeBool( true ) );
+				params.set( "visual",    JsonValue::MakeBool( false ) );
+				const std::string resp = rpc.HandleLine( Req( 7, "compare_to_reference", params ) );
+				JsonValue env = ParseResponse( resp, 7 );
+				Check( env.has( "result" ), "split: two-object floor: structured success" );
+				const JsonValue& sp = env.get( "result" ).get( "split" );
+				objFloor   = sp.get( "objectRmse" ).asNumber();
+				bgFloor    = sp.get( "backgroundRmse" ).asNumber();
+				twoObjFrac = sp.get( "objectPixelFraction" ).asNumber();
+				std::printf( "  two-object floor: objectRmse=%.6f backgroundRmse=%.6f objectPixelFraction=%.4f\n",
+					objFloor, bgFloor, twoObjFrac );
+				Check( objFloor >= 0.0 && bgFloor >= 0.0, "split: two-object floor: both buckets are real measurements" );
+			}
+
+			// Recolour ONLY obj_b's painter.
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "target", JsonValue::MakeString( "pnt_albedo_b" ) );
+				params.set( "param",  JsonValue::MakeString( "color" ) );
+				params.set( "value",  JsonValue::MakeString( "0.1 0.7 0.1" ) );
+				const std::string resp = rpc.HandleLine( Req( 8, "propose_patch", params ) );
+				JsonValue env = ParseResponse( resp, 8 );
+				Check( env.get( "result" ).get( "applied" ).asBool(), "split: second-object recolor propose_patch applied" );
+			}
+			{
+				JsonValue params = JsonValue::MakeObject();
+				params.set( "reference", JsonValue::MakeString( "viewTwo" ) );
+				params.set( "samples",   JsonValue::MakeNumber( 64.0 ) );
+				params.set( "split",     JsonValue::MakeBool( true ) );
+				params.set( "visual",    JsonValue::MakeBool( false ) );
+				const std::string resp = rpc.HandleLine( Req( 9, "compare_to_reference", params ) );
+				JsonValue env = ParseResponse( resp, 9 );
+				Check( env.has( "result" ), "split: post-second-object-recolor: structured success" );
+				const JsonValue& sp = env.get( "result" ).get( "split" );
+				const double objAfter = sp.get( "objectRmse" ).asNumber();
+				const double bgAfter  = sp.get( "backgroundRmse" ).asNumber();
+				std::printf( "  after SECOND-OBJECT recolor: objectRmse=%.6f (floor %.6f) backgroundRmse=%.6f (floor %.6f)\n",
+					objAfter, objFloor, bgAfter, bgFloor );
+				Check( objAfter > objFloor + 0.05,
+					"split: second-object recolor: objectRmse rises -- the mask covers legend entry 1, not just entry 0" );
+				Check( bgAfter < bgFloor + 0.03,
+					"split: second-object recolor: backgroundRmse stays near its floor (nothing in the sky changed)" );
+				Check( objAfter > bgAfter,
+					"split: second-object recolor: the error is attributed to the OBJECT bucket" );
+			}
+		}
+		pTwoJob->release();
+		std::remove( twoPath.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentViewportReadTest ===\n" );
@@ -693,6 +1193,7 @@ int main()
 	RunNoFrameYet();
 	RunDisplayTransformOrdering();
 	RunCompareToReference();
+	RunCompareToReferenceSplit();
 
 	std::printf( "=== AgentViewportReadTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

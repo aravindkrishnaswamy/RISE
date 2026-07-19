@@ -368,6 +368,24 @@ like it's converging:
   the STAGING is wrong, not the object -- go back to
   environment/light (section 6 below) before touching the object's
   shape or materials again.
+- Once RMSE plateaus, call `compare_to_reference` with `split:true` to
+  find out WHICH of the two (staging vs object) the plateau actually
+  is, instead of guessing from the grid alone: it returns
+  `objectRmse`/`backgroundRmse` (plus `objectPixelFraction`), an
+  object-vs-background breakdown built from your own candidate's
+  objectmap mask (one extra render). If `backgroundRmse` is already
+  low, STOP tuning the environment/ground/lights -- that stage is
+  done -- and put every remaining iteration into the OBJECT's
+  silhouette and proportions. If `backgroundRmse` is still high, your
+  staging is still the biggest lever; keep working section 6 before
+  touching the object again.
+- Check each figure is `>= 0` BEFORE acting on it. Either one is `-1`
+  when its bucket is empty -- `objectRmse` when no object is visible
+  (camera aimed away, object off-frame), `backgroundRmse` when your
+  objects fill the entire frame. `-1` means "not measured", NOT "zero
+  error": reading a `-1` backgroundRmse as "staging is done" would send
+  you off tuning the object when you have not actually checked the
+  staging at all. If you get a `-1`, fix the framing and re-compare.
 
 ### 6. Match order: silhouette -> proportions -> surface -> materials -> lighting -> environment
 
