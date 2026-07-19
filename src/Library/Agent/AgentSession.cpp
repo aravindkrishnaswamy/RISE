@@ -2632,164 +2632,102 @@ namespace RISE
 			// integrator a rasterizer insert_chunk activated.  Job::
 			// GetActiveRasterizerName() is a plain member-string accessor
 			// that defaults to "" (Job.h) -- null-safe with no active
-			// rasterizer at all, so this is safe to read regardless of
-			// isDraft/rast below.  Filled on BOTH the success and the
-			// render-failure paths below -- the active integrator is a
-			// property of the head, not of whether this particular render
-			// produced an image.
-			res.integrator = mJob->GetActiveRasterizerName();
-
-			// Fetch the live rasterizer.  Round-2 P2-A: the "!rast" bail-out
-			// now applies ONLY to the PRODUCTION branch -- gating it on
-			// `!isDraft` lets a rasterizer-less head still run a draft
-			// render.  `rast` is allowed to be null from here on: every
-			// site downstream that dereferences it either (a) lives inside
-			// doRenderWork's production body, which early-returns via
-			// doDraftRenderWork() BEFORE reaching any of them whenever
-			// isDraft is true -- and this same gate guarantees rast is
-			// non-null whenever isDraft is false -- or (b) is made
-			// null-tolerant explicitly (origSamples just below).
-			IRasterizer* rast = mJob->GetRasterizer();
-			// Round-2 P2-A / Toolkit slice 3a / GUI render modes P1: the
-			// "!rast" bail-out applies ONLY to the production BEAUTY branch --
-			// the draft, objectmap, AND view-mode paths all run through their
-			// own ephemeral pipelines and never dereference the production
-			// rasterizer, so a rasterizer-less head must still be able to run
-			// any of them.
-			if( !isDraft && !isObjectMap && !isViewMode && !rast ) {
-				res.ok = false;
-				res.message = "no active rasterizer";
-				return res;
-			}
+			// rasterizer at all.  `res.integrator` is DELIBERATELY left as
+			// the head's active (production) rasterizer's name in EITHER
+			// mode -- see AgentRenderResult::renderMode's doc for why the
+			// two fields answer different questions.  Filled on BOTH the
+			// success and the render-failure paths -- the active integrator
+			// is a property of the head, not of whether this particular
+			// render produced an image.
+			//
+			// Re-review P1 FIX: this resolution (`res.integrator =
+			// mJob->GetActiveRasterizerName();` + `IRasterizer* rast =
+			// mJob->GetRasterizer();` + the "!rast" bail-out), and the
+			// `view`/camera-override resolution that used to sit right after
+			// it, USED to run HERE -- on the CALLING thread, before the
+			// render is ever parked.  The actual render body runs LATER,
+			// inside the parked closure (RunPreviewRenderParked /
+			// SubmitAgentRenderSync / the direct headless call below),
+			// possibly after an arbitrary delay (the controller's fairness
+			// queue).  A concurrent GUI edit landing in that window could
+			// replace the Job's rasterizer/camera managers out from under a
+			// pointer cached this early -- a use-after-free class of bug,
+			// not merely a stale value.  ALL live-Job-state resolution now
+			// happens INSIDE `doRenderWork` (see its top) instead, which only
+			// ever executes already-parked (or, headless with no controller,
+			// with no concurrent GUI thread to race at all): resolved inside
+			// the park; never snapshot live Job state on the calling thread.
+			// `isDraft`/`isObjectMap`/`isViewMode`/`viewModeInfo`/
+			// `isBeautyVariant`/`res.renderMode` above are all derived PURELY
+			// from `params`, never from live Job state, so they stay safe to
+			// compute here, unchanged.
 
 			const bool wantFilmOverride =
 				( params.width > 0 && params.height > 0 );
 
 			// GUI render modes P2a `render{view:}` surface (docs/gui/
-			// RENDER_MODES.md §8, deferred from P1): resolve an optional
+			// RENDER_MODES.md section 8, deferred from P1): resolve an optional
 			// NAMED VIEW into the SAME ephemeral camera-override fields
-			// `params.camera` uses, so it composes for free with EVERY
-			// render target (Beauty/ObjectMap/ViewMode, draft or
-			// production) via the EXISTING applyCameraOverride machinery
-			// below -- no parallel override mechanism.  Resolution order:
-			// (1) a live controller's in-memory named-view store
-			// (SceneEditController::FindNamedViewPose -- reachable from
-			// this thread even when it's the agent-render worker, see that
-			// method's doc); (2) a scene camera of that exact name (the
-			// honest headless fallback -- a WrapJob session has no
-			// named-view store at all).  `view` wins over an explicit
-			// `camera` override when both are supplied (effectiveCamera
-			// starts as a COPY of params.camera, then the resolved pose
-			// overwrites it wholesale).  An unresolved name FAILS the
-			// render (res.ok=false) with the available-name list, rather
-			// than silently falling through to the active camera.
+			// `params.camera` uses, so it composes for free with EVERY render
+			// target (Beauty/ObjectMap/ViewMode, draft or production) via the
+			// EXISTING applyCameraOverride machinery below -- no parallel
+			// override mechanism.  `view` wins over an explicit `camera`
+			// override when both are supplied (`effectiveCamera` starts as a
+			// COPY of params.camera, then a resolved view's pose overwrites it
+			// wholesale).
+			//
+			// Re-review P1 FIX: resolving WHICH named view/camera this is
+			// (mController->FindNamedViewPose / mJob->GetCameras()) needs live
+			// Job/controller state, so -- like `rast` above -- that resolution
+			// now happens fresh INSIDE doRenderWork (see its top), not here.
+			// `effectiveCamera` and `wantCameraOverride` are declared here
+			// (mutable) purely so applyCameraOverride (defined below,
+			// capturing both by reference) can read whatever doRenderWork
+			// fills in later; neither is assigned a live-state-derived value
+			// at this point.
 			AgentCameraOverride effectiveCamera = params.camera;
-			if( !params.view.empty() )
-			{
-				bool resolved = false;
-				CameraSnapshot pose;
-				if( mController && mController->FindNamedViewPose( String( params.view.c_str() ), pose ) )
-				{
-					resolved = true;
-				}
-				else if( ICameraManager* cams = mJob->GetCameras() )
-				{
-					if( const ICamera* namedCam = cams->GetItem( params.view.c_str() ) )
-					{
-						resolved = CameraIntrospection::CaptureCameraSnapshot( *namedCam, pose );
-					}
-				}
+			bool wantCameraOverride = false;
 
-				if( !resolved )
-				{
-					std::string available;
-					if( mController )
-					{
-						const unsigned int n = mController->NamedViewCount();
-						for( unsigned int i = 0; i < n; ++i )
-						{
-							char nameBuf[257];
-							if( mController->NamedViewName( i, nameBuf, sizeof( nameBuf ) ) )
-							{
-								if( !available.empty() ) available += ", ";
-								available += "\"";
-								available += nameBuf;
-								available += "\"";
-							}
-						}
-					}
-					if( ICameraManager* cams = mJob->GetCameras() )
-					{
-						struct NameCollector : public IEnumCallback<const char*>
-						{
-							std::string* out;
-							bool operator()( const char* const& n ) override
-							{
-								if( !out->empty() ) *out += ", ";
-								*out += "\"";
-								*out += ( n ? n : "" );
-								*out += "\"";
-								return true;
-							}
-						} collector;
-						collector.out = &available;
-						cams->EnumerateItemNames( collector );
-					}
-					// res.renderMode / res.integrator were already set above
-					// (before this resolution block runs) -- no need to
-					// recompute them here.
-					res.ok = false;
-					res.message = "unknown view \"" + params.view + "\"";
-					res.message += available.empty()
-						? std::string( " -- no named views or scene cameras available" )
-						: ( " -- available: " + available );
-					return res;
-				}
+			// Re-review P1: doRenderWork sets exactly one of these two flags
+			// (never both) instead of returning `res` directly when the
+			// `view` resolution fails -- see doRenderWork's top for the two
+			// failure cases (unknown view name; a resolved but non-pinhole
+			// NAMED VIEW) and the dispatch tail below (`if(
+			// viewResolutionFailed )`) for how the flag short-circuits the
+			// generic renderRan/rendered fallback message.
+			// Set by ANY early bail inside doRenderWork that has already written a
+// specific res.message (an unresolvable/non-pinhole `view`, OR the
+// production "no active rasterizer" bail).  Since that resolution moved
+// INSIDE the park, those bails can no longer `return res;` directly, so
+// without this flag the shared tail's generic renderRan/rendered fallback
+// overwrites the specific reason with "render failed".
+			bool specificFailureReported = false;
+			// Re-review P2 fix: set when a resolved PINHOLE named view's FOV
+			// had to be dropped because the ACTIVE camera cannot store one
+			// (anything but PinholeCamera) -- see doRenderWork's
+			// active-camera preflight.  Surfaced as an honest note on the
+			// result message below (res.cameraOverridden site), never a
+			// render failure.
+			bool viewFovSkippedActiveNonPinhole = false;
 
-				// External review P2 fix: `effectiveCamera` (AgentCameraOverride)
-				// only HAS fields for location/lookAt/up/fov -- the pinhole-only
-				// pose+FOV subset CameraSnapshotToOverride fills in above -- and
-				// applyCameraOverride below only ever SetProperty's those four
-				// names on the ACTIVE camera.  There is no plumbing here (or in
-				// CameraIntrospection::SetProperty, which is descriptor-driven by
-				// the camera's OWN chunk type and cannot re-type an ICamera in
-				// place) to carry a ThinLens/Fisheye/Orthographic view's real
-				// optics -- sensor/focal-length/fstop/focus-distance/aperture/
-				// tilt-shift, fisheye scale, or ortho viewport scale -- onto
-				// whatever type the active camera happens to be.  Silently
-				// dropping those and rendering with the ACTIVE camera's own
-				// optics under the requested view's pose would be a materially
-				// wrong image reported as success.  Fail loudly instead of
-				// guessing: name the unsupported camera type so the caller knows
-				// exactly why, rather than getting a quietly-wrong PNG.
-				if( pose.type != RISE::CameraSnapshot::Pinhole )
-				{
-					const char* typeName = "unknown";
-					switch( pose.type )
-					{
-					case RISE::CameraSnapshot::ThinLens:     typeName = "thinlens";     break;
-					case RISE::CameraSnapshot::Fisheye:      typeName = "fisheye";      break;
-					case RISE::CameraSnapshot::Orthographic: typeName = "orthographic"; break;
-					default: break;
-					}
-					res.ok = false;
-					res.message = "view \"" + params.view + "\" is a " + typeName +
-						" camera -- render{view:} can currently only transfer a pinhole "
-						"view's pose+fov onto the active camera (AgentCameraOverride has "
-						"no thinlens/fisheye/orthographic fields), so rendering it would "
-						"silently use the active camera's own optics under the requested "
-						"pose. Not supported yet: switch the active camera to \"" +
-						params.view + "\" (if it names a real scene camera) and render "
-						"without `view`, or request a pinhole named view instead.";
-					return res;
-				}
-
-				CameraSnapshotToOverride( pose, effectiveCamera );
-			}
-
-			const bool wantCameraOverride =
+			// ROUTING-ONLY signal (P1 fix): choosing which controller entry
+			// point parks this render (RunPreviewRenderParked, when a
+			// film/camera override is in play, vs. the plain
+			// SubmitAgentRenderSync otherwise) must happen BEFORE doRenderWork
+			// ever runs -- but the REAL wantCameraOverride (above) is now
+			// resolved live, INSIDE doRenderWork, from state we cannot yet see
+			// out here.  A `view` request is therefore treated CONSERVATIVELY
+			// as "assume a camera override" for routing purposes only: a
+			// resolved pinhole view always sets at least location/lookat/up
+			// (see CameraSnapshotToOverride), so this is never a false
+			// negative; it can only ever route an eventually-failing `view`
+			// request through the override-aware entry point, which is
+			// harmless -- the actual failure message doRenderWork produces is
+			// unaffected by which entry point ran it.
+			const bool wantCameraOverrideForRouting =
+				!params.view.empty() ||
 				( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
-				  effectiveCamera.hasUp || effectiveCamera.hasFov );
+					effectiveCamera.hasUp || effectiveCamera.hasFov );
 
 			// LIVE-mode safety (see AgentSession.h Render(AgentRenderParams)
 			// doc + CLAUDE.md investigation note): DoOneRenderPass swaps the
@@ -2806,22 +2744,26 @@ namespace RISE
 			double origFilmPAR = 1.0;
 			std::vector<CapturedCameraField> capturedCam;
 			ICamera* activeCam = nullptr;
-			// Model-B F2 slice S3: sample-count override state.  Captured
-			// via GetSampleCountOverride() BEFORE any mutation (-1 = the
-			// active rasterizer doesn't support the override at all);
+			// Model-B F2 slice S3: sample-count override state.
 			// `overrodeSamples` is set true only once SetSampleCountOverride
 			// actually returns true for THIS render, so a caller reading
 			// res.samplesOverridden gets an honest answer even when
 			// `wantSamplesOverride` was requested against an unsupported
-			// rasterizer.  Round-2 P2-A: `rast` may now be null here (a
-			// rasterizer-less head running a draft render) -- guard the
-			// dereference; -1 is the SAME "no override support" sentinel
-			// this already used for an opted-out rasterizer, and this value
-			// is only ever consulted from the PRODUCTION branch below, which
-			// cannot run when rast is null (the gate above refuses
-			// production in that case).
-			const int origSamples = rast ? rast->GetSampleCountOverride() : -1;
+			// rasterizer.
+			//
+			// Re-review P1 fix: `origSamples` (GetSampleCountOverride,
+			// captured BEFORE any mutation) USED to be captured HERE, on the
+			// calling thread, from the (now-removed) outer-scope `rast` --
+			// but it is consumed ONLY inside doRenderWork's production body,
+			// so it is now declared fresh there instead, right where `rast`
+			// is guaranteed freshly-resolved and non-null.
 			bool overrodeSamples = false;
+			// P1 fix: the TAIL (after doRenderWork returns, possibly after
+			// the park has released) needs the effective sample count for
+			// the result message -- captured under the park, inside
+			// doRenderWork's production body, instead of re-dereferencing
+			// `rast` from the tail (see the `readBack` site below).
+			int productionSampleReadBack = -1;
 			// Toolkit slice 2 (quality:"draft"): the draft path's OWN
 			// sample-cap outcome, tracked separately from
 			// overrodeSamples/origSamples above -- those describe the
@@ -3474,6 +3416,179 @@ namespace RISE
 
 			auto doRenderWork = [&]()
 			{
+				// Re-review P1 fix: resolve ALL live Job/rasterizer/camera state
+				// HERE, inside the parked closure -- never snapshot it on the
+				// calling thread before park.  See the comment that used to sit
+				// just ahead of this lambda (now short and pointing here) for the
+				// full rationale.  `res.integrator` is set FIRST, unconditionally,
+				// on every invocation of this closure (every render target,
+				// success or failure) -- matches the pre-fix contract exactly,
+				// just resolved fresh here instead of on the calling thread.
+				res.integrator = mJob->GetActiveRasterizerName();
+
+				// Fetch the live rasterizer, fresh, under the park.  Same gating
+				// condition and same message as the pre-fix calling-thread check:
+				// the "!rast" bail-out applies ONLY to the production BEAUTY
+				// branch -- draft/objectmap/view-mode all run their own ephemeral
+				// pipelines and never dereference the production rasterizer.
+				IRasterizer* rast = mJob->GetRasterizer();
+				if( !isDraft && !isObjectMap && !isViewMode && !rast ) {
+					res.ok = false;
+					res.message = "no active rasterizer";
+					// This bail moved INSIDE the park (P1: no snapshotting live
+					// Job state on the calling thread), so it can no longer
+					// `return res;` directly -- flag it so the shared tail
+					// preserves this specific reason instead of overwriting it
+					// with the generic "render failed".
+					specificFailureReported = true;
+					return;
+				}
+
+				if( !params.view.empty() )
+				{
+					bool resolved = false;
+					CameraSnapshot pose;
+					if( mController && mController->FindNamedViewPose( String( params.view.c_str() ), pose ) )
+					{
+						resolved = true;
+					}
+					else if( ICameraManager* cams = mJob->GetCameras() )
+					{
+						if( const ICamera* namedCam = cams->GetItem( params.view.c_str() ) )
+						{
+							resolved = CameraIntrospection::CaptureCameraSnapshot( *namedCam, pose );
+						}
+					}
+
+					if( !resolved )
+					{
+						std::string available;
+						if( mController )
+						{
+							const unsigned int n = mController->NamedViewCount();
+							for( unsigned int i = 0; i < n; ++i )
+							{
+								char nameBuf[257];
+								if( mController->NamedViewName( i, nameBuf, sizeof( nameBuf ) ) )
+								{
+									if( !available.empty() ) available += ", ";
+									available += "\"";
+									available += nameBuf;
+									available += "\"";
+								}
+							}
+						}
+						if( ICameraManager* cams = mJob->GetCameras() )
+						{
+							struct NameCollector : public IEnumCallback<const char*>
+							{
+								std::string* out;
+								bool operator()( const char* const& n ) override
+								{
+									if( !out->empty() ) *out += ", ";
+									*out += "\"";
+									*out += ( n ? n : "" );
+									*out += "\"";
+									return true;
+								}
+							} collector;
+							collector.out = &available;
+							cams->EnumerateItemNames( collector );
+						}
+						// res.renderMode / res.integrator were already set above
+						// (before this resolution block runs) -- no need to
+						// recompute them here.
+						res.ok = false;
+						res.message = "unknown view \"" + params.view + "\"";
+						res.message += available.empty()
+							? std::string( " -- no named views or scene cameras available" )
+							: ( " -- available: " + available );
+						specificFailureReported = true;
+						return;
+					}
+
+					// External review P2 fix: `effectiveCamera` (AgentCameraOverride)
+					// only HAS fields for location/lookAt/up/fov -- the pinhole-only
+					// pose+FOV subset CameraSnapshotToOverride fills in above -- and
+					// applyCameraOverride below only ever SetProperty's those four
+					// names on the ACTIVE camera.  There is no plumbing here (or in
+					// CameraIntrospection::SetProperty, which is descriptor-driven by
+					// the camera's OWN chunk type and cannot re-type an ICamera in
+					// place) to carry a ThinLens/Fisheye/Orthographic view's real
+					// optics -- sensor/focal-length/fstop/focus-distance/aperture/
+					// tilt-shift, fisheye scale, or ortho viewport scale -- onto
+					// whatever type the active camera happens to be.  Silently
+					// dropping those and rendering with the ACTIVE camera's own
+					// optics under the requested view's pose would be a materially
+					// wrong image reported as success.  Fail loudly instead of
+					// guessing: name the unsupported camera type so the caller knows
+					// exactly why, rather than getting a quietly-wrong PNG.
+					if( pose.type != RISE::CameraSnapshot::Pinhole )
+					{
+						const char* typeName = "unknown";
+						switch( pose.type )
+						{
+						case RISE::CameraSnapshot::ThinLens:     typeName = "thinlens";     break;
+						case RISE::CameraSnapshot::Fisheye:      typeName = "fisheye";      break;
+						case RISE::CameraSnapshot::Orthographic: typeName = "orthographic"; break;
+						default: break;
+						}
+						res.ok = false;
+						res.message = "view \"" + params.view + "\" is a " + typeName +
+							" camera -- render{view:} can currently only transfer a pinhole "
+							"view's pose+fov onto the active camera (AgentCameraOverride has "
+							"no thinlens/fisheye/orthographic fields), so rendering it would "
+							"silently use the active camera's own optics under the requested "
+							"pose. Not supported yet: switch the active camera to \"" +
+							params.view + "\" (if it names a real scene camera) and render "
+							"without `view`, or request a pinhole named view instead.";
+						specificFailureReported = true;
+						return;
+					}
+
+					CameraSnapshotToOverride( pose, effectiveCamera );
+
+					// Re-review P2 fix: a valid PINHOLE named view must not be
+					// rejected just because the ACTIVE camera happens to be
+					// thin-lens/fisheye/orthographic -- CameraIntrospection::SetProperty's
+					// own "fov" branch (CameraIntrospection.cpp) rejects "fov" on
+					// anything but a PinholeCamera, so applyCameraOverride below would
+					// set cameraOverrideFailed=true and fail the WHOLE render just
+					// because the resolved pose carries a FOV the active camera cannot
+					// store.  That is the FALSE-REJECTION direction of the fix just
+					// above (which correctly keeps failing loudly when the NAMED VIEW
+					// itself is non-pinhole).  Chosen fix: (a) apply the pose, drop the
+					// FOV, note the drop honestly -- NOT (b) render through a temporary
+					// swapped-in pinhole camera.  (b) would need camera CREATE/
+					// activate/teardown plumbing this file does not have:
+					// applyCameraOverride only ever SetProperty's fields on the
+					// ALREADY-active camera (captured via
+					// mJob->GetCameras()->GetItem(activeName) below); there is no
+					// existing "render through a substitute camera" path to reuse, and
+					// building one (IJob::Add*Camera + SetActiveCamera + post-render
+					// teardown/restore) would be new, load-bearing plumbing, not a
+					// surgical fix.
+					if( ICameraManager* camsForFov = mJob->GetCameras() )
+					{
+						const std::string activeNameForFov = mJob->GetActiveCameraName();
+						const ICamera* activeCamForFov = !activeNameForFov.empty()
+							? camsForFov->GetItem( activeNameForFov.c_str() ) : nullptr;
+						CameraSnapshot activeSnapForFov;
+						const bool activeAcceptsFov = activeCamForFov
+							&& CameraIntrospection::CaptureCameraSnapshot( *activeCamForFov, activeSnapForFov )
+							&& activeSnapForFov.type == RISE::CameraSnapshot::Pinhole;
+						if( !activeAcceptsFov && effectiveCamera.hasFov )
+						{
+							effectiveCamera.hasFov = false;
+							viewFovSkippedActiveNonPinhole = true;
+						}
+					}
+				}
+
+				wantCameraOverride =
+					( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
+						effectiveCamera.hasUp || effectiveCamera.hasFov );
+
 				if( isObjectMap ) {
 					doObjectMapRenderWork();
 					return;
@@ -3564,14 +3679,17 @@ namespace RISE
 					activeCam, capturedCam );
 				restoreGuard.Arm();
 
-				// Model-B F2 slice S3: sample-count override.  Armed
-				// BEFORE the apply (same "arm before mutate" discipline as
-				// restoreGuard above) so a throw between here and the
-				// explicit tail restore still restores via the destructor.
-				// `origSamples` was already captured (GetSampleCountOverride,
-				// before ANY mutation) by the caller, outside this lambda.
+				// Model-B F2 slice S3: sample-count override.  Armed BEFORE the
+				// apply (same "arm before mutate" discipline as restoreGuard
+				// above) so a throw between here and the explicit tail restore
+				// still restores via the destructor.  Re-review P1 fix:
+				// `origSamples` is captured HERE, fresh, from the `rast` this
+				// closure already resolved above (guaranteed non-null by the
+				// bail-out at the top of this closure) -- never from a pointer
+				// cached on the calling thread before park.
 				// (No FrameStore/film interaction, so its position relative
 				// to fsGuard/restoreGuard's load-bearing order is free.)
+				const int origSamples = rast->GetSampleCountOverride();
 				SampleCountRestoreGuard sampleGuard( *rast, origSamples );
 				sampleGuard.Arm();
 
@@ -3787,6 +3905,12 @@ namespace RISE
 					progressGuard.Disarm();
 				}
 				renderRan = true;
+				// P1 fix: capture the effective sample count NOW, under the
+				// park (rast is guaranteed valid here) -- the tail (after
+				// doRenderWork returns, possibly after the park has released)
+				// must never dereference `rast` again; it reads this captured
+				// int instead (see the `readBack` site below).
+				productionSampleReadBack = rast->GetSampleCountOverride();
 
 				// ---- Restore, in reverse order, BEFORE unlocking (live mode)
 				// / returning (headless mode) -- ReadDocument's byte-identity
@@ -3914,7 +4038,7 @@ namespace RISE
 					res.message     = "render failed: " + thrownMessage;
 					return res;
 				}
-			} else if( mController && ( wantFilmOverride || wantCameraOverride ) ) {
+			} else if( mController && ( wantFilmOverride || wantCameraOverrideForRouting ) ) {
 				SceneEditController::RenderJobId controllerJobId = 0;
 				bool parked = false;
 				std::string thrownMessage;
@@ -4031,6 +4155,21 @@ namespace RISE
 			}
 			res.renderJobId = renderJobId;
 
+			// P1 fix: a `view` resolution failure (unknown name / a resolved
+			// but non-pinhole NAMED VIEW) OR the production "no active
+			// rasterizer" bail is now detected fresh INSIDE
+			// doRenderWork (under the park -- see doRenderWork's top) rather
+			// than on the calling thread before dispatch, so it can no
+			// longer `return res;` directly from there.
+			// res.ok/res.integrator/res.message were already fully populated
+			// inside doRenderWork for this case -- just stop here so the
+			// generic renderRan/rendered/HasImage fallback below (which would
+			// overwrite the specific message with a generic "render failed")
+			// never runs.
+			if( specificFailureReported ) {
+				return res;
+			}
+
 			// P1-B (belt-and-braces, fail-loud): a camera override field that
 			// failed to apply means the requested pose was NOT achieved --
 			// report ok=false rather than silently rendering un-overridden
@@ -4091,6 +4230,16 @@ namespace RISE
 			res.previewWidth     = res.width;
 			res.previewHeight    = res.height;
 			res.cameraOverridden = overrodeCamera;
+			// Re-review P2 fix: a valid PINHOLE named view rendered through a
+			// non-pinhole ACTIVE camera got its pose applied but its FOV
+			// honestly dropped (see doRenderWork's view-resolution block) --
+			// note that here rather than silently reporting an unqualified
+			// success.
+			if( viewFovSkippedActiveNonPinhole && res.ok ) {
+				res.message += " (view \"" + params.view + "\": FOV not applied -- "
+					"the active camera has no editable field-of-view (only a pinhole "
+					"camera does); the view's pose (location/lookat/up) WAS applied)";
+			}
 
 			// Model-B F2 slice S3 (production) / Toolkit slice 2 (draft):
 			// report the sample-count outcome.  DRAFT and PRODUCTION are
@@ -4202,7 +4351,7 @@ namespace RISE
 				if( overrodeSamples ) {
 					res.effectiveSamples = params.samples;
 				} else {
-					const int readBack = rast->GetSampleCountOverride();
+					const int readBack = productionSampleReadBack;   // P1 fix: captured under the park inside doRenderWork -- never re-dereference `rast` here
 					res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
 					if( wantSamplesOverride && res.ok ) {
 						res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";

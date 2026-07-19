@@ -28,6 +28,7 @@
 #ifndef PATHTRACING_INTEGRATOR_
 #define PATHTRACING_INTEGRATOR_
 
+#include <atomic>
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IScene.h"
@@ -122,11 +123,41 @@ namespace RISE
 			//! same stateless/read-only-after-construction contract.
 			const IMaterial*	pClayMaterial;
 
+		private:
+			//! Backing storage for ConstructionCount()/DestructionCount()
+			//! (see the accessors' doc, declared in the public section
+			//! below).  Defined out-of-line in the .cpp.
+			static std::atomic<long long> sConstructionCount;
+			static std::atomic<long long> sDestructionCount;
+
 		public:
 			PathTracingIntegrator(
 				const ManifoldSolverConfig& smsConfig,
 				const StabilityConfig& stabilityCfg
 				);
+
+			//! P1-a leak-fix test hook (review-p2c): a process-wide
+			//! construction/destruction counter.  Always compiled in --
+			//! test binaries link the SAME .o as `bin/rise` (see the
+			//! Filelist-driven build; there is no separate "test build" of
+			//! the library to gate a counter behind), so "guarded so
+			//! production is unaffected" means zero BEHAVIORAL footprint
+			//! rather than conditional compilation: two relaxed atomic
+			//! increments per instance, nothing in production code ever
+			//! branches on the result.  Exists because a refcount/lifetime
+			//! assertion is otherwise hard to make from outside the class --
+			//! LOG_TRACK_MEMORY (Log.cpp) is a library-wide recompile flag,
+			//! impractical for a fast automated regression test.  Lets a
+			//! test construct+destroy N rasterizers (each owning one
+			//! PathTracingIntegrator) and assert
+			//! `DestructionCount() == ConstructionCount()` -- i.e. every
+			//! constructed integrator was actually destroyed, which fails
+			//! (destruction count lags) under the pre-fix leak (an
+			//! unbalanced extra `addref()` in the rasterizer ctor left the
+			//! integrator's refcount at 1 forever, so `safe_release` in the
+			//! rasterizer dtor never reached 0 and the dtor never ran).
+			static long long ConstructionCount() { return sConstructionCount.load( std::memory_order_relaxed ); }
+			static long long DestructionCount() { return sDestructionCount.load( std::memory_order_relaxed ); }
 
 			//! Configure the path-vertex loop cap (see mMaxPathDepth's doc).
 			//! DEPTH ACCOUNTING: the main loop is
@@ -167,29 +198,66 @@ namespace RISE
 			//! IntegrateRayTemplated / IntegrateRayHWSS (before
 			//! IntegrateFromHit) -- so THAT is where the directly-visible-
 			//! background suppression lives (an `if( mIndirectOnly ) return
-			//! zero;` there); the loop's own env-miss adds are reachable
-			//! only for CONTINUATION rays (depth >= 1 = indirect environment
-			//! lighting) and are kept.
+			//! zero;` there).
 			//!
-			//! review-p3 P2-a: the direct term at the camera-visible vertex
-			//! is TWO estimator halves, both of which must be suppressed --
-			//! NEE@depth0 (the light-sampling strategy's shadow-ray
-			//! contribution, MIS-weighted) PLUS emission@depth1-from-that-
-			//! vertex (the BSDF/phase-sampled ray fired FROM the camera-
-			//! visible vertex that happens to land directly on an emitter --
-			//! the MIS *partner* of the depth0 NEE, arriving one loop
-			//! iteration later).  Suppressing only the NEE half left
-			//! `indirect` rendering direct x w_bsdf instead of zero
-			//! whenever the BSDF-sampling strategy has non-negligible pdf
-			//! toward the light (a large area light or a bright env -- a
-			//! small/distant lamp has w_bsdf approx 0 and hid the leak).
-			//! So the two gates are NOT symmetric:
-			//!   - NEE gate:      LOOP-LOCAL `depth == 0` only.
-			//!   - emission gate: LOOP-LOCAL `depth <= 1`.
-			//! depth>=2 emission is the MIS partner of NEE at depth>=1
-			//! (genuinely indirect transport) and stays untouched; NEE at
-			//! depth>=1 is genuinely indirect and stays untouched too (no
-			//! gate applies there at all).
+			//! review-p2c P2-b: THE RULE IS "SUPPRESS EXACTLY WHEN AN MIS
+			//! PARTNER WAS SUPPRESSED", NOT "SUPPRESS BY DEPTH ALONE".  The
+			//! direct term at the camera-visible vertex is estimated by TWO
+			//! MIS strategies that must be suppressed AS A PAIR or not at
+			//! all:
+			//!   - NEE@depth0: the light-sampling strategy's shadow-ray
+			//!     contribution, MIS-weighted.  Suppressed unconditionally
+			//!     at LOOP-LOCAL `depth == 0` -- NEE at the camera-visible
+			//!     vertex is always evaluable there is no ambiguity.
+			//!   - emission/env-hit@depth1: the BSDF-sampled ray fired FROM
+			//!     the camera-visible vertex that happens to land directly
+			//!     on an emitter or the environment -- the MIS *partner* of
+			//!     the depth0 NEE, arriving one loop iteration later.  This
+			//!     partner exists ONLY when NEE was actually PERFORMED (and
+			//!     hence suppressed) at depth0 -- which requires the depth0
+			//!     scatter to have sampled a NON-delta BSDF/SPF lobe.  NEE
+			//!     cannot sample through a delta (mirror/glass) lobe, so a
+			//!     delta depth0 scatter has NO suppressed NEE partner: the
+			//!     depth1 emission/env hit reached through it is the SOLE
+			//!     estimator of that specular-transport path and suppressing
+			//!     it would delete real energy (a mirror reflecting an area
+			//!     light, or showing the environment, must stay lit/visible
+			//!     under `indirect` -- that is specular transport, not
+			//!     direct illumination of the mirror).
+			//! So the gate is:
+			//!   - NEE gate:        LOOP-LOCAL `depth == 0`, unconditional.
+			//!   - emission gate:   LOOP-LOCAL `depth == 0` (the camera ray
+			//!     directly hit an emitter -- trivially direct, no MIS
+			//!     question) OR (`depth == 1` AND the depth0 scatter was
+			//!     NON-delta).
+			//!   - env-miss gate:   LOOP-LOCAL `depth == 1` AND the depth0
+			//!     scatter was NON-delta.  (The env-miss code lives inside
+			//!     the loop's `needsIntersection` block, reachable only at
+			//!     depth>=1 -- a directly-visible env background at depth==0
+			//!     never reaches it; that case is the top-level primary-miss
+			//!     branch mentioned above.)
+			//! Both loops track "was the
+			//!     immediately-preceding scatter delta" in a per-iteration
+			//!     `bPassedThroughSpecular` local (Pel/NM: shared with the
+			//!     pre-existing SMS double-count-prevention flag, carried
+			//!     across recursive/delegated calls via RAY_STATE::
+			//!     smsPassedThroughSpecular so BSSRDF/medium continuations
+			//!     inherit the correct value; HWSS: a same-named local scoped
+			//!     to IntegrateFromHitHWSS, since that loop is always entered
+			//!     fresh -- the SPF-only/SSS fallbacks above it delegate to
+			//!     IntegrateFromHitNM, which tracks its own copy).
+			//! depth>=2 emission/env-hit is always the MIS partner of NEE at
+			//! depth>=1 (genuinely indirect transport, no specular-history
+			//! ambiguity) and stays untouched; NEE at depth>=1 is genuinely
+			//! indirect and stays untouched too (no gate applies there at
+			//! all).  Applied to BOTH the emitter-hit contribution AND the
+			//! loop's own env-miss adds (per-object radiance map and global
+			//! radiance map) in both loops -- the env-miss adds were
+			//! previously either over-suppressed (Pel/NM: unconditionally
+			//! gated on raw depth<=1 like emission, deleting specular-env
+			//! reflections) or completely ungated (HWSS: no `indirect`
+			//! suppression at all, double-counting depth==1 hits whose NEE
+			//! partner was suppressed).
 			//!
 			//! Both gates use the raw LOOP-LOCAL `depth`, deliberately NOT
 			//! `depth - startDepth`: the HWSS loop mid-path-delegates to
@@ -199,8 +267,8 @@ namespace RISE
 			//! an offset check would spuriously re-trigger at that
 			//! delegated call's first iteration even when the ORIGINAL
 			//! global depth was already > 1 (genuine indirect transport).
-			//! A raw `depth <= 1` compare has no such ambiguity: every
-			//! mid-path re-entry (HWSS delegation, the BSSRDF continuation's
+			//! A raw depth compare has no such ambiguity: every mid-path
+			//! re-entry (HWSS delegation, the BSSRDF continuation's
 			//! recursive caster call, and the medium phase-sampled
 			//! continuation at startDepth=1) passes the CURRENT nonzero
 			//! depth onward, so the loop-local `depth` can never return to
@@ -211,16 +279,15 @@ namespace RISE
 			//! continuation, which IS the camera-visible vertex's MIS
 			//! partner by construction -- see IntegrateRayTemplated's
 			//! medium-scatter branch, `IntegrateFromHitForTag<Tag>(...,
-			//! /*startDepth*/1, ...)`).  Both cases are correctly direct.
+			//! /*startDepth*/1, ...)`, whose smsPassedThroughSpecular_initial
+			//! is always false -- correct, since the medium phase-function
+			//! scatter it followed is never delta and its NEE was suppressed
+			//! unconditionally just above it).
 			//! The continuation ray is STILL sampled and traced at every
-			//! vertex -- only the depth<=1 emission / depth==0 NEE
-			//! contribution is zeroed, so every indirect bounce is
-			//! untouched and full-fidelity.  Net effect: a directly-lit
-			//! diffuse surface (or a directly-visible emitter/env
-			//! background) reads BLACK at the camera-visible vertex, INCLUDING
-			//! its BSDF-sampled MIS partner; energy that arrives via a
-			//! genuine >=2-bounce path reads normally.  Default false;
-			//! every existing caller is byte-identical.
+			//! vertex regardless of suppression -- only the contribution is
+			//! zeroed, so the sampler stream stays in lockstep across modes
+			//! and every indirect bounce is untouched and full-fidelity.
+			//! Default false; every existing caller is byte-identical.
 			void SetIndirectOnly( bool b ) { mIndirectOnly = b; }
 
 			//! GUI render modes P2b `clay_lights` mode (docs/gui/RENDER_MODES.md

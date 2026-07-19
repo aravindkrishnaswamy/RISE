@@ -2649,6 +2649,42 @@ static bool RenderBeautyVariantPipeline(
 // blackened default shader from a working one.  Restricting to the SSS
 // sphere's own pixel region makes the measurement actually about the
 // thing under test.
+//! Peak luminance inside a bbox.  For "did a SPECULAR path survive?"
+//! questions the MEAN is the wrong metric: a mirror reflects the WHOLE
+//! room, and under `indirect` the room's direct lighting legitimately goes
+//! dark, so the mean collapses even when the reflected highlight is intact.
+//! The reflected lamp is a small, very bright region -- peak luminance is
+//! what actually tracks "the specular transport path still contributes".
+//! `bbox` is in the REFERENCE image's pixel space (typically a full-res
+//! objectmap render); `refW`/`refH` are that reference's dims.  BeautyVariant
+//! modes render at their own REDUCED divisor (deep_reflect quarter-res,
+//! indirect half-res), so the bbox must be RESCALED into `d`'s space --
+//! applying full-res coordinates to a quarter-res image simply misses the
+//! image entirely and silently reports "nothing found".
+static double MaxLuminanceInBBox( const Decoded& d, const BBox& bbox,
+                                  unsigned int refW, unsigned int refH )
+{
+	double best = -1.0;
+	if( bbox.found == 0 || refW == 0 || refH == 0 || d.w == 0 || d.h == 0 ) return best;
+	const double sx = (double)d.w / (double)refW;
+	const double sy = (double)d.h / (double)refH;
+	unsigned int y0 = (unsigned int)( bbox.minY * sy );
+	unsigned int y1 = (unsigned int)( bbox.maxY * sy );
+	unsigned int x0 = (unsigned int)( bbox.minX * sx );
+	unsigned int x1 = (unsigned int)( bbox.maxX * sx );
+	if( y1 >= d.h ) y1 = d.h - 1;
+	if( x1 >= d.w ) x1 = d.w - 1;
+	if( y0 > y1 || x0 > x1 ) return best;
+	for( unsigned int y = y0; y <= y1 && y < d.h; ++y ) {
+		for( unsigned int x = x0; x <= x1 && x < d.w; ++x ) {
+			const Px& q = d.at( x, y );
+			const double lum = ( (double)q[0] + (double)q[1] + (double)q[2] ) / 3.0;
+			if( lum > best ) best = lum;
+		}
+	}
+	return best;
+}
+
 static double MeanLuminanceInBBox( const Decoded& d, const BBox& bbox )
 {
 	if( bbox.found == 0 ) return -1.0;
@@ -3176,6 +3212,173 @@ static void RunIndirectPrimaryMediumScatterTest()
 	pJob->release();
 }
 
+//----------------------------------------------------------------------
+// review-p2c P2-b: MIS-partner-existence gating regressions for
+// PathTracingIntegrator::SetIndirectOnly.
+//
+// Scenario (e): a mirror reflecting an area light.  The depth==0 scatter
+// is DELTA (perfectreflector_material has no NEE-sampleable lobe -- Pdf()
+// is zero/undefined for a delta BSDF, so NEE contributes nothing at that
+// vertex either way).  With no suppressed NEE partner at depth==0, the
+// depth==1 BSDF-sampled emission hit (the mirror showing the lamp) is the
+// SOLE estimator of that specular-transport path and must survive under
+// "indirect" -- suppressing it (the pre-fix raw `depth<=1` rule, with no
+// delta check) deletes real energy.  Reuses kSceneClayFloorMirror (already
+// validated for the P1-c clay/MIS material-independence test above): a
+// perfect-mirror floor angled so the camera sees the floor reflecting a
+// bright sphere lamp positioned directly above.
+//----------------------------------------------------------------------
+static void RunIndirectModeMirrorReflectsLightTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"indirect\" scenario (e), review-p2c P2-b -- mirror reflecting an "
+	             "area light STAYS LIT (delta depth==0 scatter has no suppressed NEE partner) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_mirror_light.RISEscene", kSceneClayFloorMirror );
+	Check( !scenePath.empty(), "wrote the mirror-floor scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "mirror-floor scene loads via the CST path (indirect test)" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "mirror-floor session wraps (indirect test)" );
+	if( !session ) { pJob->release(); return; }
+
+	// Locate the MIRROR FLOOR's own pixels via a reference objectmap render.
+	// Measuring the WHOLE FRAME here would repeat the "measure the thing,
+	// not the frame" mistake the P1-b SSS test made: this fixture ALSO shows
+	// the lamp sphere directly, and `indirect` correctly blacks that out (a
+	// directly-visible emitter IS direct light), dragging a whole-frame mean
+	// below any threshold calibrated as though the reflection were the only
+	// content.  The claim under test is about the REFLECTION -- so measure
+	// the reflecting surface.
+	BBox floorBBox{ 0, 0, 0, 0, 0 };
+	unsigned int objW = 0, objH = 0;
+	{
+		AgentRenderParams objP;
+		objP.renderTarget = AgentRenderTarget::ObjectMap;
+		AgentRenderResult objR = session->Render( objP );
+		Check( objR.ok, "mirror-floor reference objectmap render succeeds" );
+		Decoded objDec;
+		if( objR.ok && DecodePng( objR.png, objDec ) ) {
+			objW = objDec.w; objH = objDec.h;
+			const LegendEntry* floorLegend = FindLegend( objR, "floor_obj" );
+			Check( floorLegend != nullptr, "objectmap legend carries floor_obj" );
+			if( floorLegend ) {
+				unsigned char cb[3];
+				if( HexToBytes( floorLegend->colorHex, cb ) ) {
+					floorBBox = ScanBBoxForColor( objDec, cb );
+				}
+			}
+		}
+	}
+	Check( floorBBox.found > 0, "the mirror floor occupies a nonzero pixel region" );
+
+	auto peakLuminanceOnFloor = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		return MaxLuminanceInBBox( dec, floorBBox, objW, objH );
+	};
+
+	const double deepReflectMean = peakLuminanceOnFloor( Implementation::ViewportRenderMode::DeepReflect );
+	const double indirectMean    = peakLuminanceOnFloor( Implementation::ViewportRenderMode::Indirect );
+	std::printf( "  FLOOR REGION PEAK: deep_reflect=%.2f indirect=%.2f\n", deepReflectMean, indirectMean );
+
+	Check( deepReflectMean > 15.0,
+	       "deep_reflect: the floor region PEAK is bright -- the mirror reflects the lamp (sanity: the fixture shows a "
+	       "visible reflection)" );
+	// MONEY ASSERTION (e): the mirror floor's brightness is ENTIRELY the
+	// depth==1 BSDF-sampled emission hit reached through a DELTA depth==0
+	// scatter -- there is no suppressed NEE partner at a delta vertex, so
+	// this must survive under "indirect".  Pre-fix (raw depth<=1
+	// suppression with no delta check), this reflection was unconditionally
+	// zeroed under "indirect" regardless of the depth==0 scatter type --
+	// verified by temporarily reverting the `!bPassedThroughSpecular` delta
+	// check (i.e. restoring `depth <= 1` unconditional suppression) and
+	// re-running: indirectMean collapses to ~0.
+	Check( indirectMean > deepReflectMean * 0.5,
+	       "MONEY ASSERTION (e): the MIRROR FLOOR's PEAK stays bright under \"indirect\" -- the reflected-lamp highlight survives (the floor MEAN legitimately drops: the mirror also reflects a room whose direct lighting indirect removes). A delta depth==0 "
+	       "scatter has no suppressed NEE partner, so its depth==1 BSDF-sampled emission hit is the sole "
+	       "estimator and must survive (review-p2c P2-b)" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// Scenario (f): a diffuse surface lit ONLY by a bright uniform environment
+// (no other light source, no other geometry to generate genuine >=2-bounce
+// GI).  The depth==0 scatter is NON-delta (a Lambertian lobe), so a real
+// NEE partner exists -- BOTH halves of the direct-env estimator (env-NEE
+// at depth==0 AND its depth==1 BSDF-sampled MIS partner, the continuation
+// ray escaping to the env map) must be suppressed under "indirect".  This
+// is the P2-b(ii) regression: the loop's own env-miss adds were reverted
+// to UNCONDITIONAL in an earlier fix (P2b review), so pre-fix this scene
+// still shows roughly half its direct-env brightness under "indirect" (the
+// env-NEE half suppressed, the BSDF-sampled half leaking through).
+//----------------------------------------------------------------------
+static const char* const kSceneDiffuseUnderBrightEnv =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"uniformcolor_painter\n{\n\tname env_pnt\n\tcolor 3 3 3\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 24\n\tpixel_filter box\n\toidn_denoise false\n\tradiance_map env_pnt\n\tradiance_scale 1.0\n\tradiance_background false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"box_geometry\n{\n\tname plane_geo\n\twidth 12\n\theight 12\n\tdepth 0.2\n}\n\n"
+	"standard_object\n{\n\tname plane_obj\n\tgeometry plane_geo\n\tmaterial mat\n\tposition 0 0 0\n}\n";
+
+static void RunIndirectModeDiffuseUnderEnvSuppressedTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: \"indirect\" scenario (f), review-p2c P2-b -- diffuse surface under "
+	             "a bright uniform env is NOT direct-env-lit (depth==1 env-hit MIS partner also suppressed) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_indirect_diffuse_env.RISEscene", kSceneDiffuseUnderBrightEnv );
+	Check( !scenePath.empty(), "wrote the diffuse-under-env scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "diffuse-under-env scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "diffuse-under-env session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	auto meanLuminance = [&]( Implementation::ViewportRenderMode mode ) -> double
+	{
+		AgentRenderParams p;
+		p.renderTarget = AgentRenderTarget::ViewMode;
+		p.viewMode     = mode;
+		AgentRenderResult r = session->Render( p );
+		if( !r.ok ) { Check( false, "render succeeds" ); return -1.0; }
+		Decoded dec;
+		if( !DecodePng( r.png, dec ) ) { Check( false, "PNG decodes" ); return -1.0; }
+		return MeanLuminance( dec );
+	};
+
+	const double deepReflectMean = meanLuminance( Implementation::ViewportRenderMode::DeepReflect );
+	const double indirectMean    = meanLuminance( Implementation::ViewportRenderMode::Indirect );
+	std::printf( "  deep_reflect=%.2f indirect=%.2f\n", deepReflectMean, indirectMean );
+
+	Check( deepReflectMean > 40.0,
+	       "deep_reflect: the plane reads brightly lit by the uniform env (sanity -- the fixture is actually lit)" );
+	// MONEY ASSERTION (f): with no other light source and no other geometry
+	// to generate genuine >=2-bounce GI, "indirect" must read NEAR-BLACK --
+	// BOTH halves of the direct-env estimator are suppressed at a non-delta
+	// depth==0 vertex.  Pre-fix, the env-miss add was UNCONDITIONAL --
+	// verified by temporarily removing the P2-b `suppressIndirectEnv` gate
+	// (restoring the unconditional add) and re-running: indirectMean reads
+	// well above this threshold.
+	Check( indirectMean >= 0.0 && indirectMean < 8.0,
+	       "MONEY ASSERTION (f): \"indirect\" on a diffuse surface under a bright uniform env reads NEAR-BLACK -- "
+	       "the depth==1 env-hit MIS partner of the suppressed depth==0 env-NEE is ALSO suppressed "
+	       "(review-p2c P2-b)" );
+	Check( indirectMean < deepReflectMean - 30.0,
+	       "MONEY ASSERTION (f2): \"indirect\" is MEANINGFULLY below \"deep_reflect\" on the same fixture" );
+
+	pJob->release();
+}
+
 int main()
 {
 	RunPerModeEndToEndTest();
@@ -3205,6 +3408,8 @@ int main()
 	RunClayLightsMaterialIndependenceMirrorTest();
 	RunClayLightsSSSBypassTest();
 	RunIndirectPrimaryMediumScatterTest();
+	RunIndirectModeMirrorReflectsLightTest();
+	RunIndirectModeDiffuseUnderEnvSuppressedTest();
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

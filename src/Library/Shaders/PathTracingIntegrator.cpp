@@ -1409,6 +1409,11 @@ namespace
 // Construction / destruction
 //////////////////////////////////////////////////////////////////////
 
+// P1-a leak-fix test hook (review-p2c): see ConstructionCount()/
+// DestructionCount()'s doc in the header.
+std::atomic<long long> PathTracingIntegrator::sConstructionCount( 0 );
+std::atomic<long long> PathTracingIntegrator::sDestructionCount( 0 );
+
 PathTracingIntegrator::PathTracingIntegrator(
 	const ManifoldSolverConfig& smsConfig,
 	const StabilityConfig& stabilityCfg
@@ -1473,6 +1478,8 @@ PathTracingIntegrator::PathTracingIntegrator(
 	// review-p3 P3 fix: same tracking-asymmetry fix as the trio above --
 	// safe_release( pClayMaterial ) runs unconditionally in the dtor.
 	GlobalLog()->PrintNew( pClayMaterial, __FILE__, __LINE__, "clay_lights NEE material" );
+
+	sConstructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
 
 PathTracingIntegrator::~PathTracingIntegrator()
@@ -1482,6 +1489,8 @@ PathTracingIntegrator::~PathTracingIntegrator()
 	safe_release( pClayBRDF );
 	safe_release( pClaySPF );
 	safe_release( pClayPainter );
+
+	sDestructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1883,17 +1892,29 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// Miss — environment / radiance map
 			if( !bHit )
 			{
+				// GUI render modes P2b `indirect` (review-p2c P2-b fix): a
+				// continuation ray landing on the env is reachable only at
+				// depth>=1 (this block is inside `needsIntersection`) -- the
+				// primary camera-ray miss is a separate, top-level path
+				// (IntegrateRayTemplated) where the direct-background
+				// suppression actually lives (see SetIndirectOnly's doc).
+				// depth>=2 is always genuinely indirect.  depth==1 is the
+				// same MIS-partner question as the emission gate above: this
+				// BSDF-sampled env hit is env-NEE's suppressed MIS partner
+				// ONLY when depth==0's scatter was non-delta (env-NEE was
+				// actually performed and suppressed there); when depth==0
+				// was delta (mirror/glass showing the env), there is no
+				// suppressed partner and this is the sole estimator of that
+				// specular-transport path, so it must survive.
+				const bool suppressIndirectEnv = mIndirectOnly &&
+					depth == 1 && !bPassedThroughSpecular;
 				// Per-object radiance map (via material)
 				if( pRadianceMap )
 				{
 					Value envRadiance = PTEvalRadianceMap<Tag>( pRadianceMap, currentRay, rast, tag );
-					// A continuation ray (this block is inside `needsIntersection`,
-					// reachable only at depth>=1) reaching the env IS indirect
-					// environment lighting -- KEPT under `indirect`.  The
-					// primary camera-ray miss is a separate, top-level path
-					// (IntegrateRayTemplated) where the direct-background
-					// suppression actually lives -- see SetIndirectOnly's doc.
-					result = result + throughput * envRadiance;
+					if( !suppressIndirectEnv ) {
+						result = result + throughput * envRadiance;
+					}
 				}
 				else if( scene.GetGlobalRadianceMap() )
 				{
@@ -1937,9 +1958,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						}
 					}
 
-					// Continuation-ray env hit (depth>=1) -- indirect
-					// environment lighting, kept under `indirect`.
-					result = result + throughput * envRadiance;
+					// Continuation-ray env hit -- see suppressIndirectEnv's
+					// doc above for the exact depth==1 MIS-partner rule.
+					if( !suppressIndirectEnv ) {
+						result = result + throughput * envRadiance;
+					}
 
 #ifdef RISE_ENABLE_OPENPGL
 					if( guidingRecorder && guidingRecorder->active &&
@@ -2153,22 +2176,30 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					emission = ClampContribution( emission, stabilityConfig.directClamp );
 				}
 
-				// GUI render modes P2b `indirect` (review-p3 P2-a fix):
-				// suppress emission at depth==0 (the directly-visible
-				// emitter itself) AND depth==1 (the BSDF-sampled MIS
-				// partner of the depth==0 NEE this same loop suppresses
-				// below -- see SetIndirectOnly's doc (depth==0, not
-				// depth==startDepth -- see that doc for why the depth==0
-				// half of this reasoning uses a raw depth compare).  The
-				// direct term at the camera-visible vertex is NEE@depth0
-				// + emission@depth1-from-that-vertex: suppressing only
-				// the NEE half left `indirect` rendering direct x
-				// w_bsdf instead of zero on any light where the BSDF-
-				// sampling strategy has non-negligible pdf (a small lamp
-				// hides this; a large area light or bright env does not).
-				// depth>=2 emission is the MIS partner of NEE at
-				// depth>=1 (genuinely indirect) and stays untouched.
-				if( !( mIndirectOnly && depth <= 1 ) ) {
+				// GUI render modes P2b `indirect` (review-p2c P2-b fix):
+				// gate on whether an MIS PARTNER EXISTS, not on depth alone.
+				// depth==0 is unconditionally suppressed (the directly-
+				// visible emitter itself -- see SetIndirectOnly's doc for
+				// why this uses a raw depth compare, not depth==startDepth).
+				// depth==1 is suppressed ONLY when the depth==0 scatter was
+				// NON-delta (`!bPassedThroughSpecular`) -- that is exactly
+				// the case where NEE was actually performed (and suppressed)
+				// at depth==0, so this BSDF-sampled emission hit is NEE's
+				// MIS partner; suppressing it too keeps the "direct at the
+				// camera vertex" pair (NEE + its BSDF-sampled partner) fully
+				// zeroed instead of leaving the unweighted partner half in.
+				// When depth==0's scatter WAS delta (mirror/glass), NEE
+				// cannot sample through a delta BSDF, so
+				// there is no suppressed partner at depth==0 to compensate
+				// for -- this depth==1 emission is the ONLY estimator of
+				// that specular-transport path and must survive (a mirror
+				// reflecting an area light must still show it under
+				// `indirect`).  depth>=2 emission is always the MIS partner
+				// of NEE at depth>=1 (genuinely indirect) and stays
+				// untouched regardless of specular history.
+				const bool suppressIndirectEmission = mIndirectOnly &&
+					( depth == 0 || ( depth == 1 && !bPassedThroughSpecular ) );
+				if( !suppressIndirectEmission ) {
 					result = result + throughput * emission;
 				}
 
@@ -2265,7 +2296,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
-								// NEE at BSSRDF entry point
+								// NEE at BSSRDF entry point.  GUI render modes P2b
+								// `indirect` (review-p2c P2-c fix): this is the
+								// SSS analog of the surface NEE gate above --
+								// mask it the same way (LOOP-LOCAL depth==0
+								// only; still EVALUATED for RNG lockstep).
+								// Previously ungated, so a directly-lit
+								// translucent surface (skin, wax, marble) kept
+								// showing its direct SSS glow under `indirect`.
 								if( pLS )
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
@@ -2274,7 +2312,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
-									result = result + sssDirectContrib;
+									if( !( mIndirectOnly && depth == 0 ) ) {
+										result = result + sssDirectContrib;
+									}
 								}
 
 								// BSSRDF continuation via CastRay sub-path
@@ -2426,6 +2466,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								// GUI render modes P2b `indirect` (review-p2c
+								// P2-c fix): same SSS-analog-of-surface-NEE
+								// gate as the diffusion-profile site above.
 								if( pLS )
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
@@ -2434,7 +2477,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
-									result = result + sssDirectContrib;
+									if( !( mIndirectOnly && depth == 0 ) ) {
+										result = result + sssDirectContrib;
+									}
 								}
 
 								// BSSRDF continuation via CastRay sub-path
@@ -3398,9 +3443,23 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 		{
 			pAOV->normal = ri.geometric.vNormal;
-			pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-				? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-				: RISEPel( 1, 1, 1 );
+			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
+			// under mClayOverride every surface's REFLECTANCE is the
+			// substituted clay BRDF (see SetClayOverride's doc) -- the
+			// albedo AOV captured here for OIDN must match, or the
+			// DENOISED clay output reacquires the authored material's
+			// colouration via OIDN's albedo-guided filtering, defeating
+			// the mode's material-independence contract exactly where
+			// users look at it (the variant pipeline runs with OIDN on).
+			// This is the FAST-prefilter hook (camera ray's first hit,
+			// evaluated before IntegrateFromHit's loop ever substitutes
+			// pBRDF) -- the ACCURATE-prefilter hook inside the loop
+			// already reads the loop-local `pBRDF`, which IS already
+			// clay-substituted there, so only this site needed the fix.
+			pAOV->albedo = mClayOverride ? pClayBRDF->albedo( ri.geometric ) :
+				( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+					? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+					: RISEPel( 1, 1, 1 ) );
 			pAOV->valid = true;
 		}
 	}
@@ -3774,9 +3833,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
 		pAOV->normal = firstHit.geometric.vNormal;
-		pAOV->albedo = ( firstHit.pMaterial && firstHit.pMaterial->GetBSDF() )
-			? firstHit.pMaterial->GetBSDF()->albedo( firstHit.geometric )
-			: RISEPel( 1, 1, 1 );
+		// GUI render modes P2b `clay_lights` (review-p2c P2-d fix, HWSS
+		// twin of the RGB/NM IntegrateRay fast-mode hook -- see that
+		// site's fuller comment).
+		pAOV->albedo = mClayOverride ? pClayBRDF->albedo( firstHit.geometric ) :
+			( ( firstHit.pMaterial && firstHit.pMaterial->GetBSDF() )
+				? firstHit.pMaterial->GetBSDF()->albedo( firstHit.geometric )
+				: RISEPel( 1, 1, 1 ) );
 		pAOV->valid = true;
 	}
 #endif
@@ -3868,6 +3931,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
 	bool needsIntersection = false;
+
+	// GUI render modes P2b `indirect` (review-p2c P2-b fix): HWSS twin of
+	// the Pel/NM loop's `bPassedThroughSpecular` -- tracks whether the
+	// PREVIOUS iteration's BSDF sample (i.e. the depth==0 scatter, by the
+	// time depth==1 is being processed) was a delta/specular event.  Used
+	// only to gate the depth==1 MIS-partner suppression below (this loop is
+	// always entered fresh -- the SPF-only and SSS fallbacks above delegate
+	// to IntegrateFromHitNM, which tracks its own copy -- so a plain local
+	// initialized false is correct with no carried-in initial value needed).
+	bool bPassedThroughSpecular = false;
 
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
@@ -4020,6 +4093,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( !bHit )
 			{
+				// GUI render modes P2b `indirect` (review-p2c P2-b fix, HWSS
+				// twin of the Pel/NM loop's `suppressIndirectEnv` -- see that
+				// site's doc for the full MIS-partner rationale).  Was
+				// previously UNGATED here (a distinct bug from the Pel/NM
+				// loop's depth<=1 over-suppression): every HWSS BSDF-sampled
+				// env hit at any depth survived under `indirect`, including
+				// depth==1 hits whose env-NEE partner (at depth==0) was
+				// suppressed just above -- a double count in the opposite
+				// direction.
+				const bool suppressIndirectEnv = mIndirectOnly &&
+					depth == 1 && !bPassedThroughSpecular;
 				// Environment contribution per wavelength
 				if( scene.GetGlobalRadianceMap() )
 				{
@@ -4052,9 +4136,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							}
 						}
 
-						// Continuation-ray env hit (depth>=1) -- indirect env
-						// lighting, kept under `indirect` (HWSS twin).
-						hwssResult[w] += throughputComp[w] * envRadiance;
+						// Continuation-ray env hit -- see suppressIndirectEnv's
+						// doc above for the exact depth==1 MIS-partner rule.
+						if( !suppressIndirectEnv ) {
+							hwssResult[w] += throughputComp[w] * envRadiance;
+						}
 					}
 				}
 				else if( pRadianceMap )
@@ -4062,8 +4148,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) continue;
-						hwssResult[w] += throughputComp[w] *
-							pRadianceMap->GetRadianceNM( currentRay, rast, swl.lambda[w] );
+						if( !suppressIndirectEnv ) {
+							hwssResult[w] += throughputComp[w] *
+								pRadianceMap->GetRadianceNM( currentRay, rast, swl.lambda[w] );
+						}
 					}
 				}
 				break;
@@ -4256,13 +4344,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					if( depth > 0 ) {
 						emission = ClampContribution( emission, stabilityConfig.directClamp );
 					}
-					// GUI render modes P2b `indirect` (HWSS twin, review-p3
-					// P2-a fix): suppress emission at depth==0 AND
-					// depth==1 (the BSDF-sampled MIS partner of the
-					// depth==0 NEE this loop suppresses below) -- see the
-					// RGB/NM twin's fuller comment above and
-					// SetIndirectOnly's doc.
-					if( !( mIndirectOnly && depth <= 1 ) ) {
+					// GUI render modes P2b `indirect` (HWSS twin, review-p2c
+					// P2-b fix): gate on MIS-partner existence, not depth
+					// alone -- see the RGB/NM twin's fuller comment above.
+					// depth==0 always suppressed; depth==1 suppressed only
+					// when depth==0's scatter was non-delta (bPassedThrough-
+					// Specular false), i.e. only when NEE actually ran (and
+					// was suppressed) at depth==0.  A delta depth==0 scatter
+					// (mirror/glass) has no suppressed NEE partner, so this
+					// emission is the sole estimator and must survive.
+					const bool suppressIndirectEmissionHW = mIndirectOnly &&
+						( depth == 0 || ( depth == 1 && !bPassedThroughSpecular ) );
+					if( !suppressIndirectEmissionHW ) {
 						hwssResult[w] += throughputComp[w] * emission;
 					}
 				}
@@ -4555,6 +4648,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		transmissionBounces = rs2.transmissionBounces;
 		translucentBounces = rs2.translucentBounces;
 		glossyFilterWidth = rs2.glossyFilterWidth;
+
+		// GUI render modes P2b `indirect` (review-p2c P2-b fix): HWSS twin
+		// of the Pel/NM loop's per-iteration bPassedThroughSpecular update
+		// (see that site) -- records whether THIS depth's scatter was delta,
+		// read at the top of the NEXT iteration's emission/env-miss gate.
+		bPassedThroughSpecular = pS->isDelta;
 
 		currentRay = traceRay;
 		currentRay.Advance( 1e-8 );

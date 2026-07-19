@@ -32,6 +32,7 @@
 
 #include <algorithm> // std::max / std::min -- render channelBalanceMax ratio
 #include <cctype>
+#include <cfloat>    // DBL_MAX -- -ffast-math-safe finiteness idiom (IsFiniteRenderNumber)
 #include <cmath>     // std::isfinite -- numeric param_equals tolerance
 #include <cstdint>   // std::uint64_t -- ScenarioContentHash's FNV-1a accumulator
 #include <cstdio>
@@ -3898,18 +3899,90 @@ namespace RISE
 					return { true, "all " + std::to_string( chunksArr.size() ) + " named chunk(s) byte-identical to the initial scene" };
 				}
 
+				//! Shared total-pixel budget for every render/decode allocation
+				//! CheckRenderKind drives (its own width*height product AND the
+				//! compareToImage reference PNG's decoded w*h -- see
+				//! DecodePngToRgb8's guard below).  The per-axis caps CheckRenderKind
+				//! already enforces (32768, mirroring Film::kMaxFilmWidth/
+				//! kMaxFilmHeight) bound only ONE axis at a time: a 32768x32768
+				//! request passes BOTH individually yet demands ~1.07e9 pixels --
+				//! tens of GiB across the rasterizer's frame + accumulation
+				//! buffers.  64,000,000 (64 "decimal" megapixels, the photography
+				//! convention) sits comfortably above any legitimate eval
+				//! checkpoint render -- the qHD default is 960x540 (~0.5MP) and
+				//! even an 8K UHD frame (7680x4320) is ~33.2MP -- while keeping
+				//! the worst-case allocation in the low hundreds of MB rather
+				//! than GiB.
+				static constexpr double kMaxEvalRenderPixels = 64000000.0;
+
+				//! Explicit-range finiteness test -- NOT std::isfinite.  The
+				//! production build compiles with -ffast-math (->
+				//! -ffinite-math-only), under which clang constant-folds
+				//! std::isfinite(x) to `true`, silently disabling the guard (see
+				//! AgentRpc.cpp's ValidateVec3Shape/ParseCameraOverrideParam and
+				//! Json.cpp's SerializeNumber for the same idiom already
+				//! established elsewhere in the Agent surface).  A plain range
+				//! comparison against +/-DBL_MAX is NOT folded away: NaN fails
+				//! every ordered comparison, +/-inf fails the respective bound.
+				bool IsFiniteRenderNumber( double v )
+				{
+					return v >= -DBL_MAX && v <= DBL_MAX;
+				}
+
 				//! Image-reconstruction Wave 2: format an author-supplied
-				//! [x,y,z] JSON number array (load-validated to be exactly 3
-				//! numbers) into the "x y z" string form AgentCameraOverride's
-				//! Vec3 fields accept (the same form CameraIntrospection::
-				//! SetProperty parses).  %.10g keeps full double precision
-				//! without a trailing exponent for ordinary scene coordinates.
+				//! [x,y,z] JSON number array (VALIDATED by ValidateCameraVec3Field
+				//! below to be exactly 3 finite numbers) into the "x y z" string
+				//! form AgentCameraOverride's Vec3 fields accept (the same form
+				//! CameraIntrospection::SetProperty parses).  %.10g keeps full
+				//! double precision without a trailing exponent for ordinary
+				//! scene coordinates.
 				std::string CameraVec3String( const JsonValue& arr )
 				{
 					char b[128];
 					std::snprintf( b, sizeof( b ), "%.10g %.10g %.10g",
 						arr.at( 0 ).asNumber(), arr.at( 1 ).asNumber(), arr.at( 2 ).asNumber() );
 					return std::string( b );
+				}
+
+				//! P2 fix (2026-07-19 re-review): validate a camera vector
+				//! FIELD's shape (array of exactly 3 numbers, each finite)
+				//! BEFORE CameraVec3String ever touches it.  Mirrors the loader's
+				//! requireVec3 (ValidateRenderCheckpointTypes: array-of-3-numbers)
+				//! PLUS a finiteness check the loader itself doesn't perform.
+				//! This matters here specifically because CheckRenderKind is
+				//! reachable DIRECTLY -- CheckScenario/CheckOneCheckpoint can be
+				//! driven with a hand-built checkpoint that never passed through
+				//! LoadEvalScenario -- so a malformed/non-finite value must be
+				//! REFUSED here rather than silently defaulted to 0 by
+				//! CameraVec3String's out-of-range .at()/asNumber() fallbacks, or
+				//! turned into a literal "inf" token (strtod/sscanf accept the
+				//! C99 "inf" spelling) that reaches the renderer's camera-pose
+				//! parser.  Returns true on a valid shape; false + `err` (naming
+				//! the field) otherwise.
+				bool ValidateCameraVec3Field( const JsonValue& arr, const char* fieldName, std::string& err )
+				{
+					if( !arr.isArray() || arr.size() != 3 ) {
+						err = std::string( "render checkpoint: \"camera." ) + fieldName +
+							"\" must be an array of exactly 3 numbers (got " +
+							( arr.isArray() ? ( std::to_string( arr.size() ) + " element(s)" ) : std::string( JsonTypeName( arr.type() ) ) ) + ")";
+						return false;
+					}
+					for( std::size_t i = 0; i < 3; ++i ) {
+						if( !arr.at( i ).isNumber() ) {
+							err = std::string( "render checkpoint: \"camera." ) + fieldName + "\"[" +
+								std::to_string( i ) + "] must be a number";
+							return false;
+						}
+						const double v = arr.at( i ).asNumber();
+						if( !IsFiniteRenderNumber( v ) ) {
+							char nb[64];
+							std::snprintf( nb, sizeof( nb ), "%.10g", v );
+							err = std::string( "render checkpoint: \"camera." ) + fieldName + "\"[" +
+								std::to_string( i ) + "] must be a finite number (got " + nb + ")";
+							return false;
+						}
+					}
+					return true;
 				}
 
 				//! Image-reconstruction Wave 2: decode PNG bytes already in
@@ -3961,6 +4034,28 @@ namespace RISE
 						buffer->release();
 						err = "PNG decode failed (not a valid PNG, or zero dimensions)";
 						return false;
+					}
+
+					// P1 fix (2026-07-19 re-review): total-pixel budget, checked
+					// from the PNG's OWN header dims (BeginRead/png_read_info has
+					// already parsed IHDR without touching pixel data) BEFORE the
+					// pixel-buffer allocation just below.  An oversized reference
+					// PNG (author error, or a hostile/malformed fixture) must not
+					// decode into a multi-GiB buffer -- same kMaxEvalRenderPixels
+					// budget CheckRenderKind enforces on its own render request.
+					{
+						const double totalPixels = static_cast<double>( w ) * static_cast<double>( h );
+						if( totalPixels > kMaxEvalRenderPixels ) {
+							reader->EndRead();
+							reader->release();
+							buffer->release();
+							char pb[192];
+							std::snprintf( pb, sizeof( pb ),
+								"reference PNG is %ux%u = %.0f pixels, exceeds the %.0f-pixel eval render budget",
+								w, h, totalPixels, kMaxEvalRenderPixels );
+							err = pb;
+							return false;
+						}
 					}
 
 					outRgb.resize( static_cast<std::size_t>( w ) * h * 3 );
@@ -4068,8 +4163,28 @@ namespace RISE
 					if( !session ) return { false, "render checkpoint: no live session (run did not complete)" };
 
 					AgentRenderParams rp;
-					const bool haveW = cp.has( "width" )  && cp.get( "width" ).isNumber();
-					const bool haveH = cp.has( "height" ) && cp.get( "height" ).isNumber();
+
+					// P2 fix (2026-07-19 re-review): width/height MUST be numbers
+					// when present -- a present-but-wrong-typed field (e.g.
+					// "width":"big") must REFUSE with an honest diagnostic, not
+					// silently fall through to the scene's default render size.
+					// Previously `haveW`/`haveH` only distinguished "present AND
+					// numeric" from "everything else", so a MATCHED pair of
+					// wrong-typed width+height (both non-numeric) slipped past the
+					// haveW!=haveH mismatch guard below entirely and silently used
+					// the default dims.  CheckRenderKind is reachable DIRECTLY --
+					// CheckScenario/CheckOneCheckpoint can be driven with a
+					// hand-built checkpoint that never passed through
+					// LoadEvalScenario's ValidateRenderCheckpointTypes -- so this
+					// type check can't be skipped upstream.
+					if( cp.has( "width" ) && !cp.get( "width" ).isNumber() )
+						return { false, "render checkpoint: \"width\" must be a number (got " +
+							std::string( JsonTypeName( cp.get( "width" ).type() ) ) + ")" };
+					if( cp.has( "height" ) && !cp.get( "height" ).isNumber() )
+						return { false, "render checkpoint: \"height\" must be a number (got " +
+							std::string( JsonTypeName( cp.get( "height" ).type() ) ) + ")" };
+					const bool haveW = cp.has( "width" );
+					const bool haveH = cp.has( "height" );
 					if( haveW && haveH ) {
 						const double wVal = cp.get( "width" ).asNumber();
 						const double hVal = cp.get( "height" ).asNumber();
@@ -4079,6 +4194,23 @@ namespace RISE
 						if( !IsWholeNumberInRange( hVal, 1.0, 32768.0 ) )
 							return { false, "render checkpoint: \"height\" must be a whole number in [1,32768] (got " +
 								FormatCheckpointNumber( hVal ) + ")" };
+						// P1 fix (2026-07-19 re-review): TOTAL-PIXEL budget -- the
+						// per-axis caps just above bound only ONE axis at a time;
+						// a 32768x32768 request passes BOTH individually yet
+						// demands ~1.07e9 pixels (kMaxEvalRenderPixels's doc has
+						// the full rationale).  Checked here (the explicit-dims
+						// path) BEFORE any allocation; the compareToImage-adopted-
+						// dims path below is separately bounded by
+						// DecodePngToRgb8's own guard on the reference's header
+						// dims.
+						const double totalPixels = wVal * hVal;
+						if( totalPixels > kMaxEvalRenderPixels ) {
+							char pb[224];
+							std::snprintf( pb, sizeof( pb ),
+								"render checkpoint: \"width\"x\"height\" %.0fx%.0f = %.0f pixels exceeds the %.0f-pixel eval render budget",
+								wVal, hVal, totalPixels, kMaxEvalRenderPixels );
+							return { false, std::string( pb ) };
+						}
 						rp.width  = static_cast<unsigned int>( wVal );
 						rp.height = static_cast<unsigned int>( hVal );
 					} else if( haveW != haveH ) {
@@ -4086,8 +4218,13 @@ namespace RISE
 					}
 
 					// Image-reconstruction Wave 2: samples override (>=1, and
-					// bounded/whole -- see IsWholeNumberInRange's doc).
-					if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() ) {
+					// bounded/whole -- see IsWholeNumberInRange's doc).  P2 fix:
+					// a present-but-wrong-typed "samples" must REFUSE (see the
+					// width/height note above), not silently skip the override.
+					if( cp.has( "samples" ) ) {
+						if( !cp.get( "samples" ).isNumber() )
+							return { false, "render checkpoint: \"samples\" must be a number (got " +
+								std::string( JsonTypeName( cp.get( "samples" ).type() ) ) + ")" };
 						const double sVal = cp.get( "samples" ).asNumber();
 						if( !IsWholeNumberInRange( sVal, 1.0, 65536.0 ) )
 							return { false, "render checkpoint: \"samples\" must be a whole number in [1,65536] (got " +
@@ -4095,25 +4232,54 @@ namespace RISE
 						rp.samples = static_cast<int>( sVal );
 					}
 
-					// Image-reconstruction Wave 2: camera-pose override.  The
-					// shape (location+lookat required, up/fov typed) is
-					// load-validated by ValidateRenderCheckpointTypes; here we
-					// only translate the JSON arrays into the "x y z" strings
-					// AgentCameraOverride accepts.  `up` defaults to [0,1,0]
-					// (the +Y-up convention) when omitted; `fov` omitted keeps
-					// the camera's current fov (hasFov stays false).
-					if( cp.has( "camera" ) && cp.get( "camera" ).isObject() ) {
+					// Image-reconstruction Wave 2: camera-pose override.  `up`
+					// defaults to [0,1,0] (the +Y-up convention) when omitted;
+					// `fov` omitted keeps the camera's current fov (hasFov stays
+					// false).  P2 fix (2026-07-19 re-review): CheckRenderKind is
+					// reachable DIRECTLY (see the width/height note above), so
+					// the shape (location+lookat required, each an array of 3
+					// numbers), TYPE, and FINITENESS of every vector component
+					// and of fov are validated HERE rather than assumed --
+					// ValidateRenderCheckpointTypes's requireVec3 is the loader-
+					// path mirror, but even that one doesn't check finiteness
+					// (ValidateCameraVec3Field's doc has the full rationale for
+					// why a non-finite component, e.g. {"location":[0,0,1e999]},
+					// must never reach the renderer's camera-pose parser).
+					if( cp.has( "camera" ) ) {
+						if( !cp.get( "camera" ).isObject() )
+							return { false, "render checkpoint: \"camera\" must be an object (got " +
+								std::string( JsonTypeName( cp.get( "camera" ).type() ) ) + ")" };
 						const JsonValue& cam = cp.get( "camera" );
+						if( !cam.has( "location" ) )
+							return { false, "render checkpoint: \"camera.location\" is required (an array of 3 numbers)" };
+						if( !cam.has( "lookat" ) )
+							return { false, "render checkpoint: \"camera.lookat\" is required (an array of 3 numbers)" };
+						std::string camErr;
+						if( !ValidateCameraVec3Field( cam.get( "location" ), "location", camErr ) ) return { false, camErr };
+						if( !ValidateCameraVec3Field( cam.get( "lookat" ),   "lookat",   camErr ) ) return { false, camErr };
 						rp.camera.hasLocation = true;
 						rp.camera.location    = CameraVec3String( cam.get( "location" ) );
 						rp.camera.hasLookAt   = true;
 						rp.camera.lookAt      = CameraVec3String( cam.get( "lookat" ) );
 						rp.camera.hasUp       = true;
-						rp.camera.up          = cam.has( "up" ) ? CameraVec3String( cam.get( "up" ) )
-						                                        : std::string( "0 1 0" );
-						if( cam.has( "fov" ) && cam.get( "fov" ).isNumber() ) {
+						if( cam.has( "up" ) ) {
+							if( !ValidateCameraVec3Field( cam.get( "up" ), "up", camErr ) ) return { false, camErr };
+							rp.camera.up = CameraVec3String( cam.get( "up" ) );
+						} else {
+							rp.camera.up = "0 1 0";
+						}
+						if( cam.has( "fov" ) ) {
+							if( !cam.get( "fov" ).isNumber() )
+								return { false, "render checkpoint: \"camera.fov\" must be a number (degrees)" };
+							const double fov = cam.get( "fov" ).asNumber();
+							// Explicit range test (not std::isfinite -- see
+							// IsFiniteRenderNumber's doc): NaN fails both
+							// comparisons, +/-inf fails the respective open bound.
+							if( !( fov > 0.0 && fov < 180.0 ) )
+								return { false, "render checkpoint: \"camera.fov\" must be > 0 and < 180 degrees (got " +
+									FormatCheckpointNumber( fov ) + ")" };
 							char fbuf[64];
-							std::snprintf( fbuf, sizeof( fbuf ), "%.10g", cam.get( "fov" ).asNumber() );
+							std::snprintf( fbuf, sizeof( fbuf ), "%.10g", fov );
 							rp.camera.hasFov = true;
 							rp.camera.fov    = fbuf;
 						}
@@ -4122,17 +4288,38 @@ namespace RISE
 					// Image-reconstruction Wave 2: decode the compareToImage
 					// reference FIRST -- its dims drive the grading render (the
 					// candidate must be produced at EXACTLY the reference's
-					// dimensions).  Both fields are load-validated present-together
-					// with rmseMax in (0,1] and a non-".." non-empty path.
-					const bool haveCompare = cp.has( "compareToImage" ) && cp.get( "compareToImage" ).isString() &&
-					                         cp.has( "rmseMax" ) && cp.get( "rmseMax" ).isNumber();
+					// dimensions).  P2 fix (2026-07-19 re-review): TYPE-check
+					// each field when present (refuse, don't silently treat a
+					// wrong-typed field as absent) and validate rmseMax's (0,1]
+					// range directly here too -- an unbounded rmseMax (e.g.
+					// 1e999) would make `rmse > rmseMax` always false below,
+					// silently turning compareToImage into a no-op that always
+					// "passes" regardless of the actual image difference.
+					if( cp.has( "compareToImage" ) && !cp.get( "compareToImage" ).isString() )
+						return { false, "render checkpoint: \"compareToImage\" must be a string (got " +
+							std::string( JsonTypeName( cp.get( "compareToImage" ).type() ) ) + ")" };
+					if( cp.has( "rmseMax" ) && !cp.get( "rmseMax" ).isNumber() )
+						return { false, "render checkpoint: \"rmseMax\" must be a number (got " +
+							std::string( JsonTypeName( cp.get( "rmseMax" ).type() ) ) + ")" };
+					const bool haveCompare = cp.has( "compareToImage" );
+					const bool haveRmse    = cp.has( "rmseMax" );
+					if( haveCompare != haveRmse )
+						return { false, "render checkpoint: \"compareToImage\" and \"rmseMax\" must both be supplied together" };
 					std::vector<unsigned char> refRgb;
 					unsigned int refW = 0, refH = 0;
 					std::string  refPath;
 					double       rmseMax = 0.0;
 					if( haveCompare ) {
-						refPath = cp.get( "compareToImage" ).asString();
 						rmseMax = cp.get( "rmseMax" ).asNumber();
+						// Explicit range test (not std::isfinite -- see
+						// IsFiniteRenderNumber's doc): NaN fails both
+						// comparisons, +/-inf fails the upper bound.
+						if( !( rmseMax > 0.0 && rmseMax <= 1.0 ) )
+							return { false, "render checkpoint: \"rmseMax\" must be in (0,1] (got " +
+								FormatCheckpointNumber( rmseMax ) + ")" };
+						refPath = cp.get( "compareToImage" ).asString();
+						if( refPath.empty() )
+							return { false, "render checkpoint: \"compareToImage\" must be a non-empty path" };
 						std::string refBytes, readErr;
 						if( !ReadWholeFile( refPath, refBytes, readErr ) ) {
 							return { false, "render checkpoint: compareToImage reference '" + refPath +

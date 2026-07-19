@@ -316,6 +316,30 @@ namespace RISE
 		//! solved, since there is no sound way to force-resolve an unregistered
 		//! name.
 		//!
+		//! SECOND RESIDUAL LIMITATION (P2c, review-p2c P2-c-ii): the
+		//! variant-mode config (maxPathDepth / indirectOnly / clayOverride)
+		//! is stamped onto the SSS continuation's integrator ONLY in the
+		//! null-pDefaultShader fallback path, where this factory builds (and
+		//! knows the concrete type of) BeautyVariantDefaultShader itself --
+		//! see CreateBeautyVariantPipeline's .cpp body.  When the CALLER
+		//! supplies a pDefaultShader (the common case per the paragraph
+		//! above: both current callers resolve and pass the production
+		//! rasterizer's own named default shader), this factory has no
+		//! reliable way to reach whatever PathTracingShaderOp (if any) is
+		//! buried inside that caller-supplied shader's op chain -- an
+		//! arbitrary named shader may be a multi-op StandardShader chain, a
+		//! branching shader, or something with no PathTracingShaderOp at
+		//! all.  A BSSRDF/random-walk-SSS continuation that resolves through
+		//! a CALLER-SUPPLIED default shader therefore runs with THAT
+		//! integrator's own settings (typically production defaults:
+		//! unbounded maxPathDepth, indirectOnly=false, clayOverride=false),
+		//! not the variant mode's.  Documented, not solved -- there is no
+		//! sound general mechanism to introspect an arbitrary IShader chain
+		//! for an embedded PathTracingIntegrator.  If this divergence proves
+		//! visible in practice, the fix is a new IShader/IShaderOp query
+		//! interface (e.g. `IConfigurablePathTracing`) that the resolved
+		//! production shader chain could opt into, not a dynamic_cast chase.
+		//!
 		//! Returns false for any non-BeautyVariant mode.  Returned pointers
 		//! are refcounted ownership references for the caller to release,
 		//! exactly like the other pipeline factories.  Refcount discipline

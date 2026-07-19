@@ -19,6 +19,7 @@
 #include "pch.h"
 #include "InteractivePelRasterizer.h"
 #include "PathTracingPelRasterizer.h"
+#include "../Shaders/PathTracingShaderOp.h"
 #include "BlockRasterizeSequence.h"
 #include "RayCaster.h"
 #include "MortonRasterizeSequence.h"
@@ -1537,6 +1538,26 @@ public:
 		return pWrapper;
 	}
 
+	//! GUI render modes P2c fix: forwarding setters onto the wrapped
+	//! PathTracingShaderOp (the concrete type behind the IShaderOp* built
+	//! via RISE_API_CreatePathTracingShaderOp above), so
+	//! CreateBeautyVariantPipeline can stamp the SAME variant-mode config
+	//! on the SSS continuation's integrator that it stamps on the main
+	//! rasterizer's.  pPTOp is null only if the RISE_API factory ever
+	//! returns a different concrete type (defensive; it doesn't today).
+	void SetMaxPathDepth( unsigned int n ) const
+	{
+		if( pPTOp ) { pPTOp->SetMaxPathDepth( n ); }
+	}
+	void SetIndirectOnly( bool b ) const
+	{
+		if( pPTOp ) { pPTOp->SetIndirectOnly( b ); }
+	}
+	void SetClayOverride( bool b ) const
+	{
+		if( pPTOp ) { pPTOp->SetClayOverride( b ); }
+	}
+
 	void Shade( const RuntimeContext& rc,
 				const RayIntersection& ri,
 				const IRayCaster& caster,
@@ -1598,10 +1619,12 @@ protected:
 
 private:
 	BeautyVariantDefaultShader( IShader* inner, IShaderOp* op )
-	: pInner( inner ), pOp( op ) {}
+	: pInner( inner ), pOp( op ),
+	  pPTOp( dynamic_cast<PathTracingShaderOp*>( op ) ) {}
 
-	IShader*   pInner;
-	IShaderOp* pOp;
+	IShader*             pInner;
+	IShaderOp*           pOp;
+	PathTracingShaderOp* pPTOp;	///< Borrowed alias of pOp's concrete type; not separately ref-counted.
 };
 
 }
@@ -1656,11 +1679,30 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	// zero-output default silently blackens their energy (external review
 	// P1-b).  SMS off here, matching the variant rasterizer's own config.
 	IShader* pOwnedShader = 0;
+	BeautyVariantDefaultShader* pOwnedBVDefault = 0;
 	if( !pDefaultShader ) {
-		pOwnedShader = BeautyVariantDefaultShader::Create();
-		if( !pOwnedShader ) {
+		pOwnedBVDefault = BeautyVariantDefaultShader::Create();
+		if( !pOwnedBVDefault ) {
 			return false;
 		}
+		pOwnedShader = pOwnedBVDefault;
+		// GUI render modes P2c fix (review-p2c P2-c-ii): stamp the SAME
+		// variant-mode config onto the SSS continuation's integrator that
+		// gets stamped onto the main rasterizer's below -- see
+		// BeautyVariantDefaultShader's forwarding setters and
+		// PathTracingShaderOp::SetMaxPathDepth's doc.  Must happen while we
+		// still hold pOwnedBVDefault (before the safe_release just below);
+		// RISE_API_CreateRayCaster addrefs the shader internally so the
+		// object survives, but calling through an already-released local
+		// pointer is the wrong idiom even when it happens to be safe.
+		// When the caller supplies its own pDefaultShader instead, we have
+		// no concrete type to reach into -- that shader's SSS continuation
+		// will NOT honor these mode settings; this is a known, deliberate
+		// limitation (documented on pDefaultShader's own doc below) rather
+		// than a silent inconsistency.
+		pOwnedBVDefault->SetMaxPathDepth( info->variantMaxBounces );
+		pOwnedBVDefault->SetIndirectOnly( info->variantIndirectOnly );
+		pOwnedBVDefault->SetClayOverride( info->variantClayOverride );
 	}
 	IShader* pShader = pDefaultShader ? pDefaultShader : pOwnedShader;
 	IRayCaster* pCaster = 0;

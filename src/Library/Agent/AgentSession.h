@@ -427,6 +427,22 @@ namespace RISE
 			//! (res.ok=false), naming the unsupported camera type in
 			//! res.message, exactly like an unresolved name -- see
 			//! RenderCore_'s resolution block.
+			//! Re-review P2 fix: the check above is about the NAMED VIEW's
+			//! own type -- it says nothing about the ACTIVE camera, which is
+			//! what actually receives the override.  A resolved PINHOLE view
+			//! is therefore NO LONGER rejected just because the ACTIVE
+			//! camera happens to be non-pinhole: CameraIntrospection::
+			//! SetProperty rejects "fov" on anything but a PinholeCamera, so
+			//! doRenderWork preflights the active camera and, when it can't
+			//! store a fov, applies the view's pose (location/lookat/up)
+			//! ONLY and drops the fov, noting the drop honestly in
+			//! res.message (" (view \"...\": FOV not applied -- ...)")
+			//! instead of failing the render.  Net contract: a resolved
+			//! PINHOLE `view` always succeeds (pose always applied; fov
+			//! applied IFF the active camera is also pinhole); a resolved
+			//! NON-pinhole `view` always fails loudly, regardless of the
+			//! active camera's type -- see RenderCore_'s doRenderWork for
+			//! both checks.
 			std::string          view;
 		};
 

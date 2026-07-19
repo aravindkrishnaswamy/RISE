@@ -49,7 +49,6 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 		smsConfig,
 		stabilityConfig
 		);
-	pIntegrator->addref();
 }
 
 void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )

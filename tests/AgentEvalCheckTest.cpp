@@ -594,6 +594,86 @@ static void TestRenderCheckpoint()
 	// (the new validation doesn't spuriously reject legitimate values).
 	checkOne( "[{\"kind\":\"render\",\"width\":16,\"height\":16,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
 		true, "a valid whole-number width/height override still passes" );
+
+	// P1 fix (2026-07-19 re-review): TOTAL-PIXEL budget.  32768x32768
+	// passes BOTH per-axis caps individually ([1,32768], just proven
+	// above) yet would demand ~1.07e9 pixels -- tens of GiB across the
+	// rasterizer's frame + accumulation buffers if ever allocated.
+	// Pre-fix, CheckRenderKind had NO product check at all -- only the
+	// two INDEPENDENT per-axis IsWholeNumberInRange calls -- so this
+	// checkpoint would have sailed past validation and gone straight
+	// into session->Render(rp) at 32768x32768: this assertion (a clean,
+	// fast REFUSAL naming the pixel budget) would have FAILED pre-fix
+	// (no such refusal existed; the call would instead have attempted
+	// the giant allocation).
+	checkOneDetailContains(
+		"[{\"kind\":\"render\",\"width\":32768,\"height\":32768,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		"exceeds the",
+		"a 32768x32768 request (legal per-axis, illegal TOTAL) is refused by the pixel budget, never allocated" );
+
+	// Sanity control: a legitimately large-but-sane render (1024x1024 =
+	// ~1.05MP, comfortably under the 64,000,000-pixel budget) still
+	// actually renders and passes -- the budget doesn't spuriously
+	// reject sane requests.  samples:1 keeps the test fast.
+	checkOne(
+		"[{\"kind\":\"render\",\"width\":1024,\"height\":1024,\"samples\":1,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		true, "a legitimate large-but-sane 1024x1024 render still passes under the pixel budget" );
+
+	// P2 fix (2026-07-19 re-review): a present-but-WRONG-TYPED width AND
+	// height (both non-numeric) must be REFUSED, not silently treated as
+	// absent.  Pre-fix, `haveW`/`haveH` were `cp.has(...) &&
+	// cp.get(...).isNumber()`, so when BOTH fields were non-numeric,
+	// haveW==haveH==false and the haveW!=haveH mismatch guard never
+	// fired either -- the checkpoint silently fell through to the
+	// scene's DEFAULT render size and (with no contradicting band here)
+	// would have PASSED: this assertion would have FAILED pre-fix
+	// (passed==true, no "must be a number" detail -- a genuinely
+	// malformed request reported success).
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":\"big\",\"height\":\"big\"}]",
+		"\"width\" must be a number",
+		"a wrong-typed width+height PAIR is refused, not silently defaulted" );
+
+	// A wrong-typed `samples` is refused too.  Pre-fix,
+	// `cp.has(\"samples\") && cp.get(\"samples\").isNumber()` was false
+	// for a string value, so the override was silently SKIPPED (the
+	// scene-authored sample count ran instead) rather than refused --
+	// this assertion would have FAILED pre-fix (passed==true).
+	checkOneDetailContains( "[{\"kind\":\"render\",\"width\":16,\"height\":16,\"samples\":\"fast\"}]",
+		"\"samples\" must be a number",
+		"a wrong-typed samples override is refused, not silently skipped" );
+
+	// A camera vector with the WRONG SHAPE (2 components instead of 3)
+	// is refused.  Pre-fix, CameraVec3String's `.at(2)` on a too-short
+	// array returned JsonValue's static Null, whose .asNumber() default
+	// is 0.0 -- so {"location":[0,0]} silently became camera location
+	// "0 0 0" (zero-padded), never a refusal: this assertion would have
+	// FAILED pre-fix (no "must be an array of exactly 3 numbers" detail
+	// exists in the pre-fix code at all).
+	checkOneDetailContains( "[{\"kind\":\"render\",\"camera\":{\"location\":[0,0],\"lookat\":[0,0,0]}}]",
+		"\"camera.location\" must be an array of exactly 3 numbers",
+		"a camera vector with the wrong element count is refused, not zero-padded" );
+
+	// A NON-FINITE camera vector component (1e999 parses to +inf via
+	// strtod) is refused.  Pre-fix, CameraVec3String formats "%.10g" on
+	// the raw double with no finiteness check anywhere in
+	// CheckRenderKind, so 1e999 became the LITERAL "inf" token inside
+	// the "x y z" pose string AgentCameraOverride carries -- an invalid
+	// camera state that would have PROCEEDED into session->Render(rp)
+	// completely undetected: this assertion would have FAILED pre-fix
+	// (no finiteness check, hence no "must be a finite number" detail,
+	// existed on this path).
+	checkOneDetailContains( "[{\"kind\":\"render\",\"camera\":{\"location\":[0,0,1e999],\"lookat\":[0,0,0]}}]",
+		"must be a finite number",
+		"a non-finite (1e999 -> +inf) camera vector component is refused" );
+
+	// A wrong-typed `camera` (not an object) is refused too.  Pre-fix,
+	// `cp.get(\"camera\").isObject()` was false, so the ENTIRE camera
+	// block was silently skipped (no override applied, the scene's own
+	// camera rendered) rather than refused -- this assertion would have
+	// FAILED pre-fix (passed==true, no "must be an object" detail).
+	checkOneDetailContains( "[{\"kind\":\"render\",\"camera\":\"oops\"}]",
+		"\"camera\" must be an object",
+		"a wrong-typed (non-object) camera field is refused, not silently skipped" );
 }
 
 //----------------------------------------------------------------------
@@ -2626,6 +2706,8 @@ static bool WriteBytes( const std::string& path, const std::vector<unsigned char
 	return true;
 }
 
+// P1 fix (2026-07-19 re-review) test support: the standard zlib/PNG
+
 static void TestRenderCameraCompareToImage()
 {
 	std::printf( "T4c: render camera override + compareToImage/rmseMax...\n" );
@@ -2740,6 +2822,19 @@ static void TestRenderCameraCompareToImage()
 		Check( d.find( "could not be read" ) != std::string::npos,
 			"the missing-file detail is clear (got: " + d + ")" );
 	}
+
+	// NOTE (2026-07-19): a reference-image OVERSIZE case is deliberately NOT
+	// tested by hand-patching a PNG's IHDR to declare huge dimensions.  RISE's
+	// PNG reader routes a truncated/inconsistent IDAT into libpng's error path
+	// DURING BeginRead ("libpng error: Not enough image data"), which aborts
+	// the process before DecodePngToRgb8's budget guard is ever reached -- so
+	// such a fixture exercises libpng's tolerance of a lying header, not our
+	// guard, and merely crashes the suite.  Producing a VALID >64MP PNG cheaply
+	// (a solid-colour image compresses to a few KB) would need streamed zlib
+	// construction; not worth it here.  The kMaxEvalRenderPixels budget IS
+	// covered by the checkpoint-dimension cases above (the real attack surface:
+	// scenario-file numbers), and DecodePngToRgb8 shares that same constant and
+	// checks it from the header before its resize.
 
 	// --- Load-validator reject cases (image-reconstruction Wave 2). ---
 	auto writeScenario = [&]( const std::string& id, const std::string& checkpointsJson ) -> std::string {

@@ -52,6 +52,24 @@ namespace RISE
 				const StabilityConfig& stabilityCfg
 				);
 
+			//! GUI render modes P2c fix: forwarding setters onto the owned
+			//! PathTracingIntegrator, so a shader op used as a caster's
+			//! DEFAULT shader (e.g. BeautyVariantDefaultShader in
+			//! InteractivePelRasterizer.cpp, which drives the BSSRDF /
+			//! random-walk-SSS continuation's recursive caster.CastRay
+			//! sub-path) can be stamped with the SAME variant-mode config
+			//! as the main rasterizer's integrator.  Without this, an SSS
+			//! continuation through this shader op silently ignored
+			//! SetMaxPathDepth / SetIndirectOnly / SetClayOverride -- a
+			//! `direct` or `indirect` render of a translucent surface (skin,
+			//! wax, marble) would still run the full unbounded PT loop and
+			//! the un-gated NEE/emission on the SSS exit vertex.
+			//! No-ops if pIntegrator is somehow null (defensive; the ctor
+			//! always constructs one).
+			void SetMaxPathDepth( unsigned int n );
+			void SetIndirectOnly( bool b );
+			void SetClayOverride( bool b );
+
 			void PerformOperation(
 				const RuntimeContext& rc,
 				const RayIntersection& ri,

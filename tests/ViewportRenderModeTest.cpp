@@ -115,6 +115,8 @@
 #include "../src/Library/Materials/LambertianBRDF.h"
 #include "../src/Library/Materials/LambertianSPF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Rendering/PathTracingPelRasterizer.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1224,6 +1226,82 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+
+	//------------------------------------------------------------------
+	// R18: review-p2c P1-a fix -- every PathTracingPelRasterizer /
+	// PathTracingSpectralRasterizer / PathTracingShaderOp leaked its
+	// PathTracingIntegrator.  `new PathTracingIntegrator(...)` starts at
+	// refcount 1 (Reference()'s ctor); the buggy ctors then called an
+	// EXTRA `pIntegrator->addref()` -> refcount 2, but the dtor's single
+	// `safe_release( pIntegrator )` only ever reaches refcount 1 -- the
+	// integrator (and everything it owns: the clay BRDF/SPF/painter
+	// quartet, the ManifoldSolver) was never destroyed.  Fixed by
+	// removing the unbalanced addref (the `new` reference IS the
+	// member's, matching every sibling ctor in this file: pSolver,
+	// pClayPainter, etc. -- see PathTracingIntegrator's own ctor doc).
+	//
+	// This is a refcount/lifetime bug, hard to assert from outside the
+	// class by inspecting the RASTERIZER (its own refcount is fine --
+	// only the INTEGRATOR it owns leaked).  LOG_TRACK_MEMORY (Log.cpp)
+	// would catch it but is a library-wide compile-time flag -- test
+	// binaries link the SAME .o files as `bin/rise` (no separate "test
+	// build"), so flipping it isn't practical for an automated
+	// regression test.  Instead this uses the ConstructionCount()/
+	// DestructionCount() test hook added to PathTracingIntegrator
+	// alongside the fix: two relaxed atomic increments per instance,
+	// zero behavioral footprint on production.  A leaked integrator
+	// shows up as DestructionCount() permanently lagging
+	// ConstructionCount() by the leaked count, forever (nothing ever
+	// catches up since the leaked references are never released).
+	//------------------------------------------------------------------
+	void TestRasterizerIntegratorLeakFix()
+	{
+		std::printf( "R18: P1-a PathTracingIntegrator leak fix (rasterizer-owned integrator refcount discipline)...\n" );
+
+		const long long before = PathTracingIntegrator::ConstructionCount();
+		Check( PathTracingIntegrator::DestructionCount() == before,
+		       "R18 baseline: construction/destruction counts are balanced before the stress loop "
+		       "(no leaks carried over from earlier tests in this binary)" );
+
+		// (a) CreateBeautyVariantPipeline -> PathTracingPelRasterizer, the
+		// exact site P1-a was found in.  Build+release N pipelines; each
+		// one constructs exactly one PathTracingIntegrator (the
+		// rasterizer's own -- CreateBeautyVariantPipeline's internal
+		// BeautyVariantDefaultShader also builds a PathTracingShaderOp,
+		// which owns a SECOND PathTracingIntegrator -- see P2-c's forwarding
+		// setters -- so each cycle actually constructs TWO).
+		constexpr int kCycles = 32;
+		for( int i = 0; i < kCycles; ++i )
+		{
+			IRasterizer* rast = nullptr;
+			IRayCaster*  caster = nullptr;
+			Check( CreateBeautyVariantPipeline( ViewportRenderMode::DeepReflect, &rast, &caster ),
+			       "R18 stress-loop pipeline builds" );
+			safe_release( rast );
+			safe_release( caster );
+		}
+
+		const long long afterConstruct = PathTracingIntegrator::ConstructionCount();
+		Check( afterConstruct > before,
+		       "R18: the stress loop actually constructed new PathTracingIntegrator instances "
+		       "(sanity -- the counter hook is wired up and firing)" );
+
+		// MONEY ASSERTION: every constructed integrator was also destroyed.
+		// Pre-fix, each cycle's rasterizer-owned integrator leaked (refcount
+		// stuck at 1), so DestructionCount() would permanently lag
+		// ConstructionCount() by kCycles (or 2*kCycles, counting the
+		// default-shader's own integrator too) after this loop -- verified
+		// by temporarily restoring the extra `pIntegrator->addref()` in
+		// PathTracingPelRasterizer's ctor and re-running: this assertion
+		// fails with exactly that gap.
+		const long long afterDestruct = PathTracingIntegrator::DestructionCount();
+		std::printf( "  constructed=%lld destroyed=%lld (delta from baseline: +%lld constructed, +%lld destroyed)\n",
+		             afterConstruct, afterDestruct, afterConstruct - before, afterDestruct - before );
+		Check( afterDestruct == afterConstruct,
+		       "MONEY ASSERTION (R18): every PathTracingIntegrator constructed by the stress loop was also "
+		       "destroyed -- DestructionCount() == ConstructionCount(), i.e. no leaked rasterizer-owned "
+		       "integrator (P1-a fix)" );
+	}
 }   // anonymous namespace
 
 int main()
@@ -1246,6 +1324,7 @@ int main()
 	TestControllerVariantModeLifecycle();
 	TestClayRefcountDiscipline();
 	TestBeautyVariantDefaultShaderPlumbing();
+	TestRasterizerIntegratorLeakFix();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
