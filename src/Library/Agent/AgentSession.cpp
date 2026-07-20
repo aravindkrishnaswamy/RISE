@@ -61,6 +61,8 @@
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
 #include "../Rendering/InteractivePelRasterizer.h"   // Toolkit slice 2 (quality:"draft"): CreateInteractiveMaterialPreviewPipeline
+#include "../Rendering/RayCaster.h"   // GUI render modes P2b (light solo): concrete RayCaster::SetSoloLightByName/ClearSoloLight
+#include "../Rendering/PixelBasedRasterizerHelper.h"   // GUI render modes P2b (light solo): reach the production rasterizer's RayCaster, mirroring Job::SetActiveRasterizerRadianceScale
 #include "../RISE_API.h"
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
@@ -1764,6 +1766,54 @@ namespace RISE
 				bool         mArmed;
 			};
 
+			//! GUI render modes P2b `render{light:}` surface (light solo):
+			//! RAII restore of the production rasterizer's light-solo state,
+			//! same Arm/Disarm/restore-on-every-exit house shape as
+			//! SampleCountRestoreGuard above.  The PRODUCTION RayCaster is
+			//! long-lived and shared across agent render calls (unlike the
+			//! BeautyVariant path's ephemeral caster, which is destroyed
+			//! with its pipeline and needs no restore) -- every light-solo
+			//! render on it must leave it exactly as found (no solo, the
+			//! steady-state default) once this render's scope exits,
+			//! including on an exception unwinding out of mJob->Rasterize()
+			//! (OIDN denoise is a documented real throw site).  Always
+			//! clears on destruction when armed: this guard's invariant is
+			//! that a light-solo render is the ONLY code path that ever
+			//! calls SetSoloLightByName on a production caster, so the
+			//! pre-render state is always "no solo" and there is nothing
+			//! else to capture/restore to.
+			class LightSoloRestoreGuard
+			{
+			public:
+				explicit LightSoloRestoreGuard( RISE::Implementation::RayCaster* pCaster )
+					: mCaster( pCaster ), mArmed( false )
+				{
+				}
+
+				void Arm()    { mArmed = true; }
+				void Disarm() { mArmed = false; }
+
+				~LightSoloRestoreGuard()
+				{
+					if( !mArmed || !mCaster ) return;
+					try {
+						mCaster->ClearSoloLight();
+					}
+					catch( ... ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"AgentSession::Render: exception escaped the light-solo "
+							"restore -- the rasterizer may be left soloed to one light" );
+					}
+				}
+
+			private:
+				LightSoloRestoreGuard( const LightSoloRestoreGuard& );             // deleted
+				LightSoloRestoreGuard& operator=( const LightSoloRestoreGuard& );  // deleted
+
+				RISE::Implementation::RayCaster* mCaster;
+				bool                              mArmed;
+			};
+
 			//! Offscreen isolation for agent/LLM renders: RAII restore of the
 			//! active rasterizer's FrameStore IDENTITY, matching the SAME
 			//! house shape as RenderOverrideRestoreGuard / ProgressRestoreGuard
@@ -2237,6 +2287,50 @@ namespace RISE
 				std::snprintf( buf, sizeof( buf ), "%.17g", snap.fov * kRadToDeg );
 				out.hasFov = true; out.fov = buf;
 			}
+		}
+
+		// GUI render modes P2b `render{light:}` surface (docs/gui/
+		// RENDER_MODES.md §3 "light solo"): resolves `lightName` against
+		// `caster`'s attached scene and designates it the sole active
+		// light, mirroring Job::SetActiveRasterizerRadianceScale's
+		// PixelBasedRasterizerHelper -> concrete RayCaster downcast (the
+		// SAME dynamic_cast pattern; every in-tree pixel-based rasterizer
+		// -- PT / BDPT / VCM / MLT and the spectral variants -- derives
+		// from PixelBasedRasterizerHelper, which owns the RayCaster).
+		// `caster` here is already the concrete IRayCaster* (the
+		// BeautyVariant path's ephemeral `variantCaster`, or the
+		// production rasterizer's own caster reached via GetRayCaster()
+		// at the call site) -- this function does the FINAL downcast to
+		// the concrete RayCaster that actually owns SetSoloLightByName.
+		// \return True if `lightName` is empty (nothing to do) or
+		// resolved; false with `outMessage` populated with the "unknown
+		// light" + available-name list on an unresolved name, or a
+		// generic "no ray caster" message if `caster` isn't a concrete
+		// RayCaster (should not happen for any in-tree rasterizer).
+		bool ApplyLightSoloByName( IRayCaster* caster, const std::string& lightName,
+		                           std::string& outMessage )
+		{
+			if( lightName.empty() ) {
+				return true;
+			}
+
+			RISE::Implementation::RayCaster* pConcreteCaster =
+				dynamic_cast<RISE::Implementation::RayCaster*>( caster );
+			if( !pConcreteCaster ) {
+				outMessage = "light \"" + lightName + "\" could not be applied -- the active rasterizer has no ray caster";
+				return false;
+			}
+
+			std::string available;
+			if( !pConcreteCaster->SetSoloLightByName( lightName.c_str(), &available ) ) {
+				outMessage = "unknown light \"" + lightName + "\"";
+				outMessage += available.empty()
+					? std::string( " -- no lights or emissive objects available" )
+					: ( " -- available: " + available );
+				return false;
+			}
+
+			return true;
 		}
 
 		bool DecodePngRgbAt( const std::vector<unsigned char>& png,
@@ -3387,6 +3481,38 @@ namespace RISE
 					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); }
 				} pipelineGuard{ ephemeralRast, variantCaster };
 
+				// GUI render modes P2b `render{light:}` surface: apply on
+				// this EPHEMERAL variant caster -- no restore guard needed,
+				// `pipelineGuard` above destroys the whole caster (and its
+				// LightSampler) with it at scope exit.  An unresolved name
+				// FAILS the render loudly, same contract as the production
+				// branch (see ApplyLightSoloByName's doc).
+				//
+				// `SetSoloLightByName` resolves against `variantCaster`'s
+				// OWN attached scene, but CreateBeautyVariantPipeline never
+				// attaches one (that normally only happens inside the
+				// terminal RasterizeScene call below) -- so an EARLY
+				// AttachScene here is required before resolution can see
+				// any lights at all.  Harmless to call again later:
+				// RasterizeScene's own AttachScene(&scene) hits the same-
+				// Scene-pointer fast path (RayCaster::AttachScene) since
+				// nothing changes the scene's light-topology generation in
+				// between, so the LightSampler this call just built (with
+				// the solo already applied) is NOT rebuilt/dropped.
+				if( !params.light.empty() ) {
+					const IScenePriv* scenePrivForSolo = mJob->GetScene();
+					if( scenePrivForSolo ) {
+						variantCaster->AttachScene( scenePrivForSolo );
+					}
+					std::string lightSoloMessage;
+					if( !ApplyLightSoloByName( variantCaster, params.light, lightSoloMessage ) ) {
+						res.ok = false;
+						res.message = lightSoloMessage;
+						specificFailureReported = true;
+						return;
+					}
+				}
+
 				RenderOverrideRestoreGuard restoreGuard( *mJob,
 					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
 					activeCam, capturedCam );
@@ -3774,6 +3900,50 @@ namespace RISE
 
 				if( wantSamplesOverride ) {
 					overrodeSamples = rast->SetSampleCountOverride( params.samples );
+				}
+
+				// GUI render modes P2b `render{light:}` surface (docs/gui/
+				// RENDER_MODES.md §3 "light solo"): resolve + apply on the
+				// PRODUCTION rasterizer's own RayCaster BEFORE the render
+				// call.  Armed BEFORE the apply (same "arm before mutate"
+				// discipline as sampleGuard above) so a throw between here
+				// and the tail restore still clears it via the destructor.
+				// An unresolved name FAILS the render loudly (res.ok=false),
+				// mirroring `view`'s unresolvable-name contract -- see
+				// ApplyLightSoloByName's doc.
+				RISE::Implementation::PixelBasedRasterizerHelper* pHelperForSolo =
+					dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+				RISE::Implementation::RayCaster* pConcreteCasterForSolo = pHelperForSolo
+					? dynamic_cast<RISE::Implementation::RayCaster*>( pHelperForSolo->GetRayCaster() )
+					: nullptr;
+				LightSoloRestoreGuard lightSoloGuard( pConcreteCasterForSolo );
+				lightSoloGuard.Arm();
+
+				if( !params.light.empty() ) {
+					// `SetSoloLightByName` resolves against the caster's
+					// OWN attached scene, but a Job whose production
+					// rasterizer has never rendered yet has no scene
+					// attached to its caster (PixelBasedRasterizerHelper
+					// only calls AttachScene from inside RasterizeScene
+					// itself).  An early AttachScene here guarantees
+					// resolution always sees the real light/object
+					// managers; it is a same-Scene-pointer no-op (or a
+					// harmless re-Prepare if something upstream already
+					// bumped the light-topology generation) on every OTHER
+					// call, since mJob->Rasterize() below attaches the
+					// SAME Scene pointer again.
+					if( pConcreteCasterForSolo ) {
+						if( const IScenePriv* scenePrivForSolo = mJob->GetScene() ) {
+							pConcreteCasterForSolo->AttachScene( scenePrivForSolo );
+						}
+					}
+					std::string lightSoloMessage;
+					if( !ApplyLightSoloByName( pConcreteCasterForSolo, params.light, lightSoloMessage ) ) {
+						res.ok = false;
+						res.message = lightSoloMessage;
+						specificFailureReported = true;
+						return;
+					}
 				}
 
 				// ---- The render itself (in-memory sink; never touches the
@@ -4491,6 +4661,30 @@ namespace RISE
 				}
 			} else if( res.ok && params.xray ) {
 				res.message += " (xray is ignored outside the view-mode diagnostics -- mode:\"normals\"|\"depth\"|\"facets\"|\"wireframe\")";
+			}
+
+			// GUI render modes P2b `render{light:}` surface (light solo):
+			// honest note about whether `light` actually took effect.
+			// Meaningful ONLY for Beauty (production) and BeautyVariant --
+			// data view-modes/objectmap/draft never evaluate scene lighting
+			// at all (first-hit diagnostic shaders / the studio preview's
+			// own fixed headlamp+AO rig), so `light` is silently ignored
+			// there, same precedent as quality/samples/xray above.  An
+			// unresolved name already failed the render loudly inside
+			// doRenderWork (see ApplyLightSoloByName's call sites) -- this
+			// block only runs when res.ok, i.e. either `light` was empty or
+			// it resolved.
+			if( res.ok && !params.light.empty() ) {
+				if( isBeautyVariant || ( !isObjectMap && !isViewMode && !isDraft ) ) {
+					res.message += " (light solo: \"" + params.light + "\" is the only active light)";
+				} else {
+					const char* what = isObjectMap ? "objectmap"
+						: isDraft ? "draft"
+						: ( viewModeInfo ? viewModeInfo->name : "view" );
+					res.message += " (light is ignored under mode:";
+					res.message += what;
+					res.message += " -- no scene lighting is evaluated)";
+				}
 			}
 
 			// Cache for ReadImage() ONLY on a successful, non-empty encode --

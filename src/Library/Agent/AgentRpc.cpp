@@ -1289,6 +1289,25 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'view' must be a string" );
 					}
 
+					// GUI render modes P2b `render{light:}` surface (docs/gui/
+					// RENDER_MODES.md §3 "light solo", §9) ADDITIVE param:
+					// {"light":"<light or emissive-object name>"} ->
+					// AgentRenderParams::light.  Valid with "beauty" and the
+					// four BeautyVariant mode names (deep_reflect/direct/
+					// indirect/clay_lights) -- see AgentRenderParams::light's
+					// doc.  Any non-string, non-null value is a clean -32602;
+					// an unresolvable name is NOT rejected here (needs a live
+					// Job to check against) -- AgentSession::RenderCore_ fails
+					// the render itself with the available-name list, same
+					// contract as an unresolvable `view`.
+					if( const JsonValue* lv = params.find( "light" ) ) {
+						if( lv->isString() ) {
+							rparams.light = lv->asString();
+						}
+						else if( !lv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'light' must be a string" );
+					}
+
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")
 					// ADDITIVE param: {"xray":false} -> AgentRenderParams::xray.
 					// DEFAULT TRUE (2026-07-17 user decision) -- absent means

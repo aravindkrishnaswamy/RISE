@@ -161,6 +161,12 @@ Recipes:
    above). Resolves a live GUI session's Named View bookmark, or --
    headless -- a scene camera of that exact name. See "The `view`
    param" below.
+11. **"Is THIS ONE light doing what I think -- shadow shape, colour,
+   falloff -- without the others visually competing for attention?"**
+   -- pass `light:"<name>"` on `beauty` or any of the four transport
+   modes. Every other light contributes exactly zero (an unbiased
+   partition of the full lighting, not a dim/approximate preview of
+   it). See "The `light` param" below.
 
 ### Known limitations (read before reporting a "bug")
 
@@ -246,6 +252,44 @@ without re-deriving camera math each call -- e.g. checking
 `deep_reflect` from three named views of a jewel/watch-crystal scene to
 confirm the reflections read correctly from every angle a user might
 actually look from.
+
+## The `light` param: isolating one light (light solo)
+
+`light` is an optional string param on `render`, ORTHOGONAL to `mode`
+and to `view` -- it composes with `beauty` (the default) and all four
+transport modes (`deep_reflect`/`direct`/`indirect`/`clay_lights`).
+Pass the name of a light (or an emissive object) to render with it as
+the ONLY active light in the scene:
+
+```json
+{"method": "render", "params": {"mode": "direct", "light": "keylight"}}
+```
+
+This is a genuine **unbiased partition** of the scene's lighting, not
+a dim/approximate preview: every OTHER light contributes exactly zero
+(both its next-event-estimation contribution AND its BSDF-sampled
+emission are suppressed), so summing a solo render of every light in
+the scene reproduces the un-soloed render, up to Monte-Carlo noise --
+`light` never double-counts or drops energy, it only isolates it. Use
+it to inspect one light's shadow shape, colour, and falloff without
+the other lights visually competing for attention, or to sanity-check
+a specific light's placement/power in isolation before touching the
+whole rig.
+
+Resolution: the name is matched first against the scene's lights (any
+light type, by name), then against named scene objects whose material
+is emissive (a mesh area light, by name). An unresolved name FAILS the
+render (`ok:false`) with the available-name list in `message` -- same
+contract as an unresolved `view`. `light` is silently ignored (an
+honest note in `message`) under `objectmap`, the four false-colour
+diagnostics (`normals`/`depth`/`facets`/`wireframe`), and
+`quality:"draft"` -- none of those evaluate scene lighting at all, so
+there is nothing for `light` to isolate.
+
+Recipe: **"Which light is casting that shadow / that colour cast?"**
+-- solo each candidate light in turn (`light:"keylight"`,
+`light:"filllight"`, ...) and compare; the offending light is the one
+whose solo render reproduces the shadow/cast you're chasing.
 
 ## Escalation ladder (cost, cheapest first)
 

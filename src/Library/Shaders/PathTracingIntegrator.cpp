@@ -2079,7 +2079,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// the NM original as the `smsSuppressEmission` flag used here.
 			const bool smsSuppressEmission = bSMSEnabled
 				&& bPassedThroughSpecular && bHadNonSpecularShading;
-			if( pEmitter && considerEmission )
+			// GUI render modes P2b `light solo` (docs/gui/RENDER_MODES.md
+			// §3): under solo, a BSDF-sampled hit contributes emission
+			// ONLY when the hit object IS the soloed mesh luminary --
+			// every other emitter (including one that is itself NEE-
+			// unreachable, e.g. CanBeAreaLight()==false, which normally
+			// takes full unweighted emission) reads black, so "exactly
+			// one light enabled" holds for the BSDF-sampling strategy too,
+			// not just NEE.  Reads solo state directly off `pLS` -- the
+			// LightSampler already owns it (SetSoloLight/SetSoloLuminary),
+			// so there is no second, duplicated flag on the integrator to
+			// drift out of sync.
+			const bool soloSuppressEmission = pLS && pLS->IsSoloActive() &&
+				!( ri.pObject && pLS->IsSoloTargetLuminary( ri.pObject ) );
+			if( pEmitter && considerEmission && !soloSuppressEmission )
 			{
 				if( smsSuppressEmission )
 				{
@@ -4298,7 +4311,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// ============================================================
 		{
 			IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
-			if( pEmitter && considerEmission )
+			// GUI render modes P2b `light solo` (HWSS twin -- see the
+			// Pel/NM loop's PART 1 for the full rationale): suppress a
+			// BSDF-sampled hit's emission unless the hit object IS the
+			// soloed mesh luminary.
+			const bool soloSuppressEmissionHW = pLS && pLS->IsSoloActive() &&
+				!( ri.pObject && pLS->IsSoloTargetLuminary( ri.pObject ) );
+			if( pEmitter && considerEmission && !soloSuppressEmissionHW )
 			{
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 				{

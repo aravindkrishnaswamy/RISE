@@ -454,6 +454,29 @@ namespace RISE
 			//! active camera's type -- see RenderCore_'s doRenderWork for
 			//! both checks.
 			std::string          view;
+			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 "light
+			//! solo", §9): OPTIONAL light-selector for a single-light
+			//! render -- "" (default) = no solo, every light in the scene
+			//! contributes normally, exactly as today.  A non-empty name is
+			//! resolved against the scene's light manager (any light, by
+			//! name) then its object manager (any named object whose
+			//! material is emissive, by name) and designates the match as
+			//! the SOLE active light for this render: every OTHER light
+			//! (explicit or mesh-emitter) contributes exactly zero direct
+			//! lighting and its BSDF-sampled emission is suppressed too
+			//! (see LightSampler::SetSoloLight/SetSoloLuminary's doc for the
+			//! exact NEE/MIS mechanism that keeps this unbiased, not merely
+			//! "mostly dark").  Valid with `beauty` (the default renderTarget)
+			//! and all four BeautyVariant modes (`deep_reflect`/`direct`/
+			//! `indirect`/`clay_lights`) -- an unresolved name FAILS the
+			//! render (res.ok=false) with the available-name list in
+			//! res.message, same contract as an unresolved `view`.  Silently
+			//! IGNORED (honestly noted in the result message) under
+			//! `objectmap`, the ShaderPipeline data modes (`normals`/`depth`/
+			//! `facets`/`wireframe`), and `quality:"draft"` -- none of those
+			//! evaluate scene lighting at all, matching the quality/samples/
+			//! xray-ignored precedent used throughout this struct.
+			std::string          light;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides

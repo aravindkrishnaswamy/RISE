@@ -522,7 +522,10 @@ LightSampler::LightSampler() :
   cachedEnvSelectProb( 0 ),
   cachedSceneCenter( 0, 0, 0 ),
   cachedSceneRadius( 0 ),
-  pOptimalMIS( 0 )
+  pOptimalMIS( 0 ),
+  soloKind( SoloKind::None ),
+  soloLight( 0 ),
+  soloLuminaryObject( 0 )
 {
 }
 
@@ -1390,6 +1393,21 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
+				// LIGHT-SOLO: the soloed luminary's selection pdf is 1.0
+				// (NEE's Step-2 bypass uses pdfAlias=1.0 too — see
+				// EvaluateDirectLighting's solo branch) so the integrator's
+				// BSDF-hit MIS partner agrees with NEE's own selection
+				// distribution.  A non-target luminary's emission is
+				// suppressed to black entirely by the integrator's PART-1
+				// solo gate (PathTracingIntegrator.cpp) before this pdf is
+				// even consulted, so its exact value here is moot — this
+				// branch still returns the honest alias/BVH pdf below for
+				// callers that query it directly (diagnostics, tests).
+				if( soloKind != SoloKind::None )
+				{
+					return IsSoloTargetLuminary( &luminary ) ? Scalar( 1.0 ) : Scalar( 0.0 );
+				}
+
 				// ALIAS-ONLY selection pdf — do NOT apply the
 				// (1 - cachedEnvSelectProb) continuous-PMF factor here.
 				// This is PT's BSDF-hit MIS competitor for a MESH-emitter
@@ -1473,6 +1491,16 @@ RISEPel LightSampler::EvaluateDirectLighting(
 		for( m=lights.begin(), n=lights.end(); m!=n; m++ )
 		{
 			const ILightPriv* l = *m;
+			// LIGHT-SOLO: skip every light that is not the soloed
+			// identity.  A soloed non-mesh light with nonzero exitance
+			// falls through this `continue` and is picked up by the
+			// Step-2 bypass below instead; a soloed zero-exitance light
+			// (ambient/directional) is evaluated right here, exactly as
+			// it would be with no lights at all besides it.
+			if( soloKind != SoloKind::None && !IsSoloTargetLight( l ) )
+			{
+				continue;
+			}
 			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
 			if( exitance <= 0 )
 			{
@@ -1492,19 +1520,58 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	// to the environment NEE below rather than returning.
 	// ----------------------------------------------------------------
 	do {
-		if( !aliasTable.IsValid() )
-		{
-			break;
-		}
-
-		// Find self in the light table (for exclusion)
+		// Find self in the light table (for exclusion) -- needed by
+		// every branch below, including the solo bypass.
 		const int selfIdx = FindLuminaryIndex( pShadingObject );
 
 		unsigned int idx;
 		Scalar pdfAlias;
 		Scalar risWeight = 1.0;
 
-		if( pLightBVH && pLightBVH->IsBuilt() )
+		if( soloKind != SoloKind::None )
+		{
+			// LIGHT-SOLO bypass: skip BVH/RIS/alias-table selection
+			// entirely.  Directly locate the soloed entry (if any) and
+			// evaluate it with selection pdf = 1.0 -- CachedPdfSelectLuminary
+			// returns the SAME 1.0 for this identity (see its solo branch)
+			// so NEE and the integrator's BSDF-hit MIS partner agree, which
+			// is what keeps the combined estimator unbiased under solo.  A
+			// solo target that is NOT in lightEntries (a zero-exitance
+			// light, already handled by Step 1 above; or an Environment
+			// target) has no entry here -- break to env NEE.
+			int soloIdx = -1;
+			if( soloKind == SoloKind::Light )
+			{
+				for( unsigned int i = 0; i < lightEntries.size(); i++ )
+				{
+					if( lightEntries[i].pLight == soloLight )
+					{
+						soloIdx = static_cast<int>( i );
+						break;
+					}
+				}
+			}
+			else if( soloKind == SoloKind::Luminary )
+			{
+				soloIdx = FindLuminaryIndex( soloLuminaryObject );
+			}
+			// SoloKind::Environment: soloIdx stays -1, handled entirely by
+			// the env-NEE block below.
+
+			if( soloIdx < 0 || soloIdx == selfIdx )
+			{
+				break;
+			}
+
+			idx = static_cast<unsigned int>( soloIdx );
+			pdfAlias = 1.0;
+			risWeight = 1.0;
+		}
+		else if( !aliasTable.IsValid() )
+		{
+			break;
+		}
+		else if( pLightBVH && pLightBVH->IsBuilt() )
 		{
 			// Light BVH: importance-weighted selection with full MIS.
 			Scalar bvhPdf;
@@ -1775,7 +1842,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	// importance map and evaluate the shadowed, MIS-weighted
 	// contribution.  This is independent of the light-table NEE
 	// above (separate strategy with its own MIS against BSDF).
-	if( pEnvSampler && pEnvSampler->IsValid() && pEnvironmentMap )
+	// LIGHT-SOLO Stage 3: env-NEE runs only when solo is inactive OR
+	// the environment IS the soloed light -- every other solo target
+	// (an explicit light or a mesh luminary) must see zero contribution
+	// from the env map, exactly like every other non-target light.
+	if( ( soloKind == SoloKind::None || soloKind == SoloKind::Environment ) &&
+		pEnvSampler && pEnvSampler->IsValid() && pEnvironmentMap )
 	{
 		Vector3 envDir;
 		Scalar envPdf;
@@ -1900,6 +1972,11 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		for( m=lights.begin(), n=lights.end(); m!=n; m++ )
 		{
 			const ILightPriv* l = *m;
+			// LIGHT-SOLO: see the RGB variant's identical filter above.
+			if( soloKind != SoloKind::None && !IsSoloTargetLight( l ) )
+			{
+				continue;
+			}
 			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
 			if( exitance <= 0 )
 			{
@@ -1925,18 +2002,58 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	// Step 2: Select one light with nonzero exitance, excluding self.
 	// ----------------------------------------------------------------
 	do {
-		if( !aliasTable.IsValid() )
-		{
-			break;
-		}
-
+		// Find self in the light table (for exclusion) -- needed by
+		// every branch below, including the solo bypass (NM variant).
 		const int selfIdx = FindLuminaryIndex( pShadingObject );
 
 		unsigned int idx;
 		Scalar pdfAlias;
 		Scalar risWeight = 1.0;
 
-		if( pLightBVH && pLightBVH->IsBuilt() )
+		if( soloKind != SoloKind::None )
+		{
+			// LIGHT-SOLO bypass: skip BVH/RIS/alias-table selection
+			// entirely.  Directly locate the soloed entry (if any) and
+			// evaluate it with selection pdf = 1.0 -- CachedPdfSelectLuminary
+			// returns the SAME 1.0 for this identity (see its solo branch)
+			// so NEE and the integrator's BSDF-hit MIS partner agree, which
+			// is what keeps the combined estimator unbiased under solo.  A
+			// solo target that is NOT in lightEntries (a zero-exitance
+			// light, already handled by Step 1 above; or an Environment
+			// target) has no entry here -- break to env NEE.
+			int soloIdx = -1;
+			if( soloKind == SoloKind::Light )
+			{
+				for( unsigned int i = 0; i < lightEntries.size(); i++ )
+				{
+					if( lightEntries[i].pLight == soloLight )
+					{
+						soloIdx = static_cast<int>( i );
+						break;
+					}
+				}
+			}
+			else if( soloKind == SoloKind::Luminary )
+			{
+				soloIdx = FindLuminaryIndex( soloLuminaryObject );
+			}
+			// SoloKind::Environment: soloIdx stays -1, handled entirely by
+			// the env-NEE block below.
+
+			if( soloIdx < 0 || soloIdx == selfIdx )
+			{
+				break;
+			}
+
+			idx = static_cast<unsigned int>( soloIdx );
+			pdfAlias = 1.0;
+			risWeight = 1.0;
+		}
+		else if( !aliasTable.IsValid() )
+		{
+			break;
+		}
+		else if( pLightBVH && pLightBVH->IsBuilt() )
 		{
 			// Light BVH: importance-weighted selection with full MIS.
 			Scalar bvhPdf;
@@ -2152,7 +2269,12 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	} while( false );
 
 	// Environment map NEE (spectral path)
-	if( pEnvSampler && pEnvSampler->IsValid() && pEnvironmentMap )
+	// LIGHT-SOLO Stage 3: env-NEE runs only when solo is inactive OR
+	// the environment IS the soloed light -- every other solo target
+	// (an explicit light or a mesh luminary) must see zero contribution
+	// from the env map, exactly like every other non-target light.
+	if( ( soloKind == SoloKind::None || soloKind == SoloKind::Environment ) &&
+		pEnvSampler && pEnvSampler->IsValid() && pEnvironmentMap )
 	{
 		Vector3 envDir;
 		Scalar envPdf;

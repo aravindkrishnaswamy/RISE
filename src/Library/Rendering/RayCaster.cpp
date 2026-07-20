@@ -104,7 +104,10 @@ RayCaster::RayCaster(
   bTransparentShadows( false ),
   dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
   bWantsWireEdgeInfo( false ),
-  bXrayViewResolve( false )
+  bXrayViewResolve( false ),
+  iPendingSoloKind( 0 ),
+  pendingSoloLight( 0 ),
+  pendingSoloLuminary( 0 )
 {
 	pDefaultShader.addref();
 }
@@ -272,6 +275,20 @@ void RayCaster::RebuildLightSamplers()
 	if( iPendingRISCandidates >= 0 )
 	{
 		pLightSampler->SetRISCandidates( (unsigned int)iPendingRISCandidates );
+	}
+
+	// Re-apply any previously-set light-solo target so a same-pointer
+	// rebuild doesn't silently drop it (the fresh LightSampler defaults to
+	// no solo).  Identity pointers (pendingSoloLight / pendingSoloLuminary)
+	// are stable across the rebuild -- they name scene-owned objects, not
+	// anything the LightSampler itself allocates.
+	if( iPendingSoloKind == 1 )
+	{
+		pLightSampler->SetSoloLight( pendingSoloLight );
+	}
+	else if( iPendingSoloKind == 2 )
+	{
+		pLightSampler->SetSoloLuminary( pendingSoloLuminary );
 	}
 
 	// Build environment importance sampler if a global radiance map exists
@@ -2203,6 +2220,134 @@ void RayCaster::SetUseLightBVH( const bool enable )
 	if( pLightSampler )
 	{
 		pLightSampler->SetUseLightBVH( enable );
+	}
+}
+
+namespace
+{
+	// GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"): collects
+	// every enumerated name into a ", "-joined, quoted list for an honest
+	// "unresolved name" error -- same shape as AgentSession's `view`
+	// resolution NameCollector.
+	struct NameJoinCollector : public IEnumCallback<const char*>
+	{
+		std::string* out;
+		bool operator()( const char* const& n ) override
+		{
+			if( !out->empty() ) *out += ", ";
+			*out += "\"";
+			*out += ( n ? n : "" );
+			*out += "\"";
+			return true;
+		}
+	};
+}
+
+bool RayCaster::SetSoloLightByName( const char* name, std::string* pAvailableNames )
+{
+	if( !name || !*name )
+	{
+		ClearSoloLight();
+		return true;
+	}
+
+	if( !pScene )
+	{
+		if( pAvailableNames ) *pAvailableNames = "";
+		return false;
+	}
+
+	// Try an explicit (non-mesh) light first -- ILightManager::GetItem is
+	// an exact-name lookup, so any match (zero- or nonzero-exitance) wins
+	// outright.
+	if( const ILightManager* pLightMgr = pScene->GetLights() )
+	{
+		if( ILightPriv* pLight = pLightMgr->GetItem( name ) )
+		{
+			iPendingSoloKind = 1;
+			pendingSoloLight = pLight;
+			pendingSoloLuminary = 0;
+			if( pLightSampler )
+			{
+				pLightSampler->SetSoloLight( pendingSoloLight );
+			}
+			return true;
+		}
+	}
+
+	// Fall back to a named mesh object whose material is emissive (a
+	// luminary).  A named object that exists but is NOT emissive falls
+	// through to the "unresolved" branch below -- naming a non-light
+	// object is not a valid solo target, and silently treating it as one
+	// would render a scene with EVERY light off rather than the honest
+	// "unknown name" failure.
+	if( const IObjectManager* pObjMgr = pScene->GetObjects() )
+	{
+		if( IObjectPriv* pObj = pObjMgr->GetItem( name ) )
+		{
+			if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() )
+			{
+				iPendingSoloKind = 2;
+				pendingSoloLight = 0;
+				pendingSoloLuminary = pObj;
+				if( pLightSampler )
+				{
+					pLightSampler->SetSoloLuminary( pendingSoloLuminary );
+				}
+				return true;
+			}
+		}
+	}
+
+	// Unresolved: build the honest available-name list (every light name
+	// UNION every emissive object name) for the caller's error message.
+	if( pAvailableNames )
+	{
+		pAvailableNames->clear();
+		NameJoinCollector collector;
+		collector.out = pAvailableNames;
+		if( const ILightManager* pLightMgr = pScene->GetLights() )
+		{
+			pLightMgr->EnumerateItemNames( collector );
+		}
+		if( const IObjectManager* pObjMgr = pScene->GetObjects() )
+		{
+			struct EmissiveNameCollector : public IEnumCallback<const char*>
+			{
+				const IObjectManager* pObjMgr;
+				std::string* out;
+				bool operator()( const char* const& n ) override
+				{
+					if( IObjectPriv* pObj = pObjMgr->GetItem( n ) )
+					{
+						if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() )
+						{
+							if( !out->empty() ) *out += ", ";
+							*out += "\"";
+							*out += ( n ? n : "" );
+							*out += "\"";
+						}
+					}
+					return true;
+				}
+			} emissiveCollector;
+			emissiveCollector.pObjMgr = pObjMgr;
+			emissiveCollector.out = pAvailableNames;
+			pObjMgr->EnumerateItemNames( emissiveCollector );
+		}
+	}
+
+	return false;
+}
+
+void RayCaster::ClearSoloLight()
+{
+	iPendingSoloKind = 0;
+	pendingSoloLight = 0;
+	pendingSoloLuminary = 0;
+	if( pLightSampler )
+	{
+		pLightSampler->ClearSolo();
 	}
 }
 
