@@ -650,6 +650,24 @@ namespace RISE
 		//!     param's reference category whose `name` matches the referring value).
 		struct ReferenceUse { NodeId sourceValueNodeId; NodeId targetNodeId; };
 
+		//! A single dangling reference, structured (D14/D25 sibling of the plain-string diagnostic
+		//! `BuildReferenceGraph` has always emitted). The string diagnostic
+		//! (`c->role + "." + role + " -> '" + val + "': unresolved reference"`) is fine for a human
+		//! reading a log, but a CALLER that wants to ATTRIBUTE the dangling reference to a specific
+		//! chunk/param/value -- e.g. to report it on the JUST-INSERTED chunk, or to compute
+		//! near-miss suggestions -- would have to re-parse that string, which is brittle (the format
+		//! is prose, not a contract, and free-form chunk/param/value text could itself contain the
+		//! delimiters the parse relies on). This struct carries the SAME information the string
+		//! already has, pre-split into fields, at the SAME site the string is emitted -- so a caller
+		//! gets exact attribution for free instead of scraping text.
+		struct UnresolvedReference
+		{
+			NodeId       sourceChunkId;   //!< the chunk NodeId whose param holds the dangling value
+			std::string  chunkKeyword;    //!< the chunk's role (e.g. "lambertian_material")
+			std::string  param;           //!< the param name (e.g. "reflectance")
+			std::string  value;           //!< the unresolved value token (e.g. "uniform_wall_pink")
+		};
+
 		//! The traced reference graph for a document (slice 1 of
 		//! docs/agentic-redesign/21-stable-apply-and-resolver.md): the resolved
 		//! reference edges + a content STAMP. The stamp is a CONSERVATIVE fingerprint
@@ -753,7 +771,13 @@ namespace RISE
 		//! when the Job has any animation (see DeriveToJobIncremental). O(N log N) for typical
 		//! documents; the conservative painter same-name ALIAS (PASS A) adds O(K^2) per name for
 		//! K same-named MIXED-kind painters -- a degenerate case (real scenes have distinct names).
-		ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics = nullptr );
+		//! `unresolved`, when non-null, is populated with a STRUCTURED `UnresolvedReference` at the
+		//! exact same site (and under the exact same "name, not numeric literal" exclusion) as each
+		//! entry appended to `diagnostics` -- see UnresolvedReference's comment for why a second,
+		//! structured form exists alongside the string. Defaulted to nullptr so every pre-existing
+		//! call site (compiled against the two-argument form) keeps building unchanged.
+		ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics = nullptr,
+			std::vector<UnresolvedReference>* unresolved = nullptr );
 
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
 		//! (D9/D15/D44: lineage survives rename + reparse on a BEST-EFFORT basis;

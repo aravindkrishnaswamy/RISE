@@ -378,7 +378,15 @@ namespace RISE
 						"status,retriable,headVersion,message}, including the \"staged\" status -- "
 						"see propose_patch's description) plus the parsed chunk's `name`/`kind` "
 						"echo. A duplicate (kind,name) against an existing chunk is rejected "
-						"with a clean message." );
+						"with a clean message. A SUCCESSFUL insert (applied=true) may still "
+						"return `unresolvedReferences`: [{param,value,suggestions:[...]}] -- this "
+						"is a WARNING, NOT a rejection. It means the just-inserted chunk names a "
+						"painter/material/geometry/etc. that is not defined ANYWHERE in the "
+						"document (yet). If you are about to insert that missing chunk next "
+						"(a legitimate forward reference), this is fine and needs no action. "
+						"Otherwise, insert the missing chunk or correct the misspelled name -- "
+						"check `suggestions` first, it lists near-miss names already defined in "
+						"the document." );
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 

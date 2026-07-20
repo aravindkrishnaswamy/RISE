@@ -1166,6 +1166,190 @@ namespace RISE
 			}
 		}
 
+		namespace
+		{
+			//! Case-insensitive lowercasing (ASCII -- every chunk/painter/material
+			//! name in practice is an ASCII identifier) -- shared basis for the two
+			//! near-miss tests CollectUnresolvedRefSuggestions uses below.
+			std::string ToLowerCopy( const std::string& s )
+			{
+				std::string out = s;
+				for( char& c : out ) c = (char)std::tolower( (unsigned char)c );
+				return out;
+			}
+
+			//! Case-insensitive "is `needle` a substring of `hay`?" An empty needle
+			//! never matches (an empty candidate name can't be a meaningful near-miss
+			//! of anything).
+			bool CiContains( const std::string& hay, const std::string& needle )
+			{
+				if( needle.empty() ) return false;
+				return ToLowerCopy( hay ).find( ToLowerCopy( needle ) ) != std::string::npos;
+			}
+
+			//! Case-insensitive Levenshtein edit distance -- O(len(a).len(b)) DP,
+			//! cheap at chunk-name lengths. The suggestion builder's typo-distance
+			//! fallback for near-misses the substring test above misses (e.g.
+			//! "wall_pnik" vs "wall_pink" shares no useful substring either way).
+			int CiEditDistance( const std::string& a, const std::string& b )
+			{
+				const std::string la = ToLowerCopy( a ), lb = ToLowerCopy( b );
+				const std::size_t n = la.size(), m = lb.size();
+				std::vector<std::vector<int> > dp( n + 1, std::vector<int>( m + 1, 0 ) );
+				for( std::size_t i = 0; i <= n; ++i ) dp[i][0] = (int)i;
+				for( std::size_t j = 0; j <= m; ++j ) dp[0][j] = (int)j;
+				for( std::size_t i = 1; i <= n; ++i )
+					for( std::size_t j = 1; j <= m; ++j ) {
+						const int sub = dp[i-1][j-1] + ( la[i-1] == lb[j-1] ? 0 : 1 );
+						const int del = dp[i-1][j] + 1;
+						const int ins = dp[i][j-1] + 1;
+						dp[i][j] = std::min( sub, std::min( del, ins ) );
+					}
+				return dp[n][m];
+			}
+
+			//! Up to 3 near-miss candidate names for a dangling reference (motivating
+			//! case: chunkKeyword="lambertian_material", param="reflectance",
+			//! value="uniform_wall_pink", and the document has a
+			//! `uniformcolor_painter` named "_wall_pink" -- MUST surface "_wall_pink").
+			//! A candidate is any chunk DEFINED in `doc` whose OWN
+			//! ChunkDescriptor::category is one of the offending param's declared
+			//! `referenceCategories` (so e.g. a Material name is never suggested for a
+			//! Painter slot) and whose name is a near-miss of `value` by EITHER test:
+			//! (1) a case-insensitive substring either direction -- ranks FIRST,
+			//! catches the motivating "right name, wrong prefix/suffix" bug class;
+			//! (2) a small case-insensitive edit distance (budget scales with name
+			//! length) -- ranks SECOND, catches single-character typos substring
+			//! matching would miss. This is a best-effort HEURISTIC ranking, not a
+			//! claim the top suggestion is what the author meant -- it's a hint, and
+			//! the caller still has to look.
+			std::vector<std::string> CollectUnresolvedRefSuggestions(
+				const RISE::Cst::Document& doc, const std::string& chunkKeyword,
+				const std::string& param, const std::string& value )
+			{
+				std::vector<std::string> out;
+				const ChunkDescriptor* srcDesc = DescriptorForKeyword( String( chunkKeyword.c_str() ) );
+				if( !srcDesc ) return out;
+				const ParameterDescriptor* pd = nullptr;
+				for( const ParameterDescriptor& p : srcDesc->parameters ) if( p.name == param ) { pd = &p; break; }
+				if( !pd || pd->referenceCategories.empty() ) return out;
+
+				// (rank, tiebreak) -- rank 0 = substring hit (tiebreak = -overlap
+				// length, so a LONGER shared substring sorts first), rank 1 =
+				// edit-distance hit (tiebreak = the distance itself, so a SMALLER
+				// distance sorts first). A plain std::pair<int,int> sorts
+				// lexicographically, which is exactly this priority order.
+				std::vector<std::pair<std::pair<int,int>, std::string> > candidates;
+				const int nItems = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < nItems; ++i ) {
+					const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+					const RISE::Cst::NodeRef item = RISE::Cst::DocResolveNodeId( doc, id );
+					if( !item || item->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					const std::string namePath = RISE::Cst::ChunkNamePath( item );   // "keyword/name", "" if unnamed
+					if( namePath.empty() ) continue;
+					const std::string prefix = item->role + "/";
+					if( namePath.size() <= prefix.size() || namePath.compare( 0, prefix.size(), prefix ) != 0 ) continue;
+					const std::string name = namePath.substr( prefix.size() );
+					if( name == value ) continue;   // would have RESOLVED -- can't be the fix for a dangling value
+
+					const ChunkDescriptor* candDesc = DescriptorForKeyword( String( item->role.c_str() ) );
+					if( !candDesc ) continue;
+					bool categoryOk = false;
+					for( ChunkCategory cc : pd->referenceCategories ) if( cc == candDesc->category ) { categoryOk = true; break; }
+					if( !categoryOk ) continue;
+
+					if( CiContains( value, name ) || CiContains( name, value ) ) {
+						candidates.push_back( std::make_pair(
+							std::make_pair( 0, -(int)std::min( name.size(), value.size() ) ), name ) );
+						continue;
+					}
+					const int dist = CiEditDistance( name, value );
+					const int budget = std::max<int>( 2, (int)( 0.34 * std::max( name.size(), value.size() ) ) );
+					if( dist <= budget )
+						candidates.push_back( std::make_pair( std::make_pair( 1, dist ), name ) );
+				}
+				std::sort( candidates.begin(), candidates.end() );
+				for( const std::pair<std::pair<int,int>, std::string>& c : candidates ) {
+					if( out.size() >= 3 ) break;
+					out.push_back( c.second );
+				}
+				return out;
+			}
+
+			//! Post-process a SUCCESSFUL insert_chunk: re-derive the reference graph
+			//! over the JUST-LANDED head and attribute any dangling reference to the
+			//! chunk THIS call inserted, filling r.unresolvedRefs (with near-miss
+			//! suggestions per offending param) and appending a one-sentence note to
+			//! r.message. NEVER touches r.applied/r.status -- see
+			//! AgentChunkResult::unresolvedRefs's doc for why a forward reference
+			//! (the painter comes in a later call) must stay a WARNING, never a
+			//! rejection: refusing it would make normal declare-after-use scene
+			//! building impossible. No-op unless `r.applied` is already true --
+			//! InsertChunk's two success paths (LIVE-controller and headless) both
+			//! call this at their own success point, after r.kind/r.name are filled
+			//! in from the commit.
+			//!
+			//! ATTRIBUTION: BuildReferenceGraph's structured out-param reports EVERY
+			//! dangling reference in the WHOLE document, not just this insert's -- a
+			//! caller must filter to the chunk it just landed (the SCOPING
+			//! requirement: an unrelated pre-existing dangling reference elsewhere
+			//! must not leak into this insert's report). The precise filter is by
+			//! NodeId, via DocFindByName( doc, "<kind>/<name>" ) -- guaranteed UNIQUE
+			//! here because a successful insert can never have landed a (kind,name)
+			//! duplicate (that collision is refused before commit, see
+			//! TestInsertRejections). FAILURE MODE: r.name can be empty for an
+			//! UNNAMED chunk (e.g. `film`) -- DocFindByName has nothing to look up
+			//! then, so this falls back to a best-effort match on chunkKeyword PLUS
+			//! both the param name and the dangling value appearing verbatim in the
+			//! raw chunkText. That fallback is heuristic -- a coincidental substring
+			//! hit could mis-attribute -- but it's moot in practice: every unnamed
+			//! chunk descriptor in this codebase has zero Reference-kind params, so an
+			//! unnamed chunk never has a dangling reference of its own to report.
+			void AttachUnresolvedRefWarnings( AgentChunkResult& r, const RISE::Cst::Document& doc,
+			                                   const std::string& chunkText )
+			{
+				if( !r.applied ) return;
+				std::vector<RISE::Cst::UnresolvedReference> all;
+				RISE::Cst::BuildReferenceGraph( doc, nullptr, &all );
+				if( all.empty() ) return;
+
+				RISE::Cst::NodeId insertedId = 0;
+				if( !r.name.empty() )
+					insertedId = RISE::Cst::DocFindByName( doc, r.kind + "/" + r.name );
+
+				std::vector<const RISE::Cst::UnresolvedReference*> mine;
+				if( insertedId != 0 ) {
+					for( const RISE::Cst::UnresolvedReference& u : all )
+						if( u.sourceChunkId == insertedId ) mine.push_back( &u );
+				} else {
+					for( const RISE::Cst::UnresolvedReference& u : all ) {
+						if( u.chunkKeyword != r.kind ) continue;
+						if( chunkText.find( u.param ) != std::string::npos &&
+						    chunkText.find( u.value ) != std::string::npos )
+							mine.push_back( &u );
+					}
+				}
+				if( mine.empty() ) return;
+
+				std::string clauses;
+				for( const RISE::Cst::UnresolvedReference* u : mine ) {
+					AgentUnresolvedRef ref;
+					ref.param = u->param;
+					ref.value = u->value;
+					ref.suggestions = CollectUnresolvedRefSuggestions( doc, u->chunkKeyword, u->param, u->value );
+					r.unresolvedRefs.push_back( ref );
+
+					if( !clauses.empty() ) clauses += "; ";
+					clauses += u->param + "='" + u->value + "'";
+					if( !ref.suggestions.empty() ) clauses += " (did you mean '" + ref.suggestions.front() + "'?)";
+				}
+				r.message += " WARNING: unresolved reference(s) in this chunk: " + clauses +
+					" -- the named chunk is not defined (yet). Fine if this is a forward "
+					"reference you're about to define next; otherwise insert the missing "
+					"chunk or correct the name.";
+			}
+		}
+
 		AgentChunkResult AgentSession::InsertChunk( const std::string& chunkText,
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
@@ -1239,6 +1423,11 @@ namespace RISE
 				r.message     = cr.message.c_str();
 				r.name        = cr.chunkName.c_str();
 				r.kind        = cr.chunkKeyword.c_str();
+				// Model-B: non-blocking dangling-reference WARNING (see
+				// AttachUnresolvedRefWarnings's doc) -- the controller commits through
+				// the SAME mJob, so its retained Document already reflects this insert.
+				if( r.applied && mJob && mJob->GetCstDocument() )
+					AttachUnresolvedRefWarnings( r, *mJob->GetCstDocument(), chunkText );
 				return r;
 			}
 
@@ -1288,6 +1477,10 @@ namespace RISE
 			r.name = nameBuf;
 			FoldChunkCode( r, code, /*isInsert*/ true, std::string(), diagBuf, /*kindWasPassed*/ false );
 			r.headVersion = mJob->GetCstHeadVersion();
+			// Model-B: non-blocking dangling-reference WARNING (see
+			// AttachUnresolvedRefWarnings's doc above FoldChunkCode's namespace).
+			if( r.applied && mJob->GetCstDocument() )
+				AttachUnresolvedRefWarnings( r, *mJob->GetCstDocument(), chunkText );
 			return r;
 		}
 

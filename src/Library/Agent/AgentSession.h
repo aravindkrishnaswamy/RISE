@@ -223,6 +223,25 @@ namespace RISE
 			bool        queueFull = false;
 		};
 
+		//! One dangling reference left behind by a chunk that WAS successfully
+		//! inserted (a NON-BLOCKING warning -- see AgentChunkResult::unresolvedRefs
+		//! for why this must never refuse the insert). `param`/`value` mirror
+		//! RISE::Cst::UnresolvedReference's fields of the same name (the chunk
+		//! identity itself is implicit -- these all belong to the chunk
+		//! AgentChunkResult::kind/name just echoed). `suggestions` holds up to 3
+		//! near-miss candidate names -- chunks already DEFINED in the document
+		//! whose category is one the param accepts and whose name looks like a
+		//! plausible typo of `value` -- so a model that fat-fingered a name (the
+		//! motivating case: authoring `uniform_wall_pink` when the painter it
+		//! had just created was actually named `_wall_pink`) gets a same-turn
+		//! correction hint instead of silently shipping a broken material.
+		struct AgentUnresolvedRef
+		{
+			std::string              param;         //!< the param that holds the dangling value (e.g. "reflectance")
+			std::string              value;          //!< the unresolved value token (e.g. "uniform_wall_pink")
+			std::vector<std::string> suggestions;    //!< up to 3 near-miss candidate names, best match first
+		};
+
 		//! Model-B F5 slice S2: the structured result of InsertChunk /
 		//! RemoveChunk.  SAME shape and gating semantics as AgentPatchResult
 		//! (applied = CLEAN success only; status in {"applied","rejected",
@@ -252,6 +271,18 @@ namespace RISE
 			//! insert_chunk/remove_chunk stage refused by StageProposal's
 			//! kMaxPendingProposals gate.
 			bool        queueFull = false;
+			//! Populated ONLY after a SUCCESSFUL insert_chunk whose newly-landed
+			//! chunk itself references a name the document has no definition for
+			//! (the CST resolver's dangling-reference diagnostic, attributed to
+			//! THIS chunk -- see AgentSession::InsertChunk). Empty on every other
+			//! path (remove, a failed insert, a clean insert). This is a WARNING,
+			//! NOT a rejection: `applied`/`status` are UNCHANGED by it -- a forward
+			//! reference (insert a material now, its painter next) is legitimate
+			//! incremental authoring, and refusing it would make normal
+			//! declare-after-use scene building impossible. AgentRpc.cpp serializes
+			//! this as `unresolvedReferences` and OMITS the key entirely when empty
+			//! (back-compat with every existing insert_chunk caller).
+			std::vector<AgentUnresolvedRef> unresolvedRefs;
 		};
 
 		//! Preview-render (F5 the cheap multi-angle observe loop): an OPTIONAL

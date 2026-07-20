@@ -2257,7 +2257,8 @@ static std::map<std::pair<int,std::string>, NodeId> BuildReferenceNamespace(
 struct ChunkRefs { std::vector<ReferenceUse> edges; std::vector<NodeId> deps; unsigned long long cs; };
 static ChunkRefs ComputeChunkRefs( const Document& doc,
 	const std::map<std::pair<int,std::string>, NodeId>& defs, const ChunkDescriptor& desc,
-	const NodeRef& c, NodeId chunkId, std::vector<std::string>& diags )
+	const NodeRef& c, NodeId chunkId, std::vector<std::string>& diags,
+	std::vector<UnresolvedReference>* unresolved = nullptr )
 {
 	++g_chunkRefsComputed;   // #4b cost gate (1 per incremental edit; N per full build)
 	ChunkRefs out;
@@ -2347,8 +2348,14 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 				// reference. (In a pure-reference slot a numeric is a TYPE mismatch,
 				// which DeriveToJob refuses at apply time; the static pass does not
 				// double-report it. See LooksNumeric.)
-				if( !LooksNumeric( val ) )
+				if( !LooksNumeric( val ) ) {
 					diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
+					// Structured sibling of the string above (same site, same exclusions): lets a
+					// caller (e.g. AgentSession's post-insert warning) attribute the dangling
+					// reference to its chunk/param/value without re-parsing prose.
+					if( unresolved )
+						unresolved->push_back( UnresolvedReference{ chunkId, c->role, role, val } );
+				}
 				continue;
 			}
 			// sourceValueNodeId is the param NodeId (a tuple's ref tokens share it;
@@ -2375,7 +2382,8 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 	return out;
 }
 
-ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics )
+ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics,
+	std::vector<UnresolvedReference>* unresolved )
 {
 	std::vector<std::string> local;
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
@@ -2409,7 +2417,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
 		if( it == registry.end() ) continue;
 		const NodeId chunkId = DocNodeIdAt( doc, (int)i );
-		ChunkRefs cr = ComputeChunkRefs( doc, defs, it->second->Describe(), c, chunkId, diags );
+		ChunkRefs cr = ComputeChunkRefs( doc, defs, it->second->Describe(), c, chunkId, diags, unresolved );
 		graph.edges.insert( graph.edges.end(), cr.edges.begin(), cr.edges.end() );
 		for( NodeId t : cr.deps ) graph.dependents[ t ].insert( chunkId );
 		stamp += cr.cs;

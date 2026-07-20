@@ -53,6 +53,19 @@
 //        derive time with a diagnostic naming it; a non-prefix entity-name
 //        collision (hand-authored chunk vs. a generated name) is also
 //        refused; read_schema advertises unnamedRepeatable:true.
+//    U1  Unresolved-reference WARNING on insert_chunk (non-blocking): the
+//        motivating real-world case (a reference names a chunk one
+//        character off from the one actually defined) still APPLIES and
+//        surfaces the near-miss suggestion -- via directlighting_shaderop's
+//        `bsdf` param, the reachable vehicle for this on today's tree (see
+//        the VEHICLE NOTE above TestUnresolvedReferenceWarning: an ordinary
+//        material/object reference hard-fails the WHOLE insert instead,
+//        by design); a forward reference (shaderop before its material)
+//        warns then resolves cleanly once the material lands; the
+//        `material none` idiom and inline numerics are NOT false-flagged;
+//        a clean insert omits the wire key entirely; a PRE-EXISTING
+//        dangling reference elsewhere never leaks into an unrelated
+//        insert's report.
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -1877,6 +1890,248 @@ static void TestGltfImportPrefixCollision()
 	}
 }
 
+//----------------------------------------------------------------------
+// U1: unresolved-reference WARNING on insert_chunk. The CST resolver
+//     (RISE::Cst::BuildReferenceGraph) already DETECTS a dangling
+//     reference (a param value naming a chunk that is not defined
+//     anywhere in the document) -- it just used to throw that
+//     information away past a log-only string diagnostic. insert_chunk
+//     now surfaces it as a STRUCTURED, NON-BLOCKING warning
+//     (AgentChunkResult::unresolvedRefs / wire key
+//     "unresolvedReferences") so a model gets same-turn signal instead
+//     of silently shipping a broken material.
+//
+//     Motivating case (a real observed failure): a local model built a
+//     scene that inserted `lambertian_material { reflectance
+//     uniform_wall_pink }` where the painter it had actually just
+//     created was named `_wall_pink` (NOT `uniform_wall_pink`).
+//     insert_chunk returned SUCCESS with no diagnostic -- the model got
+//     no signal, silently left the broken material in the document, and
+//     only much later inserted a corrected duplicate.
+//
+//     VEHICLE NOTE (read before changing this test): the LITERAL
+//     `lambertian_material.reflectance` scenario above cannot be
+//     reproduced through insert_chunk on today's tree -- verified by
+//     running it. `Job::AddLambertianMaterial` (Job.cpp) hard-fails
+//     (`return false`) when its painter name does not resolve, and
+//     `Job::ApplyCstInsertChunk`'s dry-run-guarded FULL re-derive (its
+//     documented "no half-applied state" contract) refuses the WHOLE
+//     insert when any chunk's Finalize fails -- so `applied` can never
+//     be `true` for that exact chunk/param pairing; this is a stronger,
+//     pre-existing, deliberately-tested safety net (see H2/G1) that this
+//     feature must NOT weaken. That hard gate is universal for
+//     `standard_object.material/geometry/modifier/shader` and every
+//     ordinary material's painter slot audited for this test. It is
+//     NOT universal, though: `Job::AddDirectLightingShaderOp` (bound to
+//     `directlighting_shaderop`'s `bsdf` param, ValueKind::Reference /
+//     ChunkCategory::Material) resolves the name with NO null check at
+//     all -- an unresolved `bsdf` silently becomes "no BSDF override"
+//     and the shaderop still registers successfully. That gap is this
+//     test's VEHICLE: same resolver, same AgentSession/AgentRpc
+//     plumbing, same near-miss suggestion algorithm, just a param the
+//     engine happens not to hard-validate -- so `applied==true` with a
+//     genuine unresolvedRef is actually reachable. The bad/right name
+//     pair (`uniform_wall_pink` / `_wall_pink`) is kept verbatim from
+//     the motivating report even though the category is Material here,
+//     not Painter -- the mechanism under test doesn't care which.
+//----------------------------------------------------------------------
+static void TestUnresolvedReferenceWarning()
+{
+	std::printf( "U1: insert_chunk surfaces unresolved-reference WARNINGS (non-blocking)...\n" );
+
+	// (a) THE MOTIVATING CASE (adapted vehicle -- see the note above).
+	{
+		const std::string tmp = TempPath( "agentcrud_u1a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "U1(a) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// The material the local model ACTUALLY created (name `_wall_pink`),
+		// standing in for the motivating bug's painter.
+		Agent::AgentChunkResult rMat = sess->InsertChunk(
+			"lambertian_material\n{\n\tname _wall_pink\n\treflectance pnt_albedo\n}" );
+		Check( rMat.applied, "U1(a) the (correctly-named) material inserts" );
+
+		// A shaderop's `bsdf` override references the WRONG name
+		// (`uniform_wall_pink` -- the bug: guessing a name instead of using
+		// the one actually created). Job::AddDirectLightingShaderOp does
+		// NOT hard-validate `bsdf`, so this insert still lands.
+		Agent::AgentChunkResult rOp = sess->InsertChunk(
+			"directlighting_shaderop\n{\n\tname dlop_test\n\tbsdf uniform_wall_pink\n}" );
+		Check( rOp.applied, "U1(a) the shaderop insert STILL APPLIES (a warning, not a rejection)" );
+		Check( rOp.status == "applied", "U1(a) status stays \"applied\"" );
+		Check( rOp.unresolvedRefs.size() == 1, "U1(a) exactly ONE unresolvedRef" );
+		if( rOp.unresolvedRefs.size() == 1 ) {
+			const Agent::AgentUnresolvedRef& u = rOp.unresolvedRefs[0];
+			Check( u.param == "bsdf", "U1(a) unresolvedRef param is \"bsdf\"" );
+			Check( u.value == "uniform_wall_pink", "U1(a) unresolvedRef value is the bad name" );
+			bool sawIt = false;
+			std::string suggList;
+			for( const std::string& s : u.suggestions ) {
+				if( s == "_wall_pink" ) sawIt = true;
+				suggList += "'" + s + "' ";
+			}
+			Check( sawIt, "U1(a) suggestions include the ACTUAL material name '_wall_pink'" );
+			std::printf( "  U1(a) suggestions for 'uniform_wall_pink': %s\n", suggList.c_str() );
+		}
+		Check( rOp.message.find( "bsdf" ) != std::string::npos,
+		       "U1(a) message names the offending param" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) NON-BLOCKING FORWARD REFERENCE: a shaderop references a material that
+	// does not exist YET (warned, not refused); inserting that material next
+	// succeeds cleanly and the document as a whole now resolves with no
+	// dangling entry left for that shaderop.
+	{
+		const std::string tmp = TempPath( "agentcrud_u1b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "U1(b) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rOp = sess->InsertChunk(
+			"directlighting_shaderop\n{\n\tname dlop_fwd\n\tbsdf mat_notyet\n}" );
+		Check( rOp.applied, "U1(b) forward-referencing shaderop insert APPLIES (not refused)" );
+		Check( rOp.unresolvedRefs.size() == 1 &&
+		       rOp.unresolvedRefs[0].param == "bsdf" &&
+		       rOp.unresolvedRefs[0].value == "mat_notyet",
+		       "U1(b) warned about the not-yet-defined material" );
+
+		Agent::AgentChunkResult rMat = sess->InsertChunk(
+			"lambertian_material\n{\n\tname mat_notyet\n\treflectance pnt_albedo\n}" );
+		Check( rMat.applied, "U1(b) the material insert applies" );
+		Check( rMat.unresolvedRefs.empty(), "U1(b) the material's OWN insert reports no unresolvedRefs of its own" );
+
+		// The document as a whole resolves cleanly now.
+		const std::string doc = sess->ReadDocument();
+		RISE::Cst::Document parsed = RISE::Cst::ParseToCst( doc );
+		std::vector<RISE::Cst::UnresolvedReference> unresolved;
+		RISE::Cst::BuildReferenceGraph( parsed, nullptr, &unresolved );
+		bool stillDangling = false;
+		for( const RISE::Cst::UnresolvedReference& u : unresolved )
+			if( u.chunkKeyword == "directlighting_shaderop" && u.param == "bsdf" && u.value == "mat_notyet" )
+				stillDangling = true;
+		Check( !stillDangling, "U1(b) dlop_fwd.bsdf now resolves cleanly (no dangling entry left)" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) NO FALSE POSITIVES: the explicit `material none` idiom and an inline
+	// numeric literal in a reference-ish slot must NOT be reported.
+	{
+		const std::string tmp = TempPath( "agentcrud_u1c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "U1(c) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rPnt = sess->InsertChunk(
+			"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 1 1 1\n}" );
+		Check( rPnt.applied, "U1(c) glow painter inserts" );
+
+		// lambertian_luminaire_material's `material` slot accepts the
+		// explicit-none idiom (an underlying, optional wrapped material) --
+		// must not be flagged as a dangling reference.
+		Agent::AgentChunkResult rLum = sess->InsertChunk(
+			"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 10.0\n\tmaterial none\n}" );
+		Check( rLum.applied, "U1(c) luminaire material (material none idiom) applies" );
+		Check( rLum.unresolvedRefs.empty(), "U1(c) the explicit-none idiom produces NO unresolvedRefs" );
+
+		// standard_object.position is a plain DoubleVec3 slot elsewhere in this
+		// suite, but exercise a numeric-literal-in-a-reference-ish-looking-tuple
+		// path directly against the resolver here too: `rs` (radiance scale on
+		// this fixture's rasterizer) is a plain numeric, never reference-typed,
+		// so re-confirm via a second geometry insert with an inline numeric
+		// tuple value in an otherwise ordinary param -- must not spuriously warn.
+		Agent::AgentChunkResult rGeo = sess->InsertChunk(
+			"sphere_geometry\n{\n\tname sph_numeric\n\tradius 0.42\n}" );
+		Check( rGeo.applied, "U1(c) plain-numeric-param geometry insert applies" );
+		Check( rGeo.unresolvedRefs.empty(), "U1(c) a plain numeric param produces NO unresolvedRefs" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (d) A fully clean insert produces no `unresolvedReferences` key at all in
+	// the JSON-RPC response (back-compat: an existing caller's key set is
+	// unchanged on the common case).
+	{
+		const std::string tmp = TempPath( "agentcrud_u1d.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "U1(d) fixture loads" );
+		if( !pJob ) return;
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunk\",\"params\":"
+			"{\"chunkText\":\"sphere_geometry\\n{\\nname sph_clean\\nradius 0.4\\n}\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "U1(d) insert_chunk returns a JSON-RPC result object" );
+		const Agent::JsonValue* applied = result.find( "applied" );
+		Check( applied && applied->isBool() && applied->asBool(), "U1(d) clean insert applied" );
+		Check( result.find( "unresolvedReferences" ) == nullptr,
+		       "U1(d) a clean insert OMITS the unresolvedReferences key entirely" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (e) SCOPING: a PRE-EXISTING dangling reference elsewhere in the document
+	// is NOT reported by an unrelated clean insert -- only the just-inserted
+	// chunk's own refs are.
+	{
+		const std::string tmp = TempPath( "agentcrud_u1e.RISEscene" );
+		// kScene plus one EXTRA, already-broken shaderop (bsdf names a
+		// material that was never defined) authored directly into the
+		// fixture text -- bypassing insert_chunk's own gate so the
+		// pre-existing dangling reference is genuinely already IN the head
+		// when this test begins. Uses the same reachable vehicle as (a)/(b)
+		// (see the VEHICLE NOTE above TestUnresolvedReferenceWarning): a
+		// dangling `lambertian_material.reflectance` would fail to LOAD at
+		// all (Job::AddLambertianMaterial hard-fails), so it can't stand in
+		// for "already in a loadable head" here either.
+		const std::string kSceneWithDangling = std::string( kScene ) +
+			"\ndirectlighting_shaderop\n{\n\tname dlop_dangling\n\tbsdf nonexistent_material\n}\n";
+		Job* pJob = LoadScene( kSceneWithDangling.c_str(), tmp );
+		Check( pJob != nullptr, "U1(e) fixture (with a pre-existing dangling reference) loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// Sanity: the pre-existing dangling reference really is there.
+		{
+			RISE::Cst::Document parsed = RISE::Cst::ParseToCst( sess->ReadDocument() );
+			std::vector<RISE::Cst::UnresolvedReference> unresolved;
+			RISE::Cst::BuildReferenceGraph( parsed, nullptr, &unresolved );
+			bool sawPreexisting = false;
+			for( const RISE::Cst::UnresolvedReference& u : unresolved )
+				if( u.chunkKeyword == "directlighting_shaderop" && u.value == "nonexistent_material" ) sawPreexisting = true;
+			Check( sawPreexisting, "U1(e) sanity: dlop_dangling's dangling bsdf is really in the head" );
+		}
+
+		// An UNRELATED clean insert must report NOTHING about dlop_dangling.
+		Agent::AgentChunkResult rGeo = sess->InsertChunk(
+			"sphere_geometry\n{\n\tname sph_unrelated\n\tradius 0.55\n}" );
+		Check( rGeo.applied, "U1(e) the unrelated geometry insert applies" );
+		Check( rGeo.unresolvedRefs.empty(),
+		       "U1(e) the unrelated insert's own unresolvedRefs is empty -- the PRE-EXISTING "
+		       "dangling reference elsewhere in the document does not leak into it" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -1900,6 +2155,7 @@ int main()
 	TestCameraTimelineNamedTargeting();
 	TestReservedCameraNameNoneAtDerive();
 	TestGltfImportPrefixCollision();
+	TestUnresolvedReferenceWarning();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

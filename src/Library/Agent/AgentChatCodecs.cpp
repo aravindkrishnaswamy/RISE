@@ -166,7 +166,16 @@ namespace RISE
 					"FIRST, then insert chunk by chunk. Always pass the headVersion you "
 					"last read as baseHeadVersion. A duplicate (kind,name) is rejected "
 					"-- pick a fresh name. status=applied means the entity is live (a "
-					"full re-derive ran); render + read_image to verify.",
+					"full re-derive ran); render + read_image to verify. "
+					"A SUCCESSFUL insert (applied=true) may still return "
+					"\"unresolvedReferences\": [{param,value,suggestions:[...]}] -- this "
+					"is a WARNING, NOT a rejection. It means the chunk you just inserted "
+					"names a painter/material/geometry/etc. that is not defined ANYWHERE "
+					"in the document (yet). If you are about to insert that missing "
+					"chunk next -- a legitimate forward reference -- this is fine and "
+					"needs no action. Otherwise insert the missing chunk or correct the "
+					"misspelled name; check `suggestions` first, it lists near-miss "
+					"names already defined in the document.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"chunkText\":{\"type\":\"string\",\"description\":"
 						"\"One complete chunk as scene-language text, e.g. omni_light\\n{\\nname key\\nposition 0 5 0\\ncolor 1 1 1\\npower 3.0\\n}\"},"
