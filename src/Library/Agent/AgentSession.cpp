@@ -69,6 +69,7 @@
 #include "../SceneEditor/ChunkDescriptorRegistry.h"
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Parsers/IAsciiChunkParser.h"
+#include "../Parsers/ChunkParserRegistry.h"   // F5 S3 (actionable insert_chunk diagnostics): CreateAllChunkParsers -- AllChunkKeywords' near-miss keyword set
 #include "../Utilities/RString.h"
 
 #include <algorithm>   // Facet 5 slice S1: std::sort for the deterministic skills index
@@ -80,6 +81,7 @@
 #include <stdexcept>  // Fix-round (offscreen isolation): ForTest_ThrowBeforeRasterize's std::runtime_error
 #include <fstream>  // Facet 5 slice S1: read-only skill-file reads
 #include <iterator> // Facet 5 slice S1: istreambuf_iterator for whole-file reads
+#include <mutex>    // F5 S3: std::once_flag for AllChunkKeywords' one-time cache (also already relied on by AgentSession.h's mAsyncCacheMutex)
 #include <unordered_set>  // Toolkit slice 3a fix-round P2-1: objectmap palette byte-uniqueness set
 
 // Facet 5 slice S1: directory enumeration for the skills index (the one
@@ -1208,6 +1210,53 @@ namespace RISE
 				return dp[n][m];
 			}
 
+			//! THE shared near-miss ranking core -- every near-miss suggestion list
+			//! in this file (a dangling reference's candidate chunk names, an
+			//! unknown chunk keyword's candidate registered keywords) funnels
+			//! through this ONE function, so there is exactly one typo-distance
+			//! policy to keep in sync, not several. Ranks `candidates` against
+			//! `value` by EITHER test: (1) a case-insensitive substring either
+			//! direction -- ranks FIRST, catches the motivating "right name, wrong
+			//! prefix/suffix" bug class (e.g. "_wall_pink" inside
+			//! "uniform_wall_pink"); (2) a small case-insensitive edit distance
+			//! (budget scales with name length) -- ranks SECOND, catches
+			//! single-character typos substring matching would miss. Returns up
+			//! to 3, best match first. A candidate identical to `value` is never
+			//! suggested (it would have RESOLVED, so it can't be the fix for a
+			//! dangling value / can't be what a caller mistyped AWAY from). This is
+			//! a best-effort HEURISTIC ranking, not a claim the top suggestion is
+			//! what the author meant -- it's a hint, and the caller still has to
+			//! look.
+			std::vector<std::string> RankNearMisses( const std::vector<std::string>& candidates,
+			                                          const std::string& value )
+			{
+				// (rank, tiebreak) -- rank 0 = substring hit (tiebreak = -overlap
+				// length, so a LONGER shared substring sorts first), rank 1 =
+				// edit-distance hit (tiebreak = the distance itself, so a SMALLER
+				// distance sorts first). A plain std::pair<int,int> sorts
+				// lexicographically, which is exactly this priority order.
+				std::vector<std::pair<std::pair<int,int>, std::string> > ranked;
+				for( const std::string& name : candidates ) {
+					if( name == value ) continue;
+					if( CiContains( value, name ) || CiContains( name, value ) ) {
+						ranked.push_back( std::make_pair(
+							std::make_pair( 0, -(int)std::min( name.size(), value.size() ) ), name ) );
+						continue;
+					}
+					const int dist = CiEditDistance( name, value );
+					const int budget = std::max<int>( 2, (int)( 0.34 * std::max( name.size(), value.size() ) ) );
+					if( dist <= budget )
+						ranked.push_back( std::make_pair( std::make_pair( 1, dist ), name ) );
+				}
+				std::sort( ranked.begin(), ranked.end() );
+				std::vector<std::string> out;
+				for( const std::pair<std::pair<int,int>, std::string>& c : ranked ) {
+					if( out.size() >= 3 ) break;
+					out.push_back( c.second );
+				}
+				return out;
+			}
+
 			//! Up to 3 near-miss candidate names for a dangling reference (motivating
 			//! case: chunkKeyword="lambertian_material", param="reflectance",
 			//! value="uniform_wall_pink", and the document has a
@@ -1215,14 +1264,7 @@ namespace RISE
 			//! A candidate is any chunk DEFINED in `doc` whose OWN
 			//! ChunkDescriptor::category is one of the offending param's declared
 			//! `referenceCategories` (so e.g. a Material name is never suggested for a
-			//! Painter slot) and whose name is a near-miss of `value` by EITHER test:
-			//! (1) a case-insensitive substring either direction -- ranks FIRST,
-			//! catches the motivating "right name, wrong prefix/suffix" bug class;
-			//! (2) a small case-insensitive edit distance (budget scales with name
-			//! length) -- ranks SECOND, catches single-character typos substring
-			//! matching would miss. This is a best-effort HEURISTIC ranking, not a
-			//! claim the top suggestion is what the author meant -- it's a hint, and
-			//! the caller still has to look.
+			//! Painter slot); the actual near-miss test is RankNearMisses above.
 			std::vector<std::string> CollectUnresolvedRefSuggestions(
 				const RISE::Cst::Document& doc, const std::string& chunkKeyword,
 				const std::string& param, const std::string& value )
@@ -1234,12 +1276,7 @@ namespace RISE
 				for( const ParameterDescriptor& p : srcDesc->parameters ) if( p.name == param ) { pd = &p; break; }
 				if( !pd || pd->referenceCategories.empty() ) return out;
 
-				// (rank, tiebreak) -- rank 0 = substring hit (tiebreak = -overlap
-				// length, so a LONGER shared substring sorts first), rank 1 =
-				// edit-distance hit (tiebreak = the distance itself, so a SMALLER
-				// distance sorts first). A plain std::pair<int,int> sorts
-				// lexicographically, which is exactly this priority order.
-				std::vector<std::pair<std::pair<int,int>, std::string> > candidates;
+				std::vector<std::string> candidates;
 				const int nItems = RISE::Cst::DocItemCount( doc );
 				for( int i = 0; i < nItems; ++i ) {
 					const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
@@ -1250,7 +1287,6 @@ namespace RISE
 					const std::string prefix = item->role + "/";
 					if( namePath.size() <= prefix.size() || namePath.compare( 0, prefix.size(), prefix ) != 0 ) continue;
 					const std::string name = namePath.substr( prefix.size() );
-					if( name == value ) continue;   // would have RESOLVED -- can't be the fix for a dangling value
 
 					const ChunkDescriptor* candDesc = DescriptorForKeyword( String( item->role.c_str() ) );
 					if( !candDesc ) continue;
@@ -1258,36 +1294,120 @@ namespace RISE
 					for( ChunkCategory cc : pd->referenceCategories ) if( cc == candDesc->category ) { categoryOk = true; break; }
 					if( !categoryOk ) continue;
 
-					if( CiContains( value, name ) || CiContains( name, value ) ) {
-						candidates.push_back( std::make_pair(
-							std::make_pair( 0, -(int)std::min( name.size(), value.size() ) ), name ) );
-						continue;
-					}
-					const int dist = CiEditDistance( name, value );
-					const int budget = std::max<int>( 2, (int)( 0.34 * std::max( name.size(), value.size() ) ) );
-					if( dist <= budget )
-						candidates.push_back( std::make_pair( std::make_pair( 1, dist ), name ) );
+					candidates.push_back( name );
 				}
-				std::sort( candidates.begin(), candidates.end() );
-				for( const std::pair<std::pair<int,int>, std::string>& c : candidates ) {
-					if( out.size() >= 3 ) break;
-					out.push_back( c.second );
+				return RankNearMisses( candidates, value );
+			}
+
+			//! The bare keyword of every registered chunk type (cached once --
+			//! CreateAllChunkParsers() constructs a full parser instance per
+			//! keyword, so this is not something to call on every request). Used
+			//! ONLY for near-miss suggestions on an "unknown_chunk_type" issue;
+			//! DescriptorForKeyword (ChunkDescriptorRegistry.cpp) is the canonical
+			//! per-keyword lookup everywhere else -- this is a second, independent
+			//! call to the SAME CreateAllChunkParsers() factory (not a second
+			//! registry) purely to enumerate the keyword set that lookup doesn't
+			//! expose.
+			const std::vector<std::string>& AllChunkKeywords()
+			{
+				static std::vector<std::string> keywords;
+				static std::once_flag once;
+				std::call_once( once, [] {
+					for( const RISE::ChunkParserEntry& e : RISE::CreateAllChunkParsers() )
+						if( e.parser ) keywords.push_back( e.keyword );
+				} );
+				return keywords;
+			}
+
+			//! Near-miss declared parameter names for an UNDECLARED param name on
+			//! `d` (the "unknown_param" issue's suggestions). `name` (every
+			//! chunk's own identity param, never a plausible typo target for an
+			//! unrelated param) is excluded from the candidate set.
+			//!
+			//! FALLBACK: when the typo reads as a WHOLLY DIFFERENT WORD from every
+			//! declared name (no substring / edit-distance near-miss at all -- the
+			//! motivating case: `constant` typed for the real param `value` on
+			//! `scalar_painter`, which share no meaningful substring or small edit
+			//! distance), RankNearMisses legitimately returns empty -- but an
+			//! empty suggestions list leaves the author with nothing to act on.
+			//! Fall back to the chunk's COMPLETE declared parameter list in that
+			//! case (chunk descriptors have at most a few dozen parameters, so
+			//! this stays a genuinely useful, boundedly-sized answer, and the
+			//! call site's `message` ALSO spells out this same list in prose --
+			//! see AnalyzeRejectedInsert -- so this is not the only place an
+			//! author can find it).
+			std::vector<std::string> NearMissParamNames( const ChunkDescriptor& d, const std::string& badName )
+			{
+				std::vector<std::string> candidates;
+				for( const ParameterDescriptor& p : d.parameters )
+					if( p.name != "name" ) candidates.push_back( p.name );
+				std::vector<std::string> ranked = RankNearMisses( candidates, badName );
+				if( !ranked.empty() ) return ranked;
+				return candidates;   // fallback -- see the doc above
+			}
+
+			//! Are ALL of `toks` individually numeric (RISE::Agent's LooksNumeric,
+			//! single-token strtod-consumes-the-whole-string test above in this
+			//! file)? Mirrors Cst.cpp's own (file-local, unexported) `LooksNumeric`
+			//! "entirely numeric tokens" rule -- a scalar (`0.5`) or a whitespace
+			//! tuple of scalars (`1 2 3`) -- so this layer's notion of "that's a
+			//! literal, not a name" agrees with the derive layer's. Empty input is
+			//! NOT all-numeric (mirrors Cst.cpp's `any` guard: a value-less param
+			//! is a DIFFERENT, already-diagnosed derive failure, not a numeric
+			//! literal).
+			bool AllTokensNumeric( const std::vector<std::string>& toks )
+			{
+				if( toks.empty() ) return false;
+				for( const std::string& t : toks ) if( !LooksNumeric( t ) ) return false;
+				return true;
+			}
+
+			//! A stable lowercase name for a ChunkCategory, for the
+			//! "numeric_in_reference_slot" fix-shape message (e.g. "a painter").
+			//! Deliberately a SEPARATE small copy from SchemaGen.cpp's identical
+			//! table (that one is a file-local anonymous-namespace helper in a
+			//! different translation unit, not exported) rather than a shared
+			//! header -- consistent with this file's existing practice of small
+			//! local re-derivations over cross-TU coupling for a two-line switch
+			//! (see e.g. this file's own SerializeNode).
+			const char* CategoryNameLower( ChunkCategory c )
+			{
+				switch( c ) {
+					case ChunkCategory::Painter:          return "painter";
+					case ChunkCategory::Function:         return "function";
+					case ChunkCategory::Material:         return "material";
+					case ChunkCategory::Camera:           return "camera";
+					case ChunkCategory::Film:              return "film";
+					case ChunkCategory::Geometry:         return "geometry";
+					case ChunkCategory::Modifier:         return "modifier";
+					case ChunkCategory::Medium:            return "medium";
+					case ChunkCategory::Object:            return "object";
+					case ChunkCategory::ShaderOp:          return "shaderop";
+					case ChunkCategory::Shader:             return "shader";
+					case ChunkCategory::Rasterizer:        return "rasterizer";
+					case ChunkCategory::RasterizerOutput:  return "rasterizer_output";
+					case ChunkCategory::Light:              return "light";
+					case ChunkCategory::PhotonMap:          return "photon_map";
+					case ChunkCategory::PhotonGather:       return "photon_gather";
+					case ChunkCategory::IrradianceCache:    return "irradiance_cache";
+					case ChunkCategory::Animation:           return "animation";
+					case ChunkCategory::SceneVariant:        return "scene_variant";
 				}
-				return out;
+				return "chunk";
 			}
 
 			//! Post-process a SUCCESSFUL insert_chunk: re-derive the reference graph
 			//! over the JUST-LANDED head and attribute any dangling reference to the
-			//! chunk THIS call inserted, filling r.unresolvedRefs (with near-miss
-			//! suggestions per offending param) and appending a one-sentence note to
-			//! r.message. NEVER touches r.applied/r.status -- see
-			//! AgentChunkResult::unresolvedRefs's doc for why a forward reference
-			//! (the painter comes in a later call) must stay a WARNING, never a
-			//! rejection: refusing it would make normal declare-after-use scene
-			//! building impossible. No-op unless `r.applied` is already true --
-			//! InsertChunk's two success paths (LIVE-controller and headless) both
-			//! call this at their own success point, after r.kind/r.name are filled
-			//! in from the commit.
+			//! chunk THIS call inserted, filling r.issues (reason "unresolved_reference",
+			//! with near-miss suggestions per offending param) and appending a
+			//! one-sentence note to r.message. NEVER touches r.applied/r.status --
+			//! see AgentChunkIssue's doc for why a forward reference (the painter
+			//! comes in a later call) must stay a WARNING, never a rejection:
+			//! refusing it would make normal declare-after-use scene building
+			//! impossible. No-op unless `r.applied` is already true -- InsertChunk's
+			//! two success paths (LIVE-controller and headless) both call this at
+			//! their own success point, after r.kind/r.name are filled in from the
+			//! commit.
 			//!
 			//! ATTRIBUTION: BuildReferenceGraph's structured out-param reports EVERY
 			//! dangling reference in the WHOLE document, not just this insert's -- a
@@ -1305,8 +1425,8 @@ namespace RISE
 			//! hit could mis-attribute -- but it's moot in practice: every unnamed
 			//! chunk descriptor in this codebase has zero Reference-kind params, so an
 			//! unnamed chunk never has a dangling reference of its own to report.
-			void AttachUnresolvedRefWarnings( AgentChunkResult& r, const RISE::Cst::Document& doc,
-			                                   const std::string& chunkText )
+			void AttachChunkIssueWarnings( AgentChunkResult& r, const RISE::Cst::Document& doc,
+			                                const std::string& chunkText )
 			{
 				if( !r.applied ) return;
 				std::vector<RISE::Cst::UnresolvedReference> all;
@@ -1333,21 +1453,246 @@ namespace RISE
 
 				std::string clauses;
 				for( const RISE::Cst::UnresolvedReference* u : mine ) {
-					AgentUnresolvedRef ref;
-					ref.param = u->param;
-					ref.value = u->value;
-					ref.suggestions = CollectUnresolvedRefSuggestions( doc, u->chunkKeyword, u->param, u->value );
-					r.unresolvedRefs.push_back( ref );
+					AgentChunkIssue issue;
+					issue.param  = u->param;
+					issue.value  = u->value;
+					issue.reason = "unresolved_reference";
+					issue.suggestions = CollectUnresolvedRefSuggestions( doc, u->chunkKeyword, u->param, u->value );
+					r.issues.push_back( issue );
 
 					if( !clauses.empty() ) clauses += "; ";
 					clauses += u->param + "='" + u->value + "'";
-					if( !ref.suggestions.empty() ) clauses += " (did you mean '" + ref.suggestions.front() + "'?)";
+					if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
 				}
 				r.message += " WARNING: unresolved reference(s) in this chunk: " + clauses +
 					" -- the named chunk is not defined (yet). Fine if this is a forward "
 					"reference you're about to define next; otherwise insert the missing "
 					"chunk or correct the name.";
 			}
+
+			//! Model-B F5 slice S3: pre-flight, DESCRIPTOR-BASED analysis of a
+			//! REJECTED insert_chunk (called ONLY from InsertChunk's headless path,
+			//! and only for the generic "the chunk would not derive in context"
+			//! catch-all -- Job::ApplyCstInsertChunk's code 0 -- never for a parse
+			//! failure (-1, chunk didn't even parse to one closed chunk) or a name
+			//! collision / reserved name (-2), both of which already carry a
+			//! precise, actionable message of their own). `chunkText` PARSES
+			//! CLEANLY here (InsertChunk's own -1 guard already ran), so this is
+			//! purely about WHY the dry-run derive refused it, checked against the
+			//! chunk's OWN descriptor plus `headDoc` (the CURRENT head -- byte-
+			//! identical to what the rejected insert was dry-run against, since a
+			//! reject never mutates).
+			//!
+			//! See AgentChunkIssue's doc for the four `reason` slugs. Three are
+			//! decidable from the candidate chunk's OWN CST alone (no head needed):
+			//! the keyword isn't registered (unknown_chunk_type); a param name
+			//! isn't declared on the descriptor (unknown_param); a Reference-kind
+			//! param's value is entirely numeric tokens, a type mismatch
+			//! (numeric_in_reference_slot). The fourth -- a Reference-kind param's
+			//! value is a NAME that doesn't resolve (unresolved_reference) -- needs
+			//! the head: a THROWAWAY copy of `headDoc` gets this ONE candidate
+			//! chunk appended (never mutates the caller's `headDoc`), then
+			//! RISE::Cst::BuildReferenceGraph resolves over it EXACTLY as the real
+			//! derive would (the CST chunk definitions the head + this candidate
+			//! now carry, AND the engine's runtime defaults -- see BuildReferenceGraph's
+			//! doc) -- reusing that resolver rather than re-implementing the
+			//! (category,name) namespace here.
+			//!
+			//! HONESTY (read before trusting an empty return as exoneration): this
+			//! is a STATIC, DESCRIPTOR-ONLY pass -- it does not see everything
+			//! DeriveToJob's real apply-time Finalize() validation does (e.g. a
+			//! `ggx_material` in `thinfilm` mode requiring `film_ior`+`film_thickness`
+			//! together, a semantic cross-param constraint no descriptor field
+			//! encodes). A REJECTED insert this analyser finds NOTHING wrong with
+			//! is a REAL possibility -- it then returns an EMPTY vector, and the
+			//! caller (InsertChunk) must NOT claim that as a clean bill of health;
+			//! see its call site for how the appended sentence stays silent rather
+			//! than implying the analyser exonerated the chunk.
+			std::vector<AgentChunkIssue> AnalyzeRejectedInsert( const RISE::Cst::Document& headDoc,
+			                                                     const std::string& chunkText )
+			{
+				std::vector<AgentChunkIssue> out;
+
+				RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef chunkItem;
+				{
+					const int n = RISE::Cst::DocItemCount( chunkDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+						if( it && it->kind == NodeKind::Chunk ) { chunkItem = it; break; }
+					}
+				}
+				if( !chunkItem ) return out;   // defensive only -- InsertChunk's own -1 guard already refused anything that doesn't parse to exactly one closed chunk
+
+				const std::string keyword = chunkItem->role;
+				const ChunkDescriptor* desc = DescriptorForKeyword( String( keyword.c_str() ) );
+				if( !desc ) {
+					AgentChunkIssue issue;
+					issue.value       = keyword;
+					issue.reason      = "unknown_chunk_type";
+					issue.suggestions = RankNearMisses( AllChunkKeywords(), keyword );
+					out.push_back( issue );
+					return out;   // no descriptor -- nothing further to check against
+				}
+
+				// Reference-kind params whose value is a NAME (not numeric, not the
+				// explicit-none idiom) -- resolved against the head in ONE shared
+				// BuildReferenceGraph pass below, rather than one dry-run per param.
+				std::vector<std::pair<std::string, std::string> > pendingRefChecks;   // (param, joined value)
+
+				for( const RISE::Cst::NodeRef& kid : chunkItem->kids ) {
+					if( kid->kind != NodeKind::Param ) continue;
+					std::string pname;
+					std::vector<std::string> valueTokens;
+					for( const RISE::Cst::NodeRef& tk : kid->kids ) {
+						if( tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) pname = tk->text;
+						else if( tk->role == "pvalue" ) valueTokens.push_back( tk->text );
+					}
+					if( pname.empty() ) continue;
+
+					const ParameterDescriptor* pd = FindParam( *desc, pname );
+					if( !pd ) {
+						AgentChunkIssue issue;
+						issue.param = pname;
+						for( std::size_t t = 0; t < valueTokens.size(); ++t ) {
+							if( t ) issue.value += ' ';
+							issue.value += valueTokens[t];
+						}
+						issue.reason      = "unknown_param";
+						issue.suggestions = NearMissParamNames( *desc, pname );
+						out.push_back( issue );
+						continue;
+					}
+
+					if( pd->kind != ValueKind::Reference ) continue;   // only a Reference slot can mistake a literal for a name (or vice versa)
+					if( valueTokens.empty() ) continue;                // value-less -- a DIFFERENT, already-diagnosed derive failure
+
+					std::string joined;
+					for( std::size_t t = 0; t < valueTokens.size(); ++t ) {
+						if( t ) joined += ' ';
+						joined += valueTokens[t];
+					}
+
+					if( AllTokensNumeric( valueTokens ) ) {
+						AgentChunkIssue issue;
+						issue.param  = pname;
+						issue.value  = joined;
+						issue.reason = "numeric_in_reference_slot";
+						out.push_back( issue );
+						continue;
+					}
+					if( joined == "none" ) continue;   // explicit-none idiom -- never dangling
+
+					pendingRefChecks.push_back( std::make_pair( pname, joined ) );
+				}
+
+				if( !pendingRefChecks.empty() ) {
+					// A THROWAWAY copy -- headDoc (the caller's Document, byte-
+					// identical to the live head since a reject never mutates) is
+					// untouched; `merged` is a local value carrying this ONE
+					// candidate chunk appended, purely so BuildReferenceGraph can
+					// resolve against the SAME complete namespace a landed insert
+					// would derive against.
+					RISE::Cst::Document merged = headDoc;
+					const int endAt = RISE::Cst::DocItemCount( merged );
+					merged = RISE::Cst::DocInsertItem( merged, endAt, chunkItem );
+					const std::string namePath = RISE::Cst::ChunkNamePath( chunkItem );
+					const RISE::Cst::NodeId insertedId = namePath.empty() ? 0 : RISE::Cst::DocFindByName( merged, namePath );
+
+					std::vector<RISE::Cst::UnresolvedReference> unresolved;
+					RISE::Cst::BuildReferenceGraph( merged, nullptr, &unresolved );
+
+					for( const std::pair<std::string, std::string>& pending : pendingRefChecks ) {
+						for( const RISE::Cst::UnresolvedReference& u : unresolved ) {
+							const bool mine = ( insertedId != 0 ) ? ( u.sourceChunkId == insertedId )
+							                                       : ( u.chunkKeyword == keyword );
+							if( !mine || u.param != pending.first || u.value != pending.second ) continue;
+							AgentChunkIssue issue;
+							issue.param       = u.param;
+							issue.value       = u.value;
+							issue.reason      = "unresolved_reference";
+							issue.suggestions = CollectUnresolvedRefSuggestions( merged, keyword, u.param, u.value );
+							out.push_back( issue );
+							break;   // one issue per pending param
+						}
+					}
+				}
+				return out;
+			}
+
+			//! Run the descriptor-based rejection analyser and fold what it finds
+			//! into `r` (both the structured `issues` and a human-readable
+			//! " ACTIONABLE: ..." clause appended to `message`).
+			//!
+			//! Shared by BOTH insert paths on purpose.  The LIVE (controller) path
+			//! is the GUI, which is exactly where the unactionable
+			//! "apply failed (e.g. unresolved reference); see log" was observed
+			//! stalling a local model -- an agent cannot read the log -- so wiring
+			//! this headless-only would have missed the case that motivated it.
+			//! Callers gate on the generic rawCode-0 "would not derive in context"
+			//! catch-all; the specific causes (parse failure, name collision)
+			//! already carry precise messages and must not be second-guessed.
+			//!
+			//! HONESTY: finding nothing is NOT exoneration.  This is a static,
+			//! descriptor-only pass, so a genuinely rejected chunk whose cause it
+			//! cannot see statically leaves `issues` empty and `message`
+			//! untouched -- never a clause implying the chunk checked out.
+			void AttachRejectionIssues( AgentChunkResult& r, const RISE::Cst::Document& doc,
+			                            const std::string& chunkText )
+			{
+				const std::vector<AgentChunkIssue> found =
+					AnalyzeRejectedInsert( doc, chunkText );
+				if( !found.empty() ) {
+					r.issues = found;
+					std::string clauses;
+					for( const AgentChunkIssue& issue : found ) {
+						if( !clauses.empty() ) clauses += "; ";
+						if( issue.reason == "unknown_chunk_type" ) {
+							clauses += "unknown chunk type '" + issue.value + "'";
+							if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
+						} else if( issue.reason == "unknown_param" ) {
+							clauses += "`" + issue.param + "` is not a valid parameter of `" + r.kind + "`";
+							if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
+							std::string valid;
+							const ChunkDescriptor* d = DescriptorForKeyword( String( r.kind.c_str() ) );
+							if( d ) {
+								for( const ParameterDescriptor& p : d->parameters ) {
+									if( p.name == "name" ) continue;
+									if( !valid.empty() ) valid += ", ";
+									valid += p.name;
+								}
+							}
+							if( !valid.empty() ) clauses += " -- valid parameters are: " + valid;
+						} else if( issue.reason == "numeric_in_reference_slot" ) {
+							const ParameterDescriptor* pd = nullptr;
+							const ChunkDescriptor* d = DescriptorForKeyword( String( r.kind.c_str() ) );
+							if( d ) pd = FindParam( *d, issue.param );
+							std::string catList;
+							if( pd ) for( ChunkCategory cc : pd->referenceCategories ) {
+								if( !catList.empty() ) catList += "/";
+								catList += CategoryNameLower( cc );
+							}
+							if( catList.empty() ) catList = "chunk";
+							clauses += "`" + issue.param + "` = '" + issue.value + "' is a number, but this slot needs "
+							           "the NAME of a " + catList + " chunk, not a literal";
+							if( pd && !pd->referenceCategories.empty() && pd->referenceCategories.front() == ChunkCategory::Painter )
+								clauses += " -- e.g. define `uniformcolor_painter { name <n>  color " + issue.value +
+								           " }` and set `" + issue.param + " <n>`";
+						} else if( issue.reason == "unresolved_reference" ) {
+							clauses += "`" + issue.param + "` = '" + issue.value + "' does not name anything defined in the document";
+							if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
+						}
+					}
+					if( !clauses.empty() )
+						r.message += " ACTIONABLE: " + clauses + ".";
+				}
+				// HONESTY: `found` empty is NOT exoneration -- the analyser is a
+				// static, descriptor-only pass, so a genuinely rejected chunk whose
+				// cause it cannot see statically leaves `issues` empty and `message`
+				// untouched rather than implying the chunk checked out.
+			}
+
 		}
 
 		AgentChunkResult AgentSession::InsertChunk( const std::string& chunkText,
@@ -1424,10 +1769,19 @@ namespace RISE
 				r.name        = cr.chunkName.c_str();
 				r.kind        = cr.chunkKeyword.c_str();
 				// Model-B: non-blocking dangling-reference WARNING (see
-				// AttachUnresolvedRefWarnings's doc) -- the controller commits through
+				// AttachChunkIssueWarnings's doc) -- the controller commits through
 				// the SAME mJob, so its retained Document already reflects this insert.
 				if( r.applied && mJob && mJob->GetCstDocument() )
-					AttachUnresolvedRefWarnings( r, *mJob->GetCstDocument(), chunkText );
+					AttachChunkIssueWarnings( r, *mJob->GetCstDocument(), chunkText );
+				// ...and the REJECTION analyser on the failing side.  THIS is the
+				// GUI path -- the one where the unactionable "apply failed (e.g.
+				// unresolved reference); see log" was actually observed stalling a
+				// local model -- so it needs the actionable clause at least as much
+				// as the headless path does.  A rejection leaves the head
+				// UNCHANGED, so the retained Document is the correct namespace to
+				// resolve the candidate chunk's references against.
+				else if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
+					AttachRejectionIssues( r, *mJob->GetCstDocument(), chunkText );
 				return r;
 			}
 
@@ -1478,9 +1832,18 @@ namespace RISE
 			FoldChunkCode( r, code, /*isInsert*/ true, std::string(), diagBuf, /*kindWasPassed*/ false );
 			r.headVersion = mJob->GetCstHeadVersion();
 			// Model-B: non-blocking dangling-reference WARNING (see
-			// AttachUnresolvedRefWarnings's doc above FoldChunkCode's namespace).
+			// AttachChunkIssueWarnings's doc above FoldChunkCode's namespace).
 			if( r.applied && mJob->GetCstDocument() )
-				AttachUnresolvedRefWarnings( r, *mJob->GetCstDocument(), chunkText );
+				AttachChunkIssueWarnings( r, *mJob->GetCstDocument(), chunkText );
+			// Model-B F5 slice S3: the pre-flight CAUSE analysis for a REJECTED
+			// insert -- ONLY for code 0 (Job::ApplyCstInsertChunk's generic
+			// "would not derive in context" catch-all; see AnalyzeRejectedInsert's
+			// doc for why -1/-2 are excluded, they already carry a precise cause).
+			// `mJob->GetCstDocument()` here is the SAME, UNCHANGED head the failed
+			// dry-run ran against (a reject never mutates), so this is a faithful
+			// re-check, not a stale one.
+			if( code == 0 && mJob->GetCstDocument() )
+				AttachRejectionIssues( r, *mJob->GetCstDocument(), chunkText );
 			return r;
 		}
 

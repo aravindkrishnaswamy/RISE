@@ -378,15 +378,23 @@ namespace RISE
 						"status,retriable,headVersion,message}, including the \"staged\" status -- "
 						"see propose_patch's description) plus the parsed chunk's `name`/`kind` "
 						"echo. A duplicate (kind,name) against an existing chunk is rejected "
-						"with a clean message. A SUCCESSFUL insert (applied=true) may still "
-						"return `unresolvedReferences`: [{param,value,suggestions:[...]}] -- this "
-						"is a WARNING, NOT a rejection. It means the just-inserted chunk names a "
-						"painter/material/geometry/etc. that is not defined ANYWHERE in the "
-						"document (yet). If you are about to insert that missing chunk next "
-						"(a legitimate forward reference), this is fine and needs no action. "
-						"Otherwise, insert the missing chunk or correct the misspelled name -- "
-						"check `suggestions` first, it lists near-miss names already defined in "
-						"the document." );
+						"with a clean message. EITHER a successful OR a rejected insert may "
+						"carry `issues`: [{param,value,reason,suggestions:[...]}] -- `reason` is "
+						"one of \"unresolved_reference\" (the value names a chunk not defined "
+						"ANYWHERE in the document -- fine if you are about to insert that missing "
+						"chunk next, a legitimate forward reference; otherwise insert the missing "
+						"chunk or correct the misspelled name), \"unknown_param\" (the param name "
+						"is not declared on this chunk type -- `message` also lists every valid "
+						"parameter name), \"numeric_in_reference_slot\" (this slot needs the NAME "
+						"of another chunk, not a literal number -- define the referenced chunk and "
+						"pass its name instead), or \"unknown_chunk_type\" (the keyword itself is "
+						"not a registered chunk type). On a SUCCESSFUL insert (applied=true) "
+						"`issues` is always \"unresolved_reference\" warnings and does NOT change "
+						"applied/status. On a REJECTED insert `issues` explains the cause "
+						"in detail (`suggestions` lists near-miss candidate names, best match "
+						"first) -- but an EMPTY `issues` on a rejection does not mean the chunk was "
+						"fine; it means this pass could not statically pin the cause, and `message` "
+						"still carries the engine's own diagnostic." );
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 

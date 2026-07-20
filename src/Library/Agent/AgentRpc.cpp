@@ -444,26 +444,30 @@ namespace RISE
 				result.set( "message",   JsonValue::MakeString( cr.message ) );
 				result.set( "name",      JsonValue::MakeString( cr.name ) );
 				result.set( "kind",      JsonValue::MakeString( cr.kind ) );
-				// Model-B: non-blocking dangling-reference WARNING, insert_chunk only
-				// (see AgentChunkResult::unresolvedRefs's doc). CONDITIONAL key,
-				// OMITTED entirely when empty -- same back-compat posture as
-				// `legend` above: every existing insert_chunk/remove_chunk caller
-				// that doesn't know this key exists sees an unchanged response shape
-				// on a clean insert or on remove_chunk (which never populates it).
-				if( !cr.unresolvedRefs.empty() ) {
-					JsonValue refs = JsonValue::MakeArray();
-					for( std::size_t i = 0; i < cr.unresolvedRefs.size(); ++i ) {
-						const AgentUnresolvedRef& u = cr.unresolvedRefs[i];
+				// Model-B F5 slice S3: actionable insert_chunk diagnostics -- a
+				// non-blocking WARNING on a successful insert (a forward reference)
+				// OR the descriptor-derivable CAUSE of a rejected insert (see
+				// AgentChunkIssue's doc). CONDITIONAL key, OMITTED entirely when
+				// empty -- same back-compat posture as `legend` above: every
+				// existing insert_chunk/remove_chunk caller that doesn't know this
+				// key exists sees an unchanged response shape on a clean insert, an
+				// unexplained rejection, or on remove_chunk (which never populates
+				// it).
+				if( !cr.issues.empty() ) {
+					JsonValue issues = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < cr.issues.size(); ++i ) {
+						const AgentChunkIssue& u = cr.issues[i];
 						JsonValue e = JsonValue::MakeObject();
-						e.set( "param", JsonValue::MakeString( u.param ) );
-						e.set( "value", JsonValue::MakeString( u.value ) );
+						e.set( "param",  JsonValue::MakeString( u.param ) );
+						e.set( "value",  JsonValue::MakeString( u.value ) );
+						e.set( "reason", JsonValue::MakeString( u.reason ) );
 						JsonValue sugg = JsonValue::MakeArray();
 						for( std::size_t j = 0; j < u.suggestions.size(); ++j )
 							sugg.push_back( JsonValue::MakeString( u.suggestions[j] ) );
 						e.set( "suggestions", sugg );
-						refs.push_back( e );
+						issues.push_back( e );
 					}
-					result.set( "unresolvedReferences", refs );
+					result.set( "issues", issues );
 				}
 				return result;
 			}

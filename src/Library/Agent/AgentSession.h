@@ -223,23 +223,63 @@ namespace RISE
 			bool        queueFull = false;
 		};
 
-		//! One dangling reference left behind by a chunk that WAS successfully
-		//! inserted (a NON-BLOCKING warning -- see AgentChunkResult::unresolvedRefs
-		//! for why this must never refuse the insert). `param`/`value` mirror
-		//! RISE::Cst::UnresolvedReference's fields of the same name (the chunk
-		//! identity itself is implicit -- these all belong to the chunk
-		//! AgentChunkResult::kind/name just echoed). `suggestions` holds up to 3
-		//! near-miss candidate names -- chunks already DEFINED in the document
-		//! whose category is one the param accepts and whose name looks like a
-		//! plausible typo of `value` -- so a model that fat-fingered a name (the
-		//! motivating case: authoring `uniform_wall_pink` when the painter it
-		//! had just created was actually named `_wall_pink`) gets a same-turn
-		//! correction hint instead of silently shipping a broken material.
-		struct AgentUnresolvedRef
+		//! Model-B F5 slice S3 (actionable insert_chunk diagnostics): ONE shape
+		//! for BOTH kinds of per-chunk-parameter diagnostic signal insert_chunk
+		//! can return -- a NON-BLOCKING WARNING attached to a SUCCESSFUL insert
+		//! (the chunk landed but names something not yet defined -- a forward
+		//! reference is legitimate incremental authoring, so `applied`/`status`
+		//! are UNCHANGED by it) and the descriptor-derivable CAUSE of a
+		//! REJECTED insert (see AgentSession.cpp's AnalyzeRejectedInsert).
+		//! Shipping ONE shape instead of two overlapping ones (this REPLACES
+		//! the success-only `AgentUnresolvedRef` / `unresolvedRefs` /
+		//! `unresolvedReferences` wire key that predates this slice) means a
+		//! caller learns ONE contract, not two nearly-identical ones -- and the
+		//! REJECTED case is the more urgent one: the engine's own dry-run
+		//! diagnostic for a rejected insert is a coarse, hedged, log-only
+		//! message ("<kw>: apply failed (e.g. unresolved reference); see log")
+		//! that names no param, no value, and points at a log an agent cannot
+		//! read; this struct is what turns that into something actionable.
+		//!   * `param` -- the offending parameter name; "" for a chunk-level
+		//!     issue (currently only "unknown_chunk_type", which has no param).
+		//!   * `value` -- the offending value token: the dangling reference
+		//!     name (unresolved_reference), the numeric literal found in a
+		//!     reference slot (numeric_in_reference_slot), the undeclared
+		//!     param's own given value (unknown_param, informational), or the
+		//!     unregistered keyword itself (unknown_chunk_type).
+		//!   * `reason` -- a short STABLE slug from a CLOSED set a machine
+		//!     caller can switch on without string-matching `message`:
+		//!       "unresolved_reference"      a Reference-kind param's value is
+		//!                                   a NAME that does not resolve
+		//!                                   against the document in scope
+		//!                                   (the current head on a rejected
+		//!                                   insert; the just-landed head on a
+		//!                                   successful one).
+		//!       "unknown_param"             the param name is not declared on
+		//!                                   the chunk's ChunkDescriptor at all
+		//!                                   (a typo, e.g. `constant` for the
+		//!                                   real param `value`).
+		//!       "numeric_in_reference_slot" a Reference-kind param's value is
+		//!                                   ENTIRELY numeric tokens -- a TYPE
+		//!                                   MISMATCH (a literal where a chunk
+		//!                                   NAME belongs), not a dangling
+		//!                                   reference.
+		//!       "unknown_chunk_type"        the chunk keyword itself is not a
+		//!                                   registered chunk type.
+		//!   * `suggestions` -- near-miss candidates, best match first (up to 3
+		//!     via the shared substring-then-edit-distance ranking; the
+		//!     `unknown_param` case falls back to the chunk's FULL declared
+		//!     parameter list when nothing lexically close exists -- a typo
+		//!     that reads as a wholly different word, e.g. `constant` for
+		//!     `value`, has no near-miss to rank, but the author still needs a
+		//!     concrete candidate set). ALWAYS empty for
+		//!     numeric_in_reference_slot -- a literal has no name to suggest a
+		//!     near-miss of.
+		struct AgentChunkIssue
 		{
-			std::string              param;         //!< the param that holds the dangling value (e.g. "reflectance")
-			std::string              value;          //!< the unresolved value token (e.g. "uniform_wall_pink")
-			std::vector<std::string> suggestions;    //!< up to 3 near-miss candidate names, best match first
+			std::string              param;
+			std::string              value;
+			std::string              reason;
+			std::vector<std::string> suggestions;
 		};
 
 		//! Model-B F5 slice S2: the structured result of InsertChunk /
@@ -271,18 +311,23 @@ namespace RISE
 			//! insert_chunk/remove_chunk stage refused by StageProposal's
 			//! kMaxPendingProposals gate.
 			bool        queueFull = false;
-			//! Populated ONLY after a SUCCESSFUL insert_chunk whose newly-landed
-			//! chunk itself references a name the document has no definition for
-			//! (the CST resolver's dangling-reference diagnostic, attributed to
-			//! THIS chunk -- see AgentSession::InsertChunk). Empty on every other
-			//! path (remove, a failed insert, a clean insert). This is a WARNING,
-			//! NOT a rejection: `applied`/`status` are UNCHANGED by it -- a forward
-			//! reference (insert a material now, its painter next) is legitimate
-			//! incremental authoring, and refusing it would make normal
-			//! declare-after-use scene building impossible. AgentRpc.cpp serializes
-			//! this as `unresolvedReferences` and OMITS the key entirely when empty
-			//! (back-compat with every existing insert_chunk caller).
-			std::vector<AgentUnresolvedRef> unresolvedRefs;
+			//! Populated on EITHER of two paths -- see AgentChunkIssue's doc for
+			//! the full contract:
+			//!   * a SUCCESSFUL insert_chunk whose newly-landed chunk itself
+			//!     references a name the document has no definition for (a
+			//!     WARNING; `applied`/`status` UNCHANGED -- see
+			//!     AgentSession::InsertChunk's AttachChunkIssueWarnings call);
+			//!   * a REJECTED insert_chunk the descriptor-based pre-flight
+			//!     analyser could explain (see AgentSession.cpp's
+			//!     AnalyzeRejectedInsert) -- `applied` stays false / `status`
+			//!     stays "rejected"; this is EXTRA detail, not a different
+			//!     verdict.
+			//! Empty on every other path (remove, a rejection the analyser
+			//! could not explain -- see its HONESTY note -- a clean insert).
+			//! AgentRpc.cpp serializes this as `issues` and OMITS the key
+			//! entirely when empty (back-compat with every existing
+			//! insert_chunk caller).
+			std::vector<AgentChunkIssue> issues;
 		};
 
 		//! Preview-render (F5 the cheap multi-angle observe loop): an OPTIONAL

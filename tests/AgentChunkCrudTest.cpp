@@ -66,6 +66,18 @@
 //        a clean insert omits the wire key entirely; a PRE-EXISTING
 //        dangling reference elsewhere never leaks into an unrelated
 //        insert's report.
+//    R1  Actionable REJECTED insert_chunk diagnostics (the same `issues`
+//        shape as U1, now ALSO populated on a rejection): three REAL
+//        insert_chunk failures reproduced verbatim (a near-miss dangling
+//        reference / a numeric literal in a Painter reference slot / an
+//        undeclared parameter name with the real one a near-miss typo
+//        away) each get a specific {param,value,reason,suggestions} issue
+//        plus an actionable sentence appended to `message`; a genuinely
+//        unrelated `material none` idiom and numeric Double slot in the
+//        SAME rejected chunk are not false-flagged; and a rejection the
+//        descriptor-only analyser cannot explain (a semantic cross-param
+//        constraint) honestly returns no issues rather than implying it
+//        exonerated the chunk.
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -1897,8 +1909,8 @@ static void TestGltfImportPrefixCollision()
 //     anywhere in the document) -- it just used to throw that
 //     information away past a log-only string diagnostic. insert_chunk
 //     now surfaces it as a STRUCTURED, NON-BLOCKING warning
-//     (AgentChunkResult::unresolvedRefs / wire key
-//     "unresolvedReferences") so a model gets same-turn signal instead
+//     (AgentChunkResult::issues / wire key
+//     "issues") so a model gets same-turn signal instead
 //     of silently shipping a broken material.
 //
 //     Motivating case (a real observed failure): a local model built a
@@ -1961,11 +1973,12 @@ static void TestUnresolvedReferenceWarning()
 			"directlighting_shaderop\n{\n\tname dlop_test\n\tbsdf uniform_wall_pink\n}" );
 		Check( rOp.applied, "U1(a) the shaderop insert STILL APPLIES (a warning, not a rejection)" );
 		Check( rOp.status == "applied", "U1(a) status stays \"applied\"" );
-		Check( rOp.unresolvedRefs.size() == 1, "U1(a) exactly ONE unresolvedRef" );
-		if( rOp.unresolvedRefs.size() == 1 ) {
-			const Agent::AgentUnresolvedRef& u = rOp.unresolvedRefs[0];
-			Check( u.param == "bsdf", "U1(a) unresolvedRef param is \"bsdf\"" );
-			Check( u.value == "uniform_wall_pink", "U1(a) unresolvedRef value is the bad name" );
+		Check( rOp.issues.size() == 1, "U1(a) exactly ONE issue" );
+		if( rOp.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = rOp.issues[0];
+			Check( u.param == "bsdf", "U1(a) issue param is \"bsdf\"" );
+			Check( u.value == "uniform_wall_pink", "U1(a) issue value is the bad name" );
+			Check( u.reason == "unresolved_reference", "U1(a) issue reason is \"unresolved_reference\"" );
 			bool sawIt = false;
 			std::string suggList;
 			for( const std::string& s : u.suggestions ) {
@@ -1997,15 +2010,16 @@ static void TestUnresolvedReferenceWarning()
 		Agent::AgentChunkResult rOp = sess->InsertChunk(
 			"directlighting_shaderop\n{\n\tname dlop_fwd\n\tbsdf mat_notyet\n}" );
 		Check( rOp.applied, "U1(b) forward-referencing shaderop insert APPLIES (not refused)" );
-		Check( rOp.unresolvedRefs.size() == 1 &&
-		       rOp.unresolvedRefs[0].param == "bsdf" &&
-		       rOp.unresolvedRefs[0].value == "mat_notyet",
+		Check( rOp.issues.size() == 1 &&
+		       rOp.issues[0].param == "bsdf" &&
+		       rOp.issues[0].value == "mat_notyet" &&
+		       rOp.issues[0].reason == "unresolved_reference",
 		       "U1(b) warned about the not-yet-defined material" );
 
 		Agent::AgentChunkResult rMat = sess->InsertChunk(
 			"lambertian_material\n{\n\tname mat_notyet\n\treflectance pnt_albedo\n}" );
 		Check( rMat.applied, "U1(b) the material insert applies" );
-		Check( rMat.unresolvedRefs.empty(), "U1(b) the material's OWN insert reports no unresolvedRefs of its own" );
+		Check( rMat.issues.empty(), "U1(b) the material's OWN insert reports no issues of its own" );
 
 		// The document as a whole resolves cleanly now.
 		const std::string doc = sess->ReadDocument();
@@ -2042,7 +2056,7 @@ static void TestUnresolvedReferenceWarning()
 		Agent::AgentChunkResult rLum = sess->InsertChunk(
 			"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 10.0\n\tmaterial none\n}" );
 		Check( rLum.applied, "U1(c) luminaire material (material none idiom) applies" );
-		Check( rLum.unresolvedRefs.empty(), "U1(c) the explicit-none idiom produces NO unresolvedRefs" );
+		Check( rLum.issues.empty(), "U1(c) the explicit-none idiom produces NO issues" );
 
 		// standard_object.position is a plain DoubleVec3 slot elsewhere in this
 		// suite, but exercise a numeric-literal-in-a-reference-ish-looking-tuple
@@ -2053,14 +2067,14 @@ static void TestUnresolvedReferenceWarning()
 		Agent::AgentChunkResult rGeo = sess->InsertChunk(
 			"sphere_geometry\n{\n\tname sph_numeric\n\tradius 0.42\n}" );
 		Check( rGeo.applied, "U1(c) plain-numeric-param geometry insert applies" );
-		Check( rGeo.unresolvedRefs.empty(), "U1(c) a plain numeric param produces NO unresolvedRefs" );
+		Check( rGeo.issues.empty(), "U1(c) a plain numeric param produces NO issues" );
 
 		sess.reset();
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
 
-	// (d) A fully clean insert produces no `unresolvedReferences` key at all in
+	// (d) A fully clean insert produces no `issues` key at all in
 	// the JSON-RPC response (back-compat: an existing caller's key set is
 	// unchanged on the common case).
 	{
@@ -2079,8 +2093,8 @@ static void TestUnresolvedReferenceWarning()
 		Check( JsonResultObj( resp, result ), "U1(d) insert_chunk returns a JSON-RPC result object" );
 		const Agent::JsonValue* applied = result.find( "applied" );
 		Check( applied && applied->isBool() && applied->asBool(), "U1(d) clean insert applied" );
-		Check( result.find( "unresolvedReferences" ) == nullptr,
-		       "U1(d) a clean insert OMITS the unresolvedReferences key entirely" );
+		Check( result.find( "issues" ) == nullptr,
+		       "U1(d) a clean insert OMITS the issues key entirely" );
 
 		pJob->release();
 		std::remove( tmp.c_str() );
@@ -2122,9 +2136,204 @@ static void TestUnresolvedReferenceWarning()
 		Agent::AgentChunkResult rGeo = sess->InsertChunk(
 			"sphere_geometry\n{\n\tname sph_unrelated\n\tradius 0.55\n}" );
 		Check( rGeo.applied, "U1(e) the unrelated geometry insert applies" );
-		Check( rGeo.unresolvedRefs.empty(),
-		       "U1(e) the unrelated insert's own unresolvedRefs is empty -- the PRE-EXISTING "
+		Check( rGeo.issues.empty(),
+		       "U1(e) the unrelated insert's own issues is empty -- the PRE-EXISTING "
 		       "dangling reference elsewhere in the document does not leak into it" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
+// R1: actionable REJECTED insert_chunk diagnostics (Model-B F5 slice S3).
+//     Reproduces THREE real insert_chunk rejections observed from a live
+//     GUI trajectory of qwen3.6:27b building a scene -- every one of them
+//     was rejected with an unactionable, hedged message ("apply failed
+//     (e.g. unresolved reference); see log" / "invalid parameter(s) (see
+//     log)") that named no param, no value, and pointed at a log an agent
+//     cannot read. AnalyzeRejectedInsert (AgentSession.cpp) is a
+//     descriptor-based pre-flight pass that pins the EXACT cause for all
+//     three, without changing engine derive diagnostics or `applied`/
+//     `status`/`retriable` semantics one bit.
+//   (a) lambertian_material.reflectance names `uniform_wall_pink` when the
+//       painter actually defined is `_wall_pink` -> unresolved_reference.
+//   (b) ggx_material.rs is given an inline RGB triple (`0.95 0.9 0.7`)
+//       where a Painter NAME belongs -> numeric_in_reference_slot.
+//   (c) scalar_painter is given `constant 0.45` where the real parameter
+//       is `value` -> unknown_param, with the FULL valid-parameter list
+//       surfaced in `message`.
+//   (d) NO FALSE POSITIVES on a REJECTED insert: the explicit `material
+//       none` idiom and a genuinely numeric Double slot (`scale`) must NOT
+//       be flagged alongside a real unknown_param elsewhere in the SAME
+//       rejected chunk.
+//   (e) HONESTY: a rejection the analyser genuinely cannot explain (a
+//       semantic cross-param constraint no descriptor field encodes --
+//       `ggx_material fresnel_mode thinfilm` without `film_ior`+
+//       `film_thickness`) returns EMPTY issues and does NOT append an
+//       "ACTIONABLE" sentence that would misleadingly imply the analyser
+//       exonerated the chunk.
+//----------------------------------------------------------------------
+static void TestRejectedInsertDiagnostics()
+{
+	std::printf( "R1: actionable REJECTED insert_chunk diagnostics (real repro cases)...\n" );
+
+	// (a) unresolved_reference: reflectance names the wrong (near-miss) painter.
+	{
+		const std::string tmp = TempPath( "agentcrud_r1a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R1(a) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rPaint = sess->InsertChunk(
+			"uniformcolor_painter\n{\n\tname _wall_pink\n\tcolor 0.9 0.6 0.7\n}" );
+		Check( rPaint.applied, "R1(a) the painter '_wall_pink' inserts" );
+
+		Agent::AgentChunkResult rMat = sess->InsertChunk(
+			"lambertian_material\n{\n\tname wall_pink\n\treflectance uniform_wall_pink\n}" );
+		Check( !rMat.applied && rMat.status == "rejected",
+		       "R1(a) the material insert is REJECTED (the engine hard-fails an unresolved painter)" );
+		Check( rMat.issues.size() == 1, "R1(a) exactly ONE issue" );
+		if( rMat.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = rMat.issues[0];
+			Check( u.param == "reflectance", "R1(a) issue param is \"reflectance\"" );
+			Check( u.value == "uniform_wall_pink", "R1(a) issue value is the bad name" );
+			Check( u.reason == "unresolved_reference", "R1(a) issue reason is \"unresolved_reference\"" );
+			bool sawIt = false;
+			for( const std::string& s : u.suggestions ) if( s == "_wall_pink" ) sawIt = true;
+			Check( sawIt, "R1(a) suggestions include the ACTUAL painter name '_wall_pink'" );
+		}
+		Check( rMat.message.find( "ACTIONABLE" ) != std::string::npos,
+		       "R1(a) message carries the actionable sentence" );
+		std::printf( "  R1(a) message: %s\n", rMat.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) numeric_in_reference_slot: rs given an inline RGB triple.
+	{
+		const std::string tmp = TempPath( "agentcrud_r1b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R1(b) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rGgx = sess->InsertChunk(
+			"ggx_material\n{\n\tname gold_mat\n\trd pnt_albedo\n\trs 0.95 0.9 0.7\n"
+			"\talphax pnt_albedo\n\talphay pnt_albedo\n\tior pnt_albedo\n\textinction pnt_albedo\n}" );
+		Check( !rGgx.applied && rGgx.status == "rejected",
+		       "R1(b) the ggx_material insert is REJECTED (a numeric literal in a Painter reference slot)" );
+		Check( rGgx.issues.size() == 1, "R1(b) exactly ONE issue" );
+		if( rGgx.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = rGgx.issues[0];
+			Check( u.param == "rs", "R1(b) issue param is \"rs\"" );
+			Check( u.value == "0.95 0.9 0.7", "R1(b) issue value is the numeric triple" );
+			Check( u.reason == "numeric_in_reference_slot", "R1(b) issue reason is \"numeric_in_reference_slot\"" );
+			Check( u.suggestions.empty(), "R1(b) a literal has no near-miss NAME to suggest" );
+		}
+		Check( rGgx.message.find( "painter" ) != std::string::npos,
+		       "R1(b) message names the declared reference category (painter)" );
+		std::printf( "  R1(b) message: %s\n", rGgx.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) unknown_param: `constant` typed for the real param `value`.
+	{
+		const std::string tmp = TempPath( "agentcrud_r1c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R1(c) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rScalar = sess->InsertChunk(
+			"scalar_painter\n{\n\tname _gold_ior\n\tconstant 0.45\n}" );
+		Check( !rScalar.applied && rScalar.status == "rejected",
+		       "R1(c) the scalar_painter insert is REJECTED (an undeclared parameter name)" );
+		Check( rScalar.issues.size() == 1, "R1(c) exactly ONE issue" );
+		if( rScalar.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = rScalar.issues[0];
+			Check( u.param == "constant", "R1(c) issue param is \"constant\"" );
+			Check( u.reason == "unknown_param", "R1(c) issue reason is \"unknown_param\"" );
+			bool sawValue = false;
+			for( const std::string& s : u.suggestions ) if( s == "value" ) sawValue = true;
+			Check( sawValue, "R1(c) suggestions contain the real parameter name 'value'" );
+		}
+		Check( rScalar.message.find( "value" ) != std::string::npos,
+		       "R1(c) message names the real parameter 'value'" );
+		Check( rScalar.message.find( "valid parameters are" ) != std::string::npos,
+		       "R1(c) message carries the FULL valid-parameter list" );
+		std::printf( "  R1(c) message: %s\n", rScalar.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (d) NO FALSE POSITIVES on a rejected insert: `material none` and a
+	// genuinely numeric Double slot (`scale`) must not be flagged alongside
+	// a real unknown_param (`bogus_param`) in the SAME chunk.
+	{
+		const std::string tmp = TempPath( "agentcrud_r1d.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R1(d) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rLum = sess->InsertChunk(
+			"lambertian_luminaire_material\n{\n\tname mat_bad\n\texitance pnt_albedo\n"
+			"\tscale 5.0\n\tmaterial none\n\tbogus_param 1\n}" );
+		Check( !rLum.applied && rLum.status == "rejected",
+		       "R1(d) the insert is REJECTED (the one genuinely undeclared parameter)" );
+		Check( rLum.issues.size() == 1, "R1(d) exactly ONE issue -- no false positives on `material none` or `scale`" );
+		if( rLum.issues.size() == 1 ) {
+			Check( rLum.issues[0].param == "bogus_param", "R1(d) the single issue is the real culprit" );
+			Check( rLum.issues[0].reason == "unknown_param", "R1(d) the single issue's reason is unknown_param" );
+		}
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (e) HONESTY: a rejection the analyser cannot explain (a semantic
+	// cross-param constraint -- fresnel_mode thinfilm requires film_ior +
+	// film_thickness together -- no descriptor field encodes that) returns
+	// EMPTY issues and does NOT append a misleading "ACTIONABLE" sentence.
+	{
+		const std::string tmp = TempPath( "agentcrud_r1e.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R1(e) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		// alphax/alphay/ior/extinction need an ACTUAL scalar_painter (a
+		// physical-scalar IScalarPainter slot, per docs/ISCALARPAINTER_REFACTOR.md
+		// -- a colour IPainter like pnt_albedo would trip a DIFFERENT rejection
+		// here); rd/rs stay ordinary colour painters (tints), which is correct
+		// for those slots. That isolates the rejection to EXACTLY the thinfilm
+		// presence contract this case is about.
+		Agent::AgentChunkResult rScal = sess->InsertChunk(
+			"scalar_painter\n{\n\tname _r1e_scalar\n\tvalue 0.3\n}" );
+		Check( rScal.applied, "R1(e) helper scalar_painter inserts" );
+
+		Agent::AgentChunkResult rGgx = sess->InsertChunk(
+			"ggx_material\n{\n\tname film_mat\n\trd pnt_albedo\n\trs pnt_albedo\n"
+			"\talphax _r1e_scalar\n\talphay _r1e_scalar\n\tior _r1e_scalar\n\textinction _r1e_scalar\n"
+			"\tfresnel_mode thinfilm\n}" );
+		Check( !rGgx.applied && rGgx.status == "rejected",
+		       "R1(e) the insert is REJECTED (thinfilm without film_ior+film_thickness)" );
+		Check( rGgx.issues.empty(),
+		       "R1(e) HONESTY: the analyser cannot see this semantic constraint -- issues stays empty" );
+		Check( rGgx.message.find( "ACTIONABLE" ) == std::string::npos,
+		       "R1(e) an empty analysis does NOT append a misleading ACTIONABLE sentence" );
+		std::printf( "  R1(e) message: %s\n", rGgx.message.c_str() );
 
 		sess.reset();
 		pJob->release();
@@ -2156,6 +2365,7 @@ int main()
 	TestReservedCameraNameNoneAtDerive();
 	TestGltfImportPrefixCollision();
 	TestUnresolvedReferenceWarning();
+	TestRejectedInsertDiagnostics();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

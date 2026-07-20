@@ -614,6 +614,41 @@ static void TestAgentSessionLiveMode()
 		Check( prc.status == "conflict", "attached ProposePatch honours the stale-base conflict" );
 		Check( !prc.applied, "conflicting attached ProposePatch did not apply" );
 
+		// REJECTION DIAGNOSTICS ON THE LIVE PATH.  A dangling painter reference
+		// is refused by the engine with the generic "would not derive in
+		// context ... apply failed (e.g. unresolved reference); see log" -- a
+		// message an AGENT cannot act on (it names no param, no value, and
+		// points at a log it cannot read).  This is not hypothetical: a GUI
+		// session driving a local model hit exactly this and stalled.  The GUI
+		// is THIS path (attached controller), so the actionable clause must be
+		// attached HERE, not only on the headless path where it is easier to
+		// test.  Guards that wiring.
+		{
+			Agent::AgentChunkResult ir = sess->InsertChunk(
+				"lambertian_material\n{\nname m_dangling\nreflectance whitte\n}\n" );
+			Check( !ir.applied, "live insert with a dangling painter reference is rejected" );
+			Check( ir.status == "rejected", "live dangling-reference insert reports status rejected" );
+			Check( ir.issues.size() == 1,
+			       "live rejection carries exactly one structured issue" );
+			if( ir.issues.size() == 1 ) {
+				Check( ir.issues[0].param == "reflectance",
+				       "live rejection issue names the offending param" );
+				Check( ir.issues[0].reason == "unresolved_reference",
+				       "live rejection issue carries the unresolved_reference reason" );
+				bool suggested = false;
+				for( const std::string& s : ir.issues[0].suggestions )
+					if( s == "white" ) suggested = true;
+				Check( suggested,
+				       "live rejection suggests the near-miss painter 'white' for 'whitte'" );
+			}
+			Check( ir.message.find( "ACTIONABLE" ) != std::string::npos,
+			       "live rejection message carries the ACTIONABLE clause the agent can act on" );
+			// The engine's own ground-truth text must SURVIVE -- the clause
+			// augments it, never replaces it.
+			Check( ir.message.find( "would not derive in context" ) != std::string::npos,
+			       "live rejection preserves the engine's original cause text" );
+		}
+
 		// Detach -> the direct-Job path resumes.  We must STOP the controller
 		// first (the direct path is not render-thread-safe by itself; detach
 		// models "the GUI closed").  A direct propose then still applies.
