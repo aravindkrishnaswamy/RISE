@@ -1,0 +1,58 @@
+{
+  "id": "build_stilllife_scene",
+  "title": "Build a complete furnished, lit scene around a hero bowl of fruit (multi-step whole-scene build)",
+  "//": "Member 2 of the 'furnished scene build' family (build_watch_scene, build_stilllife_scene, build_study_scene) -- an ITERATE-AGAINST member. All three share ONE identical checkpoint battery grading build completeness + coherence (chunk counts, a lit non-blown render, hero framed at the focal centre, clean diagnostics, and a read-then-build-then-render trajectory), never artistic/material fidelity. This class of task (build a whole furnished room, not just one object) is the one a local model failed at, running out of rounds mid-build without ever rendering.",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 32\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "A bowl of fruit on a rustic wooden kitchen table, in a room lit by a warm ceiling light. Decorate the room with cabinets, a window, and wall art in warm earthy tones. The bowl of fruit is the subject; the camera should focus on it."
+  ],
+  "budgets": {
+    "maxToolCalls": 120,
+    "maxLlmCalls": 80,
+    "maxWallMs": 1800000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/build_stilllife_scene.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 3,
+      "max": 40
+    },
+    {
+      "kind": "render",
+      "meanLumaMin": 0.015,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 3.0
+    },
+    {
+      "kind": "objectmap",
+      "queryAt": {
+        "x": 16,
+        "y": 12,
+        "expectName": "*"
+      }
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": [
+        "read_document",
+        "insert_chunk",
+        "render"
+      ]
+    }
+  ],
+  "checkpointsRationale": "TYPE-AGNOSTIC BY DESIGN. The battery grades build COMPLETION + COHERENCE, never material/light TYPE. chunk_count keys on a specific keyword, so a lambertian_material / lambertian_luminaire_material count would FAIL a legitimate metallic build (ggx_material for brushed gold/brass) or a scene lit by omni_light / directional_light / an env map -- an overfit to the idealized fixture's own material choices. Do NOT add a type-specific material or light check. 'Is it lit' is carried type-agnostically by the render meanLuma band: the bare scaffold has no env/ambient, so a path trace with no emitter is black and fails meanLumaMin. 'Objects have real bindings' is carried by diagnostics:clean (dangling material refs are diagnostics)."
+}

@@ -1916,8 +1916,8 @@ static void TestLoadEvalScenarioStrictCheckpointFieldTypes()
 // ended on a non-"final_text" terminal status is NOT a success regardless
 // of checkpoint state, UNLESS the scenario explicitly asserts that
 // terminalStatus via a "trajectory" checkpoint (an intentional
-// budget/refusal test).  All 16 current scenarios assert
-// terminalStatus:"final_text", so a passing run already ends final_text
+// budget/refusal test).  All current scenarios except error_path.json
+// assert terminalStatus:"final_text", so a passing run already ends final_text
 // and this gate never fires for them (T1 below is that control); it
 // guards a FUTURE scenario that omits the assertion from silently
 // scoring a budget/provider-killed run as a success (T2), while still

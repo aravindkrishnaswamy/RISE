@@ -1,0 +1,58 @@
+{
+  "id": "build_study_scene",
+  "title": "Build a complete furnished, lit scene around a hero brass telescope (multi-step whole-scene build)",
+  "//": "HELD-OUT member 3 of the 'furnished scene build' family (build_watch_scene, build_stilllife_scene are the iterate-against pair). Skill/guidance work aimed at this family must be validated against THIS member's LIVE runs, never iterated against it directly, so improvements are measured rather than overfit. This is documentation only -- the harness treats all three scenarios identically; the checkpoint battery below is byte-for-byte the same as the other two members. All three grade build completeness + coherence (chunk counts, a lit non-blown render, hero framed at the focal centre, clean diagnostics, and a read-then-build-then-render trajectory), never artistic/material fidelity -- this is the class of task a local model failed at, running out of rounds mid-build without ever rendering.",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 32\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "A brass telescope on a writing desk in a study, lit by a lamp to one side. Decorate the room as a library with bookshelves, a rug, and framed art in deep cool tones. The telescope is the hero; frame the camera on it."
+  ],
+  "budgets": {
+    "maxToolCalls": 120,
+    "maxLlmCalls": 80,
+    "maxWallMs": 1800000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/build_study_scene.fixture.jsonl"
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 3,
+      "max": 40
+    },
+    {
+      "kind": "render",
+      "meanLumaMin": 0.015,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 3.0
+    },
+    {
+      "kind": "objectmap",
+      "queryAt": {
+        "x": 16,
+        "y": 12,
+        "expectName": "*"
+      }
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": [
+        "read_document",
+        "insert_chunk",
+        "render"
+      ]
+    }
+  ],
+  "checkpointsRationale": "TYPE-AGNOSTIC BY DESIGN. The battery grades build COMPLETION + COHERENCE, never material/light TYPE. chunk_count keys on a specific keyword, so a lambertian_material / lambertian_luminaire_material count would FAIL a legitimate metallic build (ggx_material for brushed gold/brass) or a scene lit by omni_light / directional_light / an env map -- an overfit to the idealized fixture's own material choices. Do NOT add a type-specific material or light check. 'Is it lit' is carried type-agnostically by the render meanLuma band: the bare scaffold has no env/ambient, so a path trace with no emitter is black and fails meanLumaMin. 'Objects have real bindings' is carried by diagnostics:clean (dangling material refs are diagnostics)."
+}
