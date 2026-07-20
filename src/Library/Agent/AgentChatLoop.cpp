@@ -421,6 +421,20 @@ namespace RISE
 			mProvider = provider;
 			mCodec = MakeCodec( provider );
 			mModelId = modelId.empty() ? std::string( mCodec->DefaultModelId() ) : modelId;
+
+			// Anti-spin backstop follows the provider's COST posture, unless
+			// a host pinned its own cap (the eval runner does, right after
+			// this call -- and its explicit value must win).  A local round
+			// costs only wall time, so the backstop sits far out of the way
+			// of long iterative scene builds; a hosted round costs money, so
+			// it stays bounded.  Neither is a budget: a host that needs a
+			// real spend limit enforces it in its own budget accounting.
+			if( !mToolRoundsCapExplicit ) {
+				mMaxToolRoundsPerTurn = ( provider == ChatProvider::Local )
+					? kMaxToolRoundsPerTurnLocal
+					: kMaxToolRoundsPerTurn;
+			}
+
 			Reset();
 		}
 

@@ -791,7 +791,7 @@ static void TestScenarioFileFnvStamp()
 static void TestIterationCapBudgetRaise()
 {
 	std::printf( "T10: the eval-path iteration-cap raise (25 tool rounds under budgets 40/40; "
-	             "a no-budgets scenario still trips at the default 20)...\n" );
+	             "a no-budgets scenario still trips at the compiled-in default)...\n" );
 
 	// (a) budgets 40/40 -> the instance cap is raised to 40, so 25
 	//     consecutive single-tool-call rounds (well past the GUI-posture
@@ -838,8 +838,12 @@ static void TestIterationCapBudgetRaise()
 	// (b) NO budgets object (all three fields at their -1 "unlimited"
 	//     default) -> RunScenarioDriven's cap computes to
 	//     max(20,-1,-1) == the compiled-in default, so the GUI posture is
-	//     PRESERVED through the eval path: 20 tool rounds succeed, round
-	//     21 trips naming the default cap (20), never a raised one.
+	//     PRESERVED through the eval path: kMaxToolRoundsPerTurn rounds
+	//     succeed, the next trips naming that compiled-in default, never a
+	//     raised one.  Symbolic on the constant: the cap is a tuning knob
+	//     (raised 20 -> 100 in 2026-07 when it began preempting real
+	//     multi-chunk scene builds), and this test asserts the PLUMBING, not
+	//     the number.
 	{
 		AgentEvalScenario scenario;
 		std::string err;
@@ -853,11 +857,12 @@ static void TestIterationCapBudgetRaise()
 
 		const std::string dir = ScratchRunDir( "t10b_default_cap" );
 		const std::string fixturePath =
-			BuildReadDocumentFixtureFile( dir + "/fixture.jsonl", 21, /*withFinalText=*/false );
+			BuildReadDocumentFixtureFile( dir + "/fixture.jsonl",
+				AgentChatLoop::kMaxToolRoundsPerTurn + 1, /*withFinalText=*/false );
 
 		AgentEvalReplaySource src;
 		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
-		       "T10b: the 21-tool-round fixture loads (" + err + ")" );
+		       "T10b: the (cap+1)-tool-round fixture loads (" + err + ")" );
 
 		AgentEvalRunOptions opts;
 		opts.runDir = dir;
@@ -866,14 +871,14 @@ static void TestIterationCapBudgetRaise()
 		AgentEvalRunHandle h = RunScenario( scenario, opts );
 
 		Check( h.result.terminalStatus == "provider_error",
-		       "T10b: a no-budgets scenario still trips the default cap at round 21 (got '" +
+		       "T10b: a no-budgets scenario still trips the default cap (got '" +
 		       h.result.terminalStatus + "')" );
-		Check( h.result.toolCalls == 20,
-		       "T10b: exactly 20 tool calls dispatched before the cap trips" );
+		Check( h.result.toolCalls == AgentChatLoop::kMaxToolRoundsPerTurn,
+		       "T10b: exactly the cap's worth of tool calls dispatched before it trips" );
 		Check( h.result.errorMessage.find( "iteration cap" ) != std::string::npos,
 		       "T10b: errorMessage names the iteration cap" );
-		Check( h.result.errorMessage.find( "20" ) != std::string::npos,
-		       "T10b: errorMessage names the compiled-in default (20), not a raised cap" );
+		Check( h.result.errorMessage.find( std::to_string( AgentChatLoop::kMaxToolRoundsPerTurn ) ) != std::string::npos,
+		       "T10b: errorMessage names the compiled-in default, not a raised cap" );
 	}
 }
 

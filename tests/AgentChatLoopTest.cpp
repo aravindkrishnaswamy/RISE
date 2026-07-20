@@ -1436,13 +1436,13 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 			if( st.toolCalls.size() == 1 )
 				loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
 		}
-		Check( allOk, "the documented 20 tool rounds all succeed" );
+		Check( allOk, "the documented hosted cap's worth of tool rounds all succeed" );
 		Check( loop.ToolRoundCount() == AgentChatLoop::kMaxToolRoundsPerTurn,
 		       "round counter reads the documented cap" );
 		const std::size_t sizeAtCap = loop.TranscriptSize();
 		ChatStepResult tripped = loop.HandleResponse( 200, fx );
 		Check( tripped.kind == ChatStepResult::Kind::ProviderError,
-		       "the 21st tool round trips the iteration cap" );
+		       "the round after the hosted cap trips the iteration cap" );
 		Check( tripped.errorKind == ChatErrorKind::IterationCap,
 		       "the cap trip -> errorKind IterationCap" );
 		Check( tripped.errorMessage.find( "iteration cap" ) != std::string::npos,
@@ -1454,6 +1454,43 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		ChatStepResult again = loop.HandleResponse( 200, fx );
 		Check( again.kind == ChatStepResult::Kind::ToolCalls,
 		       "after a new user message the loop runs again" );
+	}
+
+	// Iteration cap is PROVIDER-AWARE: a LOCAL provider costs only wall
+	// time, so its anti-spin backstop sits far above the hosted one -- a
+	// long iterative scene build on a local model must not be preempted by
+	// a cap meant to catch runaway loops.  A host that pinned its own cap
+	// keeps it across a provider switch (the eval runner depends on this).
+	{
+		Check( AgentChatLoop::kMaxToolRoundsPerTurnLocal > AgentChatLoop::kMaxToolRoundsPerTurn,
+		       "the local anti-spin cap is higher than the hosted one" );
+
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		Check( loop.MaxToolRoundsPerTurn() == AgentChatLoop::kMaxToolRoundsPerTurn,
+		       "a hosted provider gets the bounded hosted cap" );
+
+		loop.SetProvider( ChatProvider::Local );
+		Check( loop.MaxToolRoundsPerTurn() == AgentChatLoop::kMaxToolRoundsPerTurnLocal,
+		       "switching to a local provider raises the cap to the local backstop" );
+
+		loop.SetProvider( ChatProvider::OpenAI );
+		Check( loop.MaxToolRoundsPerTurn() == AgentChatLoop::kMaxToolRoundsPerTurn,
+		       "switching back to a hosted provider restores the bounded cap" );
+
+		// An EXPLICIT host cap must survive provider switches in BOTH
+		// directions -- the eval runner pins its budget ceiling right after
+		// SetProvider, and a later switch must not silently widen or narrow it.
+		AgentChatLoop pinned;
+		pinned.SetProvider( ChatProvider::Anthropic );
+		pinned.SetMaxToolRoundsPerTurn( 7 );
+		Check( pinned.MaxToolRoundsPerTurn() == 7, "an explicit host cap applies" );
+		pinned.SetProvider( ChatProvider::Local );
+		Check( pinned.MaxToolRoundsPerTurn() == 7,
+		       "an explicit host cap survives a switch to a local provider" );
+		pinned.SetProvider( ChatProvider::Gemini );
+		Check( pinned.MaxToolRoundsPerTurn() == 7,
+		       "an explicit host cap survives a switch back to a hosted provider" );
 	}
 
 	// Iteration cap, RAISED: SetMaxToolRoundsPerTurn(25) lets a host with
@@ -1513,9 +1550,9 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		}
 		ChatStepResult tripped = loop.HandleResponse( 200, fx );
 		Check( tripped.kind == ChatStepResult::Kind::ProviderError,
-		       "SetMaxToolRoundsPerTurn(0) is ignored -- the default cap (20) still trips" );
-		Check( tripped.errorMessage.find( "20" ) != std::string::npos,
-		       "the ignored-zero cap error still names the compiled-in default (20)" );
+		       "SetMaxToolRoundsPerTurn(0) is ignored -- the default cap still trips" );
+		Check( tripped.errorMessage.find( std::to_string( AgentChatLoop::kMaxToolRoundsPerTurn ) ) != std::string::npos,
+		       "the ignored-zero cap error still names the compiled-in default" );
 	}
 }
 

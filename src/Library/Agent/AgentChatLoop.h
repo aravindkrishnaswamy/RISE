@@ -200,14 +200,33 @@ namespace RISE
 			//! Tool rounds allowed per conversation-turn before the loop
 			//! refuses with ProviderError("iteration cap...").  Round N
 			//! (N <= cap) succeeds; round cap+1 trips.  This is the
-			//! DEFAULT (the GUI chat posture); a host with its OWN honest
-			//! budget enforcement (the eval runner's per-scenario
+			//! HOSTED default; a host with its OWN honest budget
+			//! enforcement (the eval runner's per-scenario
 			//! maxToolCalls/maxLlmCalls) may RAISE the instance cap via
 			//! SetMaxToolRoundsPerTurn so a legitimately iterative
-			//! single-turn task (e.g. image->scene reconstruction, ~12-15
-			//! render-inspect-adjust rounds) is stopped by its budgets,
-			//! not preempted by this anti-spin backstop.
-			static const int kMaxToolRoundsPerTurn = 20;
+			//! single-turn task is stopped by its budgets, not preempted
+			//! by this anti-spin backstop.
+			//!
+			//! Raised 20 -> 100 (2026-07-20).  20 was preempting real work,
+			//! not runaway loops: a GUI session asked qwen3.6:27b to build a
+			//! furnished room around a hero object and it died at round 21
+			//! still inserting chunks, having never once rendered.  A
+			//! build-a-whole-scene turn legitimately needs dozens of rounds
+			//! (one insert_chunk per chunk, plus render-inspect cycles), so
+			//! a cap that low turns a capability question into a harness
+			//! artefact.  This is an ANTI-SPIN backstop, not a budget --
+			//! cost control belongs in the caller's budget, and for a local
+			//! model there is no cost at all.
+			static const int kMaxToolRoundsPerTurn = 100;
+
+			//! The same backstop for a LOCAL (self-hosted) provider, where
+			//! a round costs nothing but wall time.  Set far higher so the
+			//! only thing it stops is a genuine runaway: an iterative
+			//! scene build on a local model is exactly the workload we WANT
+			//! to run long, and re-running it is free.  Applied
+			//! automatically by SetProvider (see mToolRoundsCapExplicit)
+			//! unless the host has already pinned a cap of its own.
+			static const int kMaxToolRoundsPerTurnLocal = 1000;
 
 			//! Override the per-turn tool-round cap for THIS loop instance
 			//! (values < 1 are ignored; the default is
@@ -215,7 +234,22 @@ namespace RISE
 			//! their own per-run budgets -- the cap should sit AT or ABOVE
 			//! the host's budget so the budget (an honest, accounted stop)
 			//! fires first and this cap remains a pure runaway backstop.
-			void SetMaxToolRoundsPerTurn( int cap ) { if( cap >= 1 ) mMaxToolRoundsPerTurn = cap; }
+			//! Pinning a cap here also marks it EXPLICIT, so a later
+			//! SetProvider (a GUI model switch, say) will not silently
+			//! replace a host's deliberate cap with the provider default.
+			void SetMaxToolRoundsPerTurn( int cap )
+			{
+				if( cap >= 1 ) {
+					mMaxToolRoundsPerTurn = cap;
+					mToolRoundsCapExplicit = true;
+				}
+			}
+
+			//! The cap currently in force -- the provider default that
+			//! SetProvider installed, or a host's explicit pin.  Exposed so
+			//! a host (or a test) can report/verify which posture is active
+			//! rather than re-deriving it from the provider.
+			int MaxToolRoundsPerTurn() const { return mMaxToolRoundsPerTurn; }
 
 			//! Maximum user-attached reference images kept LIVE (un-
 			//! elided) across the WHOLE conversation -- see USER IMAGE
@@ -570,6 +604,12 @@ namespace RISE
 
 			int mToolRounds;   //!< tool rounds in the current conversation-turn
 			int mMaxToolRoundsPerTurn = kMaxToolRoundsPerTurn;   //!< instance cap (SetMaxToolRoundsPerTurn); default = the static anti-spin cap
+			//! true once a host pinned the cap via SetMaxToolRoundsPerTurn.
+			//! Guards SetProvider's provider-default assignment so a
+			//! deliberate host cap survives a provider switch.  Deliberately
+			//! NOT reset by Reset()/SetProvider -- the host set it for the
+			//! lifetime of this loop, same posture as the model selection.
+			bool mToolRoundsCapExplicit = false;
 
 			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: sticky once a
 			//! text-only model 400-rejects multimodal content.  While set,

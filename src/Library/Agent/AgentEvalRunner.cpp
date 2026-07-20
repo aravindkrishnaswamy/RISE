@@ -1940,13 +1940,14 @@ namespace RISE
 
 				AgentChatLoop loop;
 				loop.SetProvider( provider, modelId );
-				// The loop's per-turn anti-spin cap (default 20 rounds) is a GUI
+				// The loop's per-turn anti-spin cap (a provider-dependent default:
+				// bounded for hosted, far higher for local) is an interactive-chat
 				// posture; THIS host enforces the scenario's own budgets each
 				// round (maxToolCalls/maxLlmCalls -- the honest, accounted
 				// stops), so raise the instance cap to the budget ceiling and
 				// let the budgets govern.  A legitimately iterative single-turn
 				// scenario (image->scene reconstruction runs ~12-15
-				// render-inspect-adjust rounds) would otherwise die at round 21
+				// render-inspect-adjust rounds) would otherwise die at the cap
 				// with provider_error("iteration cap") long before its budgets
 				// -- the first live vision baseline failed 24/24 exactly this
 				// way.  Scenarios with no budgets keep the default cap.
