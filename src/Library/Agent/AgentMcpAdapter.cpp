@@ -360,7 +360,22 @@ namespace RISE
 						"retriable is meaningful only for status=\"rejected\": true means the refusal "
 						"is TRANSIENT (e.g. an open editor transaction in a live GUI session) and "
 						"resubmitting the identical patch later can succeed; false means retrying "
-						"verbatim can never succeed. headVersion is always the head AFTER this call." );
+						"verbatim can never succeed. headVersion is always the head AFTER this call. "
+						"A REJECTED patch may carry `issues`: [{param,value,reason,suggestions:[...]}] "
+						"-- the SAME shape insert_chunk/remove_chunk return. `reason` is one of "
+						"\"unknown_target\" (the `target` name does not resolve to any chunk -- "
+						"`suggestions` lists near-miss candidate names, restricted to `kind` when "
+						"given), \"unknown_param\" (`param` is not declared on the target's chunk "
+						"type -- `message` also lists every valid parameter name), "
+						"\"numeric_in_reference_slot\" (this slot needs the NAME of another chunk, "
+						"not a literal number), \"unresolved_reference\" (`value` names a chunk not "
+						"defined anywhere in the document -- `suggestions` lists near-miss candidate "
+						"names already defined), or \"invalid_value\" (`value` is ill-typed for the "
+						"parameter's kind -- a non-numeric token in a Double/vector slot, or a string "
+						"outside an Enum's declared set; `message` then lists the allowed values). An "
+						"EMPTY or ABSENT `issues` on a rejection does not mean the patch was fine; it "
+						"means this pass could not statically pin the cause, and `message` still "
+						"carries the engine's own diagnostic." );
 					tools.push_back( MakeTool( "propose_patch", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -412,7 +427,17 @@ namespace RISE
 						"propose_patch's description), plus the removed chunk's `name`/`kind` echo. "
 						"An unknown target is rejected; an ambiguous name is rejected with a "
 						"disambiguation hint; a target still REFERENCED by another chunk fails the "
-						"dry-run and is rejected with the diagnostic (document left byte-identical)." );
+						"dry-run and is rejected with the diagnostic (document left byte-identical). "
+						"A REJECTED remove may carry `issues`: [{param,value,reason,suggestions:[...]}] "
+						"-- the SAME shape propose_patch/insert_chunk return. The one reason remove_chunk "
+						"produces is \"still_referenced\": `value` is the target's own name and "
+						"`suggestions` NAMES every chunk the reference graph found still referencing it "
+						"(edit or remove those first, then retry). An EMPTY or ABSENT `issues` on a "
+						"rejection does NOT mean the target was unreferenced -- it means either the "
+						"remaining document fails to derive for the OTHER reason (order, not "
+						"reference), or a DYNAMIC reference (e.g. a timeline naming this entity) this "
+						"static pass cannot see; `message` still carries the engine's own hedged "
+						"diagnostic in that case." );
 					tools.push_back( MakeTool( "remove_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 

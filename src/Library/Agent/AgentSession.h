@@ -198,6 +198,12 @@ namespace RISE
 		//! resubmission.  Carried 1:1 from the controller's
 		//! AgentCommitResult in LIVE mode; the direct (headless) path has
 		//! no transaction surface, so its rejects are all permanent.
+		//! Forward-declared here (full definition + the seven-reason `reason`
+		//! contract below, after AgentChunkResult) so AgentPatchResult::issues
+		//! can be declared below without reordering this file's established
+		//! feature-chronology layout (AgentPatchResult predates the actionable-
+		//! diagnostics system by several slices).
+		struct AgentChunkIssue;
 		struct AgentPatchResult
 		{
 			bool        applied = false;
@@ -221,39 +227,70 @@ namespace RISE
 			//! other path (LIVE-mode commit, headless direct-Job, a
 			//! successful stage).
 			bool        queueFull = false;
+			//! Actionable-rejection extension (the propose_patch sibling of
+			//! AgentChunkResult::issues -- see AgentChunkIssue's doc for the
+			//! full seven-reason set and AgentSession.cpp's
+			//! AnalyzeRejectedParamEdit for how this is derived): populated
+			//! ONLY for a REJECTED param edit (`applied` false, `status`
+			//! "rejected", the generic "would not derive" cause -- never for
+			//! a conflict, a queue-full stage refusal, or a transient
+			//! open-editor-transaction refusal, all of which already carry
+			//! their own precise message and must not be second-guessed).
+			//! `applied`/`status` are UNCHANGED by this field -- it is EXTRA
+			//! detail on a verdict already reached, never a different one.
+			//! Empty on a clean apply and on a rejection the descriptor-based
+			//! analyser could not statically explain (HONESTY: empty is NOT
+			//! exoneration -- see AnalyzeRejectedParamEdit's doc).  Serialized
+			//! by AgentRpc.cpp as `issues`, OMITTED entirely when empty (same
+			//! back-compat posture as AgentChunkResult::issues).
+			std::vector<AgentChunkIssue> issues;
 		};
 
-		//! Model-B F5 slice S3 (actionable insert_chunk diagnostics): ONE shape
-		//! for BOTH kinds of per-chunk-parameter diagnostic signal insert_chunk
-		//! can return -- a NON-BLOCKING WARNING attached to a SUCCESSFUL insert
-		//! (the chunk landed but names something not yet defined -- a forward
-		//! reference is legitimate incremental authoring, so `applied`/`status`
-		//! are UNCHANGED by it) and the descriptor-derivable CAUSE of a
-		//! REJECTED insert (see AgentSession.cpp's AnalyzeRejectedInsert).
-		//! Shipping ONE shape instead of two overlapping ones (this REPLACES
-		//! the success-only `AgentUnresolvedRef` / `unresolvedRefs` /
-		//! `unresolvedReferences` wire key that predates this slice) means a
-		//! caller learns ONE contract, not two nearly-identical ones -- and the
+		//! Model-B F5 slice S3 (actionable insert_chunk diagnostics), extended by
+		//! a later slice to propose_patch and remove_chunk: ONE shape for EVERY
+		//! per-parameter / per-chunk diagnostic signal the three mutating verbs
+		//! can return -- a NON-BLOCKING WARNING attached to a SUCCESSFUL
+		//! insert_chunk (the chunk landed but names something not yet defined --
+		//! a forward reference is legitimate incremental authoring, so
+		//! `applied`/`status` are UNCHANGED by it) and the descriptor- or
+		//! reference-graph-derivable CAUSE of a REJECTED insert_chunk /
+		//! propose_patch / remove_chunk (see AgentSession.cpp's
+		//! AnalyzeRejectedInsert, AnalyzeRejectedParamEdit, AnalyzeRejectedRemove).
+		//! Shipping ONE shape instead of several overlapping ones means a caller
+		//! learns ONE contract, not three nearly-identical ones -- and the
 		//! REJECTED case is the more urgent one: the engine's own dry-run
-		//! diagnostic for a rejected insert is a coarse, hedged, log-only
-		//! message ("<kw>: apply failed (e.g. unresolved reference); see log")
-		//! that names no param, no value, and points at a log an agent cannot
-		//! read; this struct is what turns that into something actionable.
+		//! diagnostic for a rejected edit is a coarse, hedged, log-only message
+		//! ("<kw>: apply failed (e.g. unresolved reference); see log" for a
+		//! chunk, "edit rejected (entity/param not found or the edit would not
+		//! derive)" for a patch, "...it is likely still REFERENCED by another
+		//! chunk, or the remaining document no longer derives in order..." for a
+		//! remove) that names no param, no value, no referrer, and -- for
+		//! insert/patch -- points at a log an agent cannot read; this struct is
+		//! what turns that into something actionable.
 		//!   * `param` -- the offending parameter name; "" for a chunk-level
-		//!     issue (currently only "unknown_chunk_type", which has no param).
-		//!   * `value` -- the offending value token: the dangling reference
-		//!     name (unresolved_reference), the numeric literal found in a
-		//!     reference slot (numeric_in_reference_slot), the undeclared
-		//!     param's own given value (unknown_param, informational), or the
-		//!     unregistered keyword itself (unknown_chunk_type).
+		//!     issue (unknown_chunk_type, unknown_target, still_referenced --
+		//!     none of these name a PARAMETER).
+		//!   * `value` -- the offending value token: the dangling reference name
+		//!     (unresolved_reference), the numeric literal found in a reference
+		//!     slot (numeric_in_reference_slot), the undeclared param's own given
+		//!     value (unknown_param, informational), the unregistered keyword
+		//!     itself (unknown_chunk_type), the ill-typed value verbatim
+		//!     (invalid_value), the target name that did not resolve
+		//!     (unknown_target), or the remove target's own name
+		//!     (still_referenced -- the BLOCKING referrers ride in `suggestions`
+		//!     instead, since `value` is already spoken for by the target).
 		//!   * `reason` -- a short STABLE slug from a CLOSED set a machine
-		//!     caller can switch on without string-matching `message`:
+		//!     caller can switch on without string-matching `message`, grouped
+		//!     by which verb(s) can produce it:
+		//!
+		//!     insert_chunk, propose_patch, AND remove_chunk (target/param
+		//!     resolution and reference-typing are shared concerns):
 		//!       "unresolved_reference"      a Reference-kind param's value is
 		//!                                   a NAME that does not resolve
 		//!                                   against the document in scope
 		//!                                   (the current head on a rejected
-		//!                                   insert; the just-landed head on a
-		//!                                   successful one).
+		//!                                   insert/patch; the just-landed head
+		//!                                   on a successful insert).
 		//!       "unknown_param"             the param name is not declared on
 		//!                                   the chunk's ChunkDescriptor at all
 		//!                                   (a typo, e.g. `constant` for the
@@ -263,8 +300,34 @@ namespace RISE
 		//!                                   MISMATCH (a literal where a chunk
 		//!                                   NAME belongs), not a dangling
 		//!                                   reference.
+		//!
+		//!     insert_chunk ONLY:
 		//!       "unknown_chunk_type"        the chunk keyword itself is not a
 		//!                                   registered chunk type.
+		//!
+		//!     propose_patch ONLY:
+		//!       "unknown_target"            the `target` entity name does not
+		//!                                   resolve to any chunk in the head
+		//!                                   (restricted to `kind` when given).
+		//!       "invalid_value"             `param` is declared, but `value` is
+		//!                                   ill-typed for its ValueKind -- a
+		//!                                   non-finite/non-numeric token in a
+		//!                                   Double/UInt/vector slot, or a string
+		//!                                   outside an Enum's declared set (the
+		//!                                   message then lists the allowed
+		//!                                   values).
+		//!
+		//!     remove_chunk ONLY:
+		//!       "still_referenced"          the remove target resolves, AND the
+		//!                                   reference graph's reverse adjacency
+		//!                                   names at least one chunk that still
+		//!                                   references it (those referrer names
+		//!                                   ride in `suggestions` -- edit or
+		//!                                   remove them first).  A remove reject
+		//!                                   whose target has NO dependents (the
+		//!                                   OTHER derive-order cause) emits NO
+		//!                                   issue -- see the HONESTY note below.
+		//!
 		//!   * `suggestions` -- near-miss candidates, best match first (up to 3
 		//!     via the shared substring-then-edit-distance ranking; the
 		//!     `unknown_param` case falls back to the chunk's FULL declared
@@ -273,7 +336,20 @@ namespace RISE
 		//!     `value`, has no near-miss to rank, but the author still needs a
 		//!     concrete candidate set). ALWAYS empty for
 		//!     numeric_in_reference_slot -- a literal has no name to suggest a
-		//!     near-miss of.
+		//!     near-miss of. For "still_referenced" this is NOT a near-miss
+		//!     ranking -- it is the EXACT list of blocking referrer chunk names
+		//!     (every one of them, not a top-3 heuristic guess).
+		//!
+		//!   HONESTY (every analyser above shares this rule): an issue-producing
+		//!   pass is a STATIC, descriptor-/reference-graph-only check -- it does
+		//!   not see every semantic constraint the full derive validates (e.g. a
+		//!   cross-param requirement descriptors don't encode), and remove's
+		//!   pass does not see DYNAMIC references (e.g. a timeline `element`
+		//!   naming an entity outside any declared Reference param). Finding
+		//!   NOTHING is therefore never treated as exoneration -- an empty
+		//!   `issues` list on a rejection leaves `message` as the engine's own
+		//!   (already-hedged) diagnostic, never a clause implying the target/
+		//!   value checked out.
 		struct AgentChunkIssue
 		{
 			std::string              param;
@@ -311,7 +387,7 @@ namespace RISE
 			//! insert_chunk/remove_chunk stage refused by StageProposal's
 			//! kMaxPendingProposals gate.
 			bool        queueFull = false;
-			//! Populated on EITHER of two paths -- see AgentChunkIssue's doc for
+			//! Populated on any of THREE paths -- see AgentChunkIssue's doc for
 			//! the full contract:
 			//!   * a SUCCESSFUL insert_chunk whose newly-landed chunk itself
 			//!     references a name the document has no definition for (a
@@ -321,12 +397,17 @@ namespace RISE
 			//!     analyser could explain (see AgentSession.cpp's
 			//!     AnalyzeRejectedInsert) -- `applied` stays false / `status`
 			//!     stays "rejected"; this is EXTRA detail, not a different
-			//!     verdict.
-			//! Empty on every other path (remove, a rejection the analyser
-			//! could not explain -- see its HONESTY note -- a clean insert).
-			//! AgentRpc.cpp serializes this as `issues` and OMITS the key
-			//! entirely when empty (back-compat with every existing
-			//! insert_chunk caller).
+			//!     verdict;
+			//!   * a REJECTED remove_chunk whose target the reference graph
+			//!     shows is still referenced (see AgentSession.cpp's
+			//!     AnalyzeRejectedRemove) -- reason "still_referenced", the
+			//!     blocking referrer(s) named in `suggestions`.
+			//! Empty on every other path (a clean remove, a rejection either
+			//! analyser could not explain -- see AgentChunkIssue's HONESTY note
+			//! -- a clean insert with no dangling reference). AgentRpc.cpp
+			//! serializes this as `issues` and OMITS the key entirely when
+			//! empty (back-compat with every existing insert_chunk/remove_chunk
+			//! caller).
 			std::vector<AgentChunkIssue> issues;
 		};
 

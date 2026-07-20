@@ -78,6 +78,20 @@
 //        descriptor-only analyser cannot explain (a semantic cross-param
 //        constraint) honestly returns no issues rather than implying it
 //        exonerated the chunk.
+//    R2  The propose_patch sibling of R1: an unknown target (near-miss
+//        suggestion), an undeclared param (full valid-parameter list), a
+//        dangling reference retarget (near-miss suggestion), a numeric
+//        literal in a reference slot, and a non-numeric value in a Double
+//        slot each get a specific issue plus an ACTIONABLE clause; a
+//        genuinely clean patch carries no `issues` key at all.
+//    R3  The remove_chunk sibling of R1/R2: removing a still-referenced
+//        material NAMES the blocking referrer (via the reference graph's
+//        reverse adjacency) instead of the engine's own hedged "likely
+//        still REFERENCED... or the document no longer derives in order"
+//        message; HONESTY red-prove -- a remove refused because a
+//        DYNAMIC reference (a timeline `element`, outside any declared
+//        Reference param) still targets the chunk emits NO invented
+//        issue, since the static reference graph cannot see it.
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off.
 //
@@ -2341,6 +2355,281 @@ static void TestRejectedInsertDiagnostics()
 	}
 }
 
+//----------------------------------------------------------------------
+// R2: actionable REJECTED propose_patch diagnostics -- the propose_patch
+// sibling of R1 (same {param,value,reason,suggestions} shape, closing the
+// gap that only insert_chunk explained ITS rejections).  (target, kind,
+// param, value) are already in hand from the call, so this resolves
+// directly against the head document rather than parsing candidate text.
+//----------------------------------------------------------------------
+static void TestActionablePatchDiagnostics()
+{
+	std::printf( "R2: actionable REJECTED propose_patch diagnostics (real repro cases)...\n" );
+
+	// (a) unknown_target: a near-miss typo of the real geometry name "sph".
+	{
+		const std::string tmp = TempPath( "agentcrud_r2a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R2(a) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "sph_x";
+		p.kind   = "sphere_geometry";
+		p.param  = "radius";
+		p.value  = "1.0";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "R2(a) an unknown target is REJECTED" );
+		Check( r.issues.size() == 1, "R2(a) exactly ONE issue" );
+		if( r.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = r.issues[0];
+			Check( u.reason == "unknown_target", "R2(a) issue reason is \"unknown_target\"" );
+			Check( u.value == "sph_x", "R2(a) issue value is the bad target name" );
+			bool sawIt = false;
+			for( const std::string& s : u.suggestions ) if( s == "sph" ) sawIt = true;
+			Check( sawIt, "R2(a) suggestions include the ACTUAL geometry name 'sph'" );
+		}
+		Check( r.message.find( "ACTIONABLE" ) != std::string::npos,
+		       "R2(a) message carries the actionable sentence" );
+		std::printf( "  R2(a) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) unknown_param: a valid target, an undeclared param.
+	{
+		const std::string tmp = TempPath( "agentcrud_r2b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R2(b) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_diffuse";
+		p.kind   = "material";
+		p.param  = "bogus_param";
+		p.value  = "1.0";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "R2(b) an undeclared param is REJECTED" );
+		Check( r.issues.size() == 1, "R2(b) exactly ONE issue" );
+		if( r.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = r.issues[0];
+			Check( u.param == "bogus_param", "R2(b) issue param is \"bogus_param\"" );
+			Check( u.reason == "unknown_param", "R2(b) issue reason is \"unknown_param\"" );
+		}
+		Check( r.message.find( "valid parameters are" ) != std::string::npos &&
+		       r.message.find( "reflectance" ) != std::string::npos,
+		       "R2(b) message lists the valid parameters (including 'reflectance')" );
+		std::printf( "  R2(b) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) unresolved_reference: a near-miss typo of the real painter "pnt_emit".
+	{
+		const std::string tmp = TempPath( "agentcrud_r2c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R2(c) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_diffuse";
+		p.kind   = "material";
+		p.param  = "reflectance";
+		p.value  = "pnt_emitt";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "R2(c) a dangling reference retarget is REJECTED" );
+		Check( r.issues.size() == 1, "R2(c) exactly ONE issue" );
+		if( r.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = r.issues[0];
+			Check( u.param == "reflectance", "R2(c) issue param is \"reflectance\"" );
+			Check( u.value == "pnt_emitt", "R2(c) issue value is the bad name" );
+			Check( u.reason == "unresolved_reference", "R2(c) issue reason is \"unresolved_reference\"" );
+			bool sawIt = false;
+			for( const std::string& s : u.suggestions ) if( s == "pnt_emit" ) sawIt = true;
+			Check( sawIt, "R2(c) suggestions include the ACTUAL painter name 'pnt_emit'" );
+		}
+		Check( r.message.find( "ACTIONABLE" ) != std::string::npos,
+		       "R2(c) message carries the actionable sentence" );
+		std::printf( "  R2(c) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (d) numeric_in_reference_slot: reflectance given an inline RGB triple.
+	{
+		const std::string tmp = TempPath( "agentcrud_r2d.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R2(d) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "mat_diffuse";
+		p.kind   = "material";
+		p.param  = "reflectance";
+		p.value  = "0.9 0.6 0.7";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "R2(d) a numeric literal in a reference slot is REJECTED" );
+		Check( r.issues.size() == 1, "R2(d) exactly ONE issue" );
+		if( r.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = r.issues[0];
+			Check( u.param == "reflectance", "R2(d) issue param is \"reflectance\"" );
+			Check( u.value == "0.9 0.6 0.7", "R2(d) issue value is the numeric triple" );
+			Check( u.reason == "numeric_in_reference_slot", "R2(d) issue reason is \"numeric_in_reference_slot\"" );
+		}
+		Check( r.message.find( "painter" ) != std::string::npos,
+		       "R2(d) message names the declared reference category (painter)" );
+		std::printf( "  R2(d) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (e) invalid_value: a non-numeric token in a Double slot (sphere radius).
+	{
+		const std::string tmp = TempPath( "agentcrud_r2e.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R2(e) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "sph";
+		p.kind   = "sphere_geometry";
+		p.param  = "radius";
+		p.value  = "not_a_number";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( !r.applied && r.status == "rejected",
+		       "R2(e) a non-numeric value in a Double slot is REJECTED" );
+		Check( r.issues.size() == 1, "R2(e) exactly ONE issue" );
+		if( r.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = r.issues[0];
+			Check( u.param == "radius", "R2(e) issue param is \"radius\"" );
+			Check( u.value == "not_a_number", "R2(e) issue value is the bad token" );
+			Check( u.reason == "invalid_value", "R2(e) issue reason is \"invalid_value\"" );
+		}
+		Check( r.message.find( "ACTIONABLE" ) != std::string::npos,
+		       "R2(e) message carries the actionable sentence" );
+		std::printf( "  R2(e) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (f) a genuinely CLEAN patch carries no issues key at all (empty vector).
+	{
+		const std::string tmp = TempPath( "agentcrud_r2f.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R2(f) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentSetPatch p;
+		p.target = "sph";
+		p.kind   = "sphere_geometry";
+		p.param  = "radius";
+		p.value  = "1.2";
+		Agent::AgentPatchResult r = sess->ProposePatch( p );
+		Check( r.applied && r.status == "applied", "R2(f) a clean patch applies" );
+		Check( r.issues.empty(), "R2(f) a clean patch carries NO issues" );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
+//----------------------------------------------------------------------
+// R3: actionable REJECTED remove_chunk diagnostics -- the remove_chunk
+// sibling of R1/R2. The reference graph's reverse adjacency NAMES the
+// blocking referrer(s) instead of the engine's own hedged "likely still
+// REFERENCED... or the document no longer derives in order" message.
+//----------------------------------------------------------------------
+static void TestActionableRemoveDiagnostics()
+{
+	std::printf( "R3: actionable REJECTED remove_chunk diagnostics (real repro cases)...\n" );
+
+	// (h) still_referenced: mat_diffuse is bound by obj_sph's `material` param.
+	{
+		const std::string tmp = TempPath( "agentcrud_r3h.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "R3(h) fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult r = sess->RemoveChunk( "mat_diffuse" );
+		Check( !r.applied && r.status == "rejected",
+		       "R3(h) removing a still-referenced material is REFUSED" );
+		Check( r.issues.size() == 1, "R3(h) exactly ONE issue" );
+		if( r.issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = r.issues[0];
+			Check( u.value == "mat_diffuse", "R3(h) issue value is the remove target's own name" );
+			Check( u.reason == "still_referenced", "R3(h) issue reason is \"still_referenced\"" );
+			bool sawIt = false;
+			for( const std::string& s : u.suggestions ) if( s == "obj_sph" ) sawIt = true;
+			Check( sawIt, "R3(h) suggestions NAME the blocking referrer 'obj_sph'" );
+		}
+		Check( r.message.find( "ACTIONABLE" ) != std::string::npos &&
+		       r.message.find( "obj_sph" ) != std::string::npos,
+		       "R3(h) message NAMES the blocking referrer, not just a hedge" );
+		std::printf( "  R3(h) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	// (j) HONESTY: a remove that fails for the OTHER (non-reference) reason --
+	// camA is targeted by a timeline's `element` param, a DYNAMIC reference
+	// outside any declared Reference param, so the static reference graph
+	// shows NO dependents for camA even though removing it demonstrably
+	// breaks the derive.  No issue must be invented; the honest hedged
+	// message must survive untouched.
+	{
+		const std::string tmp = TempPath( "agentcrud_r3j.RISEscene" );
+		Job* pJob = LoadScene( kTwoCamScene, tmp );
+		Check( pJob != nullptr, "R3(j) two-camera fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+		Agent::AgentChunkResult rTl = sess->InsertChunk(
+			"timeline\n{\n\telement_type camera\n\telement camA\n\tparam location\n"
+			"\ttime 0\n\tvalue 0 0 5\n\ttime 1\n\tvalue 7 0 5\n}" );
+		Check( rTl.applied, "R3(j) the camA-targeting timeline inserts" );
+
+		Agent::AgentChunkResult r = sess->RemoveChunk( "camA" );
+		Check( !r.applied && r.status == "rejected",
+		       "R3(j) removing camA (still targeted by the timeline) is REFUSED" );
+		Check( r.issues.empty(),
+		       "R3(j) HONESTY: the static reference graph does not see the DYNAMIC timeline "
+		       "reference -- issues stays EMPTY rather than inventing a referrer" );
+		Check( r.message.find( "ACTIONABLE" ) == std::string::npos,
+		       "R3(j) an empty analysis does NOT append a misleading ACTIONABLE sentence" );
+		Check( r.message.find( "would not derive" ) != std::string::npos,
+		       "R3(j) the engine's own hedged message survives untouched" );
+		std::printf( "  R3(j) message: %s\n", r.message.c_str() );
+
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -2366,6 +2655,8 @@ int main()
 	TestGltfImportPrefixCollision();
 	TestUnresolvedReferenceWarning();
 	TestRejectedInsertDiagnostics();
+	TestActionablePatchDiagnostics();
+	TestActionableRemoveDiagnostics();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

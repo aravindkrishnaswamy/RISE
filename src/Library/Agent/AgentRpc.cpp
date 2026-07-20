@@ -430,6 +430,29 @@ namespace RISE
 				return true;
 			}
 
+			//! Serialize an AgentChunkIssue list as the wire `issues` array --
+			//! shared by ChunkResultJson (insert_chunk/remove_chunk) AND
+			//! propose_patch's own inline result construction below, so the
+			//! {param,value,reason,suggestions} shape can never drift between
+			//! the three verbs that can emit it.
+			JsonValue IssuesJson( const std::vector<AgentChunkIssue>& issues )
+			{
+				JsonValue arr = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < issues.size(); ++i ) {
+					const AgentChunkIssue& u = issues[i];
+					JsonValue e = JsonValue::MakeObject();
+					e.set( "param",  JsonValue::MakeString( u.param ) );
+					e.set( "value",  JsonValue::MakeString( u.value ) );
+					e.set( "reason", JsonValue::MakeString( u.reason ) );
+					JsonValue sugg = JsonValue::MakeArray();
+					for( std::size_t j = 0; j < u.suggestions.size(); ++j )
+						sugg.push_back( JsonValue::MakeString( u.suggestions[j] ) );
+					e.set( "suggestions", sugg );
+					arr.push_back( e );
+				}
+				return arr;
+			}
+
 			//! Model-B F5 slice S2: serialize an AgentChunkResult (insert_chunk /
 			//! remove_chunk share the shape: the propose_patch result fields plus
 			//! the affected chunk's name/kind echo).
@@ -444,31 +467,17 @@ namespace RISE
 				result.set( "message",   JsonValue::MakeString( cr.message ) );
 				result.set( "name",      JsonValue::MakeString( cr.name ) );
 				result.set( "kind",      JsonValue::MakeString( cr.kind ) );
-				// Model-B F5 slice S3: actionable insert_chunk diagnostics -- a
-				// non-blocking WARNING on a successful insert (a forward reference)
-				// OR the descriptor-derivable CAUSE of a rejected insert (see
-				// AgentChunkIssue's doc). CONDITIONAL key, OMITTED entirely when
-				// empty -- same back-compat posture as `legend` above: every
-				// existing insert_chunk/remove_chunk caller that doesn't know this
-				// key exists sees an unchanged response shape on a clean insert, an
-				// unexplained rejection, or on remove_chunk (which never populates
-				// it).
-				if( !cr.issues.empty() ) {
-					JsonValue issues = JsonValue::MakeArray();
-					for( std::size_t i = 0; i < cr.issues.size(); ++i ) {
-						const AgentChunkIssue& u = cr.issues[i];
-						JsonValue e = JsonValue::MakeObject();
-						e.set( "param",  JsonValue::MakeString( u.param ) );
-						e.set( "value",  JsonValue::MakeString( u.value ) );
-						e.set( "reason", JsonValue::MakeString( u.reason ) );
-						JsonValue sugg = JsonValue::MakeArray();
-						for( std::size_t j = 0; j < u.suggestions.size(); ++j )
-							sugg.push_back( JsonValue::MakeString( u.suggestions[j] ) );
-						e.set( "suggestions", sugg );
-						issues.push_back( e );
-					}
-					result.set( "issues", issues );
-				}
+				// Model-B F5 slice S3, extended to remove_chunk by a later slice:
+				// actionable insert_chunk/remove_chunk diagnostics -- a non-blocking
+				// WARNING on a successful insert (a forward reference), the
+				// descriptor-derivable CAUSE of a rejected insert, or the reference-
+				// graph-derivable CAUSE of a rejected remove (see AgentChunkIssue's
+				// doc). CONDITIONAL key, OMITTED entirely when empty -- same back-
+				// compat posture as `legend` above: every existing insert_chunk/
+				// remove_chunk caller that doesn't know this key exists sees an
+				// unchanged response shape on a clean insert/remove or an unexplained
+				// rejection.
+				if( !cr.issues.empty() ) result.set( "issues", IssuesJson( cr.issues ) );
 				return result;
 			}
 
@@ -949,7 +958,7 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// propose_patch {target,kind?,param,value,baseHeadVersion?}
-				//   -> {applied,rawCode,status,retriable,headVersion,message}
+				//   -> {applied,rawCode,status,retriable,headVersion,message,issues?}
 				//   `applied` is CLEAN success only; `status` is the four-state
 				//   gate {"applied","rejected","diagnosed","conflict"} (a rawCode-3
 				//   re-derive is applied=false/status="diagnosed": mutated but
@@ -967,7 +976,17 @@ namespace RISE
 				//   editor transaction in LIVE mode) -- resubmit the SAME patch
 				//   later; false = permanent (retrying verbatim can never
 				//   succeed).  A "conflict" is retriable-by-protocol via re-read
-				//   + re-propose, so it does NOT set the flag.
+				//   + re-propose, so it does NOT set the flag.  A REJECTED patch
+				//   (status="rejected", rawCode 0) may carry `issues`: the SAME
+				//   {param,value,reason,suggestions} shape insert_chunk/
+				//   remove_chunk return (see AgentChunkIssue's doc) -- reason one
+				//   of "unknown_target" (target doesn't resolve), "unknown_param",
+				//   "numeric_in_reference_slot", "unresolved_reference", or
+				//   "invalid_value" (an ill-typed Enum/numeric value; `message`
+				//   lists the allowed values for an Enum).  OMITTED entirely when
+				//   empty -- an empty `issues` on a rejection does not mean the
+				//   patch was fine, only that this pass could not statically pin
+				//   the cause.
 				//--------------------------------------------------------------
 				if( m == "propose_patch" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -1015,6 +1034,11 @@ namespace RISE
 					result.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
 					result.set( "headVersion", HeadVersionJson( pr.headVersion ) );
 					result.set( "message", JsonValue::MakeString( pr.message ) );
+					// Actionable rejection diagnostics -- the propose_patch sibling
+					// of insert_chunk/remove_chunk's `issues` (see AgentChunkIssue's
+					// doc). CONDITIONAL key, OMITTED entirely when empty -- same
+					// back-compat posture as ChunkResultJson's `issues`.
+					if( !pr.issues.empty() ) result.set( "issues", IssuesJson( pr.issues ) );
 					return MakeSuccess( idValue, result );
 				}
 
@@ -1056,11 +1080,17 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// remove_chunk {target, kind?, baseHeadVersion?}
-				//   -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
+				//   -> {applied,rawCode,status,retriable,headVersion,message,name,kind,issues?}
 				//   Model-B F5 slice S2: REMOVE the chunk resolved by bare name
 				//   (+ optional kind narrowing, same resolution as propose_patch)
 				//   via the trivia-preserving erase; a still-referenced target is
-				//   rejected with the dry-run diagnostic, head byte-identical.
+				//   rejected with the dry-run diagnostic, head byte-identical. A
+				//   REJECTED remove may carry `issues` (same shape as
+				//   insert_chunk/propose_patch): reason "still_referenced" NAMES
+				//   the blocking referrer chunk(s) in `suggestions` when the
+				//   reference graph can identify them; omitted when it cannot
+				//   (see AgentChunkIssue's doc -- an empty/absent `issues` on a
+				//   rejection is never proof the target was unreferenced).
 				//--------------------------------------------------------------
 				if( m == "remove_chunk" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );

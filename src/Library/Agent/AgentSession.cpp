@@ -860,6 +860,22 @@ namespace RISE
 			return out;
 		}
 
+		namespace
+		{
+			//! Forward declaration: AttachParamEditRejectionIssues is DEFINED
+			//! further down this file (alongside AnalyzeRejectedParamEdit and its
+			//! insert_chunk/remove_chunk sibling analysers -- keeping the three
+			//! actionable-rejection analysers + their message-builders together),
+			//! but ProposePatch (right below) needs to call it from BOTH its LIVE
+			//! and headless branches. Every `namespace { ... }` block at this
+			//! scope in this translation unit reopens the SAME compiler-unique
+			//! anonymous namespace, so a forward declaration here and the
+			//! definition later in the file refer to the identical symbol.
+			void AttachParamEditRejectionIssues( AgentPatchResult& r, const RISE::Cst::Document& doc,
+			                                     const std::string& target, const std::string& kind,
+			                                     const std::string& param, const std::string& value );
+		}
+
 		AgentPatchResult AgentSession::ProposePatch( const AgentSetPatch& patch )
 		{
 			AgentPatchResult r;
@@ -968,6 +984,18 @@ namespace RISE
 				r.status      = cr.status.c_str();
 				r.headVersion = cr.headVersion;
 				r.message     = cr.message.c_str();
+				// Actionable rejection diagnostics on the LIVE path -- THIS is the
+				// GUI path (see AttachRejectionIssues' identical rationale on
+				// InsertChunk's LIVE branch, the case that motivated this whole
+				// mechanism: a local model cannot read the server log the engine's
+				// own message points at).  Gated on the SAME generic rawCode==0
+				// catch-all insert_chunk uses, so a conflict / queue-full / transient
+				// open-editor-transaction refusal is never second-guessed.  A
+				// rejection leaves the head UNCHANGED, so the retained Document is
+				// the correct namespace to resolve the target/reference against.
+				if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
+					AttachParamEditRejectionIssues( r, *mJob->GetCstDocument(),
+					                                patch.target, patch.kind, patch.param, patch.value );
 				return r;
 			}
 
@@ -1080,6 +1108,15 @@ namespace RISE
 			// clean apply (its revision bumped by the Job's commit path), and the UNCHANGED current head on a
 			// reject (code 0) / diagnosed (code 3, where the Document WAS mutated so its revision also bumped).
 			r.headVersion = mJob->GetCstHeadVersion();
+			// Model-B: the pre-flight CAUSE analysis for a REJECTED param edit --
+			// ONLY for literal code 0 (ApplyCstParamEditChecked's generic "would
+			// not derive" catch-all; there is no -1/-2 class here the way chunk
+			// CRUD has, so code==0 IS the whole reject bucket).  `mJob->GetCstDocument()`
+			// here is the SAME, UNCHANGED head the failed dry-run ran against (a
+			// reject never mutates), so this is a faithful re-check, not a stale one.
+			if( code == 0 && mJob->GetCstDocument() )
+				AttachParamEditRejectionIssues( r, *mJob->GetCstDocument(),
+				                                patch.target, patch.kind, patch.param, patch.value );
 			return r;
 		}
 
@@ -1362,6 +1399,71 @@ namespace RISE
 				return true;
 			}
 
+			//! Split `s` on ASCII whitespace into non-empty tokens.  Needed by
+			//! the propose_patch rejection analyser below: unlike an
+			//! insert_chunk candidate (already tokenized by the CST parser into
+			//! discrete `pvalue` Tokens -- see AnalyzeRejectedInsert's
+			//! valueTokens loop), propose_patch's `value` arrives as a single
+			//! raw string over the wire, so it needs its own split before it can
+			//! be run through the SAME AllTokensNumeric test insert_chunk uses
+			//! (reused, not reimplemented -- see AnalyzeRejectedParamEdit).
+			std::vector<std::string> SplitWhitespace( const std::string& s )
+			{
+				std::vector<std::string> out;
+				std::string cur;
+				for( char c : s ) {
+					if( std::isspace( static_cast<unsigned char>( c ) ) ) {
+						if( !cur.empty() ) { out.push_back( cur ); cur.clear(); }
+					} else {
+						cur += c;
+					}
+				}
+				if( !cur.empty() ) out.push_back( cur );
+				return out;
+			}
+
+			//! Is `role` (a chunk's own keyword) an instance of `kind` -- exact
+			//! match, or the same "ends in `_<kind>`" suffix rule
+			//! DocFindByNameAnyRole's `roleKindSuffix` narrowing and
+			//! Job::ApplyCstRemoveChunk's post-resolve kind-verification both
+			//! already apply (e.g. `kind="material"` matches both the bare
+			//! `material` keyword and every `..._material` keyword). A SEPARATE
+			//! small copy of that one-line rule rather than a shared helper --
+			//! consistent with this file's existing practice for a rule this
+			//! short (see CategoryNameLower's doc).
+			bool RoleMatchesKind( const std::string& role, const std::string& kind )
+			{
+				if( kind.empty() ) return true;
+				if( role == kind ) return true;
+				return role.size() > kind.size() + 1 &&
+					role.compare( role.size() - kind.size() - 1, kind.size() + 1, "_" + kind ) == 0;
+			}
+
+			//! Near-miss candidate chunk NAMES for an unresolved propose_patch
+			//! `target` address -- every NAMED chunk in `doc`, restricted (via
+			//! RoleMatchesKind) to chunks of `kind` when a kind hint was given.
+			//! Mirrors CollectUnresolvedRefSuggestions' candidate-gathering loop
+			//! above, but keyed on KIND rather than on a param's declared
+			//! referenceCategories (a propose_patch target has no such param to
+			//! consult -- the caller IS the "which chunk did you mean" question).
+			std::vector<std::string> CollectTargetNameCandidates( const RISE::Cst::Document& doc,
+			                                                       const std::string& kind )
+			{
+				std::vector<std::string> candidates;
+				const int n = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeRef item = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !item || item->kind != NodeKind::Chunk ) continue;
+					if( !RoleMatchesKind( item->role, kind ) ) continue;
+					const std::string namePath = RISE::Cst::ChunkNamePath( item );
+					if( namePath.empty() ) continue;
+					const std::string prefix = item->role + "/";
+					if( namePath.size() <= prefix.size() || namePath.compare( 0, prefix.size(), prefix ) != 0 ) continue;
+					candidates.push_back( namePath.substr( prefix.size() ) );
+				}
+				return candidates;
+			}
+
 			//! A stable lowercase name for a ChunkCategory, for the
 			//! "numeric_in_reference_slot" fix-shape message (e.g. "a painter").
 			//! Deliberately a SEPARATE small copy from SchemaGen.cpp's identical
@@ -1621,6 +1723,65 @@ namespace RISE
 				return out;
 			}
 
+			//! One issue's human-readable clause, for the FOUR `reason`s that can
+			//! be produced against an EXISTING, resolved chunk's descriptor --
+			//! shared verbatim by insert_chunk's AttachRejectionIssues and
+			//! propose_patch's AttachParamEditRejectionIssues below (remove_chunk's
+			//! sole reason, "still_referenced", has no chunk-descriptor content to
+			//! share, so AttachRemoveRejectionIssues builds its own clause).
+			//! `keyword` is the resolved chunk's own keyword (insert_chunk: the
+			//! candidate chunk's parsed keyword, `r.kind`; propose_patch: the
+			//! target's resolved keyword, threaded out of
+			//! AnalyzeRejectedParamEdit) -- needed here for the "valid parameters
+			//! are" / reference-category-name lookups, which both verbs share
+			//! byte-for-byte. Returns "" for a `reason` this shared shape does not
+			//! cover (unknown_chunk_type is insert-only and handled at insert's
+			//! own call site instead, since it has no resolved keyword to key a
+			//! descriptor lookup off of; unknown_target/invalid_value/
+			//! still_referenced are each single-verb and built at their own call
+			//! sites too).
+			std::string IssueClause( const AgentChunkIssue& issue, const std::string& keyword )
+			{
+				if( issue.reason == "unknown_param" ) {
+					std::string clause = "`" + issue.param + "` is not a valid parameter of `" + keyword + "`";
+					if( !issue.suggestions.empty() ) clause += " (did you mean '" + issue.suggestions.front() + "'?)";
+					std::string valid;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( keyword.c_str() ) );
+					if( d ) {
+						for( const ParameterDescriptor& p : d->parameters ) {
+							if( p.name == "name" ) continue;
+							if( !valid.empty() ) valid += ", ";
+							valid += p.name;
+						}
+					}
+					if( !valid.empty() ) clause += " -- valid parameters are: " + valid;
+					return clause;
+				}
+				if( issue.reason == "numeric_in_reference_slot" ) {
+					const ParameterDescriptor* pd = nullptr;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( keyword.c_str() ) );
+					if( d ) pd = FindParam( *d, issue.param );
+					std::string catList;
+					if( pd ) for( ChunkCategory cc : pd->referenceCategories ) {
+						if( !catList.empty() ) catList += "/";
+						catList += CategoryNameLower( cc );
+					}
+					if( catList.empty() ) catList = "chunk";
+					std::string clause = "`" + issue.param + "` = '" + issue.value + "' is a number, but this slot needs "
+					           "the NAME of a " + catList + " chunk, not a literal";
+					if( pd && !pd->referenceCategories.empty() && pd->referenceCategories.front() == ChunkCategory::Painter )
+						clause += " -- e.g. define `uniformcolor_painter { name <n>  color " + issue.value +
+						           " }` and set `" + issue.param + " <n>`";
+					return clause;
+				}
+				if( issue.reason == "unresolved_reference" ) {
+					std::string clause = "`" + issue.param + "` = '" + issue.value + "' does not name anything defined in the document";
+					if( !issue.suggestions.empty() ) clause += " (did you mean '" + issue.suggestions.front() + "'?)";
+					return clause;
+				}
+				return std::string();
+			}
+
 			//! Run the descriptor-based rejection analyser and fold what it finds
 			//! into `r` (both the structured `issues` and a human-readable
 			//! " ACTIONABLE: ..." clause appended to `message`).
@@ -1651,37 +1812,8 @@ namespace RISE
 						if( issue.reason == "unknown_chunk_type" ) {
 							clauses += "unknown chunk type '" + issue.value + "'";
 							if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
-						} else if( issue.reason == "unknown_param" ) {
-							clauses += "`" + issue.param + "` is not a valid parameter of `" + r.kind + "`";
-							if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
-							std::string valid;
-							const ChunkDescriptor* d = DescriptorForKeyword( String( r.kind.c_str() ) );
-							if( d ) {
-								for( const ParameterDescriptor& p : d->parameters ) {
-									if( p.name == "name" ) continue;
-									if( !valid.empty() ) valid += ", ";
-									valid += p.name;
-								}
-							}
-							if( !valid.empty() ) clauses += " -- valid parameters are: " + valid;
-						} else if( issue.reason == "numeric_in_reference_slot" ) {
-							const ParameterDescriptor* pd = nullptr;
-							const ChunkDescriptor* d = DescriptorForKeyword( String( r.kind.c_str() ) );
-							if( d ) pd = FindParam( *d, issue.param );
-							std::string catList;
-							if( pd ) for( ChunkCategory cc : pd->referenceCategories ) {
-								if( !catList.empty() ) catList += "/";
-								catList += CategoryNameLower( cc );
-							}
-							if( catList.empty() ) catList = "chunk";
-							clauses += "`" + issue.param + "` = '" + issue.value + "' is a number, but this slot needs "
-							           "the NAME of a " + catList + " chunk, not a literal";
-							if( pd && !pd->referenceCategories.empty() && pd->referenceCategories.front() == ChunkCategory::Painter )
-								clauses += " -- e.g. define `uniformcolor_painter { name <n>  color " + issue.value +
-								           " }` and set `" + issue.param + " <n>`";
-						} else if( issue.reason == "unresolved_reference" ) {
-							clauses += "`" + issue.param + "` = '" + issue.value + "' does not name anything defined in the document";
-							if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
+						} else {
+							clauses += IssueClause( issue, r.kind );
 						}
 					}
 					if( !clauses.empty() )
@@ -1691,6 +1823,275 @@ namespace RISE
 				// static, descriptor-only pass, so a genuinely rejected chunk whose
 				// cause it cannot see statically leaves `issues` empty and `message`
 				// untouched rather than implying the chunk checked out.
+			}
+
+			//! Model-B F5 (actionable propose_patch diagnostics): pre-flight,
+			//! DESCRIPTOR- and REFERENCE-GRAPH-based analysis of a REJECTED
+			//! propose_patch (called ONLY for the generic rawCode==0 "would not
+			//! derive" catch-all -- ApplyCstParamEditChecked's code 0; a CONFLICT
+			//! or an empty-field guard already carries its own precise message and
+			//! must not be second-guessed). Unlike AnalyzeRejectedInsert, there is
+			//! no candidate chunk TEXT to parse here -- (target, kind, param,
+			//! value) are already in hand from the call, so this resolves the
+			//! target directly against `doc`.
+			//!
+			//! See AgentChunkIssue's doc for the full seven-reason set; this
+			//! analyser produces "unknown_target" and "invalid_value" (propose_
+			//! patch-only), plus the three reasons it shares with insert_chunk
+			//! ("unknown_param", "numeric_in_reference_slot",
+			//! "unresolved_reference" -- reused via the SAME helpers
+			//! AnalyzeRejectedInsert uses: FindParam, NearMissParamNames,
+			//! AllTokensNumeric, CollectUnresolvedRefSuggestions, RankNearMisses).
+			//!
+			//! `outResolvedKeyword` (optional): filled with the target's resolved
+			//! chunk KEYWORD whenever resolution succeeds, so the caller
+			//! (AttachParamEditRejectionIssues) can build the "valid parameters
+			//! are" / reference-category-name clauses via the shared IssueClause
+			//! without a second resolution pass.
+			//!
+			//! HONESTY: same rule as AnalyzeRejectedInsert -- an empty return is
+			//! NOT exoneration. A semantic cross-param constraint (e.g. a
+			//! `fresnel_mode thinfilm` requiring film_ior+film_thickness together)
+			//! is invisible to this static, per-field pass.
+			std::vector<AgentChunkIssue> AnalyzeRejectedParamEdit( const RISE::Cst::Document& doc,
+			                                                       const std::string& target,
+			                                                       const std::string& kind,
+			                                                       const std::string& param,
+			                                                       const std::string& value,
+			                                                       std::string* outResolvedKeyword = nullptr )
+			{
+				std::vector<AgentChunkIssue> out;
+
+				// 1) Resolve the target -- the SAME call
+				// Job::ApplyCstParamEditImpl_ itself makes (DocFindByNameAnyRole,
+				// camera-only positional fallback), so a MISS here is the exact
+				// cause of a code-0 reject when it is the TARGET that is wrong.
+				const bool uniqueFallback = ( kind == "camera" );
+				const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, target, nullptr, kind, uniqueFallback );
+				if( id == 0 ) {
+					AgentChunkIssue issue;
+					issue.value       = target;
+					issue.reason      = "unknown_target";
+					issue.suggestions = RankNearMisses( CollectTargetNameCandidates( doc, kind ), target );
+					out.push_back( issue );
+					return out;
+				}
+
+				const RISE::Cst::NodeRef chunkItem = RISE::Cst::DocResolveNodeId( doc, id );
+				if( !chunkItem ) return out;   // defensive only -- `id` just resolved a moment ago
+				const std::string keyword = chunkItem->role;
+				if( outResolvedKeyword ) *outResolvedKeyword = keyword;
+
+				const ChunkDescriptor* desc = DescriptorForKeyword( String( keyword.c_str() ) );
+				if( !desc ) return out;   // a resolved chunk's own keyword is always registered -- defensive only
+
+				// 2) Is `param` declared on this chunk's descriptor at all?
+				const ParameterDescriptor* pd = FindParam( *desc, param );
+				if( !pd ) {
+					AgentChunkIssue issue;
+					issue.param       = param;
+					issue.value       = value;
+					issue.reason      = "unknown_param";
+					issue.suggestions = NearMissParamNames( *desc, param );
+					out.push_back( issue );
+					return out;
+				}
+
+				// 3) Reference-kind: a numeric literal in the slot, or a NAME that
+				// does not resolve.
+				if( pd->kind == ValueKind::Reference ) {
+					const std::vector<std::string> toks = SplitWhitespace( value );
+					if( AllTokensNumeric( toks ) ) {
+						AgentChunkIssue issue;
+						issue.param  = param;
+						issue.value  = value;
+						issue.reason = "numeric_in_reference_slot";
+						out.push_back( issue );
+						return out;
+					}
+					if( value == "none" ) return out;   // explicit-none idiom -- never dangling
+
+					// Apply the PROPOSED value to a throwaway copy of `doc` (a value
+					// edit preserves NodeIds -- see ReferenceGraph's doc -- so `id`
+					// stays valid) and resolve THAT against BuildReferenceGraph, the
+					// SAME resolver AnalyzeRejectedInsert / AttachChunkIssueWarnings
+					// use, rather than re-implementing the (category,name) namespace
+					// here. DocSetOrAddParamValue is the SAME mutator
+					// ApplyCstParamEditImpl_ itself uses.
+					const RISE::Cst::Document trial = RISE::Cst::DocSetOrAddParamValue( doc, id, param, /*occ*/0, value );
+					std::vector<RISE::Cst::UnresolvedReference> unresolved;
+					RISE::Cst::BuildReferenceGraph( trial, nullptr, &unresolved );
+					for( const RISE::Cst::UnresolvedReference& u : unresolved ) {
+						if( u.sourceChunkId != id || u.param != param || u.value != value ) continue;
+						AgentChunkIssue issue;
+						issue.param       = param;
+						issue.value       = value;
+						issue.reason      = "unresolved_reference";
+						issue.suggestions = CollectUnresolvedRefSuggestions( trial, keyword, param, value );
+						out.push_back( issue );
+						return out;
+					}
+					return out;   // resolves fine (or this static pass can't see why not) -- nothing more to say
+				}
+
+				// 4) Numeric / Enum: an ill-typed value.
+				if( IsNumericKind( pd->kind ) ) {
+					const std::vector<std::string> toks = SplitWhitespace( value );
+					if( !AllTokensNumeric( toks ) ) {
+						AgentChunkIssue issue;
+						issue.param  = param;
+						issue.value  = value;
+						issue.reason = "invalid_value";
+						out.push_back( issue );
+					}
+					return out;
+				}
+				if( pd->kind == ValueKind::Enum ) {
+					bool known = false;
+					for( const std::string& ev : pd->enumValues ) if( ev == value ) { known = true; break; }
+					if( !known ) {
+						AgentChunkIssue issue;
+						issue.param  = param;
+						issue.value  = value;
+						issue.reason = "invalid_value";
+						out.push_back( issue );
+					}
+					return out;
+				}
+
+				return out;   // Bool/String/Filename -- nothing this static pass can say (toBoolean() never rejects; String/Filename have no structural constraint to violate)
+			}
+
+			//! propose_patch's sibling of AttachRejectionIssues -- see that
+			//! function's doc for the shared shape/gating rationale (callers gate
+			//! on the same generic rawCode==0 catch-all).
+			void AttachParamEditRejectionIssues( AgentPatchResult& r, const RISE::Cst::Document& doc,
+			                                     const std::string& target, const std::string& kind,
+			                                     const std::string& param, const std::string& value )
+			{
+				std::string resolvedKeyword;
+				const std::vector<AgentChunkIssue> found =
+					AnalyzeRejectedParamEdit( doc, target, kind, param, value, &resolvedKeyword );
+				if( found.empty() ) return;   // HONESTY -- see AnalyzeRejectedParamEdit's doc; not exoneration
+				r.issues = found;
+				std::string clauses;
+				for( const AgentChunkIssue& issue : found ) {
+					if( !clauses.empty() ) clauses += "; ";
+					if( issue.reason == "unknown_target" ) {
+						clauses += "target '" + issue.value + "' does not name";
+						clauses += kind.empty() ? std::string( " any chunk" ) : ( " a `" + kind + "` chunk" );
+						clauses += " in the document";
+						if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
+					} else if( issue.reason == "invalid_value" ) {
+						const ChunkDescriptor* d = DescriptorForKeyword( String( resolvedKeyword.c_str() ) );
+						const ParameterDescriptor* pd = d ? FindParam( *d, issue.param ) : nullptr;
+						if( pd && pd->kind == ValueKind::Enum ) {
+							std::string allowed;
+							for( const std::string& ev : pd->enumValues ) {
+								if( !allowed.empty() ) allowed += ", ";
+								allowed += ev;
+							}
+							clauses += "`" + issue.param + "` = '" + issue.value + "' is not one of `" + resolvedKeyword + "`'s allowed values";
+							if( !allowed.empty() ) clauses += " -- allowed values are: " + allowed;
+						} else {
+							clauses += "`" + issue.param + "` = '" + issue.value + "' is not a valid numeric value for this parameter";
+						}
+					} else {
+						clauses += IssueClause( issue, resolvedKeyword );
+					}
+				}
+				if( !clauses.empty() )
+					r.message += " ACTIONABLE: " + clauses + ".";
+			}
+
+			//! Model-B F5 (actionable remove_chunk diagnostics): pre-flight,
+			//! REFERENCE-GRAPH-based analysis of a REJECTED remove_chunk (called
+			//! ONLY for the generic rawCode==0 "would not derive" catch-all -- the
+			//! SAME gating FoldChunkCode's -1/-2 branches already carry their own
+			//! precise causes and must not be second-guessed).  `doc` is the
+			//! CURRENT head (byte-identical to what the rejected removal dry-ran
+			//! against, since a reject never mutates); `target`/`kind` are the
+			//! caller's original remove_chunk arguments.
+			//!
+			//! The engine's own hedge ("...it is likely still REFERENCED by
+			//! another chunk, or the remaining document no longer derives in
+			//! order...") names TWO possible causes without picking one.
+			//! BuildReferenceGraph's reverse adjacency (`dependents`: a
+			//! referenced chunk -> the chunks that reference it) can DISTINGUISH
+			//! them for the common case: resolve the target's NodeId (mirroring
+			//! Job::ApplyCstRemoveChunk's own DocFindByNameAnyRole resolution --
+			//! the camera-only positional fallback is the one `uniqueFallback`
+			//! case cheap to replicate here; every other kind stays strict
+			//! unique-or-refuse, same as the engine), then look it up in
+			//! `dependents`. A non-empty hit names the referrer(s) precisely
+			//! (reason "still_referenced"); an EMPTY hit means the OTHER cause
+			//! (the remaining document no longer derives in order) is the real
+			//! one -- see the HONESTY note below.
+			//!
+			//! HONESTY: mirrors AnalyzeRejectedInsert's rule exactly -- finding no
+			//! dependents is NOT proof the chunk is unreferenced everywhere (a
+			//! DYNAMIC reference this static graph does not model -- e.g. a
+			//! timeline `element` naming an entity outside any declared Reference
+			//! param -- could still exist) and is NOT proof the OTHER cause is
+			//! real either. So an unresolvable target (id==0) or a resolved
+			//! target with no dependents both return an EMPTY vector, and the
+			//! caller must leave the honest hedged message untouched -- never
+			//! invent a referrer that is not there.
+			std::vector<AgentChunkIssue> AnalyzeRejectedRemove( const RISE::Cst::Document& doc,
+			                                                    const std::string& target,
+			                                                    const std::string& kind )
+			{
+				std::vector<AgentChunkIssue> out;
+
+				const bool uniqueFallback = ( kind == "camera" );
+				const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, target, nullptr, kind, uniqueFallback );
+				if( id == 0 ) return out;   // could not uniquely resolve -- nothing to look up (HONESTY)
+
+				const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc, nullptr, nullptr );
+				const std::map<RISE::Cst::NodeId, std::set<RISE::Cst::NodeId> >::const_iterator dep =
+					graph.dependents.find( id );
+				if( dep == graph.dependents.end() || dep->second.empty() ) return out;   // no referrers -- the OTHER cause; stay silent (HONESTY)
+
+				AgentChunkIssue issue;
+				issue.value  = target;
+				issue.reason = "still_referenced";
+				for( const RISE::Cst::NodeId refId : dep->second ) {
+					const RISE::Cst::NodeRef refItem = RISE::Cst::DocResolveNodeId( doc, refId );
+					if( !refItem ) continue;
+					const std::string namePath = RISE::Cst::ChunkNamePath( refItem );
+					std::string label = refItem->role;   // fallback for an unnamed referrer
+					if( !namePath.empty() ) {
+						const std::string prefix = refItem->role + "/";
+						if( namePath.size() > prefix.size() && namePath.compare( 0, prefix.size(), prefix ) == 0 )
+							label = namePath.substr( prefix.size() );
+					}
+					issue.suggestions.push_back( label );
+				}
+				if( issue.suggestions.empty() ) return out;   // resolved referrer NodeIds but none produced a nameable label -- stay silent (HONESTY)
+				out.push_back( issue );
+				return out;
+			}
+
+			//! remove_chunk's sibling of AttachRejectionIssues -- see that
+			//! function's doc for the shared shape/gating rationale.
+			void AttachRemoveRejectionIssues( AgentChunkResult& r, const RISE::Cst::Document& doc,
+			                                  const std::string& target, const std::string& kind )
+			{
+				const std::vector<AgentChunkIssue> found = AnalyzeRejectedRemove( doc, target, kind );
+				if( found.empty() ) return;   // HONESTY -- see AnalyzeRejectedRemove's doc; not exoneration
+				r.issues = found;
+				std::string clauses;
+				for( const AgentChunkIssue& issue : found ) {
+					if( !clauses.empty() ) clauses += "; ";
+					std::string refs;
+					for( const std::string& s : issue.suggestions ) {
+						if( !refs.empty() ) refs += ", ";
+						refs += "'" + s + "'";
+					}
+					clauses += "'" + issue.value + "' is still referenced by " + refs;
+				}
+				if( !clauses.empty() )
+					r.message += " ACTIONABLE: " + clauses + ".";
 			}
 
 		}
@@ -1920,6 +2321,13 @@ namespace RISE
 				r.message     = cr.message.c_str();
 				r.name        = cr.chunkName.c_str();
 				r.kind        = cr.chunkKeyword.c_str();
+				// Actionable rejection diagnostics on the LIVE path -- see
+				// ProposePatch's identical rationale/gating comment on its own
+				// LIVE branch (this IS the GUI path).  A rejection leaves the
+				// head UNCHANGED, so the retained Document is the correct
+				// namespace to resolve the target + its referrers against.
+				if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
+					AttachRemoveRejectionIssues( r, *mJob->GetCstDocument(), target, kind );
 				return r;
 			}
 
@@ -1964,6 +2372,13 @@ namespace RISE
 			r.kind = kwBuf;
 			FoldChunkCode( r, code, /*isInsert*/ false, target, diagBuf, /*kindWasPassed*/ !kind.empty() );
 			r.headVersion = mJob->GetCstHeadVersion();
+			// Model-B: the pre-flight CAUSE analysis for a REJECTED remove --
+			// ONLY for literal code 0 (Job::ApplyCstRemoveChunk's generic "would
+			// not derive" catch-all; see AnalyzeRejectedRemove's doc for why -1/-2
+			// are excluded -- they already carry a precise cause, same rule
+			// InsertChunk's AttachRejectionIssues call applies).
+			if( code == 0 && mJob->GetCstDocument() )
+				AttachRemoveRejectionIssues( r, *mJob->GetCstDocument(), target, kind );
 			return r;
 		}
 

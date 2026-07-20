@@ -665,6 +665,86 @@ static void TestAgentSessionLiveMode()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 5b: actionable REJECTED propose_patch / remove_chunk diagnostics on
+// the LIVE (attached-controller) path -- the propose_patch/remove_chunk
+// siblings of Test 5's insert_chunk rejection-diagnostics block above.
+// Same rationale: the LIVE path IS the GUI, so the actionable clause must
+// be attached there too, not only on the (easier-to-test) headless path.
+//////////////////////////////////////////////////////////////////////
+static void TestActionableRejectionDiagnosticsLive()
+{
+	std::cout << "Test 5b: actionable propose_patch/remove_chunk rejection diagnostics (LIVE path)..." << std::endl;
+
+	const char* tmp = "agentlive_actionable.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "actionable-diagnostics fixture loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &c );
+
+		// (g) propose_patch, LIVE path: retarget lum's exitance to a
+		// near-miss typo of the real painter "white" -> unresolved_reference.
+		{
+			Agent::AgentSetPatch p;
+			p.target = "lum";
+			p.kind   = "lambertian_luminaire_material";
+			p.param  = "exitance";
+			p.value  = "whitte";
+			Agent::AgentPatchResult pr = sess->ProposePatch( p );
+			Check( !pr.applied && pr.status == "rejected",
+			       "(g) live propose_patch with a dangling painter retarget is rejected" );
+			Check( pr.issues.size() == 1, "(g) live rejection carries exactly one structured issue" );
+			if( pr.issues.size() == 1 ) {
+				Check( pr.issues[0].param == "exitance",
+				       "(g) live rejection issue names the offending param" );
+				Check( pr.issues[0].value == "whitte",
+				       "(g) live rejection issue carries the bad value" );
+				Check( pr.issues[0].reason == "unresolved_reference",
+				       "(g) live rejection issue carries the unresolved_reference reason" );
+				bool suggested = false;
+				for( const std::string& s : pr.issues[0].suggestions )
+					if( s == "white" ) suggested = true;
+				Check( suggested, "(g) live rejection suggests the near-miss painter 'white' for 'whitte'" );
+			}
+			Check( pr.message.find( "ACTIONABLE" ) != std::string::npos,
+			       "(g) live rejection message carries the ACTIONABLE clause" );
+			std::cout << "  (g) message: " << pr.message << std::endl;
+		}
+
+		// (i) remove_chunk, LIVE path: "white" is still bound by lum's
+		// `exitance` param -> still_referenced, naming "lum".
+		{
+			Agent::AgentChunkResult cr = sess->RemoveChunk( "white" );
+			Check( !cr.applied && cr.status == "rejected",
+			       "(i) live remove of a still-referenced painter is rejected" );
+			Check( cr.issues.size() == 1, "(i) live rejection carries exactly one structured issue" );
+			if( cr.issues.size() == 1 ) {
+				Check( cr.issues[0].value == "white",
+				       "(i) live rejection issue value is the remove target's own name" );
+				Check( cr.issues[0].reason == "still_referenced",
+				       "(i) live rejection issue carries the still_referenced reason" );
+				bool sawIt = false;
+				for( const std::string& s : cr.issues[0].suggestions ) if( s == "lum" ) sawIt = true;
+				Check( sawIt, "(i) live rejection suggestions NAME the blocking referrer 'lum'" );
+			}
+			Check( cr.message.find( "ACTIONABLE" ) != std::string::npos && cr.message.find( "lum" ) != std::string::npos,
+			       "(i) live rejection message NAMES the blocking referrer, not just a hedge" );
+			std::cout << "  (i) message: " << cr.message << std::endl;
+		}
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Test 6 (Model-B code-3 re-render fix): a DIAGNOSED CST re-derive (Job code 3)
 // REPLACED the live Scene + managers (best-effort, diagnostics logged) but reports
 // FAILURE.  Both edit layers must still RE-RENDER the viewport to show the replaced
@@ -5037,6 +5117,7 @@ int main()
 	TestConflictCrossPath();
 	TestRenderParkedDuringEdit();
 	TestAgentSessionLiveMode();
+	TestActionableRejectionDiagnosticsLive();
 	TestCodeThreeRerender();
 	TestTransformCommitCodeThree();
 	TestAgentEditMarksDirty();
