@@ -253,9 +253,27 @@ BoundingBox BoxGeometry::GenerateBoundingBox() const
 
 void BoxGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	int idx = int(floor(prand.z * 6.0));
-	if( idx < 0 ) idx = 0;
-	if( idx > 5 ) idx = 5;
+	// The caller uses GetArea() as the reciprocal position PDF, so face
+	// selection must be proportional to face area, not uniform by face.
+	// Uniform face selection over-samples thin sides and under-samples broad
+	// faces, which biases any area-light estimator that assumes 1/GetArea().
+	const Scalar faceAreas[6] = {
+		dHeight*dDepth, dHeight*dDepth,
+		dWidth*dDepth, dWidth*dDepth,
+		dWidth*dHeight, dWidth*dHeight
+	};
+	const Scalar totalArea = faceAreas[0] + faceAreas[1] + faceAreas[2] +
+		faceAreas[3] + faceAreas[4] + faceAreas[5];
+	const Scalar sample = prand.z * totalArea;
+	Scalar cumulativeArea = 0;
+	int idx = 5;
+	for( int i=0; i<5; ++i ) {
+		cumulativeArea += faceAreas[i];
+		if( sample < cumulativeArea ) {
+			idx = i;
+			break;
+		}
+	}
 
 	Point3 pt;
 	switch( idx ) {
@@ -484,5 +502,3 @@ void BoxGeometry::RegenerateData( )
 		GlobalLog()->PrintSourceError( "BoxGeometry:: Depth is 0", __FILE__, __LINE__ );
 	}
 }
-
-

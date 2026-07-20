@@ -374,6 +374,10 @@ static void RunExplicitLightPartitionTest()
 	Check( session != nullptr, "scene loads and session wraps" );
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
+	AgentRenderParams pAll;
+	AgentRenderResult rAll = session->Render( pAll );
+	Check( rAll.ok, "all-lights omni+mesh render succeeds" );
+
 	AgentRenderParams pOmni;
 	pOmni.light = "greenomni";
 	AgentRenderResult rOmni = session->Render( pOmni );
@@ -413,6 +417,8 @@ static void RunExplicitLightPartitionTest()
 	std::printf( "  solo(greenomni):            R=%.6f G=%.6f B=%.6f\n", rOmni.meanR, rOmni.meanG, rOmni.meanB );
 	std::printf( "  solo(redlight):             R=%.6f G=%.6f B=%.6f\n", rMesh.meanR, rMesh.meanG, rMesh.meanB );
 	std::printf( "  mesh ALONE (no solo, ref):  R=%.6f G=%.6f B=%.6f\n", rRef.meanR,  rRef.meanG,  rRef.meanB );
+	std::printf( "  mesh implied in all:         R=%.6f G=%.6f B=%.6f\n",
+		rAll.meanR-rOmni.meanR, rAll.meanG-rOmni.meanG, rAll.meanB-rOmni.meanB );
 
 	// (a) Each solo captured the right source.
 	Check( rOmni.meanG > 4.0 * rOmni.meanR,
@@ -431,41 +437,19 @@ static void RunExplicitLightPartitionTest()
 	       "within 3% -- soloing reproduces the single-light render regardless of what else is in the "
 	       "scene" );
 
-	//------------------------------------------------------------------
-	// KNOWN PRE-EXISTING DEFECT -- deliberately NOT asserted here.
-	//
-	// The partition identity solo(omni) + solo(mesh) == all-lights, which
-	// MONEY TESTs 1-3 assert successfully, does NOT hold in this scene.
-	// The failure is in the ALL-LIGHTS render, not in solo:
-	//
-	//   mesh ALONE, no solo ......... R = 0.021871
-	//   solo(mesh) in this scene .... R = 0.021844   <- matches, solo is right
-	//   mesh implied in all-lights .. R = 0.024043   <- +10%
-	//
-	// So the non-solo render OVER-COUNTS a mesh luminary when an explicit
-	// (delta) light-manager light coexists with it.  Measured scaling with
-	// the omni's share of the alias table (all at 256 spp):
-	//
-	//   omni power    4  ->  mesh over-counted by  +1.3 %
-	//   omni power   40  ->                        +10.1 %
-	//   omni power  400  ->                        +18.2 %
-	//
-	// A mesh+mesh control at the same power/geometry shows only +1.7 %, so
-	// the trigger is MIXING light-manager lights with mesh luminaries, not
-	// merely having two lights.  Suspected mechanism: the NEE selection pdf
-	// and the BSDF-hit MIS partner (CachedPdfSelectLuminary ->
-	// aliasTable.Pdf) disagree once a delta light shares the alias table --
-	// note bCanDoMIS at LightSampler.cpp:1790 disables NEE-side MIS whenever
-	// RIS is active, with the BSDF-hit emitter suppression documented as
-	// living "in PathTracingShaderOp" rather than PathTracingIntegrator.
-	//
-	// This is a CORE LIGHT-SAMPLING defect that predates light solo and
-	// affects every render containing a point/spot/omni light plus any
-	// emissive mesh.  It is NOT asserted here because this file's subject
-	// is light solo, and a red test for someone else's bug would be
-	// misattributed noise.  It is recorded here, with its measurements, so
-	// it is not lost -- see the accompanying session report.
-	//------------------------------------------------------------------
+	// (c) The regular all-lights estimator must keep the same mesh energy:
+	// the red mesh contribution in all = all - solo(omni).  This used to
+	// over-count by 10% because BoxGeometry::UniformRandomPoint selected
+	// faces uniformly while NEE claimed a uniform-per-area density.
+	const double meshInAllR = rAll.meanR - rOmni.meanR;
+	const double meshInAllG = rAll.meanG - rOmni.meanG;
+	const double meshInAllB = rAll.meanB - rOmni.meanB;
+	Check( rRef.meanR > 0 && rRef.meanG > 0 && rRef.meanB > 0 &&
+		std::fabs( meshInAllR - rRef.meanR ) <= kRelTol * rRef.meanR &&
+		std::fabs( meshInAllG - rRef.meanG ) <= kRelTol * rRef.meanG &&
+		std::fabs( meshInAllB - rRef.meanB ) <= kRelTol * rRef.meanB,
+	       "MONEY ASSERTION (c): the RGB mesh component in all-lights == the mesh rendered ALONE, "
+	       "within 3% -- NEE and BSDF-hit emission agree even with a delta light in the alias table" );
 
 	if( pRefJob ) pRefJob->release();
 	pJob->release();

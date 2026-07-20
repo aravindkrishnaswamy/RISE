@@ -648,6 +648,31 @@ static void TestBox()
 	}
 	REQUIRE( nPts > Mpoints / 2, "box enough random points" );
 
+	// Exact area-selection contract: UniformRandomPoint claims a 1/GetArea()
+	// density, so its face PMF must equal each face's area fraction.  Use a
+	// stratified z sequence whose 13,000 samples divide this 2x3x4 box's
+	// total area 52 exactly: X faces have area 12 (3,000 each), Y faces area
+	// 8 (2,000 each), and Z faces area 6 (1,500 each).  Uniform-by-face
+	// selection would instead produce about 2,167 samples on every face.
+	const int areaSampleCount = 13000;
+	const int expectedAreaSamples[6] = { 3000, 3000, 2000, 2000, 1500, 1500 };
+	int areaSamples[6] = { 0, 0, 0, 0, 0, 0 };
+	for( int i = 0; i < areaSampleCount; ++i ) {
+		Point3 p; Vector3 n; Point2 uv;
+		const Scalar z = ( Scalar(i) + Scalar(0.5) ) / Scalar(areaSampleCount);
+		g->UniformRandomPoint( &p, &n, &uv, Point3( Scalar(0.5), Scalar(0.5), z ) );
+		const int face = BoxFaceFromNormal( n );
+		REQUIRE( face >= 0 && face < 6, "box area sampler face index in range" );
+		if( face >= 0 && face < 6 ) {
+			areaSamples[face]++;
+		}
+	}
+	for( int f = 0; f < 6; ++f ) {
+		REQUIRE( areaSamples[f] == expectedAreaSamples[f],
+			std::string("box area sampler face ") + std::to_string(f) +
+			" matches its exact surface-area probability" );
+	}
+
 	g->release();
 	std::cout << "  box: " << nHits << " ray hits, " << nPts
 		<< " random points; per-face hits: ";
