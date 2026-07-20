@@ -133,11 +133,11 @@ static const char* const kSceneTwoColoredLightsMISHeavy =
 	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
 	"box_geometry\n{\n\tname floor_geo\n\twidth 12\n\theight 0.2\n\tdepth 12\n}\n\n"
 	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -1 0\n}\n\n"
-	"uniformcolor_painter\n{\n\tname redlight_pnt\n\tcolor 1.0 0.0 0.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname redlight_pnt\n\tcolor 1.0 0.05 0.05\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname redlight_mat\n\texitance redlight_pnt\n\tmaterial none\n\tscale 1.2\n}\n\n"
 	"box_geometry\n{\n\tname redlight_geo\n\twidth 10\n\theight 0.2\n\tdepth 10\n}\n\n"
 	"standard_object\n{\n\tname redlight\n\tgeometry redlight_geo\n\tmaterial redlight_mat\n\tposition -5.2 1.4 0\n}\n\n"
-	"uniformcolor_painter\n{\n\tname bluelight_pnt\n\tcolor 0.0 0.0 1.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname bluelight_pnt\n\tcolor 0.05 0.05 1.0\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname bluelight_mat\n\texitance bluelight_pnt\n\tmaterial none\n\tscale 1.2\n}\n\n"
 	"box_geometry\n{\n\tname bluelight_geo\n\twidth 10\n\theight 0.2\n\tdepth 10\n}\n\n"
 	"standard_object\n{\n\tname bluelight\n\tgeometry bluelight_geo\n\tmaterial bluelight_mat\n\tposition 5.2 1.4 0\n}\n";
@@ -259,7 +259,7 @@ static void RunUnbiasedPartitionTest()
 
 	// (b) The actual unbiasedness proof: summing the two solo renders
 	// reproduces the all-lights render, per channel, within a tight but
-	// genuinely discriminating MC tolerance.  8 spp/pixel * 80*60 pixels
+	// genuinely discriminating MC tolerance.  256 spp/pixel * 80*60 pixels
 	// averaged over the whole frame keeps relative MC noise on the
 	// FRAME MEAN well under 1%; 3% leaves comfortable headroom above
 	// the observed noise floor while remaining far tighter than the
@@ -276,8 +276,304 @@ static void RunUnbiasedPartitionTest()
 }
 
 //----------------------------------------------------------------------
-// (4) `light` composes with a BeautyVariant mode (mode:"direct"), not
-//     only plain beauty.
+// review-p2d P1-2: light solo is a PathTracingIntegrator mechanism.  A
+// VCM scene reaching for it must FAIL LOUDLY -- before the fix it
+// returned ok:true plus "light solo: X is the only active light" over an
+// image with every light lit, because ApplyLightSoloByName's downcast
+// reaches the RayCaster of any PixelBasedRasterizerHelper (which VCM is)
+// while LightSampler's solo branches live only in the paths PT uses.
+//----------------------------------------------------------------------
+static const char* const kSceneVcmTwoLights =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"vcm_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 12\n\theight 0.2\n\tdepth 12\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -1 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname redlight_pnt\n\tcolor 1.0 0.05 0.05\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname redlight_mat\n\texitance redlight_pnt\n\tmaterial none\n\tscale 3.0\n}\n\n"
+	"box_geometry\n{\n\tname redlight_geo\n\twidth 2.5\n\theight 0.2\n\tdepth 2.5\n}\n\n"
+	"standard_object\n{\n\tname redlight\n\tgeometry redlight_geo\n\tmaterial redlight_mat\n\tposition -2.2 2.5 0\n}\n";
+
+static void RunNonPathTracingIntegratorRefusesSoloTest()
+{
+	std::printf( "=== LightSoloTest: a non-PT integrator REFUSES light solo (review-p2d P1-2) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_lightsolo_vcm.RISEscene", kSceneVcmTwoLights );
+	Check( !scenePath.empty(), "wrote the VCM scene" );
+
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = LoadSession( scenePath, &pJob );
+	Check( session != nullptr, "VCM scene loads and session wraps" );
+	if( !session ) { if( pJob ) pJob->release(); return; }
+
+	// A render with NO light arg must still work -- the gate is scoped to
+	// light solo and must not break ordinary VCM rendering.
+	{
+		AgentRenderParams pPlain;
+		AgentRenderResult rPlain = session->Render( pPlain );
+		Check( rPlain.ok, "a VCM render with no `light` arg still succeeds -- the P1-2 gate is scoped "
+		                  "to light solo and does not break ordinary rendering" );
+	}
+
+	AgentRenderParams p;
+	p.light = "redlight";   // a name that RESOLVES; only the integrator is wrong
+	AgentRenderResult r = session->Render( p );
+	std::printf( "  ok=%d message: %s\n", r.ok ? 1 : 0, r.message.c_str() );
+
+	Check( !r.ok,
+	       "MONEY ASSERTION: VCM + light solo FAILS rather than silently rendering every light while "
+	       "reporting a solo.  The name resolves fine -- it is the integrator that cannot honour it." );
+	Check( r.message.find( "path-tracing" ) != std::string::npos,
+	       "the refusal explains that light solo is path-tracing-only (actionable, not a bare error)" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// review-p2d P2-2 fixture: an EXPLICIT (non-mesh) light + a mesh
+// luminary.  Covers SoloKind::Light, which every other fixture in this
+// file misses -- they are all mesh luminaries (SoloKind::Luminary), so
+// the light-manager branch of SetSoloLightByName, LightSampler's
+// pLight-identity scan, and the Step-1 zero-exitance deterministic
+// loop's solo filter were all unexercised with a solo target set.
+//
+// Green omni light vs red mesh luminary, so the channels discriminate
+// WHICH source each solo actually captured, not merely that the total
+// adds up.
+//----------------------------------------------------------------------
+static const char* const kSceneOmniPlusMeshLight =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 80\n\theight 60\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 12\n\theight 0.2\n\tdepth 12\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -1 0\n}\n\n"
+	"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n}\n\n"
+	"uniformcolor_painter\n{\n\tname redlight_pnt\n\tcolor 1.0 0.05 0.05\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname redlight_mat\n\texitance redlight_pnt\n\tmaterial none\n\tscale 3.0\n}\n\n"
+	"box_geometry\n{\n\tname redlight_geo\n\twidth 2.5\n\theight 0.2\n\tdepth 2.5\n}\n\n"
+	"standard_object\n{\n\tname redlight\n\tgeometry redlight_geo\n\tmaterial redlight_mat\n\tposition -2.2 2.5 0\n}\n";
+
+//----------------------------------------------------------------------
+// (3d) MONEY TEST 4 -- SoloKind::Light (explicit light) partition.
+//----------------------------------------------------------------------
+static void RunExplicitLightPartitionTest()
+{
+	std::printf( "=== LightSoloTest: MONEY TEST 4 (EXPLICIT LIGHT) -- SoloKind::Light (review-p2d P2-2) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_lightsolo_omni.RISEscene", kSceneOmniPlusMeshLight );
+	Check( !scenePath.empty(), "wrote the omni+mesh scene" );
+
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = LoadSession( scenePath, &pJob );
+	Check( session != nullptr, "scene loads and session wraps" );
+	if( !session ) { if( pJob ) pJob->release(); return; }
+
+	AgentRenderParams pOmni;
+	pOmni.light = "greenomni";
+	AgentRenderResult rOmni = session->Render( pOmni );
+	Check( rOmni.ok, "solo(greenomni) render succeeds -- resolves via the LIGHT MANAGER branch of "
+	                 "SetSoloLightByName (SoloKind::Light), not the object-manager fallback every "
+	                 "other fixture here exercises" );
+
+	AgentRenderParams pMesh;
+	pMesh.light = "redlight";
+	AgentRenderResult rMesh = session->Render( pMesh );
+	Check( rMesh.ok, "solo(redlight) render succeeds" );
+
+	// The REFERENCE for a solo render is not the all-lights render (see the
+	// note below) -- it is the same light rendered ALONE in a scene that
+	// contains no other light, with no solo applied at all.  That is exactly
+	// what "solo" claims to reproduce, and it is a scene-composition-
+	// independent ground truth.
+	std::string meshOnly = kSceneOmniPlusMeshLight;
+	{
+		const std::string omniChunk =
+			"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n}\n\n";
+		const size_t at = meshOnly.find( omniChunk );
+		Check( at != std::string::npos, "located the omni chunk to strip for the reference scene" );
+		if( at != std::string::npos ) meshOnly.erase( at, omniChunk.size() );
+	}
+	const std::string refPath = WriteTemp( "rise_lightsolo_meshonly.RISEscene", meshOnly.c_str() );
+	Job* pRefJob = nullptr;
+	std::unique_ptr<AgentSession> refSession = LoadSession( refPath, &pRefJob );
+	Check( refSession != nullptr, "mesh-only reference scene loads" );
+	AgentRenderResult rRef;
+	if( refSession ) {
+		AgentRenderParams pRef;   // NO solo -- the mesh light is the only light
+		rRef = refSession->Render( pRef );
+		Check( rRef.ok, "mesh-only reference render succeeds" );
+	}
+
+	std::printf( "  solo(greenomni):            R=%.6f G=%.6f B=%.6f\n", rOmni.meanR, rOmni.meanG, rOmni.meanB );
+	std::printf( "  solo(redlight):             R=%.6f G=%.6f B=%.6f\n", rMesh.meanR, rMesh.meanG, rMesh.meanB );
+	std::printf( "  mesh ALONE (no solo, ref):  R=%.6f G=%.6f B=%.6f\n", rRef.meanR,  rRef.meanG,  rRef.meanB );
+
+	// (a) Each solo captured the right source.
+	Check( rOmni.meanG > 4.0 * rOmni.meanR,
+	       "MONEY ASSERTION (a): solo(greenomni) is strongly G-dominant -- SoloKind::Light resolved and "
+	       "captured the omni, not the red mesh luminary" );
+	Check( rMesh.meanR > 4.0 * rMesh.meanG,
+	       "MONEY ASSERTION (a): solo(redlight) is strongly R-dominant -- the omni did not leak in" );
+
+	// (b) THE SOLO CONTRACT: soloing a light reproduces that light rendered
+	//     alone.  This is the assertion a SoloKind::Light mishandling breaks,
+	//     and unlike a partition against the all-lights render it does not
+	//     depend on any OTHER light being sampled correctly.
+	const double kRelTol = 0.03;
+	Check( rRef.meanR > 0 && std::fabs( rMesh.meanR - rRef.meanR ) <= kRelTol * rRef.meanR,
+	       "MONEY ASSERTION (b): solo(redlight) in the omni scene == the mesh light rendered ALONE, "
+	       "within 3% -- soloing reproduces the single-light render regardless of what else is in the "
+	       "scene" );
+
+	//------------------------------------------------------------------
+	// KNOWN PRE-EXISTING DEFECT -- deliberately NOT asserted here.
+	//
+	// The partition identity solo(omni) + solo(mesh) == all-lights, which
+	// MONEY TESTs 1-3 assert successfully, does NOT hold in this scene.
+	// The failure is in the ALL-LIGHTS render, not in solo:
+	//
+	//   mesh ALONE, no solo ......... R = 0.021871
+	//   solo(mesh) in this scene .... R = 0.021844   <- matches, solo is right
+	//   mesh implied in all-lights .. R = 0.024043   <- +10%
+	//
+	// So the non-solo render OVER-COUNTS a mesh luminary when an explicit
+	// (delta) light-manager light coexists with it.  Measured scaling with
+	// the omni's share of the alias table (all at 256 spp):
+	//
+	//   omni power    4  ->  mesh over-counted by  +1.3 %
+	//   omni power   40  ->                        +10.1 %
+	//   omni power  400  ->                        +18.2 %
+	//
+	// A mesh+mesh control at the same power/geometry shows only +1.7 %, so
+	// the trigger is MIXING light-manager lights with mesh luminaries, not
+	// merely having two lights.  Suspected mechanism: the NEE selection pdf
+	// and the BSDF-hit MIS partner (CachedPdfSelectLuminary ->
+	// aliasTable.Pdf) disagree once a delta light shares the alias table --
+	// note bCanDoMIS at LightSampler.cpp:1790 disables NEE-side MIS whenever
+	// RIS is active, with the BSDF-hit emitter suppression documented as
+	// living "in PathTracingShaderOp" rather than PathTracingIntegrator.
+	//
+	// This is a CORE LIGHT-SAMPLING defect that predates light solo and
+	// affects every render containing a point/spot/omni light plus any
+	// emissive mesh.  It is NOT asserted here because this file's subject
+	// is light solo, and a red test for someone else's bug would be
+	// misattributed noise.  It is recorded here, with its measurements, so
+	// it is not lost -- see the accompanying session report.
+	//------------------------------------------------------------------
+
+	if( pRefJob ) pRefJob->release();
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// review-p2d P1-1 fixture: a mesh area light PLUS a uniform environment.
+//
+// WHY THIS EXISTS: neither partition fixture above declares a radiance
+// map, so both were structurally blind to the environment.  Under
+// SoloKind::Light/Luminary the env-NEE strategy is switched off in
+// LightSampler, but every BSDF-side env-radiance add in
+// PathTracingIntegrator stayed live -- so the environment leaked into a
+// light-solo render at a FRACTIONAL MIS weight (power-heuristic against a
+// partner strategy that no longer runs).  Not "one light", not an honest
+// two-light render, and it broke the very identity light solo advertises.
+//
+// The env is bright and uniform, and the floor is diffuse, so env
+// illumination is a LARGE share of the total -- a fractional leak moves
+// the partition sum well outside tolerance rather than hiding in noise.
+//----------------------------------------------------------------------
+static const char* const kSceneLightPlusEnvironment =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"uniformcolor_painter\n{\n\tname env_pnt\n\tcolor 0.0 0.6 0.0\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise false\n"
+		"\tradiance_map env_pnt\n\tradiance_scale 1.0\n\tradiance_background true\n}\n\n"
+	"film\n{\n\twidth 80\n\theight 60\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
+	"box_geometry\n{\n\tname floor_geo\n\twidth 12\n\theight 0.2\n\tdepth 12\n}\n\n"
+	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -1 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname redlight_pnt\n\tcolor 1.0 0.05 0.05\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname redlight_mat\n\texitance redlight_pnt\n\tmaterial none\n\tscale 3.0\n}\n\n"
+	"box_geometry\n{\n\tname redlight_geo\n\twidth 2.5\n\theight 0.2\n\tdepth 2.5\n}\n\n"
+	"standard_object\n{\n\tname redlight\n\tgeometry redlight_geo\n\tmaterial redlight_mat\n\tposition -2.2 2.5 0\n}\n";
+
+//----------------------------------------------------------------------
+// (3c) MONEY TEST 3 -- the ENVIRONMENT half of the partition (P1-1).
+//----------------------------------------------------------------------
+static void RunEnvironmentPartitionTest()
+{
+	std::printf( "=== LightSoloTest: MONEY TEST 3 (ENVIRONMENT) -- solo(light)+solo(environment) ~= all (review-p2d P1-1) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_lightsolo_env.RISEscene", kSceneLightPlusEnvironment );
+	Check( !scenePath.empty(), "wrote the light+environment scene" );
+
+	Job* pJob = nullptr;
+	std::unique_ptr<AgentSession> session = LoadSession( scenePath, &pJob );
+	Check( session != nullptr, "scene loads and session wraps" );
+	if( !session ) { if( pJob ) pJob->release(); return; }
+
+	AgentRenderParams pAll;
+	AgentRenderResult rAll = session->Render( pAll );
+	Check( rAll.ok, "all-lights (light + env) render succeeds" );
+
+	AgentRenderParams pLight;
+	pLight.light = "redlight";
+	AgentRenderResult rLight = session->Render( pLight );
+	Check( rLight.ok, "solo(redlight) render succeeds" );
+
+	AgentRenderParams pEnv;
+	pEnv.light = "environment";
+	AgentRenderResult rEnv = session->Render( pEnv );
+	Check( rEnv.ok, "solo(environment) render succeeds -- the reserved \"environment\" name resolves "
+	                "(RayCaster::SetSoloLightByName), without which this identity is unstatable" );
+
+	std::printf( "  all:                 R=%.6f G=%.6f B=%.6f\n", rAll.meanR,   rAll.meanG,   rAll.meanB );
+	std::printf( "  solo(redlight):      R=%.6f G=%.6f B=%.6f\n", rLight.meanR, rLight.meanG, rLight.meanB );
+	std::printf( "  solo(environment):   R=%.6f G=%.6f B=%.6f\n", rEnv.meanR,   rEnv.meanG,   rEnv.meanB );
+	const double sumR = rLight.meanR + rEnv.meanR;
+	const double sumG = rLight.meanG + rEnv.meanG;
+	const double sumB = rLight.meanB + rEnv.meanB;
+	std::printf( "  solo(light)+solo(env): R=%.6f G=%.6f B=%.6f\n", sumR, sumG, sumB );
+
+	// (a) The fixture actually puts substantial energy through BOTH halves
+	//     -- otherwise the identity below could pass by one side being
+	//     negligible, which is exactly how a leak hides.  The env is GREEN
+	//     and the mesh light RED, so the channels also discriminate WHICH
+	//     source each solo actually captured.
+	Check( rEnv.meanG > 4.0 * rEnv.meanR,
+	       "MONEY ASSERTION (a): solo(environment) is strongly G-dominant -- it captured the GREEN env, "
+	       "not the red mesh light" );
+	Check( rLight.meanR > 4.0 * rLight.meanG,
+	       "MONEY ASSERTION (a): solo(redlight) is strongly R-dominant -- the GREEN environment did NOT "
+	       "leak in.  This is the direct P1-1 regression guard: before the fix the env leaked at a "
+	       "fractional MIS weight and dragged G up." );
+
+	// (b) The partition identity itself, per channel.
+	const double kRelTol = 0.03;
+	Check( std::fabs( sumR - rAll.meanR ) <= kRelTol * rAll.meanR + 1e-6,
+	       "MONEY ASSERTION (b): solo(light)+solo(env) R matches all within 3%" );
+	Check( std::fabs( sumG - rAll.meanG ) <= kRelTol * rAll.meanG + 1e-6,
+	       "MONEY ASSERTION (b): solo(light)+solo(env) G matches all within 3% -- the channel the "
+	       "environment dominates, so this is the one a fractional env leak breaks" );
+	Check( std::fabs( sumB - rAll.meanB ) <= kRelTol * rAll.meanB + 1e-6,
+	       "MONEY ASSERTION (b): solo(light)+solo(env) B matches all within 3%" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (3b) MONEY TEST 2 -- the MIS-SENSITIVE partition.  Same identity as
+//      (3), on the large-close-emitter fixture where the BSDF-hit
+//      emission strategy carries real weight, so an NEE-vs-emission
+//      selection-pdf disagreement is actually visible.  See
+//      kSceneTwoColoredLightsMISHeavy's doc for why (3) alone is not
+//      sufficient evidence.
 //----------------------------------------------------------------------
 static void RunUnbiasedPartitionMISHeavyTest()
 {
@@ -329,7 +625,7 @@ static void RunUnbiasedPartitionMISHeavyTest()
 
 	// (b) The actual unbiasedness proof: summing the two solo renders
 	// reproduces the all-lights render, per channel, within a tight but
-	// genuinely discriminating MC tolerance.  8 spp/pixel * 80*60 pixels
+	// genuinely discriminating MC tolerance.  256 spp/pixel * 80*60 pixels
 	// averaged over the whole frame keeps relative MC noise on the
 	// FRAME MEAN well under 1%; 3% leaves comfortable headroom above
 	// the observed noise floor while remaining far tighter than the
@@ -380,6 +676,9 @@ int main()
 	RunLightIgnoredUnderDataModesTest();
 	RunUnbiasedPartitionTest();
 	RunUnbiasedPartitionMISHeavyTest();
+	RunEnvironmentPartitionTest();
+	RunExplicitLightPartitionTest();
+	RunNonPathTracingIntegratorRefusesSoloTest();
 	RunLightSoloComposesWithBeautyVariantTest();
 
 	std::printf( "\nLightSoloTest: %d passed, %d failed\n", g_pass, g_fail );

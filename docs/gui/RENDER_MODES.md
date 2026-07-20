@@ -59,7 +59,7 @@ sibling) · **T2** beauty-variant (real integrator + config overrides) ·
 | `clay_lights` | T2 | **SHIPPED P2b (2026-07-18)** as a BeautyVariant pipeline: full transport, every surface's BRDF/SPF substituted for a shared neutral mid-grey (0.5 albedo) Lambertian pair (`PathTracingIntegrator::SetClayOverride`), real lights/GI untouched — half-res, 12 spp, 12 bounces, OIDN on. See §6. |
 | `direct` | T2 | **SHIPPED P2a (2026-07-18)** as a BeautyVariant pipeline: direct lighting only (`maxBounces=1`, wired via `PathTracingIntegrator::SetMaxPathDepth` so the PT main loop genuinely stops after the camera-hit vertex — no `directlighting_shaderop` substrate needed), half-res, 8 spp, OIDN on. See §6. |
 | `indirect` | T2 | **SHIPPED P2b (2026-07-18)** as a BeautyVariant pipeline: beauty minus the direct (emission + NEE) contribution at the camera-visible vertex only, all indirect bounces intact (`PathTracingIntegrator::SetIndirectOnly` — a genuine in-loop suppression, not a two-render subtraction) — half-res, 12 spp, 16 bounces, OIDN on. See §6. |
-| light solo | T2 | Render with exactly one light enabled. Needs a light-selector arg; remaining P2b design detail. |
+| light solo | T2 | **SHIPPED P2b (2026-07-18)** as a composable AXIS, not a mode: `render{light:"<name>"}` combines with any BeautyVariant mode or a plain production render. Resolves the name against the caster's own light manager, then object manager (mesh luminaries), via `RayCaster::SetSoloLightByName`; solo state lives on `LightSampler` (`SoloKind::{None,Light,Luminary,Environment}`) and is honoured by NEE, by the BSDF-sampled emission MIS partner (`CachedPdfSelectLuminary` returns 1.0 for the target, 0 otherwise), and by every environment-radiance site. Unresolvable names fail loudly with the available-name list. **PATH TRACING ONLY** — BDPT/VCM/MLT/`auto_*` are refused rather than silently ignoring it (see §10). Unbiasedness is certified by a partition test: `solo(A) + solo(B) == all`. |
 
 ### Transport — "what are reflections/refractions doing?"
 
@@ -632,15 +632,22 @@ Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
   `deep_reflect` + `direct` + the agent `view:` arg (§8) + the
   `wantsDenoise`-keyed DENOISED label fix (§6) — see §6 for the full shipped
   design (supersedes the config-override sketch this section used to carry).
-- **P2b (`indirect` + `clay_lights` shipped 2026-07-18; light solo
-  remains)**: `indirect` and `clay_lights` are BOTH new
+- **P2b (COMPLETE 2026-07-18: `indirect` + `clay_lights` + light solo)**:
+  `indirect` and `clay_lights` are BOTH new
   `PathTracingIntegrator` config flags (`SetIndirectOnly`/`SetClayOverride`,
   the same shape as P2a's `SetMaxPathDepth`) rather than the
   two-renders-and-diff / re-wired-materials sketches this entry used to
   carry — see §6's "Factory" subsection for the exact gating/substitution
-  sites. Light solo (needs a light-selector arg) remains open; it needs a
-  genuinely new integrator-level knob (which light(s) NEE/BSDF sampling are
-  allowed to see), not a reachable extension of either flag shipped here.
+  sites. Light solo did indeed need the genuinely new integrator-level knob
+  this entry predicted (which light(s) NEE and BSDF-sampled emission are
+  allowed to see) rather than an extension of either flag — it landed as
+  solo state on `LightSampler` plus matching suppression in
+  `PathTracingIntegrator`'s emission and environment sites, exposed as the
+  composable `render{light:}` axis rather than as a mode. Its correctness
+  property is the partition identity `solo(A) + solo(B) == all`, which two
+  fixtures guard: one for energy conservation, one (large close emitters)
+  where the BSDF-hit strategy is load-bearing so that an NEE/MIS pdf
+  disagreement is actually visible.
 - **P3**: N-up (layouts, per-pane mode+vantage, round-robin scheduler,
   primary-pane semantics).
 - **P4**: specular-only, caustics-only, variance heatmap, UV checker,

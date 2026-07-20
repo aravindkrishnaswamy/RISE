@@ -127,7 +127,10 @@ namespace RISE
 			//! pointer LightSampler rebuild (RebuildLightSamplers destroys
 			//! and recreates pLightSampler, exactly like the RIS/BVH/RR
 			//! pending fields above) so a rebuild doesn't silently drop
-			//! it.  0 = none, 1 = explicit light, 2 = mesh luminary --
+			//! it.  0 = none, 1 = explicit light, 2 = mesh luminary,
+			//! 3 = environment (review-p2d: the env is a light, and the
+			//! partition identity solo(A)+solo(B)==all is unstatable
+			//! without a way to name its half) --
 			//! kept as a raw int rather than pulling LightSampler::SoloKind
 			//! into this header (LightSampler is only forward-declared
 			//! here).  `pendingSoloLight` / `pendingSoloLuminary` carry the
@@ -417,6 +420,37 @@ namespace RISE
 			/// SetSoloLightByName succeeds, even before the next
 			/// AttachScene/RebuildLightSamplers).
 			bool IsSoloLightActive() const { return iPendingSoloKind != 0; }
+
+			//! Opaque snapshot of this caster's light-solo state, for
+			//! RAII capture/restore by callers that temporarily solo a
+			//! LONG-LIVED caster (see AgentSession's LightSoloRestoreGuard).
+			//! review-p2d P3-5: that guard used to unconditionally CLEAR on
+			//! scope exit, resting on a comment-enforced invariant that
+			//! agent light-solo was the only writer of solo state on a
+			//! production caster.  Capturing the real prior state removes
+			//! the invariant instead of documenting it, so a solo set by
+			//! any other path (a future GUI solo toggle) survives an agent
+			//! render rather than being silently dropped.
+			struct SoloStateSnapshot
+			{
+				int					kind;
+				const ILightPriv*	light;
+				const IObject*		luminary;
+				SoloStateSnapshot() : kind( 0 ), light( 0 ), luminary( 0 ) {}
+			};
+
+			SoloStateSnapshot CaptureSoloState() const
+			{
+				SoloStateSnapshot snap;
+				snap.kind     = iPendingSoloKind;
+				snap.light    = pendingSoloLight;
+				snap.luminary = pendingSoloLuminary;
+				return snap;
+			}
+
+			//! Restores a snapshot taken by CaptureSoloState, re-applying
+			//! it to the live LightSampler when there is one.
+			void RestoreSoloState( const SoloStateSnapshot& snap );
 
 			/// See IRayCaster::IsRadianceMapVisibleAsBackground.
 			/// (No `override` — RayCaster matches the file's existing

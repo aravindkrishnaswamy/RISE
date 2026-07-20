@@ -61,6 +61,8 @@
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
 #include "../Rendering/InteractivePelRasterizer.h"   // Toolkit slice 2 (quality:"draft"): CreateInteractiveMaterialPreviewPipeline
+#include "../Rendering/PathTracingPelRasterizer.h"       // review-p2d P1-2: light solo is a PathTracingIntegrator mechanism
+#include "../Rendering/PathTracingSpectralRasterizer.h"  // review-p2d P1-2: spectral twin
 #include "../Rendering/RayCaster.h"   // GUI render modes P2b (light solo): concrete RayCaster::SetSoloLightByName/ClearSoloLight
 #include "../Rendering/PixelBasedRasterizerHelper.h"   // GUI render modes P2b (light solo): reach the production rasterizer's RayCaster, mirroring Job::SetActiveRasterizerRadianceScale
 #include "../RISE_API.h"
@@ -1776,12 +1778,16 @@ namespace RISE
 			//! render on it must leave it exactly as found (no solo, the
 			//! steady-state default) once this render's scope exits,
 			//! including on an exception unwinding out of mJob->Rasterize()
-			//! (OIDN denoise is a documented real throw site).  Always
-			//! clears on destruction when armed: this guard's invariant is
-			//! that a light-solo render is the ONLY code path that ever
-			//! calls SetSoloLightByName on a production caster, so the
-			//! pre-render state is always "no solo" and there is nothing
-			//! else to capture/restore to.
+			//! (OIDN denoise is a documented real throw site).
+			//!
+			//! review-p2d P3-5: this used to CLEAR unconditionally, resting
+			//! on a comment-enforced invariant that agent light-solo was the
+			//! only writer of solo state on a production caster.  It was
+			//! armed on EVERY production render (including ones with no
+			//! `light` arg), so the first GUI-side solo toggle would have
+			//! been silently dropped by the next agent render.  It now
+			//! CAPTURES the real prior state at Arm() and restores exactly
+			//! that -- removing the invariant rather than documenting it.
 			class LightSoloRestoreGuard
 			{
 			public:
@@ -1790,14 +1796,18 @@ namespace RISE
 				{
 				}
 
-				void Arm()    { mArmed = true; }
+				void Arm()
+				{
+					if( mCaster ) mPrior = mCaster->CaptureSoloState();
+					mArmed = true;
+				}
 				void Disarm() { mArmed = false; }
 
 				~LightSoloRestoreGuard()
 				{
 					if( !mArmed || !mCaster ) return;
 					try {
-						mCaster->ClearSoloLight();
+						mCaster->RestoreSoloState( mPrior );
 					}
 					catch( ... ) {
 						GlobalLog()->PrintEx( eLog_Error,
@@ -1811,6 +1821,7 @@ namespace RISE
 				LightSoloRestoreGuard& operator=( const LightSoloRestoreGuard& );  // deleted
 
 				RISE::Implementation::RayCaster* mCaster;
+				RISE::Implementation::RayCaster::SoloStateSnapshot mPrior;
 				bool                              mArmed;
 			};
 
@@ -2307,6 +2318,39 @@ namespace RISE
 		// light" + available-name list on an unresolved name, or a
 		// generic "no ray caster" message if `caster` isn't a concrete
 		// RayCaster (should not happen for any in-tree rasterizer).
+		//! review-p2d P1-2: LIGHT SOLO IS A PATH-TRACING MECHANISM ONLY.
+		//!
+		//! Every solo touchpoint in LightSampler lives in
+		//! EvaluateDirectLighting{,NM} and CachedPdfSelectLuminary; the
+		//! generic entry points BDPT/VCM/MLT use -- SampleLight,
+		//! PdfSelectLight, PdfSelectLuminary, SelectLightRIS, LightBVH::Pdf
+		//! -- have no solo branch and still see the full scene
+		//! distribution.  So:
+		//!   * VCM / MLT: solo is a complete no-op (all lights render).
+		//!   * BDPT: WORSE than a no-op -- its eye-subpath NEE goes through
+		//!     EvaluateDirectLighting (soloed) while light-subpath
+		//!     generation goes through SampleLight (not soloed), giving a
+		//!     mixed, mutually-inconsistent estimator.
+		//!
+		//! ApplyLightSoloByName's downcast reaches the RayCaster of ANY
+		//! PixelBasedRasterizerHelper, which all of these are -- so without
+		//! this gate a `vcm_pel_rasterizer` scene returned ok:true plus the
+		//! note "light solo: X is the only active light" over an image with
+		//! every light lit.  Silently claiming an effect that did not happen
+		//! is worse than either fixing it or refusing it, so refuse loudly,
+		//! matching the unresolvable-name and non-pinhole-`view` contracts.
+		//!
+		//! Deliberately a WHITELIST, not a blacklist: `auto_*` rasterizers
+		//! resolve to PT/BDPT/VCM at render time, so they cannot be cleared
+		//! statically and are (conservatively) refused.  A new PT-family
+		//! rasterizer must opt in here explicitly rather than inherit a
+		//! silent claim it may not honour.
+		bool RasterizerSupportsLightSolo( IRasterizer* rast )
+		{
+			return dynamic_cast<RISE::Implementation::PathTracingPelRasterizer*>( rast ) != nullptr
+			    || dynamic_cast<RISE::Implementation::PathTracingSpectralRasterizer*>( rast ) != nullptr;
+		}
+
 		bool ApplyLightSoloByName( IRayCaster* caster, const std::string& lightName,
 		                           std::string& outMessage )
 		{
@@ -3918,6 +3962,22 @@ namespace RISE
 					: nullptr;
 				LightSoloRestoreGuard lightSoloGuard( pConcreteCasterForSolo );
 				lightSoloGuard.Arm();
+
+				if( !params.light.empty() && !RasterizerSupportsLightSolo( rast ) ) {
+					// review-p2d P1-2: refuse rather than render every light
+					// while reporting that only one is lit.  See
+					// RasterizerSupportsLightSolo's doc for why BDPT is
+					// actively wrong here and VCM/MLT a silent no-op.
+					res.ok = false;
+					res.message = "light \"" + params.light + "\" could not be applied -- light solo is "
+						"implemented in the path-tracing integrator only.  BDPT, VCM, MLT and the auto-routed "
+						"rasterizers would ignore it (BDPT would render a mixed estimator), so this render is "
+						"refused rather than silently reporting a solo that did not happen.  Switch the scene "
+						"to pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer, or use a BeautyVariant "
+						"view mode (which builds its own path-tracing pipeline and supports light solo).";
+					specificFailureReported = true;
+					return;
+				}
 
 				if( !params.light.empty() ) {
 					// `SetSoloLightByName` resolves against the caster's

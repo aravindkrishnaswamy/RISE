@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include <atomic>
+#include <cstring>   // review-p2d: std::strcmp for the reserved "environment" solo name
 #include "RayCaster.h"
 #include "LuminaryManager.h"
 #include "EnvironmentSampler.h"
@@ -289,6 +290,10 @@ void RayCaster::RebuildLightSamplers()
 	else if( iPendingSoloKind == 2 )
 	{
 		pLightSampler->SetSoloLuminary( pendingSoloLuminary );
+	}
+	else if( iPendingSoloKind == 3 )
+	{
+		pLightSampler->SetSoloEnvironment();
 	}
 
 	// Build environment importance sampler if a global radiance map exists
@@ -2299,8 +2304,29 @@ bool RayCaster::SetSoloLightByName( const char* name, std::string* pAvailableNam
 		}
 	}
 
+	// Reserved name: the ENVIRONMENT is a light source, and light solo's
+	// correctness property is the partition identity
+	// solo(A) + solo(B) == all -- which is unstatable without a way to
+	// name the env half.  Resolved LAST, so an authored light or emissive
+	// object literally named "environment" always wins; only a scene that
+	// actually HAS a radiance map accepts it, so the name fails honestly
+	// (with the available list) on scenes where there is no environment to
+	// solo.
+	if( pScene->GetGlobalRadianceMap() && std::strcmp( name, "environment" ) == 0 )
+	{
+		iPendingSoloKind = 3;
+		pendingSoloLight = 0;
+		pendingSoloLuminary = 0;
+		if( pLightSampler )
+		{
+			pLightSampler->SetSoloEnvironment();
+		}
+		return true;
+	}
+
 	// Unresolved: build the honest available-name list (every light name
-	// UNION every emissive object name) for the caller's error message.
+	// UNION every emissive object name, plus the reserved "environment"
+	// when the scene has a radiance map) for the caller's error message.
 	if( pAvailableNames )
 	{
 		pAvailableNames->clear();
@@ -2335,6 +2361,11 @@ bool RayCaster::SetSoloLightByName( const char* name, std::string* pAvailableNam
 			emissiveCollector.out = pAvailableNames;
 			pObjMgr->EnumerateItemNames( emissiveCollector );
 		}
+		if( pScene->GetGlobalRadianceMap() )
+		{
+			if( !pAvailableNames->empty() ) *pAvailableNames += ", ";
+			*pAvailableNames += "\"environment\"";
+		}
 	}
 
 	return false;
@@ -2348,6 +2379,39 @@ void RayCaster::ClearSoloLight()
 	if( pLightSampler )
 	{
 		pLightSampler->ClearSolo();
+	}
+}
+
+// review-p2d P3-5: restore a snapshot taken by CaptureSoloState.  The kind
+// switch MUST enumerate every SoloKind -- a missing case here silently
+// downgrades to "no solo", which is precisely the enum-translation trap this
+// codebase has been bitten by before, so it is written as an exhaustive
+// switch with a default that clears rather than a chain of ifs.
+void RayCaster::RestoreSoloState( const SoloStateSnapshot& snap )
+{
+	switch( snap.kind )
+	{
+	case 1:
+		iPendingSoloKind = 1;
+		pendingSoloLight = snap.light;
+		pendingSoloLuminary = 0;
+		if( pLightSampler ) pLightSampler->SetSoloLight( pendingSoloLight );
+		break;
+	case 2:
+		iPendingSoloKind = 2;
+		pendingSoloLight = 0;
+		pendingSoloLuminary = snap.luminary;
+		if( pLightSampler ) pLightSampler->SetSoloLuminary( pendingSoloLuminary );
+		break;
+	case 3:
+		iPendingSoloKind = 3;
+		pendingSoloLight = 0;
+		pendingSoloLuminary = 0;
+		if( pLightSampler ) pLightSampler->SetSoloEnvironment();
+		break;
+	default:
+		ClearSoloLight();
+		break;
 	}
 }
 

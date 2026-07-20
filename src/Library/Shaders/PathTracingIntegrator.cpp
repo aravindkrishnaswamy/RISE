@@ -1149,6 +1149,28 @@ namespace
 		const IRadianceMap* pMap, const Ray& ray, const RasterizerState& rast, const NMTag& tag )
 	{ return pMap->GetRadianceNM( ray, rast, tag.nm ); }
 
+	//! GUI render modes P2b `light solo`: THE ENVIRONMENT IS A LIGHT.
+	//!
+	//! Under SoloKind::Light / SoloKind::Luminary the env-NEE strategy is
+	//! switched off in LightSampler::EvaluateDirectLighting{,NM}.  Every
+	//! BSDF-side env-radiance add must therefore be switched off too.  If
+	//! it is not, the environment leaks into a light-solo render at a
+	//! FRACTIONAL MIS weight -- roughly bsdfPdf^2/(bsdfPdf^2 + envPdf^2),
+	//! power-heuristic-weighted against a partner strategy that no longer
+	//! runs.  That is neither "one light" nor an honest render of two, and
+	//! it breaks the partition identity solo(A) + solo(B) == all that the
+	//! light-solo tests certify as the correctness property.
+	//!
+	//! Under SoloKind::Environment the env IS the target and stays; the
+	//! mirror-image consistency holds there because env-NEE weights with
+	//! pES->Pdf() alone (never cachedEnvSelectProb), which is exactly the
+	//! density the BSDF-side partner below uses.
+	inline bool PTSoloSuppressEnvironment( const IRayCaster& caster )
+	{
+		const Implementation::LightSampler* pLS = caster.GetLightSampler();
+		return pLS && pLS->IsSoloActive() && !pLS->IsSoloTargetEnvironment();
+	}
+
 	// ================================================================
 	// Phase 2b part 2: additional IntegrateFromHit dispatch helpers.
 	// Each forwards at compile time to the existing dual-signature API,
@@ -1929,11 +1951,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// specular-transport path, so it must survive.
 				const bool suppressIndirectEnv = EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
 					depth == 1 && !bPassedThroughSpecular;
+				// review-p2d P1-1: light solo switches env-NEE off; the
+				// BSDF-side partner must go with it (see
+				// PTSoloSuppressEnvironment for why fractional leakage
+				// is worse than either extreme).
+				const bool soloSuppressEnv = PTSoloSuppressEnvironment( caster );
 				// Per-object radiance map (via material)
 				if( pRadianceMap )
 				{
 					Value envRadiance = PTEvalRadianceMap<Tag>( pRadianceMap, currentRay, rast, tag );
-					if( !suppressIndirectEnv ) {
+					if( !suppressIndirectEnv && !soloSuppressEnv ) {
 						result = result + throughput * envRadiance;
 					}
 				}
@@ -1981,7 +2008,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					// Continuation-ray env hit -- see suppressIndirectEnv's
 					// doc above for the exact depth==1 MIS-partner rule.
-					if( !suppressIndirectEnv ) {
+					if( !suppressIndirectEnv && !soloSuppressEnv ) {
 						result = result + throughput * envRadiance;
 					}
 
@@ -3628,7 +3655,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// continues through the same medium and escapes — attenuate
 				// the env contribution by the transmittance along that
 				// escape segment (PBRT-v4 beta *= T_maj convention).
-				if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && scene.GetGlobalRadianceMap() ) {
+				if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+					!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
 					const Value TrEsc = PTEvalTransmittance<Tag>(
 						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
 					result = result + volThroughput * TrEsc *
@@ -3712,6 +3740,13 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// drives indirect bounces but primary rays return black,
 		// matching Cycles' default for that pattern.
 		if( !caster.IsRadianceMapVisibleAsBackground() ) {
+			return Traits::zero();
+		}
+
+		// review-p2d P1-1: a directly-visible environment IS env illumination
+		// reaching the camera; under a light/luminary solo it must read black
+		// so that solo(light) + solo(env) == all holds pixel-for-pixel.
+		if( PTSoloSuppressEnvironment( caster ) ) {
 			return Traits::zero();
 		}
 
@@ -4138,6 +4173,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// direction.
 				const bool suppressIndirectEnv = EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
 					depth == 1 && !bPassedThroughSpecular;
+				// review-p2d P1-1: light solo switches env-NEE off; the
+				// BSDF-side partner must go with it (see
+				// PTSoloSuppressEnvironment for why fractional leakage
+				// is worse than either extreme).
+				const bool soloSuppressEnv = PTSoloSuppressEnvironment( caster );
 				// Environment contribution per wavelength
 				if( scene.GetGlobalRadianceMap() )
 				{
@@ -4172,7 +4212,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 						// Continuation-ray env hit -- see suppressIndirectEnv's
 						// doc above for the exact depth==1 MIS-partner rule.
-						if( !suppressIndirectEnv ) {
+						if( !suppressIndirectEnv && !soloSuppressEnv ) {
 							hwssResult[w] += throughputComp[w] * envRadiance;
 						}
 					}
@@ -4182,7 +4222,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) continue;
-						if( !suppressIndirectEnv ) {
+						if( !suppressIndirectEnv && !soloSuppressEnv ) {
 							hwssResult[w] += throughputComp[w] *
 								pRadianceMap->GetRadianceNM( currentRay, rast, swl.lambda[w] );
 						}
@@ -4860,7 +4900,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 						if( !ri2.geometric.bHit )
 						{
-						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && scene.GetGlobalRadianceMap() )
+						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+							!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() )
 							{
 								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
 									scatteredRay, RISE_INFINITY, swl.lambda[w] );
@@ -4950,6 +4991,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				result[w] = 0;
 			}
+			return;
+		}
+
+		// review-p2d P1-1 (HWSS twin of the Pel/NM camera-background gate).
+		// Returning early is safe here: IntegrateRayHWSS zeroes result[] on
+		// entry, so an unwritten result reads black rather than garbage.
+		if( PTSoloSuppressEnvironment( caster ) ) {
 			return;
 		}
 
