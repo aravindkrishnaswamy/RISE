@@ -245,6 +245,15 @@ static void RunGesturePinningTest()
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes (2 passes)" );
 	f.ctrl->ClearSequence();
 
+	// review-r3 P1: arm a CAMERA-MOTION tool first.  The polish chain
+	// (FinalRegularRunning -> PolishQueued -> polish pass) only arms on
+	// gesture-end when the tool was a motion tool -- with the default
+	// Tool::Select the entire post-roll branch under test in the settle
+	// assertion below NEVER RUNS, making that assertion vacuous (proven
+	// empirically by the round-3 auditor: reverting the guarded fix line
+	// left this test green).
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+
 	// Pointer down forces pane 0 current and pins the pick.  Every edit
 	// the gesture generates renders pane 0 ONLY, even though each edit
 	// marks pane 1 (the primary!) dirty too.
@@ -264,30 +273,37 @@ static void RunGesturePinningTest()
 		       "but the gesture pin outranks priority" );
 	}
 
-	// Release: the dirty primary now gets its pass (rotation resumes).
+	// Release.  review-r3 P1 (second attempt -- the first settle design
+	// was PROVEN VACUOUS by mutation: the spurious passes happen DURING
+	// the drain, so post-drain quiescence never counts them): assert the
+	// EXACT pass delta of the release sequence.
+	//
+	// With the motion tool armed, OnPointerUp = KickRender (a real edit:
+	// both panes dirty) + FinalRegularRunning.  Correct routing yields
+	// EXACTLY 3 passes: pane 1 (primary-dirty first), pane 0 (the
+	// final-regular pass), pane 0 again (the polish pass via the
+	// ROTATION-flag continuation).  The broken routing (continuation
+	// kick faking a scene edit) re-dirties BOTH panes at the
+	// continuation, yielding a 4th pass on pane 1 -- distinguishable by
+	// count, not by quiescence.
+	const std::size_t nAtRelease = f.ctrl->Sequence().size();
 	f.ctrl->OnPointerUp( Point2( 5, 5 ) );
-	Check( f.ctrl->WaitForPassCount( f.ctrl->Sequence().size() + 1, kWaitMs ),
-	       "rotation resumes after pointer-up" );
+	Check( f.ctrl->WaitForPassCount( nAtRelease + 3, kWaitMs ),
+	       "the 3-pass release sequence lands (primary, final-regular, polish)" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );   // drain any EXTRA passes
 	{
 		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		const std::size_t delta = seq.size() - nAtRelease;
 		bool sawPane1 = false;
-		for( std::size_t i = 0; i < seq.size(); ++i ) {
+		for( std::size_t i = nAtRelease; i < seq.size(); ++i ) {
 			if( seq[i] == 1 ) sawPane1 = true;
 		}
 		Check( sawPane1,
 		       "MONEY ASSERTION (c): the dirty primary (1) renders once the gesture ends" );
-	}
-
-	// review-r2-B P2 regression: the polish-chain continuation after a
-	// gesture must NOT masquerade as a scene edit (which would spuriously
-	// re-dirty and re-render every settled pane on every gesture end).
-	// Let the polish chain drain, then require quiescence.
-	{
-		std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
-		const std::size_t settled = f.ctrl->Sequence().size();
-		Check( f.ctrl->SettlesAt( settled, kSettleMs ),
-		       "gesture-end polish chain quiesces without re-rendering settled panes "
-		       "(the continuation kick is a rotation wake, not a fake edit)" );
+		Check( delta == 3,
+		       "MONEY ASSERTION (c/r3): the release sequence is EXACTLY 3 passes -- a 4th pass means "
+		       "the polish continuation faked a scene edit and re-rendered settled panes "
+		       "(review-r2-B P2 regression guard, count-exact this time)" );
 	}
 }
 

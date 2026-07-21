@@ -7774,20 +7774,21 @@ bool SceneEditController::UpdateNamedView( unsigned int idx )
 	String updatedName;
 	{
 		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
-		// Re-resolve BY NAME: immune to both shrinkage and shift.  A
-		// concurrent delete of the target itself makes the update a
-		// clean false, not a wrong-view write.
-		bool found = false;
-		for( std::size_t i = 0; i < mNamedViews.size(); ++i )
+		// review-r3 P1: identity = POSITION AND NAME, not name-only.
+		// Named views have no uniqueness constraint (CaptureNamedView
+		// push_backs unconditionally), so a name-only first-match scan
+		// updated the FIRST same-named view -- wrong-view corruption in a
+		// plain single-threaded call, worse than the race it replaced.
+		// The positional check with the name as a tamper-witness gives
+		// every guarantee the round-2 fix claimed: a shrink makes idx OOB
+		// or the name mismatch (clean false); a shift makes the name
+		// mismatch (clean false); duplicates update EXACTLY the entry the
+		// caller indexed.
+		if( idx >= mNamedViews.size() || !( mNamedViews[idx].name == targetName.c_str() ) )
 		{
-			if( mNamedViews[i].name == targetName.c_str() )
-			{
-				mNamedViews[i].pose = snap;
-				found = true;
-				break;
-			}
+			return false;
 		}
-		if( !found ) return false;
+		mNamedViews[idx].pose = snap;
 		updatedName = targetName;
 	}
 	// review-r2 P1: panes bound to this view must follow it.  Called AFTER
