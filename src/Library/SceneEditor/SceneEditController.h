@@ -2389,6 +2389,41 @@ namespace RISE
 		//! view to exist NOW (it snapshots the pose as the deletion
 		//! fallback); the live re-resolve-by-name happens at render time
 		//! (scheduler slice).
+		//! -------- P3a slice 3: pane-indexed pointer input ----------------
+		//!
+		//! The P3b shells hit-test their pane rects and forward events with
+		//! the pane index.  Down: (a) refuses while a render owns the scene
+		//! (the r2/r4 contract); (b) CLICK PROMOTES PRIMARY (§7.8 ratified
+		//! decision 1); (c) parks + context-switches to the pane BEFORE the
+		//! gesture pin arms; (d) for a camera-motion tool on a SECONDARY
+		//! pane still tracking the scene camera, converts the pane to
+		//! per-pane FreeFly seeded from the scene camera (§7.2 -- the
+		//! scene camera itself is NEVER mutated by secondary-pane
+		//! navigation; pane 0 keeps the classic direct-camera-edit
+		//! semantics).  Move/Up forward to the un-indexed handlers -- the
+		//! pane context was established at Down and the gesture pin holds
+		//! it.  The un-indexed handlers remain byte-identical pane-0
+		//! behaviour.
+		//! \return False when the pane is hidden/invalid or a render owns
+		//! the scene (the shell should drop the gesture).
+		bool OnPanePointerDown( unsigned int pane, const Point2& px );
+		bool OnPanePointerMove( unsigned int pane, const Point2& px );
+		bool OnPanePointerUp( unsigned int pane, const Point2& px );
+
+		//! P3a slice 3: per-pane free-fly twins (§7.4).  Pane 0 forwards to
+		//! the classic EnterFreeFlyFromActiveCamera / ExitFreeFly; panes
+		//! 1-3 set the pane's vantage config (enter = seed from the scene
+		//! camera; exit = back to SceneCamera tracking).
+		bool PaneEnterFreeFly( unsigned int pane );
+		bool PaneExitFreeFly( unsigned int pane );
+
+		//! P3a slice 3: per-pane refinement status.  For the CURRENT pane
+		//! reads the live registers (exactly what GetRefinementStatus
+		//! reports); for an unscheduled pane reads its saved slot state.
+		//! Phase values match GetRefinementStatus's contract.
+		bool GetPaneRefinementStatus( unsigned int pane, int& outPhase,
+		                              unsigned int& outScaleDivisor ) const;
+
 		bool SetPaneVantageSceneCamera( unsigned int pane );
 		bool SetPaneVantageNamedView( unsigned int pane, const char* name );
 		//! Introspection: current kind (+ named-view name when applicable).
@@ -3514,6 +3549,25 @@ namespace RISE
 		//! 0 = use film rest dims.
 		unsigned int                mCurrentPaneSurfaceW = 0;
 		unsigned int                mCurrentPaneSurfaceH = 0;
+
+		//! P3a slice 3: which pane the ACTIVE gesture targets.  Written by
+		//! OnPanePointerDown (under mMutex, parked) before the gesture pin
+		//! arms; read by the un-indexed OnPointerDown's force-switch block
+		//! (which generalizes from "switch to 0" to "switch to the gesture
+		//! pane").  Legacy un-indexed input leaves it 0 -- byte-identical
+		//! single-viewport behaviour.
+		unsigned int                mGesturePane = 0;
+		//! One-shot: set by OnPanePointerDown (under mMutex) so the
+		//! forwarded un-indexed Down keeps the armed pane instead of
+		//! resetting to 0; consumed exactly once.
+		bool                        mGesturePaneArmed = false;
+
+		//! P3a slice 3: apply a camera-op edit to the CURRENT pane's
+		//! realized override camera (per-pane fly) -- the canonical
+		//! SceneEditor::ApplyCameraOpToCamera math, then re-snapshot the
+		//! pose and kick.  Requires a camera-motion edit and
+		//! mViewportPoseActive; parks internally.
+		bool ApplyPaneFlyOp_( const SceneEdit& edit );
 
 		//! Scheduler helpers -- ALL require mMutex held (and the render
 		//! parked where they touch registers); see each impl's doc.

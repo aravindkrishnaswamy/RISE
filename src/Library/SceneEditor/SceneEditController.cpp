@@ -1573,14 +1573,25 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	}
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
-		if( mCurrentPane != 0 )
+		// P3a slice 3: legacy un-indexed input targets pane 0 UNLESS a
+		// pane-indexed Down armed a pane just before forwarding here
+		// (mGesturePaneArmed, consumed exactly once).
+		if( !mGesturePaneArmed ) {
+			mGesturePane = 0;
+		}
+		mGesturePaneArmed = false;
+		// P3a slice 3: generalized from "switch to 0" -- the gesture
+		// targets mGesturePane (0 for all legacy un-indexed input;
+		// OnPanePointerDown stamps it, under this same mutex, before
+		// forwarding here).  The pin then holds the gestured pane.
+		if( mCurrentPane != mGesturePane )
 		{
 			if( mRendering.load( std::memory_order_acquire ) ) {
 				mCancelProgress.RequestCancel();
 				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 			}
 			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-			SwitchToPaneLocked_( 0 );
+			SwitchToPaneLocked_( mGesturePane );
 		}
 	}
 	mPointerDown.store( true, std::memory_order_release );
@@ -2056,6 +2067,15 @@ void SceneEditController::OnPointerMove( const Point2& px )
 	// Pattern matches Undo / Redo / SetProperty: take the mutex,
 	// request cancel if a pass is running, wait until the render
 	// thread flips `mRendering` to false, then mutate.
+	// P3a slice 3: a camera-motion gesture on a SECONDARY pane flies THAT
+	// pane's realized override camera (per-pane FreeFly) -- the scene
+	// camera is never touched by secondary-pane navigation (§7.2, amended
+	// 2026-07-21).  Pane 0 falls through to the classic scene-camera edit.
+	if( IsCameraMotionTool( mTool ) && mGesturePane != 0 ) {
+		ApplyPaneFlyOp_( edit );
+		return;
+	}
+
 	if( IsObjectMotionTool( mTool ) ) {
 		// Inline park-and-apply: cancel any in-flight render and wait
 		// for it to drain before mutating scene geometry — object
@@ -8012,6 +8032,183 @@ bool SceneEditController::SetPaneVantageNamedView( unsigned int pane, const char
 	mPaneRender[pane].configDirty = true;   // P3a slice 2 -- see SetPaneRenderMode
 	mPaneRender[pane].dirty       = true;
 	mPanePassPending.store( true, std::memory_order_release );
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // r2/r4 contract
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden/invalid
+
+		// §7.8 ratified decision 1: a click in any pane PROMOTES it to
+		// primary.  Inline (we already hold mMutex) rather than via
+		// SetPrimaryPane, which would deadlock on re-lock.
+		mPrimaryPane = pane;
+
+		// Park + switch BEFORE the gesture pin arms (same ordering rule as
+		// the un-indexed path's force-switch, generalized).
+		if( mCurrentPane != pane || mPaneRender[pane].configDirty )
+		{
+			if( mRendering.load( std::memory_order_acquire ) ) {
+				mCancelProgress.RequestCancel();
+				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+			}
+			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+			SwitchToPaneLocked_( pane );
+		}
+
+		// §7.2: a camera-motion gesture on a SECONDARY pane still tracking
+		// the scene camera converts the pane to per-pane FreeFly, seeded
+		// from the scene camera it was showing.  The scene camera itself
+		// is never mutated by secondary-pane navigation.  (Pane 0 keeps
+		// the classic direct-camera-edit semantics -- see §7.2's 2026-07-21
+		// amendment.)
+		if( pane != 0 && IsCameraMotionTool( mTool )
+		 && mPaneConfigs[pane].vantageKind == PaneVantageKind::SceneCamera )
+		{
+			const IScene* scene = mJob.GetScene();
+			const ICamera* activeCam = scene ? scene->GetCamera() : nullptr;
+			CameraSnapshot snap;
+			if( activeCam && CameraIntrospection::CaptureCameraSnapshot( *activeCam, snap ) )
+			{
+				if( ICamera* realized = RealizeStandaloneCamera( snap, *scene ) )
+				{
+					if( mViewportOverrideCamera ) mViewportOverrideCamera->release();
+					mViewportOverrideCamera = realized;   // owns the factory addref
+					mViewportPose           = snap;
+					mViewportPoseActive     = true;
+					mPaneConfigs[pane].vantageKind = PaneVantageKind::FreeFly;
+					mPaneConfigs[pane].pose        = snap;
+				}
+			}
+		}
+
+		// Arm the gesture pane for the forwarded un-indexed Down (one-shot
+		// -- see mGesturePaneArmed's doc).
+		mGesturePane      = pane;
+		mGesturePaneArmed = true;
+	}
+	OnPointerDown( px );
+	return true;
+}
+
+bool SceneEditController::OnPanePointerMove( unsigned int pane, const Point2& px )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	if( pane >= kViewportPaneCount ) return false;
+	// The pane context was established at Down (mGesturePane); the event
+	// stream just forwards.  A mismatched pane index mid-gesture is a
+	// shell bug -- tolerated (the gesture owns its pane), not honoured.
+	OnPointerMove( px );
+	return true;
+}
+
+bool SceneEditController::OnPanePointerUp( unsigned int pane, const Point2& px )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	if( pane >= kViewportPaneCount ) return false;
+	OnPointerUp( px );
+	return true;
+}
+
+bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
+{
+	if( pane == 0 ) return EnterFreeFlyFromActiveCamera();   // alias contract
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	CameraSnapshot snap;
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
+		const IScene* scene = mJob.GetScene();
+		const ICamera* activeCam = scene ? scene->GetCamera() : nullptr;
+		if( !activeCam ) return false;
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		if( !CameraIntrospection::CaptureCameraSnapshot( *activeCam, snap ) ) return false;
+		mPaneConfigs[pane].vantageKind  = PaneVantageKind::FreeFly;
+		mPaneConfigs[pane].pose         = snap;
+		mPaneConfigs[pane].namedViewRef = String();
+		mPaneRender[pane].configDirty = true;   // realize at the next switch
+		mPaneRender[pane].dirty       = true;
+		mPanePassPending.store( true, std::memory_order_release );
+	}
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::PaneExitFreeFly( unsigned int pane )
+{
+	if( pane == 0 ) return ExitFreeFly();   // alias contract
+	// Back to tracking the scene camera -- exactly SetPaneVantageSceneCamera.
+	return SetPaneVantageSceneCamera( pane );
+}
+
+bool SceneEditController::GetPaneRefinementStatus( unsigned int pane, int& outPhase,
+                                                   unsigned int& outScaleDivisor ) const
+{
+	if( pane >= kViewportPaneCount ) return false;
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( pane == mCurrentPane )
+	{
+		// Live registers -- delegate to the existing single status so the
+		// phase semantics (variant carve-out, paused, polish) stay ONE
+		// implementation.  Safe under mMutex: GetRefinementStatus reads
+		// atomics only, no lock of its own.
+		outPhase = static_cast<int>( GetRefinementStatus( outScaleDivisor ) );
+		return true;
+	}
+	// Unscheduled: derive the honest coarse answer from the saved slot.
+	const PaneRenderState& slot = mPaneRender[pane];
+	outScaleDivisor = slot.previewScaleSaved;
+	if( slot.dirty )
+	{
+		outPhase = 1;   // Rendering (a pass is owed)
+	}
+	else if( slot.polishSaved == static_cast<int>( PolishState::PolishQueued ) )
+	{
+		outPhase = 3;   // Polishing (queued)
+	}
+	else
+	{
+		outPhase = 0;   // Idle / settled
+	}
+	return true;
+}
+
+bool SceneEditController::ApplyPaneFlyOp_( const SceneEdit& edit )
+{
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( !mViewportPoseActive || !mViewportOverrideCamera ) return false;
+	Implementation::CameraCommon* cam =
+		dynamic_cast<Implementation::CameraCommon*>( mViewportOverrideCamera );
+	if( !cam ) return false;
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	SceneEditor::ApplyCameraOpToCamera( *cam, edit, mEditor.SceneScale() );
+	cam->RegenerateData();
+	CameraIntrospection::CaptureCameraSnapshot( *cam, mViewportPose );
+	if( mGesturePane < kViewportPaneCount ) {
+		mPaneConfigs[mGesturePane].pose = mViewportPose;
+	}
+
+	// Pane-LOCAL invalidation: only the flown pane's content changed.
+	// Stamp the edit clock so the during-motion scale adaptation engages
+	// (same reason the object-motion path stamps it).
+	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+	mPaneRender[mGesturePane].dirty = true;
+	mPanePassPending.store( true, std::memory_order_release );
+	lk.unlock();
 	mCV.notify_one();
 	return true;
 }

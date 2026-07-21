@@ -655,10 +655,18 @@ visible; when a layout shrink hides the primary, primary falls back to pane 0.
 New-in-layout panes default to `{mode: preview, vantage: SceneCamera}`.
 
 Vantage semantics: a `SceneCamera` pane tracks the live active camera (edits
-to it re-render the pane).  Tumbling in ANY pane converts that pane to
-`FreeFly` seeded from what it was showing — the per-pane generalization of
-the existing enter-free-fly rule, and like it, never mutates the scene camera.
-A `NamedView` pane re-resolves by name so updating the view updates the pane.
+to it re-render the pane).  Tumbling in a SECONDARY pane converts that pane
+to `FreeFly` seeded from what it was showing — the per-pane generalization
+of the existing enter-free-fly rule, and like it, never mutates the scene
+camera.  **Pane 0 retains the classic direct-camera-edit navigation** (orbit
+/ pan / zoom / roll mutate the scene camera through the edit/undo system,
+exactly as the single viewport does today) — pane 0 IS the legacy-alias
+editing surface, and silently converting its navigation to free-fly would
+break the established orbit-edits-camera workflow both GUIs are built on.
+(Implementation-time refinement, 2026-07-21: the original text said "ANY
+pane"; amended when the pointer-routing implementation surfaced the
+back-compat conflict.)  A `NamedView` pane re-resolves by name so updating
+the view updates the pane.
 
 ### 7.3 Scheduler (the render loop, generalized)
 

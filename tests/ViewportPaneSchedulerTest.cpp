@@ -435,6 +435,86 @@ static void RunNamedViewUpdatePropagatesTest()
 	       "the UNBOUND pane (0) does not re-render -- propagation is targeted, not a global kick" );
 }
 
+//----------------------------------------------------------------------
+// (h) P3a slice 3 pointer half: a pane-indexed camera gesture on a
+//     SECONDARY pane promotes it to primary, converts it to per-pane
+//     FreeFly, pins the scheduler to it, flies ITS camera -- and never
+//     mutates the scene camera (§7.2, 2026-07-21 amendment).
+//----------------------------------------------------------------------
+static void RunPaneIndexedGestureTest()
+{
+	std::printf( "=== scheduler (h): pane-indexed gesture -- promote + convert + fly, scene camera untouched ===\n" );
+	Fixture f( "pane_sched_h.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
+	f.ctrl->ClearSequence();
+
+	// Scene-camera pose BEFORE the secondary-pane fly (free-fly is not
+	// active for pane 0, so CaptureCurrentView reads the scene camera).
+	CameraSnapshot before;
+	Check( f.ctrl->CaptureNamedView( "h_before" ), "captured the scene camera before the fly" );
+	Check( f.ctrl->FindNamedViewPose( String( "h_before" ), before ), "read back the before-pose" );
+
+	// The pane-indexed gesture on the secondary pane.
+	Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ), "pane-indexed Down on pane 1 accepted" );
+	Check( f.ctrl->GetPrimaryPane() == 1,
+	       "MONEY ASSERTION (h): the click PROMOTED pane 1 to primary (§7.8 decision 1)" );
+	{
+		SceneEditController::PaneVantageKind kind;
+		String nv;
+		Check( f.ctrl->GetPaneVantage( 1, kind, nv )
+		    && kind == SceneEditController::PaneVantageKind::FreeFly,
+		       "MONEY ASSERTION (h): the camera gesture CONVERTED pane 1 to per-pane FreeFly (§7.2)" );
+	}
+	Check( f.ctrl->OnPanePointerMove( 1, Point2( 60, 34 ) ), "pane-indexed Move accepted (the fly op)" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "the fly re-renders" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		bool allPane1 = !seq.empty();
+		for( std::size_t i = 0; i < seq.size(); ++i ) {
+			if( seq[i] != 1 ) allPane1 = false;
+		}
+		Check( allPane1,
+		       "MONEY ASSERTION (h): the gesture pins the scheduler to the GESTURED pane (1), "
+		       "not pane 0" );
+	}
+	Check( f.ctrl->OnPanePointerUp( 1, Point2( 60, 34 ) ), "pane-indexed Up accepted" );
+
+	// The scene camera must be untouched: pane 1's fly went to ITS
+	// override camera.  (IsFreeFlyActive reads pane 0's state via the
+	// alias getter, so CaptureCurrentView still reads the scene camera.)
+	Check( !f.ctrl->IsFreeFlyActive(),
+	       "pane 0 (the alias surface) is NOT in free-fly -- the conversion was pane-1-local" );
+	CameraSnapshot after;
+	Check( f.ctrl->CaptureNamedView( "h_after" ), "captured the scene camera after the fly" );
+	Check( f.ctrl->FindNamedViewPose( String( "h_after" ), after ), "read back the after-pose" );
+	// review-of-own-test: LOCATION is the WRONG witness for an orbit --
+	// orbit mutates target_orientation, not vPosition (that is exactly
+	// what SceneEditorCameraAnglesTest guards).  Compare every field the
+	// orbit/pan/zoom/roll family can move.  Proven by mutation: with a
+	// location-only witness, removing the fly routing (camera edits fall
+	// through to the scene camera) still passed 71/0.
+	Check( before.location[0] == after.location[0]
+	    && before.location[1] == after.location[1]
+	    && before.location[2] == after.location[2]
+	    && before.lookat[0] == after.lookat[0]
+	    && before.lookat[1] == after.lookat[1]
+	    && before.lookat[2] == after.lookat[2]
+	    && before.orientation[0] == after.orientation[0]
+	    && before.orientation[1] == after.orientation[1]
+	    && before.orientation[2] == after.orientation[2]
+	    && before.target_orientation[0] == after.target_orientation[0]
+	    && before.target_orientation[1] == after.target_orientation[1],
+	       "MONEY ASSERTION (h): the SCENE camera is byte-identical across every pose field the "
+	       "camera-op family can move -- secondary-pane navigation never mutates it (§7.2)" );
+}
+
 int main()
 {
 	RunRotationOrderTest();
@@ -444,6 +524,7 @@ int main()
 	RunHiddenPaneNeverRendersTest();
 	RunLayoutGrowWakesLoopTest();
 	RunNamedViewUpdatePropagatesTest();
+	RunPaneIndexedGestureTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -7663,6 +7663,49 @@ namespace RISE
 		return p->GetPaneRenderMode( pane );
 	}
 
+	bool RISE_API_SceneEditController_OnPanePointerDown(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerDown( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerMove(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerMove( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerUp(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerUp( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_PaneEnterFreeFly(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->PaneEnterFreeFly( pane );
+	}
+
+	bool RISE_API_SceneEditController_PaneExitFreeFly(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->PaneExitFreeFly( pane );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneRefinementStatus(
+		SceneEditController* p, unsigned int pane, int* outPhase,
+		unsigned int* outScaleDivisor )
+	{
+		if( !p || !outPhase || !outScaleDivisor ) return false;
+		return p->GetPaneRefinementStatus( pane, *outPhase, *outScaleDivisor );
+	}
+
 	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
 		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h )
 	{

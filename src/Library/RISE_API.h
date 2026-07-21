@@ -3729,12 +3729,11 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! scene => false, nothing mutated.  EXISTING single-viewport calls are
 	//! unchanged and alias pane 0.
 	//!
-	//! SCOPE NOTE (honest gap, review-r2; narrowed by slice 3):
-	//! _SetPaneSurfaceDims and _SetPaneSink SHIPPED with the slice-3
-	//! display plumbing below.  Still deferred: _PaneEnterFreeFly/
-	//! _PaneExitFreeFly, _GetPaneRefinementStatus, and _OnPanePointerDown/
-	//! Move/Up -- pointer input remains pane-0-scoped (click-promotes-
-	//! primary and per-pane navigation land with the P3b shells).
+	//! SCOPE NOTE (review-r2, CLOSED by slice 3): every §7.4-specified
+	//! entry now ships -- dims/sinks (display half) and the pane-indexed
+	//! pointer events, per-pane free-fly twins, and per-pane refinement
+	//! status (pointer half).  The UN-indexed calls remain byte-identical
+	//! pane-0 aliases; the shells adopt the indexed surface in P3b.
 
 	bool RISE_API_SceneEditController_SetViewportLayout(
 		SceneEditController* p, int layout );
@@ -3765,6 +3764,36 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! panes a later layout reveals).
 	bool RISE_API_SceneEditController_SetPaneSink(
 		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink );
+
+	//! P3a slice 3 (pointer half): pane-indexed pointer input.  Down
+	//! promotes the pane to primary (§7.8 decision 1), parks + context-
+	//! switches before the gesture pin, and converts a SECONDARY pane
+	//! tracking the scene camera to per-pane FreeFly for camera-motion
+	//! tools (§7.2, 2026-07-21 amendment: pane 0 keeps classic
+	//! direct-camera-edit navigation).  False = drop the gesture (hidden
+	//! pane / render owns scene).
+	bool RISE_API_SceneEditController_OnPanePointerDown(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPanePointerMove(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPanePointerUp(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+
+	//! Per-pane free-fly twins (§7.4).  Pane 0 aliases the classic
+	//! EnterFreeFlyFromActiveCamera / ExitFreeFly.
+	bool RISE_API_SceneEditController_PaneEnterFreeFly(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneExitFreeFly(
+		SceneEditController* p, unsigned int pane );
+
+	//! Per-pane refinement status: phase (0 Idle / 1 Rendering / 2
+	//! Refining / 3 Polishing / 4 Paused -- same contract as the
+	//! un-indexed call) + scale divisor.  For the currently-scheduled
+	//! pane this is the live status; for others, the honest coarse
+	//! answer from its saved state.
+	bool RISE_API_SceneEditController_GetPaneRefinementStatus(
+		SceneEditController* p, unsigned int pane, int* outPhase,
+		unsigned int* outScaleDivisor );
 
 	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
 		SceneEditController* p, unsigned int pane );

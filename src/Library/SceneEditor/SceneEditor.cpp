@@ -2717,3 +2717,11 @@ void SceneEditor::EndComposite()
 	e.op = SceneEdit::CompositeEnd;
 	Apply( e );
 }
+
+// P3a slice 3: public forwarder to the file-local canonical camera-op math
+// (see the header doc).  Thin by design -- ONE implementation.
+void RISE::SceneEditor::ApplyCameraOpToCamera(
+	Implementation::CameraCommon& cam, const SceneEdit& e, const Scalar sceneScale )
+{
+	ApplyCameraOpForward( cam, e, sceneScale );
+}
