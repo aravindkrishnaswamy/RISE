@@ -7619,6 +7619,82 @@ namespace RISE
 		return p->GetViewportRenderMode();
 	}
 
+	bool RISE_API_SceneEditController_SetViewportLayout(
+		SceneEditController* p, int layout )
+	{
+		if( !p ) return false;
+		return p->SetViewportLayout( static_cast<SceneEditController::ViewportLayout>( layout ) );
+	}
+
+	bool RISE_API_SceneEditController_GetViewportLayout(
+		SceneEditController* p, int* out )
+	{
+		if( !p || !out ) return false;
+		*out = static_cast<int>( p->GetViewportLayout() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPrimaryPane(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->SetPrimaryPane( pane );
+	}
+
+	bool RISE_API_SceneEditController_GetPrimaryPane(
+		SceneEditController* p, unsigned int* out )
+	{
+		if( !p || !out ) return false;
+		*out = p->GetPrimaryPane();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPaneRenderMode(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneRenderMode( pane, name );
+	}
+
+	const char* RISE_API_SceneEditController_GetPaneRenderMode(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return "preview";
+		return p->GetPaneRenderMode( pane );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->SetPaneVantageSceneCamera( pane );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneVantageNamedView( pane, name );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneVantage(
+		SceneEditController* p, unsigned int pane, int* outKind,
+		char* outNamedView, unsigned int cap )
+	{
+		if( !p || !outKind || !outNamedView || cap == 0 ) return false;
+		SceneEditController::PaneVantageKind kind;
+		String namedView;
+		if( !p->GetPaneVantage( pane, kind, namedView ) ) return false;
+		*outKind = static_cast<int>( kind );
+		// NUL-terminated copy, truncating to cap-1 (house C-ABI string shape).
+		unsigned int n = 0;
+		for( ; n + 1 < cap && n < namedView.size(); ++n ) {
+			outNamedView[n] = namedView.c_str()[n];
+		}
+		outNamedView[n] = '\0';
+		return true;
+	}
+
 	unsigned int RISE_API_GetViewportRenderModeCount()
 	{
 		unsigned int count = 0;

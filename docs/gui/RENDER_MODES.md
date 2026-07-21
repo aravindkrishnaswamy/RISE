@@ -671,6 +671,22 @@ refinement state: install the pane's caster (or route to its variant
 rasterizer), stamp its override camera, point `EnsureInteractiveFrameStore_`'s
 `activeRast` wiring at its FrameStore, run, publish to its sink.
 
+**Context-switch model (implementation refinement, 2026-07-20).**  The
+existing render loop is ~400 lines of accumulated race fixes (six documented
+fix-rounds) whose reasoning is stated over the SINGULAR state members
+(`mPreviewScale`, `mPolishState`, `mInRefinementPass`, `mVariantRasterizer`,
+...).  Those members are NOT generalized in place.  They remain the loop's
+**working registers** for the current quantum; each pane's state is
+SAVED/RESTORED around quanta by the scheduler, under the same mint-lock
+`mMutex` hold where the loop already does its in-lock re-checks — the same
+"mutate only while parked" discipline every viewport setter uses.  The loop
+body (and every fix-round comment's reasoning) survives verbatim.  The
+UI-thread writers stay coherent because of gesture exclusivity: gesture
+handlers only ever adapt the pane being interacted with, which is BY RULE the
+currently-scheduled pane, so writes to the registers always target the pane
+that owns them.  One new invariant: register swaps happen only while parked,
+under `mMutex`.
+
 **Rotation policy** (idle refinement):
 
 1. Rotation set = visible panes with `dirty || previewScale > 1 || polish

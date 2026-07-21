@@ -3721,6 +3721,44 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_GetViewportXray(
 		SceneEditController* p, bool* out );
 
+	//! -------- N-up multi-viewport pane model (RENDER_MODES.md §7, P3a) ----
+	//! Layout values: 0 Single, 1 TwoH, 2 OnePlusTwo, 3 Quad (the
+	//! controller's ViewportLayout enum).  Vantage kinds: 0 SceneCamera,
+	//! 1 FreeFly, 2 NamedView.  Every function is fail-closed per the
+	//! controller contract (§7.4): unknown pane / hidden pane / render owns
+	//! scene => false, nothing mutated.  EXISTING single-viewport calls are
+	//! unchanged and alias pane 0.
+
+	bool RISE_API_SceneEditController_SetViewportLayout(
+		SceneEditController* p, int layout );
+	//! Returns false (and leaves `*out` untouched) on null controller/out.
+	bool RISE_API_SceneEditController_GetViewportLayout(
+		SceneEditController* p, int* out );
+
+	bool RISE_API_SceneEditController_SetPrimaryPane(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_GetPrimaryPane(
+		SceneEditController* p, unsigned int* out );
+
+	//! Pane 0 forwards to SetViewportRenderMode (alias contract).
+	bool RISE_API_SceneEditController_SetPaneRenderMode(
+		SceneEditController* p, unsigned int pane, const char* name );
+	//! Never null; "preview" on any invalid input (mirrors
+	//! _GetViewportRenderMode's fail-closed default).
+	const char* RISE_API_SceneEditController_GetPaneRenderMode(
+		SceneEditController* p, unsigned int pane );
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
+		SceneEditController* p, unsigned int pane, const char* name );
+	//! `outKind` receives the vantage kind; `outNamedView`/`cap` receive a
+	//! NUL-terminated named-view name ("" unless kind==NamedView).  Returns
+	//! false on null controller / null outs / invalid pane / cap==0.
+	bool RISE_API_SceneEditController_GetPaneVantage(
+		SceneEditController* p, unsigned int pane, int* outKind,
+		char* outNamedView, unsigned int cap );
+
 	//! Pointer events from the platform UI.  Coordinates are in the
 	//! preview surface's pixel space.
 	bool RISE_API_SceneEditController_OnPointerDown(
