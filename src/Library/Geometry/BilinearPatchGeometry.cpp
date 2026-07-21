@@ -21,6 +21,7 @@
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
 #include "../Utilities/stl_utils.h"
+#include <algorithm>   // std::lower_bound for the area-CDF search
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -105,7 +106,8 @@ BilinearPatchGeometry::BilinearPatchGeometry(
   pOctree( 0 ),
   nMaxPerOctantNode( max_polys_per_node ),
   nMaxRecursionLevel( max_recursion_level ),
-  bUseBSP( bUseBSP_ )
+  bUseBSP( bUseBSP_ ),
+  dTotalArea( 0 )
 {
 }
 
@@ -157,6 +159,27 @@ void BilinearPatchGeometry::Prepare()
 		GlobalLog()->PrintNew( pOctree, __FILE__, __LINE__, "bilinear patches octree" );
 
 		pOctree->AddElements( patchptrs, nMaxRecursionLevel );
+	}
+
+	// Build the area-light sampling tables.  Done ONCE here rather than per
+	// UniformRandomPoint call: the table is O(patches * nAreaCells^2) to
+	// build, and NEE calls the sampler once per shadow ray.
+	vAreaCDF.clear();
+	vAreaCDF.reserve( patches.size() * nAreaCells * nAreaCells );
+	dTotalArea = 0;
+	for( BilinearPatchList::const_iterator p = patches.begin(); p != patches.end(); ++p ) {
+		// CANONICAL RISE CORNER MAPPING -- pts[] is NOT row-major:
+		//   pts[0] at (u=0, v=0)    pts[1] at (u=0, v=1)
+		//   pts[2] at (u=1, v=0)    pts[3] at (u=1, v=1)
+		// as implemented by GeometricUtilities::EvaluateBilinearPatchAt,
+		// RayBilinearPatchIntersection and TessellateToMesh.  The helper
+		// takes (c00, c10, c11, c01), so pts[1] and pts[2] SWAP here.
+		// Getting this wrong samples a different surface than IntersectRay
+		// traces on any non-planar patch -- the exact defect the pre-fix
+		// row-major tessellation had (see GeometryUVRoundtripTest's header).
+		dTotalArea += GeometricUtilities::AccumulateBilinearAreaCDF(
+			p->pts[0], p->pts[2], p->pts[3], p->pts[1],
+			nAreaCells, dTotalArea, vAreaCDF );
 	}
 }
 
@@ -306,7 +329,69 @@ BoundingBox BilinearPatchGeometry::GenerateBoundingBox() const
 
 void BilinearPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	//@ To be implemented
+	// Area-proportional sampling over every (patch, cell) pair via the single
+	// global CDF built in Prepare().  Consumers (NEE, photon emission, SSS)
+	// use 1/GetArea() as the reciprocal position PDF, so selection MUST be
+	// proportional to area -- selecting patches or cells uniformly by count
+	// would reproduce exactly the BoxGeometry defect fixed in 098d2565.
+	//
+	// Was previously an empty stub: it wrote nothing, so with Point3's
+	// zero-initialising default constructor every caller received the local
+	// origin.  A `bilinearpatch_geometry` bound to an emissive material was
+	// therefore a point-mass emitter, not a surface one -- the same pathology
+	// as the VCM torus-arealight deficit.  CanBeAreaLight() now also refuses
+	// the degenerate cases this function can no longer serve.
+	if( patches.empty() || vAreaCDF.empty() || dTotalArea <= 0 ) {
+		if( point )  *point  = Point3( 0, 0, 0 );
+		if( normal ) *normal = Vector3( 0, 1, 0 );
+		if( coord )  *coord  = Point2( 0, 0 );
+		return;
+	}
+
+	// prand.z selects (patch, cell); prand.x / prand.y place the point within
+	// that cell -- the same variate roles BoxGeometry and the triangle meshes
+	// use, so samplers that stratify a particular dimension behave alike.
+	const Scalar target = prand.z * dTotalArea;
+	std::vector<Scalar>::const_iterator it =
+		std::lower_bound( vAreaCDF.begin(), vAreaCDF.end(), target );
+	size_t flat = ( it == vAreaCDF.end() )
+		? vAreaCDF.size() - 1
+		: static_cast<size_t>( std::distance( vAreaCDF.begin(), it ) );
+
+	const size_t cellsPerPatch = static_cast<size_t>( nAreaCells ) * nAreaCells;
+	const size_t patchIdx = flat / cellsPerPatch;
+	const size_t cellIdx  = flat % cellsPerPatch;
+	if( patchIdx >= patches.size() ) {
+		if( point )  *point  = Point3( 0, 0, 0 );
+		if( normal ) *normal = Vector3( 0, 1, 0 );
+		if( coord )  *coord  = Point2( 0, 0 );
+		return;
+	}
+
+	const BilinearPatch& bp = patches[patchIdx];
+	Scalar u = 0, v = 0;
+	GeometricUtilities::BilinearCellToUV(
+		static_cast<unsigned int>( cellIdx ), nAreaCells, prand.x, prand.y, u, v );
+
+	if( point ) {
+		// Same canonical corner mapping as Prepare() -- pts[1]/pts[2] swap.
+		*point = GeometricUtilities::BilinearForward(
+			bp.pts[0], bp.pts[2], bp.pts[3], bp.pts[1], u, v );
+	}
+
+	if( normal ) {
+		const Vector3 Tu = GeometricUtilities::BilinearTangentU(
+			bp.pts[0], bp.pts[2], bp.pts[3], bp.pts[1], v );
+		const Vector3 Tv = GeometricUtilities::BilinearTangentV(
+			bp.pts[0], bp.pts[2], bp.pts[3], bp.pts[1], u );
+		const Vector3 N = Vector3Ops::Cross( Tu, Tv );
+		const Scalar nLen = Vector3Ops::Magnitude( N );
+		*normal = ( nLen > NEARZERO ) ? ( N * ( 1.0 / nLen ) ) : Vector3( 0, 1, 0 );
+	}
+
+	if( coord ) {
+		*coord = Point2( u, v );
+	}
 }
 
 SurfaceDerivatives BilinearPatchGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
@@ -325,6 +410,13 @@ SurfaceDerivatives BilinearPatchGeometry::ComputeSurfaceDerivatives( const Point
 
 Scalar BilinearPatchGeometry::GetArea( ) const
 {
-	//! @@ TODO, find a way to do this
-	return 1.0;
+	// The cached total from Prepare(), computed by the SAME quadrature the
+	// sampler's CDF uses -- so 1/GetArea() is exactly UniformRandomPoint's
+	// density.  That identity, not the absolute accuracy of the quadrature,
+	// is what area-light unbiasedness depends on.
+	//
+	// Previously a hardcoded 1.0, which made a patch's emitted power wrong by
+	// its true area (and, since consumers divide by it, silently rescaled
+	// every estimator built on this geometry).
+	return dTotalArea;
 }

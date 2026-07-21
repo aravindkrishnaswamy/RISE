@@ -19,6 +19,7 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/BoundingBox.h"
 #include "../Polygon.h"
+#include <vector>
 
 namespace RISE
 {
@@ -298,6 +299,48 @@ namespace RISE
 					const Point3& c00, const Point3& c10,
 					const Point3& c11, const Point3& c01,
 					const Scalar u
+					);
+
+		//! AREA-UNIFORM SAMPLING ON A BILINEAR PATCH.
+		//!
+		//! A bilinear patch is uniform in surface area under uniform (u, v)
+		//! ONLY when it is a parallelogram (the saddle term
+		//! D = c11 - c10 - c01 + c00 vanishes, so |dpdu x dpdv| is constant).
+		//! For any other quad the Jacobian varies across the patch, and a
+		//! sampler that draws (u, v) uniformly while its consumer divides by
+		//! 1/GetArea() has a PDF that disagrees with its own claimed density.
+		//! That mismatch silently biases every area-light estimator built on
+		//! it -- the same defect class as the BoxGeometry uniform-by-face
+		//! selection fixed in 098d2565.
+		//!
+		//! These two functions are designed to be used TOGETHER so the area
+		//! and the sampling density come from the SAME quadrature: whatever
+		//! the absolute quadrature error, 1/area is exactly the sampler's
+		//! density, which is the invariant unbiasedness actually depends on.
+		//! Build the table once (geometry Prepare/Regenerate), sample many.
+
+		//! Accumulates a per-cell area table for one bilinear patch onto the
+		//! end of `cdfOut` as a RUNNING cumulative sum (so tables for many
+		//! patches concatenate into one global CDF), and returns the patch's
+		//! area under midpoint quadrature.  `runningTotal` is the cumulative
+		//! area so far; pass 0 for the first patch.
+		//! \return The area of THIS patch (not the running total).
+		extern Scalar AccumulateBilinearAreaCDF(
+					const Point3& c00, const Point3& c10,
+					const Point3& c11, const Point3& c01,
+					const unsigned int nCells,							///< [in] Grid resolution per axis
+					const Scalar runningTotal,							///< [in] Cumulative area before this patch
+					std::vector<Scalar>& cdfOut							///< [in,out] Appended with nCells*nCells cumulative entries
+					);
+
+		//! Maps a cell index produced by searching a table from
+		//! AccumulateBilinearAreaCDF, plus two uniform variates, to (u, v).
+		extern void BilinearCellToUV(
+					const unsigned int cellIndex,						///< [in] Index WITHIN a patch's block, in [0, nCells*nCells)
+					const unsigned int nCells,
+					const Scalar rU,									///< [in] Uniform variate for the cell's u extent
+					const Scalar rV,									///< [in] Uniform variate for the cell's v extent
+					Scalar& outU, Scalar& outV
 					);
 
 		//! Inverse: given a 3D point P claimed to lie on the bilinear surface,

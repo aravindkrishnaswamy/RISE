@@ -45,6 +45,19 @@ namespace RISE
 			unsigned char			nMaxRecursionLevel;	// Maximum recursion level when generating the tree
 			bool					bUseBSP;			// Are we using BSP trees ?
 
+			//! Area-light sampling tables, built once in Prepare().
+			//! `vAreaCDF` is ONE global cumulative table over every (patch,
+			//! cell) pair -- nAreaCells^2 consecutive entries per patch, in
+			//! patch order -- so a single binary search picks both the patch
+			//! and the cell within it, area-proportionally.  `dTotalArea` is
+			//! the same quadrature's total, so 1/GetArea() is exactly the
+			//! sampler's density (see GeometricUtilities::
+			//! AccumulateBilinearAreaCDF for why that identity, not absolute
+			//! quadrature accuracy, is what unbiasedness rests on).
+			static const unsigned int nAreaCells = 8;
+			std::vector<Scalar>		vAreaCDF;
+			Scalar					dTotalArea;
+
 			virtual ~BilinearPatchGeometry( );
 
 		public:
@@ -62,8 +75,12 @@ namespace RISE
 			void Prepare();
 
 			// Tessellates every stored bilinear patch as a (detail+1) x (detail+1) bilinear grid,
-			// concatenated.  Per-patch corner mapping: pts[0]->UV(0,0), pts[1]->UV(1,0),
-			// pts[2]->UV(1,1), pts[3]->UV(0,1).  Normals recomputed from triangle topology.
+			// concatenated.  Per-patch corner mapping is the CANONICAL RISE convention:
+			// pts[0]->UV(0,0), pts[1]->UV(0,1), pts[2]->UV(1,0), pts[3]->UV(1,1) -- NOT
+			// row-major.  (This comment previously documented the pre-fix row-major order,
+			// which disagreed with the body, EvaluateBilinearPatchAt and
+			// RayBilinearPatchIntersection; it misled the 2026-07 area-light work.)
+			// Normals recomputed from triangle topology.
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
@@ -75,6 +92,15 @@ namespace RISE
 
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			Scalar GetArea( ) const;
+
+			//! \return False when there is no sampleable surface, so this
+			//! geometry is never registered as a luminary in that state.
+			//! Before 2026-07 this inherited IGeometry's `true` default while
+			//! UniformRandomPoint was an unimplemented stub and GetArea
+			//! returned a hardcoded 1.0 -- a `bilinearpatch_geometry` bound to
+			//! an emissive material became a silently broken area light whose
+			//! every NEE sample landed on the object's local origin.
+			bool CanBeAreaLight() const { return !patches.empty() && dTotalArea > 0; }
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
 
