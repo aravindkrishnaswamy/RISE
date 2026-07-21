@@ -3766,12 +3766,17 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink );
 
 	//! P3a slice 3 (pointer half): pane-indexed pointer input.  Down
-	//! promotes the pane to primary (§7.8 decision 1), parks + context-
-	//! switches before the gesture pin, and converts a SECONDARY pane
-	//! tracking the scene camera to per-pane FreeFly for camera-motion
-	//! tools (§7.2, 2026-07-21 amendment: pane 0 keeps classic
-	//! direct-camera-edit navigation).  False = drop the gesture (hidden
-	//! pane / render owns scene).
+	//! promotes the pane to primary ONLY for a non-navigation tool --
+	//! §7.8 ratified decision 1: "navigation drags never steal primary",
+	//! so a camera-motion tool's Down (orbit/pan/zoom/roll) does NOT
+	//! promote (the pane still becomes the render target for the
+	//! gesture's duration -- that is gesture exclusivity, a separate
+	//! concern from primary/gizmo ownership).  Down also parks +
+	//! context-switches before the gesture pin, and converts a SECONDARY
+	//! pane tracking the scene camera to per-pane FreeFly for
+	//! camera-motion tools (§7.2, 2026-07-21 amendment: pane 0 keeps
+	//! classic direct-camera-edit navigation).  False = drop the gesture
+	//! (hidden pane / render owns scene).
 	bool RISE_API_SceneEditController_OnPanePointerDown(
 		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
 	bool RISE_API_SceneEditController_OnPanePointerMove(
