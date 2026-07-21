@@ -573,18 +573,201 @@ string comparison.
 
 ## 7. N-up multi-viewport (P3)
 
-Pane = `{ mode, vantage, size }`; vantage = scene camera | free-fly pose |
-**named view** (Tier 2 named views are the vantage store). One pane is
-**primary**: it owns editing, picking, gizmos; others are viewers.
+**Status: DESIGN (2026-07-20).**  Grounded in a code audit of the shipped
+single-viewport architecture; every load-bearing claim cites file:line.  The
+five ratified decisions (§1) still bind — in particular decision 3 (fixed
+layout set, max 4 panes).
 
-- Fixed layouts: `1`, `2` (side-by-side), `1+2`, `2×2` (decision 3; max 4).
-- Rendering: **one interactive render thread**, round-robin across panes,
-  coarse-to-fine; ShaderPipeline panes are ~1 spp first-hit (nearly free), so
-  budget contention is only among beauty/beauty-variant panes. An edit
-  invalidates all panes; the primary refines first.
-- Plumbing primitives already exist: refcounted `ViewportFrameStore` per sink,
-  `SetViewportCameraOverride` per render, named-view poses (Tier 2 B1).
-- Production renders remain single-view.
+### 7.0 Thesis and scope
+
+One window renders up to four simultaneous views of the same scene — different
+render modes, different vantages — with **exactly one interactive render
+thread** multiplexing them.  The pane set is a HUMAN ergonomic for the GUI
+viewport; the agent already composes its own N-up as sequential
+`render{mode:, view:}` calls (§8) and does not need the layout machinery.
+
+Out of scope: Android (small screens; desktop-first), adjustable splitters
+(decision 3: fixed layouts), per-pane display transforms (decision 1: display
+cluster is not a render mode), production renders (single-view, unchanged),
+and any second render thread.
+
+### 7.1 What exists (audit summary) — the singleton row
+
+Everything viewport lives one-per-`SceneEditController` (one controller per
+window/bridge; the class is NOT a process singleton —
+[SceneEditController.h:57](../../src/Library/SceneEditor/SceneEditController.h)):
+
+| Concern | Member(s) | N-up disposition |
+|---|---|---|
+| Render thread + loop | `mRenderThread` :2802, `RenderLoop()` :2395, `DoOneRenderPass()` :2357 (virtual, test-overridable) | STAYS SINGULAR — becomes the pane scheduler |
+| Interactive rasterizer | `mInteractiveRasterizer` :2611 | stays singular; casters swap per quantum |
+| BeautyVariant rasterizer | `mVariantRasterizer` :2626 (+ scale pin `mPreviewScalePinned` :3197) | per-pane (only for panes in a variant mode) |
+| Frame buffer | `mInteractiveFrameStore` :2777 (+ `EnsureInteractiveFrameStore_` :2583) | **per-pane FrameStore** |
+| Camera override | `mViewportPose`/`mViewportPoseActive`/`mViewportOverrideCamera` :3298-3300, read at the single camera-read site (SceneEditController.cpp:1354) | per-pane |
+| Render mode | `mViewportRenderMode` :2631 (+ caster via `InstallViewModeCaster_` :2608) | per-pane |
+| X-ray flag | `mViewportXray` :2639 | stays GLOBAL in v1 (one toolbar toggle; casters are per-pane so per-pane x-ray is a cheap later polish) |
+| Refinement ladder | `mPreviewScale` :3187 (1..32 divisor), `mPolishState` :3258, `mFullResW/H` :3184 | per-pane |
+| Preview sink | `mPreviewSink` :2750, C-ABI `_SetPreviewSink` :3502 | per-pane sink |
+| Park discipline | `mMutex` / `CancelAndParkRender_` / `mRenderOwnsScene` :3081 | UNCHANGED — global, one thread |
+
+Existing affordances that make this tractable: `ViewportFrameStore` is
+refcounted and explicitly multi-instance
+([ViewportFrameStore.h:89](../../src/Library/Rendering/ViewportFrameStore.h));
+`FrameStore` is multi-reader/one-writer (per-tile shared_mutex);
+`CameraSnapshot` + `RealizeStandaloneCamera` (SceneEditController.cpp:141)
+produce a standalone `ICamera` with zero scene mutation — N vantages are a
+natural extension; and the agent render path already proves an alternate
+vantage renders through the same controller without disturbing the
+interactive loop.
+
+### 7.2 Pane model
+
+Four **always-present pane slots** on the controller; the layout selects the
+visible subset.  Hidden panes keep their configuration (toggling `2×2 → 1 →
+2×2` must not lose setups) and never render.
+
+```
+struct ViewportPane {
+    // --- configuration (UI-mutated under mMutex + park, like every
+    //     viewport setter today) ---
+    mode          : registry wire name (default "preview")
+    vantageKind   : SceneCamera | FreeFly | NamedView
+    pose          : CameraSnapshot        // FreeFly, or snapshot fallback
+    namedViewRef  : string                // NamedView: re-resolved via
+                                          // FindNamedViewPose each pass;
+                                          // falls back to `pose` snapshot
+                                          // if the view was deleted
+    // --- render plumbing (render-thread-owned; swapped only while parked) ---
+    overrideCamera   : ICamera*      // null => scene active camera
+    frameStore       : FrameStore*   // per-pane canonical HDR buffer
+    viewModeCaster   : per-pane caster instance (depth auto-window state
+                       lives here and must survive other panes' quanta)
+    variantRasterizer: IRasterizer*  // only when mode is a BeautyVariant
+    // --- refinement state (render-thread-owned) ---
+    previewScale, polishState, dirty, generation
+}
+```
+
+Layouts: `Single` (pane 0), `TwoH` (0|1), `OnePlusTwo` (0 big + 1,2 stacked),
+`Quad` (0-3).  Pane rects are fixed fractions computed GUI-side; the C++ core
+only needs per-pane pixel dims (`SetPaneSurfaceDims`).  **Primary** must be
+visible; when a layout shrink hides the primary, primary falls back to pane 0.
+New-in-layout panes default to `{mode: preview, vantage: SceneCamera}`.
+
+Vantage semantics: a `SceneCamera` pane tracks the live active camera (edits
+to it re-render the pane).  Tumbling in ANY pane converts that pane to
+`FreeFly` seeded from what it was showing — the per-pane generalization of
+the existing enter-free-fly rule, and like it, never mutates the scene camera.
+A `NamedView` pane re-resolves by name so updating the view updates the pane.
+
+### 7.3 Scheduler (the render loop, generalized)
+
+Still ONE thread, one in-flight `RasterizeScene` at a time; the park/cancel
+discipline is untouched (parking cancels + drains the CURRENT quantum,
+whichever pane it belongs to).
+
+**Quantum** = one `RasterizeScene` call for one pane at that pane's current
+refinement state: install the pane's caster (or route to its variant
+rasterizer), stamp its override camera, point `EnsureInteractiveFrameStore_`'s
+`activeRast` wiring at its FrameStore, run, publish to its sink.
+
+**Rotation policy** (idle refinement):
+
+1. Rotation set = visible panes with `dirty || previewScale > 1 || polish
+   pending`.  Panes that finish (variant budget spent; data mode polished at
+   scale 1) leave the set; empty set ⇒ thread sleeps on `mCV` as today.
+2. Order within a round: **primary first**, then secondaries by index.  Equal
+   shares (one quantum each per round) — primary-weighted shares are a
+   revisit-if-needed, not v1.
+3. Each pane walks its OWN resolution ladder (per-pane `previewScale`),
+   reusing the existing idle-refinement constants; per-pane polish (denoise
+   keyed on the registry's `wantsDenoise`, exactly the §6 rule) runs when a
+   pane reaches scale 1 idle — primary polishes first by rule 2.
+
+**Gesture exclusivity**: during a pointer gesture in pane *i* (tumble, drag),
+the scheduler renders pane *i* EXCLUSIVELY with the existing during-motion
+scale adaptation (kTargetMs=33); other panes freeze at their last frame.  This
+is the generalization of today's behavior (the single pane IS the gestured
+pane) and keeps interaction latency identical to single-viewport.
+
+**Invalidation matrix**:
+
+| Event | Effect |
+|---|---|
+| Scene edit (any mutation) | all visible panes dirty, scales reset coarse; primary renders first |
+| Pane-local: mode / vantage / named-view update | that pane dirty only |
+| Layout switch | newly-visible panes dirty; hidden panes dropped from rotation |
+| Pane resize (layout change / window resize) | affected panes dirty (store realloc via the existing same-dim short-circuit) |
+| Production/agent render starts | `mRenderOwnsScene` no-ops pane setters; loop yields (existing single-slot coordination); on completion ALL panes dirty |
+
+### 7.4 C-ABI (additive; existing calls = pane 0)
+
+New `RISE_API_SceneEditController_*` entries, all taking a pane index; every
+EXISTING viewport call keeps its signature and aliases pane 0, so current
+platform code keeps working unmodified:
+
+```
+_SetViewportLayout(layout) / _GetViewportLayout()
+_SetPrimaryPane(pane) / _GetPrimaryPane()
+_SetPaneRenderMode(pane, name) / _GetPaneRenderMode(pane)
+_SetPaneVantageSceneCamera(pane)
+_SetPaneVantageNamedView(pane, name)
+_PaneEnterFreeFly(pane) / _PaneExitFreeFly(pane)   // per-pane free-fly twins
+_SetPaneSurfaceDims(pane, w, h)
+_SetPaneSink(pane, IRasterizerOutput*)             // per-pane push sink
+_GetPaneRefinementStatus(pane, ...)                // per-pane phase+scale
+_OnPanePointerDown/Move/Up(pane, ...)              // input carries pane id
+```
+
+Fail-closed like every existing setter: unknown pane / hidden pane / render
+owns scene ⇒ false, nothing mutated.
+
+### 7.5 GUI shells
+
+Both platforms, same shape (parity convention): a layout picker (4 fixed
+icons) in the viewport toolbar; per-pane chrome = mode dropdown (the existing
+registry-driven control, §4) + vantage menu (Scene camera | named views list |
+Free-fly) + a primary marker.  The platform builds one
+`ViewportFrameStore`/sink per pane (Mac `ViewportPreviewSink`
+[RISEViewportBridge.mm:171] and the Qt `imageUpdated` path generalize by
+instantiation, not redesign).  Input: the shell hit-tests pane rects and
+forwards events with the pane index.  Gizmo/nav overlays
+(`ViewportGizmoOverlay.swift`, Qt `QPainter` overlays) draw on the PRIMARY
+pane only.
+
+### 7.6 Composition with RenderCoordinator
+
+[RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) (DESIGN, no code) arbitrates
+render consumers process-wide.  The pane set is **one** consumer: one client,
+one lease, internal pane multiplexing.  Suspend/resume applies to the whole
+pane set.  Nothing here depends on the coordinator landing, and nothing
+contradicts it.
+
+### 7.7 Phasing + tests
+
+- **P3a (core)**: pane slots + scheduler generalization + per-pane
+  stores/casters/overrides + C-ABI.  Tests exploit `DoOneRenderPass` being
+  virtual: a recording override asserts the (pane, scale) sequence — priority
+  order, gesture exclusivity, the invalidation matrix, rotation exit — with
+  no real rendering.  Per-pane isolation test: depth auto-window state in
+  pane A unmoved by pane B's quanta (the P1 process-unique spatial
+  generations make this checkable).
+- **P3b (shells)**: Mac + Windows together, per parity convention.
+- **P3c (polish)**: persistence, agent introspection, per-pane x-ray —
+  scope per the open decisions below.
+
+### 7.8 Ratified decisions (2026-07-20)
+
+1. **Primary-switch gesture: click promotes.**  A non-navigation click in any
+   pane makes it primary (DCC-standard); navigation drags never steal
+   primary.
+2. **Persistence: session-only in v1.**  The pane set resets on relaunch and
+   joins the named-view sidecar mechanism when that lands — no second
+   persistence path invented for it.
+3. **Agent surface: introspection only.**  Agents can query layout +
+   per-pane `{mode, vantage, primary}` to reason about what the user is
+   looking at; they never control the pane set (their own multi-view is
+   sequential `render{mode:, view:}`, §8).
 
 ## 8. Agent surface + skills
 
