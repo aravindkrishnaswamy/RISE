@@ -352,6 +352,21 @@ void SceneEditController::RebindEditorToJob()
 		mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
 	}
 	mPreviewScalePinned.store( false, std::memory_order_release );
+	// review-r2-B P1: the CURRENT pane's resources live in the REGISTERS
+	// (its slot is empty by the class invariant), so the slot loop below
+	// cannot reach them -- and stamping mCurrentPane = 0 without a switch
+	// made the next mint SAVE those stale registers into slot 0,
+	// clobbering pane 0's state with another pane's old-scene camera.
+	// Release the register half inline, alongside the mVariantRasterizer
+	// register release above (the frame-store register may stay: it is
+	// scene-agnostic pixels, re-dimensioned and repainted on the next
+	// pass).
+	if( mViewportOverrideCamera )
+	{
+		mViewportOverrideCamera->release();
+		mViewportOverrideCamera = nullptr;
+	}
+	mViewportPoseActive = false;
 	// review-r1 P1: the UNSCHEDULED panes' slots hold resources realized
 	// against the OLD scene/managers (override cameras, frame stores,
 	// variant pipelines, casters).  The register resets above predate the
@@ -908,6 +923,12 @@ bool SceneEditController::IsRefinementPaused() const
 }
 
 SceneEditController::RefinementPhase
+// review-r2-B P3 (N-up honesty note): phase/scale below read the live
+// REGISTERS, which describe whichever pane is CURRENTLY scheduled -- in a
+// multi-pane layout that may be a background pane, not the primary the
+// user is watching.  Single layout (every shipped GUI today) is
+// unaffected.  A per-pane status query ships with P3a slice 3; do not
+// wire the un-indexed call to a per-pane label.
 SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
 {
 	outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
@@ -1534,14 +1555,21 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	// mCurrentPane, so the switch must happen first.  Same park shape as
 	// every setter; costs at most one quantum's cancel latency.
 	//
-	// review-r1 P1: GATED on the render-owns-scene guard, like
-	// OnPointerMove/OnPointerUp -- a production/agent render holds mMutex
-	// for its ENTIRE duration, so an ungated lock here wedges the UI
-	// thread for minutes (the exact wedge class the guard exists for).
-	// Skipping the switch under that window is safe: the interactive loop
-	// is blocked out anyway, and the next pointer-down after the render
-	// completes re-runs this block.
-	if( !mRenderOwnsScene.load( std::memory_order_acquire ) )
+	// review-r1 P1 + review-r2-A P1: while a production/agent render owns
+	// the scene, REFUSE the gesture entirely -- early-return before ANY
+	// state is touched, exactly like OnPointerMove/OnPointerUp.  The
+	// round-1 shape (skip only the pane switch, then proceed) left the
+	// IN-FLIGHT gesture bound to whatever pane the rotation had loaded:
+	// once the render finished mid-drag, OnPointerMove mutated THAT
+	// pane's override camera and OnPointerUp reset ITS ladder -- the
+	// user's drag landed on a pane they never touched, checkpointed
+	// permanently at the next switch.  Refusing is honest and cheap: the
+	// interactive loop is blocked out for the render's duration anyway,
+	// and the user's next pointer-down re-enters normally.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+	{
+		return;
+	}
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mCurrentPane != 0 )
@@ -6499,8 +6527,17 @@ void SceneEditController::RenderLoop()
 				// — this is a controller-internal kick, not a user
 				// edit, and refinement / resume-snap logic should not
 				// be confused by it.
+				//
+				// review-r2-B P2: routed via mPanePassPending, NOT
+				// mEditPending -- the edit flag's consumption marks every
+				// visible pane dirty (a scene-edit semantic), so the old
+				// routing made EVERY gesture-end spuriously re-render all
+				// settled panes (up to 3 wasted passes per gesture in
+				// Quad).  The rotation flag wakes the loop without the
+				// invalidation; PickNext then selects this pane via its
+				// polishQueued priority.
 				std::lock_guard<std::mutex> lk( mMutex );
-				mEditPending.store( true, std::memory_order_release );
+				mPanePassPending.store( true, std::memory_order_release );
 				mCV.notify_one();
 			}
 		}
@@ -7720,21 +7757,38 @@ void SceneEditController::InvalidatePanesBoundToNamedView_( const String& name )
 
 bool SceneEditController::UpdateNamedView( unsigned int idx )
 {
+	String targetName;
 	{
 		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
 		if( idx >= mNamedViews.size() ) return false;
+		// review-r2-A P1: capture the STABLE IDENTITY (the name) here.  The
+		// old re-check after the park only caught vector SHRINKAGE -- a
+		// concurrent delete BEFORE idx shifts the vector so mNamedViews[idx]
+		// names a DIFFERENT view while idx < size() still holds, and the
+		// pose landed on the wrong view (and, post-round-1, the pane
+		// propagation invalidated panes bound to the wrong view too).
+		targetName = mNamedViews[ idx ].name;
 	}
 	CameraSnapshot snap;
 	if( !CaptureCurrentView( snap ) ) return false;
 	String updatedName;
 	{
 		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
-		// Re-check: CaptureCurrentView released mNamedViewsMutex while it parked
-		// (mMutex), so a concurrent DeleteNamedView could have shrunk the vector
-		// (or shifted indices) in the meantime.
-		if( idx >= mNamedViews.size() ) return false;
-		mNamedViews[ idx ].pose = snap;
-		updatedName = mNamedViews[ idx ].name;
+		// Re-resolve BY NAME: immune to both shrinkage and shift.  A
+		// concurrent delete of the target itself makes the update a
+		// clean false, not a wrong-view write.
+		bool found = false;
+		for( std::size_t i = 0; i < mNamedViews.size(); ++i )
+		{
+			if( mNamedViews[i].name == targetName.c_str() )
+			{
+				mNamedViews[i].pose = snap;
+				found = true;
+				break;
+			}
+		}
+		if( !found ) return false;
+		updatedName = targetName;
 	}
 	// review-r2 P1: panes bound to this view must follow it.  Called AFTER
 	// releasing mNamedViewsMutex (lock order -- see the helper's doc).
@@ -8064,8 +8118,16 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 		// below from the configured vantage.
 		if( slot.overrideCamera ) { slot.overrideCamera->release(); slot.overrideCamera = nullptr; }
 		slot.poseActive = false;
-		slot.configDirty = false;
 	}
+	// review-r2-A P1: the configDirty CLEAR must be unconditional.  It used
+	// to live inside the pane!=0 vantage block above, so pane 0's flag --
+	// set by RebindEditorToJob on every scene rebind -- could NEVER clear:
+	// the same-pane early-out stopped firing and EVERY subsequent mint
+	// pass re-entered the mode-reconcile, tearing down and rebuilding
+	// pane 0's caster/variant on every pass forever (depth's auto-window
+	// could never converge again -- the exact invariant the slots exist
+	// to protect, reopened by the round-1 fix).
+	slot.configDirty = false;
 
 	// Lazy vantage realization for panes 1-3 (pane 0's vantage is the
 	// existing free-fly machinery -- its registers were saved/loaded

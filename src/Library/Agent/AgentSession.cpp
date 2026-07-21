@@ -5130,6 +5130,12 @@ namespace RISE
 			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
 		}
 
+		// review-r2-B P2 (N-up honesty note): this reads CopyInteractiveFrame,
+		// i.e. the REGISTER frame store -- whichever pane the scheduler
+		// rendered most recently.  In a multi-pane layout the returned image
+		// is "the last-rendered pane" (scheduling-dependent), NOT necessarily
+		// pane 0 or the primary.  Callers surface this via the render-result
+		// message; a per-pane read lands with P3a slice 3's per-pane sinks.
 		std::vector<unsigned char> AgentSession::ReadViewport(
 			unsigned int maxEdge, unsigned int& outWidth, unsigned int& outHeight,
 			bool& outAvailable, std::string& outReason ) const

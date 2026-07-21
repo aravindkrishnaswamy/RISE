@@ -277,6 +277,18 @@ static void RunGesturePinningTest()
 		Check( sawPane1,
 		       "MONEY ASSERTION (c): the dirty primary (1) renders once the gesture ends" );
 	}
+
+	// review-r2-B P2 regression: the polish-chain continuation after a
+	// gesture must NOT masquerade as a scene edit (which would spuriously
+	// re-dirty and re-render every settled pane on every gesture end).
+	// Let the polish chain drain, then require quiescence.
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+		const std::size_t settled = f.ctrl->Sequence().size();
+		Check( f.ctrl->SettlesAt( settled, kSettleMs ),
+		       "gesture-end polish chain quiesces without re-rendering settled panes "
+		       "(the continuation kick is a rotation wake, not a fake edit)" );
+	}
 }
 
 //----------------------------------------------------------------------
