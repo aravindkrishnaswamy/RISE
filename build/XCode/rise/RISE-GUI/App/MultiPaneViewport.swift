@@ -237,6 +237,25 @@ struct MultiPaneViewportView: View {
         .task(id: ObjectIdentifier(bridge)) {
             primaryPane = Int(bridge.primaryPane)
             applyMultiViewModePreset()
+            // BUGFIX (2026-07-21): sync the CURRENT tool to the core on
+            // appear.  ViewportView does this (its .task(id:) + its
+            // onChange(of: selectedTool)); MultiPaneViewport did NOT, so
+            // entering multi-view -- or changing the tool while in it --
+            // left the core on whatever tool was last set from single
+            // view.  Selecting Orbit (or any tool) in a multi-view then
+            // did NOTHING: the toolbar highlight moved but pointer events
+            // still ran the stale tool in the core (verified live: an
+            // Orbit drag logged tool=1 TranslateObject).  Mirror
+            // ViewportView's contract exactly.
+            bridge.currentTool = selectedTool.bridgeValue
+        }
+        .onChange(of: selectedTool) { _, newValue in
+            // The load-bearing half of the fix above: forward EVERY tool
+            // change to the core while multi-view is on screen.  Without
+            // this, the single global tool the whole app shares (SetTool
+            // has no pane index) only tracked in single view.
+            bridge.currentTool = newValue.bridgeValue
+            gizmoRefreshTrigger &+= 1
         }
         .onChange(of: layout) { _, _ in
             // A layout switch can hide/reveal panes and change which
