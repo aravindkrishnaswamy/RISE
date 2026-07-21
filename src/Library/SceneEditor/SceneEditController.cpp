@@ -352,6 +352,30 @@ void SceneEditController::RebindEditorToJob()
 		mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
 	}
 	mPreviewScalePinned.store( false, std::memory_order_release );
+	// review-r1 P1: the UNSCHEDULED panes' slots hold resources realized
+	// against the OLD scene/managers (override cameras, frame stores,
+	// variant pipelines, casters).  The register resets above predate the
+	// pane slots -- reusing a stale slot against the new scene is the same
+	// lifecycle violation one indirection away.  Release everything and
+	// force the reconcile (realizedMode back to value-init Preview;
+	// configDirty so the vantage re-realizes; the CONFIGS survive
+	// deliberately -- they are the user's desired state, not realized
+	// resources).
+	for( unsigned int paneIdx = 0; paneIdx < kViewportPaneCount; ++paneIdx )
+	{
+		PaneRenderState& slot = mPaneRender[paneIdx];
+		if( slot.overrideCamera )    { slot.overrideCamera->release();    slot.overrideCamera = nullptr; }
+		if( slot.frameStore )        { slot.frameStore->release();        slot.frameStore = nullptr; }
+		if( slot.variantRasterizer ) { slot.variantRasterizer->release(); slot.variantRasterizer = nullptr; }
+		if( slot.viewModeCaster )    { slot.viewModeCaster->release();    slot.viewModeCaster = nullptr; }
+		slot.realizedMode       = Implementation::ViewportRenderMode {};
+		slot.poseActive         = false;
+		slot.configDirty        = true;
+		slot.dirty              = true;
+		slot.previewScaleSaved  = 1;
+		slot.previewPinnedSaved = false;
+	}
+	mCurrentPane = 0;
 	// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): reset alongside
 	// the mode reset above, UNCONDITIONALLY -- runs every whole-scene
 	// (re)bind, not just the mode-was-non-Preview branch above.  DEFAULT
@@ -1509,6 +1533,15 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	// ordering matters: once mPointerDown is true, PickNext pins to
 	// mCurrentPane, so the switch must happen first.  Same park shape as
 	// every setter; costs at most one quantum's cancel latency.
+	//
+	// review-r1 P1: GATED on the render-owns-scene guard, like
+	// OnPointerMove/OnPointerUp -- a production/agent render holds mMutex
+	// for its ENTIRE duration, so an ungated lock here wedges the UI
+	// thread for minutes (the exact wedge class the guard exists for).
+	// Skipping the switch under that window is safe: the interactive loop
+	// is blocked out anyway, and the next pointer-down after the render
+	// completes re-runs this block.
+	if( !mRenderOwnsScene.load( std::memory_order_acquire ) )
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mCurrentPane != 0 )
@@ -7246,7 +7279,15 @@ bool SceneEditController::InstallViewModeCaster_( Implementation::ViewportRender
 	const Implementation::ViewportRenderModeInfo* info =
 		Implementation::FindViewportRenderModeInfo( mode );
 	mInteractiveImpl->SetViewModeCaster( caster, info && info->wantsDenoise );
-	caster->release();   // rasterizer addref'd it; drop our local ref
+	// review-r1 P2: record the caster in SLOT 0 (keeping our addref)
+	// instead of dropping the local ref -- pane 0's setter and the
+	// scheduler's reconcile must share ONE source of truth, or the first
+	// rotation away and back sees realizedMode != wantMode and rebuilds,
+	// discarding depth's live auto-window calibration (the exact invariant
+	// the per-pane caster slots exist to protect).
+	if( mPaneRender[0].viewModeCaster ) { mPaneRender[0].viewModeCaster->release(); }
+	mPaneRender[0].viewModeCaster = caster;   // ownership: our addref moves to the slot
+	mPaneRender[0].realizedMode   = mode;
 	return true;
 }
 
@@ -7384,9 +7425,27 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 			// nullptr for Preview -- SetViewModeCaster restores the platform-
 			// installed preview/polish casters (see its own doc).
 			mInteractiveImpl->SetViewModeCaster( nullptr );
+			// review-r1 P2: slot-0 bookkeeping for the Preview branch too --
+			// release the held data-mode caster (a DIRECT mode change resets
+			// calibration by design; only ROTATION preserves it) and record
+			// Preview so the scheduler's reconcile agrees with reality.
+			if( mPaneRender[0].viewModeCaster ) {
+				mPaneRender[0].viewModeCaster->release();
+				mPaneRender[0].viewModeCaster = nullptr;
+			}
+			mPaneRender[0].realizedMode = Implementation::ViewportRenderMode {};
 		}
 	}
 	mViewportRenderMode = info->mode;
+	// review-r1 P2: the variant branch above never touches slot-0's caster
+	// (contract: leaving a variant later finds the data caster as it was)
+	// but realizedMode must reflect what is ACTUALLY realized, or the
+	// scheduler reconciles against a stale answer.  For variants the
+	// authoritative realization is the register mVariantRasterizer +
+	// this record.
+	if( Implementation::IsBeautyVariantMode( info->mode ) ) {
+		mPaneRender[0].realizedMode = info->mode;
+	}
 
 	// Kick a repaint -- same inline store-then-notify SetViewportPose uses
 	// (KickRender() takes mMutex itself, so it can't be called while we
@@ -7628,6 +7687,37 @@ bool SceneEditController::RestoreNamedView( unsigned int idx )
 	return SetViewportPose( pose );   // non-destructive; parks + realizes -- takes mMutex itself
 }
 
+//! review-r2 P1: a pane bound to a named view must FOLLOW the view.  The
+//! §7.2 propagation is event-driven: Update/DeleteNamedView call this to
+//! mark every bound pane for reconcile (configDirty releases the realized
+//! camera at the next switch; the deletion case then falls back to the
+//! config's snapshot pose via the existing FindNamedViewPose-miss path).
+//!
+//! LOCK ORDER: takes mMutex; the CALLER must NOT hold mNamedViewsMutex
+//! (both named-view mutators release it before calling) -- mMutex and
+//! mNamedViewsMutex are never nested in either order anywhere in this
+//! file, and this function keeps it that way.
+void SceneEditController::InvalidatePanesBoundToNamedView_( const String& name )
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	bool any = false;
+	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
+	{
+		if( mPaneConfigs[i].vantageKind == PaneVantageKind::NamedView
+		 && mPaneConfigs[i].namedViewRef == name.c_str() )
+		{
+			mPaneRender[i].configDirty = true;
+			mPaneRender[i].dirty       = true;
+			any = true;
+		}
+	}
+	if( any )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+		mCV.notify_one();
+	}
+}
+
 bool SceneEditController::UpdateNamedView( unsigned int idx )
 {
 	{
@@ -7636,20 +7726,36 @@ bool SceneEditController::UpdateNamedView( unsigned int idx )
 	}
 	CameraSnapshot snap;
 	if( !CaptureCurrentView( snap ) ) return false;
-	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
-	// Re-check: CaptureCurrentView released mNamedViewsMutex while it parked
-	// (mMutex), so a concurrent DeleteNamedView could have shrunk the vector
-	// (or shifted indices) in the meantime.
-	if( idx >= mNamedViews.size() ) return false;
-	mNamedViews[ idx ].pose = snap;
+	String updatedName;
+	{
+		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
+		// Re-check: CaptureCurrentView released mNamedViewsMutex while it parked
+		// (mMutex), so a concurrent DeleteNamedView could have shrunk the vector
+		// (or shifted indices) in the meantime.
+		if( idx >= mNamedViews.size() ) return false;
+		mNamedViews[ idx ].pose = snap;
+		updatedName = mNamedViews[ idx ].name;
+	}
+	// review-r2 P1: panes bound to this view must follow it.  Called AFTER
+	// releasing mNamedViewsMutex (lock order -- see the helper's doc).
+	InvalidatePanesBoundToNamedView_( updatedName );
 	return true;
 }
 
 bool SceneEditController::DeleteNamedView( unsigned int idx )
 {
-	std::lock_guard<std::mutex> lk( mNamedViewsMutex );
-	if( idx >= mNamedViews.size() ) return false;
-	mNamedViews.erase( mNamedViews.begin() + idx );
+	String deletedName;
+	{
+		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
+		if( idx >= mNamedViews.size() ) return false;
+		deletedName = mNamedViews[ idx ].name;
+		mNamedViews.erase( mNamedViews.begin() + idx );
+	}
+	// review-r2 P1: a bound pane's next reconcile finds the name gone and
+	// falls back to the config's snapshot pose (the existing
+	// FindNamedViewPose-miss path in SwitchToPaneLocked_) -- but only if
+	// something MARKS it for reconcile.  Same lock-order rule as Update.
+	InvalidatePanesBoundToNamedView_( deletedName );
 	return true;
 }
 
@@ -7668,12 +7774,12 @@ bool SceneEditController::FindNamedViewPose( const String& name, CameraSnapshot&
 // ======================================================================
 // N-up multi-viewport pane model (RENDER_MODES.md §7, P3a slice 1).
 //
-// CONFIG LAYER ONLY: pane 0 aliases the existing single-viewport state;
-// panes 1-3 store validated configuration that the scheduler slice will
-// consume.  Setters follow the house discipline (render-owns-scene guard,
-// then mMutex; no park needed yet for panes 1-3 because the render thread
-// does not read mPaneConfigs until the scheduler slice -- pane 0 setters
-// forward to existing methods that already park).
+// DESIRED-STATE layer: pane 0 aliases the existing single-viewport state;
+// panes 1-3 store validated configuration that SwitchToPaneLocked_'s
+// reconcile realizes at the next rotation switch.  Setters follow the
+// house discipline (render-owns-scene guard, then mMutex; no park needed
+// for panes 1-3 because the render thread reads mPaneConfigs only inside
+// the mint lock -- pane 0 setters forward to existing methods that park).
 // ======================================================================
 
 // PaneConfig::mode value-initializes to enumerator 0 in the header (the enum
@@ -7707,10 +7813,25 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	}
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( layout == mViewportLayout ) return true;   // no-op contract
+	const unsigned int oldVisible = PaneCountForLayout( mViewportLayout );
 	mViewportLayout = layout;
+	const unsigned int newVisible = PaneCountForLayout( layout );
 	// §7.2: a shrink that hides the primary falls back to pane 0.
-	if( mPrimaryPane >= PaneCountForLayout( layout ) ) {
+	if( mPrimaryPane >= newVisible ) {
 		mPrimaryPane = 0;
+	}
+	// review-r2 P1: a GROW must wake the render loop -- without this,
+	// newly-revealed panes (dirty since construction or since being
+	// hidden) stay blank until an unrelated edit happens to wake it
+	// (the loop sleeps on a predicate that only sees mEditPending /
+	// mPanePassPending).  §7.3 invalidation matrix row 3.
+	if( newVisible > oldVisible )
+	{
+		for( unsigned int i = oldVisible; i < newVisible; ++i ) {
+			mPaneRender[i].dirty = true;
+		}
+		mPanePassPending.store( true, std::memory_order_release );
+		mCV.notify_one();
 	}
 	return true;
 }
@@ -7902,6 +8023,12 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 	// ---- SAVE registers -> slot[from] --------------------------------
 	PaneRenderState& fromSlot = mPaneRender[from];
 	fromSlot.polishSaved = mPolishState.load( std::memory_order_acquire );
+	// review-r1 P1: the resolution ladder + variant pin are registers too.
+	// Without saving them, a variant pane rotated in via the scheduler ran
+	// UNPINNED (idle refinement walked its fixed divisor toward full res),
+	// and leaving one left the pin stuck on the NEXT pane.
+	fromSlot.previewScaleSaved  = mPreviewScale.load( std::memory_order_acquire );
+	fromSlot.previewPinnedSaved = mPreviewScalePinned.load( std::memory_order_acquire );
 	fromSlot.overrideCamera = mViewportOverrideCamera;   // ownership moves to the slot
 	fromSlot.poseActive     = mViewportPoseActive;
 	fromSlot.poseSaved      = mViewportPose;
@@ -7990,6 +8117,17 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 			// Variant mode leaves mInteractiveImpl's caster untouched (same
 			// contract as SetViewportRenderMode's variant branch).
 			mInteractiveImpl->SetViewModeCaster( nullptr );
+			// review-r1 P1: the variant pin (mirrors SetViewportRenderMode's
+			// variant branch).  Stamped on the SLOT's saved registers so the
+			// LOAD below (which runs after this reconcile block) carries it
+			// into the live registers.
+			{
+				const Implementation::ViewportRenderModeInfo* vinfo =
+					Implementation::FindViewportRenderModeInfo( wantMode );
+				slot.previewScaleSaved  = ( vinfo && vinfo->variantScaleDivisor > 0 )
+					? vinfo->variantScaleDivisor : 1;
+				slot.previewPinnedSaved = true;
+			}
 		}
 		else if( wantMode != Implementation::ViewportRenderMode::Preview )
 		{
@@ -8010,6 +8148,13 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 		{
 			mInteractiveImpl->SetViewModeCaster( nullptr );   // Preview
 		}
+		// review-r1 P1: a NON-variant pane must never inherit a variant
+		// pin (the stuck-pin leak).  The slot's saved pin is authoritative
+		// only for variant panes; force it clear here.
+		if( !wantVariant )
+		{
+			slot.previewPinnedSaved = false;
+		}
 		// X-ray is a GLOBAL toggle stamped onto "every caster the
 		// rasterizer currently holds" -- a slot caster that was NOT
 		// installed when SetViewportXray last ran carries a stale flag.
@@ -8019,6 +8164,11 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 
 	// ---- LOAD slot[pane] -> registers --------------------------------
 	mPolishState.store( slot.polishSaved, std::memory_order_release );
+	// review-r1 P1: restore the ladder/pin, then let the mode arms below
+	// OVERRIDE for variant panes (divisor+pin) exactly as
+	// SetViewportRenderMode's variant branch does for pane 0.
+	mPreviewScale.store( slot.previewScaleSaved, std::memory_order_release );
+	mPreviewScalePinned.store( slot.previewPinnedSaved, std::memory_order_release );
 	mViewportOverrideCamera = slot.overrideCamera;   // ownership moves back
 	mViewportPoseActive     = slot.poseActive;
 	mViewportPose           = slot.poseSaved;

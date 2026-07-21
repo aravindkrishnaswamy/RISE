@@ -3728,6 +3728,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! controller contract (§7.4): unknown pane / hidden pane / render owns
 	//! scene => false, nothing mutated.  EXISTING single-viewport calls are
 	//! unchanged and alias pane 0.
+	//!
+	//! SCOPE NOTE (honest gap, review-r2): §7.4 additionally specifies
+	//! _PaneEnterFreeFly/_PaneExitFreeFly, _SetPaneSurfaceDims,
+	//! _SetPaneSink, _GetPaneRefinementStatus and _OnPanePointerDown/
+	//! Move/Up.  Those ship with the per-pane DISPLAY plumbing (P3a slice
+	//! 3 / P3b) -- until then the single preview sink shows the last-
+	//! rendered pane and pointer input is pane-0-scoped.
 
 	bool RISE_API_SceneEditController_SetViewportLayout(
 		SceneEditController* p, int layout );

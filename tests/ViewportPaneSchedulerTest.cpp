@@ -332,6 +332,81 @@ static void RunHiddenPaneNeverRendersTest()
 	Check( f.ctrl->SettlesAt( seq.size(), kSettleMs ), "rotation quiesces at the visible-pane count" );
 }
 
+//----------------------------------------------------------------------
+// (f) review-r2 P1 regression: a layout GROW while the loop is idle
+//     must wake it -- newly-revealed panes render without waiting for
+//     an unrelated edit.  (Before the fix, SetViewportLayout mutated
+//     state and returned; the loop slept on a predicate that never saw
+//     the new panes.)
+//----------------------------------------------------------------------
+static void RunLayoutGrowWakesLoopTest()
+{
+	std::printf( "=== scheduler (f): layout grow while idle wakes the loop (review-r2 P1) ===\n" );
+	Fixture f( "pane_sched_f.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	// Start in Single, render, and QUIESCE -- the loop is now asleep.
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "single-layout pass lands" );
+	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "loop is idle before the grow" );
+	f.ctrl->ClearSequence();
+
+	// Grow to Quad with NO accompanying edit.
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "grow Single -> Quad" );
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ),
+	       "MONEY ASSERTION (f): the three newly-revealed panes render WITHOUT any edit -- the grow "
+	       "itself wakes the loop" );
+	const std::vector<unsigned int> seq = f.ctrl->Sequence();
+	bool sawAll = false;
+	{
+		bool p1 = false, p2 = false, p3 = false;
+		for( std::size_t i = 0; i < seq.size(); ++i ) {
+			if( seq[i] == 1 ) p1 = true;
+			if( seq[i] == 2 ) p2 = true;
+			if( seq[i] == 3 ) p3 = true;
+		}
+		sawAll = p1 && p2 && p3;
+	}
+	Check( sawAll, "panes 1, 2 and 3 each got their reveal pass" );
+	Check( f.ctrl->SettlesAt( seq.size(), kSettleMs ), "and the rotation quiesces after" );
+}
+
+//----------------------------------------------------------------------
+// (g) review-r2 P1 regression: updating a named view PROPAGATES to the
+//     panes bound to it (§7.2).  Before the fix, the binding resolved
+//     once and cached forever; UpdateNamedView touched no pane state.
+//----------------------------------------------------------------------
+static void RunNamedViewUpdatePropagatesTest()
+{
+	std::printf( "=== scheduler (g): UpdateNamedView re-renders bound panes (review-r2 P1) ===\n" );
+	Fixture f( "pane_sched_g.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+	Check( f.ctrl->CaptureNamedView( "keyview" ), "capture a named view" );
+	Check( f.ctrl->SetPaneVantageNamedView( 1, "keyview" ), "bind pane 1 to it" );
+
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
+	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "loop idle before the update" );
+	f.ctrl->ClearSequence();
+
+	// Update the view (index 0 -- the only one).  The BOUND pane must
+	// re-render; nothing else should.
+	Check( f.ctrl->UpdateNamedView( 0 ), "UpdateNamedView(0)" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+	       "MONEY ASSERTION (g): the bound pane re-renders after the view update -- the binding "
+	       "FOLLOWS the view instead of caching its first resolution forever" );
+	const std::vector<unsigned int> seq = f.ctrl->Sequence();
+	Check( !seq.empty() && seq[0] == 1, "and the re-rendered pane is the bound one (1)" );
+	Check( f.ctrl->SettlesAt( seq.size(), kSettleMs ),
+	       "the UNBOUND pane (0) does not re-render -- propagation is targeted, not a global kick" );
+}
+
 int main()
 {
 	RunRotationOrderTest();
@@ -339,6 +414,8 @@ int main()
 	RunGesturePinningTest();
 	RunSingleLayoutBaselineTest();
 	RunHiddenPaneNeverRendersTest();
+	RunLayoutGrowWakesLoopTest();
+	RunNamedViewUpdatePropagatesTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

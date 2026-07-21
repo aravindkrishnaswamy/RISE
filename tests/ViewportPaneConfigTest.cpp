@@ -3,7 +3,9 @@
 //  ViewportPaneConfigTest.cpp - N-up multi-viewport pane model, P3a
 //    slice 1 (docs/gui/RENDER_MODES.md §7.2 "Pane model" / §7.4 "C-ABI"):
 //    the CONFIG LAYER ONLY for SceneEditController's four always-present
-//    pane slots.  Slice 1 never renders -- there is no scheduler yet
+//    (Rendering itself is the scheduler's contract -- see
+//    ViewportPaneSchedulerTest for the rotation evidence; THIS file is
+//    the config-layer contract only.)
 //    (that is a later slice, §7.3) -- so every test here runs in
 //    SKELETON mode (SceneEditController ctrl(*pJob, nullptr)) and only
 //    exercises the config CRUD: PaneCountForLayout, {Set,Get}ViewportLayout,

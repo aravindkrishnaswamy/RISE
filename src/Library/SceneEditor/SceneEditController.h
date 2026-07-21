@@ -2312,13 +2312,14 @@ namespace RISE
 		//!
 		//! Four ALWAYS-PRESENT pane slots; the layout selects the visible
 		//! subset (hidden panes keep their configuration so toggling
-		//! 2x2 -> 1 -> 2x2 never loses a setup).  P3a SLICE 1 is the CONFIG
-		//! LAYER ONLY: pane 0 is an ALIAS VIEW of the existing single-viewport
-		//! state (its mode IS mViewportRenderMode; its vantage IS the free-fly
-		//! ViewportPose state), so single-viewport behaviour is byte-identical
-		//! and every existing setter/getter keeps working unmodified.  Panes
-		//! 1-3 hold validated configuration but DO NOT RENDER until the
-		//! scheduler slice lands (see §7.3's context-switch model).
+		//! 2x2 -> 1 -> 2x2 never loses a setup).  Pane 0 is an ALIAS VIEW of
+		//! the existing single-viewport state (its mode IS
+		//! mViewportRenderMode; its vantage IS the free-fly ViewportPose
+		//! state), so single-viewport behaviour is unchanged and every
+		//! existing setter/getter keeps working unmodified.  Panes 1-3 hold
+		//! validated configuration that the §7.3 context-switch scheduler
+		//! (SwitchToPaneLocked_ and friends, below) realizes lazily at each
+		//! rotation switch -- all visible panes RENDER.
 		//!
 		//! All setters follow the house discipline: render-owns-scene guard
 		//! first, then mMutex (+ CancelAndParkRender_ where render-thread-read
@@ -3397,12 +3398,13 @@ namespace RISE
 		mutable std::mutex          mNamedViewsMutex;
 		std::vector<NamedView>      mNamedViews;
 
-		// -------- N-up pane model storage (P3a slice 1: config only) --------
+		// -------- N-up pane model storage: DESIRED state (configs) --------
 		// Pane 0's mode/vantage are NOT stored here -- pane 0 is an alias
 		// view of mViewportRenderMode + the free-fly ViewportPose state (see
-		// the public API doc above).  Slots 1-3 hold validated config for the
-		// scheduler slice to consume.  Guarded by mMutex (setters park; the
-		// render thread does not read these until the scheduler slice).
+		// the public API doc above).  Slots 1-3 hold validated config that
+		// SwitchToPaneLocked_'s reconcile consumes at the mint boundary.
+		// Guarded by mMutex (setters lock; the render thread reads ONLY
+		// inside the mint lock, so no park is needed in the setters).
 		// Default-member-init (house pattern -- see mSectionExpanded's ctor
 		// note) so no init-list entries are needed and -Wreorder can't bite.
 		struct PaneConfig
@@ -3440,6 +3442,11 @@ namespace RISE
 		{
 			bool                         dirty = true;    // needs a pass (scene edit / config change)
 			int                          polishSaved = 0; // PolishState as int (None) -- saved register
+			//! review-r1 P1: the resolution ladder + variant pin are part of
+			//! the register set.  Defaults: full-res (1), unpinned -- what a
+			//! fresh single-viewport starts at.
+			unsigned int                 previewScaleSaved  = 1;
+			bool                         previewPinnedSaved = false;
 			ICamera*                     overrideCamera = nullptr;  // realized vantage (owned addref; null => scene camera)
 			bool                         poseActive = false;        // saved mViewportPoseActive register
 			CameraSnapshot               poseSaved {};              // saved mViewportPose register
@@ -3490,6 +3497,10 @@ namespace RISE
 		unsigned int PickNextVisiblePaneLocked_() const;
 		bool         AnyVisiblePaneHasWorkLocked_() const;
 		void         MarkAllVisiblePanesDirtyLocked_();
+		//! review-r2 P1: named-view propagation -- marks every pane bound
+		//! to `name` for reconcile.  Takes mMutex; caller must NOT hold
+		//! mNamedViewsMutex (never nested, either order).
+		void         InvalidatePanesBoundToNamedView_( const String& name );
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for
