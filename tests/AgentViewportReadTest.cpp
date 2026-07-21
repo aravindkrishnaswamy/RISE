@@ -202,6 +202,32 @@ static void RunPositiveAndIsolation()
 				Check( Base64Decode( b64, decoded ), "positive: read_viewport png_base64 decodes cleanly" );
 				Check( StartsWithPngSignature( decoded ), "positive: decoded bytes start with the \\x89PNG signature" );
 				viewportPngNative = decoded;
+
+				// P3c (§7.8 ratified decision 3): the pane-set introspection.
+				// Single layout, controller attached: layout 0, primary 0,
+				// sourcePane 0, pane 0 visible in "preview" tracking the
+				// scene camera, panes 1-3 present but not visible.  The
+				// pane set is READ-ONLY by ratified decision -- there is no
+				// setter to test on this surface, deliberately.
+				Check( r.has( "paneSet" ), "P3c: read_viewport carries paneSet when a controller is attached" );
+				if( r.has( "paneSet" ) )
+				{
+					const JsonValue& ps = r.get( "paneSet" );
+					Check( static_cast<int>( ps.get( "layout" ).asNumber() ) == 0, "P3c: layout is Single (0)" );
+					Check( static_cast<unsigned int>( ps.get( "primary" ).asNumber() ) == 0, "P3c: primary is pane 0" );
+					Check( static_cast<unsigned int>( ps.get( "sourcePane" ).asNumber() ) == 0,
+					       "P3c: sourcePane is 0 -- the PNG is attributably pane 0's content in Single layout" );
+					const JsonValue& arr = ps.get( "panes" );
+					Check( arr.size() == 4, "P3c: all four pane slots are reported" );
+					if( arr.size() == 4 )
+					{
+						Check( arr.at( 0 ).get( "visible" ).asBool() == true,  "P3c: pane 0 visible" );
+						Check( arr.at( 0 ).get( "mode" ).asString() == "preview", "P3c: pane 0 mode is preview" );
+						Check( arr.at( 0 ).get( "vantageKind" ).asNumber() == 0, "P3c: pane 0 tracks the scene camera" );
+						Check( arr.at( 1 ).get( "visible" ).asBool() == false, "P3c: pane 1 hidden in Single" );
+						Check( arr.at( 3 ).get( "visible" ).asBool() == false, "P3c: pane 3 hidden in Single" );
+					}
+				}
 			}
 
 			// Downscaled read_viewport (maxEdge = 16 -> dims <= 16).

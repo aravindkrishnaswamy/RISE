@@ -1719,6 +1719,17 @@ namespace RISE
 		//! that the flag clears afterward.
 		bool ForTest_RenderOwnsScene() const { return mRenderOwnsScene.load( std::memory_order_acquire ); }
 
+		//! P3c: the pane whose content the interactive frame store
+		//! currently holds -- i.e. which pane a CopyInteractiveFrame /
+		//! agent read_viewport actually returns.  Public and honest (not a
+		//! test seam): the agent surface reports it so a multi-pane
+		//! viewport read is attributable.
+		unsigned int CurrentRenderPane() const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			return mCurrentPane;
+		}
+
 		//! P3a slice 2 test seam: drive the render loop the way an edit
 		//! does (KickRender is private; scheduler tests need the edit
 		//! trigger without performing a real scene mutation).

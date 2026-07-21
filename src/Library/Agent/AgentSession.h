@@ -1370,6 +1370,29 @@ namespace RISE
 			                                         bool& outAvailable,
 			                                         std::string& outReason ) const;
 
+			//! P3c (RENDER_MODES.md §7.8 ratified decision 3): READ-ONLY
+			//! introspection of the N-up pane set, so an agent can reason
+			//! about what the user is looking at.  `sourcePane` is the pane
+			//! whose content ReadViewport currently returns (the r2-B
+			//! honesty gap, closed structurally).  NO agent control of the
+			//! pane set exists by decision.
+			struct ViewportPaneInfo
+			{
+				bool        visible = false;
+				std::string mode;         //!< registry wire name
+				int         vantageKind = 0;   //!< 0 SceneCamera / 1 FreeFly / 2 NamedView
+				std::string namedView;    //!< set when vantageKind==2
+			};
+			struct ViewportPanesInfo
+			{
+				int              layout = 0;      //!< 0 Single/1 TwoH/2 OnePlusTwo/3 Quad
+				unsigned int     primary = 0;
+				unsigned int     sourcePane = 0;  //!< whose pixels ReadViewport returns
+				ViewportPaneInfo panes[4];
+			};
+			//! False only when no controller is attached.
+			bool DescribeViewportPanes( ViewportPanesInfo& out ) const;
+
 			//! Toolkit slice 3b: the structured result of query_object_at.
 			//! `hit`/`name`/`kind`/`pixelX`/`pixelY`/`width`/`height`/`message`
 			//! are the wire-visible fields (AgentRpc.cpp's query_object_at

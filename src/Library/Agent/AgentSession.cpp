@@ -5136,6 +5136,30 @@ namespace RISE
 		// is "the last-rendered pane" (scheduling-dependent), NOT necessarily
 		// pane 0 or the primary.  Callers surface this via the render-result
 		// message; a per-pane read lands with P3a slice 3's per-pane sinks.
+		bool AgentSession::DescribeViewportPanes( ViewportPanesInfo& out ) const
+		{
+			if( !mController ) return false;
+			out.layout     = static_cast<int>( mController->GetViewportLayout() );
+			out.primary    = mController->GetPrimaryPane();
+			out.sourcePane = mController->CurrentRenderPane();
+			const unsigned int visible = SceneEditController::PaneCountForLayout(
+				mController->GetViewportLayout() );
+			for( unsigned int i = 0; i < SceneEditController::kViewportPaneCount; ++i )
+			{
+				ViewportPaneInfo& pi = out.panes[i];
+				pi.visible = ( i < visible );
+				pi.mode    = mController->GetPaneRenderMode( i );
+				SceneEditController::PaneVantageKind kind;
+				String nv;
+				if( mController->GetPaneVantage( i, kind, nv ) )
+				{
+					pi.vantageKind = static_cast<int>( kind );
+					pi.namedView   = nv.c_str() ? nv.c_str() : "";
+				}
+			}
+			return true;
+		}
+
 		std::vector<unsigned char> AgentSession::ReadViewport(
 			unsigned int maxEdge, unsigned int& outWidth, unsigned int& outHeight,
 			bool& outAvailable, std::string& outReason ) const

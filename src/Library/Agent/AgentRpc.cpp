@@ -1554,6 +1554,32 @@ namespace RISE
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					// P3c (§7.8 ratified decision 3): pane-set introspection,
+					// read-only.  `sourcePane` states WHICH pane the PNG came
+					// from -- in a multi-pane layout the viewport read is the
+					// last-rendered pane, and without this field the agent
+					// cannot attribute the image (the review-r2-B honesty gap,
+					// now closed structurally rather than by a note).
+					AgentSession::ViewportPanesInfo panesInfo;
+					if( s->DescribeViewportPanes( panesInfo ) )
+					{
+						JsonValue panesObj = JsonValue::MakeObject();
+						panesObj.set( "layout",     JsonValue::MakeNumber( panesInfo.layout ) );
+						panesObj.set( "primary",    JsonValue::MakeNumber( static_cast<double>( panesInfo.primary ) ) );
+						panesObj.set( "sourcePane", JsonValue::MakeNumber( static_cast<double>( panesInfo.sourcePane ) ) );
+						JsonValue arr = JsonValue::MakeArray();
+						for( unsigned int i = 0; i < 4; ++i )
+						{
+							JsonValue pv = JsonValue::MakeObject();
+							pv.set( "visible",     JsonValue::MakeBool( panesInfo.panes[i].visible ) );
+							pv.set( "mode",        JsonValue::MakeString( panesInfo.panes[i].mode ) );
+							pv.set( "vantageKind", JsonValue::MakeNumber( panesInfo.panes[i].vantageKind ) );
+							pv.set( "namedView",   JsonValue::MakeString( panesInfo.panes[i].namedView ) );
+							arr.push_back( pv );
+						}
+						panesObj.set( "panes", arr );
+						result.set( "paneSet", panesObj );
+					}
 					return MakeSuccess( idValue, result );
 				}
 
