@@ -518,6 +518,19 @@ static void TestSurfaceDimsAndSinkConfig()
 		Check( RISE_API_SceneEditController_SetPaneSurfaceDims( &ctrl, 1, 64, 64 ), "C-ABI dims round-trip" );
 		Check( !RISE_API_SceneEditController_SetPaneSink( nullptr, 1, nullptr ), "C-ABI sink refuses null controller" );
 		Check( RISE_API_SceneEditController_SetPaneSink( &ctrl, 1, nullptr ), "C-ABI sink null-clear accepted" );
+
+		// review-s3 P2: the pointer-half wrappers get the same null-
+		// controller smokes the display-half ones above always had.
+		Check( !RISE_API_SceneEditController_OnPanePointerDown( nullptr, 0, 1.0, 1.0 ), "C-ABI PanePointerDown refuses null controller" );
+		Check( !RISE_API_SceneEditController_OnPanePointerMove( nullptr, 0, 1.0, 1.0 ), "C-ABI PanePointerMove refuses null controller" );
+		Check( !RISE_API_SceneEditController_OnPanePointerUp( nullptr, 0, 1.0, 1.0 ), "C-ABI PanePointerUp refuses null controller" );
+		Check( !RISE_API_SceneEditController_PaneEnterFreeFly( nullptr, 1 ), "C-ABI PaneEnterFreeFly refuses null controller" );
+		Check( !RISE_API_SceneEditController_PaneExitFreeFly( nullptr, 1 ), "C-ABI PaneExitFreeFly refuses null controller" );
+		int phaseSm = -1; unsigned int divSm = 0;
+		Check( !RISE_API_SceneEditController_GetPaneRefinementStatus( nullptr, 0, &phaseSm, &divSm ), "C-ABI PaneRefinementStatus refuses null controller" );
+		Check( !RISE_API_SceneEditController_GetPaneRefinementStatus( &ctrl, 0, nullptr, &divSm ), "C-ABI PaneRefinementStatus refuses null outPhase" );
+		Check( !RISE_API_SceneEditController_GetPaneRefinementStatus( &ctrl, 0, &phaseSm, nullptr ), "C-ABI PaneRefinementStatus refuses null outScaleDivisor" );
+		Check( RISE_API_SceneEditController_GetPaneRefinementStatus( &ctrl, 0, &phaseSm, &divSm ), "C-ABI PaneRefinementStatus round-trips" );
 	}
 	pJob->release();
 }

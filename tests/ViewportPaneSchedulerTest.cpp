@@ -463,8 +463,15 @@ static void RunPaneIndexedGestureTest()
 
 	// The pane-indexed gesture on the secondary pane.
 	Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ), "pane-indexed Down on pane 1 accepted" );
-	Check( f.ctrl->GetPrimaryPane() == 1,
-	       "MONEY ASSERTION (h): the click PROMOTED pane 1 to primary (§7.8 decision 1)" );
+	// review-s3 P1: the FIRST version of this assertion demanded promotion
+	// here and was tagged "§7.8 decision 1" -- but the ratified text says
+	// "navigation drags NEVER steal primary", and OrbitCamera IS a
+	// navigation tool.  The test had enshrined the violation.  The pane
+	// becomes the RENDER TARGET (gesture exclusivity, asserted below);
+	// primary must stay where it was.
+	Check( f.ctrl->GetPrimaryPane() == 0,
+	       "MONEY ASSERTION (h/§7.8): a NAVIGATION drag (OrbitCamera) does NOT steal primary -- "
+	       "pane 0 remains primary" );
 	{
 		SceneEditController::PaneVantageKind kind;
 		String nv;
@@ -500,6 +507,41 @@ static void RunPaneIndexedGestureTest()
 	// orbit/pan/zoom/roll family can move.  Proven by mutation: with a
 	// location-only witness, removing the fly routing (camera edits fall
 	// through to the scene camera) still passed 71/0.
+	// The OTHER half of §7.8 decision 1: a NON-navigation click DOES
+	// promote.  Switch to Select and click pane 1.
+	f.ctrl->SetTool( SceneEditController::Tool::Select );
+	Check( f.ctrl->OnPanePointerDown( 1, Point2( 12, 12 ) ), "Select-tool Down on pane 1 accepted" );
+	Check( f.ctrl->GetPrimaryPane() == 1,
+	       "MONEY ASSERTION (h/§7.8): a NON-navigation click PROMOTES pane 1 to primary" );
+	f.ctrl->OnPanePointerUp( 1, Point2( 12, 12 ) );
+
+	// review-s3 P2 coverage: hidden-pane and free-fly-twin contracts.
+	Check( !f.ctrl->OnPanePointerDown( 3, Point2( 5, 5 ) ),
+	       "pane-indexed Down on a HIDDEN pane (3 in TwoH) is refused" );
+	Check( f.ctrl->PaneEnterFreeFly( 1 ), "PaneEnterFreeFly(1) accepted" );
+	{
+		SceneEditController::PaneVantageKind kind;
+		String nv;
+		Check( f.ctrl->GetPaneVantage( 1, kind, nv )
+		    && kind == SceneEditController::PaneVantageKind::FreeFly,
+		       "PaneEnterFreeFly set the pane's vantage to FreeFly" );
+	}
+	Check( f.ctrl->PaneExitFreeFly( 1 ), "PaneExitFreeFly(1) accepted" );
+	{
+		SceneEditController::PaneVantageKind kind;
+		String nv;
+		Check( f.ctrl->GetPaneVantage( 1, kind, nv )
+		    && kind == SceneEditController::PaneVantageKind::SceneCamera,
+		       "PaneExitFreeFly returned the pane to SceneCamera tracking" );
+	}
+	{
+		int phase = -1; unsigned int div = 0;
+		Check( f.ctrl->GetPaneRefinementStatus( 1, phase, div ),
+		       "GetPaneRefinementStatus succeeds for a valid pane" );
+		Check( !f.ctrl->GetPaneRefinementStatus( 7, phase, div ),
+		       "GetPaneRefinementStatus refuses an out-of-range pane" );
+	}
+
 	Check( before.location[0] == after.location[0]
 	    && before.location[1] == after.location[1]
 	    && before.location[2] == after.location[2]

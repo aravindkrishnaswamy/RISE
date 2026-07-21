@@ -8043,20 +8043,35 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden/invalid
 
-		// §7.8 ratified decision 1: a click in any pane PROMOTES it to
-		// primary.  Inline (we already hold mMutex) rather than via
-		// SetPrimaryPane, which would deadlock on re-lock.
-		mPrimaryPane = pane;
+		// §7.8 ratified decision 1, applied PRECISELY (review-s3 P1): "a
+		// non-navigation click in any pane makes it primary -- navigation
+		// drags NEVER steal primary."  A camera-motion tool's down IS the
+		// start of a navigation drag, so it must not promote; the pane
+		// still becomes the RENDER TARGET below (gesture exclusivity),
+		// which is a separate concern from primary/gizmo ownership.  The
+		// first cut promoted unconditionally -- a ratified-decision
+		// breach the slice-3 review caught (and the first version of
+		// scheduler scenario (h) had enshrined).
+		if( !IsCameraMotionTool( mTool ) )
+		{
+			mPrimaryPane = pane;
+		}
 
-		// Park + switch BEFORE the gesture pin arms (same ordering rule as
-		// the un-indexed path's force-switch, generalized).
+		// Park UNCONDITIONALLY (review-s3 P1): the FreeFly conversion
+		// below mutates mViewportOverrideCamera / mViewportPose(Active) --
+		// the registers the render thread reads on the documented "swapped
+		// only while parked" contract.  The first cut parked only when a
+		// SWITCH was needed, so a re-click on the already-current pane
+		// mutated them concurrently with an in-flight pass (a genuine data
+		// race; non-crashing today only by the SceneCamera=>null-override
+		// invariant coincidence).  Park always; switch conditionally.
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 		if( mCurrentPane != pane || mPaneRender[pane].configDirty )
 		{
-			if( mRendering.load( std::memory_order_acquire ) ) {
-				mCancelProgress.RequestCancel();
-				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
-			}
-			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 			SwitchToPaneLocked_( pane );
 		}
 
@@ -8087,7 +8102,12 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		}
 
 		// Arm the gesture pane for the forwarded un-indexed Down (one-shot
-		// -- see mGesturePaneArmed's doc).
+		// -- see mGesturePaneArmed's doc).  SAFE ONLY under the class-wide
+		// "pointer events are UI-thread-only" contract: the handoff spans
+		// a lock release, so two threads driving pointer events into one
+		// controller could misroute a gesture's pane.  No in-tree caller
+		// does (both C-ABI shims are UI-thread); revisit with any
+		// multi-window shell (review-s3 P3, defense-in-depth note).
 		mGesturePane      = pane;
 		mGesturePaneArmed = true;
 	}
@@ -8164,9 +8184,17 @@ bool SceneEditController::GetPaneRefinementStatus( unsigned int pane, int& outPh
 		return true;
 	}
 	// Unscheduled: derive the honest coarse answer from the saved slot.
+	// review-s3 P1: Paused is GLOBAL and must be checked FIRST, mirroring
+	// GetRefinementStatus's own ordering -- without this an unscheduled
+	// dirty pane reported Rendering while refinement was paused,
+	// contradicting the "same contract as the un-indexed call" doc.
 	const PaneRenderState& slot = mPaneRender[pane];
 	outScaleDivisor = slot.previewScaleSaved;
-	if( slot.dirty )
+	if( mRefinementPaused.load( std::memory_order_acquire ) )
+	{
+		outPhase = 4;   // Paused
+	}
+	else if( slot.dirty )
 	{
 		outPhase = 1;   // Rendering (a pass is owed)
 	}
@@ -8196,9 +8224,23 @@ bool SceneEditController::ApplyPaneFlyOp_( const SceneEdit& edit )
 
 	SceneEditor::ApplyCameraOpToCamera( *cam, edit, mEditor.SceneScale() );
 	cam->RegenerateData();
-	CameraIntrospection::CaptureCameraSnapshot( *cam, mViewportPose );
-	if( mGesturePane < kViewportPaneCount ) {
-		mPaneConfigs[mGesturePane].pose = mViewportPose;
+	// review-s3 P3: CHECKED capture into a temp -- committing a failed
+	// capture would leave a Frankenstein pose (fresh shared fields, stale
+	// type-specifics).  On failure the camera still moved (renders
+	// correctly); the pose record keeps its last good value and the next
+	// re-realization uses that -- logged so drift is diagnosable.
+	CameraSnapshot flownPose;
+	if( CameraIntrospection::CaptureCameraSnapshot( *cam, flownPose ) )
+	{
+		mViewportPose = flownPose;
+		if( mGesturePane < kViewportPaneCount ) {
+			mPaneConfigs[mGesturePane].pose = flownPose;
+		}
+	}
+	else
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::ApplyPaneFlyOp_: pose re-capture failed -- pane pose record keeps its last good value" );
 	}
 
 	// Pane-LOCAL invalidation: only the flown pane's content changed.
@@ -8232,8 +8274,20 @@ bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w,
 bool SceneEditController::SetPaneSink( unsigned int pane, IRasterizerOutput* pSink )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex );
 	if( pane >= kViewportPaneCount ) return false;   // sinks may be pre-wired for hidden panes
+	// review-s3 P1: PARK before the swap -- the render thread reads
+	// paneSink unlocked in DoOneRenderPass's attach block (and the
+	// rasterizer addrefs it there).  Swapping mid-pass could release the
+	// old sink to zero while the pass was about to addref it: an
+	// unconditional-by-construction use-after-free.  Same cancel-and-park
+	// shape as every register mutator; sink swaps are rare (shell
+	// startup / teardown), so the cancel cost is irrelevant.
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 	if( pSink ) pSink->addref();
 	if( mPaneRender[pane].paneSink ) mPaneRender[pane].paneSink->release();
 	mPaneRender[pane].paneSink = pSink;
