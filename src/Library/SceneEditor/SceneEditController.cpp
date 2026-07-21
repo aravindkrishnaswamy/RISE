@@ -805,6 +805,7 @@ SceneEditController::~SceneEditController()
 		if( slot.frameStore )        { slot.frameStore->release();        slot.frameStore = nullptr; }
 		if( slot.variantRasterizer ) { slot.variantRasterizer->release(); slot.variantRasterizer = nullptr; }
 		if( slot.viewModeCaster )    { slot.viewModeCaster->release();    slot.viewModeCaster = nullptr; }
+		if( slot.paneSink )          { slot.paneSink->release();          slot.paneSink = nullptr; }   // P3a slice 3
 	}
 	// Inverse-edit rollback holds NO snapshot — a transaction left open
 	// at teardown needs no resource release; the (uncommitted) live edits
@@ -6366,6 +6367,10 @@ void SceneEditController::RenderLoop()
 			// Clear the pane's dirty AT MINT: if this pass is cancelled by
 			// a new edit, the edit path re-marks every pane dirty anyway.
 			mPaneRender[mCurrentPane].dirty = false;
+			// P3a slice 3: stamp the pane's surface dims for the pass --
+			// registers, read by DoOneRenderPass's film-swap block.
+			mCurrentPaneSurfaceW = mPaneConfigs[mCurrentPane].surfaceW;
+			mCurrentPaneSurfaceH = mPaneConfigs[mCurrentPane].surfaceH;
 			// External review P1 fix: snapshot mPolishState and apply it
 			// to mInteractiveImpl HERE, inside the SAME mMutex hold
 			// SetViewportRenderMode / SetViewportXray take before calling
@@ -8008,6 +8013,33 @@ bool SceneEditController::SetPaneVantageNamedView( unsigned int pane, const char
 	mPaneRender[pane].dirty       = true;
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w, unsigned int h )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	// Either both zero (reset to film dims) or both nonzero.
+	if( ( w == 0 ) != ( h == 0 ) ) return false;
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden panes refuse (§7.4)
+	if( mPaneConfigs[pane].surfaceW == w && mPaneConfigs[pane].surfaceH == h ) return true;
+	mPaneConfigs[pane].surfaceW = w;
+	mPaneConfigs[pane].surfaceH = h;
+	mPaneRender[pane].dirty = true;
+	mPanePassPending.store( true, std::memory_order_release );
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::SetPaneSink( unsigned int pane, IRasterizerOutput* pSink )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( pane >= kViewportPaneCount ) return false;   // sinks may be pre-wired for hidden panes
+	if( pSink ) pSink->addref();
+	if( mPaneRender[pane].paneSink ) mPaneRender[pane].paneSink->release();
+	mPaneRender[pane].paneSink = pSink;
 	return true;
 }
 
@@ -9788,10 +9820,21 @@ void SceneEditController::DoOneRenderPass()
 	// preview rasterizer gets -- it starts every pass with an empty outs
 	// list otherwise.
 	activeRast->SetProgressCallback( &mCancelProgress );
-	if( mPreviewSink )
+	// P3a slice 3: attach the CURRENT pane's sink for this quantum; fall
+	// back to the legacy single sink (which remains pane 0's default and
+	// the only sink either shipped GUI wires today).  mPaneRender[...]
+	// .paneSink is written only under mMutex (SetPaneSink) and this read
+	// runs on the render thread between quanta -- same swapped-registers
+	// contract as the caster state above.  mCurrentPane is stable for the
+	// pass (stamped at the mint).
 	{
-		activeRast->FreeRasterizerOutputs();
-		activeRast->AddRasterizerOutput( mPreviewSink );
+		IRasterizerOutput* sinkForPass = mPaneRender[mCurrentPane].paneSink
+			? mPaneRender[mCurrentPane].paneSink : mPreviewSink;
+		if( sinkForPass )
+		{
+			activeRast->FreeRasterizerOutputs();
+			activeRast->AddRasterizerOutput( sinkForPass );
+		}
 	}
 
 	const IScene* scene = mJob.GetScene();
@@ -9875,6 +9918,33 @@ void SceneEditController::DoOneRenderPass()
 		~FilmDimRestore() { if( armed && sp ) sp->ResizeFilm( w, h, pAR ); }
 	} restoreGuard{ nullptr, 0, 0, Scalar( 1 ), false };
 
+	// P3a slice 3: a pane with explicit surface dims renders at THOSE dims
+	// (divided by the preview scale) instead of the film's rest dims -- the
+	// same ResizeFilm swap+restore mechanism, different base.  0 = film
+	// dims (pane 0's default; single-viewport behaviour unchanged).  The
+	// swap now also engages at scale==1 when pane dims differ from film
+	// dims, so a half-width pane genuinely renders half-width.
+	const unsigned int paneW = mCurrentPaneSurfaceW;
+	const unsigned int paneH = mCurrentPaneSurfaceH;
+	{
+		IScenePriv* spProbe = mJob.GetScene();
+		const IFilm* fProbe = spProbe ? spProbe->GetFilm() : nullptr;
+		const bool paneDimsDiffer = paneW && fProbe &&
+			( paneW != fProbe->GetWidth() || paneH != fProbe->GetHeight() );
+		if( paneDimsDiffer && scale <= 1 )
+		{
+			const unsigned int restW   = fProbe->GetWidth();
+			const unsigned int restH   = fProbe->GetHeight();
+			const Scalar       restPAR = fProbe->GetPixelAR();
+			spProbe->ResizeFilm( paneW, paneH, restPAR );
+			restoreGuard.sp    = spProbe;
+			restoreGuard.w     = restW;
+			restoreGuard.h     = restH;
+			restoreGuard.pAR   = restPAR;
+			restoreGuard.armed = true;
+		}
+	}
+
 	if( scale > 1 )
 	{
 		IScenePriv* sp = mJob.GetScene();
@@ -9886,8 +9956,11 @@ void SceneEditController::DoOneRenderPass()
 				const unsigned int restW   = curFilm->GetWidth();
 				const unsigned int restH   = curFilm->GetHeight();
 				const Scalar       restPAR = curFilm->GetPixelAR();
-				const unsigned int sw = restW / scale > 0 ? restW / scale : 1;
-				const unsigned int sh = restH / scale > 0 ? restH / scale : 1;
+				// P3a slice 3: pane dims override the base when set.
+				const unsigned int baseW = paneW ? paneW : restW;
+				const unsigned int baseH = paneH ? paneH : restH;
+				const unsigned int sw = baseW / scale > 0 ? baseW / scale : 1;
+				const unsigned int sh = baseH / scale > 0 ? baseH / scale : 1;
 				sp->ResizeFilm( sw, sh, restPAR );
 				// Arm the guard via field-by-field assignment — see
 				// long comment above for why aggregate-init via

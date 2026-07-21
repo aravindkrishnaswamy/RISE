@@ -3729,12 +3729,12 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! scene => false, nothing mutated.  EXISTING single-viewport calls are
 	//! unchanged and alias pane 0.
 	//!
-	//! SCOPE NOTE (honest gap, review-r2): §7.4 additionally specifies
-	//! _PaneEnterFreeFly/_PaneExitFreeFly, _SetPaneSurfaceDims,
-	//! _SetPaneSink, _GetPaneRefinementStatus and _OnPanePointerDown/
-	//! Move/Up.  Those ship with the per-pane DISPLAY plumbing (P3a slice
-	//! 3 / P3b) -- until then the single preview sink shows the last-
-	//! rendered pane and pointer input is pane-0-scoped.
+	//! SCOPE NOTE (honest gap, review-r2; narrowed by slice 3):
+	//! _SetPaneSurfaceDims and _SetPaneSink SHIPPED with the slice-3
+	//! display plumbing below.  Still deferred: _PaneEnterFreeFly/
+	//! _PaneExitFreeFly, _GetPaneRefinementStatus, and _OnPanePointerDown/
+	//! Move/Up -- pointer input remains pane-0-scoped (click-promotes-
+	//! primary and per-pane navigation land with the P3b shells).
 
 	bool RISE_API_SceneEditController_SetViewportLayout(
 		SceneEditController* p, int layout );
@@ -3754,6 +3754,17 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! _GetViewportRenderMode's fail-closed default).
 	const char* RISE_API_SceneEditController_GetPaneRenderMode(
 		SceneEditController* p, unsigned int pane );
+
+	//! P3a slice 3: pane render-surface dims (the GUI's pane rect); 0/0
+	//! resets to film dims.  Fail-closed per the block contract.
+	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
+		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h );
+
+	//! P3a slice 3: per-pane preview sink (controller addrefs; null
+	//! clears).  Valid for ANY pane index 0-3 (sinks may be pre-wired for
+	//! panes a later layout reveals).
+	bool RISE_API_SceneEditController_SetPaneSink(
+		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink );
 
 	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
 		SceneEditController* p, unsigned int pane );

@@ -2370,6 +2370,19 @@ namespace RISE
 		bool SetPaneRenderMode( unsigned int pane, const char* name );
 		const char* GetPaneRenderMode( unsigned int pane ) const;
 
+		//! P3a slice 3: set pane `pane`'s render-surface pixel dims (the
+		//! GUI's pane rect).  The pass renders at surface/previewScale and
+		//! the camera aspect adapts via the existing ResizeFilm swap.  0/0
+		//! resets to "use the film's rest dims".  Applies to VISIBLE panes
+		//! only (§7.4 fail-closed); marks the pane dirty.
+		bool SetPaneSurfaceDims( unsigned int pane, unsigned int w, unsigned int h );
+
+		//! P3a slice 3: per-pane preview sink.  The render pass attaches
+		//! the CURRENT pane's sink for its quantum (falling back to the
+		//! legacy single sink -- which remains pane 0's default -- when a
+		//! pane has none).  Pass null to clear.  The controller addrefs.
+		bool SetPaneSink( unsigned int pane, IRasterizerOutput* pSink );
+
 		//! Vantage setters.  Pane 0 forwards to the existing free-fly /
 		//! named-view machinery (ExitFreeFly / SetViewportPose); panes 1-3
 		//! store configuration.  SetPaneVantageNamedView requires the named
@@ -3420,6 +3433,11 @@ namespace RISE
 			PaneVantageKind                    vantageKind = PaneVantageKind::SceneCamera;
 			CameraSnapshot                     pose {};      // NamedView snapshot fallback / future FreeFly
 			String                             namedViewRef; // valid when vantageKind==NamedView
+			//! P3a slice 3: per-pane render surface in pixels (the GUI's
+			//! pane rect).  0/0 = "use the film's rest dims" -- pane 0's
+			//! default, byte-identical single-viewport behaviour.
+			unsigned int                       surfaceW = 0;
+			unsigned int                       surfaceH = 0;
 		};
 		PaneConfig                  mPaneConfigs[kViewportPaneCount];  // [0] unused (alias)
 		ViewportLayout              mViewportLayout = ViewportLayout::Single;
@@ -3467,6 +3485,9 @@ namespace RISE
 			//! reconcile rebuild.  Value-init 0 == Preview (static_assert
 			//! in the .cpp).
 			Implementation::ViewportRenderMode realizedMode {};
+			//! P3a slice 3: per-pane sink (owned addref; null => fall back
+			//! to the legacy mPreviewSink, which stays pane 0's default).
+			IRasterizerOutput*           paneSink = nullptr;
 			//! Set by the pane-config setters (mode/vantage) for panes 1-3;
 			//! consumed by SwitchToPaneLocked_'s reconcile.  Setters mutate
 			//! ONLY desired-state fields under mMutex -- never registers --
@@ -3486,6 +3507,13 @@ namespace RISE
 		//! predicate alongside mEditPending with the same acquire/consume
 		//! shape.
 		std::atomic<bool>           mPanePassPending { false };
+
+		//! P3a slice 3: the CURRENT pane's surface dims, stamped at the
+		//! mint (inside the same lock hold as the context switch) and read
+		//! by DoOneRenderPass -- registers, like every per-quantum input.
+		//! 0 = use film rest dims.
+		unsigned int                mCurrentPaneSurfaceW = 0;
+		unsigned int                mCurrentPaneSurfaceH = 0;
 
 		//! Scheduler helpers -- ALL require mMutex held (and the render
 		//! parked where they touch registers); see each impl's doc.

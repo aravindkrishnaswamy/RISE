@@ -484,6 +484,44 @@ namespace
 	}
 }   // anonymous namespace
 
+//----------------------------------------------------------------------
+// P8: slice-3 display plumbing config contracts (surface dims + sinks).
+// The RENDER halves (film-swap base, per-quantum sink attach) live in
+// the real DoOneRenderPass and need the GUI shells / E2E to exercise --
+// this scenario covers the config-layer contract only, honestly.
+//----------------------------------------------------------------------
+static void TestSurfaceDimsAndSinkConfig()
+{
+	std::printf( "P8: slice-3 surface dims + pane sink config contracts...\n" );
+	const std::string tmp = TempPath( "pane_slice3.RISEscene" );
+	Job* pJob = LoadScene( kPlainScene, tmp );
+	Check( pJob != nullptr, "fixture loads" );
+	if( !pJob ) return;
+	{
+		SceneEditController ctrl( *pJob, nullptr );
+		Check( ctrl.SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+
+		Check( ctrl.SetPaneSurfaceDims( 1, 640, 360 ), "set pane 1 surface dims" );
+		Check( ctrl.SetPaneSurfaceDims( 1, 640, 360 ), "same-dims re-set is a no-op true" );
+		Check( !ctrl.SetPaneSurfaceDims( 1, 640, 0 ), "half-zero dims refused (both-or-neither contract)" );
+		Check( !ctrl.SetPaneSurfaceDims( 2, 320, 200 ), "hidden pane refuses dims (§7.4)" );
+		Check( !ctrl.SetPaneSurfaceDims( 7, 320, 200 ), "out-of-range pane refused" );
+		Check( ctrl.SetPaneSurfaceDims( 1, 0, 0 ), "0/0 resets to film dims" );
+
+		// Sinks: valid for ANY pane 0-3 (pre-wiring for hidden panes is
+		// allowed -- the GUI builds all four sinks once at startup).
+		Check( ctrl.SetPaneSink( 3, nullptr ), "null sink accepted for a hidden pane (clear = no-op)" );
+		Check( !ctrl.SetPaneSink( 4, nullptr ), "out-of-range pane refused for sinks" );
+
+		// C-ABI mirrors.
+		Check( !RISE_API_SceneEditController_SetPaneSurfaceDims( nullptr, 1, 64, 64 ), "C-ABI dims refuses null controller" );
+		Check( RISE_API_SceneEditController_SetPaneSurfaceDims( &ctrl, 1, 64, 64 ), "C-ABI dims round-trip" );
+		Check( !RISE_API_SceneEditController_SetPaneSink( nullptr, 1, nullptr ), "C-ABI sink refuses null controller" );
+		Check( RISE_API_SceneEditController_SetPaneSink( &ctrl, 1, nullptr ), "C-ABI sink null-clear accepted" );
+	}
+	pJob->release();
+}
+
 int main()
 {
 	std::printf( "=== ViewportPaneConfigTest ===\n" );
@@ -494,6 +532,7 @@ int main()
 	TestPaneZeroAliasing();
 	TestVantageCrud();
 	TestCAbiWrappers();
+	TestSurfaceDimsAndSinkConfig();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

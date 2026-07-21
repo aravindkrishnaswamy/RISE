@@ -7663,6 +7663,20 @@ namespace RISE
 		return p->GetPaneRenderMode( pane );
 	}
 
+	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
+		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h )
+	{
+		if( !p ) return false;
+		return p->SetPaneSurfaceDims( pane, w, h );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneSink(
+		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink )
+	{
+		if( !p ) return false;
+		return p->SetPaneSink( pane, pSink );
+	}
+
 	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
 		SceneEditController* p, unsigned int pane )
 	{
