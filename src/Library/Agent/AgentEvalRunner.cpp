@@ -1476,7 +1476,17 @@ namespace RISE
 			//!        each split costs an extra render and calls are the
 			//!        binding constraint.  Epoch-3 cells were driven under the
 			//!        mandate and are not comparable to softened-guidance runs.
-			static const int kEvalMethodologyEpoch = 4;
+			//!   5 -> (2026-07-20) the blind-edit nudge (AgentChatLoop appends a
+			//!        one-shot "you have edited N times without rendering"
+			//!        system-prompt reminder, default on) is a DRIVE-LOOP
+			//!        change, and the general modeling skill gained a
+			//!        "don't build blind / place the hero at the fixed
+			//!        camera's focal point" lesson.  Both alter how a build
+			//!        turn is driven; cells recorded before them are not
+			//!        comparable.  (The skill file's bytes are not covered by
+			//!        ScenarioContentHash, so the epoch is the only thing that
+			//!        invalidates prior cells on a skill edit -- see epoch 2.)
+			static const int kEvalMethodologyEpoch = 5;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,

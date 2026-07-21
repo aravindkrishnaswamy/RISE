@@ -251,6 +251,30 @@ namespace RISE
 			//! rather than re-deriving it from the provider.
 			int MaxToolRoundsPerTurn() const { return mMaxToolRoundsPerTurn; }
 
+			//! Default "blind-edit" nudge threshold: after this many
+			//! consecutive DOCUMENT-MUTATING tool calls (insert_chunk /
+			//! propose_patch / remove_chunk) with NO intervening VISUAL
+			//! observation (render / read_image / read_viewport /
+			//! query_object_at), the loop appends a one-shot system-prompt
+			//! reminder to the NEXT request telling the model to render and
+			//! look at its work.  Chosen from a measured failure: a local
+			//! model asked to build a furnished scene inserted 70-100+ chunks
+			//! and NEVER rendered once, building entirely blind until it
+			//! exhausted its budget.  This is a general drive-loop nudge (like
+			//! an editor reminding you to save), NOT an eval-specific hack and
+			//! NOT a budget -- it never blocks, it only reminds.
+			static const int kDefaultBlindEditNudgeThreshold = 10;
+
+			//! Configure the blind-edit nudge (see kDefaultBlindEditNudgeThreshold).
+			//! `threshold <= 0` disables it entirely.  Default is enabled at
+			//! the default threshold.  A host that wants a different cadence
+			//! (or none -- e.g. a purely non-visual editing session) sets it here.
+			void SetBlindEditNudgeThreshold( int threshold ) { mBlindEditNudgeThreshold = threshold; }
+
+			//! The active blind-edit nudge threshold (0 = disabled).  Exposed
+			//! for hosts/tests to report or assert the posture.
+			int BlindEditNudgeThreshold() const { return mBlindEditNudgeThreshold; }
+
 			//! Maximum user-attached reference images kept LIVE (un-
 			//! elided) across the WHOLE conversation -- see USER IMAGE
 			//! RETENTION in the file header.  Attaching beyond this cap
@@ -610,6 +634,16 @@ namespace RISE
 			//! NOT reset by Reset()/SetProvider -- the host set it for the
 			//! lifetime of this loop, same posture as the model selection.
 			bool mToolRoundsCapExplicit = false;
+			//! Blind-edit nudge state (see kDefaultBlindEditNudgeThreshold).
+			//! `mBlindEditStreak` counts consecutive document-mutating tool
+			//! calls with no intervening visual observe; it resets to 0 on any
+			//! observe verb and on a new user turn.  When it reaches a positive
+			//! multiple of the threshold, `mPendingBuildNudge` is armed with a
+			//! one-shot reminder that the next BuildRequest folds into the
+			//! system prompt and clears.
+			int         mBlindEditStreak = 0;
+			int         mBlindEditNudgeThreshold = kDefaultBlindEditNudgeThreshold;
+			std::string mPendingBuildNudge;
 
 			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: sticky once a
 			//! text-only model 400-rejects multimodal content.  While set,

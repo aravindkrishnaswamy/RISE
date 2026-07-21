@@ -391,6 +391,8 @@ namespace RISE
 			mPendingResults.clear();
 			mToolLineStash.clear();
 			mToolRounds = 0;
+			mBlindEditStreak = 0;
+			mPendingBuildNudge.clear();
 			// A fresh session may target a different, image-capable model --
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
@@ -631,8 +633,11 @@ namespace RISE
 				}
 			}
 
-			// A new conversation-turn: the tool-round cap starts over.
+			// A new conversation-turn: the tool-round cap starts over, and so
+			// does the blind-edit run (the user just spoke -- a fresh
+			// instruction, not a continuation of an unseen edit streak).
 			mToolRounds = 0;
+			mBlindEditStreak = 0;
 		}
 
 		ChatHttpRequest AgentChatLoop::BuildRequest( const std::string& apiKey )
@@ -668,7 +673,20 @@ namespace RISE
 			// Facet 5 slice S1: append the skills section (when set) to the
 			// base prompt.  An empty index text sends the base prompt
 			// UNCHANGED -- byte-identical to the pre-S1 behaviour.
-			const std::string systemPrompt = ComposeSystemPrompt();
+			std::string systemPrompt = ComposeSystemPrompt();
+
+			// BLIND-EDIT NUDGE: fold a one-shot reminder into THIS request's
+			// system prompt when a run of unseen edits armed one (see
+			// AddToolResult).  One-shot -- cleared here so it rides exactly
+			// the request that follows the tripping edit, not every request
+			// after.  Deliberately NOT part of ComposeSystemPrompt() (which
+			// stamps the once-per-session trajectory record): the nudge is
+			// transient per-request state, not part of the session's identity.
+			if( !mPendingBuildNudge.empty() ) {
+				systemPrompt += "\n\n";
+				systemPrompt += mPendingBuildNudge;
+				mPendingBuildNudge.clear();
+			}
 
 			// The key goes straight through to the codec's auth header and
 			// is retained NOWHERE in this object.  REASONING-MODEL TOOLS-
@@ -849,6 +867,43 @@ namespace RISE
 			}
 
 			mPendingResults.push_back( std::make_pair( call, rawJsonRpcResponseLine ) );
+
+			// BLIND-EDIT NUDGE (see kDefaultBlindEditNudgeThreshold): track a
+			// run of document mutations with no VISUAL observation between
+			// them.  A model building a whole scene can slip into "insert
+			// forever, never look" -- measured: a local model emitted 70-100+
+			// chunks and rendered zero times.  We reset the run on any visual
+			// observe (render / read_image / read_viewport / query_object_at),
+			// leave it UNCHANGED on a non-visual read (read_document /
+			// read_schema / read_skill / validate -- inspecting text or the
+			// registry is not looking at the RENDERED result), and grow it on
+			// a mutation.  When it hits a positive multiple of the threshold
+			// we arm a one-shot reminder (folded into the next request's
+			// system prompt by BuildRequest).  Threshold <= 0 disables it.
+			{
+				const std::string& v = call.name;
+				const bool isMutation = ( v == "insert_chunk" || v == "propose_patch" || v == "remove_chunk" );
+				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
+				                               v == "read_viewport" || v == "query_object_at" );
+				if( isVisualObserve ) {
+					mBlindEditStreak = 0;
+				}
+				else if( isMutation ) {
+					++mBlindEditStreak;
+					if( mBlindEditNudgeThreshold > 0 &&
+					    ( mBlindEditStreak % mBlindEditNudgeThreshold ) == 0 ) {
+						char note[320];
+						std::snprintf( note, sizeof( note ),
+							"[system reminder] You have made %d document edits in a row without "
+							"rendering. Building blind compounds errors -- call render (or "
+							"read_viewport) now to SEE the current scene, check the framing, "
+							"lighting and placement of what you have built so far, then continue "
+							"from what you observe rather than inserting more unseen.",
+							mBlindEditStreak );
+						mPendingBuildNudge = note;
+					}
+				}
+			}
 
 			// Eval-harness E1: complete the `tool` record for this call --
 			// pair the stamped JSON-RPC line/latency with the response envelope.

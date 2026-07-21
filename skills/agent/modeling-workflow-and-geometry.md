@@ -6,6 +6,18 @@
 Modeling is: insert/edit ONE thing, then look, then adjust.  Looking
 is cheap if you ask for a small preview instead of the final image.
 
+**Do not build the whole scene blind.**  The most common failure on a
+big build is inserting dozens of chunks in a row without ever
+rendering, then running out of budget with a scene nobody -- including
+you -- has ever seen.  Rendering is not the LAST step; it is how you
+find the floor you forgot, the light that is off, the hero placed
+off-frame, WHILE they are still one edit to fix instead of thirty edits
+buried.  Render within the first handful of chunks (as soon as there is
+a lit surface to look at) and every several edits after.  If you notice
+you have inserted many chunks since your last render, stop and render
+NOW before adding more -- the host may also remind you, but do not wait
+for the reminder.
+
 1. **Insert or edit one chunk.**  `insert_chunk` for a new object/
    geometry/material; `propose_patch` for a single parameter tweak.
 2. **`validate`** first if you are not sure the edit is well-formed
@@ -107,6 +119,16 @@ invent kinds not listed here.
 - `lookat` should point at the subject's approximate center, not at
   the world origin if the subject is not there -- an off-target
   `lookat` silently crops or empties the frame.
+- **When the camera is GIVEN and you cannot change it** (a build-from-
+  scaffold task hands you a fixed `pinhole_camera`, and the rasterizer/
+  camera chunks are often not agent-editable), read where it already
+  looks -- typically `lookat 0 0 0` -- and place your HERO object THERE,
+  at the focal point, sized to fill a comfortable fraction of the frame.
+  Put the surface it rests on just below it and the supporting/decor
+  geometry AROUND and BEHIND it. Do not build the hero off to one side
+  and hope: the frame is fixed, so an off-origin hero renders as empty
+  space where the subject should be. If "the camera focuses on X" is in
+  the brief, X belongs at the point the given camera is aimed at.
 - A single render angle cannot tell you whether an object is in front
   of, behind, or intersecting another -- it can only tell you the
   silhouette agrees.  The second-angle render in the observe loop

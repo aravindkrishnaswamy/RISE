@@ -1493,6 +1493,73 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		       "an explicit host cap survives a switch back to a hosted provider" );
 	}
 
+	// BLIND-EDIT NUDGE: a run of document mutations with no visual observe
+	// arms a one-shot system-prompt reminder on the NEXT request; a visual
+	// observe resets the run; a non-visual read does not; and the nudge is
+	// one-shot (rides exactly the request after it trips).  Guards the
+	// behaviour that targets the measured "insert 70+ chunks, never render".
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetBlindEditNudgeThreshold( 3 );   // small K so the test is short
+		Check( loop.BlindEditNudgeThreshold() == 3, "the nudge threshold is settable" );
+		loop.AddUserMessage( "build a scene" );
+
+		const std::string insertFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_i\",\"name\":\"insert_chunk\",\"input\":{}}]", "tool_use" );
+		const std::string renderFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_r\",\"name\":\"render\",\"input\":{}}]", "tool_use" );
+		const std::string schemaFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_s\",\"name\":\"read_schema\",\"input\":{}}]", "tool_use" );
+		auto okResult = []( const std::string& id ) {
+			return std::string( "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+		};
+		auto stepWith = [&]( const std::string& fx ) {
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.toolCalls.size() == 1 )
+				loop.AddToolResult( st.toolCalls[0], okResult( st.toolCalls[0].id ) );
+		};
+
+		// Two inserts (streak 1,2): under threshold 3 -> no nudge yet.
+		stepWith( insertFx );
+		stepWith( insertFx );
+		Check( loop.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
+		       "nudge: below threshold, no reminder in the request" );
+
+		// A non-visual read (read_schema) does NOT reset the streak.
+		stepWith( schemaFx );
+		// Third insert -> streak hits 3 == threshold -> arm the nudge.
+		stepWith( insertFx );
+		const ChatHttpRequest armed = loop.BuildRequest( kApiKey );
+		Check( armed.body.find( "edits in a row without rendering" ) != std::string::npos,
+		       "nudge: at the threshold, the next request's system prompt carries the reminder" );
+
+		// One-shot: the SAME state on the very next request no longer carries it.
+		const ChatHttpRequest afterConsume = loop.BuildRequest( kApiKey );
+		Check( afterConsume.body.find( "edits in a row without rendering" ) == std::string::npos,
+		       "nudge: one-shot -- it rides exactly one request, not every subsequent one" );
+
+		// A visual observe (render) RESETS the streak: three more inserts are
+		// needed to re-arm, so a single insert right after does NOT nudge.
+		stepWith( renderFx );
+		stepWith( insertFx );
+		Check( loop.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
+		       "nudge: a render resets the streak -- one edit after it does not re-arm" );
+
+		// Disable it entirely: threshold 0 -> never nudges no matter how many edits.
+		AgentChatLoop off;
+		off.SetProvider( ChatProvider::Anthropic );
+		off.SetBlindEditNudgeThreshold( 0 );
+		off.AddUserMessage( "build" );
+		for( int i = 0; i < 8; ++i ) {
+			ChatStepResult st = off.HandleResponse( 200, insertFx );
+			if( st.toolCalls.size() == 1 )
+				off.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		}
+		Check( off.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
+		       "nudge: threshold 0 disables it -- 8 blind edits, still no reminder" );
+	}
+
 	// Iteration cap, RAISED: SetMaxToolRoundsPerTurn(25) lets a host with
 	// its own honest budget accounting (the eval runner) run past the
 	// GUI-posture default of 20 -- 24 single-tool rounds all succeed,
