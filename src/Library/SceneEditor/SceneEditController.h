@@ -2129,7 +2129,10 @@ namespace RISE
 		//! (non-destructive, exactly like an axis snap or Home).  The ONLY
 		//! scene write is PromoteNamedViewToCamera (§3.4).  In-memory this
 		//! slice; sidecar persistence + thumbnails are follow-ups.  Named
-		//! views are UI-thread-only state, so the store needs no lock.
+		//! views are guarded by mNamedViewsMutex -- originally UI-thread-
+		//! only, but FindNamedViewPose (agent render{view:}) added a
+		//! cross-thread READER; name-MUTATING calls remain single-writer
+		//! UI-thread-only (UpdateNamedView's tamper-witness relies on it).
 		struct NamedView
 		{
 			String         name;

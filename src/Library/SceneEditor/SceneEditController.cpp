@@ -2167,7 +2167,19 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	// KickRender() just above already reset mPolishState to None (its own
 	// idiom for "no polish is owed"); leave it there instead of overriding
 	// to FinalRegularRunning when a variant mode is active.
+	// review-r4 (pre-existing, first staked on by the round-3 count-exact
+	// test): this store used to run UNLOCKED, while every other
+	// mPolishState touch is serialized under mMutex.  Two hazards: (a) the
+	// render thread's SwitchToPaneLocked_ could save/load mPolishState
+	// concurrently, so the FinalRegularRunning could land on a DIFFERENT
+	// pane's restored register than the gestured one (a real N-up
+	// mis-mark, not just test flake); (b) the round-3 exactly-3-passes
+	// assertion could false-fail if the switch read None before this store
+	// landed.  Under mMutex both orderings serialize: the gesture pin
+	// keeps the gestured pane current until mPointerDown clears, and this
+	// lock ensures no switch interleaves with the store.
 	if( wasMotion && !mPreviewScalePinned.load( std::memory_order_acquire ) ) {
+		std::lock_guard<std::mutex> lk( mMutex );
 		mPolishState.store( static_cast<int>( PolishState::FinalRegularRunning ),
 		                    std::memory_order_release );
 	}
@@ -7784,6 +7796,10 @@ bool SceneEditController::UpdateNamedView( unsigned int idx )
 		// or the name mismatch (clean false); a shift makes the name
 		// mismatch (clean false); duplicates update EXACTLY the entry the
 		// caller indexed.
+		// (review-r4 residual, documented not fixed: a shift where a
+		// SAME-NAMED neighbour slides into idx would pass the witness --
+		// unreachable today because name-mutating calls are single-writer
+		// UI-thread-only; revisit if that invariant ever changes.)
 		if( idx >= mNamedViews.size() || !( mNamedViews[idx].name == targetName.c_str() ) )
 		{
 			return false;
