@@ -402,6 +402,18 @@ private:
     IRasterizer*         _interactiveRasterizer;
     ViewportPreviewSink* _previewSink;
 
+    // N-up (RENDER_MODES.md §7): sinks for panes 1-3.  Pane 0 keeps
+    // using `_previewSink` above via the legacy un-indexed
+    // _SetPreviewSink call, which the C-ABI documents as an alias for
+    // pane 0's sink slot (§7.4) -- see -tryBuildLivePreviewForJob's
+    // "N-up pane-0 sink" comment for the full rationale.  Index 0 of
+    // this array is intentionally always null (pane 0 has no entry
+    // here); indices 1-3 are real, addref'd ViewportPreviewSink
+    // instances with NO EDR fan-out (N-up panes render through the
+    // plain NSImage path only -- see the same comment).  Constructed
+    // once alongside `_previewSink` and torn down in -releaseLivePreview.
+    ViewportPreviewSink* _paneSinks[4];
+
     // Phase 6.5: GUI-supplied callback fired on dirty-state
     // TRANSITIONS only.  Strong-held so the C trampoline can copy-
     // capture our `self` ptr and invoke it.  Cleared (and the
@@ -479,6 +491,7 @@ private:
     _polishCaster = nullptr;
     _interactiveRasterizer = nullptr;
     _previewSink = nullptr;
+    for (unsigned int i = 0; i < 4; ++i) { _paneSinks[i] = nullptr; }
     _agentHttpServerRunning = NO;
     _agentDispatcher = nullptr;
     _agentToolDispatcherOwner = nullptr;
@@ -517,6 +530,23 @@ private:
         // before installing the sink as a rasterizer output.
         _previewSink->SetController(_controller);
         RISE_API_SceneEditController_SetPreviewSink(_controller, _previewSink);
+
+        // N-up (§7): stand up panes 1-3's sinks alongside pane 0's,
+        // gated on the SAME live-preview success (`_previewSink` non-
+        // null) as pane 0 -- in skeleton mode (no interactive
+        // rasterizer) nothing would ever drive these sinks anyway, so
+        // mirroring pane 0's conditional keeps "no live preview" one
+        // single, consistent state rather than a partial N-up setup
+        // with nothing behind it.  No SetFanoutVFS call for these --
+        // N-up panes are plain-NSImage-only (no EDR); see the
+        // "N-up pane-0 sink" comment below for why.
+        for (unsigned int i = 1; i < 4; ++i) {
+            ViewportPreviewSink* sink = new ViewportPreviewSink();
+            sink->addref();
+            sink->SetController(_controller);
+            _paneSinks[i] = sink;
+            RISE_API_SceneEditController_SetPaneSink(_controller, i, sink);
+        }
     }
 
     // Facet 5 slice 1c-1: stand up the live agent dispatcher over the SAME
@@ -575,6 +605,22 @@ private:
     return self;
 }
 
+// N-up pane-0 sink (RENDER_MODES.md §7.4/§7.5): pane 0 stays on the
+// EXISTING un-indexed `_SetPreviewSink` call below rather than being
+// migrated to `_SetPaneSink(controller, 0, ...)`.  Two reasons: (1)
+// the C-ABI already documents the un-indexed calls as an ALIAS for
+// pane 0's slot ("existing un-indexed calls = pane 0", §7.4) -- so a
+// second `_SetPaneSink(0, ...)` call would target the exact same
+// storage slot the controller already populated, and issuing it here
+// would just be a redundant no-op-with-extra-addref/release churn, not
+// a behavioural difference.  (2) it keeps the Single-layout code path
+// (this method, `-setImageBlock:`, `-pointerDown(x:y:)` etc.) BYTE-FOR-
+// BYTE unchanged from pre-N-up RISE -- the task's own requirement that
+// "Single layout must behave EXACTLY as today".  The N-up shell
+// (MultiPaneViewportView.swift) reads pane 0's image through the SAME
+// `-setImageBlock:` callback RenderViewModel already wires at scene
+// load (into `viewModel.renderedImage`), so no second image stream is
+// needed for pane 0 even inside the multi-pane grid.
 - (void)tryBuildLivePreviewForJob:(IJobPriv*)pJob {
     (void)pJob;
 
@@ -617,6 +663,14 @@ private:
     if (_previewSink) {
         _previewSink->release();
         _previewSink = nullptr;
+    }
+    // N-up: release panes 1-3's sinks alongside pane 0's.  index 0 is
+    // always null (see the ivar's doc) so the loop starts at 1.
+    for (unsigned int i = 1; i < 4; ++i) {
+        if (_paneSinks[i]) {
+            _paneSinks[i]->release();
+            _paneSinks[i] = nullptr;
+        }
     }
     if (_interactiveRasterizer) {
         _interactiveRasterizer->release();
@@ -1042,6 +1096,139 @@ private:
 - (BOOL)setViewportXray:(BOOL)on {
     if (!_controller) return NO;
     return RISE_API_SceneEditController_SetViewportXray(_controller, on ? true : false) ? YES : NO;
+}
+
+#pragma mark - N-up multi-viewport (P3, docs/gui/RENDER_MODES.md §7)
+
+- (RISEViewportLayout)viewportLayout {
+    if (!_controller) return RISEViewportLayoutSingle;
+    int out = 0;
+    if (!RISE_API_SceneEditController_GetViewportLayout(_controller, &out)) {
+        return RISEViewportLayoutSingle;
+    }
+    return static_cast<RISEViewportLayout>(out);
+}
+
+- (void)setViewportLayout:(RISEViewportLayout)layout {
+    if (!_controller) return;
+    RISE_API_SceneEditController_SetViewportLayout(_controller, static_cast<int>(layout));
+}
+
+- (NSUInteger)primaryPane {
+    if (!_controller) return 0;
+    unsigned int out = 0;
+    if (!RISE_API_SceneEditController_GetPrimaryPane(_controller, &out)) return 0;
+    return static_cast<NSUInteger>(out);
+}
+
+- (void)setPrimaryPane:(NSUInteger)pane {
+    if (!_controller) return;
+    RISE_API_SceneEditController_SetPrimaryPane(_controller, static_cast<unsigned int>(pane));
+}
+
+- (NSString *)paneRenderMode:(NSUInteger)pane {
+    if (!_controller) return @"preview";
+    const char* name = RISE_API_SceneEditController_GetPaneRenderMode(
+        _controller, static_cast<unsigned int>(pane));
+    return name ? [NSString stringWithUTF8String:name] : @"preview";
+}
+
+- (BOOL)setPaneRenderMode:(NSUInteger)pane name:(NSString *)name {
+    if (!_controller || !name) return NO;
+    return RISE_API_SceneEditController_SetPaneRenderMode(
+        _controller, static_cast<unsigned int>(pane), [name UTF8String]) ? YES : NO;
+}
+
+- (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SetPaneVantageSceneCamera(
+        _controller, static_cast<unsigned int>(pane)) ? YES : NO;
+}
+
+- (BOOL)setPaneVantageNamedView:(NSUInteger)pane name:(NSString *)name {
+    if (!_controller || !name) return NO;
+    return RISE_API_SceneEditController_SetPaneVantageNamedView(
+        _controller, static_cast<unsigned int>(pane), [name UTF8String]) ? YES : NO;
+}
+
+- (BOOL)paneEnterFreeFly:(NSUInteger)pane {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_PaneEnterFreeFly(
+        _controller, static_cast<unsigned int>(pane)) ? YES : NO;
+}
+
+- (BOOL)paneExitFreeFly:(NSUInteger)pane {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_PaneExitFreeFly(
+        _controller, static_cast<unsigned int>(pane)) ? YES : NO;
+}
+
+- (BOOL)getPaneVantage:(NSUInteger)pane
+                   kind:(RISEViewportVantageKind *)outKind
+              namedView:(NSString * _Nullable * _Nullable)outNamedView {
+    if (outNamedView) *outNamedView = @"";
+    if (!_controller || !outKind) return NO;
+    int kind = 0;
+    char nm[256] = {0};
+    if (!RISE_API_SceneEditController_GetPaneVantage(
+            _controller, static_cast<unsigned int>(pane), &kind, nm, sizeof(nm))) {
+        return NO;
+    }
+    *outKind = static_cast<RISEViewportVantageKind>(kind);
+    if (outNamedView) {
+        if (NSString* decoded = NamedViewDisplayName(nm)) {
+            *outNamedView = decoded;
+        }
+    }
+    return YES;
+}
+
+- (BOOL)setPaneSurfaceDims:(NSUInteger)pane width:(NSUInteger)w height:(NSUInteger)h {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SetPaneSurfaceDims(
+        _controller, static_cast<unsigned int>(pane),
+        static_cast<unsigned int>(w), static_cast<unsigned int>(h)) ? YES : NO;
+}
+
+- (BOOL)onPanePointerDown:(NSUInteger)pane x:(double)x y:(double)y {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_OnPanePointerDown(
+        _controller, static_cast<unsigned int>(pane), x, y) ? YES : NO;
+}
+
+- (void)onPanePointerMove:(NSUInteger)pane x:(double)x y:(double)y {
+    if (!_controller) return;
+    RISE_API_SceneEditController_OnPanePointerMove(
+        _controller, static_cast<unsigned int>(pane), x, y);
+}
+
+- (void)onPanePointerUp:(NSUInteger)pane x:(double)x y:(double)y {
+    if (!_controller) return;
+    RISE_API_SceneEditController_OnPanePointerUp(
+        _controller, static_cast<unsigned int>(pane), x, y);
+}
+
+- (int)paneRefinementPhase:(NSUInteger)pane scaleDivisor:(unsigned int *)scaleDivisor {
+    if (!_controller) {
+        if (scaleDivisor) *scaleDivisor = 1;
+        return -1;
+    }
+    int phase = 0;
+    unsigned int scale = 1;
+    if (!RISE_API_SceneEditController_GetPaneRefinementStatus(
+            _controller, static_cast<unsigned int>(pane), &phase, &scale)) {
+        if (scaleDivisor) *scaleDivisor = 1;
+        return -1;
+    }
+    if (scaleDivisor) *scaleDivisor = scale;
+    return phase;
+}
+
+- (void)setPaneImageBlock:(RISEViewportImageBlock)block forPane:(NSUInteger)pane {
+    if (pane < 1 || pane > 3) return;
+    if (_paneSinks[pane]) {
+        _paneSinks[pane]->SetBlock(block);
+    }
 }
 
 #pragma mark - Pointer events

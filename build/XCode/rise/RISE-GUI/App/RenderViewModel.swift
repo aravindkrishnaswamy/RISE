@@ -223,6 +223,14 @@ final class RenderViewModel: ObservableObject {
     @Published var progress: Double = 0.0
     @Published var progressTitle: String = ""
     @Published var renderedImage: NSImage? = nil
+    /// N-up (RENDER_MODES.md §7): the live-preview image stream for
+    /// panes 1-3, keyed by pane index (1, 2, or 3 -- pane 0 keeps using
+    /// `renderedImage` above, see RISEViewportBridge.mm's "N-up pane-0
+    /// sink" doc comment).  Sparse -- a pane with no entry yet hasn't
+    /// rendered its first frame.  Wired alongside `renderedImage` at
+    /// every scene-load site below and reset to empty at every one of
+    /// `renderedImage`'s own reset sites, so the two never drift.
+    @Published var panePreviewImages: [Int: NSImage] = [:]
     @Published var loadedFilePath: String? = nil
     /// Phase 6.5: true iff there's at least one in-memory edit since
     /// the last load / save that the SaveEngine would actually write
@@ -1048,6 +1056,7 @@ final class RenderViewModel: ObservableObject {
 
         bridge.clearAll()
         renderedImage = nil
+        panePreviewImages = [:]
         progress = 0.0
         progressTitle = ""
         elapsedTime = 0
@@ -1131,6 +1140,7 @@ final class RenderViewModel: ObservableObject {
         }
         renderState = .loading
         renderedImage = nil
+        panePreviewImages = [:]
         progress = 0.0
         cancelFlag.value = false
 
@@ -1181,6 +1191,17 @@ final class RenderViewModel: ObservableObject {
                     vb?.setImageBlock { [weak self] (image: NSImage) in
                         guard let self = self else { return }
                         self.renderedImage = image
+                    }
+                    // N-up (RENDER_MODES.md §7): panes 1-3's image
+                    // streams, wired once per bridge alongside pane 0's
+                    // above.  Rendering is layout-gated core-side (a
+                    // hidden pane never schedules), so these callbacks
+                    // simply sit idle while `viewportLayout == .single`.
+                    for pane in 1...3 {
+                        vb?.setPaneImageBlock({ [weak self] (image: NSImage) in
+                            guard let self = self else { return }
+                            self.panePreviewImages[pane] = image
+                        }, forPane: UInt(pane))
                     }
                     // Phase 6.5: track dirty edits so the Properties-
                     // panel's Save button can enable/disable.  The
@@ -1295,6 +1316,7 @@ final class RenderViewModel: ObservableObject {
         cancelFlag.value = false
         resetProductionPauseState()
         renderedImage = nil
+        panePreviewImages = [:]
         imageBuffer.reset()
         elapsedTime = 0
         remainingTime = nil
@@ -1502,6 +1524,7 @@ final class RenderViewModel: ObservableObject {
         cancelFlag.value = false
         resetProductionPauseState()
         renderedImage = nil
+        panePreviewImages = [:]
         imageBuffer.reset()
         elapsedTime = 0
         remainingTime = nil
@@ -2507,6 +2530,7 @@ final class RenderViewModel: ObservableObject {
         viewportBridge = nil
         bridge.clearAll()
         renderedImage = nil
+        panePreviewImages = [:]
         progress = 0.0
         progressTitle = ""
         elapsedTime = 0
@@ -2699,6 +2723,7 @@ final class RenderViewModel: ObservableObject {
         bridge.clearAll()
         renderState = .idle
         renderedImage = nil
+        panePreviewImages = [:]
         loadedFilePath = nil
         progress = 0.0
         progressTitle = ""

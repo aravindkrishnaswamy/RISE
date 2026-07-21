@@ -12,10 +12,17 @@
 
 #include <QWidget>
 #include <QImage>
+#include <QRect>
+#include <QSize>
 
 #include "ViewportBridge.h"
 
 class QTimer;
+class QComboBox;
+class QToolButton;
+class QMenu;
+class QLabel;
+class QAction;
 
 class ViewportWidget : public QWidget
 {
@@ -26,6 +33,17 @@ public:
 
 public slots:
     void setImage(const QImage& image);
+
+    /// N-up multi-viewport (docs/gui/RENDER_MODES.md §7): a completed frame
+    /// for a SECONDARY pane (1..ViewportBridge::kViewportPaneCount-1) --
+    /// wired to ViewportBridge::paneImageUpdated.  Pane 0's frames keep
+    /// arriving via setImage() above (ViewportBridge::imageUpdated).
+    void setPaneImage(unsigned int pane, const QImage& image);
+
+    /// N-up multi-viewport: wired to ViewportToolbar::layoutChanged --
+    /// resyncs the pane grid immediately after a layout-picker click
+    /// instead of waiting for the next 500ms poll tick.
+    void onViewportLayoutChanged();
 
     /// Update the cursor displayed over the viewport to match the
     /// active tool.  Wired to ViewportToolbar::toolChanged.  Also
@@ -78,6 +96,12 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    /// N-up multi-viewport: recomputes pane rects + repositions chrome +
+    /// pushes fresh SetPaneSurfaceDims on every geometry change.  A no-op
+    /// (early-out) while Single is the active layout -- see
+    /// recomputePaneLayout()'s doc for why Single stays on the pre-N-up
+    /// path untouched.
+    void resizeEvent(QResizeEvent* event) override;
 
 private slots:
     /// 500ms poll of ViewportBridge::getInteractiveRegion -- draws the
@@ -86,6 +110,24 @@ private slots:
     /// non-UI caller).  Mirrors TopBar's own 500ms refinement-state poll
     /// cadence.
     void pollRegionState();
+
+    /// N-up multi-viewport (docs/gui/RENDER_MODES.md §7): same 500ms
+    /// cadence as pollRegionState() above (connected to the SAME QTimer) --
+    /// resyncs the current layout, primary-pane marker, and each visible
+    /// pane's mode-combo / vantage-button chrome from the bridge.  The
+    /// safety net behind onViewportLayoutChanged()'s immediate resync
+    /// (mirrors TopBar::refreshRenderModeCombo's own poll-driven self-heal
+    /// rationale -- see that method's doc).
+    void pollPaneChrome();
+
+    /// A per-pane mode combo box changed -- sender()'s "pane" property
+    /// identifies which one.  Same click-then-reread discipline as
+    /// TopBar::onRenderModeComboChanged (the set CAN fail).
+    void onPaneModeComboChanged(int index);
+    /// A per-pane vantage menu action was triggered -- sender() (the
+    /// QMenu) carries the "pane" property; the action itself carries the
+    /// vantage choice via its own data (see buildPaneChrome()'s doc).
+    void onPaneVantageAction(QAction* action);
 
 private:
     QPointF surfacePoint(const QPointF& pos) const;
@@ -133,6 +175,77 @@ private:
     unsigned int m_regionLeft = 0, m_regionTop = 0, m_regionRight = 0, m_regionBottom = 0;
     QRect        m_regionBadgeRect;     // last-painted badge rect, for click-to-clear hit-testing
     QTimer*      m_regionPollTimer = nullptr;
+
+    // ==================================================================
+    // N-up multi-viewport (docs/gui/RENDER_MODES.md §7).  SINGLE layout
+    // (the default, and the only layout before this feature) deliberately
+    // keeps using m_image / imageDrawRect() / surfacePoint() / the region
+    // and gizmo/nav overlays exactly as written above -- every method in
+    // this block is a no-op (or takes an explicit `m_layout == Single`
+    // early-out) while Single is active, so single-viewport behaviour is
+    // byte-identical to before this section existed (§7.5's "Single
+    // layout = today's behavior exactly" requirement).
+    // ==================================================================
+
+    static constexpr int kPaneHeaderHeight = 22;   // per-pane chrome strip, in widget points
+    static constexpr int kPaneGap          = 2;    // hairline gap between pane cells
+
+    /// One pane's chrome: a mode combo (populated once from the registry,
+    /// like TopBar's m_renderModeCombo), a vantage menu button, and a
+    /// read-only primary marker.  Built once at construction for all
+    /// kViewportPaneCount slots (mirrors the core's "always-present pane
+    /// slots" model) and simply hidden for panes the active layout
+    /// doesn't show.
+    struct PaneChrome {
+        QComboBox*   modeCombo   = nullptr;
+        QToolButton* vantageBtn  = nullptr;
+        QMenu*       vantageMenu = nullptr;
+        QLabel*      primaryDot  = nullptr;
+    };
+
+    void    buildPaneChrome();
+    /// Recomputes m_paneRects/m_paneImageAreaRects for the CURRENT widget
+    /// size + m_layout, repositions/shows/hides the chrome widgets, and
+    /// pushes SetPaneSurfaceDims for every visible pane -- EXCEPT pane 0
+    /// while Single is active, which deliberately keeps relying on
+    /// ViewportBridge::scaleFilmToFit's screen-fit sizing instead (see the
+    /// block doc above).  Called from resizeEvent, onViewportLayoutChanged,
+    /// and pollPaneChrome (when it notices the layout changed).
+    void    recomputePaneLayout();
+    /// Generalized imageDrawRect() -- letterbox `img` inside `area`.
+    QRect   paneImageDrawRect(const QImage& img, const QRect& area) const;
+    /// Generalized surfacePoint() for pane `pane`: maps a widget-local
+    /// point to that pane's own image-pixel space, using the pane's own
+    /// LAST-RECEIVED FRAME size as the reference (there is no per-pane
+    /// twin of cameraSurfaceDimensions() in the C-ABI, so -- like
+    /// surfacePoint()'s own no-bridge fallback -- the most recent frame's
+    /// pixel size is the best available stand-in; a fast drag can shrink
+    /// it via preview-scale subsampling exactly like the single-viewport
+    /// path already tolerates).
+    QPointF paneSurfacePoint(unsigned int pane, const QPointF& widgetPos) const;
+    /// Hit-test the visible panes' cell rects (N-up layouts only).
+    /// Returns -1 when `widgetPos` falls in no pane (the inter-pane gap).
+    int     paneAt(const QPointF& widgetPos) const;
+    void    paintPaneGrid(QPainter& p);
+    void    refreshPaneChromeState();
+
+    ViewportBridge::ViewportLayout m_layout = ViewportBridge::ViewportLayout::Single;
+    unsigned int m_visiblePaneCount = 1;
+    QImage  m_paneImages[ViewportBridge::kViewportPaneCount];
+    QRect   m_paneRects[ViewportBridge::kViewportPaneCount];           // whole cell, incl. chrome header
+    QRect   m_paneImageAreaRects[ViewportBridge::kViewportPaneCount];  // cell minus header -- where the image draws
+    PaneChrome m_paneChrome[ViewportBridge::kViewportPaneCount];
+    /// The pane a pointer gesture is currently pinned to (gesture
+    /// exclusivity, §7.3), or -1 between gestures.  Set on a successful
+    /// OnPanePointerDown, cleared on the matching Up (mirrors the
+    /// region-drag flag pattern above).
+    int     m_activeGesturePane = -1;
+    /// Cached per-pane surface dims last PUSHED to the controller, so
+    /// resizeEvent/recomputePaneLayout only calls SetPaneSurfaceDims when
+    /// the size actually changed (mirrors the core's own same-dim
+    /// short-circuit convention referenced in RENDER_MODES.md §7.3's
+    /// invalidation matrix).
+    QSize   m_paneLastPushedDims[ViewportBridge::kViewportPaneCount];
 };
 
 #endif // VIEWPORTWIDGET_H

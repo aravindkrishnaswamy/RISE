@@ -95,6 +95,16 @@ struct ContentView: View {
     /// Popover-shown state for the toolbar's EV chip.
     @State private var showEVPopover: Bool = false
 
+    /// N-up multi-viewport (docs/gui/RENDER_MODES.md §7): the active
+    /// layout.  `.single` keeps the pre-N-up `ViewportView` path
+    /// byte-for-byte unchanged (see `centerColumn` below); any other
+    /// value engages `MultiPaneViewportView`.  Reset to `.single` on
+    /// every fresh bridge (new scene load) via the `.task(id:)` on
+    /// `viewportToolbarRow` below — a freshly-constructed controller
+    /// always defaults to Single anyway, so this just keeps the
+    /// SwiftUI-local mirror in sync.
+    @State private var viewportLayout: ViewportLayoutOption = .single
+
     var body: some View {
         VStack(spacing: 0) {
             TopBar()
@@ -250,48 +260,73 @@ struct ContentView: View {
         VStack(spacing: 0) {
             if let vb = viewModel.viewportBridge {
                 viewportToolbarRow(vb)
+                    // N-up (§7): reset the SwiftUI-local layout mirror
+                    // to Single on every fresh bridge (new scene load).
+                    // The underlying controller always constructs with
+                    // Single anyway; this just keeps this view's state
+                    // from carrying a prior scene's layout choice
+                    // forward, mirroring `ViewportView`'s own
+                    // `.task(id: ObjectIdentifier(bridge))` reset
+                    // pattern for `selectedTool`.
+                    .task(id: ObjectIdentifier(vb)) {
+                        viewportLayout = .single
+                    }
 
-                let edrActive = viewModel.edrAvailable && viewModel.edrEnabled
-                ViewportView(
-                    bridge: vb,
-                    image: $viewModel.renderedImage,
-                    timelineVisible: viewModel.hasAnimation,
-                    sceneTime: $viewModel.sceneTime,
-                    // Pull the timeline range from the scene's
-                    // animation_options chunk via the bridge.  Falls
-                    // back to 5.0 only if the scene declares no
-                    // animation options at all (animationTimeEnd == 0),
-                    // so we avoid a 0-length slider that would clamp
-                    // every scrub to t=0.
-                    timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
-                    interactionEnabled: interacting,
-                    isProductionRendering: (viewModel.renderState == .rendering),
-                    onSelectionMayHaveChanged: { propertyRefresh += 1 },
-                    isPreviewPlaying: viewModel.isPreviewPlaying,
-                    onPlayToggle: { viewModel.togglePreviewPlay() },
-                    onUserScrubBegan: { viewModel.stopPreviewPlay() },
-                    productionEDRRenderer: viewModel.productionEDRRenderer,
-                    interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
-                    edrEnabled: edrActive,
-                    selectedTool: $selectedTool,
-                    regionArmed: $regionArmed,
-                    refreshTrigger: $propertyRefresh
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: viewModel.renderedImage) { _, _ in
-                    // Each rendered frame implies the camera may have
-                    // moved; bump the refresh counter so the right
-                    // panel re-snapshots.  The panel itself protects
-                    // against overwriting an in-flight text edit
-                    // (focused field is left alone).
-                    propertyRefresh &+= 1
-                }
-                .onChange(of: viewModel.reverseSelectEpoch) { _, _ in
-                    // Reverse source traceability: a right-click "Select in
-                    // Inspector" changed the bridge selection but rendered no
-                    // frame, so drive the shared refresh here — the inspector
-                    // re-snapshots and the outliner highlight follows.
-                    propertyRefresh &+= 1
+                if viewportLayout == .single {
+                    // Single layout: EXACTLY the pre-N-up code path,
+                    // unchanged — see docs/gui/RENDER_MODES.md §7.0/§7.5.
+                    let edrActive = viewModel.edrAvailable && viewModel.edrEnabled
+                    ViewportView(
+                        bridge: vb,
+                        image: $viewModel.renderedImage,
+                        timelineVisible: viewModel.hasAnimation,
+                        sceneTime: $viewModel.sceneTime,
+                        // Pull the timeline range from the scene's
+                        // animation_options chunk via the bridge.  Falls
+                        // back to 5.0 only if the scene declares no
+                        // animation options at all (animationTimeEnd == 0),
+                        // so we avoid a 0-length slider that would clamp
+                        // every scrub to t=0.
+                        timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
+                        interactionEnabled: interacting,
+                        isProductionRendering: (viewModel.renderState == .rendering),
+                        onSelectionMayHaveChanged: { propertyRefresh += 1 },
+                        isPreviewPlaying: viewModel.isPreviewPlaying,
+                        onPlayToggle: { viewModel.togglePreviewPlay() },
+                        onUserScrubBegan: { viewModel.stopPreviewPlay() },
+                        productionEDRRenderer: viewModel.productionEDRRenderer,
+                        interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
+                        edrEnabled: edrActive,
+                        selectedTool: $selectedTool,
+                        regionArmed: $regionArmed,
+                        refreshTrigger: $propertyRefresh
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onChange(of: viewModel.renderedImage) { _, _ in
+                        // Each rendered frame implies the camera may have
+                        // moved; bump the refresh counter so the right
+                        // panel re-snapshots.  The panel itself protects
+                        // against overwriting an in-flight text edit
+                        // (focused field is left alone).
+                        propertyRefresh &+= 1
+                    }
+                    .onChange(of: viewModel.reverseSelectEpoch) { _, _ in
+                        // Reverse source traceability: a right-click "Select in
+                        // Inspector" changed the bridge selection but rendered no
+                        // frame, so drive the shared refresh here — the inspector
+                        // re-snapshots and the outliner highlight follows.
+                        propertyRefresh &+= 1
+                    }
+                } else {
+                    // N-up (§7): TwoH / OnePlusTwo / Quad.
+                    MultiPaneViewportView(
+                        bridge: vb,
+                        layout: viewportLayout,
+                        interactionEnabled: interacting,
+                        isProductionRendering: (viewModel.renderState == .rendering),
+                        selectedTool: selectedTool
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else if viewModel.renderState == .loading {
                 // Scene load in flight — RenderImageView carries the
@@ -342,6 +377,13 @@ struct ContentView: View {
             regionChip(vb)
 
             viewportRenderModeChip
+
+            // N-up (docs/gui/RENDER_MODES.md §7.5): the layout picker.
+            // Kept enabled/disabled in step with the rest of this row's
+            // interactive chips.
+            ViewportLayoutPicker(bridge: vb, layout: $viewportLayout)
+                .disabled(!interacting)
+                .opacity(interacting ? 1.0 : 0.5)
 
             Spacer(minLength: 0)
 

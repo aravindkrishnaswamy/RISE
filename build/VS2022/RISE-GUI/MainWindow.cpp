@@ -2301,6 +2301,13 @@ void MainWindow::rebuildViewportForLoadedScene()
     connect(m_viewportWidget, &ViewportWidget::regionArmCancelled,
             m_viewportToolbar, &ViewportToolbar::cancelRegionArm);
 
+    // N-up multi-viewport (docs/gui/RENDER_MODES.md §7.5): the layout
+    // picker lives in the toolbar; the pane grid it drives lives in the
+    // viewport widget -- resync immediately on a click instead of waiting
+    // for the widget's own 500ms poll.
+    connect(m_viewportToolbar, &ViewportToolbar::layoutChanged,
+            m_viewportWidget, &ViewportWidget::onViewportLayoutChanged);
+
     if (m_outlinerWidget) {
         m_outlinerWidget->setBridge(m_viewportBridge);
         // A pick in the outliner (category open/close, entity select)
@@ -2406,6 +2413,11 @@ void MainWindow::rebuildViewportForLoadedScene()
     // Live-preview frames from the bridge → viewport widget + props refresh.
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportWidget, &ViewportWidget::setImage);
+    // N-up multi-viewport (§7): secondary-pane (1..kViewportPaneCount-1)
+    // frames arrive on this separate signal -- pane 0's keep riding
+    // imageUpdated above (see ViewportBridge::paneImageUpdated's doc).
+    connect(m_viewportBridge, &ViewportBridge::paneImageUpdated,
+            m_viewportWidget, &ViewportWidget::setPaneImage);
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportProps,  &ViewportProperties::refresh);
     if (m_outlinerWidget) {

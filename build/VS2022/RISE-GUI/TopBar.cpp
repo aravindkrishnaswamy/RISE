@@ -677,9 +677,21 @@ void TopBar::pollRefinementState()
         m_refinementPhase = -1;
         m_refinementScaleDivisor = 1;
     } else {
+        // N-up multi-viewport (docs/gui/RENDER_MODES.md §7.5): the status
+        // line follows the PRIMARY pane's refinement state rather than
+        // always pane 0 -- for Single layout primaryPane() is always 0
+        // (§7.2's fallback rule), so this is byte-identical to the
+        // pre-N-up behaviour there; for N-up layouts it tracks whichever
+        // pane the user actually made primary.
+        int phase = -1;
         unsigned int sd = 1;
-        m_refinementPhase = m_bridge->refinementPhase(&sd);
-        m_refinementScaleDivisor = sd;
+        if (m_bridge->getPaneRefinementStatus(m_bridge->primaryPane(), &phase, &sd)) {
+            m_refinementPhase = phase;
+            m_refinementScaleDivisor = sd;
+        } else {
+            m_refinementPhase = -1;
+            m_refinementScaleDivisor = 1;
+        }
     }
     updateReadout();
     updateControlsEnabled();

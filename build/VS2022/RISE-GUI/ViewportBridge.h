@@ -370,6 +370,96 @@ public:
     /// requested value took effect.
     bool setViewportXray(bool on);
 
+    // -------- N-up multi-viewport pane model (docs/gui/RENDER_MODES.md §7) -
+    // Mirrors the RISE_API_SceneEditController_{Set,Get}ViewportLayout /
+    // {Set,Get}PrimaryPane / {Set,Get}PaneRenderMode / SetPaneSurfaceDims /
+    // SetPaneVantage{SceneCamera,NamedView} / GetPaneVantage /
+    // OnPanePointer{Down,Move,Up} / Pane{Enter,Exit}FreeFly /
+    // GetPaneRefinementStatus C exports.  Four ALWAYS-PRESENT pane slots
+    // (kViewportPaneCount); the layout selects the visible subset.  Pane 0
+    // is an ALIAS VIEW of the existing single-viewport state -- every
+    // un-indexed call above (setViewportRenderMode, pointerDown/Move/Up,
+    // enterFreeFly/exitFreeFly, refinementPhase, ...) keeps operating on
+    // pane 0 unchanged, so Single-layout behaviour is byte-identical to
+    // before this section existed.  Every setter here is fail-closed like
+    // every other viewport setter: unknown pane / hidden pane / render owns
+    // scene => false, nothing mutated -- callers must re-read afterward
+    // rather than assume the requested value took effect (same discipline
+    // as setViewportRenderMode / setViewportXray above).
+
+    /// Mirrors RISE::SceneEditController::kViewportPaneCount.
+    static constexpr unsigned int kViewportPaneCount = 4;
+
+    /// Mirrors RISE::SceneEditController::ViewportLayout.  Numeric values
+    /// are part of the C-API contract.
+    enum class ViewportLayout : int {
+        Single     = 0,   ///< pane 0 only (today's viewport)
+        TwoH       = 1,   ///< panes 0 | 1 side-by-side
+        OnePlusTwo = 2,   ///< pane 0 big + panes 1,2 stacked right
+        Quad       = 3    ///< panes 0-3 in a 2x2 grid
+    };
+
+    /// Mirrors RISE::SceneEditController::PaneVantageKind.
+    enum class PaneVantageKind : int {
+        SceneCamera = 0,  ///< track the live active scene camera
+        FreeFly     = 1,  ///< per-pane free-fly pose (never mutates the scene camera)
+        NamedView   = 2   ///< re-resolved by name each pass
+    };
+
+    /// Panes a layout makes visible: Single=1, TwoH=2, OnePlusTwo=3, Quad=4.
+    /// Pure function -- no bridge state, mirrors the core's
+    /// PaneCountForLayout table (docs/gui/RENDER_MODES.md §7.2); not itself
+    /// exposed via the C-ABI, so re-derived here rather than round-tripped.
+    static unsigned int paneCountForLayout(ViewportLayout layout);
+
+    bool setViewportLayout(ViewportLayout layout);
+    ViewportLayout viewportLayout() const;
+
+    /// Make `pane` primary (owner of editing/picking/gizmos).  False on an
+    /// invalid or hidden pane, or while a render owns the scene.
+    bool setPrimaryPane(unsigned int pane);
+    unsigned int primaryPane() const;
+
+    /// Pane 0 forwards to setViewportRenderMode (the alias contract above).
+    bool setPaneRenderMode(unsigned int pane, const QString& name);
+    /// "preview" on a null controller / invalid pane (mirrors
+    /// viewportRenderMode()'s fail-closed default).
+    QString paneRenderMode(unsigned int pane) const;
+
+    /// Pane render-surface pixel dims (the GUI's pane rect -- caller passes
+    /// actual DEVICE pixels, i.e. widget points times devicePixelRatioF()).
+    /// 0/0 resets to "use the film's rest dims".  Applies to visible panes
+    /// only.
+    bool setPaneSurfaceDims(unsigned int pane, unsigned int w, unsigned int h);
+
+    bool setPaneVantageSceneCamera(unsigned int pane);
+    bool setPaneVantageNamedView(unsigned int pane, const QString& name);
+    /// Introspection: current vantage kind (+ named-view name when
+    /// applicable, "" otherwise).  Returns false on null controller,
+    /// invalid pane, or an unrecognized kind from the C-ABI.
+    bool paneVantage(unsigned int pane, PaneVantageKind* outKind, QString* outNamedView) const;
+
+    /// Per-pane free-fly twins (§7.4).  Pane 0 forwards to
+    /// enterFreeFly()/exitFreeFly().
+    bool paneEnterFreeFly(unsigned int pane);
+    bool paneExitFreeFly(unsigned int pane);
+
+    /// Per-pane refinement status: phase (0 Idle / 1 Rendering / 2
+    /// Refining / 3 Polishing / 4 Paused -- same contract as
+    /// refinementPhase()) + scale divisor.  Returns false on null
+    /// controller / invalid pane.
+    bool getPaneRefinementStatus(unsigned int pane, int* outPhase,
+                                  unsigned int* outScaleDivisor) const;
+
+    /// Pane-indexed pointer input -- coordinates are in THAT PANE's local
+    /// surface pixel space (see ViewportWidget's per-pane coordinate
+    /// mapping).  Down returns false when the gesture must be dropped
+    /// (hidden pane / render owns scene) -- callers must NOT forward the
+    /// rest of that physical gesture's Move/Up when Down refused it.
+    bool onPanePointerDown(unsigned int pane, double x, double y);
+    bool onPanePointerMove(unsigned int pane, double x, double y);
+    bool onPanePointerUp(unsigned int pane, double x, double y);
+
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);
     void pointerMove(double x, double y);
@@ -840,6 +930,14 @@ signals:
     /// The QImage owns its own data (deep copy from C++ buffer).
     void imageUpdated(const QImage& image);
 
+    /// N-up multi-viewport (docs/gui/RENDER_MODES.md §7): emitted on the UI
+    /// thread with each completed frame for a SECONDARY pane (1..
+    /// kViewportPaneCount-1).  Pane 0 keeps riding `imageUpdated` above --
+    /// the render loop's documented fallback treats the legacy preview
+    /// sink as pane 0's sink whenever a pane has none, so this signal never
+    /// fires for pane 0.  The QImage owns its own data (deep copy).
+    void paneImageUpdated(unsigned int pane, const QImage& image);
+
     /// Phase 6.5: emitted on each `hasUnsavedSceneChanges()` TRANSITION
     /// (clean→dirty or dirty→clean).  Edits that leave the scene
     /// already-dirty do NOT re-fire it.  Connected by the
@@ -858,6 +956,12 @@ private:
     RISE::IRayCaster*          m_polishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
     RISE::IRasterizer*         m_interactiveRasterizer = nullptr;
     ViewportPreviewSink*       m_previewSink = nullptr;
+    // N-up multi-viewport (§7): one bridge-owned sink per SECONDARY pane
+    // (index 0 unused -- pane 0 keeps using m_previewSink/imageUpdated
+    // above), registered via RISE_API_SceneEditController_SetPaneSink in
+    // the constructor alongside m_previewSink's _SetPreviewSink call, and
+    // released alongside it in releaseLivePreview().
+    class ViewportPaneSink*   m_paneSinks[kViewportPaneCount] = {};
     std::unique_ptr<RISE::Agent::AgentRpcDispatcher> m_agentDispatcher;
     // Agent autonomy selector (2026-07): TWO more in-process
     // dispatchers, sibling to `m_agentDispatcher` above, that exist for

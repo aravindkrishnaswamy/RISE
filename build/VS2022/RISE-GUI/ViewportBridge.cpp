@@ -119,6 +119,69 @@ private:
 };
 
 // =====================================================================
+// ViewportPaneSink — N-up multi-viewport (docs/gui/RENDER_MODES.md §7):
+// like ViewportPreviewSink above, but for a SECONDARY pane (1..
+// ViewportBridge::kViewportPaneCount-1).  Registered per-pane via
+// RISE_API_SceneEditController_SetPaneSink at bridge construction time.
+// Pane 0 keeps using the legacy ViewportPreviewSink/_SetPreviewSink path
+// above -- the render loop's documented fallback ("falling back to the
+// legacy single sink ... when a pane has none") makes that pane 0's sink,
+// so Single-layout behaviour never touches this class at all.
+// =====================================================================
+class ViewportPaneSink : public IRasterizerOutput,
+                          public Implementation::Reference
+{
+public:
+    ViewportPaneSink(ViewportBridge* bridge, unsigned int pane)
+        : m_bridge(bridge), m_pane(pane) {}
+    ~ViewportPaneSink() override = default;
+
+    void OutputIntermediateImage(const IRasterImage& /*pImage*/,
+                                 const RISE::Rect* /*pRegion*/) override {}
+
+    void OutputImage(const IRasterImage& pImage,
+                     const RISE::Rect* /*pRegion*/,
+                     const unsigned int /*frame*/) override {
+        if (!m_bridge) return;
+        const unsigned int W = pImage.GetWidth();
+        const unsigned int H = pImage.GetHeight();
+        if (W == 0 || H == 0) return;
+
+        QImage img(static_cast<int>(W), static_cast<int>(H), QImage::Format_RGBA8888);
+
+        for (unsigned int y = 0; y < H; ++y) {
+            uchar* row = img.scanLine(static_cast<int>(y));
+            for (unsigned int x = 0; x < W; ++x) {
+                RISEColor c = pImage.GetPEL(x, y);
+                auto clamp8 = [](double v) -> uchar {
+                    if (v <= 0.0) return 0;
+                    if (v >= 1.0) return 255;
+                    return static_cast<uchar>(v * 255.0 + 0.5);
+                };
+                *row++ = clamp8(c.base.r);
+                *row++ = clamp8(c.base.g);
+                *row++ = clamp8(c.base.b);
+                *row++ = 255;
+            }
+        }
+
+        // Same QPointer-guarded queued emission as ViewportPreviewSink
+        // above; see that class's doc for why the guard is required.
+        const unsigned int pane = m_pane;
+        QPointer<ViewportBridge> guard(m_bridge);
+        QMetaObject::invokeMethod(m_bridge, [guard, pane, img]() {
+            if (ViewportBridge* b = guard.data()) {
+                emit b->paneImageUpdated(pane, img);
+            }
+        }, Qt::QueuedConnection);
+    }
+
+private:
+    ViewportBridge* m_bridge = nullptr;
+    unsigned int    m_pane = 0;
+};
+
+// =====================================================================
 // ViewportBridge
 // =====================================================================
 
@@ -157,6 +220,17 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         // installing the sink as a rasterizer output.
         m_previewSink->SetController(m_controller);
         RISE_API_SceneEditController_SetPreviewSink(m_controller, m_previewSink);
+    }
+
+    // N-up multi-viewport (§7): register one sink per SECONDARY pane
+    // (index 0 stays null -- pane 0 keeps the legacy m_previewSink above).
+    // Built here rather than in buildLivePreview() so construction only
+    // ever happens once the controller itself exists to register against;
+    // torn down in releaseLivePreview() alongside m_previewSink.
+    for (unsigned int pane = 1; pane < kViewportPaneCount; ++pane) {
+        m_paneSinks[pane] = new ViewportPaneSink(this, pane);
+        m_paneSinks[pane]->addref();
+        RISE_API_SceneEditController_SetPaneSink(m_controller, pane, m_paneSinks[pane]);
     }
 
     {
@@ -312,6 +386,9 @@ void ViewportBridge::buildLivePreview()
 void ViewportBridge::releaseLivePreview()
 {
     if (m_previewSink) { m_previewSink->release(); m_previewSink = nullptr; }
+    for (unsigned int pane = 1; pane < kViewportPaneCount; ++pane) {
+        if (m_paneSinks[pane]) { m_paneSinks[pane]->release(); m_paneSinks[pane] = nullptr; }
+    }
     if (m_interactiveRasterizer) { m_interactiveRasterizer->release(); m_interactiveRasterizer = nullptr; }
     if (m_polishCaster) { m_polishCaster->release(); m_polishCaster = nullptr; }
     if (m_caster) { m_caster->release(); m_caster = nullptr; }
@@ -647,6 +724,141 @@ bool ViewportBridge::setViewportXray(bool on)
 {
     if (!m_controller) return false;
     return RISE_API_SceneEditController_SetViewportXray(m_controller, on);
+}
+
+// -------- N-up multi-viewport pane model (docs/gui/RENDER_MODES.md §7) --
+
+unsigned int ViewportBridge::paneCountForLayout(ViewportLayout layout)
+{
+    // Mirrors RISE::SceneEditController::PaneCountForLayout (§7.2's table);
+    // not itself exposed via the C-ABI.
+    switch (layout) {
+    case ViewportLayout::Single:     return 1;
+    case ViewportLayout::TwoH:       return 2;
+    case ViewportLayout::OnePlusTwo: return 3;
+    case ViewportLayout::Quad:       return 4;
+    }
+    return 1;
+}
+
+bool ViewportBridge::setViewportLayout(ViewportLayout layout)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetViewportLayout(
+        m_controller, static_cast<int>(layout));
+}
+
+ViewportBridge::ViewportLayout ViewportBridge::viewportLayout() const
+{
+    if (!m_controller) return ViewportLayout::Single;
+    int out = 0;
+    if (!RISE_API_SceneEditController_GetViewportLayout(m_controller, &out)) {
+        return ViewportLayout::Single;
+    }
+    return static_cast<ViewportLayout>(out);
+}
+
+bool ViewportBridge::setPrimaryPane(unsigned int pane)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPrimaryPane(m_controller, pane);
+}
+
+unsigned int ViewportBridge::primaryPane() const
+{
+    if (!m_controller) return 0;
+    unsigned int out = 0;
+    if (!RISE_API_SceneEditController_GetPrimaryPane(m_controller, &out)) return 0;
+    return out;
+}
+
+bool ViewportBridge::setPaneRenderMode(unsigned int pane, const QString& name)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPaneRenderMode(
+        m_controller, pane, name.toUtf8().constData());
+}
+
+QString ViewportBridge::paneRenderMode(unsigned int pane) const
+{
+    if (!m_controller) return QStringLiteral("preview");
+    return QString::fromUtf8(RISE_API_SceneEditController_GetPaneRenderMode(m_controller, pane));
+}
+
+bool ViewportBridge::setPaneSurfaceDims(unsigned int pane, unsigned int w, unsigned int h)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPaneSurfaceDims(m_controller, pane, w, h);
+}
+
+bool ViewportBridge::setPaneVantageSceneCamera(unsigned int pane)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPaneVantageSceneCamera(m_controller, pane);
+}
+
+bool ViewportBridge::setPaneVantageNamedView(unsigned int pane, const QString& name)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPaneVantageNamedView(
+        m_controller, pane, name.toUtf8().constData());
+}
+
+bool ViewportBridge::paneVantage(unsigned int pane, PaneVantageKind* outKind, QString* outNamedView) const
+{
+    if (!m_controller) return false;
+    int kind = 0;
+    char nm[256] = { 0 };
+    if (!RISE_API_SceneEditController_GetPaneVantage(m_controller, pane, &kind, nm, sizeof(nm))) {
+        return false;
+    }
+    if (outKind) *outKind = static_cast<PaneVantageKind>(kind);
+    if (outNamedView) *outNamedView = QString::fromUtf8(nm);
+    return true;
+}
+
+bool ViewportBridge::paneEnterFreeFly(unsigned int pane)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_PaneEnterFreeFly(m_controller, pane);
+}
+
+bool ViewportBridge::paneExitFreeFly(unsigned int pane)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_PaneExitFreeFly(m_controller, pane);
+}
+
+bool ViewportBridge::getPaneRefinementStatus(unsigned int pane, int* outPhase,
+                                             unsigned int* outScaleDivisor) const
+{
+    if (!m_controller) return false;
+    int phase = -1;
+    unsigned int sd = 1;
+    if (!RISE_API_SceneEditController_GetPaneRefinementStatus(m_controller, pane, &phase, &sd)) {
+        return false;
+    }
+    if (outPhase) *outPhase = phase;
+    if (outScaleDivisor) *outScaleDivisor = sd;
+    return true;
+}
+
+bool ViewportBridge::onPanePointerDown(unsigned int pane, double x, double y)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_OnPanePointerDown(m_controller, pane, x, y);
+}
+
+bool ViewportBridge::onPanePointerMove(unsigned int pane, double x, double y)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_OnPanePointerMove(m_controller, pane, x, y);
+}
+
+bool ViewportBridge::onPanePointerUp(unsigned int pane, double x, double y)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_OnPanePointerUp(m_controller, pane, x, y);
 }
 
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }

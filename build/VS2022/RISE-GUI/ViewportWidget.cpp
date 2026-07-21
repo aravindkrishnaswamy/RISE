@@ -10,6 +10,7 @@
 
 #include <QPainter>
 #include <QPaintEvent>
+#include <QResizeEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QWindow>
@@ -17,6 +18,12 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QTimer>
+#include <QComboBox>
+#include <QToolButton>
+#include <QMenu>
+#include <QAction>
+#include <QLabel>
+#include <QSignalBlocker>
 
 #include <algorithm>
 #include <cmath>
@@ -35,13 +42,47 @@ ViewportWidget::ViewportWidget(ViewportBridge* bridge, QWidget* parent)
     m_regionPollTimer = new QTimer(this);
     m_regionPollTimer->setInterval(500);
     connect(m_regionPollTimer, &QTimer::timeout, this, &ViewportWidget::pollRegionState);
+    // N-up multi-viewport (docs/gui/RENDER_MODES.md §7): same 500ms
+    // cadence, a second connection to the SAME timer (Qt fires every
+    // connected slot on each timeout).
+    connect(m_regionPollTimer, &QTimer::timeout, this, &ViewportWidget::pollPaneChrome);
     m_regionPollTimer->start();
     pollRegionState();
+
+    // N-up multi-viewport: chrome is built once for all kViewportPaneCount
+    // slots (see the header's block doc) and stays hidden until a layout
+    // switch reveals a pane.  Pane 0's rects default to the whole widget so
+    // paneAt()/paneSurfacePoint() are well-defined even before the first
+    // resizeEvent (Single layout never reads them, but keeping them valid
+    // costs nothing).
+    buildPaneChrome();
+    m_paneRects[0] = rect();
+    m_paneImageAreaRects[0] = rect();
 }
 
 void ViewportWidget::setImage(const QImage& image)
 {
     m_image = image;
+    // N-up multi-viewport: pane 0 keeps arriving via this same signal (the
+    // legacy preview sink is pane 0's sink -- see ViewportBridge's doc), so
+    // the pane grid needs a copy too.
+    m_paneImages[0] = image;
+    update();
+}
+
+void ViewportWidget::setPaneImage(unsigned int pane, const QImage& image)
+{
+    // pane 0 rides setImage() above; this slot is only ever wired to
+    // ViewportBridge::paneImageUpdated, which never fires for pane 0 (see
+    // that signal's doc) -- the pane==0 guard is defensive.
+    if (pane == 0 || pane >= ViewportBridge::kViewportPaneCount) return;
+    m_paneImages[pane] = image;
+    if (m_layout != ViewportBridge::ViewportLayout::Single) update();
+}
+
+void ViewportWidget::onViewportLayoutChanged()
+{
+    recomputePaneLayout();
     update();
 }
 
@@ -92,6 +133,10 @@ void ViewportWidget::setSceneEditable(bool editable)
         // armed across the render.
         m_regionArmed = false;
         m_regionDragging = false;
+        // N-up multi-viewport: same reasoning -- drop any in-progress
+        // pane gesture pin rather than risk forwarding a stray Move/Up to
+        // a pane once a render owns the scene.
+        m_activeGesturePane = -1;
     }
     update();   // re-evaluate the nav-overlay draw gate at the new state
 }
@@ -190,6 +235,20 @@ void ViewportWidget::leaveEvent(QEvent* event)
 void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
 {
     QPainter p(this);
+
+    // N-up multi-viewport (docs/gui/RENDER_MODES.md §7): Single stays on
+    // the pre-N-up path below UNCHANGED (see the header's block doc).
+    // Every other layout paints the pane grid instead -- region overlay
+    // and nav-ball overlay are deliberately Single-layout-only (see
+    // paintPaneGrid()'s doc); gizmo overlay IS ported, anchored to pane
+    // 0's rect, since it's the only overlay this task's spec explicitly
+    // requires in N-up ("Gizmo overlays draw in the PRIMARY pane's rect
+    // only").
+    if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        paintPaneGrid(p);
+        return;
+    }
+
     p.fillRect(rect(), palette().window());
 
     if (m_image.isNull()) {
@@ -577,6 +636,27 @@ bool ViewportWidget::handleNavClick(const QPointF& widgetPos)
 
 void ViewportWidget::mousePressEvent(QMouseEvent* event)
 {
+    // N-up multi-viewport (docs/gui/RENDER_MODES.md §7): pane-indexed
+    // routing.  Region drag / the persistent-badge click / the nav-ball
+    // overlay are all Single-layout-only (see paintPaneGrid()'s doc), so
+    // this branch is intentionally simpler than the Single path below --
+    // hit-test the pane, forward Down, and PIN the gesture to that pane
+    // only if the core accepted it (§7.3 gesture exclusivity; a false
+    // return means "drop the gesture" per OnPanePointerDown's contract).
+    if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        m_activeGesturePane = -1;
+        if (!m_bridge || !m_sceneEditable) { event->accept(); return; }
+        const int pane = paneAt(event->position());
+        if (pane >= 0) {
+            const QPointF sp = paneSurfacePoint(static_cast<unsigned int>(pane), event->position());
+            if (m_bridge->onPanePointerDown(static_cast<unsigned int>(pane), sp.x(), sp.y())) {
+                m_activeGesturePane = pane;
+            }
+        }
+        event->accept();
+        return;
+    }
+
     // Every press starts a NEW physical gesture -- any suppress flag
     // left over from an earlier interrupted gesture (e.g. a lost
     // mouseReleaseEvent) is stale by definition.  Clearing here --
@@ -634,6 +714,20 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
 
 void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
 {
+    // N-up multi-viewport: forward Move only while a gesture is pinned to
+    // a pane (mousePressEvent above), and only to THAT pane -- gesture
+    // exclusivity, §7.3.
+    if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        if (m_activeGesturePane >= 0 && m_bridge && m_sceneEditable
+            && (event->buttons() & Qt::LeftButton)) {
+            const QPointF sp = paneSurfacePoint(
+                static_cast<unsigned int>(m_activeGesturePane), event->position());
+            m_bridge->onPanePointerMove(static_cast<unsigned int>(m_activeGesturePane), sp.x(), sp.y());
+        }
+        event->accept();
+        return;
+    }
+
     // Tracking mouse — swap the cursor based on whether we're over
     // the rendered image area or the empty surround.
     updateCursorForPosition(event->position());
@@ -662,6 +756,20 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
 
 void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
 {
+    // N-up multi-viewport: close out the gesture pinned in mousePressEvent,
+    // then unpin regardless of whether onPanePointerUp itself succeeded --
+    // the gesture is over either way.
+    if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        if (m_activeGesturePane >= 0 && m_bridge && m_sceneEditable) {
+            const QPointF sp = paneSurfacePoint(
+                static_cast<unsigned int>(m_activeGesturePane), event->position());
+            m_bridge->onPanePointerUp(static_cast<unsigned int>(m_activeGesturePane), sp.x(), sp.y());
+        }
+        m_activeGesturePane = -1;
+        event->accept();
+        return;
+    }
+
     if (m_regionDragging) {
         m_regionDragging = false;
         m_regionArmed = false;   // consumed -- one drag per arm
@@ -737,4 +845,405 @@ void ViewportWidget::keyPressEvent(QKeyEvent* event)
         return;
     }
     QWidget::keyPressEvent(event);
+}
+
+void ViewportWidget::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        recomputePaneLayout();
+    } else {
+        // Single doesn't push SetPaneSurfaceDims (see recomputePaneLayout's
+        // doc), but keep pane 0's cached rect current anyway -- cheap, and
+        // keeps paneAt()/paneSurfacePoint() well-defined if a caller ever
+        // reads them mid-Single (they aren't today, but nothing here
+        // depends on that staying true).
+        m_paneRects[0] = rect();
+        m_paneImageAreaRects[0] = rect();
+    }
+}
+
+// ============================================================
+// N-up multi-viewport (docs/gui/RENDER_MODES.md §7).  See the header's
+// block doc for the "Single stays byte-identical" contract every method
+// below is written to preserve.
+// ============================================================
+
+void ViewportWidget::buildPaneChrome()
+{
+    for (unsigned int pane = 0; pane < ViewportBridge::kViewportPaneCount; ++pane) {
+        PaneChrome& chrome = m_paneChrome[pane];
+
+        // Mode combo -- populated ONCE from the controller-independent
+        // registry, exactly like TopBar::m_renderModeCombo; only the
+        // current index moves afterward (refreshPaneChromeState()).
+        chrome.modeCombo = new QComboBox(this);
+        chrome.modeCombo->setFont(Theme::mono(9));
+        chrome.modeCombo->setProperty("pane", pane);
+        chrome.modeCombo->setStyleSheet(QStringLiteral(
+            "QComboBox { color: %1; background-color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 4px; }")
+            .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderLight)));
+        for (const ViewportRenderModeInfo& info : ViewportBridge::viewportRenderModes()) {
+            const int idx = chrome.modeCombo->count();
+            chrome.modeCombo->addItem(info.title);
+            chrome.modeCombo->setItemData(idx, info.name, Qt::UserRole);
+            chrome.modeCombo->setItemData(idx, info.question, Qt::ToolTipRole);
+        }
+        chrome.modeCombo->hide();
+        connect(chrome.modeCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+                this, &ViewportWidget::onPaneModeComboChanged);
+
+        // Vantage menu + button -- contents (named views list) are rebuilt
+        // on every poll tick in refreshPaneChromeState() since the named-
+        // view set can change independently of this widget.
+        chrome.vantageMenu = new QMenu(this);
+        chrome.vantageMenu->setProperty("pane", pane);
+        connect(chrome.vantageMenu, &QMenu::triggered, this, &ViewportWidget::onPaneVantageAction);
+
+        chrome.vantageBtn = new QToolButton(this);
+        chrome.vantageBtn->setFont(Theme::mono(9));
+        chrome.vantageBtn->setPopupMode(QToolButton::InstantPopup);
+        chrome.vantageBtn->setMenu(chrome.vantageMenu);
+        chrome.vantageBtn->setProperty("pane", pane);
+        chrome.vantageBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: 1px solid %2; border-radius: 3px; padding: 1px 4px; }"
+            "QToolButton::menu-indicator { image: none; }")
+            .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+        chrome.vantageBtn->hide();
+
+        // Primary marker -- read-only (§7.8 decision 1: a non-navigation
+        // click anywhere IN the pane promotes it; there is no dedicated
+        // "make primary" control).
+        chrome.primaryDot = new QLabel(this);
+        chrome.primaryDot->setFont(Theme::sans(10));
+        chrome.primaryDot->setAlignment(Qt::AlignCenter);
+        chrome.primaryDot->hide();
+    }
+}
+
+void ViewportWidget::recomputePaneLayout()
+{
+    m_layout = m_bridge ? m_bridge->viewportLayout() : ViewportBridge::ViewportLayout::Single;
+    m_visiblePaneCount = ViewportBridge::paneCountForLayout(m_layout);
+
+    // Hide every chrome widget first; only the loop below re-shows the
+    // ones the new layout actually makes visible.  Cheap -- 4 panes.
+    for (unsigned int i = 0; i < ViewportBridge::kViewportPaneCount; ++i) {
+        m_paneChrome[i].modeCombo->setVisible(false);
+        m_paneChrome[i].vantageBtn->setVisible(false);
+        m_paneChrome[i].primaryDot->setVisible(false);
+    }
+
+    if (m_layout == ViewportBridge::ViewportLayout::Single) {
+        // Pre-N-up path: pane 0 owns the WHOLE widget, no header strip, and
+        // deliberately no SetPaneSurfaceDims push -- pane 0 keeps relying
+        // on ViewportBridge::scaleFilmToFit's screen-fit sizing exactly as
+        // before this feature (see the header block doc for why).
+        m_paneRects[0] = rect();
+        m_paneImageAreaRects[0] = rect();
+        return;
+    }
+
+    // RISE UI redesign (A4 region refinement) predates N-up; a region
+    // drag/arm can't sensibly straddle a layout switch (there is no
+    // "which pane" for it), so cancel it here -- mirrors
+    // setSceneEditable(false)'s identical cancel-armed-state handling.
+    if (m_regionArmed || m_regionDragging) {
+        m_regionArmed = false;
+        m_regionDragging = false;
+        emit regionArmCancelled();
+    }
+
+    // Fixed-fraction pane rects, computed GUI-side per §7.2/§7.5.  Raster
+    // order (top-to-bottom, left-to-right) for OnePlusTwo/Quad matches the
+    // design doc's own pane-index prose ("pane 0 big + panes 1,2 stacked
+    // right"; "panes 0-3 in a 2x2 grid").
+    const QRect r = rect();
+    switch (m_layout) {
+    case ViewportBridge::ViewportLayout::TwoH: {
+        const int halfW = r.width() / 2;
+        m_paneRects[0] = QRect(r.left(), r.top(), halfW - kPaneGap / 2, r.height());
+        m_paneRects[1] = QRect(r.left() + halfW + kPaneGap / 2, r.top(),
+                               r.width() - halfW - kPaneGap / 2, r.height());
+        break;
+    }
+    case ViewportBridge::ViewportLayout::OnePlusTwo: {
+        const int leftW  = (r.width() * 2) / 3;
+        const int rightW = r.width() - leftW - kPaneGap;
+        const int halfH  = r.height() / 2;
+        m_paneRects[0] = QRect(r.left(), r.top(), leftW, r.height());
+        m_paneRects[1] = QRect(r.left() + leftW + kPaneGap, r.top(),
+                               rightW, halfH - kPaneGap / 2);
+        m_paneRects[2] = QRect(r.left() + leftW + kPaneGap, r.top() + halfH + kPaneGap / 2,
+                               rightW, r.height() - halfH - kPaneGap / 2);
+        break;
+    }
+    case ViewportBridge::ViewportLayout::Quad: {
+        const int halfW = r.width() / 2;
+        const int halfH = r.height() / 2;
+        m_paneRects[0] = QRect(r.left(), r.top(),
+                               halfW - kPaneGap / 2, halfH - kPaneGap / 2);
+        m_paneRects[1] = QRect(r.left() + halfW + kPaneGap / 2, r.top(),
+                               r.width() - halfW - kPaneGap / 2, halfH - kPaneGap / 2);
+        m_paneRects[2] = QRect(r.left(), r.top() + halfH + kPaneGap / 2,
+                               halfW - kPaneGap / 2, r.height() - halfH - kPaneGap / 2);
+        m_paneRects[3] = QRect(r.left() + halfW + kPaneGap / 2, r.top() + halfH + kPaneGap / 2,
+                               r.width() - halfW - kPaneGap / 2, r.height() - halfH - kPaneGap / 2);
+        break;
+    }
+    case ViewportBridge::ViewportLayout::Single:
+        break;   // unreachable -- handled by the early-out above
+    }
+
+    const double dpr = devicePixelRatioF();
+    for (unsigned int i = 0; i < m_visiblePaneCount; ++i) {
+        const QRect cell = m_paneRects[i];
+        m_paneImageAreaRects[i] = QRect(cell.left(), cell.top() + kPaneHeaderHeight,
+                                        cell.width(), std::max(0, cell.height() - kPaneHeaderHeight));
+
+        // Chrome strip: mode combo (left) | vantage button (middle) |
+        // primary dot (right), all within the cell's top kPaneHeaderHeight.
+        const int dotW      = 16;
+        const int vantageW  = std::min(90, std::max(40, cell.width() / 4));
+        const int comboW    = std::max(30, cell.width() - vantageW - dotW - 6);
+        int x = cell.left() + 2;
+        const int chromeY = cell.top() + 2;
+        const int chromeH = kPaneHeaderHeight - 4;
+        m_paneChrome[i].modeCombo->setGeometry(x, chromeY, comboW, chromeH);
+        x += comboW + 2;
+        m_paneChrome[i].vantageBtn->setGeometry(x, chromeY, vantageW, chromeH);
+        x += vantageW + 2;
+        m_paneChrome[i].primaryDot->setGeometry(x, chromeY, dotW, chromeH);
+
+        m_paneChrome[i].modeCombo->setVisible(true);
+        m_paneChrome[i].vantageBtn->setVisible(true);
+        m_paneChrome[i].primaryDot->setVisible(true);
+
+        // Push the render surface's DEVICE-pixel dims (devicePixelRatio-
+        // aware per the task brief) whenever the pane's image area
+        // actually changed size, mirroring the core's own same-dim
+        // short-circuit convention (§7.3's invalidation matrix).
+        const QSize devDims(
+            std::max(1, static_cast<int>(m_paneImageAreaRects[i].width()  * dpr + 0.5)),
+            std::max(1, static_cast<int>(m_paneImageAreaRects[i].height() * dpr + 0.5)));
+        if (m_bridge && devDims != m_paneLastPushedDims[i]) {
+            m_bridge->setPaneSurfaceDims(i, static_cast<unsigned int>(devDims.width()),
+                                         static_cast<unsigned int>(devDims.height()));
+            m_paneLastPushedDims[i] = devDims;
+        }
+    }
+
+    refreshPaneChromeState();
+}
+
+QRect ViewportWidget::paneImageDrawRect(const QImage& img, const QRect& area) const
+{
+    // Generalized imageDrawRect() -- letterbox `img` inside `area` instead
+    // of always inside the whole widget.
+    if (img.isNull() || area.isEmpty()) return area;
+    const QSize imgSize = img.size();
+    if (imgSize.width() <= 0 || imgSize.height() <= 0) return area;
+    const double scaleX = static_cast<double>(area.width())  / imgSize.width();
+    const double scaleY = static_cast<double>(area.height()) / imgSize.height();
+    const double scale  = std::min(scaleX, scaleY);
+    const int drawW = static_cast<int>(imgSize.width()  * scale);
+    const int drawH = static_cast<int>(imgSize.height() * scale);
+    const int x = area.left() + (area.width()  - drawW) / 2;
+    const int y = area.top()  + (area.height() - drawH) / 2;
+    return QRect(x, y, drawW, drawH);
+}
+
+QPointF ViewportWidget::paneSurfacePoint(unsigned int pane, const QPointF& widgetPos) const
+{
+    // Generalized surfacePoint().  There is no per-pane twin of
+    // cameraSurfaceDimensions() in the C-ABI (that call is scoped to the
+    // single un-indexed camera), so -- like surfacePoint()'s own no-bridge
+    // fallback -- the pane's own last-received frame size is the best
+    // available stand-in for the coordinate space's reference dims.
+    if (pane >= ViewportBridge::kViewportPaneCount) return widgetPos;
+    const QRect area = m_paneImageAreaRects[pane];
+    if (area.isEmpty()) return widgetPos;
+
+    const QImage& img = m_paneImages[pane];
+    const QRect drawRect = paneImageDrawRect(img, area);
+    if (drawRect.isEmpty()) return widgetPos;
+
+    QSize surface = img.size();
+    if (surface.width() <= 0 || surface.height() <= 0) surface = area.size();
+    if (surface.width() <= 0 || surface.height() <= 0) return widgetPos;
+
+    const double nx = (widgetPos.x() - drawRect.left()) / drawRect.width();
+    const double ny = (widgetPos.y() - drawRect.top())  / drawRect.height();
+    return QPointF(nx * surface.width(), ny * surface.height());
+}
+
+int ViewportWidget::paneAt(const QPointF& widgetPos) const
+{
+    const QPoint pt = widgetPos.toPoint();
+    for (unsigned int i = 0; i < m_visiblePaneCount && i < ViewportBridge::kViewportPaneCount; ++i) {
+        if (m_paneImageAreaRects[i].contains(pt)) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+void ViewportWidget::paintPaneGrid(QPainter& p)
+{
+    p.fillRect(rect(), palette().window());
+    const unsigned int primary = m_bridge ? m_bridge->primaryPane() : 0;
+
+    for (unsigned int i = 0; i < m_visiblePaneCount && i < ViewportBridge::kViewportPaneCount; ++i) {
+        const QRect cell = m_paneRects[i];
+        const QRect area = m_paneImageAreaRects[i];
+
+        // Chrome-strip backdrop -- the chrome widgets are opaque and draw
+        // their own backgrounds, but the sliver between/around them
+        // otherwise shows the dark viewport background.
+        p.fillRect(QRect(cell.left(), cell.top(), cell.width(), kPaneHeaderHeight), Theme::bgPanel);
+
+        const QImage& img = m_paneImages[i];
+        if (img.isNull()) {
+            p.setPen(palette().placeholderText().color());
+            p.drawText(area, Qt::AlignCenter, tr("Render to see the scene"));
+        } else {
+            const QRect drawRect = paneImageDrawRect(img, area);
+            if (!drawRect.isEmpty()) p.drawImage(drawRect, img);
+        }
+
+        // Cell border -- brighter + thicker for the primary pane, matching
+        // the primary marker's own accent color.
+        const bool isPrimary = (i == primary);
+        QPen pen(isPrimary ? Theme::accent : Theme::borderLight);
+        pen.setWidth(isPrimary ? 2 : 1);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(cell.adjusted(0, 0, -1, -1));
+    }
+
+    // Gizmo overlay (docs/gui/RENDER_MODES.md §7.5: "Gizmo overlays draw
+    // in the PRIMARY pane's rect only").  Scoped to primary==pane 0: the
+    // tool/gizmo system (ViewportTool, ProjectWorldToScreen_) is still
+    // globally scoped to pane 0 in this P3a/P3b slice -- §7.1's audit
+    // table lists the camera-override read site as staying a pane-0 alias
+    // -- so drawing it against a different primary pane would either
+    // silently no-op or misproject.  Nav-ball overlay is Single-layout-
+    // only (its anchor math is corner-of-WIDGET, not corner-of-pane; not
+    // required by this task's spec, ported honestly as a known gap rather
+    // than faked).
+    if (primary == 0 && gizmoOverlayActive() && m_bridge) {
+        const QSize surface = m_bridge->cameraSurfaceDimensions();
+        if (surface.width() > 0 && surface.height() > 0) {
+            const QRect drawRect0 = paneImageDrawRect(m_paneImages[0], m_paneImageAreaRects[0]);
+            if (!drawRect0.isEmpty()) {
+                paintGizmoOverlay(p, drawRect0, surface);
+            }
+        }
+    }
+}
+
+void ViewportWidget::refreshPaneChromeState()
+{
+    if (!m_bridge) return;
+    const unsigned int primary = m_bridge->primaryPane();
+    const QStringList namedViews = m_bridge->namedViewNames();
+
+    for (unsigned int i = 0; i < m_visiblePaneCount && i < ViewportBridge::kViewportPaneCount; ++i) {
+        PaneChrome& chrome = m_paneChrome[i];
+
+        // Mode combo -- resync current index (QSignalBlocker-guarded, same
+        // pattern as TopBar::refreshRenderModeCombo, so this never re-fires
+        // onPaneModeComboChanged).
+        const QString modeName = m_bridge->paneRenderMode(i);
+        const int wantIndex = chrome.modeCombo->findData(modeName, Qt::UserRole);
+        if (wantIndex >= 0 && wantIndex != chrome.modeCombo->currentIndex()) {
+            const QSignalBlocker blocker(chrome.modeCombo);
+            chrome.modeCombo->setCurrentIndex(wantIndex);
+        }
+
+        // Vantage button label + menu contents.
+        ViewportBridge::PaneVantageKind kind = ViewportBridge::PaneVantageKind::SceneCamera;
+        QString namedView;
+        QString label = tr("Scene Camera");
+        if (m_bridge->paneVantage(i, &kind, &namedView)) {
+            switch (kind) {
+            case ViewportBridge::PaneVantageKind::SceneCamera: label = tr("Scene Camera"); break;
+            case ViewportBridge::PaneVantageKind::FreeFly:     label = tr("Free-Fly");     break;
+            case ViewportBridge::PaneVantageKind::NamedView:
+                label = namedView.isEmpty() ? tr("Named View") : namedView;
+                break;
+            }
+        }
+        chrome.vantageBtn->setText(label);
+        chrome.vantageBtn->setToolTip(tr("Vantage \xE2\x80\x94 Scene camera, a named view, or Free-Fly"));
+
+        chrome.vantageMenu->clear();
+        QAction* sceneAct = chrome.vantageMenu->addAction(tr("Scene Camera"));
+        sceneAct->setData(QStringLiteral("__scene__"));
+        QAction* freeFlyAct = chrome.vantageMenu->addAction(tr("Free-Fly"));
+        freeFlyAct->setData(QStringLiteral("__freefly__"));
+        if (!namedViews.isEmpty()) {
+            chrome.vantageMenu->addSeparator();
+            for (const QString& name : namedViews) {
+                QAction* act = chrome.vantageMenu->addAction(name);
+                act->setData(name);
+            }
+        }
+
+        // Primary marker -- read-only; see buildPaneChrome()'s doc.
+        const bool isPrimary = (i == primary);
+        chrome.primaryDot->setText(QString::fromUtf8("\xE2\x97\x8F"));   // U+25CF BLACK CIRCLE
+        chrome.primaryDot->setToolTip(isPrimary
+            ? tr("Primary pane")
+            : tr("Click in this pane to make it primary"));
+        chrome.primaryDot->setStyleSheet(QStringLiteral("color: %1;")
+            .arg(Theme::hex(isPrimary ? Theme::accent : Theme::textFaint)));
+    }
+}
+
+void ViewportWidget::pollPaneChrome()
+{
+    if (!m_bridge) return;
+    const ViewportBridge::ViewportLayout current = m_bridge->viewportLayout();
+    if (current != m_layout) {
+        // A layout change from elsewhere (or a click this widget's own
+        // onViewportLayoutChanged() already handled, in which case this is
+        // a harmless no-op re-derive) -- resync fully.
+        recomputePaneLayout();
+        update();
+        return;
+    }
+    if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        refreshPaneChromeState();
+    }
+}
+
+void ViewportWidget::onPaneModeComboChanged(int index)
+{
+    if (!m_bridge) return;
+    auto* combo = qobject_cast<QComboBox*>(sender());
+    if (!combo) return;
+    const unsigned int pane = combo->property("pane").toUInt();
+    const QString name = combo->itemData(index, Qt::UserRole).toString();
+    if (name.isEmpty()) return;
+    // The set CAN fail (render-owns-scene, hidden pane) -- always re-read
+    // via refreshPaneChromeState() rather than trusting the click (matches
+    // TopBar::onRenderModeComboChanged's discipline).
+    m_bridge->setPaneRenderMode(pane, name);
+    refreshPaneChromeState();
+}
+
+void ViewportWidget::onPaneVantageAction(QAction* action)
+{
+    if (!m_bridge || !action) return;
+    auto* menu = qobject_cast<QMenu*>(sender());
+    if (!menu) return;
+    const unsigned int pane = menu->property("pane").toUInt();
+    const QString data = action->data().toString();
+    if (data == QLatin1String("__scene__")) {
+        m_bridge->setPaneVantageSceneCamera(pane);
+    } else if (data == QLatin1String("__freefly__")) {
+        m_bridge->paneEnterFreeFly(pane);
+    } else if (!data.isEmpty()) {
+        m_bridge->setPaneVantageNamedView(pane, data);
+    }
+    refreshPaneChromeState();
 }
