@@ -236,6 +236,7 @@ struct MultiPaneViewportView: View {
         }
         .task(id: ObjectIdentifier(bridge)) {
             primaryPane = Int(bridge.primaryPane)
+            applyMultiViewModePreset()
         }
         .onChange(of: layout) { _, _ in
             // A layout switch can hide/reveal panes and change which
@@ -243,7 +244,37 @@ struct MultiPaneViewportView: View {
             // (the core falls back to pane 0 per §7.2); re-read rather
             // than assume.
             primaryPane = Int(bridge.primaryPane)
+            applyMultiViewModePreset()
         }
+    }
+
+    /// Multi-view mode PRESET (user request 2026-07-21).  Entering a
+    /// multi-pane layout should reveal a SPREAD of complementary outputs,
+    /// not four copies of the beauty preview.  Per-slot roles are stable
+    /// across layouts (a pane index means the same thing in TwoH and Quad):
+    ///   slot 0 = beauty preview (the editing surface -- left untouched)
+    ///   slot 1 = wireframe  (topology)
+    ///   slot 2 = normals    (shading)
+    ///   slot 3 = depth      (Z range)
+    /// -- the classic modeling multi-view.  Applied ONLY to a visible
+    /// secondary pane STILL showing "preview", so a pane the user has
+    /// already switched keeps its choice across layout toggles.  (A future
+    /// "reset" affordance or alternate presets -- e.g. a lighting spread of
+    /// clay_lights / direct / indirect -- can layer on this; decision 2
+    /// keeps the built-in set fixed for now.)
+    private static let presetModeBySlot = ["preview", "wireframe", "normals", "depth"]
+
+    private func applyMultiViewModePreset() {
+        var changed = false
+        for pane in layout.paneIndices where pane != 0 && pane < Self.presetModeBySlot.count {
+            let current = bridge.paneRenderMode(UInt(pane))
+            if current == "preview" {
+                if bridge.setPaneRenderMode(UInt(pane), name: Self.presetModeBySlot[pane]) {
+                    changed = true
+                }
+            }
+        }
+        if changed { chromeRefresh &+= 1 }
     }
 
     // MARK: Pane cell
@@ -284,10 +315,39 @@ struct MultiPaneViewportView: View {
                 },
                 onSurfacePixelSizeChanged: { pixelSize in
                     guard pixelSize.width > 0, pixelSize.height > 0 else { return }
-                    if lastSurfacePixelSize[pane] == pixelSize { return }
-                    lastSurfacePixelSize[pane] = pixelSize
+                    // Render the pane at the FILM's aspect ratio, letterboxed
+                    // within the cell -- NOT the raw cell aspect.  The gizmo
+                    // overlay and the pointer->film-pixel conversion BOTH map
+                    // through cameraSurfaceDimensions (the authored film dims)
+                    // and letterbox-fit into the cell (ViewportLetterbox.fit /
+                    // currentImageDrawRect).  If a pane rendered at its cell's
+                    // OWN aspect, its content would not line up with the drawn
+                    // gizmo or with where a click maps -- the "gizmos do
+                    // nothing in a pane" bug (2026-07-21).  Constraining to the
+                    // film aspect makes every pane behave EXACTLY like the
+                    // single viewport (which renders at film dims), so the
+                    // shared overlay + pointer math is correct with no change.
+                    let film = bridge.cameraSurfaceDimensions
+                    let paneSize: CGSize
+                    if film.width > 0, film.height > 0 {
+                        let filmAspect = film.width / film.height
+                        let cellAspect = pixelSize.width / pixelSize.height
+                        if cellAspect > filmAspect {
+                            let h = pixelSize.height
+                            paneSize = CGSize(width: (h * filmAspect).rounded(), height: h)
+                        } else {
+                            let w = pixelSize.width
+                            paneSize = CGSize(width: w, height: (w / filmAspect).rounded())
+                        }
+                    } else {
+                        paneSize = pixelSize
+                    }
+                    if lastSurfacePixelSize[pane] == paneSize { return }
+                    lastSurfacePixelSize[pane] = paneSize
                     _ = bridge.setPaneSurfaceDims(
-                        UInt(pane), width: UInt(pixelSize.width), height: UInt(pixelSize.height))
+                        UInt(pane),
+                        width:  UInt(max(1, paneSize.width)),
+                        height: UInt(max(1, paneSize.height)))
                 }
             )
 

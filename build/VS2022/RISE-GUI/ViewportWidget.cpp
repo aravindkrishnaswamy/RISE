@@ -83,7 +83,38 @@ void ViewportWidget::setPaneImage(unsigned int pane, const QImage& image)
 void ViewportWidget::onViewportLayoutChanged()
 {
     recomputePaneLayout();
+    applyMultiViewModePreset();
     update();
+}
+
+// Multi-view mode PRESET (user request 2026-07-21; Mac twin:
+// MultiPaneViewport.swift applyMultiViewModePreset).  Entering a
+// multi-pane layout should reveal a SPREAD of complementary outputs, not
+// four copies of the beauty preview.  Per-slot roles are stable across
+// layouts: 0 beauty preview (editing surface, untouched), 1 wireframe
+// (topology), 2 normals (shading), 3 depth (Z) -- the classic modeling
+// multi-view.  Applied ONLY to a visible secondary pane STILL showing
+// "preview", so a pane the user already switched keeps its choice across
+// layout toggles.
+void ViewportWidget::applyMultiViewModePreset()
+{
+    if (!m_bridge) return;
+    static const char* const kPresetBySlot[4] = { "preview", "wireframe", "normals", "depth" };
+    for (unsigned int pane = 1; pane < m_visiblePaneCount && pane < 4; ++pane) {
+        if (m_bridge->paneRenderMode(pane) == QStringLiteral("preview")) {
+            m_bridge->setPaneRenderMode(pane, QString::fromLatin1(kPresetBySlot[pane]));
+            if (pane < static_cast<unsigned int>(4) && m_paneChrome[pane].modeCombo) {
+                // Reflect the preset in the chrome combo (block signals so
+                // the programmatic set doesn't re-enter setPaneRenderMode).
+                const int idx = m_paneChrome[pane].modeCombo->findData(
+                    QString::fromLatin1(kPresetBySlot[pane]));
+                if (idx >= 0) {
+                    QSignalBlocker block(m_paneChrome[pane].modeCombo);
+                    m_paneChrome[pane].modeCombo->setCurrentIndex(idx);
+                }
+            }
+        }
+    }
 }
 
 void ViewportWidget::setActiveTool(ViewportTool t)
@@ -1023,9 +1054,31 @@ void ViewportWidget::recomputePaneLayout()
         // aware per the task brief) whenever the pane's image area
         // actually changed size, mirroring the core's own same-dim
         // short-circuit convention (§7.3's invalidation matrix).
-        const QSize devDims(
+        QSize devDims(
             std::max(1, static_cast<int>(m_paneImageAreaRects[i].width()  * dpr + 0.5)),
             std::max(1, static_cast<int>(m_paneImageAreaRects[i].height() * dpr + 0.5)));
+        // Constrain the pane's render surface to the FILM aspect ratio,
+        // letterboxed inside the cell -- NOT the raw cell aspect.  The
+        // gizmo overlay and the pointer->film-pixel conversion both map
+        // through cameraSurfaceDimensions (the authored film dims) and
+        // aspect-fit into the cell; a pane rendered at its cell's OWN
+        // aspect would not line up with the gizmo or with where a click
+        // maps (the "gizmos do nothing in a pane" bug, 2026-07-21).
+        // Matching the film aspect makes every pane behave like the single
+        // viewport (which renders at film dims).  Mac twin:
+        // MultiPaneViewport.swift onSurfacePixelSizeChanged.
+        if (m_bridge) {
+            const QSize film = m_bridge->cameraSurfaceDimensions();
+            if (film.width() > 0 && film.height() > 0) {
+                const double filmAspect = static_cast<double>(film.width()) / film.height();
+                const double cellAspect = static_cast<double>(devDims.width()) / devDims.height();
+                if (cellAspect > filmAspect) {
+                    devDims.setWidth(std::max(1, static_cast<int>(devDims.height() * filmAspect + 0.5)));
+                } else {
+                    devDims.setHeight(std::max(1, static_cast<int>(devDims.width() / filmAspect + 0.5)));
+                }
+            }
+        }
         if (m_bridge && devDims != m_paneLastPushedDims[i]) {
             m_bridge->setPaneSurfaceDims(i, static_cast<unsigned int>(devDims.width()),
                                          static_cast<unsigned int>(devDims.height()));

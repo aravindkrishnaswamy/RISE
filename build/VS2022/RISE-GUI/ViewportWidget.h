@@ -212,6 +212,10 @@ private:
     /// block doc above).  Called from resizeEvent, onViewportLayoutChanged,
     /// and pollPaneChrome (when it notices the layout changed).
     void    recomputePaneLayout();
+    /// Multi-view mode preset -- see the .cpp for the per-slot roles.
+    /// Applied on every layout change to visible secondary panes still
+    /// showing "preview" (user customization survives).
+    void    applyMultiViewModePreset();
     /// Generalized imageDrawRect() -- letterbox `img` inside `area`.
     QRect   paneImageDrawRect(const QImage& img, const QRect& area) const;
     /// Generalized surfacePoint() for pane `pane`: maps a widget-local
