@@ -1719,6 +1719,20 @@ namespace RISE
 		//! that the flag clears afterward.
 		bool ForTest_RenderOwnsScene() const { return mRenderOwnsScene.load( std::memory_order_acquire ); }
 
+		//! P3a slice 2 test seam: drive the render loop the way an edit
+		//! does (KickRender is private; scheduler tests need the edit
+		//! trigger without performing a real scene mutation).
+		void ForTest_KickRender() { KickRender(); }
+
+		//! P3a slice 2 test seam: which pane's registers are currently
+		//! loaded (the scheduler's context).  Read under mMutex for a
+		//! settled answer; test-only, like every ForTest_* accessor.
+		unsigned int ForTest_CurrentPane() const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			return mCurrentPane;
+		}
+
 		const SceneEditor& Editor() const { return mEditor; }
 		SceneEditor&       Editor()       { return mEditor; }
 
