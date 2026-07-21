@@ -983,6 +983,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h" />
+	<ClInclude Include="..\..\..\src\Library\Utilities\FiniteMath.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStack.h" />

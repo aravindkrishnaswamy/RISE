@@ -22,7 +22,6 @@
 
 #include <cctype>   // P1-B: std::isspace for the whitespace-split camera-vector shape check
 #include <cerrno>   // P1-B: errno for the strtod ERANGE overflow check
-#include <cfloat>   // P1-B: DBL_MAX for the -ffast-math-safe finite-range test
 #include <cmath>
 #include <cstdint>
 #include <cstdio>   // preview-render: std::snprintf for the fov degrees-string conversion
@@ -30,6 +29,7 @@
 #include <exception>
 #include <string>
 #include <vector>
+#include "../Utilities/FiniteMath.h"
 
 namespace RISE
 {
@@ -286,8 +286,7 @@ namespace RISE
 			//! 1 = present and valid (outBase filled), 0 = absent (or null --
 			//! unconditional edit), -1 = malformed (outErr carries the -32602
 			//! message).  The validation is the slice-1a contract verbatim:
-			//! numeric uuid/revision, finite (explicit range test, NOT
-			//! std::isfinite -- -ffast-math folds that to true), non-negative,
+			//! numeric uuid/revision, finite, non-negative,
 			//! integral, <= 2^53 (the largest exactly-representable integer
 			//! double; the monotonic-from-1 counters never approach it).
 			int ParseBaseHeadVersionParam( const JsonValue& params,
@@ -308,8 +307,9 @@ namespace RISE
 				}
 				const double ud = u->asNumber();
 				const double rd = rv->asNumber();
-				if( !( ud >= 0.0 && ud <= 9007199254740992.0 && ud == std::floor( ud ) &&
-				       rd >= 0.0 && rd <= 9007199254740992.0 && rd == std::floor( rd ) ) ) {
+				if( !RISE::IsFiniteDouble( ud ) || !RISE::IsFiniteDouble( rd ) ||
+					!( ud >= 0.0 && ud <= 9007199254740992.0 && ud == std::floor( ud ) &&
+					   rd >= 0.0 && rd <= 9007199254740992.0 && rd == std::floor( rd ) ) ) {
 					outErr = "Invalid params: 'baseHeadVersion' uuid/revision must be finite non-negative integers";
 					return -1;
 				}
@@ -521,9 +521,7 @@ namespace RISE
 			//! an agent that guesses "1024" for a 512-max field still gets a
 			//! usable preview instead of an error), 0 = absent/null, -1 =
 			//! present but not a finite number (outErr carries the -32602
-			//! message).  Same non-finite guard idiom as the existing
-			//! 'samples' parse above (explicit range test, NOT std::isfinite --
-			//! survives -ffinite-math-only).
+			//! message).
 			int ParseClampedUInt( const JsonValue& params, const char* field,
 			                      unsigned int loClamp, unsigned int hiClamp,
 			                      unsigned int& out, std::string& outErr )
@@ -535,7 +533,7 @@ namespace RISE
 					return -1;
 				}
 				const double d = v->asNumber();
-				if( !( d >= -2147483648.0 && d <= 2147483647.0 ) ) {
+				if( !RISE::IsFiniteDouble( d ) || !( d >= -2147483648.0 && d <= 2147483647.0 ) ) {
 					outErr = std::string( "Invalid params: '" ) + field + "' must be a finite, in-range number";
 					return -1;
 				}
@@ -568,24 +566,21 @@ namespace RISE
 			}
 
 			//! P1-B: validate that `token` parses as a single finite number
-			//! (no trailing garbage).  Uses std::strtod + an explicit range
-			//! test against the double bounds -- NOT std::isfinite (dead
-			//! code under -ffinite-math-only per the project's established
-			//! idiom; see the 'samples' parse above).  Rejects empty tokens
-			//! and tokens with unconsumed trailing characters (so "5abc"
-			//! does not silently parse as 5).
+			//! (no trailing garbage).  Reject at the string layer before
+			//! converting: no valid decimal or hexadecimal token contains n/i,
+			//! and strtod reports ERANGE for an overflow or underflow.  Rejects
+			//! empty tokens and tokens with unconsumed trailing characters (so
+			//! "5abc" does not silently parse as 5).
 			bool IsFiniteNumberToken( const std::string& token )
 			{
 				if( token.empty() ) return false;
+				if( token.find_first_of( "nNiI" ) != std::string::npos ) return false;
 				const char* start = token.c_str();
 				char* end = nullptr;
 				errno = 0;
-				const double v = std::strtod( start, &end );
+				(void)std::strtod( start, &end );
 				if( end != start + token.size() ) return false;   // trailing garbage
-				if( errno == ERANGE ) return false;                // overflowed to +/-HUGE_VAL
-				// Explicit finite range test (survives -ffinite-math-only):
-				// NaN fails both comparisons; +/-inf fails the DBL_MAX bound.
-				if( !( v >= -DBL_MAX && v <= DBL_MAX ) ) return false;
+				if( errno == ERANGE ) return false;
 				return true;
 			}
 
@@ -669,10 +664,7 @@ namespace RISE
 				if( const JsonValue* fov = cam->find( "fov" ) ) {
 					if( fov->isNumber() ) {
 						const double fv = fov->asNumber();
-						// Explicit range test (not std::isfinite -- see the
-						// project-wide idiom note above): NaN fails both
-						// comparisons, +/-inf fails the open-interval bounds.
-						if( !( fv > 0.0 && fv < 180.0 ) ) {
+						if( !RISE::IsFiniteDouble( fv ) || !( fv > 0.0 && fv < 180.0 ) ) {
 							outErr = "Invalid params: 'camera.fov' must be in (0, 180) degrees";
 							return -1;
 						}
@@ -962,9 +954,7 @@ namespace RISE
 					// with numeric, finite, non-negative INTEGRAL uuid/revision
 					// (else -32602); null is treated as absent (unconditional
 					// edit).  Validation factored into ParseBaseHeadVersionParam
-					// (Model-B F5 S2: insert_chunk / remove_chunk share it) --
-					// the UB-guard rationale (explicit range test surviving
-					// -ffast-math, NOT std::isfinite) lives on the helper.
+					// (Model-B F5 S2: insert_chunk / remove_chunk share it).
 					{
 						std::string bErr;
 						const int b = ParseBaseHeadVersionParam( params, sp.baseVersion, bErr );
@@ -1094,20 +1084,12 @@ namespace RISE
 					if( const JsonValue* sm = params.find( "samples" ) ) {
 						if( sm->isNumber() ) {
 							// Guard the cast: static_cast<int>(inf/nan) is UB.  A
-							// hostile {"samples":1e999} parses to +inf.  We do NOT
-							// use std::isfinite here: the production build compiles
-							// with -ffast-math (-> -ffinite-math-only), under which
-							// clang constant-folds std::isfinite(x) to true and the
-							// guard becomes dead code stripped by the optimizer.  An
-							// explicit range comparison against the int32 bounds
-							// survives -ffinite-math-only (a plain >=/<= on the
-							// double is not folded away) and rejects NaN and +/-inf
-							// alike before the narrowing cast: NaN fails both
-							// comparisons, +/-inf fails the finite bound.  The
-							// bounds are exactly representable as double
-							// (2^31-1 and -2^31).
+							// hostile {"samples":1e999} parses to +inf.  The finite
+							// test must survive the production -ffast-math build; the
+							// bounds are exactly representable as double (2^31-1 and
+							// -2^31).
 							const double sv = sm->asNumber();
-							if( !( sv >= -2147483648.0 && sv <= 2147483647.0 ) )
+							if( !RISE::IsFiniteDouble( sv ) || !( sv >= -2147483648.0 && sv <= 2147483647.0 ) )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
 							samples = static_cast<int>( sv );
 							// Model-B F2 slice S3 (EffectiveRenderConfig): -1
@@ -1367,10 +1349,8 @@ namespace RISE
 					// above (2^53, the largest integer a double represents exactly) --
 					// renderJobId is a small monotonic counter in practice, but the
 					// guard must reject NaN/+inf/huge values BEFORE the narrowing
-					// static_cast below (UB otherwise), matching this file's existing
-					// non-finite-guard idiom (explicit range test, not std::isfinite --
-					// see the 'samples' parse for why).
-					if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+					// static_cast below (UB otherwise).
+					if( !RISE::IsFiniteDouble( rv ) || !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
 					const std::uint64_t jobId = static_cast<std::uint64_t>( rv );
 					const AgentSession::AgentRenderJobStatus st = s->RenderStatus( jobId );
@@ -1421,10 +1401,8 @@ namespace RISE
 					// above (2^53, the largest integer a double represents exactly) --
 					// renderJobId is a small monotonic counter in practice, but the
 					// guard must reject NaN/+inf/huge values BEFORE the narrowing
-					// static_cast below (UB otherwise), matching this file's existing
-					// non-finite-guard idiom (explicit range test, not std::isfinite --
-					// see the 'samples' parse for why).
-					if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+					// static_cast below (UB otherwise).
+					if( !RISE::IsFiniteDouble( rv ) || !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
 					const std::uint64_t jobId = static_cast<std::uint64_t>( rv );
 
@@ -1482,7 +1460,7 @@ namespace RISE
 							const double rv = rj->asNumber();
 							// Same exact-double-integer bound as render_status/
 							// render_wait above.
-							if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+							if( !RISE::IsFiniteDouble( rv ) || !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
 							jobId = static_cast<std::uint64_t>( rv );
 						}
@@ -1603,12 +1581,10 @@ namespace RISE
 					}
 					const double xd = xv->asNumber();
 					const double yd = yv->asNumber();
-					// Same explicit finite-range guard idiom as every other
-					// numeric parse in this file (NOT std::isfinite -- dead
-					// code under -ffinite-math-only; see the 'samples' parse
-					// above) -- guards the narrowing casts below against a
-					// hostile/typo'd 1e999 or NaN.
-					if( !( xd >= -2147483648.0 && xd <= 2147483647.0 ) ||
+					// Guard the narrowing casts below against a hostile/typo'd
+					// 1e999 or NaN.
+					if( !RISE::IsFiniteDouble( xd ) || !RISE::IsFiniteDouble( yd ) ||
+						!( xd >= -2147483648.0 && xd <= 2147483647.0 ) ||
 					    !( yd >= -2147483648.0 && yd <= 2147483647.0 ) )
 					{
 						return MakeError( idValue, kInvalidParams,
@@ -1741,10 +1717,8 @@ namespace RISE
 					// Same exact-double-integer bound as every other id/version
 					// field in this file (2^53, the largest exactly-representable
 					// integer double) -- guards the narrowing cast below against
-					// UB on a hostile/huge value, matching the project-wide
-					// explicit-range idiom (not std::isfinite; see the 'samples'
-					// parse earlier in this file for the -ffast-math rationale).
-					if( !( pidD >= 0.0 && pidD <= 9007199254740992.0 ) ) {
+					// UB on a hostile/huge value.
+					if( !RISE::IsFiniteDouble( pidD ) || !( pidD >= 0.0 && pidD <= 9007199254740992.0 ) ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: 'proposalId' must be a finite, non-negative number" );
 					}

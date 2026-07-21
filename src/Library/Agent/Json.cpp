@@ -13,11 +13,11 @@
 #include "pch.h"
 #include "Json.h"
 
-#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <string>
+#include "../Utilities/FiniteMath.h"
 
 namespace RISE
 {
@@ -286,21 +286,10 @@ namespace RISE
 			{
 				// JSON has no NaN/Inf; emit 0 (a defensive, standards-legal
 				// fallback -- without it %.17g prints a literal `inf`/`nan`
-				// token and the emitted line stops being JSON).  We do NOT
-				// use std::isnan/std::isinf here: the production build
-				// compiles with -ffast-math (-> -ffinite-math-only), under
-				// which clang constant-folds those intrinsics to false and
-				// the guard becomes dead code (the AgentRpc.cpp house idiom,
-				// q.v.).  A plain range comparison against +/-DBL_MAX is not
-				// folded away and rejects both non-finites: NaN fails every
-				// ordered comparison, and +/-inf fails the respective bound.
-				// HONEST CAVEAT: for the values -ffinite-math-only licenses
-				// the compiler to ASSUME (all finite), this comparison is
-				// tautologically true -- so a future clang could legally
-				// fold it away too.  AgentChatLoopTest T15 pins the
-				// behaviour against production-flag objects; a toolchain
-				// regression is caught at test time, not in the field.
-				if( !( d >= -DBL_MAX && d <= DBL_MAX ) ) {
+				// token and the emitted line stops being JSON).  The value
+				// arrives as a double, so use the volatile-materialised
+				// predicate that survives the production -ffast-math build.
+				if( !RISE::IsFiniteDouble( d ) ) {
 					out += '0';
 					return;
 				}

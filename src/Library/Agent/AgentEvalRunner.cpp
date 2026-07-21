@@ -32,13 +32,14 @@
 
 #include <algorithm> // std::max / std::min -- render channelBalanceMax ratio
 #include <cctype>
-#include <cfloat>    // DBL_MAX -- -ffast-math-safe finiteness idiom (IsFiniteRenderNumber)
-#include <cmath>     // std::isfinite -- numeric param_equals tolerance
+#include <cerrno>    // ERANGE -- string-layer overflow rejection (see CheckerParseFloatTokens)
+#include <cmath>
 #include <cstdint>   // std::uint64_t -- ScenarioContentHash's FNV-1a accumulator
 #include <cstdio>
 #include <cstdlib>   // std::strtod -- numeric param_equals token parse
 #include <cstring>   // std::strlen -- ParseRateLimit429HintMs phrase-length skip
 #include <chrono>    // std::chrono::milliseconds -- the real (non-injected) HTTP 429 backoff sleep
+#include "../Utilities/FiniteMath.h"
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -118,11 +119,10 @@ namespace RISE
 				return true;
 			}
 
-			//! Explicit-range finiteness test.  The production build uses
-			//! -ffast-math, which can make std::isfinite(x) a constant true.
+			//! Finiteness test for JSON numbers that have already been parsed.
 			bool IsFiniteEvalNumber( double v )
 			{
-				return v >= -DBL_MAX && v <= DBL_MAX;
+				return IsFiniteDouble( v );
 			}
 
 			bool ParseScenarioWholeNumber( const JsonValue& value, const std::string& label,
@@ -754,7 +754,7 @@ namespace RISE
 							return false;
 						}
 						const double fov = cam.get( "fov" ).asNumber();
-						if( !( fov > 0.0 && fov < 180.0 ) ) {
+					if( !IsFiniteEvalNumber( fov ) || !( fov > 0.0 && fov < 180.0 ) ) {
 							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 							      "].\"camera.fov\" must be > 0 and < 180 degrees";
 							return false;
@@ -793,7 +793,7 @@ namespace RISE
 						return false;
 					}
 					const double rmseMax = cp.get( "rmseMax" ).asNumber();
-					if( !( rmseMax > 0.0 && rmseMax <= 1.0 ) ) {
+					if( !IsFiniteEvalNumber( rmseMax ) || !( rmseMax > 0.0 && rmseMax <= 1.0 ) ) {
 						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 						      "].\"rmseMax\" must be in (0,1]";
 						return false;
@@ -3233,9 +3233,22 @@ namespace RISE
 					while( iss >> tok ) {
 						const char* begin = tok.c_str();
 						char* end = nullptr;
+						// REJECT AT THE STRING LAYER.  This avoids a value-level
+						// classification after -ffast-math has attached a finite
+						// assumption to the parsed double.  Text and errno are
+						// integer-domain, so they are immune to that assumption:
+						//   * no valid decimal OR hex float token contains 'n' or
+						//     'i' ('n'/'i' are not hex digits, and the exponent
+						//     markers are e/E/p/P), so those letters can only come
+						//     from nan / inf / infinity;
+						//   * strtod sets ERANGE for overflow ("1e999" -> HUGE_VAL)
+						//     and for underflow; both are refused as comparison
+						//     values.
+						if( tok.find_first_of( "nNiI" ) != std::string::npos ) return false;
+						errno = 0;
 						const double v = std::strtod( begin, &end );
 						if( end != begin + tok.size() ) return false;   // non-numeric / trailing junk
-						if( !std::isfinite( v ) ) return false;
+						if( errno == ERANGE ) return false;             // overflow / underflow
 						out.push_back( v );
 					}
 					return true;
@@ -3956,18 +3969,10 @@ namespace RISE
 				//! than GiB.
 				static constexpr double kMaxEvalRenderPixels = 64000000.0;
 
-				//! Explicit-range finiteness test -- NOT std::isfinite.  The
-				//! production build compiles with -ffast-math (->
-				//! -ffinite-math-only), under which clang constant-folds
-				//! std::isfinite(x) to `true`, silently disabling the guard (see
-				//! AgentRpc.cpp's ValidateVec3Shape/ParseCameraOverrideParam and
-				//! Json.cpp's SerializeNumber for the same idiom already
-				//! established elsewhere in the Agent surface).  A plain range
-				//! comparison against +/-DBL_MAX is NOT folded away: NaN fails
-				//! every ordered comparison, +/-inf fails the respective bound.
+				//! Finiteness test for JSON numbers that have already been parsed.
 				bool IsFiniteRenderNumber( double v )
 				{
-					return v >= -DBL_MAX && v <= DBL_MAX;
+					return RISE::IsFiniteDouble( v );
 				}
 
 				//! Image-reconstruction Wave 2: format an author-supplied
@@ -4460,10 +4465,7 @@ namespace RISE
 							if( !cam.get( "fov" ).isNumber() )
 								return { false, "render checkpoint: \"camera.fov\" must be a number (degrees)" };
 							const double fov = cam.get( "fov" ).asNumber();
-							// Explicit range test (not std::isfinite -- see
-							// IsFiniteRenderNumber's doc): NaN fails both
-							// comparisons, +/-inf fails the respective open bound.
-							if( !( fov > 0.0 && fov < 180.0 ) )
+							if( !IsFiniteRenderNumber( fov ) || !( fov > 0.0 && fov < 180.0 ) )
 								return { false, "render checkpoint: \"camera.fov\" must be > 0 and < 180 degrees (got " +
 									FormatCheckpointNumber( fov ) + ")" };
 							char fbuf[64];
@@ -4499,10 +4501,7 @@ namespace RISE
 					double       rmseMax = 0.0;
 					if( haveCompare ) {
 						rmseMax = cp.get( "rmseMax" ).asNumber();
-						// Explicit range test (not std::isfinite -- see
-						// IsFiniteRenderNumber's doc): NaN fails both
-						// comparisons, +/-inf fails the upper bound.
-						if( !( rmseMax > 0.0 && rmseMax <= 1.0 ) )
+						if( !IsFiniteRenderNumber( rmseMax ) || !( rmseMax > 0.0 && rmseMax <= 1.0 ) )
 							return { false, "render checkpoint: \"rmseMax\" must be in (0,1] (got " +
 								FormatCheckpointNumber( rmseMax ) + ")" };
 						refPath = cp.get( "compareToImage" ).asString();

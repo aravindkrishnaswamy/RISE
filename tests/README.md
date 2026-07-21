@@ -41,8 +41,8 @@ Built binaries land in `bin/tests/` (Release) or `dbin/tests/` (Debug).
   `BSPMailboxingTest.cpp`, `BSPTreeSAHTest.cpp`, `BezierClippingUnitsTest.cpp`, `CSGObjectIdentityTest.cpp`, `ClippedPlaneGeometryTest.cpp`, `DisplacedGeometryTest.cpp`, `GeometrySurfaceDerivativesTest.cpp`, `RISEMeshLegacyBSPCompatibilityTest.cpp`, `RayBoxIntersectionTest.cpp`, `RayTriangleIntersectionTest.cpp`, `TessellatedShapeDerivativesTest.cpp`
 - BVH (2):
   `BVHBuilderTest.cpp` (object/spatial split builder, leaf packing, bounds), `BVHSerializationTest.cpp` (v4 cached-BVH on-disk format round-trip)
-- Math and utility coverage (7):
-  `ColorUtilsTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `MortonCodeTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
+- Math and utility coverage (8):
+  `ColorUtilsTest.cpp`, `FiniteMathTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `MortonCodeTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
 - Noise and procedural-texture generators (10):
   `CurlNoise3DTest.cpp`, `DomainWarpNoise3DTest.cpp`, `GaborNoise3DTest.cpp`, `PerlinWorleyNoise3DTest.cpp`, `ReactionDiffusion3DTest.cpp`, `SDFPrimitive3DTest.cpp`, `SimplexNoise3DTest.cpp`, `TurbulenceNoise3DTest.cpp`, `WaveletNoise3DTest.cpp`, `WorleyNoise3DTest.cpp`
 - Sampling, shading, and cache behavior (13):

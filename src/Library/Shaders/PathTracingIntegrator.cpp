@@ -29,6 +29,7 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Profiling.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): emissive non-area-light geometries (SDF) get full BSDF weight
 #include "../Utilities/MediumTransport.h"
@@ -104,7 +105,7 @@ namespace {
 	std::atomic<uint64_t> g_smsDiag_sumSuppLumX{0};
 
 	inline void SMSDiag_AddLum( std::atomic<uint64_t>& acc, double lum ) {
-		if( lum <= 0 || !std::isfinite( lum ) ) return;
+		if( lum <= 0 || !RISE::IsFiniteDouble( lum ) ) return;
 		const uint64_t fixed = static_cast<uint64_t>( lum * kSMSDiag_LumScale );
 		acc.fetch_add( fixed, std::memory_order_relaxed );
 	}
@@ -1676,7 +1677,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// the float32 EXR overflow ceiling (~3.4e38).
 		{
 			const Scalar absMax = PTAbsMaxMagnitude( throughput );
-			if( !std::isfinite( absMax ) || absMax > Scalar(1e6) ) {
+			if( !RISE::IsFiniteDouble( absMax ) || absMax > Scalar(1e6) ) {
 				break;
 			}
 		}
@@ -4029,7 +4030,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			bool anyBad = false;
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				const Scalar v = throughputComp[w];
-				if( !std::isfinite( v ) ) { anyBad = true; break; }
+				if( !RISE::IsFiniteDouble( v ) ) { anyBad = true; break; }
 				if( fabs( v ) > maxThr ) maxThr = fabs( v );
 			}
 			if( anyBad || maxThr > Scalar(1e6) ) {

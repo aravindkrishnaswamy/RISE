@@ -73,6 +73,7 @@
 #include "../Scene.h"                 // concrete Scene (transitive scene-state includes); transactional rollback no longer uses CreateSnapshot/RestoreFromSnapshot
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RuntimeContext.h"
+#include "../Utilities/FiniteMath.h"
 #include <algorithm>      // Model-B F2 slice S2a: std::min for WaitForRenderJob's bounded wait_until slices
 #include <chrono>
 #include <cstdio>
@@ -496,7 +497,7 @@ inline bool ProjectWorldToScreen_(
 	const double sx               = sx_current * ( targetWidth  / currentWidth  );
 	const double sy_image_target  = sy_image_current * ( targetHeight / currentHeight );
 	const double sy               = targetHeight - sy_image_target;   // → widget-Y-DOWN
-	if( !std::isfinite( sx ) || !std::isfinite( sy ) ) return false;
+	if( !RISE::IsFiniteDouble( sx ) || !RISE::IsFiniteDouble( sy ) ) return false;
 	outSx = sx;
 	outSy = sy;
 	return true;
@@ -568,7 +569,7 @@ inline void ProbeAxesAtPivot_(
 		const double dx = ax - cx;
 		const double dy = ay - cy;
 		const double mag = std::sqrt( dx*dx + dy*dy );
-		if( !( mag > 0.0 ) || !std::isfinite( mag ) ) {
+		if( !( mag > 0.0 ) || !RISE::IsFiniteDouble( mag ) ) {
 			outAxisOk[a] = false;
 			continue;
 		}
@@ -628,7 +629,7 @@ inline void BuildGizmoHandles_(
 		double dx = ax - cx;
 		double dy = ay - cy;
 		const double mag = std::sqrt( dx*dx + dy*dy );
-		if( !( mag > 0.0 ) || !std::isfinite( mag ) ) continue;
+		if( !( mag > 0.0 ) || !RISE::IsFiniteDouble( mag ) ) continue;
 		axisDirX[a][0] = dx / mag;
 		axisDirX[a][1] = dy / mag;
 		axisOk[a] = true;
@@ -1386,7 +1387,7 @@ bool SceneEditController::RefreshNavGizmo( double centerX, double centerY,
 			double( curW ), double( curH ), double( stableW ), double( stableH ), sx, sy ) ) return false;
 		const double tx = sx - px, ty = sy - py;
 		const double mag = std::sqrt( tx * tx + ty * ty );
-		if( !( mag > 1e-6 ) || !std::isfinite( mag ) ) return false;
+		if( !( mag > 1e-6 ) || !RISE::IsFiniteDouble( mag ) ) return false;
 		outDx = tx / mag; outDy = ty / mag;
 		return true;
 	};

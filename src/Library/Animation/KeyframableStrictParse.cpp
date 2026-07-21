@@ -30,6 +30,7 @@
 
 #include "pch.h"
 #include "KeyframableHelper.h"
+#include "../Utilities/FiniteMath.h"
 
 #include <cctype>
 
@@ -63,11 +64,11 @@ namespace RISE
 			return true;
 		}
 
-		// See header for full rationale.  Three layers of defence
+		// See header for full rationale.  Two layers of defence
 		// against `-ffast-math`:
 		//   1. Textual reject of "nan" / "inf" before strtod.
-		//   2. `volatile` on the parsed result to block re-derivation.
-		//   3. Bit-pattern check via memcpy for overflow → ±Inf.
+		//   2. The shared volatile-materialised predicate catches an
+		//      overflow to +/-Inf.
 		// Also requires the entire input to parse — trailing non-
 		// whitespace (e.g. "1abc", "1 2") is rejected since a scalar
 		// field should be one number, not a prefix of a number.
@@ -88,10 +89,9 @@ namespace RISE
 				return false;
 			}
 
-			// Layer 2 + 3: parse, then check bits for overflow → ±Inf.
+			// Layer 2: parse, then reject an overflow to +/-Inf.
 			char* end = nullptr;
-			volatile double parsedV = std::strtod( c, &end );
-			const double parsed = parsedV;
+			const double parsed = std::strtod( c, &end );
 			if( end == c ) {
 				return false;
 			}
@@ -102,10 +102,7 @@ namespace RISE
 			if( *end != '\0' ) {
 				return false;
 			}
-			uint64_t bits;
-			std::memcpy( &bits, const_cast<const double*>( &parsed ), sizeof( bits ) );
-			const uint64_t kExpMask = 0x7FF0000000000000ULL;
-			if( ( bits & kExpMask ) == kExpMask ) {
+			if( !RISE::IsFiniteDouble( parsed ) ) {
 				return false;
 			}
 			out = static_cast<Scalar>( parsed );

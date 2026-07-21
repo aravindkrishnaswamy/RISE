@@ -1197,6 +1197,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+	<ClInclude Include="..\..\..\src\Library\Utilities\FiniteMath.h">
+	  <Filter>Utilities</Filter>
+	</ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h">
       <Filter>Utilities</Filter>
     </ClInclude>

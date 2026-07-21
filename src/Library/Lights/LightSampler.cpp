@@ -21,6 +21,7 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/Math3D/Constants.h"
 #include "../Intersection/RayIntersection.h"
@@ -841,14 +842,14 @@ void LightSampler::Prepare(
 			const Scalar rawRadius = Scalar( 0.5 ) * Vector3Ops::Magnitude( extents );
 			const Scalar kRadiusCap = Scalar( 1.0e6 );
 			cachedSceneRadius =
-				( !std::isfinite( rawRadius ) || rawRadius > kRadiusCap )
+				( !RISE::IsFiniteDouble( rawRadius ) || rawRadius > kRadiusCap )
 					? kRadiusCap
 					: rawRadius;
 			// Also defend the centre: an infinite-extent object can
 			// land ll = -INF and ur = +INF, whose midpoint is NaN.
-			if( !std::isfinite( cachedSceneCenter.x ) ||
-				!std::isfinite( cachedSceneCenter.y ) ||
-				!std::isfinite( cachedSceneCenter.z ) )
+			if( !RISE::IsFiniteDouble( cachedSceneCenter.x ) ||
+				!RISE::IsFiniteDouble( cachedSceneCenter.y ) ||
+				!RISE::IsFiniteDouble( cachedSceneCenter.z ) )
 			{
 				cachedSceneCenter = Point3( 0, 0, 0 );
 			}

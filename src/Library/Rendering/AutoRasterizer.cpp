@@ -31,6 +31,7 @@
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/SMSConfig.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/Color/Color_Template.h"
 #include <algorithm>
 #include <chrono>
@@ -160,7 +161,7 @@ namespace
 		std::vector<double> v;
 		v.reserve( lum.size() );
 		for( double x : lum ) {
-			if( std::isfinite( x ) ) {
+			if( RISE::IsFiniteDouble( x ) ) {
 				v.push_back( x );
 			}
 		}
@@ -183,7 +184,7 @@ namespace
 		double accum = 0.0;
 		size_t counted = 0;
 		for( double x : lum ) {
-			if( std::isfinite( x ) ) { accum += x; ++counted; }
+			if( RISE::IsFiniteDouble( x ) ) { accum += x; ++counted; }
 		}
 		return counted ? accum / double( counted ) : 0.0;
 	}
@@ -203,7 +204,7 @@ namespace
 		std::vector<double> v;
 		v.reserve( lum.size() );
 		for( double x : lum ) {
-			if( std::isfinite( x ) ) { v.push_back( x ); }
+			if( RISE::IsFiniteDouble( x ) ) { v.push_back( x ); }
 		}
 		if( v.empty() ) {
 			return 0.0;
@@ -243,7 +244,7 @@ namespace
 			bool   ok = true;
 			for( size_t k = 0; k < K; ++k ) {
 				const double v = frames[k][i];
-				if( !std::isfinite( v ) ) { ok = false; break; }
+			if( !RISE::IsFiniteDouble( v ) ) { ok = false; break; }
 				mean += v;
 			}
 			if( !ok ) {

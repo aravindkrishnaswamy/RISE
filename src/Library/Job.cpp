@@ -20,6 +20,7 @@
 #include "Objects/CSGObject.h"     // workstream #3: CSG re-point (dynamic_cast<CSGObject*> + SetOperation/CsgOpFromChar)
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
+#include <cstdint>
 #define _USE_MATH_DEFINES
 #include "Job.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
@@ -28,6 +29,7 @@
 #include <sys/stat.h>   // P5 Slice 4: capture the loaded file's mtime/size for the CST-save external-mod guard
 #include "RISE_API.h"
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
+#include "Utilities/FiniteMath.h"
 #include <algorithm>
 #include <cmath>
 #ifndef M_PI
@@ -650,9 +652,11 @@ bool Job::SetFilm(
 	// Reject zero dims and non-finite / non-positive pixelAR.  `NaN <=
 	// 0.0` is false (NaN comparisons always return false), so the plain
 	// `pixelAR <= 0.0` check used to let NaN through and poison every
-	// camera's projection matrix on the resync.  std::isfinite catches
-	// NaN AND ±inf in one predicate.
-	if( width == 0 || height == 0 || !std::isfinite(pixelAR) || pixelAR <= 0.0 ) {
+	// camera's projection matrix on the resync.  pixelAR arrives as a double
+	// through the public API, so there is no string layer to reject at and
+	// the test must be one that survives -ffast-math.
+	const bool bPixelARFinite = RISE::IsFiniteDouble( pixelAR );
+	if( width == 0 || height == 0 || !bPixelARFinite || pixelAR <= 0.0 ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"Job::SetFilm: zero / non-finite / negative dims rejected (width=%u, height=%u, pixelAR=%g).  "
 			"Active Film unchanged.", width, height, pixelAR );

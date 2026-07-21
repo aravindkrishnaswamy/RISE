@@ -57,6 +57,7 @@
 
 #include "pch.h"
 #include "BDPTIntegrator.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/ISPF.h"
@@ -287,7 +288,7 @@ namespace
 	{
 		RISEPel clamped = contribution;
 		for( int i = 0; i < 3; i++ ) {
-			if( !std::isfinite( clamped[i] ) || clamped[i] < 0 ) {
+			if( !RISE::IsFiniteDouble( clamped[i] ) || clamped[i] < 0 ) {
 				clamped[i] = 0;
 			}
 		}

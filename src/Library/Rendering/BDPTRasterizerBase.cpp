@@ -27,6 +27,7 @@
 
 #include "pch.h"
 #include "../Utilities/RenderParallelScope.h"
+#include "../Utilities/FiniteMath.h"
 #include "BDPTRasterizerBase.h"
 #include "../Lights/LightSampler.h"
 #include "../RasterImages/RasterImage.h"
@@ -188,8 +189,8 @@ namespace
 	inline bool IsFiniteBoundingBox( const BoundingBox& bbox )
 	{
 		return
-			std::isfinite( bbox.ll.x ) && std::isfinite( bbox.ll.y ) && std::isfinite( bbox.ll.z ) &&
-			std::isfinite( bbox.ur.x ) && std::isfinite( bbox.ur.y ) && std::isfinite( bbox.ur.z ) &&
+			RISE::IsFiniteDouble( bbox.ll.x ) && RISE::IsFiniteDouble( bbox.ll.y ) && RISE::IsFiniteDouble( bbox.ll.z ) &&
+			RISE::IsFiniteDouble( bbox.ur.x ) && RISE::IsFiniteDouble( bbox.ur.y ) && RISE::IsFiniteDouble( bbox.ur.z ) &&
 			bbox.ll.x <= bbox.ur.x &&
 			bbox.ll.y <= bbox.ur.y &&
 			bbox.ll.z <= bbox.ur.z;

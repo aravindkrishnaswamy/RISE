@@ -54,6 +54,7 @@
 #include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Cameras/CameraCommon.h"
 #include "../Scene.h"   // concrete Scene for the #2b(a) light-generation bump
 #include <cmath>
@@ -299,9 +300,9 @@ namespace
 	// theta clamp), we'd rather no-op the edit than write NaN into
 	// vPosition, where it would survive every future Recompute and
 	// surface in the panel as "nan nan nan".
-	static bool HasNaN( const Point3& p )
+	static bool HasNonFinite( const Point3& p )
 	{
-		return std::isnan( p.x ) || std::isnan( p.y ) || std::isnan( p.z );
+		return !RISE::IsFiniteDouble( p.x ) || !RISE::IsFiniteDouble( p.y ) || !RISE::IsFiniteDouble( p.z );
 	}
 
 	// Apply forward camera op to a CameraCommon, given screen-space
@@ -454,7 +455,7 @@ namespace
 			newLook.x = lookAt.x  + right.x * dx + trueUp.x * dy;
 			newLook.y = lookAt.y  + right.y * dx + trueUp.y * dy;
 			newLook.z = lookAt.z  + right.z * dx + trueUp.z * dy;
-			if( HasNaN( newRest ) || HasNaN( newLook ) ) break;   // refuse NaN propagation
+			if( HasNonFinite( newRest ) || HasNonFinite( newLook ) ) break;   // refuse non-finite propagation
 			cam.SetLocation( newRest );
 			cam.SetLookAt( newLook );
 			break;
@@ -507,7 +508,7 @@ namespace
 			newOffset.y = lookAt.y - newRest.y;
 			newOffset.z = lookAt.z - newRest.z;
 			if( Vector3Ops::Magnitude( newOffset ) < 1e-3 ) break;
-			if( HasNaN( newRest ) ) break;   // refuse NaN propagation
+			if( HasNonFinite( newRest ) ) break;   // refuse non-finite propagation
 			cam.SetLocation( newRest );
 			break;
 		}
