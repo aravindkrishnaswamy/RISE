@@ -73,6 +73,46 @@ reliably; `failureBreakdown` = why it failed. N is small (3 repeats/cell) —
 treat single-digit pass gaps as suggestive, not conclusive, and lean on
 `meanCkpt` for the finer signal.
 
+### Per-run artifacts (diagnose without re-running)
+
+Each run directory `evals/runs/<runDir>/<scenarioId>__<provider>__<model>__rN/`
+holds what the runner writes plus what the enrich tool derives:
+
+Written by the runner:
+- `<scenarioId>.trajectory.jsonl` — every LLM turn (with the raw `response_body`)
+  and tool call. The source of truth.
+- `<scenarioId>.result.jsonl` / `results.jsonl` — status, budgets, checkpoints.
+- `<scenarioId>.final.RISEscene` — the final assembled scene, re-loadable and
+  re-renderable (present only for runs made after this was added).
+
+Derived by **`python3 tools/eval_enrich.py enrich <runDir> [--render] [--samples N]`**
+(a pure post-processor — runs retroactively on any existing run; `--render`
+needs the `.final.RISEscene`):
+- `digest.json` — the per-run analysis rollup, so behavior is a file-read, not a
+  trajectory re-parse:
+  - `tools` — call histogram by verb;
+  - `edits` — `patchesByParam`, `insertsByKind`, and `rejections`
+    (count + `byReason` + items with param/value/reason from the `issues`
+    payloads) — mine `byReason` across the corpus for recurring failures →
+    skill-lesson candidates;
+  - `renders` — count + a **per-render `series`** of `{meanR,meanG,meanB,luma,
+    channelBalance}` in order — the convergence-vs-thrash signal (this is what
+    localized gemini-3.6's over-iteration);
+  - `scene` — final-scene `objectsByKind` + `lights` (kind, color, scale);
+  - `tokens` (llmCalls, input/output/cacheRead totals, peak context) and
+    `timing`;
+  - `reasoning` — `{available, provider_field, turnsWithReasoning}`.
+- `reasoning.jsonl` — one line per turn `{i, reasoning}`, **only for providers
+  that expose it**: local Ollama models (`message.reasoning`) and xAI/grok
+  (`message.reasoning_content`). gpt and gemini do not return reasoning content,
+  so those runs have none. Reasoning is captured in the trajectory's
+  `response_body` at run time, so this works retroactively too.
+- `final.beauty.png` — a render of the final scene (with `--render`); objectmap
+  is not CLI-renderable and is skipped.
+
+Regenerate anything at will; these artifacts live under the gitignored
+`evals/runs/` and are never committed.
+
 ---
 
 ## 1. Text baseline — `full_baseline` (2026-07, epoch 1)
