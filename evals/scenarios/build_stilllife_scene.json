@@ -10,9 +10,9 @@
     "A bowl of fruit on a rustic wooden kitchen table, in a room lit by a warm ceiling light. Decorate the room with cabinets, a window, and wall art in warm earthy tones. The bowl of fruit is the subject; the camera should focus on it."
   ],
   "budgets": {
-    "maxToolCalls": 120,
-    "maxLlmCalls": 80,
-    "maxWallMs": 1800000
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
   },
   "replay": {
     "fixture": "evals/fixtures/build_stilllife_scene.fixture.jsonl"

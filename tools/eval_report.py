@@ -148,6 +148,9 @@ PROVIDER_PRICING = {
         # verified 2026-07-15): flat, no context-length tier. Cache storage
         # ($1/1M-tok-hour) is not modelled (per-token read rate only).
         "gemini-3.5-flash": {"input": 1.50, "output": 9.00, "cached_input": 0.15},
+        # gemini-3.6-flash: official rates ai.google.dev/gemini-api/docs/pricing,
+        # fetched 2026-07-21 (input $1.50, output $7.50 -- cheaper output than 3.5, same input).
+        "gemini-3.6-flash": {"input": 1.50, "output": 7.50, "cached_input": 0.15},
     },
     "xai": {
         # xAI (Grok) bills like OpenAI: cached-read tokens are a SUBSET of the

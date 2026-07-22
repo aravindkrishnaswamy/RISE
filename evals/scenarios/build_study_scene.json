@@ -10,9 +10,9 @@
     "A brass telescope on a writing desk in a study, lit by a lamp to one side. Decorate the room as a library with bookshelves, a rug, and framed art in deep cool tones. The telescope is the hero; frame the camera on it."
   ],
   "budgets": {
-    "maxToolCalls": 120,
-    "maxLlmCalls": 80,
-    "maxWallMs": 1800000
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
   },
   "replay": {
     "fixture": "evals/fixtures/build_study_scene.fixture.jsonl"

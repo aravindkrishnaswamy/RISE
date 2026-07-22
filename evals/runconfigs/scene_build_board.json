@@ -1,0 +1,17 @@
+{
+  "//": "SCORED complex-scene-build BOARD (final roster). Opus excluded (token cost); llama + the 4 weak local models (qwen3-coder-next, glm-4.7-flash, qwen3-coder:30b, qwen3:32b) DROPPED as not worth the ~12h -- they never render and score low. Roster: 4 frontier (gemini-3.5-flash, gemini-3.6-flash NEW, gpt-5.6-terra, grok-4.5) + the one strong local (qwen3.6:27b). Budget 200/300 (lifted from 80 after it starved capable models mid-refine). gemini-3.5/gpt/grok cells are hash-current from the prior board run and resume-skip; gemini-3.6-flash is the new comparison row.",
+  "scenarios": [
+    "evals/scenarios/build_watch_scene.json",
+    "evals/scenarios/build_stilllife_scene.json",
+    "evals/scenarios/build_study_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "gemini", "model": "gemini-3.6-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-terra",    "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "xai",    "model": "grok-4.5",         "keyEnvVar": "XAI_API_KEY" },
+    { "provider": "local",  "model": "qwen3.6:27b" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/scene_build_board"
+}

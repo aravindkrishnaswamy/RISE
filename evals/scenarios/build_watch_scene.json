@@ -10,9 +10,9 @@
     "A brushed gold wrist watch sitting on a table in a room lit by a single window to the side. The watch is a modern sporty integrated bracelet in steel with a blue guilloche dial. The table is a modern metal table. Decorate the room with light pastel colors, furniture, and art. The showcase is the watch, so the camera must focus on it."
   ],
   "budgets": {
-    "maxToolCalls": 120,
-    "maxLlmCalls": 80,
-    "maxWallMs": 1800000
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
   },
   "replay": {
     "fixture": "evals/fixtures/build_watch_scene.fixture.jsonl"

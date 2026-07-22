@@ -1,0 +1,11 @@
+{
+  "//": "Frontier column of the furnished scene-build family -- tests the capability-wall hypothesis after 3 intervention mechanisms measured null on the local 27B: does a CAPABLE model actually USE the render loop + diagnostics + blind-edit nudge? gpt-5.6-terra (strongest prior, best-calibrated). Separate runDir so it never mixes with the local board. Epoch 5.",
+  "scenarios": [
+    "evals/scenarios/build_watch_scene.json",
+    "evals/scenarios/build_stilllife_scene.json",
+    "evals/scenarios/build_study_scene.json"
+  ],
+  "providers": [ { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" } ],
+  "repeats": 3,
+  "runDir": "evals/runs/scene_build_family_frontier"
+}
