@@ -5,13 +5,73 @@ Running scoreboard for the agent-eval harness. Regenerate any table with
 curated, human-readable snapshot with the findings and caveats that the raw
 report does not carry.
 
-**Conventions.** `pass@1` = mean full-pass rate over repeats. `meanCkpt` =
-mean checkpoint fraction (partial credit). `$/success` is cache-corrected
-(from `tools/eval_report.py` pricing) and only defined where a model has ≥1
-success. `wall(s)` = mean wall-clock per run (runs are serialized, so it is a
-fair speed metric). N is small (3 repeats/cell) — treat single-digit pass
-gaps as suggestive, not conclusive, and lean on `meanCkpt` for the finer
-signal.
+---
+
+## 0. Definitions (what "success" and each metric mean)
+
+### What counts as success
+
+A single run is a **success** only if **both** hold (`AgentEvalRunner.cpp`
+`CheckScenario`):
+
+1. **Every checkpoint passes** — all of them, not a majority. Success is
+   all-or-nothing per run.
+2. **The run ended deliberately** — terminal status `final_text` — *unless*
+   the scenario explicitly asserts a different ending via a `trajectory`
+   checkpoint (an intentional budget/refusal test). A run that passes every
+   checkpoint but was cut off by a budget stop or provider error is scored a
+   **failure**: a model that would have kept editing never actually decided it
+   was done.
+
+So **success = all checkpoints pass AND the model finished on its own terms.**
+
+Checkpoints are typed and each carries a `weight` (default 1.0). The kinds:
+**document** (chunk counts, param equals/ranges, reference-kind), **render**
+(mean-luma bands, `channelBalanceMax`, or `compareToImage` + `rmseMax`),
+**objectmap** (a named object at a pixel), **diagnostics** (clean — no dangling
+references or parse errors), **trajectory** (ended `final_text`, required tools
+in order, no mechanical loop), plus `finalText`, `proposal`, `param_series_orbit`.
+
+### Per-run metric
+
+- **`checkpointFraction`** — the **partial-credit** score for one run: the
+  weighted fraction of checkpoints that passed (`Σ weight(passed) / Σ weight`).
+  0.8 = 4 of 5 equally-weighted checkpoints. A run is a success iff this is 1.0
+  *and* the terminal-status gate above is satisfied.
+
+### Aggregated metrics (over N repeats per model × scenario cell)
+
+- **`pass@1`** — mean success rate: the fraction of the N runs that were full
+  successes. The headline "did it solve the task" number. (At N=3: 0 / 33 / 67
+  / 100%.)
+- **`pass^k`** — **1 only if ALL N repeats passed.** A *reliability* indicator
+  (consistently solves it), **NOT** the conventional pass@k (≥1 of k). `0`
+  means at least one repeat failed.
+- **`meanCkpt`** — mean `checkpointFraction` across repeats. The **finer-grained
+  signal**: it separates "failed at 4/5" from "failed at 1/5," which `pass@1`
+  collapses to the same 0. Lean on this when `pass@1` is noisy at small N.
+- **`wilson95%`** — Wilson-score 95% confidence interval on `pass@1`; honest
+  about small N (33% carries [7.5%, 70%]). Heavily overlapping intervals mean a
+  gap is suggestive, not decisive.
+- **`$/success`** — total (cache-corrected) cost ÷ number of successes.
+  Cache-aware from `tools/eval_report.py` pricing. `n/a` when there are zero
+  successes or no pricing entry. Note it *rises* on a hard eval — few successes
+  make each one "expensive."
+- **`wall(s)`** — mean wall-clock seconds per run. Runs are serialized, so it is
+  a fair provider **speed** metric.
+- **`failureBreakdown`** — counts of terminal statuses across the repeats
+  (`final_text`, `budget_llm_calls`, `budget_tool_calls`, `budget_wall_ms`,
+  `provider_error`, …). Shows *how* runs failed — capability (imperfect final
+  scene, but `final_text`) vs. infrastructure/budget (cut off). This
+  distinction is what separated the budget-80 vs budget-200 story below.
+- **`†` / `!`** — staleness flags. `†` = pre-content-hash results not tied to
+  current scenario definitions; `!` = graded under a different checkpoint count.
+  Both mean "re-run for a clean number."
+
+**Reading guide.** `pass@1` = solved it; `meanCkpt` = how close; `pass^k` =
+reliably; `failureBreakdown` = why it failed. N is small (3 repeats/cell) —
+treat single-digit pass gaps as suggestive, not conclusive, and lean on
+`meanCkpt` for the finer signal.
 
 ---
 
