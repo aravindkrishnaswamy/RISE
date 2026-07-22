@@ -5,7 +5,24 @@
 
 Key = a spot aimed at the subject; fill = a dim omni opposite the key;
 rim = a directional from behind-above to separate subject from
-background.  Remember: `direction` on a directional light points
+background.
+
+**A warm key light ALONE crushes the scene to orange -- always pair it
+with a fill.** This is the single most common lighting failure on a
+"warm"/"cozy"/"pastel" brief: authors give the room one warm light
+(exitance like `1.0 0.6 0.3`) and nothing else, so every shadow falls to
+near-black with no blue in it at all, and the whole frame reads as a
+muddy amber blob -- not the warm-but-readable room the brief wanted.
+Measured: a warm key over grey walls with NO fill renders at a
+red-to-blue channel ratio of ~3-40 (the higher the more crushed);
+adding even a dim fill pulls it back to ~1.4-2.2 and the form becomes
+legible. So on any warm brief: place the warm key, then add a SECOND,
+dimmer light -- a cool-ish fill (`0.4 0.55 0.8`, ~half the key's scale)
+is best because it puts blue back into the shadows, but even a neutral
+or gently-warm fill rescues it. "Warm" means warm KEY, not warm-only;
+the shadows still need light in them. If a render comes back visibly
+orange or you cannot make out the subject's shading, you are missing
+the fill.  Remember: `direction` on a directional light points
 FROM-surface-TO-light; spots aim with `position` + `target` instead.
 The floor is deliberate: without a backdrop there is nothing for the
 fill to lift or the rim to separate the subject FROM.  Samples 64

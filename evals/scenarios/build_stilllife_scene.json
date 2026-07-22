@@ -29,7 +29,7 @@
       "kind": "render",
       "meanLumaMin": 0.015,
       "meanLumaMax": 0.35,
-      "channelBalanceMax": 3.0
+      "channelBalanceMax": 4.0
     },
     {
       "kind": "objectmap",

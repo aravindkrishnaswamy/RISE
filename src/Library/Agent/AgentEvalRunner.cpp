@@ -1486,7 +1486,18 @@ namespace RISE
 			//!        comparable.  (The skill file's bytes are not covered by
 			//!        ScenarioContentHash, so the epoch is the only thing that
 			//!        invalidates prior cells on a skill edit -- see epoch 2.)
-			static const int kEvalMethodologyEpoch = 5;
+			//!   6 -> (2026-07-22) lighting arc.  The scene-build render-band
+			//!        channelBalanceMax was recalibrated 3.0 -> 4.0 (a
+			//!        scenario-file change, so already hash-invalidating) after
+			//!        rendered calibration showed 3.0 unfairly failed
+			//!        legitimately-warm rooms the prompt ASKS for (a good warm
+			//!        scene renders at ratio ~1.4-2.9; only no-fill crush
+			//!        exceeds ~5), and the lighting skill gained a "warm key
+			//!        alone crushes to orange -- always add a fill" lesson (a
+			//!        drive change whose skill bytes are NOT in the hash, hence
+			//!        this bump).  Prior cells were graded/driven under the old
+			//!        threshold + skill and are not comparable.
+			static const int kEvalMethodologyEpoch = 6;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
