@@ -41,6 +41,7 @@ namespace RISE
 	class IRayCaster;
 	class IRasterizer;
 	class IObject;
+	class IShader;
 
 	namespace Implementation
 	{
@@ -139,12 +140,35 @@ namespace RISE
 		//! enum values are never serialized.
 		enum class ViewportRenderMode
 		{
-			Preview,    //!< today's studio material preview (the platform-installed pipeline)
-			ObjectMap,  //!< per-object identity segmentation (agent surface; own factory above)
-			Normals,    //!< world-space shading-normal false colour
-			Depth,      //!< per-pass AUTO-WINDOWED hit distance (near = bright) -- calibrates to the visible depth range, see DepthViewShader
-			Facets,     //!< headlamp-shaded GEOMETRIC normal (reveals tessellation)
-			Wireframe   //!< first-hit triangle edges over dim facet shading
+			Preview,     //!< today's studio material preview (the platform-installed pipeline)
+			ObjectMap,   //!< per-object identity segmentation (agent surface; own factory above)
+			Normals,     //!< world-space shading-normal false colour
+			Depth,       //!< per-pass AUTO-WINDOWED hit distance (near = bright) -- calibrates to the visible depth range, see DepthViewShader
+			Facets,      //!< headlamp-shaded GEOMETRIC normal (reveals tessellation)
+			Wireframe,   //!< first-hit triangle edges over dim facet shading
+			//! GUI render modes P2a (docs/gui/RENDER_MODES.md §3 Transport):
+			//! a BeautyVariant pipeline kind -- an ephemeral, controller/agent-
+			//! OWNED production-class PT pipeline (a separate IRasterizer the
+			//! render loop DRIVES while the mode is active, not a caster swap
+			//! on the preview rasterizer) with fixed config deltas -- see
+			//! CreateBeautyVariantPipeline + ViewportRenderModeInfo's
+			//! variantScaleDivisor/variantMaxBounces/variantSamplesPerPass.
+			DeepReflect, //!< low-res, deep-bounce, higher-spp PT -- "what do reflections and refractions resolve to?"
+			//! GUI render modes P2a: direct lighting only (fixed maxBounces=1,
+			//! not full transport) at a moderate resolution divisor -- "what
+			//! does direct lighting alone contribute?"
+			Direct,
+			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
+			//! beauty minus the direct (emission + NEE) contribution at the
+			//! camera-visible vertex -- PathTracingIntegrator::SetIndirectOnly --
+			//! "what does indirect light alone contribute?"
+			Indirect,
+			//! GUI render modes P2b: full transport with every surface's
+			//! reflectance substituted for a shared neutral clay Lambertian,
+			//! real lights/GI untouched -- PathTracingIntegrator::
+			//! SetClayOverride -- "is the lighting right, independent of
+			//! materials?"
+			ClayLights
 		};
 
 		struct ViewportRenderModeInfo
@@ -156,7 +180,30 @@ namespace RISE
 			bool				wantsDenoise;       //!< false for data modes (denoising a normal map is meaningless)
 			bool				viewportSelectable; //!< appears in the viewport mode dropdown
 			bool				casterFactory;      //!< CreateInteractiveViewModeCaster can build it
+			//! GUI render modes P2a (docs/gui/RENDER_MODES.md §6): BeautyVariant
+			//! config deltas.  0/0/0 for every non-variant mode (Preview/ObjectMap/
+			//! the four T1 data modes) -- IsBeautyVariantMode(mode) is the single
+			//! source of truth for "is this a variant row", keyed off
+			//! variantSamplesPerPass > 0, so these three fields are read ONLY
+			//! after that check passes.
+			unsigned int		variantScaleDivisor;   //!< preview-resolution divisor while this mode is active (e.g. 4 = quarter-res)
+			unsigned int		variantMaxBounces;     //!< P2a fix: PathTracingIntegrator::SetMaxPathDepth's cap on the PT main loop (NOT the caster's maxR -- that's a separate, harmless SSS-recursion limit)
+			unsigned int		variantSamplesPerPass; //!< the variant PT rasterizer's fixed samples/pixel
+			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
+			//! stamped onto the variant PathTracingIntegrator via SetIndirectOnly/
+			//! SetClayOverride right after SetMaxPathDepth in CreateBeautyVariantPipeline.
+			//! false for every row except Indirect/ClayLights respectively -- read
+			//! ONLY after the IsBeautyVariantMode(mode) check passes, same as the
+			//! three fields above.
+			bool			variantIndirectOnly;   //!< true only for the "indirect" row
+			bool			variantClayOverride;   //!< true only for the "clay_lights" row
 		};
+
+		//! GUI render modes P2a: true for the BeautyVariant rows (today:
+		//! DeepReflect, Direct) -- keyed off variantSamplesPerPass > 0 rather
+		//! than a hardcoded mode list, so a future variant row is recognized
+		//! by construction.  false for every ShaderPipeline/BeautyConfig mode.
+		bool IsBeautyVariantMode( ViewportRenderMode mode );
 
 		//! All modes, in UI order.
 		const ViewportRenderModeInfo* GetViewportRenderModes( unsigned int& outCount );
@@ -207,6 +254,86 @@ namespace RISE
 			IRasterizer** ppRasterizer,
 			IRayCaster** ppCaster,
 			bool xray = false );
+
+		//! GUI render modes P2a (docs/gui/RENDER_MODES.md §6): build the
+		//! ephemeral BeautyVariant pipeline for a variant mode (today:
+		//! DeepReflect, Direct -- IsBeautyVariantMode(mode) == true).  UNLIKE
+		//! CreateInteractiveViewModePipeline, this is a REAL production-class
+		//! PT pipeline (real per-object materials, real lights, real OIDN),
+		//! not a diagnostic first-hit shader -- it mirrors the MINIMAL
+		//! production-real path Job::SetPathTracingPelRasterizer takes: a
+		//! plain RayCaster (seeRadianceMap=true, showLuminaires=true, maxR is
+		//! a fixed harmless SSS-recursion cap -- NOT the transport depth
+		//! limit, see variantMaxBounces's doc) + RISE_API_CreatePathTracingPelRasterizer
+		//! with a multijittered sampler at the mode's variantSamplesPerPass,
+		//! a box reconstruction filter, SMS off, OIDN ON (quality Auto),
+		//! default (disabled) path guiding / adaptive sampling / stability
+		//! configs, and no Z-Sobol, followed by a post-construction
+		//! PathTracingPelRasterizer::SetMaxPathDepth(variantMaxBounces) call --
+		//! THAT is what actually bounds the PT main loop's bounce depth (P2a
+		//! fix; see PathTracingIntegrator::SetMaxPathDepth's doc for the exact
+		//! accounting).
+		//!
+		//! `pDefaultShader` (P1-b fix, review-p2b): the caster's own default
+		//! IShader -- NOT dead code.  The PT main transport loop itself never
+		//! calls through it (per-object shading is inlined against each
+		//! IObject's own IMaterial), but RayCaster::CastRay / CastRayNM ARE
+		//! called recursively by the BSSRDF disk-projection and random-walk
+		//! SSS continuation sub-paths (PathTracingIntegrator.cpp), and THOSE
+		//! resolve shading via RayCaster::SelectShader -- which falls back to
+		//! this default whenever the hit object has no explicit per-object
+		//! IShader assigned (the common case: `AddObject`'s `shader` argument
+		//! is optional, and most scenes only set per-object IMaterial).  A
+		//! production PT render's default shader is a REAL shader (typically
+		//! the "global" ShaderOp-chain shader resolved via
+		//! `pShaderManager->GetItem("global")`, matching
+		//! Job::SetPathTracingPelRasterizer's own resolution -- see
+		//! BaseRasterizerDefaults::defaultShader in RasterizerDefaults.h).
+		//! Pass that same shader here so an SSS/BSSRDF object with no
+		//! explicit per-object shader shades correctly instead of resolving
+		//! to a black placeholder.  Defaulted to null so pre-existing callers
+		//! still compile.  Null does NOT fall back to a black placeholder:
+		//! this factory builds a REAL owned default (BeautyVariantDefaultShader
+		//! -- a StandardShader over a PathTracingShaderOp, i.e. a generic
+		//! `standard_shader { shaderop DefaultPathTracing }` chain) whenever
+		//! the caller passes null (P1-b fix).  Both current callers
+		//! (SceneEditController::SetViewportRenderMode, AgentSession's
+		//! doBeautyVariantRenderWork) go further (P2-c, review-p3): they
+		//! recover the PRODUCTION rasterizer's own resolved default-shader
+		//! NAME via `job.GetRasterizerParameter(job.GetActiveRasterizerName(),
+		//! "shader")` -- the exact name every Set*Rasterizer call stamped into
+		//! its registry snapshot at construction time, not a hardcoded
+		//! "global" guess -- and pass `job.GetShaders()->GetItem(thatName)`
+		//! (borrowed, not addref'd -- matches Job::SetPathTracingPelRasterizer's
+		//! own usage; RISE_API_CreateRayCaster addrefs it internally), falling
+		//! back to null (this factory's own generic default) only when no
+		//! rasterizer is active yet or the resolved name is unregistered.
+		//! RESIDUAL LIMITATION: the variant pipeline always builds a GENERIC
+		//! DefaultPathTracing chain in that fallback case (or when the resolved
+		//! shader name can't be looked up), so a scene relying on that fallback
+		//! whose `global` shader is a CUSTOM shaderop chain can still diverge
+		//! from a CLI render on SSS/BSSRDF continuations -- documented, not
+		//! solved, since there is no sound way to force-resolve an unregistered
+		//! name.
+		//!
+		//! Variant transport settings also propagate through RuntimeContext
+		//! from PathTracingPelRasterizer.  Therefore an SSS/random-walk
+		//! continuation that enters a caller-supplied default shader chain
+		//! observes the variant's max depth, indirect-only mask, and clay
+		//! override without mutating or trying to introspect that shared,
+		//! arbitrary shader chain.
+		//!
+		//! Returns false for any non-BeautyVariant mode.  Returned pointers
+		//! are refcounted ownership references for the caller to release,
+		//! exactly like the other pipeline factories.  Refcount discipline
+		//! mirrors the sibling factories exactly: internal temporaries
+		//! (sampler, filter, caster) are released locally after the
+		//! rasterizer/caster addref them internally.
+		bool CreateBeautyVariantPipeline(
+			ViewportRenderMode mode,
+			IRasterizer** ppRasterizer,
+			IRayCaster** ppCaster,
+			IShader* pDefaultShader = 0 );
 
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{

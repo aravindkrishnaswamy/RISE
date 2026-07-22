@@ -12,6 +12,7 @@
 
 #include "pch.h"
 #include "PathGuidingField.h"
+#include "FiniteMath.h"
 
 #ifdef RISE_ENABLE_OPENPGL
 
@@ -30,7 +31,7 @@ namespace
 		const Scalar energy =
 			static_cast<Scalar>( sample.weight ) *
 			static_cast<Scalar>( sample.pdf );
-		return (std::isfinite( energy ) && energy > 0) ? energy : 0;
+		return ( RISE::IsFiniteDouble( energy ) && energy > 0 ) ? energy : 0;
 	}
 }
 
@@ -142,13 +143,13 @@ void PathGuidingField::AddSample(
 		return;
 	}
 
-	if( pdf <= 0 || !std::isfinite( luminance ) || luminance < 0 ) {
+	if( pdf <= 0 || !RISE::IsFiniteDouble( luminance ) || luminance < 0 ) {
 		return;
 	}
 
 	// Clamp extreme weights to prevent outliers from corrupting the field
 	const float weight = static_cast<float>( luminance / pdf );
-	if( !std::isfinite( weight ) || weight < 0 ) {
+	if( !RISE::IsFiniteDouble( weight ) || weight < 0 ) {
 		return;
 	}
 
@@ -470,7 +471,7 @@ void PathGuidingField::UpdateCellAlpha(
 	Scalar learningRate
 	) const
 {
-	if( combinedPdf <= 0 || !std::isfinite( f ) || f <= 0 ) {
+	if( combinedPdf <= 0 || !RISE::IsFiniteDouble( f ) || f <= 0 ) {
 		return;
 	}
 
@@ -488,7 +489,7 @@ void PathGuidingField::UpdateCellAlpha(
 	// Sigmoid derivative: dα/dθ = α(1-α).
 	const float g = dL_dalpha * alpha * (1.0f - alpha);
 
-	if( !std::isfinite( g ) ) {
+	if( !RISE::IsFiniteDouble( g ) ) {
 		return;
 	}
 
@@ -534,12 +535,12 @@ void PathGuidingField::AddVolumeSample(
 		return;
 	}
 
-	if( pdf <= 0 || !std::isfinite( luminance ) || luminance < 0 ) {
+	if( pdf <= 0 || !RISE::IsFiniteDouble( luminance ) || luminance < 0 ) {
 		return;
 	}
 
 	const float weight = static_cast<float>( luminance / pdf );
-	if( !std::isfinite( weight ) || weight < 0 ) {
+	if( !RISE::IsFiniteDouble( weight ) || weight < 0 ) {
 		return;
 	}
 

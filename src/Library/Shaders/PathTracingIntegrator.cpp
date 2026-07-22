@@ -29,6 +29,7 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Profiling.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): emissive non-area-light geometries (SDF) get full BSDF weight
 #include "../Utilities/MediumTransport.h"
@@ -38,6 +39,12 @@
 #ifdef RISE_ENABLE_OPENPGL
 #include "../Utilities/PathGuidingField.h"
 #endif
+// GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting): the shared
+// clay-reflectance state SetClayOverride substitutes in -- a mid-grey
+// UniformColorPainter wrapped by a LambertianBRDF/LambertianSPF pair.
+#include "../Materials/LambertianBRDF.h"
+#include "../Materials/LambertianSPF.h"
+#include "../Painters/UniformColorPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -54,6 +61,27 @@ using PathTransportUtilities::PropagateBounceLimits;
 using RISE::SpectralDispatch::PelTag;
 using RISE::SpectralDispatch::NMTag;
 using RISE::SpectralDispatch::SpectralValueTraits;
+
+namespace
+{
+	inline unsigned int EffectivePathTracingMaxDepth( const RuntimeContext& rc,
+	                                                  unsigned int configured )
+	{
+		return rc.hasPathTracingVariantConfig ? rc.pathTracingMaxDepth : configured;
+	}
+
+	inline bool EffectivePathTracingIndirectOnly( const RuntimeContext& rc,
+	                                              bool configured )
+	{
+		return rc.hasPathTracingVariantConfig ? rc.pathTracingIndirectOnly : configured;
+	}
+
+	inline bool EffectivePathTracingClayOverride( const RuntimeContext& rc,
+	                                             bool configured )
+	{
+		return rc.hasPathTracingVariantConfig ? rc.pathTracingClayOverride : configured;
+	}
+}
 
 // RR defaults are now in StabilityConfig.  These are kept as
 // documentation of the defaults but not used directly.
@@ -77,7 +105,7 @@ namespace {
 	std::atomic<uint64_t> g_smsDiag_sumSuppLumX{0};
 
 	inline void SMSDiag_AddLum( std::atomic<uint64_t>& acc, double lum ) {
-		if( lum <= 0 || !std::isfinite( lum ) ) return;
+		if( lum <= 0 || !RISE::IsFiniteDouble( lum ) ) return;
 		const uint64_t fixed = static_cast<uint64_t>( lum * kSMSDiag_LumScale );
 		acc.fetch_add( fixed, std::memory_order_relaxed );
 	}
@@ -1122,6 +1150,28 @@ namespace
 		const IRadianceMap* pMap, const Ray& ray, const RasterizerState& rast, const NMTag& tag )
 	{ return pMap->GetRadianceNM( ray, rast, tag.nm ); }
 
+	//! GUI render modes P2b `light solo`: THE ENVIRONMENT IS A LIGHT.
+	//!
+	//! Under SoloKind::Light / SoloKind::Luminary the env-NEE strategy is
+	//! switched off in LightSampler::EvaluateDirectLighting{,NM}.  Every
+	//! BSDF-side env-radiance add must therefore be switched off too.  If
+	//! it is not, the environment leaks into a light-solo render at a
+	//! FRACTIONAL MIS weight -- roughly bsdfPdf^2/(bsdfPdf^2 + envPdf^2),
+	//! power-heuristic-weighted against a partner strategy that no longer
+	//! runs.  That is neither "one light" nor an honest render of two, and
+	//! it breaks the partition identity solo(A) + solo(B) == all that the
+	//! light-solo tests certify as the correctness property.
+	//!
+	//! Under SoloKind::Environment the env IS the target and stays; the
+	//! mirror-image consistency holds there because env-NEE weights with
+	//! pES->Pdf() alone (never cachedEnvSelectProb), which is exactly the
+	//! density the BSDF-side partner below uses.
+	inline bool PTSoloSuppressEnvironment( const IRayCaster& caster )
+	{
+		const Implementation::LightSampler* pLS = caster.GetLightSampler();
+		return pLS && pLS->IsSoloActive() && !pLS->IsSoloTargetEnvironment();
+	}
+
 	// ================================================================
 	// Phase 2b part 2: additional IntegrateFromHit dispatch helpers.
 	// Each forwards at compile time to the existing dual-signature API,
@@ -1349,11 +1399,64 @@ namespace
 	// so each is reproduced exactly rather than unified.
 	inline RISEPel PTMulDiv( const RISEPel& a, const Scalar b, const Scalar c ) { return a * ( b / c ); }
 	inline Scalar  PTMulDiv( const Scalar  a, const Scalar b, const Scalar c ) { return a * b / c; }
+
+	//! P1-c fix (review-p2b, `clay_lights` MIS inconsistency): a thin
+	//! IMaterial adapter over the integrator's shared pClayBRDF/pClaySPF,
+	//! passed to LightSampler::EvaluateDirectLighting{,NM} in place of
+	//! ri.pMaterial wherever the NEE eval already substitutes the clay
+	//! BRDF for the value/contribution term.  Without this, NEE evaluated
+	//! `f = clayBRDF.value(...)` (numerator) while computing the MIS
+	//! BSDF-sampling pdf from the AUTHORED material's Pdf() (denominator)
+	//! -- a mismatched pair that makes clay_lights biased AND dependent on
+	//! the hidden authored material (mirror/dielectric materials have a
+	//! near-zero or delta Pdf(), which starves or floods the NEE weight
+	//! for a surface that is visually identical clay).  GetBSDF()/GetSPF()
+	//! return the SAME pClayBRDF/pClaySPF instances every other clay call
+	//! site uses (no duplicate Lambertian pair -- see the ctor).
+	//! GetEmitter() is always null: LightSampler::EvaluateDirectLighting
+	//! only ever calls pMaterial->Pdf()/PdfNM() on this parameter (verified
+	//! by reading every pMaterial use in both EvaluateDirectLighting and
+	//! EvaluateDirectLightingNM -- LightSampler.cpp), never
+	//! pMaterial->GetEmitter() -- the surface's own emission is evaluated
+	//! separately (PART 1) against the REAL ri.pMaterial and is never
+	//! substituted, matching SetClayOverride's documented contract.  Pdf/
+	//! PdfNM are deliberately NOT overridden: IMaterial's base
+	//! implementation (Materials/IMaterial.cpp) delegates to
+	//! GetSPF()->Pdf(...)/PdfNM(...), i.e. pClaySPF's OWN pdf formula --
+	//! the EXACT function the continuation ray is actually sampled from
+	//! (pClaySPF::Scatter), so NEE's MIS weight and the BSDF-sampling
+	//! strategy's density can never drift apart.
+	class ClayNEEMaterial :
+		public virtual IMaterial,
+		public virtual Reference
+	{
+	public:
+		ClayNEEMaterial( const IBSDF* brdf, const ISPF* spf ) :
+		  pBRDF( const_cast<IBSDF*>( brdf ) ),
+		  pSPF( const_cast<ISPF*>( spf ) )
+		{}
+
+		IBSDF* GetBSDF() const override { return pBRDF; }
+		ISPF* GetSPF() const override { return pSPF; }
+		IEmitter* GetEmitter() const override { return 0; }
+
+	protected:
+		~ClayNEEMaterial() override {}
+
+	private:
+		IBSDF* pBRDF;
+		ISPF* pSPF;
+	};
 }
 
 //////////////////////////////////////////////////////////////////////
 // Construction / destruction
 //////////////////////////////////////////////////////////////////////
+
+// P1-a leak-fix test hook (review-p2c): see ConstructionCount()/
+// DestructionCount()'s doc in the header.
+std::atomic<long long> PathTracingIntegrator::sConstructionCount( 0 );
+std::atomic<long long> PathTracingIntegrator::sDestructionCount( 0 );
 
 PathTracingIntegrator::PathTracingIntegrator(
 	const ManifoldSolverConfig& smsConfig,
@@ -1361,17 +1464,77 @@ PathTracingIntegrator::PathTracingIntegrator(
 	) :
   pSolver( 0 ),
   bSMSEnabled( smsConfig.enabled ),
-  stabilityConfig( stabilityCfg )
+  stabilityConfig( stabilityCfg ),
+  mMaxPathDepth( 128 ),
+  mIndirectOnly( false ),
+  mClayOverride( false ),
+  pClayPainter( 0 ),
+  pClayBRDF( 0 ),
+  pClaySPF( 0 ),
+  pClayMaterial( 0 )
 {
 	if( smsConfig.enabled )
 	{
 		pSolver = new ManifoldSolver( smsConfig );
 	}
+
+	// GUI render modes P2b `clay_lights`: built unconditionally (cheap --
+	// one painter + two thin wrapper objects) rather than lazily on first
+	// SetClayOverride(true), so there is no first-use race to reason about.
+	// A mid-grey (0.5,0.5,0.5) albedo reflectance -- neutral clay, not
+	// pure white (would over-brighten bounce energy) or pure black (would
+	// kill it).  Refcount discipline (verified against LambertianBRDF /
+	// LambertianSPF's actual ctors, both of which addref their painter
+	// argument): `new UniformColorPainter` starts refcount 1; the BRDF
+	// wrapper's ctor addrefs it to 2; the SPF wrapper's ctor addrefs it to
+	// 3.  Deliberately NOT releasing the local `pPainter` here: the third
+	// reference IS `pClayPainter`'s own -- i.e. `new` is the acquisition
+	// for the member, matching every other raw-pointer-member-holds-a-ref
+	// idiom in this file (pSolver, etc).  The three-way symmetric release
+	// in the dtor below (BRDF, then SPF, then pClayPainter) exactly
+	// balances this ctor's three addrefs, so pClayPainter is never touched
+	// after the object it points to is freed.
+	{
+		IPainter* pPainter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		// review-p3 P3 fix: all three are Reference-counted and each gets
+		// its own symmetric safe_release in the dtor below -- without a
+		// matching PrintNew, LOG_TRACK_MEMORY prints a spurious "Specified
+		// Allocation does not exist!" for each on teardown.
+		GlobalLog()->PrintNew( pPainter, __FILE__, __LINE__, "clay_lights neutral painter" );
+		pClayPainter = pPainter;
+		pClayBRDF = new LambertianBRDF( *pPainter );
+		GlobalLog()->PrintNew( pClayBRDF, __FILE__, __LINE__, "clay_lights BRDF" );
+		pClaySPF  = new LambertianSPF( *pPainter );
+		GlobalLog()->PrintNew( pClaySPF, __FILE__, __LINE__, "clay_lights SPF" );
+	}
+
+	// P1-c fix: the NEE-material adapter (see ClayNEEMaterial's doc above)
+	// wraps pClayBRDF/pClaySPF by raw (non-owning) pointer -- it does not
+	// addref them.  This is safe because all four clay members share one
+	// build-once/tear-down-once lifetime scoped to this integrator: nothing
+	// dereferences pClayMaterial's GetBSDF()/GetSPF() results outside of an
+	// active render, and pClayBRDF/pClaySPF are never released before
+	// pClayMaterial in the dtor below (in fact -- release order among the
+	// four is inconsequential here specifically because none of their
+	// destructors dereference each other; ClayNEEMaterial's dtor is a
+	// trivial no-op).
+	pClayMaterial = new ClayNEEMaterial( pClayBRDF, pClaySPF );
+	// review-p3 P3 fix: same tracking-asymmetry fix as the trio above --
+	// safe_release( pClayMaterial ) runs unconditionally in the dtor.
+	GlobalLog()->PrintNew( pClayMaterial, __FILE__, __LINE__, "clay_lights NEE material" );
+
+	sConstructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
 
 PathTracingIntegrator::~PathTracingIntegrator()
 {
 	safe_release( pSolver );
+	safe_release( pClayMaterial );
+	safe_release( pClayBRDF );
+	safe_release( pClaySPF );
+	safe_release( pClayPainter );
+
+	sDestructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1487,7 +1650,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	PTIGuidingPathScope guidingPathScope( guidingRecorder, rc.pGuidingField, guidingRootRay );
 #endif
 
-	const unsigned int maxDepth = 128;
+	// GUI render modes P2a fix: was a hardcoded literal 128; now the
+	// configurable cap (see SetMaxPathDepth's doc for the exact depth
+	// accounting).  Default 128 preserves byte-identical behavior for every
+	// caller that never calls the setter.
+	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
@@ -1510,7 +1677,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// the float32 EXR overflow ceiling (~3.4e38).
 		{
 			const Scalar absMax = PTAbsMaxMagnitude( throughput );
-			if( !std::isfinite( absMax ) || absMax > Scalar(1e6) ) {
+			if( !RISE::IsFiniteDouble( absMax ) || absMax > Scalar(1e6) ) {
 				break;
 			}
 		}
@@ -1769,11 +1936,34 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// Miss — environment / radiance map
 			if( !bHit )
 			{
+				// GUI render modes P2b `indirect` (review-p2c P2-b fix): a
+				// continuation ray landing on the env is reachable only at
+				// depth>=1 (this block is inside `needsIntersection`) -- the
+				// primary camera-ray miss is a separate, top-level path
+				// (IntegrateRayTemplated) where the direct-background
+				// suppression actually lives (see SetIndirectOnly's doc).
+				// depth>=2 is always genuinely indirect.  depth==1 is the
+				// same MIS-partner question as the emission gate above: this
+				// BSDF-sampled env hit is env-NEE's suppressed MIS partner
+				// ONLY when depth==0's scatter was non-delta (env-NEE was
+				// actually performed and suppressed there); when depth==0
+				// was delta (mirror/glass showing the env), there is no
+				// suppressed partner and this is the sole estimator of that
+				// specular-transport path, so it must survive.
+				const bool suppressIndirectEnv = EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+					depth == 1 && !bPassedThroughSpecular;
+				// review-p2d P1-1: light solo switches env-NEE off; the
+				// BSDF-side partner must go with it (see
+				// PTSoloSuppressEnvironment for why fractional leakage
+				// is worse than either extreme).
+				const bool soloSuppressEnv = PTSoloSuppressEnvironment( caster );
 				// Per-object radiance map (via material)
 				if( pRadianceMap )
 				{
 					Value envRadiance = PTEvalRadianceMap<Tag>( pRadianceMap, currentRay, rast, tag );
-					result = result + throughput * envRadiance;
+					if( !suppressIndirectEnv && !soloSuppressEnv ) {
+						result = result + throughput * envRadiance;
+					}
 				}
 				else if( scene.GetGlobalRadianceMap() )
 				{
@@ -1817,7 +2007,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						}
 					}
 
-					result = result + throughput * envRadiance;
+					// Continuation-ray env hit -- see suppressIndirectEnv's
+					// doc above for the exact depth==1 MIS-partner rule.
+					if( !suppressIndirectEnv && !soloSuppressEnv ) {
+						result = result + throughput * envRadiance;
+					}
 
 #ifdef RISE_ENABLE_OPENPGL
 					if( guidingRecorder && guidingRecorder->active &&
@@ -1860,7 +2054,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// Update IOR stack
 		iorStack.SetCurrentObject( ri.pObject );
 
-		const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
+		// GUI render modes P2b `clay_lights`: substitute the shared clay
+		// BRDF for EVERY hit when the mode is active -- see mClayOverride's
+		// doc.  This also makes pBRDF non-null for materials that
+		// authored none (pure-specular SPF-only materials), so the
+		// "no-BSDF" branch below is never taken under clay_lights either.
+		const IBSDF* pBRDF = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF :
+			( ri.pMaterial ? ri.pMaterial->GetBSDF() : 0 );
 
 		// Build a RAY_STATE for utility functions that need it
 		IRayCaster::RAY_STATE rs;
@@ -1907,7 +2107,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// the NM original as the `smsSuppressEmission` flag used here.
 			const bool smsSuppressEmission = bSMSEnabled
 				&& bPassedThroughSpecular && bHadNonSpecularShading;
-			if( pEmitter && considerEmission )
+			// GUI render modes P2b `light solo` (docs/gui/RENDER_MODES.md
+			// §3): under solo, a BSDF-sampled hit contributes emission
+			// ONLY when the hit object IS the soloed mesh luminary --
+			// every other emitter (including one that is itself NEE-
+			// unreachable, e.g. CanBeAreaLight()==false, which normally
+			// takes full unweighted emission) reads black, so "exactly
+			// one light enabled" holds for the BSDF-sampling strategy too,
+			// not just NEE.  Reads solo state directly off `pLS` -- the
+			// LightSampler already owns it (SetSoloLight/SetSoloLuminary),
+			// so there is no second, duplicated flag on the integrator to
+			// drift out of sync.
+			const bool soloSuppressEmission = pLS && pLS->IsSoloActive() &&
+				!( ri.pObject && pLS->IsSoloTargetLuminary( ri.pObject ) );
+			if( pEmitter && considerEmission && !soloSuppressEmission )
 			{
 				if( smsSuppressEmission )
 				{
@@ -2025,7 +2238,32 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					emission = ClampContribution( emission, stabilityConfig.directClamp );
 				}
 
-				result = result + throughput * emission;
+				// GUI render modes P2b `indirect` (review-p2c P2-b fix):
+				// gate on whether an MIS PARTNER EXISTS, not on depth alone.
+				// depth==0 is unconditionally suppressed (the directly-
+				// visible emitter itself -- see SetIndirectOnly's doc for
+				// why this uses a raw depth compare, not depth==startDepth).
+				// depth==1 is suppressed ONLY when the depth==0 scatter was
+				// NON-delta (`!bPassedThroughSpecular`) -- that is exactly
+				// the case where NEE was actually performed (and suppressed)
+				// at depth==0, so this BSDF-sampled emission hit is NEE's
+				// MIS partner; suppressing it too keeps the "direct at the
+				// camera vertex" pair (NEE + its BSDF-sampled partner) fully
+				// zeroed instead of leaving the unweighted partner half in.
+				// When depth==0's scatter WAS delta (mirror/glass), NEE
+				// cannot sample through a delta BSDF, so
+				// there is no suppressed partner at depth==0 to compensate
+				// for -- this depth==1 emission is the ONLY estimator of
+				// that specular-transport path and must survive (a mirror
+				// reflecting an area light must still show it under
+				// `indirect`).  depth>=2 emission is always the MIS partner
+				// of NEE at depth>=1 (genuinely indirect) and stays
+				// untouched regardless of specular history.
+				const bool suppressIndirectEmission = EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+					( depth == 0 || ( depth == 1 && !bPassedThroughSpecular ) );
+				if( !suppressIndirectEmission ) {
+					result = result + throughput * emission;
+				}
 
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -2056,7 +2294,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			ISubSurfaceDiffusionProfile* pProfile =
 				ri.pMaterial ? ri.pMaterial->GetDiffusionProfile() : 0;
 
-			if( pProfile && pBRDF )
+			// P2-d fix (review-p2b): under clay_lights the surface is
+			// purely the clay Lambertian -- the authored material's
+			// diffusion-profile transport must not run (it would leak
+			// scattering parameters through, defeating the mode's
+			// material-independence contract).  See SetClayOverride's doc.
+			if( pProfile && pBRDF && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 			{
 				// Front-face gate uses the GEOMETRIC normal — "is the ray
 				// hitting the outside of this surface" is a side-of-surface
@@ -2115,7 +2358,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
-								// NEE at BSSRDF entry point
+								// NEE at BSSRDF entry point.  GUI render modes P2b
+								// `indirect` (review-p2c P2-c fix): this is the
+								// SSS analog of the surface NEE gate above --
+								// mask it the same way (LOOP-LOCAL depth==0
+								// only; still EVALUATED for RNG lockstep).
+								// Previously ungated, so a directly-lit
+								// translucent surface (skin, wax, marble) kept
+								// showing its direct SSS glow under `indirect`.
 								if( pLS )
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
@@ -2124,7 +2374,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
-									result = result + sssDirectContrib;
+									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
+										result = result + sssDirectContrib;
+									}
 								}
 
 								// BSSRDF continuation via CastRay sub-path
@@ -2214,7 +2466,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 			}
 
-			if( pRWParams && pBRDF )
+			// P2-d fix (review-p2b): same clay-independence rule as the
+			// diffusion-profile branch above -- random-walk SSS must not
+			// run under clay_lights either.
+			if( pRWParams && pBRDF && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 			{
 				// Front-face gate uses GEOMETRIC normal; Schlick Fresnel
 				// cosine uses SHADING.  See the BSSRDF site above for
@@ -2273,6 +2528,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								// GUI render modes P2b `indirect` (review-p2c
+								// P2-c fix): same SSS-analog-of-surface-NEE
+								// gate as the diffusion-profile site above.
 								if( pLS )
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
@@ -2281,7 +2539,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
-									result = result + sssDirectContrib;
+									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
+										result = result + sssDirectContrib;
+									}
 								}
 
 								// BSSRDF continuation via CastRay sub-path
@@ -2358,7 +2618,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		if( !pBRDF )
 		{
-			const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+			// GUI render modes P2b `clay_lights`: dead under clay_lights in
+			// practice (pBRDF is never null there -- see the acquisition
+			// above), kept substituted for consistency in case a future
+			// caller reaches this branch some other way.
+			const ISPF* pSPF = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClaySPF :
+				( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 			if( !pSPF ) {
 				break;
 			}
@@ -2501,11 +2766,27 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			IndependentSampler fallbackSampler( rc.random );
 			ISampler& neeSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
+			// P1-c fix (review-p2b): under clay_lights, pBRDF is already
+			// pClayBRDF (see the acquisition above) -- the MIS BSDF-
+			// sampling pdf must come from the SAME clay lobe (pClayMaterial,
+			// whose Pdf()/PdfNM() delegate to pClaySPF), not the authored
+			// ri.pMaterial (whose Pdf() could be near-zero/delta for a
+			// mirror or dielectric, breaking MIS and making clay output
+			// depend on the hidden material).  See ClayNEEMaterial's doc.
 			Value directAll = PTEvaluateDirectLighting<Tag>(
-				pLS, ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler,
+				pLS, ri.geometric, *pBRDF,
+				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, caster, neeSampler,
 				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
-			result = result + throughput * directAll;
+			// GUI render modes P2b `indirect`: suppress NEE's direct-
+			// lighting contribution at the camera-visible vertex only --
+			// see SetIndirectOnly's doc.  Still EVALUATED (same RNG
+			// consumption / shadow-ray cost as every other mode) so the
+			// sampler stream stays in lockstep; only the contribution is
+			// zeroed.
+			if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
+				result = result + throughput * directAll;
+			}
 			if constexpr ( Traits::is_pel ) {
 				if( ff ) {
 					const RISEPel ct = throughput * directAll;
@@ -2522,7 +2803,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 		}
 
-		// SMS for caustics through specular surfaces
+		// SMS for caustics through specular surfaces.  GUI render modes P2b
+		// `indirect`: deliberately NOT gated on depth==0 -- the
+		// task scope for `indirect` is "beauty minus the emission/NEE direct
+		// contribution", and a caustic reaching this vertex through a
+		// specular chain is a genuinely multi-bounce transport (the light
+		// energy already traveled through >=1 specular scatter to arrive
+		// here), not the open-air direct connection NEE evaluates.
 		if( pSolver )
 		{
 			const Vector3 woOutgoing = Vector3(
@@ -2604,7 +2891,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		// PART 3: BSDF sampling (continue path — iterative)
 		// ============================================================
-		const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+		// GUI render modes P2b `clay_lights`: the continuation-ray SPF --
+		// substituting clay here (rather than only at the acquisition
+		// above) keeps NEE (which reads pBRDF) and the continuation
+		// (which reads pSPF) consistent, so the estimator stays energy-
+		// consistent under clay_lights the same way it does for any real
+		// material's matched BRDF/SPF pair.
+		const ISPF* pSPF = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClaySPF :
+			( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 		if( !pSPF ) {
 			break;
 		}
@@ -3211,9 +3505,23 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 		{
 			pAOV->normal = ri.geometric.vNormal;
-			pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-				? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-				: RISEPel( 1, 1, 1 );
+			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
+			// under mClayOverride every surface's REFLECTANCE is the
+			// substituted clay BRDF (see SetClayOverride's doc) -- the
+			// albedo AOV captured here for OIDN must match, or the
+			// DENOISED clay output reacquires the authored material's
+			// colouration via OIDN's albedo-guided filtering, defeating
+			// the mode's material-independence contract exactly where
+			// users look at it (the variant pipeline runs with OIDN on).
+			// This is the FAST-prefilter hook (camera ray's first hit,
+			// evaluated before IntegrateFromHit's loop ever substitutes
+			// pBRDF) -- the ACCURATE-prefilter hook inside the loop
+			// already reads the loop-local `pBRDF`, which IS already
+			// clay-substituted there, so only this site needed the fix.
+			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( ri.geometric ) :
+				( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+					? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+					: RISEPel( 1, 1, 1 ) );
 			pAOV->valid = true;
 		}
 	}
@@ -3278,7 +3586,24 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 			Value result = Traits::zero();
 
-			// NEE at scatter point
+			// NEE at scatter point.  GUI render modes P2b `indirect` fix
+			// (review-p2b P2-e): this in-scattering NEE is on the PRIMARY
+			// camera-ray segment -- the medium/volumetric analog of the
+			// depth==0 surface vertex the loop's own NEE gate (see
+			// SetIndirectOnly's doc) suppresses.  There is no explicit
+			// `depth` variable at this call site (it runs before the main
+			// loop's first iteration -- IntegrateFromHitForTag below is
+			// invoked with startDepth=1, i.e. the CONTINUATION ray is
+			// already past the camera-visible vertex), so the depth==0
+			// rule applies unconditionally here rather than via a depth
+			// comparison: a camera ray that scatters in fog before ever
+			// reaching a surface is exactly the "direct light at the
+			// camera-visible point" case indirect-only must suppress --
+			// otherwise a camera in fog with a lamp still shows the direct
+			// single-scatter glow.  Still EVALUATED (same RNG consumption/
+			// shadow-ray cost as every other mode, matching the surface
+			// site's lockstep contract) so the sampler stream stays in
+			// lockstep across modes; only the contribution is zeroed.
 			if( pLS )
 			{
 				Value Ld = PTEvaluateInScattering<Tag>(
@@ -3289,7 +3614,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					Value directContrib = medWeight * Ld;
 					directContrib = ClampContribution( directContrib,
 						stabilityConfig.directClamp );
-					result = result + directContrib;
+					if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+						result = result + directContrib;
+					}
 				}
 			}
 
@@ -3329,7 +3656,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// continues through the same medium and escapes — attenuate
 				// the env contribution by the transmittance along that
 				// escape segment (PBRT-v4 beta *= T_maj convention).
-				if( scene.GetGlobalRadianceMap() ) {
+				if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+					!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
 					const Value TrEsc = PTEvalTransmittance<Tag>(
 						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
 					result = result + volThroughput * TrEsc *
@@ -3394,6 +3722,17 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// No medium, or medium with no scatter and no surface hit
 	if( !ri.geometric.bHit )
 	{
+		// GUI render modes P2b `indirect`: a camera ray that misses all
+		// geometry sees the environment/background DIRECTLY -- a direct
+		// contribution (same as a directly-visible emitter), so indirect-
+		// only returns black here.  Continuation-ray env misses (depth>=1,
+		// inside the IntegrateFromHit loop) are indirect environment
+		// lighting and are kept.  This is the ONLY primary-miss env site;
+		// the in-loop gates were dead (never reached at depth 0).
+		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+			return Traits::zero();
+		}
+
 		// Camera ray missed all geometry.  Honour the rasterizer's
 		// `radiance_background` / RadianceMapConfig::isBackground
 		// switch: when false (`Mix Shader gated by Light Path.Is
@@ -3402,6 +3741,13 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// drives indirect bounces but primary rays return black,
 		// matching Cycles' default for that pattern.
 		if( !caster.IsRadianceMapVisibleAsBackground() ) {
+			return Traits::zero();
+		}
+
+		// review-p2d P1-1: a directly-visible environment IS env illumination
+		// reaching the camera; under a light/luminary solo it must read black
+		// so that solo(light) + solo(env) == all holds pixel-for-pixel.
+		if( PTSoloSuppressEnvironment( caster ) ) {
 			return Traits::zero();
 		}
 
@@ -3557,9 +3903,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
 		pAOV->normal = firstHit.geometric.vNormal;
-		pAOV->albedo = ( firstHit.pMaterial && firstHit.pMaterial->GetBSDF() )
-			? firstHit.pMaterial->GetBSDF()->albedo( firstHit.geometric )
-			: RISEPel( 1, 1, 1 );
+		// GUI render modes P2b `clay_lights` (review-p2c P2-d fix, HWSS
+		// twin of the RGB/NM IntegrateRay fast-mode hook -- see that
+		// site's fuller comment).
+		pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( firstHit.geometric ) :
+			( ( firstHit.pMaterial && firstHit.pMaterial->GetBSDF() )
+				? firstHit.pMaterial->GetBSDF()->albedo( firstHit.geometric )
+				: RISEPel( 1, 1, 1 ) );
 		pAOV->valid = true;
 	}
 #endif
@@ -3602,7 +3952,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		bool hasRWNM = firstHit.pMaterial &&
 			firstHit.pMaterial->GetRandomWalkSSSParamsNM( swl.HeroLambda(), rwParamsNM );
 
-		if( pProfile || pRWParams || hasRWNM )
+		// P2-d fix (review-p2b): under clay_lights the delegated per-
+		// wavelength path (IntegrateFromHitNM) now bypasses SSS transport
+		// itself (see the diffusion-profile/RW-SSS gates above), so this
+		// routing decision would be numerically harmless either way -- but
+		// gating it here too keeps clay_lights on the more efficient HWSS
+		// hero-bundle path instead of unconditionally falling back to
+		// per-wavelength for a surface that no longer has any SSS behavior
+		// to represent.
+		if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 		{
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 			{
@@ -3644,11 +4002,23 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	IORStack iorStack = initialIorStack;
 	bool needsIntersection = false;
 
+	// GUI render modes P2b `indirect` (review-p2c P2-b fix): HWSS twin of
+	// the Pel/NM loop's `bPassedThroughSpecular` -- tracks whether the
+	// PREVIOUS iteration's BSDF sample (i.e. the depth==0 scatter, by the
+	// time depth==1 is being processed) was a delta/specular event.  Used
+	// only to gate the depth==1 MIS-partner suppression below (this loop is
+	// always entered fresh -- the SPF-only and SSS fallbacks above delegate
+	// to IntegrateFromHitNM, which tracks its own copy -- so a plain local
+	// initialized false is correct with no carried-in initial value needed).
+	bool bPassedThroughSpecular = false;
+
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
 
 	const LightSampler* pLS = caster.GetLightSampler();
-	const unsigned int maxDepth = 128;
+	// GUI render modes P2a fix: HWSS's twin of the Pel/NM loop cap above --
+	// was also a hardcoded literal 128; see SetMaxPathDepth's doc.
+	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
@@ -3660,7 +4030,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			bool anyBad = false;
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				const Scalar v = throughputComp[w];
-				if( !std::isfinite( v ) ) { anyBad = true; break; }
+				if( !RISE::IsFiniteDouble( v ) ) { anyBad = true; break; }
 				if( fabs( v ) > maxThr ) maxThr = fabs( v );
 			}
 			if( anyBad || maxThr > Scalar(1e6) ) {
@@ -3793,6 +4163,22 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( !bHit )
 			{
+				// GUI render modes P2b `indirect` (review-p2c P2-b fix, HWSS
+				// twin of the Pel/NM loop's `suppressIndirectEnv` -- see that
+				// site's doc for the full MIS-partner rationale).  Was
+				// previously UNGATED here (a distinct bug from the Pel/NM
+				// loop's depth<=1 over-suppression): every HWSS BSDF-sampled
+				// env hit at any depth survived under `indirect`, including
+				// depth==1 hits whose env-NEE partner (at depth==0) was
+				// suppressed just above -- a double count in the opposite
+				// direction.
+				const bool suppressIndirectEnv = EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+					depth == 1 && !bPassedThroughSpecular;
+				// review-p2d P1-1: light solo switches env-NEE off; the
+				// BSDF-side partner must go with it (see
+				// PTSoloSuppressEnvironment for why fractional leakage
+				// is worse than either extreme).
+				const bool soloSuppressEnv = PTSoloSuppressEnvironment( caster );
 				// Environment contribution per wavelength
 				if( scene.GetGlobalRadianceMap() )
 				{
@@ -3825,7 +4211,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							}
 						}
 
-						hwssResult[w] += throughputComp[w] * envRadiance;
+						// Continuation-ray env hit -- see suppressIndirectEnv's
+						// doc above for the exact depth==1 MIS-partner rule.
+						if( !suppressIndirectEnv && !soloSuppressEnv ) {
+							hwssResult[w] += throughputComp[w] * envRadiance;
+						}
 					}
 				}
 				else if( pRadianceMap )
@@ -3833,8 +4223,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) continue;
-						hwssResult[w] += throughputComp[w] *
-							pRadianceMap->GetRadianceNM( currentRay, rast, swl.lambda[w] );
+						if( !suppressIndirectEnv && !soloSuppressEnv ) {
+							hwssResult[w] += throughputComp[w] *
+								pRadianceMap->GetRadianceNM( currentRay, rast, swl.lambda[w] );
+						}
 					}
 				}
 				break;
@@ -3864,7 +4256,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 		iorStack.SetCurrentObject( ri.pObject );
 
-		const IBSDF* pBRDFCur = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
+		// GUI render modes P2b `clay_lights` (HWSS twin of the Pel/NM
+		// acquisition above): substituting clay here also makes the
+		// no-BSDF NM-delegation branch immediately below unreachable
+		// under clay_lights, matching the Pel/NM loop's behaviour.
+		const IBSDF* pBRDFCur = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF :
+			( ri.pMaterial ? ri.pMaterial->GetBSDF() : 0 );
 
 		// If we hit a material without BSDF mid-path (e.g. entered a
 		// dielectric), fall back to per-wavelength NM for remaining path.
@@ -3906,7 +4303,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			bool hasRWNM = ri.pMaterial &&
 				ri.pMaterial->GetRandomWalkSSSParamsNM( heroNM, rwParamsNM );
 
-			if( pProfile || pRWParams || hasRWNM )
+			// P2-d fix (review-p2b): same clay-independence reasoning as
+			// the entry-point Fallback 2 routing above -- don't route away
+			// from HWSS for a surface that no longer has SSS behavior
+			// under clay_lights.
+			if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 			{
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 				{
@@ -3951,7 +4352,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// ============================================================
 		{
 			IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
-			if( pEmitter && considerEmission )
+			// GUI render modes P2b `light solo` (HWSS twin -- see the
+			// Pel/NM loop's PART 1 for the full rationale): suppress a
+			// BSDF-sampled hit's emission unless the hit object IS the
+			// soloed mesh luminary.
+			const bool soloSuppressEmissionHW = pLS && pLS->IsSoloActive() &&
+				!( ri.pObject && pLS->IsSoloTargetLuminary( ri.pObject ) );
+			if( pEmitter && considerEmission && !soloSuppressEmissionHW )
 			{
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 				{
@@ -4018,7 +4425,20 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					if( depth > 0 ) {
 						emission = ClampContribution( emission, stabilityConfig.directClamp );
 					}
-					hwssResult[w] += throughputComp[w] * emission;
+					// GUI render modes P2b `indirect` (HWSS twin, review-p2c
+					// P2-b fix): gate on MIS-partner existence, not depth
+					// alone -- see the RGB/NM twin's fuller comment above.
+					// depth==0 always suppressed; depth==1 suppressed only
+					// when depth==0's scatter was non-delta (bPassedThrough-
+					// Specular false), i.e. only when NEE actually ran (and
+					// was suppressed) at depth==0.  A delta depth==0 scatter
+					// (mirror/glass) has no suppressed NEE partner, so this
+					// emission is the sole estimator and must survive.
+					const bool suppressIndirectEmissionHW = EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+						( depth == 0 || ( depth == 1 && !bPassedThroughSpecular ) );
+					if( !suppressIndirectEmissionHW ) {
+						hwssResult[w] += throughputComp[w] * emission;
+					}
 				}
 			}
 		}
@@ -4035,15 +4455,29 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			{
 				if( swl.terminated[w] ) continue;
 
+				// P1-c fix (HWSS twin of the Pel/NM loop's fix above):
+				// pBRDFCur is already pClayBRDF under clay_lights (see its
+				// acquisition above) -- pass the matching clay material so
+				// the MIS BSDF-sampling pdf agrees with it instead of the
+				// authored ri.pMaterial.
 				Scalar directNM = pLS->EvaluateDirectLightingNM(
-					ri.geometric, *pBRDFCur, ri.pMaterial, swl.lambda[w],
+					ri.geometric, *pBRDFCur,
+					EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, swl.lambda[w],
 					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
-				hwssResult[w] += throughputComp[w] * directNM;
+				// GUI render modes P2b `indirect` (HWSS twin): suppress
+				// NEE's direct-lighting contribution at the camera-visible
+				// vertex only -- see SetIndirectOnly's doc.  Still
+				// EVALUATED so the sampler stream stays in lockstep.
+				if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
+					hwssResult[w] += throughputComp[w] * directNM;
+				}
 			}
 		}
 
-		// SMS (HWSS — per wavelength, since IOR varies)
+		// SMS (HWSS — per wavelength, since IOR varies).  GUI render modes
+		// P2b `indirect`: deliberately NOT gated -- see the Pel/NM loop's
+		// matching SMS comment above.
 		if( pSolver )
 		{
 			const Vector3 woOutgoing = Vector3(
@@ -4083,7 +4517,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// ============================================================
 		// PART 3: BSDF sampling (HWSS — hero drives, companions eval)
 		// ============================================================
-		const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+		// GUI render modes P2b `clay_lights` (HWSS twin of the Pel/NM PART 3
+		// substitution): keeps NEE (pBRDFCur) and the continuation (pSPF)
+		// consistent under clay_lights, same reasoning as the Pel/NM loop.
+		const ISPF* pSPF = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClaySPF :
+			( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 		if( !pSPF ) {
 			break;
 		}
@@ -4292,6 +4730,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		translucentBounces = rs2.translucentBounces;
 		glossyFilterWidth = rs2.glossyFilterWidth;
 
+		// GUI render modes P2b `indirect` (review-p2c P2-b fix): HWSS twin
+		// of the Pel/NM loop's per-iteration bPassedThroughSpecular update
+		// (see that site) -- records whether THIS depth's scatter was delta,
+		// read at the top of the NEXT iteration's emission/env-miss gate.
+		bPassedThroughSpecular = pS->isDelta;
+
 		currentRay = traceRay;
 		currentRay.Advance( 1e-8 );
 
@@ -4418,7 +4862,12 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 				if( medWeight <= 0 ) continue;
 
-				// NEE at scatter point
+				// NEE at scatter point.  GUI render modes P2b `indirect`
+				// fix (review-p2b P2-e, HWSS twin of the RGB/NM
+				// IntegrateRayTemplated fix): same primary-camera-segment
+				// depth==0 reasoning -- see that fix's doc for the full
+				// rationale.  Still evaluated for RNG lockstep; only the
+				// contribution is zeroed.
 				if( pLS )
 				{
 					Scalar Ld = MediumTransport::EvaluateInScatteringNM(
@@ -4429,7 +4878,9 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 						Scalar directContrib = medWeight * Ld;
 						directContrib = ClampContribution( directContrib,
 							stabilityConfig.directClamp );
-						result[w] += directContrib;
+						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+							result[w] += directContrib;
+						}
 					}
 				}
 
@@ -4450,7 +4901,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 						if( !ri2.geometric.bHit )
 						{
-							if( scene.GetGlobalRadianceMap() )
+						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
+							!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() )
 							{
 								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
 									scatteredRay, RISE_INFINITY, swl.lambda[w] );
@@ -4523,6 +4975,16 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// No medium, or medium with no scatter and no surface hit
 	if( !ri.geometric.bHit )
 	{
+		// GUI render modes P2b `indirect` (HWSS twin): directly-visible
+		// background is a direct contribution -- return black under
+		// indirect-only (see the RGB IntegrateRayTemplated twin).
+		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				result[w] = 0;
+			}
+			return;
+		}
+
 		// See RGB IntegrateRay above — when isBackground=false the
 		// camera-visible background stays black; indirect bounces
 		// still pull from the global radiance map elsewhere.
@@ -4530,6 +4992,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				result[w] = 0;
 			}
+			return;
+		}
+
+		// review-p2d P1-1 (HWSS twin of the Pel/NM camera-background gate).
+		// Returning early is safe here: IntegrateRayHWSS zeroes result[] on
+		// entry, so an unwritten result reads black rather than garbage.
+		if( PTSoloSuppressEnvironment( caster ) ) {
 			return;
 		}
 

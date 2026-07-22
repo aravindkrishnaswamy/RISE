@@ -42,12 +42,32 @@ PathTracingShaderOp::PathTracingShaderOp(
   bSMSEnabled( smsConfig.enabled )
 {
 	pIntegrator = new PathTracingIntegrator( smsConfig, stabilityCfg );
-	pIntegrator->addref();
 }
 
 PathTracingShaderOp::~PathTracingShaderOp()
 {
 	safe_release( pIntegrator );
+}
+
+void PathTracingShaderOp::SetMaxPathDepth( unsigned int n )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetMaxPathDepth( n );
+	}
+}
+
+void PathTracingShaderOp::SetIndirectOnly( bool b )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetIndirectOnly( b );
+	}
+}
+
+void PathTracingShaderOp::SetClayOverride( bool b )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetClayOverride( b );
+	}
 }
 
 

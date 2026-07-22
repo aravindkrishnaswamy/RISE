@@ -17,6 +17,7 @@
 #include "FrameStore.h"
 #include "../Interfaces/IRenderObserver.h"
 #include "../Utilities/Color/ColorUtils.h"
+#include "../Utilities/FiniteMath.h"
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"  // L7 — PropagateAOVsToFrameStore
 #endif
@@ -809,21 +810,12 @@ namespace RISE
 			// curve) but quantised (needs alpha clamp).  The new
 			// gate matches the downstream quantiser branch structure.
 			//
-			// NaN/Inf check uses bit-pattern memcpy because under
-			// `-ffast-math` the compiler may constant-fold both
-			// `std::isnan(a)` and `(a == a)` to "not NaN" via
-			// type-based reasoning.  See FrameStoreColorSpace.cpp
-			// Sanitise comment for the broader rationale.  L1
-			// adversarial review MED-8 + P3.
+			// The shared finite predicate materialises its input through
+			// volatile before checking its IEEE-754 exponent, so it stays
+			// live under -ffast-math.  L1 adversarial review MED-8 + P3.
 			double a = alpha;
 			if ( !info.isFloat ) {
-				static_assert( sizeof(double) == 8, "double must be 64-bit IEEE 754" );
-				uint64_t bits;
-				std::memcpy( &bits, &a, sizeof(bits) );
-				constexpr uint64_t kExpMask = 0x7FF0000000000000ULL;
-				constexpr uint64_t kSignBit = 0x8000000000000000ULL;
-				if ( ( bits & kExpMask ) == kExpMask ) a = 0.0;     // Inf or NaN → 0
-				else if ( bits & kSignBit )            a = 0.0;     // negative → 0
+				if ( !RISE::IsFiniteDouble( a ) || !( a > 0.0 ) ) a = 0.0;
 				if ( a > 1.0 ) a = 1.0;
 			}
 

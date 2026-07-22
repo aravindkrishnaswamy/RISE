@@ -56,7 +56,6 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 		smsConfig,
 		stabilityCfg
 		);
-	pIntegrator->addref();
 }
 
 PathTracingSpectralRasterizer::~PathTracingSpectralRasterizer()

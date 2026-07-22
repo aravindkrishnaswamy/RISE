@@ -3072,7 +3072,13 @@ namespace RISE
 		//! Read a single rasterizer parameter as a parser-formatted
 		//! string (so a round-trip through SetRasterizerParameter
 		//! gives back the same value).  Empty string for unknown
-		//! rasterizer / param.
+		//! rasterizer / param.  One GET-ONLY addition with no
+		//! SetRasterizerParameter counterpart: "shader" / "defaultshader"
+		//! returns the resolved shader NAME the active rasterizer was
+		//! constructed with (review-p3 P2-c) -- the scene's actual
+		//! configured default shader, for callers that need to recover it
+		//! (e.g. an ephemeral pipeline built outside the production
+		//! rasterizer that wants to match its shading).
 		virtual std::string GetRasterizerParameter(
 			const char* /*rasterizerName*/,
 			const char* /*paramName*/ ) const { return std::string(); }

@@ -33,15 +33,18 @@
 
 #include <algorithm> // std::max / std::min -- render channelBalanceMax ratio
 #include <cctype>
-#include <cmath>     // std::isfinite -- numeric param_equals tolerance
+#include <cerrno>    // ERANGE -- string-layer overflow rejection (see CheckerParseFloatTokens)
+#include <cmath>
 #include <cstdint>   // std::uint64_t -- ScenarioContentHash's FNV-1a accumulator
 #include <cstdio>
 #include <cstdlib>   // std::strtod -- numeric param_equals token parse
 #include <cstring>   // std::strlen -- ParseRateLimit429HintMs phrase-length skip
 #include <chrono>    // std::chrono::milliseconds -- the real (non-injected) HTTP 429 backoff sleep
+#include "../Utilities/FiniteMath.h"
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -114,6 +117,34 @@ namespace RISE
 				std::ostringstream ss;
 				ss << f.rdbuf();
 				out = ss.str();
+				return true;
+			}
+
+			//! Finiteness test for JSON numbers that have already been parsed.
+			bool IsFiniteEvalNumber( double v )
+			{
+				return IsFiniteDouble( v );
+			}
+
+			bool ParseScenarioWholeNumber( const JsonValue& value, const std::string& label,
+			                               long long minValue, long long maxValue,
+			                               long long& out, std::string& err )
+			{
+				if( !value.isNumber() ) {
+					err = label + " must be a number";
+					return false;
+				}
+				const double v = value.asNumber();
+				if( !IsFiniteEvalNumber( v ) || v != std::floor( v ) ||
+				    v < static_cast<double>( minValue ) || v > static_cast<double>( maxValue ) ) {
+					char buf[96];
+					std::snprintf( buf, sizeof( buf ), "%.10g", v );
+					err = label + " must be a finite whole number in [" +
+						std::to_string( minValue ) + "," + std::to_string( maxValue ) +
+						"] (got " + buf + ")";
+					return false;
+				}
+				out = static_cast<long long>( v );
 				return true;
 			}
 
@@ -433,6 +464,31 @@ namespace RISE
 				return true;
 			}
 
+			//! As RequireFieldType, but a PRESENT numeric field must also be a
+			//! FINITE, WHOLE number within [minVal,maxVal].  Guards fields that
+			//! a later stage narrows via static_cast to a smaller/unsigned
+			//! type (e.g. CheckRenderKind's width/height/samples) -- a
+			//! negative, fractional, non-finite, or absurdly large JSON number
+			//! would otherwise reach that cast unchecked and silently wrap,
+			//! truncate, or invoke undefined behaviour.  Absent is always
+			//! legal; RequireFieldType (called first by every caller here) has
+			//! already rejected a present-but-wrong-JSON-TYPE field, so this
+			//! only re-reads a field already known to be a number.
+			bool RequireWholeNumberInRange( const JsonValue& obj, const std::string& key, double minVal, double maxVal,
+			                                 const std::string& scenarioId, std::size_t cpIndex, const std::string& label,
+			                                 std::string& err )
+			{
+				if( !obj.has( key ) || !obj.get( key ).isNumber() ) return true;
+				const double v = obj.get( key ).asNumber();
+				if( IsFiniteEvalNumber( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal ) return true;
+				char vb[64];
+				std::snprintf( vb, sizeof( vb ), "%.10g", v );
+				err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( cpIndex ) + "].\"" + label +
+				      "\" must be a whole number in [" + std::to_string( static_cast<long long>( minVal ) ) + "," +
+				      std::to_string( static_cast<long long>( maxVal ) ) + "] (got " + std::string( vb ) + ")";
+				return false;
+			}
+
 			//! "document" (mirrors CheckDocumentKind): "op"/"target"/"param"/
 			//! "value"/"name"/"chunkKind"/"referencedKind" are strings;
 			//! "numeric" is a bool; "referencedKinds" is a string array.
@@ -617,22 +673,35 @@ namespace RISE
 					"meanRMin", "meanRMax", "meanGMin", "meanGMax", "meanBMin", "meanBMax",
 					"channelBalanceMax"
 				};
-				for( const char* f : kNumFields )
+				for( const char* f : kNumFields ) {
 					if( !RequireFieldType( cp, f, JsonValue::Type::Number, scenarioId, idx, f, err ) ) return false;
+					if( cp.has( f ) && !IsFiniteEvalNumber( cp.get( f ).asNumber() ) ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].\"" +
+							f + "\" must be a finite number";
+						return false;
+					}
+				}
 				if( cp.has( "channelBalanceMax" ) && cp.get( "channelBalanceMax" ).isNumber() &&
 				    cp.get( "channelBalanceMax" ).asNumber() <= 1.0 ) {
 					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 					      "].\"channelBalanceMax\" must be > 1.0 (a ratio of 1.0 is unreachable under MC noise)";
 					return false;
 				}
+				// `width`/`height` (when present) are narrowed via
+				// static_cast<unsigned int> by CheckRenderKind -- must be
+				// finite whole numbers, bounded the same as Film::
+				// kMaxFilmWidth/kMaxFilmHeight (32768, Film.h) reject an
+				// absurd raster request rather than allocating gigabytes of
+				// frame buffer.
+				if( !RequireWholeNumberInRange( cp, "width",  1.0, 32768.0, scenarioId, idx, "width",  err ) ) return false;
+				if( !RequireWholeNumberInRange( cp, "height", 1.0, 32768.0, scenarioId, idx, "height", err ) ) return false;
 				// Image-reconstruction Wave 2: `samples` (when present) is the
-				// grading render's SPP override -- must be a whole count >= 1.
-				if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() &&
-				    cp.get( "samples" ).asNumber() < 1.0 ) {
-					err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
-					      "].\"samples\" must be >= 1";
-					return false;
-				}
+				// grading render's SPP override, narrowed via
+				// static_cast<int> by CheckRenderKind -- must be a finite
+				// whole count, bounded the same as the [1,65536]
+				// samples-override clamp documented in AgentRpc.cpp/
+				// AgentMcpAdapter.cpp.
+				if( !RequireWholeNumberInRange( cp, "samples", 1.0, 65536.0, scenarioId, idx, "samples", err ) ) return false;
 
 				// Image-reconstruction Wave 2: the `camera` pose override.
 				// location+lookat are REQUIRED (each an array of exactly 3
@@ -668,6 +737,11 @@ namespace RISE
 								      "].\"camera." + key + "\"[" + std::to_string( i ) + "] must be a number";
 								return false;
 							}
+							if( !IsFiniteEvalNumber( a.at( i ).asNumber() ) ) {
+								err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+									"].\"camera." + key + "\"[" + std::to_string( i ) + "] must be a finite number";
+								return false;
+							}
 						}
 						return true;
 					};
@@ -681,7 +755,7 @@ namespace RISE
 							return false;
 						}
 						const double fov = cam.get( "fov" ).asNumber();
-						if( !( fov > 0.0 && fov < 180.0 ) ) {
+					if( !IsFiniteEvalNumber( fov ) || !( fov > 0.0 && fov < 180.0 ) ) {
 							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 							      "].\"camera.fov\" must be > 0 and < 180 degrees";
 							return false;
@@ -720,7 +794,7 @@ namespace RISE
 						return false;
 					}
 					const double rmseMax = cp.get( "rmseMax" ).asNumber();
-					if( !( rmseMax > 0.0 && rmseMax <= 1.0 ) ) {
+					if( !IsFiniteEvalNumber( rmseMax ) || !( rmseMax > 0.0 && rmseMax <= 1.0 ) ) {
 						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
 						      "].\"rmseMax\" must be in (0,1]";
 						return false;
@@ -1229,25 +1303,27 @@ namespace RISE
 				}
 				const JsonValue& b = root.get( "budgets" );
 				if( b.has( "maxToolCalls" ) ) {
-					if( !b.get( "maxToolCalls" ).isNumber() ) {
-						err = "scenario '" + out.id + "': budgets.maxToolCalls must be a number";
-						return false;
-					}
-					out.budgets.maxToolCalls = static_cast<int>( b.get( "maxToolCalls" ).asNumber() );
+					long long value = 0;
+					if( !ParseScenarioWholeNumber( b.get( "maxToolCalls" ),
+						"scenario '" + out.id + "': budgets.maxToolCalls", -1,
+						std::numeric_limits<int>::max(), value, err ) ) return false;
+					out.budgets.maxToolCalls = static_cast<int>( value );
 				}
 				if( b.has( "maxLlmCalls" ) ) {
-					if( !b.get( "maxLlmCalls" ).isNumber() ) {
-						err = "scenario '" + out.id + "': budgets.maxLlmCalls must be a number";
-						return false;
-					}
-					out.budgets.maxLlmCalls = static_cast<int>( b.get( "maxLlmCalls" ).asNumber() );
+					long long value = 0;
+					if( !ParseScenarioWholeNumber( b.get( "maxLlmCalls" ),
+						"scenario '" + out.id + "': budgets.maxLlmCalls", -1,
+						std::numeric_limits<int>::max(), value, err ) ) return false;
+					out.budgets.maxLlmCalls = static_cast<int>( value );
 				}
 				if( b.has( "maxWallMs" ) ) {
-					if( !b.get( "maxWallMs" ).isNumber() ) {
-						err = "scenario '" + out.id + "': budgets.maxWallMs must be a number";
-						return false;
-					}
-					out.budgets.maxWallMs = static_cast<long long>( b.get( "maxWallMs" ).asNumber() );
+					long long value = 0;
+					// Keep a margin below LLONG_MAX because a double at that
+					// magnitude rounds to 2^63, which is outside long long.
+					if( !ParseScenarioWholeNumber( b.get( "maxWallMs" ),
+						"scenario '" + out.id + "': budgets.maxWallMs", -1,
+						9000000000000000000LL, value, err ) ) return false;
+					out.budgets.maxWallMs = value;
 				}
 			}
 
@@ -1306,18 +1382,16 @@ namespace RISE
 						return false;
 					}
 					AgentEvalIntervention it;
-					if( !e.has( "afterToolCalls" ) || !e.get( "afterToolCalls" ).isNumber() ) {
+					if( !e.has( "afterToolCalls" ) ) {
 						err = "scenario '" + out.id + "': interventions[" + idx +
 							"] missing required number field \"afterToolCalls\"";
 						return false;
 					}
-					it.afterToolCalls = static_cast<int>( e.get( "afterToolCalls" ).asNumber() );
-					if( it.afterToolCalls < 1 ) {
-						err = "scenario '" + out.id + "': interventions[" + idx +
-							"].afterToolCalls must be >= 1 (an intervention fires AFTER a tool call; got " +
-							std::to_string( it.afterToolCalls ) + ")";
-						return false;
-					}
+					long long afterToolCalls = 0;
+					if( !ParseScenarioWholeNumber( e.get( "afterToolCalls" ),
+						"scenario '" + out.id + "': interventions[" + idx + "].afterToolCalls",
+						1, std::numeric_limits<int>::max(), afterToolCalls, err ) ) return false;
+					it.afterToolCalls = static_cast<int>( afterToolCalls );
 					if( !e.has( "op" ) || !e.get( "op" ).isString() ) {
 						err = "scenario '" + out.id + "': interventions[" + idx + "] missing string field \"op\"";
 						return false;
@@ -2146,6 +2220,24 @@ namespace RISE
 							// pretending the round could still finish in time.
 							if( fo.status == 429 ) {
 								++rateLimitAttempts;
+								// The FINAL attempt (rateLimitAttempts reaches
+								// kRateLimitMaxAttempts): no further retry will
+								// follow, so there is nothing left to back off
+								// FOR.  Report exhaustion immediately rather
+								// than computing/checking/waiting out a dead
+								// backoff -- that wasted wait burns wall-clock
+								// for no benefit and can push a legitimate
+								// rate_limited-style exhaustion past the
+								// scenario's wall budget, misreporting it as
+								// budget_wall_ms instead of the honest
+								// provider_error below.
+								if( rateLimitAttempts >= kRateLimitMaxAttempts ) {
+									terminalStatus = "provider_error";
+									errorMessage = "rate limit: exhausted " + std::to_string( rateLimitAttempts ) +
+										" attempt(s) waiting out HTTP 429 (Too Many Requests) responses";
+									roundStopped = true;
+									break;
+								}
 								const int64_t waitMs = ComputeRateLimit429WaitMs( fo.body, rateLimitAttempts );
 								if( scenario.budgets.maxWallMs >= 0 ) {
 									const int64_t remaining =
@@ -2158,13 +2250,7 @@ namespace RISE
 									}
 								}
 								effectiveSleeper( waitMs );
-								if( rateLimitAttempts < kRateLimitMaxAttempts )
-									continue;   // retry the SAME round after the backoff wait
-								terminalStatus = "provider_error";
-								errorMessage = "rate limit: exhausted " + std::to_string( rateLimitAttempts ) +
-									" attempt(s) waiting out HTTP 429 (Too Many Requests) responses";
-								roundStopped = true;
-								break;
+								continue;   // retry the SAME round after the backoff wait
 							}
 
 							if( attempt == 1 && fo.status >= 500 && fo.status <= 599 )
@@ -3241,9 +3327,22 @@ namespace RISE
 					while( iss >> tok ) {
 						const char* begin = tok.c_str();
 						char* end = nullptr;
+						// REJECT AT THE STRING LAYER.  This avoids a value-level
+						// classification after -ffast-math has attached a finite
+						// assumption to the parsed double.  Text and errno are
+						// integer-domain, so they are immune to that assumption:
+						//   * no valid decimal OR hex float token contains 'n' or
+						//     'i' ('n'/'i' are not hex digits, and the exponent
+						//     markers are e/E/p/P), so those letters can only come
+						//     from nan / inf / infinity;
+						//   * strtod sets ERANGE for overflow ("1e999" -> HUGE_VAL)
+						//     and for underflow; both are refused as comparison
+						//     values.
+						if( tok.find_first_of( "nNiI" ) != std::string::npos ) return false;
+						errno = 0;
 						const double v = std::strtod( begin, &end );
 						if( end != begin + tok.size() ) return false;   // non-numeric / trailing junk
-						if( !std::isfinite( v ) ) return false;
+						if( errno == ERANGE ) return false;             // overflow / underflow
 						out.push_back( v );
 					}
 					return true;
@@ -3948,18 +4047,180 @@ namespace RISE
 					return { true, "all " + std::to_string( chunksArr.size() ) + " named chunk(s) byte-identical to the initial scene" };
 				}
 
+				//! Shared total-pixel budget for every render/decode allocation
+				//! CheckRenderKind drives (its own width*height product AND the
+				//! compareToImage reference PNG's decoded w*h -- see
+				//! DecodePngToRgb8's guard below).  The per-axis caps CheckRenderKind
+				//! already enforces (32768, mirroring Film::kMaxFilmWidth/
+				//! kMaxFilmHeight) bound only ONE axis at a time: a 32768x32768
+				//! request passes BOTH individually yet demands ~1.07e9 pixels --
+				//! tens of GiB across the rasterizer's frame + accumulation
+				//! buffers.  64,000,000 (64 "decimal" megapixels, the photography
+				//! convention) sits comfortably above any legitimate eval
+				//! checkpoint render -- the qHD default is 960x540 (~0.5MP) and
+				//! even an 8K UHD frame (7680x4320) is ~33.2MP -- while keeping
+				//! the worst-case allocation in the low hundreds of MB rather
+				//! than GiB.
+				static constexpr double kMaxEvalRenderPixels = 64000000.0;
+
+				//! Finiteness test for JSON numbers that have already been parsed.
+				bool IsFiniteRenderNumber( double v )
+				{
+					return RISE::IsFiniteDouble( v );
+				}
+
 				//! Image-reconstruction Wave 2: format an author-supplied
-				//! [x,y,z] JSON number array (load-validated to be exactly 3
-				//! numbers) into the "x y z" string form AgentCameraOverride's
-				//! Vec3 fields accept (the same form CameraIntrospection::
-				//! SetProperty parses).  %.10g keeps full double precision
-				//! without a trailing exponent for ordinary scene coordinates.
+				//! [x,y,z] JSON number array (VALIDATED by ValidateCameraVec3Field
+				//! below to be exactly 3 finite numbers) into the "x y z" string
+				//! form AgentCameraOverride's Vec3 fields accept (the same form
+				//! CameraIntrospection::SetProperty parses).  %.10g keeps full
+				//! double precision without a trailing exponent for ordinary
+				//! scene coordinates.
 				std::string CameraVec3String( const JsonValue& arr )
 				{
 					char b[128];
 					std::snprintf( b, sizeof( b ), "%.10g %.10g %.10g",
 						arr.at( 0 ).asNumber(), arr.at( 1 ).asNumber(), arr.at( 2 ).asNumber() );
 					return std::string( b );
+				}
+
+				//! P2 fix (2026-07-19 re-review): validate a camera vector
+				//! FIELD's shape (array of exactly 3 numbers, each finite)
+				//! BEFORE CameraVec3String ever touches it.  Mirrors the loader's
+				//! requireVec3 (ValidateRenderCheckpointTypes: array-of-3-numbers)
+				//! PLUS a finiteness check the loader itself doesn't perform.
+				//! This matters here specifically because CheckRenderKind is
+				//! reachable DIRECTLY -- CheckScenario/CheckOneCheckpoint can be
+				//! driven with a hand-built checkpoint that never passed through
+				//! LoadEvalScenario -- so a malformed/non-finite value must be
+				//! REFUSED here rather than silently defaulted to 0 by
+				//! CameraVec3String's out-of-range .at()/asNumber() fallbacks, or
+				//! turned into a literal "inf" token (strtod/sscanf accept the
+				//! C99 "inf" spelling) that reaches the renderer's camera-pose
+				//! parser.  Returns true on a valid shape; false + `err` (naming
+				//! the field) otherwise.
+				bool ValidateCameraVec3Field( const JsonValue& arr, const char* fieldName, std::string& err )
+				{
+					if( !arr.isArray() || arr.size() != 3 ) {
+						err = std::string( "render checkpoint: \"camera." ) + fieldName +
+							"\" must be an array of exactly 3 numbers (got " +
+							( arr.isArray() ? ( std::to_string( arr.size() ) + " element(s)" ) : std::string( JsonTypeName( arr.type() ) ) ) + ")";
+						return false;
+					}
+					for( std::size_t i = 0; i < 3; ++i ) {
+						if( !arr.at( i ).isNumber() ) {
+							err = std::string( "render checkpoint: \"camera." ) + fieldName + "\"[" +
+								std::to_string( i ) + "] must be a number";
+							return false;
+						}
+						const double v = arr.at( i ).asNumber();
+						if( !IsFiniteRenderNumber( v ) ) {
+							char nb[64];
+							std::snprintf( nb, sizeof( nb ), "%.10g", v );
+							err = std::string( "render checkpoint: \"camera." ) + fieldName + "\"[" +
+								std::to_string( i ) + "] must be a finite number (got " + nb + ")";
+							return false;
+						}
+					}
+					return true;
+				}
+
+				//! P1 fix (2026-07-19 mutation review): parse width/height
+				//! directly from the PNG signature + IHDR chunk header
+				//! BEFORE any reader is constructed.  PNGReader::BeginRead
+				//! (PNGReader.cpp) does NOT stop at parsing IHDR -- it goes
+				//! on to allocate the FULL pixel buffer (`new unsigned
+				//! char[nBytes]`), memset it, and decode EVERY scanline via
+				//! png_read_row, all before returning w/h to the caller.  A
+				//! kMaxEvalRenderPixels check placed after BeginRead (as the
+				//! prior version of this function did) therefore lets an
+				//! oversized-but-under-libpng's-own-2GiB-cap reference PNG
+				//! fully decode -- allocation and all -- before being
+				//! refused.  The PNG container's first 24 bytes are
+				//! fixed-layout and don't require libpng at all:
+				//!   [0..8)   8-byte PNG signature
+				//!   [8..12)  IHDR chunk length (big-endian uint32; == 13)
+				//!   [12..16) chunk type, must be "IHDR"
+				//!   [16..20) width  (big-endian uint32)
+				//!   [20..24) height (big-endian uint32)
+				//! Returns false (leaving outW/outH at 0) when the buffer is
+				//! too short or the signature/tag don't match -- callers
+				//! fall through to the existing reader-based path so
+				//! non-PNG/malformed/truncated input still produces the
+				//! SAME honest decode-failure diagnostic as before, never a
+				//! new crash or a false refusal.
+				bool ProbePngDimensions( const char* bytes, unsigned int byteCount, unsigned int& outW, unsigned int& outH )
+				{
+					outW = 0;
+					outH = 0;
+					static const unsigned char kPngSig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+					if( !bytes || byteCount < 24 )
+						return false;
+					const unsigned char* u = reinterpret_cast<const unsigned char*>( bytes );
+					if( std::memcmp( u, kPngSig, 8 ) != 0 )
+						return false;
+					if( u[12] != 'I' || u[13] != 'H' || u[14] != 'D' || u[15] != 'R' )
+						return false;
+					outW = ( static_cast<unsigned int>( u[16] ) << 24 ) | ( static_cast<unsigned int>( u[17] ) << 16 ) |
+					       ( static_cast<unsigned int>( u[18] ) << 8 )  |   static_cast<unsigned int>( u[19] );
+					outH = ( static_cast<unsigned int>( u[20] ) << 24 ) | ( static_cast<unsigned int>( u[21] ) << 16 ) |
+					       ( static_cast<unsigned int>( u[22] ) << 8 )  |   static_cast<unsigned int>( u[23] );
+					return true;
+				}
+
+				//! Bound a compareToImage file before buffering it.  PNG's IHDR is
+				//! also inspected from a fixed 24-byte read so an oversized image
+				//! is refused before any compressed payload enters process memory.
+				bool ReadReferencePngWithinEvalBudget( const std::string& path,
+				                                          std::string& out, std::string& err )
+				{
+					static constexpr std::uintmax_t kMaxReferenceBytes = 256u * 1024u * 1024u;
+					std::error_code ec;
+					const std::uintmax_t size = std::filesystem::file_size( path, ec );
+					if( ec ) {
+						err = "cannot stat file: " + path;
+						return false;
+					}
+					if( size > kMaxReferenceBytes ) {
+						err = "reference PNG is " + std::to_string( size ) +
+							" bytes, exceeds the " + std::to_string( kMaxReferenceBytes ) + "-byte eval input budget";
+						return false;
+					}
+
+					std::ifstream f( path.c_str(), std::ios::binary );
+					if( !f ) {
+						err = "cannot open file: " + path;
+						return false;
+					}
+					char header[24] = {};
+					f.read( header, sizeof( header ) );
+					const std::streamsize headerBytes = f.gcount();
+					unsigned int width = 0, height = 0;
+					if( headerBytes == static_cast<std::streamsize>( sizeof( header ) ) &&
+						ProbePngDimensions( header, sizeof( header ), width, height ) ) {
+						const double pixels = static_cast<double>( width ) * static_cast<double>( height );
+						if( pixels > kMaxEvalRenderPixels ) {
+							char buf[192];
+							std::snprintf( buf, sizeof( buf ),
+								"reference PNG is %ux%u = %.0f pixels, exceeds the %.0f-pixel eval render budget",
+								width, height, pixels, kMaxEvalRenderPixels );
+							err = buf;
+							return false;
+						}
+					}
+
+					f.clear();
+					f.seekg( 0, std::ios::beg );
+					out.resize( static_cast<std::size_t>( size ) );
+					if( !out.empty() ) {
+						f.read( &out[0], static_cast<std::streamsize>( out.size() ) );
+						if( f.gcount() != static_cast<std::streamsize>( out.size() ) ) {
+							err = "could not read complete file: " + path;
+							out.clear();
+							return false;
+						}
+					}
+					return true;
 				}
 
 				//! Image-reconstruction Wave 2: decode PNG bytes already in
@@ -4027,6 +4288,29 @@ namespace RISE
 						return false;
 					}
 
+					// P1 fix (2026-07-19 mutation review): refuse an
+					// over-budget reference BEFORE constructing a reader at
+					// all, using ProbePngDimensions' header-only parse (see
+					// its doc above for why this must happen ahead of
+					// BeginRead, not after).  A buffer that doesn't parse as
+					// a recognizable PNG header falls through silently --
+					// the reader path below still runs and produces the
+					// existing "not a valid PNG" diagnostic.
+					{
+						unsigned int probeW = 0, probeH = 0;
+						if( ProbePngDimensions( bytes, byteCount, probeW, probeH ) ) {
+							const double totalPixels = static_cast<double>( probeW ) * static_cast<double>( probeH );
+							if( totalPixels > kMaxEvalRenderPixels ) {
+								char pb[192];
+								std::snprintf( pb, sizeof( pb ),
+									"reference PNG is %ux%u = %.0f pixels, exceeds the %.0f-pixel eval render budget",
+									probeW, probeH, totalPixels, kMaxEvalRenderPixels );
+								err = pb;
+								return false;
+							}
+						}
+					}
+
 					IMemoryBuffer* buffer = nullptr;
 					if( !RISE_API_CreateCompatibleMemoryBuffer( &buffer, bytes, byteCount, /*bTakeOwnership=*/false ) || !buffer ) {
 						err = "could not wrap PNG bytes in a read buffer";
@@ -4047,6 +4331,33 @@ namespace RISE
 						buffer->release();
 						err = "PNG decode failed (not a valid PNG, or zero dimensions)";
 						return false;
+					}
+
+					// Belt-and-braces SECOND gate (2026-07-19 mutation review):
+					// the PRIMARY guard is the ProbePngDimensions header-only
+					// probe above, which runs before the reader is even
+					// constructed -- by the time control reaches here,
+					// BeginRead has ALREADY allocated the full pixel buffer
+					// and decoded every scanline (see ProbePngDimensions'
+					// doc; this comment previously and incorrectly claimed
+					// BeginRead "has already parsed IHDR without touching
+					// pixel data", which is false).  This check stays as a
+					// harmless redundant catch for any path that bypasses
+					// the header probe (e.g. a PNG whose signature/IHDR the
+					// probe couldn't parse but libpng still accepts).
+					{
+						const double totalPixels = static_cast<double>( w ) * static_cast<double>( h );
+						if( totalPixels > kMaxEvalRenderPixels ) {
+							reader->EndRead();
+							reader->release();
+							buffer->release();
+							char pb[192];
+							std::snprintf( pb, sizeof( pb ),
+								"reference PNG is %ux%u = %.0f pixels, exceeds the %.0f-pixel eval render budget",
+								w, h, totalPixels, kMaxEvalRenderPixels );
+							err = pb;
+							return false;
+						}
 					}
 
 					outRgb.resize( static_cast<std::size_t>( w ) * h * 3 );
@@ -4124,44 +4435,178 @@ namespace RISE
 				//! rmseMax) MUST be wide enough to absorb ordinary MC noise
 				//! between runs, not narrow enough to require a pinned seed.
 				//! NEVER an exact-pixel match.
+				//! render-checkpoint dimension/sample-count sanity bound: a JSON
+				//! number destined for a NARROWING cast (static_cast<unsigned
+				//! int> for width/height, static_cast<int> for samples, just
+				//! below) must be a FINITE, non-negative, WHOLE number inside
+				//! this range, or the cast is unsafe -- a negative value wraps
+				//! to a huge unsigned width/height, a fractional value silently
+				//! truncates, and an absurdly large value (e.g. a JSON
+				//! double that overflows the target int type) is undefined
+				//! behaviour on the cast itself.  Bounds mirror existing
+				//! conventions elsewhere in the agent surface: Film::
+				//! kMaxFilmWidth/kMaxFilmHeight (32768, Film.h) for width/
+				//! height, and the [1,65536] samples-override clamp documented
+				//! in AgentRpc.cpp/AgentMcpAdapter.cpp for samples.  Checked
+				//! HERE (at the checker, not only at scenario-load time) because
+				//! CheckScenario/CheckOneCheckpoint can be driven directly with
+				//! a hand-built checkpoint that never passed through
+				//! LoadEvalScenario's ValidateRenderCheckpointTypes.
+				bool IsWholeNumberInRange( double v, double minVal, double maxVal )
+				{
+					return IsFiniteRenderNumber( v ) && v == std::floor( v ) && v >= minVal && v <= maxVal;
+				}
+
+				//! Format a double for a checkpoint refusal diagnostic (matches
+				//! the "%.10g" convention CameraVec3String/camera.fov use
+				//! elsewhere in this file for JSON-number values).
+				std::string FormatCheckpointNumber( double v )
+				{
+					char b[64];
+					std::snprintf( b, sizeof( b ), "%.10g", v );
+					return std::string( b );
+				}
+
 				CheckOutcome CheckRenderKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "render checkpoint: no live session (run did not complete)" };
 
 					AgentRenderParams rp;
-					const bool haveW = cp.has( "width" )  && cp.get( "width" ).isNumber();
-					const bool haveH = cp.has( "height" ) && cp.get( "height" ).isNumber();
+					rp.maxPixelCount = static_cast<std::uint64_t>( kMaxEvalRenderPixels );
+
+					static const char* const kThresholdFields[] = {
+						"meanLumaMin", "meanLumaMax", "meanRMin", "meanRMax",
+						"meanGMin", "meanGMax", "meanBMin", "meanBMax",
+						"channelBalanceMax"
+					};
+					for( const char* field : kThresholdFields ) {
+						if( !cp.has( field ) ) continue;
+						if( !cp.get( field ).isNumber() ) {
+							return { false, "render checkpoint: \"" + std::string( field ) + "\" must be a number (got " +
+								std::string( JsonTypeName( cp.get( field ).type() ) ) + ")" };
+						}
+						if( !IsFiniteRenderNumber( cp.get( field ).asNumber() ) ) {
+							return { false, "render checkpoint: \"" + std::string( field ) + "\" must be a finite number (got " +
+								FormatCheckpointNumber( cp.get( field ).asNumber() ) + ")" };
+						}
+					}
+					if( cp.has( "channelBalanceMax" ) && !( cp.get( "channelBalanceMax" ).asNumber() > 1.0 ) ) {
+						return { false, "render checkpoint: \"channelBalanceMax\" must be > 1.0" };
+					}
+
+					// P2 fix (2026-07-19 re-review): width/height MUST be numbers
+					// when present -- a present-but-wrong-typed field (e.g.
+					// "width":"big") must REFUSE with an honest diagnostic, not
+					// silently fall through to the scene's default render size.
+					// Previously `haveW`/`haveH` only distinguished "present AND
+					// numeric" from "everything else", so a MATCHED pair of
+					// wrong-typed width+height (both non-numeric) slipped past the
+					// haveW!=haveH mismatch guard below entirely and silently used
+					// the default dims.  CheckRenderKind is reachable DIRECTLY --
+					// CheckScenario/CheckOneCheckpoint can be driven with a
+					// hand-built checkpoint that never passed through
+					// LoadEvalScenario's ValidateRenderCheckpointTypes -- so this
+					// type check can't be skipped upstream.
+					if( cp.has( "width" ) && !cp.get( "width" ).isNumber() )
+						return { false, "render checkpoint: \"width\" must be a number (got " +
+							std::string( JsonTypeName( cp.get( "width" ).type() ) ) + ")" };
+					if( cp.has( "height" ) && !cp.get( "height" ).isNumber() )
+						return { false, "render checkpoint: \"height\" must be a number (got " +
+							std::string( JsonTypeName( cp.get( "height" ).type() ) ) + ")" };
+					const bool haveW = cp.has( "width" );
+					const bool haveH = cp.has( "height" );
 					if( haveW && haveH ) {
-						rp.width  = static_cast<unsigned int>( cp.get( "width" ).asNumber() );
-						rp.height = static_cast<unsigned int>( cp.get( "height" ).asNumber() );
+						const double wVal = cp.get( "width" ).asNumber();
+						const double hVal = cp.get( "height" ).asNumber();
+						if( !IsWholeNumberInRange( wVal, 1.0, 32768.0 ) )
+							return { false, "render checkpoint: \"width\" must be a whole number in [1,32768] (got " +
+								FormatCheckpointNumber( wVal ) + ")" };
+						if( !IsWholeNumberInRange( hVal, 1.0, 32768.0 ) )
+							return { false, "render checkpoint: \"height\" must be a whole number in [1,32768] (got " +
+								FormatCheckpointNumber( hVal ) + ")" };
+						// P1 fix (2026-07-19 re-review): TOTAL-PIXEL budget -- the
+						// per-axis caps just above bound only ONE axis at a time;
+						// a 32768x32768 request passes BOTH individually yet
+						// demands ~1.07e9 pixels (kMaxEvalRenderPixels's doc has
+						// the full rationale).  Checked here (the explicit-dims
+						// path) BEFORE any allocation; the compareToImage-adopted-
+						// dims path below is separately bounded by
+						// DecodePngToRgb8's own guard on the reference's header
+						// dims.
+						const double totalPixels = wVal * hVal;
+						if( totalPixels > kMaxEvalRenderPixels ) {
+							char pb[224];
+							std::snprintf( pb, sizeof( pb ),
+								"render checkpoint: \"width\"x\"height\" %.0fx%.0f = %.0f pixels exceeds the %.0f-pixel eval render budget",
+								wVal, hVal, totalPixels, kMaxEvalRenderPixels );
+							return { false, std::string( pb ) };
+						}
+						rp.width  = static_cast<unsigned int>( wVal );
+						rp.height = static_cast<unsigned int>( hVal );
 					} else if( haveW != haveH ) {
 						return { false, "render checkpoint: \"width\"/\"height\" must both be supplied together" };
 					}
 
-					// Image-reconstruction Wave 2: samples override (load-validated >=1).
-					if( cp.has( "samples" ) && cp.get( "samples" ).isNumber() ) {
-						rp.samples = static_cast<int>( cp.get( "samples" ).asNumber() );
+					// Image-reconstruction Wave 2: samples override (>=1, and
+					// bounded/whole -- see IsWholeNumberInRange's doc).  P2 fix:
+					// a present-but-wrong-typed "samples" must REFUSE (see the
+					// width/height note above), not silently skip the override.
+					if( cp.has( "samples" ) ) {
+						if( !cp.get( "samples" ).isNumber() )
+							return { false, "render checkpoint: \"samples\" must be a number (got " +
+								std::string( JsonTypeName( cp.get( "samples" ).type() ) ) + ")" };
+						const double sVal = cp.get( "samples" ).asNumber();
+						if( !IsWholeNumberInRange( sVal, 1.0, 65536.0 ) )
+							return { false, "render checkpoint: \"samples\" must be a whole number in [1,65536] (got " +
+								FormatCheckpointNumber( sVal ) + ")" };
+						rp.samples = static_cast<int>( sVal );
 					}
 
-					// Image-reconstruction Wave 2: camera-pose override.  The
-					// shape (location+lookat required, up/fov typed) is
-					// load-validated by ValidateRenderCheckpointTypes; here we
-					// only translate the JSON arrays into the "x y z" strings
-					// AgentCameraOverride accepts.  `up` defaults to [0,1,0]
-					// (the +Y-up convention) when omitted; `fov` omitted keeps
-					// the camera's current fov (hasFov stays false).
-					if( cp.has( "camera" ) && cp.get( "camera" ).isObject() ) {
+					// Image-reconstruction Wave 2: camera-pose override.  `up`
+					// defaults to [0,1,0] (the +Y-up convention) when omitted;
+					// `fov` omitted keeps the camera's current fov (hasFov stays
+					// false).  P2 fix (2026-07-19 re-review): CheckRenderKind is
+					// reachable DIRECTLY (see the width/height note above), so
+					// the shape (location+lookat required, each an array of 3
+					// numbers), TYPE, and FINITENESS of every vector component
+					// and of fov are validated HERE rather than assumed --
+					// ValidateRenderCheckpointTypes's requireVec3 mirrors the same
+					// finite-number rule on the loader path (ValidateCameraVec3Field's
+					// doc has the full rationale for
+					// why a non-finite component, e.g. {"location":[0,0,1e999]},
+					// must never reach the renderer's camera-pose parser).
+					if( cp.has( "camera" ) ) {
+						if( !cp.get( "camera" ).isObject() )
+							return { false, "render checkpoint: \"camera\" must be an object (got " +
+								std::string( JsonTypeName( cp.get( "camera" ).type() ) ) + ")" };
 						const JsonValue& cam = cp.get( "camera" );
+						if( !cam.has( "location" ) )
+							return { false, "render checkpoint: \"camera.location\" is required (an array of 3 numbers)" };
+						if( !cam.has( "lookat" ) )
+							return { false, "render checkpoint: \"camera.lookat\" is required (an array of 3 numbers)" };
+						std::string camErr;
+						if( !ValidateCameraVec3Field( cam.get( "location" ), "location", camErr ) ) return { false, camErr };
+						if( !ValidateCameraVec3Field( cam.get( "lookat" ),   "lookat",   camErr ) ) return { false, camErr };
 						rp.camera.hasLocation = true;
 						rp.camera.location    = CameraVec3String( cam.get( "location" ) );
 						rp.camera.hasLookAt   = true;
 						rp.camera.lookAt      = CameraVec3String( cam.get( "lookat" ) );
 						rp.camera.hasUp       = true;
-						rp.camera.up          = cam.has( "up" ) ? CameraVec3String( cam.get( "up" ) )
-						                                        : std::string( "0 1 0" );
-						if( cam.has( "fov" ) && cam.get( "fov" ).isNumber() ) {
+						if( cam.has( "up" ) ) {
+							if( !ValidateCameraVec3Field( cam.get( "up" ), "up", camErr ) ) return { false, camErr };
+							rp.camera.up = CameraVec3String( cam.get( "up" ) );
+						} else {
+							rp.camera.up = "0 1 0";
+						}
+						if( cam.has( "fov" ) ) {
+							if( !cam.get( "fov" ).isNumber() )
+								return { false, "render checkpoint: \"camera.fov\" must be a number (degrees)" };
+							const double fov = cam.get( "fov" ).asNumber();
+							if( !IsFiniteRenderNumber( fov ) || !( fov > 0.0 && fov < 180.0 ) )
+								return { false, "render checkpoint: \"camera.fov\" must be > 0 and < 180 degrees (got " +
+									FormatCheckpointNumber( fov ) + ")" };
 							char fbuf[64];
-							std::snprintf( fbuf, sizeof( fbuf ), "%.10g", cam.get( "fov" ).asNumber() );
+							std::snprintf( fbuf, sizeof( fbuf ), "%.10g", fov );
 							rp.camera.hasFov = true;
 							rp.camera.fov    = fbuf;
 						}
@@ -4170,19 +4615,37 @@ namespace RISE
 					// Image-reconstruction Wave 2: decode the compareToImage
 					// reference FIRST -- its dims drive the grading render (the
 					// candidate must be produced at EXACTLY the reference's
-					// dimensions).  Both fields are load-validated present-together
-					// with rmseMax in (0,1] and a non-".." non-empty path.
-					const bool haveCompare = cp.has( "compareToImage" ) && cp.get( "compareToImage" ).isString() &&
-					                         cp.has( "rmseMax" ) && cp.get( "rmseMax" ).isNumber();
+					// dimensions).  P2 fix (2026-07-19 re-review): TYPE-check
+					// each field when present (refuse, don't silently treat a
+					// wrong-typed field as absent) and validate rmseMax's (0,1]
+					// range directly here too -- an unbounded rmseMax (e.g.
+					// 1e999) would make `rmse > rmseMax` always false below,
+					// silently turning compareToImage into a no-op that always
+					// "passes" regardless of the actual image difference.
+					if( cp.has( "compareToImage" ) && !cp.get( "compareToImage" ).isString() )
+						return { false, "render checkpoint: \"compareToImage\" must be a string (got " +
+							std::string( JsonTypeName( cp.get( "compareToImage" ).type() ) ) + ")" };
+					if( cp.has( "rmseMax" ) && !cp.get( "rmseMax" ).isNumber() )
+						return { false, "render checkpoint: \"rmseMax\" must be a number (got " +
+							std::string( JsonTypeName( cp.get( "rmseMax" ).type() ) ) + ")" };
+					const bool haveCompare = cp.has( "compareToImage" );
+					const bool haveRmse    = cp.has( "rmseMax" );
+					if( haveCompare != haveRmse )
+						return { false, "render checkpoint: \"compareToImage\" and \"rmseMax\" must both be supplied together" };
 					std::vector<unsigned char> refRgb;
 					unsigned int refW = 0, refH = 0;
 					std::string  refPath;
 					double       rmseMax = 0.0;
 					if( haveCompare ) {
-						refPath = cp.get( "compareToImage" ).asString();
 						rmseMax = cp.get( "rmseMax" ).asNumber();
+						if( !IsFiniteRenderNumber( rmseMax ) || !( rmseMax > 0.0 && rmseMax <= 1.0 ) )
+							return { false, "render checkpoint: \"rmseMax\" must be in (0,1] (got " +
+								FormatCheckpointNumber( rmseMax ) + ")" };
+						refPath = cp.get( "compareToImage" ).asString();
+						if( refPath.empty() )
+							return { false, "render checkpoint: \"compareToImage\" must be a non-empty path" };
 						std::string refBytes, readErr;
-						if( !ReadWholeFile( refPath, refBytes, readErr ) ) {
+						if( !ReadReferencePngWithinEvalBudget( refPath, refBytes, readErr ) ) {
 							return { false, "render checkpoint: compareToImage reference '" + refPath +
 								"' could not be read (" + readErr + ")" };
 						}

@@ -648,6 +648,31 @@ static void TestBox()
 	}
 	REQUIRE( nPts > Mpoints / 2, "box enough random points" );
 
+	// Exact area-selection contract: UniformRandomPoint claims a 1/GetArea()
+	// density, so its face PMF must equal each face's area fraction.  Use a
+	// stratified z sequence whose 13,000 samples divide this 2x3x4 box's
+	// total area 52 exactly: X faces have area 12 (3,000 each), Y faces area
+	// 8 (2,000 each), and Z faces area 6 (1,500 each).  Uniform-by-face
+	// selection would instead produce about 2,167 samples on every face.
+	const int areaSampleCount = 13000;
+	const int expectedAreaSamples[6] = { 3000, 3000, 2000, 2000, 1500, 1500 };
+	int areaSamples[6] = { 0, 0, 0, 0, 0, 0 };
+	for( int i = 0; i < areaSampleCount; ++i ) {
+		Point3 p; Vector3 n; Point2 uv;
+		const Scalar z = ( Scalar(i) + Scalar(0.5) ) / Scalar(areaSampleCount);
+		g->UniformRandomPoint( &p, &n, &uv, Point3( Scalar(0.5), Scalar(0.5), z ) );
+		const int face = BoxFaceFromNormal( n );
+		REQUIRE( face >= 0 && face < 6, "box area sampler face index in range" );
+		if( face >= 0 && face < 6 ) {
+			areaSamples[face]++;
+		}
+	}
+	for( int f = 0; f < 6; ++f ) {
+		REQUIRE( areaSamples[f] == expectedAreaSamples[f],
+			std::string("box area sampler face ") + std::to_string(f) +
+			" matches its exact surface-area probability" );
+	}
+
 	g->release();
 	std::cout << "  box: " << nHits << " ray hits, " << nPts
 		<< " random points; per-face hits: ";
@@ -1177,6 +1202,92 @@ static void TestBilinearInverse()
 // Bilinear patch
 // ============================================================
 
+//! Area-light contract for BilinearPatchGeometry (2026-07).
+//!
+//! UniformRandomPoint was an unimplemented stub that wrote NOTHING, and
+//! GetArea() returned a hardcoded 1.0, while CanBeAreaLight() inherited
+//! IGeometry's `true` default -- so an emissive bilinearpatch_geometry was a
+//! silently broken area light: every NEE sample landed on the local origin
+//! (Point3's default ctor zero-inits), and the emitted power was wrong by the
+//! patch's true area.
+//!
+//! Two properties are asserted, because passing one without the other is
+//! exactly how the BoxGeometry defect (098d2565) survived for so long:
+//!   (1) GetArea() matches independently-computed ground truth;
+//!   (2) samples are uniform in SURFACE AREA, not in (u, v) parameter space.
+//! A trapezoid separates them: parameter-uniform sampling puts equal numbers
+//! of samples in the narrow and wide halves, area-uniform does not.
+static void TestBilinearPatchAreaLightContract()
+{
+	std::cout << "Testing BilinearPatchGeometry area-light contract..." << std::endl;
+
+	// PLANAR TRAPEZOID in z=0.  Canonical corner mapping (NOT row-major):
+	//   pts[0]=(u0,v0)  pts[1]=(u0,v1)  pts[2]=(u1,v0)  pts[3]=(u1,v1)
+	// Width at v=0 is 4 (x from 0..4); at v=1 it is 1 (x from 0..1); height 1.
+	// Exact area of that trapezoid = (4 + 1)/2 * 1 = 2.5.
+	BilinearPatchGeometry* g = new BilinearPatchGeometry( 10, 8, /*bUseBSP=*/false );
+	BilinearPatch patch;
+	patch.pts[0] = Point3( 0, 0, 0 );   // (u=0, v=0)
+	patch.pts[1] = Point3( 0, 1, 0 );   // (u=0, v=1)
+	patch.pts[2] = Point3( 4, 0, 0 );   // (u=1, v=0)
+	patch.pts[3] = Point3( 1, 1, 0 );   // (u=1, v=1)
+	g->AddPatch( patch );
+	g->Prepare();
+
+	// (1) AREA.  Ground truth 2.5 computed analytically above -- deliberately
+	// NOT by calling the same quadrature the implementation uses, which would
+	// only prove self-consistency.
+	const Scalar area = g->GetArea();
+	std::cout << "  bilinear trapezoid GetArea=" << area << " (exact 2.5)" << std::endl;
+	REQUIRE( std::fabs( area - 2.5 ) < 0.02,
+		"bilinear patch GetArea matches the trapezoid's exact area (was hardcoded 1.0)" );
+	REQUIRE( g->CanBeAreaLight(),
+		"a bilinear patch with real area can be an area light" );
+
+	// (2) AREA-UNIFORMITY.  Split at v=0.5.  The v<0.5 half spans x-width
+	// 4.0..2.5 (area 1.625); the v>0.5 half spans 2.5..1.0 (area 0.875).
+	// So 65% of area-uniform samples must land in the wide half.  A
+	// parameter-uniform sampler -- the naive implementation -- would put 50%
+	// in each, which this assertion rejects.
+	const int NS = 40000;
+	LCG rng( 24680 );
+	int lowerHalf = 0;
+	int offSurface = 0, atOrigin = 0;
+	for( int i = 0; i < NS; ++i ) {
+		Point3 pt; Vector3 nrm; Point2 uv;
+		const Point3 prand( rng.next01(), rng.next01(), rng.next01() );
+		g->UniformRandomPoint( &pt, &nrm, &uv, prand );
+
+		// The stub's signature failure: every sample at the local origin.
+		if( std::fabs(pt.x) < 1e-12 && std::fabs(pt.y) < 1e-12 && std::fabs(pt.z) < 1e-12 ) {
+			atOrigin++;
+		}
+		// Every sample must lie ON the patch (z=0 plane, inside the trapezoid).
+		const Scalar xMaxAtY = 4.0 - 3.0 * pt.y;
+		if( std::fabs(pt.z) > 1e-9 || pt.y < -1e-9 || pt.y > 1.0 + 1e-9 ||
+		    pt.x < -1e-9 || pt.x > xMaxAtY + 1e-9 ) {
+			offSurface++;
+		}
+		if( pt.y < 0.5 ) lowerHalf++;
+	}
+
+	REQUIRE( atOrigin < NS / 100,
+		"bilinear UniformRandomPoint does not collapse to the local origin "
+		"(the unimplemented-stub signature: it wrote nothing at all)" );
+	REQUIRE( offSurface == 0,
+		"every bilinear UniformRandomPoint sample lies on the patch surface" );
+
+	const double wideFrac = double(lowerHalf) / double(NS);
+	std::cout << "  wide-half sample fraction=" << wideFrac
+	          << " (area-uniform 0.65, parameter-uniform 0.50)" << std::endl;
+	REQUIRE( std::fabs( wideFrac - 0.65 ) < 0.02,
+		"bilinear UniformRandomPoint is uniform in SURFACE AREA -- 65% of samples "
+		"fall in the wide half.  Parameter-uniform sampling would give 50%, which "
+		"disagrees with the 1/GetArea() density its consumers assume" );
+
+	g->release();
+}
+
 static void TestBilinearPatch()
 {
 	std::cout << "Testing BilinearPatchGeometry UV roundtrip..." << std::endl;
@@ -1243,6 +1354,7 @@ int main()
 	TestDisk();
 	TestClippedPlane();
 	TestBilinearPatch();
+	TestBilinearPatchAreaLightContract();
 	TestBilinearInverse();
 
 	if( g_failures > 0 ) {

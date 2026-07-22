@@ -243,6 +243,21 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (nullable NSString *)stampViewToNewCamera:(NSString *)proposedName
     NS_SWIFT_NAME(stampViewToNewCamera(_:));
 
+/// user-review P1-1: pane-indexed navigation twins.  The methods above alias
+/// pane 0 (the §7.4 C-ABI contract); the N-up nav overlay is drawn on the
+/// primary pane and calls THESE with its pane index, so it moves the pane it's
+/// actually over.  (paneEnterFreeFly / paneExitFreeFly already exist below.)
+- (BOOL)snapPaneView:(NSUInteger)pane toAxis:(NSInteger)axis negative:(BOOL)negative
+    NS_SWIFT_NAME(snapPaneView(_:toAxis:negative:));
+- (BOOL)isPaneFreeFlyActive:(NSUInteger)pane
+    NS_SWIFT_NAME(isPaneFreeFlyActive(_:));
+- (BOOL)paneSetHomeView:(NSUInteger)pane
+    NS_SWIFT_NAME(paneSetHomeView(_:));
+- (BOOL)paneGoToHomeView:(NSUInteger)pane
+    NS_SWIFT_NAME(paneGoToHomeView(_:));
+- (nullable NSString *)stampPaneViewToNewCamera:(NSUInteger)pane proposedName:(NSString *)proposedName
+    NS_SWIFT_NAME(stampPaneViewToNewCamera(_:proposedName:));
+
 #pragma mark - Named Views (B1)
 
 /// Capture the current view (free-fly pose if active, else the active camera)
@@ -267,10 +282,17 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 /// Registry entries with `viewportSelectable == true`, in registry
 /// (UI) order — the set the mode dropdown / View menu offers.  Each
 /// dictionary has string values for keys "name" ("preview", "normals",
-/// ...), "title" ("Shaded Preview", ...), and "question" (the tooltip
-/// text).  Registry-level (not controller-scoped) but still guarded on
-/// `_controller` for consistency with every other bridge accessor —
-/// empty array when no controller is attached.
+/// ...), "title" ("Shaded Preview", ...), "question" (the tooltip
+/// text), "wantsDenoise" ("1"/"0" — GUI render modes P2a: the registry's
+/// `wantsDenoise` flag, added so the DENOISED-label formatter can key off
+/// it instead of a hardcoded `mode == "preview"` check now that
+/// BeautyVariant modes genuinely denoise too), and "isVariant" ("1"/"0" —
+/// P2a review fix: `RISE::Implementation::IsBeautyVariantMode`, so the
+/// x-ray toggle can disable itself while the active mode is a
+/// BeautyVariant row — see RISE_API_GetViewportRenderModeIsVariant's doc).
+/// Registry-level (not controller-scoped) but still guarded on
+/// `_controller` for consistency with every other bridge accessor — empty
+/// array when no controller is attached.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)viewportRenderModes;
 
 /// The registry wire name of the CURRENTLY active viewport render mode
@@ -311,6 +333,110 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 /// `on` stuck.
 - (BOOL)setViewportXray:(BOOL)on
     NS_SWIFT_NAME(setViewportXray(_:));
+
+#pragma mark - N-up multi-viewport (P3, docs/gui/RENDER_MODES.md §7)
+//
+// Up to four pane slots; the layout selects the visible subset (§7.2).
+// Every setter is fail-closed per the controller contract (§7.4):
+// unknown pane / hidden pane / render-owns-scene => NO, nothing
+// mutated.  Pane 0's DISPLAY keeps using the legacy -setImageBlock: /
+// -pointerDown(x:y:) family unchanged -- see RISEViewportBridge.mm's
+// "N-up pane-0 sink" doc comment for why that's the correct choice
+// rather than migrating pane 0 onto -setPaneImageBlock:forPane:.  The
+// entry points below cover the layout/primary/chrome plumbing that
+// spans all four panes, plus display + input routing for panes 1-3.
+
+/// Mirrors SceneEditController::ViewportLayout.  §7.2: Single = pane 0
+/// only; TwoH = 0|1 side by side; OnePlusTwo = 0 big + 1,2 stacked;
+/// Quad = 0-3 in a 2x2 grid.
+typedef NS_ENUM(NSInteger, RISEViewportLayout) {
+    RISEViewportLayoutSingle     = 0,
+    RISEViewportLayoutTwoH       = 1,
+    RISEViewportLayoutOnePlusTwo = 2,
+    RISEViewportLayoutQuad       = 3,
+};
+
+/// Mirrors SceneEditController::PaneVantageKind.
+typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
+    RISEViewportVantageSceneCamera = 0,
+    RISEViewportVantageFreeFly     = 1,
+    RISEViewportVantageNamedView   = 2,
+};
+
+/// The active N-up layout.  Defaults to Single (matches the
+/// controller's construction default) when no controller is attached.
+@property (nonatomic) RISEViewportLayout viewportLayout;
+
+/// The primary pane index (0-3; §7.8 decision 1: a non-navigation
+/// click in any pane promotes it).  0 when no controller is attached.
+@property (nonatomic) NSUInteger primaryPane;
+
+/// Per-pane render mode -- the SAME registry wire names
+/// -viewportRenderModes lists.  Pane 0 forwards to
+/// -setViewportRenderMode: / -viewportRenderMode controller-side
+/// (alias contract, §7.4): calling either surface for pane 0 is
+/// equivalent, so callers may safely treat all four panes uniformly.
+- (NSString *)paneRenderMode:(NSUInteger)pane
+    NS_SWIFT_NAME(paneRenderMode(_:));
+- (BOOL)setPaneRenderMode:(NSUInteger)pane name:(NSString *)name
+    NS_SWIFT_NAME(setPaneRenderMode(_:name:));
+
+/// Per-pane vantage.  Pane 0's free-fly twins alias -enterFreeFly /
+/// -exitFreeFly (§7.4); pane 0's Scene-camera / NamedView setters have
+/// no pre-existing un-indexed equivalent, so calling them on pane 0 is
+/// a new, valid operation.
+- (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane
+    NS_SWIFT_NAME(setPaneVantageSceneCamera(_:));
+- (BOOL)setPaneVantageNamedView:(NSUInteger)pane name:(NSString *)name
+    NS_SWIFT_NAME(setPaneVantageNamedView(_:name:));
+- (BOOL)paneEnterFreeFly:(NSUInteger)pane
+    NS_SWIFT_NAME(paneEnterFreeFly(_:));
+- (BOOL)paneExitFreeFly:(NSUInteger)pane
+    NS_SWIFT_NAME(paneExitFreeFly(_:));
+
+/// `outKind` receives the vantage kind; `outNamedView` (optional, may
+/// be NULL) receives the NamedView name when kind == NamedView (""
+/// otherwise).  Returns NO on a null controller / invalid pane
+/// (outputs left untouched in that case).
+- (BOOL)getPaneVantage:(NSUInteger)pane
+                   kind:(RISEViewportVantageKind *)outKind
+              namedView:(NSString * _Nullable * _Nullable)outNamedView
+    NS_SWIFT_NAME(getPaneVantage(_:kind:namedView:));
+
+/// Pane render-surface pixel dims -- the GUI's pane rect, in PIXELS
+/// (backing-scale aware).  0/0 resets to film dims.  Call for every
+/// VISIBLE pane on layout switch and on window/pane resize.
+- (BOOL)setPaneSurfaceDims:(NSUInteger)pane width:(NSUInteger)w height:(NSUInteger)h
+    NS_SWIFT_NAME(setPaneSurfaceDims(_:width:height:));
+
+/// Pane-indexed pointer routing.  Coordinates are in the SAME
+/// full-resolution film-pixel space -cameraSurfaceDimensions
+/// describes: RISE's Film dims are a scene-level singleton (imaging
+/// dims live on the `film` chunk, not per-camera -- see
+/// docs/SCENE_CONVENTIONS.md) shared by every pane regardless of which
+/// camera/vantage that pane shows, so the one existing dims accessor
+/// is correct for all four cells (see RISEViewportBridge.mm's N-up doc
+/// comment for the full reasoning and the C-ABI gap this works
+/// around).  -onPanePointerDown returns NO to mean "drop the gesture"
+/// (hidden pane / render-owns-scene) -- callers MUST swallow the
+/// matching Move/Up sequence for that physical gesture when Down
+/// returns NO, exactly like the single-viewport region-drag's
+/// `suppressPointerUntilUp` pattern.
+- (BOOL)onPanePointerDown:(NSUInteger)pane x:(double)x y:(double)y
+    NS_SWIFT_NAME(onPanePointerDown(_:x:y:));
+- (void)onPanePointerMove:(NSUInteger)pane x:(double)x y:(double)y
+    NS_SWIFT_NAME(onPanePointerMove(_:x:y:));
+- (void)onPanePointerUp:(NSUInteger)pane x:(double)x y:(double)y
+    NS_SWIFT_NAME(onPanePointerUp(_:x:y:));
+
+/// Per-pane refinement status -- same phase/scale contract as
+/// -refinementPhaseWithScaleDivisor:, scoped to `pane`.
+- (int)paneRefinementPhase:(NSUInteger)pane scaleDivisor:(unsigned int *)scaleDivisor
+    NS_SWIFT_NAME(paneRefinementPhase(_:scaleDivisor:));
+
+// -setPaneImageBlock:forPane: (panes 1-3 image stream) is declared
+// below, next to -setImageBlock:, because it takes the
+// RISEViewportImageBlock type typedef'd in that section.
 
 #pragma mark - Pointer events
 //
@@ -494,6 +620,14 @@ typedef void (^RISEViewportDirtyChangedBlock)(BOOL hasUnsavedChanges);
 typedef void (^RISEViewportImageBlock)(NSImage *image);
 
 - (void)setImageBlock:(nullable RISEViewportImageBlock)block;
+
+/// N-up (§7): live-preview image stream for panes 1-3 ONLY (pane 0
+/// keeps using -setImageBlock: above -- see RISEViewportBridge.mm's
+/// "N-up pane-0 sink" doc comment for why).  `pane` must be 1, 2, or 3;
+/// a call with pane==0 or an out-of-range pane is a no-op.  Same
+/// ~30Hz-throttled NSImage contract as -setImageBlock:.
+- (void)setPaneImageBlock:(nullable RISEViewportImageBlock)block forPane:(NSUInteger)pane
+    NS_SWIFT_NAME(setPaneImageBlock(_:forPane:));
 
 /// True if the live-preview rasterizer was successfully constructed
 /// against the loaded scene.  False means the controller is still in

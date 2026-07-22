@@ -317,6 +317,12 @@ static void TestLoadScenarioGates()
 	tryLoad( "empty_prompts.json",
 		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[]}",
 		"empty prompts array" );
+	tryLoad( "budget_fractional.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"],\"budgets\":{\"maxToolCalls\":1.5}}",
+		"fractional maxToolCalls" );
+	tryLoad( "budget_infinite.json",
+		"{\"id\":\"x\",\"title\":\"x\",\"scene\":{\"inline\":\"b\"},\"prompts\":[\"hi\"],\"budgets\":{\"maxWallMs\":1e999}}",
+		"non-finite maxWallMs" );
 
 	// Review-round P2: an id used in filesystem paths must be a bare token.
 	tryLoad( "traversal_id.json",
@@ -364,6 +370,12 @@ static void TestLoadScenarioGates()
 	tryLoad( "iv_after_zero.json",
 		std::string( ivHead ) + "[{\"afterToolCalls\":0,\"op\":\"param_edit\",\"target\":\"a\",\"param\":\"b\",\"value\":\"c\"}]}",
 		"intervention afterToolCalls < 1" );
+	tryLoad( "iv_after_fractional.json",
+		std::string( ivHead ) + "[{\"afterToolCalls\":1.5,\"op\":\"param_edit\",\"target\":\"a\",\"param\":\"b\",\"value\":\"c\"}]}",
+		"intervention afterToolCalls must be whole" );
+	tryLoad( "iv_after_infinite.json",
+		std::string( ivHead ) + "[{\"afterToolCalls\":1e999,\"op\":\"param_edit\",\"target\":\"a\",\"param\":\"b\",\"value\":\"c\"}]}",
+		"intervention afterToolCalls must be finite" );
 	tryLoad( "iv_bad_op.json",
 		std::string( ivHead ) + "[{\"afterToolCalls\":1,\"op\":\"remove_chunk\",\"target\":\"a\",\"param\":\"b\",\"value\":\"c\"}]}",
 		"intervention op other than param_edit" );

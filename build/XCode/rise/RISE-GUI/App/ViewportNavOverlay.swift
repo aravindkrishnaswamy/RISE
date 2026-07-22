@@ -17,6 +17,11 @@ import SwiftUI
 
 struct ViewportNavOverlay: View {
     let bridge: RISEViewportBridge
+    /// user-review P1-1: the pane this overlay is drawn on (0 in the single
+    /// viewport, the PRIMARY pane in N-up).  Every nav action targets THIS
+    /// pane via the bridge's pane-indexed twins, so a secondary primary is
+    /// moved -- not pane 0.  The unindexed bridge nav methods alias pane 0.
+    var pane: UInt = 0
     /// Bumped when a new preview frame arrives (camera may have moved), so the
     /// ball re-layouts to track the live view.  Reuses the viewport's gizmo
     /// refresh trigger.
@@ -80,7 +85,7 @@ struct ViewportNavOverlay: View {
             let idx = bridge.navGizmoNubAt(x: loc.x, y: loc.y)
             if idx >= 0, Int(idx) < nubs.count {
                 let n = nubs[Int(idx)]
-                _ = bridge.snapView(toAxis: n.axis, negative: n.negative)
+                _ = bridge.snapPaneView(pane, toAxis: n.axis, negative: n.negative)
                 reload()
             }
         }
@@ -92,20 +97,20 @@ struct ViewportNavOverlay: View {
     @ViewBuilder private var controls: some View {
         HStack(spacing: 6) {
             navButton(system: "house.fill", help: "Go to home view", enabled: homeSet) {
-                _ = bridge.goToHomeView(); reload()
+                _ = bridge.paneGoToHomeView(pane); reload()
             }
             navButton(system: "mappin.and.ellipse", help: "Set current view as home", enabled: true) {
-                _ = bridge.setHomeView(); reload()
+                _ = bridge.paneSetHomeView(pane); reload()
             }
             if freeFly {
                 navButton(system: "camera.badge.plus", help: "Stamp this view into a new camera", enabled: true) {
                     // Auto-named + dedup-suffixed by the core; the new camera
                     // becomes active. The outliner picks it up on its next poll.
-                    _ = bridge.stampViewToNewCamera("view_camera")
+                    _ = bridge.stampPaneViewToNewCamera(pane, proposedName: "view_camera")
                     reload()
                 }
                 navButton(system: "camera.fill", help: "Back to scene camera", enabled: true) {
-                    _ = bridge.exitFreeFly(); reload()
+                    _ = bridge.paneExitFreeFly(pane); reload()
                 }
             }
         }
@@ -139,7 +144,7 @@ struct ViewportNavOverlay: View {
         _ = bridge.refreshNavGizmo(centerX: center.x, centerY: center.y,
                                    ballRadius: ballRadius, nubRadius: nubRadius)
         nubs = bridge.navGizmoNubs
-        freeFly = bridge.freeFlyActive
+        freeFly = bridge.isPaneFreeFlyActive(pane)
         homeSet = bridge.hasHomeView
     }
 

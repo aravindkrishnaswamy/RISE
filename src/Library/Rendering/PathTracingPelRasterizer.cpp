@@ -42,6 +42,10 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
   PixelBasedRasterizerHelper( pCaster_ , frameStore),
   PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ , frameStore),
   pIntegrator( 0 ),
+	  mHasVariantTransportConfig( false ),
+	  mVariantMaxPathDepth( 128 ),
+	  mVariantIndirectOnly( false ),
+	  mVariantClayOverride( false ),
   pSMSPhotonMap( 0 ),
   mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
@@ -49,7 +53,44 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 		smsConfig,
 		stabilityConfig
 		);
-	pIntegrator->addref();
+}
+
+void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
+{
+	mHasVariantTransportConfig = true;
+	mVariantMaxPathDepth = n ? n : 128;
+	if( pIntegrator ) {
+		pIntegrator->SetMaxPathDepth( n );
+	}
+}
+
+void PathTracingPelRasterizer::SetIndirectOnly( bool b )
+{
+	mHasVariantTransportConfig = true;
+	mVariantIndirectOnly = b;
+	if( pIntegrator ) {
+		pIntegrator->SetIndirectOnly( b );
+	}
+}
+
+void PathTracingPelRasterizer::SetClayOverride( bool b )
+{
+	mHasVariantTransportConfig = true;
+	mVariantClayOverride = b;
+	if( pIntegrator ) {
+		pIntegrator->SetClayOverride( b );
+	}
+}
+
+void PathTracingPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+	PixelBasedPelRasterizer::PrepareRuntimeContext( rc );
+	if( mHasVariantTransportConfig ) {
+		rc.hasPathTracingVariantConfig = true;
+		rc.pathTracingMaxDepth = mVariantMaxPathDepth;
+		rc.pathTracingIndirectOnly = mVariantIndirectOnly;
+		rc.pathTracingClayOverride = mVariantClayOverride;
+	}
 }
 
 PathTracingPelRasterizer::~PathTracingPelRasterizer()

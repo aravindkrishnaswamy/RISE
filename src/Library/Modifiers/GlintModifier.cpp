@@ -16,37 +16,13 @@
 #include "GlintModifier.h"
 #include "../Utilities/math_utils.h"
 #include "../Utilities/Math3D/Math3D.h"
-#include <cstring>
+#include "../Utilities/FiniteMath.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace
 {
-	//! Volatile-laundered finiteness test — the ONLY formulation that
-	//! survives the production `-O3 -flto -ffast-math` build.  A plain
-	//! memcpy/union exponent test is DELETED by the optimizer: under
-	//! -ffinite-math-only clang tags double function parameters
-	//! nofpclass(nan inf), so a NaN argument is poison at the call
-	//! boundary and the check folds to "finite" (measured: a runtime-bit
-	//! NaN coverage rendered a fully-lit facet field WITH the plain
-	//! check compiled in, from fast-math and strict-FP callers alike).
-	//! Storing through a volatile double and re-loading is observable
-	//! and opaque to value-range analysis, so the exponent test then
-	//! operates on the real bits (probe-verified for this ctor from
-	//! both caller types).  Same pattern as IsFiniteOpaque
-	//! (SceneEditor/FilmIntrospection.cpp) and the ffast-math rule's
-	//! canonical detector; keep the parser's string-level rejection as
-	//! the loud first line (a parse error beats a silent no-op).
-	inline bool IsFiniteLaundered( RISE::Scalar v )
-	{
-		volatile double opaque = (double)v;
-		double real_v = opaque;
-		unsigned long long bits = 0;
-		std::memcpy( &bits, &real_v, sizeof( bits ) );
-		return ( bits & 0x7ff0000000000000ULL ) != 0x7ff0000000000000ULL;
-	}
-
 	//! Hard safety ceiling on the facet tilt (radians).  The Rayleigh
 	//! tail is unbounded; a facet tilted anywhere near the tangent
 	//! plane is un-physical for this model (real flakes lie roughly
@@ -82,13 +58,13 @@ GlintModifier::GlintModifier(
 {
 	// ANY non-finite parameter => force the modifier INERT via the
 	// canonical density=0 switch, decided on the RAW inputs with the
-	// laundered bit test (the member clamps above mangle NaN
+	// shared finite test (the member clamps above mangle NaN
 	// unpredictably under -ffast-math).  Belt to the parser's
 	// string-level suspenders: garbage can never render as glitter.
-	if( !IsFiniteLaundered( density_ ) || !IsFiniteLaundered( coverage_ ) ||
-		!IsFiniteLaundered( fill_ ) || !IsFiniteLaundered( spreadDeg_ ) ||
-		!IsFiniteLaundered( vScale_.x ) || !IsFiniteLaundered( vScale_.y ) || !IsFiniteLaundered( vScale_.z ) ||
-		!IsFiniteLaundered( vShift_.x ) || !IsFiniteLaundered( vShift_.y ) || !IsFiniteLaundered( vShift_.z ) )
+	if( !RISE::IsFiniteDouble( density_ ) || !RISE::IsFiniteDouble( coverage_ ) ||
+		!RISE::IsFiniteDouble( fill_ ) || !RISE::IsFiniteDouble( spreadDeg_ ) ||
+		!RISE::IsFiniteDouble( vScale_.x ) || !RISE::IsFiniteDouble( vScale_.y ) || !RISE::IsFiniteDouble( vScale_.z ) ||
+		!RISE::IsFiniteDouble( vShift_.x ) || !RISE::IsFiniteDouble( vShift_.y ) || !RISE::IsFiniteDouble( vShift_.z ) )
 	{
 		density = 0;
 	}

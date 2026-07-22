@@ -129,7 +129,7 @@ RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
                                           bool isProduction, bool isCancelling,
                                           double productionProgress,
                                           bool isProductionPaused = false,
-                                          const QString& viewportRenderMode = QStringLiteral("preview"))
+                                          bool viewportRenderModeWantsDenoise = true)
 {
     // Label policy (user feedback 2026-07-16, mirrors the Mac formatter):
     // the small tracked label shows ONLY when it adds information the
@@ -161,9 +161,13 @@ RefinementStatus ComputeRefinementStatus(int phase, unsigned int scaleDivisor,
     // Data view modes (normals/depth/facets/wireframe) never denoise --
     // InteractivePelRasterizer::ShouldDenoise is gated off while a
     // view-mode caster is installed -- so claiming DENOISED there would
-    // lie.  Mirrors RefinementStatusFormatter.swift's identical gate.
+    // lie.  BeautyVariant modes (deep_reflect/direct, GUI render modes
+    // P2a) DO genuinely denoise (their own ephemeral pipeline's fixed
+    // OIDN config), so the label keys off the registry's wantsDenoise
+    // flag rather than a hardcoded mode-name comparison.  Mirrors
+    // RefinementStatusFormatter.swift's identical gate.
     case 3: return { QStringLiteral("Polishing"),
-                     viewportRenderMode == QLatin1String("preview")
+                     viewportRenderModeWantsDenoise
                          ? QStringLiteral("DENOISED — NOT FINAL")
                          : QString(),
                      1.0 };
@@ -321,6 +325,10 @@ TopBar::TopBar(QWidget* parent)
         m_renderModeCombo->addItem(info.title);
         m_renderModeCombo->setItemData(idx, info.name, Qt::UserRole);
         m_renderModeCombo->setItemData(idx, info.question, Qt::ToolTipRole);
+        // P2a review fix: stash isVariant per item (Qt::UserRole + 1) so
+        // refreshRenderModeCombo() can gate m_xrayBtn's enabled state on the
+        // ACTIVE mode without a second registry round-trip per refresh.
+        m_renderModeCombo->setItemData(idx, info.isVariant, Qt::UserRole + 1);
     }
     m_renderModeCombo->setEnabled(false);   // no bridge yet -- refreshRenderModeCombo() re-enables on scene load
     connect(m_renderModeCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
@@ -669,9 +677,21 @@ void TopBar::pollRefinementState()
         m_refinementPhase = -1;
         m_refinementScaleDivisor = 1;
     } else {
+        // N-up multi-viewport (docs/gui/RENDER_MODES.md §7.5): the status
+        // line follows the PRIMARY pane's refinement state rather than
+        // always pane 0 -- for Single layout primaryPane() is always 0
+        // (§7.2's fallback rule), so this is byte-identical to the
+        // pre-N-up behaviour there; for N-up layouts it tracks whichever
+        // pane the user actually made primary.
+        int phase = -1;
         unsigned int sd = 1;
-        m_refinementPhase = m_bridge->refinementPhase(&sd);
-        m_refinementScaleDivisor = sd;
+        if (m_bridge->getPaneRefinementStatus(m_bridge->primaryPane(), &phase, &sd)) {
+            m_refinementPhase = phase;
+            m_refinementScaleDivisor = sd;
+        } else {
+            m_refinementPhase = -1;
+            m_refinementScaleDivisor = 1;
+        }
     }
     updateReadout();
     updateControlsEnabled();
@@ -736,7 +756,7 @@ void TopBar::updateReadout()
     const RefinementStatus s = ComputeRefinementStatus(
         m_refinementPhase, m_refinementScaleDivisor, isProduction, isCancelling, m_productionProgress,
         isProductionPaused,
-        m_bridge ? m_bridge->viewportRenderMode() : QStringLiteral("preview"));
+        m_bridge ? m_bridge->viewportRenderModeWantsDenoise() : true);
 
     m_statusRowLabel->setText(s.text);
     m_statusTagLabel->setText(s.label);
@@ -871,8 +891,16 @@ void TopBar::refreshRenderModeCombo()
     if (m_xrayBtn) {
         // X-ray applies to EVERY mode including the shaded preview
         // (caster-layer resolve, default ON; user decision 2026-07-17) --
-        // no data-mode gating.
-        const bool xrayEnabled = !disabled;
+        // no data-mode gating.  P2a review fix: EXCEPT the BeautyVariant
+        // rows (deep_reflect/direct) -- those drive a wholly separate
+        // ephemeral PT pipeline that never reads the x-ray flag/caster, so
+        // toggling it there would silently no-op.  Read the ACTIVE combo
+        // item's stashed isVariant flag (Qt::UserRole + 1, set once at
+        // construction) rather than re-querying the registry here.
+        const int activeIndex = m_renderModeCombo->currentIndex();
+        const bool activeIsVariant = activeIndex >= 0
+            && m_renderModeCombo->itemData(activeIndex, Qt::UserRole + 1).toBool();
+        const bool xrayEnabled = !disabled && !activeIsVariant;
         m_xrayBtn->setEnabled(xrayEnabled);
 
         // Re-read the CURRENT flag -- never assume the button's checked

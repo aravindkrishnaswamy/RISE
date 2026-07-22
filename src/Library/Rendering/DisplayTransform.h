@@ -57,6 +57,7 @@
 
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/FiniteMath.h"
 
 #include <algorithm>
 #include <cmath>
@@ -82,10 +83,10 @@ namespace RISE
 		//! same gate.
 		inline Scalar Sanitise( Scalar x )
 		{
-			// std::isfinite catches both NaN and +/-Inf; the
-			// !(x > 0) clause coerces -0 / negatives to 0 without
-			// branching on the sign bit.
-			return ( std::isfinite( x ) && x > Scalar( 0 ) ) ? x : Scalar( 0 );
+			// The finite predicate remains live under -ffast-math; the
+			// x > 0 clause coerces -0 / negatives to 0 without a sign-bit
+			// branch.
+			return ( RISE::IsFiniteDouble( x ) && x > Scalar( 0 ) ) ? x : Scalar( 0 );
 		}
 
 		//! Identity curve.  Clamps negatives / non-finite per the

@@ -34,6 +34,7 @@
 
 namespace RISE
 {
+	namespace Implementation { class CameraCommon; }
 	class IObjectPriv;
 	class IJob;
 
@@ -184,6 +185,18 @@ namespace RISE
 		//! independent of where the camera is positioned.  Lazily
 		//! computed on first use; cached thereafter.
 		Scalar SceneScale() const;
+
+		//! P3a slice 3 (N-up per-pane fly): the CANONICAL camera-op math --
+		//! orbit / pan / zoom / roll pixel-deltas onto a CameraCommon --
+		//! exposed so SceneEditController can apply the SAME transform to a
+		//! pane's realized standalone override camera that Apply() uses for
+		//! the scene camera.  Exposing the one canonical implementation
+		//! beats re-deriving the math (drift class); the definition stays
+		//! in SceneEditor.cpp.
+		static void ApplyCameraOpToCamera(
+			Implementation::CameraCommon& cam,
+			const SceneEdit& e,
+			Scalar sceneScale );
 
 		//! The undo/redo record.  Historically an input to round-trip
 		//! save (Phase 6 / Phase A byte-splice); since the Slice-6d

@@ -7560,48 +7560,84 @@ namespace RISE
 	}
 
 	// -------- View navigation (Tier 2 §4-5): non-destructive --------
+	//
+	// user-review P1-1: the UNINDEXED entries alias PANE 0 (the §7.4 contract:
+	// "existing calls = pane 0"), so legacy single-viewport clients keep
+	// mutating pane 0 regardless of which pane is primary.  The *Pane* twins
+	// below take an explicit pane index -- the N-up nav overlay (drawn on the
+	// primary pane) calls THOSE with the primary index.
 
 	bool RISE_API_SceneEditController_SnapViewToAxis(
 		SceneEditController* p, int axis, int negative )
 	{
 		if( !p ) return false;
-		return p->SnapViewToAxis( axis, negative != 0 );
+		return p->SnapViewToAxis( axis, negative != 0, /*pane=*/0 );
 	}
 
 	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p )
 	{
 		if( !p ) return false;
-		return p->EnterFreeFlyFromActiveCamera();
+		return p->EnterFreeFlyFromActiveCamera( /*pane=*/0 );
 	}
 
 	bool RISE_API_SceneEditController_ExitFreeFly( SceneEditController* p )
 	{
 		if( !p ) return false;
-		return p->ExitFreeFly();
+		return p->ExitFreeFly( /*pane=*/0 );
 	}
 
 	bool RISE_API_SceneEditController_IsFreeFlyActive( SceneEditController* p )
 	{
 		if( !p ) return false;
-		return p->IsFreeFlyActive();
+		return p->IsFreeFlyActive( /*pane=*/0 );
 	}
 
 	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p )
 	{
 		if( !p ) return false;
-		return p->SetHomeView();
+		return p->SetHomeView( /*pane=*/0 );
 	}
 
 	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p )
 	{
 		if( !p ) return false;
-		return p->GoToHomeView();
+		return p->GoToHomeView( /*pane=*/0 );
 	}
 
 	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p )
 	{
 		if( !p ) return false;
-		return p->HasHomeView();
+		return p->HasHomeView();   // home view is a single global bookmark -- no pane
+	}
+
+	// user-review P1-1: pane-indexed navigation twins (the N-up nav overlay
+	// targets its primary pane; PaneEnterFreeFly / PaneExitFreeFly already
+	// exist as the free-fly twins).
+	bool RISE_API_SceneEditController_SnapPaneViewToAxis(
+		SceneEditController* p, unsigned int pane, int axis, int negative )
+	{
+		// kViewportNavPrimary is an INTERNAL C++ default-argument sentinel;
+		// indexed C callers must never be able to spell it as a pane.
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->SnapViewToAxis( axis, negative != 0, pane );
+	}
+
+	bool RISE_API_SceneEditController_IsPaneFreeFlyActive( SceneEditController* p, unsigned int pane )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->IsFreeFlyActive( pane );
+	}
+
+	bool RISE_API_SceneEditController_PaneSetHomeView( SceneEditController* p, unsigned int pane )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->SetHomeView( pane );
+	}
+
+	bool RISE_API_SceneEditController_PaneGoToHomeView( SceneEditController* p, unsigned int pane )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->GoToHomeView( pane );
 	}
 
 	// -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) ----
@@ -7617,6 +7653,139 @@ namespace RISE
 	{
 		if( !p ) return "preview";
 		return p->GetViewportRenderMode();
+	}
+
+	bool RISE_API_SceneEditController_SetViewportLayout(
+		SceneEditController* p, int layout )
+	{
+		if( !p ) return false;
+		return p->SetViewportLayout( static_cast<SceneEditController::ViewportLayout>( layout ) );
+	}
+
+	bool RISE_API_SceneEditController_GetViewportLayout(
+		SceneEditController* p, int* out )
+	{
+		if( !p || !out ) return false;
+		*out = static_cast<int>( p->GetViewportLayout() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPrimaryPane(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->SetPrimaryPane( pane );
+	}
+
+	bool RISE_API_SceneEditController_GetPrimaryPane(
+		SceneEditController* p, unsigned int* out )
+	{
+		if( !p || !out ) return false;
+		*out = p->GetPrimaryPane();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPaneRenderMode(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneRenderMode( pane, name );
+	}
+
+	const char* RISE_API_SceneEditController_GetPaneRenderMode(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return "preview";
+		return p->GetPaneRenderMode( pane );
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerDown(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerDown( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerMove(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerMove( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerUp(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerUp( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_PaneEnterFreeFly(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->PaneEnterFreeFly( pane );
+	}
+
+	bool RISE_API_SceneEditController_PaneExitFreeFly(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->PaneExitFreeFly( pane );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneRefinementStatus(
+		SceneEditController* p, unsigned int pane, int* outPhase,
+		unsigned int* outScaleDivisor )
+	{
+		if( !p || !outPhase || !outScaleDivisor ) return false;
+		return p->GetPaneRefinementStatus( pane, *outPhase, *outScaleDivisor );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
+		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h )
+	{
+		if( !p ) return false;
+		return p->SetPaneSurfaceDims( pane, w, h );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneSink(
+		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink )
+	{
+		if( !p ) return false;
+		return p->SetPaneSink( pane, pSink );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->SetPaneVantageSceneCamera( pane );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneVantageNamedView( pane, name );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneVantage(
+		SceneEditController* p, unsigned int pane, int* outKind,
+		char* outNamedView, unsigned int cap )
+	{
+		if( !p || !outKind || !outNamedView || cap == 0 ) return false;
+		SceneEditController::PaneVantageKind kind;
+		String namedView;
+		if( !p->GetPaneVantage( pane, kind, namedView ) ) return false;
+		*outKind = static_cast<int>( kind );
+		// NUL-terminated copy, truncating to cap-1 (house C-ABI string shape).
+		unsigned int n = 0;
+		for( ; n + 1 < cap && n < namedView.size(); ++n ) {
+			outNamedView[n] = namedView.c_str()[n];
+		}
+		outNamedView[n] = '\0';
+		return true;
 	}
 
 	unsigned int RISE_API_GetViewportRenderModeCount()
@@ -7641,6 +7810,30 @@ namespace RISE
 		if( title )              *title              = info.title;
 		if( question )           *question           = info.question;
 		if( viewportSelectable ) *viewportSelectable = info.viewportSelectable;
+		return true;
+	}
+
+	bool RISE_API_GetViewportRenderModeWantsDenoise(
+		unsigned int index, bool* out )
+	{
+		if( !out ) return false;
+		unsigned int count = 0;
+		const Implementation::ViewportRenderModeInfo* modes =
+			Implementation::GetViewportRenderModes( count );
+		if( !modes || index >= count ) return false;
+		*out = modes[index].wantsDenoise;
+		return true;
+	}
+
+	bool RISE_API_GetViewportRenderModeIsVariant(
+		unsigned int index, bool* out )
+	{
+		if( !out ) return false;
+		unsigned int count = 0;
+		const Implementation::ViewportRenderModeInfo* modes =
+			Implementation::GetViewportRenderModes( count );
+		if( !modes || index >= count ) return false;
+		*out = Implementation::IsBeautyVariantMode( modes[index].mode );
 		return true;
 	}
 
@@ -8193,7 +8386,19 @@ namespace RISE
 	{
 		if( !p || !outName || outLen == 0 ) return false;
 		const String prop = String( proposedName ? proposedName : "" );
-		return p->StampViewToNewCamera( prop, outName, outLen );
+		return p->StampViewToNewCamera( prop, outName, outLen, /*pane=*/0 );   // P1-1: pane-0 alias
+	}
+
+	// user-review P1-1: pane-indexed stamp (the N-up nav overlay stamps the
+	// PRIMARY pane's current free-fly view).
+	bool RISE_API_SceneEditController_PaneStampViewToNewCamera(
+		SceneEditController* p, unsigned int pane,
+		const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->StampViewToNewCamera( prop, outName, outLen, pane );
 	}
 
 	// -------- Named Views (Tier 2 §3) --------

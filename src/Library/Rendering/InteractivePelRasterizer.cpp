@@ -18,6 +18,8 @@
 
 #include "pch.h"
 #include "InteractivePelRasterizer.h"
+#include "PathTracingPelRasterizer.h"
+#include "../Shaders/PathTracingShaderOp.h"
 #include "BlockRasterizeSequence.h"
 #include "RayCaster.h"
 #include "MortonRasterizeSequence.h"
@@ -34,6 +36,14 @@
 #include <cstring>
 #include "../Interfaces/IEnumCallback.h"
 #include "../Interfaces/IObjectManager.h"
+// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): CreateBeautyVariantPipeline
+// builds a production-class PT pipeline directly (mirroring
+// Job::SetPathTracingPelRasterizer's minimal path) -- these config structs are
+// its default-constructed ("disabled"/"off") arguments.
+#include "../Utilities/PathGuidingField.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Utilities/StabilityConfig.h"
+#include "../Utilities/OidnConfig.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1309,19 +1319,42 @@ namespace {
 const RISE::Implementation::ViewportRenderModeInfo kViewportRenderModes[] =
 {
 	{ RISE::Implementation::ViewportRenderMode::Preview,   "preview",   "Shaded Preview",
-	  "What does the scene roughly look like?",       true,  true,  false },
+	  "What does the scene roughly look like?",       true,  true,  false, 0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::ObjectMap, "objectmap", "Object Map",
-	  "Which object is where?",                       false, false, false },
+	  "Which object is where?",                       false, false, false, 0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Normals,   "normals",   "Normals",
-	  "Which way do surfaces face?",                  false, true,  true  },
+	  "Which way do surfaces face?",                  false, true,  true,  0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Depth,     "depth",     "Depth",
-	  "How far away is everything?",                  false, true,  true  },
+	  "How far away is everything?",                  false, true,  true,  0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Facets,    "facets",    "Facets",
-	  "What does the actual tessellation look like?", false, true,  true  },
+	  "What does the actual tessellation look like?", false, true,  true,  0, 0, 0, false, false },
 	{ RISE::Implementation::ViewportRenderMode::Wireframe, "wireframe", "Wireframe",
-	  "Where are the polygon edges?",                 false, true,  true  },
+	  "Where are the polygon edges?",                 false, true,  true,  0, 0, 0, false, false },
+	// GUI render modes P2a (docs/gui/RENDER_MODES.md §3 Transport, §6): the
+	// BeautyVariant rows.  casterFactory=false -- these route through
+	// CreateBeautyVariantPipeline, not CreateInteractiveViewModeCaster.
+	{ RISE::Implementation::ViewportRenderMode::DeepReflect, "deep_reflect", "Deep Reflections",
+	  "What do reflections and refractions resolve to?", true, true, false, 4, 24, 16, false, false },
+	{ RISE::Implementation::ViewportRenderMode::Direct,      "direct",       "Direct Lighting",
+	  "What does direct lighting alone contribute?",      true, true, false, 2, 1,  8,  false, false },
+	// GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting, §9 P2b): the
+	// second pair of BeautyVariant rows -- lighting-diagnostic modes built on
+	// the SAME CreateBeautyVariantPipeline factory, distinguished only by the
+	// two trailing variantIndirectOnly/variantClayOverride flags, which
+	// CreateBeautyVariantPipeline stamps onto the PathTracingIntegrator via
+	// SetIndirectOnly/SetClayOverride right after SetMaxPathDepth.
+	{ RISE::Implementation::ViewportRenderMode::Indirect,    "indirect",     "Indirect Only",
+	  "What does indirect light alone contribute?",       true, true, false, 2, 16, 12, true,  false },
+	{ RISE::Implementation::ViewportRenderMode::ClayLights,  "clay_lights",  "Clay + Lights",
+	  "Is the lighting right, independent of materials?", true, true, false, 2, 12, 12, false, true  },
 };
 
+}
+
+bool RISE::Implementation::IsBeautyVariantMode( ViewportRenderMode mode )
+{
+	const ViewportRenderModeInfo* info = FindViewportRenderModeInfo( mode );
+	return info && info->variantSamplesPerPass > 0;
 }
 
 const RISE::Implementation::ViewportRenderModeInfo*
@@ -1441,6 +1474,309 @@ bool RISE::Implementation::CreateInteractiveViewModePipeline(
 	InteractivePelRasterizer* interactive = new InteractivePelRasterizer( pCaster, cfg );
 
 	*ppRasterizer = interactive;
+	*ppCaster = pCaster;
+	return true;
+}
+
+// ---------------------------------------------------------------------
+// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the BeautyVariant
+// pipeline factory.
+// ---------------------------------------------------------------------
+
+namespace {
+
+
+//! Owning default shader for the beauty-variant caster: a real
+//! path-tracing StandardShader PLUS the PathTracingShaderOp it runs.
+//!
+//! OWNERSHIP CONTRACT (verified against StandardShader.cpp, not assumed --
+//! this exact assumption is what crashed the first cut of the P1-b fix):
+//! `StandardShader` BORROWS its shaderops.  Its ctor copies the raw
+//! pointer vector without addref'ing, and its dtor releases nothing --
+//! in a normal Job the shaderop MANAGER owns the ops and outlives every
+//! shader built over them.  A standalone construction therefore has to
+//! provide that owner itself, or the op dies at the construction site and
+//! `StandardShader::Shade` dereferences a dangling pointer.
+//!
+//! This wrapper is that owner: it holds a reference to BOTH the inner
+//! shader and the op, forwards shading to the inner shader, and releases
+//! both in its dtor (inner first -- it borrows the op).  The ray caster
+//! addrefs THIS object, so the whole trio dies exactly when the caster
+//! does.
+class BeautyVariantDefaultShader :
+	public IShader,
+	public Reference
+{
+public:
+	//! Returns null if either sub-object could not be created.
+	static BeautyVariantDefaultShader* Create()
+	{
+		IShaderOp* pOp = 0;
+		RISE_API_CreatePathTracingShaderOp( &pOp, /*smsEnabled*/false,
+			/*smsMaxIterations*/0, /*smsThreshold*/0.0,
+			/*smsMaxChainDepth*/0, /*smsBiased*/false );
+		if( !pOp ) {
+			return 0;
+		}
+		std::vector<IShaderOp*> ops;
+		ops.push_back( pOp );
+		IShader* pInner = 0;
+		RISE_API_CreateStandardShader( &pInner, ops );
+		if( !pInner ) {
+			pOp->release();
+			return 0;
+		}
+		BeautyVariantDefaultShader* pWrapper = new BeautyVariantDefaultShader( pInner, pOp );
+		// review-p3 P3 fix: this wrapper is Reference-counted like every
+		// other allocation here (pOp/pInner are already tracked by their
+		// own RISE_API_Create* factories above) -- without a matching
+		// PrintNew, Reference::release's unconditional PrintDelete finds
+		// no matching allocation under LOG_TRACK_MEMORY and prints a
+		// spurious "Specified Allocation does not exist!" on every
+		// teardown, polluting leak reports.
+		GlobalLog()->PrintNew( pWrapper, __FILE__, __LINE__, "beauty-variant default shader" );
+		return pWrapper;
+	}
+
+	//! GUI render modes P2c fix: forwarding setters onto the wrapped
+	//! PathTracingShaderOp (the concrete type behind the IShaderOp* built
+	//! via RISE_API_CreatePathTracingShaderOp above), so
+	//! CreateBeautyVariantPipeline can stamp the SAME variant-mode config
+	//! on the SSS continuation's integrator that it stamps on the main
+	//! rasterizer's.  pPTOp is null only if the RISE_API factory ever
+	//! returns a different concrete type (defensive; it doesn't today).
+	void SetMaxPathDepth( unsigned int n ) const
+	{
+		if( pPTOp ) { pPTOp->SetMaxPathDepth( n ); }
+	}
+	void SetIndirectOnly( bool b ) const
+	{
+		if( pPTOp ) { pPTOp->SetIndirectOnly( b ); }
+	}
+	void SetClayOverride( bool b ) const
+	{
+		if( pPTOp ) { pPTOp->SetClayOverride( b ); }
+	}
+
+	void Shade( const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack& ior_stack ) const override
+	{
+		pInner->Shade( rc, ri, caster, rs, c, ior_stack );
+	}
+
+	Scalar ShadeNM( const RuntimeContext& rc,
+					const RayIntersection& ri,
+					const IRayCaster& caster,
+					const IRayCaster::RAY_STATE& rs,
+					const Scalar nm,
+					const IORStack& ior_stack ) const override
+	{
+		return pInner->ShadeNM( rc, ri, caster, rs, nm, ior_stack );
+	}
+
+	// review-p3 P2-b: this is a TRANSPARENT decorator over pInner (a real
+	// StandardShader) -- every IShader virtual must be forwarded, not just
+	// the ones the P1-b fix happened to exercise.  ShadeHWSS has a non-pure
+	// default implementation on IShader (a per-wavelength ShadeNM loop), so
+	// omitting the override here compiles cleanly and is silently WRONG:
+	// StandardShader overrides ShadeHWSS to route through
+	// PerformOperationHWSS (its real HWSS transport path, distinct from
+	// looping ShadeNM), and RayCaster::CastRayHWSS calls
+	// SelectShader(ri).ShadeHWSS -- so without this forward, any
+	// caster-dispatched HWSS continuation through this wrapper (BSSRDF /
+	// SSS on an object with no explicit per-object shader, under an HWSS
+	// rasterizer) would silently fall back to the base class's per-
+	// wavelength loop instead of pInner's real HWSS transport.  Latent
+	// today (CreateBeautyVariantPipeline only builds a Pel rasterizer), but
+	// a decorator that skips a virtual is a landmine for the next caller.
+	void ShadeHWSS( const RuntimeContext& rc,
+					 const RayIntersection& ri,
+					 const IRayCaster& caster,
+					 const IRayCaster::RAY_STATE& rs,
+					 Scalar c[SampledWavelengths::N],
+					 SampledWavelengths& swl,
+					 const IORStack& ior_stack ) const override
+	{
+		pInner->ShadeHWSS( rc, ri, caster, rs, c, swl, ior_stack );
+	}
+
+	void ResetRuntimeData() const override
+	{
+		pInner->ResetRuntimeData();
+	}
+
+protected:
+	~BeautyVariantDefaultShader() override
+	{
+		// Inner shader first: it borrows the op.
+		safe_release( pInner );
+		safe_release( pOp );
+	}
+
+private:
+	BeautyVariantDefaultShader( IShader* inner, IShaderOp* op )
+	: pInner( inner ), pOp( op ),
+	  pPTOp( dynamic_cast<PathTracingShaderOp*>( op ) ) {}
+
+	IShader*             pInner;
+	IShaderOp*           pOp;
+	PathTracingShaderOp* pPTOp;	///< Borrowed alias of pOp's concrete type; not separately ref-counted.
+};
+
+}
+
+bool RISE::Implementation::CreateBeautyVariantPipeline(
+	ViewportRenderMode mode,
+	IRasterizer** ppRasterizer,
+	IRayCaster** ppCaster,
+	IShader* pDefaultShader )
+{
+	if( ppRasterizer ) {
+		*ppRasterizer = 0;
+	}
+	if( ppCaster ) {
+		*ppCaster = 0;
+	}
+	if( !ppRasterizer || !ppCaster ) {
+		return false;
+	}
+	if( !IsBeautyVariantMode( mode ) ) {
+		return false;
+	}
+	const ViewportRenderModeInfo* info = FindViewportRenderModeInfo( mode );
+	if( !info ) {
+		return false;
+	}
+
+	// Minimal production-real caster -- mirrors Job::SetPathTracingPelRasterizer's
+	// caster construction: seeRadianceMap=true, showLuminaires=true.  `maxR`
+	// here is a harmless SSS/BSSRDF recursion cap (RayCaster::CastRay's
+	// nMaxRecursions), NOT the PT transport depth limit -- reusing
+	// variantMaxBounces for it is a convenient (and harmless) shared value,
+	// not the mechanism that bounds bounce depth.  The REAL cap is stamped
+	// below via PathTracingPelRasterizer::SetMaxPathDepth (P2a fix -- see
+	// PathTracingIntegrator::SetMaxPathDepth's doc).  Not the
+	// InteractiveMaterialPreviewRayCaster subclass -- a PLAIN RayCaster, so
+	// shading resolves through each object's own real IMaterial exactly like
+	// a production render.
+	//
+	// P1-b fix: prefer the caller-supplied production default shader (see
+	// pDefaultShader's doc) -- it is a BORROWED reference (not addref'd by
+	// us; RISE_API_CreateRayCaster below addrefs it internally, matching
+	// Job::SetPathTracingPelRasterizer's own usage of a shader-manager
+	// lookup).  Only build (and own) the local placeholder when the caller
+	// passes null.
+	// When the caller supplies nothing, build a REAL path-tracing default
+	// shader (a StandardShader over a PathTracingShaderOp -- exactly what a
+	// scene's own `standard_shader { shaderop DefaultPathTracing }` is), NOT
+	// an all-black placeholder: `RayCaster::SelectShader` hands this default
+	// to every object WITHOUT an explicit per-object shader, and the BSSRDF /
+	// random-walk-SSS continuations DO go through `caster.CastRay`, so a
+	// zero-output default silently blackens their energy (external review
+	// P1-b).  SMS off here, matching the variant rasterizer's own config.
+	IShader* pOwnedShader = 0;
+	BeautyVariantDefaultShader* pOwnedBVDefault = 0;
+	if( !pDefaultShader ) {
+		pOwnedBVDefault = BeautyVariantDefaultShader::Create();
+		if( !pOwnedBVDefault ) {
+			return false;
+		}
+		pOwnedShader = pOwnedBVDefault;
+		// GUI render modes P2c fix (review-p2c P2-c-ii): stamp the SAME
+		// variant-mode config onto the SSS continuation's integrator that
+		// gets stamped onto the main rasterizer's below -- see
+		// BeautyVariantDefaultShader's forwarding setters and
+		// PathTracingShaderOp::SetMaxPathDepth's doc.  Must happen while we
+		// still hold pOwnedBVDefault (before the safe_release just below);
+		// RISE_API_CreateRayCaster addrefs the shader internally so the
+		// object survives, but calling through an already-released local
+		// pointer is the wrong idiom even when it happens to be safe.
+		// When the caller supplies its own pDefaultShader instead, we have
+		// no concrete type to reach into -- that shader's SSS continuation
+		// will NOT honor these mode settings; this is a known, deliberate
+		// limitation (documented on pDefaultShader's own doc below) rather
+		// than a silent inconsistency.
+		pOwnedBVDefault->SetMaxPathDepth( info->variantMaxBounces );
+		pOwnedBVDefault->SetIndirectOnly( info->variantIndirectOnly );
+		pOwnedBVDefault->SetClayOverride( info->variantClayOverride );
+	}
+	IShader* pShader = pDefaultShader ? pDefaultShader : pOwnedShader;
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, /*seeRadianceMap*/true, info->variantMaxBounces, *pShader, /*showLuminaires*/true );
+	safe_release( pOwnedShader );
+	if( !pCaster ) {
+		return false;
+	}
+
+	// Multijittered sampler at the mode's fixed spp + a box reconstruction
+	// filter -- mirrors GetSamplingAndFilterElements' "multijittered"/"box"
+	// branches (Job.cpp) at unit kernel dims (SetNumSamples supplies the
+	// actual count).
+	ISampling2D* pSampler = 0;
+	RISE_API_CreateMultiJitteredSampling2D( &pSampler, 1.0, 1.0 );
+	if( pSampler ) {
+		pSampler->SetNumSamples( info->variantSamplesPerPass );
+	}
+	IPixelFilter* pFilter = 0;
+	RISE_API_CreateBoxPixelFilter( &pFilter, 1.0, 1.0 );
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pSampler, pFilter,
+		/*smsEnabled*/false, /*smsMaxIterations*/0, /*smsThreshold*/0.0, /*smsMaxChainDepth*/0,
+		/*smsBiased*/false, /*smsBernoulliTrials*/0, /*smsMultiTrials*/1, /*smsPhotonCount*/0,
+		/*smsTwoStage*/false, /*smsUseLevenbergMarquardt*/false, SMSSeedingMode::Snell, /*smsTargetBounces*/0,
+		/*oidnDenoise*/true, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
+		PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), /*useZSobol*/false );
+
+	safe_release( pSampler );
+	safe_release( pFilter );
+
+	if( !pRaster ) {
+		safe_release( pCaster );
+		return false;
+	}
+
+	// GUI render modes P2a fix (docs/gui/RENDER_MODES.md §6): the caster's
+	// `maxR` above is a harmless recursion cap on the SSS/BSSRDF sub-path
+	// (RayCaster::CastRay's nMaxRecursions check) -- it does NOT bound the PT
+	// main loop's bounce depth, which is iterative (not recursive) and used to
+	// be hardcoded to 128 regardless of `maxR`.  Stamp variantMaxBounces onto
+	// the REAL cap now that PathTracingIntegrator exposes one (n==1 for
+	// `direct` means camera-hit + NEE only, no continuation bounce -- see
+	// PathTracingIntegrator::SetMaxPathDepth's doc for the exact mapping).
+	{
+		// dynamic_cast, not static_cast: IRasterizer is a virtual base
+		// (PathTracingPelRasterizer multiply-inherits through
+		// PixelBasedRasterizerHelper / PixelBasedPelRasterizer), so a
+		// static downcast through it doesn't compile.  The factory above
+		// always returns a PathTracingPelRasterizer* on success -- this
+		// is a defensive check, not an expected-null path.
+		PathTracingPelRasterizer* pPT = dynamic_cast<PathTracingPelRasterizer*>( pRaster );
+		if( pPT ) {
+			pPT->SetMaxPathDepth( info->variantMaxBounces );
+			// GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting):
+			// stamp the two lighting-diagnostic flags.  False for every row
+			// except Indirect/ClayLights respectively, so deep_reflect/direct
+			// stay byte-identical (both flags default false on the
+			// PathTracingIntegrator, and these calls are no-ops for them).
+			pPT->SetIndirectOnly( info->variantIndirectOnly );
+			pPT->SetClayOverride( info->variantClayOverride );
+		}
+	}
+
+	// `pCaster` is NOT released here -- unlike Job::SetPathTracingPelRasterizer
+	// (which discards its own local ref once the rasterizer has addref'd it,
+	// because Job never hands the caster pointer back to anyone), this
+	// factory RETURNS pCaster as an owning reference via `*ppCaster`, exactly
+	// like CreateInteractiveMaterialPreviewPipeline / CreateInteractiveObjectMapPipeline /
+	// CreateInteractiveViewModePipeline above: the rasterizer holds its OWN
+	// addref'd reference internally, so the caller's ref (this one) and the
+	// rasterizer's internal one are independent and both must be released.
+	*ppRasterizer = pRaster;
 	*ppCaster = pCaster;
 	return true;
 }

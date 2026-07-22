@@ -139,14 +139,15 @@ namespace RISE
 					props, std::vector<std::string>() );
 			}
 
-			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §8): build the
-			//! `mode` = "normals"|"depth"|"facets"|"wireframe" portion of the
-			//! render tool's `mode` description FROM
-			//! Implementation::GetViewportRenderModes -- filtered to
-			//! `casterFactory` entries, each rendered as `"name" (question)` --
-			//! so the wording can never drift from the registry the C-ABI, both
-			//! GUI dropdowns, and AgentRpc.cpp's mode parser all share (single
-			//! source of truth, docs/gui/RENDER_MODES.md §4).
+			//! GUI render modes P1+P2a (docs/gui/RENDER_MODES.md §8): build
+			//! the `mode` = "normals"|"depth"|"facets"|"wireframe"|
+			//! "deep_reflect"|"direct" portion of the render tool's `mode`
+			//! description FROM Implementation::GetViewportRenderModes --
+			//! filtered to `casterFactory` OR BeautyVariant entries, each
+			//! rendered as `"name" (question)` -- so the wording can never
+			//! drift from the registry the C-ABI, both GUI dropdowns, and
+			//! AgentRpc.cpp's mode parser all share (single source of truth,
+			//! docs/gui/RENDER_MODES.md §4).
 			std::string DescribeViewModes()
 			{
 				unsigned int modeCount = 0;
@@ -155,7 +156,9 @@ namespace RISE
 				std::string out;
 				bool first = true;
 				for( unsigned int i = 0; i < modeCount; ++i ) {
-					if( !modes[i].casterFactory ) continue;
+					const bool agentVisible = modes[i].casterFactory
+						|| Implementation::IsBeautyVariantMode( modes[i].mode );
+					if( !agentVisible ) continue;
 					if( !first ) out += ", ";
 					first = false;
 					out += "\"";
@@ -451,12 +454,16 @@ namespace RISE
 					props.set( "pinned", BoolProp( "OPTIONAL, default false. When true, this render cannot be silently superseded by a later render submission while it is in flight (it still responds to an explicit cancel or teardown) -- meaningful only against a live in-app GUI session's controller; has no effect in headless `rise --agent-stdio`." ) );
 					props.set( "quality", StringProp( "OPTIONAL, \"draft\" or \"production\" (default \"production\" -- today's exact behaviour). \"draft\" renders through a wholly SEPARATE, cheap studio-preview pipeline (the SAME fixed preview shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting entirely -- geometry, composition, and camera framing are representative; materials, lighting, exposure, and colour are NOT. NEVER judge materials/lighting/exposure/colour from a draft image -- use quality:\"production\" (or read_viewport) for that. A draft render CAPS samples at 4 regardless of the requested `samples` value. Check the result's `renderMode` field (\"production\"/\"draft\") to see which pipeline actually ran -- `integrator` always names the head's active PRODUCTION rasterizer regardless of `quality`, so it is NOT the field to check for this." ) );
 					props.set( "mode", StringProp( std::string(
-						"OPTIONAL, \"beauty\" (default), \"objectmap\", or one of the view-mode diagnostic names below. "
+						"OPTIONAL, \"beauty\" (default), \"objectmap\", or one of the view-mode names below. "
 						"\"objectmap\" renders a flat per-object IDENTITY segmentation -- each scene object painted a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about WHICH object is at WHICH pixel and how much of the frame each covers (occlusion, placement, framing). IMPORTANT: read the objectmap image at NATIVE size -- do NOT pass read_image's maxEdge, since box-downscaling blends the identity colours and corrupts colorHex matching. "
-						"The view-mode names, each a single-pass false-colour diagnostic render (no `legend`, unlike objectmap): " ) + DescribeViewModes() + std::string(
-						". `quality` and `samples` are IGNORED under objectmap or any view mode (each has exactly one fidelity: 1 sample/pixel). Check the result's `renderMode` field to confirm which one actually ran -- it echoes back the exact mode name (e.g. \"normals\"), distinguishing it from \"objectmap\"/\"draft\"/\"production\". Orthogonal to `quality`: these modes are about geometry/segmentation, draft is about cheap studio shading. Known limitation (wireframe): triangle-mesh edges only -- analytic primitives (sphere/box/SDF) and unmeshed geometry render as dim facet shading with no lines, which is correct behaviour, not a bug. Known limitation (depth): brightness is normalized PER RENDER to the VISIBLE hit-distance range in that frame (auto-calibrated -- a wide shot and a close-up of the same scene use DIFFERENT brightness scales, so never compare depth renders across two different camera framings as if they shared a scale), self-calibrating within a single render call, falling back to the scene's bounding-box diagonal only for a degenerate/empty scene. INSTANCE NAMES (objectmap only): a generator-synthesized legend name (e.g. \"grid[0,1]\" from an instance_array) identifies the instance in the map but is NOT a CST chunk -- to EDIT it, target the GENERATOR chunk (strip the \"[i,j]\" suffix, e.g. \"grid\"), since propose_patch/remove_chunk on the instance name will fail." ) ) );
+						"The view-mode names (no `legend`, unlike objectmap): " ) + DescribeViewModes() + std::string(
+						". Two KINDS of view mode: \"normals\"/\"depth\"/\"facets\"/\"wireframe\" are single-pass FALSE-COLOUR diagnostics (exactly 1 sample/pixel, no scene lighting); \"deep_reflect\"/\"direct\"/\"indirect\"/\"clay_lights\" are REAL production-class path-traced renders (BeautyVariant modes) at a FIXED reduced resolution and a FIXED higher sample count (deep_reflect: quarter-res, 16 spp, 24 bounces -- use it to see what reflections/refractions in glass/metal/water actually resolve to; direct: half-res, 8 spp, direct lighting only, no indirect bounces -- use it to check whether the LIGHTING alone looks right independent of indirect bounce; indirect: half-res, 12 spp, 16 bounces, INDIRECT light only -- the direct/emission contribution at the camera-visible vertex is suppressed, so use it to see what bounce light alone contributes; clay_lights: half-res, 12 spp, 12 bounces, every surface's reflectance substituted for a shared neutral clay material while real lights/GI stay untouched -- use it to check whether the LIGHTING is right independent of materials/texture). `quality` and `samples` are IGNORED under objectmap or ANY view mode (each has a FIXED fidelity, diagnostic or production) -- check the result's `effectiveSamples` field for the actual spp used. Check the result's `renderMode` field to confirm which one actually ran -- it echoes back the exact mode name (e.g. \"normals\", \"deep_reflect\"), distinguishing it from \"objectmap\"/\"draft\"/\"production\". Orthogonal to `quality`: these modes are about geometry/segmentation/transport, draft is about cheap studio shading. Known limitation (wireframe): triangle-mesh edges only -- analytic primitives (sphere/box/SDF) and unmeshed geometry render as dim facet shading with no lines, which is correct behaviour, not a bug. Known limitation (depth): brightness is normalized PER RENDER to the VISIBLE hit-distance range in that frame (auto-calibrated -- a wide shot and a close-up of the same scene use DIFFERENT brightness scales, so never compare depth renders across two different camera framings as if they shared a scale), self-calibrating within a single render call, falling back to the scene's bounding-box diagonal only for a degenerate/empty scene. INSTANCE NAMES (objectmap only): a generator-synthesized legend name (e.g. \"grid[0,1]\" from an instance_array) identifies the instance in the map but is NOT a CST chunk -- to EDIT it, target the GENERATOR chunk (strip the \"[i,j]\" suffix, e.g. \"grid\"), since propose_patch/remove_chunk on the instance name will fail." ) ) );
 					props.set( "xray", BoolProp(
-						"OPTIONAL, default TRUE. ONLY meaningful when `mode` is one of the view-mode diagnostics (normals/depth/facets/wireframe) -- resolves the ray THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit, following a STRAIGHT LINE with NO refraction bending (deliberately an x-ray, not an optics simulation), up to 16 surfaces skipped. On by default -- a view-mode render sees through glass and other transparent geometry to what's underneath/inside it (e.g. mode:\"depth\" or mode:\"facets\" showing the mechanism under a crystal/cover with no extra argument needed). Pass xray:false to inspect the transmissive surface itself instead. If the ray never reaches an opaque surface after 16 skips, the LAST transmissive surface is shown instead of a black hole -- an honest partial answer. Silently IGNORED under mode:\"beauty\"/\"objectmap\" (noted in the result message)." ) );
+						"OPTIONAL, default TRUE. ONLY meaningful when `mode` is one of the FALSE-COLOUR diagnostics (normals/depth/facets/wireframe) -- resolves the ray THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit, following a STRAIGHT LINE with NO refraction bending (deliberately an x-ray, not an optics simulation), up to 16 surfaces skipped. On by default -- a view-mode render sees through glass and other transparent geometry to what's underneath/inside it (e.g. mode:\"depth\" or mode:\"facets\" showing the mechanism under a crystal/cover with no extra argument needed). Pass xray:false to inspect the transmissive surface itself instead. If the ray never reaches an opaque surface after 16 skips, the LAST transmissive surface is shown instead of a black hole -- an honest partial answer. Silently IGNORED (honestly noted) under mode:\"beauty\"/\"objectmap\" or any production-transport BeautyVariant view mode (deep_reflect/direct/indirect/clay_lights -- skipping through glass would defeat their whole purpose)." ) );
+					props.set( "view", StringProp(
+						"OPTIONAL name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with EVERY `mode` above. Equivalent to transferring the full shared pose (location, lookat, up, Euler orientation, target orientation) plus a pinhole FOV, by name instead of raw numbers -- if both are supplied, `view` wins. PINHOLE-ONLY: the override cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (`ok:false`) naming the unsupported type rather than silently rendering with the active camera's optics. An ONB-style active camera that cannot round-trip this pose also fails loudly. An unresolvable name likewise FAILS with the available-name list in `message`. Use this to compare the SAME render mode from several saved angles without re-deriving camera math each time." ) );
+					props.set( "light", StringProp(
+						"OPTIONAL name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting (not a dim/approximate preview of it). Valid with mode:\"beauty\" (the default) and the four production-transport BeautyVariant view modes (deep_reflect/direct/indirect/clay_lights); silently IGNORED (honestly noted in `message`) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:\"draft\" -- none of those evaluate scene lighting at all. An unresolvable name FAILS the render (`ok:false`) with the available-name list in `message`, same contract as an unresolvable `view`. Use this to check one light's contribution in isolation (shadow shape, colour, falloff) without the others visually competing for attention." ) );
 					tools.push_back( MakeTool( "render",
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
@@ -571,7 +578,14 @@ namespace RISE
 						"(it just copies the most recent interactive frame), so it is the cheapest "
 						"way to observe what the user sees. Returns an MCP image content block "
 						"(inline PNG) PLUS a text block with {available,reason,png_base64,byteLength,"
-						"width,height}. When `available` is false there is no image: `reason` is "
+						"width,height} plus, when a live viewport exists, `paneSet` -- the N-up "
+						"multi-viewport introspection {layout(0 Single/1 TwoH/2 OnePlusTwo/3 Quad),"
+						"primary,sourcePane,panes[4]{visible,mode,vantageKind(0 SceneCamera/1 FreeFly/"
+						"2 NamedView),namedView}}. `sourcePane` is WHICH pane's pixels the PNG holds "
+						"(the last-rendered pane -- in a multi-pane layout this is NOT necessarily the "
+						"primary or pane 0), so always check it before reasoning about a specific "
+						"pane's content. The pane set is READ-ONLY by design -- there is no agent "
+						"control of layout or panes. When `available` is false there is no image: `reason` is "
 						"\"no_controller\" (this session has no live GUI viewport -- e.g. a headless "
 						"run) or \"no_frame_yet\" (the viewport exists but has not rendered a frame "
 						"yet). available:false is a normal result, not an error -- do not retry "

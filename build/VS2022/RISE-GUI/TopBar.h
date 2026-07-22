@@ -208,7 +208,12 @@ private:
     /// the identical render-owns-scene gate plus the identical
     /// controller-side reset-on-rebind hazard the mode combo already
     /// guards against -- one poll-driven self-heal for both controls
-    /// rather than a second bespoke one.
+    /// rather than a second bespoke one.  P2a review fix: m_xrayBtn is
+    /// ADDITIONALLY disabled while the ACTIVE mode is a BeautyVariant row
+    /// (deep_reflect/direct) -- those drive a separate ephemeral pipeline
+    /// that never reads the x-ray flag, so the toggle would silently no-op
+    /// (registry-driven via each combo item's stashed isVariant flag,
+    /// Qt::UserRole + 1).
     void refreshRenderModeCombo();
 
     RenderEngine*   m_engine = nullptr;

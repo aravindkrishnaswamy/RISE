@@ -136,6 +136,40 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     sep2->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
     layout->addWidget(sep2);
 
+    // ---- N-up multi-viewport layout picker (docs/gui/RENDER_MODES.md §7.5) -
+    // 4 fixed icons -- reuses #toolGroup's bordered-container styling (the
+    // stylesheet installed above already covers #toolBtn's hover/checked
+    // states, which these buttons also use).
+    auto* layoutGroup = new QWidget(this);
+    layoutGroup->setObjectName(QStringLiteral("toolGroup"));
+    layoutGroup->setStyleSheet(QStringLiteral(
+        "#toolGroup { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+        .arg(Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
+        .arg(Theme::radiusMedium));
+    auto* layoutGroupLayout = new QHBoxLayout(layoutGroup);
+    layoutGroupLayout->setContentsMargins(2, 2, 2, 2);
+    layoutGroupLayout->setSpacing(0);
+    const ViewportBridge::ViewportLayout layouts[] = {
+        ViewportBridge::ViewportLayout::Single,
+        ViewportBridge::ViewportLayout::TwoH,
+        ViewportBridge::ViewportLayout::OnePlusTwo,
+        ViewportBridge::ViewportLayout::Quad,
+    };
+    for (auto l : layouts) {
+        LayoutButtonEntry entry;
+        entry.layout = l;
+        entry.button = makeLayoutButton(l);
+        layoutGroupLayout->addWidget(entry.button);
+        m_layoutButtons.append(entry);
+    }
+    layout->addWidget(layoutGroup);
+
+    auto* sep3 = new QFrame(this);
+    sep3->setFrameShape(QFrame::VLine);
+    sep3->setFixedHeight(18);
+    sep3->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    layout->addWidget(sep3);
+
     // ---- Active-camera chip (read-only) ----------------------------------
     m_cameraChip = new QLabel(this);
     m_cameraChip->setFont(Theme::sans(11));
@@ -210,6 +244,7 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     m_pollTimer->start();
 
     refreshAllToolButtons();
+    refreshLayoutButtons();
     updateRegionChip();
     updateCameraChip();
     updateEvChipLabel(0);
@@ -238,6 +273,7 @@ void ViewportToolbar::setBridge(ViewportBridge* bridge)
     m_bridge = bridge;
     m_regionArmed = false;
     refreshAllToolButtons();
+    refreshLayoutButtons();
     updateRegionChip();
     updateCameraChip();
 }
@@ -388,6 +424,7 @@ void ViewportToolbar::pollState()
 {
     updateCameraChip();
     updateRegionChip();
+    refreshLayoutButtons();
 }
 
 void ViewportToolbar::updateCameraChip()
@@ -569,4 +606,76 @@ void ViewportToolbar::onEdrChipClicked()
 {
     if (!m_edrAvailable) return;
     emit edrToggleClicked();
+}
+
+// ============================================================
+// N-up multi-viewport layout picker (docs/gui/RENDER_MODES.md §7.5)
+// ============================================================
+
+QToolButton* ViewportToolbar::makeLayoutButton(ViewportBridge::ViewportLayout layout)
+{
+    auto* btn = new QToolButton(this);
+    btn->setObjectName(QStringLiteral("toolBtn"));   // matches the QSS selector installed in the ctor
+    btn->setCheckable(true);
+    btn->setProperty("layout", static_cast<int>(layout));
+    btn->setToolTip(tooltipForLayout(layout));
+    btn->setFixedSize(36, 36);
+    btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    btn->setFont(Theme::mono(9));
+    btn->setText(labelForLayout(layout));
+    connect(btn, &QToolButton::clicked, this, &ViewportToolbar::onLayoutButtonClicked);
+    return btn;
+}
+
+QString ViewportToolbar::labelForLayout(ViewportBridge::ViewportLayout layout) const
+{
+    // Compact glyphs -- no icon theme guarantee on Windows (see
+    // iconForTool's comment above), so the label itself is the affordance.
+    switch (layout) {
+    case ViewportBridge::ViewportLayout::Single:     return QStringLiteral("1");
+    case ViewportBridge::ViewportLayout::TwoH:       return QStringLiteral("2H");
+    case ViewportBridge::ViewportLayout::OnePlusTwo: return QStringLiteral("1+2");
+    case ViewportBridge::ViewportLayout::Quad:       return QStringLiteral("4");
+    }
+    return QString();
+}
+
+QString ViewportToolbar::tooltipForLayout(ViewportBridge::ViewportLayout layout) const
+{
+    switch (layout) {
+    case ViewportBridge::ViewportLayout::Single:
+        return tr("Single — one full-size viewport (pane 0)");
+    case ViewportBridge::ViewportLayout::TwoH:
+        return tr("Two Up — panes 0 | 1 side-by-side");
+    case ViewportBridge::ViewportLayout::OnePlusTwo:
+        return tr("One + Two — pane 0 large, panes 1/2 stacked at right");
+    case ViewportBridge::ViewportLayout::Quad:
+        return tr("Quad — panes 0-3 in a 2×2 grid");
+    }
+    return QString();
+}
+
+void ViewportToolbar::refreshLayoutButtons()
+{
+    const ViewportBridge::ViewportLayout current = m_bridge
+        ? m_bridge->viewportLayout()
+        : ViewportBridge::ViewportLayout::Single;
+    for (const auto& entry : m_layoutButtons) {
+        entry.button->setEnabled(m_bridge != nullptr);
+        entry.button->setChecked(entry.layout == current);
+    }
+}
+
+void ViewportToolbar::onLayoutButtonClicked()
+{
+    if (!m_bridge) return;
+    auto* sender = qobject_cast<QToolButton*>(this->sender());
+    if (!sender) return;
+    const auto layout = static_cast<ViewportBridge::ViewportLayout>(sender->property("layout").toInt());
+    // The set CAN fail (render-owns-scene) -- always re-read the effective
+    // layout afterward rather than trusting the click (matches TopBar's
+    // onRenderModeComboChanged discipline).
+    m_bridge->setViewportLayout(layout);
+    refreshLayoutButtons();
+    emit layoutChanged();
 }

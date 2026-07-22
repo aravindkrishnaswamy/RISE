@@ -639,13 +639,19 @@ static void TestLive429ExponentialFallback()
 // T22: HTTP 429 attempts are capped at 5 per round -- 5 consecutive 429s
 //      exhaust the retry budget and fail with provider_error naming
 //      "rate limit", having asked the sleeper for a wait after EACH of
-//      the 5 attempts (the trajectory records an honest attempt/retry_of
-//      sibling llm record for every one of them, mirroring the 5xx-retry
-//      convention).
+//      the first 4 attempts ONLY -- the 5th/final attempt has no further
+//      retry to back off FOR, so it reports exhaustion immediately
+//      without a dead terminal wait (P2 fix: a wait here would burn
+//      wall-clock for nothing and could push a legitimate exhaustion
+//      past the scenario's wall budget).  The trajectory still records
+//      an honest attempt/retry_of sibling llm record for every one of
+//      the 5 POSTs (mirroring the 5xx-retry convention) -- only the
+//      SLEEP after the last one is skipped, not the request or the
+//      record.
 //----------------------------------------------------------------------
 static void TestLive429ExhaustedAttempts()
 {
-	std::printf( "T22: 5x HTTP 429 -> provider_error naming rate limit, 5 waits recorded...\n" );
+	std::printf( "T22: 5x HTTP 429 -> provider_error naming rate limit, 4 waits recorded (no dead terminal wait)...\n" );
 
 	AgentEvalScenario scenario;
 	std::string err;
@@ -669,7 +675,15 @@ static void TestLive429ExhaustedAttempts()
 	Check( h.result.errorMessage.find( "rate limit" ) != std::string::npos,
 	       "the error message names \"rate limit\" (got '" + h.result.errorMessage + "')" );
 	Check( mock.seenRequests.size() == 5, "the transport saw exactly 5 POSTs (the max attempts)" );
-	Check( waits.size() == 5, "exactly 5 backoff waits were requested (one per 429, including the last before giving up)" );
+	// P2 fix under test: the 5th/final 429 must NOT sleep before reporting
+	// exhaustion -- only attempts 1-4 (each of which retries) ask the
+	// sleeper for a wait.  Pre-fix this asserted waits.size() == 5 (a dead
+	// terminal wait after the un-retried 5th attempt); that assertion now
+	// fails against the fixed behaviour, which is exactly the point.
+	Check( waits.size() == 4,
+	       "exactly 4 backoff waits were requested (attempts 1-4, each followed by a retry) -- "
+	       "the 5th/final attempt reports exhaustion WITHOUT a dead terminal wait (got " +
+	       std::to_string( waits.size() ) + ")" );
 	Check( h.result.llmCalls == 0, "none of the 5 429 attempts consumed llmCalls" );
 
 	// ChatTrajectory.cpp OMITS "retry_of" entirely when retryOf < 0 (see
@@ -808,7 +822,7 @@ static void TestRunEvalMatrixAuthProbe429NotFatal()
 	       "T25: a 429 probe response leaves the column USED (not auth-fatal)" );
 	Check( mr.providersAuthFailed == 0, "T25: providersAuthFailed == 0" );
 	Check( mr.runsExecuted == 1, "T25: the column executed" );
-	Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+	Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "\"ping\"" ) != std::string::npos,
 	       "T25: the FIRST captured request is the auth probe (body contains \"ping\")" );
 	Check( mock.seenRequests.size() == 3,
 	       "T25: exactly 1 probe POST + 2 real-run POSTs reached the transport -- no probe backoff" );
@@ -2188,7 +2202,7 @@ static void TestRunEvalMatrixAuthProbe()
 		       "T12b(A): a passing probe leaves the column USED" );
 		Check( mr.providersAuthFailed == 0, "T12b(A): providersAuthFailed == 0" );
 		Check( mr.runsExecuted == 1, "T12b(A): the column executed" );
-		Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "ping" ) != std::string::npos,
+		Check( !mock.seenRequests.empty() && mock.seenRequests[0].body.find( "\"ping\"" ) != std::string::npos,
 		       "T12b(A): the FIRST captured request is the auth probe (body contains \"ping\")" );
 		Check( mock.seenRequests.size() >= 2,
 		       "T12b(A): the probe AND at least one real run request reached the transport" );
@@ -2350,7 +2364,13 @@ static void TestRunEvalMatrixAuthProbe()
 		Check( mr.runsExecuted == 1, "T12b(E): the local run executes" );
 		Check( mock.seenRequests.size() == 1,
 		       "T12b(E): the transport was called EXACTLY once (the run itself -- no probe)" );
-		Check( mock.seenRequests[0].body.find( "ping" ) == std::string::npos,
+		// Detect a probe by its EXACT JSON payload (the probe sends the
+		// user message "ping", which serializes as the quoted string
+		// "ping") -- a bare substring match false-positives on ordinary
+		// schema/prompt prose like "skipping" or "mapping" (bit us when
+		// the render tool's x-ray description gained "skipping
+		// transmissive surfaces", 2026-07-18).
+		Check( mock.seenRequests[0].body.find( "\"ping\"" ) == std::string::npos,
 		       "T12b(E): the FIRST (and only) captured request is the run, not a probe" );
 
 		std::vector<JsonValue> manifest = ReadJsonl( ( std::filesystem::path( cfg.runDir ) / "run.manifest.jsonl" ).string() );

@@ -125,23 +125,19 @@ namespace RISE
 		//!
 		//! IMPORTANT: this code is compiled with `-ffast-math`, which
 		//! permits the compiler to assume NaN / Inf never occur and
-		//! optimise `std::isfinite` / `std::isnan` to constants — even
-		//! a bit-pattern check after `memcpy` gets dead-code-eliminated
-		//! because the optimiser tracks that `parsed` "must" be finite
-		//! under fast-math.  Defence-in-depth is THREE layers:
+		//! optimise ordinary FP classification predicates to constants.
+		//! Defence-in-depth is two layers:
 		//!   1. Textual pre-check rejects "nan" / "inf" / "infinity"
 		//!      (case-insensitive, with optional sign + whitespace)
 		//!      before strtod even runs.  `strtod` is what would
 		//!      produce the NaN/Inf for those inputs.
-		//!   2. `volatile` on the parsed result blocks the optimiser
-		//!      from re-deriving the value across the bit-pattern
-		//!      check.
-		//!   3. Bit-pattern check via memcpy as backup for cases like
-		//!      "1e1000" that overflow to +Inf during strtod.
+		//!   2. RISE::IsFiniteDouble materialises the parsed value through
+		//!      volatile before its IEEE-754 exponent test, catching cases
+		//!      like "1e1000" that overflow to +Inf during strtod.
 		//! Non-`inline` external linkage: the symbol must survive in
 		//! `librise.a` for out-of-tree consumers (e.g. the Blender
 		//! bridge dylib) — `inline` let LTO elide it.  See commit
-		//! 11575d8.  The body's volatile/memcpy/textual layers above
+		//! 11575d8.  The body's shared finite predicate plus textual layer
 		//! defeat `-ffast-math` from inside the function, regardless
 		//! of whether the optimiser decides to inline-fold a callsite.
 		bool ParseStrictScalar( const String& s, Scalar& out );
@@ -164,4 +160,3 @@ namespace RISE
 #endif
 
 #endif
-

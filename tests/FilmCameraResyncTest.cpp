@@ -137,6 +137,69 @@ static void TestCLIStyleOverride()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 1b. NON-FINITE pixelAR is rejected -- and the guard actually EXISTS
+//     in the shipped binary.
+//
+// `NaN <= 0.0` is false (every ordered comparison with NaN is), so the
+// plain `pixelAR <= 0.0` check let NaN through and poisoned every
+// camera's projection matrix on the resync.  A std::isfinite() guard was
+// added for it -- but this library compiles with -ffast-math
+// (-> -ffinite-math-only), under which clang folds std::isfinite(x) to
+// `true` and DELETES the guard.  The guard read correctly in source and
+// did nothing in the binary, and nothing tested it.
+//
+// Measured on this toolchain for a noinline predicate taking a double:
+//     !std::isfinite(v)                  rejects NaN: NO   inf: NO
+//     !(v >= -DBL_MAX && v <= DBL_MAX)               NO        YES
+//     volatile round-trip + exponent bit test        YES       YES
+//
+// This test therefore exercises the SHIPPED, optimised code path.  NaN and
+// inf are produced via strtod (a runtime library call) so that the test's
+// own -ffast-math compilation cannot constant-fold them away.
+//////////////////////////////////////////////////////////////////////
+
+static void TestNonFinitePixelARRejected()
+{
+	std::cout << "Testing SetFilm rejects non-finite pixelAR..." << std::endl;
+	Job* pJob = new Job();
+	IScenePriv* scene = pJob->GetScene();
+	Check( scene != 0, "scene exists for the non-finite pixelAR test" );
+
+	const double loc[3]    = {0,0,5};
+	const double lookat[3] = {0,0,0};
+	const double up[3]     = {0,1,0};
+	const double orientation[3] = {0,0,0};
+	const double target_orientation[2] = {0,0};
+
+	pJob->SetFilm( 800, 600, 1.25 );
+	Check( pJob->AddPinholeCamera( "main", loc, lookat, up,
+		Scalar( 0.785398 ), 0, 0, 0, orientation, target_orientation ),
+		"camera added for the non-finite pixelAR test" );
+
+	Check( pJob->SetFilm( 800, 600, 1.25 ), "baseline SetFilm with a finite pixelAR succeeds" );
+	unsigned int w = 0, h = 0; Scalar pAR = 0;
+	Check( GetCameraDims( scene->GetCamera(), w, h, pAR ) && w == 800 && h == 600 && pAR == 1.25,
+	       "baseline pixelAR applied" );
+
+	// Runtime-produced non-finite values (not literals -- see header note).
+	const double nanPAR = std::strtod( "nan", 0 );
+	const double infPAR = std::strtod( "1e999", 0 );
+
+	Check( !pJob->SetFilm( 1920, 1080, nanPAR ),
+	       "MONEY ASSERTION: SetFilm REJECTS a NaN pixelAR.  Before the fix the "
+	       "std::isfinite guard was folded away by -ffast-math and NaN was accepted, "
+	       "poisoning every camera's projection matrix" );
+	Check( !pJob->SetFilm( 1920, 1080, infPAR ),
+	       "SetFilm rejects an infinite pixelAR" );
+
+	// And the rejection must leave the previous film UNCHANGED, not half-applied.
+	Check( GetCameraDims( scene->GetCamera(), w, h, pAR ) && w == 800 && h == 600 && pAR == 1.25,
+	       "a rejected SetFilm leaves the active Film and cameras untouched" );
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 // 2. Multi-camera resync: SetFilm updates EVERY camera, not just
 //    the currently-active one.
 //////////////////////////////////////////////////////////////////////
@@ -334,6 +397,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	std::cout << "=== FilmCameraResyncTest ===" << std::endl;
 
 	TestCLIStyleOverride();
+	TestNonFinitePixelARRejected();
 	TestMultiCameraResync();
 	TestRepeatedSetFilm();
 	TestSetFilmBeforeAddCamera();

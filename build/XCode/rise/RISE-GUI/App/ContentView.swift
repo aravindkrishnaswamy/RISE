@@ -95,6 +95,16 @@ struct ContentView: View {
     /// Popover-shown state for the toolbar's EV chip.
     @State private var showEVPopover: Bool = false
 
+    /// N-up multi-viewport (docs/gui/RENDER_MODES.md §7): the active
+    /// layout.  `.single` keeps the pre-N-up `ViewportView` path
+    /// byte-for-byte unchanged (see `centerColumn` below); any other
+    /// value engages `MultiPaneViewportView`.  Reset to `.single` on
+    /// every fresh bridge (new scene load) via the `.task(id:)` on
+    /// `viewportToolbarRow` below — a freshly-constructed controller
+    /// always defaults to Single anyway, so this just keeps the
+    /// SwiftUI-local mirror in sync.
+    @State private var viewportLayout: ViewportLayoutOption = .single
+
     var body: some View {
         VStack(spacing: 0) {
             TopBar()
@@ -250,48 +260,93 @@ struct ContentView: View {
         VStack(spacing: 0) {
             if let vb = viewModel.viewportBridge {
                 viewportToolbarRow(vb)
+                    // N-up (§7): reset the SwiftUI-local layout mirror
+                    // to Single on every fresh bridge (new scene load).
+                    // The underlying controller always constructs with
+                    // Single anyway; this just keeps this view's state
+                    // from carrying a prior scene's layout choice
+                    // forward, mirroring `ViewportView`'s own
+                    // `.task(id: ObjectIdentifier(bridge))` reset
+                    // pattern for `selectedTool`.
+                    .task(id: ObjectIdentifier(vb)) {
+                        viewportLayout = .single
+                    }
+                    // user-review P2#5 (round 2): region refinement is a
+                    // single-viewport affordance (N-up panes have no region-
+                    // drag gesture).  Leaving Single with a region still ARMED
+                    // or ACTIVE would strand it -- the chip is disabled in N-up,
+                    // so the user couldn't clear it, and there's no RegionOverlay
+                    // in the N-up panes to even show it.  Clear it on the way out,
+                    // mirroring the chip's own clear path.
+                    .onChange(of: viewportLayout) { _, newLayout in
+                        if newLayout != .single {
+                            if viewModel.activeRegion != nil {
+                                vb.clearInteractiveRegion()
+                                viewModel.activeRegion = nil
+                            }
+                            regionArmed = false
+                        }
+                    }
 
-                let edrActive = viewModel.edrAvailable && viewModel.edrEnabled
-                ViewportView(
-                    bridge: vb,
-                    image: $viewModel.renderedImage,
-                    timelineVisible: viewModel.hasAnimation,
-                    sceneTime: $viewModel.sceneTime,
-                    // Pull the timeline range from the scene's
-                    // animation_options chunk via the bridge.  Falls
-                    // back to 5.0 only if the scene declares no
-                    // animation options at all (animationTimeEnd == 0),
-                    // so we avoid a 0-length slider that would clamp
-                    // every scrub to t=0.
-                    timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
-                    interactionEnabled: interacting,
-                    isProductionRendering: (viewModel.renderState == .rendering),
-                    onSelectionMayHaveChanged: { propertyRefresh += 1 },
-                    isPreviewPlaying: viewModel.isPreviewPlaying,
-                    onPlayToggle: { viewModel.togglePreviewPlay() },
-                    onUserScrubBegan: { viewModel.stopPreviewPlay() },
-                    productionEDRRenderer: viewModel.productionEDRRenderer,
-                    interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
-                    edrEnabled: edrActive,
-                    selectedTool: $selectedTool,
-                    regionArmed: $regionArmed,
-                    refreshTrigger: $propertyRefresh
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: viewModel.renderedImage) { _, _ in
-                    // Each rendered frame implies the camera may have
-                    // moved; bump the refresh counter so the right
-                    // panel re-snapshots.  The panel itself protects
-                    // against overwriting an in-flight text edit
-                    // (focused field is left alone).
-                    propertyRefresh &+= 1
-                }
-                .onChange(of: viewModel.reverseSelectEpoch) { _, _ in
-                    // Reverse source traceability: a right-click "Select in
-                    // Inspector" changed the bridge selection but rendered no
-                    // frame, so drive the shared refresh here — the inspector
-                    // re-snapshots and the outliner highlight follows.
-                    propertyRefresh &+= 1
+                if viewportLayout == .single {
+                    // Single layout: EXACTLY the pre-N-up code path,
+                    // unchanged — see docs/gui/RENDER_MODES.md §7.0/§7.5.
+                    let edrActive = viewModel.edrAvailable && viewModel.edrEnabled
+                    ViewportView(
+                        bridge: vb,
+                        image: $viewModel.renderedImage,
+                        timelineVisible: viewModel.hasAnimation,
+                        sceneTime: $viewModel.sceneTime,
+                        // Pull the timeline range from the scene's
+                        // animation_options chunk via the bridge.  Falls
+                        // back to 5.0 only if the scene declares no
+                        // animation options at all (animationTimeEnd == 0),
+                        // so we avoid a 0-length slider that would clamp
+                        // every scrub to t=0.
+                        timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
+                        interactionEnabled: interacting,
+                        isProductionRendering: (viewModel.renderState == .rendering),
+                        onSelectionMayHaveChanged: { propertyRefresh += 1 },
+                        isPreviewPlaying: viewModel.isPreviewPlaying,
+                        onPlayToggle: { viewModel.togglePreviewPlay() },
+                        onUserScrubBegan: { viewModel.stopPreviewPlay() },
+                        productionEDRRenderer: viewModel.productionEDRRenderer,
+                        interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
+                        edrEnabled: edrActive,
+                        selectedTool: $selectedTool,
+                        regionArmed: $regionArmed,
+                        refreshTrigger: $propertyRefresh
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onChange(of: viewModel.renderedImage) { _, _ in
+                        // Each rendered frame implies the camera may have
+                        // moved; bump the refresh counter so the right
+                        // panel re-snapshots.  The panel itself protects
+                        // against overwriting an in-flight text edit
+                        // (focused field is left alone).
+                        propertyRefresh &+= 1
+                    }
+                    .onChange(of: viewModel.reverseSelectEpoch) { _, _ in
+                        // Reverse source traceability: a right-click "Select in
+                        // Inspector" changed the bridge selection but rendered no
+                        // frame, so drive the shared refresh here — the inspector
+                        // re-snapshots and the outliner highlight follows.
+                        propertyRefresh &+= 1
+                    }
+                } else {
+                    // N-up (§7): TwoH / OnePlusTwo / Quad.
+                    MultiPaneViewportView(
+                        bridge: vb,
+                        layout: viewportLayout,
+                        interactionEnabled: interacting,
+                        isProductionRendering: (viewModel.renderState == .rendering),
+                        selectedTool: selectedTool,
+                        // user-review P2#4: a pane pick drives the same
+                        // shared Inspector/Outliner refresh the single
+                        // viewport does.
+                        onSelectionMayHaveChanged: { propertyRefresh += 1 }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else if viewModel.renderState == .loading {
                 // Scene load in flight — RenderImageView carries the
@@ -342,6 +397,13 @@ struct ContentView: View {
             regionChip(vb)
 
             viewportRenderModeChip
+
+            // N-up (docs/gui/RENDER_MODES.md §7.5): the layout picker.
+            // Kept enabled/disabled in step with the rest of this row's
+            // interactive chips.
+            ViewportLayoutPicker(bridge: vb, layout: $viewportLayout)
+                .disabled(!interacting)
+                .opacity(interacting ? 1.0 : 0.5)
 
             Spacer(minLength: 0)
 
@@ -453,7 +515,12 @@ struct ContentView: View {
         // `interactionEnabled` guard while a render is in flight),
         // and would otherwise leave a "REGION · armed" chip stuck
         // with no drag ever able to consume it.
-        let usable = honored && interacting
+        // user-review P2#5: N-up panes have no region-drag gesture, so
+        // arming a region there would strand the chip at "· armed" with no
+        // drag able to consume it.  Region refinement is a single-viewport
+        // affordance -- gate the control on the Single layout.
+        let singleViewport = ( viewportLayout == .single )
+        let usable = honored && interacting && singleViewport
         let active = viewModel.activeRegion != nil
         let text = active ? "REGION ×" : (regionArmed ? "REGION · armed" : "REGION")
         let color: Color = active ? Theme.warn : (regionArmed ? Theme.accent : Theme.textFaint)
@@ -480,9 +547,11 @@ struct ContentView: View {
             }
             .help(!honored
                   ? "The active integrator ignores regions"
-                  : (interacting
-                     ? "Toggle region refinement — drag in the viewport to draw a box"
-                     : "Unavailable while a render is in flight"))
+                  : (!singleViewport
+                     ? "Region refinement is available in the single viewport"
+                     : (interacting
+                        ? "Toggle region refinement — drag in the viewport to draw a box"
+                        : "Unavailable while a render is in flight")))
     }
 
     /// P1 render modes (docs/gui/RENDER_MODES.md §5): the viewport's
@@ -524,6 +593,14 @@ struct ContentView: View {
                     set: { viewModel.setViewportXray($0) })) {
                     Text("See Through Glass")
                 }
+                // P2a review fix: while the active mode is a BeautyVariant
+                // row (deep_reflect/direct), this toggle would silently
+                // no-op -- those modes drive a wholly separate ephemeral PT
+                // pipeline that never reads the x-ray flag/caster.  Disable
+                // rather than let it stamp a flag with no visible effect;
+                // tooltip/help text unchanged (still accurate once the
+                // user is back on a mode where it applies).
+                .disabled(activeMode?.isVariant == true)
                 .help("X-ray: skip transmissive surfaces (straight-line) and show the first opaque hit")
             } label: {
                 HStack(spacing: 5) {

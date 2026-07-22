@@ -721,6 +721,69 @@ Vector3 GeometricUtilities::BilinearTangentV(
 		(1.0 - u) * (c01.z - c00.z) + u * (c11.z - c10.z) );
 }
 
+Scalar GeometricUtilities::AccumulateBilinearAreaCDF(
+	const Point3& c00, const Point3& c10,
+	const Point3& c11, const Point3& c01,
+	const unsigned int nCells,
+	const Scalar runningTotal,
+	std::vector<Scalar>& cdfOut )
+{
+	// Midpoint quadrature of A = integral_{[0,1]^2} |dpdu x dpdv| du dv.
+	// One cell-centre evaluation per cell; the cell's area contribution is
+	// J(centre) * (1/nCells)^2.  Exact for parallelograms at any nCells
+	// (J is constant), and O(1/nCells^2) for twisted quads.
+	const unsigned int n = ( nCells < 1 ) ? 1 : nCells;
+	const Scalar cellUV = Scalar( 1.0 ) / Scalar( n );
+	const Scalar cellUVArea = cellUV * cellUV;
+
+	Scalar running = runningTotal;
+	Scalar patchArea = 0;
+
+	for( unsigned int iv = 0; iv < n; iv++ )
+	{
+		const Scalar v = ( Scalar( iv ) + Scalar( 0.5 ) ) * cellUV;
+		for( unsigned int iu = 0; iu < n; iu++ )
+		{
+			const Scalar u = ( Scalar( iu ) + Scalar( 0.5 ) ) * cellUV;
+			const Vector3 Tu = BilinearTangentU( c00, c10, c11, c01, v );
+			const Vector3 Tv = BilinearTangentV( c00, c10, c11, c01, u );
+			const Scalar J = Vector3Ops::Magnitude( Vector3Ops::Cross( Tu, Tv ) );
+			const Scalar cellArea = J * cellUVArea;
+			patchArea += cellArea;
+			running += cellArea;
+			cdfOut.push_back( running );
+		}
+	}
+
+	return patchArea;
+}
+
+void GeometricUtilities::BilinearCellToUV(
+	const unsigned int cellIndex,
+	const unsigned int nCells,
+	const Scalar rU, const Scalar rV,
+	Scalar& outU, Scalar& outV )
+{
+	const unsigned int n = ( nCells < 1 ) ? 1 : nCells;
+	const Scalar cellUV = Scalar( 1.0 ) / Scalar( n );
+
+	const unsigned int iu = cellIndex % n;
+	const unsigned int iv = ( cellIndex / n ) % n;
+
+	Scalar fu = rU; if( fu < 0 ) fu = 0; else if( fu > 1 ) fu = 1;
+	Scalar fv = rV; if( fv < 0 ) fv = 0; else if( fv > 1 ) fv = 1;
+
+	// Uniform WITHIN the cell's (u, v) sub-square.  The density this induces
+	// in surface-area measure is J(centre)/(A_total * J(u,v)), which equals
+	// 1/A_total exactly wherever J is locally constant -- everywhere for a
+	// parallelogram, and to O(intra-cell J variation) otherwise.  Crucially
+	// it integrates to exactly 1 over the surface for ANY nCells, so the
+	// estimator remains a proper density; nCells trades only geometric-area
+	// accuracy, never normalization.
+	outU = ( Scalar( iu ) + fu ) * cellUV;
+	outV = ( Scalar( iv ) + fv ) * cellUV;
+}
+
 namespace {
 
 inline Scalar AbsScalar( Scalar a ) { return a < 0 ? -a : a; }

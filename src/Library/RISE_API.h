@@ -3627,6 +3627,9 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! renders through it) and NEVER mutate a scene camera.  All return false
 	//! on null controller / the documented refusal cases.  `negative` is
 	//! bool-as-int.  See SceneEditController for the contracts.
+	//! user-review P1-1: the UNINDEXED entries alias PANE 0 (§7.4 "existing
+	//! calls = pane 0"); the *Pane* twins take an explicit pane index for the
+	//! N-up nav overlay (drawn on the primary pane).
 	bool RISE_API_SceneEditController_SnapViewToAxis(
 		SceneEditController* p, int axis, int negative );
 	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p );
@@ -3635,6 +3638,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p );
 	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p );
 	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p );
+	//! Pane-indexed navigation twins (EnterFreeFly/ExitFreeFly already have
+	//! PaneEnterFreeFly / PaneExitFreeFly).
+	bool RISE_API_SceneEditController_SnapPaneViewToAxis(
+		SceneEditController* p, unsigned int pane, int axis, int negative );
+	bool RISE_API_SceneEditController_IsPaneFreeFlyActive( SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneSetHomeView( SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneGoToHomeView( SceneEditController* p, unsigned int pane );
 
 	//! -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) --------
 	//! Mode switch = a caster swap on the interactive rasterizer; see
@@ -3671,6 +3681,39 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		const char** name, const char** title, const char** question,
 		bool* viewportSelectable );
 
+	//! GUI render modes P2a (docs/gui/RENDER_MODES.md §6): registry entry
+	//! `index`'s `wantsDenoise` flag -- ADDITIVE sibling of
+	//! RISE_API_GetViewportRenderModeInfo above (that function's signature
+	//! is left unchanged for ABI stability; a new accessor is added instead
+	//! of widening it).  Now that the BeautyVariant modes (deep_reflect,
+	//! direct) genuinely denoise, the "DENOISED — NOT FINAL" polish-status
+	//! label should key off THIS flag rather than a hardcoded
+	//! `mode == "preview"` check.  Returns false (out untouched) on an
+	//! out-of-range index or a null `out`.
+	bool RISE_API_GetViewportRenderModeWantsDenoise(
+		unsigned int index, bool* out );
+
+	//! GUI render modes P2a review fix (docs/gui/RENDER_MODES.md §6):
+	//! registry entry `index`'s "is this a BeautyVariant row" flag
+	//! (`RISE::Implementation::IsBeautyVariantMode`) — ADDITIVE sibling of
+	//! RISE_API_GetViewportRenderModeInfo, same pattern as
+	//! RISE_API_GetViewportRenderModeWantsDenoise above.  Registry-driven
+	//! honesty for the viewport x-ray toggle: while the ACTIVE mode is a
+	//! BeautyVariant row (`deep_reflect`/`direct`), x-ray has no effect —
+	//! those modes drive an entirely separate ephemeral PT pipeline
+	//! (`mVariantRasterizer`) that never reads the x-ray flag/caster the
+	//! toggle stamps (see SetViewportXray's doc); only
+	//! `mInteractiveImpl`'s own caster(s) are stamped.  Both GUIs use this
+	//! to DISABLE the x-ray control while a variant mode is active, so the
+	//! control never silently no-ops.  This does NOT change
+	//! SetViewportXray/GetViewportXray's own behaviour: the stored flag is
+	//! set/read exactly as before and still applies immediately the moment
+	//! the user returns to a non-variant mode — only the UI-facing
+	//! enablement is additive here.  Returns false (out untouched) on an
+	//! out-of-range index or a null `out`.
+	bool RISE_API_GetViewportRenderModeIsVariant(
+		unsigned int index, bool* out );
+
 	//! -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") --------
 	//! An orthogonal boolean that composes with all four data modes
 	//! (Normals/Depth/Facets/Wireframe): resolves each hit THROUGH
@@ -3687,6 +3730,96 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! leaves `*out` untouched) on a null controller or a null `out`.
 	bool RISE_API_SceneEditController_GetViewportXray(
 		SceneEditController* p, bool* out );
+
+	//! -------- N-up multi-viewport pane model (RENDER_MODES.md §7, P3a) ----
+	//! Layout values: 0 Single, 1 TwoH, 2 OnePlusTwo, 3 Quad (the
+	//! controller's ViewportLayout enum).  Vantage kinds: 0 SceneCamera,
+	//! 1 FreeFly, 2 NamedView.  Every function is fail-closed per the
+	//! controller contract (§7.4): unknown pane / hidden pane / render owns
+	//! scene => false, nothing mutated.  EXISTING single-viewport calls are
+	//! unchanged and alias pane 0.
+	//!
+	//! SCOPE NOTE (review-r2, CLOSED by slice 3): every §7.4-specified
+	//! entry now ships -- dims/sinks (display half) and the pane-indexed
+	//! pointer events, per-pane free-fly twins, and per-pane refinement
+	//! status (pointer half).  The UN-indexed calls remain byte-identical
+	//! pane-0 aliases; the shells adopt the indexed surface in P3b.
+
+	bool RISE_API_SceneEditController_SetViewportLayout(
+		SceneEditController* p, int layout );
+	//! Returns false (and leaves `*out` untouched) on null controller/out.
+	bool RISE_API_SceneEditController_GetViewportLayout(
+		SceneEditController* p, int* out );
+
+	bool RISE_API_SceneEditController_SetPrimaryPane(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_GetPrimaryPane(
+		SceneEditController* p, unsigned int* out );
+
+	//! Pane 0 forwards to SetViewportRenderMode (alias contract).
+	bool RISE_API_SceneEditController_SetPaneRenderMode(
+		SceneEditController* p, unsigned int pane, const char* name );
+	//! Never null; "preview" on any invalid input (mirrors
+	//! _GetViewportRenderMode's fail-closed default).
+	const char* RISE_API_SceneEditController_GetPaneRenderMode(
+		SceneEditController* p, unsigned int pane );
+
+	//! P3a slice 3: pane render-surface dims (the GUI's pane rect); 0/0
+	//! resets to film dims.  Fail-closed per the block contract.
+	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
+		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h );
+
+	//! P3a slice 3: per-pane preview sink (controller addrefs; null
+	//! clears).  Valid for ANY pane index 0-3 (sinks may be pre-wired for
+	//! panes a later layout reveals).
+	bool RISE_API_SceneEditController_SetPaneSink(
+		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink );
+
+	//! P3a slice 3 (pointer half): pane-indexed pointer input.  Down
+	//! promotes the pane to primary ONLY for a non-navigation tool --
+	//! §7.8 ratified decision 1: "navigation drags never steal primary",
+	//! so a camera-motion tool's Down (orbit/pan/zoom/roll) does NOT
+	//! promote (the pane still becomes the render target for the
+	//! gesture's duration -- that is gesture exclusivity, a separate
+	//! concern from primary/gizmo ownership).  Down also parks +
+	//! context-switches before the gesture pin, and converts a SECONDARY
+	//! pane tracking the scene camera to per-pane FreeFly for
+	//! camera-motion tools (§7.2, 2026-07-21 amendment: pane 0 keeps
+	//! classic direct-camera-edit navigation).  False = drop the gesture
+	//! (hidden pane / render owns scene).
+	bool RISE_API_SceneEditController_OnPanePointerDown(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPanePointerMove(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPanePointerUp(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+
+	//! Per-pane free-fly twins (§7.4).  Pane 0 aliases the classic
+	//! EnterFreeFlyFromActiveCamera / ExitFreeFly.
+	bool RISE_API_SceneEditController_PaneEnterFreeFly(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneExitFreeFly(
+		SceneEditController* p, unsigned int pane );
+
+	//! Per-pane refinement status: phase (0 Idle / 1 Rendering / 2
+	//! Refining / 3 Polishing / 4 Paused -- same contract as the
+	//! un-indexed call) + scale divisor.  For the currently-scheduled
+	//! pane this is the live status; for others, the honest coarse
+	//! answer from its saved state.
+	bool RISE_API_SceneEditController_GetPaneRefinementStatus(
+		SceneEditController* p, unsigned int pane, int* outPhase,
+		unsigned int* outScaleDivisor );
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
+		SceneEditController* p, unsigned int pane, const char* name );
+	//! `outKind` receives the vantage kind; `outNamedView`/`cap` receive a
+	//! NUL-terminated named-view name ("" unless kind==NamedView).  Returns
+	//! false on null controller / null outs / invalid pane / cap==0.
+	bool RISE_API_SceneEditController_GetPaneVantage(
+		SceneEditController* p, unsigned int pane, int* outKind,
+		char* outNamedView, unsigned int cap );
 
 	//! Pointer events from the platform UI.  Coordinates are in the
 	//! preview surface's pixel space.
@@ -4116,6 +4249,11 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! SceneEpoch; persists via the retained CST Document; undoable.
 	bool RISE_API_SceneEditController_StampViewToNewCamera(
 		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
+	//! user-review P1-1: pane-indexed stamp (unindexed aliases pane 0).
+	bool RISE_API_SceneEditController_PaneStampViewToNewCamera(
+		SceneEditController* p, unsigned int pane,
 		const char* proposedName,
 		char* outName, unsigned int outLen );
 

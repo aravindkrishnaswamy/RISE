@@ -50,12 +50,14 @@
 #include "../Interfaces/IRasterizer.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IFilm.h"
+#include "../Interfaces/IRasterImageReader.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
-#include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image
+#include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image; transitively pulls in Color.h's COLOR_SPACE enum (external review P2 fix: resolved output colour space)
+#include "../Painters/ExpressionEval.h"     // External review P2 fix: ExpressionProgram -- reuse the SAME public expr(...) evaluator Cst.cpp's derive-time resolver is built on, so ResolveBeautyDisplayTransform_ can resolve an expr(...)-valued `exposure` param instead of silently strtod'ing it to 0
 #include "../Interfaces/IRasterImageReader.h"   // compare_to_reference: decode a registered reference PNG through RISE's OWN reader (brings RISEColor + COLOR_SPACE via Color.h)
 #include "../Interfaces/IRasterImageWriter.h"   // compare_to_reference: encode the composite [render|reference|heatmap] diff PNG
 #include "../Utilities/MemoryBuffer.h"          // compare_to_reference: Implementation::MemoryBuffer, the in-memory IWriteBuffer the composite PNG encodes into
@@ -63,6 +65,10 @@
 #include "../Rendering/FrameStore.h"   // offscreen isolation: FrameStoreIsolationGuard's private throwaway FrameStore
 #include "../Rendering/Rasterizer.h"   // offscreen isolation: concrete GetFrameStore/SetFrameStore/AcceptsFrameStorePush (not on IRasterizer)
 #include "../Rendering/InteractivePelRasterizer.h"   // Toolkit slice 2 (quality:"draft"): CreateInteractiveMaterialPreviewPipeline
+#include "../Rendering/PathTracingPelRasterizer.h"       // review-p2d P1-2: light solo is a PathTracingIntegrator mechanism
+#include "../Rendering/PathTracingSpectralRasterizer.h"  // review-p2d P1-2: spectral twin
+#include "../Rendering/RayCaster.h"   // GUI render modes P2b (light solo): concrete RayCaster::SetSoloLightByName/ClearSoloLight
+#include "../Rendering/PixelBasedRasterizerHelper.h"   // GUI render modes P2b (light solo): reach the production rasterizer's RayCaster, mirroring Job::SetActiveRasterizerRadianceScale
 #include "../RISE_API.h"
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
@@ -71,10 +77,12 @@
 #include "../Parsers/IAsciiChunkParser.h"
 #include "../Parsers/ChunkParserRegistry.h"   // F5 S3 (actionable insert_chunk diagnostics): CreateAllChunkParsers -- AllChunkKeywords' near-miss keyword set
 #include "../Utilities/RString.h"
+#include "../Utilities/MemoryBuffer.h"
+#include "../Utilities/FiniteMath.h"
 
 #include <algorithm>   // Facet 5 slice S1: std::sort for the deterministic skills index
 #include <cctype>
-#include <cfloat>   // DBL_MAX for the -ffast-math-safe non-finite range test
+#include <climits>
 #include <cmath>
 #include <cstdio>   // Facet 5 slice 1a: std::snprintf for the conflict message
 #include <cstdlib>  // Facet 5 slice S1: std::getenv for the skills-root resolution
@@ -316,23 +324,12 @@ namespace RISE
 						if( !p || !IsNumericKind( p->kind ) ) continue;
 						bool bad = values.empty();   // a numeric param needs a value
 						for( const std::string& v : values ) {
-							// Non-finite detection via an explicit range test,
-							// NOT std::isfinite: the production build compiles
-							// with -ffast-math (-> -ffinite-math-only), under
-							// which clang folds std::isfinite(x) to true and
-							// this classification silently degrades (the
-							// AgentRpc.cpp house idiom, q.v.).  A plain
-							// >=/<= against +/-DBL_MAX survives the fold:
-							// NaN fails both bounds, +/-inf fails one.
-							// HONEST CAVEAT: for values the compiler may
-							// ASSUME finite under -ffinite-math-only this
-							// comparison is tautologically true, so a
-							// future clang could legally fold it too --
-							// AgentChatLoopTest T15(b) pins the behaviour
-							// against production-flag objects, catching a
-							// toolchain regression at test time.
+							// This diagnostic consumes already-tokenised numeric
+							// text, so materialise the parsed value before its
+							// finiteness test; -ffast-math can fold ordinary FP
+							// classification predicates away.
 							const double dv = std::strtod( v.c_str(), nullptr );
-							if( !LooksNumeric( v ) || !( dv >= -DBL_MAX && dv <= DBL_MAX ) ) { bad = true; break; }
+							if( !LooksNumeric( v ) || !RISE::IsFiniteDouble( dv ) ) { bad = true; break; }
 						}
 						if( bad ) {
 							outCode = AgentDiagnosticCode::INVALID_VALUE;
@@ -2735,6 +2732,63 @@ namespace RISE
 				bool         mArmed;
 			};
 
+			//! GUI render modes P2b `render{light:}` surface (light solo):
+			//! RAII restore of the production rasterizer's light-solo state,
+			//! same Arm/Disarm/restore-on-every-exit house shape as
+			//! SampleCountRestoreGuard above.  The PRODUCTION RayCaster is
+			//! long-lived and shared across agent render calls (unlike the
+			//! BeautyVariant path's ephemeral caster, which is destroyed
+			//! with its pipeline and needs no restore) -- every light-solo
+			//! render on it must leave it exactly as found (no solo, the
+			//! steady-state default) once this render's scope exits,
+			//! including on an exception unwinding out of mJob->Rasterize()
+			//! (OIDN denoise is a documented real throw site).
+			//!
+			//! review-p2d P3-5: this used to CLEAR unconditionally, resting
+			//! on a comment-enforced invariant that agent light-solo was the
+			//! only writer of solo state on a production caster.  It was
+			//! armed on EVERY production render (including ones with no
+			//! `light` arg), so the first GUI-side solo toggle would have
+			//! been silently dropped by the next agent render.  It now
+			//! CAPTURES the real prior state at Arm() and restores exactly
+			//! that -- removing the invariant rather than documenting it.
+			class LightSoloRestoreGuard
+			{
+			public:
+				explicit LightSoloRestoreGuard( RISE::Implementation::RayCaster* pCaster )
+					: mCaster( pCaster ), mArmed( false )
+				{
+				}
+
+				void Arm()
+				{
+					if( mCaster ) mPrior = mCaster->CaptureSoloState();
+					mArmed = true;
+				}
+				void Disarm() { mArmed = false; }
+
+				~LightSoloRestoreGuard()
+				{
+					if( !mArmed || !mCaster ) return;
+					try {
+						mCaster->RestoreSoloState( mPrior );
+					}
+					catch( ... ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"AgentSession::Render: exception escaped the light-solo "
+							"restore -- the rasterizer may be left soloed to one light" );
+					}
+				}
+
+			private:
+				LightSoloRestoreGuard( const LightSoloRestoreGuard& );             // deleted
+				LightSoloRestoreGuard& operator=( const LightSoloRestoreGuard& );  // deleted
+
+				RISE::Implementation::RayCaster* mCaster;
+				RISE::Implementation::RayCaster::SoloStateSnapshot mPrior;
+				bool                              mArmed;
+			};
+
 			//! Offscreen isolation for agent/LLM renders: RAII restore of the
 			//! active rasterizer's FrameStore IDENTITY, matching the SAME
 			//! house shape as RenderOverrideRestoreGuard / ProgressRestoreGuard
@@ -3158,6 +3212,304 @@ namespace RISE
 			}
 		}
 
+		// GUI render modes P2a `render{view:}` surface (docs/gui/
+		// RENDER_MODES.md §8): format a Vector3/Scalar into the SAME string
+		// shape CameraIntrospection::SetProperty accepts, so a resolved
+		// CameraSnapshot (from a live controller's named-view store, or
+		// CameraIntrospection::CaptureCameraSnapshot on a headless scene
+		// camera) can feed straight into the EXISTING AgentCameraOverride /
+		// applyCameraOverride plumbing.
+		std::string Vec3ToOverrideStr( const double v[3] )
+		{
+			char buf[96];
+			std::snprintf( buf, sizeof( buf ), "%.17g %.17g %.17g", v[0], v[1], v[2] );
+			return std::string( buf );
+		}
+
+		std::string OrientationToOverrideStr( const double v[3] )
+		{
+			static constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+			double degrees[3] = { v[0] * kRadToDeg, v[1] * kRadToDeg, v[2] * kRadToDeg };
+			return Vec3ToOverrideStr( degrees );
+		}
+
+		// Fill `out`'s complete CameraCommon pose (location/lookAt/up plus
+		// Euler and target orientation) and fov (only for a Pinhole snapshot
+		// -- a ThinLens/Fisheye/Orthographic view has no single scalar FOV)
+		// from a captured CameraSnapshot.
+		void CameraSnapshotToOverride( const RISE::CameraSnapshot& snap,
+		                                AgentCameraOverride& out )
+		{
+			out.hasLocation = true; out.location = Vec3ToOverrideStr( snap.location );
+			out.hasLookAt   = true; out.lookAt   = Vec3ToOverrideStr( snap.lookat );
+			out.hasUp       = true; out.up       = Vec3ToOverrideStr( snap.up );
+			out.hasOrientation = true;
+			out.orientation = OrientationToOverrideStr( snap.orientation );
+			double targetOrientation[3] = {
+				snap.target_orientation[0], snap.target_orientation[1], 0.0
+			};
+			out.hasTargetOrientation = true;
+			out.targetOrientation = OrientationToOverrideStr( targetOrientation );
+			if( snap.type == RISE::CameraSnapshot::Pinhole ) {
+				// CameraSnapshot::fov is stored in RADIANS (CameraIntrospection.cpp's
+				// own CaptureCameraSnapshot / GetFovStored convention); SetProperty's
+				// "fov" -- and AgentCameraOverride::fov's documented contract -- both
+				// take DEGREES (matching the scene-file `fov` param).  Convert on the
+				// way out, mirroring CameraIntrospection::GetPropertyValue's own
+				// RAD_TO_DEG conversion for the SAME field.
+				static constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+				char buf[48];
+				std::snprintf( buf, sizeof( buf ), "%.17g", snap.fov * kRadToDeg );
+				out.hasFov = true; out.fov = buf;
+			}
+		}
+
+		// GUI render modes P2b `render{light:}` surface (docs/gui/
+		// RENDER_MODES.md §3 "light solo"): resolves `lightName` against
+		// `caster`'s attached scene and designates it the sole active
+		// light, mirroring Job::SetActiveRasterizerRadianceScale's
+		// PixelBasedRasterizerHelper -> concrete RayCaster downcast (the
+		// SAME dynamic_cast pattern; every in-tree pixel-based rasterizer
+		// -- PT / BDPT / VCM / MLT and the spectral variants -- derives
+		// from PixelBasedRasterizerHelper, which owns the RayCaster).
+		// `caster` here is already the concrete IRayCaster* (the
+		// BeautyVariant path's ephemeral `variantCaster`, or the
+		// production rasterizer's own caster reached via GetRayCaster()
+		// at the call site) -- this function does the FINAL downcast to
+		// the concrete RayCaster that actually owns SetSoloLightByName.
+		// \return True if `lightName` is empty (nothing to do) or
+		// resolved; false with `outMessage` populated with the "unknown
+		// light" + available-name list on an unresolved name, or a
+		// generic "no ray caster" message if `caster` isn't a concrete
+		// RayCaster (should not happen for any in-tree rasterizer).
+		//! review-p2d P1-2: LIGHT SOLO IS A PATH-TRACING MECHANISM ONLY.
+		//!
+		//! Every solo touchpoint in LightSampler lives in
+		//! EvaluateDirectLighting{,NM} and CachedPdfSelectLuminary; the
+		//! generic entry points BDPT/VCM/MLT use -- SampleLight,
+		//! PdfSelectLight, PdfSelectLuminary, SelectLightRIS, LightBVH::Pdf
+		//! -- have no solo branch and still see the full scene
+		//! distribution.  So:
+		//!   * VCM / MLT: solo is a complete no-op (all lights render).
+		//!   * BDPT: WORSE than a no-op -- its eye-subpath NEE goes through
+		//!     EvaluateDirectLighting (soloed) while light-subpath
+		//!     generation goes through SampleLight (not soloed), giving a
+		//!     mixed, mutually-inconsistent estimator.
+		//!
+		//! ApplyLightSoloByName's downcast reaches the RayCaster of ANY
+		//! PixelBasedRasterizerHelper, which all of these are -- so without
+		//! this gate a `vcm_pel_rasterizer` scene returned ok:true plus the
+		//! note "light solo: X is the only active light" over an image with
+		//! every light lit.  Silently claiming an effect that did not happen
+		//! is worse than either fixing it or refusing it, so refuse loudly,
+		//! matching the unresolvable-name and non-pinhole-`view` contracts.
+		//!
+		//! Deliberately a WHITELIST, not a blacklist: `auto_*` rasterizers
+		//! resolve to PT/BDPT/VCM at render time, so they cannot be cleared
+		//! statically and are (conservatively) refused.  A new PT-family
+		//! rasterizer must opt in here explicitly rather than inherit a
+		//! silent claim it may not honour.
+		bool RasterizerSupportsLightSolo( IRasterizer* rast )
+		{
+			return dynamic_cast<RISE::Implementation::PathTracingPelRasterizer*>( rast ) != nullptr
+			    || dynamic_cast<RISE::Implementation::PathTracingSpectralRasterizer*>( rast ) != nullptr;
+		}
+
+		bool ApplyLightSoloByName( IRayCaster* caster, const std::string& lightName,
+		                           std::string& outMessage )
+		{
+			if( lightName.empty() ) {
+				return true;
+			}
+
+			RISE::Implementation::RayCaster* pConcreteCaster =
+				dynamic_cast<RISE::Implementation::RayCaster*>( caster );
+			if( !pConcreteCaster ) {
+				outMessage = "light \"" + lightName + "\" could not be applied -- the active rasterizer has no ray caster";
+				return false;
+			}
+
+			std::string available;
+			if( !pConcreteCaster->SetSoloLightByName( lightName.c_str(), &available ) ) {
+				outMessage = "unknown light \"" + lightName + "\"";
+				outMessage += available.empty()
+					? std::string( " -- no lights or emissive objects available" )
+					: ( " -- available: " + available );
+				return false;
+			}
+
+			return true;
+		}
+
+		bool DecodePngRgbAt( const std::vector<unsigned char>& png,
+		                     unsigned int x, unsigned int y,
+		                     unsigned char& outR, unsigned char& outG, unsigned char& outB )
+		{
+			if( png.empty() || png.size() > static_cast<std::size_t>( UINT_MAX ) ) return false;
+			Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(
+				const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+				static_cast<unsigned int>( png.size() ), false );
+			IRasterImageReader* reader = nullptr;
+			if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+				safe_release( buffer );
+				return false;
+			}
+
+			unsigned int width = 0, height = 0;
+			if( !reader->BeginRead( width, height ) || x >= width || y >= height ) {
+				safe_release( reader );
+				safe_release( buffer );
+				return false;
+			}
+			RISEColor pixel;
+			reader->ReadColor( pixel, x, y );
+			reader->EndRead();
+			safe_release( reader );
+			safe_release( buffer );
+
+			auto toByte = []( double value ) -> unsigned char {
+				const int rounded = static_cast<int>( value * 255.0 + 0.5 );
+				return static_cast<unsigned char>( rounded < 0 ? 0 : ( rounded > 255 ? 255 : rounded ) );
+			};
+			outR = toByte( pixel.base.r );
+			outG = toByte( pixel.base.g );
+			outB = toByte( pixel.base.b );
+			return true;
+		}
+
+		// External review P2 fix (ResolveBeautyDisplayTransform_'s exposure-as-
+		// expr(...) gap): a `file_rasterizeroutput` numeric param (e.g.
+		// `exposure`) can be authored as `expr(...)` over the document's `let`
+		// bindings (the CST v7 computed-value grammar -- see the `let` chunk's
+		// doc in Cst.cpp).  DeriveToJob evaluates that GENERICALLY for every
+		// chunk param before the value ever reaches Job::AddFileRasterizerOutput
+		// (Cst.cpp's ResolveChunkParams -> TryEvalExprValue), so the actual
+		// rendered/file-written exposure is the EVALUATED number -- never the
+		// literal "expr(...)" text.  ResolveBeautyDisplayTransform_ necessarily
+		// reads the RAW, PRE-derive CST text instead (Job exposes no post-
+		// derive accessor for a stripped file output -- see that function's own
+		// doc), so a plain std::strtod on an expr(...) value silently parsed to
+		// 0 instead of the real exposure: a materially wrong "CLI parity"
+		// render reported as success.
+		//
+		// Cst.cpp keeps its own let-collection/expr-eval (CollectLetBindings /
+		// TryEvalExprValue / IsExprValue) `static` -- Cst.h exposes no resolved-
+		// numeric-value accessor to call instead (the CST "resolver" that DOES
+		// have a public surface, TraceReferences/BuildReferenceGraph, resolves
+		// NAME references like `material foo`, not arithmetic expr(...)
+		// values -- a different resolver entirely).  Rather than leave the gap
+		// or duplicate the maths, this reuses the SAME public
+		// RISE::Implementation::ExpressionProgram engine Cst.cpp's evaluator is
+		// built on (Painters/ExpressionEval.h) -- only the "walk `let` chunks in
+		// document order, evaluate expr(...) over EARLIER lets" bookkeeping is
+		// repeated (deliberately mirroring Cst.cpp's CollectLetBindings/
+		// TryEvalExprValue shape line-for-line), so the arithmetic result is
+		// byte-identical to what the actual derive already computed when the
+		// head was loaded.
+		typedef std::vector<std::pair<std::string,double> > LocalLetBindings;
+
+		//! Is `value` exactly `expr( <balanced> )`?  If so set `body` to the
+		//! inside.  Mirrors Cst.cpp's IsExprValue exactly (same balanced-paren
+		//! scan), so a value this rejects is ALSO rejected by the derive-time
+		//! evaluator (never a false positive/negative divergence between the
+		//! two).
+		bool LocalIsExprValue( const std::string& value, std::string& body )
+		{
+			if( value.size() < 6 || value.compare( 0, 5, "expr(" ) != 0 || value.back() != ')' ) return false;
+			int depth = 0; std::size_t lastClose = std::string::npos;
+			for( std::size_t k = 4; k < value.size(); ++k ) {
+				if( value[k] == '(' ) ++depth;
+				else if( value[k] == ')' ) { if( --depth == 0 ) { lastClose = k; break; } }
+			}
+			if( lastClose != value.size() - 1 ) return false;
+			body = value.substr( 5, value.size() - 6 );
+			return true;
+		}
+
+		//! Compile + evaluate one expr BODY over the numeric `lets` + PI/E
+		//! (added after the lets, matching Cst.cpp's EvalExprBody so a let
+		//! cannot shadow them either).  u/v are bound to 0 -- a scene-level
+		//! expr (unlike an instance_array component) has no per-instance
+		//! coordinate.  Returns false (never a silent 0) on a compile error or
+		//! a non-finite result.
+		bool LocalEvalExprBody( const std::string& body, const LocalLetBindings& lets, double& outVal )
+		{
+			RISE::Implementation::ExpressionProgram::Builder b;
+			for( const std::pair<std::string,double>& L : lets ) {
+				b.AddParam( L.first, static_cast<RISE::Scalar>( L.second ) );
+			}
+			b.AddParam( "PI", static_cast<RISE::Scalar>( 3.14159265358979323846 ) );
+			b.AddParam( "E",  static_cast<RISE::Scalar>( 2.71828182845904523536 ) );
+			RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
+			if( !b.Finalize( body, prog ) || !prog.IsValid() ) return false;
+			const RISE::Scalar r = prog.Eval( RISE::Scalar( 0 ), RISE::Scalar( 0 ) );
+			if( !RISE::Implementation::ExpressionProgram::IsFinite( r ) ) return false;
+			outVal = static_cast<double>( r );
+			return true;
+		}
+
+		//! Walk `doc`'s top-level `let` chunks in DOCUMENT ORDER, evaluating
+		//! each binding exactly as Cst.cpp's CollectLetBindings does: a literal
+		//! is one finite numeric token; an expr(...) binding evaluates over the
+		//! EARLIER lets only (lexical scope, no forward/cyclic refs -- a
+		//! binding that fails to evaluate is skipped, matching
+		//! CollectLetBindings' diagnose-and-continue).  A scene that loaded
+		//! successfully already passed this same check at derive time, so a
+		//! skip here is unreachable in practice for a live head; defensive
+		//! only.
+		LocalLetBindings CollectLocalLetBindings( const RISE::Cst::Document& doc )
+		{
+			LocalLetBindings out;
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( doc, i );
+				const RISE::Cst::NodeRef node = id ? RISE::Cst::DocResolveNodeId( doc, id ) : RISE::Cst::NodeRef();
+				if( !node || node->kind != RISE::Cst::NodeKind::Chunk || node->role != "let" ) continue;
+				for( const auto& kid : node->kids ) {
+					if( kid->kind != RISE::Cst::NodeKind::Param ) continue;
+					std::string name, raw; bool first = true;
+					for( const auto& tk : kid->kids ) {
+						if( tk->kind != RISE::Cst::NodeKind::Token ) continue;
+						if( first ) { name = tk->text; first = false; }
+						else { if( !raw.empty() ) raw += ' '; raw += tk->text; }
+					}
+					if( name.empty() ) continue;
+					std::string body; double val = 0.0;
+					if( LocalIsExprValue( raw, body ) ) {
+						if( !LocalEvalExprBody( body, out, val ) ) continue;
+					} else {
+						char* end = nullptr;
+						val = std::strtod( raw.c_str(), &end );
+						if( raw.empty() || end != raw.c_str() + raw.size() ) continue;
+					}
+					out.push_back( std::make_pair( name, val ) );
+				}
+			}
+			return out;
+		}
+
+		//! Resolve a chunk param's RAW CST text (as `ResolveBeautyDisplayTransform_`'s
+		//! `paramValue` lambda returns it) to its numeric value: a plain finite
+		//! literal parses via std::strtod exactly as before; an expr(...) value
+		//! is evaluated over `doc`'s `let` bindings via the helpers above.
+		//! Returns false (leaving `outVal` untouched) when `raw` is neither a
+		//! plain literal nor a resolvable expr(...) -- the caller keeps its own
+		//! pre-set default in that case (documented at the one call site) rather
+		//! than mis-reporting a parse failure as "the scene authored 0".
+		bool ResolveParamNumeric( const std::string& raw, const RISE::Cst::Document& doc, double& outVal )
+		{
+			if( raw.empty() ) return false;
+			std::string body;
+			if( LocalIsExprValue( raw, body ) ) {
+				return LocalEvalExprBody( body, CollectLocalLetBindings( doc ), outVal );
+			}
+			char* end = nullptr;
+			const double v = std::strtod( raw.c_str(), &end );
+			if( end != raw.c_str() + raw.size() ) return false;   // trailing garbage -- not a plain literal (e.g. a bare let-NAME reference, only valid wrapped in expr(...) per the CST grammar)
+			outVal = v;
+			return true;
+		}
+
 		void AgentSession::ForTest_BuildObjectMapPaletteBytes(
 			std::size_t count,
 			std::vector<std::array<unsigned char, 3> >& outBytes,
@@ -3201,7 +3553,8 @@ namespace RISE
 		}
 
 		void AgentSession::ResolveBeautyDisplayTransform_( double& outExposureEV,
-		                                                   int& outDisplayTransform ) const
+		                                                   int& outDisplayTransform,
+		                                                   int& outColorSpace ) const
 		{
 			// LDR defaults, matching the CLI file-output pipeline: ACES filmic,
 			// 0 EV.  An agent render is always an 8-bit PNG preview, so even a
@@ -3209,6 +3562,13 @@ namespace RISE
 			// HDR-only output still gets a viewable tone curve.
 			double exposureEV = 0.0;
 			int    dt         = 2 /*eDisplayTransform_ACES*/;
+			// External review P2 fix: the resolved OUTPUT COLOUR SPACE, matching
+			// the descriptor's own `defaultValueHint = "sRGB"` for
+			// file_rasterizeroutput's `color_space` param (ChunkParserRegistry.cpp)
+			// -- was previously never read at all; the in-memory PNG sink just
+			// hardcoded eColorSpace_sRGB unconditionally regardless of what the
+			// scene declared.
+			int    cs         = eColorSpace_sRGB;
 
 			// Honour a declared LDR file_rasterizeroutput's tone curve +
 			// exposure so a compareToImage grading render (and read_image of a
@@ -3272,10 +3632,44 @@ namespace RISE
 						else if( dtStr == "agx"      ) dt = 3;
 						else if( dtStr == "hable"    ) dt = 4;
 						// (absent/unknown -> keep the ACES default)
+
+						// External review P2 fix: `exStr` is the RAW pre-derive CST
+						// text -- it may be a plain literal ("1.5") OR an expr(...)
+						// value ("expr( BASE_EV + 0.5 )") the CST v7 `let`/`expr`
+						// grammar supports for ANY chunk param, DeriveToJob evaluates
+						// generically (Cst.cpp's ResolveChunkParams), and the CLI file-
+						// output pipeline therefore honours for real.  The pre-fix
+						// `std::strtod` here silently parsed an expr(...) string to 0
+						// -- a materially wrong exposure reported as a byte-parity
+						// render.  ResolveParamNumeric (above) evaluates expr(...) via
+						// the SAME public ExpressionProgram engine the derive-time
+						// evaluator is built on; a value it still can't resolve (a
+						// malformed literal, or an expr(...) that fails to compile --
+						// unreachable for a scene that loaded successfully, since
+						// DeriveToJob runs the identical evaluator at load time) leaves
+						// exposureEV at its pre-loop default (0 EV) rather than
+						// mis-reporting the failure as "the scene authored exposure 0".
 						const std::string exStr = paramValue( node, "exposure" );
 						if( !exStr.empty() ) {
-							exposureEV = std::strtod( exStr.c_str(), nullptr );
+							double resolvedExposure = 0.0;
+							if( ResolveParamNumeric( exStr, *doc, resolvedExposure ) ) {
+								exposureEV = resolvedExposure;
+							}
 						}
+
+						// External review P2 fix: honour the scene's declared output
+						// colour space instead of the previous hardcoded sRGB.  Always
+						// a plain enum token (never expr(...) -- an expr evaluates to a
+						// NUMBER, which can't match one of these string literals), so a
+						// direct string map is exact; matches ChunkParserRegistry.cpp's
+						// own color_space parsing for this same chunk one-for-one.
+						const std::string csStr = paramValue( node, "color_space" );
+						if     ( csStr == "Rec709RGB_Linear" ) cs = eColorSpace_Rec709RGB_Linear;
+						else if( csStr == "sRGB" )             cs = eColorSpace_sRGB;
+						else if( csStr == "ROMMRGB_Linear" )   cs = eColorSpace_ROMMRGB_Linear;
+						else if( csStr == "ProPhotoRGB" )      cs = eColorSpace_ProPhotoRGB;
+						// (absent/unknown -> keep the sRGB default)
+
 						break;
 					}
 				}
@@ -3294,6 +3688,7 @@ namespace RISE
 
 			outExposureEV       = exposureEV;
 			outDisplayTransform = dt;
+			outColorSpace       = cs;
 		}
 
 		AgentRenderResult AgentSession::RenderCore_( const AgentRenderParams& params,
@@ -3374,6 +3769,14 @@ namespace RISE
 			const bool isViewMode = ( params.renderTarget == AgentRenderTarget::ViewMode );
 			const Implementation::ViewportRenderModeInfo* viewModeInfo =
 				isViewMode ? Implementation::FindViewportRenderModeInfo( params.viewMode ) : nullptr;
+			// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): a
+			// BeautyVariant target (deep_reflect/direct) is a REAL
+			// production-class PT pipeline, structurally a sibling of
+			// isViewMode's ShaderPipeline data modes but routed to
+			// doBeautyVariantRenderWork instead of doViewModeRenderWork --
+			// see that lambda's doc below.
+			const bool isBeautyVariant =
+				isViewMode && viewModeInfo && Implementation::IsBeautyVariantMode( viewModeInfo->mode );
 			res.renderMode = isObjectMap ? "objectmap"
 				: isViewMode ? ( viewModeInfo ? viewModeInfo->name : "" )
 				: ( isDraft ? "draft" : "production" );
@@ -3384,41 +3787,103 @@ namespace RISE
 			// integrator a rasterizer insert_chunk activated.  Job::
 			// GetActiveRasterizerName() is a plain member-string accessor
 			// that defaults to "" (Job.h) -- null-safe with no active
-			// rasterizer at all, so this is safe to read regardless of
-			// isDraft/rast below.  Filled on BOTH the success and the
-			// render-failure paths below -- the active integrator is a
-			// property of the head, not of whether this particular render
-			// produced an image.
-			res.integrator = mJob->GetActiveRasterizerName();
-
-			// Fetch the live rasterizer.  Round-2 P2-A: the "!rast" bail-out
-			// now applies ONLY to the PRODUCTION branch -- gating it on
-			// `!isDraft` lets a rasterizer-less head still run a draft
-			// render.  `rast` is allowed to be null from here on: every
-			// site downstream that dereferences it either (a) lives inside
-			// doRenderWork's production body, which early-returns via
-			// doDraftRenderWork() BEFORE reaching any of them whenever
-			// isDraft is true -- and this same gate guarantees rast is
-			// non-null whenever isDraft is false -- or (b) is made
-			// null-tolerant explicitly (origSamples just below).
-			IRasterizer* rast = mJob->GetRasterizer();
-			// Round-2 P2-A / Toolkit slice 3a / GUI render modes P1: the
-			// "!rast" bail-out applies ONLY to the production BEAUTY branch --
-			// the draft, objectmap, AND view-mode paths all run through their
-			// own ephemeral pipelines and never dereference the production
-			// rasterizer, so a rasterizer-less head must still be able to run
-			// any of them.
-			if( !isDraft && !isObjectMap && !isViewMode && !rast ) {
-				res.ok = false;
-				res.message = "no active rasterizer";
-				return res;
-			}
+			// rasterizer at all.  `res.integrator` is DELIBERATELY left as
+			// the head's active (production) rasterizer's name in EITHER
+			// mode -- see AgentRenderResult::renderMode's doc for why the
+			// two fields answer different questions.  Filled on BOTH the
+			// success and the render-failure paths -- the active integrator
+			// is a property of the head, not of whether this particular
+			// render produced an image.
+			//
+			// Re-review P1 FIX: this resolution (`res.integrator =
+			// mJob->GetActiveRasterizerName();` + `IRasterizer* rast =
+			// mJob->GetRasterizer();` + the "!rast" bail-out), and the
+			// `view`/camera-override resolution that used to sit right after
+			// it, USED to run HERE -- on the CALLING thread, before the
+			// render is ever parked.  The actual render body runs LATER,
+			// inside the parked closure (RunPreviewRenderParked /
+			// SubmitAgentRenderSync / the direct headless call below),
+			// possibly after an arbitrary delay (the controller's fairness
+			// queue).  A concurrent GUI edit landing in that window could
+			// replace the Job's rasterizer/camera managers out from under a
+			// pointer cached this early -- a use-after-free class of bug,
+			// not merely a stale value.  ALL live-Job-state resolution now
+			// happens INSIDE `doRenderWork` (see its top) instead, which only
+			// ever executes already-parked (or, headless with no controller,
+			// with no concurrent GUI thread to race at all): resolved inside
+			// the park; never snapshot live Job state on the calling thread.
+			// `isDraft`/`isObjectMap`/`isViewMode`/`viewModeInfo`/
+			// `isBeautyVariant`/`res.renderMode` above are all derived PURELY
+			// from `params`, never from live Job state, so they stay safe to
+			// compute here, unchanged.
 
 			const bool wantFilmOverride =
 				( params.width > 0 && params.height > 0 );
-			const bool wantCameraOverride =
-				( params.camera.hasLocation || params.camera.hasLookAt ||
-				  params.camera.hasUp || params.camera.hasFov );
+
+			// GUI render modes P2a `render{view:}` surface (docs/gui/
+			// RENDER_MODES.md section 8, deferred from P1): resolve an optional
+			// NAMED VIEW into the SAME ephemeral camera-override fields
+			// `params.camera` uses, so it composes for free with EVERY render
+			// target (Beauty/ObjectMap/ViewMode, draft or production) via the
+			// EXISTING applyCameraOverride machinery below -- no parallel
+			// override mechanism.  `view` wins over an explicit `camera`
+			// override when both are supplied (`effectiveCamera` starts as a
+			// COPY of params.camera, then a resolved view's pose overwrites it
+			// wholesale).
+			//
+			// Re-review P1 FIX: resolving WHICH named view/camera this is
+			// (mController->FindNamedViewPose / mJob->GetCameras()) needs live
+			// Job/controller state, so -- like `rast` above -- that resolution
+			// now happens fresh INSIDE doRenderWork (see its top), not here.
+			// `effectiveCamera` and `wantCameraOverride` are declared here
+			// (mutable) purely so applyCameraOverride (defined below,
+			// capturing both by reference) can read whatever doRenderWork
+			// fills in later; neither is assigned a live-state-derived value
+			// at this point.
+			AgentCameraOverride effectiveCamera = params.camera;
+			bool wantCameraOverride = false;
+
+			// Re-review P1: doRenderWork sets exactly one of these two flags
+			// (never both) instead of returning `res` directly when the
+			// `view` resolution fails -- see doRenderWork's top for the two
+			// failure cases (unknown view name; a resolved but non-pinhole
+			// NAMED VIEW) and the dispatch tail below (`if(
+			// viewResolutionFailed )`) for how the flag short-circuits the
+			// generic renderRan/rendered fallback message.
+			// Set by ANY early bail inside doRenderWork that has already written a
+// specific res.message (an unresolvable/non-pinhole `view`, OR the
+// production "no active rasterizer" bail).  Since that resolution moved
+// INSIDE the park, those bails can no longer `return res;` directly, so
+// without this flag the shared tail's generic renderRan/rendered fallback
+// overwrites the specific reason with "render failed".
+			bool specificFailureReported = false;
+			// Re-review P2 fix: set when a resolved PINHOLE named view's FOV
+			// had to be dropped because the ACTIVE camera cannot store one
+			// (anything but PinholeCamera) -- see doRenderWork's
+			// active-camera preflight.  Surfaced as an honest note on the
+			// result message below (res.cameraOverridden site), never a
+			// render failure.
+			bool viewFovSkippedActiveNonPinhole = false;
+
+			// ROUTING-ONLY signal (P1 fix): choosing which controller entry
+			// point parks this render (RunPreviewRenderParked, when a
+			// film/camera override is in play, vs. the plain
+			// SubmitAgentRenderSync otherwise) must happen BEFORE doRenderWork
+			// ever runs -- but the REAL wantCameraOverride (above) is now
+			// resolved live, INSIDE doRenderWork, from state we cannot yet see
+			// out here.  A `view` request is therefore treated CONSERVATIVELY
+			// as "assume a camera override" for routing purposes only: a
+			// resolved pinhole view always sets at least location/lookat/up
+			// (see CameraSnapshotToOverride), so this is never a false
+			// negative; it can only ever route an eventually-failing `view`
+			// request through the override-aware entry point, which is
+			// harmless -- the actual failure message doRenderWork produces is
+			// unaffected by which entry point ran it.
+			const bool wantCameraOverrideForRouting =
+				!params.view.empty() ||
+				( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
+					effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
+					effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov );
 
 			// LIVE-mode safety (see AgentSession.h Render(AgentRenderParams)
 			// doc + CLAUDE.md investigation note): DoOneRenderPass swaps the
@@ -3435,22 +3900,26 @@ namespace RISE
 			double origFilmPAR = 1.0;
 			std::vector<CapturedCameraField> capturedCam;
 			ICamera* activeCam = nullptr;
-			// Model-B F2 slice S3: sample-count override state.  Captured
-			// via GetSampleCountOverride() BEFORE any mutation (-1 = the
-			// active rasterizer doesn't support the override at all);
+			// Model-B F2 slice S3: sample-count override state.
 			// `overrodeSamples` is set true only once SetSampleCountOverride
 			// actually returns true for THIS render, so a caller reading
 			// res.samplesOverridden gets an honest answer even when
 			// `wantSamplesOverride` was requested against an unsupported
-			// rasterizer.  Round-2 P2-A: `rast` may now be null here (a
-			// rasterizer-less head running a draft render) -- guard the
-			// dereference; -1 is the SAME "no override support" sentinel
-			// this already used for an opted-out rasterizer, and this value
-			// is only ever consulted from the PRODUCTION branch below, which
-			// cannot run when rast is null (the gate above refuses
-			// production in that case).
-			const int origSamples = rast ? rast->GetSampleCountOverride() : -1;
+			// rasterizer.
+			//
+			// Re-review P1 fix: `origSamples` (GetSampleCountOverride,
+			// captured BEFORE any mutation) USED to be captured HERE, on the
+			// calling thread, from the (now-removed) outer-scope `rast` --
+			// but it is consumed ONLY inside doRenderWork's production body,
+			// so it is now declared fresh there instead, right where `rast`
+			// is guaranteed freshly-resolved and non-null.
 			bool overrodeSamples = false;
+			// P1 fix: the TAIL (after doRenderWork returns, possibly after
+			// the park has released) needs the effective sample count for
+			// the result message -- captured under the park, inside
+			// doRenderWork's production body, instead of re-dereferencing
+			// `rast` from the tail (see the `readBack` site below).
+			int productionSampleReadBack = -1;
 			// Toolkit slice 2 (quality:"draft"): the draft path's OWN
 			// sample-cap outcome, tracked separately from
 			// overrodeSamples/origSamples above -- those describe the
@@ -3573,10 +4042,15 @@ namespace RISE
 				// captureAndSet's own bookkeeping so every field ALREADY
 				// applied before the failure is captured and will be
 				// restored by the guard.
-				captureAndSet( params.camera.hasLocation, "location", params.camera.location )
-					&& captureAndSet( params.camera.hasLookAt, "lookat", params.camera.lookAt )
-					&& captureAndSet( params.camera.hasUp,     "up",     params.camera.up )
-					&& captureAndSet( params.camera.hasFov,    "fov",    params.camera.fov );
+				// `effectiveCamera` (params.camera, or the resolved `view`
+				// override -- see its declaration above) is the single
+				// source every camera-override consumer reads from.
+				captureAndSet( effectiveCamera.hasLocation, "location", effectiveCamera.location )
+					&& captureAndSet( effectiveCamera.hasLookAt, "lookat", effectiveCamera.lookAt )
+					&& captureAndSet( effectiveCamera.hasUp,     "up",     effectiveCamera.up )
+					&& captureAndSet( effectiveCamera.hasOrientation, "orientation", effectiveCamera.orientation )
+					&& captureAndSet( effectiveCamera.hasTargetOrientation, "target_orientation", effectiveCamera.targetOrientation )
+					&& captureAndSet( effectiveCamera.hasFov,    "fov",    effectiveCamera.fov );
 				overrodeCamera = !capturedCam.empty();
 			};
 
@@ -3608,10 +4082,14 @@ namespace RISE
 			// its per-pixel identity bytes pass through un-tonemapped.
 			double beautyExposureEV       = 0.0;
 			int    beautyDisplayTransform = 2 /*eDisplayTransform_ACES*/;
-			if( !isObjectMap ) {
-				ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform );
-			}
-
+			// External review P2 fix: the resolved OUTPUT COLOUR SPACE, installed
+			// on the beauty sinks alongside the display transform below (see
+			// InMemoryRasterizerOutput::SetOutputColorSpace) -- default matches
+			// today's pre-fix hardcoded behaviour (sRGB) when there's no LDR
+			// file_rasterizeroutput to read one from, or under objectmap (which,
+			// like the display transform, must stay untouched -- the identity
+			// sink's per-pixel bytes are not colour-managed at all).
+			int    beautyColorSpace       = eColorSpace_sRGB;
 			// Toolkit slice 2 (quality:"draft"): the EPHEMERAL preview-
 			// pipeline render body.  Never references `rast` (the production
 			// rasterizer), its FrameStore, or mJob->RemoveRasterizerOutputs()
@@ -3680,6 +4158,7 @@ namespace RISE
 				// transform (see the resolve above) so a draft render mirrors
 				// the file/viewport look, not a raw linear->sRGB image.
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
 				ephemeralRast->AddRasterizerOutput( sink );
 
 				applyFilmOverride();
@@ -3955,14 +4434,384 @@ namespace RISE
 				restoreGuard.Disarm();
 			};
 
+			// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the EPHEMERAL
+			// BeautyVariant render body -- a sibling of doViewModeRenderWork in
+			// SHAPE (fresh throwaway pipeline, the agent's own sink, shared
+			// film/camera overrides, controller-owned cancel wiring, never
+			// touches the production rasterizer) but a REAL production-class PT
+			// render, not a diagnostic first-hit shader: real per-object
+			// materials/lights, OIDN denoise, a fixed multi-sample count.  The
+			// mode's fixed resolution divisor (variantScaleDivisor) is applied
+			// to the EFFECTIVE requested dims (the caller's width/height
+			// override if given, else the scene's current authored Film dims)
+			// -- always applied, since a variant mode ALWAYS renders reduced.
+			auto doBeautyVariantRenderWork = [&]()
+			{
+				if( !viewModeInfo ) {
+					return;   // rendered/renderRan stay false -- shared tail reports "render failed"
+				}
+
+				// review-p3 P2-c: recover the PRODUCTION rasterizer's actual
+				// configured default shader instead of letting
+				// CreateBeautyVariantPipeline fall back to its own generic
+				// internal DefaultPathTracing default -- a scene whose
+				// `global` shader is a CUSTOM shaderop chain would otherwise
+				// diverge from a CLI render on caster-dispatched SSS/BSSRDF
+				// continuations.  Sound, not a guess: GetRasterizerParameter's
+				// "shader" case reads back the exact resolved shader NAME
+				// every Set*Rasterizer call stamped into its own registry
+				// snapshot at construction time (Job.cpp).  Falls back to
+				// null (CreateBeautyVariantPipeline's own real internal
+				// default) when no rasterizer is active yet or the resolved
+				// name doesn't exist in the shader manager.
+				IShader* pProductionDefaultShader = nullptr;
+				{
+					const std::string activeRastName = mJob->GetActiveRasterizerName();
+					if( !activeRastName.empty() ) {
+						const std::string shaderName = mJob->GetRasterizerParameter(
+							activeRastName.c_str(), "shader" );
+						if( !shaderName.empty() && mJob->GetShaders() ) {
+							pProductionDefaultShader = mJob->GetShaders()->GetItem( shaderName.c_str() );
+						}
+					}
+				}
+
+				IRasterizer* ephemeralRast  = nullptr;
+				IRayCaster*  variantCaster  = nullptr;
+				if( !Implementation::CreateBeautyVariantPipeline(
+						params.viewMode, &ephemeralRast, &variantCaster, pProductionDefaultShader ) )
+				{
+					return;
+				}
+				struct EphemeralPipelineGuard
+				{
+					IRasterizer*& r; IRayCaster*& p;
+					~EphemeralPipelineGuard() { safe_release( r ); safe_release( p ); }
+				} pipelineGuard{ ephemeralRast, variantCaster };
+
+				// GUI render modes P2b `render{light:}` surface: apply on
+				// this EPHEMERAL variant caster -- no restore guard needed,
+				// `pipelineGuard` above destroys the whole caster (and its
+				// LightSampler) with it at scope exit.  An unresolved name
+				// FAILS the render loudly, same contract as the production
+				// branch (see ApplyLightSoloByName's doc).
+				//
+				// `SetSoloLightByName` resolves against `variantCaster`'s
+				// OWN attached scene, but CreateBeautyVariantPipeline never
+				// attaches one (that normally only happens inside the
+				// terminal RasterizeScene call below) -- so an EARLY
+				// AttachScene here is required before resolution can see
+				// any lights at all.  Harmless to call again later:
+				// RasterizeScene's own AttachScene(&scene) hits the same-
+				// Scene-pointer fast path (RayCaster::AttachScene) since
+				// nothing changes the scene's light-topology generation in
+				// between, so the LightSampler this call just built (with
+				// the solo already applied) is NOT rebuilt/dropped.
+				if( !params.light.empty() ) {
+					const IScenePriv* scenePrivForSolo = mJob->GetScene();
+					if( scenePrivForSolo ) {
+						variantCaster->AttachScene( scenePrivForSolo );
+					}
+					std::string lightSoloMessage;
+					if( !ApplyLightSoloByName( variantCaster, params.light, lightSoloMessage ) ) {
+						res.ok = false;
+						res.message = lightSoloMessage;
+						specificFailureReported = true;
+						return;
+					}
+				}
+
+				RenderOverrideRestoreGuard restoreGuard( *mJob,
+					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
+					activeCam, capturedCam );
+				restoreGuard.Arm();
+
+				sink = new InMemoryRasterizerOutput();
+				// A BeautyVariant pass genuinely shades + denoises -- apply the
+				// SAME display transform as production/draft beauty so it isn't
+				// a raw linear image (unlike the data-mode view sinks above,
+				// which stay untonemapped by design).
+				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
+				ephemeralRast->AddRasterizerOutput( sink );
+
+				// Film dims: the EFFECTIVE requested dims (an explicit
+				// width/height override if the caller supplied one, else the
+				// scene's current authored Film dims) divided by the mode's
+				// fixed resolution divisor.  Deliberately does NOT reuse
+				// applyFilmOverride() (which only resizes when wantFilmOverride
+				// is true) -- a variant pass resizes UNCONDITIONALLY.
+				const IScenePriv* scenePrivForDims = mJob->GetScene();
+				const IFilm* curFilmForDims = scenePrivForDims ? scenePrivForDims->GetFilm() : nullptr;
+				if( curFilmForDims ) {
+					origFilmW   = curFilmForDims->GetWidth();
+					origFilmH   = curFilmForDims->GetHeight();
+					origFilmPAR = curFilmForDims->GetPixelAR();
+				}
+				const unsigned int effW = wantFilmOverride ? params.width  : origFilmW;
+				const unsigned int effH = wantFilmOverride ? params.height : origFilmH;
+				const unsigned int div  = viewModeInfo->variantScaleDivisor > 0
+					? viewModeInfo->variantScaleDivisor : 1;
+				const unsigned int scaledW = ( effW / div ) > 0 ? ( effW / div ) : 1;
+				const unsigned int scaledH = ( effH / div ) > 0 ? ( effH / div ) : 1;
+				if( curFilmForDims && mJob->SetFilm( scaledW, scaledH, origFilmPAR ) ) {
+					overrodeFilm = true;
+				}
+
+				applyCameraOverride();
+
+				if( cameraOverrideFailed ) {
+					// FAIL LOUD, same contract as the other branches.
+					return;
+				}
+
+				// `params.quality`/`params.samples`/`params.xray` are all
+				// intentionally ignored -- the mode's spp/bounce-depth/OIDN
+				// config is FIXED by the registry (CreateBeautyVariantPipeline);
+				// honestly noted in the result message in RenderCore_'s tail.
+
+				if( mController ) {
+					ephemeralRast->SetProgressCallback( mController->AgentRenderProgress() );
+				}
+
+				// Test-only seam (shared contract with the other branches).
+				if( mThrowBeforeRasterizeForTest ) {
+					throw std::runtime_error(
+						"AgentSession::ForTest_ThrowBeforeRasterize: test-only forced throw immediately before RasterizeScene() (beauty-variant path)" );
+				}
+
+				const IScenePriv* scenePriv = mJob->GetScene();
+				if( scenePriv ) {
+					IRasterizeSequence* pSeq = nullptr;
+					if( mController ) {
+						RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+					}
+					ephemeralRast->RasterizeScene( *scenePriv, 0, pSeq );
+					safe_release( pSeq );
+
+					if( mController ) {
+						wasCancelled = mController->IsCancelRequested();
+					}
+					renderRan = true;
+					rendered  = true;
+				}
+
+				restoreFilmAndCameraOverridesOrdinary();
+				restoreGuard.Disarm();
+			};
+
 			auto doRenderWork = [&]()
 			{
+				// Re-review P1 fix: resolve ALL live Job/rasterizer/camera state
+				// HERE, inside the parked closure -- never snapshot it on the
+				// calling thread before park.  See the comment that used to sit
+				// just ahead of this lambda (now short and pointing here) for the
+				// full rationale.  `res.integrator` is set FIRST, unconditionally,
+				// on every invocation of this closure (every render target,
+				// success or failure) -- matches the pre-fix contract exactly,
+				// just resolved fresh here instead of on the calling thread.
+				res.integrator = mJob->GetActiveRasterizerName();
+
+				if( !isObjectMap ) {
+					ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform, beautyColorSpace );
+				}
+
+				if( params.maxPixelCount > 0 ) {
+					const IScenePriv* scenePrivForBudget = mJob->GetScene();
+					const IFilm* filmForBudget = scenePrivForBudget ? scenePrivForBudget->GetFilm() : nullptr;
+					const unsigned int budgetW = wantFilmOverride ? params.width
+						: ( filmForBudget ? filmForBudget->GetWidth() : 0 );
+					const unsigned int budgetH = wantFilmOverride ? params.height
+						: ( filmForBudget ? filmForBudget->GetHeight() : 0 );
+					const std::uint64_t pixels = static_cast<std::uint64_t>( budgetW ) * budgetH;
+					if( budgetW == 0 || budgetH == 0 || pixels > params.maxPixelCount ) {
+						res.ok = false;
+						res.message = "render dimensions exceed the configured pixel budget";
+						specificFailureReported = true;
+						return;
+					}
+				}
+
+				// Fetch the live rasterizer, fresh, under the park.  Same gating
+				// condition and same message as the pre-fix calling-thread check:
+				// the "!rast" bail-out applies ONLY to the production BEAUTY
+				// branch -- draft/objectmap/view-mode all run their own ephemeral
+				// pipelines and never dereference the production rasterizer.
+				IRasterizer* rast = mJob->GetRasterizer();
+				if( !isDraft && !isObjectMap && !isViewMode && !rast ) {
+					res.ok = false;
+					res.message = "no active rasterizer";
+					// This bail moved INSIDE the park (P1: no snapshotting live
+					// Job state on the calling thread), so it can no longer
+					// `return res;` directly -- flag it so the shared tail
+					// preserves this specific reason instead of overwriting it
+					// with the generic "render failed".
+					specificFailureReported = true;
+					return;
+				}
+
+				if( !params.view.empty() )
+				{
+					bool resolved = false;
+					CameraSnapshot pose;
+					if( mController && mController->FindNamedViewPose( String( params.view.c_str() ), pose ) )
+					{
+						resolved = true;
+					}
+					else if( ICameraManager* cams = mJob->GetCameras() )
+					{
+						if( const ICamera* namedCam = cams->GetItem( params.view.c_str() ) )
+						{
+							resolved = CameraIntrospection::CaptureCameraSnapshot( *namedCam, pose );
+						}
+					}
+
+					if( !resolved )
+					{
+						std::string available;
+						if( mController )
+						{
+							const unsigned int n = mController->NamedViewCount();
+							for( unsigned int i = 0; i < n; ++i )
+							{
+								char nameBuf[257];
+								if( mController->NamedViewName( i, nameBuf, sizeof( nameBuf ) ) )
+								{
+									if( !available.empty() ) available += ", ";
+									available += "\"";
+									available += nameBuf;
+									available += "\"";
+								}
+							}
+						}
+						if( ICameraManager* cams = mJob->GetCameras() )
+						{
+							struct NameCollector : public IEnumCallback<const char*>
+							{
+								std::string* out;
+								bool operator()( const char* const& n ) override
+								{
+									if( !out->empty() ) *out += ", ";
+									*out += "\"";
+									*out += ( n ? n : "" );
+									*out += "\"";
+									return true;
+								}
+							} collector;
+							collector.out = &available;
+							cams->EnumerateItemNames( collector );
+						}
+						// res.renderMode / res.integrator were already set above
+						// (before this resolution block runs) -- no need to
+						// recompute them here.
+						res.ok = false;
+						res.message = "unknown view \"" + params.view + "\"";
+						res.message += available.empty()
+							? std::string( " -- no named views or scene cameras available" )
+							: ( " -- available: " + available );
+						specificFailureReported = true;
+						return;
+					}
+
+					// A named view transfers every shared CameraCommon pose field
+					// (location/lookat/up plus Euler and target orientation) and FOV.
+					// It still cannot transfer a non-pinhole camera's own optics:
+					// it only sets those shared fields on the ACTIVE camera.  There
+					// is no plumbing here (or in
+					// CameraIntrospection::SetProperty, which is descriptor-driven by
+					// the camera's OWN chunk type and cannot re-type an ICamera in
+					// place) to carry a ThinLens/Fisheye/Orthographic view's real
+					// optics -- sensor/focal-length/fstop/focus-distance/aperture/
+					// tilt-shift, fisheye scale, or ortho viewport scale -- onto
+					// whatever type the active camera happens to be.  Silently
+					// dropping those and rendering with the ACTIVE camera's own
+					// optics under the requested view's pose would be a materially
+					// wrong image reported as success.  Fail loudly instead of
+					// guessing: name the unsupported camera type so the caller knows
+					// exactly why, rather than getting a quietly-wrong PNG.
+					if( pose.type != RISE::CameraSnapshot::Pinhole )
+					{
+						const char* typeName = "unknown";
+						switch( pose.type )
+						{
+						case RISE::CameraSnapshot::ThinLens:     typeName = "thinlens";     break;
+						case RISE::CameraSnapshot::Fisheye:      typeName = "fisheye";      break;
+						case RISE::CameraSnapshot::Orthographic: typeName = "orthographic"; break;
+						default: break;
+						}
+						res.ok = false;
+						res.message = "view \"" + params.view + "\" is a " + typeName +
+							" camera -- render{view:} can currently only transfer a pinhole "
+							"view's shared pose+fov onto the active camera (AgentCameraOverride has "
+							"no thinlens/fisheye/orthographic fields), so rendering it would "
+							"silently use the active camera's own optics under the requested "
+							"pose. Not supported yet: switch the active camera to \"" +
+							params.view + "\" (if it names a real scene camera) and render "
+							"without `view`, or request a pinhole named view instead.";
+						specificFailureReported = true;
+						return;
+					}
+
+					CameraSnapshotToOverride( pose, effectiveCamera );
+
+					// Re-review P2 fix: a valid PINHOLE named view must not be
+					// rejected just because the ACTIVE camera happens to be
+					// thin-lens/fisheye/orthographic -- CameraIntrospection::SetProperty's
+					// own "fov" branch (CameraIntrospection.cpp) rejects "fov" on
+					// anything but a PinholeCamera, so applyCameraOverride below would
+					// set cameraOverrideFailed=true and fail the WHOLE render just
+					// because the resolved pose carries a FOV the active camera cannot
+					// store.  That is the FALSE-REJECTION direction of the fix just
+					// above (which correctly keeps failing loudly when the NAMED VIEW
+					// itself is non-pinhole).  Chosen fix: (a) apply the pose, drop the
+					// FOV, note the drop honestly -- NOT (b) render through a temporary
+					// swapped-in pinhole camera.  (b) would need camera CREATE/
+					// activate/teardown plumbing this file does not have:
+					// applyCameraOverride only ever SetProperty's fields on the
+					// ALREADY-active camera (captured via
+					// mJob->GetCameras()->GetItem(activeName) below); there is no
+					// existing "render through a substitute camera" path to reuse, and
+					// building one (IJob::Add*Camera + SetActiveCamera + post-render
+					// teardown/restore) would be new, load-bearing plumbing, not a
+					// surgical fix.
+					if( ICameraManager* camsForFov = mJob->GetCameras() )
+					{
+						const std::string activeNameForFov = mJob->GetActiveCameraName();
+						const ICamera* activeCamForFov = !activeNameForFov.empty()
+							? camsForFov->GetItem( activeNameForFov.c_str() ) : nullptr;
+						CameraSnapshot activeSnapForFov;
+						const bool activeSnapshotted = activeCamForFov
+							&& CameraIntrospection::CaptureCameraSnapshot( *activeCamForFov, activeSnapForFov );
+						if( !activeSnapshotted ) {
+							res.ok = false;
+							res.message = "view \"" + params.view + "\" cannot be transferred to the active camera because its pose cannot be snapshotted";
+							specificFailureReported = true;
+							return;
+						}
+						const bool activeAcceptsFov = activeSnapForFov.type == RISE::CameraSnapshot::Pinhole;
+						if( !activeAcceptsFov && effectiveCamera.hasFov )
+						{
+							effectiveCamera.hasFov = false;
+							viewFovSkippedActiveNonPinhole = true;
+						}
+					}
+				}
+
+				wantCameraOverride =
+					( effectiveCamera.hasLocation || effectiveCamera.hasLookAt ||
+						effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
+						effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov );
+
 				if( isObjectMap ) {
 					doObjectMapRenderWork();
 					return;
 				}
 				if( isViewMode ) {
-					doViewModeRenderWork();
+					if( isBeautyVariant ) {
+						doBeautyVariantRenderWork();
+					} else {
+						doViewModeRenderWork();
+					}
 					return;
 				}
 				if( isDraft ) {
@@ -4043,19 +4892,82 @@ namespace RISE
 					activeCam, capturedCam );
 				restoreGuard.Arm();
 
-				// Model-B F2 slice S3: sample-count override.  Armed
-				// BEFORE the apply (same "arm before mutate" discipline as
-				// restoreGuard above) so a throw between here and the
-				// explicit tail restore still restores via the destructor.
-				// `origSamples` was already captured (GetSampleCountOverride,
-				// before ANY mutation) by the caller, outside this lambda.
+				// Model-B F2 slice S3: sample-count override.  Armed BEFORE the
+				// apply (same "arm before mutate" discipline as restoreGuard
+				// above) so a throw between here and the explicit tail restore
+				// still restores via the destructor.  Re-review P1 fix:
+				// `origSamples` is captured HERE, fresh, from the `rast` this
+				// closure already resolved above (guaranteed non-null by the
+				// bail-out at the top of this closure) -- never from a pointer
+				// cached on the calling thread before park.
 				// (No FrameStore/film interaction, so its position relative
 				// to fsGuard/restoreGuard's load-bearing order is free.)
+				const int origSamples = rast->GetSampleCountOverride();
 				SampleCountRestoreGuard sampleGuard( *rast, origSamples );
 				sampleGuard.Arm();
 
 				if( wantSamplesOverride ) {
 					overrodeSamples = rast->SetSampleCountOverride( params.samples );
+				}
+
+				// GUI render modes P2b `render{light:}` surface (docs/gui/
+				// RENDER_MODES.md §3 "light solo"): resolve + apply on the
+				// PRODUCTION rasterizer's own RayCaster BEFORE the render
+				// call.  Armed BEFORE the apply (same "arm before mutate"
+				// discipline as sampleGuard above) so a throw between here
+				// and the tail restore still clears it via the destructor.
+				// An unresolved name FAILS the render loudly (res.ok=false),
+				// mirroring `view`'s unresolvable-name contract -- see
+				// ApplyLightSoloByName's doc.
+				RISE::Implementation::PixelBasedRasterizerHelper* pHelperForSolo =
+					dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+				RISE::Implementation::RayCaster* pConcreteCasterForSolo = pHelperForSolo
+					? dynamic_cast<RISE::Implementation::RayCaster*>( pHelperForSolo->GetRayCaster() )
+					: nullptr;
+				LightSoloRestoreGuard lightSoloGuard( pConcreteCasterForSolo );
+				lightSoloGuard.Arm();
+
+				if( !params.light.empty() && !RasterizerSupportsLightSolo( rast ) ) {
+					// review-p2d P1-2: refuse rather than render every light
+					// while reporting that only one is lit.  See
+					// RasterizerSupportsLightSolo's doc for why BDPT is
+					// actively wrong here and VCM/MLT a silent no-op.
+					res.ok = false;
+					res.message = "light \"" + params.light + "\" could not be applied -- light solo is "
+						"implemented in the path-tracing integrator only.  BDPT, VCM, MLT and the auto-routed "
+						"rasterizers would ignore it (BDPT would render a mixed estimator), so this render is "
+						"refused rather than silently reporting a solo that did not happen.  Switch the scene "
+						"to pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer, or use a BeautyVariant "
+						"view mode (which builds its own path-tracing pipeline and supports light solo).";
+					specificFailureReported = true;
+					return;
+				}
+
+				if( !params.light.empty() ) {
+					// `SetSoloLightByName` resolves against the caster's
+					// OWN attached scene, but a Job whose production
+					// rasterizer has never rendered yet has no scene
+					// attached to its caster (PixelBasedRasterizerHelper
+					// only calls AttachScene from inside RasterizeScene
+					// itself).  An early AttachScene here guarantees
+					// resolution always sees the real light/object
+					// managers; it is a same-Scene-pointer no-op (or a
+					// harmless re-Prepare if something upstream already
+					// bumped the light-topology generation) on every OTHER
+					// call, since mJob->Rasterize() below attaches the
+					// SAME Scene pointer again.
+					if( pConcreteCasterForSolo ) {
+						if( const IScenePriv* scenePrivForSolo = mJob->GetScene() ) {
+							pConcreteCasterForSolo->AttachScene( scenePrivForSolo );
+						}
+					}
+					std::string lightSoloMessage;
+					if( !ApplyLightSoloByName( pConcreteCasterForSolo, params.light, lightSoloMessage ) ) {
+						res.ok = false;
+						res.message = lightSoloMessage;
+						specificFailureReported = true;
+						return;
+					}
 				}
 
 				// ---- The render itself (in-memory sink; never touches the
@@ -4079,6 +4991,7 @@ namespace RISE
 				// the divergence the image_reconstruct compareToImage grading
 				// depends on being closed (see ResolveBeautyDisplayTransform_).
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
+				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
 				rast->AddRasterizerOutput( sink );
 
 				// ---- Film-dims override: capture -> set -> (render happens
@@ -4265,6 +5178,12 @@ namespace RISE
 					progressGuard.Disarm();
 				}
 				renderRan = true;
+				// P1 fix: capture the effective sample count NOW, under the
+				// park (rast is guaranteed valid here) -- the tail (after
+				// doRenderWork returns, possibly after the park has released)
+				// must never dereference `rast` again; it reads this captured
+				// int instead (see the `readBack` site below).
+				productionSampleReadBack = rast->GetSampleCountOverride();
 
 				// ---- Restore, in reverse order, BEFORE unlocking (live mode)
 				// / returning (headless mode) -- ReadDocument's byte-identity
@@ -4392,7 +5311,7 @@ namespace RISE
 					res.message     = "render failed: " + thrownMessage;
 					return res;
 				}
-			} else if( mController && ( wantFilmOverride || wantCameraOverride ) ) {
+			} else if( mController && ( wantFilmOverride || wantCameraOverrideForRouting ) ) {
 				SceneEditController::RenderJobId controllerJobId = 0;
 				bool parked = false;
 				std::string thrownMessage;
@@ -4426,15 +5345,25 @@ namespace RISE
 					// gesture completes") so a caller sees the identical
 					// wording whether it hit a param edit, a chunk edit, or a
 					// preview render.
+					// P2 fix (2026-07-19 mutation review): doRenderWork never
+					// entered the park on THIS path (RunPreviewRenderParked
+					// refused before running it) -- there is no live-render
+					// state to resolve, and reading mJob->GetActiveRasterizerName()
+					// here would be an unsynchronized read racing the interactive
+					// render thread for nothing.  Leave res.integrator at its
+					// default-constructed empty string; see AgentRenderResult::
+					// integrator's field doc for the "never resolved" contract.
 					res.ok          = false;
-					res.integrator  = mJob->GetActiveRasterizerName();
 					res.renderJobId = renderJobId;   // 0 here -- no render ran, matching the other pre-flight refusal paths in this function
 					res.message     = "editor transaction in progress -- retry after the gesture completes";
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
+					// P2 fix (2026-07-19 mutation review): same reasoning as the
+					// refusal branch just above -- do not read live Job state on
+					// the calling thread here.  See AgentRenderResult::integrator's
+					// field doc.
 					res.ok          = false;
-					res.integrator  = mJob->GetActiveRasterizerName();
 					res.renderJobId = static_cast<std::uint64_t>( controllerJobId );
 					res.message     = "render failed: " + thrownMessage;
 					return res;
@@ -4464,8 +5393,12 @@ namespace RISE
 					// SubmitAgentRenderSync's `pinned` doc).  Honest
 					// failure -- no fallback direct call here, since a
 					// direct call is exactly the race this slice closes.
+					// P2 fix (2026-07-19 mutation review): doRenderWork never
+					// entered the park on THIS path (SubmitAgentRenderSync
+					// refused before running it) -- see the RunPreviewRenderParked
+					// refusal branch above and AgentRenderResult::integrator's
+					// field doc for the same reasoning.
 					res.ok = false;
-					res.integrator = mJob->GetActiveRasterizerName();
 					const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
 					res.message = ( cur.active && cur.pinned )
 						? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
@@ -4473,8 +5406,9 @@ namespace RISE
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
+					// P2 fix (2026-07-19 mutation review): same reasoning --
+					// do not read live Job state on the calling thread here.
 					res.ok          = false;
-					res.integrator  = mJob->GetActiveRasterizerName();
 					res.renderJobId = static_cast<std::uint64_t>( controllerJobId );
 					res.message     = "render failed: " + thrownMessage;
 					return res;
@@ -4509,6 +5443,21 @@ namespace RISE
 			}
 			res.renderJobId = renderJobId;
 
+			// P1 fix: a `view` resolution failure (unknown name / a resolved
+			// but non-pinhole NAMED VIEW) OR the production "no active
+			// rasterizer" bail is now detected fresh INSIDE
+			// doRenderWork (under the park -- see doRenderWork's top) rather
+			// than on the calling thread before dispatch, so it can no
+			// longer `return res;` directly from there.
+			// res.ok/res.integrator/res.message were already fully populated
+			// inside doRenderWork for this case -- just stop here so the
+			// generic renderRan/rendered/HasImage fallback below (which would
+			// overwrite the specific message with a generic "render failed")
+			// never runs.
+			if( specificFailureReported ) {
+				return res;
+			}
+
 			// P1-B (belt-and-braces, fail-loud): a camera override field that
 			// failed to apply means the requested pose was NOT achieved --
 			// report ok=false rather than silently rendering un-overridden
@@ -4526,8 +5475,16 @@ namespace RISE
 			// when this function returns -- no leak, just not this
 			// early-return's job to handle.
 			if( cameraOverrideFailed ) {
+				// P2 fix (2026-07-19 mutation review): NOT a fresh read here --
+				// doRenderWork already ran on this call (cameraOverrideFailed can
+				// only be set from inside applyCameraOverride, which only runs
+				// inside doRenderWork's park) and set res.integrator FIRST,
+				// unconditionally, before doing anything else (see doRenderWork's
+				// own comment at its top).  Re-reading mJob->GetActiveRasterizerName()
+				// here, on the calling thread, AFTER the park has already
+				// released, was both redundant and the exact unsynchronized-
+				// std::string-read race the park fix exists to prevent.
 				res.ok = false;
-				res.integrator = mJob->GetActiveRasterizerName();
 				res.cameraOverridden = false;
 				res.message = "camera override failed: '" + cameraOverrideFailedField +
 					"' did not parse -- render skipped, camera left unchanged";
@@ -4546,8 +5503,12 @@ namespace RISE
 			// SOME pixels got written.
 			if( wasCancelled ) {
 				safe_release( sink );
+				// P2 fix (2026-07-19 mutation review): same reasoning as the
+				// cameraOverrideFailed branch above -- doRenderWork already ran
+				// (wasCancelled is only ever set from inside doRenderWork's park)
+				// and already set res.integrator unconditionally.  Re-reading it
+				// here on the calling thread was redundant and racy.
 				res.ok          = false;
-				res.integrator  = mJob->GetActiveRasterizerName();
 				res.renderJobId = renderJobId;
 				res.message     = "render cancelled";
 				return res;
@@ -4569,6 +5530,16 @@ namespace RISE
 			res.previewWidth     = res.width;
 			res.previewHeight    = res.height;
 			res.cameraOverridden = overrodeCamera;
+			// Re-review P2 fix: a valid PINHOLE named view rendered through a
+			// non-pinhole ACTIVE camera got its pose applied but its FOV
+			// honestly dropped (see doRenderWork's view-resolution block) --
+			// note that here rather than silently reporting an unqualified
+			// success.
+			if( viewFovSkippedActiveNonPinhole && res.ok ) {
+				res.message += " (view \"" + params.view + "\": FOV not applied -- "
+					"the active camera has no editable field-of-view (only a pinhole "
+					"camera does); the view's pose (location/lookat/up) WAS applied)";
+			}
 
 			// Model-B F2 slice S3 (production) / Toolkit slice 2 (draft):
 			// report the sample-count outcome.  DRAFT and PRODUCTION are
@@ -4633,6 +5604,22 @@ namespace RISE
 					e.pixelCount = unknownCount;
 					res.legend.push_back( e );
 				}
+			} else if( isBeautyVariant ) {
+				// GUI render modes P2a: a BeautyVariant render has a FIXED
+				// production-class config (spp/bounces/OIDN, per the
+				// registry) -- `samples`/`quality` are both honestly
+				// ignored, same precedent as the data view-modes above, but
+				// the effective sample count is the mode's REAL fixed spp
+				// (not the ShaderPipeline exactness invariant's 1).  No
+				// legend (no per-object identity registry).
+				res.samplesOverridden = false;
+				res.effectiveSamples  = viewModeInfo ? static_cast<int>( viewModeInfo->variantSamplesPerPass ) : 0;
+				if( res.ok && ( wantSamplesOverride || params.quality == AgentRenderQuality::Draft ) ) {
+					const char* modeName = viewModeInfo ? viewModeInfo->name : "view";
+					res.message += " (mode:";
+					res.message += modeName;
+					res.message += " uses a FIXED production-quality config; quality/samples ignored)";
+				}
 			} else if( isViewMode ) {
 				// GUI render modes P1: a view-mode render has exactly ONE
 				// fidelity, the SAME EXACTNESS INVARIANT reasoning as objectmap
@@ -4664,7 +5651,7 @@ namespace RISE
 				if( overrodeSamples ) {
 					res.effectiveSamples = params.samples;
 				} else {
-					const int readBack = rast->GetSampleCountOverride();
+					const int readBack = productionSampleReadBack;   // P1 fix: captured under the park inside doRenderWork -- never re-dereference `rast` here
 					res.effectiveSamples = ( readBack >= 1 ) ? readBack : 0;
 					if( wantSamplesOverride && res.ok ) {
 						res.message += " (samples override not supported by the active rasterizer -- rendered at the scene-authored count)";
@@ -4681,7 +5668,16 @@ namespace RISE
 			// so the common case notes "active"; an explicit xray:false is
 			// noted too, so a caller can tell "inactive by request" apart
 			// from "not a view-mode render at all" (no note either way).
-			if( res.ok && isViewMode ) {
+			if( res.ok && isBeautyVariant ) {
+				// GUI render modes P2a: xray is meaningless for a
+				// BeautyVariant mode -- it's a real production transport
+				// render, not a first-hit diagnostic; skipping through
+				// transmissive surfaces would defeat deep_reflect's entire
+				// purpose (seeing what reflections/refractions resolve to).
+				res.message += " (xray is ignored under mode:";
+				res.message += viewModeInfo ? viewModeInfo->name : "";
+				res.message += " -- variant modes render fixed production transport)";
+			} else if( res.ok && isViewMode ) {
 				if( params.xray ) {
 					res.message += " (xray: transmissive surfaces skipped (straight-line))";
 				} else {
@@ -4689,6 +5685,30 @@ namespace RISE
 				}
 			} else if( res.ok && params.xray ) {
 				res.message += " (xray is ignored outside the view-mode diagnostics -- mode:\"normals\"|\"depth\"|\"facets\"|\"wireframe\")";
+			}
+
+			// GUI render modes P2b `render{light:}` surface (light solo):
+			// honest note about whether `light` actually took effect.
+			// Meaningful ONLY for Beauty (production) and BeautyVariant --
+			// data view-modes/objectmap/draft never evaluate scene lighting
+			// at all (first-hit diagnostic shaders / the studio preview's
+			// own fixed headlamp+AO rig), so `light` is silently ignored
+			// there, same precedent as quality/samples/xray above.  An
+			// unresolved name already failed the render loudly inside
+			// doRenderWork (see ApplyLightSoloByName's call sites) -- this
+			// block only runs when res.ok, i.e. either `light` was empty or
+			// it resolved.
+			if( res.ok && !params.light.empty() ) {
+				if( isBeautyVariant || ( !isObjectMap && !isViewMode && !isDraft ) ) {
+					res.message += " (light solo: \"" + params.light + "\" is the only active light)";
+				} else {
+					const char* what = isObjectMap ? "objectmap"
+						: isDraft ? "draft"
+						: ( viewModeInfo ? viewModeInfo->name : "view" );
+					res.message += " (light is ignored under mode:";
+					res.message += what;
+					res.message += " -- no scene lighting is evaluated)";
+				}
 			}
 
 			// Cache for ReadImage() ONLY on a successful, non-empty encode --
@@ -4729,29 +5749,7 @@ namespace RISE
 				return res;
 			}
 
-			// Effective dims: the SAME width/height-override composition
-			// render's own overrides use (AgentRenderParams::width/height's
-			// doc) -- both supplied means "use these transient dims",
-			// otherwise the Document's authored Film dims.  A CHEAP,
-			// read-only Film query -- NO render -- so an out-of-range (x,y)
-			// is rejected BEFORE paying for the ephemeral identity render
-			// below (see QueryObjectAt's header doc).
-			unsigned int effW = params.width;
-			unsigned int effH = params.height;
-			if( effW == 0 || effH == 0 ) {
-				const IScenePriv* scenePriv = mJob->GetScene();
-				const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
-				effW = curFilm ? curFilm->GetWidth()  : 0;
-				effH = curFilm ? curFilm->GetHeight() : 0;
-			}
-			res.width  = effW;
-			res.height = effH;
-
-			if( effW == 0 || effH == 0 ||
-			    x < 0 || y < 0 ||
-			    static_cast<unsigned int>( x ) >= effW ||
-			    static_cast<unsigned int>( y ) >= effH )
-			{
+			if( x < 0 || y < 0 ) {
 				res.outOfRange = true;
 				res.message = "x/y out of range for the effective film dims";
 				return res;
@@ -4785,29 +5783,18 @@ namespace RISE
 			res.width  = rr.width;
 			res.height = rr.height;
 
-			// Defensive: the render's OWN effective dims should match the
-			// pre-render computation above (identical composition rule) --
-			// never read out of bounds on a mismatch.  Unreachable in
-			// practice (both derive the same width/height/camera
-			// composition), kept for robustness.
+			// Determine bounds from the completed identity render, not from a
+			// live Film read on the unparked caller thread.  Another render may
+			// legally replace the session cache after Render returns, so decode
+			// this result's own immutable PNG below rather than consulting it.
 			if( res.pixelX >= res.width || res.pixelY >= res.height ) {
 				res.outOfRange = true;
 				res.message = "x/y out of range for the effective film dims";
 				return res;
 			}
 
-			RISEColor pixel;
-			bool gotPixel = false;
-			{
-				// Guarded by mAsyncCacheMutex like every other mLastSink
-				// access (ReadImage/ReadImage(maxEdge)) -- the Render() call
-				// just above already populated it synchronously on THIS
-				// thread, so this is uncontended in practice; the lock costs
-				// nothing and keeps the access pattern uniform.
-				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-				if( mLastSink ) gotPixel = mLastSink->GetPixelColor( res.pixelX, res.pixelY, pixel );
-			}
-			if( !gotPixel ) {
+			unsigned char red = 0, green = 0, blue = 0;
+			if( !DecodePngRgbAt( rr.png, res.pixelX, res.pixelY, red, green, blue ) ) {
 				res.message = "could not read the rendered pixel";
 				return res;
 			}
@@ -4818,10 +5805,9 @@ namespace RISE
 			// identical to what the objectmap PNG's corresponding pixel
 			// carries -- the exact-byte legend match below rides the same
 			// quantizer contract the palette generator guarantees.
-			const RGBA_T<unsigned char> enc = pixel.Integerize<sRGBPel, unsigned char>( 255.0 );
 			char hexBuf[8];
 			std::snprintf( hexBuf, sizeof( hexBuf ), "#%02X%02X%02X",
-				static_cast<unsigned>( enc.r ), static_cast<unsigned>( enc.g ), static_cast<unsigned>( enc.b ) );
+				static_cast<unsigned>( red ), static_cast<unsigned>( green ), static_cast<unsigned>( blue ) );
 			const std::string pixelHex( hexBuf );
 
 			if( pixelHex == "#000000" ) {
@@ -5839,14 +6825,33 @@ namespace RISE
 			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
 		}
 
+		// user-review P1-3 (round 2): the standalone DescribeViewportPanes was
+		// REMOVED -- its one caller (read_viewport RPC) now takes the pane set
+		// ATOMICALLY with the frame via SceneEditController::
+		// SnapshotPaneSetForParkedRead (inside the parked window), so a separate
+		// non-atomic getter that reads the pane set back AFTER the render resumed
+		// would only invite drift.  The ViewportPaneInfo / ViewportPanesInfo wire
+		// structs live on -- ReadViewport fills them.
+
 		std::vector<unsigned char> AgentSession::ReadViewport(
 			unsigned int maxEdge, unsigned int& outWidth, unsigned int& outHeight,
-			bool& outAvailable, std::string& outReason ) const
+			bool& outAvailable, std::string& outReason,
+		                                                 unsigned int& outSourcePane,
+		                                                 ViewportPanesInfo& outPaneSet,
+		                                                 bool& outHavePaneSet ) const
 		{
 			outWidth  = 0;
 			outHeight = 0;
 			outAvailable = false;
 			outReason.clear();
+			// review P2: initialize WITH the other out-params, before any early
+			// return -- the no_controller path below returns without reaching
+			// the later assignment, leaving this indeterminate for any future
+			// caller that doesn't pre-init its local.
+			outSourcePane = 0;
+			// user-review P1-3: same all-paths init for the pane-set flag.
+			outHavePaneSet = false;
+			outPaneSet = ViewportPanesInfo();
 
 			// No live controller -> no viewport at all (headless session).
 			// This is a STRUCTURED unavailable, NOT an error.
@@ -5855,13 +6860,68 @@ namespace RISE
 				return std::vector<unsigned char>();
 			}
 
-			// Copy the live interactive frame out of the controller.  This
-			// call does the cross-thread-safe, tile-locked COHERENT copy
-			// against the render thread (see CopyInteractiveFrame); false
-			// means the interactive render loop has not produced a frame yet.
 			std::vector<RISEColor> pixels;
 			unsigned int w = 0, h = 0;
-			if( !mController->CopyInteractiveFrame( pixels, w, h ) ) {
+			double vExposureEV = 0.0;
+			int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
+			int    vColorSpace = eColorSpace_sRGB;
+			bool copiedFrame = false;
+			SceneEditController::PaneSetSnapshot paneSnap;   // user-review P1-3
+			bool haveSnap = false;
+			const bool parked = mController->RunPreviewRenderParked( [&]() {
+				// Keep the frame copy and its live display-transform lookup in the
+				// same parked interval.  CopyInteractiveFrame itself is tile-safe,
+				// but ResolveBeautyDisplayTransform_ reads the Job's CST/camera.
+				// user-review P1#3: the source pane is captured ATOMICALLY with
+				// the frame (same frame-store lock), and this whole copy runs
+				// PARKED, so it cannot drift from the returned pixels.
+				copiedFrame = mController->CopyInteractiveFrame( pixels, w, h, &outSourcePane );
+				// user-review P1-3: capture the WHOLE pane set HERE, inside the
+				// same parked+locked window, so layout/primary/visibility/mode/
+				// vantage describe the SAME frame as the pixels above (not a
+				// later state read back through the locking getters after the
+				// render resumed).  SnapshotPaneSetForParkedRead takes no lock --
+				// mMutex is already held across this closure.
+				mController->SnapshotPaneSetForParkedRead( paneSnap );
+				haveSnap = true;
+				if( copiedFrame ) {
+					ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform, vColorSpace );
+				}
+			} );
+			if( !parked ) {
+				outReason = "editor_transaction_in_progress";
+				return std::vector<unsigned char>();
+			}
+
+			// Test-only race injector: the parked closure above already captured
+			// pixels and pane metadata as one coherent snapshot.  Mutating the
+			// live controller here proves callers never rebuild the response from
+			// post-park getters, which could describe a later layout.
+			if( mReadViewportAfterParkHookForTest ) {
+				std::function<void()> hook = std::move( mReadViewportAfterParkHookForTest );
+				hook();
+			}
+
+			// Publish the parked pane snapshot even when there is not yet a
+			// frame.  Pane introspection is useful while the initial viewport pass
+			// is pending, and the old read_viewport path returned it independently
+			// of image availability.
+			if( haveSnap ) {
+				outHavePaneSet = true;
+				outPaneSet.layout     = paneSnap.layout;
+				outPaneSet.primary    = paneSnap.primary;
+				outPaneSet.sourcePane = outSourcePane;
+				for( unsigned int i = 0; i < SceneEditController::kViewportPaneCount; ++i ) {
+					outPaneSet.panes[i].visible = paneSnap.panes[i].visible;
+					const Implementation::ViewportRenderModeInfo* mi =
+						Implementation::FindViewportRenderModeInfo( paneSnap.panes[i].mode );
+					outPaneSet.panes[i].mode        = mi ? mi->name : "preview";
+					outPaneSet.panes[i].vantageKind = static_cast<int>( paneSnap.panes[i].vantageKind );
+					outPaneSet.panes[i].namedView   = paneSnap.panes[i].namedView.c_str()
+						? paneSnap.panes[i].namedView.c_str() : "";
+				}
+			}
+			if( !copiedFrame ) {
 				outReason = "no_frame_yet";
 				return std::vector<unsigned char>();
 			}
@@ -5877,12 +6937,8 @@ namespace RISE
 			// display transform at encode time so read_viewport shows the SAME
 			// tonemapped image a human watching the viewport sees, matching
 			// read_image (see ResolveBeautyDisplayTransform_).
-			{
-				double vExposureEV = 0.0;
-				int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
-				ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform );
-				sink->SetDisplayTransform( vExposureEV, vDisplayTransform );
-			}
+			sink->SetDisplayTransform( vExposureEV, vDisplayTransform );
+			sink->SetOutputColorSpace( vColorSpace );
 
 			std::vector<unsigned char> png;
 			if( maxEdge > 0 ) {

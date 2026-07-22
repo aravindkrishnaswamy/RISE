@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Polynomial.h"
+#include "../Utilities/FiniteMath.h"
 #include <float.h>			// for copysign
 
 using namespace RISE;
@@ -339,9 +340,9 @@ namespace
 		double h = ( 8.0 * dq + hh - 2.0 * gg ) * bq / 3.0 - cq * cq - dq * aq * aq;
 		double rmax;
 		oqs_solve_cubic_analytic_depressed( g, h, &rmax );
-		if( std::isnan( rmax ) || std::isinf( rmax ) ) {
+		if( !RISE::IsFiniteDouble( rmax ) ) {
 			oqs_solve_cubic_analytic_depressed_handle_inf( g, h, &rmax );
-			if( ( std::isnan( rmax ) || std::isinf( rmax ) ) && scaled ) {
+			if( !RISE::IsFiniteDouble( rmax ) && scaled ) {
 				double rfact = oqs_cubic_rescal_fact;
 				double rfactsq = rfact * rfact;
 				double ggss = gg / rfactsq;
@@ -355,7 +356,7 @@ namespace
 				double g2 = hhss - 4.0 * dqss - 3.0 * ggss;
 				double h2 = ( 8.0 * dqss + hhss - 2.0 * ggss ) * bqs / 3.0 - cqs * ( cqs / rfact ) - ( dq / rfact ) * aqs * aqs;
 				oqs_solve_cubic_analytic_depressed( g2, h2, &rmax );
-				if( std::isnan( rmax ) || std::isinf( rmax ) ) {
+				if( !RISE::IsFiniteDouble( rmax ) ) {
 					oqs_solve_cubic_analytic_depressed_handle_inf( g2, h2, &rmax );
 				}
 				rmax *= rfact;
@@ -523,7 +524,7 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	oqs_calc_phi0( a, b, c, d, &phi0, 0 );
 	double rfact = 1.0;
 	double A = a, B = b, C = c, D = d;
-	if( std::isnan( phi0 ) || std::isinf( phi0 ) ) {
+	if( !RISE::IsFiniteDouble( phi0 ) ) {
 		rfact = oqs_quart_rescal_fact;
 		A = a / rfact;
 		double rfactsq = rfact * rfact;
@@ -704,4 +705,3 @@ Scalar Polynomial::bessi0( Scalar x )
 			+y*0.392377e-2))))))));
 	}
 }
-

@@ -1056,20 +1056,13 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
 // pixel-by-pixel via `>> 8`).  The VFS's per-tile shared_mutex (L1)
 // makes RenderToBuffer thread-safe alongside concurrent rasterizer
 // writes; we render directly into m_pixelBuffer at RGBA8_sRGB
-// (saving the RGBA16 hop entirely).  Multiple worker threads can
-// land tile callbacks concurrently — m_bufferMutex serialises them
-// so the QImage emission isn't torn.
-// Render `roi` (full image when roi == nullptr) into m_pixelBuffer +
-// emit imageUpdated.  Caller must hold m_bufferMutex.
-//
-// L4 round-7 P1 perf fix: per-tile invocations now write only the
-// changed region into m_pixelBuffer (was: full-image RenderToBuffer
-// every tile fire, ~4× regression vs legacy `>> 8`-of-tile path).
-// The QImage emission is still full-image because Qt's Compose
-// painter wants a complete pixmap, but the per-tile rasterizer→
-// buffer cost scales with tile area instead of frame area.  Frame-
-// complete fires once per frame (not hot) and uses the full-image
-// path to guarantee post-denoise / post-resolve coherence.
+// (saving the RGBA16 hop entirely).  Frame-complete callbacks and
+// main-thread polling share m_bufferMutex so staging and emission
+// cannot tear.
+// Render the full frame into m_pixelBuffer and emit imageUpdated.
+// Caller must hold m_bufferMutex.  Progressive updates are coalesced
+// by the Qt-main-thread poller; do not emit a full-resolution QImage
+// from every rasterizer tile callback.
 //
 // RGBA8_sRGB direct: gamma + sRGB primaries + uint8 quantize, no
 // intermediate uint16 buffer.  Slight ±1-LSB difference in some
@@ -1078,7 +1071,6 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
 // `Integerize<sRGBPel,unsigned short>` (Color_Template.h:118-122)
 // truncates.  Visible impact: sub-quantum on most displays.
 void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
-                                                        const RISE::Rect* halfOpenRoi,
                                                         bool nonBlocking)
 {
     if (W == 0 || H == 0 || !m_productionVFS) return;
@@ -1123,26 +1115,11 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         // EDR path uses — the platform-specific code is just the
         // DXGI swap chain set up in HDRRenderWidget.
         const ViewTransform xf = ViewTransform::ForHDRDisplay(ev);
-        if (halfOpenRoi) {
-            const unsigned int y0 = halfOpenRoi->top;
-            const unsigned int x0 = halfOpenRoi->left;
-            const unsigned int y1 = std::min<unsigned int>(halfOpenRoi->bottom, H);
-            const unsigned int x1 = std::min<unsigned int>(halfOpenRoi->right,  W);
-            if (y1 <= y0 || x1 <= x0) return;
-            // Pixel stride is 4 uint16 = 8 bytes; row stride is W*8.
-            uint16_t* base = m_hdrPixelBuffer.data()
-                             + (static_cast<size_t>(y0) * W + x0) * 4;
-            m_productionVFS->RenderToBuffer(
-                base, static_cast<size_t>(W) * 4 * sizeof(uint16_t),
-                *halfOpenRoi,
-                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf, nonBlocking);
-        } else {
-            m_productionVFS->RenderToBuffer(
-                m_hdrPixelBuffer.data(),
-                static_cast<size_t>(W) * 4 * sizeof(uint16_t),
-                RISE::Rect(0, 0, H, W),
-                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf, nonBlocking);
-        }
+        m_productionVFS->RenderToBuffer(
+            m_hdrPixelBuffer.data(),
+            static_cast<size_t>(W) * 4 * sizeof(uint16_t),
+            RISE::Rect(0, 0, H, W),
+            TargetFormat::RGBA16F_ExtendedLinearSRGB, xf, nonBlocking);
 
         // Snapshot pixels into a QByteArray for QueuedConnection
         // delivery.  The detached array is independent of
@@ -1176,27 +1153,9 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         static_cast<DISPLAY_TRANSFORM>(m_viewToneCurve.load());
     const ViewTransform xf = ViewTransform::ForLDRDisplay(ev, tc);
 
-    if (halfOpenRoi) {
-        // Region-bounded path.  RenderToBuffer writes pixels at
-        // dst[(y - y0) * dstStride + (x - x0) * bpp]
-        // (FrameStore.cpp:748-750), so to land them at their actual
-        // (y, x) image coordinates we point dst at the (y0, x0) pixel
-        // of the full-image buffer and pass the FULL row stride.
-        const unsigned int y0 = halfOpenRoi->top;
-        const unsigned int x0 = halfOpenRoi->left;
-        const unsigned int y1 = std::min<unsigned int>(halfOpenRoi->bottom, H);
-        const unsigned int x1 = std::min<unsigned int>(halfOpenRoi->right,  W);
-        if (y1 <= y0 || x1 <= x0) return;
-        uint8_t* base = m_pixelBuffer.data()
-                        + (static_cast<size_t>(y0) * W + x0) * 4;
-        m_productionVFS->RenderToBuffer(
-            base, static_cast<size_t>(W) * 4,
-            *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf, nonBlocking);
-    } else {
-        m_productionVFS->RenderToBuffer(
-            m_pixelBuffer.data(), static_cast<size_t>(W) * 4,
-            RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
-    }
+    m_productionVFS->RenderToBuffer(
+        m_pixelBuffer.data(), static_cast<size_t>(W) * 4,
+        RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
 
     QImage image = buildImageFromBuffer();
     bool firstTime = !m_sizeDetected;
@@ -1216,35 +1175,6 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
     }, Qt::QueuedConnection);
 }
 
-void RenderEngine::onProductionVFSTileComplete(const RISE::Rect& halfOpenRoi)
-{
-    if (!m_productionVFS) return;
-    // GetDimensions takes chainMutex_ shared internally — safe against
-    // a concurrent resolution-change reallocation in the rasterizer
-    // thread (see L4 round-4 P2-D adversarial review).  The earlier
-    // raw GetFrameStore()->Width()/Height() pattern was racy.
-    unsigned int W = 0, H = 0;
-    m_productionVFS->GetDimensions(W, H);
-    if (W == 0 || H == 0) return;
-
-    // try_lock (NOT the earlier blocking lock_guard) — parity with the
-    // macOS bridge's OnTileCompleteTry.  This fires on the rasterizer
-    // worker thread right after that worker EndTile'd `halfOpenRoi`, so
-    // the brief toggle-decorated window is caught.  Inversion-safe:
-    //   * A worker that can't take m_bufferMutex immediately SKIPS this
-    //     tile's toggle (poll / next tile / frame-complete still deliver
-    //     its pixels) — it never blocks on the UI side, so the
-    //     `m_bufferMutex ↔ tile-mutex` cycle the blocking version could
-    //     form cannot occur.
-    //   * The emit reads ONLY `halfOpenRoi` — the tile this worker just
-    //     EndTile'd, so no writer holds it and its shared_lock succeeds
-    //     immediately; `nonBlocking=true` is belt-and-suspenders,
-    //     skipping any contended tile rather than waiting.
-    std::unique_lock<std::mutex> lock(m_bufferMutex, std::try_to_lock);
-    if (!lock.owns_lock()) return;  // UI (poll/scrub) busy — skip this toggle
-    renderViewportToBufferAndEmit_locked(W, H, &halfOpenRoi, /*nonBlocking=*/true);
-}
-
 void RenderEngine::onProductionVFSFrameComplete()
 {
     if (!m_productionVFS) return;
@@ -1252,7 +1182,7 @@ void RenderEngine::onProductionVFSFrameComplete()
     m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
     std::lock_guard<std::mutex> lock(m_bufferMutex);
-    renderViewportToBufferAndEmit_locked(W, H, nullptr);  // full image
+    renderViewportToBufferAndEmit_locked(W, H);  // full image
     // L8 round 9 — sync the poll sentinel so a subsequent
     // pollProductionVFS doesn't redo the same work.
     m_lastSeenGeneration = m_productionVFS->Generation();
@@ -1288,7 +1218,7 @@ void RenderEngine::pollProductionVFS()
     // L8 round 14 — `nonBlocking=true`.  See FrameStore::Render doc;
     // prevents the Qt GUI thread from beachballing when workers
     // hold a slow per-pixel block's tile exclusive.
-    renderViewportToBufferAndEmit_locked(W, H, nullptr, /*nonBlocking=*/true);
+    renderViewportToBufferAndEmit_locked(W, H, /*nonBlocking=*/true);
     m_lastSeenGeneration = gen;
 }
 
@@ -1307,30 +1237,13 @@ void RenderEngine::ensureProductionVFSAttachedToRasterizer()
         // time any in-flight observer callback completes, `this` is
         // still valid.  See -RenderEngine() ordering rationale.
         //
-        // Tile-complete callback WIRED via a try_lock handler
-        // (`onProductionVFSTileComplete`) — parity with the macOS
-        // bridge's `OnTileCompleteTry`, restoring the progressive
-        // "toggle" markers.  The 30 Hz poll below almost never catches
-        // the microsecond split-bracket EndTile→BeginTile window in
-        // which the toggle-decorated pixels are visible; only a
-        // synchronous per-tile fire does.
-        //
-        // The EARLIER design here left this unwired because its handler
-        // took a BLOCKING `m_bufferMutex` lock and, with the per-tile
-        // `RenderToBuffer` inside it (taking FrameStore shared_locks),
-        // could deadlock (`m_bufferMutex ↔ tile-mutex`) under worker
-        // contention.  `onProductionVFSTileComplete` now try_locks
-        // (skip-on-busy, so a worker never blocks on the UI side) and
-        // reads ONLY the just-EndTile'd `roi` — no writer holds that
-        // tile, so its shared_lock succeeds immediately and the
-        // cross-tile wait that formed the cycle cannot occur.  The poll
-        // (`pollProductionVFS`, 30 Hz) and the frame-complete callback
-        // below remain and still guarantee the progressive fill and the
-        // final coherent image.
-        m_productionVFS->SetTileCompleteCallback(
-            [this](const RISE::Rect& roi, uint64_t /*gen*/) {
-                this->onProductionVFSTileComplete(roi);
-            });
+        // Do not install a per-tile callback.  Such callbacks run on
+        // rasterizer workers and each would deep-copy a complete QImage
+        // into the queued Qt event stream.  At high resolution that can
+        // retain many full frames before the UI consumes them.  The
+        // 30 Hz main-thread poll below coalesces tile generations into
+        // one update, while frame-complete still guarantees a final
+        // coherent image.
         m_productionVFS->SetFrameCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
                 this->onProductionVFSFrameComplete();
@@ -1377,7 +1290,7 @@ void RenderEngine::setViewExposureEV(double ev)
     if (W == 0 || H == 0) return;
     // Slider scrub: re-render the full image at the new EV.
     std::lock_guard<std::mutex> lock(m_bufferMutex);
-    renderViewportToBufferAndEmit_locked(W, H, nullptr);
+    renderViewportToBufferAndEmit_locked(W, H);
 }
 
 // L5e — Tone-curve scrub.  Same lifecycle as setViewExposureEV:
@@ -1394,7 +1307,7 @@ void RenderEngine::setViewToneCurve(int curve)
     m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
     std::lock_guard<std::mutex> lock(m_bufferMutex);
-    renderViewportToBufferAndEmit_locked(W, H, nullptr);
+    renderViewportToBufferAndEmit_locked(W, H);
 }
 
 // L5b — flip HDR display mode.  Triggers an immediate re-emit so the
@@ -1419,10 +1332,9 @@ void RenderEngine::setHDREnabled(bool enabled)
     m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
     // Repaint at the new mode.  Caller is on the UI thread; locking
-    // m_bufferMutex serialises against any in-flight rasterizer-
-    // worker tile-complete callback that's mid-emit.
+    // m_bufferMutex serialises against frame-complete callbacks.
     std::lock_guard<std::mutex> lock(m_bufferMutex);
-    renderViewportToBufferAndEmit_locked(W, H, nullptr);
+    renderViewportToBufferAndEmit_locked(W, H);
 }
 
 bool RenderEngine::saveAs(const QString& path,
@@ -1483,6 +1395,12 @@ QImage RenderEngine::buildImageFromBuffer()
 
     // Create a deep copy of the pixel data for the QImage
     QImage image(m_imageWidth, m_imageHeight, QImage::Format_RGBA8888);
+    if (image.isNull()) {
+        GlobalLog()->PrintEx(eLog_Error,
+            "RenderEngine::buildImageFromBuffer: failed to allocate %dx%d RGBA image",
+            m_imageWidth, m_imageHeight);
+        return QImage();
+    }
     for (int y = 0; y < m_imageHeight; ++y) {
         const uint8_t* srcRow = m_pixelBuffer.data() + y * m_imageWidth * 4;
         memcpy(image.scanLine(y), srcRow, m_imageWidth * 4);

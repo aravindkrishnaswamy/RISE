@@ -866,6 +866,10 @@ void MainWindow::updateMenuActionStates()
     // IDENTICAL term so the two can never drift (the toolbar's broader
     // setEnabled(interacting) alone misses the chat-render clause).
     if (m_viewportToolbar) m_viewportToolbar->setUndoRedoEnabled(bridgeInteractingEnabled);
+    // Layout selection also reaches the controller (and can otherwise block
+    // on the whole-duration mutex held by an agent render).  Keep all viewport
+    // toolbar controls on the same chat-inclusive ownership gate.
+    if (m_viewportToolbar) m_viewportToolbar->setEnabled(bridgeInteractingEnabled);
 
     // "Reveal in scene file" (item 3): the properties panel's ⌗ chip
     // and the outliner's context-menu item both call
@@ -979,6 +983,10 @@ bool MainWindow::event(QEvent* ev)
     // probe is cheap (factory enumeration, no swap chain).
     if (ev->type() == QEvent::ScreenChangeInternal) {
         onHDRAvailabilityChanged(HDRRenderWidget::probeAnyAdapterHDRAvailable());
+        // user-review P2#7: the same monitor move changes devicePixelRatio;
+        // a fixed-size window fires no resizeEvent, so the N-up panes must be
+        // told to re-push their device-pixel render dims for the new screen.
+        if (m_viewportWidget) m_viewportWidget->refreshForDpiChange();
     }
     return QMainWindow::event(ev);
 }
@@ -2301,6 +2309,13 @@ void MainWindow::rebuildViewportForLoadedScene()
     connect(m_viewportWidget, &ViewportWidget::regionArmCancelled,
             m_viewportToolbar, &ViewportToolbar::cancelRegionArm);
 
+    // N-up multi-viewport (docs/gui/RENDER_MODES.md §7.5): the layout
+    // picker lives in the toolbar; the pane grid it drives lives in the
+    // viewport widget -- resync immediately on a click instead of waiting
+    // for the widget's own 500ms poll.
+    connect(m_viewportToolbar, &ViewportToolbar::layoutChanged,
+            m_viewportWidget, &ViewportWidget::onViewportLayoutChanged);
+
     if (m_outlinerWidget) {
         m_outlinerWidget->setBridge(m_viewportBridge);
         // A pick in the outliner (category open/close, entity select)
@@ -2406,6 +2421,11 @@ void MainWindow::rebuildViewportForLoadedScene()
     // Live-preview frames from the bridge → viewport widget + props refresh.
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportWidget, &ViewportWidget::setImage);
+    // N-up multi-viewport (§7): secondary-pane (1..kViewportPaneCount-1)
+    // frames arrive on this separate signal -- pane 0's keep riding
+    // imageUpdated above (see ViewportBridge::paneImageUpdated's doc).
+    connect(m_viewportBridge, &ViewportBridge::paneImageUpdated,
+            m_viewportWidget, &ViewportWidget::setPaneImage);
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportProps,  &ViewportProperties::refresh);
     if (m_outlinerWidget) {

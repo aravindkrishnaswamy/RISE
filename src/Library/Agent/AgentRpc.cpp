@@ -22,7 +22,6 @@
 
 #include <cctype>   // P1-B: std::isspace for the whitespace-split camera-vector shape check
 #include <cerrno>   // P1-B: errno for the strtod ERANGE overflow check
-#include <cfloat>   // P1-B: DBL_MAX for the -ffast-math-safe finite-range test
 #include <cmath>
 #include <cstdint>
 #include <cstdio>   // preview-render: std::snprintf for the fov degrees-string conversion
@@ -30,6 +29,7 @@
 #include <exception>
 #include <string>
 #include <vector>
+#include "../Utilities/FiniteMath.h"
 
 namespace RISE
 {
@@ -292,8 +292,7 @@ namespace RISE
 			//! 1 = present and valid (outBase filled), 0 = absent (or null --
 			//! unconditional edit), -1 = malformed (outErr carries the -32602
 			//! message).  The validation is the slice-1a contract verbatim:
-			//! numeric uuid/revision, finite (explicit range test, NOT
-			//! std::isfinite -- -ffast-math folds that to true), non-negative,
+			//! numeric uuid/revision, finite, non-negative,
 			//! integral, <= 2^53 (the largest exactly-representable integer
 			//! double; the monotonic-from-1 counters never approach it).
 			int ParseBaseHeadVersionParam( const JsonValue& params,
@@ -314,8 +313,9 @@ namespace RISE
 				}
 				const double ud = u->asNumber();
 				const double rd = rv->asNumber();
-				if( !( ud >= 0.0 && ud <= 9007199254740992.0 && ud == std::floor( ud ) &&
-				       rd >= 0.0 && rd <= 9007199254740992.0 && rd == std::floor( rd ) ) ) {
+				if( !RISE::IsFiniteDouble( ud ) || !RISE::IsFiniteDouble( rd ) ||
+					!( ud >= 0.0 && ud <= 9007199254740992.0 && ud == std::floor( ud ) &&
+					   rd >= 0.0 && rd <= 9007199254740992.0 && rd == std::floor( rd ) ) ) {
 					outErr = "Invalid params: 'baseHeadVersion' uuid/revision must be finite non-negative integers";
 					return -1;
 				}
@@ -561,9 +561,7 @@ namespace RISE
 			//! an agent that guesses "1024" for a 512-max field still gets a
 			//! usable preview instead of an error), 0 = absent/null, -1 =
 			//! present but not a finite number (outErr carries the -32602
-			//! message).  Same non-finite guard idiom as the existing
-			//! 'samples' parse above (explicit range test, NOT std::isfinite --
-			//! survives -ffinite-math-only).
+			//! message).
 			int ParseClampedUInt( const JsonValue& params, const char* field,
 			                      unsigned int loClamp, unsigned int hiClamp,
 			                      unsigned int& out, std::string& outErr )
@@ -575,7 +573,7 @@ namespace RISE
 					return -1;
 				}
 				const double d = v->asNumber();
-				if( !( d >= -2147483648.0 && d <= 2147483647.0 ) ) {
+				if( !RISE::IsFiniteDouble( d ) || !( d >= -2147483648.0 && d <= 2147483647.0 ) ) {
 					outErr = std::string( "Invalid params: '" ) + field + "' must be a finite, in-range number";
 					return -1;
 				}
@@ -608,24 +606,21 @@ namespace RISE
 			}
 
 			//! P1-B: validate that `token` parses as a single finite number
-			//! (no trailing garbage).  Uses std::strtod + an explicit range
-			//! test against the double bounds -- NOT std::isfinite (dead
-			//! code under -ffinite-math-only per the project's established
-			//! idiom; see the 'samples' parse above).  Rejects empty tokens
-			//! and tokens with unconsumed trailing characters (so "5abc"
-			//! does not silently parse as 5).
+			//! (no trailing garbage).  Reject at the string layer before
+			//! converting: no valid decimal or hexadecimal token contains n/i,
+			//! and strtod reports ERANGE for an overflow or underflow.  Rejects
+			//! empty tokens and tokens with unconsumed trailing characters (so
+			//! "5abc" does not silently parse as 5).
 			bool IsFiniteNumberToken( const std::string& token )
 			{
 				if( token.empty() ) return false;
+				if( token.find_first_of( "nNiI" ) != std::string::npos ) return false;
 				const char* start = token.c_str();
 				char* end = nullptr;
 				errno = 0;
-				const double v = std::strtod( start, &end );
+				(void)std::strtod( start, &end );
 				if( end != start + token.size() ) return false;   // trailing garbage
-				if( errno == ERANGE ) return false;                // overflowed to +/-HUGE_VAL
-				// Explicit finite range test (survives -ffinite-math-only):
-				// NaN fails both comparisons; +/-inf fails the DBL_MAX bound.
-				if( !( v >= -DBL_MAX && v <= DBL_MAX ) ) return false;
+				if( errno == ERANGE ) return false;
 				return true;
 			}
 
@@ -709,10 +704,7 @@ namespace RISE
 				if( const JsonValue* fov = cam->find( "fov" ) ) {
 					if( fov->isNumber() ) {
 						const double fv = fov->asNumber();
-						// Explicit range test (not std::isfinite -- see the
-						// project-wide idiom note above): NaN fails both
-						// comparisons, +/-inf fails the open-interval bounds.
-						if( !( fv > 0.0 && fv < 180.0 ) ) {
+						if( !RISE::IsFiniteDouble( fv ) || !( fv > 0.0 && fv < 180.0 ) ) {
 							outErr = "Invalid params: 'camera.fov' must be in (0, 180) degrees";
 							return -1;
 						}
@@ -1012,9 +1004,7 @@ namespace RISE
 					// with numeric, finite, non-negative INTEGRAL uuid/revision
 					// (else -32602); null is treated as absent (unconditional
 					// edit).  Validation factored into ParseBaseHeadVersionParam
-					// (Model-B F5 S2: insert_chunk / remove_chunk share it) --
-					// the UB-guard rationale (explicit range test surviving
-					// -ffast-math, NOT std::isfinite) lives on the helper.
+					// (Model-B F5 S2: insert_chunk / remove_chunk share it).
 					{
 						std::string bErr;
 						const int b = ParseBaseHeadVersionParam( params, sp.baseVersion, bErr );
@@ -1155,20 +1145,12 @@ namespace RISE
 					if( const JsonValue* sm = params.find( "samples" ) ) {
 						if( sm->isNumber() ) {
 							// Guard the cast: static_cast<int>(inf/nan) is UB.  A
-							// hostile {"samples":1e999} parses to +inf.  We do NOT
-							// use std::isfinite here: the production build compiles
-							// with -ffast-math (-> -ffinite-math-only), under which
-							// clang constant-folds std::isfinite(x) to true and the
-							// guard becomes dead code stripped by the optimizer.  An
-							// explicit range comparison against the int32 bounds
-							// survives -ffinite-math-only (a plain >=/<= on the
-							// double is not folded away) and rejects NaN and +/-inf
-							// alike before the narrowing cast: NaN fails both
-							// comparisons, +/-inf fails the finite bound.  The
-							// bounds are exactly representable as double
-							// (2^31-1 and -2^31).
+							// hostile {"samples":1e999} parses to +inf.  The finite
+							// test must survive the production -ffast-math build; the
+							// bounds are exactly representable as double (2^31-1 and
+							// -2^31).
 							const double sv = sm->asNumber();
-							if( !( sv >= -2147483648.0 && sv <= 2147483647.0 ) )
+							if( !RISE::IsFiniteDouble( sv ) || !( sv >= -2147483648.0 && sv <= 2147483647.0 ) )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
 							samples = static_cast<int>( sv );
 							// Model-B F2 slice S3 (EffectiveRenderConfig): -1
@@ -1265,20 +1247,27 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'quality' must be a string" );
 					}
 
-					// Toolkit slice 3a / GUI render modes P1 (docs/gui/RENDER_MODES.md
+					// Toolkit slice 3a / GUI render modes P1+P2a (docs/gui/RENDER_MODES.md
 					// §8) ADDITIVE param: {"mode":"beauty"|"objectmap"|<a
-					// casterFactory registry mode -- "normals"|"depth"|"facets"|
-					// "wireframe"} -> AgentRenderParams::renderTarget (+ ::viewMode
-					// for the registry modes).  Absent or "beauty" is today's EXACT
+					// casterFactory OR BeautyVariant registry mode --
+					// "normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"}
+					// -> AgentRenderParams::renderTarget (+ ::viewMode for the
+					// registry modes).  Absent or "beauty" is today's EXACT
 					// behaviour (strictly additive); "objectmap" routes this ONE
 					// render through the ephemeral identity pipeline and returns a
 					// per-object `legend` in the result -- see AgentRenderTarget's
-					// doc.  A registry data-mode name routes through the SAME kind
-					// of ephemeral pipeline (CreateInteractiveViewModePipeline) but
-					// has no legend.  `quality`/`samples` are ignored under any of
-					// these (noted in the result message).  The accepted-name set
-					// is built FROM Implementation::GetViewportRenderModes -- NOT a
-					// hardcoded list -- filtered to `casterFactory` entries, so a
+					// doc.  A casterFactory data-mode name routes through the
+					// diagnostic ephemeral pipeline (CreateInteractiveViewModePipeline,
+					// no legend); a BeautyVariant name (P2a) routes through the REAL
+					// production-class ephemeral pipeline (CreateBeautyVariantPipeline,
+					// also no legend) -- both still set renderTarget=ViewMode, since
+					// from this parser's perspective they're both "one of the
+					// registry's other agent-visible modes"; AgentSession::RenderCore_
+					// branches internally on IsBeautyVariantMode.  `quality`/`samples`
+					// are ignored under any of these (noted in the result message).
+					// The accepted-name set is built FROM
+					// Implementation::GetViewportRenderModes -- NOT a hardcoded list --
+					// filtered to `casterFactory` OR BeautyVariant entries, so a
 					// future mode is agent-visible by construction the moment it's
 					// added to the registry (docs/gui/RENDER_MODES.md §4's parity
 					// promise).  Any other string (or a non-string, non-null value)
@@ -1298,7 +1287,9 @@ namespace RISE
 									Implementation::GetViewportRenderModes( modeCount );
 								const Implementation::ViewportRenderModeInfo* found = nullptr;
 								for( unsigned int i = 0; i < modeCount; ++i ) {
-									if( modes[i].casterFactory && ms == modes[i].name ) {
+									const bool agentVisible = modes[i].casterFactory
+										|| Implementation::IsBeautyVariantMode( modes[i].mode );
+									if( agentVisible && ms == modes[i].name ) {
 										found = &modes[i];
 										break;
 									}
@@ -1309,7 +1300,7 @@ namespace RISE
 								} else {
 									std::string accepted = "\"beauty\", \"objectmap\"";
 									for( unsigned int i = 0; i < modeCount; ++i ) {
-										if( modes[i].casterFactory ) {
+										if( modes[i].casterFactory || Implementation::IsBeautyVariantMode( modes[i].mode ) ) {
 											accepted += ", \"";
 											accepted += modes[i].name;
 											accepted += "\"";
@@ -1322,6 +1313,42 @@ namespace RISE
 						}
 						else if( !mv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'mode' must be a string" );
+					}
+
+					// GUI render modes P2a `render{view:}` surface (docs/gui/
+					// RENDER_MODES.md §8, deferred from P1) ADDITIVE param:
+					// {"view":"<named view or scene camera name>"} ->
+					// AgentRenderParams::view.  Valid with EVERY mode -- see
+					// AgentRenderParams::view's doc.  Any non-string, non-null
+					// value is a clean -32602; an unresolvable name is NOT
+					// rejected here (that needs a live Job to check against) --
+					// AgentSession::RenderCore_ fails the render itself with the
+					// available-name list.
+					if( const JsonValue* vv = params.find( "view" ) ) {
+						if( vv->isString() ) {
+							rparams.view = vv->asString();
+						}
+						else if( !vv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'view' must be a string" );
+					}
+
+					// GUI render modes P2b `render{light:}` surface (docs/gui/
+					// RENDER_MODES.md §3 "light solo", §9) ADDITIVE param:
+					// {"light":"<light or emissive-object name>"} ->
+					// AgentRenderParams::light.  Valid with "beauty" and the
+					// four BeautyVariant mode names (deep_reflect/direct/
+					// indirect/clay_lights) -- see AgentRenderParams::light's
+					// doc.  Any non-string, non-null value is a clean -32602;
+					// an unresolvable name is NOT rejected here (needs a live
+					// Job to check against) -- AgentSession::RenderCore_ fails
+					// the render itself with the available-name list, same
+					// contract as an unresolvable `view`.
+					if( const JsonValue* lv = params.find( "light" ) ) {
+						if( lv->isString() ) {
+							rparams.light = lv->asString();
+						}
+						else if( !lv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'light' must be a string" );
 					}
 
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")
@@ -1383,10 +1410,8 @@ namespace RISE
 					// above (2^53, the largest integer a double represents exactly) --
 					// renderJobId is a small monotonic counter in practice, but the
 					// guard must reject NaN/+inf/huge values BEFORE the narrowing
-					// static_cast below (UB otherwise), matching this file's existing
-					// non-finite-guard idiom (explicit range test, not std::isfinite --
-					// see the 'samples' parse for why).
-					if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+					// static_cast below (UB otherwise).
+					if( !RISE::IsFiniteDouble( rv ) || !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
 					const std::uint64_t jobId = static_cast<std::uint64_t>( rv );
 					const AgentSession::AgentRenderJobStatus st = s->RenderStatus( jobId );
@@ -1437,10 +1462,8 @@ namespace RISE
 					// above (2^53, the largest integer a double represents exactly) --
 					// renderJobId is a small monotonic counter in practice, but the
 					// guard must reject NaN/+inf/huge values BEFORE the narrowing
-					// static_cast below (UB otherwise), matching this file's existing
-					// non-finite-guard idiom (explicit range test, not std::isfinite --
-					// see the 'samples' parse for why).
-					if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+					// static_cast below (UB otherwise).
+					if( !RISE::IsFiniteDouble( rv ) || !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
 					const std::uint64_t jobId = static_cast<std::uint64_t>( rv );
 
@@ -1498,7 +1521,7 @@ namespace RISE
 							const double rv = rj->asNumber();
 							// Same exact-double-integer bound as render_status/
 							// render_wait above.
-							if( !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
+							if( !RISE::IsFiniteDouble( rv ) || !( rv >= 0.0 && rv <= 9007199254740992.0 ) )
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'renderJobId' must be a finite, non-negative number" );
 							jobId = static_cast<std::uint64_t>( rv );
 						}
@@ -1583,8 +1606,18 @@ namespace RISE
 					unsigned int imgW = 0, imgH = 0;
 					bool available = false;
 					std::string reason;
+					unsigned int srcPane = 0;   // user-review P1#3: captured atomically with the frame
+					// user-review P1-3 (round 2): the WHOLE pane set is now
+					// snapshotted ATOMICALLY with the frame inside ReadViewport's
+					// parked window -- layout/primary/visibility/mode/vantage all
+					// describe the SAME frame as the PNG.  The earlier code read
+					// them back via DescribeViewportPanes AFTER the render resumed,
+					// so they could describe a LATER state than the pixels.
+					AgentSession::ViewportPanesInfo panesInfo;
+					bool havePaneSet = false;
 					const std::vector<unsigned char> png =
-						s->ReadViewport( ( mePresent == 1 ) ? maxEdge : 0, imgW, imgH, available, reason );
+						s->ReadViewport( ( mePresent == 1 ) ? maxEdge : 0, imgW, imgH, available, reason, srcPane,
+						                 panesInfo, havePaneSet );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "available",  JsonValue::MakeBool( available ) );
 					result.set( "reason",     JsonValue::MakeString( reason ) );
@@ -1592,6 +1625,31 @@ namespace RISE
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					// P3c (§7.8 ratified decision 3): pane-set introspection,
+					// read-only.  `sourcePane` states WHICH pane the PNG came
+					// from -- in a multi-pane layout the viewport read is the
+					// last-rendered pane, and without this field the agent
+					// cannot attribute the image (the review-r2-B honesty gap,
+					// now closed structurally rather than by a note).
+					if( havePaneSet )
+					{
+						JsonValue panesObj = JsonValue::MakeObject();
+						panesObj.set( "layout",     JsonValue::MakeNumber( panesInfo.layout ) );
+						panesObj.set( "primary",    JsonValue::MakeNumber( static_cast<double>( panesInfo.primary ) ) );
+						panesObj.set( "sourcePane", JsonValue::MakeNumber( static_cast<double>( panesInfo.sourcePane ) ) );
+						JsonValue arr = JsonValue::MakeArray();
+						for( unsigned int i = 0; i < 4; ++i )
+						{
+							JsonValue pv = JsonValue::MakeObject();
+							pv.set( "visible",     JsonValue::MakeBool( panesInfo.panes[i].visible ) );
+							pv.set( "mode",        JsonValue::MakeString( panesInfo.panes[i].mode ) );
+							pv.set( "vantageKind", JsonValue::MakeNumber( panesInfo.panes[i].vantageKind ) );
+							pv.set( "namedView",   JsonValue::MakeString( panesInfo.panes[i].namedView ) );
+							arr.push_back( pv );
+						}
+						panesObj.set( "panes", arr );
+						result.set( "paneSet", panesObj );
+					}
 					return MakeSuccess( idValue, result );
 				}
 
@@ -1619,12 +1677,10 @@ namespace RISE
 					}
 					const double xd = xv->asNumber();
 					const double yd = yv->asNumber();
-					// Same explicit finite-range guard idiom as every other
-					// numeric parse in this file (NOT std::isfinite -- dead
-					// code under -ffinite-math-only; see the 'samples' parse
-					// above) -- guards the narrowing casts below against a
-					// hostile/typo'd 1e999 or NaN.
-					if( !( xd >= -2147483648.0 && xd <= 2147483647.0 ) ||
+					// Guard the narrowing casts below against a hostile/typo'd
+					// 1e999 or NaN.
+					if( !RISE::IsFiniteDouble( xd ) || !RISE::IsFiniteDouble( yd ) ||
+						!( xd >= -2147483648.0 && xd <= 2147483647.0 ) ||
 					    !( yd >= -2147483648.0 && yd <= 2147483647.0 ) )
 					{
 						return MakeError( idValue, kInvalidParams,
@@ -1915,10 +1971,8 @@ namespace RISE
 					// Same exact-double-integer bound as every other id/version
 					// field in this file (2^53, the largest exactly-representable
 					// integer double) -- guards the narrowing cast below against
-					// UB on a hostile/huge value, matching the project-wide
-					// explicit-range idiom (not std::isfinite; see the 'samples'
-					// parse earlier in this file for the -ffast-math rationale).
-					if( !( pidD >= 0.0 && pidD <= 9007199254740992.0 ) ) {
+					// UB on a hostile/huge value.
+					if( !RISE::IsFiniteDouble( pidD ) || !( pidD >= 0.0 && pidD <= 9007199254740992.0 ) ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: 'proposalId' must be a finite, non-negative number" );
 					}

@@ -26,6 +26,7 @@
 #include "FrameStoreColorSpace.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/FiniteMath.h"
 
 #include <algorithm>
 #include <cmath>
@@ -162,30 +163,12 @@ namespace RISE
 		// Public transfer functions all front this gate so no caller
 		// can poison the encoded output by feeding through bad inputs.
 		//
-		// IMPORTANT: this implementation does NOT use std::isfinite /
-		// std::isnan, because RISE compiles with `-ffast-math` (see
-		// build/make/rise/Config.OSX) which implies `-ffinite-math-only`.
-		// Under that flag, the compiler is told it may assume no Inf /
-		// NaN inputs, and `std::isfinite(+Inf)` may return true.  We
-		// therefore check the IEEE 754 bit pattern directly via memcpy:
-		//
-		//   bit  63       : sign  (set ⇒ negative or -0)
-		//   bits 62..52   : exponent (all 1s ⇒ Inf or NaN)
-		//   bits 51..0    : mantissa
-		//
-		// We reject "exponent all 1s" (catches +Inf, -Inf, all NaN
-		// including signalling and quiet) and "sign bit set" (catches
-		// all negatives plus -0 → 0, which is fine).  Positive finite
-		// values pass through unchanged.
+		// RISE builds with -ffast-math, so IsFiniteDouble materialises
+		// the incoming value through volatile before its IEEE-754 test.
+		// The ordered comparison then rejects negatives and both zeros.
 		static inline double Sanitise( double x )
 		{
-			static_assert( sizeof(double) == 8, "double must be 64-bit IEEE 754" );
-			uint64_t bits;
-			std::memcpy( &bits, &x, sizeof(bits) );
-			constexpr uint64_t kExpMask  = 0x7FF0000000000000ULL;
-			constexpr uint64_t kSignBit  = 0x8000000000000000ULL;
-			if ( ( bits & kExpMask ) == kExpMask ) return 0.0;  // Inf or NaN
-			if ( bits & kSignBit )                 return 0.0;  // negative or -0
+			if ( !RISE::IsFiniteDouble( x ) || !( x > 0.0 ) ) return 0.0;
 			return x;
 		}
 

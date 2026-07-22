@@ -122,6 +122,15 @@ signals:
     /// box instead of routing pointer events to the bridge.
     void regionArmedChanged(bool armed);
 
+    /// N-up multi-viewport (docs/gui/RENDER_MODES.md §7.5): the layout
+    /// picker was clicked and the bridge call was ISSUED (it can still
+    /// have been refused -- render-owns-scene -- so listeners must
+    /// re-read ViewportBridge::viewportLayout() themselves, same as this
+    /// toolbar's own refreshLayoutButtons() does).  ViewportWidget
+    /// listens so its pane grid resyncs immediately rather than waiting
+    /// for its own poll tick.
+    void layoutChanged();
+
 public slots:
     /// Reflect the View > HDR Preview action's checked state on the
     /// EDR chip.
@@ -148,6 +157,12 @@ private slots:
     void onRegionChipClicked();
     void onEdrChipClicked();
     void pollState();
+    /// N-up multi-viewport (docs/gui/RENDER_MODES.md §7.5): user clicked
+    /// one of the 4 fixed layout icons.  Same click-then-reread discipline
+    /// as onRenderModeComboChanged in TopBar -- the set CAN fail
+    /// (render-owns-scene), so this always resyncs via refreshLayoutButtons()
+    /// afterward rather than trusting the click.
+    void onLayoutButtonClicked();
 
 private:
     /// One always-visible tool button.  Holds the tool and a pointer to
@@ -167,6 +182,26 @@ private:
     /// now that there's no category-level flyout to describe instead.
     QString      tooltipForTool(ViewportTool t) const;
     QVector<ViewportTool> subToolsForCategory(ViewportBridge::ToolCategory cat) const;
+
+    // ---- N-up multi-viewport layout picker (docs/gui/RENDER_MODES.md §7.5) --
+    // 4 fixed icons -- Single / TwoH / OnePlusTwo / Quad (decision 3: the
+    // layout SET is fixed, no user-editable presets) -- styled like the
+    // tool-button cluster above.  Populated ONCE at construction; only the
+    // checked state moves, resynced by refreshLayoutButtons() on the same
+    // 500ms poll cadence pollState() already drives (mirrors TopBar's
+    // refreshRenderModeCombo pattern -- SceneEditController resets no
+    // viewport-layout state on scene rebind today, but the poll also
+    // catches any other client of the pane C-ABI, e.g. a future agent
+    // introspection surface).
+    struct LayoutButtonEntry {
+        ViewportBridge::ViewportLayout layout;
+        QToolButton*                   button;
+    };
+    QToolButton* makeLayoutButton(ViewportBridge::ViewportLayout layout);
+    void         refreshLayoutButtons();
+    QString      labelForLayout(ViewportBridge::ViewportLayout layout) const;
+    QString      tooltipForLayout(ViewportBridge::ViewportLayout layout) const;
+    QVector<LayoutButtonEntry> m_layoutButtons;
 
     void updateRegionChip();
     void updateCameraChip();

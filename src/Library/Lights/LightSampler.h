@@ -204,7 +204,116 @@ namespace RISE
 			mutable const OptimalMISAccumulator*	pOptimalMIS;
 
 		public:
+			/// LIGHT-SOLO (docs/gui/RENDER_MODES.md §3 "light solo"):
+			/// identifies which kind of solo target is active.  `None`
+			/// (default) is byte-identical to pre-light-solo behaviour —
+			/// every light/luminary/env participates normally.
+			enum class SoloKind { None, Light, Luminary, Environment };
+
+		protected:
+			SoloKind				soloKind;				///< Active solo target kind (None = disabled)
+			const ILightPriv*		soloLight;				///< Valid when soloKind==Light
+			const IObject*			soloLuminaryObject;		///< Valid when soloKind==Luminary — compares by identity against LuminaryManager::LUM_ELEM::pLum / PathTracingIntegrator's ri.pObject
+
+		public:
 			LightSampler();
+
+			//
+			// LIGHT SOLO — render with exactly one light enabled.
+			//
+			// Designates exactly one light as the sole active light: every
+			// OTHER light contributes exactly zero direct lighting
+			// (EvaluateDirectLighting{,NM}'s three stages — the zero-
+			// exitance deterministic loop, the alias/BVH/RIS-table
+			// selection, and env-NEE — each admit ONLY the soloed
+			// identity), and CachedPdfSelectLuminary returns 1.0 for the
+			// soloed luminary so the integrator's BSDF-hit emission MIS
+			// partner (PathTracingIntegrator.cpp PART 1) agrees with NEE's
+			// own bypassed selection pdf of 1.0 — this is what keeps the
+			// combined NEE+BSDF-hit MIS estimator UNBIASED under solo
+			// (both strategies see the same, degenerate single-light
+			// selection distribution) rather than merely "mostly dark".
+			// Non-target emitters' BSDF-hit emission is suppressed
+			// entirely by the integrator (see PART 1's soloSuppressEmission
+			// gate), not left to a zero MIS weight — an unreachable-by-NEE
+			// emitter (CanBeAreaLight()==false) would otherwise leak
+			// unweighted energy through under solo exactly as it does
+			// today outside solo.
+			//
+			// Setting one target clears any other.  Single-threaded: set
+			// BEFORE a render, read-only during it — same discipline as
+			// PathTracingIntegrator::SetMaxPathDepth.  Default: no solo
+			// (SoloKind::None), byte-identical to today.
+			//
+
+			/// Designates a non-mesh (point/spot/ambient/directional)
+			/// light as the sole active light.
+			void SetSoloLight( const ILightPriv* pLight )
+			{
+				soloKind = SoloKind::Light;
+				soloLight = pLight;
+				soloLuminaryObject = 0;
+			}
+
+			/// Designates a mesh luminary as the sole active light.
+			/// `pLuminaryObject` is the IObject* owning the emissive
+			/// material — the SAME identity LuminaryManager::LUM_ELEM::
+			/// pLum and a BSDF-sampled hit's `ri.pObject` compare against.
+			void SetSoloLuminary( const IObject* pLuminaryObject )
+			{
+				soloKind = SoloKind::Luminary;
+				soloLight = 0;
+				soloLuminaryObject = pLuminaryObject;
+			}
+
+			/// Designates the environment map (global radiance map) as
+			/// the sole active light.  Structural completeness for the
+			/// solo mechanism's three EvaluateDirectLighting stages — not
+			/// yet reachable by name from the agent `render{light:}`
+			/// surface (P2b resolves ILightManager + mesh-luminary names
+			/// only; env-by-name is a possible future extension, see
+			/// docs/gui/RENDER_MODES.md).
+			void SetSoloEnvironment()
+			{
+				soloKind = SoloKind::Environment;
+				soloLight = 0;
+				soloLuminaryObject = 0;
+			}
+
+			/// Clears any solo target — every light contributes normally
+			/// again.  Default state.
+			void ClearSolo()
+			{
+				soloKind = SoloKind::None;
+				soloLight = 0;
+				soloLuminaryObject = 0;
+			}
+
+			/// \return True when a solo target is active.
+			bool IsSoloActive() const { return soloKind != SoloKind::None; }
+
+			/// \return The active solo kind (None when inactive).
+			SoloKind GetSoloKind() const { return soloKind; }
+
+			/// \return True when `pLight` IS the solo target.  Used by
+			/// EvaluateDirectLighting{,NM}'s Step-1 zero-exitance loop to
+			/// admit only the soloed light.
+			bool IsSoloTargetLight( const ILightPriv* pLight ) const
+			{
+				return soloKind == SoloKind::Light && soloLight == pLight;
+			}
+
+			/// \return True when `pLuminaryObject` IS the solo target.
+			/// Used by EvaluateDirectLighting{,NM}'s Step-2 bypass,
+			/// CachedPdfSelectLuminary's pdfSelect==1.0 branch, and
+			/// PathTracingIntegrator's PART-1 emission gate.
+			bool IsSoloTargetLuminary( const IObject* pLuminaryObject ) const
+			{
+				return soloKind == SoloKind::Luminary && soloLuminaryObject == pLuminaryObject;
+			}
+
+			/// \return True when the environment map IS the solo target.
+			bool IsSoloTargetEnvironment() const { return soloKind == SoloKind::Environment; }
 
 			/// Sets the optimal MIS accumulator for direct lighting.
 			/// The accumulator must outlive the LightSampler's use of it.

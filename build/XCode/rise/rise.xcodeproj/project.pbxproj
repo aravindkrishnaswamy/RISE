@@ -1850,6 +1850,8 @@
 		FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000002C /* ScaledScalarPainter.h */; };
 		FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */; };
 		FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
+		FA9D00010000000000000001 /* FiniteMath.h in Sources */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
+		FA9D00020000000000000001 /* FiniteMath.h in Headers */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
 		FCA01000000000000000A001 /* ICameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		FCA01000000000000000A002 /* ICameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		FCA01000000000000000A004 /* CameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
@@ -2885,6 +2887,7 @@
 		FA1ABFR1000000000000002C /* ScaledScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ScaledScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MultiplyScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
+		FA9D00030000000000000001 /* FiniteMath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FiniteMath.h; sourceTree = "<group>"; };
 		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
 		FECC0002000000000000F201 /* TransformSnapshot.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TransformSnapshot.h; sourceTree = "<group>"; };
@@ -4027,6 +4030,7 @@
 				DEFE44ED00000000000000F2 /* RenderParallelScope.h */,
 				F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */,
 				F27F0A0A069C42900069C9E5 /* DynamicProperties.h */,
+				FA9D00030000000000000001 /* FiniteMath.h */,
 				F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */,
 				F27F0A0C069C42900069C9E5 /* GeometricUtilities.h */,
 				F27F0A0D069C42900069C9E5 /* HermiteInterpolator.h */,
@@ -4812,6 +4816,7 @@
 				F27F0C63069C42910069C9E5 /* DiskFileWriteBuffer.h in Headers */,
 				DEFE44ED00000000000000D2 /* RenderParallelScope.h in Headers */,
 				F27F0C65069C42910069C9E5 /* DynamicProperties.h in Headers */,
+				FA9D00020000000000000001 /* FiniteMath.h in Headers */,
 				F27F0C67069C42910069C9E5 /* GeometricUtilities.h in Headers */,
 				F27F0C68069C42910069C9E5 /* HermiteInterpolator.h in Headers */,
 				F27F0C69069C42910069C9E5 /* IORStack.h in Headers */,
@@ -6166,6 +6171,7 @@
 				DEFE44ED00000000000000C2 /* RenderParallelScope.h in Sources */,
 				F24B74192F52A632008304C4 /* DynamicProperties.cpp in Sources */,
 				F24B741A2F52A632008304C4 /* DynamicProperties.h in Sources */,
+				FA9D00010000000000000001 /* FiniteMath.h in Sources */,
 				F24B741B2F52A632008304C4 /* GeometricUtilities.cpp in Sources */,
 				F24B741C2F52A632008304C4 /* GeometricUtilities.h in Sources */,
 				F24B741D2F52A632008304C4 /* HermiteInterpolator.h in Sources */,

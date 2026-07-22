@@ -18,12 +18,15 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IRadianceMap.h"
 #include "../Utilities/Reference.h"
+#include <string>
 
 namespace RISE
 {
 	class Ray;
 	class IScene;
 	class RayIntersection;
+	class ILightPriv;
+	class IObject;
 
 	namespace Implementation { class LightSampler; }
 
@@ -118,6 +121,23 @@ namespace RISE
 			//! false; production casters never set it (cost when off is
 			//! one bool test).  Set via SetXrayViewResolve.
 			bool						bXrayViewResolve;
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
+			//! pending solo-target identity, retained across a same-
+			//! pointer LightSampler rebuild (RebuildLightSamplers destroys
+			//! and recreates pLightSampler, exactly like the RIS/BVH/RR
+			//! pending fields above) so a rebuild doesn't silently drop
+			//! it.  0 = none, 1 = explicit light, 2 = mesh luminary,
+			//! 3 = environment (review-p2d: the env is a light, and the
+			//! partition identity solo(A)+solo(B)==all is unstatable
+			//! without a way to name its half) --
+			//! kept as a raw int rather than pulling LightSampler::SoloKind
+			//! into this header (LightSampler is only forward-declared
+			//! here).  `pendingSoloLight` / `pendingSoloLuminary` carry the
+			//! identity for kinds 1 / 2 respectively.
+			int							iPendingSoloKind;
+			const ILightPriv*			pendingSoloLight;
+			const IObject*				pendingSoloLuminary;
 
 			virtual ~RayCaster();
 
@@ -366,6 +386,71 @@ namespace RISE
 
 			/// \return Whether the caster-layer x-ray resolver is enabled.
 			bool GetXrayViewResolve() const { return bXrayViewResolve; }
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
+			//! resolves `name` against the attached scene's ILightManager
+			//! (explicit lights, by name) then its IObjectManager (mesh
+			//! luminaries -- any named object whose material has a non-
+			//! null GetEmitter(), by name) and designates the match as the
+			//! sole active light -- see LightSampler::SetSoloLight/
+			//! SetSoloLuminary for the exact NEE/emission semantics.  An
+			//! empty `name` clears any active solo (equivalent to
+			//! ClearSolo()).  Retained across a same-pointer LightSampler
+			//! rebuild, forwarded live when a LightSampler already exists
+			//! -- same "set before a render, single-threaded" discipline as
+			//! SetRISCandidates.  Must be called after AttachScene() to
+			//! resolve against a real scene (a null-scene call always
+			//! fails, honestly, rather than silently deferring resolution).
+			//! \return True if `name` resolved (or was empty); false with
+			//! `pAvailableNames` populated (a ", "-joined, quoted list of
+			//! every light + emissive-object name in the scene) when it
+			//! did not.
+			bool SetSoloLightByName(
+				const char* name,								///< [in] Light/luminary name, or "" to clear
+				std::string* pAvailableNames = 0					///< [out] Populated with the resolvable-name list on failure
+				);
+
+			/// Clears any active solo target -- every light contributes
+			/// normally again.  Equivalent to SetSoloLightByName("", ...).
+			void ClearSoloLight();
+
+			/// \return True when a solo target is currently pending/active
+			/// on this caster (mirrors LightSampler::IsSoloActive without
+			/// requiring a live pLightSampler -- true immediately after
+			/// SetSoloLightByName succeeds, even before the next
+			/// AttachScene/RebuildLightSamplers).
+			bool IsSoloLightActive() const { return iPendingSoloKind != 0; }
+
+			//! Opaque snapshot of this caster's light-solo state, for
+			//! RAII capture/restore by callers that temporarily solo a
+			//! LONG-LIVED caster (see AgentSession's LightSoloRestoreGuard).
+			//! review-p2d P3-5: that guard used to unconditionally CLEAR on
+			//! scope exit, resting on a comment-enforced invariant that
+			//! agent light-solo was the only writer of solo state on a
+			//! production caster.  Capturing the real prior state removes
+			//! the invariant instead of documenting it, so a solo set by
+			//! any other path (a future GUI solo toggle) survives an agent
+			//! render rather than being silently dropped.
+			struct SoloStateSnapshot
+			{
+				int					kind;
+				const ILightPriv*	light;
+				const IObject*		luminary;
+				SoloStateSnapshot() : kind( 0 ), light( 0 ), luminary( 0 ) {}
+			};
+
+			SoloStateSnapshot CaptureSoloState() const
+			{
+				SoloStateSnapshot snap;
+				snap.kind     = iPendingSoloKind;
+				snap.light    = pendingSoloLight;
+				snap.luminary = pendingSoloLuminary;
+				return snap;
+			}
+
+			//! Restores a snapshot taken by CaptureSoloState, re-applying
+			//! it to the live LightSampler when there is one.
+			void RestoreSoloState( const SoloStateSnapshot& snap );
 
 			/// See IRayCaster::IsRadianceMapVisibleAsBackground.
 			/// (No `override` — RayCaster matches the file's existing

@@ -19,6 +19,7 @@
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Interfaces/IWriteBuffer.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/FiniteMath.h"
 #include "EXRCompression.h"
 
 #ifndef NO_EXR_SUPPORT
@@ -92,11 +93,13 @@ namespace RISE
 			// rule).  Clamp the magnitude, sign preserved, before the cast; the
 			// producers (renderer, tonemapper) are the real fix for legitimately
 			// huge values, this is just a backstop against a silent Inf leaking
-			// into the file.  Plain magnitude comparisons only (no isnan/isfinite
-			// branching, per the repo's -ffast-math convention) — a NaN input
-			// fails both the > and < comparisons and passes through unchanged.
+			// into the file.  NaN and infinities are also collapsed to zero
+			// through the shared optimisation-safe finite predicate.
 			static double ClampMagnitudeForCast( const double v, const double limit )
 			{
+				if( !RISE::IsFiniteDouble( v ) ) {
+					return 0.0;
+				}
 				if( v > limit ) {
 					return limit;
 				}

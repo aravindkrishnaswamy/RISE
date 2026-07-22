@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -15,14 +15,22 @@ Within the third family (`render{mode:}`), GUI render modes P1
 (`objectmap`) to SIX: `beauty` (default), `objectmap`, and four
 structural DIAGNOSTIC modes -- `normals`, `depth`, `facets`,
 `wireframe` -- each answering one narrow structural question with the
-SAME exact, single-pass, 1-spp cost profile as `objectmap`.  See "View
-modes" below for the per-mode decision table.
+SAME exact, single-pass, 1-spp cost profile as `objectmap`.  GUI render
+modes P2a adds TWO MORE mode values, `deep_reflect` and `direct`, and P2b
+adds TWO MORE STILL, `indirect` and `clay_lights` -- all four are a
+DIFFERENT cost tier: real production-class path-traced renders (real
+materials, real lights, real OIDN denoise) at a FIXED reduced resolution
+and FIXED higher sample count, not single-pass diagnostics. They cost
+SECONDS, not milliseconds -- more than a diagnostic mode, still far
+cheaper than a full-resolution production render because of the
+resolution divisor. See "View modes" below for the per-mode decision
+table, and "Transport modes" for all four additions.
 
 ## The decision table
 
 | Intent | Call | Cost | Trust it for | Do NOT trust it for |
 |---|---|---|---|---|
-| "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it | Anything when `available:false` (`no_controller`: headless session, no viewport at all; `no_frame_yet`: viewport exists but hasn't produced a frame) -- fall back to a `render` call instead of retrying |
+| "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false` (`no_controller`: headless session, no viewport at all; `no_frame_yet`: viewport exists but hasn't produced a frame) -- fall back to a `render` call instead of retrying |
 | "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside) | Materials, lighting, exposure, or colour -- the preview shader IGNORES the scene's authored materials and lights entirely |
 | "Which object is where? / Find object X on screen." | `render {mode:"objectmap"}` (survey, whole-frame legend) or `query_object_at {x,y}` (one answer) | About one identity render -- fixed 1 spp, no MC noise, ignores `quality`/`samples` entirely | Exact identity: byte-exact `colorHex` <-> `name` legend match, including CSG composites (legend carries the ROOT only, never the hidden operands) and instance arrays (`grid[i,j]`) | The colours as APPEARANCE -- they are arbitrary per-render identity ids, not materials. Read the objectmap PNG at NATIVE size only (omit `maxEdge` -- a box-downscale blends flat ids and breaks the match) |
 | "Does it actually look right -- materials, lighting, exposure?" | `render` (no `quality`, i.e. production) + `read_image`, or `read_viewport` if a GUI is attached AND its integrator is what you care about | The real cost -- the scene's actual configured integrator at its actual sample count | The ONLY mode where colour/shading/exposure judgments are honest | Nothing withheld -- it's simply the expensive one; don't make it your only feedback loop mid-edit |
@@ -46,6 +54,61 @@ exact mode name that ran.
 | `depth` | How far away is everything? | Grayscale, near = bright, AUTO-WINDOWED per render to the VISIBLE hit-distance range in that frame (see limitation below) | No |
 | `facets` | What does the actual tessellation look like -- where does shading disagree with geometry? | Headlamp-shaded GEOMETRIC normal -- no smoothing, no bump, no shading-normal interpolation | No |
 | `wireframe` | Where are the polygon edges? | Triangle-mesh edges over dim facet shading (see mesh-only limitation below) | No |
+| `deep_reflect` | What do reflections and refractions resolve to? | REAL path-traced render, quarter-res, 16 spp, 24 bounces, OIDN-denoised | No |
+| `direct` | What does direct lighting alone contribute? | REAL path-traced render, half-res, 8 spp, direct lighting only (1 bounce), OIDN-denoised | No |
+| `indirect` | What does indirect (bounced) light alone contribute? | REAL path-traced render, half-res, 12 spp, 16 bounces; beauty minus the direct/emission contribution at the camera-visible vertex -- a directly-lit surface or directly-visible emitter/env background reads BLACK, energy that arrived after >=1 bounce reads normally, OIDN-denoised | No |
+| `clay_lights` | Is the lighting right, independent of materials? | REAL path-traced render, half-res, 12 spp, 12 bounces; every surface's reflectance replaced by a neutral mid-grey clay Lambertian, real lights/GI untouched, OIDN-denoised | No |
+
+### Transport modes: `deep_reflect` / `direct` / `indirect` / `clay_lights` (GUI render modes P2a + P2b)
+
+Unlike the four false-colour diagnostics above, all four transport modes
+are REAL renders through the scene's actual lights (and, except
+`clay_lights`, actual materials) -- an ephemeral, fixed-config
+production-class path tracer, not a first-hit shader. Consequences that
+don't apply to `normals`/`depth`/`facets`/`wireframe`:
+
+- **Cost**: seconds, not milliseconds. Still cheap relative to a
+  full-resolution production render (the fixed resolution divisor --
+  quarter-res for `deep_reflect`, half-res for the other three -- does
+  most of the work), but do not treat them as free the way you'd treat
+  `objectmap`/`normals`/etc.
+- **`effectiveSamples` reports the REAL spp used** (16, 8, 12, or 12),
+  not the "1" the false-colour diagnostics report -- `quality`/`samples`
+  are still ignored (the config is fixed by the registry), but check
+  `effectiveSamples` if you want to confirm which mode actually ran at
+  what fidelity.
+- **`xray` is ignored** (honestly noted) -- skipping through glass
+  would defeat the whole point of any of these four modes (seeing what
+  the glass/material/lighting itself resolves to).
+
+Recipes:
+
+- **"What do the reflections/refractions in the crystal/case/metal
+  actually resolve to?"** -- `render {mode:"deep_reflect"}`. Deep
+  bounce depth (24) and a real sample count (16 spp) let specular
+  chains (glass-through-glass, metal-on-metal, a caustic-adjacent
+  reflection) actually converge, unlike a draft/false-colour render
+  which either ignores materials entirely or only resolves the first
+  hit.
+- **"Is the LIGHTING right, independent of indirect bounce / GI?"** --
+  `render {mode:"direct"}`. Direct-only transport (no indirect bounces)
+  isolates whether light placement/power/colour looks right before
+  indirect bounce and material response are layered on top -- a
+  narrower, cheaper question than a full production render.
+- **"Where does bounced light actually land?"** -- `render
+  {mode:"indirect"}`. Beauty minus the direct contribution: a directly-
+  lit wall or a directly-visible light/env background goes black, so
+  whatever remains lit is being reached ONLY through at least one
+  bounce -- useful for spotting where colour bleed, a hidden bounce
+  card, or an indirect-only light leak is landing, without the direct
+  term drowning it out visually.
+- **"Check the lighting rig without material distraction."** -- `render
+  {mode:"clay_lights"}`. Every surface's reflectance is replaced by a
+  shared neutral clay while real lights and real GI stay untouched --
+  the classic "is the lighting right independent of materials" check,
+  one step up from `clay` (which also strips the real lights) when you
+  need to confirm the ACTUAL light rig reads correctly on neutral
+  surfaces before touching material authoring.
 
 ### Recipes: matching a symptom to a mode
 
@@ -75,12 +138,35 @@ exact mode name that ran.
    RELATIVE distance within this one frame, not an absolute unit scale
    (see the normalization limitation below).
 5. **"What's under/inside that glass / crystal / transparent cover?"**
-   -- any view mode already sees through it: `xray` defaults to `true`,
-   so `render {mode:"depth"}` or `render {mode:"facets"}` already
-   resolve the ray straight through transmissive surfaces to the first
-   opaque hit (no refraction bending -- deliberately an x-ray, not an
-   optics simulation). Add `xray:false` to see the glass surface itself
-   instead of what's underneath it. See "X-ray axis" below.
+   -- any of the four false-colour view modes already sees through it:
+   `xray` defaults to `true`, so `render {mode:"depth"}` or `render
+   {mode:"facets"}` already resolve the ray straight through
+   transmissive surfaces to the first opaque hit (no refraction bending
+   -- deliberately an x-ray, not an optics simulation). Add
+   `xray:false` to see the glass surface itself instead of what's
+   underneath it. See "X-ray axis" below. (`deep_reflect` answers a
+   DIFFERENT question about the same glass -- not what's under it, but
+   what the glass ITSELF does to light passing through -- and ignores
+   `xray` entirely; see "Transport modes" above.)
+6. **"What do reflections/refractions actually resolve to?"** --
+   `render {mode:"deep_reflect"}`. See "Transport modes" above.
+7. **"Is the lighting right, independent of materials/indirect
+   bounce?"** -- `render {mode:"direct"}`. See "Transport modes" above.
+8. **"Where does bounced light land?"** -- `render {mode:"indirect"}`.
+   See "Transport modes" above.
+9. **"Check the lighting rig without material distraction."** --
+   `render {mode:"clay_lights"}`. See "Transport modes" above.
+10. **"Render the same scene from several saved angles."** -- pass
+   `view:"<name>"` on ANY `render` call (composes with every mode
+   above). Resolves a live GUI session's Named View bookmark, or --
+   headless -- a scene camera of that exact name. See "The `view`
+   param" below.
+11. **"Is THIS ONE light doing what I think -- shadow shape, colour,
+   falloff -- without the others visually competing for attention?"**
+   -- pass `light:"<name>"` on `beauty` or any of the four transport
+   modes. Every other light contributes exactly zero (an unbiased
+   partition of the full lighting, not a dim/approximate preview of
+   it). See "The `light` param" below.
 
 ### Known limitations (read before reporting a "bug")
 
@@ -101,12 +187,17 @@ exact mode name that ran.
    scene -- an empty frame or a single flat plane filling it -- so a
    mostly-flat scene can still read as unusually uniform; that is
    expected, not a broken render.)
-3. **All five non-`beauty` modes (`objectmap` + the four view modes)
-   ignore `quality` and `samples` unconditionally.** Each has exactly
-   one fidelity by design (an exact single-pass diagnostic image) --
-   requesting a higher sample count or `quality:"draft"` under any of
+3. **Every non-`beauty` mode (`objectmap`, the four false-colour view
+   modes, AND the four transport modes) ignores `quality` and `samples`
+   unconditionally.** Each has exactly one FIXED fidelity by design --
+   an exact single-pass diagnostic image for `objectmap`/`normals`/
+   `depth`/`facets`/`wireframe`, a fixed higher-spp production-class
+   render for `deep_reflect`/`direct`/`indirect`/`clay_lights` --
+   requesting a different sample count or `quality:"draft"` under any of
    them is a silent no-op, honestly noted in the result `message`, not
-   an error.
+   an error. Check `effectiveSamples` for the ACTUAL spp used (1 for the
+   false-colour modes, 16/8/12/12 for deep_reflect/direct/indirect/
+   clay_lights).
 4. **`xray` is a straight line, not real refraction.** It follows the
    ORIGINAL ray direction through every transmissive surface it skips
    -- no bending, no lensing. It answers "what's under/inside this
@@ -133,8 +224,72 @@ instead of what's underneath it -- e.g. to inspect a cover's own
 tessellation or normals rather than the mechanism inside.
 
 `xray` is silently ignored (honestly noted in the result `message`)
-under `mode:"beauty"` or `mode:"objectmap"` -- it only means something
-for the four view-mode diagnostics.
+under `mode:"beauty"`, `mode:"objectmap"`, or a transport mode
+(`deep_reflect`/`direct`/`indirect`/`clay_lights`) -- it only means
+something for the four false-colour view-mode diagnostics.
+
+## The `view` param: rendering from a saved vantage
+
+`view` is an optional string param on `render`, ORTHOGONAL to `mode` --
+it composes with EVERY mode (`beauty`, `objectmap`, any view mode, any
+transport mode). Pass a name instead of raw `camera`
+location/lookat/up/fov numbers:
+
+```json
+{"method": "render", "params": {"mode": "deep_reflect", "view": "hero-angle"}}
+```
+
+Resolution order: (1) a live in-app GUI session's Named View bookmark
+of that exact name; (2) headless (`rise --agent-stdio`, no live
+controller), a scene CAMERA of that exact name. An unresolved name
+FAILS the render (`ok:false`) with the available-name list in
+`message` -- it never silently falls back to the active camera. If
+BOTH `view` and an explicit `camera` override are supplied, `view`
+wins.
+
+Use it to compare the SAME render mode from several saved angles
+without re-deriving camera math each call -- e.g. checking
+`deep_reflect` from three named views of a jewel/watch-crystal scene to
+confirm the reflections read correctly from every angle a user might
+actually look from.
+
+## The `light` param: isolating one light (light solo)
+
+`light` is an optional string param on `render`, ORTHOGONAL to `mode`
+and to `view` -- it composes with `beauty` (the default) and all four
+transport modes (`deep_reflect`/`direct`/`indirect`/`clay_lights`).
+Pass the name of a light (or an emissive object) to render with it as
+the ONLY active light in the scene:
+
+```json
+{"method": "render", "params": {"mode": "direct", "light": "keylight"}}
+```
+
+This is a genuine **unbiased partition** of the scene's lighting, not
+a dim/approximate preview: every OTHER light contributes exactly zero
+(both its next-event-estimation contribution AND its BSDF-sampled
+emission are suppressed), so summing a solo render of every light in
+the scene reproduces the un-soloed render, up to Monte-Carlo noise --
+`light` never double-counts or drops energy, it only isolates it. Use
+it to inspect one light's shadow shape, colour, and falloff without
+the other lights visually competing for attention, or to sanity-check
+a specific light's placement/power in isolation before touching the
+whole rig.
+
+Resolution: the name is matched first against the scene's lights (any
+light type, by name), then against named scene objects whose material
+is emissive (a mesh area light, by name). An unresolved name FAILS the
+render (`ok:false`) with the available-name list in `message` -- same
+contract as an unresolved `view`. `light` is silently ignored (an
+honest note in `message`) under `objectmap`, the four false-colour
+diagnostics (`normals`/`depth`/`facets`/`wireframe`), and
+`quality:"draft"` -- none of those evaluate scene lighting at all, so
+there is nothing for `light` to isolate.
+
+Recipe: **"Which light is casting that shadow / that colour cast?"**
+-- solo each candidate light in turn (`light:"keylight"`,
+`light:"filllight"`, ...) and compare; the offending light is the one
+whose solo render reproduces the shadow/cast you're chasing.
 
 ## Escalation ladder (cost, cheapest first)
 
@@ -155,7 +310,16 @@ for the four view-mode diagnostics.
    separate pipeline, samples capped at 4; tiny `width`/`height` keep
    it fast. Both this and step 2 work on a head with NO active
    production rasterizer chunk -- neither dereferences one.
-4. **`render` (production)** -- the real integrator at its authored
+4. **`render {mode:"deep_reflect"|"direct"|"indirect"|"clay_lights"}`**
+   -- a REAL production-class render (real materials/lights/OIDN, except
+   `clay_lights` which neutralizes materials) at a fixed reduced
+   resolution and fixed higher sample count -- seconds, not
+   milliseconds, but still far cheaper than full-res production. Reach
+   for this ONLY for the narrow transport/lighting question each
+   answers (see "Transport modes" above); it costs more than every step
+   before it. Also works on a head with NO active production rasterizer
+   chunk (its own ephemeral pipeline, never the production one).
+5. **`render` (production)** -- the real integrator at its authored
    (or overridden) sample count. The only step that costs what the
    final image costs; do it last, once the cheap steps already agree
    the edit is roughly right.
@@ -210,13 +374,23 @@ mention (viewport, objectmap/query).
    clamped `[16,512]`, and confirm the override took by reading
    `previewWidth`/`previewHeight` (`render`) or `width`/`height`
    (`query_object_at`) back from the result.
-6. **Draft, objectmap/query_object_at, AND every view mode
-   (`normals`/`depth`/`facets`/`wireframe`) all work on a
-   rasterizer-less head; production does not.** Every cheap-render path
-   runs its own ephemeral pipeline and never touches the production
-   rasterizer, so all of them succeed even before any `*_rasterizer`
-   chunk exists in the scene -- a production `render` call on the same
-   head fails honestly instead.
+6. **Draft, objectmap/query_object_at, AND every view mode --
+   `normals`/`depth`/`facets`/`wireframe` AND
+   `deep_reflect`/`direct`/`indirect`/`clay_lights`
+   -- all work on a rasterizer-less head; production does not.** Every
+   cheap-render path (including the four transport modes) runs its OWN
+   ephemeral pipeline and never touches the production rasterizer, so
+   all of them succeed even before any `*_rasterizer` chunk exists in
+   the scene -- a production `render` call on the same head fails
+   honestly instead.
+7. **`deep_reflect`/`direct`/`indirect`/`clay_lights` are NOT free like
+   the other four view modes.** They cost seconds (a real path-traced
+   render at a fixed reduced resolution/sample count), not
+   milliseconds. Reach for a false-colour diagnostic
+   (`normals`/`depth`/`facets`/`wireframe`) or `objectmap` first if the
+   question is structural rather than about transport/lighting --
+   don't default to one of these four for a question `facets` or
+   `depth` already answers for free.
 
 ## Worked example: locating an object, cheaply, before editing it
 
@@ -385,7 +559,8 @@ only honest here):
 
 1. **`renderMode` vs `integrator` -- read the right field.** `renderMode`
    ("production"/"draft"/"objectmap"/"normals"/"depth"/"facets"/
-   "wireframe") tells you which pipeline made THIS image; `integrator`
+   "wireframe"/"deep_reflect"/"direct"/"indirect"/"clay_lights") tells
+   you which pipeline made THIS image; `integrator`
    always names the head's active PRODUCTION rasterizer chunk
    regardless of `quality`. Checking `integrator` to see if a draft
    render "used PT" is a category error -- it always

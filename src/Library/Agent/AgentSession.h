@@ -32,6 +32,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -433,6 +434,10 @@ namespace RISE
 			std::string lookAt;      //!< "x y z"
 			bool        hasUp = false;
 			std::string up;          //!< "x y z"
+			bool        hasOrientation = false;
+			std::string orientation; //!< "heading pitch bank" in degrees
+			bool        hasTargetOrientation = false;
+			std::string targetOrientation; //!< "heading pitch 0" in degrees
 			bool        hasFov = false;
 			std::string fov;         //!< degrees, plain number
 		};
@@ -475,16 +480,26 @@ namespace RISE
 		{
 			Beauty,     //!< radiance / studio-preview shading (default)
 			ObjectMap,  //!< flat per-object identity segmentation + legend
-			//! GUI render modes P1 (docs/gui/RENDER_MODES.md §8): one of
-			//! the ShaderPipeline data/diagnostic modes -- Normals / Depth /
-			//! Facets / Wireframe (the registry's casterFactory modes).
-			//! WHICH one is carried in AgentRenderParams::viewMode below.
-			//! Routes through CreateInteractiveViewModePipeline (a sibling of
-			//! CreateInteractiveObjectMapPipeline), never the production
-			//! rasterizer; `quality`/`samples` are IGNORED exactly as under
-			//! ObjectMap (same single-fidelity, single-ray-per-pixel
-			//! reasoning), and `res.renderMode` is the registry's wire name
-			//! (e.g. "normals") so a caller can distinguish it from
+			//! GUI render modes P1+P2a (docs/gui/RENDER_MODES.md §8): one of
+			//! the registry's OTHER agent-visible modes -- either a
+			//! ShaderPipeline data/diagnostic mode (Normals/Depth/Facets/
+			//! Wireframe, `casterFactory`) or a P2a BeautyVariant mode
+			//! (DeepReflect/Direct, `IsBeautyVariantMode`).  WHICH one is
+			//! carried in AgentRenderParams::viewMode below;
+			//! RenderCore_ branches internally
+			//! (`Implementation::IsBeautyVariantMode(viewModeInfo->mode)`)
+			//! between the two: a ShaderPipeline mode routes through
+			//! CreateInteractiveViewModePipeline (single-ray-per-pixel
+			//! exactness, `quality`/`samples` IGNORED exactly as under
+			//! ObjectMap); a BeautyVariant mode routes through
+			//! CreateBeautyVariantPipeline (a REAL production-class PT
+			//! render at a FIXED reduced resolution + FIXED higher spp --
+			//! `quality`/`samples`/`xray` are ALL ignored, but
+			//! `res.effectiveSamples` reports the mode's real fixed spp, not
+			//! the ShaderPipeline exactness invariant's 1).  Neither ever
+			//! touches the production rasterizer.  `res.renderMode` is the
+			//! registry's wire name either way (e.g. "normals" or
+			//! "deep_reflect") so a caller can distinguish it from
 			//! "objectmap"/"draft"/"production".
 			ViewMode
 		};
@@ -531,6 +546,10 @@ namespace RISE
 		{
 			unsigned int         width = 0;    //!< 0 = no override
 			unsigned int         height = 0;   //!< 0 = no override
+			//! Internal resource ceiling.  Zero leaves the session unrestricted;
+			//! evaluators set a finite cap so an authored Film cannot bypass their
+			//! explicit width/height preflight.
+			std::uint64_t        maxPixelCount = 0;
 			int                  samples = -1;  //!< -1 = no override; else the requested SPP (see EffectiveRenderConfig doc above)
 			AgentCameraOverride  camera;
 			bool                 pinned = false;  //!< false = preview (today's semantics); true = pinned (never silently superseded -- see doc above)
@@ -573,6 +592,79 @@ namespace RISE
 			//! IGNORED under Beauty/ObjectMap (honestly noted in the result
 			//! message), matching the quality/samples-ignored precedent.
 			bool                 xray = true;
+			//! GUI render modes P2a (docs/gui/RENDER_MODES.md §8, deferred
+			//! from P1): OPTIONAL named-view vantage override for THIS
+			//! render only -- "" (default) = no override, use the active
+			//! camera / an explicit `camera` override exactly as today.
+			//! Resolves to the SAME ephemeral `camera` override fields above
+			//! (composes for free with every existing camera-override
+			//! consumer) rather than a parallel mechanism.  Valid with EVERY
+			//! render target (Beauty/ObjectMap/ViewMode, draft or
+			//! production).  Resolution order: (1) a live controller's
+			//! in-memory named-view store (SceneEditController::
+			//! FindNamedViewPose); (2) a scene CAMERA of that exact name
+			//! (the honest headless fallback -- a WrapJob session has no
+			//! named-view store at all).  An unresolved name is a FAILED
+			//! render (res.ok=false) with the available-name list in
+			//! res.message, not a silent fall-through to the active camera.
+			//! If BOTH `view` and an explicit `camera` override are
+			//! supplied, `view` wins (camera fields it resolves take
+			//! precedence) -- see AgentSession::RenderCore_'s resolution
+			//! block for the exact precedence.
+			//! External review P2 fix: ONLY a PINHOLE view can be applied --
+			//! AgentCameraOverride (above) has fields for the full shared
+			//! position/orbit pose plus fov, and
+			//! applyCameraOverride only ever SetProperty's those onto the
+			//! ACTIVE camera, so a ThinLens/Fisheye/Orthographic named view's
+			//! real optics (sensor/focal-length/fstop/focus-distance/
+			//! aperture/tilt-shift, fisheye scale, ortho viewport scale)
+			//! cannot be transferred -- rendering it would silently borrow
+			//! the active camera's own optics under the requested pose. A
+			//! non-pinhole resolved view is therefore ALSO a FAILED render
+			//! (res.ok=false), naming the unsupported camera type in
+			//! res.message, exactly like an unresolved name -- see
+			//! RenderCore_'s resolution block.
+			//! Re-review P2 fix: the check above is about the NAMED VIEW's
+			//! own type -- it says nothing about the ACTIVE camera, which is
+			//! what actually receives the override.  A resolved PINHOLE view
+			//! is therefore NO LONGER rejected just because the ACTIVE
+			//! camera happens to be non-pinhole: CameraIntrospection::
+			//! SetProperty rejects "fov" on anything but a PinholeCamera, so
+			//! doRenderWork preflights the active camera and, when it can't
+			//! store a fov, applies the view's pose (location/lookat/up)
+			//! ONLY and drops the fov, noting the drop honestly in
+			//! res.message (" (view \"...\": FOV not applied -- ...)")
+			//! instead of failing the render.  Net contract: a resolved
+			//! PINHOLE `view` succeeds when the active camera can snapshot and
+			//! restore that shared pose (fov is applied IFF the active camera is
+			//! also pinhole); a resolved
+			//! NON-pinhole `view` always fails loudly, regardless of the
+			//! active camera's type -- see RenderCore_'s doRenderWork for
+			//! both checks.
+			std::string          view;
+			//! GUI render modes P2b (docs/gui/RENDER_MODES.md §3 "light
+			//! solo", §9): OPTIONAL light-selector for a single-light
+			//! render -- "" (default) = no solo, every light in the scene
+			//! contributes normally, exactly as today.  A non-empty name is
+			//! resolved against the scene's light manager (any light, by
+			//! name) then its object manager (any named object whose
+			//! material is emissive, by name) and designates the match as
+			//! the SOLE active light for this render: every OTHER light
+			//! (explicit or mesh-emitter) contributes exactly zero direct
+			//! lighting and its BSDF-sampled emission is suppressed too
+			//! (see LightSampler::SetSoloLight/SetSoloLuminary's doc for the
+			//! exact NEE/MIS mechanism that keeps this unbiased, not merely
+			//! "mostly dark").  Valid with `beauty` (the default renderTarget)
+			//! and all four BeautyVariant modes (`deep_reflect`/`direct`/
+			//! `indirect`/`clay_lights`) -- an unresolved name FAILS the
+			//! render (res.ok=false) with the available-name list in
+			//! res.message, same contract as an unresolved `view`.  Silently
+			//! IGNORED (honestly noted in the result message) under
+			//! `objectmap`, the ShaderPipeline data modes (`normals`/`depth`/
+			//! `facets`/`wireframe`), and `quality:"draft"` -- none of those
+			//! evaluate scene lighting at all, matching the quality/samples/
+			//! xray-ignored precedent used throughout this struct.
+			std::string          light;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides
@@ -642,6 +734,26 @@ namespace RISE
 			//! agent can OBSERVE which integrator is live after a rasterizer
 			//! insert_chunk.  Empty when no rasterizer is active (the no-head /
 			//! no-rasterizer failure paths).
+			//!
+			//! P2 fix (2026-07-19 mutation review): also EMPTY on any render
+			//! that was refused, or threw, BEFORE doRenderWork ever entered the
+			//! park -- concretely, a RunPreviewRenderParked refusal/throw or a
+			//! SubmitAgentRenderSync refusal/throw (AgentSession.cpp's
+			//! RenderCore_).  Those paths deliberately do NOT read
+			//! mJob->GetActiveRasterizerName() on the calling thread, because
+			//! by that point the park has already released (or never started)
+			//! and the interactive render thread may be concurrently mutating
+			//! that Job state -- an unsynchronized std::string read racing a
+			//! concurrent mutation is exactly the class of bug the park fix
+			//! exists to prevent.  An empty `integrator` on a failed render
+			//! (`ok == false`) therefore means one of two things: no rasterizer
+			//! was active, OR the render never resolved far enough to observe
+			//! one (never entered the park) -- callers that need to
+			//! disambiguate should inspect `message`.  Every path where
+			//! doRenderWork DID run (including its own internal failure/
+			//! cancellation returns) still gets a fresh, correctly-synchronized
+			//! read -- doRenderWork sets this field FIRST, unconditionally, at
+			//! its own top, under the park.
 			std::string                integrator;
 			//! Preview-render ADDITIVE wire fields: the dims ACTUALLY used for
 			//! this render (== width/height above; kept as an explicit echo so
@@ -706,10 +818,13 @@ namespace RISE
 			//! Toolkit slice 2 ADDITIVE wire field: "production" (default)
 			//! or "draft" -- which pipeline THIS render actually ran
 			//! through (see AgentRenderParams::quality's doc).  Set
-			//! unconditionally alongside `integrator` above (both are
-			//! filled as soon as this call passes the initial no-head /
-			//! no-active-rasterizer guards, and persist across every later
-			//! return path).  DELIBERATELY DISTINCT from `integrator`:
+			//! unconditionally on the calling thread before any park/dispatch
+			//! decision (it's a pure function of `params`, never live Job
+			//! state) and persists across every later return path.
+			//! `integrator` does NOT share that unconditional timing -- see
+			//! its own field doc above: it is left EMPTY on any render
+			//! refused/thrown before doRenderWork ever entered the park.
+			//! DELIBERATELY DISTINCT from `integrator`:
 			//! `integrator` always names the HEAD's active (production)
 			//! rasterizer, independent of what this call rendered with --
 			//! a draft render still reports the production integrator's
@@ -1686,6 +1801,27 @@ namespace RISE
 			                                      unsigned int& outWidth,
 			                                      unsigned int& outHeight ) const;
 
+			//! P3c (RENDER_MODES.md §7.8 ratified decision 3): READ-ONLY
+			//! introspection of the N-up pane set, so an agent can reason
+			//! about what the user is looking at.  `sourcePane` is the pane
+			//! whose content ReadViewport currently returns (the r2-B
+			//! honesty gap, closed structurally).  NO agent control of the
+			//! pane set exists by decision.
+			struct ViewportPaneInfo
+			{
+				bool        visible = false;
+				std::string mode;         //!< registry wire name
+				int         vantageKind = 0;   //!< 0 SceneCamera / 1 FreeFly / 2 NamedView
+				std::string namedView;    //!< set when vantageKind==2
+			};
+			struct ViewportPanesInfo
+			{
+				int              layout = 0;      //!< 0 Single/1 TwoH/2 OnePlusTwo/3 Quad
+				unsigned int     primary = 0;
+				unsigned int     sourcePane = 0;  //!< whose pixels ReadViewport returns
+				ViewportPaneInfo panes[4];
+			};
+
 			//! Toolkit slice 1 (read_viewport): fetch the CURRENT live
 			//! interactive GUI viewport's pixels as PNG bytes -- the exact
 			//! frame the user is looking at right now.  This is DISTINCT from
@@ -1722,7 +1858,20 @@ namespace RISE
 			                                         unsigned int& outWidth,
 			                                         unsigned int& outHeight,
 			                                         bool& outAvailable,
-			                                         std::string& outReason ) const;
+			                                         std::string& outReason,
+			                                         unsigned int& outSourcePane,
+			                                         // user-review P1-3: the WHOLE pane set,
+			                                         // snapshotted ATOMICALLY with the frame
+			                                         // inside the parked window (not read back
+			                                         // through the locking getters after the
+			                                         // render resumed).  outHavePaneSet is false
+			                                         // only when the parked read never ran.
+			                                         ViewportPanesInfo& outPaneSet,
+			                                         bool& outHavePaneSet ) const;
+
+			// (user-review P1-3: the standalone DescribeViewportPanes getter was
+			//  removed -- read_viewport now snapshots the pane set atomically with
+			//  the frame; see ReadViewport's outPaneSet + SnapshotPaneSetForParkedRead.)
 
 			//! Toolkit slice 3b: the structured result of query_object_at.
 			//! `hit`/`name`/`kind`/`pixelX`/`pixelY`/`width`/`height`/`message`
@@ -1831,6 +1980,16 @@ namespace RISE
 			//! chunks.  Production code never calls this.
 			void ForTest_SetDrainChunkMs( unsigned int chunkMs ) { mDrainChunkMsForTest = chunkMs; }
 
+			//! Invoked once after ReadViewport releases its parked controller
+			//! snapshot but before it serializes the response.  Test-only: lets a
+			//! regression test prove response metadata comes from that snapshot,
+			//! rather than getters read after rendering resumes.  Set and consume
+			//! on one thread before the ReadViewport/RPC call.
+			void ForTest_SetReadViewportAfterParkHook( std::function<void()> hook )
+			{
+				mReadViewportAfterParkHookForTest = std::move( hook );
+			}
+
 			//! Round-2 P1-2 test hook: read mAsyncOutstandingJobId directly
 			//! (under mAsyncCacheMutex, like every other access to this
 			//! field).  Exists so a test can red-prove the publish-before-
@@ -1891,10 +2050,16 @@ namespace RISE
 			//! an HDR `file_rasterizeroutput` declared FIRST no longer shadows
 			//! a LATER LDR output's declared `display_transform`/`exposure` --
 			//! rather than only observing it indirectly through pixel bytes.
+			//! External review P2 fix: also exposes the resolved output
+			//! COLOUR SPACE (`outColorSpace`, `COLOR_SPACE` enum values, int to
+			//! keep this header off Color.h) -- previously the in-memory PNG
+			//! sink hardcoded eColorSpace_sRGB regardless of the scene's
+			//! declared `file_rasterizeroutput` color_space.
 			void ForTest_ResolveBeautyDisplayTransform( double& outExposureEV,
-			                                            int& outDisplayTransform ) const
+			                                            int& outDisplayTransform,
+			                                            int& outColorSpace ) const
 			{
-				ResolveBeautyDisplayTransform_( outExposureEV, outDisplayTransform );
+				ResolveBeautyDisplayTransform_( outExposureEV, outDisplayTransform, outColorSpace );
 			}
 
 		private:
@@ -1948,8 +2113,17 @@ namespace RISE
 			//! (int to keep this header off the DisplayTransform.h dependency).
 			//! Never applied to the OBJECTMAP identity sink (which must emit
 			//! un-tonemapped per-pixel identity bytes).
+			//! External review P2 fix: also resolves `outColorSpace` (`COLOR_SPACE`
+			//! enum values, int to keep this header off Color.h) from the SAME
+			//! LDR `file_rasterizeroutput`'s declared `color_space` -- default
+			//! `eColorSpace_sRGB` (0) when absent/no LDR output, matching the
+			//! descriptor's own default hint.  Exposure is now resolved via the
+			//! CST v7 `expr(...)`-aware path (see AgentSession.cpp's
+			//! ResolveParamNumeric) instead of a raw std::strtod, so an
+			//! expr(...)-authored `exposure` no longer silently resolves to 0.
 			void ResolveBeautyDisplayTransform_( double& outExposureEV,
-			                                     int& outDisplayTransform ) const;
+			                                     int& outDisplayTransform,
+			                                     int& outColorSpace ) const;
 
 			//! Fix-round-1 P1-A / round-2 P1-1: cancel + wait, UNBOUNDED, for
 			//! any OUTSTANDING async render submitted against the
@@ -2132,6 +2306,10 @@ namespace RISE
 			//! non-Render surface -- set before the teardown/detach call
 			//! that will read it, never concurrently.
 			unsigned int mDrainChunkMsForTest = 0;
+
+			//! See ForTest_SetReadViewportAfterParkHook.  Mutable because
+			//! ReadViewport is a logically-const observe operation.
+			mutable std::function<void()> mReadViewportAfterParkHookForTest;
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled
