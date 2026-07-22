@@ -236,14 +236,11 @@ private:
     void onProgress(double progress, double total, const std::string& title);
     void onLogMessage(int level, const std::string& message);
 
-    // L4c — VFS observer entry points.  Called from rasterizer
-    // worker threads (multiple may concurrently land tile events);
-    // m_bufferMutex serialises buffer access + the QImage emission.
-    // L4 round-7 P1: tile callback now receives the half-open roi
-    // so we can RenderToBuffer just the changed region (was: full
-    // image every tile fire — ~4× regression vs legacy).  Frame-
-    // complete uses full-image (once per frame, not hot).
-    void onProductionVFSTileComplete(const RISE::Rect& halfOpenRoi);
+    // VFS frame-complete callback.  Rasterizer workers may invoke it;
+    // m_bufferMutex serialises its staging-buffer access and QImage
+    // emission.  Tile callbacks are intentionally not registered:
+    // a full-resolution QImage per tile can overwhelm Qt's queued
+    // event storage before the UI thread consumes it.
     void onProductionVFSFrameComplete();
     // L8 round 9 — lockless progressive-update poll.  Runs on the
     // Qt main thread via `m_progressivePollTimer`; reads the
@@ -251,14 +248,9 @@ private:
     // workers have produced new pixels since the last call.
     // Otherwise renders the full image into the staging buffer and
     // emits a QImage to the UI.  See `RenderEngine.cpp` impl for
-    // the deadlock-avoidance rationale (replaces the per-tile
-    // `onProductionVFSTileComplete` callback which acquired
-    // `m_bufferMutex` from every worker thread).
+    // the deadlock-avoidance rationale (replaces the former per-tile
+    // callback which acquired `m_bufferMutex` from every worker).
     void pollProductionVFS();
-    // halfOpenRoi == nullptr → full image; non-null → render only
-    // the [y0, y1) × [x0, x1) region into m_pixelBuffer's matching
-    // image-space slice.
-    //
     // L8 round 14 — `nonBlocking` opt-in for the polling path so a
     // slow worker block doesn't beachball the Qt GUI thread.  When
     // true, RenderToBuffer uses `try_lock_shared` per tile and
@@ -266,7 +258,6 @@ private:
     // contents for those tiles.  See `FrameStore::Render` doc for
     // the architecture rationale.
     void renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
-                                              const RISE::Rect* halfOpenRoi,
                                               bool nonBlocking = false);
     void ensureProductionVFSAttachedToRasterizer();
 
