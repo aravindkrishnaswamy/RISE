@@ -68,12 +68,49 @@ so probably real, but not decisively.
 **Board takeaways.**
 - **gemini-3.5-flash leads** and is the only model clearing the lighting
   checkpoint with any regularity.
-- **Lighting is the universal ceiling** — every model fails the render-band
-  checkpoint in most runs. The concrete next lever; capable models now
-  *finish*, so they can act on lighting guidance (unlike the earlier
-  never-render wall).
 - **Local is not competitive here:** qwen3.6 is far behind on quality *and*
   ~10× slower. Confirmed capability wall (see §4).
+
+### 2a. Lighting arc — recalibration + fill lesson (2026-07-22, epoch 6)
+
+The "lighting ceiling" (every model failing the render-band checkpoint) was
+diagnosed model-free (authored + rendered control scenes): scenes fail on
+**channel imbalance, not darkness** — a single warm light with no fill
+crushes shadows to near-zero blue (ratios 3–329). Rendered calibration
+showed `channelBalanceMax: 3.0` was slightly too strict — it failed
+legitimately-warm rooms the prompts ask for (a good warm scene renders at
+~1.4–2.9; only no-fill crush exceeds ~5). **Raised to 4.0.**
+
+Calibration effect, isolated by re-grading the *same* epoch-5 renders at 4.0
+(render is unchanged; only grading flips):
+
+| model | render-band 3.0 → 4.0 | meanCkpt 3.0 → 4.0 |
+|---|---|---|
+| gpt-5.6-terra | 1/9 → **4/9** | 0.69 → 0.76 |
+| grok-4.5 | 1/9 → 4/9 | 0.56 → 0.62 |
+| gemini-3.6-flash | 1/9 → 2/9 | 0.78 → 0.80 |
+| gemini-3.5-flash | 3/9 → 3/9 | 0.84 (unchanged) |
+| qwen3.6:27b | 1/6 → 1/6 | 0.57 (unchanged — its scenes crush past 4.0) |
+
+Plus a lighting-skill lesson ("a warm key alone crushes to orange — always
+add a fill"). Measured on gpt (the only tier where lighting is the binding
+constraint — it finishes builds), fresh epoch-6 run at 4.0 + the lesson:
+
+| gpt-5.6-terra | render-band | meanCkpt | full pass |
+|---|---|---|---|
+| epoch-5 (3.0, no lesson) | 1/9 | 0.69 | 1/9 |
+| re-graded @4.0 (calibration only) | 4/9 | 0.76 | — |
+| **epoch-6 (4.0 + fill lesson)** | **6/9** | **0.91** | **5/9** |
+
+**Honest attribution.** The calibration is a clean, isolated win (re-grade
+proves it). The epoch-6 run is a large overall jump (0.69→0.91, 1→5 full
+passes), and it **generalized to the held-out `build_study`** (2/3
+render-band). But the *marginal* gain of the fill lesson over calibration
+alone (4→6/9) is 2 runs — within N=9 noise; the meanCkpt jump (0.76→0.91) is
+more convincing but still N=9. Models lit via omni/directional/spot lights
+(not the single-luminaire pattern), consistent with the lesson but not
+proven caused by it. **The full board has NOT been re-run at epoch-6** — only
+gpt has; the other rows above are epoch-5 renders re-graded at 4.0.
 
 ---
 
@@ -113,5 +150,5 @@ object+lighting+stage+env; graded by RMSE vs committed references.
 
 ---
 
-_Last updated: 2026-07-22. Raw runs under `evals/runs/`; runconfigs under
+_Last updated: 2026-07-22 (lighting arc). Raw runs under `evals/runs/`; runconfigs under
 `evals/runconfigs/`._
