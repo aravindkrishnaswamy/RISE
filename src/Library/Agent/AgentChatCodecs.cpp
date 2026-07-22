@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the TEN provider-neutral tool definitions (1:1 with the
+//    (1) the ELEVEN provider-neutral tool definitions (1:1 with the
 //        AgentRpc verbs; parameter names/shapes mirror AgentRpc.cpp),
 //    (2) a small raw-span JSON scanner (byte-exact extraction of the
 //        assistant content from a response body, so provider-opaque
@@ -323,6 +323,83 @@ namespace RISE
 							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180).\"}"
 						"},\"required\":[\"location\",\"lookat\"]}"
 					"},\"required\":[\"x\",\"y\"]}"
+				},
+				{
+					"compare_to_reference",
+					"Measure how closely the current scene's render matches a reference photo -- "
+					"the SAME RMSE objective function an image-reconstruction grader uses, handed "
+					"to you directly instead of leaving you to render-then-eyeball. Renders the "
+					"live scene at the NAMED reference's exact pixel dimensions (no width/height "
+					"override -- the comparison needs pixel-for-pixel alignment) and returns "
+					"{rmse, channelDelta:{r,g,b}, grid, worstCell, width, height, reference, "
+					"summary}. rmse = sqrt(mean((render-reference)/255)^2) over all pixels -- "
+					"lower is better, 0 is a perfect match; treat this as the primary objective to "
+					"minimize. channelDelta is the mean SIGNED per-channel difference (render minus "
+					"reference, [-1,1]) -- positive means your render runs brighter than the "
+					"reference on that channel (e.g. channelDelta.b > 0 means too blue). grid is a "
+					"3x3 ROW-MAJOR array (index 0 = top-left ... index 8 = bottom-right) of "
+					"{rmse,dr,dg,db} -- the SAME two measures broken down spatially, so you can "
+					"find WHICH region is worst (background/environment staging is the most common "
+					"weak spot) instead of guessing from one number; worstCell names that region "
+					"(e.g. \"top-right\"). QUALITY TRADEOFF: omit `samples` (the default) and the "
+					"comparison renders quality:\"draft\" -- cheap, but IGNORES materials/lighting "
+					"entirely, so a low draft-mode RMSE only confirms geometry/composition/camera "
+					"alignment, NOT colour/material match. Pass `samples` (e.g. 16-64) to switch to "
+					"quality:\"production\" for the real, grader-equivalent reading -- recommended "
+					"workflow: iterate cheaply under the draft default while getting composition "
+					"right, then request `samples` once composition looks plausible. `visual` "
+					"(default true) also returns a [render | reference | abs-diff heatmap] "
+					"composite image; set it false once you only need the numbers. `split` "
+					"(default false) additionally returns split:{objectRmse,backgroundRmse,"
+					"objectPixelFraction,ok,note} -- an object-vs-background RMSE breakdown from "
+					"an EXTRA ephemeral mode:\"objectmap\" render of your own candidate. Reach for "
+					"it once your overall rmse plateaus: a high backgroundRmse means staging "
+					"(ground/environment/lighting) is still the biggest lever; a low backgroundRmse "
+					"with a high objectRmse means staging is DONE -- stop tuning it and spend "
+					"remaining iterations on the object's silhouette/proportions instead. Honesty "
+					"caveat: the object mask comes from YOUR candidate only (the reference PNG has "
+					"no objectmap of its own), so it answers \"on the pixels where my object is, how "
+					"wrong am I\" and \"on my background pixels, how wrong am I\" -- a badly "
+					"misplaced object still shows up (high objectRmse on the candidate's object "
+					"pixels, AND the reference's real object pixels raise backgroundRmse since your "
+					"candidate has no object there). Both figures sentinel to -1 when their bucket is "
+					"EMPTY: objectRmse is -1 when no object pixels are visible (camera pointed "
+					"away, object off-frame), backgroundRmse is -1 when registered objects cover "
+					"the ENTIRE frame. Check for >= 0 before trusting either -- -1 means \"not "
+					"measured\", NOT \"perfect match\". WARNING: without `splitObjects`, EVERY "
+					"registered object counts as OBJECT -- including a ground plane, backdrop, or "
+					"any other staging geometry you built as a real scene object -- so an unscoped "
+					"split measures \"geometry vs. environment\", not \"hero object vs. staging\" "
+					"(observed averaging 86% of the frame in the OBJECT bucket on scenes with a "
+					"modeled ground plane). Pass `splitObjects` (an array of object names) to scope "
+					"the OBJECT bucket to just your hero object -- every other pixel, including "
+					"other registered geometry, then falls into BACKGROUND instead, giving a true "
+					"hero-object-vs-staging reading. A requested name absent from the candidate's "
+					"objectmap legend is dropped from the mask (not a hard failure) and surfaced in "
+					"split.note along with the names that ARE available, so a typo can't silently "
+					"shrink your mask unnoticed; if NONE of the requested names match, objectRmse "
+					"comes back -1 with a note saying so explicitly (distinct from the ordinary "
+					"\"object off-frame\" -1 case).",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"reference\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of a host-registered reference image (e.g. view1, view2, ... in prompt-attachment order). An unknown name is an error listing every registered reference.\"},"
+						"\"camera\":{\"type\":\"object\",\"description\":"
+						"\"Optional EPHEMERAL camera-pose override for this ONE comparison render -- captured and restored automatically, never touches the document.\","
+						"\"properties\":{"
+							"\"location\":{\"type\":\"string\",\"description\":\"Eye position, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector, a string of EXACTLY 3 finite numbers \\\"x y z\\\".\"},"
+							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180).\"}"
+						"},\"required\":[\"location\",\"lookat\"]},"
+						"\"visual\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default true. When true, also returns a composite [render|reference|heatmap] diff image. Set false to save tokens once you only need the numeric feedback.\"},"
+						"\"samples\":{\"type\":\"number\",\"description\":"
+						"\"Optional sample-count override, clamped to [1,65536]. Omit for a cheap quality:draft comparison (materials/lighting ignored); supply for a real quality:production RMSE reading -- see the tool description's quality tradeoff.\"},"
+						"\"split\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default false. Returns an object-vs-background RMSE breakdown (one extra objectmap render) -- see the tool description's split paragraph.\"},"
+						"\"splitObjects\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"Optional array of object names, only meaningful alongside split:true. Scopes the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, including other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Without this, a modeled ground plane/backdrop counts as OBJECT too, inflating the OBJECT bucket -- see the tool description's WARNING. A name not found in the candidate's objectmap legend is dropped from the mask and surfaced in split.note (never a hard failure).\"}"
+					"},\"required\":[\"reference\"]}"
 				},
 			};
 
@@ -655,11 +732,16 @@ namespace RISE
 				return summary;
 			}
 
-			//! True + the base64 payload iff this call is a read_image whose
-			//! JSON-RPC result carries a non-empty png_base64 string.
+			//! True + the base64 payload iff this call is a read_image (or a
+			//! compare_to_reference called with visual:true -- see
+			//! AgentRpc.cpp's compare_to_reference dispatch doc: it
+			//! deliberately reuses the SAME "png_base64" field name so this
+			//! one predicate, and every retention/elision policy built on
+			//! it, covers both without a second code path) whose JSON-RPC
+			//! result carries a non-empty png_base64 string.
 			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
 			{
-				if( call.name != "read_image" || !result.isObject() ) return false;
+				if( ( call.name != "read_image" && call.name != "compare_to_reference" ) || !result.isObject() ) return false;
 				const JsonValue* b64 = result.find( "png_base64" );
 				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;
 				outB64 = b64->asString();

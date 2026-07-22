@@ -2460,6 +2460,38 @@ static void TestPromptImagesEndToEnd()
 		if( recs[i].get( "attachments" ).asNumber( -1.0 ) == 1.0 ) sawUserAttachment = true;
 	}
 	Check( sawUserAttachment, "T13: the trajectory's user record carries attachments==1" );
+
+	// compare_to_reference naming contract: RunScenarioDriven registers
+	// EVERY prompt-attachment image on the session as "view1".."viewN" in
+	// prompt-then-attachment order (AgentEvalRunner.cpp, right after the
+	// pre-flight image load, before dispatcher construction) -- so the
+	// SINGLE image just attached above must be reachable as "view1" post-
+	// run.  Drive the real compare_to_reference verb through the run
+	// handle's own retained dispatcher (AgentEvalRunHandle::dispatcher) and
+	// confirm the result carries an `rmse` field rather than an "unknown
+	// reference" error -- the honest end-to-end proof that the registry
+	// actually holds the name, not just that RunScenarioDriven compiles a
+	// registration call.  visual:false keeps this fixture cheap (no
+	// composite PNG needed to prove the name resolved).
+	Check( h.dispatcher != nullptr, "T13: the run handle retains a live dispatcher post-run" );
+	if( h.dispatcher ) {
+		JsonValue req = JsonValue::MakeObject();
+		req.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		req.set( "id", JsonValue::MakeNumber( 99.0 ) );
+		req.set( "method", JsonValue::MakeString( "compare_to_reference" ) );
+		JsonValue cparams = JsonValue::MakeObject();
+		cparams.set( "reference", JsonValue::MakeString( "view1" ) );
+		cparams.set( "visual", JsonValue::MakeBool( false ) );
+		req.set( "params", cparams );
+
+		const std::string cresp = h.dispatcher->HandleLine( JsonSerialize( req ) );
+		JsonValue cenv; std::string cperr;
+		Check( JsonParse( cresp, cenv, cperr ), "T13: compare_to_reference response parses as JSON (" + cperr + ")" );
+		Check( cenv.has( "result" ) && cenv.get( "result" ).has( "rmse" ),
+		       "T13: compare_to_reference{reference:\"view1\"} succeeds post-run -- "
+		       "confirms RunScenarioDriven registered the attached image as \"view1\" (" +
+		       JsonSerialize( cenv ) + ")" );
+	}
 }
 
 // A minimal, well-formed 1x1 transparent PNG (67 bytes decoded) -- the

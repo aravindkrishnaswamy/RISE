@@ -52,6 +52,36 @@ namespace RISE
 
 	namespace Agent
 	{
+		//! compare_to_reference (the reconstruction feedback instrument --
+		//! docs/agentic-redesign vision baseline: models reconstructing a
+		//! scene from a reference photo used to score RMSE 0.24-0.40 with
+		//! NO feedback signal at all -- they render, then guess): one
+		//! HOST-registered reference image the compare_to_reference verb
+		//! may grade a render against.  `name` is the caller-chosen handle
+		//! a compare_to_reference call passes back (e.g. the eval harness's
+		//! "view1".."viewN" prompt-attachment naming contract -- see
+		//! AgentEvalRunner.cpp's RunScenarioDriven, which registers every
+		//! prompt's image attachments in prompt-then-attachment order);
+		//! `pngBytes` is the RAW PNG FILE BYTES (NOT base64) -- decoded at
+		//! compare time through the SAME in-tree PNGReader path
+		//! AgentEvalRunner.cpp's DecodePngToRgb8 uses (see AgentSession.cpp's
+		//! own copy of that decode helper for the exact byte-round-trip
+		//! contract; duplicated rather than exported because the eval
+		//! runner's copy is a file-local helper in an anonymous namespace).
+		//!
+		//! READ-SIDE HYGIENE: compare_to_reference can ONLY see images the
+		//! host explicitly registered via AgentSession::SetReferenceImages
+		//! -- there is no wire parameter that names a filesystem path or
+		//! arbitrary bytes.  This mirrors read_skill's bare-name rule (a
+		//! caller picks a NAME off a host-curated index; it never supplies
+		//! a path the host then opens) -- a remote/agent caller cannot use
+		//! this verb to read an arbitrary file off the host's disk.
+		struct AgentReferenceImage
+		{
+			std::string name;
+			std::string pngBytes;
+		};
+
 		//! Secure-MCP slice 5a: a construction-time, WIRE-IMMUTABLE flag
 		//! naming who this session speaks for -- the local human operating
 		//! the GUI (Owner) or a remote/external agent proposing edits for a
@@ -671,6 +701,235 @@ namespace RISE
 			std::vector<LegendEntry>   legend;
 		};
 
+		//! compare_to_reference params.  `reference` is REQUIRED -- the
+		//! name of a HOST-registered AgentReferenceImage (see
+		//! AgentSession::SetReferenceImages).  `camera` composes EXACTLY
+		//! like AgentRenderParams::camera (an ephemeral, per-field-optional
+		//! override, captured and restored, never touches the document).
+		//! There is deliberately NO width/height override: the comparison
+		//! ALWAYS renders at the NAMED reference's own pixel dimensions (a
+		//! caller cannot compare at a different resolution than the
+		//! reference was authored at -- the RMSE/grid math requires
+		//! pixel-for-pixel alignment).
+		//!
+		//! `quality`/`samples` tradeoff (deliberate, see CompareToReference's
+		//! doc for the full rationale): absent `samples` (the default, -1),
+		//! the comparison renders at AgentRenderQuality::Draft -- cheap
+		//! (capped at 4 samples, fixed studio-preview shading), good enough
+		//! to iterate on GEOMETRY/COMPOSITION/CAMERA alignment against the
+		//! reference, but IGNORES the scene's authored materials and
+		//! lighting entirely -- a low draft-mode RMSE says nothing about
+		//! material/colour/lighting match.  Supplying `samples` (>=1)
+		//! switches to AgentRenderQuality::Production at that sample count
+		//! -- the real grader-equivalent measurement, and materially more
+		//! expensive.  The intended loop: iterate cheaply under the Draft
+		//! default while getting composition right, then pass `samples`
+		//! for the real RMSE reading once composition looks plausible.
+		//!
+		//! `visual` (default true) additionally builds and returns the
+		//! side-by-side composite diff PNG (see AgentCompareToReferenceResult::
+		//! compositePng) -- set false once only the numeric feedback is
+		//! needed, to save the image-encode cost and the response's token
+		//! footprint.
+		//!
+		//! `split` (default false, back-compat -- see AgentCompareSplitResult's
+		//! doc for the full mechanism): when true, ALSO renders the candidate
+		//! scene a SECOND time as an ephemeral mode:"objectmap" identity
+		//! segmentation (same dims/camera as the comparison render) and uses
+		//! it to partition the SAME candidate-vs-reference pixel pairs into
+		//! an OBJECT bucket (pixels the candidate's own objectmap marks as a
+		//! real registered object) and a BACKGROUND bucket (every other
+		//! pixel), each with its own RMSE.  This is the diagnostic that
+		//! separates "your staging/background is done" from "the residual
+		//! is the object's shape" -- once `backgroundRmse` is low, stop
+		//! tuning ground/environment/lighting and spend remaining iterations
+		//! on the object's silhouette and proportions instead.  Costs one
+		//! EXTRA render (the objectmap pass) on top of the usual comparison
+		//! render.
+		//!
+		//! `splitObjects` (default empty, back-compat) SCOPES the OBJECT
+		//! bucket to a caller-named subset of the objectmap legend -- only
+		//! meaningful when `split` is true; ignored otherwise.  Empty (the
+		//! default) keeps the ORIGINAL, unscoped rule: every registered
+		//! object -- whatever the objectmap legend lists -- counts as
+		//! OBJECT.  That default has a sharp failure mode found in a live
+		//! eval run: models routinely build a ground plane and a backdrop
+		//! as ordinary registered objects to stage the hero object, so the
+		//! STAGE lands in the OBJECT bucket right alongside the hero and
+		//! BACKGROUND shrinks to whatever the sky/environment leaves
+		//! uncovered (observed objectPixelFraction averaging 0.86 across a
+		//! run).  The split then measures "geometry vs. environment", not
+		//! "hero object vs. staging", which is what it is documented and
+		//! used for.  Passing a non-empty `splitObjects` fixes this: ONLY
+		//! legend entries whose `name` (LegendEntry::name -- the scene's own
+		//! object name) appears in this list count as OBJECT; every other
+		//! pixel -- INCLUDING other registered geometry such as a ground
+		//! plane or backdrop -- falls into BACKGROUND.  `"<unmapped>"` is
+		//! never a selectable name here (it is not a real object and is
+		//! always excluded from the OBJECT bucket, scoped or not).  See
+		//! AgentSession::CompareToReference's split block for how an
+		//! unknown/typo'd name is surfaced in AgentCompareSplitResult::note
+		//! rather than silently shrinking the mask.
+		struct AgentCompareToReferenceParams
+		{
+			std::string              reference;
+			AgentCameraOverride      camera;
+			bool                     visual  = true;
+			int                      samples = -1;   //!< -1 = no override (quality:Draft); >=1 = quality:Production at this SPP
+			bool                     split   = false;   //!< see the doc block above this struct
+			std::vector<std::string> splitObjects;      //!< see the doc block above this struct; empty = unscoped (every registered object)
+		};
+
+		//! One cell of a compare_to_reference 3x3 grid -- see
+		//! AgentCompareToReferenceResult::grid's doc.
+		struct AgentCompareGridCell
+		{
+			double rmse = 0.0;   //!< this cell's RMSE, same formula as the overall AgentCompareToReferenceResult::rmse, restricted to this cell's pixels
+			double dr   = 0.0;   //!< this cell's mean signed R delta (render - reference), in [-1,1]
+			double dg   = 0.0;
+			double db   = 0.0;
+		};
+
+		//! compare_to_reference split:true result -- an OBJECT-vs-BACKGROUND
+		//! RMSE breakdown built from the CANDIDATE's own mode:"objectmap"
+		//! render (see AgentCompareToReferenceParams::split's doc for the
+		//! render mechanics).  A pixel is OBJECT iff the candidate's
+		//! objectmap identity render resolves it to a REAL registered
+		//! object's legend colour (the reserved background/no-hit colour,
+		//! and a hit on an unregistered/"<unmapped>" object, both fall into
+		//! BACKGROUND) -- see AgentSession::CompareToReference's doc for the
+		//! exact mask rule.
+		//!
+		//! HONESTY CAVEAT (read before trusting a number from this struct):
+		//! the mask comes from the CANDIDATE ONLY -- the reference is a
+		//! committed PNG with no objectmap of its own.  This answers "on
+		//! the pixels where MY object currently is, how wrong am I" and
+		//! "on my background pixels, how wrong am I" -- NOT "how wrong is
+		//! the reference's object region".  A badly MISPLACED object is
+		//! still informative under this rule: its pixels show high
+		//! `objectRmse` (the candidate's object doesn't match what the
+		//! reference has there), AND the reference's actual object pixels
+		//! -- now sitting in the candidate's BACKGROUND mask, since the
+		//! candidate's object isn't there -- pull `backgroundRmse` up too,
+		//! rather than silently vanishing into an "object" bucket that
+		//! doesn't cover them.
+		struct AgentCompareSplitResult
+		{
+			//! true iff the candidate's objectmap render succeeded, decoded,
+			//! and matched the comparison's own width/height.  false (with
+			//! `note` explaining why) on ANY failure along that path --
+			//! never crashes, and never fails the OVERALL compare_to_reference
+			//! call (the split is a pure ADD-ON measurement).
+			bool        ok = false;
+			//! RMSE (identical formula to AgentCompareToReferenceResult::rmse)
+			//! restricted to OBJECT-mask pixels.  Left at -1.0 when the mask
+			//! is empty (no object visible in the candidate's objectmap --
+			//! see `note`) so a caller can distinguish "no object pixels" from
+			//! a genuine 0.0 (a pixel-perfect object match).
+			double      objectRmse = -1.0;
+			//! RMSE restricted to every pixel NOT in the object mask
+			//! (background / no-hit / an unregistered-object hit).  Left at
+			//! -1.0 when THAT mask is empty -- registered objects cover the
+			//! entire frame -- for the same reason objectRmse does: a 0.0
+			//! here would read as "the background matches perfectly" when in
+			//! truth no background pixel was ever measured.  Both buckets
+			//! sentinel symmetrically; check `>= 0.0` before trusting either.
+			double      backgroundRmse = -1.0;
+			//! Object-mask pixel count divided by total pixel count, in
+			//! [0,1] -- how much of the frame the candidate's object(s)
+			//! actually cover.
+			double      objectPixelFraction = 0.0;
+			//! Empty on a clean split.  Explains a `!ok` split (the
+			//! objectmap render or its PNG decode failed, or its dims came
+			//! back mismatched) or an ok-but-degenerate split (the object
+			//! mask was empty -- camera pointed away, object off-frame or
+			//! fully occluded -- `objectRmse` stays -1 and `backgroundRmse`
+			//! covers the whole frame).
+			std::string note;
+		};
+
+		//! The structured result of compare_to_reference.  `ok` is false
+		//! (and `error` explains why) for an unregistered `reference` name,
+		//! a reference PNG that fails to decode, a comparison render that
+		//! fails, or a candidate/reference dimension mismatch (should not
+		//! happen in practice -- the render is forced to the reference's
+		//! own dims -- but checked defensively rather than indexing past
+		//! either buffer's end).  `badReference` disambiguates the FIRST
+		//! of those (an unregistered name -- a caller usage error naming
+		//! the wrong reference) from every other failure (a render/decode
+		//! problem) so AgentRpc.cpp can pick -32602 vs -32603 without
+		//! string-matching `error`.
+		struct AgentCompareToReferenceResult
+		{
+			bool        ok = false;
+			std::string error;
+			bool        badReference = false;
+			//! Overall RMSE = sqrt(mean over all pixels*RGB of
+			//! ((render-reference)/255)^2) -- THE SAME FORMULA the eval
+			//! checker's "render" checkpoint compareToImage assertion uses
+			//! (AgentEvalRunner.cpp's CheckRenderKind) -- i.e. this is the
+			//! grader's own objective function, computed BEFORE the grader
+			//! ever runs.
+			double      rmse = 0.0;
+			//! Mean SIGNED per-channel delta (render minus reference, each
+			//! byte scaled to [0,1] before averaging) over ALL pixels -- a
+			//! positive value means the render is, on average, brighter
+			//! than the reference on that channel; negative means dimmer.
+			//! Range [-1,1].
+			double      channelDeltaR = 0.0;
+			double      channelDeltaG = 0.0;
+			double      channelDeltaB = 0.0;
+			//! A 3x3 spatial breakdown of the SAME RMSE/delta measures
+			//! above, ROW-MAJOR (index 0 = top-left ... index 8 =
+			//! bottom-right; row = index/3, col = index%3).  The image is
+			//! split into 3 columns and 3 rows (the last column/row
+			//! absorbs any remainder when width/height isn't a multiple of
+			//! 3) -- lets a caller localize WHERE the reconstruction is
+			//! worst (the vision baseline's dominant failure mode was
+			//! background/env staging, ~60% of pixels, that this grid is
+			//! meant to surface directly rather than leave the caller to
+			//! infer from one scalar).
+			std::vector<AgentCompareGridCell> grid;
+			//! The highest-RMSE cell's human label: "top-left",
+			//! "top-center", "top-right", "middle-left", "center",
+			//! "middle-right", "bottom-left", "bottom-center",
+			//! "bottom-right".  Empty iff `grid` is empty (a failed
+			//! comparison).
+			std::string worstCell;
+			//! The reference's (== the render's, forced) pixel dims.
+			unsigned int width  = 0;
+			unsigned int height = 0;
+			//! Echoes the requested reference name (even on a failure, so
+			//! a caller need not thread the request back through itself).
+			std::string reference;
+			//! A human-readable one-line synthesis of the measures above
+			//! (RMSE + per-channel brightness delta + worst-region call-
+			//! out) -- meant to be read directly, not just machine-parsed.
+			std::string summary;
+			//! The [render | reference | abs-diff heatmap] side-by-side
+			//! composite, 8-bit sRGB PNG bytes, 3x the reference's width by
+			//! its height (compositeWidth/compositeHeight echo the exact
+			//! encoded dims).  EMPTY unless ok && the request's `visual`
+			//! was true.  See AgentSession::CompareToReference's doc for
+			//! the heatmap ramp (black -> red -> yellow -> white on mean
+			//! per-pixel |delta|).
+			std::vector<unsigned char> compositePng;
+			unsigned int compositeWidth  = 0;
+			unsigned int compositeHeight = 0;
+			//! true iff the REQUEST's `split` was true (regardless of
+			//! whether the split itself then succeeded) -- test THIS, not
+			//! `split.ok`, to distinguish "not requested" from "requested
+			//! but failed" (both leave `split.ok == false`).  When false,
+			//! `split` is default-constructed and callers should not read
+			//! it (mirrors the wire contract: the "split" JSON key is
+			//! omitted entirely from the response unless this is true).
+			bool                    hasSplit = false;
+			//! The object-vs-background RMSE breakdown -- see
+			//! AgentCompareSplitResult's doc.  Only meaningfully populated
+			//! when `hasSplit` is true.
+			AgentCompareSplitResult split;
+		};
+
 		//! Facet 5 slice S1: one entry of the skills INDEX -- `name` is the
 		//! skill's filename minus ".md" (the handle a client passes back to
 		//! fetch the full markdown), `title` the "# ..." first line, `hook`
@@ -1058,6 +1317,58 @@ namespace RISE
 			//! staged, including via a reload that minted a fresh uuid)
 			//! resolves to status="conflict" and is NOT applied.
 			AgentResolveResult ResolveProposal( std::uint64_t proposalId, bool approve );
+
+			//! compare_to_reference: register (or wholesale REPLACE) the set
+			//! of reference images THIS session's compare_to_reference verb
+			//! may grade against.  HOST-PROVIDED ONLY -- there is no wire
+			//! verb that lets a remote/agent caller add, remove, or rename
+			//! an entry; only the embedding host calls this (the eval
+			//! runner pre-flight-loading a scenario's prompt-attachment
+			//! images -- see AgentEvalRunner.cpp's RunScenarioDriven; a
+			//! future GUI could pass chat attachments the same way),
+			//! typically once, before the session starts serving requests.
+			//! Empty by default -- every EXISTING construction site
+			//! (LoadFromFile/WrapJob) leaves this unset, so
+			//! compare_to_reference cleanly refuses every name (see
+			//! AgentCompareToReferenceResult::badReference) until a host
+			//! registers at least one image; back-compat by construction.
+			//! Replaces the ENTIRE set, not additive -- a second call fully
+			//! supersedes the first (no accumulation across calls).
+			void SetReferenceImages( std::vector<AgentReferenceImage> images )
+			{
+				mReferenceImages = std::move( images );
+			}
+
+			//! compare_to_reference: render the live head at the NAMED
+			//! reference's exact pixel dims (see AgentCompareToReferenceParams'
+			//! doc for the quality/samples tradeoff and the camera-override
+			//! composition), decode both PNGs through the SAME in-tree
+			//! PNGReader path read_image's underlying bytes / the eval
+			//! checker's compareToImage assertion use, and report the
+			//! grader's own RMSE objective function PLUS a 3x3 spatial
+			//! breakdown and (optionally) a visual [render|reference|diff]
+			//! composite -- see AgentCompareToReferenceResult's doc for the
+			//! full field-by-field contract.
+			//!
+			//! NEVER mutates the retained Document (like every Render call,
+			//! the comparison render's camera/dims overrides are captured
+			//! and restored) and NEVER touches ReadImage()'s cache
+			//! differently than an ordinary Render call would -- a
+			//! compare_to_reference call's render is cached for ReadImage()
+			//! exactly like any other successful Render, so a caller CAN
+			//! read_image afterward to see the same frame the comparison
+			//! graded.  This holds for `split:true` too: that path runs a
+			//! SECOND, ephemeral objectmap render to build its mask, and
+			//! since Render() caches every success, the implementation
+			//! stashes and restores the beauty cache (under an RAII guard)
+			//! around it, so the objectmap never PERSISTS past the call.
+			//! Precisely: the cache transiently holds the objectmap for the
+			//! width of that internal render, so a ReadImage() issued from
+			//! ANOTHER thread mid-compare can still observe it -- bounded and
+			//! self-healing, unlike the unguarded behaviour it replaced,
+			//! which was permanent.  Single-threaded callers never see it.
+			//! Locked by the "cache-survival" case in AgentViewportReadTest.
+			AgentCompareToReferenceResult CompareToReference( const AgentCompareToReferenceParams& params );
 
 			//! render + read_image (slice 0b): render the current head into an
 			//! in-memory sRGB PNG and return the bytes + film dims.  Headless
@@ -1741,6 +2052,14 @@ namespace RISE
 			//! surface (set once at server-start time, before any request
 			//! is served, and never mutated concurrently with a stage).
 			std::string mSessionLabel;
+
+			//! compare_to_reference: the HOST-registered reference set (see
+			//! SetReferenceImages's doc).  Empty until a host registers at
+			//! least one image; single-threaded like the rest of this
+			//! class's non-Render surface (set once by the host before the
+			//! session serves requests, never mutated concurrently with a
+			//! CompareToReference call).
+			std::vector<AgentReferenceImage> mReferenceImages;
 
 			//! Facet 5 slice 1b: the attached LIVE controller (null = headless
 			//! direct-Job mode).  BORROWED (never released); the caller owns it.

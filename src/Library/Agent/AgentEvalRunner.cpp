@@ -16,6 +16,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "pch.h"
 #include "AgentEvalRunner.h"
 
@@ -1513,7 +1514,43 @@ namespace RISE
 			//! under the new methodology), preventing one runDir from silently mixing
 			//! results produced under two methodologies. Scenario-file changes do NOT need
 			//! this -- the hash already covers them.
-			static const int kEvalMethodologyEpoch = 1;
+			//! Epoch history:
+			//!   1 -> initial.
+			//!   2 -> (2026-07-19) compare_to_reference gained the `split`
+			//!        parameter (a TOOL-DEFINITION change) and
+			//!        skills/agent/modeling-from-image-captures.md turned its
+			//!        plateau guidance into a directive rule with a mechanical
+			//!        trigger (a DRIVE-LOOP change).  Note the skill file's
+			//!        bytes are NOT covered by ScenarioContentHash -- only
+			//!        scenario files are -- so a skill edit is precisely the
+			//!        "alters how runs are DRIVEN without touching any
+			//!        scenario file" case this epoch exists for.  Without the
+			//!        bump the pre-split vision cells stay hash-current and
+			//!        get silently reused, so a re-run would measure nothing
+			//!        and the board would mix two methodologies.
+			//!   3 -> (2026-07-19) compare_to_reference gained `splitObjects`
+			//!        (tool-definition change) and the skill now directs the
+			//!        model to SCOPE the split to its hero object
+			//!        (drive-loop change).  Motivated by the epoch-2 gpt run:
+			//!        unscoped, a candidate's ground plane and backdrop are
+			//!        registered objects, so they landed in the OBJECT bucket
+			//!        and objectPixelFraction averaged 0.86 -- the split was
+			//!        reporting geometry-vs-environment, not
+			//!        object-vs-staging, making the skill's own read of it
+			//!        wrong.  Epoch-2 cells were driven under that broken
+			//!        reading and must not be compared against scoped runs.
+			//!   4 -> (2026-07-19) the skill's split guidance was SOFTENED from
+			//!        a mandate ("from your THIRD compare onward") back to an
+			//!        occasional, opt-in diagnostic (drive-loop change).  A
+			//!        controlled A/B (epoch 3, gpt, 2 scenarios x 3 repeats x
+			//!        2 arms, arms differing ONLY in the skill file) measured
+			//!        the mandate's effect on final RMSE at -0.0004, 95% CI
+			//!        [-0.050, +0.050] -- nothing -- while it pushed 5 of 6
+			//!        runs into budget exhaustion vs 1 of 6 without it, since
+			//!        each split costs an extra render and calls are the
+			//!        binding constraint.  Epoch-3 cells were driven under the
+			//!        mandate and are not comparable to softened-guidance runs.
+			static const int kEvalMethodologyEpoch = 4;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
@@ -1913,6 +1950,16 @@ namespace RISE
 				// scenario.prompts[i], parallel-indexed; empty for a text-only
 				// prompt.
 				std::vector<std::vector<ChatAttachment>> promptAttachments( scenario.prompts.size() );
+				// compare_to_reference naming contract: every prompt-attachment
+				// image, in prompt-then-attachment order (the SAME order the
+				// promptAttachments loop below walks), is ALSO registered on
+				// the session as an AgentSession::AgentReferenceImage named
+				// "view1", "view2", ... -- the Nth image attached across ALL
+				// prompts is viewN.  Raw file bytes (not base64) -- compare_to_
+				// reference decodes them itself.  Scenarios/skills reference
+				// these names; keep this contract in sync with AgentSession.h's
+				// SetReferenceImages doc if it ever changes.
+				std::vector<AgentReferenceImage> referenceImages;
 				for( std::size_t pi = 0; pi < scenario.prompts.size(); ++pi ) {
 					const AgentEvalPrompt& prompt = scenario.prompts[pi];
 					for( std::size_t ii = 0; ii < prompt.imagePaths.size(); ++ii ) {
@@ -1942,8 +1989,14 @@ namespace RISE
 						att.mimeType = mimeType;
 						att.base64Data = Base64Encode( std::vector<unsigned char>( bytes.begin(), bytes.end() ) );
 						promptAttachments[pi].push_back( att );
+
+						AgentReferenceImage refImg;
+						refImg.name     = "view" + std::to_string( referenceImages.size() + 1 );
+						refImg.pngBytes = bytes;   // raw file bytes verbatim (compare_to_reference decodes non-PNG types honestly, per its own PNG-only decode contract)
+						referenceImages.push_back( std::move( refImg ) );
 					}
 				}
+				session->SetReferenceImages( std::move( referenceImages ) );
 
 				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
 				handle.result.headVersionStart = headVersionStart;
@@ -4132,12 +4185,48 @@ namespace RISE
 				//! Image-reconstruction Wave 2: decode PNG bytes already in
 				//! memory into a tightly-packed 8-bit RGB pixel buffer (row-
 				//! major, 3 bytes/pixel, alpha dropped) through RISE's OWN
+				//! The two decoders below read with eColorSpace_Rec709RGB_Linear and
+				//! treat the resulting pel channel as the stored byte/255 VERBATIM.
+				//! That is only a no-op while RISEPel IS Rec709RGBPel: PNGReader
+				//! hardcodes SetFromIntegerized<Rec709RGBPel,...>, whose ColorBase
+				//! conversion is a plain copy in that case.  If RISEPel is ever
+				//! retyped -- the documented ACEScg migration in
+				//! docs/COLOR_SPACE_MIGRATION.md would do exactly that -- the read
+				//! silently becomes a real primaries conversion and EVERY decoded
+				//! byte shifts, with no compile error and no failing test.  Fail
+				//! loudly at compile time instead.
+				static_assert( std::is_same<RISEPel, Rec709RGBPel>::value,
+					"PNG decode assumes RISEPel == Rec709RGBPel (verbatim byte passthrough). "
+					"RISEPel was retyped -- re-derive the decode path in "
+					"DecodeReferencePngToRgb8_ / DecodePngToRgb8 before flipping the typedef." );
+
+				//! Scale one decoded [0,1] channel back to its stored 8-bit byte,
+				//! ROUNDING to nearest and clamping to [0,255].  Lockstep twin of
+				//! AgentSession.cpp's QuantizeDecodedChannel_, whose doc carries
+				//! the full rationale (the read side's precomputed-reciprocal
+				//! scale makes 24 of the 256 byte values land a hair low, which a
+				//! truncating cast then drops an LSB).  `!( d > 0.0 )` rather than
+				//! `d <= 0.0` so NaN takes the 0 branch instead of reaching the
+				//! cast (casting NaN to an integral type is UB).
+				inline unsigned char QuantizeDecodedChannel_( Scalar v )
+				{
+					const double d = static_cast<double>( v ) * 255.0 + 0.5;
+					if( !( d > 0.0 ) ) return 0;     // also catches NaN
+					if( d >= 255.0 )   return 255;
+					return static_cast<unsigned char>( d );
+				}
+
 				//! PNGReader -- the SAME decoder png_painter uses.  We decode
 				//! with eColorSpace_Rec709RGB_Linear (the reader's "do nothing"
-				//! branch: byte/255 in) and re-Integerize<Rec709RGBPel> (·255
-				//! out) so the EXACT stored 8-bit byte the writer emitted comes
-				//! back verbatim -- a pure linear round-trip with NO gamma step,
-				//! so no quantization drift is introduced by the read side.
+				//! branch: byte/255 in) and scale back out by ·255 so the EXACT
+				//! stored 8-bit byte the writer emitted comes back verbatim --
+				//! a pure linear round-trip with NO gamma step, so no
+				//! quantization drift is introduced by the read side.  That
+				//! last property requires ROUNDING the scale-back (see
+				//! QuantizeDecodedChannel_): Integerize's truncating cast
+				//! silently biased 24 of the 256 possible byte values one LSB
+				//! low, which largely cancels in a candidate-vs-reference
+				//! difference but is still wrong.
 				//! This is why "compareToImage" compares like-with-like: the
 				//! candidate is decode(rr.png) where rr.png is byte-identical to
 				//! what read_image returns (InMemoryRasterizerOutput::ToPng),
@@ -4235,13 +4324,20 @@ namespace RISE
 						for( unsigned int x = 0; x < w; ++x ) {
 							RISEColor c;
 							reader->ReadColor( c, x, y );
-							// eColorSpace_Rec709RGB_Linear ⟶ Integerize<Rec709RGBPel>
-							// is an exact byte round-trip (see the function doc).
-							const RGBA_T<unsigned char> enc = c.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
+							// eColorSpace_Rec709RGB_Linear leaves c.base holding
+							// the stored byte/255 verbatim.  Scale back by *255
+							// with ROUNDING, not Integerize's truncating cast:
+							// the read side scales by a precomputed reciprocal
+							// (1.0/255.0), so b*OVMax*255.0 lands a hair below b
+							// for 24 of the 256 byte values (e.g. 180 ->
+							// 179.99999999999997) and a truncating cast then drops
+							// those an LSB.  Kept in lockstep with
+							// AgentSession.cpp's DecodeReferencePngToRgb8_, whose
+							// doc carries the full rationale and the bad-byte list.
 							const std::size_t idx = ( static_cast<std::size_t>( y ) * w + x ) * 3;
-							outRgb[idx + 0] = enc.r;
-							outRgb[idx + 1] = enc.g;
-							outRgb[idx + 2] = enc.b;
+							outRgb[idx + 0] = QuantizeDecodedChannel_( c.base.r );
+							outRgb[idx + 1] = QuantizeDecodedChannel_( c.base.g );
+							outRgb[idx + 2] = QuantizeDecodedChannel_( c.base.b );
 						}
 					}
 

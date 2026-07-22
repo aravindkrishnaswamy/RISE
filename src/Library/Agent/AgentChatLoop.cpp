@@ -26,7 +26,7 @@ namespace RISE
 		namespace
 		{
 			//! The static co-editing system prompt (rule 7): the user and
-			//! the agent co-edit ONE live scene through the ten verbs.
+			//! the agent co-edit ONE live scene through the eleven verbs.
 			const char* const kSystemPrompt =
 				"You are a scene-editing agent embedded in the RISE renderer. You and "
 				"the user CO-EDIT one live scene: the user sees the same viewport and "

@@ -127,7 +127,13 @@ namespace RISE
 				       // captured and restored) -- available under every
 				       // autonomy posture, including Read, exactly like
 				       // render itself.
-				       method == "query_object_at";
+				       method == "query_object_at" ||
+				       // compare_to_reference is a PURE READ -- it renders
+				       // (never mutates the retained Document, exactly like
+				       // render itself) and grades against a HOST-registered
+				       // reference image; available under every autonomy
+				       // posture, including Read.
+				       method == "compare_to_reference";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
@@ -1665,6 +1671,164 @@ namespace RISE
 					result.set( "width",   JsonValue::MakeNumber( static_cast<double>( qr.width ) ) );
 					result.set( "height",  JsonValue::MakeNumber( static_cast<double>( qr.height ) ) );
 					result.set( "message", JsonValue::MakeString( qr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// compare_to_reference {reference,camera?,visual?,samples?,split?,splitObjects?} ->
+				//   {rmse,channelDelta:{r,g,b},grid:[{rmse,dr,dg,db},x9],
+				//    worstCell,width,height,reference,summary,
+				//    png_base64?,compositeWidth?,compositeHeight?,
+				//    split?:{ok,objectRmse,backgroundRmse,objectPixelFraction,note}}
+				//   The reconstruction feedback instrument: see AgentRpc.h's
+				//   file-header doc for the full contract.  `reference`
+				//   (REQUIRED, non-empty string) names a HOST-registered
+				//   image (AgentSession::SetReferenceImages) -- an unknown
+				//   name is a clean -32602 naming every registered
+				//   reference (AgentSession::AgentCompareToReferenceResult::
+				//   badReference distinguishes this from every other
+				//   failure, which maps to -32603).  `camera`/`visual`/
+				//   `samples` compose exactly as AgentCompareToReferenceParams
+				//   documents.  The composite image, when present, is
+				//   returned under the SAME "png_base64" field name
+				//   read_image uses -- deliberately, so the chat-loop's
+				//   image retention/elision policy (which keys off that
+				//   literal field name) applies to it identically.  `split`
+				//   (OPTIONAL bool, default false) requests the object-vs-
+				//   background RMSE breakdown -- see
+				//   AgentSession::AgentCompareSplitResult's doc for the
+				//   candidate-objectmap mask mechanism and its honesty
+				//   caveat.  The "split" result key is OMITTED entirely
+				//   when `split` was false or absent (back-compat).
+				//   `splitObjects` (OPTIONAL array of strings, default empty,
+				//   only meaningful alongside `split:true`) SCOPES the
+				//   OBJECT bucket to just the named registered object(s) --
+				//   see AgentCompareToReferenceParams::splitObjects' doc for
+				//   why: WITHOUT it, a scene's own ground plane / backdrop /
+				//   any other staging geometry counts as OBJECT too (they
+				//   are registered objects like any other), so to get a
+				//   true hero-object-vs-staging reading, scope this to the
+				//   hero object's name.  Each element must be a string --
+				//   a non-array or a non-string element is a clean -32602.
+				//   A requested name absent from the candidate's objectmap
+				//   legend is never a hard failure: it is dropped from the
+				//   mask and surfaced in `split.note` instead (see
+				//   AgentSession::CompareToReference's split block).
+				//--------------------------------------------------------------
+				if( m == "compare_to_reference" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+
+					const JsonValue* refVal = params.find( "reference" );
+					if( !refVal || !refVal->isString() || refVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'reference' (a non-empty string) is required" );
+					}
+
+					AgentCompareToReferenceParams cparams;
+					cparams.reference = refVal->asString();
+
+					if( const JsonValue* vv = params.find( "visual" ) ) {
+						if( vv->isBool() ) cparams.visual = vv->asBool();
+						else if( !vv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'visual' must be a boolean" );
+					}
+
+					if( const JsonValue* sv = params.find( "samples" ) ) {
+						if( sv->isNumber() ) {
+							// Same explicit finite-range guard idiom as every
+							// other numeric parse in this file (NOT
+							// std::isfinite -- dead code under
+							// -ffinite-math-only; see the 'samples' parse in
+							// the render dispatch above).
+							const double sd = sv->asNumber();
+							if( !( sd >= -2147483648.0 && sd <= 2147483647.0 ) )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
+							int samples = static_cast<int>( sd );
+							if( samples < 1 ) samples = 1;
+							else if( samples > 65536 ) samples = 65536;
+							cparams.samples = samples;
+						}
+						else if( !sv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
+					}
+
+					if( const JsonValue* spv = params.find( "split" ) ) {
+						if( spv->isBool() ) cparams.split = spv->asBool();
+						else if( !spv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'split' must be a boolean" );
+					}
+
+					if( const JsonValue* sov = params.find( "splitObjects" ) ) {
+						if( sov->isArray() ) {
+							for( std::size_t i = 0; i < sov->size(); ++i ) {
+								const JsonValue& el = sov->at( i );
+								if( !el.isString() )
+									return MakeError( idValue, kInvalidParams,
+										"Invalid params: 'splitObjects' must be an array of strings" );
+								cparams.splitObjects.push_back( el.asString() );
+							}
+						}
+						else if( !sov->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'splitObjects' must be an array of strings" );
+					}
+
+					AgentCameraOverride crCamOverride;
+					std::string crCamErr;
+					const int crCamPresent = ParseCameraOverrideParam( params, crCamOverride, crCamErr );
+					if( crCamPresent < 0 ) return MakeError( idValue, kInvalidParams, crCamErr );
+					if( crCamPresent == 1 ) cparams.camera = crCamOverride;
+
+					const AgentCompareToReferenceResult cr = s->CompareToReference( cparams );
+					if( !cr.ok ) {
+						return MakeError( idValue, cr.badReference ? kInvalidParams : kInternalError,
+							cr.error.empty() ? "compare_to_reference failed" : cr.error );
+					}
+
+					JsonValue channelDelta = JsonValue::MakeObject();
+					channelDelta.set( "r", JsonValue::MakeNumber( cr.channelDeltaR ) );
+					channelDelta.set( "g", JsonValue::MakeNumber( cr.channelDeltaG ) );
+					channelDelta.set( "b", JsonValue::MakeNumber( cr.channelDeltaB ) );
+
+					JsonValue grid = JsonValue::MakeArray();
+					for( const AgentCompareGridCell& cell : cr.grid ) {
+						JsonValue cj = JsonValue::MakeObject();
+						cj.set( "rmse", JsonValue::MakeNumber( cell.rmse ) );
+						cj.set( "dr",   JsonValue::MakeNumber( cell.dr ) );
+						cj.set( "dg",   JsonValue::MakeNumber( cell.dg ) );
+						cj.set( "db",   JsonValue::MakeNumber( cell.db ) );
+						grid.push_back( cj );
+					}
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "rmse",         JsonValue::MakeNumber( cr.rmse ) );
+					result.set( "channelDelta", channelDelta );
+					result.set( "grid",         grid );
+					result.set( "worstCell",    JsonValue::MakeString( cr.worstCell ) );
+					result.set( "width",        JsonValue::MakeNumber( static_cast<double>( cr.width ) ) );
+					result.set( "height",       JsonValue::MakeNumber( static_cast<double>( cr.height ) ) );
+					result.set( "reference",    JsonValue::MakeString( cr.reference ) );
+					result.set( "summary",      JsonValue::MakeString( cr.summary ) );
+					if( !cr.compositePng.empty() ) {
+						result.set( "png_base64",       JsonValue::MakeString( Base64Encode( cr.compositePng ) ) );
+						result.set( "compositeWidth",   JsonValue::MakeNumber( static_cast<double>( cr.compositeWidth ) ) );
+						result.set( "compositeHeight",  JsonValue::MakeNumber( static_cast<double>( cr.compositeHeight ) ) );
+					}
+					// split:true -- the object-vs-background RMSE breakdown
+					// (AgentCompareSplitResult).  Omitted entirely when the
+					// request's `split` was false (back-compat) -- see
+					// AgentSession::AgentCompareToReferenceResult::hasSplit's
+					// doc.  Present (with a `note`, possibly `ok:false`) on a
+					// failed/degenerate split -- never a crash, never fails
+					// the overall compare.
+					if( cr.hasSplit ) {
+						JsonValue split = JsonValue::MakeObject();
+						split.set( "ok",                  JsonValue::MakeBool( cr.split.ok ) );
+						split.set( "objectRmse",          JsonValue::MakeNumber( cr.split.objectRmse ) );
+						split.set( "backgroundRmse",      JsonValue::MakeNumber( cr.split.backgroundRmse ) );
+						split.set( "objectPixelFraction", JsonValue::MakeNumber( cr.split.objectPixelFraction ) );
+						split.set( "note",                JsonValue::MakeString( cr.split.note ) );
+						result.set( "split", split );
+					}
 					return MakeSuccess( idValue, result );
 				}
 

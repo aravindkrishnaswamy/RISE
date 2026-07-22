@@ -334,7 +334,119 @@ centered -- reach for `render {mode:"objectmap"}` or `query_object_at`
 answers "what is actually there" structurally, cheaper than iterating
 on a beauty render's ambiguity.
 
+**Measure every iteration.** When reference images are REGISTERED (a
+reconstruction eval registers its prompt attachments as `view1`,
+`view2`, ... for this purpose; a live chat host may register attached
+images the same way -- check what names are actually registered rather
+than assuming), end EVERY iteration of this loop with
+`compare_to_reference` against the primary view instead of eyeballing
+convergence -- the returned `rmse` IS the graded objective, and the
+job is to make it fall monotonically across iterations, not to feel
+like it's converging:
+
+- Use `channelDelta`'s SIGN to fix global colour/brightness first,
+  before chasing anything structural: `channelDelta.r > 0` means the
+  render is too RED on that channel -- check the environment tint and
+  the key light's colour before touching geometry.
+- Use `worstCell` plus the 3x3 `grid` to LOCALIZE the biggest
+  remaining error before guessing what to fix next -- per the
+  environment-first doctrine (section 6 below), the worst cell is very
+  often the background/environment, not the object.
+- Use the composite `[render | reference | abs-diff heatmap]` image
+  (the default `visual:true`) to SEE the error's structure when the
+  number alone doesn't tell you what changed; set `visual:false` once
+  you only need the number, to save the encode cost and the response's
+  token footprint.
+- Use draft compares (the default -- omit `samples`) for composition
+  passes: cheap, and adequate for silhouette/placement feedback.
+  Switch to a production compare (`samples: 24` or similar) once
+  you're judging colour, lighting, or material fidelity -- draft
+  shading is NOT what the grader renders, so a low draft RMSE only
+  confirms geometry/composition, never colour or material match (see
+  the tool's own `samples` parameter doc for the full tradeoff).
+
+**If -- and only if -- you need to settle whether the residual is the
+STAGING or the OBJECT, you can measure it instead of guessing.**
+`compare_to_reference` takes `split: true`, which returns
+`objectRmse`, `backgroundRmse` and `objectPixelFraction`: the same
+RMSE computed separately over the pixels your object covers and
+everything else, from an objectmap mask of your OWN candidate.
+
+**Use it sparingly -- at most once, at a genuine decision point.** It
+costs an EXTRA render every time, and on this task your tool/LLM
+budget, not your information, is the binding constraint. That is
+measured, not cautionary: an earlier version of this skill told you to
+pass it from your third compare onward, and in a controlled A/B that
+mandate changed the final RMSE by -0.0004 (95% CI -0.05..+0.05, i.e.
+nothing at all) while pushing 5 of 6 runs into budget exhaustion,
+versus 1 of 6 without it. Runs that skipped it had budget left to
+finish deliberately. So: if you already know what to fix next, just
+fix it. Reach for the split only when you would otherwise burn
+iterations guessing.
+
+When you do use it, it beats the old rule of thumb that a plateau
+above ~0.1 means the staging is wrong -- that guess is often wrong,
+and this is a measurement.
+
+**If you use it, pass `splitObjects` -- do not skip it.** Unscoped,
+"OBJECT" means EVERY registered object, and your ground plane and
+backdrop ARE registered objects, so they land in the OBJECT bucket and
+"background" shrinks to just the sky. Measured on real runs of this
+task, that put `objectPixelFraction` at ~0.86 and made the split
+report geometry-vs-environment rather than object-vs-staging -- the
+reading below would then be nonsense. Naming your hero object (the
+`standard_object` name you gave it, e.g. `obj_subject`) puts the
+ground, the backdrop and the sky all in BACKGROUND, which is the
+split you actually want. Sanity-check `objectPixelFraction`: it
+should be roughly the share of frame your subject covers. If it is
+near 1.0 you almost certainly forgot to scope. Then act, decisively:
+
+- **`backgroundRmse` low, `objectRmse` high** -> the stage is DONE.
+  Stop touching the environment, ground and lights entirely. Spend
+  every remaining iteration on the object's silhouette and
+  proportions.
+- **`backgroundRmse` still high** -> staging is your biggest lever
+  regardless of how the object looks. Keep working section 6 and do
+  not touch the object's shape or materials yet.
+- **Both high** -> staging first (section 6). A wrong environment
+  changes how the object is lit, so fixing the object against wrong
+  lighting is work you will redo.
+
+One safety rule before you act on either figure: **check it is
+`>= 0`.** Each sentinels to `-1` when its bucket is empty --
+`objectRmse` when no object is visible (camera aimed away, object
+off-frame, or you named an object that does not exist -- READ the
+`note`, which tells these apart and lists the names actually
+available), `backgroundRmse` when your objects fill the entire frame.
+`-1` means "not measured", NOT "zero error". Reading a `-1`
+`backgroundRmse` as "staging is done" would send you off tuning the
+object having never checked the staging at all. On a `-1`, fix the
+framing and re-compare before drawing any conclusion.
+
 ### 6. Match order: silhouette -> proportions -> surface -> materials -> lighting -> environment
+
+**Stage before object: environment first.** In a photo reconstruction
+the background/environment fills most of the frame's PIXELS -- the
+fastest RMSE reduction is almost always staging, not the object. Work
+in this order before you spend real effort on the hero:
+
+1. **Environment/backdrop tint** -- the single biggest pixel-count
+   lever in the frame.
+2. **Ground tone** -- usually the second-biggest flat region in frame.
+3. **Key-light direction and colour**, read from the shadows (section
+   8 below has the how-to).
+4. **THEN** object silhouette/proportions.
+5. **Materials.**
+6. **Fine shape detail.**
+
+An object-fixated session that nails the hero on a wrong stage scores
+WORSE than an empty correct stage -- this is measured fact from the
+July-2026 baseline. Only once the stage (steps 1-3 above) reads
+correctly does the per-object match order below (silhouette ->
+proportions -> surface -> materials -> lighting -> environment) take
+over for the object itself: that finer-grained order governs HOW to
+build the object once you've started on it, not WHETHER to start on it
+before the stage is right.
 
 Do not add surface detail, bevels, or secondary geometry until the
 blockout's silhouette agrees with the reference from every view in the
