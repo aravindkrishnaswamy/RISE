@@ -70,6 +70,112 @@
 
 ---
 
+> ## Implementation status (reconciled 2026-07-08) — the "Design only / greenfield in code" banner above is HISTORICAL
+>
+> Most of this facet has **shipped** on `feature/gui-snapshot-prototype` (merged to `master`
+> 2026-07-08). The §1 "greenfield in code" grounding describes the *pre-implementation* state and
+> is kept for history; the current reality:
+>
+> - **F5 agentic surface — SHIPPED.** The `src/Library/Agent/` module: `read_document` /
+>   `read_schema` / `validate` / `propose_patch` / `render` / `read_image` / `read_skill` /
+>   `insert_chunk` / `remove_chunk` / `list_proposals` / `resolve_proposal` over JSON-RPC/stdio,
+>   the live GUI co-edit path (agent edits are render-safe, conflict-safe, save-safe, and
+>   **Cmd-Z citizens** via shared undo), an LLM **chat panel** (Mac + Windows) driving the verbs
+>   as tools against the live scene, and **three provider codecs** (Anthropic, Gemini, OpenAI/ChatGPT).
+> - **GUI-as-just-another-agent (L2) — REALIZED.** The GUI and the agent are two clients of the
+>   one `Job::ApplyCst*` edit pathway; the same call the property widget makes is the call
+>   `propose_patch` makes.
+> - **F2 render coordinator — SHIPPED.** One render slot; interactive / agent-preview / production
+>   renders all serialized through `SceneEditController`'s single-slot machinery (async agent
+>   render worker, `RenderJobId`, pinned-vs-preview, `render_wait`/`render_status`/`render_cancel`).
+> - **Secure-MCP — SHIPPED (S1–S6).** RISE is an MCP server an external agent drives over stdio
+>   **or** an authenticated, DNS-rebinding-protected 127.0.0.1 loopback HTTP channel, in a
+>   fail-closed read-only-default posture; mutating edits from an external client **STAGE as
+>   proposals the human approves in the GUI** (the human is the firewall) — realizing the
+>   §2.8 transports and much of the `AI_SECURITY_MODEL.md` threat model in real code. S6 added
+>   defense-in-depth limits (proposal-queue cap, UTF-8-safe list truncation, request/response
+>   deadlines, mutating-verb rate limit).
+> - **Divergence from the design worth noting:** the shipped surface **extended** the existing
+>   edit/history subsystem (inverse-patch undo, first-class CST-head-dirty channel) rather than
+>   **deleting** ~40% of `SceneEditor/` as §3 / `60-supersession-and-migration.md` projected —
+>   the "concentrated supersession" payoff is **unrealized**; the F3 persistent-CST and the full
+>   F2 stamp/phase async arbiter remain design-only (their former justifications are met by
+>   cheaper means). The north star ("agent + GUI = two clients of one CST-edit pathway") holds and
+>   is empirically demonstrated.
+>
+> ### Observe toolkit & render isolation (2026-07 arc, in progress)
+>
+> A cost-aware **observe** toolkit is being layered onto the `render`/`read_image` verbs so the
+> agent can look at the scene at the right price for the purpose:
+>
+> - **Offscreen render isolation — SHIPPED (2026-07-08).** Agent/LLM renders used to paint into
+>   the production rasterizer's canonical `FrameStore` — the same buffer the GUI viewport observes
+>   — so an agent render visibly disturbed the user's viewport (surfaced by the user on a Mac
+>   window resize, which re-composites the Metal layer from that shared buffer). Fix: each agent
+>   render runs into a **private throwaway `FrameStore`** (`FrameStoreIsolationGuard`, RAII, in
+>   `AgentSession::RenderCore_`); the returned PNG still comes from `InMemoryRasterizerOutput` via
+>   the `outs` path, independent of the `FrameStore`. Shared C++ → fixes Mac + Windows + the
+>   loopback server with no bridge change. Reviewed to zero-P1 (closed a same-dims isolation hole
+>   and a throw-path use-after-free found in review). This is the **foundation** the toolkit builds
+>   on — every throwaway render is now invisible to the user.
+> - **S1 `read_viewport` — SHIPPED (2026-07-09).** New read-safe verb returning the CURRENT
+>   pixels of the live interactive GUI viewport — the exact frame the user is looking at — with
+>   **no re-render** (the cheapest observe). Coherent copy via the FrameStore's all-tile-lock
+>   dump (the Save-As mechanism, never a torn read); a new leaf mutex closes a pointer-swap data
+>   race that adding the first cross-thread reader would otherwise have introduced (red-proven:
+>   removing it → reliable UAF crash under a 3-reader × live-refinement hammer). Honest
+>   availability contract: `{available:false, reason:"no_controller"|"no_frame_yet"}` as a
+>   structured success — deliberately NOT read_image's silent-empty-image shape. On the MCP
+>   surface as tool #15 (image content block when available); allowed under the Read autonomy
+>   posture; deliberately NOT in the chat panel's curated 9-tool list. Shared C++ — Mac,
+>   Windows, and the loopback server with zero bridge changes.
+> - **S2 `quality:"draft"` — SHIPPED (2026-07-09).** The render verb's optional quality param:
+>   draft renders run on a fresh, per-call interactive-preview pipeline invoked directly against
+>   the live derived scene (never the production rasterizer — structurally isolated, no
+>   framebuffer, own outputs), samples hard-capped at 4, cancel wired to the ephemeral instance
+>   (promptness regression-locked). Empirically proven to ignore authored materials (that's the
+>   point AND the danger — taught as a hard warning on all three teaching surfaces: geometry/
+>   composition/framing representative; materials/lighting/exposure/colour NOT). Works on heads
+>   with no rasterizer chunk yet (the moment an orientation check matters most). Additive
+>   `renderMode` result field; `integrator` keeps its head-property meaning. The fix round also
+>   corrected a pre-existing falsehood: the chat schema taught samples as "advisory" — it has
+>   been honored for the pixel-based family since the F2-S3 EffectiveRenderConfig work.
+> - **S3a `mode:"objectmap"` — SHIPPED (2026-07-09).** The segmentation render: every pixel
+>   painted with a byte-exact identity colour per world-visible object (emissive geometry
+>   included), a legend `{name, colorHex, pixelCount}` in the render result, colours matched to
+>   PNG bytes by identity (half-LSB-centred pre-images through the truncating sRGB quantizer;
+>   the palette generator validates roundtrippability + byte-uniqueness at accept time — only
+>   perceptual distance degrades at scale, never identity, and reserved background/unknown
+>   bytes can never be assigned). Deterministic ids from the manager's sorted-name order; CSG
+>   legends as the composite root; `grid[i,j]` instance names taught as legend-identifiers
+>   whose editable target is the generator chunk. NATIVE-SIZE read only (downscale blends
+>   identity colours — taught on every read_image surface + negative-tested). Ephemeral,
+>   structurally isolated, exactness pinned by a permanent kernel-forcing red-prove test.
+>   Three review rounds each caught a distinct real defect (emitter suppression; palette
+>   collisions at scale; a background-colour collision in the exhaustive fallback).
+> - **S3b `query_object_at {x,y}` — SHIPPED (2026-07-09).** The point query: the world-visible
+>   object under one pixel, composing with the same ephemeral camera/dims overrides as render
+>   (aim, then ask). Reuses the objectmap machinery wholesale (one identity render; every
+>   objectmap invariant carries over by construction); `hit:false` is a structured success.
+>   16th MCP tool AND the 10th tool in the chat panel's curated list — the most chat-useful
+>   observe primitive ("move the mug" → find it → aim at it). The review round added a
+>   permanent vertical-asymmetry y-mapping lock after proving every prior test scene sat at
+>   world y=0 (an injected y-flip passed the whole suite undetected).
+> - **S4 the observe-modes decision skill — SHIPPED (2026-07-09). THE OBSERVE-TOOLKIT ARC IS
+>   COMPLETE.** `skills/agent/observe-modes.md`: the decision table (intent → mode → cost →
+>   what the result can and cannot be trusted for), the escalation ladder (viewport →
+>   query/objectmap → draft → production LAST, once confident), and the hard warnings,
+>   worded verbatim-consistent with the tool teaching. Every decision-table row is
+>   be-the-agent-verified in CI against a live dispatcher, and the review round proved the
+>   warnings are load-bearing, not folklore: draft luma is byte-identical between a normal
+>   scene and a 60×-dimmer clone (draft must never judge lighting), and a downscaled
+>   objectmap read genuinely corrupts legend matching. The agent now has four honest ways to
+>   look at a scene — free (the user's own viewport), cheap (draft geometry checks),
+>   identity-exact (objectmap/point-query), and true (production) — and a skill that teaches
+>   which to reach for.
+
+---
+
 ## 1. Current-state grounding — what exists today for this facet
 
 The agentic surface is **greenfield in code** but **richly designed on paper**, and that paper
