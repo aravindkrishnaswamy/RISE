@@ -2352,6 +2352,25 @@ namespace RISE
 				}
 				handle.resultPath = resultPath;
 
+				// Persist the FINAL assembled scene alongside the result, so a
+				// run can be re-rendered or inspected later.  The renders
+				// themselves are computed in-memory and discarded -- only their
+				// numeric grades survive in the checkpoints -- so without this
+				// the scene the model actually built is only reconstructible by
+				// replaying the trajectory's insert_chunk calls.  ReadDocument()
+				// returns the canonical `.RISEscene` text of the head (secrets
+				// length-masked; a no-op for eval scenes), re-loadable via
+				// LoadAsciiSceneViaCst.  Best-effort: a run with no session or an
+				// empty head writes nothing (a load_error / never-built run).
+				if( dispatcher && dispatcher->Session() ) {
+					const std::string finalScene = dispatcher->Session()->ReadDocument();
+					if( !finalScene.empty() ) {
+						const std::string scenePath = JoinPath( runDir, scenario.id + ".final.RISEscene" );
+						std::ofstream sf( scenePath.c_str(), std::ios::binary );
+						if( sf ) sf << finalScene;
+					}
+				}
+
 				handle.dispatcher = std::move( dispatcher );
 				return handle;
 			}

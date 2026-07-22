@@ -619,6 +619,20 @@ static void TestTwoToolObserveScenario()
 	       "two_tool_observe trajectory record sequence is session,user,llm,tool,tool,llm,summary" );
 	Check( ToolNameSequence( recs ) == ( std::vector<std::string>{ "render", "read_image" } ),
 	       "two_tool_observe trajectory tool records are render then read_image, in order" );
+
+	// The final assembled scene is persisted beside the result, so a run can
+	// be re-rendered/inspected later (renders are in-memory-only otherwise).
+	{
+		const std::string scenePath =
+			( std::filesystem::path( opts.runDir ) / "two_tool_observe.final.RISEscene" ).string();
+		std::ifstream sf( scenePath.c_str(), std::ios::binary );
+		Check( sf.good(), "run wrote <scenario>.final.RISEscene beside the result" );
+		std::ostringstream ss; ss << sf.rdbuf();
+		const std::string scene = ss.str();
+		Check( !scene.empty(), "final scene file is non-empty" );
+		Check( scene.rfind( "RISE ASCII SCENE", 0 ) == 0,
+		       "final scene file is a re-loadable .RISEscene (starts with the header)" );
+	}
 }
 
 //----------------------------------------------------------------------
