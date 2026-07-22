@@ -990,6 +990,45 @@ private:
     return [NSString stringWithUTF8String:name];
 }
 
+// user-review P1-1: pane-indexed navigation twins.  The unindexed methods
+// above alias pane 0 (the §7.4 C-ABI contract); the N-up nav overlay, drawn on
+// the primary pane, calls THESE with the primary pane index so it moves the
+// pane it's actually over (never pane 0 when a secondary is primary).
+- (BOOL)snapPaneView:(NSUInteger)pane toAxis:(NSInteger)axis negative:(BOOL)negative {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SnapPaneViewToAxis(
+        _controller, static_cast<unsigned int>(pane), static_cast<int>(axis), negative ? 1 : 0) ? YES : NO;
+}
+
+- (BOOL)isPaneFreeFlyActive:(NSUInteger)pane {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_IsPaneFreeFlyActive(
+        _controller, static_cast<unsigned int>(pane)) ? YES : NO;
+}
+
+- (BOOL)paneSetHomeView:(NSUInteger)pane {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_PaneSetHomeView(
+        _controller, static_cast<unsigned int>(pane)) ? YES : NO;
+}
+
+- (BOOL)paneGoToHomeView:(NSUInteger)pane {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_PaneGoToHomeView(
+        _controller, static_cast<unsigned int>(pane)) ? YES : NO;
+}
+
+- (NSString *)stampPaneViewToNewCamera:(NSUInteger)pane proposedName:(NSString *)proposedName {
+    if (!_controller) return nil;
+    char name[256] = {0};
+    const char* prop = proposedName ? [proposedName UTF8String] : "";
+    if (!RISE_API_SceneEditController_PaneStampViewToNewCamera(
+            _controller, static_cast<unsigned int>(pane), prop, name, sizeof(name))) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:name];
+}
+
 #pragma mark - Named Views (B1)
 
 - (BOOL)captureNamedView:(NSString *)name {

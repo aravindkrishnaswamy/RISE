@@ -3627,6 +3627,9 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! renders through it) and NEVER mutate a scene camera.  All return false
 	//! on null controller / the documented refusal cases.  `negative` is
 	//! bool-as-int.  See SceneEditController for the contracts.
+	//! user-review P1-1: the UNINDEXED entries alias PANE 0 (§7.4 "existing
+	//! calls = pane 0"); the *Pane* twins take an explicit pane index for the
+	//! N-up nav overlay (drawn on the primary pane).
 	bool RISE_API_SceneEditController_SnapViewToAxis(
 		SceneEditController* p, int axis, int negative );
 	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p );
@@ -3635,6 +3638,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p );
 	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p );
 	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p );
+	//! Pane-indexed navigation twins (EnterFreeFly/ExitFreeFly already have
+	//! PaneEnterFreeFly / PaneExitFreeFly).
+	bool RISE_API_SceneEditController_SnapPaneViewToAxis(
+		SceneEditController* p, unsigned int pane, int axis, int negative );
+	bool RISE_API_SceneEditController_IsPaneFreeFlyActive( SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneSetHomeView( SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneGoToHomeView( SceneEditController* p, unsigned int pane );
 
 	//! -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) --------
 	//! Mode switch = a caster swap on the interactive rasterizer; see
@@ -4239,6 +4249,11 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! SceneEpoch; persists via the retained CST Document; undoable.
 	bool RISE_API_SceneEditController_StampViewToNewCamera(
 		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
+	//! user-review P1-1: pane-indexed stamp (unindexed aliases pane 0).
+	bool RISE_API_SceneEditController_PaneStampViewToNewCamera(
+		SceneEditController* p, unsigned int pane,
 		const char* proposedName,
 		char* outName, unsigned int outLen );
 

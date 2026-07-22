@@ -382,9 +382,104 @@ static void RunNoFrameYet()
 			Check( r.get( "available" ).asBool() == false, "no-frame: available == false" );
 			Check( r.get( "reason" ).asString() == "no_frame_yet", "no-frame: reason == \"no_frame_yet\"" );
 			Check( r.get( "png_base64" ).asString().empty(), "no-frame: png_base64 is empty" );
+			// The pane set is controller state, not image state.  It must remain
+			// available while the first interactive pass is pending; otherwise an
+			// agent cannot reason about the user's N-up layout before any pixels
+			// have arrived.
+			Check( r.has( "paneSet" ), "no-frame: paneSet remains available before the first frame" );
+			if( r.has( "paneSet" ) ) {
+				const JsonValue& ps = r.get( "paneSet" );
+				Check( static_cast<int>( ps.get( "layout" ).asNumber() ) == 0,
+				       "no-frame: paneSet reports Single layout" );
+				Check( static_cast<unsigned int>( ps.get( "primary" ).asNumber() ) == 0,
+				       "no-frame: paneSet reports pane 0 as primary" );
+				const JsonValue& panes = ps.get( "panes" );
+				Check( panes.size() == 4 && panes.at( 0 ).get( "visible" ).asBool()
+				       && !panes.at( 1 ).get( "visible" ).asBool(),
+				       "no-frame: paneSet preserves Single visibility" );
+			}
 		}
 
 		controller.Stop();   // retire the (never-started-interactive) agent worker + threads
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// P3c atomicity regression: read_viewport must describe the SAME pane set
+// captured with its copied frame, even when the live layout changes after the
+// parked copy releases.  The hook deliberately creates that otherwise-tiny
+// post-park window deterministically; it made the old getter-based response
+// report Single while returning pane 1's TwoH frame.
+//////////////////////////////////////////////////////////////////////
+static void RunPaneSetSnapshotAtomicity()
+{
+	std::printf( "=== read_viewport: pane-set snapshot is atomic with frame ===\n" );
+
+	const std::string scenePath = WriteTemp( "agent_viewport_paneset_atomic.RISEscene", kScene );
+	Check( !scenePath.empty(), "pane-set atomicity: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "pane-set atomicity: scene loads via CST" );
+	{
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "pane-set atomicity: Job has an active rasterizer" );
+		SceneEditController controller( *pJob, rast );
+		Check( controller.SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		       "pane-set atomicity: selects TwoH before rendering" );
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders( 2, 5000 ),
+		       "pane-set atomicity: both initial TwoH panes render" );
+		const unsigned int beforeModeChange = controller.ForTest_GetRenderCount();
+		Check( controller.SetPaneRenderMode( 1, "wireframe" ),
+		       "pane-set atomicity: pane 1 switches to wireframe" );
+		Check( controller.ForTest_WaitForRenders( beforeModeChange + 1, 5000 ),
+		       "pane-set atomicity: pane 1's wireframe frame arrives" );
+
+		// user-review P2 (test TOCTOU): STOP the interactive loop FIRST, then
+		// verify the frozen frame -- otherwise a scheduler pass could complete
+		// between the CopyInteractiveFrame check and StopInteractive, flipping
+		// mInteractiveFrameStorePane to pane 0 and spuriously failing the read.
+		controller.StopInteractive();   // freeze the exact frame for the RPC read
+		std::vector<RISEColor> currentPixels;
+		unsigned int currentW = 0, currentH = 0, currentPane = 99;
+		Check( controller.CopyInteractiveFrame( currentPixels, currentW, currentH, &currentPane )
+		       && currentPane == 1,
+		       "pane-set atomicity: the frozen live frame is pane 1 before the read" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "pane-set atomicity: AgentSession wraps the Job" );
+		session->AttachController( &controller );
+		bool hookRan = false;
+		session->ForTest_SetReadViewportAfterParkHook( [&]() {
+			hookRan = controller.SetViewportLayout( SceneEditController::ViewportLayout::Single );
+		} );
+		AgentRpcDispatcher rpc( std::move( session ) );
+
+		const std::string resp = rpc.HandleLine( Req( 1, "read_viewport", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 1 );
+		Check( hookRan && controller.GetViewportLayout() == SceneEditController::ViewportLayout::Single,
+		       "pane-set atomicity: hook changed the live controller to Single after the parked copy" );
+		Check( env.has( "result" ), "pane-set atomicity: read_viewport remains a structured success" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "available" ).asBool(), "pane-set atomicity: copied frame remains available" );
+		Check( r.has( "paneSet" ), "pane-set atomicity: response includes the parked pane set" );
+		if( r.has( "paneSet" ) ) {
+			const JsonValue& ps = r.get( "paneSet" );
+			Check( static_cast<int>( ps.get( "layout" ).asNumber() )
+			           == static_cast<int>( SceneEditController::ViewportLayout::TwoH ),
+			       "MONEY: response retains the frame's TwoH layout, not post-park Single" );
+			Check( static_cast<unsigned int>( ps.get( "sourcePane" ).asNumber() ) == 1,
+			       "MONEY: response attributes the PNG to the parked pane-1 frame" );
+			const JsonValue& panes = ps.get( "panes" );
+			Check( panes.size() == 4 && panes.at( 1 ).get( "visible" ).asBool()
+			       && panes.at( 1 ).get( "mode" ).asString() == "wireframe",
+			       "MONEY: pane 1 remains visible and wireframe in the response snapshot" );
+		}
+
+		controller.Stop();
 	}
 
 	pJob->release();
@@ -515,6 +610,7 @@ int main()
 	RunPositiveAndIsolation();
 	RunNoController();
 	RunNoFrameYet();
+	RunPaneSetSnapshotAtomicity();
 	RunDisplayTransformOrdering();
 
 	std::printf( "=== AgentViewportReadTest: %d passed, %d failed ===\n", g_pass, g_fail );

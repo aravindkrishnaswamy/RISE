@@ -20,6 +20,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/RISE_API.h"   // user-review P1-1: C-ABI contract (unindexed nav aliases pane 0)
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 
@@ -463,6 +464,13 @@ static void RunPaneIndexedGestureTest()
 
 	// The pane-indexed gesture on the secondary pane.
 	Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ), "pane-indexed Down on pane 1 accepted" );
+	// A physical gesture is bound to the accepted pane.  In particular, a
+	// hidden/mismatched pane's trailing event must neither be reported as
+	// accepted nor complete the live pane-1 gesture.
+	Check( !f.ctrl->OnPanePointerMove( 3, Point2( 20, 20 ) ),
+	       "MONEY: Move from hidden/mismatched pane 3 is refused while pane 1 owns the gesture" );
+	Check( !f.ctrl->OnPanePointerUp( 3, Point2( 20, 20 ) ),
+	       "MONEY: Up from hidden/mismatched pane 3 is refused and cannot end pane 1's gesture" );
 	// review-s3 P1: the FIRST version of this assertion demanded promotion
 	// here and was tagged "§7.8 decision 1" -- but the ratified text says
 	// "navigation drags NEVER steal primary", and OrbitCamera IS a
@@ -557,6 +565,366 @@ static void RunPaneIndexedGestureTest()
 	       "camera-op family can move -- secondary-pane navigation never mutates it (§7.2)" );
 }
 
+//----------------------------------------------------------------------
+// (j) user-review P2#1: a layout SHRINK that hides the currently-
+//     scheduled pane must relocate the scheduler to the (visible)
+//     primary and stop rendering the hidden pane -- otherwise a hidden
+//     pane keeps rendering and its pixels get reported as the current
+//     frame.
+//----------------------------------------------------------------------
+static void RunShrinkCancelsHiddenPaneTest()
+{
+	std::printf( "=== scheduler (j): shrink relocates the scheduler off a now-hidden pane (user-review P2#1) ===\n" );
+	Fixture f( "pane_sched_j.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "initial Quad rotation completes (4 passes)" );
+	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "Quad settles" );
+	// After a settled Quad rotation the scheduler's current pane is a
+	// high index (the last one rendered) -- i.e. one that Single hides.
+	Check( f.ctrl->ForTest_CurrentPane() >= 1,
+	       "precondition: the current pane is a secondary (Single will hide it)" );
+	f.ctrl->ClearSequence();
+
+	// Shrink to Single.  The fix must relocate to pane 0 and repaint it,
+	// and NO further pass may land on a hidden pane (index >= 1).
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Single ), "shrink Quad -> Single" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+	       "MONEY ASSERTION (j): the shrink repaints the visible primary (pane 0)" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );   // drain any stray passes
+	const std::vector<unsigned int> seq = f.ctrl->Sequence();
+	bool anyHidden = false;
+	for( std::size_t i = 0; i < seq.size(); ++i ) {
+		if( seq[i] >= 1 ) anyHidden = true;
+	}
+	Check( !anyHidden,
+	       "MONEY ASSERTION (j): NO pass lands on a hidden pane (>=1) after the shrink -- the "
+	       "scheduler relocated to pane 0 instead of continuing on the now-invisible pane" );
+	Check( f.ctrl->ForTest_CurrentPane() == 0,
+	       "the scheduler's current pane is the visible primary (0) after the shrink" );
+}
+
+//----------------------------------------------------------------------
+// (j2) A shrink can interrupt an object-transform drag, not just an idle
+// scheduler slot.  It must complete the same transaction cleanup as PointerUp:
+// close the composite, persist the pending transform, drop the gizmo drag, and
+// never schedule the hidden pane again.
+//----------------------------------------------------------------------
+static void RunShrinkFinalizesHiddenGestureTest()
+{
+	std::printf( "=== scheduler (j2): shrink finalizes an active hidden-pane transform gesture ===\n" );
+	Fixture f( "pane_sched_j2.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "initial Quad rotation completes" );
+	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "Quad settles" );
+
+	f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->RefreshGizmoHandles();
+	int center = -1;
+	for( unsigned int i = 0; i < f.ctrl->GizmoHandleCount(); ++i ) {
+		if( f.ctrl->GizmoHandleKind( i )
+		    == static_cast<int>( SceneEditController::GizmoHandle::Kind::ScreenCenter ) ) {
+			center = static_cast<int>( i );
+			break;
+		}
+	}
+	Check( center >= 0, "a ScreenCenter transform handle is available" );
+	if( center < 0 ) return;
+	const Point2 down( f.ctrl->GizmoHandleScreenX( static_cast<unsigned int>( center ) ),
+	                   f.ctrl->GizmoHandleScreenY( static_cast<unsigned int>( center ) ) );
+	Check( f.ctrl->OnPanePointerDown( 3, down ), "pane-3 transform Down is accepted" );
+	Check( f.ctrl->Editor().IsCompositeOpen() && f.ctrl->IsGizmoDragActive(),
+	       "precondition: pane-3 transform gesture has an open composite and active gizmo drag" );
+	f.ctrl->OnPanePointerMove( 3, Point2( down.x + 4.0, down.y + 3.0 ) );
+	Check( f.ctrl->Editor().HasPendingCstObjectTransforms(),
+	       "precondition: transform gesture accumulated a CST-pending object edit" );
+	f.ctrl->ClearSequence();
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::OnePlusTwo ),
+	       "shrink Quad -> OnePlusTwo hides the gestured pane 3" );
+	Check( !f.ctrl->Editor().IsCompositeOpen(),
+	       "MONEY (j2): shrink closes the interrupted gesture composite" );
+	Check( !f.ctrl->Editor().HasPendingCstObjectTransforms(),
+	       "MONEY (j2): shrink commits the interrupted gesture's pending CST transform" );
+	Check( !f.ctrl->IsGizmoDragActive(),
+	       "MONEY (j2): shrink clears the interrupted gizmo drag state" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+	       "shrink queues a repaint for the remaining visible panes" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+	const std::vector<unsigned int> seq = f.ctrl->Sequence();
+	bool renderedHidden = false;
+	for( std::size_t i = 0; i < seq.size(); ++i ) {
+		if( seq[i] >= 3 ) renderedHidden = true;
+	}
+	Check( !renderedHidden,
+	       "MONEY (j2): no post-shrink render targets hidden pane 3 after a finalized drag" );
+}
+
+//----------------------------------------------------------------------
+// (j3) Platform paint/timer code asks for layout and primary while an agent
+// render holds mMutex for its full duration.  Those UI-read snapshots must be
+// lock-free; a waiter is intentionally held open long enough to catch a
+// blocking getter without depending on render speed.
+//----------------------------------------------------------------------
+static void RunLayoutSnapshotsDoNotBlockParkedRenderTest()
+{
+	std::printf( "=== scheduler (j3): layout/primary snapshots stay nonblocking during parked render ===\n" );
+	Fixture f( "pane_sched_j3.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
+	Check( f.ctrl->SetPrimaryPane( 2 ), "primary := pane 2" );
+
+	std::mutex gateMutex;
+	std::condition_variable gateCV;
+	bool entered = false, release = false, parked = false;
+	std::thread holder( [&]() {
+		parked = f.ctrl->RunPreviewRenderParked( [&]() {
+			std::unique_lock<std::mutex> lk( gateMutex );
+			entered = true;
+			gateCV.notify_all();
+			gateCV.wait( lk, [&]{ return release; } );
+		} );
+	} );
+	{
+		std::unique_lock<std::mutex> lk( gateMutex );
+		Check( gateCV.wait_for( lk, std::chrono::milliseconds( kWaitMs ), [&]{ return entered; } ),
+		       "parked render closure entered while holding the controller mutex" );
+	}
+
+	SceneEditController::ViewportLayout observedLayout = SceneEditController::ViewportLayout::Single;
+	unsigned int observedPrimary = 99;
+	bool gettersDone = false;
+	std::thread reader( [&]() {
+		observedLayout = f.ctrl->GetViewportLayout();
+		observedPrimary = f.ctrl->GetPrimaryPane();
+		std::lock_guard<std::mutex> lk( gateMutex );
+		gettersDone = true;
+		gateCV.notify_all();
+	} );
+	{
+		std::unique_lock<std::mutex> lk( gateMutex );
+		Check( gateCV.wait_for( lk, std::chrono::milliseconds( 250 ), [&]{ return gettersDone; } ),
+		       "MONEY (j3): layout/primary getters return while the agent render still owns mMutex" );
+		release = true;
+		gateCV.notify_all();
+	}
+	holder.join();
+	reader.join();
+	Check( parked, "parked render completed after the test released it" );
+	Check( observedLayout == SceneEditController::ViewportLayout::Quad && observedPrimary == 2,
+	       "MONEY (j3): lock-free getters return the coherent published Quad / pane-2 snapshot" );
+}
+
+//----------------------------------------------------------------------
+// (k) user-review P1#6 (round 2): with the PRIMARY pane set to a
+//     SECONDARY, the pane-0 ALIAS getters/setters must STILL target pane
+//     0.  The nav funnel targets the primary pane; the pane-0 alias
+//     forwarders pass an EXPLICIT 0.  Regression under review: repointing
+//     the funnel at mPrimaryPane WITHOUT splitting the alias made
+//     GetPaneVantage(0) (and the pane-0 vantage setters) operate on the
+//     PRIMARY pane instead of pane 0.
+//----------------------------------------------------------------------
+static void RunPaneZeroAliasUnderSecondaryPrimaryTest()
+{
+	std::printf( "=== scheduler (k): pane-0 alias unaffected by a secondary primary (user-review P1#6 r2) ===\n" );
+	Fixture f( "pane_sched_k.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	using Kind = SceneEditController::PaneVantageKind;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
+	Check( f.ctrl->SetPrimaryPane( 2 ), "primary := pane 2 (a secondary)" );
+	// Put the PRIMARY (pane 2) into free-fly, then pump a full rotation so
+	// the scheduler realizes it into pane 2's registers/slot (poseActive).
+	Check( f.ctrl->PaneEnterFreeFly( 2 ), "pane 2 enters free-fly" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "a full Quad rotation runs (pane 2's free-fly realized)" );
+	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "settles" );
+
+	// The primary pane reports its OWN free-fly (config-backed for a
+	// secondary) -- confirms the setup took.
+	Kind k2 = Kind::SceneCamera; String nv2;
+	Check( f.ctrl->GetPaneVantage( 2, k2, nv2 ), "GetPaneVantage(2) succeeds" );
+	Check( k2 == Kind::FreeFly, "pane 2 (the primary) reports FreeFly" );
+
+	// MONEY: pane 0's alias getter reports pane 0's OWN vantage
+	// (SceneCamera) -- NOT the secondary primary's FreeFly.  The buggy
+	// funnel routed GetPaneVantage(0) -> IsFreeFlyActive() at mPrimaryPane==2
+	// and would report FreeFly here.
+	Kind k0 = Kind::FreeFly; String nv0( "dirty" );
+	Check( f.ctrl->GetPaneVantage( 0, k0, nv0 ), "GetPaneVantage(0) succeeds" );
+	Check( k0 == Kind::SceneCamera,
+	       "MONEY ASSERTION (k): GetPaneVantage(0) reports pane 0's OWN vantage "
+	       "(SceneCamera), NOT the secondary primary pane 2's FreeFly -- the pane-0 "
+	       "alias forwards an EXPLICIT 0, unaffected by mPrimaryPane" );
+	Check( nv0.size() <= 1, "pane 0 named-view name is empty (SceneCamera)" );
+}
+
+//----------------------------------------------------------------------
+// (l) user-review P1-1: the UNINDEXED nav path aliases PANE 0 (the §7.4
+//     C-ABI contract "existing calls = pane 0"), NOT the primary pane.
+//     The pane-INDEXED path targets the named pane.  Regression: making
+//     the funnel default to mPrimaryPane made a legacy unindexed Snap /
+//     Home / FreeFly mutate a SECONDARY pane whenever it was primary.
+//----------------------------------------------------------------------
+static void RunUnindexedNavAliasesPaneZeroTest()
+{
+	std::printf( "=== scheduler (l): unindexed nav aliases pane 0; indexed targets the pane (user-review P1-1) ===\n" );
+	Fixture f( "pane_sched_l.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	using Kind = SceneEditController::PaneVantageKind;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
+	Check( f.ctrl->SetPrimaryPane( 2 ), "primary := pane 2 (a secondary)" );
+
+	// UNINDEXED snap (explicit pane 0, exactly what the legacy C-ABI wrapper
+	// passes) must free-fly PANE 0 and leave the secondary primary untouched.
+	Check( RISE_API_SceneEditController_SnapViewToAxis( f.ctrl, 0, 0 ),
+	       "UNINDEXED C-ABI SnapViewToAxis succeeds (must alias pane 0)" );
+	Kind k0 = Kind::SceneCamera; String nv0;
+	Check( f.ctrl->GetPaneVantage( 0, k0, nv0 ), "GetPaneVantage(0) succeeds" );
+	Check( k0 == Kind::FreeFly, "MONEY (l): unindexed snap put PANE 0 into free-fly" );
+	Kind k2 = Kind::FreeFly; String nv2;
+	Check( f.ctrl->GetPaneVantage( 2, k2, nv2 ), "GetPaneVantage(2) succeeds" );
+	Check( k2 == Kind::SceneCamera,
+	       "MONEY (l): the secondary PRIMARY pane 2 is UNTOUCHED by the unindexed "
+	       "(pane-0) nav -- the §7.4 alias contract holds even when primary != 0" );
+
+	// INDEXED snap targets pane 2.
+	Check( RISE_API_SceneEditController_SnapPaneViewToAxis( f.ctrl, 2, 1, 0 ),
+	       "INDEXED C-ABI SnapPaneViewToAxis(pane 2) succeeds" );
+	Kind k2b = Kind::SceneCamera; String nv2b;
+	Check( f.ctrl->GetPaneVantage( 2, k2b, nv2b ), "GetPaneVantage(2) succeeds after indexed snap" );
+	Check( k2b == Kind::FreeFly, "MONEY (l): the INDEXED snap put pane 2 into free-fly" );
+}
+
+//----------------------------------------------------------------------
+// (m) Entering Free-Fly from a secondary NamedView must preserve the view
+//     being displayed.  Regression: PaneEnterFreeFly captured the scene
+//     camera, visibly jumping away from the named view as soon as the menu
+//     action was selected.
+//----------------------------------------------------------------------
+static void RunPaneFreeFlyPreservesNamedViewTest()
+{
+	std::printf( "=== scheduler (m): secondary Free-Fly preserves its NamedView pose ===\n" );
+	Fixture f( "pane_sched_m.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+	Check( f.ctrl->SnapViewToAxis( 0, false, 0 ), "pane 0 snap creates a non-scene-camera side view" );
+	Check( f.ctrl->CaptureNamedView( "side" ), "capture side NamedView from pane 0 free-fly" );
+	CameraSnapshot expected;
+	Check( f.ctrl->FindNamedViewPose( String( "side" ), expected ), "read back side NamedView pose" );
+	Check( f.ctrl->ExitFreeFly( 0 ), "pane 0 returns to the scene camera" );
+	Check( f.ctrl->SetPaneVantageNamedView( 1, "side" ), "pane 1 displays the side NamedView" );
+
+	Check( f.ctrl->PaneEnterFreeFly( 1 ), "pane 1 enters Free-Fly" );
+	SceneEditController::PaneVantageKind kind;
+	String named;
+	Check( f.ctrl->GetPaneVantage( 1, kind, named )
+	    && kind == SceneEditController::PaneVantageKind::FreeFly,
+	       "pane 1 now reports Free-Fly" );
+
+	// Realize the configured pane once, then inspect its saved/free-fly pose.
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "both TwoH panes render" );
+	CameraSnapshot actual;
+	Check( f.ctrl->GetViewportPose( actual, 1 ), "pane 1 has a realized Free-Fly pose" );
+	Check( actual.location[0] == expected.location[0]
+	    && actual.location[1] == expected.location[1]
+	    && actual.location[2] == expected.location[2]
+	    && actual.lookat[0] == expected.lookat[0]
+	    && actual.lookat[1] == expected.lookat[1]
+	    && actual.lookat[2] == expected.lookat[2],
+	       "MONEY (m): pane 1 Free-Fly keeps the NamedView pose, not the scene camera" );
+}
+
+//----------------------------------------------------------------------
+// (n) Pane* C-ABI nav wrappers forward `pane` RAW.  The nav funnels must
+//     reject both an out-of-range index and an in-range HIDDEN pane: neither
+//     may park/cancel a pass, switch the scheduler, or mutate pane state.
+//----------------------------------------------------------------------
+static void RunOutOfRangePaneNavRejectedTest()
+{
+	std::printf( "=== scheduler (n): out-of-range pane nav fails closed, no OOB (user-review round 2) ===\n" );
+	Fixture f( "pane_sched_m.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	const unsigned int bad = 9;   // >= kViewportPaneCount (4)
+	const unsigned int privateSentinel = SceneEditController::kViewportNavPrimary;
+
+	Check( !RISE_API_SceneEditController_SnapPaneViewToAxis( f.ctrl, bad, 0, 0 ),
+	       "MONEY (n): SnapPaneViewToAxis(out-of-range) fails closed (no OOB write to mPaneConfigs)" );
+	Check( !RISE_API_SceneEditController_IsPaneFreeFlyActive( f.ctrl, bad ),
+	       "MONEY (n): IsPaneFreeFlyActive(out-of-range) fails closed (no OOB read of mPaneRender)" );
+	Check( !RISE_API_SceneEditController_PaneSetHomeView( f.ctrl, bad ),
+	       "MONEY (n): PaneSetHomeView(out-of-range) fails closed" );
+	Check( !RISE_API_SceneEditController_PaneGoToHomeView( f.ctrl, bad ),
+	       "MONEY (n): PaneGoToHomeView(out-of-range) fails closed" );
+	char nm[64] = {0};
+	Check( !RISE_API_SceneEditController_PaneStampViewToNewCamera( f.ctrl, bad, "v", nm, sizeof( nm ) ),
+	       "MONEY (n): PaneStampViewToNewCamera(out-of-range) fails closed" );
+
+	// The internal C++ default-argument sentinel is UINT_MAX.  It means
+	// "primary pane" only inside the C++ nav funnel; public indexed C callers
+	// must never be able to smuggle it through as a pane and mutate primary.
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+	       "layout Quad for private-sentinel checks" );
+	Check( f.ctrl->SetPrimaryPane( 1 ), "primary := pane 1 for private-sentinel checks" );
+	Check( RISE_API_SceneEditController_SnapPaneViewToAxis( f.ctrl, 1, 0, 0 ),
+	       "control: indexed snap on actual primary pane succeeds" );
+	Check( !RISE_API_SceneEditController_SnapPaneViewToAxis( f.ctrl, privateSentinel, 0, 0 ),
+	       "MONEY (n): private nav sentinel is rejected by indexed SnapPaneViewToAxis" );
+	Check( !RISE_API_SceneEditController_IsPaneFreeFlyActive( f.ctrl, privateSentinel ),
+	       "MONEY (n): private nav sentinel is rejected by indexed IsPaneFreeFlyActive" );
+	Check( RISE_API_SceneEditController_PaneSetHomeView( f.ctrl, 1 ),
+	       "control: indexed SetHome on actual primary pane succeeds" );
+	Check( !RISE_API_SceneEditController_PaneSetHomeView( f.ctrl, privateSentinel ),
+	       "MONEY (n): private nav sentinel is rejected by indexed PaneSetHomeView" );
+	Check( !RISE_API_SceneEditController_PaneGoToHomeView( f.ctrl, privateSentinel ),
+	       "MONEY (n): private nav sentinel is rejected by indexed PaneGoToHomeView" );
+	const unsigned int cameraCountBefore = f.job->GetScene()->GetCameras()->getItemCount();
+	Check( !RISE_API_SceneEditController_PaneStampViewToNewCamera(
+		f.ctrl, privateSentinel, "v", nm, sizeof( nm ) ),
+	       "MONEY (n): private nav sentinel is rejected by indexed PaneStampViewToNewCamera" );
+	Check( f.job->GetScene()->GetCameras()->getItemCount() == cameraCountBefore,
+	       "MONEY (n): rejected private sentinel never creates a camera on the primary pane" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Single ),
+	       "restore Single for hidden-pane checks" );
+	// In Single layout, pane 2 is a valid array
+	// slot but hidden.  This is the real regression topology: bounds-only
+	// validation let SnapViewToAxis switch the scheduler to this invisible pane.
+	const unsigned int hidden = 2;
+	Check( !RISE_API_SceneEditController_SnapPaneViewToAxis( f.ctrl, hidden, 0, 0 ),
+	       "MONEY (n): SnapPaneViewToAxis(hidden) fails closed without selecting a hidden pane" );
+	Check( !RISE_API_SceneEditController_PaneSetHomeView( f.ctrl, hidden ),
+	       "MONEY (n): PaneSetHomeView(hidden) fails closed" );
+	Check( !RISE_API_SceneEditController_PaneGoToHomeView( f.ctrl, hidden ),
+	       "MONEY (n): PaneGoToHomeView(hidden) fails closed" );
+	Check( !RISE_API_SceneEditController_PaneStampViewToNewCamera( f.ctrl, hidden, "v", nm, sizeof( nm ) ),
+	       "MONEY (n): PaneStampViewToNewCamera(hidden) fails closed" );
+
+	// Control: an in-range call is well-defined and doesn't crash.
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad (control)" );
+	Check( RISE_API_SceneEditController_IsPaneFreeFlyActive( f.ctrl, 1 ),
+	       "control: the valid pane-1 query still observes the successful control snap" );
+}
+
 int main()
 {
 	RunRotationOrderTest();
@@ -567,6 +935,13 @@ int main()
 	RunLayoutGrowWakesLoopTest();
 	RunNamedViewUpdatePropagatesTest();
 	RunPaneIndexedGestureTest();
+	RunShrinkCancelsHiddenPaneTest();
+	RunShrinkFinalizesHiddenGestureTest();
+	RunLayoutSnapshotsDoNotBlockParkedRenderTest();
+	RunPaneZeroAliasUnderSecondaryPrimaryTest();
+	RunUnindexedNavAliasesPaneZeroTest();
+	RunPaneFreeFlyPreservesNamedViewTest();
+	RunOutOfRangePaneNavRejectedTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

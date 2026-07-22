@@ -101,9 +101,27 @@ void ViewportWidget::applyMultiViewModePreset()
     if (!m_bridge) return;
     static const char* const kPresetBySlot[4] = { "preview", "wireframe", "normals", "depth" };
     for (unsigned int pane = 1; pane < m_visiblePaneCount && pane < 4; ++pane) {
-        if (m_bridge->paneRenderMode(pane) == QStringLiteral("preview")) {
-            m_bridge->setPaneRenderMode(pane, QString::fromLatin1(kPresetBySlot[pane]));
-            if (pane < static_cast<unsigned int>(4) && m_paneChrome[pane].modeCombo) {
+        // user-review P2#2: apply the slot preset EXACTLY ONCE per pane (the
+        // first time it becomes visible).  The old current=="preview" gate
+        // treated an EXPLICIT Preview choice as uninitialized and re-clobbered
+        // it on every layout change; the once-per-pane guard makes an explicit
+        // Preview indistinguishable from any other explicit choice -- both are
+        // the user's, both preserved.
+        if (m_panePresetApplied[pane]) continue;
+        // A pane the core already persisted to a non-Preview mode is the user's
+        // -- mark applied and leave it alone.
+        if (m_bridge->paneRenderMode(pane) != QStringLiteral("preview")) {
+            m_panePresetApplied[pane] = true;
+            continue;
+        }
+        // user-review P2-2: mark applied ONLY when the setter SUCCEEDS.
+        // setPaneRenderMode is refused while a production/agent render owns the
+        // scene; marking before checking left the pane stuck at Preview forever
+        // (no retry).  On refusal, stay unmarked so the render-end retry (see
+        // setProductionRendering) or the next layout change re-applies.
+        if (m_bridge->setPaneRenderMode(pane, QString::fromLatin1(kPresetBySlot[pane]))) {
+            m_panePresetApplied[pane] = true;
+            if (m_paneChrome[pane].modeCombo) {
                 // Reflect the preset in the chrome combo (block signals so
                 // the programmatic set doesn't re-enter setPaneRenderMode).
                 const int idx = m_paneChrome[pane].modeCombo->findData(
@@ -150,6 +168,12 @@ void ViewportWidget::setProductionRendering(bool inProgress)
 {
     if (m_productionRendering == inProgress) return;
     m_productionRendering = inProgress;
+    // user-review P2-2: a preset that was refused because a render owned the
+    // scene left its pane unmarked; retry now that the render is done so those
+    // panes finally get the spread (self-healing, no user action needed).
+    if (!inProgress && m_layout != ViewportBridge::ViewportLayout::Single) {
+        applyMultiViewModePreset();
+    }
     update();
 }
 
@@ -157,6 +181,10 @@ void ViewportWidget::setSceneEditable(bool editable)
 {
     if (m_sceneEditable == editable) return;
     m_sceneEditable = editable;
+    for (PaneChrome& chrome : m_paneChrome) {
+        if (chrome.modeCombo) chrome.modeCombo->setEnabled(editable);
+        if (chrome.vantageBtn) chrome.vantageBtn->setEnabled(editable);
+    }
     if (!editable) {
         // A render now owns the scene: cancel any armed / in-progress region
         // interaction so a mid-render release can't commit it
@@ -269,12 +297,9 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
 
     // N-up multi-viewport (docs/gui/RENDER_MODES.md §7): Single stays on
     // the pre-N-up path below UNCHANGED (see the header's block doc).
-    // Every other layout paints the pane grid instead -- region overlay
-    // and nav-ball overlay are deliberately Single-layout-only (see
-    // paintPaneGrid()'s doc); gizmo overlay IS ported, anchored to pane
-    // 0's rect, since it's the only overlay this task's spec explicitly
-    // requires in N-up ("Gizmo overlays draw in the PRIMARY pane's rect
-    // only").
+    // Every other layout paints the pane grid instead.  Region refinement is
+    // Single-only; gizmo and navigation overlays are both drawn in the
+    // primary pane's rect by paintPaneGrid().
     if (m_layout != ViewportBridge::ViewportLayout::Single) {
         paintPaneGrid(p);
         return;
@@ -314,7 +339,7 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
         // isFreeFlyActive()/hasHomeView() (controller mutex), which a
         // chat-driven render holds — skip the overlay while render-owned so
         // a repaint can't wedge the Qt main thread.
-        paintNavOverlay(p);
+        paintNavOverlay(p, 0);
     }
 }
 
@@ -526,22 +551,43 @@ static constexpr double kNavBtnW   = 24.0;   // control-button width
 static constexpr double kNavBtnH   = 20.0;   // control-button height
 static constexpr double kNavBtnGap = 6.0;
 
-QPointF ViewportWidget::navBallCenter() const
+QPointF ViewportWidget::navBallCenter(unsigned int pane) const
 {
+    if (m_layout != ViewportBridge::ViewportLayout::Single
+        && pane < m_visiblePaneCount
+        && !m_paneImageAreaRects[pane].isEmpty()) {
+        const QRect& area = m_paneImageAreaRects[pane];
+        return QPointF(area.right() - kNavInset - kNavBallR,
+                       area.top() + kNavInset + kNavBallR);
+    }
     return QPointF(width() - kNavInset - kNavBallR, kNavInset + kNavBallR);
 }
 
-void ViewportWidget::navControlRects(QRectF& outHome, QRectF& outSet,
+void ViewportWidget::navControlRects(unsigned int pane, QRectF& outHome, QRectF& outSet,
                                      QRectF& outStamp, QRectF& outExit) const
 {
     // A centered row just below the ball: Home, Set-home, and (only while
     // free-flying) Stamp-to-camera + Back-to-camera.
-    const QPointF c = navBallCenter();
+    const QPointF c = navBallCenter(pane);
     const double rowY = c.y() + kNavBallR + kNavNubR + 6.0;
-    const bool freeFly = m_bridge && m_bridge->isFreeFlyActive();
+    const bool freeFly = m_bridge && m_bridge->isPaneFreeFlyActive(pane);
     const int nButtons = freeFly ? 4 : 2;
     const double totalW = nButtons * kNavBtnW + (nButtons - 1) * kNavBtnGap;
     double x = c.x() - totalW / 2.0;
+    // user-review P2: in N-up the ball sits near the pane's right edge, so a
+    // centered 4-button (free-fly) row -- 114px wide -- protruded ~11px past
+    // the pane into the seam / adjacent pane, and (paint == hit-test) a click
+    // there fired a PRIMARY nav action instead of the sibling pane.  Clamp the
+    // row into the pane's image area so it stays fully inside and clickable.
+    if (m_layout != ViewportBridge::ViewportLayout::Single
+        && pane < m_visiblePaneCount
+        && !m_paneImageAreaRects[pane].isEmpty()) {
+        const QRect& area = m_paneImageAreaRects[pane];
+        const double maxX = area.right() - kNavInset - totalW;
+        const double minX = area.left() + kNavInset;
+        if (x > maxX) x = maxX;
+        if (x < minX) x = minX;   // (pane wider than the row in every shipped layout)
+    }
     outHome  = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
     outSet   = QRectF(x, rowY, kNavBtnW, kNavBtnH); x += kNavBtnW + kNavBtnGap;
     outStamp = freeFly ? QRectF(x, rowY, kNavBtnW, kNavBtnH) : QRectF();
@@ -549,10 +595,10 @@ void ViewportWidget::navControlRects(QRectF& outHome, QRectF& outSet,
     outExit  = freeFly ? QRectF(x, rowY, kNavBtnW, kNavBtnH) : QRectF();
 }
 
-void ViewportWidget::paintNavOverlay(QPainter& p)
+void ViewportWidget::paintNavOverlay(QPainter& p, unsigned int pane)
 {
     if (!m_bridge) return;
-    const QPointF c = navBallCenter();
+    const QPointF c = navBallCenter(pane);
     if (!m_bridge->refreshNavGizmo(c.x(), c.y(), kNavBallR, kNavNubR)) {
         return;   // no supported (pinhole) camera -> draw nothing
     }
@@ -605,7 +651,7 @@ void ViewportWidget::paintNavOverlay(QPainter& p)
 
     // Control buttons.
     QRectF homeR, setR, stampR, exitR;
-    navControlRects(homeR, setR, stampR, exitR);
+    navControlRects(pane, homeR, setR, stampR, exitR);
     const bool homeEnabled = m_bridge->hasHomeView();
     auto drawBtn = [&](const QRectF& rc, const QString& label, bool enabled) {
         if (rc.isNull()) return;
@@ -624,7 +670,7 @@ void ViewportWidget::paintNavOverlay(QPainter& p)
     p.restore();
 }
 
-bool ViewportWidget::handleNavClick(const QPointF& widgetPos)
+bool ViewportWidget::handleNavClick(const QPointF& widgetPos, unsigned int pane)
 {
     if (!m_bridge) return false;
 
@@ -634,25 +680,25 @@ bool ViewportWidget::handleNavClick(const QPointF& widgetPos)
     // nothing must consume clicks (no invisible dead zone in the corner).
     // This also re-lays-out at the current ball geometry so the nub hit-test
     // below matches what was painted.
-    const QPointF c = navBallCenter();
+    const QPointF c = navBallCenter(pane);
     if (!m_bridge->refreshNavGizmo(c.x(), c.y(), kNavBallR, kNavNubR)) return false;
 
     // Control buttons first (they sit below the ball, overlapping no nub).
     QRectF homeR, setR, stampR, exitR;
-    navControlRects(homeR, setR, stampR, exitR);
+    navControlRects(pane, homeR, setR, stampR, exitR);
     if (homeR.contains(widgetPos)) {
-        if (m_bridge->hasHomeView()) { m_bridge->goToHomeView(); update(); }
+        if (m_bridge->hasHomeView()) { m_bridge->paneGoToHomeView(pane); update(); }
         return true;   // consume even when disabled — it's our visible control area
     }
-    if (setR.contains(widgetPos)) { m_bridge->setHomeView(); update(); return true; }
+    if (setR.contains(widgetPos)) { m_bridge->paneSetHomeView(pane); update(); return true; }
     if (!stampR.isNull() && stampR.contains(widgetPos)) {
         // Auto-named + dedup-suffixed by the core; the new camera becomes
         // active. The outliner picks it up via its scene-epoch poll.
-        m_bridge->stampViewToNewCamera(QStringLiteral("view_camera"));
+        m_bridge->stampPaneViewToNewCamera(pane, QStringLiteral("view_camera"));
         update();
         return true;
     }
-    if (!exitR.isNull() && exitR.contains(widgetPos)) { m_bridge->exitFreeFly(); update(); return true; }
+    if (!exitR.isNull() && exitR.contains(widgetPos)) { m_bridge->paneExitFreeFly(pane); update(); return true; }
 
     // Nub hit-test → snap the view.
     const int idx = m_bridge->navGizmoNubAt(widgetPos.x(), widgetPos.y());
@@ -660,7 +706,7 @@ bool ViewportWidget::handleNavClick(const QPointF& widgetPos)
     const QVector<ViewportBridge::NavNub> nubs = m_bridge->navGizmoNubs();
     if (idx >= nubs.size()) return false;
     const ViewportBridge::NavNub& n = nubs[idx];
-    m_bridge->snapViewToAxis(n.axis, n.negative);
+    m_bridge->snapPaneViewToAxis(pane, n.axis, n.negative);
     update();
     return true;
 }
@@ -668,15 +714,20 @@ bool ViewportWidget::handleNavClick(const QPointF& widgetPos)
 void ViewportWidget::mousePressEvent(QMouseEvent* event)
 {
     // N-up multi-viewport (docs/gui/RENDER_MODES.md §7): pane-indexed
-    // routing.  Region drag / the persistent-badge click / the nav-ball
-    // overlay are all Single-layout-only (see paintPaneGrid()'s doc), so
-    // this branch is intentionally simpler than the Single path below --
-    // hit-test the pane, forward Down, and PIN the gesture to that pane
-    // only if the core accepted it (§7.3 gesture exclusivity; a false
-    // return means "drop the gesture" per OnPanePointerDown's contract).
+    // routing.  Region drag and the persistent badge are Single-only; the
+    // navigation ball is on the primary pane and must consume its clicks
+    // before they become a scene gesture.
     if (m_layout != ViewportBridge::ViewportLayout::Single) {
         m_activeGesturePane = -1;
         if (!m_bridge || !m_sceneEditable) { event->accept(); return; }
+        if (!m_productionRendering && event->button() == Qt::LeftButton) {
+            const unsigned int primary = m_bridge->primaryPane();
+            if (primary < m_visiblePaneCount
+                && handleNavClick(event->position(), primary)) {
+                event->accept();
+                return;
+            }
+        }
         const int pane = paneAt(event->position());
         if (pane >= 0) {
             const QPointF sp = paneSurfacePoint(static_cast<unsigned int>(pane), event->position());
@@ -725,7 +776,7 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
     // drive Home / free-fly.  Consumes the click so it isn't also forwarded as
     // a scene pick.  Gated off during production render (the ball isn't drawn).
     if (!m_productionRendering && m_sceneEditable && event->button() == Qt::LeftButton
-        && handleNavClick(event->position())) {
+        && handleNavClick(event->position(), 0)) {
         event->accept();
         return;
     }
@@ -1089,6 +1140,19 @@ void ViewportWidget::recomputePaneLayout()
     refreshPaneChromeState();
 }
 
+void ViewportWidget::refreshForDpiChange()
+{
+    // user-review P2#7: a fixed-size top-level window dragged between
+    // displays with different DPI fires no resizeEvent (the LOGICAL size is
+    // unchanged), so the pane device-pixel dims -- computed from
+    // devicePixelRatioF() in recomputePaneLayout() -- would stay stale and
+    // the panes would render at the wrong resolution for the new screen.
+    // MainWindow forwards its ScreenChangeInternal here; re-run the layout so
+    // fresh device dims push (recomputePaneLayout early-outs while Single).
+    recomputePaneLayout();
+    update();
+}
+
 QRect ViewportWidget::paneImageDrawRect(const QImage& img, const QRect& area) const
 {
     // Generalized imageDrawRect() -- letterbox `img` inside `area` instead
@@ -1108,11 +1172,12 @@ QRect ViewportWidget::paneImageDrawRect(const QImage& img, const QRect& area) co
 
 QPointF ViewportWidget::paneSurfacePoint(unsigned int pane, const QPointF& widgetPos) const
 {
-    // Generalized surfacePoint().  There is no per-pane twin of
-    // cameraSurfaceDimensions() in the C-ABI (that call is scoped to the
-    // single un-indexed camera), so -- like surfacePoint()'s own no-bridge
-    // fallback -- the pane's own last-received frame size is the best
-    // available stand-in for the coordinate space's reference dims.
+    // Generalized surfacePoint().  RISE's Film pixel dims are a scene-level
+    // singleton shared by every pane, so the coordinate reference is the
+    // STABLE authored film size (cameraSurfaceDimensions()) -- see the P1#4
+    // note in the body below for why the pane's last-received frame size is
+    // NOT used (it jumps with the adaptive preview scale mid-drag).  The
+    // frame-size / area-size fallbacks only apply when no bridge/film exists.
     if (pane >= ViewportBridge::kViewportPaneCount) return widgetPos;
     const QRect area = m_paneImageAreaRects[pane];
     if (area.isEmpty()) return widgetPos;
@@ -1121,7 +1186,16 @@ QPointF ViewportWidget::paneSurfacePoint(unsigned int pane, const QPointF& widge
     const QRect drawRect = paneImageDrawRect(img, area);
     if (drawRect.isEmpty()) return widgetPos;
 
-    QSize surface = img.size();
+    // user-review P1#4: map through the STABLE authored film dims, NOT the
+    // pane's last-delivered image size.  The adaptive preview scale changes
+    // the delivered image RESOLUTION mid-drag; the letterbox drawRect (built
+    // from the image ASPECT, which the film-aspect constraint keeps fixed)
+    // stays put, so nx/ny are already scale-invariant -- but multiplying them
+    // by a resolution that jumps with the scale made the mapped coordinate
+    // jump by the scale factor.  cameraSurfaceDimensions() is constant across
+    // scale changes, exactly like the single viewport's surfacePoint().
+    QSize surface = m_bridge ? m_bridge->cameraSurfaceDimensions() : QSize();
+    if (surface.width() <= 0 || surface.height() <= 0) surface = img.size();
     if (surface.width() <= 0 || surface.height() <= 0) surface = area.size();
     if (surface.width() <= 0 || surface.height() <= 0) return widgetPos;
 
@@ -1172,24 +1246,34 @@ void ViewportWidget::paintPaneGrid(QPainter& p)
         p.drawRect(cell.adjusted(0, 0, -1, -1));
     }
 
-    // Gizmo overlay (docs/gui/RENDER_MODES.md §7.5: "Gizmo overlays draw
-    // in the PRIMARY pane's rect only").  Scoped to primary==pane 0: the
-    // tool/gizmo system (ViewportTool, ProjectWorldToScreen_) is still
-    // globally scoped to pane 0 in this P3a/P3b slice -- §7.1's audit
-    // table lists the camera-override read site as staying a pane-0 alias
-    // -- so drawing it against a different primary pane would either
-    // silently no-op or misproject.  Nav-ball overlay is Single-layout-
-    // only (its anchor math is corner-of-WIDGET, not corner-of-pane; not
-    // required by this task's spec, ported honestly as a known gap rather
-    // than faked).
-    if (primary == 0 && gizmoOverlayActive() && m_bridge) {
+    // Gizmo overlay (docs/gui/RENDER_MODES.md §7.5: draws in the PRIMARY
+    // pane's rect only).  user-review P2#3: paint it on WHICHEVER pane is
+    // primary, not just pane 0 -- matching the Mac twin.  The core's gizmo
+    // handles now project through the PRIMARY pane's camera
+    // (EffectiveViewportCamera_ targets mPrimaryPane since the P1#2/P1#6
+    // fixes), and cameraSurfaceDimensions() is the film-dim reference every
+    // pane is letterboxed to, so the projection lines up with the primary
+    // pane's image.  During any object-transform gesture the primary pane is
+    // the scheduled pane, so the handles are exact; between gestures the
+    // static handles may reflect a sibling pane's idle camera (a race-free
+    // primary-pane snapshot is a documented follow-up).
+    if (gizmoOverlayActive() && m_bridge && primary < m_visiblePaneCount) {
         const QSize surface = m_bridge->cameraSurfaceDimensions();
         if (surface.width() > 0 && surface.height() > 0) {
-            const QRect drawRect0 = paneImageDrawRect(m_paneImages[0], m_paneImageAreaRects[0]);
-            if (!drawRect0.isEmpty()) {
-                paintGizmoOverlay(p, drawRect0, surface);
+            const QRect drawRectP = paneImageDrawRect(m_paneImages[primary], m_paneImageAreaRects[primary]);
+            if (!drawRectP.isEmpty()) {
+                paintGizmoOverlay(p, drawRectP, surface);
             }
         }
+    }
+
+    // docs/gui/RENDER_MODES.md §7.5: navigation chrome, like gizmos, lives
+    // on the primary pane.  `m_sceneEditable` covers both production and
+    // chat/agent render ownership, whose controller mutex must not be read
+    // from the paint path.
+    if (!m_productionRendering && m_sceneEditable && m_bridge
+        && primary < m_visiblePaneCount) {
+        paintNavOverlay(p, primary);
     }
 }
 
@@ -1254,13 +1338,17 @@ void ViewportWidget::refreshPaneChromeState()
 
 void ViewportWidget::pollPaneChrome()
 {
-    if (!m_bridge) return;
+    if (!m_bridge || !m_sceneEditable) return;
     const ViewportBridge::ViewportLayout current = m_bridge->viewportLayout();
     if (current != m_layout) {
         // A layout change from elsewhere (or a click this widget's own
         // onViewportLayoutChanged() already handled, in which case this is
         // a harmless no-op re-derive) -- resync fully.
         recomputePaneLayout();
+        // Keep externally-driven layout changes on the same preset path as
+        // the toolbar action.  A newly-visible secondary otherwise remains
+        // preview forever because no local layout-change signal fires.
+        applyMultiViewModePreset();
         update();
         return;
     }
@@ -1271,7 +1359,7 @@ void ViewportWidget::pollPaneChrome()
 
 void ViewportWidget::onPaneModeComboChanged(int index)
 {
-    if (!m_bridge) return;
+    if (!m_bridge || !m_sceneEditable) return;
     auto* combo = qobject_cast<QComboBox*>(sender());
     if (!combo) return;
     const unsigned int pane = combo->property("pane").toUInt();
@@ -1286,7 +1374,7 @@ void ViewportWidget::onPaneModeComboChanged(int index)
 
 void ViewportWidget::onPaneVantageAction(QAction* action)
 {
-    if (!m_bridge || !action) return;
+    if (!m_bridge || !m_sceneEditable || !action) return;
     auto* menu = qobject_cast<QMenu*>(sender());
     if (!menu) return;
     const unsigned int pane = menu->property("pane").toUInt();

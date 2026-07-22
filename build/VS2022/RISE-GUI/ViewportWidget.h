@@ -45,6 +45,14 @@ public slots:
     /// instead of waiting for the next 500ms poll tick.
     void onViewportLayoutChanged();
 
+    /// user-review P2#7: re-run the pane layout after a top-level screen /
+    /// DPI change.  A FIXED-SIZE window dragged to a different-DPI display
+    /// fires no resizeEvent (logical size unchanged), so the device-pixel
+    /// pane dims would otherwise stay stale.  MainWindow forwards its
+    /// QEvent::ScreenChangeInternal here.  No-op while Single is active
+    /// (recomputePaneLayout early-outs there).
+    void refreshForDpiChange();
+
     /// Update the cursor displayed over the viewport to match the
     /// active tool.  Wired to ViewportToolbar::toolChanged.  Also
     /// records the active tool's category so `paintEvent` knows
@@ -140,11 +148,11 @@ private:
     // top-right corner; a nub click snaps the view (SnapViewToAxis), and the
     // three labeled controls Go-Home / Set-Home / Back-to-camera drive the
     // free-fly ViewportPose.  All layout/hit-test math is shared C++.
-    QPointF navBallCenter() const;
-    void    navControlRects(QRectF& outHome, QRectF& outSet,
+    QPointF navBallCenter(unsigned int pane) const;
+    void    navControlRects(unsigned int pane, QRectF& outHome, QRectF& outSet,
                             QRectF& outStamp, QRectF& outExit) const;
-    void    paintNavOverlay(QPainter& p);
-    bool    handleNavClick(const QPointF& widgetPos);   // true == consumed
+    void    paintNavOverlay(QPainter& p, unsigned int pane);
+    bool    handleNavClick(const QPointF& widgetPos, unsigned int pane);   // true == consumed
     void    paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface);
     void    cancelRegionDrag();
 
@@ -250,6 +258,12 @@ private:
     /// short-circuit convention referenced in RENDER_MODES.md §7.3's
     /// invalidation matrix).
     QSize   m_paneLastPushedDims[ViewportBridge::kViewportPaneCount];
+    /// user-review P2#2: panes the multi-view preset has already been
+    /// applied to.  Applying it exactly once per pane (not "whenever the
+    /// pane still reads preview") keeps an EXPLICIT Preview choice from
+    /// being re-clobbered on every layout change.  Reset with the widget
+    /// (recreated per scene load), mirroring the Mac @State twin.
+    bool    m_panePresetApplied[ViewportBridge::kViewportPaneCount] = { false };
 };
 
 #endif // VIEWPORTWIDGET_H

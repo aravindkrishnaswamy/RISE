@@ -243,6 +243,21 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (nullable NSString *)stampViewToNewCamera:(NSString *)proposedName
     NS_SWIFT_NAME(stampViewToNewCamera(_:));
 
+/// user-review P1-1: pane-indexed navigation twins.  The methods above alias
+/// pane 0 (the §7.4 C-ABI contract); the N-up nav overlay is drawn on the
+/// primary pane and calls THESE with its pane index, so it moves the pane it's
+/// actually over.  (paneEnterFreeFly / paneExitFreeFly already exist below.)
+- (BOOL)snapPaneView:(NSUInteger)pane toAxis:(NSInteger)axis negative:(BOOL)negative
+    NS_SWIFT_NAME(snapPaneView(_:toAxis:negative:));
+- (BOOL)isPaneFreeFlyActive:(NSUInteger)pane
+    NS_SWIFT_NAME(isPaneFreeFlyActive(_:));
+- (BOOL)paneSetHomeView:(NSUInteger)pane
+    NS_SWIFT_NAME(paneSetHomeView(_:));
+- (BOOL)paneGoToHomeView:(NSUInteger)pane
+    NS_SWIFT_NAME(paneGoToHomeView(_:));
+- (nullable NSString *)stampPaneViewToNewCamera:(NSUInteger)pane proposedName:(NSString *)proposedName
+    NS_SWIFT_NAME(stampPaneViewToNewCamera(_:proposedName:));
+
 #pragma mark - Named Views (B1)
 
 /// Capture the current view (free-fly pose if active, else the active camera)

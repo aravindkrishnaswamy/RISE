@@ -5130,44 +5130,33 @@ namespace RISE
 			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
 		}
 
-		// review-r2-B P2 (N-up honesty note): this reads CopyInteractiveFrame,
-		// i.e. the REGISTER frame store -- whichever pane the scheduler
-		// rendered most recently.  In a multi-pane layout the returned image
-		// is "the last-rendered pane" (scheduling-dependent), NOT necessarily
-		// pane 0 or the primary.  Callers surface this via the render-result
-		// message; a per-pane read lands with P3a slice 3's per-pane sinks.
-		bool AgentSession::DescribeViewportPanes( ViewportPanesInfo& out ) const
-		{
-			if( !mController ) return false;
-			out.layout     = static_cast<int>( mController->GetViewportLayout() );
-			out.primary    = mController->GetPrimaryPane();
-			out.sourcePane = mController->CurrentRenderPane();
-			const unsigned int visible = SceneEditController::PaneCountForLayout(
-				mController->GetViewportLayout() );
-			for( unsigned int i = 0; i < SceneEditController::kViewportPaneCount; ++i )
-			{
-				ViewportPaneInfo& pi = out.panes[i];
-				pi.visible = ( i < visible );
-				pi.mode    = mController->GetPaneRenderMode( i );
-				SceneEditController::PaneVantageKind kind;
-				String nv;
-				if( mController->GetPaneVantage( i, kind, nv ) )
-				{
-					pi.vantageKind = static_cast<int>( kind );
-					pi.namedView   = nv.c_str() ? nv.c_str() : "";
-				}
-			}
-			return true;
-		}
+		// user-review P1-3 (round 2): the standalone DescribeViewportPanes was
+		// REMOVED -- its one caller (read_viewport RPC) now takes the pane set
+		// ATOMICALLY with the frame via SceneEditController::
+		// SnapshotPaneSetForParkedRead (inside the parked window), so a separate
+		// non-atomic getter that reads the pane set back AFTER the render resumed
+		// would only invite drift.  The ViewportPaneInfo / ViewportPanesInfo wire
+		// structs live on -- ReadViewport fills them.
 
 		std::vector<unsigned char> AgentSession::ReadViewport(
 			unsigned int maxEdge, unsigned int& outWidth, unsigned int& outHeight,
-			bool& outAvailable, std::string& outReason ) const
+			bool& outAvailable, std::string& outReason,
+		                                                 unsigned int& outSourcePane,
+		                                                 ViewportPanesInfo& outPaneSet,
+		                                                 bool& outHavePaneSet ) const
 		{
 			outWidth  = 0;
 			outHeight = 0;
 			outAvailable = false;
 			outReason.clear();
+			// review P2: initialize WITH the other out-params, before any early
+			// return -- the no_controller path below returns without reaching
+			// the later assignment, leaving this indeterminate for any future
+			// caller that doesn't pre-init its local.
+			outSourcePane = 0;
+			// user-review P1-3: same all-paths init for the pane-set flag.
+			outHavePaneSet = false;
+			outPaneSet = ViewportPanesInfo();
 
 			// No live controller -> no viewport at all (headless session).
 			// This is a STRUCTURED unavailable, NOT an error.
@@ -5182,11 +5171,24 @@ namespace RISE
 			int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
 			int    vColorSpace = eColorSpace_sRGB;
 			bool copiedFrame = false;
+			SceneEditController::PaneSetSnapshot paneSnap;   // user-review P1-3
+			bool haveSnap = false;
 			const bool parked = mController->RunPreviewRenderParked( [&]() {
 				// Keep the frame copy and its live display-transform lookup in the
 				// same parked interval.  CopyInteractiveFrame itself is tile-safe,
 				// but ResolveBeautyDisplayTransform_ reads the Job's CST/camera.
-				copiedFrame = mController->CopyInteractiveFrame( pixels, w, h );
+				// user-review P1#3: the source pane is captured ATOMICALLY with
+				// the frame (same frame-store lock), and this whole copy runs
+				// PARKED, so it cannot drift from the returned pixels.
+				copiedFrame = mController->CopyInteractiveFrame( pixels, w, h, &outSourcePane );
+				// user-review P1-3: capture the WHOLE pane set HERE, inside the
+				// same parked+locked window, so layout/primary/visibility/mode/
+				// vantage describe the SAME frame as the pixels above (not a
+				// later state read back through the locking getters after the
+				// render resumed).  SnapshotPaneSetForParkedRead takes no lock --
+				// mMutex is already held across this closure.
+				mController->SnapshotPaneSetForParkedRead( paneSnap );
+				haveSnap = true;
 				if( copiedFrame ) {
 					ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform, vColorSpace );
 				}
@@ -5194,6 +5196,35 @@ namespace RISE
 			if( !parked ) {
 				outReason = "editor_transaction_in_progress";
 				return std::vector<unsigned char>();
+			}
+
+			// Test-only race injector: the parked closure above already captured
+			// pixels and pane metadata as one coherent snapshot.  Mutating the
+			// live controller here proves callers never rebuild the response from
+			// post-park getters, which could describe a later layout.
+			if( mReadViewportAfterParkHookForTest ) {
+				std::function<void()> hook = std::move( mReadViewportAfterParkHookForTest );
+				hook();
+			}
+
+			// Publish the parked pane snapshot even when there is not yet a
+			// frame.  Pane introspection is useful while the initial viewport pass
+			// is pending, and the old read_viewport path returned it independently
+			// of image availability.
+			if( haveSnap ) {
+				outHavePaneSet = true;
+				outPaneSet.layout     = paneSnap.layout;
+				outPaneSet.primary    = paneSnap.primary;
+				outPaneSet.sourcePane = outSourcePane;
+				for( unsigned int i = 0; i < SceneEditController::kViewportPaneCount; ++i ) {
+					outPaneSet.panes[i].visible = paneSnap.panes[i].visible;
+					const Implementation::ViewportRenderModeInfo* mi =
+						Implementation::FindViewportRenderModeInfo( paneSnap.panes[i].mode );
+					outPaneSet.panes[i].mode        = mi ? mi->name : "preview";
+					outPaneSet.panes[i].vantageKind = static_cast<int>( paneSnap.panes[i].vantageKind );
+					outPaneSet.panes[i].namedView   = paneSnap.panes[i].namedView.c_str()
+						? paneSnap.panes[i].namedView.c_str() : "";
+				}
 			}
 			if( !copiedFrame ) {
 				outReason = "no_frame_yet";

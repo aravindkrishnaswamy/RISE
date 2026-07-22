@@ -271,6 +271,22 @@ struct ContentView: View {
                     .task(id: ObjectIdentifier(vb)) {
                         viewportLayout = .single
                     }
+                    // user-review P2#5 (round 2): region refinement is a
+                    // single-viewport affordance (N-up panes have no region-
+                    // drag gesture).  Leaving Single with a region still ARMED
+                    // or ACTIVE would strand it -- the chip is disabled in N-up,
+                    // so the user couldn't clear it, and there's no RegionOverlay
+                    // in the N-up panes to even show it.  Clear it on the way out,
+                    // mirroring the chip's own clear path.
+                    .onChange(of: viewportLayout) { _, newLayout in
+                        if newLayout != .single {
+                            if viewModel.activeRegion != nil {
+                                vb.clearInteractiveRegion()
+                                viewModel.activeRegion = nil
+                            }
+                            regionArmed = false
+                        }
+                    }
 
                 if viewportLayout == .single {
                     // Single layout: EXACTLY the pre-N-up code path,
@@ -324,7 +340,11 @@ struct ContentView: View {
                         layout: viewportLayout,
                         interactionEnabled: interacting,
                         isProductionRendering: (viewModel.renderState == .rendering),
-                        selectedTool: selectedTool
+                        selectedTool: selectedTool,
+                        // user-review P2#4: a pane pick drives the same
+                        // shared Inspector/Outliner refresh the single
+                        // viewport does.
+                        onSelectionMayHaveChanged: { propertyRefresh += 1 }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -495,7 +515,12 @@ struct ContentView: View {
         // `interactionEnabled` guard while a render is in flight),
         // and would otherwise leave a "REGION · armed" chip stuck
         // with no drag ever able to consume it.
-        let usable = honored && interacting
+        // user-review P2#5: N-up panes have no region-drag gesture, so
+        // arming a region there would strand the chip at "· armed" with no
+        // drag able to consume it.  Region refinement is a single-viewport
+        // affordance -- gate the control on the Single layout.
+        let singleViewport = ( viewportLayout == .single )
+        let usable = honored && interacting && singleViewport
         let active = viewModel.activeRegion != nil
         let text = active ? "REGION ×" : (regionArmed ? "REGION · armed" : "REGION")
         let color: Color = active ? Theme.warn : (regionArmed ? Theme.accent : Theme.textFaint)
@@ -522,9 +547,11 @@ struct ContentView: View {
             }
             .help(!honored
                   ? "The active integrator ignores regions"
-                  : (interacting
-                     ? "Toggle region refinement — drag in the viewport to draw a box"
-                     : "Unavailable while a render is in flight"))
+                  : (!singleViewport
+                     ? "Region refinement is available in the single viewport"
+                     : (interacting
+                        ? "Toggle region refinement — drag in the viewport to draw a box"
+                        : "Unavailable while a render is in flight")))
     }
 
     /// P1 render modes (docs/gui/RENDER_MODES.md §5): the viewport's

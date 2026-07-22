@@ -206,6 +206,12 @@ struct MultiPaneViewportView: View {
     /// has no pane index — one tool selection drives every pane, same
     /// as the cursor in the single-viewport case).
     let selectedTool: ViewportTool
+    /// user-review P2#4: a pane pick can change the selection, but N-up
+    /// never drove the shared Inspector/Outliner refresh the single
+    /// viewport does.  ContentView wires this to `propertyRefresh += 1`
+    /// (the same counter OutlinerView + the inspector observe), so a pick
+    /// in any pane re-snapshots both panels -- matching ViewportView.
+    var onSelectionMayHaveChanged: () -> Void = {}
 
     @State private var primaryPane: Int = 0
     @State private var gizmoRefreshTrigger: Int = 0
@@ -220,6 +226,10 @@ struct MultiPaneViewportView: View {
     /// round trip entirely is cheap and keeps this view's intent
     /// obvious).
     @State private var lastSurfacePixelSize: [Int: CGSize] = [:]
+    // user-review P2#2: the "already presetted" guard lives on the view MODEL
+    // (viewModel.panePresetApplied), NOT here as @State -- @State resets when
+    // this view is torn down on a Single detour (Quad→Single→Quad), which
+    // re-clobbered an explicit "preview" choice.  Bridge/scene-scoped there.
 
     var body: some View {
         GeometryReader { geo in
@@ -265,6 +275,13 @@ struct MultiPaneViewportView: View {
             primaryPane = Int(bridge.primaryPane)
             applyMultiViewModePreset()
         }
+        .onChange(of: isProductionRendering) { _, rendering in
+            // user-review P2-2: a preset that was refused because a render owned
+            // the scene left its pane unmarked; retry now that the render is
+            // done so those panes finally get the spread (self-healing, no user
+            // action needed).
+            if !rendering { applyMultiViewModePreset() }
+        }
     }
 
     /// Multi-view mode PRESET (user request 2026-07-21).  Entering a
@@ -286,11 +303,26 @@ struct MultiPaneViewportView: View {
     private func applyMultiViewModePreset() {
         var changed = false
         for pane in layout.paneIndices where pane != 0 && pane < Self.presetModeBySlot.count {
-            let current = bridge.paneRenderMode(UInt(pane))
-            if current == "preview" {
-                if bridge.setPaneRenderMode(UInt(pane), name: Self.presetModeBySlot[pane]) {
-                    changed = true
-                }
+            // user-review P2#2: apply the slot preset EXACTLY ONCE per pane
+            // -- the first time it becomes visible.  After that the pane's
+            // mode is the user's to own (including an explicit "preview",
+            // which the old current=="preview" gate wrongly re-clobbered on
+            // every layout change).
+            guard !viewModel.panePresetApplied.contains(pane) else { continue }
+            // A pane the core already persisted to a non-Preview mode is the
+            // user's -- mark it applied and leave it alone.
+            if bridge.paneRenderMode(UInt(pane)) != "preview" {
+                viewModel.panePresetApplied.insert(pane)
+                continue
+            }
+            // user-review P2-2: mark applied ONLY when the setter SUCCEEDS.
+            // setPaneRenderMode is refused while a production/agent render owns
+            // the scene; marking before checking left the pane stuck at Preview
+            // forever (no retry).  On refusal, stay unmarked so the render-end
+            // retry below (or the next layout change) re-applies.
+            if bridge.setPaneRenderMode(UInt(pane), name: Self.presetModeBySlot[pane]) {
+                viewModel.panePresetApplied.insert(pane)
+                changed = true
             }
         }
         if changed { chromeRefresh &+= 1 }
@@ -320,6 +352,11 @@ struct MultiPaneViewportView: View {
                     let newPrimary = Int(bridge.primaryPane)
                     if newPrimary != primaryPane { primaryPane = newPrimary }
                     gizmoRefreshTrigger &+= 1
+                    // user-review P2#4: a Select-tool Down may have just
+                    // picked an object; motion Downs don't change selection
+                    // but the panel refresh is cheap, so always notify
+                    // (mirrors ViewportView's own pointer-down contract).
+                    onSelectionMayHaveChanged()
                     return accepted
                 },
                 onPointerMove: { p in
@@ -331,6 +368,7 @@ struct MultiPaneViewportView: View {
                     guard interactionEnabled else { return }
                     bridge.onPanePointerUp(UInt(pane), x: Double(p.x), y: Double(p.y))
                     gizmoRefreshTrigger &+= 1
+                    onSelectionMayHaveChanged()   // user-review P2#4
                 },
                 onSurfacePixelSizeChanged: { pixelSize in
                     guard pixelSize.width > 0, pixelSize.height > 0 else { return }
@@ -389,10 +427,14 @@ struct MultiPaneViewportView: View {
                 refreshToken: chromeRefresh,
                 onChanged: { chromeRefresh &+= 1 }
             )
+            .disabled(!interactionEnabled)
         }
         .overlay(alignment: .topTrailing) {
-            if isPrimary && !isProductionRendering {
-                ViewportNavOverlay(bridge: bridge, refreshTrigger: gizmoRefreshTrigger,
+            if isPrimary && interactionEnabled && !isProductionRendering {
+                // user-review P1-1: this overlay is on the PRIMARY pane cell;
+                // target that pane so nav actions move it, not pane 0.
+                ViewportNavOverlay(bridge: bridge, pane: UInt(pane),
+                                   refreshTrigger: gizmoRefreshTrigger,
                                    sceneEditable: interactionEnabled)
                     .padding(8)
             }

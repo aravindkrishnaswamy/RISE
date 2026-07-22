@@ -231,6 +231,15 @@ final class RenderViewModel: ObservableObject {
     /// every scene-load site below and reset to empty at every one of
     /// `renderedImage`'s own reset sites, so the two never drift.
     @Published var panePreviewImages: [Int: NSImage] = [:]
+    /// user-review P2#2 (round 2): panes the N-up mode PRESET has been
+    /// applied to.  Bridge/scene-scoped (reset ONLY on a fresh scene load,
+    /// below) rather than @State on MultiPaneViewportView -- a @State guard
+    /// resets when the view is torn down on a Single detour (Quad→Single→Quad),
+    /// which re-clobbered an explicit "preview" choice the user made in the
+    /// earlier N-up session.  Living here, it survives layout toggles within a
+    /// scene and only clears when a genuinely new scene loads.  Not @Published:
+    /// nothing renders from it, so it must not trigger view updates.
+    var panePresetApplied: Set<Int> = []
     @Published var loadedFilePath: String? = nil
     /// Phase 6.5: true iff there's at least one in-memory edit since
     /// the last load / save that the SaveEngine would actually write
@@ -1188,8 +1197,15 @@ final class RenderViewModel: ObservableObject {
                     self.sceneTime = 0
                     // Wire the live-preview image callback.  The block
                     // is invoked on the main thread by the bridge.
-                    vb?.setImageBlock { [weak self] (image: NSImage) in
-                        guard let self = self else { return }
+                    vb?.setImageBlock { [weak self, weak vb] (image: NSImage) in
+                        // user-review P2#6: a frame already dispatched to the
+                        // main queue by a PRIOR bridge (before -shutdown) still
+                        // fires here -- and `self` (the view model) outlives the
+                        // bridge swap, so `[weak self]` alone does not stop a
+                        // stale frame from overwriting the newly-loaded scene.
+                        // Drop any frame not from the CURRENT bridge.
+                        guard let self = self, let vb = vb,
+                              self.viewportBridge === vb else { return }
                         self.renderedImage = image
                     }
                     // N-up (RENDER_MODES.md §7): panes 1-3's image
@@ -1198,8 +1214,12 @@ final class RenderViewModel: ObservableObject {
                     // hidden pane never schedules), so these callbacks
                     // simply sit idle while `viewportLayout == .single`.
                     for pane in 1...3 {
-                        vb?.setPaneImageBlock({ [weak self] (image: NSImage) in
-                            guard let self = self else { return }
+                        vb?.setPaneImageBlock({ [weak self, weak vb] (image: NSImage) in
+                            // user-review P2#6: same stale-bridge guard as the
+                            // pane-0 image block above -- a late pane frame from
+                            // a shut-down bridge must not clobber the new scene.
+                            guard let self = self, let vb = vb,
+                                  self.viewportBridge === vb else { return }
                             self.panePreviewImages[pane] = image
                         }, forPane: UInt(pane))
                     }
@@ -1211,6 +1231,11 @@ final class RenderViewModel: ObservableObject {
                     // Reset to false on fresh scene load — even if a
                     // previous scene was dirty, this scene starts clean.
                     self.sceneEditsDirty = false
+                    // user-review P2#2 (round 2): a genuinely new scene starts
+                    // with no preset applied, so its panes get the spread on
+                    // first reveal.  This is the ONLY reset point -- layout
+                    // toggles within a scene must NOT clear it.
+                    self.panePresetApplied = []
                     vb?.setDirtyChangedBlock { [weak self] (hasUnsaved: Bool) in
                         guard let self = self else { return }
                         self.sceneEditsDirty = hasUnsaved

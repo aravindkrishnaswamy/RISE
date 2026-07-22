@@ -793,6 +793,78 @@ contradicts it.
    looking at; they never control the pane set (their own multi-view is
    sequential `render{mode:, view:}`, §8).
 
+### 7.9 User-review remediation (2026-07-21)
+
+An external review of the shipped P3 flagged 6 P1 + 7 P2 correctness issues.
+All are fixed; this subsection is the corrected record (it **supersedes** the
+earlier "camera-override read stays a pane-0 alias" / "gizmo scoped to pane 0"
+statements in §7.1's audit table and §7.5).
+
+- **P1#1 — per-pane sink isolation.**  `FreeRasterizerOutputs()` now runs
+  unconditionally before a pass, and the legacy preview-sink fallback is
+  restricted to pane 0.  A secondary pane without its own sink no longer
+  publishes into pane 0 (or the previously-attached pane).
+- **P1#2 — pick/gizmo use the pane's camera.**  A new
+  `EffectiveViewportCamera_(scene)` (the override register when free-fly is
+  active, else the scene camera) replaces the raw `scene->GetCamera()` at
+  `PickAt` + the four gizmo-projection sites.  Correct for every pane during a
+  gesture (a gesture makes that pane current).  *(Round-2 concurrency fix: the
+  non-gesture readers `RefreshGizmoHandles`/`RefreshNavGizmo` take `mMutex`
+  (+`mRenderOwnsScene` guard) so their override-register read can't race the
+  render thread's `SwitchToPaneLocked_`; the gesture-pinned readers stay
+  lock-free — the render can't rotate while pinned.  See the
+  `EffectiveViewportCamera_` invariant comment.)*
+- **P1#3 — `read_viewport` atomicity.**  The frame's source pane is captured
+  **inside** the parked copy (`CopyInteractiveFrame`'s new `outSourcePane`,
+  read under `mInteractiveFrameStoreMutex`) and the RPC overrides
+  `panes.sourcePane` with it — image + `sourcePane` now describe the same frame.
+- **P1#4 (Windows) — scale-invariant pointer mapping.**  `paneSurfacePoint`
+  maps through the stable authored film dims (`cameraSurfaceDimensions()`), not
+  the pane's last-delivered image size, so an adaptive preview-scale change
+  mid-drag no longer jumps the mapped coordinate.
+- **P1#5 (macOS) — non-blocking refinement poll.**  `GetPaneRefinementStatus`
+  answers a coarse "Rendering" without `mMutex` while a render owns the scene,
+  so the 0.5 s status poll can't wedge the UI (including Cancel).
+- **P1#6 (macOS) — nav overlay targets the primary pane.**  The free-fly / nav
+  funnel (`SetViewportPose`, `ExitFreeFly`, `IsFreeFlyActive`,
+  `GetViewportPose`, `EnterFreeFlyFromActiveCamera`) takes an explicit target
+  pane: the default `kViewportNavPrimary` sentinel resolves (under the lock) to
+  `mPrimaryPane` for the nav overlay, while the **pane-0 alias forwarders**
+  (`Set/GetPaneVantage*(0)`, `PaneEnter/ExitFreeFly(0)`) pass an EXPLICIT `0` so
+  they keep operating on pane 0 regardless of which pane is primary.  In single
+  view `mPrimaryPane==0` so the default path is byte-identical.  A secondary
+  pane's free-fly is persisted into its `mPaneConfigs` vantage; `StampView`
+  reads the primary pane's pose.  Scheduler test **(k)** mutation-verifies the
+  alias isn't corrupted by a secondary primary.  *(Round-2 fix of a regression
+  the first cut introduced — repointing the funnel at `mPrimaryPane` without
+  the explicit-0 split had made the pane-0 chrome forwarders hit the primary.)*
+- **P2#1 — layout shrink relocates a hidden active pane.**  `SetViewportLayout`
+  cancels/parks an in-flight pass on a now-hidden pane, drops a gesture pinned
+  to it, and switches the scheduler to the visible primary.  Scheduler test
+  scenario (j).
+- **P2#2 — preset applied once per pane.**  Both shells track which panes the
+  preset touched instead of inferring "untouched" from a pane still reading
+  `preview`, so an EXPLICIT Preview choice survives layout changes.
+- **P2#3 — primary-pane gizmo on both shells.**  Windows now paints the object
+  gizmo on whichever pane is primary (was pane-0-only), matching macOS.  Both
+  are exact during an object-transform gesture; the static idle-projection
+  through a sibling pane's camera between gestures is a documented bound (a
+  race-free primary-pane camera snapshot — avoiding the sibling-slot UAF the
+  render thread's `release()` would create — is the follow-up).
+- **P2#4 (macOS) — Inspector/Outliner refresh on a pane pick** via the new
+  `onSelectionMayHaveChanged` callback (drives the shared `propertyRefresh`).
+- **P2#5 — region tool gated to Single.**  N-up panes have no region-drag
+  gesture, so the chip is disabled (with an explanatory tooltip) outside the
+  single viewport rather than stranding a "· armed" state.
+- **P2#6 (macOS) — stale-bridge identity guard.**  The pane-image callbacks
+  drop any frame whose owning bridge is no longer `viewportBridge`, so a frame
+  already dispatched by a shut-down bridge can't overwrite a freshly-loaded
+  scene.
+- **P2#7 (Windows) — DPI cross-display refresh.**  MainWindow forwards
+  `ScreenChangeInternal` to `ViewportWidget::refreshForDpiChange()`, which
+  re-pushes the pane device-pixel dims (a fixed-size window firing no
+  resizeEvent otherwise left them stale for the new screen).
+
 ## 8. Agent surface + skills
 
 - `render{mode:}` widens from `beauty|objectmap` to the full agent-visible

@@ -588,6 +588,31 @@ bool ViewportBridge::hasHomeView() const
     return RISE_API_SceneEditController_HasHomeView(m_controller);
 }
 
+bool ViewportBridge::snapPaneViewToAxis(unsigned int pane, int axis, bool negative)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SnapPaneViewToAxis(
+        m_controller, pane, axis, negative ? 1 : 0);
+}
+
+bool ViewportBridge::isPaneFreeFlyActive(unsigned int pane) const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_IsPaneFreeFlyActive(m_controller, pane);
+}
+
+bool ViewportBridge::paneSetHomeView(unsigned int pane)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_PaneSetHomeView(m_controller, pane);
+}
+
+bool ViewportBridge::paneGoToHomeView(unsigned int pane)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_PaneGoToHomeView(m_controller, pane);
+}
+
 QString ViewportBridge::stampViewToNewCamera(const QString& proposedName)
 {
     if (!m_controller) return QString();
@@ -595,6 +620,18 @@ QString ViewportBridge::stampViewToNewCamera(const QString& proposedName)
     const QByteArray prop = proposedName.toUtf8();
     if (!RISE_API_SceneEditController_StampViewToNewCamera(
             m_controller, prop.constData(), name, sizeof(name))) {
+        return QString();
+    }
+    return QString::fromUtf8(name);
+}
+
+QString ViewportBridge::stampPaneViewToNewCamera(unsigned int pane, const QString& proposedName)
+{
+    if (!m_controller) return QString();
+    char name[256] = { 0 };
+    const QByteArray prop = proposedName.toUtf8();
+    if (!RISE_API_SceneEditController_PaneStampViewToNewCamera(
+            m_controller, pane, prop.constData(), name, sizeof(name))) {
         return QString();
     }
     return QString::fromUtf8(name);

@@ -1682,9 +1682,15 @@ namespace RISE
 		//! yet (no render has run) or it has zero dims.  Callable from any
 		//! thread (e.g. the agent RPC thread) concurrently with the render
 		//! thread.
+		//! `outSourcePane` (optional) receives, ATOMICALLY with the frame,
+		//! which pane's pixels the copy holds -- captured under the same
+		//! frame-store leaf lock as the store snapshot (user-review P1#3),
+		//! so the returned image and its pane label always agree even if
+		//! the scheduler advances immediately after.
 		bool CopyInteractiveFrame( std::vector<RISEColor>& outPixels,
 		                           unsigned int& outWidth,
-		                           unsigned int& outHeight ) const;
+		                           unsigned int& outHeight,
+		                           unsigned int* outSourcePane = nullptr ) const;
 
 		// Test hooks (Phase 2) ---------------------------------------
 		// These let tests bypass picking and observe internal counters.
@@ -2061,7 +2067,8 @@ namespace RISE
 		//! Non-destructive navigation (fly/snap/Home) stays pose-only; THIS is
 		//! the deliberate bridge to a durable camera.
 		bool StampViewToNewCamera( const String& proposedName,
-		                           char* outName, unsigned int outLen );
+		                           char* outName, unsigned int outLen,
+		                           unsigned int pane = kViewportNavPrimary );
 
 		//! -------- Free-fly viewport pose (Tier 2 / Direction B §5.3-5.5) --------
 		//!
@@ -2078,30 +2085,41 @@ namespace RISE
 		//! but non-destructive).  Stamp/promote (a later slice) is the only action
 		//! that writes a scene camera.  See docs/gui/CAMERAS_AND_VIEWS.md.
 
+		//! user-review P1#6 (round 2): the free-fly funnel takes an explicit
+		//! target pane so the two callers with DIFFERENT intents stay separated:
+		//! the nav overlay (drawn on the primary pane) targets the PRIMARY pane
+		//! -- signalled by the default `kViewportNavPrimary` sentinel, resolved
+		//! to `mPrimaryPane` under the lock -- while the pane-0 alias forwarders
+		//! (PaneEnterFreeFly(0), Set/GetPaneVantage*(0)) pass an EXPLICIT 0 so
+		//! they keep operating on pane 0 regardless of which pane is primary.
+		//! In single-viewport mode mPrimaryPane==0, so the default path is
+		//! byte-for-byte the classic behavior.
+		static constexpr unsigned int kViewportNavPrimary = 0xFFFFFFFFu;
+
 		//! Enter free-fly: capture the active camera into the transient pose and
 		//! realize the override.  Returns false when there is no active camera or
 		//! its kind isn't realizable (same clonability gate as CloneActiveCamera).
 		//! Cancel-and-parks (swaps the render-thread-read override under the lock).
-		bool EnterFreeFlyFromActiveCamera();
+		bool EnterFreeFlyFromActiveCamera( unsigned int pane = kViewportNavPrimary );
 
 		//! Set the transient pose explicitly (e.g. a named-view restore or an
 		//! axis snap computes the target pose).  Realizes a fresh override camera
 		//! from `pose`.  Returns false when the pose kind isn't realizable / no
 		//! film.  Cancel-and-parks.
-		bool SetViewportPose( const CameraSnapshot& pose );
+		bool SetViewportPose( const CameraSnapshot& pose, unsigned int pane = kViewportNavPrimary );
 
 		//! Exit free-fly: drop the transient pose + release the override so the
 		//! interactive pass renders through Scene::pActiveCamera again.  No-op
 		//! (returns false) when free-fly isn't active.  Cancel-and-parks.
-		bool ExitFreeFly();
+		bool ExitFreeFly( unsigned int pane = kViewportNavPrimary );
 
 		//! Whether a transient viewport pose is currently overriding the
 		//! interactive render camera.
-		bool IsFreeFlyActive() const;
+		bool IsFreeFlyActive( unsigned int pane = kViewportNavPrimary ) const;
 
 		//! Copy the current transient pose into `out`.  Returns false when
 		//! free-fly isn't active (out untouched).
-		bool GetViewportPose( CameraSnapshot& out ) const;
+		bool GetViewportPose( CameraSnapshot& out, unsigned int pane = kViewportNavPrimary ) const;
 
 		//! -------- Axis snaps + Home (Tier 2 / Direction B §4.2) --------
 		//!
@@ -2117,16 +2135,16 @@ namespace RISE
 		//! a sensible up (world-Y for X/Z axes; ∓Z for the Y/top-bottom axis so up
 		//! isn't parallel to the view).  Returns false on a bad axis, no seedable
 		//! camera, or a realization failure.
-		bool SnapViewToAxis( int axis, bool negative );
+		bool SnapViewToAxis( int axis, bool negative, unsigned int pane = kViewportNavPrimary );
 
 		//! Capture the CURRENT view (the transient pose if in free-fly, else the
 		//! active camera) into the single reserved "home" slot.  Returns false when
 		//! there is no camera to capture.
-		bool SetHomeView();
+		bool SetHomeView( unsigned int pane = kViewportNavPrimary );
 
 		//! Restore the home slot into the transient pose (a degenerate named-view
 		//! restore, §4.2).  Returns false when no home has been set.
-		bool GoToHomeView();
+		bool GoToHomeView( unsigned int pane = kViewportNavPrimary );
 
 		//! Whether a home view has been captured this session.
 		bool HasHomeView() const;
@@ -2356,6 +2374,30 @@ namespace RISE
 
 		static constexpr unsigned int kViewportPaneCount = 4;
 
+		//! user-review P1-3: an atomic snapshot of the whole pane set, captured
+		//! WITH the interactive frame (not read back through the individual
+		//! locking getters after rendering resumed, which could describe a later
+		//! state than the returned PNG).  Filled by SnapshotPaneSetForParkedRead.
+		struct PaneSetSnapshot
+		{
+			int          layout  = 0;
+			unsigned int primary = 0;
+			struct Pane
+			{
+				bool                               visible = false;
+				Implementation::ViewportRenderMode mode = {};   // value-init == 0 == Preview (enum not fully defined here)
+				PaneVantageKind                    vantageKind = PaneVantageKind::SceneCamera;
+				String                             namedView;
+			} panes[kViewportPaneCount];
+		};
+
+		//! Capture the whole pane set into @a out.  REQUIRES mMutex to ALREADY
+		//! be held -- call ONLY from inside a RunPreviewRenderParked closure (the
+		//! same contract CopyInteractiveFrame follows), so the snapshot is atomic
+		//! with the frame copied there and the render is parked.  Re-taking
+		//! mMutex here would deadlock (it is a plain non-recursive std::mutex).
+		void SnapshotPaneSetForParkedRead( PaneSetSnapshot& out ) const;
+
 		//! Panes a layout makes visible: Single=1, TwoH=2, OnePlusTwo=3, Quad=4.
 		static unsigned int PaneCountForLayout( ViewportLayout layout );
 
@@ -2389,9 +2431,11 @@ namespace RISE
 		bool SetPaneSurfaceDims( unsigned int pane, unsigned int w, unsigned int h );
 
 		//! P3a slice 3: per-pane preview sink.  The render pass attaches
-		//! the CURRENT pane's sink for its quantum (falling back to the
-		//! legacy single sink -- which remains pane 0's default -- when a
-		//! pane has none).  Pass null to clear.  The controller addrefs.
+		//! CURRENT pane's sink for its quantum.  Pane 0 falls back to the
+		//! legacy single sink when it has no override; panes 1--3 with no
+		//! sink publish nowhere.  Pass null to clear.  The controller addrefs.
+		//! A subsequent legacy SetPreviewSink call replaces a retained pane-0
+		//! override and restores the legacy sink as pane 0's source.
 		bool SetPaneSink( unsigned int pane, IRasterizerOutput* pSink );
 
 		//! Vantage setters.  Pane 0 forwards to the existing free-fly /
@@ -2922,6 +2966,11 @@ namespace RISE
 		// only when scale changes shrink/grow the active dims.
 		// `Reference`-counted; we own one addref.
 		mutable RISE::Implementation::FrameStore* mInteractiveFrameStore;
+		//! user-review P1#3: which pane's pixels mInteractiveFrameStore
+		//! currently holds.  Written under mInteractiveFrameStoreMutex
+		//! wherever the store register is (re)assigned, so a reader under
+		//! that same lock gets a consistent (frame, pane) pair.
+		mutable unsigned int              mInteractiveFrameStorePane = 0;
 
 		// Toolkit slice 1 (read_viewport): a LEAF mutex guarding ONLY the
 		// `mInteractiveFrameStore` POINTER swap -- nothing else.  The store's
@@ -3330,6 +3379,10 @@ namespace RISE
 		// render thread writes them and the UI thread reads them.
 		std::atomic<unsigned int>   mFullResW;
 		std::atomic<unsigned int>   mFullResH;
+		//! Guards CameraCommon frame/matrix reads against DoOneRenderPass's
+		//! temporary ResizeFilm swap.  UI overlays take this with try_lock so
+		//! they defer rather than block during an interactive pass.
+		std::mutex                  mCameraFrameMutex;
 
 		std::atomic<unsigned int>   mPreviewScale;
 		// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): true while a
@@ -3488,6 +3541,12 @@ namespace RISE
 		PaneConfig                  mPaneConfigs[kViewportPaneCount];  // [0] unused (alias)
 		ViewportLayout              mViewportLayout = ViewportLayout::Single;
 		unsigned int                mPrimaryPane    = 0;   // always visible in layout
+		//! Lock-free UI-read snapshots.  Agent/production renders deliberately
+		//! hold mMutex for their whole duration, while platform paint/timer paths
+		//! still need the last coherent layout and primary without blocking.
+		//! Writers update both under mMutex before publishing the layout snapshot.
+		std::atomic<int>            mViewportLayoutSnapshot { 0 };
+		std::atomic<unsigned int>   mPrimaryPaneSnapshot { 0 };
 
 		// -------- P3a slice 2: context-switch scheduler state --------
 		//
@@ -3597,6 +3656,36 @@ namespace RISE
 		//! to `name` for reconcile.  Takes mMutex; caller must NOT hold
 		//! mNamedViewsMutex (never nested, either order).
 		void         InvalidatePanesBoundToNamedView_( const String& name );
+
+		//! user-review P1#2: the camera picking + gizmo projection must use
+		//! -- the pane the user is INTERACTING with (its free-fly / named-
+		//! view override when active), NOT always the scene camera.  During
+		//! a gesture the register (mViewportOverrideCamera) reflects the
+		//! gesture pane (OnPanePointerDown force-switches to it), so this is
+		//! the correct camera for the click that is happening.  Falls back
+		//! to the scene camera when no override is active (pane 0 / scene-
+		//! camera panes).  RefreshNavGizmo already used this exact idiom
+		//! inline; this centralizes it so pick + every gizmo site agree.
+		const ICamera* EffectiveViewportCamera_( const IScene* scene ) const;
+
+		//! user-review P1-5 / P2-1: the effective camera of a SPECIFIC pane
+		//! (its realized free-fly / named-view override, else the scene camera),
+		//! reading the SLOT for a non-current pane.  REQUIRES mMutex held: the
+		//! render thread's SwitchToPaneLocked_ (which swaps + ->release()s these)
+		//! also runs under mMutex, so the returned pointer stays valid for the
+		//! caller's use while the lock is held.  Used by the gizmo + nav-ball
+		//! refreshers to project through the PRIMARY pane (what the overlay is
+		//! drawn on), not whatever pane the scheduler last rotated in.
+		const ICamera* PaneEffectiveCameraLocked_( unsigned int pane, const IScene* scene ) const;
+
+		//! user-review P2-A: the gizmo-handle computation, assuming mMutex AND
+		//! mCameraFrameMutex are ALREADY held.  The public RefreshGizmoHandles()
+		//! wraps this in TRY-locks (best-effort, never blocks the paint thread);
+		//! the gesture path (OnPointerDown) instead PARKS the render and holds
+		//! both locks so the grab's hit-test is reliable even mid-refinement --
+		//! the try-lock path would otherwise silently drop the handles (and the
+		//! click) whenever a preview pass held mCameraFrameMutex.
+		void RefreshGizmoHandlesLocked_();
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
 		// `mProperties` is the PRIMARY-selection snapshot (kept for

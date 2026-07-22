@@ -284,12 +284,20 @@ public:
     bool goToHomeView();
     bool hasHomeView() const;
 
+    // N-up navigation targets the primary pane, rather than the legacy
+    // pane-0 aliases above.  The nav overlay is the only caller.
+    bool snapPaneViewToAxis(unsigned int pane, int axis, bool negative);
+    bool isPaneFreeFlyActive(unsigned int pane) const;
+    bool paneSetHomeView(unsigned int pane);
+    bool paneGoToHomeView(unsigned int pane);
+
     /// B3 fly-then-stamp: promote the current free-fly view into a NEW named
     /// scene camera (named from a CST-safe canonicalization of `proposedName`,
     /// then dedup-suffixed; the new camera becomes active). Returns the
     /// created camera's name, or an empty
     /// QString when there's no free-fly pose to stamp / the edit was refused.
     QString stampViewToNewCamera(const QString& proposedName);
+    QString stampPaneViewToNewCamera(unsigned int pane, const QString& proposedName);
 
     // -------- Named Views (Tier 2 §3) --------
     /// Capture the current view (free-fly pose if active, else the active

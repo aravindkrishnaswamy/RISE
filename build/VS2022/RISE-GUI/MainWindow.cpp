@@ -866,6 +866,10 @@ void MainWindow::updateMenuActionStates()
     // IDENTICAL term so the two can never drift (the toolbar's broader
     // setEnabled(interacting) alone misses the chat-render clause).
     if (m_viewportToolbar) m_viewportToolbar->setUndoRedoEnabled(bridgeInteractingEnabled);
+    // Layout selection also reaches the controller (and can otherwise block
+    // on the whole-duration mutex held by an agent render).  Keep all viewport
+    // toolbar controls on the same chat-inclusive ownership gate.
+    if (m_viewportToolbar) m_viewportToolbar->setEnabled(bridgeInteractingEnabled);
 
     // "Reveal in scene file" (item 3): the properties panel's ⌗ chip
     // and the outliner's context-menu item both call
@@ -979,6 +983,10 @@ bool MainWindow::event(QEvent* ev)
     // probe is cheap (factory enumeration, no swap chain).
     if (ev->type() == QEvent::ScreenChangeInternal) {
         onHDRAvailabilityChanged(HDRRenderWidget::probeAnyAdapterHDRAvailable());
+        // user-review P2#7: the same monitor move changes devicePixelRatio;
+        // a fixed-size window fires no resizeEvent, so the N-up panes must be
+        // told to re-push their device-pixel render dims for the new screen.
+        if (m_viewportWidget) m_viewportWidget->refreshForDpiChange();
     }
     return QMainWindow::event(ev);
 }

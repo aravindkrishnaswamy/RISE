@@ -32,6 +32,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -1332,6 +1333,27 @@ namespace RISE
 			                                      unsigned int& outWidth,
 			                                      unsigned int& outHeight ) const;
 
+			//! P3c (RENDER_MODES.md §7.8 ratified decision 3): READ-ONLY
+			//! introspection of the N-up pane set, so an agent can reason
+			//! about what the user is looking at.  `sourcePane` is the pane
+			//! whose content ReadViewport currently returns (the r2-B
+			//! honesty gap, closed structurally).  NO agent control of the
+			//! pane set exists by decision.
+			struct ViewportPaneInfo
+			{
+				bool        visible = false;
+				std::string mode;         //!< registry wire name
+				int         vantageKind = 0;   //!< 0 SceneCamera / 1 FreeFly / 2 NamedView
+				std::string namedView;    //!< set when vantageKind==2
+			};
+			struct ViewportPanesInfo
+			{
+				int              layout = 0;      //!< 0 Single/1 TwoH/2 OnePlusTwo/3 Quad
+				unsigned int     primary = 0;
+				unsigned int     sourcePane = 0;  //!< whose pixels ReadViewport returns
+				ViewportPaneInfo panes[4];
+			};
+
 			//! Toolkit slice 1 (read_viewport): fetch the CURRENT live
 			//! interactive GUI viewport's pixels as PNG bytes -- the exact
 			//! frame the user is looking at right now.  This is DISTINCT from
@@ -1368,30 +1390,20 @@ namespace RISE
 			                                         unsigned int& outWidth,
 			                                         unsigned int& outHeight,
 			                                         bool& outAvailable,
-			                                         std::string& outReason ) const;
+			                                         std::string& outReason,
+			                                         unsigned int& outSourcePane,
+			                                         // user-review P1-3: the WHOLE pane set,
+			                                         // snapshotted ATOMICALLY with the frame
+			                                         // inside the parked window (not read back
+			                                         // through the locking getters after the
+			                                         // render resumed).  outHavePaneSet is false
+			                                         // only when the parked read never ran.
+			                                         ViewportPanesInfo& outPaneSet,
+			                                         bool& outHavePaneSet ) const;
 
-			//! P3c (RENDER_MODES.md §7.8 ratified decision 3): READ-ONLY
-			//! introspection of the N-up pane set, so an agent can reason
-			//! about what the user is looking at.  `sourcePane` is the pane
-			//! whose content ReadViewport currently returns (the r2-B
-			//! honesty gap, closed structurally).  NO agent control of the
-			//! pane set exists by decision.
-			struct ViewportPaneInfo
-			{
-				bool        visible = false;
-				std::string mode;         //!< registry wire name
-				int         vantageKind = 0;   //!< 0 SceneCamera / 1 FreeFly / 2 NamedView
-				std::string namedView;    //!< set when vantageKind==2
-			};
-			struct ViewportPanesInfo
-			{
-				int              layout = 0;      //!< 0 Single/1 TwoH/2 OnePlusTwo/3 Quad
-				unsigned int     primary = 0;
-				unsigned int     sourcePane = 0;  //!< whose pixels ReadViewport returns
-				ViewportPaneInfo panes[4];
-			};
-			//! False only when no controller is attached.
-			bool DescribeViewportPanes( ViewportPanesInfo& out ) const;
+			// (user-review P1-3: the standalone DescribeViewportPanes getter was
+			//  removed -- read_viewport now snapshots the pane set atomically with
+			//  the frame; see ReadViewport's outPaneSet + SnapshotPaneSetForParkedRead.)
 
 			//! Toolkit slice 3b: the structured result of query_object_at.
 			//! `hit`/`name`/`kind`/`pixelX`/`pixelY`/`width`/`height`/`message`
@@ -1499,6 +1511,16 @@ namespace RISE
 			//! needing to wait out multiple 5000ms production-default
 			//! chunks.  Production code never calls this.
 			void ForTest_SetDrainChunkMs( unsigned int chunkMs ) { mDrainChunkMsForTest = chunkMs; }
+
+			//! Invoked once after ReadViewport releases its parked controller
+			//! snapshot but before it serializes the response.  Test-only: lets a
+			//! regression test prove response metadata comes from that snapshot,
+			//! rather than getters read after rendering resumes.  Set and consume
+			//! on one thread before the ReadViewport/RPC call.
+			void ForTest_SetReadViewportAfterParkHook( std::function<void()> hook )
+			{
+				mReadViewportAfterParkHookForTest = std::move( hook );
+			}
 
 			//! Round-2 P1-2 test hook: read mAsyncOutstandingJobId directly
 			//! (under mAsyncCacheMutex, like every other access to this
@@ -1808,6 +1830,10 @@ namespace RISE
 			//! non-Render surface -- set before the teardown/detach call
 			//! that will read it, never concurrently.
 			unsigned int mDrainChunkMsForTest = 0;
+
+			//! See ForTest_SetReadViewportAfterParkHook.  Mutable because
+			//! ReadViewport is a logically-const observe operation.
+			mutable std::function<void()> mReadViewportAfterParkHookForTest;
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled

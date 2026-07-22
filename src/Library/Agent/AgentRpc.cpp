@@ -1545,8 +1545,18 @@ namespace RISE
 					unsigned int imgW = 0, imgH = 0;
 					bool available = false;
 					std::string reason;
+					unsigned int srcPane = 0;   // user-review P1#3: captured atomically with the frame
+					// user-review P1-3 (round 2): the WHOLE pane set is now
+					// snapshotted ATOMICALLY with the frame inside ReadViewport's
+					// parked window -- layout/primary/visibility/mode/vantage all
+					// describe the SAME frame as the PNG.  The earlier code read
+					// them back via DescribeViewportPanes AFTER the render resumed,
+					// so they could describe a LATER state than the pixels.
+					AgentSession::ViewportPanesInfo panesInfo;
+					bool havePaneSet = false;
 					const std::vector<unsigned char> png =
-						s->ReadViewport( ( mePresent == 1 ) ? maxEdge : 0, imgW, imgH, available, reason );
+						s->ReadViewport( ( mePresent == 1 ) ? maxEdge : 0, imgW, imgH, available, reason, srcPane,
+						                 panesInfo, havePaneSet );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "available",  JsonValue::MakeBool( available ) );
 					result.set( "reason",     JsonValue::MakeString( reason ) );
@@ -1560,8 +1570,7 @@ namespace RISE
 					// last-rendered pane, and without this field the agent
 					// cannot attribute the image (the review-r2-B honesty gap,
 					// now closed structurally rather than by a note).
-					AgentSession::ViewportPanesInfo panesInfo;
-					if( s->DescribeViewportPanes( panesInfo ) )
+					if( havePaneSet )
 					{
 						JsonValue panesObj = JsonValue::MakeObject();
 						panesObj.set( "layout",     JsonValue::MakeNumber( panesInfo.layout ) );
