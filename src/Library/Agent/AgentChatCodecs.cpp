@@ -4,8 +4,12 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the TWELVE provider-neutral tool definitions (1:1 with the
-//        AgentRpc verbs; parameter names/shapes mirror AgentRpc.cpp),
+//    (1) the THIRTEEN provider-neutral tool definitions -- twelve are
+//        1:1 with the AgentRpc verbs (parameter names/shapes mirror
+//        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
+//        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
+//        intercepted by the HOST (GUI drive loop / eval runner) before
+//        reaching HandleLine (see AgentChatLoop.cpp / AgentEvalRunner.cpp),
 //    (2) a small raw-span JSON scanner (byte-exact extraction of the
 //        assistant content from a response body, so provider-opaque
 //        fields -- thinking-block signatures -- echo back VERBATIM),
@@ -475,6 +479,34 @@ namespace RISE
 						"\"splitObjects\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
 						"\"Optional array of object names, only meaningful alongside split:true. Scopes the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, including other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Without this, a modeled ground plane/backdrop counts as OBJECT too, inflating the OBJECT bucket -- see the tool description's WARNING. A name not found in the candidate's objectmap legend is dropped from the mask and surfaced in split.note (never a hard failure).\"}"
 					"},\"required\":[\"reference\"]}"
+				},
+				{
+					"ask_user",
+					"Pause and ask the user a single, SPECIFIC clarifying question when a "
+					"real ambiguity would MATERIALLY change the scene you build -- subject "
+					"identity, style/mood, or a key composition choice. Do NOT ask about "
+					"details you can decide yourself with reasonable taste (exact colours, "
+					"minor placement, secondary props) -- pick something sensible and note "
+					"the choice in your final summary instead. If the brief is already "
+					"clear, do NOT call this tool at all; asking when the answer is obvious "
+					"wastes the user's time. Budget: at most 2-3 calls per task, and prefer "
+					"ONE call carrying your single most important question over several "
+					"small ones. Prefer `options` (2-5 short choices the user can click) "
+					"over a fully open-ended question -- options are faster for the user to "
+					"answer and easier for you to act on. Returns either {\"answer\": "
+					"\"...\"} -- the text of the option the user picked (verbatim) or their "
+					"typed freeform reply -- or, when no interactive user is available to "
+					"answer (e.g. a headless eval run), {\"available\": false, \"note\": "
+					"\"...\"}. On available:false, do NOT re-ask -- make your best judgment "
+					"from the brief as given and proceed.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"question\":{\"type\":\"string\",\"description\":"
+						"\"Required. ONE specific question, phrased so a short answer resolves it (e.g. \\\"Should the mood be warm sunset or cool overcast?\\\").\"},"
+						"\"options\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"Optional, 2-5 short strings the user can pick from with one click. Preferred over leaving the question fully open-ended -- offer options whenever the plausible answers are enumerable.\"},"
+						"\"allowFreeform\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default true. Whether a typed answer (instead of clicking one of options) is acceptable. Set false only when options is exhaustive and a freeform reply would not make sense.\"}"
+					"},\"required\":[\"question\"]}"
 				},
 			};
 

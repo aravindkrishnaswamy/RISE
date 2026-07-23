@@ -637,10 +637,11 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (twelve tools) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (thirteen tools) + SetSkillIndex...\n" );
 
-	// Anthropic: twelve tools (S2 added insert_chunk/remove_chunk; toolkit
-	// slice 3b added query_object_at; compare_to_reference is the eleventh),
+	// Anthropic: thirteen tools (S2 added insert_chunk/remove_chunk; toolkit
+	// slice 3b added query_object_at; compare_to_reference is the twelfth;
+	// ask_user (stage 1a of clarifying-questions) is the thirteenth),
 	// read_skill present with a schema.
 	{
 		AgentChatLoop loop;
@@ -648,7 +649,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 12, "anthropic body carries twelve tools" );
+		Check( tools.isArray() && tools.size() == 13, "anthropic body carries thirteen tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -661,28 +662,28 @@ static void TestChatLoopWiring()
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
 
-	// Gemini: eleven functionDeclarations, read_skill present.
+	// Gemini: thirteen functionDeclarations, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 12, "gemini body carries eleven functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 13, "gemini body carries thirteen functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
-	// OpenAI/ChatGPT: eleven function tools, read_skill present.
+	// OpenAI/ChatGPT: thirteen function tools, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::OpenAI );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 12, "openai body carries twelve tools" );
+		Check( tools.isArray() && tools.size() == 13, "openai body carries thirteen tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& fn = tools.at( i ).get( "function" );

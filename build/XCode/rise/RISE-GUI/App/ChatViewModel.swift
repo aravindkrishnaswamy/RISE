@@ -228,6 +228,14 @@ final class ChatViewModel: ObservableObject {
             case thinking
             case error
             case notice
+            /// Stage 1b (clarifying-questions): the model's `ask_user`
+            /// question text, appended when the tool call is intercepted
+            /// (see `handleAskUserToolCall`) — this row IS the call's
+            /// transcript representation, so `ask_user` gets no separate
+            /// `.toolActivity` "→ ask_user" row.  Styled like `.assistant`
+            /// narration but with a small accent marker so questions are
+            /// scannable in history (ChatPanel's `questionRow`).
+            case question
         }
         let id = UUID()
         let kind: Kind
@@ -307,6 +315,30 @@ final class ChatViewModel: ObservableObject {
     /// exotic-but-well-formed recorded turn may be invalid on replay;
     /// Reset is the documented recovery).
     @Published private(set) var resetOffered: Bool = false
+
+    // MARK: - Clarifying questions (`ask_user`, stage 1b)
+
+    /// One `ask_user` call awaiting the user's answer — the Swift-facing
+    /// mirror of the tool's parsed arguments (see
+    /// `ChatViewModel.parseAskUserArgs`).  ChatPanel renders this as an
+    /// answer card above the composer while non-nil.
+    struct PendingQuestion: Equatable {
+        let question: String
+        let options: [String]
+        let allowFreeform: Bool
+    }
+    /// Non-nil exactly while `handleAskUserToolCall` is suspended awaiting
+    /// an answer (i.e. exactly while `pendingAnswerContinuation` is
+    /// non-nil — the two are always set/cleared together).
+    @Published private(set) var pendingQuestion: PendingQuestion? = nil
+    /// The suspended `ask_user` continuation, or nil when no question is
+    /// pending.  `resumePendingQuestion(with:)` is the ONLY place that
+    /// resumes it — it nils this property BEFORE calling `.resume`, so a
+    /// second resume attempt (a stray double-tap on an answer-card button
+    /// racing a Stop, say) finds nil and safely no-ops.  A
+    /// `CheckedContinuation` traps on a second `.resume`, so that guard is
+    /// load-bearing, not defensive dressing.
+    private var pendingAnswerContinuation: CheckedContinuation<String?, Never>?
 
     // Provider settings.  MODEL IDS persist in UserDefaults; keys go
     // to the Keychain only.
@@ -1558,7 +1590,60 @@ final class ChatViewModel: ObservableObject {
         stopRequested = true
         driverTask?.cancel()
         cancelAnyOutstandingChatRender()
+        // Stage 1b: a pending ask_user question is exactly the kind of
+        // synchronous-stretch-vs-await distinction this method's doc talks
+        // about — the driver is suspended AWAITING the continuation, not
+        // between HTTP rounds, so cancelling driverTask alone would leave
+        // it parked forever.  Resuming with nil is what lets it observe
+        // Task.isCancelled/stopRequested and unwind (see
+        // `handleAskUserToolCall`'s doc); a no-op when no question is
+        // pending.
+        resumePendingQuestion(with: nil)
         transcript.append(Entry(kind: .notice, text: "Stopped."))
+    }
+
+    /// Stage 1b: answer a pending `ask_user` question by tapping one of
+    /// its offered options — used VERBATIM (no trimming), matching the
+    /// tool's documented contract ("the text of the option the user
+    /// picked, verbatim"; see AgentChatCodecs.cpp's `ask_user`
+    /// description).  A no-op if no question is pending (button already
+    /// gone) or a race already resumed it (see `resumePendingQuestion`'s
+    /// double-resume guard).
+    func answerQuestion(option text: String) {
+        resumePendingQuestion(with: text)
+    }
+
+    /// Stage 1b: answer a pending `ask_user` question with typed free
+    /// text.  Empty/whitespace-only input is a no-op — there is nothing
+    /// useful to send, and the Send button in the answer card is disabled
+    /// on the same predicate.
+    func answerQuestion(freeform text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        resumePendingQuestion(with: trimmed)
+    }
+
+    /// Stage 1b: resume the suspended `ask_user` continuation exactly
+    /// once.  `answer == nil` means "no answer is coming" (Stop / scene
+    /// close / a production render starting — see every `cancelTurn()`
+    /// call site and `requestStop()` above); `handleAskUserToolCall`
+    /// reads that as the same interrupted-tool-call signal every other
+    /// mid-turn cancellation produces, and abandons without recording a
+    /// result (the next `addUserMessage`'s flush synthesizes the
+    /// cancelled result, same recovery as every other pending tool call).
+    ///
+    /// DOUBLE-RESUME GUARD: nils `pendingAnswerContinuation` BEFORE
+    /// calling `.resume` — a `CheckedContinuation` traps if resumed
+    /// twice, and two independent callers can legitimately race here (a
+    /// button tap racing a Stop click, or Stop firing from both
+    /// `requestStop()` and a `cancelTurn()` triggered by the same user
+    /// gesture). Taking the continuation out of the property first means
+    /// the SECOND caller finds nil and returns without touching it.
+    private func resumePendingQuestion(with answer: String?) {
+        guard let continuation = pendingAnswerContinuation else { return }
+        pendingAnswerContinuation = nil
+        pendingQuestion = nil
+        continuation.resume(returning: answer)
     }
 
     /// Reset the conversation (offered after repeated HTTP 400s, and
@@ -1608,6 +1693,13 @@ final class ChatViewModel: ObservableObject {
         driverTask = nil
         isBusy = false
         cancelAnyOutstandingChatRender()
+        // Stage 1b: every caller of cancelTurn() (sceneOpened, sceneClosed,
+        // applyProviderSelection, resetConversation, productionRenderStarting)
+        // is one of the transcript-clear / turn-teardown sites that must not
+        // leave a driveTurn() Task parked forever awaiting an answer nobody
+        // will give — see `requestStop()`'s matching call for the full
+        // rationale. No-op when no question is pending.
+        resumePendingQuestion(with: nil)
     }
 
     /// Model-B F2 slice S2b: trip `render_cancel` on the controller if a
@@ -1880,6 +1972,23 @@ final class ChatViewModel: ObservableObject {
                     guard let vb = viewportBridge else { return }
                     guard sceneEditableOrReportRenderConflict() else { return }
 
+                    // Stage 1b (clarifying-questions): ask_user is a
+                    // CHAT-LOOP-ONLY tool with no AgentRpc verb (see
+                    // AgentChatCodecs.cpp's layout doc) -- the HOST
+                    // intercepts it HERE, before toolCallToJsonRpcLine /
+                    // agentHandleToolCall, exactly as AgentEvalRunner.cpp's
+                    // headless interception does for stage 1a (that one
+                    // always answers available:false; this one has a real
+                    // interactive user to ask).  It gets NO "→ ask_user"
+                    // activity row -- the question row
+                    // `handleAskUserToolCall` appends IS its transcript
+                    // representation -- so this branch never falls into the
+                    // toolRowIndex/agentHandleToolCall machinery below.
+                    if call.name == "ask_user" {
+                        guard await handleAskUserToolCall(call) else { return }
+                        continue
+                    }
+
                     transcript.append(Entry(kind: .toolActivity,
                                             text: "→ \(call.name)"))
                     // GUI stage 2: this call's row — found BY INDEX (it
@@ -1970,6 +2079,125 @@ final class ChatViewModel: ObservableObject {
                 return
             }
         }
+    }
+
+    /// Stage 1b (clarifying-questions): parsed `ask_user` arguments
+    /// (mirrors the JSON-Schema in AgentChatCodecs.cpp's `ask_user`
+    /// tool definition — `question` required, `options`/`allowFreeform`
+    /// optional).
+    private struct AskUserArgs {
+        let question: String
+        let options: [String]
+        let allowFreeform: Bool
+    }
+
+    /// Parse one `ask_user` call's `argsJson`.  Returns nil on ANYTHING
+    /// short of a well-formed object with a non-blank `question` string
+    /// — malformed `options`/`allowFreeform` entries are dropped/defaulted
+    /// individually rather than failing the whole call, since they are
+    /// optional and a model that gets them slightly wrong (e.g. a number
+    /// in the `options` array) still asked a perfectly answerable
+    /// question.
+    private static func parseAskUserArgs(_ argsJson: String) -> AskUserArgs? {
+        guard let data = argsJson.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let rawQuestion = obj["question"] as? String
+        else { return nil }
+        let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return nil }
+        let options = (obj["options"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let allowFreeform = (obj["allowFreeform"] as? Bool) ?? true
+        return AskUserArgs(question: question, options: options, allowFreeform: allowFreeform)
+    }
+
+    /// Build the JSON-RPC success envelope `chatBridge.addToolResult`
+    /// expects for an answered `ask_user` call: `{"jsonrpc":"2.0",
+    /// "id":<rpcId>,"result":{"answer":"<text>"}}` — the exact shape
+    /// AgentChatLoopTest.cpp's T39b/T39c hand-feed to `AddToolResult`.
+    /// Goes through `JSONSerialization` (rather than hand-splicing
+    /// `answer` into a string literal) so an answer containing quotes,
+    /// backslashes, or newlines is escaped correctly.
+    private static func askUserResultLine(rpcId: Int, answer: String) -> String {
+        let obj: [String: Any] = ["jsonrpc": "2.0", "id": rpcId, "result": ["answer": answer]]
+        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+              let line = String(data: data, encoding: .utf8)
+        else {
+            // A plain-string `answer` value is always JSON-representable
+            // as UTF-8 -- this branch is unreachable in practice, but the
+            // function stays total (an empty answer beats a crash).
+            return "{\"jsonrpc\":\"2.0\",\"id\":\(rpcId),\"result\":{\"answer\":\"\"}}"
+        }
+        return line
+    }
+
+    /// Stage 1b (clarifying-questions): handle one `ask_user` call —
+    /// parse its arguments, publish `pendingQuestion` so ChatPanel shows
+    /// the answer card, suspend until the user answers (or the turn is
+    /// torn down), and feed the result back to `chatBridge`.
+    ///
+    /// MALFORMED ARGS: synthesized as a JSON-RPC `error` result (code
+    /// -32602, matching JSON-RPC's own "Invalid params") fed straight to
+    /// `addToolResult` — never a crash, never a transcript row (there is
+    /// no question worth showing).  The model sees the error and can
+    /// retry with valid arguments.
+    ///
+    /// CONTINUATION LIFECYCLE: `pendingAnswerContinuation` is created by
+    /// the `withCheckedContinuation` call below and consumed EXACTLY ONCE
+    /// by `resumePendingQuestion(with:)` — either with the user's answer
+    /// (`answerQuestion(option:)` / `answerQuestion(freeform:)`, driven by
+    /// ChatPanel's answer card) or with `nil` (`requestStop()` / every
+    /// `cancelTurn()` call site: scene close, provider switch, manual
+    /// reset, a production render starting).  `resumePendingQuestion`'s
+    /// own doc has the double-resume guard.
+    ///
+    /// Returns `false` when the turn is being torn down (a nil answer, OR
+    /// Stop/scene-close/a-render-starting fired in the gap between resume
+    /// and this Task actually running again — the SAME post-await
+    /// re-verification every other suspension point in `driveTurn` does)
+    /// — the caller's `guard ... else { return }` mirrors every other
+    /// post-await site in this file. On `false`, nothing is recorded for
+    /// this call: the next `addUserMessage`'s flush synthesizes the
+    /// cancelled result, the SAME recovery path every other interrupted
+    /// tool call uses.
+    private func handleAskUserToolCall(_ call: RISEAgentChatToolCall) async -> Bool {
+        let rpcId = nextRpcId
+        nextRpcId += 1
+
+        // Stamp the trajectory's request record + latency stash EXACTLY like
+        // the normal dispatch path does (line ~1999). We discard the returned
+        // JSON-RPC line — ask_user is never dispatched to the scene — but the
+        // call's side effect is load-bearing: without it, every recorded
+        // ask_user `tool` record carries an EMPTY jsonRpcRequest and a latency
+        // of 0ms, which reads as "instant" when the round-trip actually took
+        // however long the user thought about the answer. (Review P2; the
+        // eval runner's interception already stamps it — this mirrors that.)
+        _ = chatBridge.toolCallToJsonRpcLine(call, rpcId: rpcId)
+
+        guard let args = Self.parseAskUserArgs(call.argsJson) else {
+            let errorLine = "{\"jsonrpc\":\"2.0\",\"id\":\(rpcId),\"error\":" +
+                "{\"code\":-32602,\"message\":\"ask_user: malformed arguments\"}}"
+            chatBridge.addToolResult(call, jsonRpcResponseLine: errorLine)
+            return true
+        }
+
+        transcript.append(Entry(kind: .question, text: args.question))
+
+        let answer: String? = await withCheckedContinuation { continuation in
+            pendingAnswerContinuation = continuation
+            pendingQuestion = PendingQuestion(
+                question: args.question, options: args.options, allowFreeform: args.allowFreeform)
+        }
+
+        guard let answerText = answer,
+              !Task.isCancelled, !stopRequested,
+              viewportBridge != nil,
+              sceneEditableOrReportRenderConflict()
+        else { return false }
+
+        transcript.append(Entry(kind: .user, text: answerText))
+        chatBridge.addToolResult(
+            call, jsonRpcResponseLine: Self.askUserResultLine(rpcId: rpcId, answer: answerText))
+        return true
     }
 
     /// Model-B F2 slice S2b: execute a `render` tool call WITHOUT

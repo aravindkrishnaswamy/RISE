@@ -895,6 +895,13 @@ namespace RISE
 				                          v == "propose_patch" || v == "remove_chunk" );
 				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
 				                               v == "read_viewport" || v == "query_object_at" );
+				// ask_user is EXPLICITLY neither: it neither mutates the
+				// document nor observes the rendered result, so (like
+				// read_document/read_schema/read_skill/validate above) it
+				// falls through both branches below and leaves the streak
+				// UNCHANGED -- pausing to ask a clarifying question is not
+				// progress toward the blind-edit failure mode this nudge
+				// guards against, so it should neither reset nor grow it.
 				if( isVisualObserve ) {
 					mBlindEditStreak = 0;
 				}

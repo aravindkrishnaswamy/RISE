@@ -36,6 +36,7 @@ struct ChatPanel: View {
             errorAffordances
             attachmentErrorBanner
             pendingAttachmentStrip
+            questionCard
             composer
         }
     }
@@ -159,6 +160,21 @@ struct ChatPanel: View {
         }
     }
 
+    // MARK: - Clarifying question (`ask_user`, stage 1b)
+
+    /// The answer card, shown ABOVE the composer exactly while
+    /// `chat.pendingQuestion` is set (i.e. while `driveTurn` is suspended
+    /// awaiting an answer — see `ChatViewModel.handleAskUserToolCall`).
+    /// The question's own transcript row (`.question` kind, appended at
+    /// the same moment) stays visible in the scrollback above this card —
+    /// this is the LIVE answer affordance, not a duplicate of that row.
+    @ViewBuilder
+    private var questionCard: some View {
+        if let question = chat.pendingQuestion {
+            AskUserCard(chat: chat, question: question)
+        }
+    }
+
     // MARK: - Composer
 
     /// Input row (attach / text / send-or-stop) + a footer row with the
@@ -169,6 +185,15 @@ struct ChatPanel: View {
     /// render workers read off-main.  Drag-and-drop an image file
     /// straight onto the input row attaches it — the same accept/
     /// downscale/cap pipeline as the paperclip picker.
+    ///
+    /// Stage 1b: also gated on `chat.pendingQuestion == nil` — `chat.isBusy`
+    /// is already true for the whole time a question is pending (the
+    /// driver Task hasn't returned; it's suspended awaiting the answer),
+    /// so this duplicates the effect of that check, but states the intent
+    /// directly: the composer must not let the user start a SECOND
+    /// message while the FIRST is paused on a question — that would fork
+    /// the turn, and the answer card above is the one place the user
+    /// should be typing right now.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
@@ -182,13 +207,16 @@ struct ChatPanel: View {
                 .foregroundColor(Theme.textFaint)
                 .disabled(chat.isBusy || viewModel.viewportBridge == nil
                           || !viewModel.isSceneEditableForAgents
+                          || chat.pendingQuestion != nil
                           || chat.pendingAttachments.count >= RISEAgentChatBridge.maxLiveUserImages)
                 .help("Attach reference image(s) — up to "
                       + "\(RISEAgentChatBridge.maxLiveUserImages) per message")
 
                 TextField(
                     "", text: $chat.inputText,
-                    prompt: Text("Ask the agent — reads, edits, validates, renders…")
+                    prompt: Text(chat.pendingQuestion != nil
+                                 ? "Answer the question above…"
+                                 : "Ask the agent — reads, edits, validates, renders…")
                         .foregroundColor(Theme.textDim)
                 )
                 .textFieldStyle(.plain)
@@ -196,7 +224,8 @@ struct ChatPanel: View {
                 .foregroundColor(Theme.textPrimary)
                 .onSubmit { chat.send() }
                 .disabled(chat.isBusy || viewModel.viewportBridge == nil
-                          || !viewModel.isSceneEditableForAgents)
+                          || !viewModel.isSceneEditableForAgents
+                          || chat.pendingQuestion != nil)
 
                 if chat.isBusy {
                     ProgressView()
@@ -228,6 +257,7 @@ struct ChatPanel: View {
                     .background(Theme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
                     .disabled(viewModel.viewportBridge == nil
                               || !viewModel.isSceneEditableForAgents
+                              || chat.pendingQuestion != nil
                               || (chat.inputText.trimmingCharacters(
                                      in: .whitespacesAndNewlines).isEmpty
                                   && chat.pendingAttachments.isEmpty))
@@ -433,6 +463,8 @@ private struct ProposalsPanel: View {
 ///   - `.assistant`: plain left-aligned narration text.
 ///   - `.toolActivity`: a compact hairline-bordered "trace chip".
 ///   - `.error` / `.notice`: unchanged in spirit, restyled to tokens.
+///   - `.question` (stage 1b): assistant-style narration with a small
+///     accent "?" marker — an `ask_user` question, scannable in history.
 private struct ChatTranscriptRow: View {
     let entry: ChatViewModel.Entry
 
@@ -468,6 +500,8 @@ private struct ChatTranscriptRow: View {
             errorRow
         case .notice:
             noticeRow
+        case .question:
+            questionRow
         }
     }
 
@@ -509,6 +543,27 @@ private struct ChatTranscriptRow: View {
             .lineSpacing(6)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Stage 1b (clarifying-questions): an `ask_user` question — styled
+    /// like `.assistant` narration (same font/color/line-spacing) but
+    /// with a small accent "?" badge in front, so a question stands out
+    /// from ordinary narration when scanning back through history without
+    /// looking as loud as `.error`.
+    private var questionRow: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Text("?")
+                .font(Theme.sans(9.5, .bold))
+                .foregroundColor(Theme.bgPanel)
+                .frame(width: 14, height: 14)
+                .background(Circle().fill(Theme.accentSoft))
+            Text(entry.text)
+                .font(Theme.sans(12.5))
+                .foregroundColor(Theme.textSecondary)
+                .lineSpacing(6)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// The comp's compact "trace chip" label with the leading "→ "
@@ -627,6 +682,101 @@ private struct ChatTranscriptRow: View {
         Text(entry.text)
             .font(Theme.sans(12.5).italic())
             .foregroundColor(Theme.textDim)
+    }
+}
+
+/// Stage 1b (clarifying-questions): the `ask_user` answer card — shown
+/// above the composer exactly while `chat.pendingQuestion != nil` (see
+/// `ChatPanel.questionCard`).  One tap on an option button, or Send on
+/// the freeform field, answers the question, which resumes the driver's
+/// suspended continuation (`ChatViewModel.answerQuestion(option:)` /
+/// `answerQuestion(freeform:)`) — the card disappears on the next
+/// publish (`pendingQuestion` goes back to nil inside
+/// `resumePendingQuestion`), so there is no local "answered" state to
+/// track here beyond the freeform text field itself.
+private struct AskUserCard: View {
+    @ObservedObject var chat: ChatViewModel
+    let question: ChatViewModel.PendingQuestion
+    @State private var freeformText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Text("?")
+                    .font(Theme.sans(10, .bold))
+                    .foregroundColor(Theme.bgPanel)
+                    .frame(width: 15, height: 15)
+                    .background(Circle().fill(Theme.accent))
+                Text("Waiting for your answer")
+                    .font(Theme.sans(10.5).italic())
+                    .foregroundColor(Theme.textDim)
+                Spacer(minLength: 0)
+            }
+
+            Text(question.question)
+                .font(Theme.sans(12.5))
+                .foregroundColor(Theme.textPrimary)
+                .lineSpacing(3)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !question.options.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
+                        Button {
+                            chat.answerQuestion(option: option)
+                        } label: {
+                            Text(option)
+                                .font(Theme.sans(11.5, .medium))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(Theme.accentLight)
+                        .background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7)
+                            .stroke(Theme.accent.opacity(0.35), lineWidth: 1))
+                    }
+                }
+            }
+
+            if question.allowFreeform {
+                HStack(spacing: 6) {
+                    TextField(
+                        "", text: $freeformText,
+                        prompt: Text(question.options.isEmpty
+                                     ? "Type your answer…" : "Or type your own answer…")
+                            .foregroundColor(Theme.textDim)
+                    )
+                    .textFieldStyle(.plain)
+                    .font(Theme.sans(12))
+                    .foregroundColor(Theme.textPrimary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(Theme.bgWell, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderLight, lineWidth: 1))
+                    .onSubmit(submitFreeform)
+
+                    Button("Send", action: submitFreeform)
+                        .buttonStyle(.plain)
+                        .font(Theme.sans(11, .semibold))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .foregroundColor(Theme.accentLight)
+                        .background(Theme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
+                        .disabled(freeformText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(11)
+        .background(Theme.bgCard, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.accent.opacity(0.3), lineWidth: 1))
+    }
+
+    private func submitFreeform() {
+        chat.answerQuestion(freeform: freeformText)
+        freeformText = ""
     }
 }
 

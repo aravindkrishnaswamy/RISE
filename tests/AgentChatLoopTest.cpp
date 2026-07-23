@@ -430,7 +430,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Chat Completions user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 12, "body carries exactly twelve OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 13, "body carries exactly thirteen OpenAI tools" );
 	bool sawReadDocument = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i ).get( "function" );
@@ -478,8 +478,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 12,
-		       "xAI body carries the same twelve tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 13,
+		       "xAI body carries the same thirteen tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -695,7 +695,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 12, "body carries exactly twelve tools" );
+	Check( tools.isArray() && tools.size() == 13, "body carries exactly thirteen tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "insert_chunk", "remove_chunk",
 	                           "render", "read_image", "query_object_at", "compare_to_reference" };
@@ -1112,7 +1112,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 12, "eleven functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 13, "thirteen functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -5139,6 +5139,388 @@ static void TestToolOutcomeDisplay()
 	}
 }
 
+//----------------------------------------------------------------------
+// T39: ask_user (stage 1a of clarifying-questions) -- the chat-loop-only
+// tool.  It has NO AgentRpc verb (see AgentChatCodecs.cpp / AgentRpc.cpp
+// -- untouched by this feature) so this test never touches a dispatcher;
+// the "host" role (GUI drive loop / eval runner, out of scope here) is
+// simulated the same way every other AddToolResult call in this file
+// simulates a dispatcher response -- a hand-built JSON-RPC result line
+// fed straight to loop.AddToolResult.
+//
+// (a) schema presence on ALL THREE provider codecs: question/options/
+//     allowFreeform, question required, at the tool-table level (grep
+//     the built request bodies -- exactly the pattern every other T-series
+//     schema check in this file uses).
+// (b) end-to-end: the model calls ask_user, the host answers
+//     {"answer":"warm sunset"}, and the NEXT request body carries that
+//     answer back in the packed tool results -- proven for Anthropic
+//     (tool_result content) and OpenAI (role:tool content), the two
+//     shapes the task calls out explicitly.
+//----------------------------------------------------------------------
+static void TestAskUserToolSchema()
+{
+	std::printf( "T39: ask_user tool schema on all three provider codecs...\n" );
+
+	// Anthropic: input_schema.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& tools = root.get( "tools" );
+		bool saw = false;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			if( tools.at( i ).get( "name" ).asString() != "ask_user" ) continue;
+			saw = true;
+			const JsonValue& schema = tools.at( i ).get( "input_schema" );
+			Check( schema.get( "type" ).asString() == "object", "T39a: anthropic ask_user schema is an object" );
+			const JsonValue& props = schema.get( "properties" );
+			Check( props.get( "question" ).get( "type" ).asString() == "string",
+			       "T39a: anthropic ask_user.question is a string" );
+			Check( props.get( "options" ).get( "type" ).asString() == "array",
+			       "T39a: anthropic ask_user.options is an array" );
+			Check( props.get( "options" ).get( "items" ).get( "type" ).asString() == "string",
+			       "T39a: anthropic ask_user.options items are strings" );
+			Check( props.get( "allowFreeform" ).get( "type" ).asString() == "boolean",
+			       "T39a: anthropic ask_user.allowFreeform is a boolean" );
+			const JsonValue& req = schema.get( "required" );
+			bool questionRequired = false;
+			for( std::size_t r = 0; r < req.size(); ++r )
+				if( req.at( r ).asString() == "question" ) questionRequired = true;
+			Check( questionRequired, "T39a: anthropic ask_user requires question" );
+			Check( !tools.at( i ).get( "description" ).asString().empty(),
+			       "T39a: anthropic ask_user has a non-empty description" );
+		}
+		Check( saw, "T39a: anthropic tool table includes ask_user" );
+	}
+
+	// OpenAI: function.parameters (same JSON-Schema literal, different envelope).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& tools = root.get( "tools" );
+		bool saw = false;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			const JsonValue& fn = tools.at( i ).get( "function" );
+			if( fn.get( "name" ).asString() != "ask_user" ) continue;
+			saw = true;
+			Check( tools.at( i ).get( "type" ).asString() == "function",
+			       "T39a: openai ask_user tool entry type is function" );
+			const JsonValue& props = fn.get( "parameters" ).get( "properties" );
+			Check( props.get( "question" ).get( "type" ).asString() == "string",
+			       "T39a: openai ask_user.question is a string" );
+			Check( props.get( "options" ).get( "type" ).asString() == "array",
+			       "T39a: openai ask_user.options is an array" );
+			Check( props.get( "allowFreeform" ).get( "type" ).asString() == "boolean",
+			       "T39a: openai ask_user.allowFreeform is a boolean" );
+			bool questionRequired = false;
+			const JsonValue& req = fn.get( "parameters" ).get( "required" );
+			for( std::size_t r = 0; r < req.size(); ++r )
+				if( req.at( r ).asString() == "question" ) questionRequired = true;
+			Check( questionRequired, "T39a: openai ask_user requires question" );
+		}
+		Check( saw, "T39a: openai tool table includes ask_user" );
+	}
+
+	// Gemini: functionDeclarations[].parameters.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
+		bool saw = false;
+		for( std::size_t i = 0; i < decls.size(); ++i ) {
+			if( decls.at( i ).get( "name" ).asString() != "ask_user" ) continue;
+			saw = true;
+			const JsonValue& props = decls.at( i ).get( "parameters" ).get( "properties" );
+			Check( props.get( "question" ).get( "type" ).asString() == "string",
+			       "T39a: gemini ask_user.question is a string" );
+			Check( props.get( "options" ).get( "type" ).asString() == "array",
+			       "T39a: gemini ask_user.options is an array" );
+			Check( props.get( "allowFreeform" ).get( "type" ).asString() == "boolean",
+			       "T39a: gemini ask_user.allowFreeform is a boolean" );
+		}
+		Check( saw, "T39a: gemini functionDeclarations include ask_user" );
+	}
+}
+
+static void TestAskUserToolLoop()
+{
+	std::printf( "T39b/c: ask_user end-to-end -- Anthropic + OpenAI packed tool results...\n" );
+
+	// (b) Anthropic: the model calls ask_user with an options-carrying
+	// question, the "host" answers {"answer":"warm sunset"} (as if the
+	// user clicked the "warm sunset" option), and the reply rides back in
+	// the next request's tool_result content -- the SAME packing every
+	// other Anthropic tool result in this file uses (see T2 above); the
+	// loop itself has NO ask_user special-casing, it treats this exactly
+	// like any other tool_use/tool_result round-trip.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "Build me a sunset scene" );
+
+		const std::string fixture = AnthropicFixture(
+			"[{\"type\":\"text\",\"text\":\"Let me check the mood first.\"},"
+			"{\"type\":\"tool_use\",\"id\":\"toolu_ask1\",\"name\":\"ask_user\","
+			"\"input\":{\"question\":\"Should the mood be warm sunset or cool overcast?\","
+			"\"options\":[\"warm sunset\",\"cool overcast\"]}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fixture );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls, "T39b: ask_user tool_use fixture -> ToolCalls" );
+		Check( st.toolCalls.size() == 1, "T39b: exactly one tool call" );
+		if( st.toolCalls.size() != 1 ) return;
+		Check( st.toolCalls[0].name == "ask_user", "T39b: call name is ask_user" );
+		Check( st.toolCalls[0].argsJson.find( "\"question\"" ) != std::string::npos,
+		       "T39b: the question rides in argsJson" );
+
+		// The HOST intercepts (never dispatcher->HandleLine -- ask_user has
+		// no AgentRpc verb) and synthesizes the answer itself; from the
+		// loop's point of view this is indistinguishable from any other
+		// hand-fed JSON-RPC result line.
+		loop.AddToolResult( st.toolCalls[0],
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"answer\":\"warm sunset\"}}" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		JsonValue last = LastArrayEntry( root, "messages" );
+		Check( last.get( "role" ).asString() == "user", "T39b: tool results ride in a user message" );
+		const JsonValue& tr = last.get( "content" ).at( 0 );
+		Check( tr.get( "type" ).asString() == "tool_result", "T39b: content[0] is a tool_result" );
+		Check( tr.get( "tool_use_id" ).asString() == "toolu_ask1", "T39b: tool_use_id matches the ask_user call" );
+		Check( !tr.has( "is_error" ), "T39b: a success result carries no is_error" );
+		const std::string resultText = tr.get( "content" ).at( 0 ).get( "text" ).asString();
+		Check( resultText.find( "\"answer\":\"warm sunset\"" ) != std::string::npos,
+		       "T39b: the user's answer (warm sunset) rides in the tool_result" );
+	}
+
+	// (c) OpenAI: same round-trip, role:tool packing.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "Build me a sunset scene" );
+
+		const std::string fixture =
+			"{\"id\":\"chatcmpl_fixture\",\"object\":\"chat.completion\","
+			"\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+			"\"content\":\"Let me check the mood first.\",\"tool_calls\":[{\"id\":\"call_ask1\","
+			"\"type\":\"function\",\"function\":{\"name\":\"ask_user\","
+			"\"arguments\":\"{\\\"question\\\":\\\"Should the mood be warm sunset or cool overcast?\\\","
+			"\\\"options\\\":[\\\"warm sunset\\\",\\\"cool overcast\\\"]}\"}}]},"
+			"\"finish_reason\":\"tool_calls\"}]}";
+		ChatStepResult st = loop.HandleResponse( 200, fixture );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls, "T39c: ask_user tool_calls fixture -> ToolCalls" );
+		Check( st.toolCalls.size() == 1, "T39c: exactly one tool call" );
+		if( st.toolCalls.size() != 1 ) return;
+		Check( st.toolCalls[0].name == "ask_user", "T39c: OpenAI function name is ask_user" );
+
+		loop.AddToolResult( st.toolCalls[0],
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"answer\":\"warm sunset\"}}" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		const JsonValue& messages = root.get( "messages" );
+		Check( messages.size() == 4, "T39c: OpenAI follow-up carries system, user, assistant, tool" );
+		const JsonValue& asst = messages.at( 2 );
+		Check( asst.get( "role" ).asString() == "assistant" &&
+		       asst.get( "tool_calls" ).at( 0 ).get( "id" ).asString() == "call_ask1",
+		       "T39c: OpenAI assistant tool_calls echo back on the next request" );
+		const JsonValue& tool = messages.at( 3 );
+		Check( tool.get( "role" ).asString() == "tool" &&
+		       tool.get( "tool_call_id" ).asString() == "call_ask1",
+		       "T39c: OpenAI tool result answers with role:tool + matching tool_call_id" );
+		Check( tool.get( "content" ).asString().find( "\"answer\":\"warm sunset\"" ) != std::string::npos,
+		       "T39c: the user's answer (warm sunset) rides in role:tool content" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T39d: ask_user PARALLEL with a dispatched tool call in the SAME turn --
+// the WIRE-INVARIANT half of the parallel-mixed-turn coverage (the
+// eval-runner-level half -- both results counted against budget, the
+// trajectory carrying both tool records in order -- lives in
+// AgentEvalReplayTest.cpp's T12, which drives the REAL
+// AgentEvalRunner.cpp interception code through a replay fixture; this
+// test proves what that trajectory evidence cannot show directly: that
+// BOTH results land in ONE packed message on the wire).  The loop itself
+// has NO ask_user special-casing (pinned design), so this test manually
+// replicates exactly what the host (GUI drive loop / eval runner) does:
+// intercept ONLY the call named ask_user and synthesize its result;
+// dispatch every other call through the LIVE rpc dispatcher, unmodified.
+//----------------------------------------------------------------------
+static void TestAskUserParallelWithDispatchedTool( AgentRpcDispatcher& rpc )
+{
+	std::printf( "T39d: ask_user parallel with a dispatched tool_call -- "
+	             "both results in ONE packed message (wire invariant)...\n" );
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	loop.AddUserMessage( "Check the mood with me, then read the document" );
+
+	const std::string fx = AnthropicFixture(
+		"[{\"type\":\"tool_use\",\"id\":\"toolu_parAsk\",\"name\":\"ask_user\","
+		"\"input\":{\"question\":\"Should the mood be warm sunset or cool overcast?\","
+		"\"options\":[\"warm sunset\",\"cool overcast\"]}},"
+		"{\"type\":\"tool_use\",\"id\":\"toolu_parDoc\",\"name\":\"read_document\",\"input\":{}}]",
+		"tool_use" );
+	ChatStepResult st = loop.HandleResponse( 200, fx );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 2,
+	       "T39d: two parallel tool calls parsed (ask_user + read_document)" );
+	if( st.toolCalls.size() != 2 ) return;
+	Check( st.toolCalls[0].name == "ask_user", "T39d: first parallel call is ask_user" );
+	Check( st.toolCalls[1].name == "read_document", "T39d: second parallel call is read_document" );
+
+	const std::size_t before = loop.TranscriptSize();
+
+	// Drive both calls exactly like AgentEvalRunner.cpp's dispatch loop
+	// does: ask_user is intercepted BEFORE it would reach HandleLine
+	// (synthesized here identically to the runner's own literal); the
+	// other call is dispatched for REAL through the live rpc dispatcher.
+	for( std::size_t ci = 0; ci < st.toolCalls.size(); ++ci ) {
+		const ChatToolCall& call = st.toolCalls[ci];
+		std::string resp;
+		if( call.name == "ask_user" ) {
+			resp = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"available\":false,"
+			       "\"note\":\"ask_user: no interactive user is available in this run; "
+			       "use your best judgment and proceed\"}}";
+		}
+		else {
+			resp = rpc.HandleLine( loop.ToolCallToJsonRpcLine( call, static_cast<int>( ci ) + 60 ) );
+		}
+		if( ci == 0 ) Check( loop.TranscriptSize() == before, "T39d: first result alone does NOT flush yet" );
+		loop.AddToolResult( call, resp );
+	}
+	Check( loop.TranscriptSize() == before + 1,
+	       "T39d: BOTH results (one intercepted, one dispatched) flush as ONE tool-results entry" );
+
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	JsonValue root = ParseBody( req.body );
+	JsonValue last = LastArrayEntry( root, "messages" );
+	Check( last.get( "role" ).asString() == "user", "T39d: the packed entry is a user message" );
+	const JsonValue& content = last.get( "content" );
+	Check( content.isArray() && content.size() == 2,
+	       "T39d: ONE user message carries BOTH tool_results -- the wire invariant" );
+
+	bool sawAsk = false, sawDoc = false;
+	for( std::size_t i = 0; i < content.size(); ++i ) {
+		const JsonValue& tr = content.at( i );
+		Check( tr.get( "type" ).asString() == "tool_result", "T39d: each packed entry is a tool_result" );
+		const std::string id = tr.get( "tool_use_id" ).asString();
+		const std::string resultText = tr.get( "content" ).at( 0 ).get( "text" ).asString();
+		if( id == "toolu_parAsk" ) {
+			sawAsk = true;
+			Check( !tr.has( "is_error" ), "T39d: the synthesized ask_user result carries no is_error" );
+			Check( resultText.find( "\"available\":false" ) != std::string::npos,
+			       "T39d: the ask_user tool_result carries the synthesized available:false" );
+		}
+		if( id == "toolu_parDoc" ) {
+			sawDoc = true;
+			Check( !tr.has( "is_error" ), "T39d: the real read_document result carries no is_error" );
+			Check( resultText.find( "RISE ASCII SCENE" ) != std::string::npos,
+			       "T39d: the read_document tool_result carries the REAL dispatched document text "
+			       "(proof it was NOT also intercepted)" );
+		}
+	}
+	Check( sawAsk && sawDoc, "T39d: both tool_use_ids are answered in the SAME packed message" );
+}
+
+//----------------------------------------------------------------------
+// T40: ABANDONED-QUESTION FLUSH SYNTHESIS -- the model calls ask_user,
+// the host stamps ToolCallToJsonRpcLine (as if about to intercept/
+// dispatch it) but NEVER calls AddToolResult -- the GUI "user closed the
+// panel / started a new message before answering" abandon path.  The
+// loop has NO ask_user special-casing, so this exercises the SAME
+// generic wire-invariant machinery every other abandoned-call path in
+// this file relies on (see TestFlushSynthesis / T9's "partial tool
+// rounds synthesize error results"): AddUserMessage synthesizes the
+// documented -32001 "not executed" JSON-RPC error for every still-
+// pending call before the new user turn is allowed to ride the wire, so
+// the NEXT BuildRequest never carries an unanswered tool_use block.
+//----------------------------------------------------------------------
+static void TestAskUserAbandonedFlushSynthesis()
+{
+	std::printf( "T40: ask_user abandoned (stamped, never answered) -- flush synthesizes "
+	             "-32001 \"not executed\", no unanswered tool_use rides the wire...\n" );
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	loop.AddUserMessage( "Build me a sunset scene" );
+
+	const std::string fx = AnthropicFixture(
+		"[{\"type\":\"text\",\"text\":\"Let me check the mood first.\"},"
+		"{\"type\":\"tool_use\",\"id\":\"toolu_abandoned\",\"name\":\"ask_user\","
+		"\"input\":{\"question\":\"Should the mood be warm sunset or cool overcast?\","
+		"\"options\":[\"warm sunset\",\"cool overcast\"]}}]",
+		"tool_use" );
+	ChatStepResult st = loop.HandleResponse( 200, fx );
+	Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+	       "T40: ask_user tool_use fixture -> one pending ToolCall" );
+	if( st.toolCalls.size() != 1 ) return;
+
+	// The host stamps the JSON-RPC line (as ToolCallToJsonRpcLine does
+	// right before a real dispatch/intercept would happen) but the user
+	// abandons the question -- NO AddToolResult ever follows.  Discard
+	// the stamped line itself; only the STAMPING side effect (marking the
+	// call pending, recorded for the eval-harness E1 latency stash)
+	// matters here, matching the documented abandon path.
+	(void)loop.ToolCallToJsonRpcLine( st.toolCalls[0], 70 );
+
+	// A new user turn now fires WITHOUT the pending call ever being
+	// answered -- this is what forces the flush-with-synthesis.
+	loop.AddUserMessage( "Never mind, just use your best judgment." );
+
+	// Transcript order: user, assistant(tool_use), SYNTHESIZED ToolResults,
+	// user (the "never mind" turn just added) -- the synthesized entry is
+	// SECOND-TO-LAST, not last (matches TestFlushSynthesis (b)'s fixed
+	// index 2 for the same four-entry shape).
+	const std::size_t idx = loop.TranscriptSize() - 2;   // the synthesized ToolResults entry
+	Check( loop.TranscriptAt( idx ).role == ChatTranscriptEntry::Role::ToolResults,
+	       "T40: the entry at TranscriptSize()-2 really is the synthesized ToolResults entry" );
+	Check( loop.TranscriptAt( idx ).toolSummaries.size() == 1,
+	       "T40: the synthesized entry carries exactly one summary (for the abandoned ask_user call)" );
+	if( loop.TranscriptAt( idx ).toolSummaries.size() == 1 ) {
+		Check( loop.TranscriptAt( idx ).toolSummaries[0].outcomeLine.rfind( "error:", 0 ) == 0,
+		       "T40: toolSummaries[0].outcomeLine starts with \"error:\" (got '" +
+		       loop.TranscriptAt( idx ).toolSummaries[0].outcomeLine + "')" );
+	}
+
+	// The NEXT BuildRequest must carry the synthesized -32001 result, not
+	// an unanswered tool_use -- the wire invariant every provider's
+	// tool_use/tool_result pairing depends on.
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	JsonValue root = ParseBody( req.body );
+	JsonValue lastToolMsg = JsonValue::MakeNull();
+	const JsonValue& messages = root.get( "messages" );
+	for( std::size_t i = 0; i < messages.size(); ++i ) {
+		const JsonValue& c0 = messages.at( i ).get( "content" ).at( 0 );
+		if( c0.get( "type" ).asString() == "tool_result" &&
+		    c0.get( "tool_use_id" ).asString() == "toolu_abandoned" ) {
+			lastToolMsg = messages.at( i );
+			break;
+		}
+	}
+	Check( !lastToolMsg.isNull(), "T40: the abandoned ask_user call IS answered on the wire (no gap)" );
+	const JsonValue& tr = lastToolMsg.get( "content" ).at( 0 );
+	Check( tr.get( "is_error" ).asBool() == true,
+	       "T40: the synthesized result rides with is_error:true" );
+	const std::string resultText = tr.get( "content" ).at( 0 ).get( "text" ).asString();
+	// PackToolResults' error branch serializes just the INNER `error`
+	// object (see AgentChatCodecs.cpp: "blocks.push_back( MakeTextBlock(
+	// JsonSerialize( *e ) ) )") -- NOT the whole {jsonrpc,id,error}
+	// envelope -- so resultText parses straight to {code,message}, not to
+	// a wrapper carrying an "error" key.
+	JsonValue synthesized;
+	std::string perr;
+	Check( JsonParse( resultText, synthesized, perr ),
+	       "T40: the synthesized result text parses as JSON (" + perr + ")" );
+	Check( synthesized.get( "code" ).asNumber() == -32001,
+	       "T40: the synthesized JSON-RPC error carries code -32001 (\"not executed\")" );
+	Check( synthesized.get( "message" ).asString().find( "not executed" ) != std::string::npos,
+	       "T40: the synthesized error message names \"not executed\"" );
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -5195,6 +5577,10 @@ int main()
 	TestContextCompaction( rpc );
 	TestReasoningExtraction();
 	TestToolOutcomeDisplay();
+	TestAskUserToolSchema();
+	TestAskUserToolLoop();
+	TestAskUserParallelWithDispatchedTool( rpc );
+	TestAskUserAbandonedFlushSynthesis();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

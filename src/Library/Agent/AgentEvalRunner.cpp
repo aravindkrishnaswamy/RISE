@@ -1595,7 +1595,19 @@ namespace RISE
 			//!        problem.  Skill now says "build in coherent groups (batch),
 			//!        then render after each group and always after lighting."
 			//!        A drive change; prior cells are not comparable.
-			static const int kEvalMethodologyEpoch = 9;
+			//!   10 -> (2026-07-23) the `ask_user` chat tool shipped (stage 1a of
+			//!        the clarifying-questions feature): models now see a
+			//!        THIRTEENTH tool in every provider request and may spend a
+			//!        round calling it instead of building.  The eval runner
+			//!        intercepts ask_user before dispatch and always answers
+			//!        available:false (no interactive user in a headless run),
+			//!        so a model that asks pays a real tool-call round-trip for
+			//!        no scene progress -- a tool-DEFINITION change, not a drive
+			//!        or grading change, but it alters how a run is driven all
+			//!        the same (a model may now choose to ask rather than act).
+			//!        Prior cells were driven against a twelve-tool table and
+			//!        are not comparable.
+			static const int kEvalMethodologyEpoch = 10;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
@@ -2295,9 +2307,50 @@ namespace RISE
 									terminalStatus = "budget_tool_calls"; budgetHit = true; break;
 								}
 								const ChatToolCall& call = st.toolCalls[ci];
-								const std::string line = loop.ToolCallToJsonRpcLine( call, nextRpcId++ );
-								const std::string resp = dispatcher->HandleLine( line );
+								// rpcId captured (not just incremented inline) so the
+								// ask_user interception below can stamp the SAME id
+								// into its synthesized response -- ToolCallToJsonRpcLine
+								// already embeds it into `line`'s "id" field either way.
+								const int rpcId = nextRpcId++;
+								const std::string line = loop.ToolCallToJsonRpcLine( call, rpcId );
+								std::string resp;
+								if( call.name == "ask_user" ) {
+									// PINNED DESIGN: ask_user is a chat-loop-only tool
+									// (see AgentChatCodecs.cpp) -- it has NO AgentRpc verb
+									// and is never sent to dispatcher->HandleLine.  The
+									// HOST (here: the eval runner) intercepts it BEFORE
+									// dispatch and synthesizes the result itself, exactly
+									// as the Mac/Windows GUI drive loop will (stage 1b).
+									// An eval run has no interactive user to answer, so
+									// synthesize a SUCCESS (never an error -- an error
+									// result would pollute the trajectory with noise the
+									// model did not cause) telling the model no one is
+									// available and it should proceed on its own
+									// judgment, matching the tool description's contract.
+									// Stage 2 will replace this stub with a scripted
+									// responder that can supply a real scripted answer
+									// for scenarios that want to exercise the
+									// "user answered" branch instead of "available:false".
+									JsonValue resultObj = JsonValue::MakeObject();
+									resultObj.set( "available", JsonValue::MakeBool( false ) );
+									resultObj.set( "note", JsonValue::MakeString(
+										"ask_user: no interactive user is available in this run; "
+										"use your best judgment and proceed" ) );
+									JsonValue respObj = JsonValue::MakeObject();
+									respObj.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+									respObj.set( "id", JsonValue::MakeNumber( static_cast<double>( rpcId ) ) );
+									respObj.set( "result", resultObj );
+									resp = JsonSerialize( respObj );
+								}
+								else {
+									resp = dispatcher->HandleLine( line );
+								}
 								loop.AddToolResult( call, resp );
+								// Counts the SAME as every other tool -- ask_user is a
+								// real round-trip against the scenario's tool-call
+								// budget (maxToolCalls), just like a dispatched verb;
+								// it is not free just because it never reaches the
+								// dispatcher.
 								++toolCalls;
 
 								// Scenario interventions: a scripted co-editor edit
