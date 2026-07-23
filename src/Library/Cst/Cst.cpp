@@ -3261,12 +3261,11 @@ NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, i
 	}
 	if( occurrences ) *occurrences = (int)matches.size();
 	std::string matchPath;
-	if( matches.size() == 1 ) {
-		matchPath = matches[0];
-	} else if( matches.size() > 1 && !roleKindSuffix.empty() ) {
-		// Cross-category collision (e.g. a material AND a geometry named "m"): keep only the chunk whose
-		// keyword (the role, before the '/') names this kind -- role == suffix (the bare "material") or role
-		// ends in "_<suffix>" (lambertian_material, ggx_material, ...).  One survivor -> use it; else refuse.
+	if( !matches.empty() && !roleKindSuffix.empty() ) {
+		// A supplied kind is a constraint, not merely a collision hint. Keep
+		// only chunks whose keyword names that kind even when the bare name has
+		// exactly one match; otherwise ("material", "x") could silently target
+		// a uniquely named `sphere_geometry x`.
 		const std::string under = "_" + roleKindSuffix;
 		int narrowed = 0;
 		for( size_t m = 0; m < matches.size(); ++m ) {
@@ -3276,16 +3275,22 @@ NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, i
 				( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );
 			if( kindMatch ) { ++narrowed; matchPath = matches[m]; }
 		}
-		if( narrowed != 1 ) return 0;                              // still ambiguous (or none of the kind) -> refuse
+		if( narrowed != 1 ) return 0;                              // ambiguous or wrong kind -> refuse
+	} else if( matches.size() == 1 ) {
+		matchPath = matches[0];                                   // no kind constraint: unique name is enough
+	} else if( matches.size() > 1 ) {
+		return 0;                                                  // ambiguous with no kind constraint
 	} else if( uniqueFallback && matches.empty() && !roleKindSuffix.empty() ) {
 		// Unnamed-entity fallback (e.g. the sole, UNNAMED camera the editor addresses as the active camera):
-		// no chunk carries this bare name, but if exactly ONE top-level chunk is of the requested kind, use it,
-		// resolved by POSITION (DocNodeIdAt) since it has no name to NameFind.  SAFE for always-named kinds
-		// (material/light): a name match would have been found first, so this branch never fires for them.
+		// no chunk carries this bare name, but if exactly ONE UNNAMED top-level
+		// chunk is of the requested kind, use it by position. Named chunks are
+		// excluded deliberately: empty-target singleton addressing must never
+		// broaden into "whichever sole material/object happens to exist."
 		const std::string under = "_" + roleKindSuffix;
 		int kindCount = 0, kindIndex = -1;
 		for( size_t i = 0; i < items.size(); ++i ) {
 			if( items[i]->kind != NodeKind::Chunk ) continue;
+			if( !ChunkNamePath( items[i] ).empty() ) continue;       // fallback is for truly unnamed chunks only
 			const std::string& role = items[i]->role;
 			const bool kindMatch = ( role == roleKindSuffix ) ||
 				( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );

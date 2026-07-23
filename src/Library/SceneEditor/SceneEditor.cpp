@@ -185,12 +185,17 @@ SceneEditor::SceneEditor( IScenePriv& scene )
 , mScenePhotonsExist( false )
 , mLastSetTime( 0 )
 , mSceneScale( 0 )
+, mDirtyNotificationState( std::make_shared<DirtyNotificationState>() )
 {
 	mScenePhotonsExist = ComputeScenePhotonsExist();
 }
 
 SceneEditor::~SceneEditor()
 {
+	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+	state->ownerAlive.store( false, std::memory_order_release );
+	std::lock_guard<std::mutex> lk( state->mutex );
+	state->listener = DirtyChangedFn();
 }
 
 namespace {
@@ -1046,7 +1051,7 @@ void SceneEditor::FireDirtyChangedIfTransitioned()
 	// stable Document, so this is also where the derived-dirty CACHE is
 	// recomputed race-free (the lock-free C-API query reads only the cache).
 	RecomputeHeadDiffers_();
-	mDirtyNotifyPending.store( true, std::memory_order_release );
+	mDirtyNotificationState->pending.store( true, std::memory_order_release );
 }
 
 void SceneEditor::DrainDirtyNotification()
@@ -1060,51 +1065,64 @@ void SceneEditor::DrainDirtyNotification()
 	// COALESCED semantics (documented on SetDirtyChangedListener): the
 	// listener reports the CURRENT state whenever it differs from the last
 	// report; a clean->dirty->clean burst between drains nets to no call.
-	if( !mDirtyNotifyPending.load( std::memory_order_acquire ) ) return;
-	if( mNotifyDelivering.exchange( true, std::memory_order_acq_rel ) ) return;   // active deliverer will pick it up
+	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+	if( !state->pending.load( std::memory_order_acquire ) ) return;
+	if( state->delivering.exchange( true, std::memory_order_acq_rel ) ) return;   // active deliverer will pick it up
 	for( ;; )
 	{
-		if( !mDirtyNotifyPending.exchange( false, std::memory_order_acq_rel ) ) break;
+		if( !state->pending.exchange( false, std::memory_order_acq_rel ) ) break;
 		bool fire = false;
 		bool now  = false;
 		DirtyChangedFn listenerCopy;
 		{
-			std::lock_guard<std::mutex> lk( mNotifyMutex );
+			std::lock_guard<std::mutex> lk( state->mutex );
 			now = HasUnsavedChanges();
-			if( now != mPrevHasUnsavedChanges )
+			if( now != state->prevHasUnsavedChanges )
 			{
-				mPrevHasUnsavedChanges = now;
+				state->prevHasUnsavedChanges = now;
 				fire = true;
-				listenerCopy = mDirtyChangedListener;
+				listenerCopy = state->listener;
 			}
 		}
-		if( fire && listenerCopy ) listenerCopy( now );   // NO lock held
+		if( fire && listenerCopy ) {
+			listenerCopy( now );   // NO lock held
+			if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
+				state->delivering.store( false, std::memory_order_release );
+				return;           // controller was destroyed by the callback; never touch `this` again
+			}
+		}
 	}
-	mNotifyDelivering.store( false, std::memory_order_release );
+	state->delivering.store( false, std::memory_order_release );
 	// Close the race where another thread flagged pending after our last
 	// exchange but saw us still delivering: one bounded retry.  A residual
 	// miss self-heals at the next drain (per-frame catch-all).
-	if( mDirtyNotifyPending.load( std::memory_order_acquire )
-	 && !mNotifyDelivering.exchange( true, std::memory_order_acq_rel ) )
+	if( state->pending.load( std::memory_order_acquire )
+	 && !state->delivering.exchange( true, std::memory_order_acq_rel ) )
 	{
-		if( mDirtyNotifyPending.exchange( false, std::memory_order_acq_rel ) )
+		if( state->pending.exchange( false, std::memory_order_acq_rel ) )
 		{
 			bool fire = false;
 			bool now  = false;
 			DirtyChangedFn listenerCopy;
 			{
-				std::lock_guard<std::mutex> lk( mNotifyMutex );
+				std::lock_guard<std::mutex> lk( state->mutex );
 				now = HasUnsavedChanges();
-				if( now != mPrevHasUnsavedChanges )
+				if( now != state->prevHasUnsavedChanges )
 				{
-					mPrevHasUnsavedChanges = now;
+					state->prevHasUnsavedChanges = now;
 					fire = true;
-					listenerCopy = mDirtyChangedListener;
+					listenerCopy = state->listener;
 				}
 			}
-			if( fire && listenerCopy ) listenerCopy( now );
+			if( fire && listenerCopy ) {
+				listenerCopy( now );
+				if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
+					state->delivering.store( false, std::memory_order_release );
+					return;
+				}
+			}
 		}
-		mNotifyDelivering.store( false, std::memory_order_release );
+		state->delivering.store( false, std::memory_order_release );
 	}
 }
 

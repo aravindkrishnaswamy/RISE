@@ -47,6 +47,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2969,6 +2970,77 @@ static void RunSaveVsRenderRedProveTest()
 }
 
 //////////////////////////////////////////////////////////////////////
+// (t2) SAVE-SNAPSHOT RED-PROVE: RequestSave captures the persistent CST
+//      head before unlocked IO. While the save hook holds IO back, an
+//      agent commit is allowed to replace the live Document. The first
+//      save must write the pre-edit snapshot and leave the newer head
+//      dirty; a second save writes that newer head and clears dirty.
+//
+//      Pre-fix, SaveEngine borrowed Job::pCstDocument after the hook.
+//      Depending on timing this either serialized the post-snapshot edit
+//      while claiming the earlier head, or held a raw pointer that a
+//      writer could free. The exact disk/live split below pins the safe
+//      snapshot linearization point without relying on a UAF crash.
+//////////////////////////////////////////////////////////////////////
+static void RunSaveSnapshotConcurrentEditTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (t2) save serializes an immutable CST snapshot while a newer edit remains dirty ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_save_snapshot.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the save-snapshot scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the save-snapshot scene" );
+	SaveGateMintController controller( *pJob );
+
+	SaveResult firstSave;
+	std::thread saveThread( [&]() {
+		firstSave = controller.RequestSave( scenePath );
+	} );
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.saveHookEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.saveHookEntered.load( std::memory_order_acquire ),
+		"RequestSave captured its snapshot and is parked before IO" );
+
+	const SceneEditController::AgentCommitResult edit = controller.ApplyAgentParamEdit(
+		String( "mat_emit" ), String( "material" ), String( "scale" ), String( "45.0" ), nullptr );
+	Check( edit.applied, "a newer agent edit can commit while snapshot IO is pending" );
+	Check( std::string( controller.SerializedSceneText().c_str() ).find( "scale 45.0" ) != std::string::npos,
+		"live retained Document contains the newer scale 45.0 edit" );
+
+	controller.releaseSaveGate.store( true, std::memory_order_release );
+	saveThread.join();
+	Check( Succeeded( firstSave.status ), "first snapshot save completes successfully" );
+	Check( controller.HasUnsavedChanges(),
+		"MONEY (t2-a): newer head remains dirty after the older snapshot is saved" );
+
+	std::ifstream firstDiskIn( scenePath.c_str(), std::ios::binary );
+	std::stringstream firstDiskBytes;
+	firstDiskBytes << firstDiskIn.rdbuf();
+	const std::string firstDisk = firstDiskBytes.str();
+	Check( firstDisk.find( "scale 30.0" ) != std::string::npos
+	    && firstDisk.find( "scale 45.0" ) == std::string::npos,
+		"MONEY (t2-b): first save wrote exactly the pre-edit snapshot, not the concurrently replaced live Document" );
+
+	const SaveResult secondSave = controller.RequestSave( scenePath );
+	Check( Succeeded( secondSave.status ), "second save writes the newer live head" );
+	Check( !controller.HasUnsavedChanges(), "second save baselines the unchanged newer head as clean" );
+	std::ifstream secondDiskIn( scenePath.c_str(), std::ios::binary );
+	std::stringstream secondDiskBytes;
+	secondDiskBytes << secondDiskIn.rdbuf();
+	Check( secondDiskBytes.str().find( "scale 45.0" ) != std::string::npos,
+		"MONEY (t2-c): second save persisted the newer edit" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Model-B F2 slice S4: SubmitProductionRenderSync tests.
 //
 // (u) TRIPLE-CLASS concurrency proof: a production submission
@@ -4596,6 +4668,7 @@ int main()
 	RunMintClobberRedProveTest();
 	RunLostEditWedgeRedProveTest();
 	RunSaveVsRenderRedProveTest();
+	RunSaveSnapshotConcurrentEditTest();
 	RunChurnConcurrentInteractiveTest();
 	RunProductionTripleConcurrencyProofTest();
 	RunDirectRasterizeRedProveTest();

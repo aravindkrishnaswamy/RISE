@@ -3,24 +3,25 @@
 //  SaveEngine.h - the scene-save side of the Model-B CST cutover.
 //
 //  Since Slice 6c-3a every scene loads CST-only (Job retains a
-//  canonical CST Document), so Save() SERIALIZEs that retained Document
-//  directly (Cst::SerializeCst — byte-exact on an unedited round-trip,
+//  canonical CST Document).  The controller snapshots that persistent
+//  Document under its mutation mutex; Save() serializes the immutable
+//  snapshot (Cst::SerializeCst — byte-exact on an unedited round-trip,
 //  minimal-diff on edits) and writes it atomically.
 //
 //  An external-modification guard refuses an IN-PLACE save when the
 //  loaded file changed on disk after load (mtime/size mismatch) —
 //  overwriting it with the in-memory scene would silently clobber those
-//  external edits (docs/ROUND_TRIP_SAVE_PLAN.md §11.6).  The guard reads
-//  the CST-load FileIdentity via IJobPriv::GetCstLoadFileIdentity().
+//  external edits (docs/ROUND_TRIP_SAVE_PLAN.md §11.6).  The controller
+//  snapshots the CST-load FileIdentity alongside the Document.
 //
 //  (The legacy two-mode byte-splice save — Mode A in-place line rewrite
 //  + Mode B managed override block, driven by SourceSpanIndex /
 //  OverrideSpanIndex — was deleted in Model-B P5 Slice 6d: it only ran
 //  for a non-CST Job, which no longer exists.)
 //
-//  Inputs are borrowed references; outputs are a SaveResult value.
-//  Caller is responsible for the cancel-and-park dance against the
-//  render thread (§9.9 — Phase 6.5).
+//  Inputs are borrowed immutable references; outputs are a SaveResult
+//  value.  Caller is responsible for capturing the snapshots and
+//  publishing dirty/file-identity state after the unlocked IO.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -28,13 +29,11 @@
 #define SaveEngine_
 
 #include <string>
-#include <unordered_set>
-#include <vector>
 
 namespace RISE
 {
-    class IJobPriv;
-    class DirtyTracker;
+    struct FileIdentity;
+    namespace Cst { struct Document; }
 
     /// Outcome of a Save() call.  Status discriminates UI messaging.
     struct SaveResult
@@ -61,32 +60,30 @@ namespace RISE
             || s == SaveResult::Status::NoOp;
     }
 
-    /// CST-Document save engine.  Serializes the Job's retained CST
-    /// Document; refuses an in-place save when the loaded file changed
+    /// CST-Document save engine.  Serializes an immutable Document
+    /// snapshot; refuses an in-place save when the loaded file changed
     /// externally.
     ///
-    /// Concurrency: the engine itself takes no locks and does no
-    /// thread coordination.  The CALLER is responsible for parking
-    /// the render thread (cancel + wait for !mRendering) before
-    /// calling Save and resuming after — see §9.9 / Phase 6.5's
-    /// `SceneEditController::RequestSave`.
+    /// Concurrency: the engine itself takes no locks and reads only its
+    /// immutable snapshots.  The caller captures and later publishes
+    /// those snapshots under its own mutex.
     class SaveEngine
     {
     public:
-        /// Borrowed references.  Lifetime: caller guarantees they
-        /// outlive the SaveEngine.  `dirty` is non-const because
-        /// Save() clears it on a successful (Saved or NoOp) outcome.
+        /// Borrowed immutable snapshots.  Lifetime: caller guarantees
+        /// they outlive the SaveEngine.  SaveEngine deliberately has no
+        /// access to the live Job or editor dirty state: the controller
+        /// captures these under its mutation mutex, performs file IO
+        /// unlocked, then publishes save/dirty state under the mutex.
         SaveEngine(
-            IJobPriv&                              job,
-            DirtyTracker&                          dirty,
-            std::unordered_set<std::string>&       scaleFromAnchorSet );
+            const Cst::Document& document,
+            const FileIdentity& loadedFileIdentity );
 
         SaveResult Save( const std::string& filePath );
 
     private:
-        IJobPriv&                              mJob;
-        DirtyTracker&                          mDirty;
-        std::unordered_set<std::string>&       mScaleFromAnchorSet;
+        const Cst::Document& mDocument;
+        const FileIdentity&  mLoadedFileIdentity;
     };
 }
 

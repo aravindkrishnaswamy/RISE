@@ -47,6 +47,7 @@
 #include "CstIntrospection.h"         // Generic descriptor+CST property rows (Painter, Geometry, ...) -- GUI redesign 2026-07-22
 #include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
+#include "FileIdentity.h"             // immutable loaded-file identity captured with save snapshots
 #include "../Interfaces/IMaterialManager.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPainterManager.h"
@@ -80,6 +81,7 @@
 #include <cstdio>
 #include <ctime>          // for time() used by CloneActiveCamera dedup fallback
 #include <exception>      // Model-B F2 slice S2a: std::exception_ptr / current_exception / rethrow_exception
+#include <memory>
 #include <string>
 
 using namespace RISE;
@@ -2551,12 +2553,6 @@ void SceneEditController::DropStaleSelection_()
 
 void SceneEditController::UndoInner_()
 {
-	// Round-5 review P0: same save-in-flight refusal as SetPropertyInner_
-	// (history navigation mutates the Document).
-	if( mSaving.load( std::memory_order_acquire ) ) {
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: undo/redo refused -- a save is in flight." );
-		return;
-	}
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
 	// undoing PAST the baseline would break RollbackTransaction's revert
@@ -2628,12 +2624,6 @@ void SceneEditController::UndoInner_()
 
 void SceneEditController::RedoInner_()
 {
-	// Round-5 review P0: same save-in-flight refusal as SetPropertyInner_
-	// (history navigation mutates the Document).
-	if( mSaving.load( std::memory_order_acquire ) ) {
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: undo/redo refused -- a save is in flight." );
-		return;
-	}
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	if( mTxnOpen ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
@@ -2756,6 +2746,7 @@ bool SceneEditController::RequestProductionRender()
 
 SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState() const
 {
+	std::lock_guard<std::mutex> lk( mMutex );
 	EditorStateSnapshot st;
 	st.historyMarker     = mEditor.History().NextSeq();
 	st.dirty             = mEditor.CaptureDirtyState();
@@ -2768,7 +2759,10 @@ SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState
 
 void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, bool restoreDirty )
 {
-	RestoreEditorStateLocked_( st, restoreDirty );
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		RestoreEditorStateLocked_( st, restoreDirty );
+	}
 	// Document-first phase 1: this PUBLIC entry point holds no controller
 	// lock -- drain the dirty->clean notification RestoreDirtyState flagged.
 	// (RollbackTransaction calls the Locked_ body directly under mMutex and
@@ -2839,8 +2833,8 @@ bool SceneEditController::BeginTransaction()
 			"composite is open; close it before opening a transaction." );
 		return false;
 	}
-	mTxnOpen              = true;
 	mTxnBaseline = CaptureEditorState();   // H1: one owned baseline
+	mTxnOpen              = true;
 	mEditor.History().SnapshotRedoForRollback();   // P1-#3: so a full rollback restores the pre-transaction redo stack
 	mEditor.History().SnapshotUndoForRollback();   // P1: ...and the pre-transaction undo stack (cap-evicted records)
 	return true;
@@ -4116,24 +4110,6 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// transaction API and the in-app agent path both run on the main
 	// thread; a future async agent transport must revisit this (marshal
 	// the commit to the main thread or synchronize the flag).
-	// Round-5 review P0: refuse while a SAVE is in flight.  RequestSave
-	// serializes the retained Document during its unlocked step 2 (file IO)
-	// with only mSaving as the guard -- the render thread honors it, and an
-	// agent commit from the RPC thread must too, else a D2 re-derive can
-	// free/replace the Document mid-serialize (UAF) or slip in before the
-	// save-success baseline and be silently baselined "clean".  Retriable:
-	// the identical commit succeeds once the save completes.
-	if( mSaving.load( std::memory_order_acquire ) )
-	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused -- a save is in flight (retry after it completes)." );
-		r.applied = false;
-		r.rawCode = 0;
-		r.status  = String( "rejected" );
-		r.retriable = true;
-		r.headVersion = mJob.GetCstHeadVersion();
-		r.message = String( "save in flight" );
-		return r;
-	}
 	if( mTxnOpen )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused inside an open transaction (no EditHistory record -> rollback cannot revert it)." );
@@ -5545,20 +5521,6 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	const String& b,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
-	AgentCommitResult rSaveGate;
-	// Round-5 review P0: same save-in-flight refusal as ApplyAgentParamEditInner_
-	// (see that guard's doc) -- chunk CRUD re-derives and replaces the Document.
-	if( mSaving.load( std::memory_order_acquire ) )
-	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk CRUD refused -- a save is in flight (retry after it completes)." );
-		rSaveGate.applied = false;
-		rSaveGate.rawCode = 0;
-		rSaveGate.status  = String( "rejected" );
-		rSaveGate.retriable = true;
-		rSaveGate.headVersion = mJob.GetCstHeadVersion();
-		rSaveGate.message = String( "save in flight" );
-		return rSaveGate;
-	}
 	AgentCommitResult r;
 	const char* verb = isInsert ? "insert" : "remove";
 
@@ -5912,17 +5874,15 @@ void SceneEditController::KickRender()
 // SaveEngine::Save -- an unconditional whole-Document SerializeCst
 // (NoOps on byte-equality; dirty state selects nothing, it only gates
 // the Save button).  Three-step cancel-and-park dance:
-//   1. Park the render thread (cancel in-flight + wait for
-//      mRendering=false), set mSaving=true.
-//   2. Run SaveEngine outside the lock (file IO is slow).
-//   3. Reacquire lock, clear mSaving, capture any error, notify the
-//      render loop.
+//   1. Park the render thread, snapshot the retained Document + loaded-file
+//      identity + head version under mMutex, set mSaving=true.
+//   2. Serialize/write the immutable snapshots outside the lock.
+//   3. Reacquire the lock, publish file identity and clear dirty ONLY if
+//      the live head still matches the serialized snapshot, then resume.
 //
-// The live SceneEditor exposes `mScaleFromAnchorSet` const-only
-// (ScaleFromAnchorSet()), while the SaveEngine takes a non-const
-// reference it clears post-save.  We copy into a local, pass that to
-// the engine, then mirror its clear back onto the editor's state via
-// ClearDirtyState() on success.
+// The immutable snapshot is the save/read counterpart of the controller's
+// write funnel: a concurrent editor mutation can replace pCstDocument safely
+// while IO runs, and the version comparison keeps that newer head dirty.
 SaveResult SceneEditController::RequestSave( const std::string& filePath )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
@@ -5939,6 +5899,8 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	// half-painted viewport.
 	bool interruptedPass = false;
 	RISE::Cst::CstHeadVersion headAtSerialize;
+	std::unique_ptr<RISE::Cst::Document> documentSnapshot;
+	RISE::FileIdentity loadedFileIdentitySnapshot;
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load() ) {
@@ -5949,10 +5911,14 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		mSaving.store( true );
 		// Round-5 review P0: remember WHICH head the engine is about to
 		// serialize.  Step 3 baselines "clean" ONLY if the head is still this
-		// one -- a mutation that somehow slips past the mSaving gates can then
-		// never be silently baselined as saved (derived-dirty philosophy: the
-		// flag must never claim the file carries a change it does not).
+		// one -- a mutation that lands while IO runs can then never be silently
+		// baselined as saved.
 		headAtSerialize = mJob.GetCstHeadVersion();
+		const RISE::Cst::Document* document = mJob.GetCstDocument();
+		if( document ) {
+			documentSnapshot.reset( new RISE::Cst::Document( *document ) );
+			loadedFileIdentitySnapshot = mJob.GetCstLoadFileIdentity();
+		}
 	}
 
 	// Fix-round-6 RED-PROVE test seam -- no-op in production (see the
@@ -5964,14 +5930,22 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	ForTest_OnSaveEngineAboutToRun();
 
 	// ---- Step 2: run SaveEngine WITHOUT the lock --------------------
-	// File IO can take a few ms; holding mMutex across that would
-	// stall any other UI-state transition that needs the lock.
-	std::unordered_set<std::string> sfaCopy = mEditor.ScaleFromAnchorSet();
-	SaveEngine engine(
-		mJob,
-		mEditor.Dirty(),
-		sfaCopy );
-	SaveResult result = engine.Save( filePath );
+	// File IO can take a few ms; holding mMutex across it would stall UI
+	// state. The engine receives no live Job/editor references.
+	SaveResult result;
+	if( documentSnapshot ) {
+		SaveEngine engine( *documentSnapshot, loadedFileIdentitySnapshot );
+		result = engine.Save( filePath );
+	} else {
+		result.status = SaveResult::Status::Failed;
+		result.filePath = filePath;
+		result.errorMessage =
+			"cannot save '" + filePath + "': the job has no retained CST "
+			"Document to serialize. Load the scene via the CST path before saving.";
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController::RequestSave: no retained CST Document for '%s' -- nothing to serialize",
+			filePath.c_str() );
+	}
 
 	// ---- Step 3: publish results + release render loop --------------
 	// notify_one runs INSIDE the lock_guard scope (P2.3 review fix):
@@ -5984,17 +5958,18 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		std::lock_guard<std::mutex> lk( mMutex );
 		mSaving.store( false );
 		if( Succeeded( result.status ) ) {
-			// Engine cleared mEditor.Dirty() already (it holds a non-
-			// const ref).  Clear the SFA set on the editor side too,
-			// since the engine cleared its local copy.
-			// Round-5 review P0: baseline-clean ONLY when the head is still the
-			// one the engine serialized (see headAtSerialize).  A moved head
-			// means some mutation slipped in -- the file is a valid snapshot of
-			// the OLD head, so the scene must STAY dirty.
+			// The successful write is now the on-disk identity baseline even
+			// when a concurrent edit moved the live head: the file contains the
+			// old snapshot and the next save of the newer head must not mistake
+			// our own write for an external modification.
+			mJob.RefreshCstLoadFileIdentity( filePath.c_str() );
+			// Baseline-clean ONLY when the live head is still the serialized
+			// one. A moved head means the file is a valid OLD snapshot, so the
+			// newer scene stays dirty and its tracker state remains untouched.
 			if( mJob.GetCstHeadVersion() == headAtSerialize ) {
 				mEditor.ClearDirtyState();
 			} else {
-				GlobalLog()->PrintEx( eLog_Error,
+				GlobalLog()->PrintEx( eLog_Info,
 					"SceneEditController::RequestSave: the Document head moved during the save -- "
 					"the written file snapshots the PRE-edit head, so the scene stays DIRTY." );
 			}
@@ -10329,24 +10304,14 @@ bool SceneEditController::RemoveEnvironment()
 
 bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )
 {
-	// Hacky-but-pragmatic implementation: SetProperty's existing
-	// switch reads `mSelectionCategory` + `mSelectionName` inline
-	// throughout its ~150-line body.  Rather than parameterize that
-	// body over (cat, selName) — which would force every per-
-	// category branch to take both — temporarily swap the primary
-	// tuple for the call and restore on return.  Both fields are
-	// UI-thread-only writes (no render-thread reads), so the
-	// temporary mutation isn't racy.  Future cleanup: refactor
-	// SetProperty's body into a helper that takes (cat, selName)
-	// explicitly and drop this swap.
-	const Category savedCat  = mSelectionCategory;
-	const String   savedName = mSelectionName;
 	const int idx = static_cast<int>( cat );
-	mSelectionCategory = cat;
-	mSelectionName     = ( idx >= 0 && idx < kNumCategories ) ? mSelectionByCategory[idx] : String();
-	const bool ok = SetProperty( name, valueStr );
-	mSelectionCategory = savedCat;
-	mSelectionName     = savedName;
+	if( idx < 0 || idx >= kNumCategories ) return false;
+	const String targetName = mSelectionByCategory[idx];
+	const bool ok = SetPropertyInner_( cat, targetName, name, valueStr );
+	// The primary selection was never overwritten, so a synchronous dirty
+	// callback sees coherent UI state and any re-entrant SetSelection it makes
+	// remains authoritative.
+	mEditor.DrainDirtyNotification();
 	return ok;
 }
 
@@ -10359,7 +10324,7 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 // ---------------------------------------------------------------------
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
-	const bool ok = SetPropertyInner_( name, valueStr );
+	const bool ok = SetPropertyInner_( mSelectionCategory, mSelectionName, name, valueStr );
 	mEditor.DrainDirtyNotification();
 	return ok;
 }
@@ -10393,17 +10358,11 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	return r;
 }
 
-bool SceneEditController::SetPropertyInner_( const String& name, const String& valueStr )
+bool SceneEditController::SetPropertyInner_(
+	Category targetCategory, const String& targetName,
+	const String& name, const String& valueStr )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
-	// Round-5 review P0 (belt to the agent-path gate): refuse edits while a
-	// save serializes the Document lock-free in RequestSave step 2.  Shells
-	// save on the edit thread (same-thread-safe by construction); this guards
-	// the documented off-thread-save case (tests, future transports).
-	if( mSaving.load( std::memory_order_acquire ) ) {
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: property edit refused -- a save is in flight." );
-		return false;
-	}
 	// External-review P1 (2026-07-22): general dangling-reference guard.  Reject
 	// BEFORE any arm mutates the scene when this edit would persist a reference
 	// to a runtime-only entity (no CST chunk) -- it would render now but fail on
@@ -10411,17 +10370,17 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 	// category uniformly (material slot rebinds, object material/geometry/shader
 	// bindings, painter/geometry child refs); inline literals + CST-backed names
 	// + `none` are untouched.  See WouldPersistDanglingReference_.
-	if( mSelectionName.size() > 1
-	 && WouldPersistDanglingReference_( mSelectionCategory, mSelectionName, name, valueStr ) )
+	if( targetName.size() > 1
+	 && WouldPersistDanglingReference_( targetCategory, targetName, name, valueStr ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: edit of `%s.%s` rejected -- `%s` names a runtime-only entity with "
 			"no CST chunk, so persisting it would write a DANGLING reference that fails on save/reload. "
 			"Bind a scene-defined entity instead.",
-			mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
+			targetName.c_str(), name.c_str(), valueStr.c_str() );
 		return false;
 	}
-	switch( mSelectionCategory ) {
+	switch( targetCategory ) {
 
 	case Category::Camera: {
 		// Cameras: route through the editor's transactional Apply path
@@ -10485,10 +10444,10 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		// redo work end-to-end alongside drag-driven transform edits.
 		const IScene* scene = mJob.GetScene();
 		if( !scene ) return false;
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
 
 		SceneEdit edit;
-		edit.objectName = mSelectionName;
+		edit.objectName = targetName;
 
 		if( name == String( "position" ) ) {
 			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
@@ -10540,7 +10499,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		}
 		else if( name == String( "casts_shadows" ) || name == String( "receives_shadows" ) ) {
 			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
-			const IObject* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
+			const IObject* obj = objs ? objs->GetItem( targetName.c_str() ) : 0;
 			if( !obj ) return false;
 			bool castsB = obj->DoesCastShadows();
 			bool recvsB = obj->DoesReceiveShadows();
@@ -10643,13 +10602,13 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		// prev value, calls KeyframeFromParameters + SetIntermediateValue
 		// + RegenerateData on the forward path, and replays the prev
 		// value through the same machinery on undo.
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
 		IScenePriv* scene = mJob.GetScene();
 		if( !scene ) return false;
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetLightProperty;
-		edit.objectName    = mSelectionName;   // light entity name
+		edit.objectName    = targetName;   // light entity name
 		edit.propertyName  = name;             // "position" / "energy" / etc.
 		edit.propertyValue = valueStr;
 
@@ -10677,7 +10636,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 
 	case Category::Rasterizer: {
 		// Document-first ADR phase 3: rasterizer edits ride the TRANSACTION
-		// path.  mSelectionName is the rasterizer chunk keyword; the empty
+		// path. targetName is the rasterizer chunk keyword; the empty
 		// target + kind form addresses the sole chunk of that kind (Job's
 		// generalized unique-in-kind resolve).  ApplyAgentParamEdit does the
 		// whole coherent sequence -- park, dry-run-gated Document edit,
@@ -10689,7 +10648,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		// undo/redo.  An unrecordable edit (no unique chunk of this kind)
 		// rejects inside the path -- same outcome as the round-4 pre-flight.
 		// Legacy scenes (no retained Document) keep the LIVE-only rebuild.
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
 		if( !mJob.HasRetainedCstDocument() ) {
 			if( mTxnOpen ) {
 				GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: rasterizer property edit refused inside an open transaction (live-only on a legacy scene -> not undoable)." );
@@ -10702,15 +10661,15 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 			}
 			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 			const bool ok = mJob.SetRasterizerParameter(
-				mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
+				targetName.c_str(), name.c_str(), valueStr.c_str() );
 			if( !ok ) return false;
 			mEditPending.store( true, std::memory_order_release );
 			lk.unlock();
 			mCV.notify_one();
 			return true;
 		}
-		const AgentCommitResult r = ApplyAgentParamEdit(
-			String( "" ), mSelectionName, name, valueStr, nullptr );
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			String( "" ), targetName, name, valueStr, nullptr );
 		return r.applied;
 	}
 
@@ -10795,7 +10754,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		// (potentially destroying it if no one else holds a ref),
 		// which the render thread may be mid-sample on.  Same lock
 		// pattern Light / Object / Film use for the same reason.
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
 
 		// GUI redesign 2026-07-22 (external-review P1): the material panel now
 		// surfaces BOTH painter/scalar-painter SLOTS and the scalar VALUE params
@@ -10824,7 +10783,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 			std::lock_guard<std::mutex> clk( mMutex );
 			const IMaterialManager* mats = mJob.GetMaterials();
 			const IMaterial* mat = mats
-				? const_cast<IMaterialManager*>( mats )->GetItem( mSelectionName.c_str() )
+				? const_cast<IMaterialManager*>( mats )->GetItem( targetName.c_str() )
 				: nullptr;
 			const MaterialSlotRef slot = mat
 				? MaterialIntrospection::GetSlot( *mat, name )
@@ -10838,8 +10797,8 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 			}
 		}
 		if( !rebindSlot ) {
-			const AgentCommitResult r = ApplyAgentParamEdit(
-				mSelectionName, String( "material" ), name, valueStr, nullptr );
+			const AgentCommitResult r = ApplyAgentParamEditInner_(
+				targetName, String( "material" ), name, valueStr, nullptr );
 			return r.applied;
 		}
 
@@ -10852,7 +10811,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetMaterialProperty;
-		edit.objectName    = mSelectionName;
+		edit.objectName    = targetName;
 		edit.propertyName  = name;
 		edit.propertyValue = valueStr;
 
@@ -10873,7 +10832,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		// and-park as Material — medium setters re-derive sigma_t and
 		// sigma_t_max caches that the render thread reads via
 		// SampleDistance / EvalTransmittance.
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
 
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load( std::memory_order_acquire ) ) {
@@ -10884,7 +10843,7 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetMediumProperty;
-		edit.objectName    = mSelectionName;
+		edit.objectName    = targetName;
 		edit.propertyName  = name;
 		edit.propertyValue = valueStr;
 
@@ -10910,9 +10869,9 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		// undo/redo (PushAgentCstParamEdit), marks dirty, bumps light
 		// generation if needed, and kicks the re-render itself, so no
 		// separate park/SceneEdit/Apply dance is needed here.
-		if( mSelectionName.size() <= 1 ) return false;
-		const AgentCommitResult r = ApplyAgentParamEdit(
-			mSelectionName, String( "painter" ), name, valueStr, nullptr );
+		if( targetName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			targetName, String( "painter" ), name, valueStr, nullptr );
 		return r.applied;
 	}
 
@@ -10921,9 +10880,9 @@ bool SceneEditController::SetPropertyInner_( const String& name, const String& v
 		// generic agent CST param-edit path (cancel-and-parks, captures
 		// the prior value for undo/redo, marks dirty, re-derives the
 		// geometry AND every object referencing it, kicks the re-render).
-		if( mSelectionName.size() <= 1 ) return false;
-		const AgentCommitResult r = ApplyAgentParamEdit(
-			mSelectionName, String( "geometry" ), name, valueStr, nullptr );
+		if( targetName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			targetName, String( "geometry" ), name, valueStr, nullptr );
 		return r.applied;
 	}
 

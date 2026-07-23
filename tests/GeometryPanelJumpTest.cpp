@@ -48,6 +48,15 @@
 //      T13 Rasterizer undo (document-first phase 3) -- the migrated
 //          transaction-path rasterizer edit is undoable; Undo restores
 //          `samples 8` in the CST.
+//      T14 Kind-constrained lookup -- an agent request naming a geometry
+//          while claiming `kind=material` is rejected without moving head.
+//      T15 Unnamed-singleton lookup -- an empty material target does not
+//          resolve to the fixture's sole NAMED material.
+//      T16 Per-category callback coherence -- a dirty callback sees the
+//          primary Object selection during a secondary Material edit, and
+//          a re-entrant Light selection remains authoritative.
+//      T17 Callback destruction -- the public C dirty callback may destroy
+//          its controller without the drain touching freed editor storage.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -64,6 +73,7 @@
 #include <vector>
 
 #include "../src/Library/Job.h"
+#include "../src/Library/RISE_API.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/SceneEditor/CstIntrospection.h"
 #include "../src/Library/Parsers/ChunkDescriptor.h"
@@ -121,6 +131,20 @@ namespace
 			return nullptr;
 		}
 		return pJob;
+	}
+
+	struct DestroyOnDirtyContext
+	{
+		SceneEditController* controller = nullptr;
+		int fires = 0;
+	};
+
+	void DestroyControllerOnDirty( void* userData, int )
+	{
+		DestroyOnDirtyContext* context = static_cast<DestroyOnDirtyContext*>( userData );
+		++context->fires;
+		RISE_API_DestroySceneEditController( context->controller );
+		context->controller = nullptr;
 	}
 
 	bool NameInCategory( SceneEditController& ctrl, Category cat, const std::string& name )
@@ -409,6 +433,12 @@ int main()
 			}
 			Check( restored,
 				"MONEY (T13): Undo restored `samples 8` in the CST (rasterizer edits are now undoable)" );
+			Check( pJob->GetRasterizerParameter( "pathtracing_pel_rasterizer", "samples" ) == std::string( "8" ),
+				"MONEY (T13): Undo also re-realized the LIVE rasterizer with samples == 8" );
+			ctrl.Redo();
+			Check( pJob->GetRasterizerParameter( "pathtracing_pel_rasterizer", "samples" ) == std::string( "16" ),
+				"MONEY (T13): Redo re-realized the LIVE rasterizer with samples == 16" );
+			ctrl.Undo();
 		}
 
 	}
@@ -424,6 +454,7 @@ int main()
 		"film\n{\nwidth 24\nheight 24\n}\n\n"
 		"pinhole_camera\n{\nlocation 0 0 3.5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n\n"
 		"uniformcolor_painter\n{\nname pnt_a\ncolor 0.5 0.5 0.5\n}\n\n"
+		"uniformcolor_painter\n{\nname pnt_b\ncolor 0.2 0.7 0.3\n}\n\n"
 		"lambertian_material\n{\nname mat_a\nreflectance pnt_a\n}\n\n"
 		"sphere_geometry\n{\nname g1\nradius 0.5\n}\n\n"
 		"standard_object\n{\nname obj_a\ngeometry g1\nmaterial mat_a\n}\n\n"
@@ -483,8 +514,91 @@ int main()
 			ctrl2.SetDirtyChangedListener( SceneEditController::DirtyChangedFn() );
 		}
 
+		// ---------- T14: a supplied kind is a hard constraint ----------
+		std::printf( "T14: uniquely named wrong-kind agent target is rejected...\n" );
+		{
+			const RISE::Cst::CstHeadVersion before = pJob2->GetCstHeadVersion();
+			const std::string radiusBefore = CstValueOf( pJob2, "g1", "geometry", "radius" );
+			const SceneEditController::AgentCommitResult r = ctrl2.ApplyAgentParamEdit(
+				String( "g1" ), String( "material" ), String( "radius" ), String( "1.25" ), nullptr );
+			Check( !r.applied,
+				"MONEY (T14): name=g1, kind=material does not target the uniquely named sphere_geometry" );
+			Check( pJob2->GetCstHeadVersion() == before,
+				"T14: wrong-kind rejection leaves the CST head unchanged" );
+			Check( CstValueOf( pJob2, "g1", "geometry", "radius" ) == radiusBefore,
+				"T14: sphere radius remains unchanged" );
+		}
+
+		// ---------- T15: empty target addresses unnamed singletons only ----------
+		std::printf( "T15: empty material target does not resolve the sole named material...\n" );
+		{
+			const RISE::Cst::CstHeadVersion before = pJob2->GetCstHeadVersion();
+			const std::string reflectanceBefore = CstValueOf( pJob2, "mat_a", "material", "reflectance" );
+			const SceneEditController::AgentCommitResult r = ctrl2.ApplyAgentParamEdit(
+				String( "" ), String( "material" ), String( "reflectance" ), String( "pnt_b" ), nullptr );
+			Check( !r.applied,
+				"MONEY (T15): empty target + material rejects instead of mutating sole named mat_a" );
+			Check( pJob2->GetCstHeadVersion() == before,
+				"T15: named-singleton rejection leaves the CST head unchanged" );
+			Check( CstValueOf( pJob2, "mat_a", "material", "reflectance" ) == reflectanceBefore,
+				"T15: mat_a reflectance remains unchanged" );
+		}
+
+		// ---------- T16: per-category edit never swaps primary selection ----------
+		std::printf( "T16: dirty callback sees coherent primary selection during secondary edit...\n" );
+		{
+			ctrl2.Editor().ClearDirtyState();
+			ctrl2.Editor().DrainDirtyNotification();
+			Check( ctrl2.SetSelection( Category::Object, String( "obj_a" ) ),
+				"T16: Object obj_a is the primary selection" );
+			Category seenCategory = Category::None;
+			String seenName;
+			int fired = 0;
+			ctrl2.SetDirtyChangedListener( [&]( bool ) {
+				++fired;
+				seenCategory = ctrl2.GetSelectionCategory();
+				seenName = ctrl2.GetSelectionName();
+				ctrl2.SetSelection( Category::Light, String( "lgt" ) );
+			} );
+			Check( ctrl2.SetPropertyForCategory(
+					Category::Material, String( "reflectance" ), String( "pnt_b" ) ),
+				"T16: secondary Material edit succeeds" );
+			Check( fired == 1, "T16: clean->dirty callback fired exactly once" );
+			Check( seenCategory == Category::Object && seenName == String( "obj_a" ),
+				"MONEY (T16): callback observed the real primary Object selection, not temporary Material state" );
+			Check( ctrl2.GetSelectionCategory() == Category::Light
+					&& ctrl2.GetSelectionName() == String( "lgt" ),
+				"MONEY (T16): re-entrant Light selection was not overwritten when the edit returned" );
+			ctrl2.SetDirtyChangedListener( SceneEditController::DirtyChangedFn() );
+		}
+
 		pJob2->release();
 		std::remove( tmp2.c_str() );
+	}
+
+	// ---------- T17: C callback may destroy its controller ----------
+	std::printf( "T17: dirty callback destroys its controller without a post-callback UAF...\n" );
+	const std::string tmp3 = TempPath( "geometry_panel_jump_destroy_callback.RISEscene" );
+	Job* pJob3 = LoadScene( kSceneNoRaster, tmp3 );
+	Check( pJob3 != nullptr, "T17: destruction fixture scene loads" );
+	if( pJob3 )
+	{
+		DestroyOnDirtyContext context;
+		Check( RISE_API_CreateSceneEditController( pJob3, nullptr, &context.controller ),
+			"T17: C API creates the controller" );
+		Check( RISE_API_SceneEditController_SetDirtyChangedCallback(
+				context.controller, &DestroyControllerOnDirty, &context ),
+			"T17: destruction callback installs" );
+		Check( RISE_API_SceneEditController_SetSelection(
+				context.controller, static_cast<int>( Category::Geometry ), "g1" ),
+			"T17: selects geometry before the dirtying edit" );
+		const bool editReturned = RISE_API_SceneEditController_SetProperty(
+			context.controller, "radius", "0.9" );
+		Check( editReturned, "T17: the dirtying C API call returned after callback destruction" );
+		Check( context.fires == 1 && context.controller == nullptr,
+			"MONEY (T17): callback destroyed the controller exactly once and the drain returned safely" );
+		pJob3->release();
+		std::remove( tmp3.c_str() );
 	}
 
 	pJob->release();

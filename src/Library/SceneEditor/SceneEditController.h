@@ -1769,16 +1769,18 @@ namespace RISE
 		// file: an external-modification guard refuses an in-place
 		// save when the loaded file changed on disk after load, the
 		// write is atomic (temp + rename), and the engine NoOps when
-		// the serialized bytes equal the on-disk file.  Dirty state
-		// does not select WHAT is written (the whole Document always
-		// is) -- it only gates the GUI Save button; a successful
-		// Saved/NoOp Clear()s the DirtyTracker.  Follows
-		// the lock-free disk-IO sequence:
+		// the serialized bytes equal the on-disk file. Dirty state does
+		// not select WHAT is written (the whole Document snapshot always
+		// is); it only gates the GUI Save button. Follows the lock-free
+		// disk-IO sequence:
 		//   1. Acquire mMutex, cancel in-flight render, wait for
-		//      mRendering=false, set mSaving=true, release mMutex.
-		//   2. Run SaveEngine::Save outside the lock (file IO is slow).
+		//      mRendering=false, snapshot Document/file identity/head,
+		//      set mSaving=true, release mMutex.
+		//   2. Run SaveEngine::Save on the immutable snapshots outside
+		//      the lock (file IO is slow).
 		//   3. Reacquire mMutex, clear mSaving, surface any error,
-		//      notify the render loop.
+		//      clear dirty only if the live head still equals the
+		//      serialized snapshot, and notify the render loop.
 		// `filePath` is the target .RISEscene to write — typically
 		// the originally-loaded path, but the caller can redirect for
 		// Save-As.  Returns the SaveResult so the UI can show the
@@ -1787,10 +1789,10 @@ namespace RISE
 
 		//! True iff a save is currently in flight on disk.  The render
 		//! loop's wake condition consults this so a new render pass
-		//! doesn't start mid-save (we don't want concurrent file
-		//! access AND we want the save's frame-store reads to see a
-		//! stable state).  Mirrors mRendering but in the opposite
-		//! direction.
+		//! doesn't start mid-save. The save reads immutable Document
+		//! state, but retaining the gate avoids competing IO/render work
+		//! and preserves viewport scheduling. Mirrors mRendering in the
+		//! opposite direction.
 		bool IsSaving() const { return mSaving.load(); }
 
 		//! Diagnostic message from the most recent save attempt.
@@ -1931,13 +1933,12 @@ namespace RISE
 		//! — a stream of N edits that all leave the scene dirty
 		//! produces one callback, not N.  Pass an empty/null `std::function`
 		//! to detach.
-		//! THREADING CONTRACT (external-review round 3, 2026-07-22): the listener
-		//! fires on WHATEVER thread drove the edit, UNDER THE HELD mMutex (see
-		//! ApplyAgentParamEdit's MarkCstHeadDirty call site).  It MUST NOT call
-		//! back into this controller synchronously -- the enumeration getters and
-		//! RefreshProperties now take mMutex, so a synchronous re-entry deadlocks
-		//! (non-recursive mutex).  Marshal to your UI queue instead; both shells
-		//! already do (Mac dispatch_async(main), Windows Qt::QueuedConnection).
+		//! THREADING CONTRACT (document-first phase 1): the listener fires on
+		//! whichever thread drains the mutation, with NO controller or
+		//! notification lock held. Synchronous re-entry is supported (including
+		//! controller destruction); platform bridges should still marshal UI
+		//! work to their event queue for thread affinity. Transitions are
+		//! coalesced: consume the reported value rather than counting calls.
 		using DirtyChangedFn = SceneEditor::DirtyChangedFn;
 		void SetDirtyChangedListener( DirtyChangedFn fn )
 		{
@@ -3713,7 +3714,8 @@ namespace RISE
 		//! call these then drain the deferred dirty notification OUTSIDE any
 		//! lock (SceneEditor::DrainDirtyNotification) -- so listener work never
 		//! runs under mMutex and a re-entrant listener cannot deadlock.
-		bool SetPropertyInner_( const String& name, const String& valueStr );
+		bool SetPropertyInner_( Category targetCategory, const String& targetName,
+		                       const String& name, const String& valueStr );
 		//! Drain-free body of RestoreEditorState -- for callers that HOLD mMutex
 		//! (RollbackTransaction), whose own post-unlock drain delivers the
 		//! notification.  The public RestoreEditorState wraps this + drains.

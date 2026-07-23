@@ -2,10 +2,11 @@
 //
 //  SaveEngine.cpp - the scene-save side of the Model-B CST cutover.
 //
-//  Serializes the Job's retained CST Document (the complete source of
-//  truth since Slice 6c-3a routed every GUI edit into it) and writes it
-//  atomically.  An external-modification guard refuses an IN-PLACE save
-//  when the loaded file changed on disk after load.
+//  Serializes an immutable snapshot of the Job's retained CST Document
+//  (the complete source of truth since Slice 6c-3a routed every GUI edit
+//  into it) and writes it atomically.  An external-modification guard
+//  refuses an IN-PLACE save when the loaded file changed on disk after
+//  load.
 //
 //  See docs/ROUND_TRIP_SAVE_PLAN.md §9 (algorithm history) and §11.6
 //  (the external-modification guard's rationale).
@@ -16,10 +17,7 @@
 #include "SaveEngine.h"
 #include "../Cst/Cst.h"   // P5 Slice 4: SerializeCst the retained CST Document
 
-#include "DirtyTracker.h"
 #include "FileIdentity.h"
-#include "../Interfaces/IJobPriv.h"
-#include "../Utilities/Log/Log.h"
 
 #include <cstring>
 #include <ctime>
@@ -166,12 +164,10 @@ bool ReadFile( const std::string& filePath, std::string& outBytes,
 // ----------------------------------------------------------------------
 
 SaveEngine::SaveEngine(
-    IJobPriv&                              job,
-    DirtyTracker&                          dirty,
-    std::unordered_set<std::string>&       scaleFromAnchorSet )
-    : mJob( job )
-    , mDirty( dirty )
-    , mScaleFromAnchorSet( scaleFromAnchorSet )
+    const Cst::Document& document,
+    const FileIdentity& loadedFileIdentity )
+    : mDocument( document )
+    , mLoadedFileIdentity( loadedFileIdentity )
 {
 }
 
@@ -181,37 +177,11 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     result.filePath = filePath;
 
     // ---- CST-Document save (the Model-B cutover's save side) -----------
-    // The Job retains a canonical CST Document (LoadAsciiSceneViaCst) that
-    // is the COMPLETE source of truth -- every GUI edit routes into it
-    // (Slice 3) -- so SERIALIZE it directly.  SerializeCst is byte-exact
-    // on an unedited round-trip and minimal-diff on edits
-    // (CstSaveFidelityTest).
-    //
-    // Since Slice 6c-3a every scene loads CST-only, so a Job with NO
-    // retained Document can no longer occur in production.  If one somehow
-    // reaches here (a lightweight / non-CST Job), there is nothing to
-    // serialize -- return a clear failure rather than crashing or writing
-    // garbage.  (The legacy byte-splice fallback that used to run for such
-    // a Job was deleted in Slice 6d.)
-    if( !mJob.HasRetainedCstDocument() ) {
-        result.status = SaveResult::Status::Failed;
-        result.errorMessage =
-            "cannot save '" + filePath + "': the job has no retained CST "
-            "Document to serialize.  Load the scene via the CST path before "
-            "saving.";
-        GlobalLog()->PrintEx( eLog_Error,
-            "SaveEngine::Save: no retained CST Document for '%s' -- nothing to serialize",
-            filePath.c_str() );
-        return result;
-    }
-
-    const RISE::Cst::Document* doc = mJob.GetCstDocument();
-    if( !doc ) {
-        result.status = SaveResult::Status::Failed;
-        result.errorMessage =
-            "Job reports a retained CST Document but GetCstDocument() returned null";
-        return result;
-    }
+    // The controller captured this immutable persistent-Document snapshot
+    // under its mutation mutex.  File IO can therefore run unlocked without
+    // borrowing the Job's replaceable pCstDocument or touching dirty state.
+    // A concurrent edit lands on a newer head; RequestSave's publish step
+    // detects that version change and leaves the editor dirty.
 
     // External-modification guard, IN-PLACE save only: if the loaded file
     // was edited on disk after load, an in-place re-serialize would clobber
@@ -221,7 +191,7 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // the loaded path.  The FileIdentity is captured at CST-load time
     // (Job::RefreshCstLoadFileIdentity) and read via GetCstLoadFileIdentity.
     {
-        const FileIdentity& cstLoadIdent = mJob.GetCstLoadFileIdentity();
+        const FileIdentity& cstLoadIdent = mLoadedFileIdentity;
         if( cstLoadIdent.captured && cstLoadIdent.filePath == filePath ) {
             struct ::stat cur = {};
             if( ::stat( filePath.c_str(), &cur ) == 0 ) {
@@ -246,16 +216,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         }
     }
 
-    const std::string text = RISE::Cst::SerializeCst( *doc );
+    const std::string text = RISE::Cst::SerializeCst( mDocument );
 
     // NoOp when the target already holds exactly these bytes (e.g. a save
     // with no pending edits).
     std::string existing, rerr;
     if( ReadFile( filePath, existing, rerr ) && existing == text ) {
         result.status = SaveResult::Status::NoOp;
-        mDirty.Clear();
-        mScaleFromAnchorSet.clear();
-        mJob.RefreshCstLoadFileIdentity( filePath.c_str() );   // re-baseline (re-anchor a Save-As to the new path)
         return result;
     }
 
@@ -267,14 +234,6 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     }
 
     result.status = SaveResult::Status::Saved;
-    mDirty.Clear();
-    mScaleFromAnchorSet.clear();
-    // Re-baseline the file identity to the just-written file so the NEXT
-    // save isn't falsely refused (the write changed mtime/size) and a
-    // Save-As re-anchors the guard to the new target path.  Updates the
-    // ClearAll-surviving member too, so the baseline survives the next
-    // D2 re-derive.
-    mJob.RefreshCstLoadFileIdentity( filePath.c_str() );
     return result;
 }
 

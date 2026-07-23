@@ -575,9 +575,10 @@ namespace RISE
 		//! NOTE: the suffix narrows the COMMON keywords per kind (material/light/camera/object); a few keywords
 		//! are false-negatives (gltf_import, hosek_wilkie_skylight, camera_defaults) -> a ChunkCategory-based
 		//! disambiguator is the cleaner future fix.  `uniqueFallback` (OPT-IN, only for UNNAMED-addressable kinds
-		//! like cameras): if NO chunk carries `bareName` but exactly ONE chunk is of the kind, return it by POSITION.
-		//! It is OFF for always-named kinds (material/light/object) so a typo'd/unknown name correctly REFUSES
-		//! (returns 0) instead of silently resolving to the sole chunk of that kind.
+		//! like cameras): if NO chunk carries `bareName` but exactly ONE UNNAMED chunk is of the kind, return it by
+		//! POSITION. Named chunks never participate in fallback, so an empty/typo'd target cannot silently resolve
+		//! to the sole material/light/object. When `roleKindSuffix` is supplied it is always enforced, including
+		//! for a single bare-name match.
 		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr, const std::string& roleKindSuffix = std::string(), bool uniqueFallback = false );
 
 		//! Resolve a durable NodeId to the green node it now labels (null if gone),

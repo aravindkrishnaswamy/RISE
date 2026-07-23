@@ -33,6 +33,7 @@
 #include <functional>
 #include <unordered_set>
 #include <atomic>
+#include <memory>
 #include <mutex>
 
 namespace RISE
@@ -86,10 +87,18 @@ namespace RISE
 		//! material / shader / shadow / camera / light ops without it.
 		void SetJob( IJob* job )
 		{
+			const bool initialBinding = ( mJob != job );
 			mJob = job;
-			// Document-first ADR phase 1: a fresh bind is the CLEAN baseline --
-			// derived dirty compares the head against this saved version.
-			CaptureSavedHeadVersion_();
+			if( initialBinding ) {
+				// Only initial attachment establishes a clean baseline. A D2
+				// re-derive rebinds the SAME Job after committing a new head;
+				// treating that as a fresh bind would baseline an unsaved edit.
+				CaptureSavedHeadVersion_();
+			} else {
+				// Same-Job rebind: retain the saved baseline and refresh the
+				// derived floor against the new live head.
+				RecomputeHeadDiffers_();
+			}
 		}
 
 		//! Re-point the editor at the Job's CURRENT scene after a whole-scene rebuild (e.g. a scene_variant
@@ -479,7 +488,9 @@ namespace RISE
 		using DirtyChangedFn = std::function<void(bool hasUnsavedChanges)>;
 		void SetDirtyChangedListener( DirtyChangedFn fn )
 		{
-			mDirtyChangedListener = std::move( fn );
+			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+			std::lock_guard<std::mutex> lk( state->mutex );
+			state->listener = std::move( fn );
 			// Don't fire on attach — the bridge already knows the
 			// initial state (it can call HasUnsavedChanges()).
 		}
@@ -615,28 +626,22 @@ namespace RISE
 		// Undo/Redo -- kick unconditionally and don't consult this; it is meaningful only right after Apply.)
 		bool mCstLiveSceneChanged = false;
 
-		//! Phase 6.5 UI hook: GUI-installed listener fired on
-		//! `HasUnsavedChanges()` TRANSITIONS only.  Empty by default
-		//! (no callbacks fire until SetDirtyChangedListener is called).
-		DirtyChangedFn mDirtyChangedListener;
-
-		//! Memoized last-fired value of `HasUnsavedChanges()` so the
-		//! listener only fires on transitions.  Starts at false
-		//! (matches the initial clean state on construction).
-		//! Phase 1: guarded by mNotifyMutex (concurrent drains).
-		bool mPrevHasUnsavedChanges = false;
-
-		//! Document-first ADR phase 1: deferred-notification state.  The
-		//! pending flag is set under arbitrary locks (cheap atomic); the
-		//! leaf mNotifyMutex serializes drains and is never held while
-		//! acquiring any other lock.
-		std::atomic<bool> mDirtyNotifyPending{ false };
-		std::mutex        mNotifyMutex;
-		//! Round-5 review P1: single-deliverer gate -- only one thread runs the
-		//! listener at a time; racing drains re-flag pending and the active
-		//! deliverer loops, so callbacks stay ORDERED and a re-entrant nested
-		//! drain (from inside the listener) returns immediately (no deadlock).
-		std::atomic<bool> mNotifyDelivering{ false };
+		//! Deferred-notification state lives independently of SceneEditor's
+		//! storage so a C callback may destroy its controller safely. Drain
+		//! keeps a shared reference, and SceneEditor::~SceneEditor marks the
+		//! owner dead before the callback returns to the drain; the drain then
+		//! touches only this surviving state and exits without dereferencing
+		//! the destroyed editor.
+		struct DirtyNotificationState
+		{
+			DirtyChangedFn   listener;
+			bool             prevHasUnsavedChanges = false;
+			std::atomic<bool> pending{ false };
+			std::atomic<bool> delivering{ false };
+			std::atomic<bool> ownerAlive{ true };
+			std::mutex        mutex;
+		};
+		std::shared_ptr<DirtyNotificationState> mDirtyNotificationState;
 
 		//! Round-5 review P1: the derived-dirty floor is served from this CACHED
 		//! atomic, recomputed at every mutation's Fire (under the mutator's own
