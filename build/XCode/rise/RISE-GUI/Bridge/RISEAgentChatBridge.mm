@@ -96,8 +96,9 @@ static NSString *ToNS(const std::string& s) {
     return call;
 }
 
-- (NSString *)callId { return ToNS(_cppId); }
-- (NSString *)name   { return ToNS(_cppName); }
+- (NSString *)callId   { return ToNS(_cppId); }
+- (NSString *)name     { return ToNS(_cppName); }
+- (NSString *)argsJson { return ToNS(_cppArgsJson); }
 
 @end
 
@@ -146,6 +147,7 @@ static NSString *ToNS(const std::string& s) {
     NSString *_errorMessage;
     RISEAgentChatErrorKind _errorKind;
     NSString *_assistantDisplayText;
+    NSString *_reasoningText;
 }
 
 - (instancetype)initWithStep:(const Agent::ChatStepResult&)step {
@@ -192,6 +194,7 @@ static NSString *ToNS(const std::string& s) {
     _finalText            = ToNS(step.finalText);
     _errorMessage         = ToNS(step.errorMessage);
     _assistantDisplayText = ToNS(step.assistantDisplayText);
+    _reasoningText        = ToNS(step.reasoningText);
     return self;
 }
 
@@ -201,6 +204,7 @@ static NSString *ToNS(const std::string& s) {
 - (NSString *)errorMessage { return _errorMessage; }
 - (RISEAgentChatErrorKind)errorKind { return _errorKind; }
 - (NSString *)assistantDisplayText  { return _assistantDisplayText; }
+- (NSString *)reasoningText         { return _reasoningText; }
 
 @end
 
@@ -344,6 +348,16 @@ static NSString *ToNS(const std::string& s) {
 - (void)addToolResult:(RISEAgentChatToolCall *)call
   jsonRpcResponseLine:(NSString *)line {
     _loop->AddToolResult([call cppCall], ToStd(line));
+}
+
+- (NSString *)toolOutcomeLineFor:(RISEAgentChatToolCall *)call
+                       resultLine:(NSString *)line {
+    // Pure/stateless (see AgentChatLoop::ToolOutcomeLineForDisplay's
+    // doc) -- does not require _loop's transcript/pending state at
+    // all, but is a bridge instance method for symmetry with the
+    // rest of this class's tool-call surface.
+    return ToNS(Agent::AgentChatLoop::ToolOutcomeLineForDisplay(
+        [call cppCall], ToStd(line)));
 }
 
 - (void)startTrajectoryInDirectory:(NSString *)directory

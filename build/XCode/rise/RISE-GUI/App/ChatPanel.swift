@@ -431,6 +431,19 @@ private struct ProposalsPanel: View {
 private struct ChatTranscriptRow: View {
     let entry: ChatViewModel.Entry
 
+    /// GUI stage 2: whether THIS row's disclosure (a `.thinking` row,
+    /// or a `.toolActivity` row that has `detailText`) is currently
+    /// expanded — seeded once from `entry.isExpandedByDefault` at
+    /// row-init time (see the custom `init` below), then purely local
+    /// UI state the user can toggle either way afterward.  Unused for
+    /// every other row kind.
+    @State private var isExpanded: Bool
+
+    init(entry: ChatViewModel.Entry) {
+        self.entry = entry
+        _isExpanded = State(initialValue: entry.isExpandedByDefault)
+    }
+
     /// Matches the comp's "max-width:86%" bubble constraint against
     /// the fixed 404pt left-panel width (404 − 2×14 padding ≈ 376pt
     /// content column; 86% of that ≈ 320pt).
@@ -443,7 +456,9 @@ private struct ChatTranscriptRow: View {
         case .assistant:
             assistantText
         case .toolActivity:
-            traceChip
+            toolActivityRow
+        case .thinking:
+            thinkingRow
         case .error:
             errorRow
         case .notice:
@@ -491,6 +506,13 @@ private struct ChatTranscriptRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The comp's compact "trace chip" label with the leading "→ "
+    /// stripped — shared by the plain chip and the disclosure variant
+    /// below so both read identically at a glance.
+    private var traceChipLabel: String {
+        entry.text.hasPrefix("→ ") ? String(entry.text.dropFirst(2)) : entry.text
+    }
+
     /// The comp's compact "trace chip" — one per tool call.  The comp
     /// merges several sequential verbs into a single chip with a
     /// grammar-version/error-count trailer ("grammar v2.3 · 0 errors");
@@ -498,10 +520,9 @@ private struct ChatTranscriptRow: View {
     /// exposes no grammar/error-count data, so each tool call renders
     /// its own chip here instead of a fabricated merged trailer.
     private var traceChip: some View {
-        let label = entry.text.hasPrefix("→ ") ? String(entry.text.dropFirst(2)) : entry.text
-        return HStack(spacing: 7) {
+        HStack(spacing: 7) {
             Text("✓").foregroundColor(Theme.success)
-            Text(label)
+            Text(traceChipLabel)
             Spacer(minLength: 0)
         }
         .font(Theme.mono(10.5))
@@ -509,6 +530,82 @@ private struct ChatTranscriptRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.borderHairline, lineWidth: 1))
+    }
+
+    /// GUI stage 2: the trace chip PLUS an expandable disclosure once
+    /// the call's result has landed and `entry.detailText` (args +
+    /// result, capped) is set — before that (the brief dispatch-time
+    /// window, or a call the driver abandoned mid-turn) this is
+    /// byte-identical to the plain `traceChip` above: SAME one-line
+    /// density, no new always-visible chrome.
+    private var toolActivityRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if let detail = entry.detailText, !detail.isEmpty {
+                Button {
+                    isExpanded.toggle()
+                } label: {
+                    HStack(spacing: 7) {
+                        Text("✓").foregroundColor(Theme.success)
+                        Text(traceChipLabel)
+                        Spacer(minLength: 0)
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8))
+                    }
+                    .font(Theme.mono(10.5))
+                    .foregroundColor(Theme.textMuted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.borderHairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    Text(detail)
+                        .font(Theme.mono(9.5))
+                        .foregroundColor(Theme.textMuted)
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.bgPanel, in: RoundedRectangle(cornerRadius: 6))
+                }
+            } else {
+                traceChip
+            }
+        }
+    }
+
+    /// GUI stage 2: a dim, collapsed-by-default disclosure for the
+    /// model's reasoning text — collapsed shows a word-count summary
+    /// only (no chrome beyond the chevron), expanded shows the full
+    /// text in a smaller secondary-styled, selectable view.  Initial
+    /// state comes from `entry.isExpandedByDefault`, driven by the
+    /// "Detailed transcript" setting at append time.
+    private var thinkingRow: some View {
+        let wordCount = entry.text.split(whereSeparator: { $0.isWhitespace }).count
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8))
+                    Text(isExpanded ? "Thinking" : "Thinking (\(wordCount) word\(wordCount == 1 ? "" : "s"))")
+                }
+                .font(Theme.sans(11).italic())
+                .foregroundColor(Theme.textDim)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Text(entry.text)
+                    .font(Theme.sans(11))
+                    .foregroundColor(Theme.textDim)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .padding(.leading, 13)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var errorRow: some View {
@@ -544,6 +641,16 @@ private struct ChatTranscriptRow: View {
 struct ChatSettingsView: View {
     @EnvironmentObject var viewModel: RenderViewModel
     @ObservedObject var chat: ChatViewModel
+
+    /// GUI stage 2: the transcript verbosity toggle — SAME UserDefaults
+    /// key ChatViewModel's `detailedTranscriptEnabled` reads (see its
+    /// doc).  Default false (compact): `.thinking` rows append
+    /// collapsed and tool rows stay one line, matching today's density.
+    /// True (detailed): new `.thinking` rows append pre-expanded. Only
+    /// affects rows appended AFTER the toggle changes — it does not
+    /// retroactively re-collapse/re-expand anything already in the
+    /// transcript.
+    @AppStorage("agentChatDetailedTranscript") private var detailedTranscript = false
 
     @State private var draftProvider: AgentChatProviderChoice = .openai
     @State private var draftModelId: String = ""
@@ -738,6 +845,20 @@ struct ChatSettingsView: View {
                       + "tokens, timings).  API-key-shaped content is always "
                       + "redacted regardless of this setting.  Set "
                       + "RISE_TRAJECTORY_DIR to record elsewhere.")
+
+                // GUI stage 2: display-only verbosity, independent of
+                // trajectory recording above (that logs to a file for
+                // eval tooling; this controls what the live transcript
+                // shows).
+                Toggle("Detailed transcript (auto-expand thinking)",
+                       isOn: $detailedTranscript)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .help("Show the model's reasoning expanded by default. "
+                      + "Off (default): thinking is collapsed to a word "
+                      + "count and tool results stay one line — click "
+                      + "either to expand. Only affects rows appended "
+                      + "after this changes.")
             }
 
             Divider()

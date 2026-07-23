@@ -1309,6 +1309,23 @@ namespace RISE
 			mToolLineStash.clear();
 		}
 
+		//! GUI STAGE 2: a public, declared entry point onto the file-local
+		//! ToolOutcomeLine helper above -- so a caller OUTSIDE this
+		//! translation unit (the Mac GUI's ObjC++ bridge) can compute the
+		//! same one-line outcome summary FlushPendingToolResults uses for
+		//! ChatToolDisplaySummary::outcomeLine, for a tool result it is
+		//! handling asynchronously (the render tool's async path) before
+		//! that summary has been packed into the transcript.  Pure
+		//! delegation -- the anonymous-namespace implementation is
+		//! deliberately left in place (single source of truth for the
+		//! parsing rules; see its doc above) rather than moved or
+		//! duplicated.
+		std::string AgentChatLoop::ToolOutcomeLineForDisplay( const ChatToolCall& call,
+		                                                       const std::string& rawJsonRpcResponseLine )
+		{
+			return ToolOutcomeLine( call, rawJsonRpcResponseLine );
+		}
+
 		void AgentChatLoop::ElideAllLiveImages()
 		{
 			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: rewrite every entry

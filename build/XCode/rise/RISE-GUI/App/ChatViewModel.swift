@@ -221,12 +221,35 @@ final class ChatViewModel: ObservableObject {
             case user
             case assistant
             case toolActivity
+            /// GUI stage 2: the model's reasoning/thinking text for one
+            /// turn (mirrors RISEAgentChatStep.reasoningText — see its
+            /// doc).  Rendered as a collapsed-by-default disclosure; see
+            /// `isExpandedByDefault`.
+            case thinking
             case error
             case notice
         }
         let id = UUID()
         let kind: Kind
-        let text: String
+        /// GUI stage 2: `var`, not `let` — a `.toolActivity` row is
+        /// appended at DISPATCH time ("→ name") and updated IN PLACE
+        /// once the tool's result line arrives ("→ name  outcome"), so
+        /// the panel shows immediate activity feedback without a
+        /// second, duplicate row per call.
+        var text: String
+        /// GUI stage 2: the row's expandable detail payload — a
+        /// `.thinking` row's full reasoning text, or a `.toolActivity`
+        /// row's args+result detail (set once the result arrives,
+        /// alongside the in-place `text` update above).  nil/absent
+        /// means "nothing to expand" (no chevron is shown).
+        var detailText: String? = nil
+        /// GUI stage 2: whether this row's disclosure starts expanded.
+        /// Only ever set true for `.thinking` rows, and only when the
+        /// "Detailed transcript" setting is on (see
+        /// `ChatViewModel.detailedTranscriptEnabled`) — every other row
+        /// kind, and every `.thinking` row in the default (compact)
+        /// posture, starts collapsed.
+        var isExpandedByDefault: Bool = false
         /// Small LOCAL thumbnails for images attached to a `.user` entry
         /// (Model-B F5 chat image attachments) — shows what was actually
         /// sent, without re-decoding the base64 that rode on the wire.
@@ -737,6 +760,36 @@ final class ChatViewModel: ObservableObject {
     private static let recordTrajectoriesKey = "agentChat.recordTrajectories"
     private static func modelIdKey(_ p: AgentChatProviderChoice) -> String {
         "agentChat.modelId.\(p.rawValue)"
+    }
+
+    /// GUI stage 2: the verbosity toggle's UserDefaults key — SAME key
+    /// ChatSettingsView's `@AppStorage("agentChatDetailedTranscript")`
+    /// reads/writes (both sides of one UserDefaults entry; there is no
+    /// dedicated `@Published` mirror here because this is read once per
+    /// append, not observed continuously).  Default false (compact):
+    /// `.thinking` rows append collapsed.  True (detailed): `.thinking`
+    /// rows append pre-expanded, so the reasoning is visible without an
+    /// extra click.
+    private static let detailedTranscriptKey = "agentChatDetailedTranscript"
+
+    /// The CURRENT value of the verbosity toggle, read fresh each time
+    /// (see the key doc above) — used only to seed a NEW `.thinking`
+    /// entry's `isExpandedByDefault`; never retroactively re-collapses/
+    /// re-expands rows already in the transcript.
+    private var detailedTranscriptEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.detailedTranscriptKey)
+    }
+
+    /// GUI stage 2: cap a tool-call detail payload (args JSON or a raw
+    /// result line) to ~4KB — Swift `String.prefix` counts Characters
+    /// (grapheme clusters), so this can never split a multi-byte
+    /// codepoint the way a raw byte-offset cut could; matches the
+    /// UTF-8-safety the C++ side's own ~8KB resultJson cap provides
+    /// (AgentChatLoop.cpp's Utf8SafeCutPoint), just via Swift's native
+    /// Character-counted `String` rather than a manual byte scan.
+    private static func cappedForDetail(_ s: String, limit: Int = 4096) -> String {
+        if s.count <= limit { return s }
+        return String(s.prefix(limit)) + "…[truncated]"
     }
 
     /// Review-round P2 (E1): the loaded scene's path, handed in by
@@ -1795,6 +1848,16 @@ final class ChatViewModel: ObservableObject {
             switch step.kind {
             case .toolCalls:
                 consecutiveHttp400s = 0
+                // GUI stage 2: the model's reasoning for THIS turn, ahead
+                // of the assistant/tool rows it precedes on the wire —
+                // see ChatStepResult::reasoningText's doc (Anthropic
+                // `thinking` blocks, OpenAI-family `reasoning`/
+                // `reasoning_content`; "" on Gemini and plain gpt turns).
+                if !step.reasoningText.isEmpty {
+                    transcript.append(Entry(
+                        kind: .thinking, text: step.reasoningText,
+                        isExpandedByDefault: detailedTranscriptEnabled))
+                }
                 if !step.assistantDisplayText.isEmpty {
                     transcript.append(Entry(kind: .assistant,
                                             text: step.assistantDisplayText))
@@ -1819,6 +1882,11 @@ final class ChatViewModel: ObservableObject {
 
                     transcript.append(Entry(kind: .toolActivity,
                                             text: "→ \(call.name)"))
+                    // GUI stage 2: this call's row — found BY INDEX (it
+                    // was just appended last), not by re-scanning text,
+                    // so the later in-place update can't mismatch a
+                    // same-named earlier call still visible above it.
+                    let toolRowIndex = transcript.count - 1
                     let line = chatBridge.toolCallToJsonRpcLine(call, rpcId: nextRpcId)
                     nextRpcId += 1
 
@@ -1860,12 +1928,35 @@ final class ChatViewModel: ObservableObject {
                     guard viewportBridge != nil else { return }
                     guard sceneEditableOrReportRenderConflict() else { return }
 
+                    // GUI stage 2: update the dispatch-time row IN
+                    // PLACE now that a result line exists — covers BOTH
+                    // the synchronous and the async-render path, since
+                    // both funnel into the same `responseLine` above.
+                    // The one-liner is the SAME deterministic summary
+                    // (ToolOutcomeLineForDisplay) FlushPendingToolResults
+                    // uses for the wire-side ChatToolDisplaySummary, so
+                    // this row and the C++ transcript never disagree.
+                    if toolRowIndex < transcript.count {
+                        let outcome = chatBridge.toolOutcomeLine(for: call, resultLine: responseLine)
+                        transcript[toolRowIndex].text = "→ \(call.name)  \(outcome)"
+                        transcript[toolRowIndex].detailText =
+                            "Args:\n" + Self.cappedForDetail(call.argsJson)
+                            + "\n\nResult:\n" + Self.cappedForDetail(responseLine)
+                    }
+
                     chatBridge.addToolResult(call, jsonRpcResponseLine: responseLine)
                 }
                 continue
 
             case .finalText:
                 consecutiveHttp400s = 0
+                // GUI stage 2: same reasoning-first ordering as the
+                // .toolCalls branch above.
+                if !step.reasoningText.isEmpty {
+                    transcript.append(Entry(
+                        kind: .thinking, text: step.reasoningText,
+                        isExpandedByDefault: detailedTranscriptEnabled))
+                }
                 if !step.finalText.isEmpty {
                     transcript.append(Entry(kind: .assistant, text: step.finalText))
                 }

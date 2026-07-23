@@ -490,6 +490,21 @@ namespace RISE
 			//! this base; SystemPrompt() itself never changes.)
 			static const char* SystemPrompt();
 
+			//! GUI STAGE 2: the public, declared form of the file-local
+			//! ToolOutcomeLine helper in AgentChatLoop.cpp -- lets a caller
+			//! OUTSIDE this translation unit (the Mac GUI's ObjC++ bridge)
+			//! compute the SAME deterministic one-line outcome summary
+			//! (e.g. "160x120, luma 0.19", "3/4 applied") that
+			//! FlushPendingToolResults uses for
+			//! ChatToolDisplaySummary::outcomeLine -- needed for the async
+			//! render-tool path, where the GUI has a call + its raw
+			//! JSON-RPC response line before that summary exists in the
+			//! transcript.  Pure, stateless, DISPLAY-ONLY (see the
+			//! CRITICAL INVARIANT block above): never touches the
+			//! transcript or reads/writes any loop state.
+			static std::string ToolOutcomeLineForDisplay( const ChatToolCall& call,
+			                                               const std::string& rawJsonRpcResponseLine );
+
 			//! Facet 5 slice S1: set the "Available skills" section appended
 			//! to the system prompt of every subsequent BuildRequest.
 			//! `indexText` is a stable, human-readable rendering of the

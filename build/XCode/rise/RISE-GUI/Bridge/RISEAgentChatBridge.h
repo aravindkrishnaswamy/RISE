@@ -117,6 +117,10 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 @interface RISEAgentChatToolCall : NSObject
 @property (nonatomic, readonly, copy) NSString *callId;
 @property (nonatomic, readonly, copy) NSString *name;
+/// The call's arguments, as sent (mirrors RISE::Agent::ChatToolCall::argsJson) --
+/// GUI stage 2: exposed for the transcript row's expandable detail view
+/// (argsJson + the eventual result line), alongside `outcomeLine`.
+@property (nonatomic, readonly, copy) NSString *argsJson;
 @end
 
 /// A fully-described HTTP request the Swift driver performs.
@@ -147,6 +151,12 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// ToolCalls (text alongside the calls, possibly empty) and FinalText
 /// (== finalText).  Empty on ProviderError.
 @property (nonatomic, readonly, copy) NSString *assistantDisplayText;
+/// GUI stage 2: the model's reasoning/thinking text for THIS turn —
+/// mirrors RISE::Agent::ChatStepResult::reasoningText (see its doc).
+/// Filled for BOTH ToolCalls and FinalText; "" when the provider
+/// exposes no reasoning for this turn (every Gemini turn, a plain
+/// gpt-family turn, or any ProviderError).  DISPLAY-ONLY.
+@property (nonatomic, readonly, copy) NSString *reasoningText;
 @end
 
 @interface RISEAgentChatBridge : NSObject
@@ -234,6 +244,18 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 - (void)addToolResult:(RISEAgentChatToolCall *)call
   jsonRpcResponseLine:(NSString *)line
     NS_SWIFT_NAME(addToolResult(_:jsonRpcResponseLine:));
+
+/// GUI stage 2: the same deterministic one-line outcome summary the
+/// C++ core computes for a tool's ChatToolDisplaySummary (e.g.
+/// "160x120, luma 0.19", "3/4 applied", "error: <msg>") — wraps
+/// RISE::Agent::AgentChatLoop::ToolOutcomeLineForDisplay.  Pure
+/// function of `call` + `line`; does not touch the loop's transcript
+/// or pending state, so it is safe to call for a result the driver is
+/// handling OUT OF BAND (the async render-tool path) before/without
+/// ever calling addToolResult:jsonRpcResponseLine: for it.
+- (NSString *)toolOutcomeLineFor:(RISEAgentChatToolCall *)call
+                       resultLine:(NSString *)line
+    NS_SWIFT_NAME(toolOutcomeLine(for:resultLine:));
 
 /// Eval-harness E1: begin recording this chat session's trajectory to a
 /// per-session JSONL file under `directory` (created as needed), rotating
