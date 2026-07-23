@@ -1,14 +1,14 @@
 # Modeling Workflow and Geometry
 > hook: Read when composing or iterating on scene GEOMETRY -- placing objects, choosing primitive types, or checking placement cheaply from multiple angles.
 
-## The observe loop (render to answer a question, not as a ritual)
+## The observe loop (build in coherent groups, then look)
 
-Modeling is: build a coherent GROUP of related chunks, then look IF
-there is a question a render can answer that you cannot answer more
-cheaply.  A render is an instrument, not a step you owe after every
-edit -- and it is not free (it costs a round-trip, tokens, and time).
-Use your own judgment about when one is worth it; that judgment is part
-of what you are here to exercise.
+Modeling is: build a coherent GROUP of related chunks, then look.
+Batch the group so it costs one round-trip, and render often enough
+that a mistake is one edit to fix instead of thirty edits buried.  A
+render is cheap -- a single small call -- and it is how you catch the
+floor you forgot, the light that is off, the hero placed off-frame,
+while they are still easy to fix.
 
 **Batch related chunks with `insert_chunks`.**  A painter, its
 material, a geometry, and the object that binds them are one coherent
@@ -16,57 +16,43 @@ unit -- add them in a single `insert_chunks` call, in dependency order,
 not four separate `insert_chunk` calls.  Same for a whole lighting rig
 or a piece of furniture.  That is one round-trip instead of many, and
 it means you render once you have a whole THING to look at rather than
-after each fragment.
+after each fragment.  Batching is where you SAVE calls; the renders
+between groups are cheap and you should keep them.
 
-**When a render earns its cost** -- reach for one when you have a
-question only a rendered image answers:
-- **LIGHTING is the render you must not skip.**  Of every trigger here,
-  this is the highest-value render on a lit scene: once your lights are
-  in place -- and again whenever you change a light or a material --
-  render and actually CHECK the lit result.  Is it too dark, too bright,
-  or crushed to a single colour (a warm key with no fill reads as an
-  orange blob)?  Brightness and colour balance are visual facts you
-  cannot read off the chunk text, and getting the light wrong is the
-  single most common way a build fails.  Skipping THIS one render to
-  save a call is a false economy -- a scene that is black, blown out, or
-  mono-coloured fails no matter how good the geometry is, and you will
-  not know until you look.  Batch the build cheaply; do not batch away
-  the lighting check.
-- you have just built enough that there is a lit surface to SEE, and
-  the first sanity check is due -- is the scene not black, is the hero
-  in frame, does the floor exist;
-- you are UNSURE of a spatial relationship a single mental model cannot
-  settle -- is that object behind, inside, or floating above another;
-  does the hero actually rest ON the table (depth ambiguity is exactly
-  what a second camera angle exists to catch);
-- you are about to build a LOT more on top of something you have not
-  verified -- check the foundation before thirty chunks bury it.
+**Render after each coherent group, and always after lighting.**  Once
+a group has landed -- the surface, a cluster of furniture, the light
+rig -- render a small preview and check it before you build the next
+group on top.  In particular:
+- **the LIGHTING render is the one you must not skip.**  Once your
+  lights are in place -- and again whenever you change a light or a
+  material -- render and actually CHECK the lit result.  Is it too dark,
+  too bright, or crushed to a single colour (a warm key with no fill
+  reads as an orange blob)?  Brightness and colour balance are visual
+  facts you cannot read off the chunk text, and getting the light wrong
+  is the single most common way a build fails -- a scene that is black,
+  blown out, or mono-coloured fails no matter how good the geometry is,
+  and you will not know until you look;
+- render the first time there is a lit surface to SEE -- is the scene
+  not black, is the hero in frame, does the floor exist;
+- render to settle a spatial relationship a single mental model cannot
+  -- is that object behind, inside, or floating above another; does the
+  hero actually rest ON the table (a second camera angle is what catches
+  depth ambiguity);
+- render before you build a LOT more on top of something unverified --
+  check the foundation before thirty chunks bury it.
 
-**When a render is wasted** -- you can get the answer more cheaply:
-- "did the material bind / is the painter defined?" is a
-  `read_document` or the insert's own `issues` diagnostics, not a
-  render;
-- "did this insert land?" -- the insert result already told you, and
-  nothing visual changed;
-- nothing visual has changed since your last render -- a re-render just
-  shows you the same frame;
-- you feel the urge to render after EVERY chunk -- that is thrashing;
-  build the group, then look once.
+The only render not worth making is one that tells you nothing you
+already know: re-rendering when nothing visual changed since the last
+look, or rendering to confirm a binding that `read_document` or the
+insert's own `issues` diagnostics already answered.  Short of that,
+when in doubt, look -- the render is cheap and the failure it catches
+is not.
 
-The rule is a question, not a counter: *render when the information you
-would gain exceeds the cost AND you cannot get it by reasoning about
-the chunks, reading the document, or the diagnostics.*  There is no
-fixed "every N edits" cadence to follow -- reason your way to the right
-one for the scene in front of you.
-
-**But do not fly blind.**  The opposite failure is just as real:
-building an entire scene and never rendering once, then discovering at
-the end that the key light was off or the hero was off-frame, with no
-budget left to fix it.  If you have assembled a substantial scene and
-still have not looked, that IS an unanswered question -- render before
-you are in too deep.  The two failure modes are symmetric; steer
-between them by asking, each time, "is there something here a render
-would tell me that I do not already know?"
+**Do not fly blind.**  The failure that actually loses builds is the
+opposite of over-rendering: assembling an entire scene and never
+rendering once, then discovering at the end that the key light was off
+or the hero off-frame, with no budget left to fix it.  If you have
+built a substantial scene and have not looked, render now.
 
 **How to render cheaply, when you do render:**
 - **`render {width:160, height:120}`** from the default camera -- the

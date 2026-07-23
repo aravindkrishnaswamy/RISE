@@ -1586,7 +1586,16 @@ namespace RISE
 			//!        gpt and the sole quality cost was the lighting checkpoint
 			//!        -- fewer renders, less lighting correction).  A drive
 			//!        change; prior cells are not comparable.
-			static const int kEvalMethodologyEpoch = 8;
+			//!   9 -> (2026-07-22) RESTORED the regular render cadence in the
+			//!        modeling skill while KEEPING batch insert_chunks.  The
+			//!        epoch-7/8 data showed chattiness was dominated by INSERTS
+			//!        (fixed by the batch verb), not renders; the render
+			//!        softening had cut renders 6.9->2.3 on gpt and cost the
+			//!        lighting checkpoint for a lever that was never the cost
+			//!        problem.  Skill now says "build in coherent groups (batch),
+			//!        then render after each group and always after lighting."
+			//!        A drive change; prior cells are not comparable.
+			static const int kEvalMethodologyEpoch = 9;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
