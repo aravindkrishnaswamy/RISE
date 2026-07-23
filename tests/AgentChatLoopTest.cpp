@@ -5521,6 +5521,57 @@ static void TestAskUserAbandonedFlushSynthesis()
 	       "T40: the synthesized error message names \"not executed\"" );
 }
 
+//----------------------------------------------------------------------
+// T41: GUI stage 3 -- SetSystemPromptOverride replaces the composed
+// system prompt VERBATIM (no base prompt, no skills section) in the
+// actual BuildRequest body, and the override survives Reset().
+//----------------------------------------------------------------------
+static void TestSystemPromptOverride()
+{
+	std::printf( "T41: SetSystemPromptOverride -- verbatim body, base+skills absent, survives Reset...\n" );
+
+	const std::string kTriagePrompt =
+		"You are a scene-brief triage assistant for a 3D renderer.";
+
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	loop.SetSkillIndex( "render -- take a picture of the current scene" );
+	loop.SetSystemPromptOverride( kTriagePrompt );
+	loop.AddUserMessage( "A red sphere on a checkerboard." );
+
+	// The Anthropic codec emits "system" as a one-block array (a
+	// cache_control carrier -- see T1's "system is a one-block array"
+	// check); extract the block's "text" the same way T1 does, rather
+	// than treating "system" as a plain string.
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	JsonValue root = ParseBody( req.body );
+	const std::string system = root.get( "system" ).at( 0 ).get( "text" ).asString();
+	Check( system == kTriagePrompt,
+	       "T41: Anthropic body's \"system\" field is the override VERBATIM (got '" + system + "')" );
+	Check( system.find( "Available skills" ) == std::string::npos,
+	       "T41: the skills section is ABSENT under an override" );
+	Check( system.find( AgentChatLoop::SystemPrompt() ) == std::string::npos,
+	       "T41: the base co-editing system prompt is ABSENT under an override" );
+
+	// Survives Reset(): a fresh AddUserMessage still carries the override.
+	loop.Reset();
+	loop.AddUserMessage( "A blue cube on a plain floor." );
+	const ChatHttpRequest req2 = loop.BuildRequest( kApiKey );
+	JsonValue root2 = ParseBody( req2.body );
+	Check( root2.get( "system" ).at( 0 ).get( "text" ).asString() == kTriagePrompt,
+	       "T41: the override SURVIVES Reset() (deliberately not cleared)" );
+
+	// Clearing with an empty string reverts to the normal composition.
+	loop.SetSystemPromptOverride( "" );
+	loop.Reset();
+	loop.AddUserMessage( "A green cone on a table." );
+	const ChatHttpRequest req3 = loop.BuildRequest( kApiKey );
+	JsonValue root3 = ParseBody( req3.body );
+	const std::string system3 = root3.get( "system" ).at( 0 ).get( "text" ).asString();
+	Check( system3.find( AgentChatLoop::SystemPrompt() ) != std::string::npos,
+	       "T41: clearing the override (empty string) reverts to the base prompt" );
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -5581,6 +5632,7 @@ int main()
 	TestAskUserToolLoop();
 	TestAskUserParallelWithDispatchedTool( rpc );
 	TestAskUserAbandonedFlushSynthesis();
+	TestSystemPromptOverride();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

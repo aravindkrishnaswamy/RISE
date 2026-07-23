@@ -807,6 +807,16 @@ struct ChatSettingsView: View {
     /// transcript.
     @AppStorage("agentChatDetailedTranscript") private var detailedTranscript = false
 
+    /// GUI stage 3 (prompt triage) — SAME UserDefaults keys
+    /// `ChatViewModel`'s `triageEnabled`/`triageProvider`/`triageModelId`
+    /// read (see those properties' doc). `triageProviderRaw` stores the
+    /// provider's rawValue directly (matching the Picker's `.tag`) rather
+    /// than an `AgentChatProviderChoice`, since `@AppStorage` needs a
+    /// directly-storable type.
+    @AppStorage("agentChatTriageEnabled") private var triageEnabled = false
+    @AppStorage("agentChatTriageProvider") private var triageProviderRaw = "local"
+    @AppStorage("agentChatTriageModel") private var triageModel = "qwen3.6:27b"
+
     @State private var draftProvider: AgentChatProviderChoice = .openai
     @State private var draftModelId: String = ""
     @State private var draftKey: String = ""
@@ -980,6 +990,60 @@ struct ChatSettingsView: View {
             }
             .disabled(!chat.hasConversation)
             .help("Drop the conversation history (keeps provider / model / keys)")
+
+            Divider()
+
+            // GUI stage 3 (prompt triage): opt-in, lightweight-model
+            // pre-pass over the FIRST message of a fresh conversation —
+            // see ChatViewModel.runTriage's doc for the full mechanics.
+            // Off by default.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Prompt triage")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Toggle("Prompt triage (ask clarifying questions first)",
+                       isOn: $triageEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .help("Before the FIRST message of a new conversation, ask a "
+                          + "cheap/fast model whether your brief is ambiguous in a "
+                          + "way that matters (subject, setting, mood/lighting) and "
+                          + "let it ask up to two clarifying questions — or silently "
+                          + "add context — before the main model sees it. Skipped "
+                          + "for attachments and every later message. Off by "
+                          + "default.")
+
+                if triageEnabled {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Triage provider")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Picker("", selection: $triageProviderRaw) {
+                            ForEach(AgentChatProviderChoice.allCases) { p in
+                                Text(p.displayName).tag(p.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+
+                        Text("Triage model")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        TextField("qwen3.6:27b", text: $triageModel)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                    .padding(.leading, 2)
+
+                    Text("Pick something cheap and fast — this runs before every "
+                         + "new conversation's first reply. Local is $0; a saved "
+                         + "Keychain key or environment variable is used for a "
+                         + "hosted triage provider, same as the main chat.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             Divider()
 

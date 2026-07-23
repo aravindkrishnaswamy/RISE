@@ -298,6 +298,13 @@ namespace RISE
 			mSkillIndexText = indexText;
 		}
 
+		void AgentChatLoop::SetSystemPromptOverride( const std::string& prompt )
+		{
+			// See the header doc: verbatim replacement for auxiliary
+			// single-purpose loops, NOT cleared by Reset()/SetProvider().
+			mSystemPromptOverride = prompt;
+		}
+
 		void AgentChatLoop::SetContextBudget( std::size_t highWaterTokens, std::size_t lowWaterTokens )
 		{
 			// Provider-neutral config (like SetSkillIndex above): stored
@@ -1546,6 +1553,11 @@ namespace RISE
 
 		std::string AgentChatLoop::ComposeSystemPrompt() const
 		{
+			// GUI STAGE 3 (prompt triage): a non-empty override REPLACES
+			// the whole composition -- no base prompt, no skills section.
+			// See SetSystemPromptOverride's doc.
+			if( !mSystemPromptOverride.empty() ) return mSystemPromptOverride;
+
 			std::string systemPrompt = kSystemPrompt;
 			if( !mSkillIndexText.empty() ) {
 				systemPrompt += "\n\nAvailable skills:\n";
