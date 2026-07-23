@@ -862,13 +862,30 @@ static void TestLiveControllerPath()
 			"omni_light\n{\nname fillkey\nposition -2 3 1\ncolor 1 1 1\npower 1.0\n}" );
 		Check( rRetry.applied, "the identical insert succeeds after the gesture completes" );
 
-		// (3) Conflict through the live path.
+		// (3) A UI scrub is also an open EditHistory composite.  Agent
+		// commits must not land inside it: the UI thread would otherwise
+		// absorb the agent record into "Scrub", breaking both undo grouping
+		// and the transaction boundary.
+		c.OnTimeScrubBegin();
+		const std::string headBeforeScrub = sess->ReadDocument();
+		Agent::AgentChunkResult rScrub = sess->InsertChunk(
+			"omni_light\n{\nname gesturekey\nposition 2 3 1\ncolor 1 1 1\npower 1.0\n}" );
+		Check( !rScrub.applied && rScrub.status == "rejected",
+		       "mid-scrub insert refused" );
+		Check( rScrub.retriable, "the scrub refusal is RETRIABLE (transient)" );
+		Check( sess->ReadDocument() == headBeforeScrub, "the scrub refusal mutated nothing" );
+		c.OnTimeScrubEnd();
+		Agent::AgentChunkResult rScrubRetry = sess->InsertChunk(
+			"omni_light\n{\nname gesturekey\nposition 2 3 1\ncolor 1 1 1\npower 1.0\n}" );
+		Check( rScrubRetry.applied, "the identical insert succeeds after the scrub completes" );
+
+		// (4) Conflict through the live path.
 		RISE::Cst::CstHeadVersion stale = sess->HeadVersion();
 		stale.revision += 50;
 		Agent::AgentChunkResult rC = sess->RemoveChunk( "livekey", "", &stale );
 		Check( !rC.applied && rC.status == "conflict", "stale-base remove conflicts through the controller" );
 
-		// (4) Remove through the live path.
+		// (5) Remove through the live path.
 		Agent::AgentChunkResult rRm = sess->RemoveChunk( "livekey" );
 		Check( rRm.applied, "live remove applied via the controller" );
 		Check( pJob->GetLights()->GetItem( "livekey" ) == nullptr,

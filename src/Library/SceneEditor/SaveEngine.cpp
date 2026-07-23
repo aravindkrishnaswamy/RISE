@@ -23,11 +23,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <system_error>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <unordered_map>
 
 // POSIX-only headers + helpers used by the optional fsync hardening
 // path in AtomicWrite.  On Windows we fall back to std::ofstream +
@@ -51,6 +54,52 @@ namespace {
 // ----------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------
+
+// One in-process save lease per canonical target path.  The operation mutex
+// covers external-identity validation through the atomic rename, closing the
+// check-then-write race between two independently loaded controllers.  The
+// owning SaveEngine reserves this state before its pre-IO seam; a competing
+// engine's try-lock is therefore an immediate, deterministic refusal.
+struct PathSaveState
+{
+    std::mutex operationMutex;
+};
+
+std::string CanonicalSavePath( const std::string& filePath )
+{
+    std::error_code ec;
+    std::filesystem::path path =
+        std::filesystem::weakly_canonical( std::filesystem::path( filePath ), ec );
+    if( ec ) {
+        ec.clear();
+        path = std::filesystem::absolute( std::filesystem::path( filePath ), ec );
+        if( ec ) path = std::filesystem::path( filePath );
+        path = path.lexically_normal();
+    }
+    std::string key = path.string();
+#if defined(_WIN32)
+    // Windows path lookup is case-insensitive; make the in-process lease
+    // key obey the same rule so spelling aliases cannot bypass it.
+    for( char& c : key ) {
+        if( c >= 'A' && c <= 'Z' ) c = static_cast<char>( c - 'A' + 'a' );
+    }
+#endif
+    return key;
+}
+
+std::shared_ptr<PathSaveState> SaveStateForPath( const std::string& canonicalPath )
+{
+    static std::mutex registryMutex;
+    static std::unordered_map<std::string, std::weak_ptr<PathSaveState>> registry;
+
+    std::lock_guard<std::mutex> lk( registryMutex );
+    std::shared_ptr<PathSaveState> state = registry[canonicalPath].lock();
+    if( !state ) {
+        state.reset( new PathSaveState() );
+        registry[canonicalPath] = state;
+    }
+    return state;
+}
 
 // Atomic write: tmp + (POSIX-only fsync) + rename + (POSIX-only
 // dir-fsync) (§9.8).  R-final P1 #1 fix: portable across POSIX and
@@ -166,18 +215,48 @@ bool ReadFile( const std::string& filePath, std::string& outBytes,
 // SaveEngine
 // ----------------------------------------------------------------------
 
+struct SaveLease
+{
+    explicit SaveLease( const std::string& canonicalPath )
+        : state( SaveStateForPath( canonicalPath ) )
+        , lock( state->operationMutex, std::try_to_lock )
+    {
+    }
+
+    std::shared_ptr<PathSaveState> state;
+    std::unique_lock<std::mutex>   lock;
+};
+
 SaveEngine::SaveEngine(
     const Cst::Document& document,
-    const FileIdentity& loadedFileIdentity )
+    const FileIdentity& loadedFileIdentity,
+    const std::string& filePath )
     : mDocument( document )
     , mLoadedFileIdentity( loadedFileIdentity )
+    , mFilePath( filePath )
+    , mLease( new SaveLease( CanonicalSavePath( filePath ) ) )
 {
 }
 
-SaveResult SaveEngine::Save( const std::string& filePath )
+SaveEngine::~SaveEngine() = default;
+
+SaveResult SaveEngine::Save()
 {
     SaveResult result;
-    result.filePath = filePath;
+    result.filePath = mFilePath;
+
+    // The lease is reserved in the constructor, before the controller's
+    // pre-IO test hook and before this method starts.  A second controller
+    // therefore cannot slip through the same path while the first is paused
+    // anywhere between snapshot capture and atomic publication.
+    if( !mLease || !mLease->lock.owns_lock() ) {
+        result.status = SaveResult::Status::Refused;
+        result.errorMessage =
+            "save refused: another save to '" + mFilePath +
+            "' is already in progress";
+        return result;
+    }
+    const std::string canonicalTarget = CanonicalSavePath( mFilePath );
 
     // ---- CST-Document save (the Model-B cutover's save side) -----------
     // The controller captured this immutable persistent-Document snapshot
@@ -195,11 +274,14 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // (Job::RefreshCstLoadFileIdentity) and read via GetCstLoadFileIdentity.
     {
         const FileIdentity& cstLoadIdent = mLoadedFileIdentity;
-        if( cstLoadIdent.captured && cstLoadIdent.filePath == filePath ) {
+        if( cstLoadIdent.captured
+            && CanonicalSavePath( cstLoadIdent.filePath ) == canonicalTarget ) {
             struct ::stat cur = {};
-            if( ::stat( filePath.c_str(), &cur ) == 0 ) {
+            if( ::stat( mFilePath.c_str(), &cur ) == 0 ) {
                 const long long curSize  = static_cast<long long>( cur.st_size );
                 const long long curMtime = static_cast<long long>( cur.st_mtime );
+                const long long curDevice = static_cast<long long>( cur.st_dev );
+                const long long curFileId = static_cast<long long>( cur.st_ino );
                 long long curMtimeNsec = 0;
 #if defined(__APPLE__)
                 curMtimeNsec = static_cast<long long>( cur.st_mtimespec.tv_nsec );
@@ -207,11 +289,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 curMtimeNsec = static_cast<long long>( cur.st_mtim.tv_nsec );
 #endif
                 if( curSize != cstLoadIdent.sizeBytes || curMtime != cstLoadIdent.mtimeSec
-                    || curMtimeNsec != cstLoadIdent.mtimeNsec ) {
+                    || curMtimeNsec != cstLoadIdent.mtimeNsec
+                    || curDevice != cstLoadIdent.deviceId
+                    || curFileId != cstLoadIdent.fileId ) {
                     result.status = SaveResult::Status::Refused;
                     result.errorMessage =
-                        "scene file '" + filePath + "' was modified externally between load and save "
-                        "(mtime/size mismatch).  Saving would overwrite those external changes with the "
+                        "scene file '" + mFilePath + "' was modified externally between load and save "
+                        "(metadata/file-id mismatch).  Saving would overwrite those external changes with the "
                         "in-memory scene.  Reload the file before saving.";
                     return result;
                 }
@@ -224,13 +308,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // NoOp when the target already holds exactly these bytes (e.g. a save
     // with no pending edits).
     std::string existing, rerr;
-    if( ReadFile( filePath, existing, rerr ) && existing == text ) {
+    if( ReadFile( mFilePath, existing, rerr ) && existing == text ) {
         result.status = SaveResult::Status::NoOp;
         return result;
     }
 
     std::string werr;
-    if( !AtomicWrite( filePath, text, werr ) ) {
+    if( !AtomicWrite( mFilePath, text, werr ) ) {
         result.status = SaveResult::Status::Failed;
         result.errorMessage = werr;
         return result;

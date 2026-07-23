@@ -1392,8 +1392,9 @@ namespace RISE
 		//! Human-readable labels for the next Undo()/Redo() step
 		//! ("Translate", "Agent Edit", …) for the platform shells'
 		//! Edit-menu items — thin forwards of EditHistory::LabelForUndo/
-		//! Redo.  Empty when the corresponding stack is empty.  UI-thread
-		//! only (the same thread that performs edits / Undo / Redo).
+		//! Redo.  Empty when the corresponding stack is empty.  Safe to poll
+		//! while an agent thread commits edits; the history peek is serialized
+		//! with the mutation path by mMutex.
 		String UndoLabel() const;
 		String RedoLabel() const;
 
@@ -2602,8 +2603,9 @@ namespace RISE
 
 		//! Fix-round-6 (save-vs-render race) RED-PROVE test hook.  Called
 		//! by RequestSave, unlocked, immediately AFTER its step-1 lock
-		//! scope has set mSaving=true and released mMutex, but BEFORE
-		//! SaveEngine::Save runs.  A test can hold RequestSave open here
+		//! scope has set mSaving=true and released mMutex and AFTER it has
+		//! reserved the per-target save lease, but BEFORE SaveEngine::Save
+		//! runs.  A test can hold RequestSave open here
 		//! to deterministically widen the real (normally sub-millisecond)
 		//! window during which mSaving is true and RenderLoop's mint-site
 		//! re-check must bounce rather than mint -- without this seam,
@@ -3699,6 +3701,12 @@ namespace RISE
 		//! camera panes).  RefreshNavGizmo already used this exact idiom
 		//! inline; this centralizes it so pick + every gizmo site agree.
 		const ICamera* EffectiveViewportCamera_( const IScene* scene ) const;
+
+		//! Camera-dimension fallback for call sites that already hold mMutex.
+		//! The public getter try-locks around this body when its atomic cache
+		//! is not primed, keeping UI polling non-blocking without making
+		//! locked gizmo paths self-contend.
+		bool GetCameraDimensionsLocked_( unsigned int& w, unsigned int& h ) const;
 
 		//! Jump-to-definition shared body (see PropertyJumpTarget) --
 		//! resolves one row's Reference value against the live managers.

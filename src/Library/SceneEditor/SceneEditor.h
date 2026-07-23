@@ -744,6 +744,12 @@ namespace RISE
 		{
 			RecomputeHeadDiffers_();
 			RecomputeHasUnsavedChangesCached_();
+			const std::shared_ptr<DirtyNotificationState> state =
+				mDirtyNotificationState;
+			state->currentHasUnsavedChanges.store(
+				mHasUnsavedChangesCached.load( std::memory_order_acquire ),
+				std::memory_order_release );
+			state->pending.store( true, std::memory_order_release );
 		}
 
 		//! P5 Slice 3 expansion (object transform): the CONTROLLER calls these at a render-thread-PARKED boundary

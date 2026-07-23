@@ -860,10 +860,13 @@ void SceneEditController::Start( bool suppressInitialRender )
 	// DoOneRenderPass refreshes these on every pass before swapping
 	// in the preview-scale dims, so a scene reload picks up new dims
 	// on the next render without further bookkeeping.
-	if( const IScene* scene = mJob.GetScene() ) {
-		if( const IFilm* film = scene->GetFilm() ) {
-			mFullResW.store( film->GetWidth(),  std::memory_order_release );
-			mFullResH.store( film->GetHeight(), std::memory_order_release );
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( const IScene* scene = mJob.GetScene() ) {
+			if( const IFilm* film = scene->GetFilm() ) {
+				mFullResW.store( film->GetWidth(),  std::memory_order_release );
+				mFullResH.store( film->GetHeight(), std::memory_order_release );
+			}
 		}
 	}
 
@@ -1040,11 +1043,17 @@ bool SceneEditController::InteractiveRasterizerHonorsRegion() const
 
 String SceneEditController::UndoLabel() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return String();
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return String();
 	return String( mEditor.History().LabelForUndo() );
 }
 
 String SceneEditController::RedoLabel() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return String();
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return String();
 	return String( mEditor.History().LabelForRedo() );
 }
 
@@ -1339,7 +1348,7 @@ void SceneEditController::RefreshGizmoHandlesLocked_()
 	// Stable full-res target dims — what the platform overlay uses
 	// as `surface` size and what pointer events normalize through.
 	unsigned int stableW = 0, stableH = 0;
-	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return;
+	if( !GetCameraDimensionsLocked_( stableW, stableH ) || stableW == 0 || stableH == 0 ) return;
 
 	// CURRENT camera frame dims — what `mxTrans` projects into.
 	// During an in-flight render pass these are subsampled (preview-
@@ -1537,7 +1546,7 @@ bool SceneEditController::RefreshNavGizmo( double centerX, double centerY,
 	const Point3 pivot( Scalar( snap.lookat[0] ), Scalar( snap.lookat[1] ), Scalar( snap.lookat[2] ) );
 
 	unsigned int stableW = 0, stableH = 0;
-	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return false;
+	if( !GetCameraDimensionsLocked_( stableW, stableH ) || stableW == 0 || stableH == 0 ) return false;
 	const Implementation::CameraCommon* camC =
 		dynamic_cast<const Implementation::CameraCommon*>( cam );
 	const unsigned int curW = camC ? camC->GetWidth()  : stableW;
@@ -1716,6 +1725,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	// on pointer-up, leaving mCompositeDepth >= 1 forever -- IsCompositeOpen() then
 	// permanently blocks transactions and history grows unbounded.
 	if( mGestureOpenedComposite ) {
+		std::lock_guard<std::mutex> lk( mMutex );
 		mEditor.EndComposite();
 		mGestureOpenedComposite = false;
 	}
@@ -1742,7 +1752,10 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::ScaleObject:
 		if( mSelectionCategory == Category::Object && mSelectionName.size() > 1 )
 		{
-			mEditor.BeginComposite( "Drag" );
+			{
+				std::lock_guard<std::mutex> lk( mMutex );
+				mEditor.BeginComposite( "Drag" );
+			}
 			mGestureOpenedComposite = true;   // P1: record what this gesture opened
 			isMotionTool = true;
 
@@ -1827,7 +1840,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 					const IScene* scene = mJob.GetScene();
 					const ICamera* cam = EffectiveViewportCamera_( scene );   // user-review P1#2
 					unsigned int stableW = 0, stableH = 0;
-					const bool stableOk = GetCameraDimensions( stableW, stableH )
+					const bool stableOk = GetCameraDimensionsLocked_( stableW, stableH )
 					                    && stableW > 0 && stableH > 0;
 					if( cam && stableOk && IsGizmoSupportedCamera_( cam ) ) {
 						const Implementation::CameraCommon* camC =
@@ -1873,7 +1886,10 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::PanCamera:
 	case Tool::ZoomCamera:
 	case Tool::RollCamera:
-		mEditor.BeginComposite( "Camera" );
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			mEditor.BeginComposite( "Camera" );
+		}
 		mGestureOpenedComposite = true;   // P1: record what this gesture opened
 		isMotionTool = true;
 		// Auto-promote the Cameras section in the accordion when the
@@ -2263,6 +2279,7 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	// transactions (IsCompositeOpen) + growing history unbounded -- or double-
 	// close when the tool changed away from a motion tool.
 	if( mGestureOpenedComposite ) {
+		std::lock_guard<std::mutex> lk( mMutex );
 		mEditor.EndComposite();
 		mGestureOpenedComposite = false;
 	}
@@ -2352,12 +2369,15 @@ void SceneEditController::OnTimeScrubBegin()
 	// repeated Begin) before opening a new one -- otherwise scrubs NEST and one stays
 	// open forever (permanent IsCompositeOpen block + the open group defeats history
 	// trimming).  Mirrors the pointer-gesture orphan guard in OnPointerDown.
-	if( mScrubOpenedComposite ) {
-		mEditor.EndComposite();
-		mScrubOpenedComposite = false;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( mScrubOpenedComposite ) {
+			mEditor.EndComposite();
+			mScrubOpenedComposite = false;
+		}
+		mEditor.BeginComposite( "Scrub" );
+		mScrubOpenedComposite = true;
 	}
-	mEditor.BeginComposite( "Scrub" );
-	mScrubOpenedComposite = true;
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 }
 
@@ -2444,6 +2464,7 @@ void SceneEditController::OnTimeScrubEnd()
 	// P1: close only the composite THIS scrub opened -- a stray End with no open scrub
 	// must not under-flow the composite depth.
 	if( mScrubOpenedComposite ) {
+		std::lock_guard<std::mutex> lk( mMutex );
 		mEditor.EndComposite();
 		mScrubOpenedComposite = false;
 	}
@@ -2701,49 +2722,43 @@ bool SceneEditController::RequestProductionRender()
 		Stop();
 	}
 
-	IRasterizer* prod = mJob.GetRasterizer();
-	if( !prod )
-	{
-		// Without a production rasterizer there's nothing to do; the
-		// caller should ensure one is configured by the time they
-		// click "Render".  We restart interactive and report failure.
-		// Round-2 P2: don't silently un-pause — a Pause that raced this
-		// production render would otherwise be clobbered by the restart
-		// (Start() clears mRefinementPaused).  Mirrors ResumeRefinement.
-		if( wasRunning && !IsRefinementPaused() ) Start();
-		return false;
-	}
-
-	const IScene* scene = mJob.GetScene();
-	if( scene )
-	{
-		// Run a FULL SetSceneTime(t) at the most recently scrubbed
-		// time before invoking the production rasterizer.  The
-		// preview path (called from OnTimeScrub) uses
-		// SetSceneTimeForPreview, which deliberately skips photon-map
-		// regeneration to keep scrubbing responsive.  Without this
-		// full pass, hitting Render after scrubbing produces a frame
-		// at the scrubbed time but with caustics from the scene's
-		// initial time — visibly stale for any photon-mapped scene.
-		// SetSceneTime triggers Regenerate on every populated photon
-		// map; for non-photon scenes it's effectively a cheap reset
-		// of the per-object runtime data and is harmless.
-		scene->SetSceneTime( mEditor.LastSceneTime() );
-
-		// PrepareForRendering rebuilds spatial structure if invalidated.
-		scene->GetObjects()->PrepareForRendering();
-	}
-
 	bool ok = false;
-	if( scene )
 	{
-		// Running this synchronously on the calling (UI) thread is
-		// the contract: production renders are long, the platform UI
-		// shows a modal during the call, and re-enabling the
-		// interactive controls before the production render finishes
-		// would race with the production rasterizer.
-		prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
-		ok = true;
+		// The legacy synchronous entry point must participate in the same
+		// one-owner discipline as the composed production/agent paths.
+		// Holding mMutex for the complete live-pointer lifetime prevents an
+		// any-thread D2 edit from replacing the Job graph mid-rasterize;
+		// mRenderOwnsScene lets UI getters refuse promptly instead of
+		// blocking behind that duration-long lock.
+		std::unique_lock<std::mutex> lk( mMutex );
+		struct LegacyRenderOwnershipScope {
+			explicit LegacyRenderOwnershipScope( std::atomic<bool>& flag )
+				: mFlag( flag )
+			{
+				mFlag.store( true, std::memory_order_release );
+			}
+			~LegacyRenderOwnershipScope()
+			{
+				mFlag.store( false, std::memory_order_release );
+			}
+			std::atomic<bool>& mFlag;
+		} ownScope_( mRenderOwnsScene );
+
+		IRasterizer* prod = mJob.GetRasterizer();
+		const IScene* scene = mJob.GetScene();
+		if( prod && scene )
+		{
+			// Run a FULL SetSceneTime(t) at the most recently scrubbed
+			// time before invoking the production rasterizer.  The
+			// preview path deliberately skips photon-map regeneration.
+			scene->SetSceneTime( mEditor.LastSceneTime() );
+			scene->GetObjects()->PrepareForRendering();
+
+			// Running synchronously on the calling thread is this legacy
+			// API's contract.  The platform UI displays a modal for it.
+			prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
+			ok = true;
+		}
 	}
 
 	// Round-2 P2: same paused-guard as the early-exit restart above.
@@ -3706,6 +3721,15 @@ bool SceneEditController::SetSelectionInner_( Category cat, const String& entity
 bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEnd,
                                                unsigned int& numFrames ) const
 {
+	// Agent edits may re-derive the Job from any thread, replacing the
+	// animation and its manager graph.  Query only in the same critical
+	// section as every D2 replacement so the returned values came from one
+	// still-live graph.  This is a frequently-polled UI getter, so follow
+	// the stale/fallback getter convention and never block a repaint behind
+	// production ownership or a contended editor operation.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 	bool doFields = false, invertFields = false;
 	return mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields );
 }
@@ -3722,18 +3746,34 @@ bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h 
 		// non-zero ones, which is better than failing the pointer
 		// event entirely.  This path runs only at startup, before
 		// any render pass refreshes the cache.
-		if( const IScene* scene = mJob.GetScene() ) {
-			if( const IFilm* film = scene->GetFilm() ) {
-				w = film->GetWidth();
-				h = film->GetHeight();
-				return w > 0 && h > 0;
-			}
-		}
-		return false;
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+		std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+		if( !lk.owns_lock() ) return false;
+		return GetCameraDimensionsLocked_( w, h );
 	}
 	w = cachedW;
 	h = cachedH;
 	return true;
+}
+
+bool SceneEditController::GetCameraDimensionsLocked_( unsigned int& w,
+	                                                   unsigned int& h ) const
+{
+	const unsigned int cachedW = mFullResW.load( std::memory_order_acquire );
+	const unsigned int cachedH = mFullResH.load( std::memory_order_acquire );
+	if( cachedW > 0 && cachedH > 0 ) {
+		w = cachedW;
+		h = cachedH;
+		return true;
+	}
+	if( const IScene* scene = mJob.GetScene() ) {
+		if( const IFilm* film = scene->GetFilm() ) {
+			w = film->GetWidth();
+			h = film->GetHeight();
+			return w > 0 && h > 0;
+		}
+	}
+	return false;
 }
 
 void SceneEditController::ForTest_SetSelection( Category cat, const String& name )
@@ -4138,14 +4178,15 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// BeginTransaction publishes the flag while holding this same mutex.
 	// The under-lock recheck closes the false->Begin->commit TOCTOU that an
 	// atomic pre-flight check alone would still permit.
-	if( mTxnOpen.load( std::memory_order_acquire ) )
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
 	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused inside an open transaction (no EditHistory record -> rollback cannot revert it)." );
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused while an editor transaction/gesture is open." );
 		r.applied = false;
 		r.rawCode = 0;
 		r.status  = String( "rejected" );
 		r.retriable = true;
-		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
 		r.headVersion = mJob.GetCstHeadVersion();
 		return r;
 	}
@@ -5536,14 +5577,15 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	// conflict gate, the Job apply -- whose D2 ClearAll transiently zeroes the
 	// head-version -- the rebind, and the post-commit head read).
 	std::unique_lock<std::mutex> lk( mMutex );
-	if( mTxnOpen.load( std::memory_order_acquire ) )
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
 	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk %s refused inside an open transaction (no EditHistory record -> rollback cannot revert it).", verb );
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk %s refused while an editor transaction/gesture is open.", verb );
 		r.applied = false;
 		r.rawCode = 0;
 		r.status  = String( "rejected" );
 		r.retriable = true;
-		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
 		r.headVersion = mJob.GetCstHeadVersion();
 		return r;
 	}
@@ -5937,15 +5979,22 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	// for as long as it needs, giving RenderLoop's mint-site re-check a
 	// deterministic (rather than IO-timing-dependent) window to prove
 	// itself against.
+	std::unique_ptr<SaveEngine> saveEngine;
+	if( documentSnapshot ) {
+		// Reserve the canonical target-path lease BEFORE the test hook (and
+		// therefore before any IO).  A different controller that requests the
+		// same target while this save is paused is refused deterministically.
+		saveEngine.reset( new SaveEngine(
+			*documentSnapshot, loadedFileIdentitySnapshot, filePath ) );
+	}
 	ForTest_OnSaveEngineAboutToRun();
 
 	// ---- Step 2: run SaveEngine WITHOUT the lock --------------------
 	// File IO can take a few ms; holding mMutex across it would stall UI
 	// state. The engine receives no live Job/editor references.
 	SaveResult result;
-	if( documentSnapshot ) {
-		SaveEngine engine( *documentSnapshot, loadedFileIdentitySnapshot );
-		result = engine.Save( filePath );
+	if( saveEngine ) {
+		result = saveEngine->Save();
 	} else {
 		result.status = SaveResult::Status::Failed;
 		result.filePath = filePath;

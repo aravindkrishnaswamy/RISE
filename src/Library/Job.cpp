@@ -9957,6 +9957,8 @@ void Job::RefreshCstLoadFileIdentity( const char* path )
 	ident.mtimeNsec = 0;
 #endif
 	ident.sizeBytes = static_cast<long long>( fileStats.st_size );
+	ident.deviceId  = static_cast<long long>( fileStats.st_dev );
+	ident.fileId    = static_cast<long long>( fileStats.st_ino );
 	ident.captured  = true;
 	mCstLoadFileIdentity = ident;                                   // survives ClearAll; the CST-save guard reads it via GetCstLoadFileIdentity
 }

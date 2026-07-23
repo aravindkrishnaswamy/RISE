@@ -29,6 +29,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <filesystem>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include "CstRenderEquivalence.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
@@ -51,6 +55,27 @@ using namespace RISE::Implementation;
 
 static int passCount = 0, failCount = 0;
 static void Check( bool c, const char* n ) { if( c ) ++passCount; else { ++failCount; std::cout << "  FAIL: " << n << std::endl; } }
+
+class BlockingSaveController : public SceneEditController
+{
+public:
+	explicit BlockingSaveController( IJobPriv& job )
+		: SceneEditController( job, 0 )
+	{
+	}
+
+	std::atomic<bool> hookEntered{ false };
+	std::atomic<bool> releaseHook{ false };
+
+protected:
+	void ForTest_OnSaveEngineAboutToRun() override
+	{
+		hookEntered.store( true, std::memory_order_release );
+		while( !releaseHook.load( std::memory_order_acquire ) ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+};
 
 // Read a light's scalar property (e.g. "power") off the LIVE scene via the same
 // descriptor introspection the panel uses; -999 if absent.
@@ -797,6 +822,104 @@ int main()
 			Check( ca.RequestSave( std::string( tb ) ).status == SaveResult::Status::Refused, "SV5: an external edit to the Save-As target B is now guarded (Refused)" );
 			ja->release();
 			std::remove( ta ); std::remove( tb );
+		}
+
+		// SV5b: two independently-loaded controllers cannot both publish
+		// divergent edits to one path.  Restore the original timestamp after
+		// A's atomic replacement and give B an absolute spelling of the same
+		// path: size+mtime and string-equality-only guards both miss this
+		// adversarial case.  Canonical-path matching plus device/file identity
+		// must still refuse B and preserve its dirty edit for reconciliation.
+		{
+			const char* tc = "cst_s4_two_controllers.RISEscene";
+			{ std::ofstream o( tc ); o << SCENE; }
+			const std::filesystem::file_time_type originalTime =
+				std::filesystem::last_write_time( tc );
+
+			Job* ja = new Job();
+			Job* jb = new Job();
+			Check( ja->LoadAsciiSceneViaCst( tc ), "SV5b: controller A loads the shared path" );
+			Check( jb->LoadAsciiSceneViaCst( tc ), "SV5b: controller B loads the shared path independently" );
+			SceneEditController ca( *ja, 0 );
+			SceneEditController cb( *jb, 0 );
+			ca.SetSelection( Cat::Light, String( "l" ) );
+			cb.SetSelection( Cat::Light, String( "l" ) );
+			Check( ca.SetPropertyForCategory( Cat::Light, String( "power" ), String( "8" ) ),
+			       "SV5b: controller A makes its divergent edit" );
+			Check( cb.SetPropertyForCategory( Cat::Light, String( "power" ), String( "9" ) ),
+			       "SV5b: controller B makes its divergent same-size edit" );
+			Check( ca.RequestSave( std::string( tc ) ).status == SaveResult::Status::Saved,
+			       "SV5b: controller A publishes first" );
+
+			// Defeat timestamp-only detection deterministically.  AtomicWrite
+			// still replaced the inode/file-id, which is the identity signal
+			// the hardened guard must retain.
+			std::filesystem::last_write_time( tc, originalTime );
+			const std::string absoluteAlias =
+				std::filesystem::absolute( std::filesystem::path( tc ) ).string();
+			const SaveResult rb = cb.RequestSave( absoluteAlias );
+			Check( rb.status == SaveResult::Status::Refused,
+			       "SV5b: stale controller B is refused through an absolute path alias" );
+			Check( cb.HasUnsavedChanges(),
+			       "SV5b: refused controller B retains its divergent dirty edit" );
+			{ std::ifstream in( tc ); std::stringstream ss; ss << in.rdbuf();
+			  const std::string disk = ss.str();
+			  Check( disk.find( "power 8" ) != std::string::npos
+			      && disk.find( "power 9" ) == std::string::npos,
+			      "SV5b: disk retains A's accepted head; B did not overwrite it" ); }
+
+			ja->release();
+			jb->release();
+			std::remove( tc );
+		}
+
+		// SV5c: overlap the two controllers at the exact pre-IO seam.
+		// A has already reserved the target lease when its hook blocks;
+		// B must be refused immediately rather than passing an independent
+		// identity check and racing A's rename.
+		{
+			const char* tc = "cst_s4_overlapping_saves.RISEscene";
+			{ std::ofstream o( tc ); o << SCENE; }
+			Job* ja = new Job();
+			Job* jb = new Job();
+			Check( ja->LoadAsciiSceneViaCst( tc ), "SV5c: controller A loads the shared path" );
+			Check( jb->LoadAsciiSceneViaCst( tc ), "SV5c: controller B loads the shared path" );
+			BlockingSaveController ca( *ja );
+			SceneEditController cb( *jb, 0 );
+			ca.SetSelection( Cat::Light, String( "l" ) );
+			cb.SetSelection( Cat::Light, String( "l" ) );
+			Check( ca.SetPropertyForCategory( Cat::Light, String( "power" ), String( "8" ) ),
+			       "SV5c: controller A makes its divergent edit" );
+			Check( cb.SetPropertyForCategory( Cat::Light, String( "power" ), String( "9" ) ),
+			       "SV5c: controller B makes its divergent edit" );
+
+			SaveResult ra;
+			std::thread saveA( [&] { ra = ca.RequestSave( std::string( tc ) ); } );
+			for( unsigned int i = 0;
+			     i < 5000 && !ca.hookEntered.load( std::memory_order_acquire );
+			     ++i ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+			Check( ca.hookEntered.load( std::memory_order_acquire ),
+			       "SV5c: controller A holds the canonical-path lease before IO" );
+			const SaveResult rb = cb.RequestSave( std::string( tc ) );
+			Check( rb.status == SaveResult::Status::Refused,
+			       "SV5c: overlapping controller B save is refused" );
+			Check( cb.HasUnsavedChanges(),
+			       "SV5c: refused overlapping controller B remains dirty" );
+			ca.releaseHook.store( true, std::memory_order_release );
+			saveA.join();
+			Check( ra.status == SaveResult::Status::Saved,
+			       "SV5c: lease-owning controller A publishes successfully" );
+			{ std::ifstream in( tc ); std::stringstream ss; ss << in.rdbuf();
+			  const std::string disk = ss.str();
+			  Check( disk.find( "power 8" ) != std::string::npos
+			      && disk.find( "power 9" ) == std::string::npos,
+			      "SV5c: overlapping save leaves only A's accepted head on disk" ); }
+
+			ja->release();
+			jb->release();
+			std::remove( tc );
 		}
 
 		// SV6 (6c-3b review P3 restore): a save to a bad/un-writable target reports Failed, populates

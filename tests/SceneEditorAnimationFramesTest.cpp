@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <atomic>
+#include <thread>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -150,6 +152,45 @@ int main()
 	Check( !c.SetPropertyForCategory( Cat::Animation, String( "frames" ), String( "abc" ) ),
 	       "frames=abc is rejected" );
 	Check( ActiveNumFrames( *pJob ) == 60, "num_frames unchanged after rejected edits" );
+
+	// --- Any-thread D2 edits vs UI metadata/history polling ---
+	// The animation getter and Undo/Redo labels are polled by both shells.
+	// Repeated D2 frame edits replace the Job graph and push EditHistory;
+	// concurrent reads must either return one coherent generation or the
+	// documented transient empty/false fallback, never touch freed graph or
+	// deque storage.
+	std::atomic<bool> stopReader{ false };
+	std::atomic<bool> sawBadFrames{ false };
+	std::atomic<unsigned int> successfulReads{ 0 };
+	std::thread reader( [&] {
+		while( !stopReader.load( std::memory_order_acquire ) ) {
+			double ts = 0, te = 1;
+			unsigned int nf = 0;
+			if( c.GetAnimationOptions( ts, te, nf ) ) {
+				if( nf != 60u && nf != 61u ) {
+					sawBadFrames.store( true, std::memory_order_release );
+				}
+				successfulReads.fetch_add( 1, std::memory_order_relaxed );
+			}
+			c.UndoLabel();
+			c.RedoLabel();
+			std::this_thread::yield();
+		}
+	} );
+	for( unsigned int i = 0; i < 20; ++i ) {
+		const String value( ( i & 1u ) ? "60" : "61" );
+		Check( c.SetPropertyForCategory( Cat::Animation, String( "frames" ), value ),
+		       "concurrent D2 animation edit applies" );
+		std::this_thread::yield();
+	}
+	stopReader.store( true, std::memory_order_release );
+	reader.join();
+	Check( successfulReads.load( std::memory_order_acquire ) > 0,
+	       "concurrent UI poll observed animation snapshots" );
+	Check( !sawBadFrames.load( std::memory_order_acquire ),
+	       "concurrent animation getter returned only coherent frame counts" );
+	Check( ActiveNumFrames( *pJob ) == 60,
+	       "concurrency stress leaves the active animation at the final value" );
 	}
 
 	pJob->release();

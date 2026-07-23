@@ -9,7 +9,7 @@
 //  minimal-diff on edits) and writes it atomically.
 //
 //  An external-modification guard refuses an IN-PLACE save when the
-//  loaded file changed on disk after load (mtime/size mismatch) —
+//  loaded file changed on disk after load (metadata/file-id mismatch) —
 //  overwriting it with the in-memory scene would silently clobber those
 //  external edits (docs/ROUND_TRIP_SAVE_PLAN.md §11.6).  The controller
 //  snapshots the CST-load FileIdentity alongside the Document.
@@ -28,11 +28,13 @@
 #ifndef SaveEngine_
 #define SaveEngine_
 
+#include <memory>
 #include <string>
 
 namespace RISE
 {
     struct FileIdentity;
+    struct SaveLease;
     namespace Cst { struct Document; }
 
     /// Outcome of a Save() call.  Status discriminates UI messaging.
@@ -64,9 +66,10 @@ namespace RISE
     /// snapshot; refuses an in-place save when the loaded file changed
     /// externally.
     ///
-    /// Concurrency: the engine itself takes no locks and reads only its
-    /// immutable snapshots.  The caller captures and later publishes
-    /// those snapshots under its own mutex.
+    /// Concurrency: each engine reads only immutable snapshots and takes a
+    /// process-wide per-canonical-path lease around identity validation
+    /// through atomic publication.  Different target files remain
+    /// independent; overlapping saves to one target cannot both succeed.
     class SaveEngine
     {
     public:
@@ -77,13 +80,17 @@ namespace RISE
         /// unlocked, then publishes save/dirty state under the mutex.
         SaveEngine(
             const Cst::Document& document,
-            const FileIdentity& loadedFileIdentity );
+            const FileIdentity& loadedFileIdentity,
+            const std::string& filePath );
+        ~SaveEngine();
 
-        SaveResult Save( const std::string& filePath );
+        SaveResult Save();
 
     private:
         const Cst::Document& mDocument;
         const FileIdentity&  mLoadedFileIdentity;
+        std::string          mFilePath;
+        std::unique_ptr<SaveLease> mLease;
     };
 }
 
