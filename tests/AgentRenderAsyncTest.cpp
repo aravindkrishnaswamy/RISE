@@ -1052,6 +1052,9 @@ static void RunPostStopRefusalTest()
 	SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
 	controller->Start( /*suppressInitialRender=*/true );
 	controller->Stop();   // interactive loop AND the agent-render worker are both torn down now
+	controller->Start( /*suppressInitialRender=*/true );
+	Check( !controller->IsRunning(),
+	       "full Stop() is terminal: a later Start cannot resurrect only the interactive thread" );
 
 	SceneEditController::RenderJobId dummyId = SceneEditController::kInvalidRenderJobId;
 	const bool asyncAccepted = controller->SubmitAgentRenderAsync(
@@ -4577,6 +4580,32 @@ static void RunAgentRenderRestoresPersistentCallbackRedProveTest()
 	std::printf( "=== (z4) agent render restores persistent callback: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+// (z5) The legacy RequestProductionRender entry point pauses and restarts
+// only the interactive loop.  It must not call full Stop(), which also
+// retires the dedicated agent-render worker permanently.
+static void RunLegacyProductionPreservesAgentWorkerTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (z5) legacy production render preserves the agent worker ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_legacy_production_worker.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the legacy-production scene (z5)" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the legacy-production scene (z5)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+	Check( controller.RequestProductionRender(),
+	       "legacy RequestProductionRender completes successfully (z5)" );
+	Check( controller.SubmitAgentRenderSync(
+		       [] {}, String( "post-legacy-production" ), nullptr, 2000 ),
+	       "MONEY (z5): agent-render worker still accepts work after legacy production" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 // (guard) render-owns-scene: a UI-callable mMutex-locking method, called on
 // another thread WHILE a production/agent render owns the scene (holds mMutex
 // across its closure), must NO-OP and return immediately -- never block on
@@ -4687,6 +4716,7 @@ int main()
 	RunProgressSlotAtomicClearTest();
 	RunComposedPriorCapturedInSlotRedProveTest();
 	RunAgentRenderRestoresPersistentCallbackRedProveTest();
+	RunLegacyProductionPreservesAgentWorkerTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

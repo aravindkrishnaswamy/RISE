@@ -35,6 +35,8 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
 #include <utility>
 
 namespace RISE
@@ -489,8 +491,20 @@ namespace RISE
 		void SetDirtyChangedListener( DirtyChangedFn fn )
 		{
 			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
-			std::lock_guard<std::mutex> lk( state->mutex );
+			std::unique_lock<std::mutex> lk( state->mutex );
 			state->listener = std::move( fn );
+			// Replacing/detaching is a quiescence barrier for the PREVIOUS
+			// callback.  Platform listeners capture raw bridge userData, so
+			// returning while another thread still invokes its copied
+			// std::function would let bridge teardown free that pointer first.
+			// A callback may itself destroy the controller/editor; that same
+			// callback thread must not wait for its own return.
+			if( state->callbacksInFlight != 0
+			 && state->callbackThread != std::this_thread::get_id() ) {
+				state->callbackCV.wait( lk, [&] {
+					return state->callbacksInFlight == 0;
+				} );
+			}
 			// Don't fire on attach — the bridge already knows the
 			// initial state (it can call HasUnsavedChanges()).
 		}
@@ -642,6 +656,9 @@ namespace RISE
 			std::atomic<bool> ownerAlive{ true };
 			std::atomic<unsigned int> deferDepth{ 0 };
 			std::mutex        mutex;
+			std::condition_variable callbackCV;
+			unsigned int      callbacksInFlight = 0;
+			std::thread::id   callbackThread;
 		};
 		std::shared_ptr<DirtyNotificationState> mDirtyNotificationState;
 

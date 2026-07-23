@@ -89,7 +89,8 @@ namespace RISE
     private:
         const Cst::Document& mDocument;
         const FileIdentity&  mLoadedFileIdentity;
-        std::string          mFilePath;
+        std::string          mFilePath;          ///< user-requested path (result/diagnostics)
+        std::string          mResolvedFilePath;  ///< canonical IO target (preserves final symlink)
         std::unique_ptr<SaveLease> mLease;
     };
 }

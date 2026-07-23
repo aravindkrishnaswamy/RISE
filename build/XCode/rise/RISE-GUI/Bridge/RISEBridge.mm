@@ -49,6 +49,7 @@
 #include "SceneEditor/CancellableProgressCallback.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -635,6 +636,48 @@ static BOOL RunProductionRenderThroughController(
         ? YES : NO;
 }
 
+// Strong lifetime handoff for RISEBridge's borrowed viewport controller.
+// Every production entry point holds one of these for its complete Job /
+// controller use. attachSceneEditController(NULL) first blocks new
+// controller-routed calls, then waits for all existing leases to drain
+// before RISEViewportBridge destroys the controller.
+class ViewportControllerLease
+{
+public:
+    ViewportControllerLease(
+        SceneEditController*& controllerSlot,
+        bool& controllerRequired,
+        unsigned int& activeUsers,
+        std::mutex& mutex,
+        std::condition_variable& cv )
+        : mActiveUsers( activeUsers )
+        , mMutex( mutex )
+        , mCV( cv )
+    {
+        std::lock_guard<std::mutex> lk( mMutex );
+        mController = controllerSlot;
+        mFallbackAllowed = !controllerRequired;
+        ++mActiveUsers;
+    }
+
+    ~ViewportControllerLease()
+    {
+        std::lock_guard<std::mutex> lk( mMutex );
+        if( mActiveUsers > 0 ) --mActiveUsers;
+        if( mActiveUsers == 0 ) mCV.notify_all();
+    }
+
+    SceneEditController* Controller() const { return mController; }
+    bool CanProceed() const { return mController || mFallbackAllowed; }
+
+private:
+    SceneEditController*   mController = nullptr;
+    bool                   mFallbackAllowed = false;
+    unsigned int&          mActiveUsers;
+    std::mutex&            mMutex;
+    std::condition_variable& mCV;
+};
+
 // ============================================================
 // RISEBridge implementation
 // ============================================================
@@ -651,6 +694,10 @@ static BOOL RunProductionRenderThroughController(
     // calling Job::Rasterize() directly, so a production render can never
     // overlap the interactive loop or an agent render inside Rasterize().
     SceneEditController* _viewportController;
+    std::mutex _viewportControllerMutex;
+    std::condition_variable _viewportControllerCV;
+    unsigned int _viewportControllerUsers;
+    bool _viewportControllerRequired;
     // L5a round-5 — TWO independent ViewportFrameStores, one per
     // path.  Production VFS is for the full-quality renderer
     // (Render / Render-Animation buttons), with per-tile updates
@@ -710,6 +757,8 @@ static BOOL RunProductionRenderThroughController(
         _job = nullptr;
         RISE_CreateJobPriv(&_job);
         _viewportController = nullptr;
+        _viewportControllerUsers = 0;
+        _viewportControllerRequired = false;
 
         // L5d — interactive GUI: drop file_rasterizeroutput chunks
         // at parse time so loading a scene doesn't auto-write
@@ -1321,14 +1370,24 @@ static BOOL RunProductionRenderThroughController(
 }
 
 - (BOOL)rasterize {
-    const double sceneTime = _viewportController
-        ? static_cast<double>(_viewportController->LastSceneTime())
+    ViewportControllerLease lease(
+        _viewportController, _viewportControllerRequired,
+        _viewportControllerUsers, _viewportControllerMutex,
+        _viewportControllerCV );
+    if( !lease.CanProceed() ) return NO;
+    const double sceneTime = lease.Controller()
+        ? static_cast<double>(lease.Controller()->LastSceneTime())
         : 0.0;
     return [self rasterizeAtSceneTime:sceneTime];
 }
 
 - (BOOL)rasterizeAtSceneTime:(double)t {
     if (!_job) return NO;
+    ViewportControllerLease lease(
+        _viewportController, _viewportControllerRequired,
+        _viewportControllerUsers, _viewportControllerMutex,
+        _viewportControllerCV );
+    if( !lease.CanProceed() ) return NO;
 
     // Clear previous rasterizer outputs before reattaching VFS.
     // Without this, every Render click stacks another rasterizer-side
@@ -1348,7 +1407,7 @@ static BOOL RunProductionRenderThroughController(
     IJobPriv* job = _job;
     const Scalar sceneTime = static_cast<Scalar>(t);
     return RunProductionRenderThroughController(
-        _job, _viewportController, String("gui_rasterize"), _progressCallback,
+        _job, lease.Controller(), String("gui_rasterize"), _progressCallback,
         [job, sceneTime]() -> BOOL {
             // This can regenerate photon maps for a long time. It belongs
             // inside the coordinator's worker-held critical section: running
@@ -1367,6 +1426,11 @@ static BOOL RunProductionRenderThroughController(
 
 - (BOOL)rasterizeAnimation {
     if (!_job) return NO;
+    ViewportControllerLease lease(
+        _viewportController, _viewportControllerRequired,
+        _viewportControllerUsers, _viewportControllerMutex,
+        _viewportControllerCV );
+    if( !lease.CanProceed() ) return NO;
 
     IRasterizer* rasterizer = _job->GetRasterizer();
     if (!rasterizer) return NO;
@@ -1392,7 +1456,7 @@ static BOOL RunProductionRenderThroughController(
 
     IJobPriv* job = _job;
     BOOL result = RunProductionRenderThroughController(
-        _job, _viewportController, String("gui_rasterize_animation"), _progressCallback,
+        _job, lease.Controller(), String("gui_rasterize_animation"), _progressCallback,
         [job]() -> BOOL { return job->RasterizeAnimationUsingOptions() ? YES : NO; });
 
     // Finalize the video file after rendering completes.
@@ -1413,6 +1477,11 @@ static BOOL RunProductionRenderThroughController(
                       right:(uint32_t)right
                      bottom:(uint32_t)bottom {
     if (!_job) return NO;
+    ViewportControllerLease lease(
+        _viewportController, _viewportControllerRequired,
+        _viewportControllerUsers, _viewportControllerMutex,
+        _viewportControllerCV );
+    if( !lease.CanProceed() ) return NO;
 
     // Same accumulation hygiene as `rasterize:` — clear outputs so
     // the rasterizer's outs list doesn't grow unbounded across
@@ -1427,7 +1496,7 @@ static BOOL RunProductionRenderThroughController(
 
     IJobPriv* job = _job;
     return RunProductionRenderThroughController(
-        _job, _viewportController, String("gui_rasterize_region"), _progressCallback,
+        _job, lease.Controller(), String("gui_rasterize_region"), _progressCallback,
         [job, left, top, right, bottom]() -> BOOL {
             return job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
         });
@@ -1501,7 +1570,25 @@ static BOOL RunProductionRenderThroughController(
     // See the header doc for the full lifetime contract (RISEViewportBridge
     // is the sole caller; registers after creating its controller, clears
     // to NULL before destroying it).
-    _viewportController = static_cast<SceneEditController*>(opaqueController);
+    std::unique_lock<std::mutex> lk(_viewportControllerMutex);
+    SceneEditController* next =
+        static_cast<SceneEditController*>(opaqueController);
+    if( !next ) {
+        // Block new controller-routed production work before waiting. A
+        // caller that arrives during teardown is refused (not silently
+        // fallen back to an uncoordinated direct Job::Rasterize).
+        _viewportController = nullptr;
+        _viewportControllerRequired = true;
+        _viewportControllerCV.wait(lk, [&] {
+            return _viewportControllerUsers == 0;
+        });
+        return;
+    }
+    _viewportControllerCV.wait(lk, [&] {
+        return _viewportControllerUsers == 0;
+    });
+    _viewportController = next;
+    _viewportControllerRequired = true;
 }
 
 @end

@@ -824,6 +824,12 @@ void SceneEditController::Start( bool suppressInitialRender )
 	// mRenderThread (std::terminate) -- see mLifecycleMutex's doc.
 	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
 
+	// Full Stop() is terminal for this controller because it also retires
+	// the dedicated agent-render worker.  In particular, a legacy
+	// RequestProductionRender finishing concurrently with Stop must not
+	// resurrect only the interactive half after teardown has completed.
+	if( mAgentRenderStop.load( std::memory_order_acquire ) ) return;
+
 	bool expected = false;
 	if( !mRunning.compare_exchange_strong( expected, true ) )
 	{
@@ -2273,49 +2279,55 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
 	mPointerDown.store( false, std::memory_order_release );
 
-	// P1: close the composite the GESTURE opened on pointer-DOWN, regardless of
-	// any tool/selection change mid-gesture.  Deciding from the CURRENT tool (the
-	// old switch here) could STRAND an open composite -- permanently blocking
-	// transactions (IsCompositeOpen) + growing history unbounded -- or double-
-	// close when the tool changed away from a motion tool.
-	if( mGestureOpenedComposite ) {
-		std::lock_guard<std::mutex> lk( mMutex );
-		mEditor.EndComposite();
-		mGestureOpenedComposite = false;
-	}
-	// P5 Slice 3 expansion (object transform): a gizmo drag accumulated per-frame transform edits (each a cheap
-	// direct mutate under the per-frame park).  Commit the NET transform to the CST as the authoritative `matrix`
-	// param now -- ONCE -- under a render-thread park, because a commit RE-DERIVES (on a variant scene it ClearAll's
-	// the live scene, which must not race a worker mid-traversal).  No-op when nothing is pending (camera drags,
-	// legacy-loaded scenes).
-	if( mEditor.HasPendingCstObjectTransforms() || mEditor.HasPendingCstCameraPose() ) {
+	bool notifyAfterFinalize = false;
+	{
+		// Finalize the whole gesture under one controller critical section.
+		// Keep its composite OPEN while waiting for the render to park: wait()
+		// releases mMutex, and the open composite makes an agent D2 that enters
+		// during that interval refuse/retry instead of replacing the scene
+		// before the pending live transform/pose is captured into the CST.
 		std::unique_lock<std::mutex> lk( mMutex );
-		if( mRendering.load( std::memory_order_acquire ) ) {
-			mCancelProgress.RequestCancel();
-			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		const bool hasPending =
+			mEditor.HasPendingCstObjectTransforms()
+			|| mEditor.HasPendingCstCameraPose();
+		if( hasPending ) {
+			if( mRendering.load( std::memory_order_acquire ) ) {
+				mCancelProgress.RequestCancel();
+				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+			}
+			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+			// P5 Slice 3 expansion (object transform): a gizmo drag accumulated
+			// per-frame live edits. Commit the NET transform/pose to the CST once,
+			// while the render is parked and agent D2 is excluded.
+			// INVARIANT: the object and camera pending sets are MUTUALLY EXCLUSIVE here -- a gesture composite is
+			// single-tool ("Drag" object-motion XOR "Camera" camera-motion) and every commit boundary drains BOTH
+			// sets, so they are never simultaneously populated.  That matters because the object commit may take a D2
+			// (ClearAll + re-derive), which would rebuild the live CAMERA from the Document's pre-drag pose -- if a
+			// camera pose were ALSO pending, the camera commit below would then read+record that reset pose.  Should a
+			// future composite ever span both categories, snapshot BOTH (object matrices + camera pose strings) BEFORE
+			// routing EITHER (CommitPendingCstObjectTransforms already snapshots its matrices first; the camera commit
+			// would need the same).
+			//
+			// A2: OnPointerUp is a `void` gesture-end callback with no caller to report a bool to, so the commit
+			// returns are legitimately ignored here (unlike SetProperty, which now propagates them) -- a route failure
+			// is already logged by the commit itself (SceneEditor::CommitPendingCstObjectTransforms /
+			// CommitPendingCstCameraPose), and the render kick below repaints the live scene regardless via
+			// `mEditPending` set unconditionally after this block.
+			mEditor.CommitPendingCstObjectTransforms();   // object gizmo drag -> `matrix` param
+			mEditor.CommitPendingCstCameraPose();          // camera orbit/pan/zoom/roll -> pose params
+			mEditPending.store( true, std::memory_order_release );
+			mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			notifyAfterFinalize = true;
 		}
-		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-		// INVARIANT: the object and camera pending sets are MUTUALLY EXCLUSIVE here -- a gesture composite is
-		// single-tool ("Drag" object-motion XOR "Camera" camera-motion) and every commit boundary drains BOTH
-		// sets, so they are never simultaneously populated.  That matters because the object commit may take a D2
-		// (ClearAll + re-derive), which would rebuild the live CAMERA from the Document's pre-drag pose -- if a
-		// camera pose were ALSO pending, the camera commit below would then read+record that reset pose.  Should a
-		// future composite ever span both categories, snapshot BOTH (object matrices + camera pose strings) BEFORE
-		// routing EITHER (CommitPendingCstObjectTransforms already snapshots its matrices first; the camera commit
-		// would need the same).
-		//
-		// A2: OnPointerUp is a `void` gesture-end callback with no caller to report a bool to, so the commit
-		// returns are legitimately ignored here (unlike SetProperty, which now propagates them) -- a route failure
-		// is already logged by the commit itself (SceneEditor::CommitPendingCstObjectTransforms /
-		// CommitPendingCstCameraPose), and the render kick below repaints the live scene regardless via
-		// `mEditPending` set unconditionally after this block.
-		mEditor.CommitPendingCstObjectTransforms();   // object gizmo drag -> `matrix` param
-		mEditor.CommitPendingCstCameraPose();          // camera orbit/pan/zoom/roll -> pose params
-		mEditPending.store( true, std::memory_order_release );
-		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
-		lk.unlock();
-		mCV.notify_one();
+
+		// Close the composite only AFTER the persistence flush.  This also
+		// handles an armed-but-no-motion gesture (no pending CST channel).
+		if( mGestureOpenedComposite ) {
+			mEditor.EndComposite();
+			mGestureOpenedComposite = false;
+		}
 	}
+	if( notifyAfterFinalize ) mCV.notify_one();
 	// Always clear the drag state (incl. the armed-but-no-motion case).
 	mGizmoDrag.active = false;
 
@@ -2719,7 +2731,11 @@ bool SceneEditController::RequestProductionRender()
 	const bool wasRunning = IsRunning();
 	if( wasRunning )
 	{
-		Stop();
+		// Pause only the interactive loop.  Stop() also permanently retires
+		// the controller's long-lived agent-render worker, so using it here
+		// made the first legacy production render disable every later agent
+		// render for this controller.
+		StopInteractive();
 	}
 
 	bool ok = false;

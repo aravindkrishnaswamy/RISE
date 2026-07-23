@@ -922,6 +922,40 @@ int main()
 			std::remove( tc );
 		}
 
+#if !defined(_WIN32)
+		// SV5d: saving through a final-component symlink updates its target
+		// without atomically replacing the link itself.
+		{
+			const char* target = "cst_s4_symlink_target.RISEscene";
+			const char* alias  = "cst_s4_symlink_alias.RISEscene";
+			{ std::ofstream o( target ); o << SCENE; }
+			std::remove( alias );
+			std::filesystem::create_symlink(
+				std::filesystem::path( target ),
+				std::filesystem::path( alias ) );
+			Job* js = new Job();
+			Check( js->LoadAsciiSceneViaCst( alias ),
+			       "SV5d: scene loads through a symlink" );
+			SceneEditController cs( *js, 0 );
+			cs.SetSelection( Cat::Light, String( "l" ) );
+			Check( cs.SetPropertyForCategory(
+				       Cat::Light, String( "power" ), String( "8" ) ),
+			       "SV5d: edit through symlink-loaded controller applies" );
+			Check( cs.RequestSave( std::string( alias ) ).status
+				       == SaveResult::Status::Saved,
+			       "SV5d: save through symlink reports Saved" );
+			Check( std::filesystem::is_symlink(
+				       std::filesystem::symlink_status( alias ) ),
+			       "MONEY (SV5d): save preserves the final-component symlink" );
+			{ std::ifstream in( target ); std::stringstream ss; ss << in.rdbuf();
+			  Check( ss.str().find( "power 8" ) != std::string::npos,
+			      "MONEY (SV5d): the symlink target receives the edit" ); }
+			js->release();
+			std::remove( alias );
+			std::remove( target );
+		}
+#endif
+
 		// SV6 (6c-3b review P3 restore): a save to a bad/un-writable target reports Failed, populates
 		// LastSaveError, and RETAINS the dirty state (the edit is not lost).  Since the CST cutover this is the
 		// AtomicWrite-open-failure path (the target's directory does not exist -> ofstream open fails).  Red-provable:

@@ -194,8 +194,7 @@ SceneEditor::~SceneEditor()
 {
 	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
 	state->ownerAlive.store( false, std::memory_order_release );
-	std::lock_guard<std::mutex> lk( state->mutex );
-	state->listener = DirtyChangedFn();
+	SetDirtyChangedListener( DirtyChangedFn() );
 }
 
 namespace {
@@ -1094,6 +1093,24 @@ bool SceneEditor::DrainDirtyNotificationState_(
 		return state->ownerAlive.load( std::memory_order_acquire );
 	if( state->delivering.exchange( true, std::memory_order_acq_rel ) )
 		return state->ownerAlive.load( std::memory_order_acquire );   // active deliverer will pick it up
+	struct CallbackFlightGuard
+	{
+		explicit CallbackFlightGuard(
+			const std::shared_ptr<DirtyNotificationState>& stateIn )
+			: state( stateIn )
+		{
+		}
+		~CallbackFlightGuard()
+		{
+			std::lock_guard<std::mutex> lk( state->mutex );
+			if( state->callbacksInFlight > 0 ) --state->callbacksInFlight;
+			if( state->callbacksInFlight == 0 ) {
+				state->callbackThread = std::thread::id();
+				state->callbackCV.notify_all();
+			}
+		}
+		std::shared_ptr<DirtyNotificationState> state;
+	};
 	for( ;; )
 	{
 		if( !state->pending.exchange( false, std::memory_order_acq_rel ) ) break;
@@ -1107,9 +1124,14 @@ bool SceneEditor::DrainDirtyNotificationState_(
 				state->prevHasUnsavedChanges = now;
 				fire = true;
 				listenerCopy = state->listener;
+				if( listenerCopy ) {
+					++state->callbacksInFlight;
+					state->callbackThread = std::this_thread::get_id();
+				}
 			}
 		}
 		if( fire && listenerCopy ) {
+			CallbackFlightGuard flight( state );
 			listenerCopy( now );   // NO lock held
 			if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
 				state->delivering.store( false, std::memory_order_release );
@@ -1136,9 +1158,14 @@ bool SceneEditor::DrainDirtyNotificationState_(
 					state->prevHasUnsavedChanges = now;
 					fire = true;
 					listenerCopy = state->listener;
+					if( listenerCopy ) {
+						++state->callbacksInFlight;
+						state->callbackThread = std::this_thread::get_id();
+					}
 				}
 			}
 			if( fire && listenerCopy ) {
+				CallbackFlightGuard flight( state );
 				listenerCopy( now );
 				if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
 					state->delivering.store( false, std::memory_order_release );

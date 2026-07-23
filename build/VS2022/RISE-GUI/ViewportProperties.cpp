@@ -673,9 +673,8 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
         m_bridge->saveSceneTo(target, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
-        emit sceneSavedToPath(target, wasSaveAs);
-        break;
     case ViewportBridge::SaveStatus::NoOp:
+        emit sceneSavedToPath(target, wasSaveAs);
         break;
     case ViewportBridge::SaveStatus::Refused:
         QMessageBox::warning(

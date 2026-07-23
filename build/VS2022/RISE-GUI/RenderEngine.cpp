@@ -532,6 +532,12 @@ void RenderEngine::attachSceneEditController(void* opaqueController)
     // See the header doc for the full lifetime contract (ViewportBridge
     // is the sole caller; registers after creating its controller, clears
     // to nullptr before destroying it).
+    // Clearing is also the lifetime barrier: cancel and join the tracked
+    // production worker before publishing nullptr, so no worker can still
+    // hold the old borrowed controller when ViewportBridge destroys it.
+    if (!opaqueController && m_viewportController) {
+        cancelAndJoinInFlightWork();
+    }
     m_viewportController = static_cast<SceneEditController*>(opaqueController);
 }
 
@@ -714,10 +720,11 @@ void RenderEngine::startRender(double sceneTime)
     // -- the dtor drains the queue -- but kept as defense in depth),
     // the `delete progressCb` in its !guard branch does.
     QPointer<RenderEngine> guard(this);
-    QThread* thread = QThread::create([this, progressCb, guard, sceneTime]() {
+    SceneEditController* const viewportController = m_viewportController;
+    QThread* thread = QThread::create([this, progressCb, guard, sceneTime, viewportController]() {
         IJobPriv* job = m_job;
         bool ok = RunProductionRenderThroughController(
-            job, m_viewportController, "gui_render", progressCb,
+            job, viewportController, "gui_render", progressCb,
             [job, sceneTime]() -> bool {
                 // Full SetSceneTime may regenerate photon maps for a long
                 // time. Execute it on this worker, inside the coordinator,
@@ -847,10 +854,11 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
 
     // L4 round-6 P1 — QPointer guard for the queued completion lambda.
     QPointer<RenderEngine> guard(this);
-    QThread* thread = QThread::create([this, progressCb, rasterizer, proResEncoder, hevcEncoder, guard]() {
+    SceneEditController* const viewportController = m_viewportController;
+    QThread* thread = QThread::create([this, progressCb, rasterizer, proResEncoder, hevcEncoder, guard, viewportController]() {
         IJobPriv* job = m_job;
         bool ok = RunProductionRenderThroughController(
-            job, m_viewportController, "gui_render_animation", progressCb,
+            job, viewportController, "gui_render_animation", progressCb,
             [job]() -> bool { return job->RasterizeAnimationUsingOptions(); });
 
         // Flush + write each container's trailer before the outputs are

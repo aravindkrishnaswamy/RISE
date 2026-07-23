@@ -71,6 +71,9 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -628,6 +631,63 @@ int main()
 			"MONEY (T18): catch-all drain returned without touching the destroyed controller" );
 		pJob4->release();
 		std::remove( tmp4.c_str() );
+	}
+
+	// ---------- T19: detach waits out an already-copied callback ----------
+	std::printf( "T19: dirty-listener detach is a quiescence barrier...\n" );
+	const std::string tmp5 = TempPath( "geometry_panel_jump_detach_barrier.RISEscene" );
+	Job* pJob5 = LoadScene( kSceneNoRaster, tmp5 );
+	Check( pJob5 != nullptr, "T19: detach fixture scene loads" );
+	if( pJob5 )
+	{
+		SceneEditController controller( *pJob5, /*interactiveRasterizer*/nullptr );
+		Check( controller.SetSelection( Category::Geometry, String( "g1" ) ),
+			"T19: selects geometry before the dirtying edit" );
+		std::atomic<bool> callbackEntered{ false };
+		std::atomic<bool> releaseCallback{ false };
+		std::atomic<bool> detachReturned{ false };
+		std::atomic<bool> editReturned{ false };
+		std::atomic<unsigned int> fires{ 0 };
+		controller.SetDirtyChangedListener( [&]( bool ) {
+			fires.fetch_add( 1, std::memory_order_acq_rel );
+			callbackEntered.store( true, std::memory_order_release );
+			while( !releaseCallback.load( std::memory_order_acquire ) ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+		} );
+		std::thread editThread( [&] {
+			editReturned.store(
+				controller.SetProperty( String( "radius" ), String( "0.91" ) ),
+				std::memory_order_release );
+		} );
+		for( unsigned int i = 0;
+		     i < 5000 && !callbackEntered.load( std::memory_order_acquire );
+		     ++i ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+		Check( callbackEntered.load( std::memory_order_acquire ),
+			"T19: dirty callback is in flight" );
+		std::thread detachThread( [&] {
+			controller.SetDirtyChangedListener(
+				SceneEditController::DirtyChangedFn() );
+			detachReturned.store( true, std::memory_order_release );
+		} );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 30 ) );
+		Check( !detachReturned.load( std::memory_order_acquire ),
+			"MONEY (T19): detach has not returned while the copied callback is still in flight" );
+		releaseCallback.store( true, std::memory_order_release );
+		editThread.join();
+		detachThread.join();
+		Check( editReturned.load( std::memory_order_acquire ),
+			"T19: dirtying edit returns after callback release" );
+		Check( detachReturned.load( std::memory_order_acquire ),
+			"MONEY (T19): detach returns after the in-flight callback quiesces" );
+		Check( controller.SetProperty( String( "radius" ), String( "0.92" ) ),
+			"T19: a later edit still succeeds" );
+		Check( fires.load( std::memory_order_acquire ) == 1,
+			"T19: detached callback never fires again" );
+		pJob5->release();
+		std::remove( tmp5.c_str() );
 	}
 
 	pJob->release();

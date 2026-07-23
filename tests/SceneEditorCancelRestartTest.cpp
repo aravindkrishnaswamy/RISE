@@ -127,7 +127,7 @@ private:
 
 static void TestStartStopIsClean()
 {
-	std::cout << "Testing Start/Stop lifecycle..." << std::endl;
+	std::cout << "Testing interactive Start/Stop lifecycle..." << std::endl;
 
 	Job* pJob = new Job();
 	TestController c( *pJob );
@@ -139,16 +139,22 @@ static void TestStartStopIsClean()
 	Check( c.ForTest_WaitForRenders( 1, /*timeoutMs*/2000 ),
 	       "initial render fires within 2s" );
 
-	c.Stop();
-	Check( !c.IsRunning(), "controller not running after Stop" );
+	c.StopInteractive();
+	Check( !c.IsRunning(), "controller not running after StopInteractive" );
 
-	// Idempotency
+	// The interactive half is restartable and both operations are idempotent.
 	c.Start();
 	c.Start();   // second Start is a no-op
 	Check( c.IsRunning(), "Start is idempotent" );
+	c.StopInteractive();
+	c.StopInteractive();    // second interactive stop is a no-op
+	Check( !c.IsRunning(), "StopInteractive is idempotent" );
+
+	// Full Stop is teardown: it also retires the one-shot agent worker.
 	c.Stop();
-	c.Stop();    // second Stop is a no-op
-	Check( !c.IsRunning(), "Stop is idempotent" );
+	c.Stop();    // second full Stop is a no-op
+	c.Start();
+	Check( !c.IsRunning(), "full Stop is terminal" );
 	pJob->release();
 }
 

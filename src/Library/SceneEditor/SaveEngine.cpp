@@ -234,7 +234,8 @@ SaveEngine::SaveEngine(
     : mDocument( document )
     , mLoadedFileIdentity( loadedFileIdentity )
     , mFilePath( filePath )
-    , mLease( new SaveLease( CanonicalSavePath( filePath ) ) )
+    , mResolvedFilePath( CanonicalSavePath( filePath ) )
+    , mLease( new SaveLease( mResolvedFilePath ) )
 {
 }
 
@@ -256,7 +257,7 @@ SaveResult SaveEngine::Save()
             "' is already in progress";
         return result;
     }
-    const std::string canonicalTarget = CanonicalSavePath( mFilePath );
+    const std::string& canonicalTarget = mResolvedFilePath;
 
     // ---- CST-Document save (the Model-B cutover's save side) -----------
     // The controller captured this immutable persistent-Document snapshot
@@ -277,7 +278,7 @@ SaveResult SaveEngine::Save()
         if( cstLoadIdent.captured
             && CanonicalSavePath( cstLoadIdent.filePath ) == canonicalTarget ) {
             struct ::stat cur = {};
-            if( ::stat( mFilePath.c_str(), &cur ) == 0 ) {
+            if( ::stat( mResolvedFilePath.c_str(), &cur ) == 0 ) {
                 const long long curSize  = static_cast<long long>( cur.st_size );
                 const long long curMtime = static_cast<long long>( cur.st_mtime );
                 const long long curDevice = static_cast<long long>( cur.st_dev );
@@ -308,13 +309,13 @@ SaveResult SaveEngine::Save()
     // NoOp when the target already holds exactly these bytes (e.g. a save
     // with no pending edits).
     std::string existing, rerr;
-    if( ReadFile( mFilePath, existing, rerr ) && existing == text ) {
+    if( ReadFile( mResolvedFilePath, existing, rerr ) && existing == text ) {
         result.status = SaveResult::Status::NoOp;
         return result;
     }
 
     std::string werr;
-    if( !AtomicWrite( mFilePath, text, werr ) ) {
+    if( !AtomicWrite( mResolvedFilePath, text, werr ) ) {
         result.status = SaveResult::Status::Failed;
         result.errorMessage = werr;
         return result;

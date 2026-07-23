@@ -1062,11 +1062,13 @@ ViewportBridge::SaveStatus ViewportBridge::saveSceneTo(
     }
     const SaveStatus rs = static_cast<SaveStatus>(status);
 
-    // Phase 6.5: on Saved with a Save-As target (path != current
+    // Phase 6.5: on either successful outcome with a Save-As target
+    // (path != current
     // loadedFilePath), re-anchor the engine's record so subsequent
     // in-place saves target the file we just wrote.  Matches the
-    // library's FileIdentity re-anchor inside SaveEngine.
-    if (rs == SaveStatus::Saved && m_engine) {
+    // library's FileIdentity re-anchor inside SaveEngine.  NoOp still
+    // re-anchors: the chosen target already contains byte-identical CST.
+    if ((rs == SaveStatus::Saved || rs == SaveStatus::NoOp) && m_engine) {
         if (m_engine->loadedFilePath() != path) {
             m_engine->setLoadedFilePath(path);
         }

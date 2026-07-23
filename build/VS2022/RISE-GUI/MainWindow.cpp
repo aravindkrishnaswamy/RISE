@@ -1208,13 +1208,12 @@ bool MainWindow::performSceneSaveAs()
     const ViewportBridge::SaveStatus status = m_viewportBridge->saveSceneTo(filePath, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
+    case ViewportBridge::SaveStatus::NoOp:
         onSceneSavedToPath(filePath, /*wasSaveAs=*/true);
         // Media paths follow the scene to its new home -- vital for the
         // untitled create path, whose template load registered no project
         // root (review P2; mirrors the Mac registerMediaPaths-on-Save-As).
         m_engine->setupMediaPaths(filePath);
-        return true;
-    case ViewportBridge::SaveStatus::NoOp:
         return true;
     case ViewportBridge::SaveStatus::Refused: {
         const QString message = errMsg.isEmpty()

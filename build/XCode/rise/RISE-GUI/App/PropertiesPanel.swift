@@ -462,9 +462,8 @@ struct PropertiesPanel: View {
     // Status codes mirror SaveResult::Status:
     //   0 = Saved   — silent success (button greys out via the dirty-
     //                 changed callback's clean→dirty=false transition)
-    //   1 = NoOp    — silent (nothing to write).  Shouldn't normally
-    //                 fire from a button that's disabled-when-clean,
-    //                 but it's safe to ignore.
+    //   1 = NoOp    — silent success.  A Save-As still re-anchors to
+    //                 the chosen byte-identical target.
     //   2 = Refused — engine declined (cross-file target, barrier-
     //                 conflict, external modification).  Modal alert.
     //   3 = Failed  — IO error or file-not-found.  Modal alert.
@@ -544,9 +543,16 @@ struct PropertiesPanel: View {
                 alert.runModal()
             }
         case 1:
-            // NoOp — silent success.  The file is unchanged on
-            // disk; no re-anchor needed.
-            break
+            // NoOp is still a successful Save-As: the chosen file already
+            // contains byte-identical CST, and the core re-anchored its file
+            // identity to this path.  Keep the shell's next in-place Save
+            // aligned with that same target.
+            if path != viewModel.loadedFilePath {
+                viewModel.loadedFilePath = path
+            }
+            if !viewModel.isEditorDirty {
+                viewModel.refreshEditorContents()
+            }
         case 2:
             showSaveAlert(
                 title: "Save Refused",
