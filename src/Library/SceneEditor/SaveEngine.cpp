@@ -65,7 +65,7 @@ struct PathSaveState
     std::mutex operationMutex;
 };
 
-std::string CanonicalSavePath( const std::string& filePath )
+std::string ResolvedSavePath( const std::string& filePath )
 {
     std::error_code ec;
     std::filesystem::path path =
@@ -76,7 +76,12 @@ std::string CanonicalSavePath( const std::string& filePath )
         if( ec ) path = std::filesystem::path( filePath );
         path = path.lexically_normal();
     }
-    std::string key = path.string();
+    return path.string();
+}
+
+std::string CanonicalSavePath( const std::string& filePath )
+{
+    std::string key = ResolvedSavePath( filePath );
 #if defined(_WIN32)
     // Windows path lookup is case-insensitive; make the in-process lease
     // key obey the same rule so spelling aliases cannot bypass it.
@@ -234,8 +239,8 @@ SaveEngine::SaveEngine(
     : mDocument( document )
     , mLoadedFileIdentity( loadedFileIdentity )
     , mFilePath( filePath )
-    , mResolvedFilePath( CanonicalSavePath( filePath ) )
-    , mLease( new SaveLease( mResolvedFilePath ) )
+    , mResolvedFilePath( ResolvedSavePath( filePath ) )
+    , mLease( new SaveLease( CanonicalSavePath( mResolvedFilePath ) ) )
 {
 }
 
@@ -257,7 +262,7 @@ SaveResult SaveEngine::Save()
             "' is already in progress";
         return result;
     }
-    const std::string& canonicalTarget = mResolvedFilePath;
+    const std::string canonicalTarget = CanonicalSavePath( mResolvedFilePath );
 
     // ---- CST-Document save (the Model-B cutover's save side) -----------
     // The controller captured this immutable persistent-Document snapshot

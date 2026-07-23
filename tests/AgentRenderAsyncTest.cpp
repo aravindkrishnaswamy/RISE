@@ -1632,6 +1632,18 @@ static void RunTxnOpenRenderRefusalTest()
 		Check( controller.BeginTransaction(), "transaction opens" );
 		Check( controller.IsTransactionOpen(), "transaction reports open" );
 
+		std::atomic<unsigned int> directCalls{ 0 };
+		Check( !controller.SubmitAgentRenderSync(
+			       [&] { directCalls.fetch_add( 1, std::memory_order_acq_rel ); },
+			       String( "txn-open-direct-sync" ), nullptr, 500 ),
+		       "MONEY (k): direct synchronous agent submission is refused inside the transaction" );
+		Check( !controller.SubmitProductionRenderSync(
+			       [&] { directCalls.fetch_add( 1, std::memory_order_acq_rel ); },
+			       String( "txn-open-direct-production" ), nullptr, 500 ),
+		       "MONEY (k): direct production submission is refused inside the transaction" );
+		Check( directCalls.load( std::memory_order_acquire ) == 0,
+		       "MONEY (k): neither refused direct closure was invoked" );
+
 		AgentRenderParams withOverride;
 		withOverride.camera.hasLocation = true;  withOverride.camera.location = "3.5 0 0";
 		withOverride.camera.hasLookAt   = true;  withOverride.camera.lookAt   = "0 0 0";
@@ -1656,6 +1668,9 @@ static void RunTxnOpenRenderRefusalTest()
 		// Control: the SAME override render succeeds once the transaction
 		// is closed -- the refusal is transaction-scoped, not a broken path.
 		const AgentRenderResult r2 = session->Render( withOverride );
+		if( !r2.ok ) {
+			std::printf( "    post-transaction message=\"%s\"\n", r2.message.c_str() );
+		}
 		Check( r2.ok, "the same WITH-override render succeeds once the transaction is closed" );
 		Check( !r2.png.empty(), "post-transaction override render produces PNG bytes" );
 		Check( r2.cameraOverridden, "post-transaction override render actually applied the camera override" );

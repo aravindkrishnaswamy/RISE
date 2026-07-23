@@ -196,7 +196,10 @@ namespace RISE
 		//! production render — the preview path uses
 		//! SetSceneTimeForPreview which deliberately skips photon
 		//! regen and would leave caustics from the pre-scrub time.
-		Scalar LastSceneTime() const { return mLastSetTime; }
+		Scalar LastSceneTime() const
+		{
+			return mLastSetTime.load( std::memory_order_acquire );
+		}
 
 		//! Characteristic length of the scene — the diagonal of the
 		//! axis-aligned union of all object bounding boxes (or a
@@ -583,7 +586,10 @@ namespace RISE
 		// IScene exposes SetSceneTime but no GetSceneTime, so we
 		// track the most-recently-applied time locally.  Used to
 		// capture prevTime for undo on SetSceneTime ops.
-		Scalar       mLastSetTime;
+		// Read by platform production-render handoff threads while the UI
+		// may scrub/undo time. A scalar atomic is the authoritative snapshot;
+		// live Scene mutation remains serialized by the controller mutex.
+		std::atomic<Scalar> mLastSetTime;
 		// Cached scene scale (bbox-union diagonal).  0 = uncomputed;
 		// `SceneScale()` lazy-computes on first call.  `mutable`
 		// because `SceneScale` is `const`-qualified so camera-op

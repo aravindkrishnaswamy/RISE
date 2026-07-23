@@ -310,6 +310,21 @@ MainWindow::MainWindow(QWidget* parent)
     updateCenterViewStack();
 }
 
+MainWindow::~MainWindow()
+{
+    // QObject deletes children in construction order. RenderEngine is the
+    // first MainWindow child, while the live ViewportBridge is created later
+    // for each loaded scene and borrows that engine. Tear the bridge down
+    // explicitly while the engine is still alive; otherwise QObject's
+    // default child destruction would free the engine first and the bridge
+    // destructor would call attachSceneEditController(nullptr) through a
+    // dangling m_engine pointer.
+    if (m_engine) {
+        m_engine->cancelAndJoinInFlightWork();
+    }
+    teardownViewport();
+}
+
 // ============================================================
 // Workspace chrome construction (UI redesign)
 // ============================================================

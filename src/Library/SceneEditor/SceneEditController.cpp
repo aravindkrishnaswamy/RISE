@@ -2738,44 +2738,27 @@ bool SceneEditController::RequestProductionRender()
 		StopInteractive();
 	}
 
-	bool ok = false;
-	{
-		// The legacy synchronous entry point must participate in the same
-		// one-owner discipline as the composed production/agent paths.
-		// Holding mMutex for the complete live-pointer lifetime prevents an
-		// any-thread D2 edit from replacing the Job graph mid-rasterize;
-		// mRenderOwnsScene lets UI getters refuse promptly instead of
-		// blocking behind that duration-long lock.
-		std::unique_lock<std::mutex> lk( mMutex );
-		struct LegacyRenderOwnershipScope {
-			explicit LegacyRenderOwnershipScope( std::atomic<bool>& flag )
-				: mFlag( flag )
-			{
-				mFlag.store( true, std::memory_order_release );
-			}
-			~LegacyRenderOwnershipScope()
-			{
-				mFlag.store( false, std::memory_order_release );
-			}
-			std::atomic<bool>& mFlag;
-		} ownScope_( mRenderOwnsScene );
+	// Route even this legacy synchronous arm through the tracked production
+	// slot. Stop() retires and joins that worker, so it cannot return while
+	// this render still borrows the controller or Job. The older direct
+	// mMutex-held call was mutually exclusive with edits, but invisible to
+	// Stop() once StopInteractive had already made mRunning false.
+	const bool ok = RunProductionRenderComposed(
+		mJob, this, String( "legacy_production_render" ),
+		/*guiProgress=*/nullptr,
+		[&]() -> bool {
+			IRasterizer* prod = mJob.GetRasterizer();
+			const IScene* scene = mJob.GetScene();
+			if( !prod || !scene ) return false;
 
-		IRasterizer* prod = mJob.GetRasterizer();
-		const IScene* scene = mJob.GetScene();
-		if( prod && scene )
-		{
 			// Run a FULL SetSceneTime(t) at the most recently scrubbed
-			// time before invoking the production rasterizer.  The
-			// preview path deliberately skips photon-map regeneration.
+			// time before invoking the production rasterizer. The preview
+			// path deliberately skips photon-map regeneration.
 			scene->SetSceneTime( mEditor.LastSceneTime() );
 			scene->GetObjects()->PrepareForRendering();
-
-			// Running synchronously on the calling thread is this legacy
-			// API's contract.  The platform UI displays a modal for it.
 			prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
-			ok = true;
-		}
-	}
+			return true;
+		} );
 
 	// Round-2 P2: same paused-guard as the early-exit restart above.
 	if( wasRunning && !IsRefinementPaused() ) Start();
@@ -2877,7 +2860,23 @@ bool SceneEditController::BeginTransaction()
 	// Undo() during rollback walks the whole group back PAST the baseline,
 	// consuming the pre-baseline CompositeBegin and corrupting the
 	// surrounding undo history.  A transaction must bracket WHOLE edits.
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::BeginTransaction refused: a coordinated "
+			"agent/production render is queued or running." );
+		return false;
+	}
 	std::lock_guard<std::mutex> lk( mMutex );
+	// Close the check-to-lock race with a submission that claimed the gate
+	// after the prompt atomic check above but before this mutex acquisition.
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::BeginTransaction refused: a coordinated "
+			"agent/production render is queued or running." );
+		return false;
+	}
 	if( mEditor.IsCompositeOpen() )
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
@@ -4730,6 +4729,15 @@ bool SceneEditController::RunPreviewRenderParked(
 	}
 
 	std::unique_lock<std::mutex> lk( mMutex );
+	// BeginTransaction publishes mTxnOpen while holding this same mutex.
+	// Recheck after acquiring it to close false -> Begin -> render between
+	// the prompt atomic check above and this critical section.
+	if( mTxnOpen.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
+		return false;
+	}
 	CancelAndParkRender_( lk );
 
 	RenderJobId jobId;
@@ -5058,38 +5066,15 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		return false;
 	}
 
-	// mCurrentRenderJob/mNextRenderJobId are guarded by mJobStatusMutex
-	// (NOT mMutex -- see that member's doc: mMutex is held by the
-	// worker for the render's WHOLE DURATION, so a status reader
-	// using mMutex would block for the entire render instead of
-	// observing it in flight; this was a real bug caught by this
-	// slice's own flaky test).  mAgentRenderBlocksInteractive is a
-	// SEPARATE plain atomic that RenderLoop checks WHILE holding
-	// mMutex -- set it under a brief, nested mMutex acquisition here
-	// so RenderLoop's mint block and this write are strictly
-	// ordered (RenderLoop cannot observe the gate false while this
-	// job is being minted).  Nesting mMutex INSIDE the already-held
-	// slot lock is safe here specifically because the single-slot
-	// policy above guarantees no render is currently in flight (the
-	// worker only holds mMutex WHILE a render runs, and a render can
-	// only start after mAgentRenderPending flips true, which happens
-	// later in this same critical section) -- so this brief, nested
-	// mMutex acquisition can never block behind the worker's
-	// render-duration hold.  No other code path acquires mMutex then
-	// tries to acquire mAgentRenderSlotMutex (the worker and
-	// WaitForRenderJob both release one before acquiring the other),
-	// so this nesting order (slot outer, mMutex inner) is the ONLY
-	// nesting order used anywhere and cannot deadlock.
-	RenderJobId jobId = kInvalidRenderJobId;
-	{
-		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
-		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
-		mCurrentRenderJob.id          = jobId;
-		mCurrentRenderJob.renderClass = renderClass;
-		mCurrentRenderJob.active      = true;
-		mCurrentRenderJob.clientLabel = clientLabel;   // Fix-round-1 P3-c: surface who submitted this job
-		mCurrentRenderJob.pinned      = pinned;        // Model-B F2 slice S3
-	}
+	// Claim the interactive gate and check transaction state under the
+	// same brief mMutex hold. This closes both directions of the race:
+	// an already-open transaction refuses this submission, while a
+	// successfully claimed submission makes a later BeginTransaction
+	// refuse until the worker clears the gate at completion.
+	//
+	// Nesting mMutex INSIDE the already-held slot lock is safe because
+	// the single-slot check above guarantees no coordinated render is in
+	// flight. This remains the sole lock order used by this machinery.
 	{
 		// Model-B F2 slice S2a: claim the interactive-loop gate for
 		// the FULL duration of this render (mint through worker
@@ -5098,7 +5083,27 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		// stomping mCurrentRenderJob in the gap between this mint and
 		// the worker actually starting).
 		std::lock_guard<std::mutex> renderLk( mMutex );
+		if( mTxnOpen.load( std::memory_order_acquire ) )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused inside an open transaction." );
+			return false;
+		}
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+	}
+
+	// Status readers use mJobStatusMutex rather than mMutex so they remain
+	// non-blocking during a render. Mint only after the gate claim succeeds;
+	// a transaction refusal must not publish a phantom active job.
+	RenderJobId jobId = kInvalidRenderJobId;
+	{
+		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
+		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
+		mCurrentRenderJob.id          = jobId;
+		mCurrentRenderJob.renderClass = renderClass;
+		mCurrentRenderJob.active      = true;
+		mCurrentRenderJob.clientLabel = clientLabel;
+		mCurrentRenderJob.pinned      = pinned;
 	}
 
 	mAgentRenderFn          = std::move( fn );

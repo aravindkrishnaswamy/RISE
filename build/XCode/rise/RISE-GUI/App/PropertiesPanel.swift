@@ -552,6 +552,22 @@ struct PropertiesPanel: View {
             }
             if !viewModel.isEditorDirty {
                 viewModel.refreshEditorContents()
+            } else {
+                // Same conflict as the Saved arm: Save-As changed which
+                // file the editor session targets, but refreshing would
+                // discard the scene editor's independent text edits.
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "The scene is now anchored to \(path), which already " +
+                    "contained the current interactive scene.  The scene " +
+                    "editor pane still shows its own unsaved text changes.  " +
+                    "Clicking Save in the scene editor will overwrite that " +
+                    "file — use Revert in the scene editor to discard your " +
+                    "text edits and pull the selected file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             }
         case 2:
             showSaveAlert(

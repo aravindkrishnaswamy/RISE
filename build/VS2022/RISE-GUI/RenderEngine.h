@@ -262,6 +262,7 @@ private:
     // the architecture rationale.
     void renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
                                               bool nonBlocking = false);
+    void ensureProductionVFSInitialized();
     void ensureProductionVFSAttachedToRasterizer();
 
     RISE::IJobPriv* m_job = nullptr;

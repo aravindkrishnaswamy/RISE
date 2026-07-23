@@ -1454,7 +1454,8 @@ void SceneEditor::RebindToJob_()
 	// the animator's default time, but the user is parked at mLastSetTime -- re-apply it (the scrub-TIME twin of
 	// the camera/rasterizer/animation preservation) so the viewport pose matches the timeline slider; the
 	// production path already re-applies LastSceneTime before dispatch.  Skipped at the implicit t=0 (no scrub).
-	if( mScene && mLastSetTime != 0 ) mScene->SetSceneTimeForPreview( mLastSetTime );
+	const Scalar lastSetTime = mLastSetTime.load( std::memory_order_acquire );
+	if( mScene && lastSetTime != 0 ) mScene->SetSceneTimeForPreview( lastSetTime );
 }
 
 // P5 Slice 3 expansion: shared CST-routing for a property edit (material/light/...).  Mirrors the material
@@ -1870,7 +1871,7 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 
 	if( edit.op == SceneEdit::SetSceneTime )
 	{
-		edit.prevTime = mLastSetTime;
+		edit.prevTime = mLastSetTime.load( std::memory_order_acquire );
 		return true;
 	}
 
@@ -2295,7 +2296,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// Restore the time captured before the edit.  Use the preview
 		// path (no photon regen) so undo is fast.
 		mScene->SetSceneTimeForPreview( edit.prevTime );
-		mLastSetTime = edit.prevTime;
+		mLastSetTime.store( edit.prevTime, std::memory_order_release );
 		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
 		return true;
 	}
@@ -2715,7 +2716,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	if( edit.op == SceneEdit::SetSceneTime )
 	{
 		mScene->SetSceneTimeForPreview( edit.s );
-		mLastSetTime = edit.s;
+		mLastSetTime.store( edit.s, std::memory_order_release );
 		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
 		return true;
 	}
