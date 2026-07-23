@@ -148,6 +148,15 @@ namespace RISE
 			{
 				return method == "propose_patch" ||
 				       method == "insert_chunk"  ||
+				       // insert_chunks is the BATCH form of insert_chunk (see
+				       // AgentSession::InsertChunks's doc) -- it mutates via the
+				       // exact same AgentSession::InsertChunk delegate per element,
+				       // so it carries the SAME authority/autonomy posture as
+				       // insert_chunk: letting it reach AgentSession under
+				       // Propose autonomy does not itself commit anything, the
+				       // session's own Owner/External authority still decides
+				       // staging-vs-commit per element.
+				       method == "insert_chunks" ||
 				       method == "remove_chunk";
 			}
 
@@ -1066,6 +1075,86 @@ namespace RISE
 					// queue-full check above.
 					if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "insert_chunk" );
 					return MakeSuccess( idValue, ChunkResultJson( cr ) );
+				}
+
+				//--------------------------------------------------------------
+				// insert_chunks {chunks:[string,...], baseHeadVersion?}
+				//   -> {applied:number, total:number, results:[ChunkResultJson,...]}
+				//   BATCH form of insert_chunk (see AgentSession::InsertChunks's
+				//   doc): apply MULTIPLE complete chunks in ONE call instead of
+				//   one round-trip per chunk, collapsing what would otherwise be
+				//   N insert_chunk calls for an N-chunk scene.  SEQUENTIAL,
+				//   BEST-EFFORT -- every element of `chunks` is attempted IN
+				//   ORDER even if an earlier one is rejected, so a later chunk
+				//   that depends on an earlier one resolves cleanly (and a later
+				//   chunk that depended on a REJECTED earlier one simply also
+				//   fails, with its own actionable `issues`).  `baseHeadVersion`,
+				//   when given, is the optimistic-concurrency precondition for
+				//   the BATCH AS A WHOLE (checked against the FIRST element
+				//   only -- see AgentSession::InsertChunks's doc).  `applied` is
+				//   the count of `results` entries with applied==true; `total`
+				//   is `chunks.size()`.  Each `results` element is the EXACT
+				//   same shape ChunkResultJson gives insert_chunk (status, name,
+				//   kind, issues warnings/causes per chunk).  REQUIRES a head:
+				//   no session -> error.
+				//--------------------------------------------------------------
+				if( m == "insert_chunks" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* chunks = params.find( "chunks" );
+					if( !chunks || !chunks->isArray() ) {
+						std::string msg = "Invalid params: 'chunks' (array of strings) is required";
+						// See DescribeOtherParamKeys's doc (mirrors insert_chunk's
+						// identical guidance): name whatever the caller sent
+						// INSTEAD so a wrong-key mistake is visible in the SAME
+						// error round-trip.
+						const std::string other = DescribeOtherParamKeys(
+							params, { "chunks", "baseHeadVersion" } );
+						if( !other.empty() )
+							msg += " (got " + other + " instead -- rename to 'chunks')";
+						return MakeError( idValue, kInvalidParams, msg );
+					}
+					if( chunks->size() == 0 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'chunks' must be a non-empty array of strings" );
+					}
+					std::vector<std::string> chunkTexts;
+					chunkTexts.reserve( chunks->size() );
+					for( std::size_t i = 0; i < chunks->size(); ++i ) {
+						const JsonValue& item = chunks->at( i );
+						if( !item.isString() ) {
+							char buf[128];
+							std::snprintf( buf, sizeof( buf ),
+								"Invalid params: 'chunks[%zu]' must be a string", i );
+							return MakeError( idValue, kInvalidParams, buf );
+						}
+						chunkTexts.push_back( item.asString() );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+					const std::vector<AgentChunkResult> results =
+						s->InsertChunks( chunkTexts, ( b == 1 ) ? &base : nullptr );
+					// Secure-MCP slice 6: if ANY element hit the pending-proposal
+					// queue-full condition (External authority, live controller,
+					// queue already at capacity), report it with the SAME queue-
+					// full error shape insert_chunk uses -- it's the identical
+					// External-authority staging posture, just discovered on one
+					// of several elements instead of the sole one.
+					for( const AgentChunkResult& cr : results ) {
+						if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "insert_chunks" );
+					}
+					std::size_t appliedCount = 0;
+					JsonValue resultsArr = JsonValue::MakeArray();
+					for( const AgentChunkResult& cr : results ) {
+						if( cr.applied ) ++appliedCount;
+						resultsArr.push_back( ChunkResultJson( cr ) );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
+					result.set( "total",   JsonValue::MakeNumber( static_cast<double>( results.size() ) ) );
+					result.set( "results", resultsArr );
+					return MakeSuccess( idValue, result );
 				}
 
 				//--------------------------------------------------------------

@@ -2245,6 +2245,37 @@ namespace RISE
 			return r;
 		}
 
+		std::vector<AgentChunkResult> AgentSession::InsertChunks( const std::vector<std::string>& chunkTexts,
+		                                                          const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			std::vector<AgentChunkResult> out;
+
+			// Empty input is a no-op -- return an empty vector, don't call
+			// InsertChunk at all (see the header doc).
+			if( chunkTexts.empty() )
+				return out;
+
+			out.reserve( chunkTexts.size() );
+
+			// SEQUENTIAL, BEST-EFFORT: delegate to the existing InsertChunk
+			// for every element, in order, without duplicating any of its
+			// logic (authority gate, LIVE-vs-headless routing, conflict
+			// detection, issue diagnostics all come along for free).  Only
+			// the FIRST call gets the caller's `baseOrNull` -- every later
+			// element applies against the head as this batch has evolved
+			// it so far (see the header doc's rationale).  A rejected
+			// element does not abort the loop; later elements are still
+			// attempted so their own results are informative even when
+			// they depended on the rejected one.
+			for( std::size_t i = 0; i < chunkTexts.size(); ++i )
+			{
+				const RISE::Cst::CstHeadVersion* base = ( i == 0 ) ? baseOrNull : nullptr;
+				out.push_back( InsertChunk( chunkTexts[i], base ) );
+			}
+
+			return out;
+		}
+
 		AgentChunkResult AgentSession::RemoveChunk( const std::string& target,
 		                                            const std::string& kind,
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )

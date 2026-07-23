@@ -745,6 +745,150 @@ static void TestActionableRejectionDiagnosticsLive()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 5c: insert_chunks (the BATCH form of insert_chunk) on the LIVE
+// (attached-controller) path.  Mirrors Test 5's WrapJob + AttachController +
+// TestController harness -- the recurring failure mode this codebase has
+// hit before is wiring a mutating verb to the headless path only and
+// missing the LIVE controller path (the GUI), so this proves
+// AgentSession::InsertChunks reaches ApplyAgentInsertChunk (via its
+// per-element InsertChunk delegate) for real, with a real render thread
+// running underneath it, not just headlessly.
+//
+//   (a) ALL-APPLY: a 4-chunk batch (painter -> material -> geometry ->
+//       object, in dependency order) applies IN FULL through the attached
+//       controller: every result applied, the live managers grew, the
+//       controller cancel-and-parked + re-kicked a render pass, and the
+//       editor is DIRTY afterward -- the exact LIVE-commit contract Test 5
+//       proves for a single insert_chunk, now proven for a whole batch in
+//       one call.
+//   (c) BEST-EFFORT: a 2-chunk batch where the FIRST element is a dangling
+//       painter reference (rejected, with the SAME actionable `issues` Test
+//       5 proves for a single live insert_chunk rejection) and the SECOND
+//       element is independent and unrelated -- it still applies, proving
+//       a live rejection does not abort the batch.
+//////////////////////////////////////////////////////////////////////
+static void TestInsertChunksLive()
+{
+	std::cout << "Test 5c: insert_chunks (BATCH insert_chunk) on the LIVE controller path..." << std::endl;
+
+	const char* tmp = "agentlive_insert_chunks.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "insert_chunks live fixture loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Check( sess != nullptr, "AgentSession wraps the live Job" );
+		sess->AttachController( &c );
+		Check( sess->HasController(), "session attached to the running controller" );
+
+		//------------------------------------------------------------------
+		// (a) ALL-APPLY: painter -> material (references it) -> geometry ->
+		// object (binds geometry + material), all 4 in ONE InsertChunks call.
+		//------------------------------------------------------------------
+		{
+			Check( !c.HasUnsavedChanges(), "scene is CLEAN before the live insert_chunks batch" );
+			const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
+			const unsigned int rendersBefore = c.ForTest_GetRenderCount();
+
+			std::vector<std::string> chunks;
+			chunks.push_back( "uniformcolor_painter\n{\nname pnt_ic\ncolor 0.2 0.4 0.6\n}\n" );
+			chunks.push_back( "lambertian_material\n{\nname mat_ic\nreflectance pnt_ic\n}\n" );
+			chunks.push_back( "sphere_geometry\n{\nname sph_ic\nradius 0.4\n}\n" );
+			chunks.push_back( "standard_object\n{\nname obj_ic\ngeometry sph_ic\nmaterial mat_ic\nposition 2 0 0\n}\n" );
+
+			const std::vector<Agent::AgentChunkResult> results = sess->InsertChunks( chunks );
+			Check( results.size() == 4, "(a) live insert_chunks returns one result per input chunk" );
+			if( results.size() == 4 ) {
+				Check( results[0].applied && results[0].status == "applied" &&
+				       results[0].kind == "uniformcolor_painter" && results[0].name == "pnt_ic",
+				       "(a) live batch element 0 (painter) applied" );
+				Check( results[1].applied && results[1].status == "applied" &&
+				       results[1].kind == "lambertian_material" && results[1].name == "mat_ic",
+				       "(a) live batch element 1 (material referencing element 0) applied" );
+				Check( results[1].issues.empty(),
+				       "(a) the intra-batch reference resolved cleanly -- no unresolved_reference issue "
+				       "on the material, because the painter already landed earlier in this SAME batch" );
+				Check( results[2].applied && results[2].kind == "sphere_geometry" && results[2].name == "sph_ic",
+				       "(a) live batch element 2 (geometry) applied" );
+				Check( results[3].applied && results[3].kind == "standard_object" && results[3].name == "obj_ic",
+				       "(a) live batch element 3 (object binding elements 1+2) applied" );
+			}
+
+			// The LIVE managers actually grew (this reached ApplyAgentInsertChunk,
+			// not just the retained Document).
+			Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "mat_ic" ) != nullptr,
+			       "(a) the live managers carry the batch-inserted material" );
+			Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj_ic" ) != nullptr,
+			       "(a) the live managers carry the batch-inserted object" );
+
+			// The SAME park/kick/dirty contract Test 5 proves for one insert_chunk.
+			Check( c.ForTest_GetCancelCount() > cancelsBefore,
+			       "(a) the live batch cancel-and-PARKED the in-flight pass" );
+			Check( c.HasUnsavedChanges(), "(a) the live batch marked the editor DIRTY (Save enables)" );
+			Check( c.ForTest_WaitForRenders( rendersBefore + 1, 3000 ),
+			       "(a) the live batch KICKED a fresh viewport pass" );
+			Check( c.IsRunning(), "(a) render thread alive after the live insert_chunks batch" );
+		}
+
+		//------------------------------------------------------------------
+		// (c) BEST-EFFORT: element 0 is a dangling painter reference (the
+		// exact rejection Test 5 exercises for a single live insert_chunk);
+		// element 1 is independent and unrelated.  The rejection must NOT
+		// abort the batch -- element 1 still applies, and element 0's
+		// `issues` survive the LIVE path exactly like Test 5's single-insert
+		// case.
+		//------------------------------------------------------------------
+		{
+			std::vector<std::string> chunks;
+			chunks.push_back( "lambertian_material\n{\nname m_ic_dangling\nreflectance whitte\n}\n" );
+			chunks.push_back( "sphere_geometry\n{\nname sph_ic2\nradius 0.25\n}\n" );
+
+			const std::vector<Agent::AgentChunkResult> results = sess->InsertChunks( chunks );
+			Check( results.size() == 2, "(c) live best-effort insert_chunks returns one result per input" );
+			if( results.size() == 2 ) {
+				Check( !results[0].applied && results[0].status == "rejected",
+				       "(c) live batch element 0 (dangling reference) is rejected" );
+				Check( results[0].issues.size() == 1,
+				       "(c) live rejection carries exactly one structured issue, same as a single insert_chunk" );
+				if( results[0].issues.size() == 1 ) {
+					Check( results[0].issues[0].param == "reflectance",
+					       "(c) live rejection issue names the offending param" );
+					Check( results[0].issues[0].reason == "unresolved_reference",
+					       "(c) live rejection issue carries the unresolved_reference reason" );
+					bool suggested = false;
+					for( const std::string& s : results[0].issues[0].suggestions )
+						if( s == "white" ) suggested = true;
+					Check( suggested, "(c) live rejection suggests the near-miss painter 'white' for 'whitte'" );
+				}
+				Check( results[0].message.find( "ACTIONABLE" ) != std::string::npos,
+				       "(c) live rejection message carries the ACTIONABLE clause" );
+
+				// The batch did NOT stop: element 1 still applied.
+				Check( results[1].applied && results[1].status == "applied" &&
+				       results[1].kind == "sphere_geometry" && results[1].name == "sph_ic2",
+				       "(c) BEST-EFFORT: the rejected element 0 did not stop element 1 from applying" );
+			}
+			Check( pJob->GetObjects() == nullptr || pJob->GetObjects()->GetItem( "m_ic_dangling" ) == nullptr,
+			       "(c) the rejected element never reached the live managers" );
+			// sph_ic2 is a geometry, not directly queryable by name through
+			// GetObjects() -- the applied==true result above (round-tripped
+			// through the SAME ApplyAgentInsertChunk path as (a)) is the
+			// live-reach proof for this element.
+		}
+
+		c.Stop();
+		Check( !c.IsRunning(), "controller stops + joins cleanly after the live insert_chunks tests" );
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Test 6 (Model-B code-3 re-render fix): a DIAGNOSED CST re-derive (Job code 3)
 // REPLACED the live Scene + managers (best-effort, diagnostics logged) but reports
 // FAILURE.  Both edit layers must still RE-RENDER the viewport to show the replaced
@@ -5118,6 +5262,7 @@ int main()
 	TestRenderParkedDuringEdit();
 	TestAgentSessionLiveMode();
 	TestActionableRejectionDiagnosticsLive();
+	TestInsertChunksLive();
 	TestCodeThreeRerender();
 	TestTransformCommitCodeThree();
 	TestAgentEditMarksDirty();

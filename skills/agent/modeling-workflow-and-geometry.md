@@ -1,51 +1,81 @@
 # Modeling Workflow and Geometry
 > hook: Read when composing or iterating on scene GEOMETRY -- placing objects, choosing primitive types, or checking placement cheaply from multiple angles.
 
-## The observe loop (cheap iteration, not full-size renders)
+## The observe loop (render to answer a question, not as a ritual)
 
-Modeling is: insert/edit ONE thing, then look, then adjust.  Looking
-is cheap if you ask for a small preview instead of the final image.
+Modeling is: build a coherent GROUP of related chunks, then look IF
+there is a question a render can answer that you cannot answer more
+cheaply.  A render is an instrument, not a step you owe after every
+edit -- and it is not free (it costs a round-trip, tokens, and time).
+Use your own judgment about when one is worth it; that judgment is part
+of what you are here to exercise.
 
-**Do not build the whole scene blind.**  The most common failure on a
-big build is inserting dozens of chunks in a row without ever
-rendering, then running out of budget with a scene nobody -- including
-you -- has ever seen.  Rendering is not the LAST step; it is how you
-find the floor you forgot, the light that is off, the hero placed
-off-frame, WHILE they are still one edit to fix instead of thirty edits
-buried.  Render within the first handful of chunks (as soon as there is
-a lit surface to look at) and every several edits after.  If you notice
-you have inserted many chunks since your last render, stop and render
-NOW before adding more -- the host may also remind you, but do not wait
-for the reminder.
+**Batch related chunks with `insert_chunks`.**  A painter, its
+material, a geometry, and the object that binds them are one coherent
+unit -- add them in a single `insert_chunks` call, in dependency order,
+not four separate `insert_chunk` calls.  Same for a whole lighting rig
+or a piece of furniture.  That is one round-trip instead of many, and
+it means you render once you have a whole THING to look at rather than
+after each fragment.
 
-1. **Insert or edit one chunk.**  `insert_chunk` for a new object/
-   geometry/material; `propose_patch` for a single parameter tweak.
-2. **`validate`** first if you are not sure the edit is well-formed
-   (bad references, wrong param shape) -- cheaper than a failed render.
-3. **`render {width:160, height:120}`** from the default camera.  The
-   result's `meanR/meanG/meanB` alone often confirm placement sanity
-   (e.g. "did the floor stop being solid black") without looking at a
-   pixel.
-4. **`render` again with a `camera` override from 1-2 MORE angles.**
-   A single view hides depth -- an object can be behind, inside, or
-   floating above another and look identical from the original
-   camera.  To orbit: keep `lookat` fixed on the subject and move
-   `location` to a different point around it, e.g. swap X and Z to
-   look from the side, or raise Y to look down from above.  Both
-   `location` and `lookat` are strings of EXACTLY 3 finite numbers
-   `"x y z"` (space-separated) -- wrong token count or a non-numeric
-   component is rejected.  `fov` is optional and defaults to the
-   camera's current value; only set it (exclusive range `(0, 180)`)
-   when you need wider/narrower framing to fit the subject.  The
-   override is EPHEMERAL -- restored after that one render, never
-   touches the document.
-5. **`read_image {maxEdge:160}`** only when you actually need to SEE
-   the frame (composition, silhouette, color relationships) -- the
-   render result's channel means often already answer "did this
-   change" or "is this still black/blown out".
-6. **Full-size, full-sample render with no width/height/camera
-   override** ONLY for final verification once you are confident the
-   placement is right.
+**When a render earns its cost** -- reach for one when you have a
+question only a rendered image answers:
+- you have just built enough that there is a lit surface to SEE, and
+  the first sanity check is due -- is the scene not black, is the hero
+  in frame, does the floor exist;
+- you changed LIGHTING or MATERIALS and need the result -- brightness,
+  colour balance, and shadow are visual facts, not derivable from the
+  chunk text;
+- you are UNSURE of a spatial relationship a single mental model cannot
+  settle -- is that object behind, inside, or floating above another;
+  does the hero actually rest ON the table (depth ambiguity is exactly
+  what a second camera angle exists to catch);
+- you are about to build a LOT more on top of something you have not
+  verified -- check the foundation before thirty chunks bury it.
+
+**When a render is wasted** -- you can get the answer more cheaply:
+- "did the material bind / is the painter defined?" is a
+  `read_document` or the insert's own `issues` diagnostics, not a
+  render;
+- "did this insert land?" -- the insert result already told you, and
+  nothing visual changed;
+- nothing visual has changed since your last render -- a re-render just
+  shows you the same frame;
+- you feel the urge to render after EVERY chunk -- that is thrashing;
+  build the group, then look once.
+
+The rule is a question, not a counter: *render when the information you
+would gain exceeds the cost AND you cannot get it by reasoning about
+the chunks, reading the document, or the diagnostics.*  There is no
+fixed "every N edits" cadence to follow -- reason your way to the right
+one for the scene in front of you.
+
+**But do not fly blind.**  The opposite failure is just as real:
+building an entire scene and never rendering once, then discovering at
+the end that the key light was off or the hero was off-frame, with no
+budget left to fix it.  If you have assembled a substantial scene and
+still have not looked, that IS an unanswered question -- render before
+you are in too deep.  The two failure modes are symmetric; steer
+between them by asking, each time, "is there something here a render
+would tell me that I do not already know?"
+
+**How to render cheaply, when you do render:**
+- **`render {width:160, height:120}`** from the default camera -- the
+  `meanR/meanG/meanB` alone often answer "is it lit / still black /
+  blown out" without reading a single pixel.
+- **`render` with a `camera` override from another angle** to resolve
+  depth -- keep `lookat` on the subject and move `location` (swap X and
+  Z for a side view, raise Y for top-down).  `location`/`lookat` are
+  `"x y z"` strings of exactly 3 finite numbers; `fov` is optional in
+  the open range `(0, 180)`.  The override is EPHEMERAL -- restored
+  after that one render, never touches the document.
+- **`read_image {maxEdge:160}`** only when you actually need to SEE the
+  frame (composition, silhouette, colour) -- the channel means usually
+  already answered "did this change".
+- **`validate`** before a render if you are unsure an edit is
+  well-formed -- cheaper than a failed render.
+- **Full-size, full-sample render** (no width/height/camera override)
+  ONLY for final verification, once you are confident.
 
 **Why this matters (measured):** a `maxEdge 128`-`192` preview PNG is
 roughly an order of magnitude smaller than a full 800^2 frame --

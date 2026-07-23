@@ -2630,6 +2630,320 @@ static void TestActionableRemoveDiagnostics()
 	}
 }
 
+//----------------------------------------------------------------------
+// IC1: insert_chunks -- the BATCH form of insert_chunk (headless, direct
+// AgentSession::InsertChunks API).  Covers the ALL-APPLY case (a) and the
+// INTRA-BATCH DEPENDENCY case (b): a painter at index 0 resolves cleanly
+// against a material at index 1 that references it, because index 0 has
+// already landed by the time index 1 is applied -- exactly as if the two
+// had been separate insert_chunk calls in the same order.
+//----------------------------------------------------------------------
+static void TestInsertChunksBatchAllApply()
+{
+	std::printf( "IC1: insert_chunks batch -- ALL-APPLY + intra-batch dependency (headless)...\n" );
+	const std::string tmp = TempPath( "agentcrud_ic1.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IC1 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const RISE::Cst::CstHeadVersion v0 = sess->HeadVersion();
+
+	std::vector<std::string> chunks;
+	chunks.push_back( "uniformcolor_painter\n{\n\tname pnt_batch\n\tcolor 0.1 0.9 0.3\n}" );
+	chunks.push_back( "lambertian_material\n{\n\tname mat_batch\n\treflectance pnt_batch\n}" );
+	chunks.push_back( "sphere_geometry\n{\n\tname sph_batch\n\tradius 0.3\n}" );
+	chunks.push_back( "standard_object\n{\n\tname obj_batch\n\tgeometry sph_batch\n\tmaterial mat_batch\n\tposition 1.5 0 0\n}" );
+
+	const std::vector<Agent::AgentChunkResult> results = sess->InsertChunks( chunks );
+	Check( results.size() == 4, "IC1 returns exactly one result per input chunk, same order" );
+	if( results.size() == 4 ) {
+		Check( results[0].applied && results[0].status == "applied" &&
+		       results[0].kind == "uniformcolor_painter" && results[0].name == "pnt_batch",
+		       "IC1(a) element 0 (painter) applied, echoes kind/name" );
+		Check( results[1].applied && results[1].status == "applied" &&
+		       results[1].kind == "lambertian_material" && results[1].name == "mat_batch",
+		       "IC1(a) element 1 (material referencing element 0) applied" );
+		Check( results[1].issues.empty(),
+		       "IC1(b) INTRA-BATCH DEPENDENCY: the material's reflectance reference resolves cleanly "
+		       "-- no unresolved_reference issue -- because the painter already landed earlier in "
+		       "THIS SAME BATCH before the material was applied" );
+		Check( results[2].applied && results[2].kind == "sphere_geometry" && results[2].name == "sph_batch",
+		       "IC1(a) element 2 (geometry) applied" );
+		Check( results[3].applied && results[3].kind == "standard_object" && results[3].name == "obj_batch",
+		       "IC1(a) element 3 (object binding elements 1+2) applied" );
+		Check( results[3].headVersion.revision > v0.revision,
+		       "IC1(a) the final element's headVersion reflects the accumulated batch revisions" );
+	}
+
+	// The DERIVED live scene grew (managers resolve every batch-inserted entity).
+	Check( pJob->GetMaterials() && pJob->GetMaterials()->GetItem( "mat_batch" ) != nullptr,
+	       "IC1(a) derived scene has the batch-inserted material" );
+	Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj_batch" ) != nullptr,
+	       "IC1(a) derived scene has the batch-inserted object" );
+
+	// The retained Document carries every chunk.
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "pnt_batch" ) != std::string::npos &&
+	       doc.find( "mat_batch" ) != std::string::npos &&
+	       doc.find( "sph_batch" ) != std::string::npos &&
+	       doc.find( "obj_batch" ) != std::string::npos,
+	       "IC1(a) ReadDocument carries every batch-inserted chunk" );
+
+	// Empty input is a documented no-op.
+	{
+		const std::vector<std::string> none;
+		const std::vector<Agent::AgentChunkResult> emptyResults = sess->InsertChunks( none );
+		Check( emptyResults.empty(), "IC1 an empty chunks vector returns an empty results vector (no-op)" );
+	}
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// IC2: insert_chunks BEST-EFFORT / PER-CHUNK RESULTS (headless) -- a
+// batch whose SECOND element is rejected (references a painter defined
+// NEITHER in the batch NOR the document) does not stop the batch: the
+// other three elements still apply, and `applied` == total-1.
+//----------------------------------------------------------------------
+static void TestInsertChunksBestEffort()
+{
+	std::printf( "IC2: insert_chunks batch -- BEST-EFFORT per-chunk results (headless)...\n" );
+	const std::string tmp = TempPath( "agentcrud_ic2.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IC2 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	std::vector<std::string> chunks;
+	chunks.push_back( "uniformcolor_painter\n{\n\tname pnt_c0\n\tcolor 0.4 0.4 0.4\n}" );
+	// References a painter that exists NEITHER earlier in this batch NOR
+	// anywhere in the document -- a hard REJECT (not a forward-reference
+	// warning; see U1's VEHICLE NOTE for why an ordinary material reference
+	// hard-fails the whole insert).
+	chunks.push_back( "lambertian_material\n{\n\tname mat_c1\n\treflectance nope_painter_xyz\n}" );
+	chunks.push_back( "sphere_geometry\n{\n\tname sph_c2\n\tradius 0.2\n}" );
+	// Binds the NEW geometry to the PRE-EXISTING mat_diffuse (from kScene)
+	// so it does NOT depend on the rejected mat_c1 -- isolating the
+	// best-effort assertion from a chained-dependency failure.
+	chunks.push_back( "standard_object\n{\n\tname obj_c3\n\tgeometry sph_c2\n\tmaterial mat_diffuse\n\tposition -1.5 0 0\n}" );
+
+	const std::vector<Agent::AgentChunkResult> results = sess->InsertChunks( chunks );
+	Check( results.size() == 4, "IC2 returns one result per input chunk" );
+	if( results.size() == 4 ) {
+		Check( results[0].applied && results[0].status == "applied",
+		       "IC2(c) element 0 (painter) applied" );
+		Check( !results[1].applied && results[1].status == "rejected",
+		       "IC2(c) element 1 (dangling reference) is REJECTED" );
+		Check( results[1].issues.size() == 1, "IC2(c) the rejected element carries exactly one issue" );
+		if( results[1].issues.size() == 1 ) {
+			const Agent::AgentChunkIssue& u = results[1].issues[0];
+			Check( u.param == "reflectance", "IC2(c) issue param is \"reflectance\"" );
+			Check( u.value == "nope_painter_xyz", "IC2(c) issue value is the undefined name" );
+			Check( u.reason == "unresolved_reference", "IC2(c) issue reason is \"unresolved_reference\"" );
+		}
+		Check( results[2].applied && results[2].status == "applied",
+		       "IC2(c) BEST-EFFORT: element 2 (geometry, independent of the rejected element 1) still applied" );
+		Check( results[3].applied && results[3].status == "applied",
+		       "IC2(c) BEST-EFFORT: element 3 (object, does not depend on the rejected element) still applied" );
+	}
+
+	// applied == total - 1: exactly one rejection, nothing else affected.
+	int appliedCount = 0;
+	for( const Agent::AgentChunkResult& r : results ) if( r.applied ) ++appliedCount;
+	Check( appliedCount == 3 && (int)results.size() == 4,
+	       "IC2 applied == total-1 (3 of 4) -- the one rejection is isolated, not cascaded" );
+
+	// The rejected element never reached the managers; the applied ones did.
+	Check( pJob->GetMaterials() == nullptr || pJob->GetMaterials()->GetItem( "mat_c1" ) == nullptr,
+	       "IC2(c) the rejected material never reached the live managers" );
+	Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj_c3" ) != nullptr,
+	       "IC2(c) the surviving object DID reach the live managers" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// IC3: insert_chunks VALIDATION -- driven through the REAL wire
+// (AgentRpcDispatcher::HandleLine, headless: WrapJob with no controller
+// attached), mirroring L2's raw-JSON-RPC style.  `chunks` missing / not an
+// array / an empty array / containing a non-string element must ALL
+// return -32602 (invalid params), never crash, and never mutate the
+// document.
+//----------------------------------------------------------------------
+static void TestInsertChunksValidation()
+{
+	std::printf( "IC3: insert_chunks wire validation (missing/non-array/empty/non-string -> -32602)...\n" );
+	const std::string tmp = TempPath( "agentcrud_ic3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "IC3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	// (1) Missing `chunks` entirely.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunks\",\"params\":{}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "IC3(1) insert_chunks without 'chunks' -> -32602 invalid params" );
+	}
+
+	// (2) `chunks` present but not an array (a string, the insert_chunk-style mistake).
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"insert_chunks\",\"params\":"
+			"{\"chunks\":\"omni_light { name x }\"}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "IC3(2) insert_chunks with a non-array 'chunks' -> -32602 invalid params" );
+	}
+
+	// (3) `chunks` is an empty array.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"insert_chunks\",\"params\":{\"chunks\":[]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "IC3(3) insert_chunks with an EMPTY 'chunks' array -> -32602 invalid params" );
+	}
+
+	// (4) `chunks` contains a non-string element.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"insert_chunks\",\"params\":"
+			"{\"chunks\":[\"uniformcolor_painter\\n{\\nname ok_one\\ncolor 1 1 1\\n}\", 42]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "IC3(4) insert_chunks with a non-string element -> -32602 invalid params" );
+		Check( resp.find( "chunks[1]" ) != std::string::npos,
+		       "IC3(4) the error names WHICH element (index 1) was the offender" );
+	}
+
+	// None of the above touched the document (every rejection was a pure
+	// param-validation refusal before AgentSession::InsertChunks was ever
+	// called).
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "IC3 none of the 4 validation refusals mutated the document" );
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// IC4: insert_chunks WIRE SHAPE -- the ALL-APPLY (a) and BEST-EFFORT (c)
+// cases driven through the REAL JSON-RPC transport
+// (AgentRpcDispatcher::HandleLine), asserting the {applied,total,results:
+// [...]} envelope IC1/IC2 could not see (those two exercise the C++
+// AgentSession::InsertChunks API directly, not the wire serialization).
+// Prints the raw response line for both cases.
+//----------------------------------------------------------------------
+static void TestInsertChunksWireShape()
+{
+	std::printf( "IC4: insert_chunks wire shape ({applied,total,results}) via HandleLine...\n" );
+
+	// (a) ALL-APPLY over the wire.
+	{
+		const std::string tmp = TempPath( "agentcrud_ic4a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "IC4(a) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+			const std::string resp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunks\",\"params\":{\"chunks\":["
+				"\"uniformcolor_painter\\n{\\nname pnt_wire\\ncolor 0.1 0.9 0.3\\n}\","
+				"\"lambertian_material\\n{\\nname mat_wire\\nreflectance pnt_wire\\n}\","
+				"\"sphere_geometry\\n{\\nname sph_wire\\nradius 0.3\\n}\","
+				"\"standard_object\\n{\\nname obj_wire\\ngeometry sph_wire\\nmaterial mat_wire\\nposition 1.5 0 0\\n}\""
+				"]}}" );
+			std::printf( "  IC4(a) all-apply raw response:\n  %s\n", resp.c_str() );
+
+			Agent::JsonValue result;
+			Check( JsonResultObj( resp, result ), "IC4(a) insert_chunks returns a JSON-RPC result object" );
+			const Agent::JsonValue* applied = result.find( "applied" );
+			const Agent::JsonValue* total   = result.find( "total" );
+			const Agent::JsonValue* results = result.find( "results" );
+			Check( applied && applied->isNumber() && applied->asNumber() == 4.0,
+			       "IC4(a) wire 'applied' == 4" );
+			Check( total && total->isNumber() && total->asNumber() == 4.0,
+			       "IC4(a) wire 'total' == 4" );
+			Check( results && results->isArray() && results->size() == 4,
+			       "IC4(a) wire 'results' is a 4-element array" );
+			if( results && results->isArray() && results->size() == 4 ) {
+				for( std::size_t i = 0; i < 4; ++i ) {
+					const Agent::JsonValue& e = results->at( i );
+					const Agent::JsonValue* st = e.find( "status" );
+					Check( st && st->isString() && st->asString() == "applied",
+					       "IC4(a) every wire result element has status \"applied\"" );
+				}
+			}
+			Check( pJob->GetObjects() && pJob->GetObjects()->GetItem( "obj_wire" ) != nullptr,
+			       "IC4(a) the wire batch reached the live managers" );
+
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) BEST-EFFORT over the wire: element 1 rejected, others applied.
+	{
+		const std::string tmp = TempPath( "agentcrud_ic4c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "IC4(c) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+			const std::string resp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"insert_chunks\",\"params\":{\"chunks\":["
+				"\"uniformcolor_painter\\n{\\nname pnt_wire_c0\\ncolor 0.4 0.4 0.4\\n}\","
+				"\"lambertian_material\\n{\\nname mat_wire_c1\\nreflectance nope_painter_wire\\n}\","
+				"\"sphere_geometry\\n{\\nname sph_wire_c2\\nradius 0.2\\n}\","
+				"\"standard_object\\n{\\nname obj_wire_c3\\ngeometry sph_wire_c2\\nmaterial mat_diffuse\\nposition -1.5 0 0\\n}\""
+				"]}}" );
+			std::printf( "  IC4(c) best-effort raw response:\n  %s\n", resp.c_str() );
+
+			Agent::JsonValue result;
+			Check( JsonResultObj( resp, result ), "IC4(c) insert_chunks returns a JSON-RPC result object" );
+			const Agent::JsonValue* applied = result.find( "applied" );
+			const Agent::JsonValue* total   = result.find( "total" );
+			const Agent::JsonValue* results = result.find( "results" );
+			Check( applied && applied->isNumber() && applied->asNumber() == 3.0,
+			       "IC4(c) wire 'applied' == 3 (one rejection out of 4)" );
+			Check( total && total->isNumber() && total->asNumber() == 4.0,
+			       "IC4(c) wire 'total' == 4" );
+			Check( results && results->isArray() && results->size() == 4,
+			       "IC4(c) wire 'results' is a 4-element array" );
+			if( results && results->isArray() && results->size() == 4 ) {
+				const Agent::JsonValue& e0 = results->at( 0 );
+				const Agent::JsonValue& e1 = results->at( 1 );
+				const Agent::JsonValue& e2 = results->at( 2 );
+				const Agent::JsonValue& e3 = results->at( 3 );
+				const Agent::JsonValue* s0 = e0.find( "status" );
+				const Agent::JsonValue* s1 = e1.find( "status" );
+				const Agent::JsonValue* s2 = e2.find( "status" );
+				const Agent::JsonValue* s3 = e3.find( "status" );
+				Check( s0 && s0->asString() == "applied", "IC4(c) wire element 0 status \"applied\"" );
+				Check( s1 && s1->asString() == "rejected", "IC4(c) wire element 1 status \"rejected\"" );
+				Check( s2 && s2->asString() == "applied", "IC4(c) wire element 2 status \"applied\"" );
+				Check( s3 && s3->asString() == "applied", "IC4(c) wire element 3 status \"applied\"" );
+				const Agent::JsonValue* issues1 = e1.find( "issues" );
+				Check( issues1 && issues1->isArray() && issues1->size() == 1,
+				       "IC4(c) wire element 1 carries exactly one issue" );
+			}
+
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -2657,6 +2971,10 @@ int main()
 	TestRejectedInsertDiagnostics();
 	TestActionablePatchDiagnostics();
 	TestActionableRemoveDiagnostics();
+	TestInsertChunksBatchAllApply();
+	TestInsertChunksBestEffort();
+	TestInsertChunksValidation();
+	TestInsertChunksWireShape();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

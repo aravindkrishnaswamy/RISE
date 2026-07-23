@@ -653,10 +653,10 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 17,
-		       "tools/list under Read STILL lists all 17 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 18,
+		       "tools/list under Read STILL lists all 18 tools (mutating tools are ANNOTATED, not hidden)" );
 
-		bool sawProposePatch = false, sawInsertChunk = false, sawRemoveChunk = false;
+		bool sawProposePatch = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRender = false, sawListProposals = false, sawResolveProposal = false;
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
@@ -668,6 +668,7 @@ static void TestMcpLayer()
 			if( annotated ) ++annotatedCount;
 			if( name == "propose_patch" ) { sawProposePatch = true; Check( annotated, "propose_patch tool description is ANNOTATED under Read" ); }
 			if( name == "insert_chunk" )  { sawInsertChunk  = true; Check( annotated, "insert_chunk tool description is ANNOTATED under Read" ); }
+			if( name == "insert_chunks" ) { sawInsertChunks = true; Check( annotated, "insert_chunks tool description is ANNOTATED under Read" ); }
 			if( name == "remove_chunk" )  { sawRemoveChunk  = true; Check( annotated, "remove_chunk tool description is ANNOTATED under Read" ); }
 			if( name == "render" )        { sawRender       = true; Check( !annotated, "render tool description is NOT annotated under Read (it is allowed)" ); }
 			if( name == "list_proposals" ) {
@@ -680,9 +681,9 @@ static void TestMcpLayer()
 				Check( ownerOnlyAnnotated, "resolve_proposal tool description IS annotated with the OWNER-ONLY note under Read" );
 			}
 		}
-		Check( sawProposePatch && sawInsertChunk && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
+		Check( sawProposePatch && sawInsertChunk && sawInsertChunks && sawRemoveChunk && sawRender && sawListProposals && sawResolveProposal,
 		       "all 3 mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 3, "EXACTLY 3 tool descriptions carry the generic read-refusal note under Read (the mutating set, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 4, "EXACTLY 4 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. insert_chunks, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -692,7 +693,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 17, "tools/list under Commit lists all 17 tools" );
+		Check( tools.isArray() && tools.size() == 18, "tools/list under Commit lists all 18 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -728,9 +729,9 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 17, "tools/list under Propose lists all 17 tools" );
+		Check( tools.isArray() && tools.size() == 18, "tools/list under Propose lists all 18 tools" );
 
-		bool sawProposePatch = false, sawInsertChunk = false, sawRemoveChunk = false;
+		bool sawProposePatch = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		int proposeNotedCount = 0, readNotedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& t = tools.at( i );
@@ -751,15 +752,19 @@ static void TestMcpLayer()
 				sawInsertChunk = true;
 				Check( proposeNoted, "insert_chunk tool description carries the propose-staging note under Propose" );
 			}
+			if( name == "insert_chunks" ) {
+				sawInsertChunks = true;
+				Check( proposeNoted, "insert_chunks (batch) tool description carries the propose-staging note under Propose" );
+			}
 			if( name == "remove_chunk" ) {
 				sawRemoveChunk = true;
 				Check( proposeNoted, "remove_chunk tool description carries the propose-staging note under Propose" );
 			}
 		}
-		Check( sawProposePatch && sawInsertChunk && sawRemoveChunk,
-		       "all 3 mutating tools were found in tools/list under Propose" );
-		Check( proposeNotedCount == 3,
-		       "RED-PROVE: EXACTLY 3 tool descriptions carry the propose-staging note under Propose" );
+		Check( sawProposePatch && sawInsertChunk && sawInsertChunks && sawRemoveChunk,
+		       "all 4 mutating tools were found in tools/list under Propose" );
+		Check( proposeNotedCount == 4,
+		       "RED-PROVE: EXACTLY 4 tool descriptions carry the propose-staging note under Propose" );
 		Check( readNotedCount == 0,
 		       "RED-PROVE: NO tool description carries the Read-only refusal note under Propose" );
 	}

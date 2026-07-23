@@ -1571,7 +1571,16 @@ namespace RISE
 			//!        drive change whose skill bytes are NOT in the hash, hence
 			//!        this bump).  Prior cells were graded/driven under the old
 			//!        threshold + skill and are not comparable.
-			static const int kEvalMethodologyEpoch = 6;
+			//!   7 -> (2026-07-22) the batch `insert_chunks` verb shipped (a
+			//!        tool-definition change -- models can now add a coherent
+			//!        group of chunks in ONE call instead of N), and the
+			//!        modeling skill's observe-loop section was rewritten from
+			//!        a prescriptive "render every iteration" cadence to a
+			//!        scenario-based "render to answer a question" framing (a
+			//!        drive change; skill bytes are not in the hash).  Both
+			//!        change how a build turn is driven; prior cells are not
+			//!        comparable.
+			static const int kEvalMethodologyEpoch = 7;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,

@@ -1392,6 +1392,55 @@ namespace RISE
 			AgentChunkResult InsertChunk( const std::string& chunkText,
 			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! BATCH form of InsertChunk (insert_chunks): apply MULTIPLE
+			//! complete chunks in ONE call instead of one round-trip per
+			//! chunk.  Motivation: a scene assembled one insert_chunk at a
+			//! time costs N tool calls / N LLM round-trips for an N-chunk
+			//! scene (measured: 70-140 inserts per agent run, dominating
+			//! tool use and re-sent context) -- batching collapses that to
+			//! ONE call.
+			//!
+			//! Semantics are SEQUENTIAL and BEST-EFFORT, and this method
+			//! does NOT duplicate InsertChunk's logic -- it simply calls
+			//! InsertChunk once per element of `chunkTexts`, IN ORDER, and
+			//! collects one AgentChunkResult per input (same size and order
+			//! as `chunkTexts`).  Because each call lands (or is rejected)
+			//! before the next one runs, a chunk EARLIER in the batch that
+			//! is referenced by a LATER chunk resolves cleanly -- e.g. a
+			//! painter at index 0 followed by a material at index 1 that
+			//! references it -- exactly as if the two had been separate
+			//! insert_chunk calls in the same order, without the caller
+			//! having to round-trip in between.
+			//!
+			//! A REJECTED element does NOT stop the batch: the remaining
+			//! elements are still attempted in order.  If a later element
+			//! depended on the rejected one, it will simply also fail --
+			//! with its own actionable `issues` diagnostic (see InsertChunk
+			//! / AttachRejectionIssues) -- which is informative rather than
+			//! silently swallowed.  Callers should check every element's
+			//! `status`/`applied`, not just the overall return.
+			//!
+			//! `baseOrNull` is the OPTIONAL optimistic-concurrency
+			//! precondition for the BATCH AS A WHOLE (see ProposePatch /
+			//! InsertChunk): it is passed to the FIRST element's InsertChunk
+			//! call only.  Every subsequent element passes nullptr, so it
+			//! applies against the head as it stands AFTER the prior
+			//! elements in this same batch -- the batch is one logical
+			//! operation and only its start needs to be pinned to the
+			//! caller's observed head; re-checking it after every
+			//! self-inflicted mutation would be meaningless.
+			//!
+			//! Authority / LIVE-vs-headless routing, conflict detection, and
+			//! per-chunk `issues` diagnostics are ALL inherited unchanged
+			//! from InsertChunk (including the Secure-MCP External-authority
+			//! staging behaviour) -- there is nothing batch-specific to
+			//! those concerns.
+			//!
+			//! `chunkTexts` empty -> returns an empty vector (no-op); no
+			//! InsertChunk call is made.
+			std::vector<AgentChunkResult> InsertChunks( const std::vector<std::string>& chunkTexts,
+			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
 			//! narrowing -- the SAME resolution rules as ProposePatch,

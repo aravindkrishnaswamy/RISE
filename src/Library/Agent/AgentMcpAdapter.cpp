@@ -416,6 +416,44 @@ namespace RISE
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// insert_chunks -- BATCH form of insert_chunk
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "chunks", StringArrayProp( "An array of complete chunks, each a `keyword { ... }` block with braces on their own lines -- SAME grammar as insert_chunk's `chunkText`, one chunk per array element (not multiple chunks concatenated into one element). Order matters: a chunk that is REFERENCED by a later chunk must appear BEFORE it in this array, exactly like the ordering rule across separate insert_chunk calls." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required; required.push_back( "chunks" );
+					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
+						"Add SEVERAL complete chunks to the scene document IN ONE CALL, applied in "
+						"the given array order. USE THIS instead of many separate insert_chunk calls "
+						"when adding a coherent group of chunks -- e.g. a painter plus the material "
+						"that references it, a geometry, and the object that binds them together, or "
+						"a whole lighting rig -- it is ONE round-trip instead of N. Each chunk is "
+						"realized via the SAME dry-run-guarded full re-derive insert_chunk uses (a "
+						"failed dry-run for one element leaves the document AND the live scene byte-"
+						"identical for THAT element -- no half-applied state for it). Order matters: "
+						"a chunk that is referenced by a later one in this array must appear BEFORE "
+						"it, same rule as across separate insert_chunk calls -- e.g. a painter chunk "
+						"at index 0 followed by a material chunk at index 1 that names it resolves "
+						"cleanly, because index 0 has already landed by the time index 1 is applied. "
+						"SEQUENTIAL and BEST-EFFORT: a REJECTED chunk does NOT stop the batch -- every "
+						"remaining element is still attempted in order (a later chunk that depended on "
+						"a rejected earlier one will simply also fail, with its own actionable "
+						"`issues`, rather than being silently skipped). `baseHeadVersion`, when given, "
+						"is the optimistic-concurrency precondition for the BATCH AS A WHOLE, checked "
+						"against the FIRST element only -- later elements apply against the head as "
+						"this batch has evolved it so far. Returns {applied,total,results:[...]}: "
+						"`total` is chunks.size(), `applied` is how many of `results` have "
+						"applied=true, and each `results[i]` is the EXACT same shape insert_chunk "
+						"returns for `chunks[i]` -- {applied,rawCode,status,retriable,headVersion,"
+						"message,name,kind,issues?} -- including insert_chunk's `issues` reasons "
+						"(\"unresolved_reference\", \"unknown_param\", \"numeric_in_reference_slot\", "
+						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
+						"behaviour. Check every element's own status; do not assume the whole batch "
+						"succeeded just because the call itself returned. REQUIRES a scene to be "
+						"loaded; `chunks` must be a non-empty array of strings." );
+					tools.push_back( MakeTool( "insert_chunks", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// remove_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -744,13 +782,13 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 17 tool names this adapter recognizes --
+			//! The list of the 18 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
-					"propose_patch", "insert_chunk", "remove_chunk",
+					"propose_patch", "insert_chunk", "insert_chunks", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"compare_to_reference",

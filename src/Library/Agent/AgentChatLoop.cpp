@@ -882,7 +882,11 @@ namespace RISE
 			// system prompt by BuildRequest).  Threshold <= 0 disables it.
 			{
 				const std::string& v = call.name;
-				const bool isMutation = ( v == "insert_chunk" || v == "propose_patch" || v == "remove_chunk" );
+				// insert_chunks (the batch form of insert_chunk) counts as a
+				// mutation here too -- it still edits the document with no
+				// visual observation in between, same blind-edit risk.
+				const bool isMutation = ( v == "insert_chunk" || v == "insert_chunks" ||
+				                          v == "propose_patch" || v == "remove_chunk" );
 				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
 				                               v == "read_viewport" || v == "query_object_at" );
 				if( isVisualObserve ) {

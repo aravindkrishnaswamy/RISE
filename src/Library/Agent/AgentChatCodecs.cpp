@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the ELEVEN provider-neutral tool definitions (1:1 with the
+//    (1) the TWELVE provider-neutral tool definitions (1:1 with the
 //        AgentRpc verbs; parameter names/shapes mirror AgentRpc.cpp),
 //    (2) a small raw-span JSON scanner (byte-exact extraction of the
 //        assistant content from a response body, so provider-opaque
@@ -206,6 +206,42 @@ namespace RISE
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
 						"\"required\":[\"uuid\",\"revision\"]}"
 					"},\"required\":[\"chunkText\"]}"
+				},
+				{
+					"insert_chunks",
+					"BATCH form of insert_chunk: add SEVERAL complete chunks to the live "
+					"scene in ONE call instead of one call per chunk. USE THIS instead of "
+					"many separate insert_chunk calls whenever you're adding a coherent "
+					"group of entities together -- e.g. a painter plus the material that "
+					"references it, a geometry, and the object that binds them, or a whole "
+					"lighting rig -- it is one round-trip instead of N. Elements are "
+					"applied IN ARRAY ORDER; the SAME ordering rule as insert_chunk applies "
+					"WITHIN the array: a chunk referenced by a later chunk must appear "
+					"BEFORE it (e.g. a painter at index 0 then a material at index 1 that "
+					"names it resolves cleanly, because index 0 has already landed by the "
+					"time index 1 is applied). SEQUENTIAL and BEST-EFFORT: a rejected "
+					"element does NOT stop the batch -- every remaining element is still "
+					"attempted (a later chunk that depended on a rejected earlier one will "
+					"simply also fail, with its own actionable issues, rather than being "
+					"silently skipped). Always pass the headVersion you last read as "
+					"baseHeadVersion -- it is checked against the FIRST element only, since "
+					"the whole batch is one logical operation. Returns "
+					"{applied,total,results:[...]}: total is chunks.length, applied is how "
+					"many results have applied=true, and each results[i] is the EXACT same "
+					"shape insert_chunk returns for chunks[i] (applied, rawCode, status, "
+					"retriable, headVersion, message, name, kind, and optional issues with "
+					"the same reasons insert_chunk documents). Check every element's own "
+					"status -- do not assume the whole batch succeeded just because the "
+					"call returned. Each array element must be EXACTLY ONE `keyword "
+					"{ ... }` block, same grammar as insert_chunk's chunkText.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"chunks\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"An array of complete chunks, one keyword { ... } block per element (same grammar as insert_chunk's chunkText), applied in order. A chunk referenced by a later element must appear before it in this array -- e.g. a uniformcolor_painter chunk at index 0 followed by a lambertian_material chunk at index 1 that names it in its reflectance parameter.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale batch is rejected as a conflict instead of clobbering. Checked against the FIRST element only.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"chunks\"]}"
 				},
 				{
 					"remove_chunk",

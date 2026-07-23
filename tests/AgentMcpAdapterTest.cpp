@@ -194,7 +194,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 17, "id:null tools/list result carries all 17 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 18, "id:null tools/list result carries all 18 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -268,7 +268,7 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 17, "tools/list returns EXACTLY the 17 agent verbs" );
+		Check( toolsList.size() == 18, "tools/list returns EXACTLY the 18 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
@@ -591,7 +591,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 17, "no-head tools/list still lists all 17 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 18, "no-head tools/list still lists all 18 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

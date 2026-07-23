@@ -637,9 +637,9 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (eleven tools) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (twelve tools) + SetSkillIndex...\n" );
 
-	// Anthropic: eleven tools (S2 added insert_chunk/remove_chunk; toolkit
+	// Anthropic: twelve tools (S2 added insert_chunk/remove_chunk; toolkit
 	// slice 3b added query_object_at; compare_to_reference is the eleventh),
 	// read_skill present with a schema.
 	{
@@ -648,7 +648,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 11, "anthropic body carries eleven tools" );
+		Check( tools.isArray() && tools.size() == 12, "anthropic body carries twelve tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -668,7 +668,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 11, "gemini body carries eleven functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 12, "gemini body carries eleven functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
@@ -682,7 +682,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 11, "openai body carries eleven tools" );
+		Check( tools.isArray() && tools.size() == 12, "openai body carries twelve tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const JsonValue& fn = tools.at( i ).get( "function" );

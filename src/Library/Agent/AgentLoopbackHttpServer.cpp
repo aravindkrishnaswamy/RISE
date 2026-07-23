@@ -278,7 +278,8 @@ namespace
 
 	//! True iff `body` is an MCP `tools/call` request naming one of the
 	//! mutating verbs this rate limiter counts against
-	//! (propose_patch/insert_chunk/remove_chunk/resolve_proposal). This
+	//! (propose_patch/insert_chunk/insert_chunks/remove_chunk/
+	//! resolve_proposal). This
 	//! server only ever fronts AgentMcpAdapter (see the class doc), so
 	//! every request body it ever dispatches is MCP-shaped: the actual
 	//! verb name for a tool invocation always lives at params.name (see
@@ -308,8 +309,13 @@ namespace
 		if( !nameVal || !nameVal->isString() ) return false;
 
 		const std::string name = nameVal->asString();
-		if( name == "propose_patch" || name == "insert_chunk" ||
-		    name == "remove_chunk"  || name == "resolve_proposal" ) {
+		if( name == "propose_patch" || name == "insert_chunk"   ||
+		    // insert_chunks is the BATCH form of insert_chunk (see
+		    // AgentSession::InsertChunks's doc) -- it mutates the document
+		    // exactly like insert_chunk (just N chunks per call instead of
+		    // one), so it counts against the SAME mutating-call rate limit.
+		    name == "insert_chunks"  ||
+		    name == "remove_chunk"   || name == "resolve_proposal" ) {
 			outToolName = name;
 			return true;
 		}

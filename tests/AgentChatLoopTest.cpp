@@ -430,7 +430,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Chat Completions user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 11, "body carries exactly eleven OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 12, "body carries exactly twelve OpenAI tools" );
 	bool sawReadDocument = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i ).get( "function" );
@@ -478,8 +478,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 11,
-		       "xAI body carries the same eleven tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 12,
+		       "xAI body carries the same twelve tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -695,7 +695,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 11, "body carries exactly eleven tools" );
+	Check( tools.isArray() && tools.size() == 12, "body carries exactly twelve tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "insert_chunk", "remove_chunk",
 	                           "render", "read_image", "query_object_at", "compare_to_reference" };
@@ -1112,7 +1112,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 11, "eleven functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 12, "eleven functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
