@@ -1700,6 +1700,16 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	}
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
+		// Coordinated agent/production admission claims this gate while
+		// holding mMutex. Establish the pointer-down state under that same
+		// lock so exactly one side wins: an already-queued render refuses
+		// the gesture, while an admitted gesture makes the later render
+		// submission refuse until pointer-up closes its composite.
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			mGesturePaneArmed = false;
+			return;
+		}
 		// P3a slice 3: legacy un-indexed input targets pane 0 UNLESS a
 		// pane-indexed Down armed a pane just before forwarding here
 		// (mGesturePaneArmed, consumed exactly once).
@@ -1720,8 +1730,8 @@ void SceneEditController::OnPointerDown( const Point2& px )
 			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 			SwitchToPaneLocked_( mGesturePane );
 		}
+		mPointerDown.store( true, std::memory_order_release );
 	}
-	mPointerDown.store( true, std::memory_order_release );
 	mLastPx = px;
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 
@@ -2383,6 +2393,12 @@ void SceneEditController::OnTimeScrubBegin()
 	// trimming).  Mirrors the pointer-gesture orphan guard in OnPointerDown.
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
+		// Same admission handshake as pointer-down: a coordinated render
+		// that already owns the queued/running gate wins and this scrub does
+		// not begin; once this composite opens, render admission sees it
+		// under mMutex and refuses instead.
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return;
 		if( mScrubOpenedComposite ) {
 			mEditor.EndComposite();
 			mScrubOpenedComposite = false;
@@ -2496,7 +2512,14 @@ void SceneEditController::BeginPropertyScrub()
 	// drag — the next OnPointerMove would early-return because
 	// mPointerDown is false, even though the user's mouse is still
 	// down on the viewport.
-	mScrubInProgress.store( true, std::memory_order_release );
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		// Property scrubs do not open an EditHistory composite, so publish
+		// their gesture flag under the same admission lock explicitly.
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return;
+		mScrubInProgress.store( true, std::memory_order_release );
+	}
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 }
@@ -2743,22 +2766,39 @@ bool SceneEditController::RequestProductionRender()
 	// this render still borrows the controller or Job. The older direct
 	// mMutex-held call was mutually exclusive with edits, but invisible to
 	// Stop() once StopInteractive had already made mRunning false.
-	const bool ok = RunProductionRenderComposed(
-		mJob, this, String( "legacy_production_render" ),
-		/*guiProgress=*/nullptr,
-		[&]() -> bool {
-			IRasterizer* prod = mJob.GetRasterizer();
-			const IScene* scene = mJob.GetScene();
-			if( !prod || !scene ) return false;
+	bool ok = false;
+	try
+	{
+		ok = RunProductionRenderComposed(
+			mJob, this, String( "legacy_production_render" ),
+			/*guiProgress=*/nullptr,
+			[&]() -> bool {
+				IRasterizer* prod = mJob.GetRasterizer();
+				const IScene* scene = mJob.GetScene();
+				if( !prod || !scene ) return false;
 
-			// Run a FULL SetSceneTime(t) at the most recently scrubbed
-			// time before invoking the production rasterizer. The preview
-			// path deliberately skips photon-map regeneration.
-			scene->SetSceneTime( mEditor.LastSceneTime() );
-			scene->GetObjects()->PrepareForRendering();
-			prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
-			return true;
-		} );
+				// Run a FULL SetSceneTime(t) at the most recently scrubbed
+				// time before invoking the production rasterizer. The preview
+				// path deliberately skips photon-map regeneration.
+				scene->SetSceneTime( mEditor.LastSceneTime() );
+				scene->GetObjects()->PrepareForRendering();
+				prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
+				return true;
+			} );
+	}
+	catch( const std::exception& e )
+	{
+		// This method is exposed through a bool C ABI and Objective-C
+		// bridge. Never let renderer exceptions cross either boundary.
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController::RequestProductionRender failed with an exception: %s",
+			e.what() );
+	}
+	catch( ... )
+	{
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController::RequestProductionRender failed with an unknown exception." );
+	}
 
 	// Round-2 P2: same paused-guard as the early-exit restart above.
 	if( wasRunning && !IsRefinementPaused() ) Start();
@@ -4729,6 +4769,15 @@ bool SceneEditController::RunPreviewRenderParked(
 	}
 
 	std::unique_lock<std::mutex> lk( mMutex );
+	// The dedicated agent/production worker claims this gate before it
+	// acquires mMutex. A direct camera/film-override preview must not slip
+	// into that queued window and overwrite the coordinated job record.
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused while another coordinated render is queued or running." );
+		return false;
+	}
 	// BeginTransaction publishes mTxnOpen while holding this same mutex.
 	// Recheck after acquiring it to close false -> Begin -> render between
 	// the prompt atomic check above and this critical section.
@@ -4736,6 +4785,18 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
+		return false;
+	}
+	// Camera/film-override agent renders use this direct parked path rather
+	// than the dedicated coordinator worker. They must obey the same
+	// gesture exclusion rule: otherwise pointer-up returns while
+	// mRenderOwnsScene is true and leaves the EditHistory composite open.
+	if( mPointerDown.load( std::memory_order_acquire )
+	 || mScrubInProgress.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused while an editor gesture is open." );
 		return false;
 	}
 	CancelAndParkRender_( lk );
@@ -5087,6 +5148,14 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
 				"SceneEditController: render submission refused inside an open transaction." );
+			return false;
+		}
+		if( mPointerDown.load( std::memory_order_acquire )
+		 || mScrubInProgress.load( std::memory_order_acquire )
+		 || mEditor.IsCompositeOpen() )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused while an editor gesture is open." );
 			return false;
 		}
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );

@@ -2062,6 +2062,22 @@ final class RenderViewModel: ObservableObject {
             }
             if !isEditorDirty {
                 refreshEditorContents()
+            } else {
+                // Save-As changed the raw editor's eventual write target.
+                // Keep its independent text edits, but make the overwrite
+                // hazard explicit just as the in-place and Properties-panel
+                // save paths do.
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "The scene is now anchored to \(path), but the scene " +
+                    "editor pane still shows its own unsaved text changes.  " +
+                    "Clicking Save in the scene editor will overwrite that " +
+                    "file — use Revert in the scene editor to discard your " +
+                    "text edits and pull the selected file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             }
             return true
         case 2:
