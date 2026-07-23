@@ -35,6 +35,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 namespace RISE
 {
@@ -98,6 +99,7 @@ namespace RISE
 				// Same-Job rebind: retain the saved baseline and refresh the
 				// derived floor against the new live head.
 				RecomputeHeadDiffers_();
+				RecomputeHasUnsavedChangesCached_();
 			}
 		}
 
@@ -452,7 +454,7 @@ namespace RISE
 		//! byte-equality of the serialized Document).  Drives the
 		//! GUI's "Save" button enable state on both platform shells.
 		//! Cheap O(1).
-		//! Consults every TRANSIENT dirty channel via
+		//! Mutation sites publish every TRANSIENT dirty channel via
 		//! DirtyTracker::HasAnyDirty() — object transforms (Phase 6),
 		//! property-shaped edits on objects / cameras / lights /
 		//! materials / media (Phase B), created-pending entities
@@ -467,9 +469,7 @@ namespace RISE
 		//! dirty (revision moved) -- a safe false-positive (ADR SS3.3).
 		bool HasUnsavedChanges() const
 		{
-			return HeadDiffersFromSaved_()
-			    || mDirtyTracker.HasAnyDirty()
-			    || !mScaleFromAnchorSet.empty();
+			return mHasUnsavedChangesCached.load( std::memory_order_acquire );
 		}
 
 		//! Notification channel for the platform GUI to update its
@@ -636,12 +636,21 @@ namespace RISE
 		{
 			DirtyChangedFn   listener;
 			bool             prevHasUnsavedChanges = false;
+			std::atomic<bool> currentHasUnsavedChanges{ false };
 			std::atomic<bool> pending{ false };
 			std::atomic<bool> delivering{ false };
 			std::atomic<bool> ownerAlive{ true };
+			std::atomic<unsigned int> deferDepth{ 0 };
 			std::mutex        mutex;
 		};
 		std::shared_ptr<DirtyNotificationState> mDirtyNotificationState;
+
+		//! State-only drain used by the public drain and the deferral
+		//! token. It never dereferences SceneEditor, so a listener may
+		//! destroy the controller/editor and the active drain still returns
+		//! safely.
+		static bool DrainDirtyNotificationState_(
+			const std::shared_ptr<DirtyNotificationState>& state );
 
 		//! Round-5 review P1: the derived-dirty floor is served from this CACHED
 		//! atomic, recomputed at every mutation's Fire (under the mutator's own
@@ -650,6 +659,12 @@ namespace RISE
 		//! query then never reads the non-atomic head/saved versions directly
 		//! (the round-4 wiring did, a torn-read UB).
 		std::atomic<bool> mHeadDiffersCached{ false };
+
+		//! Complete lock-free dirty answer. DirtyTracker and
+		//! mScaleFromAnchorSet are mutable containers written under the
+		//! controller mutex, so public/ABI readers must never inspect them
+		//! directly. Mutation sites publish their combined value here.
+		std::atomic<bool> mHasUnsavedChangesCached{ false };
 
 		//! Document-first ADR phase 1: the head version at bind / last
 		//! successful save -- the clean baseline for derived dirty.
@@ -667,7 +682,37 @@ namespace RISE
 		//! single-threaded context) -- see mHeadDiffersCached's doc.
 		void RecomputeHeadDiffers_();
 
+		//! Publish the complete dirty answer from the stable tracker,
+		//! scale-anchor set, and cached revision floor.
+		void RecomputeHasUnsavedChangesCached_();
+
 	public:
+		//! Defers dirty delivery across a composite public controller call.
+		//! Nested mutation helpers may each attempt to drain; while this
+		//! token lives those drains only leave the notification pending.
+		//! The last token's destructor performs the state-only drain after
+		//! all controller work has completed.
+		class DirtyNotificationDeferral
+		{
+		public:
+			DirtyNotificationDeferral( DirtyNotificationDeferral&& other ) noexcept
+				: mState( std::move( other.mState ) ) {}
+			~DirtyNotificationDeferral();
+
+			DirtyNotificationDeferral( const DirtyNotificationDeferral& ) = delete;
+			DirtyNotificationDeferral& operator=( const DirtyNotificationDeferral& ) = delete;
+			DirtyNotificationDeferral& operator=( DirtyNotificationDeferral&& ) = delete;
+
+		private:
+			friend class SceneEditor;
+			explicit DirtyNotificationDeferral(
+				const std::shared_ptr<DirtyNotificationState>& state )
+				: mState( state ) {}
+			std::shared_ptr<DirtyNotificationState> mState;
+		};
+
+		DirtyNotificationDeferral DeferDirtyNotifications();
+
 		//! Document-first ADR phase 1 (fire -> pending + drain): mutation
 		//! entry points (Apply success, Undo, Redo, ClearDirtyState, the
 		//! marks) call THIS, which only records "dirty may have changed" --
@@ -681,19 +726,25 @@ namespace RISE
 		void FireDirtyChangedIfTransitioned();
 
 		//! Drain the pending dirty notification: if a mutation flagged a
-		//! possible change, re-evaluate `HasUnsavedChanges()` and fire the
-		//! listener iff it TRANSITIONED since the last fire.  MUST be called
-		//! with no controller locks held.  Thread-safe (leaf mNotifyMutex
-		//! serializes concurrent drains); a listener must not re-enter a
-		//! draining entry point synchronously (marshal to your queue -- both
-		//! shells already do).
-		void DrainDirtyNotification();
+		//! possible change, read the atomically-published complete dirty
+		//! value and fire the listener iff it transitioned since the last
+		//! fire. MUST be called with no controller locks held. Thread-safe
+		//! (leaf mutex serializes concurrent drains); synchronous re-entry is
+		//! coalesced into the active deliverer's loop.
+		//! Returns false when the listener destroyed this editor/controller.
+		//! Callers that have more member work after a drain must return
+		//! immediately on false.
+		bool DrainDirtyNotification();
 
 		//! Round-5 review P1: recompute the cached derived-dirty floor.  Call
 		//! ONLY while the Document is stable (the controller calls it inside
 		//! its RefreshProperties mMutex try_lock region as a per-frame
 		//! self-heal for any mutation path that missed its Fire).
-		void RefreshDerivedDirty() { RecomputeHeadDiffers_(); }
+		void RefreshDerivedDirty()
+		{
+			RecomputeHeadDiffers_();
+			RecomputeHasUnsavedChangesCached_();
+		}
 
 		//! P5 Slice 3 expansion (object transform): the CONTROLLER calls these at a render-thread-PARKED boundary
 		//! (drag-end / panel transform edit / undo / redo) to commit object transforms accumulated by the

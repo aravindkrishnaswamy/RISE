@@ -19,8 +19,8 @@
 
 #include "FileIdentity.h"
 
+#include <atomic>
 #include <cstring>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -64,17 +64,20 @@ namespace {
 bool AtomicWrite( const std::string& filePath, const std::string& bytes,
                   std::string& outError )
 {
-    // Build a per-process / per-invocation tmp path.  pid + epoch
-    // seconds is unique enough for single-threaded save sequences;
-    // the rename is what enforces atomicity, not the tmp uniqueness.
+    // Build a per-process / per-invocation tmp path. The monotonic
+    // counter prevents two controllers in the same process from sharing
+    // a temp file even when they save the same target concurrently.
+    static std::atomic<unsigned long long> nextTmpId{ 1 };
 #if defined(_WIN32)
     const long long pidValue = static_cast<long long>( ::_getpid() );
 #else
     const long long pidValue = static_cast<long long>( ::getpid() );
 #endif
+    const unsigned long long tmpId =
+        nextTmpId.fetch_add( 1, std::memory_order_relaxed );
     const std::string tmpPath = filePath + ".tmp." +
         std::to_string( pidValue ) + "." +
-        std::to_string( static_cast<long long>( std::time( nullptr ) ) );
+        std::to_string( tmpId );
 
     // Write bytes to tmp via std::ofstream (binary mode, no text
     // translation — line endings are managed explicitly upstream).

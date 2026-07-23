@@ -1051,32 +1051,57 @@ void SceneEditor::FireDirtyChangedIfTransitioned()
 	// stable Document, so this is also where the derived-dirty CACHE is
 	// recomputed race-free (the lock-free C-API query reads only the cache).
 	RecomputeHeadDiffers_();
-	mDirtyNotificationState->pending.store( true, std::memory_order_release );
+	RecomputeHasUnsavedChangesCached_();
+	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+	state->currentHasUnsavedChanges.store(
+		mHasUnsavedChangesCached.load( std::memory_order_acquire ),
+		std::memory_order_release );
+	state->pending.store( true, std::memory_order_release );
 }
 
-void SceneEditor::DrainDirtyNotification()
+SceneEditor::DirtyNotificationDeferral::~DirtyNotificationDeferral()
+{
+	if( !mState ) return;
+	if( mState->deferDepth.fetch_sub( 1, std::memory_order_acq_rel ) == 1 )
+		SceneEditor::DrainDirtyNotificationState_( mState );
+}
+
+SceneEditor::DirtyNotificationDeferral SceneEditor::DeferDirtyNotifications()
+{
+	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+	state->deferDepth.fetch_add( 1, std::memory_order_acq_rel );
+	return DirtyNotificationDeferral( state );
+}
+
+bool SceneEditor::DrainDirtyNotification()
+{
+	const std::shared_ptr<DirtyNotificationState> state =
+		mDirtyNotificationState;
+	return DrainDirtyNotificationState_( state );
+}
+
+bool SceneEditor::DrainDirtyNotificationState_(
+	const std::shared_ptr<DirtyNotificationState>& state )
 {
 	// Round-5 review P1 (listener OUTSIDE all locks + ordered delivery):
-	// single-deliverer loop.  The state comparison runs under the leaf
-	// mNotifyMutex; the LISTENER runs with NO lock held (ADR rule 5), so a
-	// callback that performs another mutating controller call cannot
-	// self-deadlock -- its nested drain sees mNotifyDelivering and returns,
-	// and this outer loop re-checks pending and delivers the follow-up.
-	// COALESCED semantics (documented on SetDirtyChangedListener): the
-	// listener reports the CURRENT state whenever it differs from the last
-	// report; a clean->dirty->clean burst between drains nets to no call.
-	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
-	if( !state->pending.load( std::memory_order_acquire ) ) return;
-	if( state->delivering.exchange( true, std::memory_order_acq_rel ) ) return;   // active deliverer will pick it up
+	// single-deliverer loop. The complete dirty value was published by the
+	// mutator while its controller lock held, so this state-only routine
+	// neither races DirtyTracker containers nor borrows the SceneEditor.
+	// That also makes callback-driven controller destruction safe.
+	if( state->deferDepth.load( std::memory_order_acquire ) != 0 )
+		return state->ownerAlive.load( std::memory_order_acquire );
+	if( !state->pending.load( std::memory_order_acquire ) )
+		return state->ownerAlive.load( std::memory_order_acquire );
+	if( state->delivering.exchange( true, std::memory_order_acq_rel ) )
+		return state->ownerAlive.load( std::memory_order_acquire );   // active deliverer will pick it up
 	for( ;; )
 	{
 		if( !state->pending.exchange( false, std::memory_order_acq_rel ) ) break;
 		bool fire = false;
-		bool now  = false;
+		const bool now = state->currentHasUnsavedChanges.load( std::memory_order_acquire );
 		DirtyChangedFn listenerCopy;
 		{
 			std::lock_guard<std::mutex> lk( state->mutex );
-			now = HasUnsavedChanges();
 			if( now != state->prevHasUnsavedChanges )
 			{
 				state->prevHasUnsavedChanges = now;
@@ -1088,7 +1113,7 @@ void SceneEditor::DrainDirtyNotification()
 			listenerCopy( now );   // NO lock held
 			if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
 				state->delivering.store( false, std::memory_order_release );
-				return;           // controller was destroyed by the callback; never touch `this` again
+				return false;
 			}
 		}
 	}
@@ -1102,11 +1127,10 @@ void SceneEditor::DrainDirtyNotification()
 		if( state->pending.exchange( false, std::memory_order_acq_rel ) )
 		{
 			bool fire = false;
-			bool now  = false;
+			const bool now = state->currentHasUnsavedChanges.load( std::memory_order_acquire );
 			DirtyChangedFn listenerCopy;
 			{
 				std::lock_guard<std::mutex> lk( state->mutex );
-				now = HasUnsavedChanges();
 				if( now != state->prevHasUnsavedChanges )
 				{
 					state->prevHasUnsavedChanges = now;
@@ -1118,12 +1142,13 @@ void SceneEditor::DrainDirtyNotification()
 				listenerCopy( now );
 				if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
 					state->delivering.store( false, std::memory_order_release );
-					return;
+					return false;
 				}
 			}
 		}
 		state->delivering.store( false, std::memory_order_release );
 	}
+	return state->ownerAlive.load( std::memory_order_acquire );
 }
 
 void SceneEditor::CaptureSavedHeadVersion_()
@@ -1137,6 +1162,7 @@ void SceneEditor::CaptureSavedHeadVersion_()
 	else
 		mSavedHeadVersion = RISE::Cst::CstHeadVersion();
 	RecomputeHeadDiffers_();   // round-5 P1: the cache must track the new baseline
+	RecomputeHasUnsavedChangesCached_();
 }
 
 void SceneEditor::RecomputeHeadDiffers_()
@@ -1149,6 +1175,14 @@ void SceneEditor::RecomputeHeadDiffers_()
 		if( cur.uuid != 0 ) differs = ( cur != mSavedHeadVersion );   // legacy scene (uuid 0): no floor
 	}
 	mHeadDiffersCached.store( differs, std::memory_order_release );
+}
+
+void SceneEditor::RecomputeHasUnsavedChangesCached_()
+{
+	const bool dirty = HeadDiffersFromSaved_()
+		|| mDirtyTracker.HasAnyDirty()
+		|| !mScaleFromAnchorSet.empty();
+	mHasUnsavedChangesCached.store( dirty, std::memory_order_release );
 }
 
 namespace {

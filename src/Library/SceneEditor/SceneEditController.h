@@ -443,11 +443,9 @@ namespace RISE
 		//! cancel-and-park critical section so it is safe against the live
 		//! render thread, and it calls RebindEditorToJob on a D2 full re-derive
 		//! (codes 2/3) so the editor's cached scene/manager pointers do not
-		//! dangle.  Callable from ANY thread PROVIDED the transaction API is
-		//! unused (transactions are main-thread-only and the mTxnOpen
-		//! pre-flight read below is UNSYNCHRONIZED -- mMutex does not cover
-		//! the flag); within that contract it takes mMutex +
-		//! cancel-and-parks itself, and the whole commit + rebind +
+		//! dangle. Callable from any thread: the transaction-open gate is
+		//! rechecked under mMutex before the path cancel-and-parks, and the
+		//! whole commit + rebind +
 		//! version-bump runs UNDER mMutex so no render-thread reader can
 		//! observe the transient {0,0} head-version (D2 ClearAll) or a
 		//! half-rebuilt Scene.
@@ -466,11 +464,7 @@ namespace RISE
 		//! EditHistory record, so RollbackTransaction could never revert
 		//! it -- the agent should retry after the gesture completes
 		//! (retriable=true marks this as the transient reject a wire
-		//! client may resubmit verbatim).  That mTxnOpen check is the
-		//! unsynchronized read the headline's proviso refers to: it relies
-		//! on the main-thread contract (mMutex does not cover the flag;
-		//! see its member doc), so a future async transport must marshal
-		//! commits to the main thread.
+		//! client may resubmit verbatim).
 		AgentCommitResult ApplyAgentParamEdit(
 			const String& entityName,
 			const String& entityKind,
@@ -3719,6 +3713,7 @@ namespace RISE
 		//! Drain-free body of RestoreEditorState -- for callers that HOLD mMutex
 		//! (RollbackTransaction), whose own post-unlock drain delivers the
 		//! notification.  The public RestoreEditorState wraps this + drains.
+		EditorStateSnapshot CaptureEditorStateLocked_() const;
 		void RestoreEditorStateLocked_( const EditorStateSnapshot& s, bool restoreDirty );
 		bool SetSelectionInner_( Category cat, const String& entityName );
 		void UndoInner_();
@@ -3819,12 +3814,12 @@ namespace RISE
 		// SceneSnapshot is held.  `mTxnOpen` is true exactly when a
 		// transaction is open.  `mTxnBaseline.historyMarker` records EditHistory::NextSeq() at
 		// BeginTransaction so RollbackTransaction undoes while the top edit's
-		// seq >= that marker (trim-immune; survives the 1024 history cap).  Both
-		// are touched only on the UI thread (Begin/Rollback/End are
-		// UI-thread calls), so they need no synchronization beyond the
-		// cancel-and-park RollbackTransaction already takes for the scene
-		// mutation itself.
-		bool                                 mTxnOpen;
+		// seq >= that marker (trim-immune; survives the 1024 history cap).
+		// Begin/Rollback/End are UI entry points, but any-thread agent
+		// commits and render submissions consult the flag. Atomic loads make
+		// status checks race-free; transitions and commit rechecks are
+		// serialized under mMutex.
+		std::atomic<bool>                    mTxnOpen;
 		EditorStateSnapshot                  mTxnBaseline;        // H1: one owned baseline (history marker + dirty + selection)
 
 		// Disable copy / move

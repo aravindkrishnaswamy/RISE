@@ -601,6 +601,35 @@ int main()
 		std::remove( tmp3.c_str() );
 	}
 
+	// ---------- T18: catch-all drain must stop after callback destruction ----------
+	std::printf( "T18: RefreshProperties catch-all survives callback destruction...\n" );
+	const std::string tmp4 = TempPath( "geometry_panel_jump_refresh_destroy.RISEscene" );
+	Job* pJob4 = LoadScene( kScene, tmp4 );
+	Check( pJob4 != nullptr, "T18: catch-all destruction fixture loads" );
+	if( pJob4 )
+	{
+		SceneEditController* controller =
+			new SceneEditController( *pJob4, /*interactiveRasterizer*/nullptr );
+		int fires = 0;
+		controller->SetDirtyChangedListener( [&]( bool ) {
+			++fires;
+			delete controller;
+			controller = nullptr;
+		} );
+		controller->SetTool( SceneEditController::Tool::OrbitCamera );
+		controller->OnPointerDown( Point2( 8, 8 ) );
+		controller->OnPointerMove( Point2( 12, 9 ) );
+		controller->OnPointerUp( Point2( 12, 9 ) );
+		// Pointer gestures intentionally leave delivery to the per-frame
+		// catch-all. RefreshProperties must return immediately when that
+		// callback destroys the controller.
+		controller->RefreshProperties();
+		Check( fires == 1 && controller == nullptr,
+			"MONEY (T18): catch-all drain returned without touching the destroyed controller" );
+		pJob4->release();
+		std::remove( tmp4.c_str() );
+	}
+
 	pJob->release();
 	std::remove( tmp.c_str() );
 	std::printf( "=== GeometryPanelJumpTest: %d passed, %d failed ===\n", g_pass, g_fail );

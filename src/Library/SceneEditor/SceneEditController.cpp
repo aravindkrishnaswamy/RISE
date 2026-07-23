@@ -1783,6 +1783,11 @@ void SceneEditController::OnPointerDown( const Point2& px )
 				mGizmoDrag.anchorPxY = static_cast<double>( px.y );
 
 				// Capture pivot (world) + projection.
+				// Re-park and keep mMutex across every live scene/object/camera
+				// read below. A background agent D2 may replace all of those
+				// managers between the handle refresh and this capture.
+				std::unique_lock<std::mutex> captureLk( mMutex );
+				CancelAndParkRender_( captureLk );
 				double wx = 0, wy = 0, wz = 0;
 				if( ForTest_GetSelectionPivotWorld( wx, wy, wz ) ) {
 					mGizmoDrag.pivotWorld = Point3( wx, wy, wz );
@@ -2067,10 +2072,14 @@ void SceneEditController::OnPointerMove( const Point2& px )
 				// direction in world.  Approximates the optical axis
 				// (exact when the pivot is dead-centre on screen;
 				// usable elsewhere).
-				const IScene* scene = mJob.GetScene();
-				const ICamera* cam = EffectiveViewportCamera_( scene );   // user-review P1#2
-				if( !cam ) return;
-				const Point3 camPos = cam->GetLocation();
+				Point3 camPos;
+				{
+					std::lock_guard<std::mutex> sceneLk( mMutex );
+					const IScene* scene = mJob.GetScene();
+					const ICamera* cam = EffectiveViewportCamera_( scene );
+					if( !cam ) return;
+					camPos = cam->GetLocation();
+				}
 				const Vector3 fwd = Vector3Ops::Normalize(
 					Vector3Ops::mkVector3( mGizmoDrag.pivotWorld, camPos ) );
 				worldAxis = fwd;
@@ -2207,7 +2216,7 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		return;
 	}
 
-	if( IsObjectMotionTool( mTool ) ) {
+	if( IsObjectMotionTool( mTool ) || IsCameraMotionTool( mTool ) ) {
 		// Inline park-and-apply: cancel any in-flight render and wait
 		// for it to drain before mutating scene geometry — object
 		// transforms invalidate the top-level BVH which a worker
@@ -2238,8 +2247,6 @@ void SceneEditController::OnPointerMove( const Point2& px )
 			lk.unlock();
 			mCV.notify_one();
 		}
-	} else if( mEditor.Apply( edit ) ) {
-		KickRender();
 	}
 }
 
@@ -2558,7 +2565,7 @@ void SceneEditController::UndoInner_()
 	// undoing PAST the baseline would break RollbackTransaction's revert
 	// guarantee (and ClearRedo would then drop a pre-baseline edit).  The
 	// rollback path uses mEditor.Undo() directly, bypassing this guard.
-	if( mTxnOpen ) {
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction is open; use Rollback/EndTransaction." );
 		return;
 	}
@@ -2571,6 +2578,10 @@ void SceneEditController::UndoInner_()
 	// SetProperty + the CloneActiveCamera path) already park; the
 	// inverse path needs the same protection.
 	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction opened before the undo acquired the mutation lock." );
+		return;
+	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
 		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
@@ -2625,11 +2636,15 @@ void SceneEditController::UndoInner_()
 void SceneEditController::RedoInner_()
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
-	if( mTxnOpen ) {
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
 		return;
 	}
 	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction opened before the redo acquired the mutation lock." );
+		return;
+	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
 		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
@@ -2747,6 +2762,11 @@ bool SceneEditController::RequestProductionRender()
 SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState() const
 {
 	std::lock_guard<std::mutex> lk( mMutex );
+	return CaptureEditorStateLocked_();
+}
+
+SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorStateLocked_() const
+{
 	EditorStateSnapshot st;
 	st.historyMarker     = mEditor.History().NextSeq();
 	st.dirty             = mEditor.CaptureDirtyState();
@@ -2767,7 +2787,7 @@ void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, boo
 	// lock -- drain the dirty->clean notification RestoreDirtyState flagged.
 	// (RollbackTransaction calls the Locked_ body directly under mMutex and
 	// drains at its own post-unlock tail.)
-	mEditor.DrainDirtyNotification();
+	if( !mEditor.DrainDirtyNotification() ) return;
 }
 
 void SceneEditController::RestoreEditorStateLocked_( const EditorStateSnapshot& st, bool restoreDirty )
@@ -2826,6 +2846,7 @@ bool SceneEditController::BeginTransaction()
 	// Undo() during rollback walks the whole group back PAST the baseline,
 	// consuming the pre-baseline CompositeBegin and corrupting the
 	// surrounding undo history.  A transaction must bracket WHOLE edits.
+	std::lock_guard<std::mutex> lk( mMutex );
 	if( mEditor.IsCompositeOpen() )
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
@@ -2833,8 +2854,8 @@ bool SceneEditController::BeginTransaction()
 			"composite is open; close it before opening a transaction." );
 		return false;
 	}
-	mTxnBaseline = CaptureEditorState();   // H1: one owned baseline
-	mTxnOpen              = true;
+	mTxnBaseline = CaptureEditorStateLocked_();   // H1: one owned baseline
+	mTxnOpen.store( true, std::memory_order_release );
 	mEditor.History().SnapshotRedoForRollback();   // P1-#3: so a full rollback restores the pre-transaction redo stack
 	mEditor.History().SnapshotUndoForRollback();   // P1: ...and the pre-transaction undo stack (cap-evicted records)
 	return true;
@@ -2842,12 +2863,12 @@ bool SceneEditController::BeginTransaction()
 
 bool SceneEditController::IsTransactionOpen() const
 {
-	return mTxnOpen;
+	return mTxnOpen.load( std::memory_order_acquire );
 }
 
 bool SceneEditController::RollbackTransaction()
 {
-	if( !mTxnOpen ) return false;
+	if( !mTxnOpen.load( std::memory_order_acquire ) ) return false;
 
 	// Cancel-and-park around the inverse-edit applies — SceneEditor::Undo
 	// mutates live scene state the render thread reads per-pixel (object
@@ -2948,7 +2969,7 @@ bool SceneEditController::RollbackTransaction()
 	}
 
 	// Close the transaction.
-	mTxnOpen              = false;
+	mTxnOpen.store( false, std::memory_order_release );
 	mEditor.History().ClearRollbackSnapshots();   // P1 review: free the rollback snapshots now the txn is closed
 
 	// Re-render the reverted state.  Inline the KickRender effect under
@@ -2972,12 +2993,13 @@ bool SceneEditController::RollbackTransaction()
 
 bool SceneEditController::EndTransaction()
 {
-	if( !mTxnOpen ) return false;
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mTxnOpen.load( std::memory_order_acquire ) ) return false;
 	// Commit is record-only: the edits were applied + recorded live
 	// during the transaction (the shipping flow), so committing just
 	// closes the transaction.  No re-apply, no revert; the redo stack is
 	// left intact so normal Undo/Redo of the committed edits still works.
-	mTxnOpen              = false;
+	mTxnOpen.store( false, std::memory_order_release );
 	mEditor.History().ClearRollbackSnapshots();   // P1 review: free the rollback snapshots now the txn is closed
 	return true;
 }
@@ -3506,7 +3528,7 @@ bool SceneEditController::SetSelectionInner_( Category cat, const String& entity
 
 	if( needsRenderSerialization )
 	{
-		if( mTxnOpen ) {
+		if( mTxnOpen.load( std::memory_order_acquire ) ) {
 			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: active camera/rasterizer/animation/film switch refused inside an open transaction (not undoable -> rollback cannot revert it)." );
 			return false;
 		}
@@ -3798,61 +3820,45 @@ void SceneEditController::PickAt( const Point2& px )
 	// (mSectionExpanded + mSelectionByCategory) the panel reads,
 	// leaving the new selection invisible to the GUI.
 
-	const IScene* scene = mJob.GetScene();
-	if( !scene ) { SetSelection( Category::None, String() ); return; }
-
-	const ICamera* cam = EffectiveViewportCamera_( scene );   // user-review P1#2: pick through the interacted pane's camera
-	if( !cam ) { SetSelection( Category::None, String() ); return; }
-
-	IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
-	if( !objs ) { SetSelection( Category::None, String() ); return; }
-
-	// Spatial structure must be current before IntersectRay — defensive
-	// in case nothing has rendered yet (rebuild is a no-op when valid).
-	objs->PrepareForRendering();
-
-	// Generate a primary camera ray for this pixel.  RuntimeContext
-	// here is just enough to satisfy the GenerateRay signature — the
-	// simple pinhole / thinlens path doesn't read it.  Picking is
-	// best-effort; if more exotic cameras need a real rc later, plumb.
-	//
-	// Y-flip: the camera projection inverts Y between the rasterizer's
-	// screen-pixel space (where the IRasterImage is laid out) and the
-	// world-up direction the user perceives.  When the rasterized image
-	// is displayed in the platform viewport, the visual top corresponds
-	// to "image-pixel space large-Y", and the visual bottom to
-	// small-Y — the opposite of the top-left view-coords the bridge
-	// hands us.  Without this flip, clicking visually low picks objects
-	// rendered visually high (camera-projection inversion).
-	const Scalar pickPxY = static_cast<Scalar>( scene->GetFilm()->GetHeight() ) - px.y;
-
-	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, /*threaded*/false );
-	Ray r;
-	if( !cam->GenerateRay( rc, r, Point2( px.x, pickPxY ) ) ) {
-		SetSelection( Category::None, String() );
-		return;
+	String pickedName;
+	{
+		// Picking reads and prepares the live object manager and camera.
+		// Hold the mutation mutex and park rendering so neither a render
+		// nor an any-thread D2 commit can replace/use those structures
+		// concurrently. Copy only the resolved name out of this scope.
+		std::unique_lock<std::mutex> lk( mMutex );
+		CancelAndParkRender_( lk );
+		const IScene* scene = mJob.GetScene();
+		const ICamera* cam = EffectiveViewportCamera_( scene );
+		IObjectManager* objs =
+			scene ? const_cast<IObjectManager*>( scene->GetObjects() ) : nullptr;
+		const IFilm* film = scene ? scene->GetFilm() : nullptr;
+		if( scene && cam && objs && film ) {
+			objs->PrepareForRendering();
+			const Scalar pickPxY =
+				static_cast<Scalar>( film->GetHeight() ) - px.y;
+			RuntimeContext rc(
+				GlobalRNG(), RuntimeContext::PASS_NORMAL, /*threaded*/false );
+			Ray ray;
+			if( cam->GenerateRay( rc, ray, Point2( px.x, pickPxY ) ) ) {
+				RasterizerState rast;
+				RayIntersection ri( ray, rast );
+				objs->IntersectRay(
+					ri, /*frontFace*/true, /*backFace*/false, /*exit*/false );
+				if( ri.geometric.bHit && ri.pObject ) {
+					FindObjectNameCallback cb( ri.pObject, objs );
+					objs->EnumerateItemNames( cb );
+					pickedName = cb.foundName;
+				}
+			}
+		}
 	}
 
-	RasterizerState rast;
-	RayIntersection ri( r, rast );
-	objs->IntersectRay( ri, /*frontFace*/true, /*backFace*/false, /*exit*/false );
-
-	if( ri.geometric.bHit && ri.pObject ) {
-		// IObject has no GetName() — walk the manager to recover the
-		// registered name corresponding to the hit pointer.  O(n);
-		// fine for click cadence and typical scene sizes.
-		FindObjectNameCallback cb( ri.pObject, objs );
-		objs->EnumerateItemNames( cb );
-		if( cb.foundName.size() > 1 ) {
-			// SetSelection(Object, name) is the right path:
-			// (a) updates the primary tuple,
-			// (b) updates mSelectionByCategory[Object] + sets the
-			//     expanded flag,
-			// (c) auto-syncs Materials section to the object's
-			//     bound material (Phase 4b auto-sync rule).
-			SetSelection( Category::Object, cb.foundName );
-			return;
-		}
+	if( pickedName.size() > 1 ) {
+		// SetSelection takes mMutex itself; invoke it only after the pick
+		// scope releases the non-recursive lock.
+		SetSelection( Category::Object, pickedName );
+		return;
 	}
 
 	// No hit (or hit on an unregistered object) — collapse the panel
@@ -4054,9 +4060,27 @@ bool SceneEditController::CaptureAgentChunkForRemoveUndo_(
 {
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
-	const bool uniqueFallback = ( kind.size() > 1 && std::string( kind.c_str() ) == "camera" );
+	const std::string kindText = kind.size() > 1 ? kind.c_str() : "";
+	const std::string targetText = target.c_str();
+	// Mirror Job::ApplyCstRemoveChunk's descriptor-aware positional
+	// addressing. APPEND-class chunks such as timeline/keyframe are
+	// unnamed and removable by keyword when exactly one exists. They need
+	// the same pre-remove capture as the unnamed-camera case or the
+	// successful removal would have no undo record.
+	bool targetNamesAChunk = false;
+	if( kindText.empty() ) {
+		int nameOccurrences = 0;
+		RISE::Cst::DocFindByNameAnyRole(
+			*doc, targetText, &nameOccurrences, "", false );
+		targetNamesAChunk = nameOccurrences > 0;
+	}
+	const ChunkDescriptor* removeDescriptor = DescriptorForKeyword(
+		String( kindText.empty() ? targetText.c_str() : kindText.c_str() ) );
+	const bool unnamedRepeatable =
+		removeDescriptor && removeDescriptor->unnamedRepeatable && !targetNamesAChunk;
+	const bool uniqueFallback = ( kindText == "camera" ) || unnamedRepeatable;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-		*doc, target.c_str(), nullptr, kind.size() > 1 ? kind.c_str() : "", uniqueFallback );
+		*doc, targetText, nullptr, kindText, uniqueFallback );
 	if( id == 0 ) return false;
 	const int idx = RISE::Cst::DocIndexOfNodeId( *doc, id, nullptr );
 	if( idx < 0 ) return false;
@@ -4088,11 +4112,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 {
 	AgentCommitResult r;
 
-	// F5 polish A1 round 2: refuse a MID-TRANSACTION agent commit BEFORE any
-	// mutation or park -- the same rule as the existing mTxnOpen refusals
-	// on the other entry points (SetSelection's active-switch; SetProperty's
-	// animation frame-count / rasterizer / film; Undo/Redo's history
-	// navigation).
+	// F5 polish A1 round 2: refuse a MID-TRANSACTION agent commit before any
+	// mutation or park.
 	// An agent commit's Document mutation has NO EditHistory record, so
 	// RollbackTransaction's inverse-edit Undo loop can never revert it; a
 	// FULL rollback would then RestoreEditorState the pre-transaction dirty
@@ -4104,34 +4125,6 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// -- lands in mEntityDirty, which restores by plain copy.)  Surfaced
 	// HONESTLY as a plain "rejected" (NOT a conflict -- the head did not
 	// move; the agent should simply retry once the gesture completes).
-	// Thread contract: mTxnOpen is a plain bool that mMutex does NOT cover
-	// (Begin/EndTransaction write it with no lock held; see the member doc
-	// in the header) -- the check is race-free today because the
-	// transaction API and the in-app agent path both run on the main
-	// thread; a future async agent transport must revisit this (marshal
-	// the commit to the main thread or synchronize the flag).
-	if( mTxnOpen )
-	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused inside an open transaction (no EditHistory record -> rollback cannot revert it)." );
-		r.applied = false;
-		r.rawCode = 0;
-		r.status  = String( "rejected" );
-		// The ONE transient reject: the identical commit succeeds once the
-		// gesture completes, so mark it retriable for the wire client (the
-		// permanent rejects below keep the default false).
-		r.retriable = true;
-		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
-		{
-			// Keep this function's "every head read is under mMutex"
-			// invariant (no torn 16-byte read against a concurrent
-			// parked edit on another thread).  No park needed -- we
-			// mutate nothing, so the in-flight pass keeps rendering.
-			std::lock_guard<std::mutex> hlk( mMutex );
-			r.headVersion = mJob.GetCstHeadVersion();
-		}
-		return r;
-	}
-
 	// Cancel-and-park the render thread, THEN hold mMutex across the WHOLE
 	// commit -- the pre-flight refusals, the conflict pre-check,
 	// ApplyCstParamEdit (which on a D2 ClearAll's + rebuilds the Scene and
@@ -4142,6 +4135,20 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// concurrent parked edit on ANOTHER thread is the real writer of the head
 	// -- there is no torn read of the 16-byte CstHeadVersion either.
 	std::unique_lock<std::mutex> lk( mMutex );
+	// BeginTransaction publishes the flag while holding this same mutex.
+	// The under-lock recheck closes the false->Begin->commit TOCTOU that an
+	// atomic pre-flight check alone would still permit.
+	if( mTxnOpen.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused inside an open transaction (no EditHistory record -> rollback cannot revert it)." );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
 	CancelAndParkRender_( lk );
 
 	// Pre-flight refusals (under the lock): a Job with no retained Document,
@@ -4470,6 +4477,7 @@ std::vector<SceneEditController::AgentProposal> SceneEditController::ListProposa
 bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, AgentCommitResult* outResult )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
 	// The whole resolve -- find, re-check, and (on approve) apply -- runs
 	// under ONE mMutex hold, so there is no window between "the base
 	// version matched" and "the apply actually ran" for a concurrent commit
@@ -4658,7 +4666,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	const String&                clientLabel,
 	RenderJobId*                 outJobId )
 {
-	if( mTxnOpen )
+	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
 		return false;
@@ -5058,7 +5066,7 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	bool                  pinned,
 	RenderClass           renderClass )
 {
-	if( mTxnOpen )
+	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused inside an open transaction (would stall the gesture)." );
 		return false;
@@ -5524,30 +5532,21 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	AgentCommitResult r;
 	const char* verb = isInsert ? "insert" : "remove";
 
-	// Mid-transaction refusal FIRST, before any mutation or park -- an agent
-	// chunk edit has no EditHistory record, so RollbackTransaction could never
-	// revert it (same rule + rationale as ApplyAgentParamEdit; same
-	// main-thread contract on the unsynchronized mTxnOpen read).
-	if( mTxnOpen )
+	// Cancel-and-park, then hold mMutex across the WHOLE commit (pre-flight,
+	// conflict gate, the Job apply -- whose D2 ClearAll transiently zeroes the
+	// head-version -- the rebind, and the post-commit head read).
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk %s refused inside an open transaction (no EditHistory record -> rollback cannot revert it).", verb );
 		r.applied = false;
 		r.rawCode = 0;
 		r.status  = String( "rejected" );
-		r.retriable = true;   // the ONE transient reject: retry after the gesture completes
+		r.retriable = true;
 		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
-		{
-			// Every head read stays under mMutex (no torn 16-byte read).
-			std::lock_guard<std::mutex> hlk( mMutex );
-			r.headVersion = mJob.GetCstHeadVersion();
-		}
+		r.headVersion = mJob.GetCstHeadVersion();
 		return r;
 	}
-
-	// Cancel-and-park, then hold mMutex across the WHOLE commit (pre-flight,
-	// conflict gate, the Job apply -- whose D2 ClearAll transiently zeroes the
-	// head-version -- the rebind, and the post-commit head read).
-	std::unique_lock<std::mutex> lk( mMutex );
 	CancelAndParkRender_( lk );
 
 	if( !mJob.HasRetainedCstDocument() )
@@ -5903,12 +5902,23 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	RISE::FileIdentity loadedFileIdentitySnapshot;
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
+		// Exactly one save may own this controller. Besides making the
+		// mSaving boolean an honest render barrier, this gives concurrent
+		// callers a deterministic ordering instead of allowing two stale
+		// snapshots to race their writes and file-identity publication.
+		if( mSaving.load( std::memory_order_acquire ) ) {
+			SaveResult busy;
+			busy.status = SaveResult::Status::Refused;
+			busy.filePath = filePath;
+			busy.errorMessage = "save refused: another save is already in progress";
+			return busy;
+		}
 		if( mRendering.load() ) {
 			mCancelProgress.RequestCancel();
 			interruptedPass = true;
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load(); } );
-		mSaving.store( true );
+		mSaving.store( true, std::memory_order_release );
 		// Round-5 review P0: remember WHICH head the engine is about to
 		// serialize.  Step 3 baselines "clean" ONLY if the head is still this
 		// one -- a mutation that lands while IO runs can then never be silently
@@ -7012,7 +7022,7 @@ void SceneEditController::RefreshProperties()
 	// every frame) -- a mutation path that missed an explicit drain degrades
 	// to a one-frame notification delay instead of a lost transition.  Runs
 	// BEFORE the try_lock below, i.e. outside any controller lock.
-	mEditor.DrainDirtyNotification();
+	if( !mEditor.DrainDirtyNotification() ) return;
 	// External-review P1 (2026-07-22): the row build below reads LIVE scene /
 	// CST / manager state (buildRowsFor across every expanded category --
 	// geometry enumeration, material-slot classification, CST introspection,
@@ -7665,11 +7675,6 @@ bool SceneEditController::CloneActiveCamera(
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
 
-	IScene* scene = mJob.GetScene();
-	if( !scene ) return false;
-	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
-	if( !cams ) return false;
-
 	// Cancel-and-park BEFORE capturing the snapshot.  The render
 	// thread reads + writes the active camera's stored fields
 	// concurrently (e.g. an in-flight orbit drag updates
@@ -7686,6 +7691,10 @@ bool SceneEditController::CloneActiveCamera(
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
 	const ICamera* activeCam = scene->GetCamera();
 	if( !activeCam ) return false;
 
@@ -7748,11 +7757,6 @@ bool SceneEditController::StampViewToNewCamera(
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
 
-	IScene* scene = mJob.GetScene();
-	if( !scene ) return false;
-	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
-	if( !cams ) return false;
-
 	// Park before reading mViewportPose + mutating the ICameraManager (same
 	// reason CloneActiveCamera parks: the render thread and other UI-thread
 	// edits touch these).  The pose fields are the value we stamp.
@@ -7771,6 +7775,10 @@ bool SceneEditController::StampViewToNewCamera(
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
 	// Register-or-slot read (see GetViewportPose); safe under mMutex with the
 	// render parked above.
 	const bool poseActive = ( mCurrentPane == t ) ? mViewportPoseActive
@@ -9519,11 +9527,6 @@ bool SceneEditController::PromoteNamedViewToCamera(
 		snapshot = mNamedViews[ idx ].pose;   // copy before park
 	}
 
-	IScene* scene = mJob.GetScene();
-	if( !scene ) return false;
-	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
-	if( !cams ) return false;
-
 	// Park before mutating the ICameraManager (same rationale as stamp/clone).
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mRendering.load( std::memory_order_acquire ) ) {
@@ -9532,6 +9535,10 @@ bool SceneEditController::PromoteNamedViewToCamera(
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
 	const String finalName = UniqueCameraName( proposedName, *cams );
 	if( finalName.size() > outLen ) {
 		outName[0] = '\0';
@@ -9719,6 +9726,7 @@ SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTem
 		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
 		return roR;
 	}
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
 	if( outName ) *outName = String();
 
 	const EntityTemplateDef* tpl = EntityTemplates::At( cat, idx );
@@ -9867,6 +9875,7 @@ SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
 		return roR;
 	}
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
 	if( outName ) *outName = String();
 	AgentCommitResult r;
 
@@ -10049,7 +10058,7 @@ bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, c
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( outPersisted ) *outPersisted = false;
 
-	if( mTxnOpen ) {
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: environment edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
 		return false;
 	}
@@ -10155,6 +10164,7 @@ SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( cons
 		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
 		return roR;
 	}
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
 	AgentCommitResult rej;
 	rej.applied = false;
 	rej.rawCode = 0;
@@ -10269,6 +10279,7 @@ SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( cons
 bool SceneEditController::RemoveEnvironment()
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
 	// Precheck: only unbind when a radiance_map is ACTUALLY bound.  This matters
 	// for correctness, not just cosmetics: the live-map clear below must NOT fire
 	// when nothing was bound, because the global map might then belong to a
@@ -10418,36 +10429,31 @@ bool SceneEditController::SetPropertyInner_(
 	}
 
 	case Category::Animation: {
-		// The only editable animation property is the active animation's frame
-		// count.  num_frames is pure playback metadata — it doesn't alter the
-		// in-flight render's pixels (only renderanimation's frame count and the
-		// preview-play loop step), so no cancel-and-park is needed.  Apply by
-		// re-declaring the ACTIVE animation with the new count (DeclareAnimation
-		// upserts; make_active=false leaves the active selection unchanged).
+		// The panel labels the descriptor's persisted `num_frames` field as
+		// `frames`. Route it through the same checked CST transaction path as
+		// other descriptor value edits so the live animation, retained
+		// Document, dirty state, undo/redo, and save/reload all agree.
 		if( !( name == String( "frames" ) ) ) return false;
 		unsigned int newFrames = 0;
 		if( sscanf( valueStr.c_str(), "%u", &newFrames ) != 1 || newFrames < 1 ) return false;
-		char nameBuf[256] = { 0 };
-		if( !mJob.GetActiveAnimationName( nameBuf, sizeof(nameBuf) ) ) return false;
-		double ts = 0, te = 1; unsigned int nf = 30; bool df = false, invf = false;
-		if( !mJob.GetAnimationOptions( ts, te, nf, df, invf ) ) return false;
-		if( mTxnOpen ) {
-			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: animation frame-count edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
-			return false;
-		}
-		return mJob.DeclareAnimation( nameBuf, ts, te, newFrames, df, invf, false );
+		if( targetName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			targetName, String( "animation" ), String( "num_frames" ),
+			valueStr, nullptr );
+		return r.applied;
 	}
 
 	case Category::Object: {
 		// Route the panel's editable rows to the matching SceneEdit
 		// op.  Every path goes through SceneEditor::Apply so undo /
 		// redo work end-to-end alongside drag-driven transform edits.
-		const IScene* scene = mJob.GetScene();
-		if( !scene ) return false;
 		if( targetName.size() <= 1 ) return false;
 
 		SceneEdit edit;
 		edit.objectName = targetName;
+		bool shadowEdit = false;
+		bool editCastsShadows = false;
+		bool shadowValue = false;
 
 		if( name == String( "position" ) ) {
 			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
@@ -10498,17 +10504,9 @@ bool SceneEditController::SetPropertyInner_(
 			edit.propertyValue = valueStr;
 		}
 		else if( name == String( "casts_shadows" ) || name == String( "receives_shadows" ) ) {
-			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
-			const IObject* obj = objs ? objs->GetItem( targetName.c_str() ) : 0;
-			if( !obj ) return false;
-			bool castsB = obj->DoesCastShadows();
-			bool recvsB = obj->DoesReceiveShadows();
-			bool newVal = false;
-			if( !ParsePropertyBool( valueStr, newVal ) ) return false;
-			if( name == String( "casts_shadows" ) )    castsB = newVal;
-			if( name == String( "receives_shadows" ) ) recvsB = newVal;
-			edit.op = SceneEdit::SetObjectShadowFlags;
-			edit.s  = static_cast<Scalar>( ( castsB ? 1 : 0 ) | ( recvsB ? 2 : 0 ) );
+			if( !ParsePropertyBool( valueStr, shadowValue ) ) return false;
+			shadowEdit = true;
+			editCastsShadows = ( name == String( "casts_shadows" ) );
 		}
 		else {
 			return false;
@@ -10527,6 +10525,22 @@ bool SceneEditController::SetPropertyInner_(
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		if( shadowEdit ) {
+			const IScene* scene = mJob.GetScene();
+			IObjectManager* objs =
+				scene ? const_cast<IObjectManager*>( scene->GetObjects() ) : nullptr;
+			const IObject* obj =
+				objs ? objs->GetItem( targetName.c_str() ) : nullptr;
+			if( !obj ) return false;
+			bool castsShadows = obj->DoesCastShadows();
+			bool receivesShadows = obj->DoesReceiveShadows();
+			if( editCastsShadows ) castsShadows = shadowValue;
+			else receivesShadows = shadowValue;
+			edit.op = SceneEdit::SetObjectShadowFlags;
+			edit.s = static_cast<Scalar>(
+				( castsShadows ? 1 : 0 ) | ( receivesShadows ? 2 : 0 ) );
+		}
 
 		const bool ok = mEditor.Apply( edit );
 		if( !ok ) {
@@ -10603,8 +10617,6 @@ bool SceneEditController::SetPropertyInner_(
 		// + RegenerateData on the forward path, and replays the prev
 		// value through the same machinery on undo.
 		if( targetName.size() <= 1 ) return false;
-		IScenePriv* scene = mJob.GetScene();
-		if( !scene ) return false;
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetLightProperty;
@@ -10650,7 +10662,7 @@ bool SceneEditController::SetPropertyInner_(
 		// Legacy scenes (no retained Document) keep the LIVE-only rebuild.
 		if( targetName.size() <= 1 ) return false;
 		if( !mJob.HasRetainedCstDocument() ) {
-			if( mTxnOpen ) {
+			if( mTxnOpen.load( std::memory_order_acquire ) ) {
 				GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: rasterizer property edit refused inside an open transaction (live-only on a legacy scene -> not undoable)." );
 				return false;
 			}
@@ -10674,7 +10686,7 @@ bool SceneEditController::SetPropertyInner_(
 	}
 
 	case Category::Film: {
-		if( mTxnOpen ) {
+		if( mTxnOpen.load( std::memory_order_acquire ) ) {
 			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: film property edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
 			return false;
 		}

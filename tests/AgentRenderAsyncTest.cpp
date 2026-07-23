@@ -3006,6 +3006,11 @@ static void RunSaveSnapshotConcurrentEditTest()
 	}
 	Check( controller.saveHookEntered.load( std::memory_order_acquire ),
 		"RequestSave captured its snapshot and is parked before IO" );
+	const SaveResult overlappingSave = controller.RequestSave( scenePath );
+	Check( overlappingSave.status == SaveResult::Status::Refused,
+		"MONEY (t2-overlap): a second RequestSave is refused while the first owns the save barrier" );
+	Check( controller.IsSaving(),
+		"MONEY (t2-overlap): refused overlap does not clear the first save's in-flight barrier" );
 
 	const SceneEditController::AgentCommitResult edit = controller.ApplyAgentParamEdit(
 		String( "mat_emit" ), String( "material" ), String( "scale" ), String( "45.0" ), nullptr );

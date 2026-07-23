@@ -579,7 +579,12 @@ struct PropertiesPanel: View {
         bridge.refreshProperties()
         selectionCategory = bridge.selectionCategory
         selectionName = bridge.selectionName
-        rows = bridge.propertySnapshot().enumerated().map { PropertyRow.from($1, index: $0) }
+        // Read the per-category snapshot just like the Windows inspector.
+        // Animation and Scene Variant intentionally have no legacy
+        // primary PanelMode, but their accordion sections can still expose
+        // descriptor-backed rows.
+        rows = bridge.propertySnapshot(for: selectionCategory)
+            .enumerated().map { PropertyRow.from($1, index: $0) }
 
         // Reset the Advanced disclosure whenever the selected entity's
         // identity changes — otherwise it could stay open showing a
