@@ -1580,7 +1580,13 @@ namespace RISE
 			//!        drive change; skill bytes are not in the hash).  Both
 			//!        change how a build turn is driven; prior cells are not
 			//!        comparable.
-			static const int kEvalMethodologyEpoch = 7;
+			//!   8 -> (2026-07-22) the modeling skill's observe-loop section
+			//!        elevated the LIGHTING render to a "must not skip" case
+			//!        (epoch-7's scenario-based cadence cut renders 6.9->2.8 on
+			//!        gpt and the sole quality cost was the lighting checkpoint
+			//!        -- fewer renders, less lighting correction).  A drive
+			//!        change; prior cells are not comparable.
+			static const int kEvalMethodologyEpoch = 8;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,

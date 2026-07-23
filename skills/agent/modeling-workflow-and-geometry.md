@@ -20,12 +20,21 @@ after each fragment.
 
 **When a render earns its cost** -- reach for one when you have a
 question only a rendered image answers:
+- **LIGHTING is the render you must not skip.**  Of every trigger here,
+  this is the highest-value render on a lit scene: once your lights are
+  in place -- and again whenever you change a light or a material --
+  render and actually CHECK the lit result.  Is it too dark, too bright,
+  or crushed to a single colour (a warm key with no fill reads as an
+  orange blob)?  Brightness and colour balance are visual facts you
+  cannot read off the chunk text, and getting the light wrong is the
+  single most common way a build fails.  Skipping THIS one render to
+  save a call is a false economy -- a scene that is black, blown out, or
+  mono-coloured fails no matter how good the geometry is, and you will
+  not know until you look.  Batch the build cheaply; do not batch away
+  the lighting check.
 - you have just built enough that there is a lit surface to SEE, and
   the first sanity check is due -- is the scene not black, is the hero
   in frame, does the floor exist;
-- you changed LIGHTING or MATERIALS and need the result -- brightness,
-  colour balance, and shadow are visual facts, not derivable from the
-  chunk text;
 - you are UNSURE of a spatial relationship a single mental model cannot
   settle -- is that object behind, inside, or floating above another;
   does the hero actually rest ON the table (depth ambiguity is exactly
