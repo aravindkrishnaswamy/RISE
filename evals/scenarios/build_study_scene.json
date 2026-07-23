@@ -49,7 +49,6 @@
       "noMechanicalLoop": true,
       "requiredToolInOrder": [
         "read_document",
-        "insert_chunk",
         "render"
       ]
     }

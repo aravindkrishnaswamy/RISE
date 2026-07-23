@@ -212,6 +212,37 @@ more convincing but still N=9. Models lit via omni/directional/spot lights
 proven caused by it. **The full board has NOT been re-run at epoch-6** — only
 gpt has; the other rows above are epoch-5 renders re-graded at 4.0.
 
+### 2b. Chattiness fix — batch inserts + scenario-based render skill (2026-07-22, epoch 7)
+
+The digests showed `insert_chunk` (one chunk per call) was ~2/3 of all tool
+calls, so an N-chunk scene cost N LLM round-trips and re-prefilled a
+one-chunk-at-a-time-growing context. Two changes: a batch `insert_chunks` verb,
+and rewriting the observe-loop skill from "render every iteration" to
+scenario-based "render to answer a question." Measured on gpt (epoch-7 vs the
+epoch-6 gpt run):
+
+| gpt-5.6-terra | tool calls | LLM calls | renders/run | meanCkpt |
+|---|---|---|---|---|
+| epoch-6 (no batch, prescriptive skill) | 86 | 142 | 6.9 | 0.91 |
+| epoch-7 (batch + scenario-render) | **30** | **23** | 2.8 | **0.84** |
+
+**A large, real efficiency win — 84% fewer LLM calls, 65% fewer tool calls —
+at a modest quality cost.** gpt *adopted* `insert_chunks` (1.7 batch calls/run,
+building whole scenes in ~2 calls) and *reasoned to a sensible render cadence*
+(2.8/run — down from 6.9, but not zero) — the capability probe passed.
+
+**Attribution, honest.** The raw epoch-7 meanCkpt looked like 0.73, but most of
+that was a MEASUREMENT ARTIFACT: the trajectory checkpoint hard-coded the literal
+`insert_chunk` tool name in `requiredToolInOrder`, so a run that correctly built
+via the new `insert_chunks` verb failed it (perfect correlation: every pure-batch
+run failed `traj`, every run that also called the singular verb passed). Fixed —
+`requiredToolInOrder` is now `[read_document, render]`, verb-agnostic (the ≥3-object
+checkpoint already proves building happened). Re-graded, epoch-7 is **0.84** (3/9
+full passes, `traj` 9/9). The remaining 0.07 gap vs epoch-6 is in the lighting
+checkpoint (render_band 6/9 → 3/9) — fewer renders plausibly means less lighting
+correction, the genuine tradeoff, though at N=9 that 6-vs-3 gap carries real
+uncertainty. Not yet run on the other models.
+
 ---
 
 ## 3. Image→scene reconstruction (vision) — `image_reconstruct` (2026-07-18)
@@ -250,5 +281,5 @@ object+lighting+stage+env; graded by RMSE vs committed references.
 
 ---
 
-_Last updated: 2026-07-22 (lighting arc). Raw runs under `evals/runs/`; runconfigs under
+_Last updated: 2026-07-22 (chattiness fix). Raw runs under `evals/runs/`; runconfigs under
 `evals/runconfigs/`._
