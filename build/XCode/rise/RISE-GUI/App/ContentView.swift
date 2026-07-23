@@ -235,23 +235,28 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    /// The Agent tab: the LLM Chat panel, plus (behind the Developer
-    /// toggle) the raw JSON-RPC Agent debug panel below it.  Wrapped in
-    /// a ScrollView so the fixed-height chat transcript + debug panel
-    /// don't overflow a short window — mirrors the pre-redesign
-    /// controlsPanel's layout of the same two panels.
+    /// The Agent tab: the LLM Chat panel filling the column's FULL
+    /// height, plus (behind the Developer toggle) the raw JSON-RPC
+    /// Agent debug panel at its intrinsic height below.  Deliberately
+    /// NOT wrapped in a ScrollView: inside one, nothing stretches, so
+    /// the panel used to sit at its intrinsic height in the top half of
+    /// the column with dead space beneath.  The transcript inside
+    /// ChatPanel is the flexible element (minHeight 220, maxHeight
+    /// .infinity) and scrolls internally, so the column cannot overflow:
+    /// worst-case fixed content (proposals + 220 transcript floor +
+    /// composer + compact debug panel) stays well inside the window's
+    /// 760pt minimum height.
     private var agentTabBody: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 10) {
-                ChatPanel(chat: viewModel.chat)
+        VStack(alignment: .leading, spacing: 10) {
+            ChatPanel(chat: viewModel.chat)
 
-                if viewModel.showAgentDebugPanel {
-                    Divider()
-                    AgentPanel()
-                }
+            if viewModel.showAgentDebugPanel {
+                Divider()
+                AgentPanel()
             }
-            .padding(10)
         }
+        .padding(10)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: - Center column (viewport / log drawer)

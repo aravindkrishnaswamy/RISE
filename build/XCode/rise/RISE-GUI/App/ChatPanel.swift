@@ -62,7 +62,12 @@ struct ChatPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
             }
-            .frame(minHeight: 220, maxHeight: 420)
+            // The transcript is the FLEXIBLE element of the agent column:
+            // it absorbs all remaining vertical space (agentTabBody gives
+            // the panel the full column height) and scrolls internally.
+            // The old `maxHeight: 420` cap is why the panel once occupied
+            // only the top half of the column.
+            .frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity)
             .background(Theme.bgPanel)
             .onChange(of: chat.transcript.count) { _, _ in
                 if let last = chat.transcript.last {
