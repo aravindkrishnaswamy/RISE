@@ -678,8 +678,10 @@ namespace RISE
 		//! object.  mMutex is a plain (non-recursive) std::mutex, so
 		//! re-entering it from `fn` is an immediate self-deadlock, not a
 		//! stall-and-retry.  Refused (returns false, `fn` NOT invoked) while
-		//! an editor transaction is open -- parking here would stall the
-		//! gesture (same rule as ApplyAgentParamEdit's mTxnOpen refusal).
+		//! an editor transaction/gesture or save is open, or while another
+		//! direct/coordinated render owns the admission gate. Direct renders
+		//! publish that same gate before waiting for mMutex, so UI callbacks
+		//! refuse promptly instead of queuing behind the render-duration hold.
 		//! Returns true iff `fn` ran.
 		bool RunPreviewRenderParked( const std::function<void()>& fn );
 
@@ -687,8 +689,8 @@ namespace RISE
 		//! (including the non-recursive-mMutex / no-reentrancy contract on
 		//! `fn`), plus render-identity bookkeeping -- assigns a fresh
 		//! monotonic RenderJobId, records {id, renderClass, active=true}
-		//! under the SAME mMutex hold this method already takes for the
-		//! cancel-and-park (zero new synchronization), runs `fn`, then
+		//! under mJobStatusMutex after a short admission handshake and the
+		//! cancel-and-park mMutex hold, runs `fn`, then
 		//! marks the job record inactive before returning -- via an RAII
 		//! guard, so `active` is flipped false on EVERY exit, including an
 		//! exception unwinding out of `fn` (a real throw site: `fn` is
@@ -3145,6 +3147,13 @@ namespace RISE
 		// mint loses the race still gets its own clean completion later;
 		// only an UNGUARDED unconditional mint clobbering an ALREADY-
 		// LANDED record was ever the bug.
+		// Serializes the short admission handshake between a long
+		// coordinated/direct render and UI operations that must acquire
+		// mMutex without ever queuing behind that render. Lock order:
+		// mAgentRenderSlotMutex (when present) -> this mutex -> mMutex.
+		// It is never held for the render itself; only until the gate below
+		// is published or the UI gesture/save state is established.
+		mutable std::mutex          mRenderAdmissionMutex;
 		std::atomic<bool>           mAgentRenderBlocksInteractive;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
@@ -3189,8 +3198,8 @@ namespace RISE
 		// destroyed; Stop() joins both before ~SceneEditController runs
 		// the rest of its body).
 		//
-		// THREE locks total on this controller now (mMutex + two below),
-		// each deliberately narrow and single-purpose -- the split is the
+		// The controller's render-coordination locks are deliberately narrow
+		// and single-purpose -- the split is the
 		// fix for TWO real bugs this slice's own concurrency test caught:
 		//
 		//   1. mMutex is held by the worker for the render's WHOLE
@@ -3221,9 +3230,10 @@ namespace RISE
 		//      both ActiveFlipGuards) and every reader, NEVER held across a
 		//      render by anyone.
 		//
-		// Nesting order is the ONLY order used anywhere, so none of the
-		// three locks can deadlock against each other: mAgentRenderSlotMutex
-		// may be held OUTSIDE a brief, nested mMutex or mJobStatusMutex
+		// Nesting order is the ONLY order used anywhere, so these locks
+		// cannot deadlock against each other: mAgentRenderSlotMutex may be
+		// held OUTSIDE a brief, nested mRenderAdmissionMutex + mMutex or
+		// mJobStatusMutex
 		// acquisition (SubmitAgentRenderAsync does both, in that order);
 		// mMutex may be held OUTSIDE a brief, nested mJobStatusMutex
 		// acquisition (RenderLoop, the worker, RunPreviewRenderParked); no
@@ -3244,7 +3254,8 @@ namespace RISE
 		//
 		//   AgentSession::mAsyncCacheMutex
 		//     -> SceneEditController::mAgentRenderSlotMutex
-		//          -> SceneEditController::mMutex           (brief, mAgentRenderBlocksInteractive)
+		//          -> SceneEditController::mRenderAdmissionMutex
+		//               -> SceneEditController::mMutex      (brief, mAgentRenderBlocksInteractive)
 		//          -> SceneEditController::mJobStatusMutex
 		//
 		// (mMutex and mJobStatusMutex are siblings under mAgentRenderSlotMutex,

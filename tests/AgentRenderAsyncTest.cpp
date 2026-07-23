@@ -4691,6 +4691,8 @@ static void RunGestureRenderAdmissionTest()
 	// Render wins: hold its worker after admission but before mMutex. The
 	// begin-side gate checks must refuse promptly in precisely this window.
 	QueuedCancellationSeamController gated( *pJob );
+	Check( gated.SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+	       "z6: two-pane layout is ready for indexed-pointer admission coverage" );
 	SceneEditController::RenderJobId renderId = SceneEditController::kInvalidRenderJobId;
 	std::atomic<bool> renderClosureRan{ false };
 	Check( gated.SubmitAgentRenderAsync(
@@ -4719,14 +4721,26 @@ static void RunGestureRenderAdmissionTest()
 	}
 
 	gated.SetTool( SceneEditController::Tool::OrbitCamera );
+	const Scalar timeBeforeQueuedCallbacks = gated.LastSceneTime();
+	const unsigned int paneBeforeQueuedCallbacks = gated.ForTest_CurrentPane();
 	gated.OnPointerDown( Point2( 9.0, 9.0 ) );
 	Check( !gated.Editor().IsCompositeOpen(),
 	       "MONEY (z6): pointer-down is refused while an admitted render is queued" );
 	gated.OnPointerUp( Point2( 9.0, 9.0 ) );
+	Check( !gated.OnPanePointerDown( 1, Point2( 9.0, 9.0 ) ),
+	       "MONEY (z6): indexed pointer-down is refused before mutating pane state while a render is queued" );
+	Check( gated.ForTest_CurrentPane() == paneBeforeQueuedCallbacks,
+	       "MONEY (z6): a refused indexed pointer-down does not switch the realized pane" );
 	gated.OnTimeScrubBegin();
 	Check( !gated.Editor().IsCompositeOpen(),
 	       "MONEY (z6): timeline scrub begin is refused while an admitted render is queued" );
+	gated.OnTimeScrub( Scalar( 0.75 ) );
+	Check( gated.LastSceneTime() == timeBeforeQueuedCallbacks,
+	       "MONEY (z6): a timeline value callback cannot mutate scene time while an admitted render is queued" );
 	gated.OnTimeScrubEnd();
+	const SaveResult queuedSave = gated.RequestSave( scenePath );
+	Check( queuedSave.status == SaveResult::Status::Refused,
+	       "MONEY (z6): save refuses promptly while a coordinated render owns admission" );
 
 	gated.releaseWorkerGate.store( true, std::memory_order_release );
 	Check( gated.WaitForRenderJob( renderId, 5000 ),
@@ -4746,6 +4760,65 @@ static void RunGestureRenderAdmissionTest()
 	       "z6: the post-render transaction closes cleanly" );
 	if( session ) session->AttachController( nullptr );
 	gated.Stop();
+
+	// Direct camera/film-override renders now publish the same admission
+	// gate. Hold one inside its closure (and therefore across its mMutex
+	// ownership) and prove UI begin/save callbacks fail fast instead of
+	// queueing behind the render and applying after it finishes.
+	SceneEditController direct( *pJob, /*interactiveRasterizer*/0 );
+	std::atomic<bool> directEntered{ false };
+	std::atomic<bool> releaseDirect{ false };
+	std::atomic<bool> directReturned{ false };
+	std::thread directThread( [&] {
+		const bool ran = direct.RunPreviewRenderParked( [&] {
+			directEntered.store( true, std::memory_order_release );
+			while( !releaseDirect.load( std::memory_order_acquire ) )
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		} );
+		directReturned.store( ran, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !directEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( directEntered.load( std::memory_order_acquire ),
+	       "z6: direct parked render is held while it owns the scene" );
+	Check( RunWatchdogged( "timeline begin during direct parked render", 200, [&] {
+		       direct.OnTimeScrubBegin();
+	       } ),
+	       "MONEY (z6): timeline begin does not wait behind a direct parked render" );
+	Check( RunWatchdogged( "timeline value during direct parked render", 200, [&] {
+		       direct.OnTimeScrub( Scalar( 0.9 ) );
+	       } ),
+	       "MONEY (z6): timeline value does not wait behind a direct parked render" );
+	Check( RunWatchdogged( "property begin during direct parked render", 200, [&] {
+		       direct.BeginPropertyScrub();
+	       } ),
+	       "MONEY (z6): property begin does not wait behind a direct parked render" );
+	std::atomic<int> directSaveStatus{ -1 };
+	Check( RunWatchdogged( "save during direct parked render", 200, [&] {
+		       const SaveResult r = direct.RequestSave( scenePath );
+		       directSaveStatus.store( static_cast<int>( r.status ), std::memory_order_release );
+	       } ),
+	       "MONEY (z6): save does not wait behind a direct parked render" );
+	Check( directSaveStatus.load( std::memory_order_acquire )
+	           == static_cast<int>( SaveResult::Status::Refused ),
+	       "MONEY (z6): save reports refusal while a direct parked render owns admission" );
+	releaseDirect.store( true, std::memory_order_release );
+	directThread.join();
+	Check( directReturned.load( std::memory_order_acquire ),
+	       "z6: direct parked render completes after release" );
+	Check( direct.BeginTransaction(),
+	       "MONEY (z6): refused direct-render UI callbacks leave no orphan gesture state" );
+	Check( direct.RollbackTransaction(),
+	       "z6: direct-render post-check transaction closes cleanly" );
+	Check( direct.SubmitAgentRenderSync(
+		       [] {}, String( "post-direct-admission" ), nullptr, 2000 ),
+	       "MONEY (z6): refused property begin leaves no scrub flag after the direct render" );
+	direct.Stop();
 
 	pJob->release();
 	std::remove( scenePath.c_str() );

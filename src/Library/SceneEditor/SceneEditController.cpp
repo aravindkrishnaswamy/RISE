@@ -1699,17 +1699,17 @@ void SceneEditController::OnPointerDown( const Point2& px )
 		return;
 	}
 	{
-		std::unique_lock<std::mutex> lk( mMutex );
-		// Coordinated agent/production admission claims this gate while
-		// holding mMutex. Establish the pointer-down state under that same
-		// lock so exactly one side wins: an already-queued render refuses
-		// the gesture, while an admitted gesture makes the later render
-		// submission refuse until pointer-up closes its composite.
+		// Take the short admission lock BEFORE mMutex and inspect the gate
+		// before attempting the potentially-blocking controller lock.  A
+		// render that already won therefore makes this callback return
+		// promptly; while this lock is held, no new render can claim
+		// admission during the cancel-and-park wait below.
+		std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 		{
-			mGesturePaneArmed = false;
 			return;
 		}
+		std::unique_lock<std::mutex> lk( mMutex );
 		// P3a slice 3: legacy un-indexed input targets pane 0 UNLESS a
 		// pane-indexed Down armed a pane just before forwarding here
 		// (mGesturePaneArmed, consumed exactly once).
@@ -2285,6 +2285,11 @@ void SceneEditController::OnPointerMove( const Point2& px )
 void SceneEditController::OnPointerUp( const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	// Closing mPointerDown is itself an admission transition: without
+	// this lock a render could claim the gate after the false store but
+	// before the pending CST/composite finalization acquired mMutex.
+	std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	(void)px;
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
 	mPointerDown.store( false, std::memory_order_release );
@@ -2392,13 +2397,10 @@ void SceneEditController::OnTimeScrubBegin()
 	// open forever (permanent IsCompositeOpen block + the open group defeats history
 	// trimming).  Mirrors the pointer-gesture orphan guard in OnPointerDown.
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
-		// Same admission handshake as pointer-down: a coordinated render
-		// that already owns the queued/running gate wins and this scrub does
-		// not begin; once this composite opens, render admission sees it
-		// under mMutex and refuses instead.
+		std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 			return;
+		std::lock_guard<std::mutex> lk( mMutex );
 		if( mScrubOpenedComposite ) {
 			mEditor.EndComposite();
 			mScrubOpenedComposite = false;
@@ -2412,6 +2414,12 @@ void SceneEditController::OnTimeScrubBegin()
 void SceneEditController::OnTimeScrub( Scalar t )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
+	// Check before mMutex so a queued or running coordinated render never
+	// turns a UI scrub callback into a render-duration wait.  Holding the
+	// admission lock through the mutation also closes the wait() release
+	// window in which a render could otherwise claim the gate.
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	// Time-scrub mutations cascade through the animator's observer
 	// chain — a keyframed DisplacedGeometry, for example, destroys
 	// its TriangleMeshGeometryIndexed (and the BSP tree inside) and
@@ -2489,6 +2497,8 @@ void SceneEditController::OnTimeScrub( Scalar t )
 
 void SceneEditController::OnTimeScrubEnd()
 {
+	std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	// P1: close only the composite THIS scrub opened -- a stray End with no open scrub
 	// must not under-flow the composite depth.
 	if( mScrubOpenedComposite ) {
@@ -2513,11 +2523,10 @@ void SceneEditController::BeginPropertyScrub()
 	// mPointerDown is false, even though the user's mouse is still
 	// down on the viewport.
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
-		// Property scrubs do not open an EditHistory composite, so publish
-		// their gesture flag under the same admission lock explicitly.
+		std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 			return;
+		std::lock_guard<std::mutex> lk( mMutex );
 		mScrubInProgress.store( true, std::memory_order_release );
 	}
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
@@ -2526,6 +2535,8 @@ void SceneEditController::BeginPropertyScrub()
 
 void SceneEditController::EndPropertyScrub()
 {
+	std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	// Restore full resolution and queue one final render so the
 	// post-scrub frame is sharp.  The render-loop's idle-refinement
 	// pass will further refine on top.  Note: the watchdog in the
@@ -2900,6 +2911,7 @@ bool SceneEditController::BeginTransaction()
 	// Undo() during rollback walks the whole group back PAST the baseline,
 	// consuming the pre-baseline CompositeBegin and corrupting the
 	// surrounding undo history.  A transaction must bracket WHOLE edits.
+	std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
 	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
@@ -2908,15 +2920,6 @@ bool SceneEditController::BeginTransaction()
 		return false;
 	}
 	std::lock_guard<std::mutex> lk( mMutex );
-	// Close the check-to-lock race with a submission that claimed the gate
-	// after the prompt atomic check above but before this mutex acquisition.
-	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-	{
-		GlobalLog()->PrintEx( eLog_Warning,
-			"SceneEditController::BeginTransaction refused: a coordinated "
-			"agent/production render is queued or running." );
-		return false;
-	}
 	if( mEditor.IsCompositeOpen() )
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
@@ -4768,6 +4771,10 @@ bool SceneEditController::RunPreviewRenderParked(
 		return false;
 	}
 
+	// Admission is a short outer lock, not a render-duration lock. It makes
+	// "gate is clear -> acquire mMutex -> publish gate" atomic against UI
+	// gesture/save entry points and the dedicated worker's submit path.
+	std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
 	std::unique_lock<std::mutex> lk( mMutex );
 	// The dedicated agent/production worker claims this gate before it
 	// acquires mMutex. A direct camera/film-override preview must not slip
@@ -4799,6 +4806,23 @@ bool SceneEditController::RunPreviewRenderParked(
 			"SceneEditController: preview render refused while an editor gesture is open." );
 		return false;
 	}
+	if( mSaving.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused while a save is in progress." );
+		return false;
+	}
+	mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+	struct DirectRenderAdmissionGuard
+	{
+		SceneEditController& self;
+		~DirectRenderAdmissionGuard()
+		{
+			self.mAgentRenderBlocksInteractive.store( false, std::memory_order_release );
+			self.mCV.notify_all();
+		}
+	} directAdmissionGuard{ *this };
+	admissionLk.unlock();
 	CancelAndParkRender_( lk );
 
 	RenderJobId jobId;
@@ -5143,11 +5167,24 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		// the exact race this closes (RenderLoop's own mint block
 		// stomping mCurrentRenderJob in the gap between this mint and
 		// the worker actually starting).
+		std::lock_guard<std::mutex> admissionLk( mRenderAdmissionMutex );
 		std::lock_guard<std::mutex> renderLk( mMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused -- another direct/coordinated render has admission." );
+			return false;
+		}
 		if( mTxnOpen.load( std::memory_order_acquire ) )
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
 				"SceneEditController: render submission refused inside an open transaction." );
+			return false;
+		}
+		if( mSaving.load( std::memory_order_acquire ) )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused while a save is in progress." );
 			return false;
 		}
 		if( mPointerDown.load( std::memory_order_acquire )
@@ -6033,6 +6070,14 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	std::unique_ptr<RISE::Cst::Document> documentSnapshot;
 	RISE::FileIdentity loadedFileIdentitySnapshot;
 	{
+		std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+			SaveResult busy;
+			busy.status = SaveResult::Status::Refused;
+			busy.filePath = filePath;
+			busy.errorMessage = "save refused: a render is queued or in progress";
+			return busy;
+		}
 		std::unique_lock<std::mutex> lk( mMutex );
 		// Exactly one save may own this controller. Besides making the
 		// mSaving boolean an honest render barrier, this gives concurrent
@@ -9043,6 +9088,12 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // r2/r4 contract
 	{
+		std::unique_lock<std::mutex> admissionLk( mRenderAdmissionMutex );
+		// Refuse before mMutex and before primary-pane / FreeFly state is
+		// touched.  The lock remains held across the interactive-render
+		// wait so a coordinated render cannot claim the scene mid-handoff.
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return false;
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden/invalid
 
@@ -9114,6 +9165,12 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		// multi-window shell (review-s3 P3, defense-in-depth note).
 		mGesturePane      = pane;
 		mGesturePaneArmed = true;
+		// Publish the gesture exclusion before dropping admission.  The
+		// forwarded legacy OnPointerDown repeats this store, but this first
+		// one prevents a render from slipping into the lock-release handoff:
+		// any submission that wins before the forward sees pointerDown and
+		// refuses, leaving the pane routing intact.
+		mPointerDown.store( true, std::memory_order_release );
 	}
 	OnPointerDown( px );
 	return true;
