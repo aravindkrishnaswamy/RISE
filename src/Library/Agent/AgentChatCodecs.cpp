@@ -1251,12 +1251,28 @@ namespace RISE
 			}
 
 			std::string text;
+			// DISPLAY-LAYER ENRICHMENT (regression fix): reasoning text is a
+			// PARALLEL extraction alongside `text` -- collected here from
+			// every "thinking" content block's "thinking" field, joined by
+			// "\n\n" when the turn carries more than one.  This NEVER
+			// touches the raw echo below (assistantEntryJson splices the
+			// content array VERBATIM, signature and all); it only feeds
+			// ChatParsedResponse::reasoningText / ChatStepResult::reasoningText
+			// for display.
+			std::string reasoningText;
 			std::vector<ChatToolCall> calls;
 			for( std::size_t i = 0; i < content.size(); ++i ) {
 				const JsonValue& block = content.at( i );
 				const std::string type = block.get( "type" ).asString();
 				if( type == "text" ) {
 					text += block.get( "text" ).asString();
+				}
+				else if( type == "thinking" ) {
+					const std::string t = block.get( "thinking" ).asString();
+					if( !t.empty() ) {
+						if( !reasoningText.empty() ) reasoningText += "\n\n";
+						reasoningText += t;
+					}
 				}
 				else if( type == "tool_use" ) {
 					ChatToolCall c;
@@ -1311,8 +1327,8 @@ namespace RISE
 					}
 					calls.push_back( c );
 				}
-				// thinking / other block kinds: not displayed; the raw echo
-				// below preserves them for the provider.
+				// other block kinds (e.g. server_tool_use): not displayed;
+				// the raw echo below preserves them for the provider.
 			}
 
 			const std::string stopReason = root.get( "stop_reason" ).asString();
@@ -1375,6 +1391,8 @@ namespace RISE
 			}
 			out.assistantDisplayText = text;
 			out.step.assistantDisplayText = text;
+			out.reasoningText = reasoningText;
+			out.step.reasoningText = reasoningText;
 
 			// The assistant transcript entry: the content array as a RAW
 			// byte span of the body (verbatim echo -- signatures intact).
@@ -2025,6 +2043,10 @@ namespace RISE
 			}
 			out.assistantDisplayText = text;
 			out.step.assistantDisplayText = text;
+			// DISPLAY-LAYER ENRICHMENT: Gemini exposes no reasoning/thinking
+			// field on the wire (unlike Anthropic's thinking blocks or the
+			// OpenAI-family reasoning/reasoning_content fields) -- reasoningText
+			// stays "" (its default) for every Gemini turn.
 
 			// Raw-span echo of candidates[0].content (verbatim -- preserves
 			// provider-opaque fields such as thought signatures).
@@ -2390,6 +2412,26 @@ namespace RISE
 			}
 
 			const std::string text = JsonObjectContentToText( msg.get( "content" ) );
+
+			// DISPLAY-LAYER ENRICHMENT (regression fix): this ONE codec
+			// serves OpenAI, xAI, and a local/Ollama-style server (see the
+			// class doc), and each names its reasoning field differently --
+			// Ollama's /api/chat-compatible local server emits
+			// `message.reasoning`, xAI emits `message.reasoning_content`.
+			// Prefer `reasoning` when it is a non-empty string, else fall
+			// back to `reasoning_content`; a plain gpt response carries
+			// neither, so reasoningText stays "" (its default) exactly as
+			// documented on ChatStepResult::reasoningText.
+			std::string reasoningText;
+			if( const JsonValue* r = msg.find( "reasoning" ) ) {
+				if( r->isString() && !r->asString().empty() ) reasoningText = r->asString();
+			}
+			if( reasoningText.empty() ) {
+				if( const JsonValue* rc = msg.find( "reasoning_content" ) ) {
+					if( rc->isString() && !rc->asString().empty() ) reasoningText = rc->asString();
+				}
+			}
+
 			std::vector<ChatToolCall> calls;
 			const JsonValue& toolCalls = msg.get( "tool_calls" );
 			if( toolCalls.isArray() ) {
@@ -2506,6 +2548,8 @@ namespace RISE
 			}
 			out.assistantDisplayText = text;
 			out.step.assistantDisplayText = text;
+			out.reasoningText = reasoningText;
+			out.step.reasoningText = reasoningText;
 
 			std::size_t cb = 0, ce = 0, eb = 0, ee = 0, mb = 0, me = 0;
 			if( RawObjectMember( rawBody, 0, "choices", cb, ce ) &&

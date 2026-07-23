@@ -151,6 +151,46 @@ namespace RISE
 			Local
 		};
 
+		//! One tool call's display summary, held on a ToolResults
+		//! ChatTranscriptEntry (see ChatTranscriptEntry::toolSummaries).
+		//! DISPLAY-ONLY -- see the CRITICAL INVARIANT block on
+		//! ChatTranscriptEntry::reasoningText below; none of these fields
+		//! are read by BuildRequest or EstimateContextTokens.
+		struct ChatToolDisplaySummary
+		{
+			std::string name;         //!< the tool name (a JSON-RPC verb), e.g. "insert_chunks"
+			std::string outcomeLine;  //!< the ToolOutcomeLine one-liner for this call (see AgentChatLoop.cpp)
+			std::string argsJson;     //!< the call's arguments, as sent (ChatToolCall::argsJson)
+
+			//! The raw JSON-RPC response ENVELOPE line AddToolResult
+			//! recorded for this call, CAPPED at 8 KB with a
+			//! "...[truncated]" suffix when longer -- a full read_image
+			//! result can carry a large base64 PNG, and this field exists
+			//! for a GUI's "show me the raw result" affordance, not to
+			//! duplicate the wire payload.  ELISION-TRACKING: when
+			//! `carriesImage` is true and a NEWER image supersedes this
+			//! summary's call (the same IMAGE RETENTION rule that rewrites
+			//! the owning entry's rawJson -- see the file header), this
+			//! field is overwritten with the fixed placeholder
+			//! "[image elided -- superseded by a newer render]" and
+			//! `carriesImage` is cleared, at BOTH elision call sites
+			//! (FlushPendingToolResults' older-entry rewrite pass and
+			//! ElideAllLiveImages).  Without this, a summary would keep
+			//! serving a STALE base64 blob after its owning entry's rawJson
+			//! was already elided -- exactly the retained memory / stale
+			//! data the elision exists to avoid.
+			std::string resultJson;
+
+			//! True iff `resultJson` currently holds a LIVE read_image
+			//! base64 result (i.e. ChatToolResultCarriesImage was true for
+			//! this call at flush time) -- mirrors
+			//! ChatTranscriptEntry::carriesLiveImage but scoped to this ONE
+			//! summary rather than the whole entry (an entry can pack
+			//! several calls; only the image-bearing one(s) need tracking).
+			//! Cleared alongside the resultJson rewrite described above.
+			bool        carriesImage = false;
+		};
+
 		//! One transcript entry as the GUI sees it.  `rawJson` is the
 		//! provider-native message this entry contributes to BuildRequest;
 		//! `displayText` is the human-readable extraction.
@@ -190,6 +230,59 @@ namespace RISE
 			//! EstimateContextTokens).  Maintained wherever carriesLiveImage
 			//! / liveUserImageCount change.  0 for entries with no live image.
 			std::size_t imageContentBytes = 0;
+
+			//! ======================================================
+			//! DISPLAY-LAYER ENRICHMENT (regression fix, see below) --
+			//! reasoningText and toolSummaries/ChatToolDisplaySummary.
+			//!
+			//! CRITICAL INVARIANT, stated loudly because it is the entire
+			//! point of these fields existing as SEPARATE members rather
+			//! than being folded into displayText or rawJson: they are
+			//! DISPLAY-ONLY.
+			//!   * rawJson (the wire echo) is NEVER touched by anything
+			//!     that populates these fields -- BuildRequest reads ONLY
+			//!     mTranscript[i].rawJson when assembling `rawEntries`
+			//!     (AgentChatLoop.cpp, the `for` loop right after the
+			//!     empty-transcript / CompactTranscript guards in
+			//!     BuildRequest), so BuildRequest's output is BYTE-
+			//!     IDENTICAL to before this change -- reasoningText and
+			//!     toolSummaries are simply never read on that path.
+			//!   * Nothing in this struct is EVER serialized back to a
+			//!     provider.  A provider's own reasoning representation
+			//!     (an Anthropic thinking block with its signature, an
+			//!     OpenAI-family message.reasoning / reasoning_content
+			//!     field) already rides in rawJson verbatim, byte-
+			//!     preserved, independently of reasoningText -- these
+			//!     fields are a PARALLEL extraction for the GUI to render,
+			//!     not a replacement or a second source of truth for the
+			//!     wire.
+			//!   * EstimateContextTokens (the context-compaction budget
+			//!     estimator) reads ONLY ComposeSystemPrompt(),
+			//!     mCodec->ToolsWireBytes(), and per-entry rawJson /
+			//!     carriesLiveImage / liveUserImageCount / imageContentBytes
+			//!     -- it never reads displayText, reasoningText, or
+			//!     toolSummaries, so populating these fields does not
+			//!     perturb the compaction estimate or trigger point by even
+			//!     one byte.
+			//! ======================================================
+
+			//! Assistant entries only: the model's reasoning/thinking text
+			//! for this turn, extracted by the codec from whichever
+			//! provider-specific field carries it (Anthropic `thinking`
+			//! content blocks; OpenAI-family `message.reasoning` (Ollama)
+			//! or `message.reasoning_content` (xAI)) -- see
+			//! ChatStepResult::reasoningText's doc for the full per-
+			//! provider rule.  "" when the provider exposes no reasoning
+			//! for this turn (every Gemini turn; a plain gpt-family turn;
+			//! any ToolResults/User entry).
+			std::string reasoningText;
+
+			//! ToolResults entries only: a per-call display summary, one
+			//! per element of `ordered` in FlushPendingToolResults
+			//! (pending-call order, synthesized-error results included) --
+			//! see ChatToolDisplaySummary's doc.  Empty for User/Assistant
+			//! entries.
+			std::vector<ChatToolDisplaySummary> toolSummaries;
 		};
 
 		//! The sans-IO chat loop (see the file header for the contract).

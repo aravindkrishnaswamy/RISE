@@ -803,6 +803,10 @@ namespace RISE
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
 				entry.displayText = pr.assistantDisplayText;
+				// DISPLAY-LAYER ENRICHMENT: mirrors displayText <- pr.assistantDisplayText
+				// immediately above -- DISPLAY-ONLY, see the CRITICAL INVARIANT
+				// block on ChatTranscriptEntry::reasoningText (AgentChatLoop.h).
+				entry.reasoningText = pr.reasoningText;
 				entry.rawJson = pr.assistantEntryJson;
 				mTranscript.push_back( entry );
 
@@ -813,6 +817,8 @@ namespace RISE
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
 				entry.displayText = pr.assistantDisplayText;
+				// DISPLAY-LAYER ENRICHMENT: see the tool-call branch above.
+				entry.reasoningText = pr.reasoningText;
 				entry.rawJson = pr.assistantEntryJson;
 				mTranscript.push_back( entry );
 
@@ -954,6 +960,188 @@ namespace RISE
 				FlushPendingToolResults();
 		}
 
+		namespace
+		{
+			//! Back off from byte offset `n` (into `s`) while the byte there
+			//! is a UTF-8 CONTINUATION byte ((b & 0xC0) == 0x80), returning
+			//! the largest cut position <= `n` that does NOT land inside a
+			//! multi-byte codepoint.  SHARED by every byte-count truncation
+			//! in this file -- the 8KB resultJson cap in
+			//! FlushPendingToolResults and ToolOutcomeLine's ~80-char
+			//! message cap below (via TruncateForOutcome) -- so cutting a
+			//! provider- or RPC-supplied string at a fixed byte count can
+			//! never split a multi-byte sequence and emit invalid UTF-8.
+			//! `n >= s.size()` is returned unchanged (nothing to cut); the
+			//! back-off floor is 0 (an empty prefix is always valid UTF-8,
+			//! so a pathological string of nothing but continuation bytes
+			//! degrades safely rather than looping).
+			std::size_t Utf8SafeCutPoint( const std::string& s, std::size_t n )
+			{
+				if( n >= s.size() ) return n;
+				while( n > 0 && ( static_cast<unsigned char>( s[n] ) & 0xC0 ) == 0x80 ) --n;
+				return n;
+			}
+
+			//! Truncate `s` to at most `maxChars` bytes (UTF-8-safe -- see
+			//! Utf8SafeCutPoint), appending "..." when it was longer --
+			//! shared by ToolOutcomeLine's error/rejection arms so a
+			//! runaway provider- or RPC-supplied message string can never
+			//! blow up the one-line outcome summary.
+			std::string TruncateForOutcome( const std::string& s, std::size_t maxChars )
+			{
+				if( s.size() <= maxChars ) return s;
+				return s.substr( 0, Utf8SafeCutPoint( s, maxChars ) ) + "...";
+			}
+
+			//! DISPLAY-LAYER ENRICHMENT: the "read schema tells you nothing"
+			//! fix.  Turns one tool call's raw JSON-RPC response ENVELOPE
+			//! line into a short, deterministic, human-readable one-liner
+			//! for the GUI's transcript row -- e.g. "160x120, luma 0.19" for
+			//! a render, "3/4 applied" for a batch insert.  DISPLAY-ONLY:
+			//! the caller (FlushPendingToolResults) never feeds this string
+			//! back onto the wire.
+			//!
+			//! Deterministic rules, in priority order (mirrors the class's
+			//! design brief exactly -- a parse failure or any shape this
+			//! function does not recognize degrades to a safe generic
+			//! string rather than guessing or crashing):
+			//!   1. A JSON-RPC `error` envelope           -> "error: <msg, <=80 chars>"
+			//!   2. result.status == "rejected"            -> "rejected: <issues[0].reason `param`, or <=80 chars of message>"
+			//!   3. result.status == "conflict"             -> "conflict (stale base)"
+			//!   4. name == "insert_chunks"                 -> "<applied>/<total> applied"
+			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
+			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
+			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
+			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
+			//!   8. anything else                            -> "ok"
+			//! A line that does not parse as a JSON object returns "?".
+			std::string ToolOutcomeLine( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine )
+			{
+				JsonValue env;
+				std::string perr;
+				if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return "?";
+
+				// 1. JSON-RPC error envelope (the dispatcher's -32602/-32001/...
+				// shape, or the loop's own synthesized "not executed" envelope).
+				if( const JsonValue* err = env.find( "error" ) ) {
+					if( err->isObject() ) {
+						return "error: " + TruncateForOutcome( err->get( "message" ).asString(), 80 );
+					}
+				}
+
+				const JsonValue& result = env.get( "result" );
+				const std::string status = result.get( "status" ).asString();
+
+				// 2. Rejected: prefer the first structured issue (matches
+				// insert_chunk/insert_chunks/propose_patch/remove_chunk's
+				// shared {param,value,reason,suggestions} `issues` shape --
+				// see AgentRpc.cpp's IssuesJson); fall back to the free-text
+				// `message` when no issues were attached.
+				if( status == "rejected" ) {
+					const JsonValue& issues = result.get( "issues" );
+					if( issues.isArray() && issues.size() > 0 ) {
+						const JsonValue& first = issues.at( 0 );
+						const std::string reason = first.get( "reason" ).asString();
+						if( !reason.empty() ) {
+							return "rejected: " + reason + " `" + first.get( "param" ).asString() + "`";
+						}
+					}
+					return "rejected: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+				}
+
+				// 3. Conflict: a stale baseHeadVersion precondition -- the
+				// SAME fixed string regardless of verb (insert_chunk/
+				// insert_chunks/propose_patch/remove_chunk all gate this way).
+				if( status == "conflict" ) return "conflict (stale base)";
+
+				// 4. insert_chunks: the batch summary (result.applied is a
+				// COUNT here, not a bool -- distinct from insert_chunk's
+				// per-call boolean of the same name; see AgentRpc.cpp).
+				if( call.name == "insert_chunks" ) {
+					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
+					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
+					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";
+				}
+
+				// 5. A single-chunk mutation that applied cleanly.
+				// propose_patch's result carries no name/kind echo (only
+				// insert_chunk/remove_chunk do, via ChunkResultJson) -- so it
+				// gets the bare "applied" the design brief calls for.
+				if( ( call.name == "insert_chunk" || call.name == "propose_patch" ||
+				      call.name == "remove_chunk" ) && result.get( "applied" ).asBool() ) {
+					if( call.name == "propose_patch" ) return "applied";
+					return "applied: " + result.get( "kind" ).asString() +
+					       " `" + result.get( "name" ).asString() + "`";
+				}
+
+				// 6. render: dimensions + mean luma (unweighted RGB mean, 2dp),
+				// with the render mode annotated when it is anything other
+				// than the default "beauty" (an empty renderMode -- e.g. a
+				// hand-built envelope in a test -- is treated the same as
+				// "beauty": no annotation).
+				if( call.name == "render" ) {
+					const long long w = static_cast<long long>( result.get( "width" ).asNumber() );
+					const long long h = static_cast<long long>( result.get( "height" ).asNumber() );
+					const double luma = ( result.get( "meanR" ).asNumber() +
+					                      result.get( "meanG" ).asNumber() +
+					                      result.get( "meanB" ).asNumber() ) / 3.0;
+					char lumaBuf[32];
+					std::snprintf( lumaBuf, sizeof( lumaBuf ), "%.2f", luma );
+					std::string line = std::to_string( w ) + "x" + std::to_string( h ) + ", luma " + lumaBuf;
+					const std::string mode = result.get( "renderMode" ).asString();
+					if( !mode.empty() && mode != "beauty" ) line += " [" + mode + "]";
+					return line;
+				}
+
+				// 7. read_image / read_viewport: both always carry
+				// width/height (0 when read_viewport has no live frame) --
+				// the "if present" guard is for a hostile/hand-built
+				// envelope (a test fixture, a misbehaving dispatcher) that
+				// omits them entirely rather than the documented RPC shape.
+				if( call.name == "read_image" || call.name == "read_viewport" ) {
+					if( result.has( "width" ) && result.has( "height" ) ) {
+						const long long w = static_cast<long long>( result.get( "width" ).asNumber() );
+						const long long h = static_cast<long long>( result.get( "height" ).asNumber() );
+						return "image " + std::to_string( w ) + "x" + std::to_string( h );
+					}
+					return "ok";
+				}
+
+				// 8. Every other verb (read_document, read_schema, read_skill,
+				// validate, query_object_at, list_proposals, ...): a plain
+				// success with nothing terser to say than "ok".
+				return "ok";
+			}
+
+			//! The text that replaces an elided (superseded) summary result --
+			//! DELIBERATELY the same wording AgentChatCodecs.cpp's
+			//! kImageElidedNote uses for the owning entry's rawJson rewrite
+			//! (that constant is file-local to AgentChatCodecs.cpp, so this
+			//! is a separate literal, not a shared symbol -- keep the two in
+			//! sync by hand if the wording ever changes).
+			const char* const kSummaryImageElidedNote =
+				"[image elided -- superseded by a newer render]";
+
+			//! ELISION CONSISTENCY (see ChatToolDisplaySummary::carriesImage's
+			//! doc): rewrite every image-bearing summary in `summaries` to
+			//! the elided placeholder and clear its flag -- the
+			//! toolSummaries sibling of RewriteElidedImages' rawJson
+			//! rewrite.  Shared by BOTH elision call sites (the
+			//! FlushPendingToolResults older-entry retention pass and
+			//! ElideAllLiveImages) so a summary can never keep serving a
+			//! STALE base64 blob after its owning entry's rawJson has
+			//! already been elided.  A no-op (no-cost early return for the
+			//! common case) when nothing in `summaries` carries an image.
+			void ElideSummaryImages( std::vector<ChatToolDisplaySummary>& summaries )
+			{
+				for( std::size_t i = 0; i < summaries.size(); ++i ) {
+					if( !summaries[i].carriesImage ) continue;
+					summaries[i].resultJson = kSummaryImageElidedNote;
+					summaries[i].carriesImage = false;
+				}
+			}
+		}
+
 		void AgentChatLoop::FlushPendingToolResults()
 		{
 			// No pending turn -> nothing to flush.  (mPendingResults cannot
@@ -979,7 +1167,6 @@ namespace RISE
 			std::vector<std::pair<ChatToolCall, std::string>> ordered;
 			ordered.reserve( mPendingCalls.size() );
 			std::vector<bool> used( mPendingResults.size(), false );
-			std::string names;
 			for( std::size_t i = 0; i < mPendingCalls.size(); ++i ) {
 				std::size_t found = mPendingResults.size();
 				for( std::size_t j = 0; j < mPendingResults.size(); ++j ) {
@@ -988,20 +1175,70 @@ namespace RISE
 						break;
 					}
 				}
-				if( i ) names += ", ";
-				names += mPendingCalls[i].name;
 				if( found < mPendingResults.size() ) {
 					used[found] = true;
 					ordered.push_back( mPendingResults[found] );
 				}
 				else {
-					names += " (not executed)";
+					// ToolOutcomeLine reads this envelope's "error" object and
+					// reports it verbatim ("error: tool call was not executed
+					// ...") -- so the not-executed case needs no separate
+					// name-suffix bookkeeping the way the old "[tool results:
+					// ...]" display string did.
 					ordered.push_back( std::make_pair( mPendingCalls[i],
 					                                   std::string( kUnexecutedEnvelope ) ) );
 				}
 			}
 			// Defensive: mPendingResults can only hold answers to pending
 			// calls (AddToolResult filters), so `ordered` covers everything.
+
+			// DISPLAY-LAYER ENRICHMENT (regression fix): a per-call outcome
+			// one-liner (ToolOutcomeLine) plus a per-call display summary,
+			// built from `ordered` -- i.e. covering exactly the calls that
+			// were packed onto the wire, synthesized "not executed" results
+			// included.  This is what REPLACES the old opaque
+			// "[tool results: name, name]" display string (which told the
+			// user nothing about what actually happened) -- entry.displayText
+			// below joins each "<name> → <outcome>" item (U+2192
+			// RIGHTWARDS ARROW) with a " · " (U+00B7 MIDDLE DOT)
+			// separator, e.g. "insert_chunks → 4/4 applied · render
+			// → 160x120, luma 0.19" -- both emitted as explicit UTF-8
+			// byte-escape literals below (NOT raw source characters) so the
+			// bytes are correct regardless of the compiler's assumed source
+			// encoding (MSVC narrow-literal handling is code-page-dependent
+			// without an explicit /utf-8 flag; escapes sidestep that
+			// entirely on every one of the five build projects).
+			// DISPLAY-ONLY throughout: see the CRITICAL INVARIANT block on
+			// ChatTranscriptEntry::reasoningText in AgentChatLoop.h --
+			// nothing here touches entry.rawJson.
+			std::string joinedOutcome;
+			std::vector<ChatToolDisplaySummary> summaries;
+			summaries.reserve( ordered.size() );
+			static const std::size_t kMaxResultJsonBytes = 8192;
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				const ChatToolCall& c = ordered[i].first;
+				const std::string& raw = ordered[i].second;
+				const std::string outcome = ToolOutcomeLine( c, raw );
+
+				if( i ) joinedOutcome += " \xC2\xB7 ";   // U+00B7 MIDDLE DOT, UTF-8
+				joinedOutcome += c.name + " \xE2\x86\x92 " + outcome;   // U+2192 RIGHTWARDS ARROW, UTF-8
+
+				ChatToolDisplaySummary s;
+				s.name = c.name;
+				s.outcomeLine = outcome;
+				s.argsJson = c.argsJson;
+				s.resultJson = ( raw.size() > kMaxResultJsonBytes )
+					? raw.substr( 0, Utf8SafeCutPoint( raw, kMaxResultJsonBytes ) ) + "...[truncated]"
+					: raw;
+				// ELISION CONSISTENCY (see ChatToolDisplaySummary::carriesImage's
+				// doc): stamp whether THIS summary's resultJson is a live
+				// read_image base64 result, using the SAME predicate the
+				// IMAGE RETENTION pass below uses to decide whether the
+				// owning entry carries an image -- so the two never disagree
+				// about what counts as "image-bearing".
+				s.carriesImage = ChatToolResultCarriesImage( c, raw );
+				summaries.push_back( s );
+			}
 
 			// IMAGE RETENTION (see the header): when this entry packs a NEW
 			// image, elide the image from every older ToolResults entry so
@@ -1025,6 +1262,12 @@ namespace RISE
 					// The entry's live image is gone -- its whole tracked
 					// payload goes with it (see EstimateContextTokens).
 					mTranscript[i].imageContentBytes = 0;
+					// ELISION CONSISTENCY: the display-layer toolSummaries
+					// sibling of the rawJson rewrite just above -- without
+					// this, a summary would keep serving the STALE base64
+					// blob (and the memory it retains) after the owning
+					// entry's rawJson was already elided.
+					ElideSummaryImages( mTranscript[i].toolSummaries );
 					// Eval-harness E1: record the transcript rewrite.
 					if( mRecorder ) {
 						EnsureSessionRecordEmitted();
@@ -1040,7 +1283,8 @@ namespace RISE
 
 			ChatTranscriptEntry entry;
 			entry.role = ChatTranscriptEntry::Role::ToolResults;
-			entry.displayText = "[tool results: " + names + "]";
+			entry.displayText = joinedOutcome;
+			entry.toolSummaries = summaries;
 			entry.rawJson = mCodec->PackToolResults( ordered );
 			entry.carriesLiveImage = carriesImage;
 			if( carriesImage ) {
@@ -1088,6 +1332,9 @@ namespace RISE
 					// The entry's live image is gone -- its whole tracked
 					// payload goes with it (see EstimateContextTokens).
 					e.imageContentBytes = 0;
+					// ELISION CONSISTENCY: see the identical call in
+					// FlushPendingToolResults' older-entry retention pass.
+					ElideSummaryImages( e.toolSummaries );
 					if( mRecorder ) {
 						EnsureSessionRecordEmitted();
 						TrajectoryHistoryEditRecord h;

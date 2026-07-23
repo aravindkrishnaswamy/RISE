@@ -240,6 +240,25 @@ namespace RISE
 			//! ProviderError.
 			std::string               assistantDisplayText;
 
+			//! DISPLAY-LAYER ENRICHMENT (regression fix): the model's
+			//! reasoning/thinking text for THIS turn, extracted from
+			//! whichever PROVIDER-SPECIFIC field carries it -- Anthropic
+			//! `thinking` content blocks (concatenated), OpenAI-family
+			//! `message.reasoning` (Ollama) or `message.reasoning_content`
+			//! (xAI), never Gemini (no reasoning field is exposed).  Filled
+			//! for BOTH ToolCalls and FinalText, mirroring
+			//! assistantDisplayText; "" when the provider exposes none for
+			//! this turn (including every gpt-family response, which
+			//! carries neither field).  DISPLAY-ONLY, like
+			//! assistantDisplayText: this text is NEVER re-serialized onto
+			//! the wire -- the raw echo (assistantEntryJson /
+			//! ChatTranscriptEntry::rawJson) carries the ORIGINAL
+			//! provider-native reasoning representation (e.g. an Anthropic
+			//! thinking block with its signature) byte-identically, so
+			//! replay/signature-verification is completely unaffected by
+			//! this field's existence.  Empty on ProviderError.
+			std::string               reasoningText;
+
 			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY (set ONLY on a
 			//! ProviderError whose errorKind is Http): true when the loop
 			//! detected a text-only model rejecting image content
@@ -285,6 +304,13 @@ namespace RISE
 			ChatStepResult step;
 			std::string    assistantEntryJson;   //!< raw provider-native message entry (verbatim content span)
 			std::string    assistantDisplayText; //!< concatenated text blocks/parts (for display)
+
+			//! Mirrors ChatStepResult::reasoningText (see its doc) -- kept
+			//! alongside assistantDisplayText the same way
+			//! step.assistantDisplayText is kept alongside this struct's own
+			//! assistantDisplayText.  DISPLAY-ONLY; never read by
+			//! assistantEntryJson's construction.
+			std::string    reasoningText;
 		};
 
 		//! The pure provider-codec interface.  Stateless: every method is

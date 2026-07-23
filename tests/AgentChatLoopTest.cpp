@@ -1700,6 +1700,24 @@ static void TestFlushSynthesis( AgentRpcDispatcher& rpc )
 		Check( loop.TranscriptAt( 2 ).role == ChatTranscriptEntry::Role::ToolResults,
 		       "the synthesized results ride BEFORE the new user message" );
 
+		// DISPLAY-LAYER ENRICHMENT regression guard: a synthesized
+		// "not executed" result must be just as legible in the display
+		// layer as a real one -- ToolOutcomeLine reads the synthesized
+		// envelope's "error" object like any other JSON-RPC error.
+		{
+			const ChatTranscriptEntry& synth = loop.TranscriptAt( 2 );
+			Check( synth.toolSummaries.size() == 1,
+			       "T9b: the synthesized ToolResults entry carries one toolSummaries entry" );
+			if( synth.toolSummaries.size() == 1 ) {
+				const std::string& outcome = synth.toolSummaries[0].outcomeLine;
+				Check( outcome.rfind( "error: tool call was not executed", 0 ) == 0,
+				       "T9b: the synthesized call's outcomeLine starts with "
+				       "\"error: tool call was not executed\"" );
+			}
+			Check( synth.displayText.find( "error: tool call was not executed" ) != std::string::npos,
+			       "T9b: the synthesized call's outcome also rides in the entry's displayText" );
+		}
+
 		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
 		const JsonValue& msgs = root.get( "messages" );
 		Check( msgs.isArray() && msgs.size() == 4, "the wire carries all four messages" );
@@ -4590,6 +4608,537 @@ static void TestContextCompaction( AgentRpcDispatcher& rpc )
 	}
 }
 
+//----------------------------------------------------------------------
+// T37: display-layer enrichment -- reasoningText extraction per provider
+//      (the regression fix: local models used to inline <think> into
+//      `content`, which flowed into assistantDisplayText; reasoning has
+//      since moved to provider-specific SEPARATE fields no codec read
+//      for display until now).
+//----------------------------------------------------------------------
+static void TestReasoningExtraction()
+{
+	std::printf( "T37: display-layer enrichment -- reasoningText extraction per provider...\n" );
+
+	// (a) OpenAI-family codec, Ollama wire shape: message.reasoning.
+	{
+		// Run ONE tool-call turn through a FRESH loop, with the assistant
+		// message object carrying `msgExtra` verbatim (a raw JSON
+		// fragment, e.g. ",\"reasoning\":\"...\"", or "" for none).
+		// Returns the assistant entry's reasoningText plus the body of the
+		// NEXT request (after the turn has ridden the wire once, with its
+		// lone pending call synthesized "not executed" -- BuildRequest
+		// flushes it since no AddToolResult is ever called here).
+		struct Turn { std::string reasoningText; std::string nextBody; };
+		auto runTurn = []( const std::string& msgExtra ) -> Turn {
+			AgentChatLoop loop;
+			loop.SetProvider( ChatProvider::OpenAI );
+			loop.AddUserMessage( "build a red sphere" );
+			const std::string body =
+				"{\"id\":\"chatcmpl_r1\",\"choices\":[{\"index\":0,\"message\":{"
+				"\"role\":\"assistant\",\"content\":null" + msgExtra +
+				",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":"
+				"{\"name\":\"render\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}";
+			ChatStepResult st = loop.HandleResponse( 200, body );
+			Check( st.kind == ChatStepResult::Kind::ToolCalls,
+			       "T37a: the reasoning fixture still parses as ToolCalls" );
+			Turn t;
+			t.reasoningText = loop.TranscriptAt( loop.TranscriptSize() - 1 ).reasoningText;
+			t.nextBody = loop.BuildRequest( kApiKey ).body;
+			return t;
+		};
+
+		const Turn bare   = runTurn( "" );
+		const Turn reason = runTurn( ",\"reasoning\":\"planning the scene\"" );
+
+		Check( bare.reasoningText.empty(),
+		       "T37a: no reasoning field on the wire -> reasoningText empty (plain gpt-family control)" );
+		Check( reason.reasoningText == "planning the scene",
+		       "T37a: OpenAI-family (Ollama shape) message.reasoning -> ChatTranscriptEntry::reasoningText" );
+		Check( bare.nextBody.find( "planning the scene" ) == std::string::npos,
+		       "T37a: reasoning text absent from a fixture never appears anywhere on the wire" );
+
+		// The REAL, non-tautological BuildRequest-is-unperturbed guarantee:
+		// bodyReason differs from bodyBare by EXACTLY the raw
+		// ,"reasoning":"..." substring the response itself carried (that
+		// substring was ALREADY part of the byte-preserved assistant
+		// rawJson echo BEFORE this change -- BuildRequest has always
+		// spliced entries verbatim), and NOTHING ELSE changed.  That
+		// proves reasoningText is populated FROM the wire and never
+		// serialized back ONTO it: BuildRequest treats the transcript
+		// entry as an opaque rawJson blob regardless of whether
+		// reasoningText happens to be non-empty.
+		const std::string needle = ",\"reasoning\":\"planning the scene\"";
+		const std::size_t pos = reason.nextBody.find( needle );
+		Check( pos != std::string::npos,
+		       "T37a: the reasoning key/value rides the wire verbatim (pre-existing byte-echo "
+		       "behaviour -- it was already part of the raw provider message)" );
+		std::string reconstructed = reason.nextBody;
+		if( pos != std::string::npos ) reconstructed.erase( pos, needle.size() );
+		Check( reconstructed == bare.nextBody,
+		       "T37a: removing exactly that substring reproduces the reasoning-free request "
+		       "BYTE-FOR-BYTE -- BuildRequest's output is UNPERTURBED by reasoningText's existence" );
+	}
+
+	// (b) xAI wire shape: message.reasoning_content (the SAME OpenAI-
+	// family codec serves xAI -- see AgentChatCodecs.h's OpenAIChatCodec
+	// class doc).
+	{
+		OpenAIChatCodec codec;
+		const std::string body =
+			"{\"id\":\"c\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+			"\"content\":\"Done.\",\"reasoning_content\":\"weighing the options\"},"
+			"\"finish_reason\":\"stop\"}]}";
+		const ChatParsedResponse pr = codec.ParseResponse( 200, body );
+		Check( pr.step.kind == ChatStepResult::Kind::FinalText, "T37b: xAI-shaped fixture parses as FinalText" );
+		Check( pr.reasoningText == "weighing the options",
+		       "T37b: xAI shape (reasoning_content) extracted the same way as Ollama's reasoning field" );
+		Check( pr.step.reasoningText == "weighing the options",
+		       "T37b: ... mirrored onto ChatStepResult::reasoningText" );
+
+		// `reasoning` takes priority over `reasoning_content` when BOTH are
+		// present and non-empty.
+		const std::string both =
+			"{\"id\":\"c\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+			"\"content\":\"Done.\",\"reasoning\":\"primary\",\"reasoning_content\":\"secondary\"},"
+			"\"finish_reason\":\"stop\"}]}";
+		Check( codec.ParseResponse( 200, both ).reasoningText == "primary",
+		       "T37b: message.reasoning wins over message.reasoning_content when both are present" );
+
+		// An EMPTY reasoning string falls back to reasoning_content (the
+		// "whichever is a non-empty string" rule).
+		const std::string emptyReasoning =
+			"{\"id\":\"c\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+			"\"content\":\"Done.\",\"reasoning\":\"\",\"reasoning_content\":\"fallback\"},"
+			"\"finish_reason\":\"stop\"}]}";
+		Check( codec.ParseResponse( 200, emptyReasoning ).reasoningText == "fallback",
+		       "T37b: an empty message.reasoning falls back to reasoning_content" );
+	}
+
+	// (c) Anthropic: a thinking block + a text block -> reasoningText
+	// carries the thinking text; the raw echo still carries the ORIGINAL
+	// thinking block bytes (signature untouched) -- byte-preservation is
+	// unaffected by the new parallel extraction (mirrors T5's
+	// TestVerbatimEcho, extended to also check reasoningText).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "Think about the scene" );
+
+		const std::string content =
+			"[{\"type\":\"thinking\",\"thinking\":\"The sphere's albedo is grey; plan: recolor.\","
+			"\"signature\":\"EqQBCkYIAhABGAIiQPd8kZzXqm5S1==\"},"
+			"{\"type\":\"text\",\"text\":\"I have a plan.\"}]";
+		const std::string fx = AnthropicFixture( content, "end_turn" );
+
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::FinalText, "T37c: thinking+text end_turn -> FinalText" );
+		Check( st.reasoningText == "The sphere's albedo is grey; plan: recolor.",
+		       "T37c: Anthropic thinking block -> ChatStepResult::reasoningText" );
+		Check( loop.TranscriptAt( 1 ).reasoningText == "The sphere's albedo is grey; plan: recolor.",
+		       "T37c: ... and mirrored onto the assistant ChatTranscriptEntry" );
+		Check( loop.TranscriptAt( 1 ).rawJson.find( "EqQBCkYIAhABGAIiQPd8kZzXqm5S1==" ) != std::string::npos,
+		       "T37c: the thinking block's opaque signature survives verbatim in rawJson" );
+		Check( loop.TranscriptAt( 1 ).rawJson.find( content ) != std::string::npos,
+		       "T37c: the WHOLE thinking block rides byte-identical in rawJson "
+		       "(the extraction is parallel, not a rewrite)" );
+
+		// Multiple thinking blocks in one turn join with "\n\n".
+		AgentChatLoop loop2;
+		loop2.SetProvider( ChatProvider::Anthropic );
+		loop2.AddUserMessage( "Think more" );
+		const std::string content2 =
+			"[{\"type\":\"thinking\",\"thinking\":\"First idea.\",\"signature\":\"sigA\"},"
+			"{\"type\":\"thinking\",\"thinking\":\"Second idea.\",\"signature\":\"sigB\"},"
+			"{\"type\":\"text\",\"text\":\"Combined plan.\"}]";
+		ChatStepResult st2 = loop2.HandleResponse( 200, AnthropicFixture( content2, "end_turn" ) );
+		Check( st2.reasoningText == "First idea.\n\nSecond idea.",
+		       "T37c: multiple thinking blocks in one turn join with \\n\\n" );
+
+		// A thinking block ALONGSIDE a tool_use in the SAME turn (stop_reason
+		// "tool_use", not "end_turn") -- reasoningText must be extracted on
+		// the TOOL-CALL path too, not just the end-of-turn FinalText path
+		// exercised above; the raw echo still carries the original thinking
+		// block bytes (signature untouched) alongside the tool_use block.
+		AgentChatLoop loop3;
+		loop3.SetProvider( ChatProvider::Anthropic );
+		loop3.AddUserMessage( "Think, then render" );
+		const std::string content3 =
+			"[{\"type\":\"thinking\",\"thinking\":\"I should render to check the framing.\","
+			"\"signature\":\"sigToolCall\"},"
+			"{\"type\":\"tool_use\",\"id\":\"toolu_think1\",\"name\":\"render\",\"input\":{}}]";
+		ChatStepResult st3 = loop3.HandleResponse( 200, AnthropicFixture( content3, "tool_use" ) );
+		Check( st3.kind == ChatStepResult::Kind::ToolCalls,
+		       "T37c: thinking+tool_use under stop_reason tool_use -> ToolCalls (not FinalText)" );
+		Check( st3.reasoningText == "I should render to check the framing.",
+		       "T37c: reasoningText is extracted on the TOOL-CALL path too, not just end_turn" );
+		Check( loop3.TranscriptAt( 1 ).reasoningText == "I should render to check the framing.",
+		       "T37c: ... and mirrored onto the assistant ChatTranscriptEntry on the tool-call path" );
+		Check( loop3.TranscriptAt( 1 ).rawJson.find( "sigToolCall" ) != std::string::npos,
+		       "T37c: the thinking block's signature survives verbatim in rawJson "
+		       "alongside the tool_use block" );
+		Check( loop3.TranscriptAt( 1 ).rawJson.find( content3 ) != std::string::npos,
+		       "T37c: the WHOLE content array (thinking + tool_use) rides byte-identical in rawJson" );
+	}
+
+	// (d) Gemini: reasoningText is always "" (no reasoning field is
+	// exposed on the wire) -- both on a ToolCalls turn and a FinalText turn.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "render it" );
+		ChatStepResult st = loop.HandleResponse( 200, GeminiFixture(
+			"{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"render\",\"args\":{}}}]}",
+			"STOP" ) );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls, "T37d: gemini tool-call fixture parses" );
+		Check( st.reasoningText.empty(), "T37d: gemini ToolCalls turn -> reasoningText always empty" );
+		Check( loop.TranscriptAt( loop.TranscriptSize() - 1 ).reasoningText.empty(),
+		       "T37d: ... and the transcript entry too" );
+
+		AgentChatLoop loop2;
+		loop2.SetProvider( ChatProvider::Gemini );
+		loop2.AddUserMessage( "describe it" );
+		ChatStepResult st2 = loop2.HandleResponse( 200, GeminiFixture(
+			"{\"role\":\"model\",\"parts\":[{\"text\":\"A red sphere.\"}]}", "STOP" ) );
+		Check( st2.kind == ChatStepResult::Kind::FinalText, "T37d: gemini text fixture parses" );
+		Check( st2.reasoningText.empty(), "T37d: gemini FinalText turn -> reasoningText always empty" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T38: tool outcome one-liners (ToolOutcomeLine, exercised indirectly via
+//      AddToolResult/FlushPendingToolResults since it is a FILE-LOCAL
+//      helper in AgentChatLoop.cpp) + the per-call display summaries
+//      (ChatTranscriptEntry::toolSummaries) that replace the old opaque
+//      "[tool results: name, name]" display string.
+//----------------------------------------------------------------------
+static void TestToolOutcomeDisplay()
+{
+	std::printf( "T38: tool outcome one-liners + per-call display summaries...\n" );
+
+	// Run a SINGLE tool-call turn (fixed id "t1") through a fresh
+	// Anthropic loop, answer it with the hand-crafted `resultLine`, and
+	// return the resulting ToolResults transcript entry -- the flush
+	// happens automatically once the lone pending call is answered.
+	auto oneCallFlush = []( const std::string& toolName, const std::string& resultLine ) -> ChatTranscriptEntry {
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "do it" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"" + toolName + "\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != 1 ) {
+			Check( false, "T38: expected exactly one pending call" );
+			return ChatTranscriptEntry();
+		}
+		loop.AddToolResult( st.toolCalls[0], resultLine );   // flushes immediately (1 of 1 answered)
+		return loop.TranscriptAt( loop.TranscriptSize() - 1 );
+	};
+
+	// (a) rejected with a structured issue -> "rejected: <reason> `<param>`".
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "propose_patch",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":false,\"status\":\"rejected\","
+			"\"message\":\"could not resolve\",\"issues\":[{\"param\":\"reflectance\",\"value\":\"pnt_x\","
+			"\"reason\":\"unresolved_reference\",\"suggestions\":[]}]}}" );
+		Check( e.toolSummaries.size() == 1, "T38a: one call -> one summary" );
+		Check( e.toolSummaries[0].outcomeLine == "rejected: unresolved_reference `reflectance`",
+		       "T38a: rejected-with-issues -> \"rejected: <reason> `<param>`\"" );
+		Check( e.displayText == "propose_patch \xE2\x86\x92 rejected: unresolved_reference `reflectance`",
+		       "T38a: displayText mirrors the single outcome line as \"name \\u2192 outcome\"" );
+	}
+
+	// (b) rejected with NO issues -> falls back to the free-text message.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "propose_patch",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":false,\"status\":\"rejected\","
+			"\"message\":\"target does not resolve\"}}" );
+		Check( e.toolSummaries[0].outcomeLine == "rejected: target does not resolve",
+		       "T38b: rejected with no issues -> the free-text message" );
+	}
+
+	// (c) conflict -> the fixed "conflict (stale base)" string.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunk",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":false,\"status\":\"conflict\"}}" );
+		Check( e.toolSummaries[0].outcomeLine == "conflict (stale base)",
+		       "T38c: status conflict -> the fixed \"conflict (stale base)\" string" );
+	}
+
+	// (d) insert_chunks batch summary.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunks",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":3,\"total\":4,\"results\":[]}}" );
+		Check( e.toolSummaries[0].outcomeLine == "3/4 applied",
+		       "T38d: insert_chunks -> \"<applied>/<total> applied\"" );
+	}
+
+	// (e) insert_chunk applied cleanly -> "applied: <kind> `<name>`".
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunk",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\","
+			"\"kind\":\"sphere_geometry\",\"name\":\"sph\"}}" );
+		Check( e.toolSummaries[0].outcomeLine == "applied: sphere_geometry `sph`",
+		       "T38e: insert_chunk applied -> \"applied: <kind> `<name>`\"" );
+	}
+
+	// (f) propose_patch applied cleanly -> bare "applied" (no kind/name echo
+	// on this verb's result shape).
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "propose_patch",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\"}}" );
+		Check( e.toolSummaries[0].outcomeLine == "applied",
+		       "T38f: propose_patch applied -> bare \"applied\" (no kind/name on this verb)" );
+	}
+
+	// (g) render: dimensions + 2dp mean luma, with/without a non-default
+	// renderMode annotation.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":160,\"height\":120,"
+			"\"meanR\":0.1,\"meanG\":0.2,\"meanB\":0.27}}" );
+		Check( e.toolSummaries[0].outcomeLine == "160x120, luma 0.19",
+		       "T38g: render -> \"<w>x<h>, luma <2dp mean>\"" );
+
+		const ChatTranscriptEntry e2 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":64,\"height\":64,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,\"renderMode\":\"draft\"}}" );
+		Check( e2.toolSummaries[0].outcomeLine == "64x64, luma 0.00 [draft]",
+		       "T38g: a non-\"beauty\" renderMode is annotated" );
+
+		const ChatTranscriptEntry e3 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":64,\"height\":64,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,\"renderMode\":\"beauty\"}}" );
+		Check( e3.toolSummaries[0].outcomeLine == "64x64, luma 0.00",
+		       "T38g: renderMode \"beauty\" is NOT annotated (the default)" );
+	}
+
+	// (h) read_image / read_viewport -> "image <w>x<h>".
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "read_image",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"png_base64\":\"\",\"byteLength\":0,"
+			"\"width\":64,\"height\":48}}" );
+		Check( e.toolSummaries[0].outcomeLine == "image 64x48",
+		       "T38h: read_image -> \"image <w>x<h>\"" );
+
+		const ChatTranscriptEntry e2 = oneCallFlush( "read_viewport",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"available\":false,\"reason\":\"no_frame_yet\","
+			"\"png_base64\":\"\",\"byteLength\":0,\"width\":0,\"height\":0}}" );
+		Check( e2.toolSummaries[0].outcomeLine == "image 0x0",
+		       "T38h: read_viewport reports its (0x0) dimensions even when unavailable "
+		       "(width/height are PRESENT, just zero)" );
+	}
+
+	// (i) an unrecognized/unlisted verb -> the generic "ok".
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "list_proposals",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"proposals\":[]}}" );
+		Check( e.toolSummaries[0].outcomeLine == "ok",
+		       "T38i: an unrecognized verb's clean result -> the generic \"ok\"" );
+	}
+
+	// (j) a JSON-RPC error envelope -> "error: <message>", truncated at 80
+	// chars (+"...") when the message is longer.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunk",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32602,"
+			"\"message\":\"Invalid params: 'chunkText' (string) is required\"}}" );
+		Check( e.toolSummaries[0].outcomeLine ==
+		       "error: Invalid params: 'chunkText' (string) is required",
+		       "T38j: a JSON-RPC error envelope -> \"error: <message>\"" );
+
+		const std::string longMsg( 200, 'z' );
+		const ChatTranscriptEntry eLong = oneCallFlush( "insert_chunk",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"" + longMsg + "\"}}" );
+		const std::string outcome = eLong.toolSummaries[0].outcomeLine;
+		Check( outcome.size() == std::string( "error: " ).size() + 80 + 3,
+		       "T38j: an over-80-char error message is truncated to 80 chars + \"...\"" );
+		Check( outcome.substr( 0, 7 ) == "error: " && outcome.substr( outcome.size() - 3 ) == "...",
+		       "T38j: the truncated outcome carries the \"error: \" prefix and \"...\" suffix" );
+	}
+
+	// (j2) UTF-8-SAFE TRUNCATION (P2 fix 2) on the SAME 80-char error-
+	// message cap: a multi-byte UTF-8 character straddling the cut
+	// boundary is dropped WHOLE, never split mid-byte.
+	{
+		// 79 ASCII bytes, then a 4-byte emoji starting at byte offset 79 --
+		// so the raw cut point (80) lands on the emoji's SECOND byte (a
+		// continuation byte).
+		const std::string emoji = "\xF0\x9F\x98\x80";   // U+1F600, 4 bytes
+		const std::string msg = std::string( 79, 'a' ) + emoji + std::string( 20, 'b' );
+		Check( ( static_cast<unsigned char>( msg[80] ) & 0xC0 ) == 0x80,
+		       "T38j2: sanity -- byte 80 of the fixture IS a UTF-8 continuation byte" );
+
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunk",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"" + msg + "\"}}" );
+		const std::string& outcome = e.toolSummaries[0].outcomeLine;
+		Check( outcome == "error: " + std::string( 79, 'a' ) + "...",
+		       "T38j2: the straddling emoji is dropped WHOLE (79 'a's, not 79 'a's + a partial byte), "
+		       "leaving the retained prefix valid UTF-8" );
+	}
+
+	// (k) a line that does not parse as JSON at all -> the safe "?" fallback.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunk", "not even json" );
+		Check( e.toolSummaries[0].outcomeLine == "?",
+		       "T38k: an unparseable JSON-RPC line -> the safe \"?\" fallback" );
+	}
+
+	// (l) two calls in one turn: displayText joins both outcome lines with
+	// " . " (middle dot), toolSummaries.size() == 2, and argsJson carries
+	// each call's OWN original arguments (not the result).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "insert then render" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"insert_chunks\",\"input\":{}},"
+			"{\"type\":\"tool_use\",\"id\":\"t2\",\"name\":\"render\",\"input\":{\"width\":160}}]",
+			"tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.toolCalls.size() == 2, "T38l: two pending calls" );
+		if( st.toolCalls.size() != 2 ) return;
+
+		loop.AddToolResult( st.toolCalls[0],
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":4,\"total\":4,\"results\":[]}}" );
+		Check( loop.TranscriptSize() == 2, "T38l: one of two answered -> no flush yet" );
+		loop.AddToolResult( st.toolCalls[1],
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"width\":160,\"height\":120,"
+			"\"meanR\":0.1,\"meanG\":0.2,\"meanB\":0.27}}" );
+		Check( loop.TranscriptSize() == 3, "T38l: answering the second call flushes" );
+
+		const ChatTranscriptEntry& e = loop.TranscriptAt( 2 );
+		Check( e.role == ChatTranscriptEntry::Role::ToolResults, "T38l: the flushed entry is ToolResults" );
+		Check( e.displayText ==
+		       "insert_chunks \xE2\x86\x92 4/4 applied \xC2\xB7 render \xE2\x86\x92 160x120, luma 0.19",
+		       "T38l: TWO outcomes join with \" \\u00b7 \" (middle dot), each \"name \\u2192 outcome\"" );
+		Check( e.toolSummaries.size() == 2, "T38l: two calls -> two toolSummaries" );
+		Check( e.toolSummaries[0].name == "insert_chunks" && e.toolSummaries[0].outcomeLine == "4/4 applied",
+		       "T38l: summary[0] matches the first call" );
+		Check( e.toolSummaries[1].name == "render" && e.toolSummaries[1].outcomeLine == "160x120, luma 0.19",
+		       "T38l: summary[1] matches the second call" );
+		Check( e.toolSummaries[1].argsJson.find( "\"width\":160" ) != std::string::npos,
+		       "T38l: argsJson carries the call's ORIGINAL arguments (not the result)" );
+	}
+
+	// (m) resultJson capping: a >8KB raw response line is capped at 8192
+	// bytes with a "...[truncated]" suffix; a short one rides unmodified.
+	{
+		const std::string kSuffix = "...[truncated]";
+		const std::string bigMessage( 9000, 'q' );
+		const std::string bigLine =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"status\":\"rejected\",\"message\":\"" +
+			bigMessage + "\"}}";
+		Check( bigLine.size() > 8192, "T38m: sanity -- the crafted line exceeds the 8KB cap" );
+		const ChatTranscriptEntry e = oneCallFlush( "propose_patch", bigLine );
+		const std::string& capped = e.toolSummaries[0].resultJson;
+		Check( capped.size() == 8192 + kSuffix.size(),
+		       "T38m: resultJson is capped at 8192 bytes + the \"...[truncated]\" suffix" );
+		Check( capped.substr( 0, 8192 ) == bigLine.substr( 0, 8192 ),
+		       "T38m: the retained prefix is byte-identical to the raw line" );
+		Check( capped.substr( capped.size() - kSuffix.size() ) == kSuffix,
+		       "T38m: the cap suffix is exactly \"...[truncated]\"" );
+
+		const std::string shortLine =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"status\":\"applied\",\"applied\":true}}";
+		const ChatTranscriptEntry e2 = oneCallFlush( "propose_patch", shortLine );
+		Check( e2.toolSummaries[0].resultJson == shortLine,
+		       "T38m: a result under the cap rides UNMODIFIED (no spurious truncation)" );
+	}
+
+	// (n) ELISION CONSISTENCY (P2 fix 1): a second image-bearing flush
+	// elides the FIRST entry's rawJson AND toolSummaries -- the older
+	// summary must not keep serving the stale base64 blob (or the memory
+	// it retains) after its owning entry has been elided.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "read image one" );
+		ChatStepResult st1 = loop.HandleResponse( 200, AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"img1\",\"name\":\"read_image\",\"input\":{}}]",
+			"tool_use" ) );
+		Check( st1.toolCalls.size() == 1, "T38n: first read_image call pending" );
+		if( st1.toolCalls.size() != 1 ) return;
+		const std::string firstB64Line =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"png_base64\":\"Zmlyc3RpbWFnZQ==\","
+			"\"byteLength\":9,\"width\":8,\"height\":8}}";
+		loop.AddToolResult( st1.toolCalls[0], firstB64Line );   // flushes -> transcript index 2
+
+		Check( loop.TranscriptAt( 2 ).carriesLiveImage, "T38n: the first entry carries a live image" );
+		Check( loop.TranscriptAt( 2 ).toolSummaries.size() == 1 &&
+		       loop.TranscriptAt( 2 ).toolSummaries[0].carriesImage,
+		       "T38n: the first entry's summary is stamped carriesImage" );
+		Check( loop.TranscriptAt( 2 ).toolSummaries[0].resultJson == firstB64Line,
+		       "T38n: the first entry's summary resultJson initially holds the real base64 result" );
+
+		loop.AddUserMessage( "now read image two" );
+		ChatStepResult st2 = loop.HandleResponse( 200, AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"img2\",\"name\":\"read_image\",\"input\":{}}]",
+			"tool_use" ) );
+		Check( st2.toolCalls.size() == 1, "T38n: second read_image call pending" );
+		if( st2.toolCalls.size() != 1 ) return;
+		const std::string secondB64Line =
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"png_base64\":\"c2Vjb25kaW1hZ2U=\","
+			"\"byteLength\":10,\"width\":8,\"height\":8}}";
+		loop.AddToolResult( st2.toolCalls[0], secondB64Line );   // flushes -> supersedes entry index 2
+
+		Check( !loop.TranscriptAt( 2 ).carriesLiveImage,
+		       "T38n: the OLDER entry's carriesLiveImage is cleared once superseded" );
+		Check( loop.TranscriptAt( 2 ).toolSummaries.size() == 1,
+		       "T38n: the older entry still carries exactly one summary" );
+		Check( !loop.TranscriptAt( 2 ).toolSummaries[0].carriesImage,
+		       "T38n: the older entry's summary carriesImage is cleared too" );
+		Check( loop.TranscriptAt( 2 ).toolSummaries[0].resultJson ==
+		       "[image elided -- superseded by a newer render]",
+		       "T38n: the older entry's summary resultJson became the elision placeholder "
+		       "(no longer the stale base64 blob)" );
+
+		// The NEWER entry's summary is untouched -- still carries its own
+		// real image (only the OLDER, superseded entry is rewritten).
+		const std::size_t newEntryIdx = loop.TranscriptSize() - 1;
+		Check( loop.TranscriptAt( newEntryIdx ).carriesLiveImage,
+		       "T38n: the newer entry still carries the live image" );
+		Check( loop.TranscriptAt( newEntryIdx ).toolSummaries.size() == 1 &&
+		       loop.TranscriptAt( newEntryIdx ).toolSummaries[0].carriesImage &&
+		       loop.TranscriptAt( newEntryIdx ).toolSummaries[0].resultJson == secondB64Line,
+		       "T38n: the newer entry's summary keeps its REAL base64 result untouched" );
+	}
+
+	// (o) UTF-8-SAFE TRUNCATION (P2 fix 2) on the 8KB resultJson cap: a
+	// multi-byte UTF-8 character straddling the cap boundary is dropped
+	// WHOLE (never split mid-byte), so the retained prefix stays valid
+	// UTF-8.
+	{
+		const std::string prefix = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"status\":\"rejected\",\"message\":\"";
+		const std::string suffix = "\"}}";
+		const std::string emoji = "\xF0\x9F\x98\x80";   // U+1F600, 4 bytes: lead + 3 continuation
+		// Place `emoji` so its FIRST byte sits at absolute offset 8191 --
+		// the raw cap boundary (8192) then lands on the emoji's SECOND
+		// byte (a continuation byte).
+		const std::size_t emojiStart = 8191;
+		Check( emojiStart > prefix.size(), "T38o: sanity -- filler length is non-negative" );
+		const std::string filler( emojiStart - prefix.size(), 'a' );
+		const std::string bigLine = prefix + filler + emoji + std::string( 200, 'b' ) + suffix;
+		Check( bigLine.size() > 8192, "T38o: sanity -- the crafted line exceeds the 8KB cap" );
+		Check( ( static_cast<unsigned char>( bigLine[8192] ) & 0xC0 ) == 0x80,
+		       "T38o: sanity -- byte 8192 of the fixture IS a UTF-8 continuation byte "
+		       "(the fixture really straddles the cap boundary)" );
+
+		const ChatTranscriptEntry e = oneCallFlush( "propose_patch", bigLine );
+		const std::string kSuffix = "...[truncated]";
+		const std::string& capped = e.toolSummaries[0].resultJson;
+		Check( capped.size() < 8192 + kSuffix.size(),
+		       "T38o: the UTF-8-safe cut backs off SHORT of the raw 8192-byte boundary" );
+		const std::string retained = capped.substr( 0, capped.size() - kSuffix.size() );
+		Check( retained == bigLine.substr( 0, emojiStart ),
+		       "T38o: the retained prefix ends exactly before the straddling emoji -- "
+		       "the WHOLE partial multi-byte sequence is dropped, not split" );
+		Check( !retained.empty() &&
+		       ( static_cast<unsigned char>( retained.back() ) & 0xC0 ) != 0x80,
+		       "T38o: the retained prefix's last byte is never a UTF-8 continuation byte" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -4644,6 +5193,8 @@ int main()
 	TestReasoningEffortRetry();
 	TestContextBudgetEstimator();
 	TestContextCompaction( rpc );
+	TestReasoningExtraction();
+	TestToolOutcomeDisplay();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );
