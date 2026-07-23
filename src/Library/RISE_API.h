@@ -3441,8 +3441,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		                                   ///< Heterogeneous read-only)
 		SceneEditCategory_Animation  = 8,  ///< Named animations (Category::Animation)
 		SceneEditCategory_SceneVariant = 9,///< scene_variant overlays (Category::SceneVariant)
-		SceneEditCategory_Painter   = 10   ///< Painters (union of the IPainter + IScalarPainter
+		SceneEditCategory_Painter   = 10,  ///< Painters (union of the IPainter + IScalarPainter
 		                                   ///< managers; Category::Painter)
+		SceneEditCategory_Geometry  = 11   ///< Geometry (IGeometryManager; every "*_geometry" chunk;
+		                                   ///< Category::Geometry -- GUI redesign 2026-07-22)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -4061,6 +4063,23 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_PropertyUnitLabel(
 		SceneEditController* p, unsigned int idx,
 		char* buf, unsigned int bufLen );
+
+	//! Jump-to-definition (GUI redesign, 2026-07-22): for a Reference-kind
+	//! row whose value names another element, resolve which UI category
+	//! that element lives in (probing the descriptor's declared target
+	//! categories against the live managers, first-wins).  On success
+	//! writes the SceneEditCategory to `outCategory` and the element name
+	//! to `nameBuf`, so the shell can _SetSelection(outCategory, name) --
+	//! the "right-click a reference -> jump to its definition" affordance.
+	//! False for non-Reference rows, empty values, or dangling references
+	//! (shells grey the menu item).  The ForCategory twin indexes the
+	//! per-category snapshot, same convention as every accessor pair here.
+	bool RISE_API_SceneEditController_PropertyJumpTarget(
+		SceneEditController* p, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen );
+	bool RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+		SceneEditController* p, int category, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen );
 
 	//! Apply an edited value.  Triggers a re-render via the
 	//! cancel-restart loop.  Returns false on parse failure,

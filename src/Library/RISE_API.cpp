@@ -8273,6 +8273,42 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_PropertyJumpTarget(
+		SceneEditController* p, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen )
+	{
+		if( !p || !outCategory || !nameBuf || nameBufLen == 0 ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name;
+		if( !p->PropertyJumpTarget( idx, cat, name ) ) return false;
+		// External-review P2 (2026-07-22): the name is a LOOKUP KEY the shell
+		// feeds back to setSelection -- a silent truncation (CopyToBuf) would
+		// jump to a non-existent prefix.  Refuse rather than mis-navigate; the
+		// shells then hide the menu item.  (strlen, not String::size(), so the
+		// fit test is byte-exact against CopyToBuf's `i + 1 < bufLen` bound.)
+		if( strlen( name.c_str() ) >= nameBufLen ) return false;
+		*outCategory = static_cast<int>( cat );
+		CopyToBuf( name, nameBuf, nameBufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+		SceneEditController* p, int category, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen )
+	{
+		if( !p || !outCategory || !nameBuf || nameBufLen == 0 ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name;
+		if( !p->PropertyJumpTargetFor(
+				static_cast<SceneEditController::Category>( category ), idx, cat, name ) ) return false;
+		// Same truncation guard as the non-categorized twin above -- the name
+		// is a lookup key; refuse rather than jump to a truncated prefix.
+		if( strlen( name.c_str() ) >= nameBufLen ) return false;
+		*outCategory = static_cast<int>( cat );
+		CopyToBuf( name, nameBuf, nameBufLen );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_SetProperty(
 		SceneEditController* p, const char* name, const char* valueStr )
 	{

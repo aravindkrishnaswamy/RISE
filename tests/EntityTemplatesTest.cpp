@@ -21,7 +21,7 @@
 //        new path: both ApplyAgentParamEdit directly and the
 //        SetSelection + SetProperty(Category::Painter) GUI-facing path
 //        mutate the CST chunk's `color` parameter, verified by re-reading
-//        it through PainterIntrospection::Inspect.
+//        it through CstIntrospection::Inspect (generic descriptor+CST rows).
 //
 //  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes, OIDN off,
 //  no render pass is ever started (SceneEditController's cancel-and-park
@@ -50,7 +50,7 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
-#include "../src/Library/SceneEditor/PainterIntrospection.h"
+#include "../src/Library/SceneEditor/CstIntrospection.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -315,7 +315,7 @@ namespace
 
 		{
 			const std::vector<CameraProperty> rows =
-				PainterIntrospection::Inspect( pJob->GetCstDocument(), String( "pnt_albedo" ) );
+				CstIntrospection::Inspect( pJob->GetCstDocument(), *pJob, String( "pnt_albedo" ), "painter", "Painter chunk keyword" );
 			bool found = false;
 			for( const CameraProperty& row : rows )
 			{
@@ -323,12 +323,12 @@ namespace
 				{
 					found = true;
 					Check( std::string( row.value.c_str() ) == "0.25 0.25 0.25",
-						"PainterIntrospection sees the edited color value (got `" + std::string( row.value.c_str() ) + "`)" );
+						"CstIntrospection sees the edited color value (got `" + std::string( row.value.c_str() ) + "`)" );
 				}
 			}
-			Check( found, "PainterIntrospection::Inspect surfaces a `color` row for uniformcolor_painter" );
+			Check( found, "CstIntrospection::Inspect surfaces a `color` row for uniformcolor_painter" );
 			Check( !rows.empty() && std::string( rows[0].name.c_str() ) == "type" && !rows[0].editable,
-				"PainterIntrospection::Inspect's leading row is a read-only `type` identity row" );
+				"CstIntrospection::Inspect's leading row is a read-only `type` identity row" );
 		}
 
 		// Path B: the GUI-facing SetSelection + SetProperty(Category::Painter)
@@ -338,7 +338,7 @@ namespace
 
 		{
 			const std::vector<CameraProperty> rows =
-				PainterIntrospection::Inspect( pJob->GetCstDocument(), String( "pnt_albedo" ) );
+				CstIntrospection::Inspect( pJob->GetCstDocument(), *pJob, String( "pnt_albedo" ), "painter", "Painter chunk keyword" );
 			bool found = false;
 			for( const CameraProperty& row : rows )
 			{

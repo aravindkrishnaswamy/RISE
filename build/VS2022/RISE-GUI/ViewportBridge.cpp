@@ -1199,6 +1199,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 8: return Category::Animation;
         case 9: return Category::SceneVariant;
         case 10: return Category::Painter;
+        case 11: return Category::Geometry;   // GUI redesign 2026-07-22
         default: return Category::None;
     }
 }
@@ -1479,6 +1480,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
         p.description = QString::fromUtf8(descBuf);
         p.kind = RISE_API_SceneEditController_PropertyKind(m_controller, i);
         p.editable = RISE_API_SceneEditController_PropertyEditable(m_controller, i);
+        p.index = static_cast<int>(i);   // jump-to-definition queries by snapshot index
 
         // Forward the descriptor's quick-pick presets — empty for
         // parameters that declared none, in which case the panel
@@ -1540,6 +1542,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
         p.value = QString::fromUtf8(valBuf);
         p.description = QString::fromUtf8(descBuf);
         p.kind = RISE_API_SceneEditController_PropertyKindFor(m_controller, catInt, i);
+        p.index = static_cast<int>(i);   // jump-to-definition queries by snapshot index
         p.editable = RISE_API_SceneEditController_PropertyEditableFor(m_controller, catInt, i);
 
         const unsigned int numPresets = RISE_API_SceneEditController_PropertyPresetCountFor(m_controller, catInt, i);
@@ -1560,6 +1563,33 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
         out.append(p);
     }
     return out;
+}
+
+bool ViewportBridge::propertyJumpTargetFor(Category cat, int index,
+                                           Category* outCat, QString* outName)
+{
+    if (!m_controller || !outCat || !outName || index < 0) return false;
+    int rawCat = 0;
+    char nameBuf[128] = { 0 };
+    if (!RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+            m_controller, static_cast<int>(cat), static_cast<unsigned int>(index),
+            &rawCat, nameBuf, sizeof(nameBuf))) {
+        return false;
+    }
+    // Same int->enum translation discipline as selectionCategory() (the
+    // bridge-enum-translation audit): unknown ints fail closed.
+    switch (rawCat) {
+        case 1:  *outCat = Category::Camera;   break;
+        case 3:  *outCat = Category::Object;   break;
+        case 4:  *outCat = Category::Light;    break;
+        case 6:  *outCat = Category::Material; break;
+        case 7:  *outCat = Category::Medium;   break;
+        case 10: *outCat = Category::Painter;  break;
+        case 11: *outCat = Category::Geometry; break;
+        default: return false;
+    }
+    *outName = QString::fromUtf8(nameBuf);
+    return !outName->isEmpty();
 }
 
 bool ViewportBridge::setPropertyForCategory(Category cat, const QString& name, const QString& value)

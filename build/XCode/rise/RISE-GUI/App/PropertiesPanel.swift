@@ -59,8 +59,11 @@ struct PropertyRow: Identifiable {
     let editable: Bool
     let presets: [PropertyPreset] // empty when descriptor declared no presets
     let unitLabel: String         // empty for dimensionless / unlabelled fields
+    /// Snapshot position -- the C-ABI property index this row was built
+    /// from (jump-to-definition queries the core by index).
+    let index: Int
 
-    nonisolated static func from(_ src: RISEViewportProperty) -> PropertyRow {
+    nonisolated static func from(_ src: RISEViewportProperty, index: Int) -> PropertyRow {
         let presets: [PropertyPreset] = src.presets.enumerated().map { (idx, p) in
             PropertyPreset(id: "\(src.name).preset.\(idx)", label: p.label, value: p.value)
         }
@@ -72,7 +75,8 @@ struct PropertyRow: Identifiable {
             kind: PropertyKind(rawValue: src.kind) ?? .string,
             editable: src.editable,
             presets: presets,
-            unitLabel: src.unitLabel
+            unitLabel: src.unitLabel,
+            index: index
         )
     }
 }
@@ -94,6 +98,7 @@ private func categoryTitle(_ cat: RISEViewportCategory) -> String {
     case .animation:    return "Animation"
     case .sceneVariant: return "Variants"
     case .painter:      return "Painters"
+    case .geometry:     return "Geometry"
     case .none:         return "Scene"
     default:            return "Scene"
     }
@@ -116,6 +121,7 @@ private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
     case .animation:    return "▶"
     case .sceneVariant: return "⧉"
     case .painter:      return "▧"
+    case .geometry:     return "◇"
     case .none:         return "•"
     default:            return "•"
     }
@@ -272,6 +278,24 @@ struct PropertiesPanel: View {
                     viewModel.revealSourceSpan(category: selectionCategory, name: selectionName, param: row.name)
                 } label: {
                     Label("Reveal “\(row.name)” in Scene File", systemImage: "text.magnifyingglass")
+                }
+            }
+            // Jump-to-definition (GUI redesign 2026-07-22): a Reference
+            // row whose value names a live element gets a direct jump to
+            // that element's own panel.  Resolution happens at menu-build
+            // time (right-click), so the item reflects the CURRENT scene
+            // -- a dangling reference simply shows no item.
+            if row.kind == .reference {
+                var jumpCat: RISEViewportCategory = .none
+                var jumpName: NSString? = nil
+                if bridge.propertyJumpTarget(atIndex: UInt(row.index),
+                                             outCategory: &jumpCat, outName: &jumpName),
+                   let name = jumpName as String? {
+                    Button {
+                        viewModel.jumpToEntity(category: jumpCat, name: name)
+                    } label: {
+                        Label("Jump to Definition of “\(name)”", systemImage: "arrow.uturn.right")
+                    }
                 }
             }
         }
@@ -555,7 +579,7 @@ struct PropertiesPanel: View {
         bridge.refreshProperties()
         selectionCategory = bridge.selectionCategory
         selectionName = bridge.selectionName
-        rows = bridge.propertySnapshot().map(PropertyRow.from)
+        rows = bridge.propertySnapshot().enumerated().map { PropertyRow.from($1, index: $0) }
 
         // Reset the Advanced disclosure whenever the selected entity's
         // identity changes — otherwise it could stay open showing a

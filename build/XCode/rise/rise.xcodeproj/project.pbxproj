@@ -1870,10 +1870,10 @@
 		FECC0005000000000000F506 /* SaveEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F502 /* SaveEngine.cpp */; };
 		FECC0006000000000000F603 /* FileIdentity.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
 		FECC0006000000000000F605 /* FileIdentity.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0006000000000000F601 /* FileIdentity.h */; };
-		FECC0007000000000000F703 /* PainterIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F701 /* PainterIntrospection.h */; };
-		FECC0007000000000000F704 /* PainterIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F702 /* PainterIntrospection.cpp */; };
-		FECC0007000000000000F705 /* PainterIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F701 /* PainterIntrospection.h */; };
-		FECC0007000000000000F706 /* PainterIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F702 /* PainterIntrospection.cpp */; };
+		FECC0007000000000000F703 /* CstIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F701 /* CstIntrospection.h */; };
+		FECC0007000000000000F704 /* CstIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F702 /* CstIntrospection.cpp */; };
+		FECC0007000000000000F705 /* CstIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F701 /* CstIntrospection.h */; };
+		FECC0007000000000000F706 /* CstIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F702 /* CstIntrospection.cpp */; };
 		FECC0008000000000000F803 /* EntityTemplates.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
 		FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
 		FECC0008000000000000F805 /* EntityTemplates.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F801 /* EntityTemplates.h */; };
@@ -2897,8 +2897,8 @@
 		FECC0005000000000000F501 /* SaveEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SaveEngine.h; sourceTree = "<group>"; };
 		FECC0005000000000000F502 /* SaveEngine.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SaveEngine.cpp; sourceTree = "<group>"; };
 		FECC0006000000000000F601 /* FileIdentity.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FileIdentity.h; sourceTree = "<group>"; };
-		FECC0007000000000000F701 /* PainterIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterIntrospection.h; sourceTree = "<group>"; };
-		FECC0007000000000000F702 /* PainterIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PainterIntrospection.cpp; sourceTree = "<group>"; };
+		FECC0007000000000000F701 /* CstIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CstIntrospection.h; sourceTree = "<group>"; };
+		FECC0007000000000000F702 /* CstIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CstIntrospection.cpp; sourceTree = "<group>"; };
 		FECC0008000000000000F801 /* EntityTemplates.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EntityTemplates.h; sourceTree = "<group>"; };
 		FECC0008000000000000F802 /* EntityTemplates.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EntityTemplates.cpp; sourceTree = "<group>"; };
 		FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SnapshotLeafClone.cpp; sourceTree = "<group>"; };
@@ -4277,8 +4277,8 @@
 				F2EE006100000000000000A1 /* MaterialIntrospection.cpp */,
 				F2EE006200000000000000A1 /* MediaIntrospection.h */,
 				F2EE006300000000000000A1 /* MediaIntrospection.cpp */,
-				FECC0007000000000000F701 /* PainterIntrospection.h */,
-				FECC0007000000000000F702 /* PainterIntrospection.cpp */,
+				FECC0007000000000000F701 /* CstIntrospection.h */,
+				FECC0007000000000000F702 /* CstIntrospection.cpp */,
 				FECC0008000000000000F801 /* EntityTemplates.h */,
 				FECC0008000000000000F802 /* EntityTemplates.cpp */,
 			);
@@ -4662,7 +4662,7 @@
 				F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */,
 				F2EE006000000000000000C1 /* MaterialIntrospection.h in Headers */,
 				F2EE006200000000000000C1 /* MediaIntrospection.h in Headers */,
-				FECC0007000000000000F705 /* PainterIntrospection.h in Headers */,
+				FECC0007000000000000F705 /* CstIntrospection.h in Headers */,
 				FECC0008000000000000F805 /* EntityTemplates.h in Headers */,
 				F2EE003000000000000000C1 /* DisplayTransform.h in Headers */,
 				F2EE003100000000000000C1 /* DisplayTransformWriter.h in Headers */,
@@ -5223,7 +5223,7 @@
 				F2EE002300000000000000C1 /* FilmIntrospection.cpp in Sources */,
 				F2EE006100000000000000C1 /* MaterialIntrospection.cpp in Sources */,
 				F2EE006300000000000000C1 /* MediaIntrospection.cpp in Sources */,
-				FECC0007000000000000F706 /* PainterIntrospection.cpp in Sources */,
+				FECC0007000000000000F706 /* CstIntrospection.cpp in Sources */,
 				FECC0008000000000000F806 /* EntityTemplates.cpp in Sources */,
 				F2EE003200000000000000C1 /* DisplayTransformWriter.cpp in Sources */,
 				F2EE001100000000000000C1 /* InteractivePelRasterizer.cpp in Sources */,
@@ -5900,8 +5900,8 @@
 				F2EE006100000000000000B1 /* MaterialIntrospection.cpp in Sources */,
 				F2EE006200000000000000B1 /* MediaIntrospection.h in Sources */,
 				F2EE006300000000000000B1 /* MediaIntrospection.cpp in Sources */,
-				FECC0007000000000000F703 /* PainterIntrospection.h in Sources */,
-				FECC0007000000000000F704 /* PainterIntrospection.cpp in Sources */,
+				FECC0007000000000000F703 /* CstIntrospection.h in Sources */,
+				FECC0007000000000000F704 /* CstIntrospection.cpp in Sources */,
 				FECC0008000000000000F803 /* EntityTemplates.h in Sources */,
 				FECC0008000000000000F804 /* EntityTemplates.cpp in Sources */,
 				F2EE003000000000000000B1 /* DisplayTransform.h in Sources */,

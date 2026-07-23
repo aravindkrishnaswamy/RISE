@@ -136,8 +136,8 @@ void OutlinerWidget::refresh()
         m_entitiesByCategory.clear();
         static const Category cats[] = {
             Category::Rasterizer, Category::Camera, Category::Light, Category::Object,
-            Category::Material, Category::Painter, Category::Medium, Category::Film,
-            Category::Animation, Category::SceneVariant,
+            Category::Material, Category::Painter, Category::Medium, Category::Geometry,
+            Category::Film, Category::Animation, Category::SceneVariant,
         };
         for (Category c : cats) {
             m_entitiesByCategory.insert(static_cast<int>(c), m_bridge->categoryEntities(c));
@@ -210,6 +210,11 @@ void OutlinerWidget::rebuild()
         // match and is the same fallback the Mac slice uses.
         { Category::Painter,      "Painters",        "PNT", Theme::catMaterial },
         { Category::Medium,       "Media",           "MED", Theme::catMedia },
+        // Geometry (GUI redesign 2026-07-22): every "*_geometry" chunk,
+        // the shapes objects reference by name.  Mirrors the Mac
+        // OutlinerView ordering (after Media, before the singleton rows);
+        // catObject is the conceptual neighbour, same fallback as Mac.
+        { Category::Geometry,     "Geometry",        "GEO", Theme::catObject },
         { Category::Film,         "Output Settings", "FLM", Theme::catFilm },
         { Category::Animation,    "Animation",       "ANM", Theme::catAnimation },
         { Category::SceneVariant, "Variants",         "VAR", Theme::catVariant },

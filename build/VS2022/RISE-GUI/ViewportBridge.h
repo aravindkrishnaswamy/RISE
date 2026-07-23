@@ -48,6 +48,7 @@ struct ViewportProperty {
     bool    editable = false;
     QVector<ViewportPropertyPreset> presets;   // empty when descriptor declared no presets
     QString unitLabel;                         // short suffix shown next to the field — "mm", "°", "scene units", or empty
+    int     index = -1;                        // snapshot position (the C-ABI property index) — jump-to-definition queries by index
 };
 
 /// Tool enum mirroring SceneEditController::Tool and the C-API
@@ -738,7 +739,8 @@ public:
         Medium     = 7,   ///< Participating media
         Animation  = 8,   ///< Named animation paths (pick to activate; no editable properties)
         SceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
-        Painter    = 10   ///< Painters (union of the IPainter + IScalarPainter managers)
+        Painter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
+        Geometry   = 11   ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
     };
 
     PanelMode panelMode() const;
@@ -753,6 +755,12 @@ public:
     /// edits the right material even when Object is the primary
     /// selection (auto-synced state).
     QVector<ViewportProperty> propertySnapshotFor(Category cat);
+    /// Jump-to-definition (GUI redesign 2026-07-22): for `cat`'s
+    /// snapshot row at `index` (a Reference-kind row), resolve which
+    /// category the value names.  False for non-Reference rows or
+    /// dangling references — the context-menu item stays hidden.
+    bool propertyJumpTargetFor(Category cat, int index,
+                               Category* outCat, QString* outName);
     bool setPropertyForCategory(Category cat, const QString& name, const QString& value);
     /// Per-category selection accessor.  Returns the entity name
     /// picked in `cat`'s section, or empty when nothing is picked.

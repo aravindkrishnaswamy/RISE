@@ -1600,6 +1600,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         case 8: return RISEViewportCategoryAnimation;
         case 9: return RISEViewportCategorySceneVariant;
         case 10: return RISEViewportCategoryPainter;
+        case 11: return RISEViewportCategoryGeometry;   // GUI redesign 2026-07-22
         default: return RISEViewportCategoryNone;
     }
 }
@@ -1990,6 +1991,35 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (void)collapseSectionFor:(RISEViewportCategory)category {
     if (!_controller) return;
     RISE_API_SceneEditController_CollapseSection(_controller, (int)category);
+}
+
+- (BOOL)propertyJumpTargetAtIndex:(NSUInteger)idx
+                      outCategory:(RISEViewportCategory *)outCategory
+                          outName:(NSString * _Nullable * _Nonnull)outName {
+    if (outName) *outName = nil;
+    if (!_controller || !outCategory || !outName) return NO;
+    int cat = 0;
+    char nameBuf[128] = {0};
+    if (!RISE_API_SceneEditController_PropertyJumpTarget(
+            _controller, (unsigned int)idx, &cat, nameBuf, sizeof(nameBuf))) {
+        return NO;
+    }
+    NSString *n = [NSString stringWithUTF8String:nameBuf];
+    if (!n || n.length == 0) return NO;
+    // Same int->enum translation discipline as -selectionCategory (the
+    // bridge-enum-translation audit): default to None on an unknown int.
+    switch (cat) {
+        case 1:  *outCategory = RISEViewportCategoryCamera;   break;
+        case 3:  *outCategory = RISEViewportCategoryObject;   break;
+        case 4:  *outCategory = RISEViewportCategoryLight;    break;
+        case 6:  *outCategory = RISEViewportCategoryMaterial; break;
+        case 7:  *outCategory = RISEViewportCategoryMedium;   break;
+        case 10: *outCategory = RISEViewportCategoryPainter;  break;
+        case 11: *outCategory = RISEViewportCategoryGeometry; break;
+        default: return NO;
+    }
+    *outName = n;
+    return YES;
 }
 
 - (NSArray<RISEViewportProperty *> *)propertySnapshotFor:(RISEViewportCategory)category {

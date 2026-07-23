@@ -667,6 +667,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryAnimation  = 8,   ///< Named animation paths (pick to activate)
     RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
     RISEViewportCategoryPainter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
+    RISEViewportCategoryGeometry   = 11,  ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -685,6 +686,17 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// Snapshot of the current entity's properties.  Updated after
 /// `refreshProperties` and after any successful setProperty: call.
 - (NSArray<RISEViewportProperty *> *)propertySnapshot;
+
+/// Jump-to-definition (GUI redesign, 2026-07-22): for the PRIMARY
+/// snapshot's Reference-kind row at `idx`, resolve which category the
+/// row's value names (probing the descriptor's declared target
+/// categories against the live managers, first-wins).  Returns NO for
+/// non-Reference rows / dangling references -- the context-menu item
+/// stays hidden.  On YES the caller navigates via -setSelection:name:.
+- (BOOL)propertyJumpTargetAtIndex:(NSUInteger)idx
+                      outCategory:(RISEViewportCategory *)outCategory
+                          outName:(NSString * _Nullable * _Nonnull)outName
+    NS_SWIFT_NAME(propertyJumpTarget(atIndex:outCategory:outName:));
 
 /// Apply an edit to a named property.  Returns YES on success.
 - (BOOL)setPropertyName:(NSString *)name value:(NSString *)value;

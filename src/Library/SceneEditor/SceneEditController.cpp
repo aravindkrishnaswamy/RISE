@@ -44,7 +44,8 @@
 #include "FilmIntrospection.h"
 #include "MaterialIntrospection.h"
 #include "MediaIntrospection.h"
-#include "PainterIntrospection.h"     // Entity-creation slice: Category::Painter property rows
+#include "CstIntrospection.h"         // Generic descriptor+CST property rows (Painter, Geometry, ...) -- GUI redesign 2026-07-22
+#include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "../Interfaces/IMaterialManager.h"
 #include "../Interfaces/IMedium.h"
@@ -2517,6 +2518,13 @@ bool SelectionStillResolves( const IJobPriv& job,
 		}
 		return false;
 	}
+	case Cat::Geometry: {
+		// GUI redesign 2026-07-22: geometry is name-managed like Material --
+		// a removed/undone geometry must drop the stale selection so the
+		// panel doesn't render a header for an entity that no longer exists.
+		IGeometryManager* m = const_cast<IJobPriv&>( job ).GetGeometries();
+		return m && m->GetItem( name.c_str() ) != 0;
+	}
 	case Cat::Rasterizer:
 	case Cat::Film:
 	case Cat::None:
@@ -3091,6 +3099,20 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 	case Category::Painter: {
 		return static_cast<unsigned int>( CollectPainterUnionNames( mJob ).size() );
 	}
+	case Category::Geometry: {
+		// GUI redesign 2026-07-22: geometry is fully name-managed
+		// (IGeometryManager on the Job) -- enumerate exactly like Medium.
+		struct Count : public IEnumCallback<const char*> {
+			unsigned int n = 0;
+			bool operator()( const char* const& name ) override {
+				if( name ) ++n;
+				return true;
+			}
+		};
+		Count cb;
+		mJob.EnumerateGeometryNames( cb );
+		return cb.n;
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -3170,6 +3192,12 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( idx >= names.size() ) return String();
 		return names[idx];
 	}
+	case Category::Geometry: {
+		CollectNamesCallback cb;
+		mJob.EnumerateGeometryNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
 	case Category::None:
 	default:
 		return String();
@@ -3222,6 +3250,7 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	case Category::Material:
 	case Category::Medium:
 	case Category::Painter:
+	case Category::Geometry:
 	case Category::None:
 	default:
 		return String();
@@ -3366,6 +3395,17 @@ void SceneEditController::CollapseSection( Category cat )
 bool SceneEditController::SetSelection( Category cat, const String& entityName )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	// External-review P1 (2026-07-22): the C-ABI passes a RAW int category
+	// (RISE_API_..._SetSelection casts an arbitrary int to Category), and every
+	// path below indexes the fixed mSelectionByCategory / mSectionExpanded
+	// arrays by static_cast<int>(cat) with NO bounds check.  An out-of-range
+	// value (-1, or >= kNumCategories) is an out-of-bounds array WRITE that
+	// corrupts controller memory.  Reject before any indexing.  None==0 is a
+	// valid in-range value handled immediately below.
+	{
+		const int ci = static_cast<int>( cat );
+		if( ci < 0 || ci >= kNumCategories ) return false;
+	}
 	// Category::None: clear every per-category selection + the
 	// expanded flags AND the primary tuple.  No side effect on
 	// the scene.  The panel's "collapse this section without
@@ -5880,6 +5920,7 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 	case Category::Animation:    outSuffix = "animation";       return true;
 	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
 	case Category::Painter:      outSuffix = "painter";         return true;   // matches every "*_painter" chunk keyword (endsWith), same convention as ClassifyCstEntityKind's "_material"/"_light"/"_medium" suffixes
+	case Category::Geometry:     outSuffix = "geometry";        return true;   // matches every "*_geometry" chunk keyword (endsWith) -- GUI redesign 2026-07-22
 	case Category::Rasterizer:
 	case Category::Film:
 	case Category::None:
@@ -5936,6 +5977,7 @@ SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
 		auto toCat = []( ChunkCategory cc ) -> Cat {
 			switch( cc ) {
 			case ChunkCategory::Painter:      return Cat::Painter;
+			case ChunkCategory::Geometry:     return Cat::Geometry;   // GUI redesign 2026-07-22: geometry is now UI-addressable
 			// NOTE: ChunkCategory::Function is NOT mapped to Painter.  The only two
 			// Function chunks (piecewise_linear_function / _function2d) register into
 			// the Function1D/2D managers, NOT the painter managers, so they never
@@ -6835,6 +6877,21 @@ String SceneEditController::CurrentPanelHeader() const
 
 void SceneEditController::RefreshProperties()
 {
+	// External-review P1 (2026-07-22): the row build below reads LIVE scene /
+	// CST / manager state (buildRowsFor across every expanded category --
+	// geometry enumeration, material-slot classification, CST introspection,
+	// live candidate-name enumeration).  A concurrent agent commit on another
+	// thread D2-rederives under mMutex, freeing + replacing those managers ->
+	// use-after-free.  Serialize under mMutex.  During a production/agent
+	// render the render OWNS the scene and holds mMutex for its whole duration;
+	// follow the getter convention (see the mRenderOwnsScene member doc) and
+	// keep the prior rows rather than block the UI thread -- the scene is
+	// read-only then, so the panel simply shows the last snapshot until the
+	// render ends.  No internal caller holds mMutex here (only the C-ABI, on
+	// the UI thread), so the lock cannot self-deadlock.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;
+	std::lock_guard<std::mutex> lk( mMutex );
+
 	mProperties.clear();
 	for( int i = 0; i < kNumCategories; ++i ) mPropertiesByCategory[i].clear();
 
@@ -6870,6 +6927,9 @@ void SceneEditController::RefreshProperties()
 			if( !obj ) break;
 			out = ObjectIntrospection::Inspect( selName, *obj,
 				mJob.GetMaterials(), mJob.GetShaders(), &mJob );
+			// GUI redesign 2026-07-22: jump-to-definition metadata only
+			// (no value/editability change) -- see AnnotateReferenceRows.
+			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "standard_object" );
 			break;
 		}
 		case Category::Light: {
@@ -6878,6 +6938,9 @@ void SceneEditController::RefreshProperties()
 			const ILightPriv* light = lights->GetItem( selName.c_str() );
 			if( !light ) break;
 			out = LightIntrospection::Inspect( selName, *light );
+			// GUI redesign 2026-07-22: jump-to-definition metadata only
+			// (no value/editability change) -- see AnnotateReferenceRows.
+			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "light" );
 			break;
 		}
 		case Category::Film: {
@@ -6894,12 +6957,23 @@ void SceneEditController::RefreshProperties()
 			if( !mat ) break;
 			out = MaterialIntrospection::Inspect( selName, *mat,
 				mJob.GetPainters(), mJob.GetScalarPainters(), &mJob );
+			// GUI redesign 2026-07-22: merge in the generic descriptor+CST
+			// rows -- read-only live rows with a CST-backed param become
+			// editable (the SetMaterialProperty edit route writes the CST
+			// anyway), descriptor params the live module never surfaced
+			// appear, and Reference rows gain jump-to-definition metadata.
+			// No-op on a programmatic/legacy scene (no CST chunk).
+			CstIntrospection::AugmentWithCstRows( out, mJob.GetCstDocument(), mJob,
+				selName, "material" );
 			break;
 		}
 		case Category::Medium: {
 			const IMedium* med = mJob.GetMedium( selName.c_str() );
 			if( !med ) break;
 			out = MediaIntrospection::Inspect( selName, *med );
+			// GUI redesign 2026-07-22: jump-to-definition metadata only
+			// (no value/editability change) -- see AnnotateReferenceRows.
+			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "medium" );
 			break;
 		}
 		case Category::Animation: {
@@ -6924,9 +6998,21 @@ void SceneEditController::RefreshProperties()
 		case Category::Painter: {
 			// Entity-creation slice: rows are CST-chunk-sourced (there is
 			// no live per-parameter getter surface on IPainter/
-			// IScalarPainter) -- see PainterIntrospection.h's header doc.
+			// IScalarPainter) -- see CstIntrospection.h's header doc.
 			if( selName.size() <= 1 ) break;
-			out = PainterIntrospection::Inspect( mJob.GetCstDocument(), selName );
+			out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
+				"painter", "Painter chunk keyword" );
+			break;
+		}
+		case Category::Geometry: {
+			// GUI redesign 2026-07-22: same generic descriptor+CST surface
+			// as Painter -- geometry chunks have no live per-parameter
+			// getter either (a sphere's radius is baked at construction);
+			// the CST is the editable source of truth, and an edit
+			// re-derives the geometry + every object referencing it.
+			if( selName.size() <= 1 ) break;
+			out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
+				"geometry", "Geometry chunk keyword" );
 			break;
 		}
 		case Category::None:
@@ -6974,6 +7060,20 @@ void SceneEditController::RefreshProperties()
 		break;
 	case PanelMode::None:
 	default:
+		// GUI redesign 2026-07-22: Painter and Geometry have no dedicated
+		// PanelMode value (their rows are the generic descriptor+CST
+		// surface), but the SHELLS' single-panel path reads the PRIMARY
+		// snapshot -- without this routing, selecting a painter in the
+		// outliner showed an EMPTY panel (a real pre-existing gap the
+		// per-category accessors masked in tests), and geometry would
+		// have inherited it.  Deliberately NOT extended to Animation /
+		// SceneVariant: their empty primary snapshot drives the shells'
+		// explanatory "selecting activates..." message.
+		if( mSelectionCategory == Category::Painter
+		 || mSelectionCategory == Category::Geometry )
+		{
+			mProperties = mPropertiesByCategory[ static_cast<int>( mSelectionCategory ) ];
+		}
 		break;
 	}
 }
@@ -7042,6 +7142,158 @@ String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 }
 
 // -------------------------------------------------------------------
+// Jump-to-definition (GUI redesign, 2026-07-22).  See the header doc.
+// -------------------------------------------------------------------
+
+namespace {
+
+// ChunkCategory (the descriptor's target vocabulary) -> UI Category.
+// Only categories with a UI section map; Function maps to Painter
+// because colour painters dual-register as functions (Cst.cpp PASS A)
+// and function chunks have no UI section of their own -- a function
+// reference that resolves against the painter union IS selectable
+// there.  Unmappable kinds (Shader / ShaderOp / Modifier / ...) return
+// None: the jump is unavailable until those grow UI sections.
+inline RISE::SceneEditController::Category UiCategoryForChunkCategory( RISE::ChunkCategory cc )
+{
+	using Cat = RISE::SceneEditController::Category;
+	switch( cc )
+	{
+	case RISE::ChunkCategory::Painter:   return Cat::Painter;
+	case RISE::ChunkCategory::Function:  return Cat::Painter;
+	case RISE::ChunkCategory::Material:  return Cat::Material;
+	case RISE::ChunkCategory::Geometry:  return Cat::Geometry;
+	case RISE::ChunkCategory::Medium:    return Cat::Medium;
+	case RISE::ChunkCategory::Object:    return Cat::Object;
+	case RISE::ChunkCategory::Camera:    return Cat::Camera;
+	case RISE::ChunkCategory::Light:     return Cat::Light;
+	default:                             return Cat::None;
+	}
+}
+
+}  // namespace
+
+bool SceneEditController::PropertyJumpTarget(
+	unsigned int idx, Category& outCat, String& outName ) const
+{
+	outCat = Category::None;
+	outName = String();
+	if( idx >= mProperties.size() ) return false;
+	return ResolveRowJumpTarget_( mProperties[idx], outCat, outName );
+}
+
+bool SceneEditController::PropertyJumpTargetFor(
+	Category cat, unsigned int idx, Category& outCat, String& outName ) const
+{
+	outCat = Category::None;
+	outName = String();
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return false;
+	const std::vector<CameraProperty>& rows = mPropertiesByCategory[ci];
+	if( idx >= rows.size() ) return false;
+	return ResolveRowJumpTarget_( rows[idx], outCat, outName );
+}
+
+// Shared resolution body.  First-wins across the row's declared
+// referenceCategories, probing the LIVE managers -- the same category
+// order ComputeChunkRefs resolves reference edges in, so the jump lands
+// on the element the renderer actually bound.
+bool SceneEditController::ResolveRowJumpTarget_(
+	const CameraProperty& row, Category& outCat, String& outName ) const
+{
+	if( row.kind != ValueKind::Reference ) return false;
+	if( row.value.size() <= 1 ) return false;
+	if( row.referenceCategories.empty() ) return false;
+	// The `none` sentinel is the registered null painter/geometry, not an
+	// authored binding -- an optional reference left unset resolves to it.
+	// Jumping there would land on a non-CST placeholder entity, so treat it
+	// as "no target" (the shells then hide the menu item).
+	if( std::string( row.value.c_str() ) == "none" ) return false;
+	// jump-UAF fix (external review 2026-07-22): CandidateNamesForChunkCategory
+	// enumerates the LIVE managers, which an agent CST edit on another thread
+	// can swap mid re-derive (ClearAll under mMutex).  try_lock so we either
+	// enumerate under a stable manager set or bail (no jump this click) rather
+	// than racing a manager free -- and NEVER block, since a production/agent
+	// render holds mMutex for its whole duration (a blocking guard would freeze
+	// the UI).  A jump missed during an active render is retried on the next click.
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	for( ChunkCategory rc : row.referenceCategories )
+	{
+		const Category ui = UiCategoryForChunkCategory( rc );
+		if( ui == Category::None ) continue;
+		const std::vector<String> names =
+			CstIntrospection::CandidateNamesForChunkCategory( mJob, rc );
+		for( const String& n : names )
+		{
+			if( n == row.value )
+			{
+				outCat  = ui;
+				outName = row.value;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// External-review P1 (2026-07-22): general dangling-reference guard for GUI
+// property edits.  See the header doc.  Rejects ONLY the precisely-
+// diagnosable runtime-only case; inline literals + CST-backed names + `none`
+// all pass.  Reads the CST doc + live managers under a brief mMutex hold (same
+// race as the jump / material-classification reads: an agent commit can swap
+// them mid re-derive); SetProperty already cleared the mRenderOwnsScene gate
+// before calling this, so the hold contends only with brief interactive
+// per-pass / agent-edit holds -- never a whole production render.
+bool SceneEditController::WouldPersistDanglingReference_(
+	Category cat, const String& entityName, const String& paramName, const String& value )
+{
+	if( value.size() <= 1 ) return false;
+	if( std::string( value.c_str() ) == "none" ) return false;   // null sentinel is always valid
+
+	std::lock_guard<std::mutex> lk( mMutex );
+
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;   // legacy scene (no retained CST) -> nothing to persist into
+
+	// Resolve the entity's chunk + the edited param's descriptor.
+	const RISE::Cst::NodeId id = ResolveSourceChunkId(
+		*doc, cat, std::string( entityName.c_str() ), std::string() );
+	if( id == 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	if( !chunk ) return false;
+	const ChunkDescriptor* cd = DescriptorForKeyword( String( chunk->role.c_str() ) );
+	if( !cd ) return false;
+	const ParameterDescriptor* pd = nullptr;
+	const std::string want( paramName.c_str() );
+	for( const ParameterDescriptor& p : cd->parameters )
+		if( p.name == want ) { pd = &p; break; }
+	if( !pd || pd->kind != ValueKind::Reference ) return false;   // not a reference param
+
+	// CST-addressable?  A chunk of ANY role named `value` exists -> the reference
+	// resolves on a full re-derive / save+reload -> persistable.  (Duplicate names
+	// are a hard error, so the empty suffix is unambiguous.)
+	if( RISE::Cst::DocFindByNameAnyRole(
+			*doc, std::string( value.c_str() ), nullptr, std::string(), false ) != 0 )
+		return false;
+
+	// Not CST-addressable.  Reject ONLY if `value` is a RUNTIME-registered entity
+	// of an allowed referenceCategory -- that confirms it is a reference NAME (not
+	// an inline literal like `ior 1.7`) that renders now but would DANGLE on
+	// save/reload.  A value resolving in NEITHER the CST nor a manager is an
+	// inline literal / not-yet-created name; leave it to the existing derive path
+	// (conservative -- never a false rejection of a legitimate edit).
+	for( ChunkCategory rc : pd->referenceCategories )
+	{
+		const std::vector<String> names =
+			CstIntrospection::CandidateNamesForChunkCategory( mJob, rc );
+		for( const String& n : names )
+			if( n == value ) return true;   // registered runtime-only -> dangling reference
+	}
+	return false;
+}
+
+// -------------------------------------------------------------------
 // Phase 4b — per-category property accessors.  Each looks up the
 // correct mPropertiesByCategory[cat] vector and forwards to the
 // matching CameraProperty field.  Bounds-check the category enum and
@@ -7054,13 +7306,11 @@ inline const std::vector<RISE::CameraProperty>* PropsForCat(
 	const std::vector<RISE::CameraProperty>* arr, RISE::SceneEditController::Category cat )
 {
 	const int i = static_cast<int>( cat );
-	// Pre-existing bug fixed in passing: this bound was hardcoded to 9
-	// (stale even before this change -- SceneVariant=9 was already
-	// silently excluded from PropertyCountFor/PropertyNameFor/etc.).
-	// kNumCategories is private (this is a free function, not a
-	// member), so mirror its value here with an explicit comment
-	// rather than hardcoding a now-also-stale literal.
-	if( i < 0 || i >= 11 ) return 0;   // 11 == SceneEditController::kNumCategories (None..Painter)
+	// GUI redesign 2026-07-22: this bound went stale TWICE as a mirrored
+	// literal (9 pre-SceneVariant, then 11 silently excluding the new
+	// Category::Geometry).  kNumCategories is now PUBLIC -- use it, never
+	// mirror it.
+	if( i < 0 || i >= RISE::SceneEditController::kNumCategories ) return 0;
 	return &arr[i];
 }
 }
@@ -9826,6 +10076,23 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	// External-review P1 (2026-07-22): general dangling-reference guard.  Reject
+	// BEFORE any arm mutates the scene when this edit would persist a reference
+	// to a runtime-only entity (no CST chunk) -- it would render now but fail on
+	// save/reload / a later full re-derive.  Covers every reference-carrying
+	// category uniformly (material slot rebinds, object material/geometry/shader
+	// bindings, painter/geometry child refs); inline literals + CST-backed names
+	// + `none` are untouched.  See WouldPersistDanglingReference_.
+	if( mSelectionName.size() > 1
+	 && WouldPersistDanglingReference_( mSelectionCategory, mSelectionName, name, valueStr ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: edit of `%s.%s` rejected -- `%s` names a runtime-only entity with "
+			"no CST chunk, so persisting it would write a DANGLING reference that fails on save/reload. "
+			"Bind a scene-defined entity instead.",
+			mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
+		return false;
+	}
 	switch( mSelectionCategory ) {
 
 	case Category::Camera: {
@@ -10188,6 +10455,52 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// pattern Light / Object / Film use for the same reason.
 		if( mSelectionName.size() <= 1 ) return false;
 
+		// GUI redesign 2026-07-22 (external-review P1): the material panel now
+		// surfaces BOTH painter/scalar-painter SLOTS and the scalar VALUE params
+		// merged in from the descriptor+CST by AugmentWithCstRows (ar_film_ior,
+		// and -- crucially -- physical scalars like a dielectric `ior` whose
+		// slot is an IScalarPainter pipe but whose scene value is an INLINE
+		// NUMBER `ior 1.5`, not a painter name).  SetMaterialProperty only
+		// REBINDS a slot: it looks the value up as a painter NAME and rejects
+		// anything unregistered ("scalar_painter `1.7` is not registered").  So
+		// route to SetMaterialProperty ONLY when the entered value actually
+		// names a registered painter in the slot's pipe (a genuine rebind);
+		// every other edit -- an inline numeric, or a non-slot descriptor param
+		// (GetSlot==None) -- is a VALUE edit that must go through the generic CST
+		// param-edit path (which cancel-and-parks + captures undo/redo itself),
+		// exactly like Painter/Geometry.  Reading the managers here (pre-park)
+		// matches the Object arm's pre-park scene reads; ApplyAgentParamEdit
+		// re-resolves by name under its own lock, so the brief TOCTOU is benign.
+		// Classify UNDER a brief mMutex hold (external-review P1): the manager
+		// reads (GetMaterials/GetSlot/GetPainters) would otherwise race an agent
+		// commit's D2 manager swap -> UAF.  The routing decision is acted on with
+		// the lock RELEASED (ApplyAgentParamEdit re-locks itself; the slot-rebind
+		// path re-parks below) -- both re-resolve by name, so the release window
+		// is a benign routing TOCTOU, not a correctness gap.
+		bool rebindSlot = false;
+		{
+			std::lock_guard<std::mutex> clk( mMutex );
+			const IMaterialManager* mats = mJob.GetMaterials();
+			const IMaterial* mat = mats
+				? const_cast<IMaterialManager*>( mats )->GetItem( mSelectionName.c_str() )
+				: nullptr;
+			const MaterialSlotRef slot = mat
+				? MaterialIntrospection::GetSlot( *mat, name )
+				: MaterialSlotRef();
+			if( slot.kind == MaterialSlotRef::Painter ) {
+				IPainterManager* pm = mJob.GetPainters();
+				rebindSlot = pm && pm->GetItem( valueStr.c_str() ) != nullptr;
+			} else if( slot.kind == MaterialSlotRef::ScalarPainter ) {
+				IScalarPainterManager* spm = mJob.GetScalarPainters();
+				rebindSlot = spm && spm->GetItem( valueStr.c_str() ) != nullptr;
+			}
+		}
+		if( !rebindSlot ) {
+			const AgentCommitResult r = ApplyAgentParamEdit(
+				mSelectionName, String( "material" ), name, valueStr, nullptr );
+			return r.applied;
+		}
+
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load( std::memory_order_acquire ) ) {
 			mCancelProgress.RequestCancel();
@@ -10247,7 +10560,7 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 	case Category::Painter: {
 		// Entity-creation slice: painters have no per-material-style
-		// live setter surface (see PainterIntrospection.h's header
+		// live setter surface (see CstIntrospection.h's header
 		// doc), so route straight through the generic agent CST
 		// param-edit path -- the "RouteCstParamEdit_-class" path
 		// Material/Light/Medium use on CST scenes, generalized: it
@@ -10258,6 +10571,17 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		if( mSelectionName.size() <= 1 ) return false;
 		const AgentCommitResult r = ApplyAgentParamEdit(
 			mSelectionName, String( "painter" ), name, valueStr, nullptr );
+		return r.applied;
+	}
+
+	case Category::Geometry: {
+		// GUI redesign 2026-07-22: identical route to Painter -- the
+		// generic agent CST param-edit path (cancel-and-parks, captures
+		// the prior value for undo/redo, marks dirty, re-derives the
+		// geometry AND every object referencing it, kicks the re-render).
+		if( mSelectionName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEdit(
+			mSelectionName, String( "geometry" ), name, valueStr, nullptr );
 		return r.applied;
 	}
 

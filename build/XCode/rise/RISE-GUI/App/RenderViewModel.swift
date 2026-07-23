@@ -2396,6 +2396,19 @@ final class RenderViewModel: ObservableObject {
         }
     }
 
+    /// Jump-to-definition (GUI redesign 2026-07-22): navigate the
+    /// inspector + outliner to a referenced element -- the action behind
+    /// the property context menu's "Jump to Definition".  Reuses the
+    /// reverse-select epoch so the outliner highlight and the panel
+    /// re-snapshot through the exact wiring "Select in Inspector"
+    /// already exercises.
+    func jumpToEntity(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, !name.isEmpty else { return }
+        if vb.setSelection(category, name: name) {
+            reverseSelectEpoch &+= 1
+        }
+    }
+
     // MARK: - Entity creation + painter CRUD (entity-creation slice)
     //
     // All three mutating calls below take the controller's commit mutex

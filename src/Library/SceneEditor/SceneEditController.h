@@ -270,12 +270,22 @@ namespace RISE
 			                  ///< active animation (like picking a camera); no editable
 			                  ///< properties, selection just activates it.
 			SceneVariant = 9, ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
-			Painter    = 10   ///< Painters section (union of the IPainter + IScalarPainter
+			Painter    = 10,  ///< Painters section (union of the IPainter + IScalarPainter
 			                  ///< managers).  CurrentPanelMode returns PanelMode::None for
 			                  ///< this category this slice (no dedicated PanelMode value) —
 			                  ///< property rows are read via PropertyCountFor/PropertyNameFor
 			                  ///< (indexed directly by Category, not by the current panel).
+			Geometry   = 11   ///< Geometry section (IGeometryManager; every "*_geometry"
+			                  ///< chunk).  GUI redesign 2026-07-22: enumerated via
+			                  ///< IJob::EnumerateGeometryNames; property rows are the
+			                  ///< generic descriptor+CST surface (CstIntrospection); edits
+			                  ///< route through ApplyAgentParamEdit (entityKind
+			                  ///< "geometry").  Same PanelMode::None convention as Painter.
 		};
+
+		//! Category array bound (None..Geometry).  PUBLIC so free helpers
+		//! (PropsForCat) and shells never mirror it as a stale literal.
+		static constexpr int kNumCategories = 12;
 
 		//! Model-B F2 slice S1: render IDENTITY.  A monotonic id assigned to
 		//! every render this controller (or a headless AgentSession wrapping
@@ -2005,6 +2015,23 @@ namespace RISE
 		//! hint; the parser ignores it.
 		String PropertyUnitLabel( unsigned int idx ) const;
 
+		//! Jump-to-definition (GUI redesign, 2026-07-22): for a
+		//! ValueKind::Reference row whose value names another element,
+		//! resolve WHICH UI category that element lives in so the shell
+		//! can SetSelection(outCat, outName) -- the "right-click a
+		//! reference, jump to its definition" affordance.  Resolution
+		//! probes the row's descriptor-declared referenceCategories
+		//! against the LIVE managers first-wins (the same order Cst.cpp's
+		//! ComputeChunkRefs resolves reference edges).  Returns false for
+		//! a non-Reference row, an empty/unset value, or a value that
+		//! doesn't currently name an element in any declared category
+		//! (dangling reference -- the shell greys the menu item).
+		//! Indexes the PRIMARY snapshot; the For twin indexes the
+		//! per-category snapshot (same convention as every accessor pair
+		//! above).
+		bool PropertyJumpTarget( unsigned int idx, Category& outCat, String& outName ) const;
+		bool PropertyJumpTargetFor( Category cat, unsigned int idx, Category& outCat, String& outName ) const;
+
 		//! Refresh the property snapshot from the live entity.  Called
 		//! by the platform UI before reading PropertyN getters.
 		//! Picks camera vs object vs empty based on CurrentPanelMode.
@@ -2894,7 +2921,10 @@ namespace RISE
 		// pick, used for the panel header / single-tuple callers.
 		// All writes happen on the UI thread; render thread doesn't
 		// touch these.
-		static constexpr int        kNumCategories = 11;  // None..Painter
+		// (kNumCategories moved PUBLIC next to the Category enum -- GUI
+		//  redesign 2026-07-22: the free-function PropsForCat mirrored it as
+		//  a literal that went stale TWICE; public visibility removes the
+		//  mirroring hazard for good.)
 		String                      mSelectionByCategory[ kNumCategories ];
 		//! Per-category "is the accordion section expanded?" flag,
 		//! tracked SEPARATELY from `mSelectionByCategory` so a user
@@ -3667,6 +3697,23 @@ namespace RISE
 		//! camera panes).  RefreshNavGizmo already used this exact idiom
 		//! inline; this centralizes it so pick + every gizmo site agree.
 		const ICamera* EffectiveViewportCamera_( const IScene* scene ) const;
+
+		//! Jump-to-definition shared body (see PropertyJumpTarget) --
+		//! resolves one row's Reference value against the live managers.
+		bool ResolveRowJumpTarget_( const CameraProperty& row, Category& outCat, String& outName ) const;
+
+		//! External-review P1 (2026-07-22): general reference-target guard for
+		//! GUI property edits.  Returns true (== "reject this edit") ONLY when
+		//! @a value would persist a DANGLING reference: @a paramName is a
+		//! Reference-kind param on @a entityName's chunk (@a cat's role suffix),
+		//! and @a value names a RUNTIME-only registered entity of an allowed
+		//! referenceCategory that has NO CST chunk -- so it renders now but fails
+		//! on save/reload.  Inline literals (e.g. `ior 1.7`), CST-backed names,
+		//! and the `none` sentinel all return false (allowed).  Conservative by
+		//! construction: only the precisely-diagnosable runtime-only case is
+		//! rejected, so it never blocks a legitimate edit.
+		bool WouldPersistDanglingReference_( Category cat, const String& entityName,
+			const String& paramName, const String& value );
 
 		//! user-review P1-5 / P2-1: the effective camera of a SPECIFIC pane
 		//! (its realized free-fly / named-view override, else the scene camera),
