@@ -29,8 +29,11 @@
 #include "EditHistory.h"
 #include "DirtyTracker.h"
 #include "../Interfaces/IScenePriv.h"
+#include "../Cst/Cst.h"   // Document-first ADR phase 1: CstHeadVersion (derived dirty)
 #include <functional>
 #include <unordered_set>
+#include <atomic>
+#include <mutex>
 
 namespace RISE
 {
@@ -81,7 +84,13 @@ namespace RISE
 		//! `IJob::EnumerateMediumNames`.  Null Job causes those ops to
 		//! fail at Apply time — the editor stays usable for transform /
 		//! material / shader / shadow / camera / light ops without it.
-		void SetJob( IJob* job ) { mJob = job; }
+		void SetJob( IJob* job )
+		{
+			mJob = job;
+			// Document-first ADR phase 1: a fresh bind is the CLEAN baseline --
+			// derived dirty compares the head against this saved version.
+			CaptureSavedHeadVersion_();
+		}
 
 		//! Re-point the editor at the Job's CURRENT scene after a whole-scene rebuild (e.g. a scene_variant
 		//! re-derive ClearAll's + recreates the Scene + managers); call ALONGSIDE the SetXManager setters,
@@ -233,6 +242,9 @@ namespace RISE
 		{
 			mDirtyTracker.Clear();
 			mScaleFromAnchorSet.clear();
+			// Document-first ADR phase 1: a successful save makes the CURRENT
+			// head the clean baseline for the derived-dirty comparison.
+			CaptureSavedHeadVersion_();
 			FireDirtyChangedIfTransitioned();
 		}
 
@@ -437,20 +449,29 @@ namespace RISE
 		//! materials / media (Phase B), created-pending entities
 		//! (Phase C), and the CST-head boolean (Model-B F5) — plus the
 		//! scale-from-anchor set.
+		//! Document-first ADR phase 1: the REVISION-DIFF term is the derived
+		//! floor -- a Document commit after the last save ALWAYS reads dirty,
+		//! regardless of tracker bookkeeping (kills the false-clean class
+		//! permanently).  The tracker + scale-anchor terms persist as safe
+		//! (false-dirty-only) supplements for live-only pending state and
+		//! legacy scenes.  Known asymmetry: undo-back-to-saved still reads
+		//! dirty (revision moved) -- a safe false-positive (ADR SS3.3).
 		bool HasUnsavedChanges() const
 		{
-			return mDirtyTracker.HasAnyDirty()
+			return HeadDiffersFromSaved_()
+			    || mDirtyTracker.HasAnyDirty()
 			    || !mScaleFromAnchorSet.empty();
 		}
 
 		//! Notification channel for the platform GUI to update its
-		//! Save-button enable state.  Fires only on TRANSITIONS of
-		//! `HasUnsavedChanges()` (clean→dirty or dirty→clean), so
-		//! a stream of N edits that all leave the scene dirty
-		//! produces ONE callback.  Fired from Apply / Undo / Redo /
-		//! ClearDirtyState.  Listener runs on the calling thread
-		//! (typically the UI thread); bridges should marshal to
-		//! their UI dispatch queue if needed.
+		//! Save-button enable state.  COALESCED transition semantics
+		//! (document-first phase 1 + round-5): the listener reports the
+		//! CURRENT `HasUnsavedChanges()` whenever it DIFFERS from the last
+		//! report, delivered from the post-unlock drain with NO lock held.
+		//! A clean->dirty->clean burst between drains nets to NO callback --
+		//! the final state was already correct; consumers must key on the
+		//! reported VALUE, never count calls.  Listener runs on whichever
+		//! thread drained; bridges should marshal to their UI queue.
 		//!
 		//! Set once before the editor starts receiving edits;
 		//! re-setting clears the previous listener.  Pass `nullptr`
@@ -602,17 +623,72 @@ namespace RISE
 		//! Memoized last-fired value of `HasUnsavedChanges()` so the
 		//! listener only fires on transitions.  Starts at false
 		//! (matches the initial clean state on construction).
+		//! Phase 1: guarded by mNotifyMutex (concurrent drains).
 		bool mPrevHasUnsavedChanges = false;
 
+		//! Document-first ADR phase 1: deferred-notification state.  The
+		//! pending flag is set under arbitrary locks (cheap atomic); the
+		//! leaf mNotifyMutex serializes drains and is never held while
+		//! acquiring any other lock.
+		std::atomic<bool> mDirtyNotifyPending{ false };
+		std::mutex        mNotifyMutex;
+		//! Round-5 review P1: single-deliverer gate -- only one thread runs the
+		//! listener at a time; racing drains re-flag pending and the active
+		//! deliverer loops, so callbacks stay ORDERED and a re-entrant nested
+		//! drain (from inside the listener) returns immediately (no deadlock).
+		std::atomic<bool> mNotifyDelivering{ false };
+
+		//! Round-5 review P1: the derived-dirty floor is served from this CACHED
+		//! atomic, recomputed at every mutation's Fire (under the mutator's own
+		//! lock -> the Job head read is race-free) and by the controller's
+		//! per-frame RefreshDerivedDirty catch-all.  The lock-free C-API dirty
+		//! query then never reads the non-atomic head/saved versions directly
+		//! (the round-4 wiring did, a torn-read UB).
+		std::atomic<bool> mHeadDiffersCached{ false };
+
+		//! Document-first ADR phase 1: the head version at bind / last
+		//! successful save -- the clean baseline for derived dirty.
+		RISE::Cst::CstHeadVersion mSavedHeadVersion;
+
+		//! Capture the CURRENT head version as the clean baseline (bind +
+		//! save success).
+		void CaptureSavedHeadVersion_();
+
+		//! Derived-dirty floor: serves mHeadDiffersCached (lock-free).
+		bool HeadDiffersFromSaved_() const { return mHeadDiffersCached.load( std::memory_order_acquire ); }
+
+		//! Recompute the cached floor from the live head + saved baseline.
+		//! REQUIRES a stable Document (the caller's mutation lock, or a
+		//! single-threaded context) -- see mHeadDiffersCached's doc.
+		void RecomputeHeadDiffers_();
+
 	public:
-		//! Re-evaluate `HasUnsavedChanges()` and fire the listener iff
-		//! the value changed since the last fire.  Called from every
-		//! mutation entry point (Apply success, Undo, Redo,
-		//! ClearDirtyState).  No-op when no listener is installed.
-		//! `public` because a file-scope RAII helper in SceneEditor.cpp
-		//! invokes it from Apply / Undo / Redo's scope-exit; no
-		//! preconditions — safe to call from anywhere.
+		//! Document-first ADR phase 1 (fire -> pending + drain): mutation
+		//! entry points (Apply success, Undo, Redo, ClearDirtyState, the
+		//! marks) call THIS, which only records "dirty may have changed" --
+		//! it never invokes the listener, so it is safe under any lock.  The
+		//! CONTROLLER drains after releasing its mutex
+		//! (DrainDirtyNotification), so the listener always runs OUTSIDE
+		//! controller locks; a missed drain site degrades to a one-frame
+		//! delay (RefreshProperties drains as a per-frame catch-all), never
+		//! a deadlock or a missed transition.  Kept public for the RAII
+		//! helper in SceneEditor.cpp; safe to call from anywhere.
 		void FireDirtyChangedIfTransitioned();
+
+		//! Drain the pending dirty notification: if a mutation flagged a
+		//! possible change, re-evaluate `HasUnsavedChanges()` and fire the
+		//! listener iff it TRANSITIONED since the last fire.  MUST be called
+		//! with no controller locks held.  Thread-safe (leaf mNotifyMutex
+		//! serializes concurrent drains); a listener must not re-enter a
+		//! draining entry point synchronously (marshal to your queue -- both
+		//! shells already do).
+		void DrainDirtyNotification();
+
+		//! Round-5 review P1: recompute the cached derived-dirty floor.  Call
+		//! ONLY while the Document is stable (the controller calls it inside
+		//! its RefreshProperties mMutex try_lock region as a per-frame
+		//! self-heal for any mutation path that missed its Fire).
+		void RefreshDerivedDirty() { RecomputeHeadDiffers_(); }
 
 		//! P5 Slice 3 expansion (object transform): the CONTROLLER calls these at a render-thread-PARKED boundary
 		//! (drag-end / panel transform edit / undo / redo) to commit object transforms accumulated by the

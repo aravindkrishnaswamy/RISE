@@ -3970,6 +3970,17 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Caller is responsible for `userData` lifetime — typical pattern
 	//! is __bridge_retained / CFBridgingRelease around an Obj-C block
 	//! or an objc_storeWeak slot.
+	//!
+	//! THREADING CONTRACT (document-first phase 1 + round-5, 2026-07-22):
+	//! the callback is delivered from a post-mutation DRAIN on whichever
+	//! thread drove the edit, with NO controller lock held, and transitions
+	//! are COALESCED -- it reports the CURRENT hasUnsavedChanges whenever it
+	//! differs from the last report; a clean->dirty->clean burst between
+	//! drains produces no call (key on the VALUE, never count calls).
+	//! Re-entering the controller from the callback is deadlock-hardened
+	//! (single-deliverer drain + snapshot getters) but still discouraged --
+	//! marshal to your own event loop / dispatch queue (both in-tree shells
+	//! do: dispatch_async(main) on macOS, Qt::QueuedConnection on Windows).
 	typedef void (*RISE_API_DirtyChangedFn)( void* userData, int hasUnsavedChanges );
 	bool RISE_API_SceneEditController_SetDirtyChangedCallback(
 		SceneEditController* p,

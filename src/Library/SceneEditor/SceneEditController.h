@@ -1931,6 +1931,13 @@ namespace RISE
 		//! — a stream of N edits that all leave the scene dirty
 		//! produces one callback, not N.  Pass an empty/null `std::function`
 		//! to detach.
+		//! THREADING CONTRACT (external-review round 3, 2026-07-22): the listener
+		//! fires on WHATEVER thread drove the edit, UNDER THE HELD mMutex (see
+		//! ApplyAgentParamEdit's MarkCstHeadDirty call site).  It MUST NOT call
+		//! back into this controller synchronously -- the enumeration getters and
+		//! RefreshProperties now take mMutex, so a synchronous re-entry deadlocks
+		//! (non-recursive mutex).  Marshal to your UI queue instead; both shells
+		//! already do (Mac dispatch_async(main), Windows Qt::QueuedConnection).
 		using DirtyChangedFn = SceneEditor::DirtyChangedFn;
 		void SetDirtyChangedListener( DirtyChangedFn fn )
 		{
@@ -3702,6 +3709,65 @@ namespace RISE
 		//! resolves one row's Reference value against the live managers.
 		bool ResolveRowJumpTarget_( const CameraProperty& row, Category& outCat, String& outName ) const;
 
+		//! Document-first ADR phase 1: the mutation bodies.  The PUBLIC twins
+		//! call these then drain the deferred dirty notification OUTSIDE any
+		//! lock (SceneEditor::DrainDirtyNotification) -- so listener work never
+		//! runs under mMutex and a re-entrant listener cannot deadlock.
+		bool SetPropertyInner_( const String& name, const String& valueStr );
+		//! Drain-free body of RestoreEditorState -- for callers that HOLD mMutex
+		//! (RollbackTransaction), whose own post-unlock drain delivers the
+		//! notification.  The public RestoreEditorState wraps this + drains.
+		void RestoreEditorStateLocked_( const EditorStateSnapshot& s, bool restoreDirty );
+		bool SetSelectionInner_( Category cat, const String& entityName );
+		void UndoInner_();
+		void RedoInner_();
+		AgentCommitResult ApplyAgentParamEditInner_(
+			const String& entityName, const String& entityKind, const String& param,
+			const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! External-review round 3 (2026-07-22): the UNLOCKED bodies of the
+		//! category-enumeration getters.  REQUIRE a stable manager set: either
+		//! mMutex held (SourceRefAtByteOffset's addressability probe, the
+		//! InstantiateEntityTemplate name-pick scope) or a single-threaded
+		//! context.  The PUBLIC getters wrap these with the mRenderOwnsScene
+		//! guard + a blocking mMutex hold (safe: GUI edits run on the UI thread
+		//! itself, so a UI-thread poll only ever contends brief background
+		//! holds -- see the SetDirtyChangedListener threading contract).
+		unsigned int CategoryEntityCountLocked_( Category cat ) const;
+		String       CategoryEntityNameLocked_( Category cat, unsigned int idx ) const;
+		String       CategoryActiveNameLocked_( Category cat ) const;
+
+		//! Round-4 structural fix (the "UI reads live managers" P1 class): the
+		//! PUBLIC enumeration getters serve a per-category SNAPSHOT with a
+		//! stale-fallback refresh, never a blocking mMutex hold.  Refresh
+		//! policy: try_lock mMutex -- on success rebuild this category's
+		//! snapshot from the *Locked_ bodies; on contention (or render-owns-
+		//! scene) serve the PRIOR snapshot unchanged.  Properties: never
+		//! blocks (no UI freeze), never deadlocks (a dirty-listener that
+		//! re-enters on the mutating thread fails the try_lock and gets the
+		//! stale list), never races a manager swap (live reads only under the
+		//! lock), and never flickers empty (stale beats empty).  mEnumSnapshotMutex
+		//! guards ONLY the snapshot arrays; it is always leaf-level -- nothing
+		//! acquires mMutex (or anything else) while holding it.
+		void RefreshEnumSnapshot_( Category cat ) const;
+
+		//! Document-first ADR phase 2: THE unified UI read surface.  Every
+		//! public read accessor (properties, enumeration, jump rows) serves
+		//! this one struct under the one leaf mUiSnapshotMutex; the writers
+		//! (RefreshProperties, RefreshEnumSnapshot_) build into locals under
+		//! the mMutex try_lock and publish with a brief leaf hold.  A new
+		//! UI-visible datum belongs IN THIS STRUCT, refreshed on one of the
+		//! existing cadences -- never an ad-hoc live read (ADR rule 4).
+		struct EditorUiSnapshot
+		{
+			std::vector<CameraProperty> properties;                          // primary (panel-mode routed)
+			std::vector<CameraProperty> propertiesByCategory[kNumCategories];
+			std::vector<String>         entityNames[kNumCategories];
+			String                      activeNames[kNumCategories];
+		};
+		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
+		mutable EditorUiSnapshot  mUi;
+
 		//! External-review P1 (2026-07-22): general reference-target guard for
 		//! GUI property edits.  Returns true (== "reject this edit") ONLY when
 		//! @a value would persist a DANGLING reference: @a paramName is a
@@ -3742,8 +3808,8 @@ namespace RISE
 		// in `RefreshProperties`.  Phase 4b's multi-section panel
 		// reads the per-category arrays so each expanded section
 		// renders its own rows independently.
-		std::vector<CameraProperty>                          mProperties;
-		std::vector<CameraProperty>                          mPropertiesByCategory[ kNumCategories ];
+		// (mProperties / mPropertiesByCategory moved into EditorUiSnapshot --
+		// Document-first ADR phase 2.)
 
 		// Transactional-rollback state.  Appended at the end of the member
 		// list so the addition is layout-additive (no field before it

@@ -2549,8 +2549,14 @@ void SceneEditController::DropStaleSelection_()
 	}
 }
 
-void SceneEditController::Undo()
+void SceneEditController::UndoInner_()
 {
+	// Round-5 review P0: same save-in-flight refusal as SetPropertyInner_
+	// (history navigation mutates the Document).
+	if( mSaving.load( std::memory_order_acquire ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: undo/redo refused -- a save is in flight." );
+		return;
+	}
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
 	// undoing PAST the baseline would break RollbackTransaction's revert
@@ -2620,8 +2626,14 @@ void SceneEditController::Undo()
 	}
 }
 
-void SceneEditController::Redo()
+void SceneEditController::RedoInner_()
 {
+	// Round-5 review P0: same save-in-flight refusal as SetPropertyInner_
+	// (history navigation mutates the Document).
+	if( mSaving.load( std::memory_order_acquire ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: undo/redo refused -- a save is in flight." );
+		return;
+	}
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	if( mTxnOpen ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
@@ -2755,6 +2767,16 @@ SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState
 }
 
 void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, bool restoreDirty )
+{
+	RestoreEditorStateLocked_( st, restoreDirty );
+	// Document-first phase 1: this PUBLIC entry point holds no controller
+	// lock -- drain the dirty->clean notification RestoreDirtyState flagged.
+	// (RollbackTransaction calls the Locked_ body directly under mMutex and
+	// drains at its own post-unlock tail.)
+	mEditor.DrainDirtyNotification();
+}
+
+void SceneEditController::RestoreEditorStateLocked_( const EditorStateSnapshot& st, bool restoreDirty )
 {
 	// P1-#1: on a FULL rollback restore the dirty channels to the pre-transaction
 	// baseline (fires the dirty-changed listener); on a PARTIAL rollback leave the
@@ -2922,7 +2944,7 @@ bool SceneEditController::RollbackTransaction()
 	// baseline so a fully reverted document doesn't keep showing unsaved
 	// changes (Undo RE-MARKS dirty; created entities are never un-marked),
 	// then re-run the selection/panel resync the controller's Undo does.
-	RestoreEditorState( mTxnBaseline, fullyReverted );   // H1 + P1-#1: dirty only on full revert; selection always
+	RestoreEditorStateLocked_( mTxnBaseline, fullyReverted );   // H1 + P1-#1 (phase 1: Locked_ -- we hold mMutex; the tail drain notifies)
 	// P1-#3: a FULL rollback restores the pre-transaction redo stack the first edit
 	// cleared; a PARTIAL leaves it empty (ClearRedo above) since those redo entries
 	// are no longer coherent with the residual state.
@@ -2950,6 +2972,7 @@ bool SceneEditController::RollbackTransaction()
 	// changes the category entity lists; bump the epoch so platform UIs
 	// re-pull (cheap, and covers the conflict/AI-reject cases).
 	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
 	return fullyReverted;
 }
 
@@ -3031,7 +3054,61 @@ std::vector<String> CollectPainterUnionNames( IJobPriv& job )
 
 }  // namespace
 
+// Round-4 structural fix (external review): the PUBLIC enumeration getters
+// serve a SNAPSHOT with stale-fallback refresh -- see the header doc on
+// RefreshEnumSnapshot_.  This replaces round-3's blocking wrappers, whose
+// blocking lock could DEADLOCK a C-ABI dirty-changed callback that calls
+// back into the controller (the listener fires on the mutating thread with
+// mMutex held, and the C contract cannot forbid re-entry by out-of-tree
+// clients).  A try_lock refresh + stale fallback is deadlock-proof, block-
+// proof, UAF-proof (live reads only under the lock), and flicker-proof
+// (stale beats empty -- including during a production/agent render, where
+// the outliner now keeps its last-known list instead of blanking).
+void SceneEditController::RefreshEnumSnapshot_( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
+	std::vector<String> names;
+	const unsigned int n = CategoryEntityCountLocked_( cat );
+	names.reserve( n );
+	for( unsigned int i = 0; i < n; ++i ) names.push_back( CategoryEntityNameLocked_( cat, i ) );
+	String active = CategoryActiveNameLocked_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );              // leaf lock: never held across mMutex
+	mUi.entityNames[ci].swap( names );
+	mUi.activeNames[ci] = active;
+}
+
 unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	RefreshEnumSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.entityNames[ci].size() );
+}
+
+String SceneEditController::CategoryEntityName( Category cat, unsigned int idx ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return String();
+	RefreshEnumSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.entityNames[ci].size() ? mUi.entityNames[ci][idx] : String();
+}
+
+String SceneEditController::CategoryActiveName( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return String();
+	RefreshEnumSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return mUi.activeNames[ci];
+}
+
+unsigned int SceneEditController::CategoryEntityCountLocked_( Category cat ) const
 {
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return 0;
@@ -3119,7 +3196,7 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 	}
 }
 
-String SceneEditController::CategoryEntityName( Category cat, unsigned int idx ) const
+String SceneEditController::CategoryEntityNameLocked_( Category cat, unsigned int idx ) const
 {
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return String();
@@ -3204,7 +3281,7 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 	}
 }
 
-String SceneEditController::CategoryActiveName( Category cat ) const
+String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 {
 	switch( cat ) {
 	case Category::Camera: {
@@ -3392,7 +3469,7 @@ void SceneEditController::CollapseSection( Category cat )
 	}
 }
 
-bool SceneEditController::SetSelection( Category cat, const String& entityName )
+bool SceneEditController::SetSelectionInner_( Category cat, const String& entityName )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// External-review P1 (2026-07-22): the C-ABI passes a RAW int category
@@ -3534,7 +3611,8 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 						char wStr[64]; char hStr[64];
 						std::snprintf( wStr, sizeof(wStr), "%u", filmAfter->GetWidth() );
 						std::snprintf( hStr, sizeof(hStr), "%u", filmAfter->GetHeight() );
-						mJob.ApplyCstFilmEdit( wStr, hStr, nullptr );
+						if( mJob.ApplyCstFilmEdit( wStr, hStr, nullptr ) != 0 )
+							mEditor.MarkCstHeadDirty( "", nullptr );   // round-3 sibling fix + round-4 gate: see the Film SetProperty arm
 					}
 				}
 			}
@@ -3575,12 +3653,23 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	//     Object, since the user is editing media independently.
 	if( cat == Category::Object ) {
 		if( entityName.size() > 1 ) {
+			// External-review round 3 (2026-07-22): the two Find helpers read the
+			// LIVE object manager, racing an any-thread agent D2 manager swap ->
+			// UAF.  Resolve both names under a brief mMutex hold, then write the
+			// UI-state members with the lock released (main-thread-only members;
+			// the lock protects the manager reads, not them).
+			String matName, medName;
+			{
+				std::lock_guard<std::mutex> slk( mMutex );
+				matName = FindObjectMaterialName( mJob, entityName );
+				medName = FindObjectInteriorMediumName( mJob, entityName );
+			}
 			const int matIdx = static_cast<int>( Category::Material );
-			mSelectionByCategory[ matIdx ] = FindObjectMaterialName( mJob, entityName );
+			mSelectionByCategory[ matIdx ] = matName;
 			mSectionExpanded[ matIdx ]     = true;
 
 			const int medIdx = static_cast<int>( Category::Medium );
-			mSelectionByCategory[ medIdx ] = FindObjectInteriorMediumName( mJob, entityName );
+			mSelectionByCategory[ medIdx ] = medName;
 			mSectionExpanded[ medIdx ]     = true;
 		}
 		// Note: a "section header click" on Object with empty name
@@ -3937,9 +4026,14 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 {
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
-	const bool uniqueFallback = ( entityKind.size() > 1 && std::string( entityKind.c_str() ) == "camera" );
+	// Phase 3: kind-addressed singletons -- same generalized rule as
+	// Job::ApplyCstParamEditImpl_ (empty name + kind = the sole chunk of that
+	// kind), so the prior-value capture resolves the SAME chunk the edit will.
+	const std::string ekind( entityKind.size() > 1 ? entityKind.c_str() : "" );
+	const bool uniqueFallback = ( ekind == "camera" )
+		|| ( entityName.size() <= 1 && !ekind.empty() );
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-		*doc, entityName.c_str(), nullptr, entityKind.size() > 1 ? entityKind.c_str() : "", uniqueFallback );
+		*doc, entityName.size() > 1 ? entityName.c_str() : "", nullptr, ekind, uniqueFallback );
 	if( id == 0 ) return false;
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return false;
@@ -3991,7 +4085,7 @@ bool SceneEditController::CaptureAgentChunkForRemoveUndo_(
 // under mMutex while the render thread is parked, so no reader can observe
 // the D2 transient {0,0} head-version or a half-rebuilt Scene.  Callable from
 // any thread.
-SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditInner_(
 	const String& entityName,
 	const String& entityKind,
 	const String& param,
@@ -4022,6 +4116,24 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	// transaction API and the in-app agent path both run on the main
 	// thread; a future async agent transport must revisit this (marshal
 	// the commit to the main thread or synchronize the flag).
+	// Round-5 review P0: refuse while a SAVE is in flight.  RequestSave
+	// serializes the retained Document during its unlocked step 2 (file IO)
+	// with only mSaving as the guard -- the render thread honors it, and an
+	// agent commit from the RPC thread must too, else a D2 re-derive can
+	// free/replace the Document mid-serialize (UAF) or slip in before the
+	// save-success baseline and be silently baselined "clean".  Retriable:
+	// the identical commit succeeds once the save completes.
+	if( mSaving.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused -- a save is in flight (retry after it completes)." );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "save in flight" );
+		return r;
+	}
 	if( mTxnOpen )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused inside an open transaction (no EditHistory record -> rollback cannot revert it)." );
@@ -4070,7 +4182,12 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
 		return r;
 	}
-	if( entityName.size() <= 1 || param.size() <= 1 || value.size() <= 1 )
+	// Document-first ADR phase 3: an EMPTY target with a non-empty kind is the
+	// KIND-ADDRESSED SINGLETON form (the sole `film` / `<kind>_rasterizer` /
+	// unnamed-camera chunk) -- Job::ApplyCstParamEditImpl_ resolves it via the
+	// generalized unique-in-kind fallback.  Only the both-empty form is invalid.
+	if( ( entityName.size() <= 1 && entityKind.size() <= 1 )
+	 || param.size() <= 1 || value.size() <= 1 )
 	{
 		// RString::size() counts the trailing NUL, so a non-empty string has
 		// size >= 2; size <= 1 is the empty case.
@@ -4078,7 +4195,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		r.rawCode = 0;
 		r.status  = String( "rejected" );
 		r.headVersion = mJob.GetCstHeadVersion();
-		r.message = String( "target, param, and value must all be non-empty" );
+		r.message = String( "param and value must be non-empty, and target may be empty only with a kind (singleton addressing)" );
 		return r;
 	}
 
@@ -4273,7 +4390,9 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentInsertChun
 	const String& chunkText,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
-	return ApplyAgentChunkCrud_( /*isInsert*/ true, chunkText, String(), baseVersionOrNull );
+	const AgentCommitResult r = ApplyAgentChunkCrud_( /*isInsert*/ true, chunkText, String(), baseVersionOrNull );
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
 }
 
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChunk(
@@ -4281,7 +4400,9 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 	const String& kind,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
-	return ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
+	const AgentCommitResult r = ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -5424,6 +5545,20 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	const String& b,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
+	AgentCommitResult rSaveGate;
+	// Round-5 review P0: same save-in-flight refusal as ApplyAgentParamEditInner_
+	// (see that guard's doc) -- chunk CRUD re-derives and replaces the Document.
+	if( mSaving.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk CRUD refused -- a save is in flight (retry after it completes)." );
+		rSaveGate.applied = false;
+		rSaveGate.rawCode = 0;
+		rSaveGate.status  = String( "rejected" );
+		rSaveGate.retriable = true;
+		rSaveGate.headVersion = mJob.GetCstHeadVersion();
+		rSaveGate.message = String( "save in flight" );
+		return rSaveGate;
+	}
 	AgentCommitResult r;
 	const char* verb = isInsert ? "insert" : "remove";
 
@@ -5803,6 +5938,7 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	// Step 3 re-kicks a render when it does, so a save never strands a
 	// half-painted viewport.
 	bool interruptedPass = false;
+	RISE::Cst::CstHeadVersion headAtSerialize;
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load() ) {
@@ -5811,6 +5947,12 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load(); } );
 		mSaving.store( true );
+		// Round-5 review P0: remember WHICH head the engine is about to
+		// serialize.  Step 3 baselines "clean" ONLY if the head is still this
+		// one -- a mutation that somehow slips past the mSaving gates can then
+		// never be silently baselined as saved (derived-dirty philosophy: the
+		// flag must never claim the file carries a change it does not).
+		headAtSerialize = mJob.GetCstHeadVersion();
 	}
 
 	// Fix-round-6 RED-PROVE test seam -- no-op in production (see the
@@ -5845,7 +5987,17 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 			// Engine cleared mEditor.Dirty() already (it holds a non-
 			// const ref).  Clear the SFA set on the editor side too,
 			// since the engine cleared its local copy.
-			mEditor.ClearDirtyState();
+			// Round-5 review P0: baseline-clean ONLY when the head is still the
+			// one the engine serialized (see headAtSerialize).  A moved head
+			// means some mutation slipped in -- the file is a valid snapshot of
+			// the OLD head, so the scene must STAY dirty.
+			if( mJob.GetCstHeadVersion() == headAtSerialize ) {
+				mEditor.ClearDirtyState();
+			} else {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditController::RequestSave: the Document head moved during the save -- "
+					"the written file snapshots the PRE-edit head, so the scene stays DIRTY." );
+			}
 			mLastSaveError.clear();
 		} else {
 			mLastSaveError = result.errorMessage;
@@ -5857,6 +6009,10 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		}
 		mCV.notify_one();
 	}
+	// Document-first phase 1: the save-success ClearDirtyState above only
+	// flagged the transition -- drain it here, outside the lock scope, so the
+	// Save button disables promptly on the dirty->clean flip.
+	mEditor.DrainDirtyNotification();
 
 	return result;
 }
@@ -6176,9 +6332,9 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 	// keyword blocklist, no forward-round-trip that role-keyed configs can defeat).
 	auto nameInEnum = [&]( Category c, const std::string& name ) {
 		if( name.empty() ) return false;
-		const unsigned int n = CategoryEntityCount( c );   // lock-free; safe under mMutex
+		const unsigned int n = CategoryEntityCountLocked_( c );   // Locked_ twin: this probe runs under mMutex (round-3 getter split)
 		for( unsigned int i = 0; i < n; ++i )
-			if( std::string( CategoryEntityName( c, i ).c_str() ) == name ) return true;
+			if( std::string( CategoryEntityNameLocked_( c, i ).c_str() ) == name ) return true;
 		return false;
 	};
 
@@ -6815,7 +6971,7 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 	case Category::Painter:
 		// Entity-creation slice: no dedicated PanelMode::Painter this
 		// slice (PropertyCountFor/PropertyNameFor/etc. read
-		// mPropertiesByCategory[Category::Painter] directly, indexed by
+		// mUi.propertiesByCategory[Category::Painter] directly, indexed by
 		// Category rather than by the "current panel" mirror below --
 		// see buildRowsFor's Painter case and this method's own header
 		// doc on Category::Painter).
@@ -6877,6 +7033,11 @@ String SceneEditController::CurrentPanelHeader() const
 
 void SceneEditController::RefreshProperties()
 {
+	// Document-first ADR phase 1: per-frame catch-all drain (shells call this
+	// every frame) -- a mutation path that missed an explicit drain degrades
+	// to a one-frame notification delay instead of a lost transition.  Runs
+	// BEFORE the try_lock below, i.e. outside any controller lock.
+	mEditor.DrainDirtyNotification();
 	// External-review P1 (2026-07-22): the row build below reads LIVE scene /
 	// CST / manager state (buildRowsFor across every expanded category --
 	// geometry enumeration, material-slot classification, CST introspection,
@@ -6890,19 +7051,40 @@ void SceneEditController::RefreshProperties()
 	// render ends.  No internal caller holds mMutex here (only the C-ABI, on
 	// the UI thread), so the lock cannot self-deadlock.
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;
-	std::lock_guard<std::mutex> lk( mMutex );
+	// Round-3 P1 (deadlock fix): try_lock, NOT a blocking guard.  The dirty-
+	// changed listener fires UNDER the held mMutex (ApplyAgentParamEdit ->
+	// MarkCstHeadDirty); a listener that synchronously refreshed the panel
+	// would self-deadlock on a blocking lock, and even the shells' deferred
+	// listeners can land a refresh while a background agent commit still
+	// holds mMutex -- blocking would freeze the UI thread for the commit's
+	// duration.  On contention keep the PRIOR rows (panel shows the last
+	// snapshot); the shells refresh every frame/epoch, so it self-heals.
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;
+	// Round-5 review P1: per-frame self-heal of the cached derived-dirty
+	// floor -- the Document is stable under this try_lock, so any mutation
+	// path that missed its Fire is corrected within a frame.
+	mEditor.RefreshDerivedDirty();
 
-	mProperties.clear();
-	for( int i = 0; i < kNumCategories; ++i ) mPropertiesByCategory[i].clear();
+	// Document-first ADR phase 2: build into LOCALS (under the mMutex
+	// try_lock above), publish under a brief leaf mUiSnapshotMutex hold at
+	// the end -- readers never see a half-built panel and never take mMutex.
+	std::vector<CameraProperty> primaryRows;
+	std::vector<CameraProperty> byCat[kNumCategories];
+	auto publish = [&]() {
+		std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+		mUi.properties.swap( primaryRows );
+		for( int i = 0; i < kNumCategories; ++i ) mUi.propertiesByCategory[i].swap( byCat[i] );
+	};
 
 	const IScene* scene = mJob.GetScene();
-	if( !scene ) return;
+	if( !scene ) { publish(); return; }   // skeleton: publish the EMPTY panel (matches the old clear-then-return)
 
 	// Build per-category property rows for every category that has
 	// a non-empty selection.  Each section in the panel renders its
-	// own rows from `mPropertiesByCategory[cat]`.  For back-compat
+	// own rows from `mUi.propertiesByCategory[cat]`.  For back-compat
 	// with the single-tuple PropertyXxx accessors, also populate
-	// `mProperties` from the PRIMARY category's rows.
+	// `mUi.properties` from the PRIMARY category's rows.
 	auto buildRowsFor = [&]( Category cat, const String& selName ) -> std::vector<CameraProperty> {
 		std::vector<CameraProperty> out;
 		switch( cat ) {
@@ -7030,7 +7212,7 @@ void SceneEditController::RefreshProperties()
 	for( int i = 1; i < kNumCategories; ++i ) {
 		if( !mSectionExpanded[i] ) continue;
 		const Category cat = static_cast<Category>( i );
-		mPropertiesByCategory[i] = buildRowsFor( cat, mSelectionByCategory[i] );
+		byCat[i] = buildRowsFor( cat, mSelectionByCategory[i] );
 	}
 
 	// Back-compat single-tuple snapshot drives the existing
@@ -7038,25 +7220,25 @@ void SceneEditController::RefreshProperties()
 	// the primary category's rows.
 	switch( CurrentPanelMode() ) {
 	case PanelMode::Camera:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Camera ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Camera ) ];
 		break;
 	case PanelMode::Rasterizer:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Rasterizer ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Rasterizer ) ];
 		break;
 	case PanelMode::Object:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Object ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Object ) ];
 		break;
 	case PanelMode::Light:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Light ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Light ) ];
 		break;
 	case PanelMode::Film:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Film ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Film ) ];
 		break;
 	case PanelMode::Material:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Material ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Material ) ];
 		break;
 	case PanelMode::Medium:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Medium ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Medium ) ];
 		break;
 	case PanelMode::None:
 	default:
@@ -7072,73 +7254,85 @@ void SceneEditController::RefreshProperties()
 		if( mSelectionCategory == Category::Painter
 		 || mSelectionCategory == Category::Geometry )
 		{
-			mProperties = mPropertiesByCategory[ static_cast<int>( mSelectionCategory ) ];
+			primaryRows = byCat[ static_cast<int>( mSelectionCategory ) ];
 		}
 		break;
 	}
+
+	publish();
 }
 
 unsigned int SceneEditController::PropertyCount() const
 {
-	return static_cast<unsigned int>( mProperties.size() );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.properties.size() );
 }
 
 String SceneEditController::PropertyName( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].name;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].name;
 }
 
 String SceneEditController::PropertyValue( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].value;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].value;
 }
 
 String SceneEditController::PropertyDescription( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].description;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].description;
 }
 
 int SceneEditController::PropertyKind( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return -1;
-	return static_cast<int>( mProperties[idx].kind );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return -1;
+	return static_cast<int>( mUi.properties[idx].kind );
 }
 
 bool SceneEditController::PropertyEditable( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return false;
-	return mProperties[idx].editable;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return false;
+	return mUi.properties[idx].editable;
 }
 
 unsigned int SceneEditController::PropertyPresetCount( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return 0;
-	return static_cast<unsigned int>( mProperties[idx].presets.size() );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return 0;
+	return static_cast<unsigned int>( mUi.properties[idx].presets.size() );
 }
 
 String SceneEditController::PropertyPresetLabel( unsigned int idx, unsigned int presetIdx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	const auto& presets = mProperties[idx].presets;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	const auto& presets = mUi.properties[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
 	return String( presets[presetIdx].label.c_str() );
 }
 
 String SceneEditController::PropertyPresetValue( unsigned int idx, unsigned int presetIdx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	const auto& presets = mProperties[idx].presets;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	const auto& presets = mUi.properties[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
 	return String( presets[presetIdx].value.c_str() );
 }
 
 String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].unitLabel;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].unitLabel;
 }
 
 // -------------------------------------------------------------------
@@ -7178,8 +7372,16 @@ bool SceneEditController::PropertyJumpTarget(
 {
 	outCat = Category::None;
 	outName = String();
-	if( idx >= mProperties.size() ) return false;
-	return ResolveRowJumpTarget_( mProperties[idx], outCat, outName );
+	// Phase 2: COPY the row out under the leaf lock, resolve after releasing
+	// it -- ResolveRowJumpTarget_ try_locks mMutex, and the leaf must never
+	// be held while acquiring another lock.
+	CameraProperty row;
+	{
+		std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+		if( idx >= mUi.properties.size() ) return false;
+		row = mUi.properties[idx];
+	}
+	return ResolveRowJumpTarget_( row, outCat, outName );
 }
 
 bool SceneEditController::PropertyJumpTargetFor(
@@ -7189,9 +7391,14 @@ bool SceneEditController::PropertyJumpTargetFor(
 	outName = String();
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return false;
-	const std::vector<CameraProperty>& rows = mPropertiesByCategory[ci];
-	if( idx >= rows.size() ) return false;
-	return ResolveRowJumpTarget_( rows[idx], outCat, outName );
+	CameraProperty row;   // phase 2: copy-then-resolve (see PropertyJumpTarget)
+	{
+		std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+		const std::vector<CameraProperty>& rows = mUi.propertiesByCategory[ci];
+		if( idx >= rows.size() ) return false;
+		row = rows[idx];
+	}
+	return ResolveRowJumpTarget_( row, outCat, outName );
 }
 
 // Shared resolution body.  First-wins across the row's declared
@@ -7270,14 +7477,47 @@ bool SceneEditController::WouldPersistDanglingReference_(
 		if( p.name == want ) { pd = &p; break; }
 	if( !pd || pd->kind != ValueKind::Reference ) return false;   // not a reference param
 
-	// CST-addressable?  A chunk of ANY role named `value` exists -> the reference
-	// resolves on a full re-derive / save+reload -> persistable.  (Duplicate names
-	// are a hard error, so the empty suffix is unambiguous.)
-	if( RISE::Cst::DocFindByNameAnyRole(
-			*doc, std::string( value.c_str() ), nullptr, std::string(), false ) != 0 )
+	// CST-resolvable?  Round-3 P1 fix: the earlier any-role name probe let a
+	// same-named chunk of the WRONG category (a geometry named like the runtime
+	// painter) or a LATER-declared chunk vouch for the value -- both save a
+	// non-derivable scene.  Mirror the resolver instead: the target must be a
+	// chunk whose registry category satisfies one of the param's declared
+	// referenceCategories (including BuildReferenceNamespace's two documented
+	// dual-registers: a colour painter doubles as a Function2D, and a
+	// piecewise_linear_function doubles as a colour painter), and it must be
+	// declared BEFORE the referencing chunk (DeriveToJob is sequential -- a
+	// forward reference is not registered yet at bind time).
+	const int refCount = RISE::Cst::DocItemCount( *doc );
+	int refIdx = -1;
+	for( int i = 0; i < refCount; ++i )
+		if( RISE::Cst::DocNodeIdAt( *doc, i ) == id ) { refIdx = i; break; }
+	if( refIdx < 0 ) return false;   // cannot locate the referencer -> defer to the derive path
+	auto categorySatisfies = [&]( ChunkCategory chunkCat, const std::string& role, ChunkCategory rc ) {
+		if( chunkCat == rc ) return true;
+		if( rc == ChunkCategory::Function && chunkCat == ChunkCategory::Painter
+		 && role != "scalar_painter" ) return true;   // colour painter dual-registers as Function2D
+		if( rc == ChunkCategory::Painter && role == "piecewise_linear_function" )
+			return true;                                 // 1D function dual-registers as a colour painter
 		return false;
+	};
+	const std::string wantName( value.c_str() );
+	for( int i = 0; i < refIdx; ++i )
+	{
+		const RISE::Cst::NodeRef ch = RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, i ) );
+		if( !ch || ch->kind != RISE::Cst::NodeKind::Chunk ) continue;
+		const std::string np = RISE::Cst::ChunkNamePath( ch );
+		const size_t slash = np.rfind( '/' );
+		if( slash == std::string::npos ) continue;                      // unnamed: not referenceable
+		if( np.compare( slash + 1, std::string::npos, wantName ) != 0 ) continue;
+		const ChunkDescriptor* tcd = DescriptorForKeyword( String( ch->role.c_str() ) );
+		if( !tcd ) continue;
+		for( ChunkCategory rc : pd->referenceCategories )
+			if( categorySatisfies( tcd->category, ch->role, rc ) )
+				return false;   // category-correct, earlier-declared CST target -> persistable
+	}
 
-	// Not CST-addressable.  Reject ONLY if `value` is a RUNTIME-registered entity
+	// No category-correct, earlier-declared CST target.  Reject ONLY if `value`
+	// is a RUNTIME-registered entity
 	// of an allowed referenceCategory -- that confirms it is a reference NAME (not
 	// an inline literal like `ior 1.7`) that renders now but would DANGLE on
 	// save/reload.  A value resolving in NEITHER the CST nor a manager is an
@@ -7295,7 +7535,7 @@ bool SceneEditController::WouldPersistDanglingReference_(
 
 // -------------------------------------------------------------------
 // Phase 4b — per-category property accessors.  Each looks up the
-// correct mPropertiesByCategory[cat] vector and forwards to the
+// correct mUi.propertiesByCategory[cat] vector and forwards to the
 // matching CameraProperty field.  Bounds-check the category enum and
 // the row index; out-of-range returns sensible empty / -1 values
 // (matches the single-tuple accessors above).
@@ -7317,49 +7557,57 @@ inline const std::vector<RISE::CameraProperty>* PropsForCat(
 
 unsigned int SceneEditController::PropertyCountFor( Category cat ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return v ? static_cast<unsigned int>( v->size() ) : 0u;
 }
 
 String SceneEditController::PropertyNameFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].name : String();
 }
 
 String SceneEditController::PropertyValueFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].value : String();
 }
 
 String SceneEditController::PropertyDescriptionFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].description : String();
 }
 
 int SceneEditController::PropertyKindFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? static_cast<int>( (*v)[idx].kind ) : -1;
 }
 
 bool SceneEditController::PropertyEditableFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].editable : false;
 }
 
 unsigned int SceneEditController::PropertyPresetCountFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? static_cast<unsigned int>( (*v)[idx].presets.size() ) : 0u;
 }
 
 String SceneEditController::PropertyPresetLabelFor( Category cat, unsigned int idx, unsigned int presetIdx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	if( !v || idx >= v->size() ) return String();
 	const auto& presets = (*v)[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
@@ -7368,7 +7616,8 @@ String SceneEditController::PropertyPresetLabelFor( Category cat, unsigned int i
 
 String SceneEditController::PropertyPresetValueFor( Category cat, unsigned int idx, unsigned int presetIdx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	if( !v || idx >= v->size() ) return String();
 	const auto& presets = (*v)[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
@@ -7377,7 +7626,8 @@ String SceneEditController::PropertyPresetValueFor( Category cat, unsigned int i
 
 String SceneEditController::PropertyUnitLabelFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].unitLabel : String();
 }
 
@@ -9527,9 +9777,9 @@ SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTem
 		// as UniqueEntityName; the doc-wide probe below covers the
 		// derived sub-chunk names UniqueEntityName can't see.
 		std::vector<std::string> inCat;
-		const unsigned int nc = CategoryEntityCount( cat );
+		const unsigned int nc = CategoryEntityCountLocked_( cat );   // under nlk (round-3 getter split)
 		inCat.reserve( nc );
-		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityName( cat, i ).c_str() );
+		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityNameLocked_( cat, i ).c_str() );
 		auto inCatTaken = [&]( const std::string& nm ) {
 			return std::find( inCat.begin(), inCat.end(), nm ) != inCat.end();
 		};
@@ -9842,19 +10092,46 @@ bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, c
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	// Round-4 review P1 (transactional ordering; matches the Rasterizer arm):
+	// validate recordability BEFORE the live edit -- an environment edit the
+	// Document cannot carry would mark dirty, then Save would clear the flag
+	// while serializing nothing and a reload would revert it.  Refuse instead.
+	// Legacy scenes (no retained Document) keep live-only editing.
+	const bool hasDoc = mJob.HasRetainedCstDocument();
+	if( hasDoc ) {
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		const RISE::Cst::NodeId rid = doc
+			? RISE::Cst::DocFindByNameAnyRole( *doc, "", nullptr, activeName.c_str(), true )
+			: 0;
+		if( rid == 0 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: environment edit `%s` refused -- the scene has no unique `%s` chunk "
+				"in its retained Document, so the edit could not survive a save/reload.",
+				paramName, activeName.c_str() );
+			if( outPersisted ) *outPersisted = false;
+			return false;
+		}
+	}
+
 	const bool ok = mJob.SetRasterizerParameter( activeName.c_str(), paramName, value.c_str() );
 	if( !ok ) return false;
 
-	// Mirror to the CST so the edit survives a save (Document-only, no re-derive;
-	// safe under the lock -- pCstDocument is swapped here too).  A 0 return means
-	// the active rasterizer has no unique chunk in the Document, so the edit will
-	// NOT persist -- reported via outPersisted so callers can be honest.
-	const int cstResult = mJob.ApplyCstEnvironmentEdit( paramName, value.c_str() );
+	// Mirror to the CST (Document-only, no re-derive; safe under the lock --
+	// pCstDocument is swapped here too).  The pre-flight guarantees the chunk
+	// resolves; gate the dirty mark on the actual record anyway (the flag must
+	// never claim a change the Document does not carry).
+	const int cstResult = hasDoc ? mJob.ApplyCstEnvironmentEdit( paramName, value.c_str() ) : 0;
 	if( outPersisted ) *outPersisted = ( cstResult != 0 );
+	if( cstResult != 0 ) mEditor.MarkCstHeadDirty( "", nullptr );
 
 	mEditPending.store( true, std::memory_order_release );
 	lk.unlock();
 	mCV.notify_one();
+	// Round-5 review P1: this is a DIRECT mutation entry point (the public
+	// SetEnvironmentScale/Background/Orient wrappers) -- drain here so a
+	// C-API / headless caller that never polls RefreshProperties still gets
+	// the dirty notification.
+	mEditor.DrainDirtyNotification();
 	return true;
 }
 
@@ -10073,9 +10350,60 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 	return ok;
 }
 
+// ---------------------------------------------------------------------
+// Document-first ADR phase 1: public mutation entry points = inner body +
+// post-unlock drain of the deferred dirty notification.  The inner bodies
+// release mMutex before returning, so the drain (which may run the shell's
+// dirty-changed listener) never executes under a controller lock.  Idempotent
+// and cheap when nothing changed (atomic test-and-clear).
+// ---------------------------------------------------------------------
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
+	const bool ok = SetPropertyInner_( name, valueStr );
+	mEditor.DrainDirtyNotification();
+	return ok;
+}
+
+bool SceneEditController::SetSelection( Category cat, const String& entityName )
+{
+	const bool ok = SetSelectionInner_( cat, entityName );
+	mEditor.DrainDirtyNotification();
+	return ok;
+}
+
+void SceneEditController::Undo()
+{
+	UndoInner_();
+	mEditor.DrainDirtyNotification();
+}
+
+void SceneEditController::Redo()
+{
+	RedoInner_();
+	mEditor.DrainDirtyNotification();
+}
+
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
+	const String& entityName, const String& entityKind, const String& param,
+	const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	const AgentCommitResult r = ApplyAgentParamEditInner_(
+		entityName, entityKind, param, value, baseVersionOrNull );
+	mEditor.DrainDirtyNotification();
+	return r;
+}
+
+bool SceneEditController::SetPropertyInner_( const String& name, const String& valueStr )
+{
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	// Round-5 review P0 (belt to the agent-path gate): refuse edits while a
+	// save serializes the Document lock-free in RequestSave step 2.  Shells
+	// save on the edit thread (same-thread-safe by construction); this guards
+	// the documented off-thread-save case (tests, future transports).
+	if( mSaving.load( std::memory_order_acquire ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: property edit refused -- a save is in flight." );
+		return false;
+	}
 	// External-review P1 (2026-07-22): general dangling-reference guard.  Reject
 	// BEFORE any arm mutates the scene when this edit would persist a reference
 	// to a runtime-only entity (no CST chunk) -- it would render now but fail on
@@ -10348,38 +10676,42 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 	}
 
 	case Category::Rasterizer: {
-		// Phase 3: the introspection layer surfaces editable rows for
-		// type-specific params (samples, max_eye_depth, etc.) and the
-		// Job side keeps a per-rasterizer params snapshot.  Editing
-		// re-instantiates the rasterizer with the modified value while
-		// preserving every other parameter.  No undo support yet —
-		// rebuilding a rasterizer is a heavy operation; Phase 4 may
-		// add it via a dedicated SetRasterizerProperty SceneEdit op.
+		// Document-first ADR phase 3: rasterizer edits ride the TRANSACTION
+		// path.  mSelectionName is the rasterizer chunk keyword; the empty
+		// target + kind form addresses the sole chunk of that kind (Job's
+		// generalized unique-in-kind resolve).  ApplyAgentParamEdit does the
+		// whole coherent sequence -- park, dry-run-gated Document edit,
+		// re-derive (which re-realizes the rasterizer from its chunk), undo
+		// capture, gated dirty mark, re-render kick -- so the bespoke
+		// live-rebuild + record + mark sequence this arm used to hand-roll
+		// (and mis-roll: rounds 3-4 found both a lost-on-save and a
+		// saved-but-lost bug in it) is GONE, and rasterizer edits gain
+		// undo/redo.  An unrecordable edit (no unique chunk of this kind)
+		// rejects inside the path -- same outcome as the round-4 pre-flight.
+		// Legacy scenes (no retained Document) keep the LIVE-only rebuild.
 		if( mSelectionName.size() <= 1 ) return false;
-
-		if( mTxnOpen ) {
-			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: rasterizer property edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
-			return false;
+		if( !mJob.HasRetainedCstDocument() ) {
+			if( mTxnOpen ) {
+				GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: rasterizer property edit refused inside an open transaction (live-only on a legacy scene -> not undoable)." );
+				return false;
+			}
+			std::unique_lock<std::mutex> lk( mMutex );
+			if( mRendering.load( std::memory_order_acquire ) ) {
+				mCancelProgress.RequestCancel();
+				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+			}
+			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+			const bool ok = mJob.SetRasterizerParameter(
+				mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
+			if( !ok ) return false;
+			mEditPending.store( true, std::memory_order_release );
+			lk.unlock();
+			mCV.notify_one();
+			return true;
 		}
-		// Cancel-and-park: rasterizer rebuild releases the old instance
-		// and constructs a new one.  The render thread reads
-		// `pRasterizer` per-pixel; we need it parked.  Same pattern as
-		// SetActiveRasterizer's selection path.
-		std::unique_lock<std::mutex> lk( mMutex );
-		if( mRendering.load( std::memory_order_acquire ) ) {
-			mCancelProgress.RequestCancel();
-			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
-		}
-		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-
-		const bool ok = mJob.SetRasterizerParameter(
-			mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
-		if( !ok ) return false;
-
-		mEditPending.store( true, std::memory_order_release );
-		lk.unlock();
-		mCV.notify_one();
-		return true;
+		const AgentCommitResult r = ApplyAgentParamEdit(
+			String( "" ), mSelectionName, name, valueStr, nullptr );
+		return r.applied;
 	}
 
 	case Category::Film: {
@@ -10437,7 +10769,17 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 				// Cst.cpp derive path, all use %.17g).  %.6g truncated e.g. 1.7777778 -> 1.77778 (Delta~2e-6).
 				std::snprintf( vbuf, sizeof(vbuf), "%.17g", filmRef->GetPixelAR() ); p = vbuf;
 			}
-			if( w || h || p ) mJob.ApplyCstFilmEdit( w, h, p );
+			if( w || h || p ) {
+				// Round-3 sibling fix + round-4 gate: mark dirty ONLY when the
+				// Document actually recorded the change (ApplyCstFilmEdit inserts
+				// a film chunk when absent, so 0 is pathological -- but the flag
+				// must never claim a change the Document does not carry, else
+				// Save clears dirty while serializing nothing).  Empty name ->
+				// the CST-head boolean channel; the listener fires under this
+				// held mMutex (see the SetDirtyChangedListener contract).
+				if( mJob.ApplyCstFilmEdit( w, h, p ) != 0 )
+					mEditor.MarkCstHeadDirty( "", nullptr );
+			}
 		}
 
 		mEditPending.store( true, std::memory_order_release );

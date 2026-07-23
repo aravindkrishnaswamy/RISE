@@ -1038,14 +1038,99 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 
 void SceneEditor::FireDirtyChangedIfTransitioned()
 {
-	// Cheap O(1) check whether the dirty state's emptiness has
-	// flipped since the last time we fired.  Listener installed by
-	// the GUI bridge layer; tests that don't install one pay
-	// only the bool comparison.
-	const bool now = HasUnsavedChanges();
-	if( now == mPrevHasUnsavedChanges ) return;
-	mPrevHasUnsavedChanges = now;
-	if( mDirtyChangedListener ) mDirtyChangedListener( now );
+	// Document-first ADR phase 1: record-only.  The listener itself runs in
+	// DrainDirtyNotification, called by the controller AFTER releasing its
+	// mutex -- so a mark under any lock can never deadlock a re-entrant
+	// listener nor block the mutating thread on shell work.
+	// Round-5 review P1: every mutation site runs under its own lock with a
+	// stable Document, so this is also where the derived-dirty CACHE is
+	// recomputed race-free (the lock-free C-API query reads only the cache).
+	RecomputeHeadDiffers_();
+	mDirtyNotifyPending.store( true, std::memory_order_release );
+}
+
+void SceneEditor::DrainDirtyNotification()
+{
+	// Round-5 review P1 (listener OUTSIDE all locks + ordered delivery):
+	// single-deliverer loop.  The state comparison runs under the leaf
+	// mNotifyMutex; the LISTENER runs with NO lock held (ADR rule 5), so a
+	// callback that performs another mutating controller call cannot
+	// self-deadlock -- its nested drain sees mNotifyDelivering and returns,
+	// and this outer loop re-checks pending and delivers the follow-up.
+	// COALESCED semantics (documented on SetDirtyChangedListener): the
+	// listener reports the CURRENT state whenever it differs from the last
+	// report; a clean->dirty->clean burst between drains nets to no call.
+	if( !mDirtyNotifyPending.load( std::memory_order_acquire ) ) return;
+	if( mNotifyDelivering.exchange( true, std::memory_order_acq_rel ) ) return;   // active deliverer will pick it up
+	for( ;; )
+	{
+		if( !mDirtyNotifyPending.exchange( false, std::memory_order_acq_rel ) ) break;
+		bool fire = false;
+		bool now  = false;
+		DirtyChangedFn listenerCopy;
+		{
+			std::lock_guard<std::mutex> lk( mNotifyMutex );
+			now = HasUnsavedChanges();
+			if( now != mPrevHasUnsavedChanges )
+			{
+				mPrevHasUnsavedChanges = now;
+				fire = true;
+				listenerCopy = mDirtyChangedListener;
+			}
+		}
+		if( fire && listenerCopy ) listenerCopy( now );   // NO lock held
+	}
+	mNotifyDelivering.store( false, std::memory_order_release );
+	// Close the race where another thread flagged pending after our last
+	// exchange but saw us still delivering: one bounded retry.  A residual
+	// miss self-heals at the next drain (per-frame catch-all).
+	if( mDirtyNotifyPending.load( std::memory_order_acquire )
+	 && !mNotifyDelivering.exchange( true, std::memory_order_acq_rel ) )
+	{
+		if( mDirtyNotifyPending.exchange( false, std::memory_order_acq_rel ) )
+		{
+			bool fire = false;
+			bool now  = false;
+			DirtyChangedFn listenerCopy;
+			{
+				std::lock_guard<std::mutex> lk( mNotifyMutex );
+				now = HasUnsavedChanges();
+				if( now != mPrevHasUnsavedChanges )
+				{
+					mPrevHasUnsavedChanges = now;
+					fire = true;
+					listenerCopy = mDirtyChangedListener;
+				}
+			}
+			if( fire && listenerCopy ) listenerCopy( now );
+		}
+		mNotifyDelivering.store( false, std::memory_order_release );
+	}
+}
+
+void SceneEditor::CaptureSavedHeadVersion_()
+{
+	// GetCstHeadVersion lives on IJobPriv (mJob is stored as IJob*); the
+	// downcast is safe in-tree (the controller always binds the concrete
+	// Job).  A null / non-priv job leaves the baseline defaulted (uuid 0),
+	// matching HeadDiffersFromSaved_'s legacy-scene arm.
+	if( const IJobPriv* priv = dynamic_cast<const IJobPriv*>( mJob ) )
+		mSavedHeadVersion = priv->GetCstHeadVersion();
+	else
+		mSavedHeadVersion = RISE::Cst::CstHeadVersion();
+	RecomputeHeadDiffers_();   // round-5 P1: the cache must track the new baseline
+}
+
+void SceneEditor::RecomputeHeadDiffers_()
+{
+	const IJobPriv* priv = dynamic_cast<const IJobPriv*>( mJob );
+	bool differs = false;
+	if( priv )
+	{
+		const RISE::Cst::CstHeadVersion cur = priv->GetCstHeadVersion();
+		if( cur.uuid != 0 ) differs = ( cur != mSavedHeadVersion );   // legacy scene (uuid 0): no floor
+	}
+	mHeadDiffersCached.store( differs, std::memory_order_release );
 }
 
 namespace {

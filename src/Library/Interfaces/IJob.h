@@ -3736,6 +3736,7 @@ namespace RISE
 		virtual IProgressCallback* ExchangeProgress(
 			IProgressCallback* /*next*/					///< [in] The callback to install (may be null)
 			) { return nullptr; }
+
 	};
 
 

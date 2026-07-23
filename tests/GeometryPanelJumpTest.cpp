@@ -29,6 +29,25 @@
 //          material slot to a RUNTIME-only painter (registered, no CST
 //          chunk) is REJECTED and leaves the CST binding untouched, while a
 //          CST-backed rebind still succeeds (guard is not over-broad).
+//      T8  Guard category-correctness (round-3 P1) -- a same-named CST
+//          chunk of the WRONG category (shader `global`) does not vouch
+//          for a painter reference; the edit is still rejected.
+//      T9  Guard declaration order (round-3 P1) -- a LATER-declared CST
+//          painter (pnt_late) is a forward reference (DeriveToJob is
+//          sequential); the edit is rejected.
+//      T10 Rasterizer CST round-trip (round-3 P1) -- SetProperty(samples)
+//          records into the retained Document (was runtime-only, lost on
+//          save/reload) and flips HasUnsavedChanges.
+//      T11 Unrecordable-edit refusal (round-4 P1) -- on a scene with NO
+//          rasterizer chunk, the edit is refused up-front and the dirty
+//          tracker stays clean (no "saved but lost" phantom).
+//      T12 Listener re-entry (round-4 P1 + document-first phase 1) -- an
+//          enumeration getter called INSIDE the dirty-changed listener
+//          returns without deadlocking (post-unlock drain + snapshot
+//          getters).  HANGS on regression.
+//      T13 Rasterizer undo (document-first phase 3) -- the migrated
+//          transaction-path rasterizer edit is undoable; Undo restores
+//          `samples 8` in the CST.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -77,7 +96,11 @@ namespace
 		"sphere_geometry\n{\nname sph\nradius 0.8\n}\n\n"
 		"box_geometry\n{\nname bx\nwidth 1.0\nheight 1.0\ndepth 1.0\n}\n\n"
 		"standard_object\n{\nname obj_sph\ngeometry sph\nmaterial mat_diffuse\n}\n\n"
-		"omni_light\n{\nname lgt_a\npower 3.0\ncolor 1 1 1\nposition 0 3 0\n}\n";
+		"omni_light\n{\nname lgt_a\npower 3.0\ncolor 1 1 1\nposition 0 3 0\n}\n\n"
+		// T9 fixture: a painter declared AFTER every material chunk.  DeriveToJob is
+		// sequential, so binding mat_diffuse.reflectance to it would be a FORWARD
+		// reference that fails on reload -- the guard must reject it.
+		"uniformcolor_painter\n{\nname pnt_late\ncolor 0.9 0.1 0.1\n}\n";
 
 	std::string TempPath( const char* name )
 	{
@@ -300,6 +323,168 @@ int main()
 			Check( CstValueOf( pJob, "mat_diffuse", "material", "reflectance" ) == std::string( "pnt_albedo2" ),
 				"T7: the CST-backed rebind persisted (reflectance == pnt_albedo2)" );
 		}
+
+		// ---------- T8: guard is CATEGORY-correct (round-3 P1) ----------
+		// A CST chunk of the WRONG category sharing the value's name must not
+		// vouch for it: `global` names the standard_shader chunk (declared
+		// first), so the pre-fix any-role probe accepted it -- but a painter
+		// reference to `global` (backed only by a runtime-registered painter)
+		// still dangles on reload.  Mutation-verified against categorySatisfies.
+		std::printf( "T8: dangling-reference guard is category-correct...\n" );
+		{
+			Check( pJob->AddCheckerPainter( "global", 1.0, "pnt_albedo", "pnt_albedo" ),
+				"fixture: registered a runtime-only painter named `global` (collides with the shader chunk)" );
+			Check( ctrl.SetSelection( Category::Material, String( "mat_diffuse" ) ),
+				"SetSelection(Material, mat_diffuse) for the category test" );
+			Check( !ctrl.SetProperty( String( "reflectance" ), String( "global" ) ),
+				"MONEY (T8): a same-named WRONG-category CST chunk does not vouch -- edit REJECTED" );
+			Check( CstValueOf( pJob, "mat_diffuse", "material", "reflectance" ) == std::string( "pnt_albedo2" ),
+				"T8: the CST reflectance binding is unchanged" );
+		}
+
+		// ---------- T9: guard enforces declaration order (round-3 P1) ----------
+		// `pnt_late` IS a CST painter -- but declared AFTER every material
+		// chunk.  DeriveToJob is sequential, so the binding would be a forward
+		// reference that fails on reload.  Mutation-verified against the
+		// `i < refIdx` order bound.
+		std::printf( "T9: dangling-reference guard enforces declaration order...\n" );
+		{
+			Check( !ctrl.SetProperty( String( "reflectance" ), String( "pnt_late" ) ),
+				"MONEY (T9): a LATER-declared CST painter is a forward reference -- edit REJECTED" );
+			Check( CstValueOf( pJob, "mat_diffuse", "material", "reflectance" ) == std::string( "pnt_albedo2" ),
+				"T9: the CST reflectance binding is unchanged" );
+		}
+
+		// ---------- T10: rasterizer param edit round-trips the CST (round-3 P1) ----------
+		// SetRasterizerParameter only rebuilt the runtime instance; without the
+		// CST record, `samples 8 -> 16` reverted on save/reload and Save never
+		// enabled.  Verify the record (SerializeNode carries the new value) and
+		// the dirty flip.
+		std::printf( "T10: rasterizer param edit records into the CST + marks dirty...\n" );
+		{
+			Check( ctrl.SetSelection( Category::Rasterizer, String( "pathtracing_pel_rasterizer" ) ),
+				"SetSelection(Rasterizer, pathtracing_pel_rasterizer) succeeds" );
+			Check( ctrl.SetProperty( String( "samples" ), String( "16" ) ),
+				"SetProperty(samples, 16) on the rasterizer succeeds" );
+			const RISE::Cst::Document* doc = pJob->GetCstDocument();
+			bool recorded = false;
+			if( doc ) {
+				const RISE::Cst::NodeId rid = RISE::Cst::DocFindByNameAnyRole(
+					*doc, "", nullptr, "pathtracing_pel_rasterizer", true );
+				const RISE::Cst::NodeRef chunk = rid ? RISE::Cst::DocResolveNodeId( *doc, rid )
+				                                     : RISE::Cst::NodeRef();
+				if( chunk ) {
+					const std::string bytes = RISE::Cst::SerializeNode( chunk );
+					recorded = ( bytes.find( "samples 16" ) != std::string::npos );
+				}
+			}
+			Check( recorded,
+				"MONEY (T10): the retained CST rasterizer chunk now carries `samples 16`" );
+			Check( ctrl.HasUnsavedChanges(),
+				"MONEY (T10): the edit marked the scene dirty (Save enables)" );
+			// Document-first phase 3: the edit rides the transaction path, whose
+			// re-derive must RE-REALIZE the live rasterizer from its chunk.
+			Check( pJob->GetRasterizerParameter( "pathtracing_pel_rasterizer", "samples" ) == std::string( "16" ),
+				"MONEY (T10): the LIVE rasterizer re-realized with samples == 16 (derive-driven, not a bespoke rebuild)" );
+		}
+
+		// ---------- T13: rasterizer edit is UNDOABLE (document-first phase 3) ----------
+		// The bespoke arm had no undo (\"rebuilding a rasterizer is heavy\");
+		// riding the transaction path makes the edit a first-class history
+		// citizen for free.  Undo must restore samples 8 in the CST.
+		std::printf( "T13: rasterizer edit undo restores the prior value...\n" );
+		{
+			ctrl.Undo();
+			const RISE::Cst::Document* doc = pJob->GetCstDocument();
+			bool restored = false;
+			if( doc ) {
+				const RISE::Cst::NodeId rid = RISE::Cst::DocFindByNameAnyRole(
+					*doc, "", nullptr, "pathtracing_pel_rasterizer", true );
+				const RISE::Cst::NodeRef chunk = rid ? RISE::Cst::DocResolveNodeId( *doc, rid )
+				                                     : RISE::Cst::NodeRef();
+				if( chunk ) {
+					const std::string bytes = RISE::Cst::SerializeNode( chunk );
+					restored = ( bytes.find( "samples 8" ) != std::string::npos );
+				}
+			}
+			Check( restored,
+				"MONEY (T13): Undo restored `samples 8` in the CST (rasterizer edits are now undoable)" );
+		}
+
+	}
+
+	// =====================================================================
+	// T11 + T12 run on a FRESH scene that declares NO rasterizer chunk --
+	// exactly the "lazily-created / no unique CST chunk" configuration T11
+	// exercises, and a clean dirty-tracker for T12's transition.
+	// =====================================================================
+	const char* const kSceneNoRaster =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"film\n{\nwidth 24\nheight 24\n}\n\n"
+		"pinhole_camera\n{\nlocation 0 0 3.5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\nname pnt_a\ncolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\nname mat_a\nreflectance pnt_a\n}\n\n"
+		"sphere_geometry\n{\nname g1\nradius 0.5\n}\n\n"
+		"standard_object\n{\nname obj_a\ngeometry g1\nmaterial mat_a\n}\n\n"
+		"omni_light\n{\nname lgt\npower 3.0\ncolor 1 1 1\nposition 0 3 0\n}\n";
+	const std::string tmp2 = TempPath( "geometry_panel_jump_noraster.RISEscene" );
+	Job* pJob2 = LoadScene( kSceneNoRaster, tmp2 );
+	Check( pJob2 != nullptr, "no-rasterizer fixture scene loads via CST" );
+	if( pJob2 )
+	{
+		SceneEditController ctrl2( *pJob2, nullptr );   // skeleton
+
+		// ---------- T11: unrecordable rasterizer edit is REFUSED (round-4 P1) ----------
+		// The scene has NO rasterizer chunk, so the (lazily-created) live
+		// rasterizer's edits cannot be recorded.  Round-3 applied the live edit
+		// AND marked dirty anyway -- Save then cleared the dirty state while
+		// serializing NO change, and a reload reverted the edit ("saved but
+		// lost").  The round-4 pre-flight refuses the edit up front and leaves
+		// the dirty tracker untouched.
+		std::printf( "T11: unrecordable rasterizer edit is refused (no chunk to record into)...\n" );
+		{
+			Check( ctrl2.SetSelection( Category::Rasterizer, String( "pathtracing_pel_rasterizer" ) ),
+				"T11: SetSelection(Rasterizer, pathtracing_pel_rasterizer) succeeds (live activation)" );
+			Check( !ctrl2.SetProperty( String( "samples" ), String( "4" ) ),
+				"MONEY (T11): the edit is REFUSED -- no `pathtracing_pel_rasterizer` chunk to record into" );
+			Check( !ctrl2.HasUnsavedChanges(),
+				"MONEY (T11): the refused edit did NOT mark the scene dirty (no phantom Save)" );
+		}
+
+		// ---------- T12: dirty-listener re-entry does not deadlock ----------
+		// Round-4: the listener fired on the mutating thread with mMutex HELD;
+		// the snapshot getters made an in-listener re-entry serve the stale
+		// (primed) snapshot instead of deadlocking.  Document-first phase 1
+		// went further: the listener now fires from the POST-UNLOCK drain, so
+		// the in-listener getter may even refresh.  Either way this test HANGS
+		// if the no-deadlock property regresses.
+		std::printf( "T12: enumeration getter inside the under-lock dirty listener...\n" );
+		{
+			// Prime the snapshot on this (clean, un-contended) thread first --
+			// the in-listener read serves the LAST snapshot, and an unprimed
+			// one is legitimately empty.
+			Check( ctrl2.CategoryEntityCount( Category::Geometry ) == 1,
+				"T12: primed enumeration sees the 1-geometry list" );
+			unsigned int fromListener = 999;
+			int fired = 0;
+			ctrl2.SetDirtyChangedListener( [&]( bool ) {
+				++fired;
+				fromListener = ctrl2.CategoryEntityCount( Category::Geometry );
+			} );
+			Check( ctrl2.SetSelection( Category::Geometry, String( "g1" ) ),
+				"T12: SetSelection(Geometry, g1)" );
+			Check( ctrl2.SetProperty( String( "radius" ), String( "0.75" ) ),
+				"T12: geometry edit succeeds with a re-entrant listener installed" );
+			Check( fired > 0,
+				"T12: the clean->dirty transition fired the listener" );
+			Check( fromListener == 1,
+				"MONEY (T12): the getter called INSIDE the dirty listener returned the 1-geometry list (no deadlock, no empty flicker)" );
+			ctrl2.SetDirtyChangedListener( SceneEditController::DirtyChangedFn() );
+		}
+
+		pJob2->release();
+		std::remove( tmp2.c_str() );
 	}
 
 	pJob->release();

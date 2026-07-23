@@ -10133,10 +10133,16 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 	if( !pCstDocument || !entityName || !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
 	// Cameras are the one editor-addressable kind that can be UNNAMED (the sole `pinhole_camera { ... }`), so
 	// allow the unique-in-kind resolve-by-position fallback for them; always-named kinds keep strict refuse.
-	const bool uniqueFallback = ( entityKind && std::string( entityKind ) == "camera" );
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, entityKind ? entityKind : "", uniqueFallback );
+	// Document-first ADR phase 3 (kind-addressed singletons): an EMPTY name with a
+	// non-empty kind resolves the SOLE chunk of that kind -- the general rule the
+	// camera special case was an instance of.  This is how the transaction path
+	// addresses the unnamed film / rasterizer singleton chunks (an ambiguous or
+	// absent kind still refuses via DocFindByNameAnyRole's kindCount==1 gate).
+	const std::string ekind = entityKind ? entityKind : "";
+	const bool uniqueFallback = ( ekind == "camera" ) || ( entityName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", entityName );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` (kind `%s`) not found or ambiguous in the CST Document; edit rejected", entityName, ekind.c_str() );
 		return 0;
 	}
 	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, role, occ, newValue );
@@ -10156,10 +10162,14 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ )
 {
 	if( !pCstDocument || !entityName || !role ) return 0;
-	const bool uniqueFallback = ( entityKind && std::string( entityKind ) == "camera" );
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, entityKind ? entityKind : "", uniqueFallback );
+	// Phase 3: same kind-addressed-singleton rule as ApplyCstParamEditImpl_ (the
+	// mirrored resolution this function's doc promises) -- the agent Undo of a
+	// singleton-chunk param insert must resolve the same chunk the edit did.
+	const std::string ekind = entityKind ? entityKind : "";
+	const bool uniqueFallback = ( ekind == "camera" ) || ( entityName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamRemoveChecked:: `%s` not found or ambiguous in the CST Document; remove rejected", entityName );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamRemoveChecked:: `%s` (kind `%s`) not found or ambiguous in the CST Document; remove rejected", entityName, ekind.c_str() );
 		return 0;
 	}
 	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParamOcc( *pCstDocument, id, role, occ );
