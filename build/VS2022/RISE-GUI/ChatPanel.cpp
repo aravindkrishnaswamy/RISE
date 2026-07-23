@@ -33,6 +33,7 @@
 #include <QStandardPaths>
 #include <QTextEdit>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QVector>
@@ -64,6 +65,24 @@ namespace
     {
         const QByteArray utf8 = s.toUtf8();
         return std::string(utf8.constData(), static_cast<std::size_t>(utf8.size()));
+    }
+
+    // GUI stage 3 (Windows parity, chat-display enrichment): cap a
+    // tool-call detail payload (args JSON or a raw result line) to
+    // ~4KB for the expandable detail view -- mirrors
+    // ChatViewModel.cappedForDetail (Swift).  QString::size() counts
+    // UTF-16 code units, not Characters/graphemes the way Swift's
+    // String.count does, so a cut could in principle land inside a
+    // surrogate pair for an astral codepoint; accepted per the task
+    // brief ("QString::fromUtf8 then truncate by QString size is
+    // safe") since this truncates an already-decoded QString that is
+    // only ever displayed, never re-encoded onto the wire -- a split
+    // surrogate renders as one replacement glyph at worst, not a crash
+    // or a corrupted request.
+    QString cappedForDetail(const QString& s, int limit = 4096)
+    {
+        if (s.size() <= limit) return s;
+        return s.left(limit) + QStringLiteral("...[truncated]");
     }
 
     // Build one JSON-RPC 2.0 request line (used for the driver-internal
@@ -381,6 +400,29 @@ ChatPanel::ChatPanel(QWidget* parent)
         "Set RISE_TRAJECTORY_DIR to record elsewhere.");
     outer->addWidget(m_recordTrajectoriesCheck);
 
+    // GUI stage 3 (Windows parity, chat-display enrichment): the
+    // transcript verbosity toggle -- mirrors the Mac ChatSettingsView
+    // "Detailed transcript" toggle (@AppStorage "agentChatDetailedTranscript"),
+    // persisted under this platform's own QSettings key
+    // ("agentChat/detailedTranscript", default false) -- not shared
+    // storage with the Mac client, just naming parity.  Off (default):
+    // reasoning rows append collapsed and tool-call detail always stays
+    // collapsed regardless of this setting.  On: reasoning rows append
+    // pre-expanded.
+    {
+        QSettings settings;
+        m_detailedTranscript =
+            settings.value("agentChat/detailedTranscript", false).toBool();
+    }
+    m_detailedTranscriptCheck = new QCheckBox("Detailed transcript (auto-expand thinking)");
+    m_detailedTranscriptCheck->setChecked(m_detailedTranscript);
+    m_detailedTranscriptCheck->setToolTip(
+        "Off (default): reasoning is collapsed to a word-count summary and "
+        "tool-call detail (args + result) stays collapsed behind a chevron. "
+        "On: reasoning starts expanded. Tool-call detail always starts "
+        "collapsed either way -- click its chevron to inspect one call.");
+    outer->addWidget(m_detailedTranscriptCheck);
+
     m_statusLabel = new QLabel();
     m_statusLabel->setFont(Theme::sans(11));
     m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
@@ -389,6 +431,8 @@ ChatPanel::ChatPanel(QWidget* parent)
 
     connect(m_recordTrajectoriesCheck, &QCheckBox::toggled,
             this, &ChatPanel::recordTrajectoriesToggled);
+    connect(m_detailedTranscriptCheck, &QCheckBox::toggled,
+            this, &ChatPanel::detailedTranscriptToggled);
     connect(m_providerCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
             this, &ChatPanel::providerChanged);
     connect(m_modelEdit, &QLineEdit::editingFinished,
@@ -962,6 +1006,181 @@ void ChatPanel::clearLayout(QVBoxLayout* layout)
     clearQLayoutRecursive(layout);
 }
 
+// ============================================================
+// GUI stage 3 (Windows parity, chat-display enrichment): collapsible
+// row builders -- see the header doc on each for the shared contract.
+// ============================================================
+
+QWidget* ChatPanel::buildThinkingRow(const QString& reasoningText, bool expandedByDefault)
+{
+    auto* container = new QWidget(m_transcriptContent);
+    auto* vlayout = new QVBoxLayout(container);
+    vlayout->setContentsMargins(0, 0, 0, 0);
+    vlayout->setSpacing(4);
+
+    // Word count for the collapsed label -- QString::simplified()
+    // collapses every run of whitespace (space/tab/newline) to a
+    // single space and trims the ends, so counting spaces + 1 gives
+    // the word count without pulling in QRegularExpression.
+    const QString simplified = reasoningText.simplified();
+    const int wordCount = simplified.isEmpty() ? 0 : simplified.count(QLatin1Char(' ')) + 1;
+    const QString collapsedLabel = (wordCount == 1)
+        ? tr("Thinking (1 word)")
+        : tr("Thinking (%1 words)").arg(wordCount);
+    const QString expandedLabel = tr("Thinking");
+
+    auto* chevron = new QToolButton(container);
+    chevron->setCheckable(true);
+    chevron->setChecked(expandedByDefault);
+    chevron->setArrowType(expandedByDefault ? Qt::DownArrow : Qt::RightArrow);
+    chevron->setAutoRaise(true);
+    chevron->setCursor(Qt::PointingHandCursor);
+    chevron->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    chevron->setText(expandedByDefault ? expandedLabel : collapsedLabel);
+    QFont chevronFont = Theme::sans(11);
+    chevronFont.setItalic(true);
+    chevron->setFont(chevronFont);
+    chevron->setStyleSheet(QStringLiteral(
+        "QToolButton { color: %1; border: none; background: transparent; padding: 0; }")
+        .arg(Theme::hex(Theme::textDim)));
+    vlayout->addWidget(chevron);
+
+    auto* detail = new QLabel(reasoningText, container);
+    detail->setFont(Theme::sans(11));
+    detail->setWordWrap(true);
+    detail->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    detail->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    detail->setContentsMargins(13, 0, 0, 0);
+    detail->setVisible(expandedByDefault);
+    vlayout->addWidget(detail);
+
+    // Both widgets are children of `container`; when it (or an
+    // ancestor) is torn down by clearLayout(), chevron dies with it and
+    // Qt disconnects this lambda automatically -- no dangling capture.
+    connect(chevron, &QToolButton::toggled, container,
+            [chevron, detail, collapsedLabel, expandedLabel](bool checked) {
+        chevron->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+        chevron->setText(checked ? expandedLabel : collapsedLabel);
+        detail->setVisible(checked);
+    });
+
+    return container;
+}
+
+QWidget* ChatPanel::buildToolRow(const QString& headerText, const QString& detailText,
+                                  bool hasDetail, bool startExpanded,
+                                  QLabel** outLabel, QTextEdit** outDetailEdit,
+                                  QToolButton** outChevron)
+{
+    auto* container = new QWidget(m_transcriptContent);
+    auto* vlayout = new QVBoxLayout(container);
+    vlayout->setContentsMargins(0, 0, 0, 0);
+    vlayout->setSpacing(5);
+
+    // The hairline-bordered chip -- same look as the pre-feature trace
+    // chip when hasDetail is false (chevron hidden), per the "rows
+    // without detail render exactly as today" contract.
+    auto* chip = new QWidget(container);
+    chip->setStyleSheet(QStringLiteral("border: 1px solid %1; border-radius: 7px;")
+        .arg(Theme::hex(Theme::borderHairline)));
+    auto* chipLayout = new QHBoxLayout(chip);
+    chipLayout->setContentsMargins(10, 6, 10, 6);
+    chipLayout->setSpacing(7);
+
+    auto* check = new QLabel(QStringLiteral("\xE2\x9C\x93"), chip);
+    check->setFont(Theme::mono(10));
+    check->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::success)));
+    chipLayout->addWidget(check);
+
+    auto* label = new QLabel(headerText, chip);
+    label->setFont(Theme::mono(10));
+    label->setWordWrap(true);
+    label->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textMuted)));
+    chipLayout->addWidget(label, 1);
+
+    auto* chevron = new QToolButton(chip);
+    chevron->setCheckable(true);
+    chevron->setChecked(startExpanded);
+    chevron->setArrowType(startExpanded ? Qt::DownArrow : Qt::RightArrow);
+    chevron->setAutoRaise(true);
+    chevron->setCursor(Qt::PointingHandCursor);
+    chevron->setFixedSize(16, 16);
+    chevron->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    chevron->setVisible(hasDetail);
+    chevron->setEnabled(hasDetail);
+    chipLayout->addWidget(chevron);
+
+    vlayout->addWidget(chip);
+
+    auto* detail = new QTextEdit(container);
+    detail->setReadOnly(true);
+    detail->setPlainText(detailText);
+    detail->setFont(Theme::mono(9));
+    detail->setFixedHeight(120);
+    detail->setStyleSheet(QStringLiteral(
+        "QTextEdit { color: %1; background-color: %2; border: none; border-radius: 6px; }")
+        .arg(Theme::hex(Theme::textMuted), Theme::hex(Theme::bgPanel)));
+    detail->setVisible(hasDetail && startExpanded);
+    vlayout->addWidget(detail);
+
+    // Same auto-disconnect-on-destroy reasoning as buildThinkingRow's
+    // connection above -- chevron and detail are both children of
+    // `container`, so they share its lifetime.
+    connect(chevron, &QToolButton::toggled, container, [chevron, detail](bool checked) {
+        chevron->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+        if (detail) detail->setVisible(checked);
+    });
+
+    if (outLabel) *outLabel = label;
+    if (outDetailEdit) *outDetailEdit = detail;
+    if (outChevron) *outChevron = chevron;
+    return container;
+}
+
+void ChatPanel::updatePendingToolRow(const RISE::Agent::ChatToolCall& call,
+                                      const std::string& responseLine)
+{
+    // QPointer GUARD: every OTHER tool call's dispatch-to-result path is
+    // fully synchronous C++ (no event-loop turn in between), so the row
+    // built at dispatch time is still exactly what it was. `render`
+    // calls are the one exception -- they suspend across the async
+    // submit/poll state machine (startAsyncRenderToolCall /
+    // pollOutstandingRender), a genuine event-loop gap during which a
+    // Stop / production-render-start / provider-switch can call
+    // finishBusy()/refreshTranscript(), which clearLayout()s (i.e.
+    // deleteLater()s) every live transcript widget, this row included.
+    // A raw pointer would dangle the moment that deferred deletion
+    // actually runs; QPointer auto-nulls instead, so this check is a
+    // real guard against a stale write, not decoration.
+    if (!m_pendingToolRowLabel) {
+        m_pendingToolRowDetail = nullptr;
+        m_pendingToolRowChevron = nullptr;
+        return;
+    }
+
+    // The SAME deterministic one-line outcome summary
+    // FlushPendingToolResults uses for the wire-side
+    // ChatToolDisplaySummary::outcomeLine, so this row and the eventual
+    // authoritative rebuild (from m_loop's transcript) never disagree.
+    const QString outcome = toQString(AgentChatLoop::ToolOutcomeLineForDisplay(call, responseLine));
+    m_pendingToolRowLabel->setText(
+        QStringLiteral("\xE2\x86\x92 ") + toQString(call.name) + QStringLiteral("  ") + outcome);
+
+    if (m_pendingToolRowDetail) {
+        m_pendingToolRowDetail->setPlainText(
+            QStringLiteral("Args:\n") + cappedForDetail(toQString(call.argsJson))
+            + QStringLiteral("\n\nResult:\n") + cappedForDetail(toQString(responseLine)));
+    }
+    if (m_pendingToolRowChevron) {
+        m_pendingToolRowChevron->setVisible(true);
+        m_pendingToolRowChevron->setEnabled(true);
+    }
+
+    m_pendingToolRowLabel = nullptr;
+    m_pendingToolRowDetail = nullptr;
+    m_pendingToolRowChevron = nullptr;
+}
+
 void ChatPanel::rebuildTranscriptWidgets()
 {
     clearLayout(m_transcriptLayout);
@@ -998,43 +1217,55 @@ void ChatPanel::rebuildTranscriptWidgets()
             row->addWidget(bubble, 0, Qt::AlignRight);
             m_transcriptLayout->addLayout(row);
         } else if (entry.role == Role::Assistant) {
+            // GUI stage 3 (Windows parity): the model's reasoning for
+            // THIS turn, if the provider exposed any (Anthropic
+            // `thinking` blocks; OpenAI-family `reasoning`/
+            // `reasoning_content`; "" on Gemini and a plain gpt-family
+            // turn) -- rendered BEFORE the assistant's own narration,
+            // mirroring ChatViewModel.driveTurn's reasoning-first
+            // ordering.  entry.reasoningText is recorded onto this SAME
+            // Assistant transcript entry by HandleResponse regardless of
+            // whether the turn ended in tool calls or final text (see
+            // AgentChatLoop.cpp), so this one spot covers both paths.
+            if (!entry.reasoningText.empty()) {
+                m_transcriptLayout->addWidget(
+                    buildThinkingRow(toQString(entry.reasoningText), m_detailedTranscript));
+            }
             auto* lbl = new QLabel(body.isEmpty() ? tr("[no text]") : body);
             lbl->setFont(Theme::sans(12));
             lbl->setWordWrap(true);
             lbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
             m_transcriptLayout->addWidget(lbl);
         } else {
-            // ToolResults -- a compact hairline-bordered trace chip.
-            // displayText is "[tool results: name1, name2]" (see
-            // AgentChatLoop.cpp); strip the wrapper for display.
-            QString label = body;
-            static const QString kPrefix = QStringLiteral("[tool results:");
-            if (label.startsWith(kPrefix) && label.endsWith(QLatin1Char(']'))) {
-                label = label.mid(kPrefix.length());
-                label.chop(1);
-                label = label.trimmed();
+            // ToolResults -- one expandable trace chip PER CALL, built
+            // from entry.toolSummaries (name/outcomeLine/argsJson/
+            // resultJson, populated by FlushPendingToolResults) rather
+            // than parsing entry.displayText: stage 1 (AgentChatLoop.cpp)
+            // reformatted displayText to "name -> outcome (dot) name ->
+            // outcome" and it no longer carries a "[tool results: ...]"
+            // wrapper to strip.
+            if (entry.toolSummaries.empty()) {
+                // Defensive fallback -- every ToolResults entry gets
+                // toolSummaries from FlushPendingToolResults, so this
+                // should not happen; kept so an unexpected empty entry
+                // still renders something instead of silently vanishing.
+                const QString label = body.isEmpty() ? tr("tool results") : body;
+                m_transcriptLayout->addWidget(buildToolRow(label, QString(), false, false));
+            } else {
+                for (const auto& summary : entry.toolSummaries) {
+                    const QString header = QStringLiteral("\xE2\x86\x92 ") + toQString(summary.name)
+                        + QStringLiteral("  ") + toQString(summary.outcomeLine);
+                    const QString detail = QStringLiteral("Args:\n")
+                        + cappedForDetail(toQString(summary.argsJson))
+                        + QStringLiteral("\n\nResult:\n")
+                        + cappedForDetail(toQString(summary.resultJson));
+                    // Collapsed by default regardless of the "Detailed
+                    // transcript" setting -- that toggle only seeds
+                    // thinking rows (see buildThinkingRow's call site
+                    // above); tool-call detail always starts collapsed.
+                    m_transcriptLayout->addWidget(buildToolRow(header, detail, true, false));
+                }
             }
-            if (label.isEmpty()) label = tr("tool results");
-
-            auto* chip = new QWidget();
-            chip->setStyleSheet(QStringLiteral("border: 1px solid %1; border-radius: 7px;")
-                .arg(Theme::hex(Theme::borderHairline)));
-            auto* chipLayout = new QHBoxLayout(chip);
-            chipLayout->setContentsMargins(10, 6, 10, 6);
-            chipLayout->setSpacing(7);
-
-            auto* check = new QLabel(QStringLiteral("\xE2\x9C\x93"));
-            check->setFont(Theme::mono(10));
-            check->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::success)));
-            chipLayout->addWidget(check);
-
-            auto* text = new QLabel(label);
-            text->setFont(Theme::mono(10));
-            text->setWordWrap(true);
-            text->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textMuted)));
-            chipLayout->addWidget(text, 1);
-
-            m_transcriptLayout->addWidget(chip);
         }
     }
 
@@ -1185,6 +1416,26 @@ void ChatPanel::recordTrajectoriesToggled(bool on)
     }
 }
 
+// GUI stage 3 (Windows parity, chat-display enrichment): persist +
+// re-render.  NOTE the difference from the Mac panel: this panel's
+// rebuildTranscriptWidgets() fully tears down and rebuilds every
+// transcript widget on each refresh (see clearLayout()), so toggling
+// this ALSO re-seeds every thinking row currently on screen from the
+// new setting -- not just rows appended after the toggle, unlike the
+// Mac panel (whose SwiftUI rows are per-Entry @State, seeded once at
+// append time). A user's manually expanded/collapsed rows already do
+// not survive any refresh on this panel regardless of this toggle --
+// a pre-existing property of the full-rebuild design, not introduced
+// here.
+void ChatPanel::detailedTranscriptToggled(bool on)
+{
+    if (on == m_detailedTranscript) return;
+    m_detailedTranscript = on;
+    QSettings settings;
+    settings.setValue("agentChat/detailedTranscript", on);
+    refreshTranscript(m_statusLabel ? m_statusLabel->text() : QString());
+}
+
 QString ChatPanel::renderSkillIndex(const QString& rpcResponse) const
 {
     const QJsonDocument doc = QJsonDocument::fromJson(rpcResponse.toUtf8());
@@ -1299,9 +1550,47 @@ void ChatPanel::processNextToolCall()
         const int rpcId = m_nextRpcId++;
         const std::string line = m_loop->ToolCallToJsonRpcLine(call, rpcId);
 
+        // GUI stage 3 (Windows parity): a live dispatch-time row --
+        // "-> name" with no detail yet (the chevron stays hidden until
+        // updatePendingToolRow reveals it once a result exists) --
+        // mirrors ChatViewModel.driveTurn appending its `.toolActivity`
+        // entry before executing the call.  Inserted just before the
+        // trailing stretch item rebuildTranscriptWidgets() always
+        // leaves last, so it lands at the bottom of the transcript
+        // without a full rebuild.  m_pendingToolRow* are consumed (and
+        // reset to null) by updatePendingToolRow() below, or by the
+        // async render path's own AddToolResult call sites.
+        {
+            QLabel* label = nullptr;
+            QTextEdit* detailEdit = nullptr;
+            QToolButton* chevron = nullptr;
+            QWidget* row = buildToolRow(
+                QStringLiteral("\xE2\x86\x92 ") + toQString(call.name),
+                QString(), /*hasDetail=*/false, /*startExpanded=*/false,
+                &label, &detailEdit, &chevron);
+            const int insertIndex = m_transcriptLayout->count() > 0
+                ? m_transcriptLayout->count() - 1 : 0;
+            m_transcriptLayout->insertWidget(insertIndex, row);
+            m_pendingToolRowLabel = label;
+            m_pendingToolRowDetail = detailEdit;
+            m_pendingToolRowChevron = chevron;
+            QTimer::singleShot(0, this, [this]() {
+                if (m_transcriptScroll) {
+                    if (QScrollBar* bar = m_transcriptScroll->verticalScrollBar()) {
+                        bar->setValue(bar->maximum());
+                    }
+                }
+            });
+        }
+
         if (call.name == "render") {
             // P1-2: suspends here -- resumes back into processNextToolCall
             // from pollOutstandingRender() once the async job completes.
+            // GUI stage 3: the row created above stays live across the
+            // suspension via m_pendingToolRow* (QPointer-guarded --
+            // see updatePendingToolRow); startAsyncRenderToolCall /
+            // pollOutstandingRender update it at each of their
+            // AddToolResult call sites.
             startAsyncRenderToolCall(call, line);
             return;
         }
@@ -1315,6 +1604,7 @@ void ChatPanel::processNextToolCall()
         // `render` is excluded from this routing on purpose (handled in
         // the `if` branch above via the level-independent agentHandleLine).
         const QString response = m_bridge->agentHandleToolCall(toQString(line));
+        updatePendingToolRow(call, toStdString(response));
         m_loop->AddToolResult(call, toStdString(response));
         processNextToolCall();
         return;
@@ -1344,9 +1634,10 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     const QString asyncLine = injectAsyncTrue(toQString(submitLine));
     if (asyncLine.isEmpty()) {
         m_activeRenderPending = false;
-        m_loop->AddToolResult(m_activeRenderCall,
-            toStdString(makeSyntheticRenderResultLine(
-                false, "internal: could not stage the async render submit")));
+        const std::string resultLine = toStdString(makeSyntheticRenderResultLine(
+            false, "internal: could not stage the async render submit"));
+        updatePendingToolRow(m_activeRenderCall, resultLine);
+        m_loop->AddToolResult(m_activeRenderCall, resultLine);
         processNextToolCall();
         return;
     }
@@ -1357,6 +1648,7 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         // Malformed response line -- should not happen (HandleLine always
         // emits valid JSON-RPC) -- fail honestly rather than guess.
         m_activeRenderPending = false;
+        updatePendingToolRow(m_activeRenderCall, toStdString(submitResponse));
         m_loop->AddToolResult(m_activeRenderCall, toStdString(submitResponse));
         processNextToolCall();
         return;
@@ -1366,6 +1658,7 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         // Refused outright (no controller attached) -- already a
         // well-formed JSON-RPC error envelope; surface it verbatim.
         m_activeRenderPending = false;
+        updatePendingToolRow(m_activeRenderCall, toStdString(submitResponse));
         m_loop->AddToolResult(m_activeRenderCall, toStdString(submitResponse));
         processNextToolCall();
         return;
@@ -1379,15 +1672,18 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         const QString message = result.contains("message")
             ? result.value("message").toString() : QStringLiteral("render refused");
         m_activeRenderPending = false;
-        m_loop->AddToolResult(m_activeRenderCall,
-            toStdString(makeSyntheticRenderResultLine(false, message)));
+        const std::string resultLine = toStdString(makeSyntheticRenderResultLine(false, message));
+        updatePendingToolRow(m_activeRenderCall, resultLine);
+        m_loop->AddToolResult(m_activeRenderCall, resultLine);
         processNextToolCall();
         return;
     }
     if (!result.contains("renderJobId")) {
         m_activeRenderPending = false;
-        m_loop->AddToolResult(m_activeRenderCall, toStdString(makeSyntheticRenderResultLine(
-            false, "render accepted but no renderJobId was returned")));
+        const std::string resultLine = toStdString(makeSyntheticRenderResultLine(
+            false, "render accepted but no renderJobId was returned"));
+        updatePendingToolRow(m_activeRenderCall, resultLine);
+        m_loop->AddToolResult(m_activeRenderCall, resultLine);
         processNextToolCall();
         return;
     }
@@ -1438,6 +1734,7 @@ void ChatPanel::pollOutstandingRender()
         if (m_renderPollTimer) m_renderPollTimer->stop();
         setOutstandingRenderJobId(0);
         m_activeRenderPending = false;
+        updatePendingToolRow(m_activeRenderCall, toStdString(waitResponse));
         m_loop->AddToolResult(m_activeRenderCall, toStdString(waitResponse));
         processNextToolCall();
         return;
@@ -1460,6 +1757,7 @@ void ChatPanel::pollOutstandingRender()
         responseLine = makeSyntheticRenderResultLine(
             false, "render completed but no cached result was found");
     }
+    updatePendingToolRow(m_activeRenderCall, toStdString(responseLine));
     m_loop->AddToolResult(m_activeRenderCall, toStdString(responseLine));
     processNextToolCall();
 }

@@ -19,6 +19,7 @@
 #include <QDateTime>
 #include <QVector>
 #include <QElapsedTimer>
+#include <QPointer>
 #include <memory>
 #include <vector>
 
@@ -33,6 +34,8 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QPushButton;
 class QScrollArea;
+class QTextEdit;
+class QToolButton;
 class QVBoxLayout;
 class QTimer;
 class ViewportBridge;
@@ -166,6 +169,12 @@ private slots:
     // Eval-harness E1: the "Record chat trajectories" checkbox (default ON).
     void recordTrajectoriesToggled(bool on);
 
+    // GUI stage 3 (Windows parity, chat-display enrichment): the
+    // "Detailed transcript" checkbox (default OFF) -- mirrors the Mac
+    // ChatSettingsView toggle.  See detailedTranscriptToggled()'s .cpp
+    // doc for the persistence + re-render contract.
+    void detailedTranscriptToggled(bool on);
+
     // P1-2: fires on a ~250ms QTimer while a chat-driven `render` tool
     // call has an async job outstanding; each tick is a fast
     // render_wait(timeoutMs:0) poll-once through agentHandleLine.
@@ -261,6 +270,49 @@ private:
     void rebuildTranscriptWidgets();
     void clearLayout(QVBoxLayout* layout);
 
+    // GUI stage 3 (Windows parity, chat-display enrichment) -----------
+    // Row builders shared by rebuildTranscriptWidgets() (the full,
+    // authoritative rebuild from m_loop's transcript) and
+    // processNextToolCall()'s live dispatch-time row (an ephemeral
+    // widget inserted directly into the already-built layout, ahead of
+    // the trailing stretch, until the next full rebuild supersedes it).
+
+    // A collapsed-by-default (or, when `expandedByDefault`, pre-
+    // expanded) disclosure row for one turn's reasoning text: a flat,
+    // checkable QToolButton chevron reading "Thinking (N words)",
+    // toggling a hidden word-wrapped, selectable QLabel with the full
+    // text.  Parented to m_transcriptContent; the caller owns nothing
+    // (Qt parent/child cleans it up on the next clearLayout()).
+    QWidget* buildThinkingRow(const QString& reasoningText, bool expandedByDefault);
+
+    // One tool-call "trace chip": a checkmark + `headerText`, hairline-
+    // bordered like the pre-existing chip, plus a chevron toggling a
+    // hidden read-only QTextEdit body (`detailText`) -- collapsed by
+    // default (`startExpanded` exists for interface symmetry with
+    // buildThinkingRow; every call site below passes false, matching
+    // the "tool detail always starts collapsed" contract).  When
+    // `hasDetail` is false the chevron is hidden/disabled and the row
+    // reads exactly like the plain pre-feature chip -- the dispatch-
+    // time state, before a result exists to show.  The three optional
+    // out-params let a caller (processNextToolCall's dispatch site)
+    // retain pointers for a later in-place update; pass nullptr when
+    // the row will never be updated (the full-rebuild path, where the
+    // whole ChatToolDisplaySummary is already known up front).
+    QWidget* buildToolRow(const QString& headerText, const QString& detailText,
+                          bool hasDetail, bool startExpanded,
+                          QLabel** outLabel = nullptr, QTextEdit** outDetailEdit = nullptr,
+                          QToolButton** outChevron = nullptr);
+
+    // Update the live dispatch-time row (m_pendingToolRow*, set by
+    // processNextToolCall's buildToolRow call) now that `call`'s result
+    // line has returned: relabels it "-> name  <outcome>" via
+    // AgentChatLoop::ToolOutcomeLineForDisplay, fills in the args+result
+    // detail, and reveals the chevron.  QPointer-guarded (see the .cpp
+    // doc) so a transcript clear that races an in-flight async render
+    // tool call is a safe no-op rather than a dangling-pointer write.
+    void updatePendingToolRow(const RISE::Agent::ChatToolCall& call,
+                              const std::string& responseLine);
+
     // Secure-MCP slice 5c (Windows parity): rebuild the proposals
     // column from a freshly-parsed list_proposals response.
     void rebuildProposalsUI(const QVector<ProposalEntry>& proposals);
@@ -299,6 +351,28 @@ private:
     bool m_recordTrajectories = true;
     QString m_scenePath;   // scene-identity for the session record (may be empty)
     QElapsedTimer m_httpTimer;   //!< started at post(), read at networkFinished()
+
+    // GUI stage 3 (Windows parity, chat-display enrichment): the
+    // transcript verbosity toggle -- QSettings key "agentChat/detailedTranscript",
+    // default false.  Read by rebuildTranscriptWidgets() to seed each
+    // thinking row's initial expanded state; see detailedTranscriptToggled()'s
+    // .cpp doc for why toggling it re-seeds every row currently on
+    // screen (not just future ones, unlike the Mac panel).
+    QCheckBox* m_detailedTranscriptCheck = nullptr;
+    bool m_detailedTranscript = false;
+
+    // GUI stage 3: the live tool-dispatch row's widgets, set by
+    // processNextToolCall() at dispatch time and consumed (then reset
+    // to null) by updatePendingToolRow() once that call's result lands.
+    // QPointer, not raw pointers -- see updatePendingToolRow's header
+    // doc for the lifetime story. At most one tool call is ever
+    // in-flight at a time (processNextToolCall drains m_pendingToolCalls
+    // one at a time, synchronously except for the `render` verb's async
+    // submit/poll suspension), so a single set suffices -- no per-call
+    // container needed.
+    QPointer<QLabel>      m_pendingToolRowLabel;
+    QPointer<QTextEdit>   m_pendingToolRowDetail;
+    QPointer<QToolButton> m_pendingToolRowChevron;
 
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_modelEdit = nullptr;
