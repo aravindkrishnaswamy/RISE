@@ -241,7 +241,33 @@ checkpoint already proves building happened). Re-graded, epoch-7 is **0.84** (3/
 full passes, `traj` 9/9). The remaining 0.07 gap vs epoch-6 is in the lighting
 checkpoint (render_band 6/9 → 3/9) — fewer renders plausibly means less lighting
 correction, the genuine tradeoff, though at N=9 that 6-vs-3 gap carries real
-uncertainty. Not yet run on the other models.
+uncertainty.
+
+**Resolution (epoch 8 → 9).** The chattiness turned out to be dominated by
+INSERTS (which the batch verb fixes), not renders (only 2.8–6.9 of 30–86 calls);
+the render-softening had attacked the small lever and cost lighting. So: keep
+the batch verb, restore the regular render cadence (epoch 9), and re-measure on
+gpt + gemini-3.5 + gemini-3.6 at one epoch.
+
+| model | calls (no batch → e9) | meanCkpt (no batch → e9) | render_band |
+|---|---|---|---|
+| **gemini-3.6-flash** | 143 → **62** (−57%) | **0.78 → 0.91** | 1/9 → **5/9** |
+| gemini-3.5-flash | ~108 → **45** (−58%) | 0.84 → **0.89** | 3/9 → 5/9 |
+| gpt-5.6-terra | 86 → **30** (−65%) | 0.91 → 0.84 | 6/9 → 3/9 |
+
+Three findings:
+1. **The batch verb generalizes to all three (−55…−65% calls) and all adopt it.**
+   The durable win — keep it regardless of the cadence question.
+2. **It fixed the worst offender.** gemini-3.6 (the over-iterator) went from
+   crushed (0.78, worst) to tied-best (0.91) while nearly halving its calls —
+   batch helped the model that needed it most. (It still over-patches, 27.8/run;
+   the batch verb cut inserts, not patches — the next chattiness lever.)
+3. **Render-cadence *prose* moves gemini but not gpt.** Restoring the cadence
+   recovered gemini lighting (3.5 to its best 0.89; 3.6's jump) while keeping the
+   cost win — but gpt renders ~2.6×/run regardless of wording (2.8/2.3/2.6 across
+   epochs 7/8/9), so its lighting stays at 3/9. gpt is prose-insensitive here; its
+   lighting is the one unsolved gap and would need a non-prose lever (a nudge or a
+   hard requirement), not more skill text.
 
 ---
 
@@ -281,5 +307,5 @@ object+lighting+stage+env; graded by RMSE vs committed references.
 
 ---
 
-_Last updated: 2026-07-22 (chattiness fix). Raw runs under `evals/runs/`; runconfigs under
+_Last updated: 2026-07-22 (chattiness fix -- batch + restored cadence). Raw runs under `evals/runs/`; runconfigs under
 `evals/runconfigs/`._
