@@ -120,31 +120,6 @@ struct TargetSpec {
 	double      mxXYZD65toTW[3][3];    // Bradford D65 → target whitepoint
 };
 
-// Bradford D65 → D50 chromatic adaptation.  Copied from
-// `mxXYZD65toXYZD50` in src/Library/Utilities/Color/Color.cpp.
-static const double kBradford_D65_to_D50[3][3] = {
-	{  1.0479, 0.0229, -0.0502 },
-	{  0.0296, 0.9904, -0.0171 },
-	{ -0.0092, 0.0151,  0.7519 }
-};
-
-// Bradford D65 → ACES D60-ish (xy = 0.32168, 0.33767).  Derived from
-// the canonical Bradford-cone-response matrix and the ACES Reference
-// Whitepoint chromaticities — verification recipe:
-//   D65 white  XYZ = (0.95047, 1.00000, 1.08883)
-//   ACES white XYZ = (0.95265, 1.00000, 1.00883)  [from (0.32168, 0.33767)]
-//   M_adapt = M_Bradford^-1 · diag(rho_dst / rho_src) · M_Bradford
-//   where rho_* = M_Bradford · white_*
-// Round-trip M_adapt · D65_XYZ == ACES_XYZ verified.  See ACES TB-2014-004
-// + Lindbloom Bradford reference.  An earlier value (commit pre-fix) had
-// the wrong sign convention and was caught by the Stage A adversarial
-// review.
-static const double kBradford_D65_to_ACES[3][3] = {
-	{  1.0129910965,  0.0060845191, -0.0149298715 },
-	{  0.0076709636,  0.9981726261, -0.0050179063 },
-	{ -0.0028339778,  0.0046733535,  0.9247039866 }
-};
-
 // Rec.709 / sRGB Linear (D65).  XYZ(D65)→Rec709(D65).  Copied from
 // `mxXYZtoRec709` in src/Library/Utilities/Color/Color.cpp.
 static const TargetSpec kTarget_Rec709 = {
@@ -181,6 +156,8 @@ static const TargetSpec kTarget_ROMM = {
 		{  0.0,     0.0,     1.2123 }
 	},
 	{
+		// Bradford D65 → D50 chromatic adaptation. Copied from
+		// `mxXYZD65toXYZD50` in Color.cpp.
 		{  1.0479, 0.0229, -0.0502 },
 		{  0.0296, 0.9904, -0.0171 },
 		{ -0.0092, 0.0151,  0.7519 }
@@ -200,6 +177,8 @@ static const TargetSpec kTarget_ACEScg = {
 		{  0.0117218943, -0.0082844420,  0.9883948585 }
 	},
 	{
+		// Bradford D65 → ACES D60-ish (xy = 0.32168, 0.33767),
+		// derived from the canonical Bradford cone-response matrix.
 		{  1.0129910965,  0.0060845191, -0.0149298715 },
 		{  0.0076709636,  0.9981726261, -0.0050179063 },
 		{ -0.0028339778,  0.0046733535,  0.9247039866 }
@@ -309,7 +288,7 @@ static bool SolveCoefficients( const double target[3], double c[3], double* outR
 	const double kFDStep    = 5e-4;
 
 	double bestC[3] = { c[0], c[1], c[2] };
-	double bestResNorm = std::numeric_limits<double>::infinity();
+	double bestResNorm = std::numeric_limits<double>::max();
 
 	{
 		double rgb[3];
@@ -592,7 +571,7 @@ int main( int argc, char** argv )
 					JH::CellToRGB( maxC, z, x, y, rgb );
 
 					double c[3] = { prevCoeff[0], prevCoeff[1], prevCoeff[2] };
-					double resNorm = std::numeric_limits<double>::infinity();
+					double resNorm = std::numeric_limits<double>::max();
 
 					// z = 0 means the target RGB is (0, 0, 0): the
 					// fundamentally-unrepresentable "perfect black"
@@ -609,7 +588,7 @@ int main( int argc, char** argv )
 						if( resNorm > 1e-4 ) {
 							// Retry from cold start
 							double cAlt[3] = { 0.0, 0.0, 0.0 };
-							double altRes  = std::numeric_limits<double>::infinity();
+							double altRes  = std::numeric_limits<double>::max();
 							JH::SolveCoefficients( rgb, cAlt, &altRes );
 							if( altRes < resNorm ) {
 								c[0] = cAlt[0]; c[1] = cAlt[1]; c[2] = cAlt[2];

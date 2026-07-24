@@ -102,7 +102,6 @@ int main() {
 			Vec3 wi(sinTheta, 0.0, cosTheta);
 
 			double sum = 0.0;
-			int validSamples = 0;
 
 			for(int s = 0; s < NUM_SAMPLES; s++) {
 				double u1 = rand01();
@@ -125,7 +124,6 @@ int main() {
 					// With VNDF sampling and F=1, the estimator for E_ss is:
 					// E_ss = (1/N) * sum G1(wo)
 					sum += GGX_G1(alpha, cosWo);
-					validSamples++;
 				}
 			}
 
