@@ -2610,6 +2610,14 @@ namespace RISE
 		//! scheduler timing.  No-op in production.
 		virtual void ForTest_OnAgentWorkerAboutToParkRender() {}
 
+		//! Direct-render teardown RED-PROVE hook. Called after a
+		//! RunPreviewRenderParked caller has registered its lifetime with
+		//! Stop(), but before it tries to acquire render admission. A test
+		//! can hold a pre-existing caller here and prove terminal Stop()
+		//! drains it even though it has not yet become the render occupant.
+		//! No-op in production.
+		virtual void ForTest_OnDirectRenderBeforeAdmission() {}
+
 		//! Fix-round-6 (save-vs-render race) RED-PROVE test hook.  Called
 		//! by RequestSave, unlocked, immediately AFTER its step-1 lock
 		//! scope has set mSaving=true and released mMutex and AFTER it has
@@ -3172,18 +3180,18 @@ namespace RISE
 		std::atomic<bool>           mAgentRenderBlocksInteractive;
 		//! Direct RunPreviewRenderParked calls execute on their caller's
 		//! thread, outside the dedicated agent worker's joinable lifetime.
-		//! This leaf state lets Stop() cancel and drain that caller before
-		//! controller destruction. A direct render publishes active while
-		//! holding mRenderAdmissionMutex, and Stop() takes admission before
-		//! its final wait, closing the start-vs-teardown race.
+		//! This leaf state lets terminal Stop() close registration and drain
+		//! every caller that entered before closure, including callers still
+		//! waiting to acquire mRenderAdmissionMutex.
 		mutable std::mutex          mDirectRenderStateMutex;
 		std::condition_variable     mDirectRenderDoneCV;
-		//! Guarded by mDirectRenderStateMutex. Normally 0/1; may transiently
-		//! reach 2 when a successor publishes after the prior caller clears
-		//! the admission gate but before its scope guard decrements. A count,
-		//! rather than a boolean, makes that legal handoff impossible to
-		//! overwrite and lets Stop() drain every admitted caller.
-		unsigned int                mDirectRenderActiveCount;
+		//! Both guarded by mDirectRenderStateMutex. The count is incremented
+		//! at method entry, before admission, and decremented as the caller's
+		//! final controller access. mDirectRenderStopping is terminal:
+		//! Stop() sets it before teardown so no later caller can register
+		//! behind the zero-count predicate.
+		unsigned int                mDirectRenderCallCount;
+		bool                        mDirectRenderStopping;
 		//! Per-direct-occupant cancellation latch. The direct path must reset
 		//! the shared progress token after draining an interactive pass; this
 		//! bit preserves an explicit Stop/render_cancel that arrives before

@@ -2445,6 +2445,30 @@ protected:
 };
 
 //////////////////////////////////////////////////////////////////////
+// Direct-render teardown seam: holds a caller after it has registered its
+// lifetime with Stop(), but before it acquires render admission.
+//////////////////////////////////////////////////////////////////////
+class DirectAdmissionWaiterController : public SceneEditController
+{
+public:
+	explicit DirectAdmissionWaiterController( IJobPriv& job )
+	: SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	std::atomic<bool> callerRegistered{ false };
+	std::atomic<bool> releaseCaller{ false };
+
+protected:
+	void ForTest_OnDirectRenderBeforeAdmission() override
+	{
+		callerRegistered.store( true, std::memory_order_release );
+		while( !releaseCaller.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+};
+
+//////////////////////////////////////////////////////////////////////
 // (q0) Queued cancellation must survive the worker's per-render Reset().
 // A cancel after an async submission but before the worker starts used to be
 // silently erased, turning Stop/render_cancel into a full render.
@@ -5085,6 +5109,42 @@ static void RunGestureRenderAdmissionTest()
 	directStopThread.join();
 	Check( directStopReturned.load( std::memory_order_acquire ),
 	       "z6: Stop completes after the direct render releases the scene" );
+
+	// A caller that entered before Stop but has not yet acquired admission
+	// must be drained too. Counting only the admitted occupant lets Stop
+	// observe zero and return while this caller is still about to touch the
+	// controller.
+	DirectAdmissionWaiterController directAdmissionWaiter( *pJob );
+	std::atomic<bool> waiterAccepted{ true };
+	std::atomic<bool> waiterStopReturned{ false };
+	std::thread directWaiterThread( [&] {
+		const bool accepted =
+			directAdmissionWaiter.RunPreviewRenderParked( [] {} );
+		waiterAccepted.store( accepted, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !directAdmissionWaiter.callerRegistered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( directAdmissionWaiter.callerRegistered.load( std::memory_order_acquire ),
+	       "z6: direct pre-admission waiter registered before teardown" );
+	std::thread waiterStopThread( [&] {
+		directAdmissionWaiter.Stop();
+		waiterStopReturned.store( true, std::memory_order_release );
+	} );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	Check( !waiterStopReturned.load( std::memory_order_acquire ),
+	       "MONEY (z6): Stop drains a pre-existing direct caller that has not acquired admission" );
+	directAdmissionWaiter.releaseCaller.store( true, std::memory_order_release );
+	directWaiterThread.join();
+	waiterStopThread.join();
+	Check( !waiterAccepted.load( std::memory_order_acquire ),
+	       "z6: the drained pre-admission caller refuses after terminal Stop" );
+	Check( waiterStopReturned.load( std::memory_order_acquire ),
+	       "z6: Stop completes after the pre-admission caller retires" );
 
 	pJob->release();
 	std::remove( scenePath.c_str() );

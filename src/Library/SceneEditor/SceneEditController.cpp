@@ -233,7 +233,8 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mAgentRenderBlocksInteractive( false )
 , mDirectRenderStateMutex()
 , mDirectRenderDoneCV()
-, mDirectRenderActiveCount( 0 )
+, mDirectRenderCallCount( 0 )
+, mDirectRenderStopping( false )
 , mDirectRenderCancelRequested( false )
 , mCancelCount( 0 )
 , mRenderCount( 0 )
@@ -909,7 +910,7 @@ void SceneEditController::StopInteractive()
 	{
 		std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
-		if( mDirectRenderActiveCount > 0 )
+		if( mDirectRenderCallCount > 0 )
 		{
 			mDirectRenderCancelRequested.store( true, std::memory_order_release );
 		}
@@ -1087,6 +1088,15 @@ String SceneEditController::RedoLabel() const
 
 void SceneEditController::Stop()
 {
+	// Close direct caller registration before any terminal teardown. A
+	// caller that entered earlier is already counted even if it is still
+	// waiting for render admission; a caller arriving later refuses before
+	// touching any other controller state.
+	{
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		mDirectRenderStopping = true;
+	}
+
 	// Model-B F2 slice S4 fix round 5: THE ORDER BELOW IS LOAD-BEARING --
 	// agent-worker retirement MUST run to completion BEFORE
 	// StopInteractive()'s interactive teardown, not after.
@@ -1182,14 +1192,14 @@ void SceneEditController::Stop()
 	StopInteractive();
 
 	// RunPreviewRenderParked executes on an external caller's thread rather
-	// than mAgentRenderThread. Close admission so no direct caller can publish
-	// active after the predicate check, then wait for the currently-published
-	// occupant to make its final controller touch. This is required even when
-	// Start() was never called (StopInteractive is then intentionally a no-op).
-	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	// than mAgentRenderThread. Registration was closed at function entry;
+	// now drain every earlier caller through its final controller touch.
+	// Do NOT hold admission here: one of those counted callers may already be
+	// waiting for that mutex and must be allowed to acquire it, observe the
+	// terminal agent-stop flag, and retire.
 	std::unique_lock<std::mutex> directLk( mDirectRenderStateMutex );
 	mDirectRenderDoneCV.wait( directLk, [&] {
-		return mDirectRenderActiveCount == 0;
+		return mDirectRenderCallCount == 0;
 	} );
 }
 
@@ -4108,7 +4118,7 @@ void SceneEditController::CancelAgentRender_()
 	}
 	{
 		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
-		if( mDirectRenderActiveCount > 0 )
+		if( mDirectRenderCallCount > 0 )
 		{
 			mDirectRenderCancelRequested.store( true, std::memory_order_release );
 		}
@@ -4838,6 +4848,35 @@ bool SceneEditController::RunPreviewRenderParked(
 	const String&                clientLabel,
 	RenderJobId*                 outJobId )
 {
+	// Register before touching admission or any other controller state.
+	// Terminal Stop() closes this registration under the same leaf mutex and
+	// then waits for every successfully-registered caller to make its final
+	// controller touch. This includes a caller blocked before admission.
+	{
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		if( mDirectRenderStopping )
+		{
+			return false;
+		}
+		++mDirectRenderCallCount;
+	}
+	struct DirectRenderCallGuard
+	{
+		SceneEditController& self;
+		~DirectRenderCallGuard()
+		{
+			// LAST access to self on every return/throw path.
+			std::lock_guard<std::mutex> directLk( self.mDirectRenderStateMutex );
+			--self.mDirectRenderCallCount;
+			if( self.mDirectRenderCallCount == 0 )
+			{
+				self.mDirectRenderDoneCV.notify_all();
+			}
+		}
+	} directCallGuard{ *this };
+
+	ForTest_OnDirectRenderBeforeAdmission();
+
 	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
@@ -4885,10 +4924,6 @@ bool SceneEditController::RunPreviewRenderParked(
 		return false;
 	}
 	mDirectRenderCancelRequested.store( false, std::memory_order_release );
-	{
-		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
-		++mDirectRenderActiveCount;
-	}
 	mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
 	struct DirectRenderAdmissionGuard
 	{
@@ -4897,17 +4932,6 @@ bool SceneEditController::RunPreviewRenderParked(
 		{
 			self.mAgentRenderBlocksInteractive.store( false, std::memory_order_release );
 			self.mCV.notify_all();
-			// LAST guarded access to self: notify while the state mutex is
-			// still held. Stop() cannot finish its wait (and permit
-			// destruction) until this lock_guard has completed the unlock.
-			{
-				std::lock_guard<std::mutex> directLk( self.mDirectRenderStateMutex );
-				--self.mDirectRenderActiveCount;
-				if( self.mDirectRenderActiveCount == 0 )
-				{
-					self.mDirectRenderDoneCV.notify_all();
-				}
-			}
 		}
 	} directAdmissionGuard{ *this };
 	admissionLk.unlock();
