@@ -8,9 +8,9 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
 
 ## Requirements
 
-- **Android Studio Hedgehog (2023.1.1) or newer**. On first open, Android
-  Studio will offer to install the matching NDK (r26.3+) and CMake (3.22.1+)
-  through the SDK Manager — accept both prompts.
+- **Android Studio Narwhal 3 Feature Drop (2025.1.3) or a newer release
+  compatible with AGP 8.13**. Install the project-pinned NDK
+  **27.0.12077973** and CMake 3.22.1 through the SDK Manager.
 - **JDK 17** (bundled with Android Studio).
 - An **arm64-v8a** Android 14 (API 34) emulator image. On an Apple Silicon
   host the ARM image is hardware-accelerated; on Intel hosts it runs under
@@ -21,7 +21,7 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
 1. In Android Studio: *File → Open* → select the `android/` directory.
 2. Wait for Gradle sync. First sync will download AGP 8.13.2 and the Compose
    dependencies, then invoke CMake against `../build/cmake/rise-android/
-   CMakeLists.txt` and compile ~180 library TUs. Expect the first build to
+   CMakeLists.txt` and compile ~340 library TUs. Expect the first build to
    take several minutes; incremental builds are fast.
 3. Select the `app` run configuration and an arm64 emulator, then Run.
 
@@ -76,7 +76,7 @@ android/
             RiseNative.kt              external fun declarations
             RiseCallback.kt            progress / tile / log interface
           ui/
-            RenderScreen.kt            adaptive two-pane layout
+            RenderScreen.kt            top scene dropdown + full-bleed viewport
             RenderViewModel.kt         state orchestration
             RenderState.kt             sealed UI state
             SceneCatalog.kt            bundled scene list

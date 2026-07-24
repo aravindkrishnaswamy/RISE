@@ -37,12 +37,14 @@
 # Usage:
 #   bash scripts/bdpt_connection_baselines.sh capture <tag>  # 2 trials each
 #   bash scripts/bdpt_connection_baselines.sh check   <tag>  # 1 render, vs trial-a
+# Check limit: max(MAX_DELTA_PCT, captured a-vs-b floor); default 0.5%.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${ROOT}/bin/rise"
 MODE="${1:?capture|check}"
 TAG="${2:?tag}"
+MAX_DELTA_PCT="${MAX_DELTA_PCT:-0.5}"
 DIR="${ROOT}/tests/baselines_refactor/${TAG}_bdptconn"
 RENDERED="${ROOT}/rendered"
 export RISE_MEDIA_PATH="${ROOT}/"
@@ -134,7 +136,13 @@ for entry in "${MANIFEST[@]}"; do
                 failures=$((failures + 1))
                 continue
             fi
-            echo "  ${name} [${ptag}]: post-Δ=${d}%  (floor=${floor}%)"
+            limit="$(awk -v configured="${MAX_DELTA_PCT}" -v measured="${floor}" 'BEGIN { measured += 0; if (measured > configured) configured = measured; printf "%.4f", configured }')"
+            if awk -v delta="${d}" -v limit="${limit}" 'BEGIN { exit(delta <= limit ? 0 : 1) }'; then
+                echo "  PASS ${name} [${ptag}]: post-Δ=${d}%  (floor=${floor}%, limit=${limit}%)"
+            else
+                echo "  FAIL ${name} [${ptag}]: post-Δ=${d}%  (floor=${floor}%, limit=${limit}%)"
+                failures=$((failures + 1))
+            fi
         else
             echo "  FAIL render ${name}"
             failures=$((failures + 1))

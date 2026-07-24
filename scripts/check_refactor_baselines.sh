@@ -5,16 +5,16 @@
 #
 # For each scene:
 #   - render fresh
-#   - compute log-luminance RMS vs baseline PNG
-#   - compute mean luminance delta
+#   - compute encoded-PNG Rec.709 luma drift
+#   - compute 100 × RMS(log10(encoded luma + 1))
 #   - fail if either exceeds the configured threshold
 #
 # Usage:
 #   bash scripts/check_refactor_baselines.sh [phase_tag]
 #
 # Thresholds:
-#   Mean luminance drift:  < 0.5%
-#   Per-pixel log-luminance RMS: < 3.0
+#   Mean encoded-luma drift: < 0.5%
+#   100 × log10-luma RMS: < 3.0 (equivalent to raw RMS < 0.03)
 #
 set -euo pipefail
 
@@ -110,11 +110,11 @@ if base.shape != fresh.shape:
     print(f"ERROR_SHAPE: baseline={base.shape} fresh={fresh.shape}")
     sys.exit(1)
 
-def luminance(img):
+def encoded_luma(img):
     return img[:,:,0]*0.2126 + img[:,:,1]*0.7152 + img[:,:,2]*0.0722
 
-base_lum = luminance(base)
-fresh_lum = luminance(fresh)
+base_lum = encoded_luma(base)
+fresh_lum = encoded_luma(fresh)
 
 base_mean = base_lum.mean()
 fresh_mean = fresh_lum.mean()
@@ -136,7 +136,7 @@ identical = int(np.all(base == fresh, axis=-1).sum())
 total_pixels = base.shape[0] * base.shape[1]
 identical_pct = 100.0 * identical / total_pixels
 
-print(f"{verdict} lum_delta={lum_pct:.3f}% log_rms={log_rms:.3f} identical={identical_pct:.1f}%")
+print(f"{verdict} encoded_luma_delta={lum_pct:.3f}% log10_luma_rms_x100={log_rms:.3f} identical={identical_pct:.1f}%")
 sys.exit(0 if verdict == "PASS" else 1)
 PYEOF
     ); then

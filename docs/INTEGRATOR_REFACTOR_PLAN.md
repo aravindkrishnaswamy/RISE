@@ -473,10 +473,12 @@ Check fresh PNG renders against that tagged baseline set:
 bash scripts/check_refactor_baselines.sh phase0
 ```
 
-The checker measures whole-image mean-luminance drift (default limit 0.5%)
-and log-luminance RMS (default limit 3.0), and reports the identical-pixel
-percentage as a diagnostic. It is a compact regression smoke gate, not a
-bit-identity, per-region, variance, firefly, linear-HDR, or XYZ oracle.
+The checker measures whole-image Rec.709-weighted luma directly in the
+encoded 8-bit PNG domain (default drift limit 0.5%) and
+`100 × RMS(log10(luma + 1))` (default limit 3.0, or 0.03 in unscaled log10
+units), and reports the identical-pixel percentage as a diagnostic. It is a
+compact regression smoke gate, not a bit-identity, per-region, variance,
+firefly, linear-HDR, or XYZ oracle.
 Use the focused integrator tests and variance workflow for those stronger
 claims.
 
