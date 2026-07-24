@@ -13,8 +13,8 @@
 #   bash scripts/check_refactor_baselines.sh [phase_tag]
 #
 # Thresholds:
-#   Mean encoded-luma drift: < 0.5%
-#   100 × log10-luma RMS: < 3.0 (equivalent to raw RMS < 0.03)
+#   Mean encoded-luma drift: <= 0.5%
+#   100 × log10-luma RMS: <= 3.0 (equivalent to raw RMS <= 0.03)
 #
 set -euo pipefail
 
@@ -60,7 +60,7 @@ total_pass=0
 total_missing=0
 
 echo "Checking baselines against fresh renders (tag=${TAG})"
-echo "Thresholds: mean luminance ${LUM_THRESHOLD_PCT}%, RMS ${RMS_THRESHOLD}"
+echo "Thresholds: encoded-luma drift ${LUM_THRESHOLD_PCT}%, log10-luma RMS x100 ${RMS_THRESHOLD}"
 echo
 
 for scene_rel in "${SCENES[@]}"; do

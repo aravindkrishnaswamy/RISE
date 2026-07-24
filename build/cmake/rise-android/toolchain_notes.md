@@ -7,10 +7,10 @@ under `android/app/src/main/cpp/`.
 
 ## Prerequisites
 
-- **Android Studio** (Hedgehog 2023.1.1 or newer). When the project is first
-  opened, Android Studio will prompt to install the matching NDK and CMake
-  from the SDK Manager. Accept both.
-- **NDK version**: r26d or newer (any r26.x or r27.x works). CMake 3.22.1+.
+- **Android Studio** Narwhal 3 Feature Drop (2025.1.3) or a newer release
+  compatible with the pinned AGP 8.13.
+- **NDK version**: exactly `27.0.12077973`, as pinned by
+  `android/app/build.gradle.kts`. CMake 3.22.1+.
 - **ABI**: `arm64-v8a` only. Emulator: use an ARM64 Android 14 (API 34) system
   image. On an Intel host, enable hardware-accelerated ARM translation in AVD
   Manager — Android Studio will warn if unavailable.
@@ -24,18 +24,19 @@ implementation plan and has no dependencies on the Kotlin layer.
 From this directory:
 
 ```sh
-export ANDROID_NDK=~/AppData/Local/Android/Sdk/ndk/26.3.11579264   # or wherever
+export RISE_ANDROID_NDK="${ANDROID_SDK_ROOT}/ndk/27.0.12077973"
 cmake -B _out \
-  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+  -DCMAKE_TOOLCHAIN_FILE="$RISE_ANDROID_NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-29 \
   -DANDROID_STL=c++_shared
 cmake --build _out --target rise -j8
 ```
 
-Expected output: a `librise.a` archive under `_out/` containing ~180 object
-files. Warnings are fine; errors mean the source list in `rise_sources.cmake`
-or the compile flags in `CMakeLists.txt` need adjustment.
+Expected output: a `librise.a` archive under `_out/` containing about 340
+object files, with no compiler warnings or errors. A warning or error means
+the source list in `rise_sources.cmake`, the compile flags in
+`CMakeLists.txt`, or the affected source needs correction.
 
 ## Source list synchronization
 

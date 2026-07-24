@@ -83,7 +83,7 @@ b=np.array(Image.open(sys.argv[1]).convert("RGB"),dtype=np.float64)
 f=np.array(Image.open(sys.argv[2]).convert("RGB"),dtype=np.float64)
 def L(x): return (x[:,:,0]*0.2126+x[:,:,1]*0.7152+x[:,:,2]*0.0722).mean()
 bm,fm=L(b),L(f)
-print("%.4f"%(0.0 if bm<1e-9 else abs(bm-fm)/bm*100.0))
+print("%.4f"%(0.0 if bm<1e-9 and fm<1e-9 else (100.0 if bm<1e-9 else abs(bm-fm)/bm*100.0)))
 PY
 }
 
