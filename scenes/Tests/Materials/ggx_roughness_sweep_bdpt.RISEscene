@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           ggx_roughness_sweep.RISEscene                                                          #
+#   File:           ggx_roughness_sweep_bdpt.RISEscene                                                          #
 #   Description:    Eight gold GGX spheres sweeping isotropic roughness from 0.01 to 1.0 in a Cornell      #
 #                   box. Validates monotonic highlight spread and energy conservation with                   #
 #                   Kulla-Conty multiscattering.                                                            #

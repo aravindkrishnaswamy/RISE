@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           teapot.scn                                                                              #
+#   File:           teapot.RISEscene                                                                              #
 #   Description:    A simple Utah teapot                                                                    #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      January 23, 2002                                                                        #
@@ -336,7 +336,8 @@ lambertian_material
 # is applied along per-vertex normals of the tessellated mesh.  Using
 # bezierpatch_geometry as the base keeps a single source of truth for
 # the Utah teapot model — the same .bezier file feeds the analytic
-# variant (teapot_analytic.RISEscene) and this displacement variant.
+# test variant (scenes/Tests/Geometry/teapot_analytic.RISEscene) and this
+# displacement showcase.
 #
 bezierpatch_geometry
 {
@@ -449,7 +450,6 @@ timeline
 	time 1
 	value 0 0 800
 }
-
 
 
 

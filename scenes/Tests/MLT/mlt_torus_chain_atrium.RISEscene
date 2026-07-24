@@ -4,7 +4,7 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           mlt_torus_chain_atrium.RISEscene                                                       #
-#   Description:    BDPT torture test: a helical chain of 30 interlocking dielectric (glass) toruses        #
+#   Description:    MLT torture test: a helical chain of 30 interlocking dielectric (glass) toruses         #
 #                   spiraling through a procedurally generated columned atrium.  Each torus                 #
 #                   has a unique colored Tau with at least one RGB component >= 0.999.  Light must          #
 #                   traverse dozens of refractive boundaries to illuminate the scene.                       #
@@ -16,7 +16,7 @@ RISE ASCII SCENE 7
 > set accelerator B 10 8
 
 ##################################################
-# Renderer -- Bidirectional Path Tracing
+# Renderer -- Metropolis Light Transport
 ##################################################
 
 standard_shader
@@ -1177,5 +1177,4 @@ torus_geometry
 		orientation		0 720.07000000000005002 0
 		material		glass_o0014
 	}
-
 

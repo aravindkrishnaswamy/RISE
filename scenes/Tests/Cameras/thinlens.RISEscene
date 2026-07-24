@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           dof.RISEScene                                                                           #
+#   File:           thinlens.RISEscene                                                                           #
 #   Description:    Demonstrates depth of field effects via the thin lens camera.  Note the thin lens       #
 #                   camera can be difficult to use.  Consider the realistic camera instead.                 #
 #   Author:         Aravind Krishnaswamy                                                                    #

@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           ggx_anisotropy_sweep.RISEscene                                                         #
+#   File:           ggx_anisotropy_sweep_bdpt.RISEscene                                                         #
 #   Description:    3x3 grid of GGX spheres varying alpha_x (columns) vs alpha_y (rows). Diagonal          #
 #                   entries (alpha_x == alpha_y) should match isotropic GGX. Off-diagonal entries            #
 #                   show anisotropic highlight stretching.                                                   #

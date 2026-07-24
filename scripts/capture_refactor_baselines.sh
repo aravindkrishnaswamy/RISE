@@ -45,9 +45,14 @@ SCENES=(
     "scenes/Tests/VCM/cornellbox_vcm_caustics.RISEscene"
     "scenes/Tests/Spectral/hwss_cornellbox_pt.RISEscene"
     "scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene"
-    "scenes/Tests/RussianRoulette/cornellbox_highalbedo_pt.RISEscene"
-    "scenes/Tests/RussianRoulette/cornellbox_highalbedo_bdpt.RISEscene"
 )
+
+for scene_rel in "${SCENES[@]}"; do
+    if [ ! -f "${ROOT}/${scene_rel}" ]; then
+        echo "ERROR: configured scene is missing: ${scene_rel}" >&2
+        exit 1
+    fi
+done
 
 echo "Capturing baselines to: ${BASELINE_DIR}"
 echo "Total scenes: ${#SCENES[@]}"
@@ -56,8 +61,8 @@ echo
 for scene_rel in "${SCENES[@]}"; do
     scene_abs="${ROOT}/${scene_rel}"
     if [ ! -f "${scene_abs}" ]; then
-        echo "SKIP (missing): ${scene_rel}"
-        continue
+        echo "ERROR: configured scene disappeared: ${scene_rel}" >&2
+        exit 1
     fi
 
     base_name="$(basename "${scene_rel}" .RISEscene)"

@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           textureaccessors.scn                                                                    #
+#   File:           textureaccessors.RISEscene                                                                    #
 #   Description:    Test of different texture accessors                                                     #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      April 2, 2003                                                                           #

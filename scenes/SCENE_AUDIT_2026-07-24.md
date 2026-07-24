@@ -17,6 +17,8 @@ multi-feature, or end-to-end stress scenes belong in `FeatureBased/`.
   duplicated across the showcase tree.
 - One presentation owner remains in `FeatureBased/` for each consolidated
   composition.
+- Active scene-header `File:` identities now match their current filenames;
+  older inline painter-block headers remain as provenance only.
 - The CLI default and GUI starter remain outside the sample taxonomy because
   they are runtime product assets.
 
@@ -109,7 +111,13 @@ corpus manifest:
 ```sh
 export RISE_MEDIA_PATH="$(pwd)/"
 make -C build/make/rise ../../../bin/tests/CstDeriveGoldenTest
+git add <intended-scene-adds-moves-and-removals>
 ./bin/tests/CstDeriveGoldenTest --generate
 git diff tests/data/cst_derive_golden.txt
 ./bin/tests/CstDeriveGoldenTest
 ```
+
+The generator enumerates `git ls-files`; stage intended scene additions and
+move destinations before generation so they cannot be omitted as untracked
+files. Review and stage the regenerated golden file only after inspecting its
+diff.

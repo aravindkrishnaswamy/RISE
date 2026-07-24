@@ -113,8 +113,8 @@ class EnumRenderOutputsCallback : public IEnumCallback<IRasterizerOutput>
 void Usage()
 {
 	std::cout << "Usage: mpirun -np #procs ./risempi <scene file> [S|A] <num frames>" << std::endl;
-	std::cout << "Example: mpirun -np 8 ./risempi ../scenes/cornellbox.RISEscene S      -or-" << std::endl;
-	std::cout << "         mpirun -np 8 ./risempi ../scenes/cornellbox.RISEscene A 240" << std::endl;
+	std::cout << "Example: mpirun -np 8 ./risempi ../scenes/Tests/BDPT/cornellbox_bdpt.RISEscene S      -or-" << std::endl;
+	std::cout << "         mpirun -np 8 ./risempi ../scenes/Tests/BDPT/cornellbox_bdpt.RISEscene A 240" << std::endl;
 
 }
 
@@ -376,4 +376,3 @@ int main( int argc, char** argv )
 
 	return 1;
 }
-

@@ -43,9 +43,14 @@ SCENES=(
     "scenes/Tests/VCM/cornellbox_vcm_caustics.RISEscene"
     "scenes/Tests/Spectral/hwss_cornellbox_pt.RISEscene"
     "scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene"
-    "scenes/Tests/RussianRoulette/cornellbox_highalbedo_pt.RISEscene"
-    "scenes/Tests/RussianRoulette/cornellbox_highalbedo_bdpt.RISEscene"
 )
+
+for scene_rel in "${SCENES[@]}"; do
+    if [ ! -f "${ROOT}/${scene_rel}" ]; then
+        echo "ERROR: configured scene is missing: ${scene_rel}" >&2
+        exit 1
+    fi
+done
 
 LUM_THRESHOLD_PCT=${LUM_THRESHOLD_PCT:-0.5}
 RMS_THRESHOLD=${RMS_THRESHOLD:-3.0}
@@ -148,7 +153,7 @@ done
 
 echo
 echo "Summary: ${total_pass} passed, ${total_fail} failed, ${total_missing} missing"
-if [ $total_fail -gt 0 ]; then
+if [ $total_fail -gt 0 ] || [ $total_missing -gt 0 ]; then
     exit 1
 fi
 exit 0

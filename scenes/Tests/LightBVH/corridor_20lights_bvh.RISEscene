@@ -2,11 +2,10 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           torture_corridor_pt.RISEscene                                                           #
-#   Description:    Torture test: long corridor (4000 units) with 20 equally-spaced                         #
-#                   point lights.  From any shading point, only 2-3 nearby lights                           #
-#                   contribute significantly (1/d^2), but the alias table distributes                       #
-#                   samples uniformly across all 20.  ~85% of sampling budget wasted.                       #
+#   File:           corridor_20lights_bvh.RISEscene                                                           #
+#   Description:    Light-BVH variant of the 20-light corridor. The spatial sampler                         #
+#                   should focus the 64spp budget on the 2-3 nearby lights that                              #
+#                   dominate by 1/d^2. Compare with the alias variant.                                      #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      March 30, 2026                                                                          #
 #                                                                                                           #
@@ -488,5 +487,4 @@ standard_object
 	geometry			farwallgeom
 	material			white
 }
-
 

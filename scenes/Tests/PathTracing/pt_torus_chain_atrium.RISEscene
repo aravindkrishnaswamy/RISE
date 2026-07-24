@@ -3,8 +3,8 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           bdpt_torus_chain_atrium.RISEscene                                                       #
-#   Description:    BDPT torture test: a helical chain of 30 interlocking dielectric (glass) toruses        #
+#   File:           pt_torus_chain_atrium.RISEscene                                                         #
+#   Description:    PT torture test: a helical chain of 30 interlocking dielectric (glass) toruses          #
 #                   spiraling through a procedurally generated columned atrium.  Each torus                 #
 #                   has a unique colored Tau with at least one RGB component >= 0.999.  Light must          #
 #                   traverse dozens of refractive boundaries to illuminate the scene.                       #
@@ -16,13 +16,11 @@ RISE ASCII SCENE 7
 > set accelerator B 10 8
 
 ##################################################
-# Renderer -- Bidirectional Path Tracing
+# Renderer -- Path Tracing
 #
-# BDPT uses the shader chain to shade each eye subpath vertex.
-# DefaultDirectLighting provides NEE at each bounce (the t>=2, s=1
-# strategy), and PathTracingShaderOp continues the eye subpath.
-# The BDPTIntegrator then adds its own light-subpath connections
-# and SMS strategies on top — those are separate from the shader.
+# This variant exercises unidirectional PT with RIS path guiding.
+# SMS is deliberately disabled so the comparison isolates the
+# path-tracing strategy from the BDPT and MLT variants.
 ##################################################
 
 standard_shader
@@ -34,18 +32,9 @@ standard_shader
 
 
 ##################################################
-# Alternative: Unidirectional MIS Path Tracer
-#
-# MISPathTracingShaderOp is a self-contained integrator that
-# handles NEE (both mesh and non-mesh lights), BSDF sampling,
-# emission, and SMS all in one shaderop with proper MIS weights.
-# It replaces the entire DefaultDirectLighting + PathTracing chain.
-# Use with pixelpel_rasterizer instead of bdpt_pel_rasterizer.
-#
-# Note: for scenes like this one where all floor illumination must
-# pass through glass, BDPT is fundamentally superior — its light
-# subpaths directly carry energy through the glass, which the
-# unidirectional PT cannot do.
+# The scene is intentionally difficult for PT because useful floor
+# illumination traverses the glass chain; the BDPT showcase owner can
+# construct those paths from the light side.
 ##################################################
 
 pathtracing_pel_rasterizer
@@ -1229,5 +1218,4 @@ torus_geometry
 		orientation		0 720.07000000000005002 0
 		material		glass_o0014
 	}
-
 

@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           cornellbox_pathtracer.RISEscene                                                         #
+#   File:           bench_pt.RISEscene                                                         #
 #   Description:    The famous cornell box rendered with the path tracer                                    #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      January 22, 2004                                                                        #

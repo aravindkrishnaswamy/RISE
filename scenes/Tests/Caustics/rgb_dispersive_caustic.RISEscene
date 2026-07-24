@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           rgb_dispersive_caustic.scn                                                              #
+#   File:           rgb_dispersive_caustic.RISEscene                                                              #
 #   Description:    Renders RGB dispersion using a standard RGB renderer and photon map                     #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      March 3, 2005                                                                           #

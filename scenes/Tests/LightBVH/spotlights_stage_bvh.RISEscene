@@ -2,11 +2,11 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           spotlights_stage_alias.RISEscene                                                        #
+#   File:           spotlights_stage_bvh.RISEscene                                                          #
 #   Description:    Stage-like room with 12 spotlights pointing in various directions.                      #
 #                   Tests orientation cone importance in the Light BVH.  From any                            #
 #                   shading point, only a few spots actually illuminate it; the rest                         #
-#                   point away.  Alias table wastes samples on misdirected spots.                            #
+#                   point away.  The BVH orientation cones should reject those lights.                      #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      April 9, 2026                                                                           #
 #                                                                                                           #
@@ -487,5 +487,4 @@ standard_object
 	material			white
 	position			250 10 250
 }
-
 

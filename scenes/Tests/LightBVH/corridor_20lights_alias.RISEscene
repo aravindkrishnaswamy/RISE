@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           torture_corridor_pt.RISEscene                                                           #
+#   File:           corridor_20lights_alias.RISEscene                                                           #
 #   Description:    Torture test: long corridor (4000 units) with 20 equally-spaced                         #
 #                   point lights.  From any shading point, only 2-3 nearby lights                           #
 #                   contribute significantly (1/d^2), but the alias table distributes                       #

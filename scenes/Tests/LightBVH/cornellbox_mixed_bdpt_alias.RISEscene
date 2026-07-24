@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           cornellbox_mixed_lights_bdpt.RISEscene                                                  #
+#   File:           cornellbox_mixed_bdpt_alias.RISEscene                                                  #
 #   Description:    Same scene as cornellbox_mixed_lights_pt but rendered with BDPT.                        #
 #                   The converged images should match, validating that the unified                            #
 #                   light sampler produces the same result across both integrators.                          #

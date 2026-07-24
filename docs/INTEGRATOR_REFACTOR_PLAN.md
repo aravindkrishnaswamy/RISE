@@ -491,7 +491,6 @@ Stochastic scenes — **within 2σ of per-pixel sample variance**:
 ### 4.3 Gate C — Cross-strategy consistency
 
 PT and BDPT should converge on scenes without caustics.  BDPT and VC-only VCM should converge on every scene.  Specifically:
-- `scenes/Tests/RussianRoulette/cornellbox_highalbedo_{pt,bdpt}.RISEscene` at high SPP: mean luminance within 1% per channel.
 - `scenes/Tests/BDPT/cornellbox_bdpt_correlation_test.RISEscene`: already on the test manifest.
 - **New for this refactor**: run VCM with `enableVM=false` (connection-only) on every BDPT test scene and confirm convergence to within 1% of BDPT's mean luminance.  This is the critical gate for Phase 2d — the shared primitive has to produce identical connection math for both callers.
 - HWSS vs NM convergence: `hwss_cornellbox_pt_ref.RISEscene` vs `hwss_cornellbox_pt_4samp_ref.RISEscene` — XYZ agreement to 0.5%.
@@ -534,7 +533,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_keyhole.RISEsce
 printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_caustic_chain.RISEscene
 printf "render\nquit\n" | ./bin/rise scenes/Tests/MLT/mlt_torus_chain_atrium.RISEscene
 printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_reflected_caustic.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_chromatic_caustic.RISEscene
+printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_luminous_orb.RISEscene
 ```
 
 Compare to baselines at matched mutation counts.

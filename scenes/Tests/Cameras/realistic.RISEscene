@@ -2,7 +2,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           realistic.RISEScene                                                                     #
+#   File:           realistic.RISEscene                                                                     #
 #   Description:    Demonstrates the photographic thin-lens camera with full-frame 35mm settings.            #
 #                   (Was previously the `realistic_camera` stub; migrated when the keyword was reserved      #
 #                   for the future multi-element lens camera. See docs/CAMERAS_ROADMAP.md Phase 4.)         #

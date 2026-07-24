@@ -1,11 +1,10 @@
 RISE ASCII SCENE 7
 #############################################################################################################
 #   Torture test: 100-light corridor, 10000 units long, 200 wide, 200 tall.                                #
-#   100 point lights at equal spacing (every 100 units).  At 64spp with global                              #
-#   alias table, each light gets ~0.64 samples on average.  From any shading                                #
-#   point, only the 2-3 nearest lights matter (1/d^2), so ~97% of the budget                                #
-#   is wasted.  This should show severe noise/fireflies compared to spatial                                 #
-#   selection.                                                                                              #
+#   100 point lights at equal spacing (every 100 units).  At 64spp, the                                     #
+#   Light BVH should concentrate samples on the few nearby lights that dominate                              #
+#   by 1/d^2.  Compare against the alias variant, which distributes most of                                 #
+#   its budget to distant lights.                                                                            #
 #############################################################################################################
 
 > set accelerator B 10 8

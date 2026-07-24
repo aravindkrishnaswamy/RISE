@@ -27,8 +27,10 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
 
 The first launch extracts bundled self-contained native-v7 scenes (including
 `scenes/Tests/Geometry/shapes.RISEscene`) from the APK to `filesDir/rise/`.
-Subsequent launches skip extraction if `BuildConfig.VERSION_CODE` is
-unchanged.
+Subsequent launches skip extraction when the generated
+`BuildConfig.RISE_ASSETS_FINGERPRINT` matches the fingerprint stored beside
+the extracted assets. Scene or bundled-media changes update that fingerprint,
+so they do not require a version-code bump to re-extract.
 
 ## Gradle wrapper
 

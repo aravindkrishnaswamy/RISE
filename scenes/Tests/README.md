@@ -20,6 +20,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Bench/`: standardized benchmark scenes used by `bench.sh` for wall-time comparisons across commits.  `bench_pt` / `bench_bdpt` / `bench_vcm` are the small Cornell-class controls; `bench_pt_bigmesh` is a procedurally-displaced ~1M-tri ellipsoid (geometry-bound, single deep-BVH mesh) added as the third regime in the BVH-stack benchmark sweep so wide-tree / SoA-leaf optimisations get a fair test (the small bench scenes top out at 47K tris where wide-SIMD never pays off — see [docs/BVH_RETROSPECTIVE.md](../../docs/BVH_RETROSPECTIVE.md) Tier D2-rev for context)
 - `Camera/`: isolated physical-exposure validation
 - `Cameras/`: isolated camera-model checks (sensor-format presets, tilt-shift, named-camera selection)
+- `ChunkCoverage/`: minimal parser-chunk acceptance and derive coverage
 - `Caustics/`: compact caustic and SMS comparison scenes
 - `Geometry/`: primitive and CSG sanity scenes
 - `GlobalIllumination/`: focused GI baselines such as final gather
