@@ -46,6 +46,18 @@ BIN="${ROOT}/bin/rise"
 MODE="${1:?capture|check}"
 TAG="${2:?tag}"
 MAX_DELTA_PCT="${MAX_DELTA_PCT:-0.5}"
+if ! python3 - "${MAX_DELTA_PCT}" <<'PY'
+import math, sys
+try:
+    value = float(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if math.isfinite(value) and value >= 0.0 else 1)
+PY
+then
+    echo "ERROR: MAX_DELTA_PCT must be finite and nonnegative" >&2
+    exit 2
+fi
 DIR="${ROOT}/tests/baselines_refactor/${TAG}_bdptconn"
 RENDERED="${ROOT}/rendered"
 export RISE_MEDIA_PATH="${ROOT}/"
