@@ -515,8 +515,9 @@ const Palette& DarkPalette()
 		// Same value in both palettes -- matches Mac's hardcoded `.white`
 		// (see Theme.h's doc on this token).
 		q.iconOnAccent = QColor(0xff, 0xff, 0xff);
-		// Same value in both palettes -- mirrors macOS ProposalCard.swift's
-		// unconditional `Color(hex: 0x0d1116)` (see Theme.h's doc).
+		// Near-black on Dark's bright accent; the LIGHT palette flips
+		// this to white (see LightPalette below and Theme.h's doc).
+		// Mirrors macOS Theme.swift's DarkPalette.textOnAccent.
 		q.textOnAccent = QColor(0x0d, 0x11, 0x16);
 
 		q.catMaterial = QColor(0xc9, 0xa0, 0xd4);
@@ -594,12 +595,11 @@ const Palette& LightPalette()
 		// LIGHT backgrounds, but that leaves it too DARK itself to host
 		// near-black text on top: white-on-0x1a6fa8 is ~4.6:1 (passes
 		// WCAG AA for normal text), while 0x0d1116-on-0x1a6fa8 was only
-		// ~3.5:1 (fails AA text, borderline even for AA-large).  Diverges
-		// deliberately from the Mac client (App/Theme.swift's
-		// LightPalette), which mirrors Dark's near-black unconditionally
-		// in both modes -- see Theme.h's doc on this token for the
-		// callers (ViewportProperties' Save button, ProposalCard's Apply
-		// button) this keeps legible.
+		// ~3.5:1 (fails AA text, borderline even for AA-large).  The Mac
+		// client adopted the same per-mode split on 2026-07-24
+		// (App/Theme.swift's LightPalette.textOnAccent = white) -- see
+		// Theme.h's doc on this token for the callers (ViewportProperties'
+		// Save button, ProposalCard's Apply button) this keeps legible.
 		q.textOnAccent = QColor(0xff, 0xff, 0xff);
 
 		q.catMaterial = QColor(0x8a, 0x5a, 0x9e);

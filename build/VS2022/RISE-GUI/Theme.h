@@ -99,19 +99,17 @@ inline QColor gold{ 0xd4, 0xb9, 0x8a };          // values / units
 inline QColor teal{ 0x8f, 0xd4, 0xc4 };          // animation category
 // Text drawn directly on a SOLID accent fill (e.g. ProposalCard's "Apply"
 // button, ViewportProperties' "Save" button -- background-color:
-// Theme::accent).  Dark mode: a near-black literal, mirroring the macOS
-// client's ProposalCard.swift, which hardcodes `Color(hex: 0x0d1116)` on
-// its matching Apply button unconditionally of ThemeState.mode.  Light
-// mode: DIVERGES from Mac (P2 fix, 2026-07-23 review) -- white, not the
-// same near-black.  Mac's hardcode reads fine against Dark's brighter
-// accent (0x6db8e8) but goes ~3.5:1 (fails WCAG AA text) against Light's
-// deliberately darkened accent (0x1a6fa8, darkened specifically for
-// ~4.5:1 contrast against LIGHT backgrounds -- see LightPalette's own
-// doc in Theme.cpp), which made ViewportProperties' Save button
-// functionally invisible in Light mode.  White-on-0x1a6fa8 is ~4.6:1,
-// clearing AA.  See Theme.cpp's LightPalette() for the token's actual
-// per-mode value (set explicitly in both DarkPalette() and
-// LightPalette(), like every other token below).
+// Theme::accent).  Mirrors the macOS client's Theme.swift `textOnAccent`
+// token (added 2026-07-24; both platforms previously hardcoded
+// 0x0d1116): near-black in Dark, WHITE in Light.  The per-mode split
+// (P2 fix, 2026-07-23 review) exists because near-black reads fine
+// against Dark's brighter accent (0x6db8e8, ~8.7:1) but goes ~3.5:1
+// (fails WCAG AA text) against Light's deliberately darkened accent
+// (0x1a6fa8 -- see LightPalette's own doc in Theme.cpp), which made
+// ViewportProperties' Save button functionally invisible in Light mode.
+// White-on-0x1a6fa8 is ~4.6:1, clearing AA.  Per-mode values set
+// explicitly in both DarkPalette() and LightPalette(), like every
+// other token below.
 inline QColor textOnAccent{ 0x0d, 0x11, 0x16 };
 
 // Fixed glyph/label tint for content painted on a solid-ish accent fill

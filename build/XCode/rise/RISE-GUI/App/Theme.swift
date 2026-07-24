@@ -57,6 +57,10 @@ enum Theme {
         static let accent = Color(hex: 0x6db8e8)
         static let accentLight = Color(hex: 0x9ecbe8)
         static let accentSoft = Color(hex: 0x8fb8e8)
+        // Text drawn directly ON a solid accent fill (ProposalCard Apply,
+        // PropertiesPanel Save). Near-black on the light-blue dark-mode
+        // accent (~8.7:1).
+        static let textOnAccent = Color(hex: 0x0d1116)
         static let success = Color(hex: 0x7fb98a)
         static let successLight = Color(hex: 0xa9d4b1)
         static let warn = Color(hex: 0xe0b25a)
@@ -127,6 +131,11 @@ enum Theme {
         static let accent = Color(hex: 0x1a6fa8)
         static let accentLight = Color(hex: 0x2580bd)
         static let accentSoft = Color(hex: 0x3a77ad)
+        // White, not the dark palette's near-black: the light-mode accent
+        // is darkened for contrast, and near-black text on it is only
+        // ~3.5:1 (fails AA for 11-12pt text) while white is ~4.6:1.
+        // The Windows client (Theme.h/Theme.cpp) mirrors this divergence.
+        static let textOnAccent = Color(hex: 0xffffff)
         static let success = Color(hex: 0x2e7d43)
         static let successLight = Color(hex: 0x3d8f52)
         static let warn = Color(hex: 0x9a6b10)
@@ -199,6 +208,10 @@ enum Theme {
     static var accentLight: Color { ThemeState.mode == .dark ? DarkPalette.accentLight : LightPalette.accentLight }
     /// Softer accent for diff block headers / gutters.
     static var accentSoft: Color { ThemeState.mode == .dark ? DarkPalette.accentSoft : LightPalette.accentSoft }
+    /// Text drawn directly ON a solid accent fill (Apply / Save pills).
+    /// Near-black in dark mode, white in light mode — see the palette
+    /// comments for the AA-contrast rationale of the divergence.
+    static var textOnAccent: Color { ThemeState.mode == .dark ? DarkPalette.textOnAccent : LightPalette.textOnAccent }
     /// Success / parse-OK / additions.
     static var success: Color { ThemeState.mode == .dark ? DarkPalette.success : LightPalette.success }
     /// Lighter success for diff "+" text.

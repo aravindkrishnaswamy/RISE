@@ -222,7 +222,7 @@ struct ProposalDiffCard: View {
             }
             .buttonStyle(.plain)
             .background(Theme.accent, in: RoundedRectangle(cornerRadius: 7))
-            .foregroundColor(Color(hex: 0x0d1116))
+            .foregroundColor(Theme.textOnAccent)
             .disabled(applyRejectDisabled)
             .opacity(applyRejectDisabled ? 0.4 : 1.0)
             .help(applyRejectDisabled ? "Unavailable while a render is in flight" : "")

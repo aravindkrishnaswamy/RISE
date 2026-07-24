@@ -1070,14 +1070,19 @@ private struct PillButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
+        // Filled variant is accent + textOnAccent (2026-07-24 fix): the
+        // previous Theme.textPrimary fill inverts to near-black in Light
+        // mode, where the Color.black text made the Save label invisible
+        // (~1.1:1). Matches ProposalCard's Apply-button idiom; the
+        // Windows client (ViewportProperties.cpp) carries the same fix.
         configuration.label
             .font(Theme.sans(11, .semibold))
-            .foregroundColor(filled ? Color.black.opacity(0.85) : Theme.textTertiary)
+            .foregroundColor(filled ? Theme.textOnAccent : Theme.textTertiary)
             .padding(.horizontal, 11)
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: Theme.radiusMedium)
-                    .fill(filled ? Theme.textPrimary : Color.clear)
+                    .fill(filled ? Theme.accent : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.radiusMedium)
