@@ -479,6 +479,8 @@ encoded 8-bit PNG domain (default drift limit 0.5%) and
 units), and reports the identical-pixel percentage as a diagnostic. It is a
 compact regression smoke gate, not a bit-identity, per-region, variance,
 firefly, linear-HDR, or XYZ oracle.
+Both baseline and fresh PNGs must have mean encoded luma at least 1.0; this
+rejects valid-looking but effectively black renderer-failure outputs.
 Use the focused integrator tests and variance workflow for those stronger
 claims.
 

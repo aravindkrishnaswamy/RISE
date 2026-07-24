@@ -37,6 +37,7 @@
 #   bash scripts/bdpt_eye_subpath_baselines.sh capture <tag>  # 2 trials each
 #   bash scripts/bdpt_eye_subpath_baselines.sh check   <tag>  # 1 render, vs trial-a
 # Check limit: max(MAX_DELTA_PCT, captured a-vs-b floor); default 0.5%.
+# Captures/checks reject images with mean encoded luma below 1.0.
 #
 # Mean-luminance % delta is the reliable metric (Phase 2a finding).  Capture
 # records the per-scene run-to-run noise floor (trial-a vs trial-b) so "within
@@ -83,7 +84,10 @@ b=np.array(Image.open(sys.argv[1]).convert("RGB"),dtype=np.float64)
 f=np.array(Image.open(sys.argv[2]).convert("RGB"),dtype=np.float64)
 def L(x): return (x[:,:,0]*0.2126+x[:,:,1]*0.7152+x[:,:,2]*0.0722).mean()
 bm,fm=L(b),L(f)
-print("%.4f"%(0.0 if bm<1e-9 and fm<1e-9 else (100.0 if bm<1e-9 else abs(bm-fm)/bm*100.0)))
+if bm < 1.0 or fm < 1.0:
+    print("near-black image rejected", file=sys.stderr)
+    sys.exit(1)
+print("%.4f"%(abs(bm-fm)/bm*100.0))
 PY
 }
 

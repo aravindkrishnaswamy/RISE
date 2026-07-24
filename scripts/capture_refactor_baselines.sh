@@ -88,12 +88,20 @@ for scene_rel in "${SCENES[@]}"; do
     end_time=$(date +%s)
     elapsed=$((end_time - start_time))
 
-    if [ -f "${candidate_png}" ]; then
+    if [ -f "${candidate_png}" ] && python3 - "${candidate_png}" <<'PYEOF'
+import sys
+import numpy as np
+from PIL import Image
+img = np.array(Image.open(sys.argv[1]).convert("RGB"), dtype=np.float64)
+luma = img[:,:,0]*0.2126 + img[:,:,1]*0.7152 + img[:,:,2]*0.0722
+sys.exit(0 if luma.mean() >= 1.0 else 1)
+PYEOF
+    then
         cp "${candidate_png}" "${BASELINE_DIR}/${base_name}.png"
         size=$(wc -c < "${BASELINE_DIR}/${base_name}.png")
         echo "  captured ${base_name}.png (${size} bytes, ${elapsed}s)"
     else
-        echo "  FAIL: ${candidate_png} not produced (rise exit ${rise_exit})"
+        echo "  FAIL: ${candidate_png} missing, unreadable, or near-black (rise exit ${rise_exit})"
         total_fail=$((total_fail + 1))
         tail -10 /tmp/rise_capture_$$.log
         ls "${RENDERED_DIR}/${base_name}"* 2>/dev/null || true

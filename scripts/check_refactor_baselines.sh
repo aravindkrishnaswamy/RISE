@@ -14,7 +14,8 @@
 #
 # Thresholds:
 #   Mean encoded-luma drift: <= 0.5%
-#   100 × log10-luma RMS: <= 3.0 (equivalent to raw RMS <= 0.03)
+#   100 × log10-luma RMS: <= 3.0 (unscaled log10-luma RMS <= 0.03)
+#   Baseline and fresh mean encoded luma: >= 1.0
 #
 set -euo pipefail
 
@@ -119,10 +120,11 @@ fresh_lum = encoded_luma(fresh)
 base_mean = base_lum.mean()
 fresh_mean = fresh_lum.mean()
 
-if base_mean < 1e-9:
-    lum_pct = 0.0 if fresh_mean < 1e-9 else 100.0
-else:
-    lum_pct = abs(base_mean - fresh_mean) / base_mean * 100.0
+if base_mean < 1.0 or fresh_mean < 1.0:
+    print(f"ERROR_DARK: baseline_mean={base_mean:.6f} fresh_mean={fresh_mean:.6f}")
+    sys.exit(1)
+
+lum_pct = abs(base_mean - fresh_mean) / base_mean * 100.0
 
 # Log-luminance RMS (adds 1 to avoid log(0))
 base_log = np.log10(base_lum + 1.0)
