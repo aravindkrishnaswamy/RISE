@@ -24,8 +24,28 @@ BIN="${ROOT}/bin/rise"
 TAG="${1:-phase0}"
 BASELINE_DIR="${ROOT}/tests/baselines_refactor/${TAG}"
 RENDERED_DIR="${ROOT}/rendered"
+LUM_THRESHOLD_PCT=${LUM_THRESHOLD_PCT:-0.5}
+RMS_THRESHOLD=${RMS_THRESHOLD:-3.0}
 
 export RISE_MEDIA_PATH="${ROOT}/"
+
+if ! python3 - "${LUM_THRESHOLD_PCT}" "${RMS_THRESHOLD}" <<'PY'
+import math
+import sys
+
+for label, raw in zip(("LUM_THRESHOLD_PCT", "RMS_THRESHOLD"), sys.argv[1:]):
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"ERROR: {label} must be finite and nonnegative", file=sys.stderr)
+        sys.exit(1)
+    if not math.isfinite(value) or value < 0.0:
+        print(f"ERROR: {label} must be finite and nonnegative", file=sys.stderr)
+        sys.exit(1)
+PY
+then
+    exit 2
+fi
 
 if [ ! -d "${BASELINE_DIR}" ]; then
     echo "ERROR: baseline directory not found: ${BASELINE_DIR}"
@@ -52,9 +72,6 @@ for scene_rel in "${SCENES[@]}"; do
         exit 1
     fi
 done
-
-LUM_THRESHOLD_PCT=${LUM_THRESHOLD_PCT:-0.5}
-RMS_THRESHOLD=${RMS_THRESHOLD:-3.0}
 
 total_fail=0
 total_pass=0

@@ -42,7 +42,7 @@
 # Mean-luminance % delta is the reliable metric (Phase 2a finding).  Capture
 # records the per-scene run-to-run noise floor (trial-a vs trial-b) so "within
 # noise" is quantified per scene.
-set -uo pipefail
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${ROOT}/bin/rise"
@@ -64,7 +64,10 @@ fi
 DIR="${ROOT}/tests/baselines_refactor/${TAG}_bdpteye"
 RENDERED="${ROOT}/rendered"
 export RISE_MEDIA_PATH="${ROOT}/"
-mkdir -p "${DIR}"
+if ! mkdir -p "${DIR}"; then
+    echo "ERROR: unable to create baseline directory: ${DIR}" >&2
+    exit 1
+fi
 
 # scene_rel : output_png_basename : path-tag
 MANIFEST=(
@@ -127,8 +130,28 @@ for entry in "${MANIFEST[@]}"; do
 
     if [ "${MODE}" = "capture" ]; then
         echo "=== capture ${name} [${ptag}] ==="
-        if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.a.png"; else echo "  FAIL render-a"; failures=$((failures + 1)); continue; fi
-        if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.b.png"; else echo "  FAIL render-b"; failures=$((failures + 1)); continue; fi
+        if render "${scene_abs}" "${outpng}"; then
+            if ! cp "${outpng}" "${DIR}/${name}.a.png"; then
+                echo "  FAIL copy capture-a ${name}"
+                failures=$((failures + 1))
+                continue
+            fi
+        else
+            echo "  FAIL render-a"
+            failures=$((failures + 1))
+            continue
+        fi
+        if render "${scene_abs}" "${outpng}"; then
+            if ! cp "${outpng}" "${DIR}/${name}.b.png"; then
+                echo "  FAIL copy capture-b ${name}"
+                failures=$((failures + 1))
+                continue
+            fi
+        else
+            echo "  FAIL render-b"
+            failures=$((failures + 1))
+            continue
+        fi
         if ! floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"; then
             echo "  FAIL compare capture pair ${name}"
             failures=$((failures + 1))
