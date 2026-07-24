@@ -3152,8 +3152,12 @@ namespace RISE
 		// mMutex without ever queuing behind that render. Lock order:
 		// mAgentRenderSlotMutex (when present) -> this mutex -> mMutex.
 		// It is never held for the render itself; only until the gate below
-		// is published or the UI gesture/save state is established.
-		mutable std::mutex          mRenderAdmissionMutex;
+		// is published or a UI mutation/gesture/save is complete. Recursive
+		// because several public UI operations deliberately compose other
+		// public operations (axis snap -> enter free-fly -> set pose; pane-0
+		// aliases -> legacy setters) on the same UI thread. Cross-thread
+		// exclusion semantics remain identical to a plain mutex.
+		mutable std::recursive_mutex mRenderAdmissionMutex;
 		std::atomic<bool>           mAgentRenderBlocksInteractive;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;

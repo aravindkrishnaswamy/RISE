@@ -4693,6 +4693,13 @@ static void RunGestureRenderAdmissionTest()
 	QueuedCancellationSeamController gated( *pJob );
 	Check( gated.SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
 	       "z6: two-pane layout is ready for indexed-pointer admission coverage" );
+	gated.OnTimeScrubBegin();
+	gated.OnTimeScrub( Scalar( 0.2 ) );
+	gated.OnTimeScrubEnd();
+	Check( gated.LastSceneTime() == Scalar( 0.2 ),
+	       "z6: undo admission probe has a real timeline edit to protect" );
+	Check( gated.SetSelection( SceneEditController::Category::Camera, String() ),
+	       "z6: property admission probe selects the active camera" );
 	SceneEditController::RenderJobId renderId = SceneEditController::kInvalidRenderJobId;
 	std::atomic<bool> renderClosureRan{ false };
 	Check( gated.SubmitAgentRenderAsync(
@@ -4723,6 +4730,32 @@ static void RunGestureRenderAdmissionTest()
 	gated.SetTool( SceneEditController::Tool::OrbitCamera );
 	const Scalar timeBeforeQueuedCallbacks = gated.LastSceneTime();
 	const unsigned int paneBeforeQueuedCallbacks = gated.ForTest_CurrentPane();
+	gated.Undo();
+	Check( gated.LastSceneTime() == timeBeforeQueuedCallbacks,
+	       "MONEY (z6): undo cannot mutate history while an admitted render is queued" );
+	Check( !gated.SetProperty( String( "fov" ), String( "41" ) ),
+	       "MONEY (z6): property apply is refused while an admitted render is queued" );
+	Check( !gated.SetSelection(
+		       SceneEditController::Category::Object, String( "obj_sph" ) ),
+	       "MONEY (z6): selection mutation is refused while an admitted render is queued" );
+	const SceneEditController::AgentCommitResult queuedCommit =
+		gated.ApplyAgentParamEdit(
+			String( "mat_emit" ), String( "lambertian_luminaire_material" ),
+			String( "scale" ), String( "31.0" ), nullptr );
+	Check( !queuedCommit.applied && queuedCommit.retriable,
+	       "MONEY (z6): the shared agent write funnel refuses retriably while a render owns admission" );
+	Check( !gated.SetPrimaryPane( 1 ),
+	       "MONEY (z6): primary-pane mutation is refused while an admitted render is queued" );
+	Check( gated.GetPrimaryPane() == 0,
+	       "MONEY (z6): refused primary-pane mutation leaves the primary unchanged" );
+	Check( !gated.SetPaneRenderMode( 1, "normals" ),
+	       "MONEY (z6): pane render-mode mutation is refused while an admitted render is queued" );
+	Check( !gated.SetPaneSurfaceDims( 1, 320, 180 ),
+	       "MONEY (z6): pane surface mutation is refused while an admitted render is queued" );
+	Check( !gated.SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+	       "MONEY (z6): layout mutation is refused while an admitted render is queued" );
+	Check( gated.GetViewportLayout() == SceneEditController::ViewportLayout::TwoH,
+	       "MONEY (z6): refused layout mutation leaves the visible pane set unchanged" );
 	gated.OnPointerDown( Point2( 9.0, 9.0 ) );
 	Check( !gated.Editor().IsCompositeOpen(),
 	       "MONEY (z6): pointer-down is refused while an admitted render is queued" );
@@ -4807,6 +4840,15 @@ static void RunGestureRenderAdmissionTest()
 	Check( directSaveStatus.load( std::memory_order_acquire )
 	           == static_cast<int>( SaveResult::Status::Refused ),
 	       "MONEY (z6): save reports refusal while a direct parked render owns admission" );
+	std::atomic<bool> coordinatedAcceptedDuringDirect{ true };
+	Check( RunWatchdogged( "coordinated submission during direct parked render", 200, [&] {
+		       const bool accepted = direct.SubmitAgentRenderAsync(
+			       [] {}, String( "must-refuse-behind-direct" ), nullptr );
+		       coordinatedAcceptedDuringDirect.store( accepted, std::memory_order_release );
+	       } ),
+	       "MONEY (z6): coordinated submission does not wait behind a direct parked render" );
+	Check( !coordinatedAcceptedDuringDirect.load( std::memory_order_acquire ),
+	       "MONEY (z6): coordinated submission refuses while a direct parked render owns admission" );
 	releaseDirect.store( true, std::memory_order_release );
 	directThread.join();
 	Check( directReturned.load( std::memory_order_acquire ),
@@ -4818,6 +4860,42 @@ static void RunGestureRenderAdmissionTest()
 	Check( direct.SubmitAgentRenderSync(
 		       [] {}, String( "post-direct-admission" ), nullptr, 2000 ),
 	       "MONEY (z6): refused property begin leaves no scrub flag after the direct render" );
+
+	// The opposite running order must also fail fast: once a coordinated
+	// worker is inside its render-duration mMutex hold, a direct override
+	// must inspect the shared gate before trying that mutex.
+	std::atomic<bool> coordinatedEntered{ false };
+	std::atomic<bool> releaseCoordinated{ false };
+	SceneEditController::RenderJobId coordinatedId =
+		SceneEditController::kInvalidRenderJobId;
+	Check( direct.SubmitAgentRenderAsync(
+		       [&] {
+			       coordinatedEntered.store( true, std::memory_order_release );
+			       while( !releaseCoordinated.load( std::memory_order_acquire ) )
+				       std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		       },
+		       String( "running-coordinated-gate" ), &coordinatedId ),
+	       "z6: coordinated running-render probe is accepted" );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !coordinatedEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( coordinatedEntered.load( std::memory_order_acquire ),
+	       "z6: coordinated worker is held inside its render-duration lock" );
+	std::atomic<bool> directAcceptedDuringCoordinated{ true };
+	Check( RunWatchdogged( "direct submission during coordinated render", 200, [&] {
+		       const bool accepted = direct.RunPreviewRenderParked( [] {} );
+		       directAcceptedDuringCoordinated.store( accepted, std::memory_order_release );
+	       } ),
+	       "MONEY (z6): direct submission does not wait behind a coordinated render" );
+	Check( !directAcceptedDuringCoordinated.load( std::memory_order_acquire ),
+	       "MONEY (z6): direct submission refuses while a coordinated render owns admission" );
+	releaseCoordinated.store( true, std::memory_order_release );
+	Check( direct.WaitForRenderJob( coordinatedId, 2000 ),
+	       "z6: coordinated running-render probe completes after release" );
 	direct.Stop();
 
 	pJob->release();
