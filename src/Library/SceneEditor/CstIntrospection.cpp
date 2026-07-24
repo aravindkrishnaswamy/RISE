@@ -147,22 +147,16 @@ std::vector<CameraProperty> CstIntrospection::Inspect(
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return out;
 
-	// Defensive kind check (inherited from the painter original):
-	// DocFindByNameAnyRole's roleKindSuffix only narrows when the bare
-	// name is AMBIGUOUS (>1 chunk shares it); a single cross-category
-	// match resolves regardless of kind.  A name can exist in a manager
-	// without a matching CST chunk of that kind while some OTHER
-	// category's chunk carries the same name -- refuse rather than
-	// introspect the wrong chunk.
-	{
-		const std::string& role = chunk->role;
-		const std::string want( roleKindSuffix );
-		const std::string suffix = "_" + want;
-		const bool kindMatches = ( role == want ) ||
-			( role.size() > suffix.size()
-			  && role.compare( role.size() - suffix.size(), suffix.size(), suffix ) == 0 );
-		if( !kindMatches ) return out;
-	}
+	// Defensive kind check (inherited from the painter original).  Since
+	// round 6 (85e1b9bd) DocFindByNameAnyRole enforces roleKindSuffix as a
+	// HARD CONSTRAINT on every match (single or ambiguous), so a resolved
+	// chunk already satisfies the kind; this re-verify is defense-in-depth
+	// against a name existing in a manager while some OTHER category's chunk
+	// carries the same name.  It calls the resolver's OWN shared predicate
+	// (suffix fast path + registry-classifier authority) so it can never
+	// diverge -- the old suffix-only re-check here wrongly refused registry-
+	// classified kinds (an expression_function2d addressed as "painter").
+	if( !RISE::Cst::RoleMatchesKindConstraint( chunk->role, roleKindSuffix ) ) return out;
 
 	const String keyword( chunk->role.c_str() );
 	const ChunkDescriptor* cd = DescriptorForKeyword( keyword );

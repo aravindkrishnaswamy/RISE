@@ -57,6 +57,23 @@
 //          a re-entrant Light selection remains authoritative.
 //      T17 Callback destruction -- the public C dirty callback may destroy
 //          its controller without the drain touching freed editor storage.
+//      T20 POSITIVE cross-category narrowing (round-7) -- with a geometry
+//          and a material BOTH named `x`, kind=material edits the material
+//          and kind=geometry edits the geometry (the success side of T14).
+//      T21 Camera typo refusal (round-7) -- in a document with an unnamed
+//          pinhole + `name tele` camera, a typo'd `tel` camera edit is
+//          REFUSED instead of silently falling back to the unnamed camera.
+//      T22 Camera fallback positive directions (round-7) -- the ACTIVE
+//          camera's registered runtime name (`default`) and the EMPTY
+//          (Camera,"") address both still resolve the unnamed camera even
+//          with a named sibling present (pins named-chunk + unnamed-
+//          singleton coexistence as INTENDED resolve-the-unnamed).
+//      T23 Single-camera-total fallback (round-7) -- in a ONE-camera
+//          document, a camera-kind address that matches no name still
+//          resolves the sole camera (the documented single-camera rule).
+//      T24 Post-narrowing occurrence count (round-7 P3) -- removing `x`
+//          with kind=light reports NOT-FOUND (-1), not "2 chunks named x
+//          match" ambiguity (-2), now that occurrences narrows by kind.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -688,6 +705,154 @@ int main()
 			"T19: detached callback never fires again" );
 		pJob5->release();
 		std::remove( tmp5.c_str() );
+	}
+
+	// =====================================================================
+	// T20-T24 (round-7): cross-category narrowing success side, the gated
+	// camera absent-name fallback (both directions), and the post-narrowing
+	// occurrence count.  Fixture: TWO cameras (one named `tele`, one UNNAMED
+	// -- the unnamed one is declared LAST so it is the ACTIVE camera,
+	// registered under the runtime allocator's `default`), plus a geometry
+	// and a material that BOTH carry the name `x`.
+	// =====================================================================
+	const char* const kSceneTwoCameras =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"film\n{\nwidth 24\nheight 24\n}\n\n"
+		"pinhole_camera\n{\nname tele\nlocation 0 0 5\nlookat 0 0 0\nup 0 1 0\nfov 20.0\n}\n\n"
+		"pinhole_camera\n{\nlocation 0 0 3.5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\nname pnt_a\ncolor 0.5 0.5 0.5\n}\n\n"
+		"uniformcolor_painter\n{\nname pnt_b\ncolor 0.2 0.7 0.3\n}\n\n"
+		"lambertian_material\n{\nname x\nreflectance pnt_a\n}\n\n"
+		"sphere_geometry\n{\nname x\nradius 0.5\n}\n\n"
+		"standard_object\n{\nname obj_a\ngeometry x\nmaterial x\n}\n\n"
+		"omni_light\n{\nname lgt\npower 3.0\ncolor 1 1 1\nposition 0 3 0\n}\n";
+	const std::string tmp6 = TempPath( "geometry_panel_jump_two_cameras.RISEscene" );
+	Job* pJob6 = LoadScene( kSceneTwoCameras, tmp6 );
+	Check( pJob6 != nullptr, "two-camera / name-collision fixture loads via CST" );
+	if( pJob6 )
+	{
+		SceneEditController ctrl6( *pJob6, nullptr );   // skeleton
+
+		// The UNNAMED camera chunk, resolved the same way the editor resolves the
+		// (Camera, "") address; returns its serialized bytes ("" if unresolvable).
+		auto unnamedCameraBytes = [&]() -> std::string {
+			const RISE::Cst::Document* doc = pJob6->GetCstDocument();
+			if( !doc ) return std::string();
+			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, "", nullptr, "camera", true );
+			const RISE::Cst::NodeRef chunk = id ? RISE::Cst::DocResolveNodeId( *doc, id ) : RISE::Cst::NodeRef();
+			return chunk ? RISE::Cst::SerializeNode( chunk ) : std::string();
+		};
+
+		// ---------- T20: cross-category narrowing SUCCESS side ----------
+		std::printf( "T20: kind narrows a cross-category name collision to the right chunk...\n" );
+		{
+			const SceneEditController::AgentCommitResult rm = ctrl6.ApplyAgentParamEdit(
+				String( "x" ), String( "material" ), String( "reflectance" ), String( "pnt_b" ), nullptr );
+			Check( rm.applied,
+				"MONEY (T20): name=x kind=material APPLIES despite a geometry also named x" );
+			Check( CstValueOf( pJob6, "x", "material", "reflectance" ) == std::string( "pnt_b" ),
+				"MONEY (T20): the MATERIAL x now carries reflectance pnt_b" );
+			Check( CstValueOf( pJob6, "x", "geometry", "radius" ) == std::string( "0.5" ),
+				"T20: the GEOMETRY x is untouched by the material-kind edit" );
+			const SceneEditController::AgentCommitResult rg = ctrl6.ApplyAgentParamEdit(
+				String( "x" ), String( "geometry" ), String( "radius" ), String( "0.6" ), nullptr );
+			Check( rg.applied,
+				"MONEY (T20): name=x kind=geometry APPLIES and targets the geometry" );
+			Check( CstValueOf( pJob6, "x", "geometry", "radius" ) == std::string( "0.6" ),
+				"T20: the GEOMETRY x now carries radius 0.6" );
+			Check( CstValueOf( pJob6, "x", "material", "reflectance" ) == std::string( "pnt_b" ),
+				"T20: the MATERIAL x is untouched by the geometry-kind edit" );
+		}
+
+		// ---------- T21: camera TYPO refusal (round-7 gated fallback) ----------
+		std::printf( "T21: typo'd camera name refuses instead of editing the unnamed camera...\n" );
+		{
+			const RISE::Cst::CstHeadVersion before = pJob6->GetCstHeadVersion();
+			const SceneEditController::AgentCommitResult r = ctrl6.ApplyAgentParamEdit(
+				String( "tel" ), String( "camera" ), String( "fov" ), String( "25" ), nullptr );
+			Check( !r.applied,
+				"MONEY (T21): `tel` (typo of tele) is REFUSED -- no silent fallback to the unnamed camera" );
+			Check( pJob6->GetCstHeadVersion() == before,
+				"T21: the refused edit leaves the CST head unchanged" );
+			Check( unnamedCameraBytes().find( "fov 40.0" ) != std::string::npos,
+				"MONEY (T21): the unnamed camera still carries its original fov 40.0" );
+			Check( CstValueOf( pJob6, "tele", "camera", "fov" ) == std::string( "20.0" ),
+				"T21: the named camera `tele` is also untouched" );
+			// The DESTRUCTIVE side of the same gate (round-7 review): a typo'd
+			// camera REMOVE must refuse too -- reverting only ApplyCstRemoveChunk's
+			// gate (back to unconditional kind=="camera" fallback) would delete
+			// the unnamed camera here and is caught by exactly this pin.
+			char kw[64]; kw[0] = '\0';
+			char diag[256]; diag[0] = '\0';
+			const int rmrc = pJob6->ApplyCstRemoveChunk( "tel", "camera", kw, sizeof( kw ), diag, sizeof( diag ) );
+			Check( rmrc == -1,
+				"MONEY (T21): remove `tel` kind=camera is REFUSED (-1) -- the destructive verb does not fall back either" );
+			Check( unnamedCameraBytes().find( "fov 40.0" ) != std::string::npos,
+				"T21: the unnamed camera chunk survives the refused remove" );
+		}
+
+		// ---------- T22: camera fallback POSITIVE directions ----------
+		std::printf( "T22: active registered name + empty target still resolve the unnamed camera...\n" );
+		{
+			Check( pJob6->GetActiveCameraName() == std::string( "default" ),
+				"T22: the unnamed camera (declared last) is ACTIVE under the runtime name `default`" );
+			const SceneEditController::AgentCommitResult ra = ctrl6.ApplyAgentParamEdit(
+				String( "default" ), String( "camera" ), String( "fov" ), String( "35" ), nullptr );
+			Check( ra.applied,
+				"MONEY (T22): the ACTIVE camera's registered name `default` still resolves the unnamed chunk" );
+			Check( unnamedCameraBytes().find( "fov 35" ) != std::string::npos,
+				"T22: the unnamed camera chunk now carries fov 35" );
+			Check( CstValueOf( pJob6, "tele", "camera", "fov" ) == std::string( "20.0" ),
+				"T22: the named sibling `tele` is untouched by the active-name edit" );
+			const SceneEditController::AgentCommitResult re = ctrl6.ApplyAgentParamEdit(
+				String( "" ), String( "camera" ), String( "fov" ), String( "38" ), nullptr );
+			Check( re.applied,
+				"MONEY (T22): the EMPTY (Camera, \"\") address resolves the unnamed singleton even with a named sibling (coexistence pinned as INTENDED)" );
+			Check( unnamedCameraBytes().find( "fov 38" ) != std::string::npos,
+				"T22: the unnamed camera chunk now carries fov 38" );
+			Check( CstValueOf( pJob6, "tele", "camera", "fov" ) == std::string( "20.0" ),
+				"T22: the named sibling `tele` is untouched by the empty-target edit" );
+		}
+
+		// ---------- T24: post-narrowing occurrence count (P3) ----------
+		std::printf( "T24: wrong-kind removal reports not-found, not name-count ambiguity...\n" );
+		{
+			char kw[64]; kw[0] = '\0';
+			char diag[256]; diag[0] = '\0';
+			const int rc = pJob6->ApplyCstRemoveChunk( "x", "light", kw, sizeof( kw ), diag, sizeof( diag ) );
+			Check( rc == -1,
+				"MONEY (T24): remove x kind=light returns NOT-FOUND (-1), not ambiguous (-2) -- occurrences narrows by kind" );
+			Check( std::string( diag ).find( "chunks named" ) == std::string::npos,
+				"T24: no misleading `N chunks named x match` diagnostic for a wrong-kind target" );
+		}
+
+		pJob6->release();
+		std::remove( tmp6.c_str() );
+	}
+
+	// ---------- T23: single-camera-total fallback survives the gate ----------
+	std::printf( "T23: a one-camera document still resolves a no-match camera address by position...\n" );
+	const std::string tmp7 = TempPath( "geometry_panel_jump_single_camera.RISEscene" );
+	Job* pJob7 = LoadScene( kSceneNoRaster, tmp7 );
+	Check( pJob7 != nullptr, "T23: single-camera fixture loads" );
+	if( pJob7 )
+	{
+		SceneEditController ctrl7( *pJob7, nullptr );   // skeleton
+		const SceneEditController::AgentCommitResult r = ctrl7.ApplyAgentParamEdit(
+			String( "cam" ), String( "camera" ), String( "fov" ), String( "33" ), nullptr );
+		Check( r.applied,
+			"MONEY (T23): with exactly ONE camera chunk total, a non-matching camera address still resolves it (documented single-camera rule; the G5 swap recipe depends on this)" );
+		const RISE::Cst::Document* doc = pJob7->GetCstDocument();
+		bool has33 = false;
+		if( doc ) {
+			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, "", nullptr, "camera", true );
+			const RISE::Cst::NodeRef chunk = id ? RISE::Cst::DocResolveNodeId( *doc, id ) : RISE::Cst::NodeRef();
+			has33 = chunk && RISE::Cst::SerializeNode( chunk ).find( "fov 33" ) != std::string::npos;
+		}
+		Check( has33, "T23: the sole camera chunk now carries fov 33" );
+		pJob7->release();
+		std::remove( tmp7.c_str() );
 	}
 
 	pJob->release();

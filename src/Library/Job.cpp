@@ -10135,13 +10135,18 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 	if( !pCstDocument || !entityName || !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
 	// Cameras are the one editor-addressable kind that can be UNNAMED (the sole `pinhole_camera { ... }`), so
 	// allow the unique-in-kind resolve-by-position fallback for them; always-named kinds keep strict refuse.
+	// Round-7 tightening: the camera fallback is GATED (DocCameraUniqueFallbackPermitted) so a TYPO'D camera
+	// name can no longer silently edit the sole unnamed camera -- fallback is attempted only for an empty
+	// name, the active camera's registered name, or a single-camera document.
 	// Document-first ADR phase 3 (kind-addressed singletons): an EMPTY name with a
 	// non-empty kind resolves the SOLE chunk of that kind -- the general rule the
 	// camera special case was an instance of.  This is how the transaction path
 	// addresses the unnamed film / rasterizer singleton chunks (an ambiguous or
 	// absent kind still refuses via DocFindByNameAnyRole's kindCount==1 gate).
 	const std::string ekind = entityKind ? entityKind : "";
-	const bool uniqueFallback = ( ekind == "camera" ) || ( entityName[0] == '\0' && !ekind.empty() );
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( *pCstDocument, entityName, GetActiveCameraName() )
+		: ( entityName[0] == '\0' && !ekind.empty() );
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` (kind `%s`) not found or ambiguous in the CST Document; edit rejected", entityName, ekind.c_str() );
@@ -10167,8 +10172,11 @@ int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityK
 	// Phase 3: same kind-addressed-singleton rule as ApplyCstParamEditImpl_ (the
 	// mirrored resolution this function's doc promises) -- the agent Undo of a
 	// singleton-chunk param insert must resolve the same chunk the edit did.
+	// Round-7: same gated camera fallback as ApplyCstParamEditImpl_ (lockstep).
 	const std::string ekind = entityKind ? entityKind : "";
-	const bool uniqueFallback = ( ekind == "camera" ) || ( entityName[0] == '\0' && !ekind.empty() );
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( *pCstDocument, entityName, GetActiveCameraName() )
+		: ( entityName[0] == '\0' && !ekind.empty() );
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamRemoveChecked:: `%s` (kind `%s`) not found or ambiguous in the CST Document; remove rejected", entityName, ekind.c_str() );
@@ -10339,11 +10347,13 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
 		return 0;
 	}
-	// DocFindByNameAnyRole's single-match path returns a uniquely-named chunk REGARDLESS of the "standard_object"
-	// suffix, so a csg_object (also ChunkCategory::Object, also uniquely named) would be accepted here -- but it
-	// has NO `matrix` param, so the insert below would fail the dry-run derive and silently drop the transform.
-	// Verify the resolved chunk really is a standard_object (the only object chunk with a `matrix` param).  The
-	// editor classifies + routes transforms up front (CstObjectTransformKind), refusing what it can't commit; this is defence.
+	// Round-6 (85e1b9bd) made the supplied kind a HARD CONSTRAINT inside DocFindByNameAnyRole itself
+	// (RoleMatchesKindConstraint narrows every match, single or not), so a csg_object can no longer resolve
+	// against the exact "standard_object" keyword ("csg_object" neither equals it, ends in "_standard_object",
+	// nor registry-classifies into it -- the classifier union covers only the painter/material/geometry/light/
+	// medium/camera UI kinds).  This re-verify is retained as DEFENSE-IN-DEPTH: a wrong-kind chunk here has NO
+	// `matrix` param, so the insert below would fail the dry-run derive and silently drop the transform.  The
+	// editor also classifies + routes transforms up front (CstObjectTransformKind), refusing what it can't commit.
 	{
 		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
 		if( !chunk || chunk->role != "standard_object" ) {
@@ -10363,8 +10373,9 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 // edit -- 0 = NOT routable (not in the CST as an object chunk: unknown / gltf-import sub-object), 1 = MATRIX
 // (standard_object -- has a `matrix` param, commits any transform losslessly), 2 = COMPONENTS (csg_object -- has
 // position/orientation but no matrix/scale, so it commits only translate+rotate via those params).  Resolves by
-// bare name then VERIFIES the keyword (DocFindByNameAnyRole's single-match path ignores the suffix, so a uniquely-
-// named csg_object would otherwise masquerade as the requested standard_object).  The editor uses this to route
+// bare name under an EXACT-keyword kind constraint (since round 6 DocFindByNameAnyRole enforces the kind on
+// every match, so a uniquely-named csg_object no longer resolves as "standard_object"; the post-resolve keyword
+// check is retained as defense-in-depth).  The editor uses this to route
 // the commit (matrix vs components) AND to refuse, up front, a transform it cannot represent (a non-routable
 // object, or a SCALE on a components-only csg) -- so the live object never diverges from an un-committable CST.
 int Job::CstObjectTransformKind( const char* name ) const
@@ -10415,6 +10426,12 @@ int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* posit
 // composed position), so routing all five with their current values reconstructs the same pose on re-derive --
 // no double-apply.  One re-derive (vs five for per-param routes).  Same 0/1/2/3 contract.  Unnamed-camera
 // resolve-by-position fallback (cameras can be the sole unnamed `pinhole_camera { ... }`).
+// Round-7 note: this fallback stays UNGATED (unlike the agent-facing ApplyCstParamEditImpl_ /
+// ApplyCstRemoveChunk sites, which run camName through DocCameraUniqueFallbackPermitted).  `camName` here --
+// and in ApplyCstRemoveCameraChunk / ApplyCstDeleteCameraChunk below -- is a LIVE-REGISTRY name from the
+// GUI's own camera enumeration (the runtime allocator's "default" et al for unnamed chunks), never a typed
+// agent address, so the typo-retargeting hazard the gate closes cannot arise; gating would instead refuse
+// legitimate pose/delete operations on an unnamed non-active camera in a multi-camera document.
 int Job::ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
                                  const char* orientation, const char* targetOrientation )
 {
@@ -10998,7 +11015,14 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	// Resolution mirrors ApplyCstParamEdit: cameras are the one editor-addressable kind that can be UNNAMED,
 	// so they get the unique-in-kind resolve-by-position fallback; always-named kinds keep strict refuse.
 	// The sole-instance case of an `unnamedRepeatable` kind (handled above) gets the SAME positional fallback.
-	const bool uniqueFallback = ( kind && std::string( kind ) == "camera" ) || unnamedRepeatable;
+	// Round-7: the camera fallback is GATED (DocCameraUniqueFallbackPermitted, same rule as
+	// ApplyCstParamEditImpl_) -- for a DESTRUCTIVE verb especially, a typo'd camera name must
+	// refuse rather than fall back to removing the sole unnamed camera.
+	const bool uniqueFallback =
+		( kind && std::string( kind ) == "camera"
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( *pCstDocument, target, GetActiveCameraName() )
+			: false )
+		|| unnamedRepeatable;
 	int occ = 0;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, target, &occ, kind ? kind : "", uniqueFallback );
 	if( id == 0 ) {
@@ -11022,19 +11046,19 @@ int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
 	{
 		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
 		if( chunk ) S2CopyOut( outKeyword, keywordMax, chunk->role );
-		// KIND VERIFICATION (review round 1 P2, the ApplyCstObjectMatrixEdit defensive pattern):
-		// DocFindByNameAnyRole's SINGLE-MATCH path returns a uniquely-named chunk REGARDLESS of the kind
-		// suffix -- so `remove_chunk target=x kind=material` where `x` is uniquely a geometry would
-		// otherwise remove the GEOMETRY.  For a DESTRUCTIVE verb, re-verify the resolved chunk's keyword
-		// against the requested kind (exact match, or the same "ends in _<kind>" suffix rule the
-		// narrowing uses) and refuse a mismatch as not-found.
+		// KIND VERIFICATION (review round 1 P2, the ApplyCstObjectMatrixEdit defensive pattern).
+		// HISTORICAL NOTE: pre round-6, DocFindByNameAnyRole's single-match path returned a uniquely-
+		// named chunk regardless of the kind suffix, so this check was load-bearing.  Since round 6
+		// (85e1b9bd) the supplied kind is a HARD CONSTRAINT inside the resolver itself (narrowed by
+		// RoleMatchesKindConstraint: suffix fast path + registry-classifier authority), so a resolved
+		// chunk here already satisfies the kind.  Kept as DEFENSE-IN-DEPTH for a destructive verb --
+		// and it now calls the SAME shared predicate, so it can never diverge from the resolver
+		// (the old suffix-only re-check here wrongly refused registry-classified kinds, e.g. removing
+		// an `expression_function2d` addressed as kind=painter).
 		if( chunk && kind && kind[0] ) {
 			const std::string k( kind );
 			const std::string& role = chunk->role;
-			const bool roleMatches =
-				( role == k ) ||
-				( role.size() > k.size() + 1 &&
-				  role.compare( role.size() - k.size() - 1, k.size() + 1, "_" + k ) == 0 );
+			const bool roleMatches = RISE::Cst::RoleMatchesKindConstraint( role, k );
 			if( !roleMatches ) {
 				S2CopyOut( outDiag, diagMax, "'" + std::string( target ) + "' resolved to a `" + role + "`, not a `" + k + "`" );
 				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: `%s` resolved to a `%s`, not the requested kind `%s`; remove rejected", target, role.c_str(), kind );

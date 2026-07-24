@@ -756,6 +756,20 @@ inline void BuildGizmoHandles_(
 
 SceneEditController::~SceneEditController()
 {
+	// Round-7 (P2-3, destructor quiescence-barrier ordering): detach the dirty
+	// listener FIRST.  SetDirtyChangedListener is a quiescence barrier (waits
+	// for callbacksInFlight == 0 unless called from the callback thread itself,
+	// so the T17/T18 destroy-from-callback pattern cannot self-deadlock).
+	// Without this, the only barrier ran in ~SceneEditor -- but mEditor is
+	// declared BEFORE this class's mutexes, so member destruction (reverse
+	// declaration order) tears the mutexes down before that barrier runs: a
+	// cross-thread RISE_API_DestroySceneEditController racing a synchronously
+	// re-entrant dirty callback could touch destroyed mutexes.  In-tree shells
+	// are immune (they marshal async), but the C-ABI advertises hardened
+	// re-entry, so the barrier must precede EVERYTHING in teardown.  After it
+	// returns the listener is empty, so no further callback can re-enter this
+	// controller while the rest of the dtor (and member destruction) proceeds.
+	mEditor.SetDirtyChangedListener( SceneEditor::DirtyChangedFn() );
 	Stop();
 	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
 	// mJob.ClearProgressIfCurrent( &mCancelProgress )) -- this dtor CANNOT touch mJob: several
@@ -4191,11 +4205,16 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 	// Phase 3: kind-addressed singletons -- same generalized rule as
 	// Job::ApplyCstParamEditImpl_ (empty name + kind = the sole chunk of that
 	// kind), so the prior-value capture resolves the SAME chunk the edit will.
+	// Round-7: same GATED camera fallback as Job::ApplyCstParamEditImpl_
+	// (DocCameraUniqueFallbackPermitted) -- the capture must stay in lockstep
+	// with the edit's resolution, including the typo-refusal direction.
 	const std::string ekind( entityKind.size() > 1 ? entityKind.c_str() : "" );
+	const char* bareName = entityName.size() > 1 ? entityName.c_str() : "";
 	const bool uniqueFallback = ( ekind == "camera" )
-		|| ( entityName.size() <= 1 && !ekind.empty() );
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, bareName, mJob.GetActiveCameraName() )
+		: ( entityName.size() <= 1 && !ekind.empty() );
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-		*doc, entityName.size() > 1 ? entityName.c_str() : "", nullptr, ekind, uniqueFallback );
+		*doc, bareName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) return false;
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return false;
@@ -4240,7 +4259,13 @@ bool SceneEditController::CaptureAgentChunkForRemoveUndo_(
 		String( kindText.empty() ? targetText.c_str() : kindText.c_str() ) );
 	const bool unnamedRepeatable =
 		removeDescriptor && removeDescriptor->unnamedRepeatable && !targetNamesAChunk;
-	const bool uniqueFallback = ( kindText == "camera" ) || unnamedRepeatable;
+	// Round-7: same GATED camera fallback as Job::ApplyCstRemoveChunk (lockstep
+	// with the remove this capture precedes).
+	const bool uniqueFallback =
+		( kindText == "camera"
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, targetText, mJob.GetActiveCameraName() )
+			: false )
+		|| unnamedRepeatable;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
 		*doc, targetText, nullptr, kindText, uniqueFallback );
 	if( id == 0 ) return false;
@@ -6414,7 +6439,7 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 	using Category = SceneEditController::Category;
 	outUniqueFallback = false;
 	switch( cat ) {
-	case Category::Camera:       outSuffix = "camera";         outUniqueFallback = true; return true;   // same unnamed-active-camera fallback as CaptureAgentPriorParamValue_
+	case Category::Camera:       outSuffix = "camera";         outUniqueFallback = true; return true;   // fallback ELIGIBLE -- use sites gate it via DocCameraUniqueFallbackPermitted (round-7), same rule as CaptureAgentPriorParamValue_
 	case Category::Object:       outSuffix = "standard_object"; return true;
 	case Category::Light:        outSuffix = "light";           return true;
 	case Category::Material:     outSuffix = "material";        return true;
@@ -6440,11 +6465,16 @@ namespace {
 // unique-in-kind singletons Film / Rasterizer (which RoleKindSuffixForCategory
 // rejects, since they have no chunk-`name` addressing).  `activeRasterizerKind` is
 // the active rasterizer's keyword (its CST role) for the Rasterizer singleton.
+// `activeCameraName` is the LIVE active camera's registered name, feeding the
+// round-7 gated camera fallback (DocCameraUniqueFallbackPermitted).
 RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
-	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind )
+	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind,
+	const std::string& activeCameraName )
 {
 	std::string suffix; bool uf = false;
 	if( RoleKindSuffixForCategory( cat, suffix, uf ) ) {
+		if( cat == SceneEditController::Category::Camera && uf )
+			uf = RISE::Cst::DocCameraUniqueFallbackPermitted( doc, name, activeCameraName );
 		if( name.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
 		return RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, suffix, uf );
 	}
@@ -6537,6 +6567,9 @@ bool SceneEditController::EntitySourceLocation( Category cat, const String& name
 
 	std::string suffix; bool uniqueFallback = false;
 	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) ) return false;
+	if( cat == Category::Camera && uniqueFallback )   // round-7 gated camera fallback (typo-refusal)
+		uniqueFallback = RISE::Cst::DocCameraUniqueFallbackPermitted(
+			*doc, name.size() > 1 ? name.c_str() : "", mJob.GetActiveCameraName() );
 	if( name.size() <= 1 && !uniqueFallback ) return false;   // an empty name only resolves via the unique-fallback (unnamed sole entity of its kind)
 
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, name.c_str(), nullptr, suffix, uniqueFallback );
@@ -6577,7 +6610,8 @@ bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, c
 
 	const std::string activeRast = mJob.GetActiveRasterizerName();
 	const RISE::Cst::NodeId chunkId =
-		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast );
+		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast,
+		                      mJob.GetActiveCameraName() );
 	if( chunkId == 0 ) return false;   // unresolvable ref (removed entity / ambiguous / no such singleton)
 
 	size_t off = 0, len = 0;
@@ -7848,7 +7882,8 @@ bool SceneEditController::WouldPersistDanglingReference_(
 
 	// Resolve the entity's chunk + the edited param's descriptor.
 	const RISE::Cst::NodeId id = ResolveSourceChunkId(
-		*doc, cat, std::string( entityName.c_str() ), std::string() );
+		*doc, cat, std::string( entityName.c_str() ), std::string(),
+		mJob.GetActiveCameraName() );
 	if( id == 0 ) return false;
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return false;
@@ -10351,6 +10386,9 @@ SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 			r.headVersion = mJob.GetCstHeadVersion();
 			return r;
 		}
+		if( cat == Category::Camera && uniqueFallback )   // round-7 gated camera fallback (typo-refusal)
+			uniqueFallback = RISE::Cst::DocCameraUniqueFallbackPermitted(
+				*doc, name.size() > 1 ? name.c_str() : "", mJob.GetActiveCameraName() );
 		const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
 			*doc, name.c_str(), nullptr, suffix, uniqueFallback );
 		if( id == 0 )

@@ -567,19 +567,48 @@ namespace RISE
 		//! level items for a `name` param matching `bareName` and resolves the single hit to its NodeId;
 		//! returns 0 if absent or ambiguous (>1 chunks share the name).  O(N) scan -- used on discrete panel
 		//! edits, not the per-frame gizmo path (which will carry the NodeId forward).
-		//! `roleKindSuffix` (optional) disambiguates a CROSS-category bare-name collision (e.g. a material and
-		//! a geometry both named "m"): when >1 chunks share the name, narrow to those whose keyword (the item's
-		//! role) equals the suffix or ends in "_<suffix>" -- every material keyword ends in "_material" (or is
-		//! the bare "material"), so the editor passes "material" for a material edit.  If exactly one survives
-		//! the narrowing, return it; else still refuse.  Empty suffix = no narrowing (pure unique-or-refuse).
-		//! NOTE: the suffix narrows the COMMON keywords per kind (material/light/camera/object); a few keywords
-		//! are false-negatives (gltf_import, hosek_wilkie_skylight, camera_defaults) -> a ChunkCategory-based
-		//! disambiguator is the cleaner future fix.  `uniqueFallback` (OPT-IN, only for UNNAMED-addressable kinds
-		//! like cameras): if NO chunk carries `bareName` but exactly ONE UNNAMED chunk is of the kind, return it by
-		//! POSITION. Named chunks never participate in fallback, so an empty/typo'd target cannot silently resolve
-		//! to the sole material/light/object. When `roleKindSuffix` is supplied it is always enforced, including
-		//! for a single bare-name match.
+		//! `roleKindSuffix` (optional) is a HARD CONSTRAINT, not just a collision disambiguator: every bare-
+		//! name match is narrowed through RoleMatchesKindConstraint (keyword == suffix, keyword ends in
+		//! "_<suffix>", or -- for the UI-union kinds -- the DescriptorRegistry classifier category), INCLUDING
+		//! a single bare-name match, so ("material", "x") can never silently target a uniquely named
+		//! `sphere_geometry x`.  If exactly one match survives the narrowing, return it; else refuse (0).
+		//! Empty suffix = no narrowing (pure unique-or-refuse).  `uniqueFallback` (OPT-IN, only for UNNAMED-
+		//! addressable kinds like cameras -- see DocCameraUniqueFallbackPermitted for the camera gating rule):
+		//! if NO chunk carries `bareName` but exactly ONE UNNAMED chunk is of the kind (suffix predicate only;
+		//! the registry-classifier union does NOT broaden the fallback), return it by POSITION.  Named chunks
+		//! never participate in fallback, so an empty/typo'd target cannot silently resolve to the sole
+		//! material/light/object.  `*occurrences` (if non-null) receives the POST-narrowing match count when a
+		//! kind constraint is supplied (so "1 chunk named x exists but it is the wrong kind" reports 0 =
+		//! not-found, never "ambiguous"), and the raw bare-name count when the suffix is empty.
 		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr, const std::string& roleKindSuffix = std::string(), bool uniqueFallback = false );
+
+		//! True iff chunk keyword `role` satisfies the kind constraint `roleKindSuffix` -- the ONE narrowing
+		//! predicate DocFindByNameAnyRole enforces, exposed so defensive re-verification sites (e.g. the
+		//! destructive remove_chunk kind check) stay in lockstep with the resolver instead of re-deriving a
+		//! suffix-only approximation that diverges on registry-classified kinds (an `expression_function2d`
+		//! IS a "painter" per the DescriptorRegistry category even though its keyword lacks the suffix).
+		//! Matches when: role == suffix; role ends in "_<suffix>" (fast path); or the DescriptorRegistry
+		//! classifies role's category into the suffix's UI union (painter accepts Painter|Function; material /
+		//! geometry / light / medium / camera accept their own category).  An empty suffix matches everything
+		//! (no constraint).  NOTE the camera asymmetry: the registry category for "camera" also covers
+		//! non-camera-chunk helpers (camera_defaults, category Camera) -- harmless for NAME-addressed
+		//! narrowing (those chunks are unnamed) but deliberately NOT used by the unnamed-fallback scan.
+		bool RoleMatchesKindConstraint( const std::string& role, const std::string& roleKindSuffix );
+
+		//! Round-7 camera-fallback tightening: whether DocFindByNameAnyRole's unnamed-unique-in-kind
+		//! positional fallback may be ATTEMPTED for a camera addressed by `bareName`.  The unconditional
+		//! camera fallback let a TYPO'D camera name silently edit the sole unnamed camera (scene with an
+		//! unnamed pinhole + `thinlens_camera { name tele }`: an agent edit naming `tel` matched nothing,
+		//! fell back, and edited the pinhole).  Permitted iff: `bareName` is empty (the (Camera, "") =
+		//! active-camera / kind-addressed-singleton convention); OR `bareName` equals `activeCameraName`
+		//! (the LIVE registry name the runtime allocator issued to an unnamed chunk -- "default" et al --
+		//! so addressing the active camera by its registered name keeps working); OR the document holds
+		//! exactly ONE camera-kind chunk total (named or unnamed; suffix predicate, so camera_defaults /
+		//! scene_options do not count) -- with one camera, any camera-kind address can only mean that
+		//! camera, and the fallback branch itself still requires it to be unnamed.  Callers pass
+		//! IJob::GetActiveCameraName() (may be empty; an empty active name never matches a non-empty
+		//! bareName).  Pure Document predicate otherwise -- no live-scene access here.
+		bool DocCameraUniqueFallbackPermitted( const Document& doc, const std::string& bareName, const std::string& activeCameraName );
 
 		//! Resolve a durable NodeId to the green node it now labels (null if gone),
 		//! in O(log N) via the persistent reverse index -- the counted "agent holds

@@ -3832,7 +3832,18 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_OnPointerUp(
 		SceneEditController* p, Scalar x, Scalar y );
 
-	//! Time scrubber.
+	//! Time scrubber.  RETURN SEMANTICS (unified render/editor admission, 2026-07):
+	//! `false` is a REFUSAL, not only a null-controller guard.  All three refuse
+	//! while a coordinated/agent render holds the interactive-admission gate
+	//! (agent-render-blocks-interactive); OnTimeScrub additionally refuses while a
+	//! production render owns the scene (render-owns-scene) and when the
+	//! SetSceneTime edit itself is refused by the editor.  A refused call performs
+	//! NO mutation and opens/closes NO undo composite -- the shell should simply
+	//! drop the gesture event (and may retry on the next event; the gates clear
+	//! when the render completes or is cancelled).  Bracketing is self-healing
+	//! across refusals: a Begin whose End was refused leaves its composite to be
+	//! reconciled by the next successful Begin (orphan-composite guard), so shells
+	//! need no bracketing bookkeeping around refusals.
 	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p );
 	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t );
 	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p );
