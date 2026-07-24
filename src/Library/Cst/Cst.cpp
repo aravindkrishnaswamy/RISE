@@ -3271,8 +3271,29 @@ NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, i
 		for( size_t m = 0; m < matches.size(); ++m ) {
 			const size_t slash = matches[m].rfind( '/' );
 			const std::string role = ( slash == std::string::npos ) ? matches[m] : matches[m].substr( 0, slash );
-			const bool kindMatch = ( role == roleKindSuffix ) ||
+			bool kindMatch = ( role == roleKindSuffix ) ||
 				( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );
+			// Round-6 regression fix (SourceTraceTest): the kind constraint must
+			// honour the REGISTRY CLASSIFIER, not just the keyword suffix -- an
+			// expression_function2d is a registry Painter (and function chunks
+			// dual-register into the Painter UI union) despite not ending in
+			// `_painter`.  The suffix-only narrowing introduced by the kind-
+			// constraint fix silently un-addressed those chunks (reveal-in-file /
+			// jump broke).  Suffix stays the fast path; the registry category is
+			// the authority when the suffix disagrees.
+			if( !kindMatch ) {
+				const std::map<std::string, const IAsciiChunkParser*>& reg = DescriptorRegistry();
+				std::map<std::string, const IAsciiChunkParser*>::const_iterator it = reg.find( role );
+				if( it != reg.end() ) {
+					const ChunkCategory cc = it->second->Describe().category;
+					if(      roleKindSuffix == "painter"  ) kindMatch = ( cc == ChunkCategory::Painter || cc == ChunkCategory::Function );
+					else if( roleKindSuffix == "material" ) kindMatch = ( cc == ChunkCategory::Material );
+					else if( roleKindSuffix == "geometry" ) kindMatch = ( cc == ChunkCategory::Geometry );
+					else if( roleKindSuffix == "light"    ) kindMatch = ( cc == ChunkCategory::Light );
+					else if( roleKindSuffix == "medium"   ) kindMatch = ( cc == ChunkCategory::Medium );
+					else if( roleKindSuffix == "camera"   ) kindMatch = ( cc == ChunkCategory::Camera );
+				}
+			}
 			if( kindMatch ) { ++narrowed; matchPath = matches[m]; }
 		}
 		if( narrowed != 1 ) return 0;                              // ambiguous or wrong kind -> refuse

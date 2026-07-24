@@ -4930,6 +4930,16 @@ bool SceneEditController::RunPreviewRenderParked(
 		SceneEditController& self;
 		~DirectRenderAdmissionGuard()
 		{
+			// Round-6 review P1 (lost wakeup): clear the gate and notify UNDER
+			// mMutex.  This guard destructs AFTER `lk` below (reverse declaration
+			// order releases mMutex first), so an unlocked store+notify could land
+			// exactly between RenderLoop's predicate check and its kernel park --
+			// the classic missed-wakeup window (see the RenderLoop doc: notifiers
+			// must hold the waiter's mutex).  The agent worker's release already
+			// follows this discipline (AgentRenderWorkerLoop_'s renderLk hold);
+			// this mirrors it.  mMutex is provably NOT held here on every path
+			// (`lk` is destroyed first), so the re-acquire cannot self-deadlock.
+			std::lock_guard<std::mutex> g( self.mMutex );
 			self.mAgentRenderBlocksInteractive.store( false, std::memory_order_release );
 			self.mCV.notify_all();
 		}
