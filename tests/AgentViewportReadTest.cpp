@@ -338,6 +338,9 @@ static void RunPositiveAndIsolation()
 				"T2 paneSet: layout TwoH" );
 			Check( controller.SetPaneVantageSceneCameraNamed( 1, "cam" ),
 				"T2 paneSet: pane 1 binds scene camera cam" );
+			Check( controller.SetPaneContentSource(
+					1, SceneEditController::PaneContentSource::LastRender ),
+				"T4 paneSet: pane 1 selects Last Render" );
 			{
 				const std::string resp = rpc.HandleLine(
 					Req( 6, "read_viewport", JsonValue::MakeObject() ) );
@@ -346,10 +349,11 @@ static void RunPositiveAndIsolation()
 				const JsonValue& panes = paneSet.get( "panes" );
 				Check( panes.size() == 4
 				    && panes.at( 1 ).get( "visible" ).asBool()
+				    && panes.at( 1 ).get( "contentSource" ).asNumber() == 1
 				    && panes.at( 1 ).get( "vantageKind" ).asNumber() == 3
 				    && panes.at( 1 ).get( "namedView" ).asString() == "cam",
-					"MONEY ASSERTION T2: read_viewport serializes kind 3 and the "
-					"exact named scene-camera reference" );
+					"MONEY ASSERTION T2/T4: read_viewport serializes LastRender "
+					"orthogonally to kind 3 and the exact named scene-camera reference" );
 			}
 
 			// Downscaled read_viewport (maxEdge = 16 -> dims <= 16).

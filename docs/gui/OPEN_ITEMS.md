@@ -12,7 +12,7 @@ _Last updated: 2026-07-24, during the viewport render-mode follow-up._
 
 ---
 
-## 0. Viewport render-mode follow-up (in progress)
+## 0. Viewport render-mode follow-up — DONE
 
 - **T0 — DONE:** fixed the gesture-pinned scheduler spin exposed by
   BeautyVariant + object-gizmo interaction.  Dirty frozen siblings no longer
@@ -45,7 +45,16 @@ _Last updated: 2026-07-24, during the viewport render-mode follow-up._
 - **T3 — DONE:** named-camera pane navigation follows the bound camera
   through the existing name-targeted edit/undo path; the contract is ratified
   in `RENDER_MODES.md` §7.2.
-- **T4 — pending:** Last Render pane content.
+- **T4 — DONE:** `LastRender` is a persistent pane content source outside
+  the render-mode registry.  The controller retains one owning,
+  full-resolution deep copy across scene/gizmo edits, excludes frozen panes
+  from scheduling, and publishes each successful GUI-production or agent
+  completion exactly once to every subscriber.  Failed/cancelled renders
+  preserve the prior copy; render-before-subscribe delivery and the
+  transparent pre-first-render placeholder are regression-locked.  The
+  additive C ABI, agent pane introspection, and both desktop shells expose the
+  same source semantics.  Review remediation and mutation evidence are
+  recorded in `RENDER_MODES.md` §7.9.
 
 ## 1. P2 sweep (from the round-6 three-reviewer pass) — DONE (round 7, 2026-07-24)
 
@@ -123,9 +132,10 @@ first.  See ADR §4.
 
 ## 5. Merge gate
 
-§1 remains clean from round 7, but the branch has a new active viewport
-follow-up (§0) and is no longer at its merge gate.  Re-establish the full
-suite, warning-free clean core rebuild, Mac arm64 GUI build, and zero-P1
-adversarial gate after T4.  (x86_64 Mac links fail against arm64 Homebrew
-dylibs — environmental, not a regression.  The Windows-shell build/run pass
-in §4 remains outstanding for merge consideration.)
+§0 and §1 are clean.  The T4 gate was re-established on 2026-07-24: a
+warning-free clean core rebuild, all 220 standalone tests, a clean arm64 Mac
+GUI build, mutation verification of every new T4 assertion, and a fresh
+three-reviewer adversarial round reporting ZERO P1/P2.  (x86_64 Mac links
+fail against arm64 Homebrew dylibs — environmental, not a regression.  The
+Windows-shell build/run pass in §4 remains outstanding for merge
+consideration.)

@@ -94,7 +94,7 @@ public:
                 *row++ = clamp8(c.base.r);
                 *row++ = clamp8(c.base.g);
                 *row++ = clamp8(c.base.b);
-                *row++ = 255;
+                *row++ = ViewportShellDisplayAlpha8(c);
             }
         }
 
@@ -161,7 +161,7 @@ public:
                 *row++ = clamp8(c.base.r);
                 *row++ = clamp8(c.base.g);
                 *row++ = clamp8(c.base.b);
-                *row++ = 255;
+                *row++ = ViewportShellDisplayAlpha8(c);
             }
         }
 
@@ -820,6 +820,27 @@ QString ViewportBridge::paneRenderMode(unsigned int pane) const
 {
     if (!m_controller) return QStringLiteral("preview");
     return QString::fromUtf8(RISE_API_SceneEditController_GetPaneRenderMode(m_controller, pane));
+}
+
+bool ViewportBridge::setPaneContentSource(
+    unsigned int pane, PaneContentSource source)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPaneContentSource(
+        m_controller, pane, static_cast<int>(source));
+}
+
+ViewportBridge::PaneContentSource
+ViewportBridge::paneContentSource(unsigned int pane) const
+{
+    if (!m_controller) return PaneContentSource::Interactive;
+    int source = 0;
+    if (!RISE_API_SceneEditController_GetPaneContentSource(
+            m_controller, pane, &source)) {
+        return PaneContentSource::Interactive;
+    }
+    return source == static_cast<int>(PaneContentSource::LastRender)
+        ? PaneContentSource::LastRender : PaneContentSource::Interactive;
 }
 
 bool ViewportBridge::setPaneSurfaceDims(unsigned int pane, unsigned int w, unsigned int h)

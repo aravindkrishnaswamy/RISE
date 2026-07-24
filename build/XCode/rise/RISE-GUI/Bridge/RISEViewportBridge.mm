@@ -345,7 +345,7 @@ private:
                     *p++ = Clamp8( c.base.r );
                     *p++ = Clamp8( c.base.g );
                     *p++ = Clamp8( c.base.b );
-                    *p++ = 255;
+                    *p++ = ViewportShellDisplayAlpha8( c );
                 }
             }
 
@@ -1177,6 +1177,24 @@ private:
     if (!_controller || !name) return NO;
     return RISE_API_SceneEditController_SetPaneRenderMode(
         _controller, static_cast<unsigned int>(pane), [name UTF8String]) ? YES : NO;
+}
+
+- (RISEViewportPaneContentSource)paneContentSource:(NSUInteger)pane {
+    if (!_controller) return RISEViewportPaneContentInteractive;
+    int source = 0;
+    if (!RISE_API_SceneEditController_GetPaneContentSource(
+            _controller, static_cast<unsigned int>(pane), &source)) {
+        return RISEViewportPaneContentInteractive;
+    }
+    return source == 1 ? RISEViewportPaneContentLastRender
+                       : RISEViewportPaneContentInteractive;
+}
+
+- (BOOL)setPaneContentSource:(NSUInteger)pane source:(RISEViewportPaneContentSource)source {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SetPaneContentSource(
+        _controller, static_cast<unsigned int>(pane),
+        static_cast<int>(source)) ? YES : NO;
 }
 
 - (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane {

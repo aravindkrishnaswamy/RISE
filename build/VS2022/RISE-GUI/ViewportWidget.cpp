@@ -109,6 +109,11 @@ void ViewportWidget::applyMultiViewModePreset()
         // Preview indistinguishable from any other explicit choice -- both are
         // the user's, both preserved.
         if (m_panePresetApplied[pane]) continue;
+        if (m_bridge->paneContentSource(pane)
+            == ViewportBridge::PaneContentSource::LastRender) {
+            m_panePresetApplied[pane] = true;
+            continue;
+        }
         // A pane the core already persisted to a non-Preview mode is the user's
         // -- mark applied and leave it alone.
         if (m_bridge->paneRenderMode(pane) != QStringLiteral("preview")) {
@@ -731,6 +736,8 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
         if (!m_productionRendering && event->button() == Qt::LeftButton) {
             const unsigned int primary = m_bridge->primaryPane();
             if (primary < m_visiblePaneCount
+                && m_bridge->paneContentSource(primary)
+                    != ViewportBridge::PaneContentSource::LastRender
                 && handleNavClick(event->position(), primary)) {
                 event->accept();
                 return;
@@ -973,6 +980,12 @@ void ViewportWidget::buildPaneChrome()
         chrome.modeCombo->setStyleSheet(QStringLiteral(
             "QComboBox { color: %1; background-color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 4px; }")
             .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderLight)));
+        chrome.modeCombo->addItem(tr("Last Render"));
+        chrome.modeCombo->setItemData(
+            0, QStringLiteral("@last_render"), Qt::UserRole);
+        chrome.modeCombo->setItemData(
+            0, tr("Show the most recent completed production or agent render"),
+            Qt::ToolTipRole);
         for (const ViewportRenderModeInfo& info : ViewportBridge::viewportRenderModes()) {
             const int idx = chrome.modeCombo->count();
             chrome.modeCombo->addItem(info.title);
@@ -1282,7 +1295,12 @@ void ViewportWidget::paintPaneGrid(QPainter& p)
     // the scheduled pane, so the handles are exact; between gestures the
     // static handles may reflect a sibling pane's idle camera (a race-free
     // primary-pane snapshot is a documented follow-up).
-    if (gizmoOverlayActive() && m_bridge && primary < m_visiblePaneCount) {
+    const bool primaryIsLastRender = m_bridge
+        && primary < m_visiblePaneCount
+        && m_bridge->paneContentSource(primary)
+            == ViewportBridge::PaneContentSource::LastRender;
+    if (gizmoOverlayActive() && m_bridge && primary < m_visiblePaneCount
+        && !primaryIsLastRender) {
         const QSize surface = m_bridge->cameraSurfaceDimensions();
         if (surface.width() > 0 && surface.height() > 0) {
             const QRect drawRectP = paneImageDrawRect(m_paneImages[primary], m_paneImageAreaRects[primary]);
@@ -1297,7 +1315,7 @@ void ViewportWidget::paintPaneGrid(QPainter& p)
     // chat/agent render ownership, whose controller mutex must not be read
     // from the paint path.
     if (!m_productionRendering && m_sceneEditable && m_bridge
-        && primary < m_visiblePaneCount) {
+        && primary < m_visiblePaneCount && !primaryIsLastRender) {
         paintNavOverlay(p, primary);
     }
 }
@@ -1315,7 +1333,12 @@ void ViewportWidget::refreshPaneChromeState()
         // Mode combo -- resync current index (QSignalBlocker-guarded, same
         // pattern as TopBar::refreshRenderModeCombo, so this never re-fires
         // onPaneModeComboChanged).
-        const QString modeName = m_bridge->paneRenderMode(i);
+        const bool lastRender =
+            m_bridge->paneContentSource(i)
+            == ViewportBridge::PaneContentSource::LastRender;
+        const QString modeName = lastRender
+            ? QStringLiteral("@last_render")
+            : m_bridge->paneRenderMode(i);
         const int wantIndex = chrome.modeCombo->findData(modeName, Qt::UserRole);
         if (wantIndex >= 0 && wantIndex != chrome.modeCombo->currentIndex()) {
             const QSignalBlocker blocker(chrome.modeCombo);
@@ -1414,8 +1437,13 @@ void ViewportWidget::onPaneModeComboChanged(int index)
     // The set CAN fail (render-owns-scene, hidden pane) -- always re-read
     // via refreshPaneChromeState() rather than trusting the click (matches
     // TopBar::onRenderModeComboChanged's discipline).
-    if (pane < ViewportBridge::kViewportPaneCount
-        && m_bridge->setPaneRenderMode(pane, name)) {
+    const bool accepted =
+        pane < ViewportBridge::kViewportPaneCount
+        && (name == QStringLiteral("@last_render")
+            ? m_bridge->setPaneContentSource(
+                pane, ViewportBridge::PaneContentSource::LastRender)
+            : m_bridge->setPaneRenderMode(pane, name));
+    if (accepted) {
         // A successful user choice owns this pane even if its first-reveal
         // preset was previously refused.  The hosted-render retry must not
         // overwrite an explicit Preview selected in that short window.

@@ -37,6 +37,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/InMemoryRasterizerOutput.h"
 #include "../src/Library/Agent/Json.h"   // pre-S2 hardening: red-prove the session-local id's exact wire round-trip
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
@@ -44,10 +45,14 @@
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Interfaces/IRasterizer.h"   // Model-B F2 slice S3: SetSampleCountOverride/GetSampleCountOverride red-prove
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"   // Model-B F2 S3 fix round (P1): ForTest_SamplingKernelName red-prove
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"   // Model-B F2 slice S1: RenderJobId coordinator bookkeeping
+#include "../src/Library/Utilities/Reference.h"
 
 #include <atomic>      // Model-B F2 slice S1: TestController's simulated-render slice counter
 #include <chrono>      // Model-B F2 slice S1: TestController's simulated-render sleep
@@ -144,6 +149,96 @@ static bool ReadPngDims( const std::vector<unsigned char>& b, unsigned int& w, u
 	return true;
 }
 
+class LastRenderRecordingSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	unsigned int count = 0;
+	unsigned int width = 0;
+	unsigned int height = 0;
+	double meanR = 0.0;
+	double meanG = 0.0;
+	double meanB = 0.0;
+	double meanA = 0.0;
+	std::vector<RISEColor> pixels;
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+
+	void OutputImage(
+		const IRasterImage& image, const Rect*, const unsigned int ) override
+	{
+		width = image.GetWidth();
+		height = image.GetHeight();
+		double sr = 0.0, sg = 0.0, sb = 0.0, sa = 0.0;
+		pixels.resize( static_cast<std::size_t>( width ) * height );
+		for( unsigned int y = 0; y < height; ++y )
+		{
+			for( unsigned int x = 0; x < width; ++x )
+			{
+				const RISEColor c = image.GetPEL( x, y );
+				pixels[ static_cast<std::size_t>( y ) * width + x ] = c;
+				sr += c.base.r;
+				sg += c.base.g;
+				sb += c.base.b;
+				sa += c.a;
+			}
+		}
+		const double n = static_cast<double>( width ) * height;
+		meanR = n > 0.0 ? sr / n : 0.0;
+		meanG = n > 0.0 ? sg / n : 0.0;
+		meanB = n > 0.0 ? sb / n : 0.0;
+		meanA = n > 0.0 ? sa / n : 0.0;
+		++count;
+	}
+
+	std::vector<unsigned char> EncodedPng(
+		double exposureEV, int displayTransform ) const
+	{
+		InMemoryRasterizerOutput* encoder =
+			new InMemoryRasterizerOutput();
+		std::vector<RISEColor> copy = pixels;
+		encoder->AdoptCoherentSnapshot(
+			std::move( copy ), width, height );
+		encoder->SetDisplayTransform( exposureEV, displayTransform );
+		const std::vector<unsigned char> png = encoder->ToPng();
+		encoder->release();
+		return png;
+	}
+
+	bool MatchesImage( const IRasterImage& image ) const
+	{
+		if( width != image.GetWidth() || height != image.GetHeight()
+		 || pixels.size() != static_cast<std::size_t>( width ) * height )
+			return false;
+		for( unsigned int y = 0; y < height; ++y )
+		{
+			for( unsigned int x = 0; x < width; ++x )
+			{
+				const RISEColor actual =
+					pixels[ static_cast<std::size_t>( y ) * width + x ];
+				const RISEColor expected = image.GetPEL( x, y );
+				if( actual.base.r != expected.base.r
+				 || actual.base.g != expected.base.g
+				 || actual.base.b != expected.base.b
+				 || actual.a != expected.a )
+					return false;
+			}
+		}
+		return true;
+	}
+
+protected:
+	~LastRenderRecordingSink() override = default;
+};
+
+class RejectingProgressCallback : public IProgressCallback
+{
+public:
+	bool Progress( const double, const double ) override { return false; }
+	void SetTitle( const char* ) override {}
+};
+
 static void RunCameraOverrideTests();          // fwd decl -- defined below, called from main()
 static void RunRestoreOnThrowTest();           // P1-A red-prove -- defined below, called from main()
 static void RunMalformedCameraOverrideTests(); // P1-B -- defined below, called from main()
@@ -153,6 +248,7 @@ static void RunSampleCountOverrideTests();     // Model-B F2 slice S3 (Effective
 static void RunDraftQualityTests();            // Toolkit slice 2 (quality:"draft") -- defined below, called from main()
 static void RunDraftCancelTest();              // Toolkit slice 2 draft-quality cancel mid-flight -- defined below, called from main()
 static void RunNoRasterizerDraftTest();        // Round-2 P2-A: draft render on a rasterizer-less head -- defined below, called from main()
+static void RunLastRenderCompletionSitesTest();// T4: agent + GUI-production completion capture
 
 static void RunCoreTests()
 {
@@ -1892,6 +1988,13 @@ static void RunDraftCancelTest()
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft-cancel test)" );
 
 	SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+	LastRenderRecordingSink* lastRenderSink = new LastRenderRecordingSink();
+	Check( controller->SetViewportLayout(
+			SceneEditController::ViewportLayout::TwoH )
+	    && controller->SetPaneSink( 1, lastRenderSink )
+	    && controller->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"T4 cancellation fixture wires a Last Render pane" );
 	controller->Start( /*suppressInitialRender=*/true );
 
 	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
@@ -1968,6 +2071,10 @@ static void RunDraftCancelTest()
 			       "MONEY ASSERTION: the cancelled draft render reports ok=false -- genuinely interrupted, never a partial success" );
 			Check( cached.result.renderMode == "draft", "the cancelled result still reports renderMode==\"draft\"" );
 		}
+		Check( lastRenderSink->count == 1
+		    && lastRenderSink->width == 1 && lastRenderSink->height == 1,
+			"MONEY (T4/cancel): cancelled agent render preserves the prior "
+			"Last Render placeholder without a partial-frame push" );
 
 		// RED-PROVE the red-prove: the session is still USABLE after a
 		// cancelled draft render -- a clean follow-up draft render (small,
@@ -1977,10 +2084,16 @@ static void RunDraftCancelTest()
 		const AgentRenderResult clean = session->Render( p2 );
 		Check( clean.ok, "a follow-up draft render succeeds after the cancelled one (session still usable)" );
 		Check( clean.renderMode == "draft", "the follow-up render reports renderMode==\"draft\"" );
+		Check( lastRenderSink->count == 2
+		    && lastRenderSink->width == 24 && lastRenderSink->height == 24,
+			"T4 cancellation control: the next successful render pushes exactly once" );
 
 		session->AttachController( nullptr );
 	}
 
+	Check( controller->SetPaneSink( 1, nullptr ),
+		"T4 cancellation fixture detaches its pane sink" );
+	lastRenderSink->release();
 	controller->Stop();
 	delete controller;
 	pJob->release();
@@ -2045,6 +2158,178 @@ static void RunNoRasterizerDraftTest()
 	std::printf( "=== Round-2 P2-A no-rasterizer draft render: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// T4 money evidence for every real completion branch.  The scheduler test
+// proves pane-source mechanics directly; this test prevents any integration
+// hook from disappearing while the core helper stays green:
+//   1. AgentSession::RenderCore_'s production, object-map, view-mode, and
+//      draft InMemoryRasterizerOutput branches.
+//   2. SceneEditController's common GUI production-render composition.
+// It also exercises render-first/select-later retention: no Last Render pane
+// exists during the first completion, then the retained image is delivered
+// when a pane subscribes.
+//////////////////////////////////////////////////////////////////////
+static void RunLastRenderCompletionSitesTest()
+{
+	std::printf( "=== AgentProposeRenderTest: T4 Last Render completion sites ===\n" );
+	const std::string scenePath =
+		WriteTemp( "rise_agent_t4_last_render.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the T4 completion scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		"Job loads the T4 completion scene" );
+	SceneEditController controller( *pJob, nullptr );
+	LastRenderRecordingSink* sink = new LastRenderRecordingSink();
+	Check( controller.SetViewportLayout(
+			SceneEditController::ViewportLayout::TwoH )
+	    && controller.SetPaneSink( 1, sink ),
+		"pane 1 sink is installed while its source remains Interactive" );
+	Check( sink->count == 0,
+		"no Last Render subscriber receives an image before the first completion" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession wraps the controller-owned Job" );
+	if( session )
+	{
+		session->AttachController( &controller );
+		AgentRenderParams agentParams;
+		agentParams.width = 16;
+		agentParams.height = 16;
+		agentParams.samples = 1;
+		const unsigned int beforeAgent = sink->count;
+		const AgentRenderResult agentResult = session->Render( agentParams );
+		Check( agentResult.ok && agentResult.width == 16
+		    && agentResult.height == 16,
+			"real coordinated agent render completes at the override size" );
+		Check( sink->count == beforeAgent,
+			"MONEY (T4/no-subscriber): completion is retained without "
+			"pushing an Interactive pane" );
+		Check( controller.SetPaneContentSource(
+				1, SceneEditController::PaneContentSource::LastRender ),
+			"pane 1 subscribes to Last Render after the render completes" );
+		Check( sink->count == beforeAgent + 1
+		    && sink->width == 16 && sink->height == 16
+		    && sink->EncodedPng( 0.0, 2 ) == agentResult.png,
+			"MONEY (T4/agent): render-first/select-later delivers the exact "
+			"position-sensitive RGBA InMemory image, not a blank, flattened, "
+			"permuted, or stale substitute" );
+
+		AgentRenderParams objectMapParams;
+		objectMapParams.width = 16;
+		objectMapParams.height = 16;
+		objectMapParams.renderTarget = AgentRenderTarget::ObjectMap;
+		const unsigned int beforeObjectMap = sink->count;
+		const AgentRenderResult objectMapResult =
+			session->Render( objectMapParams );
+		Check( objectMapResult.ok
+		    && objectMapResult.renderMode == "objectmap"
+		    && sink->count == beforeObjectMap + 1
+		    && sink->EncodedPng( 0.0, 0 ) == objectMapResult.png,
+			"MONEY (T4/object-map): successful object-map completion "
+			"publishes its exact position-sensitive RGBA image once" );
+
+		AgentRenderParams viewModeParams;
+		viewModeParams.width = 16;
+		viewModeParams.height = 16;
+		viewModeParams.renderTarget = AgentRenderTarget::ViewMode;
+		viewModeParams.viewMode =
+			Implementation::ViewportRenderMode::Normals;
+		const unsigned int beforeViewMode = sink->count;
+		const AgentRenderResult viewModeResult =
+			session->Render( viewModeParams );
+		Check( viewModeResult.ok
+		    && viewModeResult.renderMode == "normals"
+		    && sink->count == beforeViewMode + 1
+		    && sink->EncodedPng( 0.0, 0 ) == viewModeResult.png,
+			"MONEY (T4/view-mode): successful diagnostic-view completion "
+			"publishes its exact position-sensitive RGBA image once" );
+
+		AgentRenderParams variantParams;
+		variantParams.width = 16;
+		variantParams.height = 16;
+		variantParams.renderTarget = AgentRenderTarget::ViewMode;
+		variantParams.viewMode =
+			Implementation::ViewportRenderMode::Direct;
+		const unsigned int beforeVariant = sink->count;
+		const AgentRenderResult variantResult =
+			session->Render( variantParams );
+		Check( variantResult.ok
+		    && variantResult.renderMode == "direct"
+		    && sink->count == beforeVariant + 1
+		    && sink->width == variantResult.width
+		    && sink->height == variantResult.height
+		    && sink->EncodedPng( 0.0, 2 ) == variantResult.png,
+			"MONEY (T4/BeautyVariant): successful production-class variant "
+			"completion publishes its exact reduced-resolution RGBA image once" );
+
+		AgentRenderParams draftParams;
+		draftParams.width = 16;
+		draftParams.height = 16;
+		draftParams.quality = AgentRenderQuality::Draft;
+		const unsigned int beforeDraft = sink->count;
+		const AgentRenderResult draftResult = session->Render( draftParams );
+		Check( draftResult.ok
+		    && draftResult.renderMode == "draft"
+		    && sink->count == beforeDraft + 1
+		    && sink->EncodedPng( 0.0, 2 ) == draftResult.png,
+			"MONEY (T4/draft): successful draft completion publishes its "
+			"exact position-sensitive RGBA image once" );
+
+		const unsigned int beforeFailure = sink->count;
+		AgentRenderParams failedParams;
+		failedParams.view = "definitely_missing_t4_view";
+		const AgentRenderResult failedResult = session->Render( failedParams );
+		Check( !failedResult.ok && sink->count == beforeFailure,
+			"MONEY (T4/agent): failed agent render preserves the previous Last Render" );
+
+		const unsigned int beforeProduction = sink->count;
+		Check( controller.RequestProductionRender(),
+			"real GUI production-render composition completes" );
+		IRasterizer* completedRasterizer = pJob->GetRasterizer();
+		Implementation::FrameStore* completedStore =
+			completedRasterizer ? completedRasterizer->GetFrameStore() : nullptr;
+		Check( sink->count == beforeProduction + 1
+		    && sink->width == 24 && sink->height == 24
+		    && completedStore
+		    && sink->MatchesImage(
+				completedStore->AsBeautyRasterImage() ),
+			"MONEY (T4/production): common production completion pushes "
+			"the exact per-pixel RGBA canonical FrameStore image once" );
+
+		// A platform Cancel button reports cancellation by returning false
+		// from the composed inner callback.  Some rasterizers still return
+		// true after stopping, so the composition layer must remember the
+		// callback refusal and preserve the prior completed image.
+		RejectingProgressCallback rejectingProgress;
+		bool innerAccepted = true;
+		const unsigned int beforeCancelledGuiRender = sink->count;
+		const bool composedResult =
+			SceneEditController::RunProductionRenderComposed(
+				*pJob, &controller, String( "t4_gui_cancel_probe" ),
+				&rejectingProgress,
+				[&]() -> bool {
+					IProgressCallback* active = pJob->GetProgress();
+					innerAccepted = active
+						? active->Progress( 1.0, 2.0 ) : true;
+					return true;
+				} );
+		Check( composedResult && !innerAccepted,
+			"GUI-cancel probe reproduces a rasterizer that returns success "
+			"after its inner progress callback refuses work" );
+		Check( sink->count == beforeCancelledGuiRender,
+			"MONEY (T4/GUI cancel): inner-callback cancellation preserves "
+			"the prior Last Render without a partial/stale-frame push" );
+		session->AttachController( nullptr );
+	}
+
+	Check( controller.SetPaneSink( 1, nullptr ), "Last Render sink detached" );
+	sink->release();
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -2057,6 +2342,7 @@ int main()
 	RunDraftQualityTests();
 	RunDraftCancelTest();
 	RunNoRasterizerDraftTest();
+	RunLastRenderCompletionSitesTest();
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

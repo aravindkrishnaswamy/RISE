@@ -45,8 +45,20 @@
 
 namespace RISE
 {
+	//! Desktop viewport sinks intentionally display ordinary render output as
+	//! opaque, even when a no-hit pixel carries coverage alpha 0.  A negative
+	//! alpha is reserved solely for the Last Render "no completed image yet"
+	//! clear sentinel; shells map that sentinel to transparent and every real
+	//! render pixel to opaque.  Keeping the rule here gives Mac, Windows, and
+	//! the regression test one source of truth.
+	inline unsigned char ViewportShellDisplayAlpha8( const RISEColor& c )
+	{
+		return c.a < 0.0 ? 0 : 255;
+	}
+
 	namespace Implementation { class InteractivePelRasterizer; }
 	namespace Implementation { class FrameStore; }
+	class IRasterImage;
 	//! GUI render modes P1 (docs/gui/RENDER_MODES.md §5).  Opaque-enum
 	//! forward declaration (implicit `int` underlying type, matching the
 	//! full definition in InteractivePelRasterizer.h) -- gives this header
@@ -2436,6 +2448,14 @@ namespace RISE
 			SceneCameraNamed = 3, //!< track one manager-registered scene camera by name
 		};
 
+		//! T4: top-level pane content source.  Stable C-ABI wire values;
+		//! LastRender is deliberately orthogonal to the render-mode registry.
+		enum class PaneContentSource : int
+		{
+			Interactive = 0,
+			LastRender  = 1,
+		};
+
 		static constexpr unsigned int kViewportPaneCount = 4;
 
 		//! user-review P1-3: an atomic snapshot of the whole pane set, captured
@@ -2449,6 +2469,7 @@ namespace RISE
 			struct Pane
 			{
 				bool                               visible = false;
+				PaneContentSource                  contentSource = PaneContentSource::Interactive;
 				Implementation::ViewportRenderMode mode = {};   // value-init == 0 == Preview (enum not fully defined here)
 				PaneVantageKind                    vantageKind = PaneVantageKind::SceneCamera;
 				String                             namedView;
@@ -2486,6 +2507,25 @@ namespace RISE
 		//! fail-closed contract); getters work on any valid index.
 		bool SetPaneRenderMode( unsigned int pane, const char* name );
 		const char* GetPaneRenderMode( unsigned int pane ) const;
+
+		//! Select Interactive or LastRender content for a visible pane.
+		//! LastRender parks an in-flight quantum, publishes the retained full
+		//! render (or an explicit empty placeholder), and is never scheduled.
+		//! Pane 0 refuses LastRender in Single layout so the legacy surface
+		//! remains unchanged.
+		bool SetPaneContentSource( unsigned int pane, PaneContentSource source );
+		PaneContentSource GetPaneContentSource( unsigned int pane ) const;
+
+		//! AgentSession completion hook.  The caller MUST already own this
+		//! controller's coordinated render slot (mMutex held, preview parked).
+		//! The image is deep-copied before return and pushed once to each
+		//! LastRender pane sink.
+		bool PublishAgentRenderImageParked( const IRasterImage& image );
+		//! Ownership-transfer sibling used by AgentSession after its
+		//! InMemoryRasterizerOutput has already created the required owning
+		//! full-resolution copy.  On success, `image` is adopted and nulled;
+		//! on refusal ownership remains with the caller.
+		bool AdoptAgentRenderImageParked( IRasterImage*& image );
 
 		//! P3a slice 3: set pane `pane`'s render-surface pixel dims (the
 		//! GUI's pane rect).  The pass renders at surface/previewScale and
@@ -3661,6 +3701,7 @@ namespace RISE
 			// enumerator NAME is unavailable; InteractivePelRasterizer.h
 			// defines Preview first and a static_assert in the .cpp pins it).
 			Implementation::ViewportRenderMode mode {};
+			PaneContentSource                  contentSource = PaneContentSource::Interactive;
 			PaneVantageKind                    vantageKind = PaneVantageKind::SceneCamera;
 			CameraSnapshot                     pose {};      // named-target deletion fallback / FreeFly
 			String                             namedViewRef; // valid when vantageKind==NamedView
@@ -3671,7 +3712,7 @@ namespace RISE
 			unsigned int                       surfaceW = 0;
 			unsigned int                       surfaceH = 0;
 		};
-		PaneConfig                  mPaneConfigs[kViewportPaneCount];  // [0] unused (alias)
+		PaneConfig                  mPaneConfigs[kViewportPaneCount];  // [0] contentSource only; mode/vantage alias
 		ViewportLayout              mViewportLayout = ViewportLayout::Single;
 		unsigned int                mPrimaryPane    = 0;   // always visible in layout
 		//! Lock-free UI-read snapshots.  Agent/production renders deliberately
@@ -3746,6 +3787,11 @@ namespace RISE
 		//! shape.
 		std::atomic<bool>           mPanePassPending { false };
 
+		//! T4: immutable deep copy of the most recent successful full
+		//! production/agent render.  Guarded by mMutex, independent of the
+		//! interactive FrameStores, retained until replacement/teardown.
+		IRasterImage*               mLastRenderImage = nullptr;
+
 		//! P3a slice 3: the CURRENT pane's surface dims, stamped at the
 		//! mint (inside the same lock hold as the context switch) and read
 		//! by DoOneRenderPass -- registers, like every per-quantum input.
@@ -3785,6 +3831,10 @@ namespace RISE
 		unsigned int PickNextVisiblePaneLocked_() const;
 		bool         AnyVisiblePaneHasWorkLocked_() const;
 		void         MarkAllVisiblePanesDirtyLocked_();
+		bool         IsInteractivePaneLocked_( unsigned int pane ) const;
+		bool         CaptureLastRenderImageLocked_( const IRasterImage& image );
+		bool         AdoptLastRenderImageLocked_( IRasterImage*& image );
+		void         PublishLastRenderToSinkLocked_( unsigned int pane );
 		//! Mark panes bound to one manager-registered camera for desired-state
 		//! reconcile.  REQUIRES mMutex held; includes hidden panes so a later
 		//! reveal cannot resurrect a stale realized camera.

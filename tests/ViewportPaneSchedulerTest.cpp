@@ -24,8 +24,10 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Cameras/CameraCommon.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
+#include "../src/Library/Utilities/Reference.h"
 
 #include <atomic>
 #include <chrono>
@@ -232,6 +234,59 @@ private:
 	bool                        mSaveGateArmed = false;
 	bool                        mSaveGateReached = false;
 	bool                        mReleaseSaveGate = false;
+};
+
+class RecordingPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	unsigned int Count() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mCount;
+	}
+
+	unsigned int Width() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mWidth;
+	}
+
+	unsigned int Height() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mHeight;
+	}
+
+	RISEColor FirstPixel() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mFirstPixel;
+	}
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+
+	void OutputImage(
+		const IRasterImage& image, const Rect*, const unsigned int ) override
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mWidth = image.GetWidth();
+		mHeight = image.GetHeight();
+		mFirstPixel = ( mWidth && mHeight )
+			? image.GetPEL( 0, 0 ) : RISEColor();
+		++mCount;
+	}
+
+protected:
+	~RecordingPaneSink() override = default;
+
+private:
+	mutable std::mutex mMutex;
+	unsigned int       mCount = 0;
+	unsigned int       mWidth = 0;
+	unsigned int       mHeight = 0;
+	RISEColor           mFirstPixel;
 };
 
 struct Fixture
@@ -2729,6 +2784,180 @@ static void RunOutOfRangePaneNavRejectedTest()
 	       "control: the valid pane-1 query still observes the successful control snap" );
 }
 
+//----------------------------------------------------------------------
+// (s/T4) Last Render is a pane CONTENT SOURCE, not a registry mode.  It
+// is inert under interactive invalidation and receives exactly one push
+// per completed full render.  The retained image must outlive its source.
+//----------------------------------------------------------------------
+static void RunLastRenderPaneSourceTest()
+{
+	std::printf( "=== scheduler (s/T4): Last Render panes are persistent completion-fed sources ===\n" );
+	Fixture f( "pane_sched_s_last_render.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	RecordingPaneSink* sink1 = new RecordingPaneSink();
+	RecordingPaneSink* sink2 = new RecordingPaneSink();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	Check( f.ctrl->SetPaneSink( 1, sink1 ) && f.ctrl->SetPaneSink( 2, sink2 ),
+		"pane sinks installed" );
+	Check( Implementation::FindViewportRenderModeByName( "last_render" ) == nullptr,
+		"MONEY (T4): Last Render is NOT a fake agent-visible render-mode registry row" );
+
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"Last Render setter succeeds before any full render exists" );
+	int wireSource = -1;
+	Check( RISE_API_SceneEditController_GetPaneContentSource(
+			f.ctrl, 1, &wireSource ) && wireSource == 1,
+		"C ABI reports the stable LastRender wire value 1" );
+	Check( !RISE_API_SceneEditController_SetPaneContentSource( f.ctrl, 1, 2 ),
+		"C ABI refuses an unknown content-source wire value" );
+	Check( sink1->Count() == 1 && sink1->Width() == 1 && sink1->Height() == 1
+	    && sink1->FirstPixel().a < 0.0
+	    && ViewportShellDisplayAlpha8( sink1->FirstPixel() ) == 0
+	    && ViewportShellDisplayAlpha8(
+			RISEColor( RISEPel( 0.25, 0.5, 0.75 ), 0.0 ) ) == 255,
+		"MONEY (T4): pre-first-render state is an explicit transparent placeholder" );
+
+	f.ctrl->SetTool( SceneEditController::Tool::Select );
+	Check( f.ctrl->OnPanePointerDown( 2, Point2( 4, 4 ) ),
+		"control: an Interactive pane accepts pointer Down" );
+	Check( !f.ctrl->SetPaneContentSource(
+			2, SceneEditController::PaneContentSource::LastRender )
+	    && f.ctrl->GetPaneContentSource( 2 )
+			== SceneEditController::PaneContentSource::Interactive,
+		"MONEY (T4/review): source switch on the actively gestured pane is "
+		"refused, so later Move/Up cannot commit behind frozen pixels" );
+	Check( f.ctrl->OnPanePointerUp( 2, Point2( 4, 4 ) ),
+		"the unchanged Interactive gesture completes normally" );
+
+	f.ctrl->Start( true );
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ),
+		"layout-grow rotation renders the three Interactive panes" );
+	Check( f.ctrl->SettlesAt( 3, kSettleMs ),
+		"MONEY (T4): Last Render pane is excluded from dirty rotation" );
+	f.ctrl->ClearSequence();
+	const unsigned int pushesBeforeEdit = sink1->Count();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ),
+		"scene edit renders the three Interactive panes" );
+	Check( f.ctrl->SettlesAt( 3, kSettleMs )
+	    && sink1->Count() == pushesBeforeEdit,
+		"MONEY (T4): scene edits neither schedule nor refresh Last Render" );
+	Check( !f.ctrl->OnPanePointerDown( 1, Point2( 4, 4 ) ),
+		"MONEY (T4): picking/navigation/gizmos are refused on frozen content" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPaneSurfaceDims( 1, 640, 360 ),
+		"Last Render pane accepts surface-size bookkeeping" );
+	Check( f.ctrl->SettlesAt( 0, kSettleMs ),
+		"MONEY (T4): resizing Last Render never schedules an interactive pass" );
+
+	IRasterImage* first = nullptr;
+	Check( RISE_API_CreateRISEColorRasterImage(
+			&first, 3, 2, RISEColor( RISEPel( 0.2, 0.3, 0.4 ), 1.0 ) )
+	    && first,
+		"constructed first full-render image" );
+	bool firstPublished = false;
+	SceneEditController::RenderJobId jobId = 0;
+	Check( first && f.ctrl->SubmitAgentRenderSync(
+			[&] {
+				firstPublished = f.ctrl->PublishAgentRenderImageParked( *first );
+			},
+			String( "t4_first_completion" ), &jobId, kWaitMs ),
+		"simulated coordinated full-render completion accepted" );
+	Check( firstPublished && sink1->Count() == pushesBeforeEdit + 1
+	    && sink1->Width() == 3 && sink1->Height() == 2,
+		"MONEY (T4): one completion pushes exactly once at full resolution" );
+	const RISEColor retainedPixel = sink1->FirstPixel();
+	if( first )
+	{
+		first->SetPEL( 0, 0, RISEColor( RISEPel( 0.9, 0.1, 0.1 ), 1.0 ) );
+		first->release();
+		first = nullptr;
+	}
+
+	Check( f.ctrl->SetPaneContentSource(
+			2, SceneEditController::PaneContentSource::LastRender ),
+		"a second pane selects Last Render after a completion" );
+	Check( sink2->Count() == 1 && sink2->Width() == 3 && sink2->Height() == 2
+	    && sink2->FirstPixel().base.r == retainedPixel.base.r
+	    && sink2->FirstPixel().base.g == retainedPixel.base.g
+	    && sink2->FirstPixel().base.b == retainedPixel.base.b,
+		"MONEY (T4): a later subscriber receives the retained deep copy, not mutated source memory" );
+
+	IRasterImage* second = nullptr;
+	Check( RISE_API_CreateRISEColorRasterImage(
+			&second, 5, 4, RISEColor( RISEPel( 0.6, 0.5, 0.4 ), 1.0 ) )
+	    && second,
+		"constructed replacement full-render image" );
+	const unsigned int sink1BeforeSecond = sink1->Count();
+	const unsigned int sink2BeforeSecond = sink2->Count();
+	bool secondPublished = false;
+	Check( second && f.ctrl->SubmitAgentRenderSync(
+			[&] {
+				secondPublished = f.ctrl->PublishAgentRenderImageParked( *second );
+			},
+			String( "t4_second_completion" ), &jobId, kWaitMs ),
+		"second coordinated full-render completion accepted" );
+	Check( secondPublished
+	    && sink1->Count() == sink1BeforeSecond + 1
+	    && sink2->Count() == sink2BeforeSecond + 1
+	    && sink1->Width() == 5 && sink2->Height() == 4,
+		"MONEY (T4): replacement pushes exactly once to every Last Render pane" );
+	if( second ) second->release();
+
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPaneRenderMode( 1, "normals" ),
+		"choosing an interactive mode exits Last Render" );
+	Check( f.ctrl->GetPaneContentSource( 1 )
+	    == SceneEditController::PaneContentSource::Interactive,
+		"render-mode selection restores the Interactive source" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs )
+	    && f.ctrl->Sequence()[0] == 1
+	    && f.ctrl->SettlesAt( 1, kSettleMs ),
+		"MONEY (T4): returning to Interactive schedules one fresh pane-local pass" );
+
+	// All-visible-frozen is a scheduler boundary, not a request for a
+	// fallback interactive pane.  A later scene edit must stay quiescent.
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender )
+	    && f.ctrl->SetPaneContentSource(
+			3, SceneEditController::PaneContentSource::LastRender ),
+		"all nonzero panes are frozen before the pane-0 boundary check" );
+	f.ctrl->ClearSequence();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs )
+	    && f.ctrl->Sequence()[0] == 0
+	    && f.ctrl->SettlesAt( 1, kSettleMs ),
+		"T4 Single-transition setup leaves pane 0 as the current scheduler pane" );
+	Check( f.ctrl->SetPaneContentSource(
+			0, SceneEditController::PaneContentSource::LastRender ),
+		"all four Quad panes can display Last Render" );
+	f.ctrl->ClearSequence();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->SettlesAt( 0, kSettleMs ),
+		"MONEY (T4): an all-LastRender layout remains quiescent after scene edits" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Single ),
+		"return to legacy Single layout" );
+	Check( f.ctrl->GetPaneContentSource( 0 )
+	    == SceneEditController::PaneContentSource::Interactive
+	    && !f.ctrl->SetPaneContentSource(
+			0, SceneEditController::PaneContentSource::LastRender ),
+		"MONEY (T4): Single restores/refuses pane-0 Last Render for legacy compatibility" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs )
+	    && f.ctrl->Sequence()[0] == 0
+	    && f.ctrl->SettlesAt( 1, kSettleMs ),
+		"MONEY (T4): Single immediately repaints restored pane 0 instead of "
+		"leaving the retained full-render pixels stranded on screen" );
+
+	Check( f.ctrl->SetPaneSink( 1, nullptr ) && f.ctrl->SetPaneSink( 2, nullptr ),
+		"pane sinks detached" );
+	sink1->release();
+	sink2->release();
+}
+
 int main()
 {
 	RunRotationOrderTest();
@@ -2762,6 +2991,7 @@ int main()
 	RunNamedSceneCameraONBTest();
 	RunNamedSceneCameraSetterParksRenderTest();
 	RunOutOfRangePaneNavRejectedTest();
+	RunLastRenderPaneSourceTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

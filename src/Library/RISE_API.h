@@ -3769,6 +3769,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	const char* RISE_API_SceneEditController_GetPaneRenderMode(
 		SceneEditController* p, unsigned int pane );
 
+	//! T4 pane content source. Stable wire values: 0 Interactive,
+	//! 1 LastRender.  LastRender is not a render-mode registry row.
+	bool RISE_API_SceneEditController_SetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int source );
+	bool RISE_API_SceneEditController_GetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int* out );
+
 	//! P3a slice 3: pane render-surface dims (the GUI's pane rect); 0/0
 	//! resets to film dims.  Fail-closed per the block contract.
 	bool RISE_API_SceneEditController_SetPaneSurfaceDims(

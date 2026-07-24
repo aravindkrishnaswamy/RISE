@@ -539,7 +539,7 @@ namespace RISE
 						"(inline PNG) PLUS a text block with {available,reason,png_base64,byteLength,"
 						"width,height} plus, when a live viewport exists, `paneSet` -- the N-up "
 						"multi-viewport introspection {layout(0 Single/1 TwoH/2 OnePlusTwo/3 Quad),"
-						"primary,sourcePane,panes[4]{visible,mode,vantageKind(0 SceneCamera/1 FreeFly/"
+						"primary,sourcePane,panes[4]{visible,contentSource(0 Interactive/1 LastRender),mode,vantageKind(0 SceneCamera/1 FreeFly/"
 						"2 NamedView/3 SceneCameraNamed),namedView}}. `namedView` holds the referenced "
 						"name for kinds 2 and 3. `sourcePane` is WHICH pane's pixels the PNG holds "
 						"(the last-rendered pane -- in a multi-pane layout this is NOT necessarily the "

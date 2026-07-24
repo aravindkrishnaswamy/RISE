@@ -50,6 +50,13 @@ namespace RISE
 		//! True if RequestCancel was called and Reset has not.
 		bool IsCancelRequested() const;
 
+		//! True if either the coordinator cancel flag was requested OR the
+		//! caller-supplied inner callback refused progress / reported
+		//! cancellation since the last Reset().  Completion consumers use
+		//! this stronger predicate to avoid publishing a partial frame when
+		//! a platform Cancel button lives entirely in the inner callback.
+		bool WasCancellationObserved() const;
+
 		// IProgressCallback
 		bool Progress( const double progress, const double total ) override;
 		void SetTitle( const char* title ) override;
@@ -78,12 +85,18 @@ namespace RISE
 				return true;
 			}
 			IProgressCallback* inner = mInner.load( std::memory_order_acquire );
-			return inner && inner->IsCancelled();
+			if( inner && inner->IsCancelled() )
+			{
+				mInnerCancelled.store( true, std::memory_order_release );
+				return true;
+			}
+			return false;
 		}
 
 	private:
 		std::atomic<IProgressCallback*> mInner;
 		std::atomic<bool>               mCancelled;
+		mutable std::atomic<bool>       mInnerCancelled;
 	};
 }
 

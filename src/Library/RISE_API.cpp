@@ -7699,6 +7699,24 @@ namespace RISE
 		return p->GetPaneRenderMode( pane );
 	}
 
+	bool RISE_API_SceneEditController_SetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int source )
+	{
+		if( !p || source < 0 || source > 1 ) return false;
+		return p->SetPaneContentSource(
+			pane,
+			static_cast<SceneEditController::PaneContentSource>( source ) );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int* out )
+	{
+		if( !p || !out || pane >= SceneEditController::kViewportPaneCount )
+			return false;
+		*out = static_cast<int>( p->GetPaneContentSource( pane ) );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_OnPanePointerDown(
 		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
 	{

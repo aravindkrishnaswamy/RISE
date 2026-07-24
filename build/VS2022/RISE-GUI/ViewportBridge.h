@@ -416,6 +416,11 @@ public:
         SceneCameraNamed = 3   ///< track one manager-registered scene camera by name
     };
 
+    enum class PaneContentSource : int {
+        Interactive = 0,
+        LastRender  = 1
+    };
+
     /// Panes a layout makes visible: Single=1, TwoH=2, OnePlusTwo=3, Quad=4.
     /// Pure function -- no bridge state, mirrors the core's
     /// PaneCountForLayout table (docs/gui/RENDER_MODES.md §7.2); not itself
@@ -435,6 +440,8 @@ public:
     /// "preview" on a null controller / invalid pane (mirrors
     /// viewportRenderMode()'s fail-closed default).
     QString paneRenderMode(unsigned int pane) const;
+    bool setPaneContentSource(unsigned int pane, PaneContentSource source);
+    PaneContentSource paneContentSource(unsigned int pane) const;
 
     /// Pane render-surface pixel dims (the GUI's pane rect -- caller passes
     /// actual DEVICE pixels, i.e. widget points times devicePixelRatioF()).

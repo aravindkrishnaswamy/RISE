@@ -364,6 +364,12 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
     RISEViewportVantageSceneCameraNamed = 3,
 };
 
+/// Mirrors SceneEditController::PaneContentSource.
+typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
+    RISEViewportPaneContentInteractive = 0,
+    RISEViewportPaneContentLastRender  = 1,
+};
+
 /// The active N-up layout.  Defaults to Single (matches the
 /// controller's construction default) when no controller is attached.
 /// Mutations are explicitly fallible: a coordinated render may acquire
@@ -387,6 +393,11 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
     NS_SWIFT_NAME(paneRenderMode(_:));
 - (BOOL)setPaneRenderMode:(NSUInteger)pane name:(NSString *)name
     NS_SWIFT_NAME(setPaneRenderMode(_:name:));
+
+- (RISEViewportPaneContentSource)paneContentSource:(NSUInteger)pane
+    NS_SWIFT_NAME(paneContentSource(_:));
+- (BOOL)setPaneContentSource:(NSUInteger)pane source:(RISEViewportPaneContentSource)source
+    NS_SWIFT_NAME(setPaneContentSource(_:source:));
 
 /// Per-pane vantage.  Pane 0's free-fly twins alias -enterFreeFly /
 /// -exitFreeFly (§7.4); pane 0's Scene-camera / NamedView setters have

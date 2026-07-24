@@ -630,6 +630,7 @@ visible subset.  Hidden panes keep their configuration (toggling `2×2 → 1 →
 struct ViewportPane {
     // --- configuration (UI-mutated under mMutex + park, like every
     //     viewport setter today) ---
+    contentSource : Interactive | LastRender
     mode          : registry wire name (default "preview")
     vantageKind   : SceneCamera | FreeFly | NamedView | SceneCameraNamed
     pose          : CameraSnapshot        // FreeFly, or named-target fallback
@@ -701,6 +702,30 @@ snapshot remains visible but camera navigation refuses the edit rather than
 falling through to the active camera; a same-name recreation makes navigation
 live again.
 
+Content-source semantics: `Interactive` is the default and uses the render
+mode / vantage configuration above.  `LastRender` is an orthogonal pane
+content source, deliberately not a render-mode registry row: it displays a
+retained full-resolution copy of the most recent successfully completed
+production or agent render.  Switching a pane to `LastRender` preserves its
+interactive mode/vantage configuration for a later return, removes the pane
+from scheduler rotation, and refuses pointer/gizmo input because the frozen
+image has no honest editable camera projection.  Scene edits, camera edits,
+time changes, layout changes, and pane resize do not change its pixels.  A new
+successful full render replaces the retained copy and pushes it once to every
+Last Render pane sink; failed or cancelled renders preserve the prior copy.
+Before any full render has completed, selecting `LastRender` still succeeds
+and publishes an explicit transparent 1×1 placeholder rather than leaving
+stale preview pixels on screen.  Internally its negative-alpha clear sentinel
+is the only input both desktop converters map to transparency; ordinary
+coverage-alpha-zero render pixels remain opaque, preserving legacy LDR and
+EDR parity.  Switching the actively gestured/scrubbed pane
+to frozen content refuses until the interaction ends, so its later Move/Up
+cannot commit invisible edits behind the retained image.  Pane 0 may also
+select Last Render in an N-up layout; the
+single-layout legacy viewport remains on its existing interactive surface.
+Shrinking an N-up layout whose pane 0 is `LastRender` back to Single restores
+pane 0 to `Interactive`, and Single refuses selecting `LastRender` directly.
+
 ### 7.3 Scheduler (the render loop, generalized)
 
 Still ONE thread, one in-flight `RasterizeScene` at a time; the park/cancel
@@ -730,9 +755,10 @@ under `mMutex`.
 
 **Rotation policy** (idle refinement):
 
-1. Rotation set = visible panes with `dirty || previewScale > 1 || polish
-   pending`.  Panes that finish (variant budget spent; data mode polished at
-   scale 1) leave the set; empty set ⇒ thread sleeps on `mCV` as today.
+1. Rotation set = visible `Interactive` panes with `dirty || previewScale > 1
+   || polish pending`.  `LastRender` panes are never scheduled.  Panes that
+   finish (variant budget spent; data mode polished at scale 1) leave the set;
+   empty set ⇒ thread sleeps on `mCV` as today.
 2. Order within a round: **primary first**, then secondaries by index.  Equal
    shares (one quantum each per round) — primary-weighted shares are a
    revisit-if-needed, not v1.
@@ -757,7 +783,7 @@ gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
 
 | Event | Effect |
 |---|---|
-| Scene edit (any mutation) | all visible panes dirty, scales reset coarse; primary renders first |
+| Scene edit (any mutation) | all visible Interactive panes dirty, scales reset coarse; primary Interactive pane renders first; Last Render panes unchanged |
 | Pane-local: mode / vantage / named-view update | that pane dirty only |
 | Named scene-camera edit (panel/gizmo/agent), undo/redo/rollback | affected named-camera panes are config-dirty and re-resolve; kind-omitted agent edits conservatively reconcile all kind-3 panes |
 | Time scrub | all named-camera panes config-dirty (an inactive bound camera may be animated) |
@@ -765,7 +791,12 @@ gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
 | Same-name camera creation after deletion | bound panes config-dirty and resume live re-resolution |
 | Layout switch | newly-visible panes dirty; hidden panes dropped from rotation |
 | Pane resize (layout change / window resize) | affected panes dirty (store realloc via the existing same-dim short-circuit) |
-| Production/agent render starts | `mRenderOwnsScene` no-ops pane setters; loop yields (existing single-slot coordination); on completion ALL panes dirty |
+| Pane source → Last Render | cancel/park that pane, clear its interactive work, publish retained image or transparent placeholder; no scheduler wake unless another Interactive pane already has work |
+| Pane source → Interactive / interactive mode selected | preserve mode/vantage, mark that pane config-dirty + dirty, wake one fresh pane-local pass |
+| N-up → Single while pane 0 is Last Render | restore pane 0 to Interactive and wake an immediate repaint; Single refuses selecting Last Render |
+| Production/agent render starts | `mRenderOwnsScene` no-ops pane setters; loop yields (existing single-slot coordination) |
+| Successful production/agent render completes | replace the retained full-resolution copy and push it once to every Last Render pane sink; Interactive panes resume through their existing post-render wake policy |
+| Failed/cancelled production/agent render completes | retained copy and Last Render panes unchanged |
 
 ### 7.4 C-ABI (additive; existing calls = pane 0)
 
@@ -777,6 +808,7 @@ platform code keeps working unmodified:
 _SetViewportLayout(layout) / _GetViewportLayout()
 _SetPrimaryPane(pane) / _GetPrimaryPane()
 _SetPaneRenderMode(pane, name) / _GetPaneRenderMode(pane)
+_SetPaneContentSource(pane, source) / _GetPaneContentSource(pane)
 _SetPaneVantageSceneCamera(pane)
 _SetPaneVantageSceneCameraNamed(pane, name)         // kind 3; panes 1-3 only
 _SetPaneVantageNamedView(pane, name)
@@ -797,7 +829,8 @@ configuration.
 
 Both platforms, same shape (parity convention): a layout picker (4 fixed
 icons) in the viewport toolbar; per-pane chrome = mode dropdown (the existing
-registry-driven control, §4) + vantage menu (active Scene camera | scene-camera
+registry-driven rows plus the separate `Last Render` content-source row, never
+inserted into the registry) + vantage menu (active Scene camera | scene-camera
 list on panes 1-3 | named views list | Free-fly) + a primary marker.  The platform builds one
 `ViewportFrameStore`/sink per pane (Mac `ViewportPreviewSink`
 [RISEViewportBridge.mm:171] and the Qt `imageUpdated` path generalize by
@@ -962,6 +995,32 @@ statements in §7.1's audit table and §7.5).
   object-gizmo, property-watchdog, lifecycle/pause, setter exclusion, and shrink
   paths.  Removing the pin guard is RED (12 focused failures and tens of
   thousands of redundant low-resolution passes); restoring it is GREEN.
+- **T4 — persistent Last Render content source (2026-07-24).**
+  `PaneContentSource::{Interactive,LastRender}` is orthogonal to the
+  render-mode registry and is carried through pane config, C ABI, agent
+  introspection, and both shells.  The controller owns one deep-copied
+  full-resolution image, retained even when no pane subscribes; a later
+  subscriber receives that exact image.  Successful object-map, diagnostic
+  view/BeautyVariant, draft, production-agent, and GUI-production completion
+  branches publish once after the render is fully complete.  Failed renders
+  and both coordinator-side and platform-inner-callback cancellation preserve
+  the prior image.  Last Render panes never join dirty/refinement rotation,
+  ignore resize/edit invalidation, reject navigation/gizmos, and preserve
+  their dormant interactive configuration.
+
+  Round-one adversarial review found and closed four P2 classes: platform
+  Cancel buttons returned `false` through the composed inner progress callback
+  without latching cancellation, allowing a partial canonical FrameStore to
+  replace the retained image; both shells forced alpha to 255 and turned the
+  transparent empty state opaque black; switching source during an active
+  pane gesture could strand invisible edit completion; and macOS could show
+  both a registry-mode and Last Render checkmark.  The completion tests now
+  compare position-sensitive RGBA bytes/per-pixel values against the agent
+  sink / canonical FrameStore, cover every distinct agent completion branch,
+  and exercise
+  render-first/select-later retention.  Mutation cuts that remove retention,
+  object-map/view publication, inner-cancel latching, gesture exclusion, or
+  the Single-layout repaint each turn the focused suites red.
 
 ## 8. Agent surface + skills
 

@@ -339,6 +339,10 @@ struct MultiPaneViewportView: View {
             // which the old current=="preview" gate wrongly re-clobbered on
             // every layout change).
             guard !viewModel.panePresetApplied.contains(pane) else { continue }
+            if bridge.paneContentSource(UInt(pane)).rawValue == 1 {
+                viewModel.panePresetApplied.insert(pane)
+                continue
+            }
             // A pane the core already persisted to a non-Preview mode is the
             // user's -- mark it applied and leave it alone.
             if bridge.paneRenderMode(UInt(pane)) != "preview" {
@@ -384,17 +388,18 @@ struct MultiPaneViewportView: View {
     @ViewBuilder
     private func paneCell(pane: Int, rect: CGRect) -> some View {
         let isPrimary = pane == primaryPane
+        let isLastRender = bridge.paneContentSource(UInt(pane)).rawValue == 1
         let image: NSImage? = pane == 0 ? viewModel.renderedImage : viewModel.panePreviewImages[pane]
 
         ZStack(alignment: .top) {
             PaneCanvas(
                 image: image,
-                cursor: interactionEnabled ? selectedTool.nsCursor : .arrow,
+                cursor: interactionEnabled && !isLastRender ? selectedTool.nsCursor : .arrow,
                 surfaceDimensionsProvider: { [weak bridge] in
                     bridge?.cameraSurfaceDimensions ?? .zero
                 },
                 onPointerDown: { p in
-                    guard interactionEnabled else { return false }
+                    guard interactionEnabled && !isLastRender else { return false }
                     let accepted = bridge.onPanePointerDown(UInt(pane), x: Double(p.x), y: Double(p.y))
                     // §7.8 decision 1 / the core's own promotion rule:
                     // re-read rather than assume — a navigation-tool
@@ -455,7 +460,8 @@ struct MultiPaneViewportView: View {
                 }
             )
 
-            if isPrimary && selectedTool.category == .objectTransform && !isProductionRendering {
+            if isPrimary && !isLastRender
+                && selectedTool.category == .objectTransform && !isProductionRendering {
                 ViewportGizmoOverlay(
                     bridge: bridge,
                     refreshTrigger: gizmoRefreshTrigger,
@@ -483,7 +489,8 @@ struct MultiPaneViewportView: View {
             .disabled(!interactionEnabled)
         }
         .overlay(alignment: .topTrailing) {
-            if isPrimary && interactionEnabled && !isProductionRendering {
+            if isPrimary && !isLastRender
+                && interactionEnabled && !isProductionRendering {
                 // user-review P1-1: this overlay is on the PRIMARY pane cell;
                 // target that pane so nav actions move it, not pane 0.
                 ViewportNavOverlay(bridge: bridge, pane: UInt(pane),
@@ -530,6 +537,7 @@ private struct PaneChromeStrip: View {
     let onChanged: () -> Void
 
     @State private var modeName: String = "preview"
+    @State private var contentSource = RISEViewportPaneContentSource(rawValue: 0)!
     @State private var vantageKind: RISEViewportVantageKind = .sceneCamera
     @State private var vantageNamedView: String = ""
 
@@ -554,6 +562,7 @@ private struct PaneChromeStrip: View {
 
     private func refresh() {
         modeName = bridge.paneRenderMode(UInt(pane))
+        contentSource = bridge.paneContentSource(UInt(pane))
         var kind: RISEViewportVantageKind = .sceneCamera
         var namedView: NSString? = nil
         if bridge.getPaneVantage(UInt(pane), kind: &kind, namedView: &namedView) {
@@ -563,11 +572,27 @@ private struct PaneChromeStrip: View {
     }
 
     private var activeModeTitle: String {
-        modes.first { $0.name == modeName }?.title ?? modeName
+        if contentSource.rawValue == 1 { return "Last Render" }
+        return modes.first { $0.name == modeName }?.title ?? modeName
     }
 
     private var modeMenu: some View {
         Menu {
+            Button {
+                let lastRender = RISEViewportPaneContentSource(rawValue: 1)!
+                if bridge.setPaneContentSource(UInt(pane), source: lastRender) {
+                    onModeAccepted()
+                }
+                onChanged()
+            } label: {
+                if contentSource.rawValue == 1 {
+                    Label("Last Render", systemImage: "checkmark")
+                } else {
+                    Text("Last Render")
+                }
+            }
+            .help("Show the most recent completed production or agent render")
+            Divider()
             ForEach(modes) { mode in
                 Button {
                     if bridge.setPaneRenderMode(UInt(pane), name: mode.name) {
@@ -575,7 +600,7 @@ private struct PaneChromeStrip: View {
                     }
                     onChanged()
                 } label: {
-                    if mode.name == modeName {
+                    if contentSource.rawValue == 0 && mode.name == modeName {
                         Label(mode.title, systemImage: "checkmark")
                     } else {
                         Text(mode.title)
@@ -590,7 +615,7 @@ private struct PaneChromeStrip: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Pane render mode")
+        .help("Pane content")
     }
 
     private var vantageLabel: String {

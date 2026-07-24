@@ -885,6 +885,11 @@ SceneEditController::~SceneEditController()
 		if( slot.viewModeCaster )    { slot.viewModeCaster->release();    slot.viewModeCaster = nullptr; }
 		if( slot.paneSink )          { slot.paneSink->release();          slot.paneSink = nullptr; }   // P3a slice 3
 	}
+	if( mLastRenderImage )
+	{
+		mLastRenderImage->release();
+		mLastRenderImage = nullptr;
+	}
 	// Inverse-edit rollback holds NO snapshot — a transaction left open
 	// at teardown needs no resource release; the (uncommitted) live edits
 	// simply remain, exactly as they would after a commit.
@@ -5893,6 +5898,24 @@ bool SceneEditController::RunProductionRenderComposed(
 			innerGuard.Arm();
 
 			result = doRasterize();
+			if( result && !coordProgress->WasCancellationObserved() )
+			{
+				// T4 production completion site: the coordinator still owns
+				// mMutex and the render has fully returned, so the active
+				// rasterizer's canonical FrameStore is stable.  Every current
+				// production rasterizer, including MLT, participates in the
+				// canonical store; it also survives the platform shells'
+				// per-render output-list replacement.
+				IRasterizer* completedRasterizer = job.GetRasterizer();
+				Implementation::FrameStore* completedStore =
+					completedRasterizer
+					? completedRasterizer->GetFrameStore() : nullptr;
+				if( completedStore )
+				{
+					controller->CaptureLastRenderImageLocked_(
+						completedStore->AsBeautyRasterImage() );
+				}
+			}
 
 			// Ordinary-path tail: explicit restore + Disarm, mirroring the
 			// house convention elsewhere in this file -- the destructors
@@ -7262,7 +7285,12 @@ void SceneEditController::RenderLoop()
 			// mRendering is false for this whole block (it only flips true
 			// at the mint), so the parked-registers precondition holds.
 			// Gestures pin the pick to mCurrentPane (see PickNext's doc).
-			SwitchToPaneLocked_( PickNextVisiblePaneLocked_() );
+			const unsigned int nextPane = PickNextVisiblePaneLocked_();
+			if( !IsInteractivePaneLocked_( nextPane ) )
+			{
+				continue;   // every visible pane is LastRender
+			}
+			SwitchToPaneLocked_( nextPane );
 			thisPassPane = mCurrentPane;
 			// Clear the pane's dirty AT MINT: if this pass is cancelled by
 			// a new edit, the edit path re-marks every pane dirty anyway.
@@ -8753,7 +8781,8 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 		// pane's config.  Refuse until release instead of breaking exclusivity.
 		return false;
 	}
-	if( info->mode == mViewportRenderMode )
+	if( info->mode == mViewportRenderMode
+	 && mPaneConfigs[0].contentSource == PaneContentSource::Interactive )
 	{
 		return true;   // no-op -- already the active mode
 	}
@@ -8874,6 +8903,7 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 		}
 	}
 	mViewportRenderMode = info->mode;
+	mPaneConfigs[0].contentSource = PaneContentSource::Interactive;
 	// review-r1 P2: the variant branch above never touches slot-0's caster
 	// (contract: leaving a variant later finds the data caster as it was)
 	// but realizedMode must reflect what is ACTUALLY realized, or the
@@ -9196,7 +9226,8 @@ void SceneEditController::InvalidatePanesBoundToNamedView_( const String& name )
 	bool any = false;
 	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
 	{
-		if( mPaneConfigs[i].vantageKind == PaneVantageKind::NamedView
+		if( IsInteractivePaneLocked_( i )
+		 && mPaneConfigs[i].vantageKind == PaneVantageKind::NamedView
 		 && mPaneConfigs[i].namedViewRef == name.c_str() )
 		{
 			mPaneRender[i].configDirty = true;
@@ -9219,7 +9250,8 @@ void SceneEditController::InvalidatePanesBoundToSceneCameraLocked_(
 	bool visibleMatch = false;
 	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
 	{
-		if( mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed
+		if( IsInteractivePaneLocked_( i )
+		 && mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed
 		 && mPaneConfigs[i].sceneCameraRef == name.c_str() )
 		{
 			mPaneRender[i].configDirty = true;
@@ -9239,7 +9271,8 @@ void SceneEditController::InvalidateAllSceneCameraNamedPanesLocked_()
 	bool visibleMatch = false;
 	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
 	{
-		if( mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed )
+		if( IsInteractivePaneLocked_( i )
+		 && mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed )
 		{
 			mPaneRender[i].configDirty = true;
 			mPaneRender[i].dirty       = true;
@@ -9377,6 +9410,18 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	const unsigned int oldVisible = PaneCountForLayout( mViewportLayout );
 	mViewportLayout = layout;
 	const unsigned int newVisible = PaneCountForLayout( layout );
+	bool restoredPaneZeroInteractive = false;
+	// T4: Single layout is the byte-compatible legacy viewport, which has
+	// no Last Render chrome.  Returning to Single therefore restores pane 0
+	// to its preserved interactive mode/vantage instead of stranding the
+	// only visible surface on a frozen source the user cannot switch back.
+	if( newVisible == 1
+	 && mPaneConfigs[0].contentSource == PaneContentSource::LastRender )
+	{
+		mPaneConfigs[0].contentSource = PaneContentSource::Interactive;
+		mPaneRender[0].dirty = true;
+		restoredPaneZeroInteractive = true;
+	}
 	// §7.2: a shrink that hides the primary falls back to pane 0.
 	if( mPrimaryPane >= newVisible ) {
 		mPrimaryPane = 0;
@@ -9396,7 +9441,7 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	if( newVisible > oldVisible )
 	{
 		for( unsigned int i = oldVisible; i < newVisible; ++i ) {
-			mPaneRender[i].dirty = true;
+			if( IsInteractivePaneLocked_( i ) ) mPaneRender[i].dirty = true;
 		}
 		mPanePassPending.store( true, std::memory_order_release );
 		mCV.notify_one();
@@ -9478,6 +9523,11 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 			mCV.notify_one();
 		}
 	}
+	if( restoredPaneZeroInteractive )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+		mCV.notify_one();
+	}
 	return true;
 }
 
@@ -9507,6 +9557,7 @@ void SceneEditController::SnapshotPaneSetForParkedRead( PaneSetSnapshot& out ) c
 	for( unsigned int i = 0; i < kViewportPaneCount; ++i )
 	{
 		out.panes[i].visible = ( i < visible );
+		out.panes[i].contentSource = mPaneConfigs[i].contentSource;
 		out.panes[i].mode    = ( i == 0 ) ? mViewportRenderMode : mPaneConfigs[i].mode;
 		if( i == 0 )
 		{
@@ -9562,6 +9613,7 @@ bool SceneEditController::SetPaneRenderMode( unsigned int pane, const char* name
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden panes refuse (§7.4)
 	mPaneConfigs[pane].mode = info->mode;
+	mPaneConfigs[pane].contentSource = PaneContentSource::Interactive;
 	// P3a slice 2: desired-state edit -- the scheduler reconciles at the
 	// next switch (configDirty), and the pane needs a fresh pass.  Wake the
 	// loop via the rotation flag (NOT mEditPending: this is not a scene
@@ -9594,6 +9646,96 @@ const char* SceneEditController::GetPaneRenderMode( unsigned int pane ) const
 	const Implementation::ViewportRenderModeInfo* info =
 		Implementation::FindViewportRenderModeInfo( mPaneConfigs[pane].mode );
 	return info ? info->name : "preview";
+}
+
+bool SceneEditController::SetPaneContentSource(
+	unsigned int pane, PaneContentSource source )
+{
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+	if( source != PaneContentSource::Interactive
+	 && source != PaneContentSource::LastRender )
+		return false;
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	if( pane == 0 && mViewportLayout == ViewportLayout::Single
+	 && source == PaneContentSource::LastRender )
+		return false;
+	if( mPaneConfigs[pane].contentSource == source ) return true;
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   && pane == mGesturePane )
+	 || ( mScrubInProgress.load( std::memory_order_acquire )
+	   && pane == mCurrentPane ) )
+	{
+		// Changing the source beneath an active interaction would leave its
+		// later Move/Up mutating and committing invisible state behind the
+		// frozen image.  Preserve gesture exclusivity and let the caller retry
+		// after the matching release/end.
+		return false;
+	}
+
+	// A just-finished interactive quantum must not overwrite the retained
+	// image after this setter returns.  Park before changing source or
+	// publishing the Last Render frame.
+	CancelAndParkRender_( lk );
+	mPaneConfigs[pane].contentSource = source;
+	if( pane == mCurrentPane ) {
+		mPolishState.store(
+			static_cast<int>( PolishState::None ),
+			std::memory_order_release );
+	} else {
+		mPaneRender[pane].polishSaved =
+			static_cast<int>( PolishState::None );
+	}
+
+	if( source == PaneContentSource::LastRender )
+	{
+		mPaneRender[pane].dirty = false;
+		PublishLastRenderToSinkLocked_( pane );
+	}
+	else
+	{
+		mPaneRender[pane].configDirty = true;
+		mPaneRender[pane].dirty = true;
+	}
+
+	if( AnyVisiblePaneHasWorkLocked_() )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+		mCV.notify_one();
+	}
+	return true;
+}
+
+SceneEditController::PaneContentSource
+SceneEditController::GetPaneContentSource( unsigned int pane ) const
+{
+	if( pane >= kViewportPaneCount ) return PaneContentSource::Interactive;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return mPaneConfigs[pane].contentSource;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return PaneContentSource::Interactive;
+	return mPaneConfigs[pane].contentSource;
+}
+
+bool SceneEditController::PublishAgentRenderImageParked(
+	const IRasterImage& image )
+{
+	// AgentSession calls only from RenderCore_'s successful completion tail,
+	// while the controller's coordinated worker owns mMutex for the whole
+	// render.  Taking it again here would self-deadlock.
+	if( !mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	return CaptureLastRenderImageLocked_( image );
+}
+
+bool SceneEditController::AdoptAgentRenderImageParked( IRasterImage*& image )
+{
+	if( !image
+	 || !mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return false;
+	return AdoptLastRenderImageLocked_( image );
 }
 
 bool SceneEditController::SetPaneVantageSceneCamera( unsigned int pane )
@@ -9693,6 +9835,10 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 			return false;
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden/invalid
+		// A frozen full-render image has no honest live camera projection.
+		// Refuse before primary promotion or register switching so object
+		// gizmos, picking, and camera tools cannot mutate invisible state.
+		if( !IsInteractivePaneLocked_( pane ) ) return false;
 
 		// §7.8 ratified decision 1, applied PRECISELY (review-s3 P1): "a
 		// non-navigation click in any pane makes it primary -- navigation
@@ -9897,6 +10043,12 @@ bool SceneEditController::GetPaneRefinementStatus( unsigned int pane, int& outPh
 	// coarse "Rendering" is honest: a render IS in flight.
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
 	{
+		if( mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
+		{
+			outScaleDivisor = 1;
+			outPhase = 0;   // frozen source remains settled until completion
+			return true;
+		}
 		outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
 		outPhase = 1;   // Rendering
 		return true;
@@ -9905,6 +10057,12 @@ bool SceneEditController::GetPaneRefinementStatus( unsigned int pane, int& outPh
 	if( !lk.owns_lock() ) {
 		outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
 		outPhase = 1;   // Rendering: a render is acquiring/holding the controller.
+		return true;
+	}
+	if( !IsInteractivePaneLocked_( pane ) )
+	{
+		outScaleDivisor = 1;
+		outPhase = 0;
 		return true;
 	}
 	if( pane == mCurrentPane )
@@ -9999,6 +10157,7 @@ bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w,
 	if( mPaneConfigs[pane].surfaceW == w && mPaneConfigs[pane].surfaceH == h ) return true;
 	mPaneConfigs[pane].surfaceW = w;
 	mPaneConfigs[pane].surfaceH = h;
+	if( !IsInteractivePaneLocked_( pane ) ) return true;
 	mPaneRender[pane].dirty = true;
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
@@ -10030,6 +10189,11 @@ bool SceneEditController::SetPaneSink( unsigned int pane, IRasterizerOutput* pSi
 	if( pSink ) pSink->addref();
 	if( mPaneRender[pane].paneSink ) mPaneRender[pane].paneSink->release();
 	mPaneRender[pane].paneSink = pSink;
+	if( pSink
+	 && mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
+	{
+		PublishLastRenderToSinkLocked_( pane );
+	}
 	return true;
 }
 
@@ -10063,6 +10227,13 @@ bool SceneEditController::GetPaneVantage( unsigned int pane, PaneVantageKind& ou
 // PaneConfig::mode.
 static_assert( static_cast<int>( Implementation::ViewportRenderMode::Preview ) == 0,
 	"PaneRenderState::realizedMode's value-init default assumes Preview == 0" );
+
+//! REQUIRES mMutex held.
+bool SceneEditController::IsInteractivePaneLocked_( unsigned int pane ) const
+{
+	return pane < kViewportPaneCount
+	    && mPaneConfigs[pane].contentSource == PaneContentSource::Interactive;
+}
 
 //! Extracted from SetViewportRenderMode (P3a slice 2) -- see the header doc.
 bool SceneEditController::BuildVariantRasterizer_(
@@ -10313,18 +10484,20 @@ unsigned int SceneEditController::PickNextVisiblePaneLocked_() const
 	if( mPointerDown.load( std::memory_order_acquire )
 	 || mScrubInProgress.load( std::memory_order_acquire ) )
 	{
-		return mCurrentPane;
+		if( IsInteractivePaneLocked_( mCurrentPane ) ) return mCurrentPane;
 	}
 	const unsigned int visible = PaneCountForLayout( mViewportLayout );
 	auto polishQueued = [&]( unsigned int p ) -> bool {
+		if( !IsInteractivePaneLocked_( p ) ) return false;
 		const int st = ( p == mCurrentPane )
 			? mPolishState.load( std::memory_order_acquire )
 			: mPaneRender[p].polishSaved;
 		return st == static_cast<int>( PolishState::PolishQueued );
 	};
-	if( mPrimaryPane < visible && mPaneRender[mPrimaryPane].dirty ) return mPrimaryPane;
+	if( mPrimaryPane < visible && IsInteractivePaneLocked_( mPrimaryPane )
+	 && mPaneRender[mPrimaryPane].dirty ) return mPrimaryPane;
 	for( unsigned int i = 0; i < visible; ++i ) {
-		if( mPaneRender[i].dirty ) return i;
+		if( IsInteractivePaneLocked_( i ) && mPaneRender[i].dirty ) return i;
 	}
 	if( mPrimaryPane < visible && polishQueued( mPrimaryPane ) ) return mPrimaryPane;
 	for( unsigned int i = 0; i < visible; ++i ) {
@@ -10338,6 +10511,7 @@ bool SceneEditController::AnyVisiblePaneHasWorkLocked_() const
 {
 	const unsigned int visible = PaneCountForLayout( mViewportLayout );
 	for( unsigned int i = 0; i < visible; ++i ) {
+		if( !IsInteractivePaneLocked_( i ) ) continue;
 		if( mPaneRender[i].dirty ) return true;
 		const int st = ( i == mCurrentPane )
 			? mPolishState.load( std::memory_order_acquire )
@@ -10352,7 +10526,80 @@ void SceneEditController::MarkAllVisiblePanesDirtyLocked_()
 {
 	const unsigned int visible = PaneCountForLayout( mViewportLayout );
 	for( unsigned int i = 0; i < visible; ++i ) {
-		mPaneRender[i].dirty = true;
+		if( IsInteractivePaneLocked_( i ) ) mPaneRender[i].dirty = true;
+	}
+}
+
+//! REQUIRES mMutex held.  Deep-copy first so neither a production
+//! FrameStore nor AgentSession's reusable sink is retained by the viewport.
+bool SceneEditController::CaptureLastRenderImageLocked_(
+	const IRasterImage& image )
+{
+	const unsigned int w = image.GetWidth();
+	const unsigned int h = image.GetHeight();
+	if( w == 0 || h == 0 ) return false;
+
+	IRasterImage* copy = nullptr;
+	if( !RISE_API_CreateRISEColorRasterImage(
+			&copy, w, h, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) )
+	 || !copy )
+		return false;
+	for( unsigned int y = 0; y < h; ++y ) {
+		for( unsigned int x = 0; x < w; ++x ) {
+			copy->SetPEL( x, y, image.GetPEL( x, y ) );
+		}
+	}
+	const bool adopted = AdoptLastRenderImageLocked_( copy );
+	if( copy ) copy->release();
+	return adopted;
+}
+
+//! REQUIRES mMutex held.  Transfers the caller's owning reference.
+bool SceneEditController::AdoptLastRenderImageLocked_( IRasterImage*& image )
+{
+	if( !image || image->GetWidth() == 0 || image->GetHeight() == 0 )
+		return false;
+	if( mLastRenderImage ) mLastRenderImage->release();
+	mLastRenderImage = image;
+	image = nullptr;
+	for( unsigned int pane = 0; pane < kViewportPaneCount; ++pane ) {
+		if( mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
+			PublishLastRenderToSinkLocked_( pane );
+	}
+	return true;
+}
+
+//! REQUIRES mMutex held.  Hidden panes are included: their sinks are
+//! pre-wired by both shells, so the retained image is already present when
+//! a later layout reveal makes the pane visible.
+void SceneEditController::PublishLastRenderToSinkLocked_( unsigned int pane )
+{
+	if( pane >= kViewportPaneCount ) return;
+	IRasterizerOutput* sink = ( pane == 0 )
+		? ( mPaneRender[0].paneSink
+			? mPaneRender[0].paneSink : mPreviewSink )
+		: mPaneRender[pane].paneSink;
+	if( !sink ) return;
+
+	if( mLastRenderImage )
+	{
+		sink->OutputImage( *mLastRenderImage, nullptr, 0 );
+		return;
+	}
+
+	// Honest empty state: overwrite any stale preview pixels with a
+	// transparent 1x1 placeholder until the first full render completes.
+	IRasterImage* placeholder = nullptr;
+	if( RISE_API_CreateRISEColorRasterImage(
+			&placeholder, 1, 1,
+			// Negative alpha is an internal clear sentinel, not coverage:
+			// ViewportShellDisplayAlpha8 maps it to transparent while normal
+			// alpha-0 render pixels retain the viewport's legacy opacity.
+			RISEColor( RISEPel( 0, 0, 0 ), -1.0 ) )
+	 && placeholder )
+	{
+		sink->OutputImage( *placeholder, nullptr, 0 );
+		placeholder->release();
 	}
 }
 

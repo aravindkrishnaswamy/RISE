@@ -17,6 +17,7 @@ using namespace RISE;
 CancellableProgressCallback::CancellableProgressCallback( IProgressCallback* inner )
 : mInner( inner )
 , mCancelled( false )
+, mInnerCancelled( false )
 {
 }
 
@@ -37,11 +38,18 @@ void CancellableProgressCallback::RequestCancel()
 void CancellableProgressCallback::Reset()
 {
 	mCancelled.store( false, std::memory_order_release );
+	mInnerCancelled.store( false, std::memory_order_release );
 }
 
 bool CancellableProgressCallback::IsCancelRequested() const
 {
 	return mCancelled.load( std::memory_order_acquire );
+}
+
+bool CancellableProgressCallback::WasCancellationObserved() const
+{
+	return mCancelled.load( std::memory_order_acquire )
+		|| mInnerCancelled.load( std::memory_order_acquire );
 }
 
 bool CancellableProgressCallback::Progress( const double progress, const double total )
@@ -53,7 +61,12 @@ bool CancellableProgressCallback::Progress( const double progress, const double 
 	IProgressCallback* inner = mInner.load( std::memory_order_acquire );
 	if( inner )
 	{
-		return inner->Progress( progress, total );
+		const bool accepted = inner->Progress( progress, total );
+		if( !accepted )
+		{
+			mInnerCancelled.store( true, std::memory_order_release );
+		}
+		return accepted;
 	}
 	return true;
 }

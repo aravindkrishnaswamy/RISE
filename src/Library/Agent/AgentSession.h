@@ -1653,6 +1653,7 @@ namespace RISE
 			struct ViewportPaneInfo
 			{
 				bool        visible = false;
+				int         contentSource = 0; //!< 0 Interactive / 1 LastRender
 				std::string mode;         //!< registry wire name
 				int         vantageKind = 0;   //!< 0 SceneCamera / 1 FreeFly / 2 NamedView / 3 SceneCameraNamed
 				std::string namedView;    //!< referenced name when vantageKind==2 or 3
