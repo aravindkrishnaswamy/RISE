@@ -547,7 +547,8 @@ namespace RISE
 			//! S5a hardening: when false (the common case -- the proposing
 			//! session did not pin an explicit baseHeadVersion), `baseVersion`
 			//! above is IGNORED by the caller and StageProposal stamps it
-			//! itself, under mMutex, from the controller's OWN current head --
+			//! itself under render admission (and mMutex when no render owns
+			//! the immutable scene) from the controller's OWN current head --
 			//! this is what closes the unlocked-read race (see StageProposal's
 			//! doc).  When true, the caller already supplied a real
 			//! caller-pinned baseVersion (an explicit baseHeadVersion argument
@@ -590,7 +591,8 @@ namespace RISE
 		//! non-atomic 16-byte CstHeadVersion, outside any lock.  Instead:
 		//! when `proposal.hasExplicitBaseVersion` is false, StageProposal
 		//! stamps `baseVersion` from `mJob.GetCstHeadVersion()` ITSELF, under
-		//! the SAME mMutex hold used to mint the id and enqueue -- so the
+		//! render admission (plus mMutex when the render gate is clear) and
+		//! enqueues under the proposal leaf mutex -- so the
 		//! captured baseVersion is atomically "the head at the instant this
 		//! proposal joined the queue", with no window for a torn read or a
 		//! stale value.  When `hasExplicitBaseVersion` is true (the caller
@@ -605,10 +607,11 @@ namespace RISE
 		//! is not consumed, and `outStagedVersion` (if provided) is left
 		//! UNTOUCHED. The caller (AgentSession::ProposePatch/InsertChunk/
 		//! RemoveChunk) maps a 0 return to a distinct queue-full result
-		//! rather than treating it as a normal stage. Thread-safe under
-		//! mMutex (no cancel-and-park needed: staging touches only the
-		//! queue, never the Document or the live Scene, so there is nothing
-		//! for the render thread to race).  Use `outStagedVersion` to read
+		//! rather than treating it as a normal stage. Thread-safe without
+		//! waiting behind a render-duration mMutex hold: staging touches only
+		//! the proposal queue, and render admission makes the retained
+		//! Document head immutable while a direct/coordinated render owns the
+		//! scene. Use `outStagedVersion` to read
 		//! back the exact baseVersion that was stamped/kept -- this is the
 		//! value the caller should surface as the "staged" response's
 		//! headVersion, again with no separate unlocked read.
@@ -618,7 +621,8 @@ namespace RISE
 		//! Secure-MCP slice 5a: a snapshot of every proposal currently on
 		//! the queue (pending AND resolved -- resolved proposals stay
 		//! visible for audit rather than being purged; see the class doc).
-		//! Thread-safe under mMutex.
+		//! Thread-safe under the proposal leaf mutex; never waits behind a
+		//! render-duration scene lock.
 		std::vector<AgentProposal> ListProposals() const;
 
 		//! Secure-MCP slice 5a: resolve proposal `id` by APPROVING (`approve
@@ -1370,9 +1374,12 @@ namespace RISE
 
 		//! Bracket a time-scrub interaction.  All OnTimeScrub calls
 		//! between Begin and End collapse to one undo entry.
-		void OnTimeScrubBegin();
-		void OnTimeScrub( Scalar t );
-		void OnTimeScrubEnd();
+		//! Fallible because a coordinated/direct render can acquire
+		//! admission between a shell's enabled-state snapshot and the
+		//! callback. FALSE means no scrub state/time mutation occurred.
+		bool OnTimeScrubBegin();
+		bool OnTimeScrub( Scalar t );
+		bool OnTimeScrubEnd();
 
 		//! Bracket a property-panel scrub gesture (a click-and-drag
 		//! on a value's chevron handle).  Without this signal, the
@@ -3037,12 +3044,15 @@ namespace RISE
 		std::atomic<bool>           mRunning;
 		std::atomic<bool>           mEditPending;
 
-		//! Secure-MCP slice 5a: the proposal queue.  Guarded by mMutex --
-		//! the SAME lock ApplyAgent{ParamEdit,InsertChunk,RemoveChunk} take,
-		//! so ResolveProposal's base-version re-check-then-apply is one
-		//! atomic critical section with no window for a concurrent commit
-		//! (staged OR direct) to move the head between the check and the
-		//! apply.  A resolved (applied/rejected/conflict) proposal is KEPT
+		//! Secure-MCP slice 5a: proposal bookkeeping has its own leaf mutex
+		//! so an External proposal/list request never waits behind the
+		//! render-duration scene lock. ResolveProposal still holds render
+		//! admission across snapshot -> optimistic ApplyAgent* -> status
+		//! publication, so no second resolver/commit can interleave; the
+		//! ApplyAgent* base-version gate remains the authoritative atomic
+		//! check-and-apply.
+		//!
+		//! A resolved (applied/rejected/conflict) proposal is KEPT
 		//! on the queue for audit rather than purged at resolve time -- but
 		//! see Secure-MCP slice 6 below, which bounds how far that audit
 		//! trail can grow: this controller's lifetime is one Job/one
@@ -3078,12 +3088,13 @@ namespace RISE
 		//!     below the history cap by the sibling gate above), so this
 		//!     eviction can never stall or need to fall back to dropping a
 		//!     pending proposal.
+		mutable std::mutex          mProposalMutex;
 		std::vector<AgentProposal> mProposals;
 		//! Monotonic proposal-id counter; starts at 1 (0 is the "not found"
 		//! sentinel returned by StageProposal only if ever called before
 		//! construction — never in practice, since the counter is a plain
-		//! member initialized at construction).  Guarded by mMutex, same as
-		//! mProposals.
+		//! member initialized at construction). Guarded by mProposalMutex,
+		//! same as mProposals.
 		std::uint64_t               mNextProposalId = 1;
 		//! One-shot, set by Start( true ) before the render thread is
 		//! spawned and consumed by RenderLoop on entry.  When set, the

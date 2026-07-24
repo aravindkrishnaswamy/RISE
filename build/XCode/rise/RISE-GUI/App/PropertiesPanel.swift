@@ -263,8 +263,10 @@ struct PropertiesPanel: View {
         PropertyRowView(
             row: row,
             onCommit: { newValue in
-                _ = bridge.setProperty(for: selectionCategory, name: row.name, value: newValue)
+                let accepted = bridge.setProperty(
+                    for: selectionCategory, name: row.name, value: newValue)
                 reload()
+                return accepted
             },
             onScrubBegin: { bridge.beginPropertyScrub() },
             onScrubEnd:   { bridge.endPropertyScrub()   }
@@ -709,7 +711,7 @@ private struct AdvancedDisclosure<Content: View>: View {
 /// picked by `row.kind`; all kinds share the same 82pt label column.
 private struct PropertyRowView: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
     let onScrubBegin: () -> Void
     let onScrubEnd:   () -> Void
 
@@ -788,7 +790,7 @@ private struct PresetMenu: View {
 
 private struct TextWellCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
     let onScrubBegin: () -> Void
     let onScrubEnd: () -> Void
 
@@ -804,7 +806,7 @@ private struct TextWellCell: View {
                         name: row.name,
                         kind: row.kind,
                         onScrubBegin: onScrubBegin,
-                        onScrub: { onCommit($0) },
+                        onScrub: { _ = commit($0) },
                         onScrubEnd: onScrubEnd
                     )
                 }
@@ -813,10 +815,10 @@ private struct TextWellCell: View {
                     .font(Theme.mono(11))
                     .foregroundColor(Theme.textPrimary)
                     .focused($isFocused)
-                    .onSubmit { onCommit(text) }
+                    .onSubmit { _ = commit(text) }
                     .onChange(of: isFocused) { _, focused in
                         if !focused && text != row.initialValue {
-                            onCommit(text)
+                            _ = commit(text)
                         }
                     }
                 if !row.unitLabel.isEmpty {
@@ -828,7 +830,7 @@ private struct TextWellCell: View {
                 if !row.presets.isEmpty {
                     PresetMenu(row: row) { value in
                         text = value
-                        onCommit(value)
+                        _ = commit(value)
                     }
                 }
             } else {
@@ -854,13 +856,19 @@ private struct TextWellCell: View {
             if !isFocused { text = newValue }
         }
     }
+
+    private func commit(_ value: String) -> Bool {
+        let accepted = onCommit(value)
+        if !accepted { text = row.initialValue }
+        return accepted
+    }
 }
 
 // MARK: - Bool pill toggle
 
 private struct BoolPillCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var isOn: Bool = false
 
@@ -869,7 +877,9 @@ private struct BoolPillCell: View {
             Button {
                 guard row.editable else { return }
                 isOn.toggle()
-                onCommit(isOn ? "true" : "false")
+                if !onCommit(isOn ? "true" : "false") {
+                    isOn = Self.parseBool(row.initialValue)
+                }
             } label: {
                 ZStack(alignment: isOn ? .trailing : .leading) {
                     RoundedRectangle(cornerRadius: 9)
@@ -905,7 +915,7 @@ private struct BoolPillCell: View {
 
 private struct Vec3Cell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var comps: [String] = ["0", "0", "0"]
     @FocusState private var focusedIndex: Int?
@@ -941,7 +951,9 @@ private struct Vec3Cell: View {
     }
 
     private func commit() {
-        onCommit(comps.joined(separator: " "))
+        if !onCommit(comps.joined(separator: " ")) {
+            comps = Self.parseVec3(row.initialValue)
+        }
     }
 
     private func vecColor(_ i: Int) -> Color {
@@ -963,7 +975,7 @@ private struct Vec3Cell: View {
 
 private struct FilenameCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var text: String = ""
     @FocusState private var isFocused: Bool
@@ -976,9 +988,9 @@ private struct FilenameCell: View {
                 .foregroundColor(row.editable ? Theme.textPrimary : Theme.textMuted)
                 .disabled(!row.editable)
                 .focused($isFocused)
-                .onSubmit { onCommit(text) }
+                .onSubmit { _ = commit(text) }
                 .onChange(of: isFocused) { _, focused in
-                    if !focused && text != row.initialValue { onCommit(text) }
+                    if !focused && text != row.initialValue { _ = commit(text) }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
@@ -1011,8 +1023,14 @@ private struct FilenameCell: View {
         panel.canChooseFiles = true
         if panel.runModal() == .OK, let url = panel.url {
             text = url.path
-            onCommit(url.path)
+            _ = commit(url.path)
         }
+    }
+
+    private func commit(_ value: String) -> Bool {
+        let accepted = onCommit(value)
+        if !accepted { text = row.initialValue }
+        return accepted
     }
 }
 
@@ -1020,7 +1038,7 @@ private struct FilenameCell: View {
 
 private struct ReferenceChipCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var text: String = ""
     @FocusState private var isFocused: Bool
@@ -1041,9 +1059,9 @@ private struct ReferenceChipCell: View {
                     .font(Theme.mono(11.5))
                     .foregroundColor(Theme.textPrimary)
                     .focused($isFocused)
-                    .onSubmit { onCommit(text) }
+                    .onSubmit { _ = commit(text) }
                     .onChange(of: isFocused) { _, focused in
-                        if !focused && text != row.initialValue { onCommit(text) }
+                        if !focused && text != row.initialValue { _ = commit(text) }
                     }
             } else {
                 Text(text.isEmpty ? row.initialValue : text)
@@ -1054,7 +1072,7 @@ private struct ReferenceChipCell: View {
             if !row.presets.isEmpty {
                 PresetMenu(row: row) { value in
                     text = value
-                    onCommit(value)
+                    _ = commit(value)
                 }
             }
         }
@@ -1066,13 +1084,19 @@ private struct ReferenceChipCell: View {
             if !isFocused { text = v }
         }
     }
+
+    private func commit(_ value: String) -> Bool {
+        let accepted = onCommit(value)
+        if !accepted { text = row.initialValue }
+        return accepted
+    }
 }
 
 // MARK: - Enum (bordered menu chip when presets exist, else a plain well)
 
 private struct EnumChipCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var text: String = ""
 
@@ -1082,7 +1106,9 @@ private struct EnumChipCell: View {
                 ForEach(row.presets) { preset in
                     Button(preset.label) {
                         text = preset.value
-                        onCommit(preset.value)
+                        if !onCommit(preset.value) {
+                            text = row.initialValue
+                        }
                     }
                 }
             } label: {

@@ -1320,19 +1320,19 @@ private:
 
 #pragma mark - Time scrubber
 
-- (void)scrubTimeBegin {
-    if (!_controller) return;
-    RISE_API_SceneEditController_OnTimeScrubBegin(_controller);
+- (BOOL)scrubTimeBegin {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_OnTimeScrubBegin(_controller) ? YES : NO;
 }
 
-- (void)scrubTime:(double)t {
-    if (!_controller) return;
-    RISE_API_SceneEditController_OnTimeScrub(_controller, t);
+- (BOOL)scrubTime:(double)t {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_OnTimeScrub(_controller, t) ? YES : NO;
 }
 
-- (void)scrubTimeEnd {
-    if (!_controller) return;
-    RISE_API_SceneEditController_OnTimeScrubEnd(_controller);
+- (BOOL)scrubTimeEnd {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_OnTimeScrubEnd(_controller) ? YES : NO;
 }
 
 - (void)beginPropertyScrub {

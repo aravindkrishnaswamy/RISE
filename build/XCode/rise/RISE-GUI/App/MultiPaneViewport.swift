@@ -233,6 +233,11 @@ struct MultiPaneViewportView: View {
     /// round trip entirely is cheap and keeps this view's intent
     /// obvious).
     @State private var lastSurfacePixelSize: [Int: CGSize] = [:]
+    /// Most recently measured desired size, retained separately from the
+    /// accepted-size cache. PaneCanvasNSView suppresses duplicate geometry
+    /// callbacks, so a controller refusal must be retried explicitly when
+    /// interaction/render admission becomes available again.
+    @State private var desiredSurfacePixelSize: [Int: CGSize] = [:]
     // user-review P2#2: the "already presetted" guard lives on the view MODEL
     // (viewModel.panePresetApplied), NOT here as @State -- @State resets when
     // this view is torn down on a Single detour (Quad→Single→Quad), which
@@ -289,6 +294,9 @@ struct MultiPaneViewportView: View {
             // action needed).
             if !rendering { applyMultiViewModePreset() }
         }
+        .onChange(of: interactionEnabled) { _, enabled in
+            if enabled { retryPendingSurfaceSizes() }
+        }
     }
 
     /// Multi-view mode PRESET (user request 2026-07-21).  Entering a
@@ -333,6 +341,27 @@ struct MultiPaneViewportView: View {
             }
         }
         if changed { chromeRefresh &+= 1 }
+    }
+
+    private func applySurfaceSize(pane: Int, size: CGSize) {
+        guard lastSurfacePixelSize[pane] != size else { return }
+        // Cache only an accepted size. A render can acquire admission after
+        // PaneCanvas measured the view; keeping the desired value separate
+        // lets interactionEnabled's false->true transition retry even though
+        // PaneCanvasNSView suppresses duplicate measurements.
+        if bridge.setPaneSurfaceDims(
+            UInt(pane),
+            width: UInt(max(1, size.width)),
+            height: UInt(max(1, size.height))) {
+            lastSurfacePixelSize[pane] = size
+        }
+    }
+
+    private func retryPendingSurfaceSizes() {
+        for pane in layout.paneIndices {
+            guard let size = desiredSurfacePixelSize[pane] else { continue }
+            applySurfaceSize(pane: pane, size: size)
+        }
     }
 
     // MARK: Pane cell
@@ -406,12 +435,8 @@ struct MultiPaneViewportView: View {
                     } else {
                         paneSize = pixelSize
                     }
-                    if lastSurfacePixelSize[pane] == paneSize { return }
-                    lastSurfacePixelSize[pane] = paneSize
-                    _ = bridge.setPaneSurfaceDims(
-                        UInt(pane),
-                        width:  UInt(max(1, paneSize.width)),
-                        height: UInt(max(1, paneSize.height)))
+                    desiredSurfacePixelSize[pane] = paneSize
+                    applySurfaceSize(pane: pane, size: paneSize)
                 }
             )
 

@@ -196,6 +196,12 @@ void ViewportWidget::setSceneEditable(bool editable)
         // pane gesture pin rather than risk forwarding a stray Move/Up to
         // a pane once a render owns the scene.
         m_activeGesturePane = -1;
+    } else if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        // A geometry notification can race a production/chat render's
+        // admission claim. recomputePaneLayout caches only dimensions the
+        // controller accepted, so becoming editable is the reliable retry
+        // edge for a refused SetPaneSurfaceDims call.
+        recomputePaneLayout();
     }
     update();   // re-evaluate the nav-overlay draw gate at the new state
 }
@@ -1131,9 +1137,15 @@ void ViewportWidget::recomputePaneLayout()
             }
         }
         if (m_bridge && devDims != m_paneLastPushedDims[i]) {
-            m_bridge->setPaneSurfaceDims(i, static_cast<unsigned int>(devDims.width()),
-                                         static_cast<unsigned int>(devDims.height()));
-            m_paneLastPushedDims[i] = devDims;
+            // Cache only an accepted size. A production/chat render can
+            // acquire admission after the widget measured its geometry;
+            // retaining the prior accepted value lets setSceneEditable(true)
+            // retry this desired size without requiring another resize.
+            if (m_bridge->setPaneSurfaceDims(
+                    i, static_cast<unsigned int>(devDims.width()),
+                    static_cast<unsigned int>(devDims.height()))) {
+                m_paneLastPushedDims[i] = devDims;
+            }
         }
     }
 

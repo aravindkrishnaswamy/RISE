@@ -7879,22 +7879,19 @@ namespace RISE
 	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p )
 	{
 		if( !p ) return false;
-		p->OnTimeScrubBegin();
-		return true;
+		return p->OnTimeScrubBegin();
 	}
 
 	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t )
 	{
 		if( !p ) return false;
-		p->OnTimeScrub( t );
-		return true;
+		return p->OnTimeScrub( t );
 	}
 
 	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p )
 	{
 		if( !p ) return false;
-		p->OnTimeScrubEnd();
-		return true;
+		return p->OnTimeScrubEnd();
 	}
 
 	bool RISE_API_SceneEditController_BeginPropertyScrub( SceneEditController* p )

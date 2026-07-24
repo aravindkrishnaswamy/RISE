@@ -226,6 +226,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mCV()
 , mRunning( false )
 , mEditPending( false )
+, mProposalMutex()
 , mSuppressInitialRender( false )
 , mRendering( false )
 , mSaving( false )
@@ -2396,7 +2397,7 @@ void SceneEditController::OnPointerUp( const Point2& px )
 
 // Direct controls -----------------------------------------------------
 
-void SceneEditController::OnTimeScrubBegin()
+bool SceneEditController::OnTimeScrubBegin()
 {
 	// P1: close any composite a PRIOR scrub left open (a missing OnTimeScrubEnd or a
 	// repeated Begin) before opening a new one -- otherwise scrubs NEST and one stays
@@ -2405,7 +2406,7 @@ void SceneEditController::OnTimeScrubBegin()
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-			return;
+			return false;
 		std::lock_guard<std::mutex> lk( mMutex );
 		if( mScrubOpenedComposite ) {
 			mEditor.EndComposite();
@@ -2415,17 +2416,18 @@ void SceneEditController::OnTimeScrubBegin()
 		mScrubOpenedComposite = true;
 	}
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
+	return true;
 }
 
-void SceneEditController::OnTimeScrub( Scalar t )
+bool SceneEditController::OnTimeScrub( Scalar t )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	// Check before mMutex so a queued or running coordinated render never
 	// turns a UI scrub callback into a render-duration wait.  Holding the
 	// admission lock through the mutation also closes the wait() release
 	// window in which a render could otherwise claim the gate.
-	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Time-scrub mutations cascade through the animator's observer
 	// chain — a keyframed DisplacedGeometry, for example, destroys
 	// its TriangleMeshGeometryIndexed (and the BSP tree inside) and
@@ -2499,12 +2501,13 @@ void SceneEditController::OnTimeScrub( Scalar t )
 	{
 		mCV.notify_one();
 	}
+	return ok;
 }
 
-void SceneEditController::OnTimeScrubEnd()
+bool SceneEditController::OnTimeScrubEnd()
 {
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
-	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// P1: close only the composite THIS scrub opened -- a stray End with no open scrub
 	// must not under-flow the composite depth.
 	if( mScrubOpenedComposite ) {
@@ -2514,6 +2517,7 @@ void SceneEditController::OnTimeScrubEnd()
 	}
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 	KickRender();
+	return true;
 }
 
 void SceneEditController::BeginPropertyScrub()
@@ -4527,25 +4531,40 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 // Secure-MCP slice 5a: proposal staging + owner-approval state machine.
 //
 // StageProposal is deliberately CHEAP and INERT: it only appends to
-// mProposals under mMutex -- no cancel-and-park (nothing here touches the
-// Document or the live Scene, so there is nothing for the render thread to
-// race), no conflict check (that happens once, at APPROVAL time in
-// ResolveProposal -- staging against a since-moved head is fine; it is
-// APPLYING against a since-moved head that would be unsafe), no EditHistory
-// record (an inert proposal is not yet a commit).
+// mProposals under its leaf mutex -- no cancel-and-park (nothing here mutates
+// the Document or live Scene), no conflict check (that happens at APPROVAL
+// time), no EditHistory record (an inert proposal is not yet a commit).
 //
 // S5a hardening round: baseVersion is stamped from mJob.GetCstHeadVersion()
-// HERE, under the SAME mMutex hold that mints the id and enqueues -- not
-// pre-read unlocked by the caller (AgentSession) beforehand.  mJob is a
-// reference (IJobPriv&), always valid, so reading it here is exactly the
-// same "head read under mMutex" contract ApplyAgentParamEdit's own doc
-// requires (see that method's comment block, ~line 3193): no torn 16-byte
-// read against a concurrent commit / render-thread write on another thread.
+// HERE under render admission, not pre-read unlocked by AgentSession. When
+// the render gate is clear we also take mMutex, exactly like a commit. When
+// the gate is set, every controller write funnel refuses under this same
+// admission lock and the render only reads the retained Document, so the
+// head is immutable and can be captured without waiting behind the render's
+// duration-long mMutex hold.
 //////////////////////////////////////////////////////////////////////
 std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
                                                    RISE::Cst::CstHeadVersion* outStagedVersion )
 {
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	RISE::Cst::CstHeadVersion stagedHead;
+	if( !proposal.hasExplicitBaseVersion )
+	{
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			// A direct/coordinated render owns the scene but cannot mutate
+			// its retained Document. Admission excludes every controller
+			// commit until this head capture and enqueue are complete.
+			stagedHead = mJob.GetCstHeadVersion();
+		}
+		else
+		{
+			std::lock_guard<std::mutex> sceneLk( mMutex );
+			stagedHead = mJob.GetCstHeadVersion();
+		}
+	}
+
+	std::lock_guard<std::mutex> proposalLk( mProposalMutex );
 
 	// Secure-MCP slice 6: the PENDING-depth cap, checked FIRST and BEFORE
 	// touching mNextProposalId or mProposals at all -- a full queue is a
@@ -4569,10 +4588,10 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
 	if( !p.hasExplicitBaseVersion )
 	{
 		// The common case: the proposing session did not pin an explicit
-		// baseHeadVersion, so the head-at-stage-time IS the base -- read it
-		// now, under mMutex, instead of trusting whatever (potentially
-		// racy) value the caller put in proposal.baseVersion.
-		p.baseVersion = mJob.GetCstHeadVersion();
+		// baseHeadVersion, so the admission-protected head-at-stage-time IS
+		// the base instead of whatever potentially-racy value the caller
+		// placed in proposal.baseVersion.
+		p.baseVersion = stagedHead;
 	}
 	const std::uint64_t id = p.id;
 	if( outStagedVersion ) *outStagedVersion = p.baseVersion;
@@ -4604,10 +4623,8 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
 
 std::vector<SceneEditController::AgentProposal> SceneEditController::ListProposals() const
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return {};  // render-owns-scene guard
-	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-	if( !lk.owns_lock() ) return {};
-	return mProposals;   // copy out under the lock -- the caller's snapshot is stable
+	std::lock_guard<std::mutex> proposalLk( mProposalMutex );
+	return mProposals;   // copy out under the leaf lock -- stable and render-independent
 }
 
 bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, AgentCommitResult* outResult )
@@ -4615,36 +4632,20 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
-	// The whole resolve -- find, re-check, and (on approve) apply -- runs
-	// under ONE mMutex hold, so there is no window between "the base
-	// version matched" and "the apply actually ran" for a concurrent commit
-	// (staged or direct, on any thread) to move the head out from under us.
-	// ApplyAgent{ParamEdit,InsertChunk,RemoveChunk} below take mMutex
-	// THEMSELVES (cancel-and-park + the whole commit), so we must NOT hold
-	// mMutex while calling them -- mMutex is a plain, non-recursive
-	// std::mutex (re-entering it is an immediate self-deadlock, not a
-	// stall-and-retry; see CancelAndParkRender_'s doc).  So this method
-	// takes mMutex ONLY for the find + status-transition step, releases it,
-	// then (on a version match) calls the normal ApplyAgent* entry point --
-	// which takes mMutex again for its OWN cancel-and-park critical section.
-	//
-	// This does NOT reopen the TOCTOU window the single-lock design above
-	// was written to close: the invariant that matters is "the version we
-	// COMPARE is the version we APPLY AGAINST", and ApplyAgent* re-derives
-	// that itself -- baseVersionOrNull is passed straight through to the
-	// SAME optimistic-concurrency gate a direct (non-staged) commit already
-	// uses, checked UNDER ApplyAgent*'s OWN mMutex hold, atomically with
-	// its own apply.  A second mover between our pre-check here and
-	// ApplyAgent*'s internal check is not a bug: it is caught by
-	// ApplyAgent*'s own gate and folded into this method's conflict
-	// handling below, exactly as if OUR pre-check had raced it.  What we do
-	// here first (a cheap pre-check before even attempting the call) is
-	// belt-and-suspenders for a fast, honest status on the COMMON case
-	// (proposal already known-stale) without ever needing to hold mMutex
-	// across a nested ApplyAgent* call.
+	// Admission serializes resolvers and controller commits. Proposal
+	// bookkeeping itself uses a leaf mutex, while ApplyAgent* remains the
+	// authoritative optimistic check-and-apply under mMutex. This avoids
+	// coupling inert queue reads/writes to a production render's long scene
+	// lock without weakening the base-version invariant.
 	AgentProposal snapshot;
+	RISE::Cst::CstHeadVersion rejectedHead;
+	if( !approve )
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::lock_guard<std::mutex> sceneLk( mMutex );
+		rejectedHead = mJob.GetCstHeadVersion();
+	}
+	{
+		std::lock_guard<std::mutex> proposalLk( mProposalMutex );
 		bool found = false;
 		for( auto& p : mProposals )
 		{
@@ -4666,15 +4667,13 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 			// report the REAL current head -- leaving it default-constructed
 			// {0,0} is indistinguishable from the "no session / unknown id"
 			// sentinel a caller uses to detect a refusal that never even
-			// found the proposal.  mMutex is still held here (this whole
-			// find+reject block runs under the SAME lock acquired above), so
-			// this is a safe, non-torn read of the 16-byte CstHeadVersion --
-			// no concurrent commit on another thread can be mutating it
-			// mid-read.
+			// found the proposal. rejectedHead was captured under mMutex
+			// while the outer admission lock excluded every concurrent
+			// commit, so it is a safe, non-torn current head.
 			if( outResult )
 			{
 				outResult->status      = String( "rejected" );
-				outResult->headVersion = mJob.GetCstHeadVersion();
+				outResult->headVersion = rejectedHead;
 				outResult->message     = String( "proposal rejected (no mutation)" );
 			}
 			return true;   // apply never ran -- applied/rawCode/retriable stay at their defaults (false/0/false)
@@ -4703,7 +4702,7 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 	}
 
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::lock_guard<std::mutex> proposalLk( mProposalMutex );
 		for( auto& p : mProposals )
 		{
 			if( p.id == id )
@@ -4874,6 +4873,14 @@ bool SceneEditController::RunPreviewRenderParked(
 		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	// The cancellation above belonged to the interactive pass we just
+	// drained, not to this fresh direct render. Scope the shared token per
+	// render exactly as AgentRenderWorkerLoop_ does; otherwise a camera/film
+	// override render installs an already-cancelled callback on the Job and
+	// immediately returns a partial/empty "render cancelled" result. Any
+	// cancellation arriving after this reset remains visible to fn().
+	mCancelProgress.Reset();
 
 	// Defensive post-park validation. Controller-owned state cannot have
 	// opened after the gate claim (all such paths now refuse under

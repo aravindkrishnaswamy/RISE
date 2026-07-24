@@ -4791,13 +4791,16 @@ static void RunGestureRenderAdmissionTest()
 	       "MONEY (z6): indexed pointer-down is refused before mutating pane state while a render is queued" );
 	Check( gated.ForTest_CurrentPane() == paneBeforeQueuedCallbacks,
 	       "MONEY (z6): a refused indexed pointer-down does not switch the realized pane" );
-	gated.OnTimeScrubBegin();
+	Check( !gated.OnTimeScrubBegin(),
+	       "MONEY (z6): timeline begin reports its queued-render refusal" );
 	Check( !gated.Editor().IsCompositeOpen(),
 	       "MONEY (z6): timeline scrub begin is refused while an admitted render is queued" );
-	gated.OnTimeScrub( Scalar( 0.75 ) );
+	Check( !gated.OnTimeScrub( Scalar( 0.75 ) ),
+	       "MONEY (z6): timeline value reports its queued-render refusal" );
 	Check( gated.LastSceneTime() == timeBeforeQueuedCallbacks,
 	       "MONEY (z6): a timeline value callback cannot mutate scene time while an admitted render is queued" );
-	gated.OnTimeScrubEnd();
+	Check( !gated.OnTimeScrubEnd(),
+	       "MONEY (z6): timeline end reports its queued-render refusal" );
 	const SaveResult queuedSave = gated.RequestSave( scenePath );
 	Check( queuedSave.status == SaveResult::Status::Refused,
 	       "MONEY (z6): save refuses promptly while a coordinated render owns admission" );
@@ -4867,6 +4870,26 @@ static void RunGestureRenderAdmissionTest()
 	Check( directSaveStatus.load( std::memory_order_acquire )
 	           == static_cast<int>( SaveResult::Status::Refused ),
 	       "MONEY (z6): save reports refusal while a direct parked render owns admission" );
+	std::atomic<std::uint64_t> proposalIdDuringDirect{ 0 };
+	Check( RunWatchdogged( "proposal staging during direct parked render", 200, [&] {
+		       SceneEditController::AgentProposal p;
+		       p.target = String( "mat_emit" );
+		       p.entityKind = String( "lambertian_luminaire_material" );
+		       p.param = String( "scale" );
+		       p.value = String( "32.0" );
+		       proposalIdDuringDirect.store(
+			       direct.StageProposal( p ), std::memory_order_release );
+	       } ),
+	       "MONEY (z6): inert proposal staging does not wait behind a direct render's scene lock" );
+	Check( proposalIdDuringDirect.load( std::memory_order_acquire ) != 0,
+	       "MONEY (z6): proposal staged during a render receives a real id" );
+	const std::vector<SceneEditController::AgentProposal> proposalsDuringDirect =
+		direct.ListProposals();
+	Check( proposalsDuringDirect.size() == 1
+	       && proposalsDuringDirect[0].id
+	            == proposalIdDuringDirect.load( std::memory_order_acquire )
+	       && proposalsDuringDirect[0].status == String( "pending" ),
+	       "MONEY (z6): proposal snapshots remain available while a render owns the scene" );
 	std::atomic<bool> coordinatedAcceptedDuringDirect{ true };
 	Check( RunWatchdogged( "coordinated submission during direct parked render", 200, [&] {
 		       const bool accepted = direct.SubmitAgentRenderAsync(
@@ -4943,8 +4966,12 @@ static void RunGestureRenderAdmissionTest()
 	Check( delayedCancel.passEntered.load( std::memory_order_acquire ),
 	       "z6: delayed-cancel interactive pass is running" );
 	std::atomic<bool> parkedDirectReturned{ false };
+	std::atomic<bool> parkedDirectStartedCancelled{ true };
 	std::thread parkedDirectThread( [&] {
-		const bool ok = delayedCancel.RunPreviewRenderParked( [] {} );
+		const bool ok = delayedCancel.RunPreviewRenderParked( [&] {
+			parkedDirectStartedCancelled.store(
+				delayedCancel.IsCancelRequested(), std::memory_order_release );
+		} );
 		parkedDirectReturned.store( ok, std::memory_order_release );
 	} );
 	{
@@ -4966,6 +4993,8 @@ static void RunGestureRenderAdmissionTest()
 	parkedDirectThread.join();
 	Check( parkedDirectReturned.load( std::memory_order_acquire ),
 	       "z6: direct parked render proceeds after the cancelled interactive pass drains" );
+	Check( !parkedDirectStartedCancelled.load( std::memory_order_acquire ),
+	       "MONEY (z6): direct render resets the interactive pass's cancellation before its own closure" );
 	delayedCancel.Stop();
 
 	pJob->release();

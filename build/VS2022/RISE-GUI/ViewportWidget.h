@@ -252,11 +252,12 @@ private:
     /// OnPanePointerDown, cleared on the matching Up (mirrors the
     /// region-drag flag pattern above).
     int     m_activeGesturePane = -1;
-    /// Cached per-pane surface dims last PUSHED to the controller, so
+    /// Cached per-pane surface dims last ACCEPTED by the controller, so
     /// resizeEvent/recomputePaneLayout only calls SetPaneSurfaceDims when
-    /// the size actually changed (mirrors the core's own same-dim
-    /// short-circuit convention referenced in RENDER_MODES.md §7.3's
-    /// invalidation matrix).
+    /// the desired size differs. A refusal leaves the accepted cache
+    /// unchanged so setSceneEditable(true) can retry after a render releases
+    /// admission (mirrors the core's same-dim short-circuit convention
+    /// referenced in RENDER_MODES.md §7.3's invalidation matrix).
     QSize   m_paneLastPushedDims[ViewportBridge::kViewportPaneCount];
     /// user-review P2#2: panes the multi-view preset has already been
     /// applied to.  Applying it exactly once per pane (not "whenever the

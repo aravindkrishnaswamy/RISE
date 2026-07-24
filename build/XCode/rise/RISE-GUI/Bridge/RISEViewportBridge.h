@@ -483,9 +483,12 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
 
 #pragma mark - Time scrubber
 
-- (void)scrubTimeBegin;
-- (void)scrubTime:(double)t;
-- (void)scrubTimeEnd;
+/// Each operation is fallible because a render may acquire controller
+/// admission after the timeline's enabled-state snapshot.  On a refused
+/// value update, callers must restore their local time from -lastSceneTime.
+- (BOOL)scrubTimeBegin;
+- (BOOL)scrubTime:(double)t;
+- (BOOL)scrubTimeEnd;
 
 #pragma mark - Properties-panel scrub gesture
 //

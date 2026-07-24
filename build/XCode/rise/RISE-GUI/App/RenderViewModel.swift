@@ -1803,8 +1803,11 @@ final class RenderViewModel: ObservableObject {
         guard span > 0 else { return }
         let dt = span / Double(frames - 1)
 
+        // Admission can change after the render-state guard above. Do not
+        // start a playback task unless the controller actually opened the
+        // scrub bracket.
+        guard vb.scrubTimeBegin() else { return }
         isPreviewPlaying = true
-        vb.scrubTimeBegin()           // one undo bracket for the whole run
         sceneTime = t0                // onChange(sceneTime) -> bridge.scrubTime
 
         previewPlayTask = Task { [weak self] in
@@ -1826,7 +1829,7 @@ final class RenderViewModel: ObservableObject {
         isPreviewPlaying = false
         previewPlayTask?.cancel()
         previewPlayTask = nil
-        viewportBridge?.scrubTimeEnd()
+        _ = viewportBridge?.scrubTimeEnd()
     }
 
 

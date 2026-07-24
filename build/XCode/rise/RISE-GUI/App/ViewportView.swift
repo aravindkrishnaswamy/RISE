@@ -364,18 +364,24 @@ struct ViewportView: View {
                     },
                     onScrubBegin: {
                         guard interactionEnabled else { return }
-                        bridge.scrubTimeBegin()
+                        _ = bridge.scrubTimeBegin()
                     },
                     onScrubEnd: {
                         guard interactionEnabled else { return }
-                        bridge.scrubTimeEnd()
+                        _ = bridge.scrubTimeEnd()
                     }
                 )
                 .disabled(!interactionEnabled)
                 .opacity(interactionEnabled ? 1.0 : 0.5)
                 .onChange(of: sceneTime) { _, newValue in
                     guard interactionEnabled else { return }
-                    bridge.scrubTime(newValue)
+                    // The render gate can win after the slider's enabled
+                    // state was sampled. Keep the binding honest when the
+                    // controller refuses rather than displaying a time the
+                    // scene never reached.
+                    if !bridge.scrubTime(newValue) {
+                        sceneTime = bridge.lastSceneTime()
+                    }
                 }
             }
         }
