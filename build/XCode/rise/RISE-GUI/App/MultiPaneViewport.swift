@@ -296,15 +296,22 @@ struct MultiPaneViewportView: View {
             if !rendering { applyMultiViewModePreset() }
         }
         .onChange(of: interactionEnabled) { _, enabled in
-            if enabled { retryPendingSurfaceSizes() }
+            if enabled {
+                applyMultiViewModePreset()
+                retryPendingSurfaceSizes()
+            }
         }
         // A hosted/direct AgentSession render can own core admission without
         // changing either of the app-level booleans above. PaneCanvas also
-        // suppresses duplicate geometry callbacks, so keep retrying only the
-        // desired sizes that have not yet been accepted. Successful panes
-        // become no-ops through lastSurfacePixelSize.
+        // suppresses duplicate geometry callbacks, so keep retrying only
+        // unapplied presets and desired sizes that have not yet been accepted.
+        // Successful panes become no-ops through panePresetApplied and
+        // lastSurfacePixelSize.
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
-            if interactionEnabled { retryPendingSurfaceSizes() }
+            if interactionEnabled {
+                applyMultiViewModePreset()
+                retryPendingSurfaceSizes()
+            }
         }
     }
 
@@ -313,16 +320,15 @@ struct MultiPaneViewportView: View {
     /// not four copies of the beauty preview.  Per-slot roles are stable
     /// across layouts (a pane index means the same thing in TwoH and Quad):
     ///   slot 0 = beauty preview (the editing surface -- left untouched)
-    ///   slot 1 = wireframe  (topology)
-    ///   slot 2 = normals    (shading)
-    ///   slot 3 = depth      (Z range)
-    /// -- the classic modeling multi-view.  Applied ONLY to a visible
+    ///   slot 1 = indirect  (bounce-light isolation)
+    ///   slot 2 = facets    (tessellation)
+    ///   slot 3 = direct    (direct-light isolation)
+    /// -- a lighting/debug spread.  Applied ONLY to a visible
     /// secondary pane STILL showing "preview", so a pane the user has
     /// already switched keeps its choice across layout toggles.  (A future
-    /// "reset" affordance or alternate presets -- e.g. a lighting spread of
-    /// clay_lights / direct / indirect -- can layer on this; decision 2
+    /// "reset" affordance or alternate presets can layer on this; decision 2
     /// keeps the built-in set fixed for now.)
-    private static let presetModeBySlot = ["preview", "wireframe", "normals", "depth"]
+    private static let presetModeBySlot = ["preview", "indirect", "facets", "direct"]
 
     private func applyMultiViewModePreset() {
         var changed = false
@@ -466,6 +472,12 @@ struct MultiPaneViewportView: View {
                 isPrimary: isPrimary,
                 modes: viewModel.viewportRenderModes,
                 refreshToken: chromeRefresh,
+                onModeAccepted: {
+                    // A successful user choice owns this pane even if the
+                    // first-reveal preset was previously refused.  This
+                    // closes the timer-retry window for explicit Preview.
+                    viewModel.panePresetApplied.insert(pane)
+                },
                 onChanged: { chromeRefresh &+= 1 }
             )
             .disabled(!interactionEnabled)
@@ -514,6 +526,7 @@ private struct PaneChromeStrip: View {
     /// its pane's mode/vantage — the strip itself has no other signal
     /// that pane state changed (no push notifications from the core).
     let refreshToken: Int
+    let onModeAccepted: () -> Void
     let onChanged: () -> Void
 
     @State private var modeName: String = "preview"
@@ -557,7 +570,9 @@ private struct PaneChromeStrip: View {
         Menu {
             ForEach(modes) { mode in
                 Button {
-                    _ = bridge.setPaneRenderMode(UInt(pane), name: mode.name)
+                    if bridge.setPaneRenderMode(UInt(pane), name: mode.name) {
+                        onModeAccepted()
+                    }
                     onChanged()
                 } label: {
                     if mode.name == modeName {

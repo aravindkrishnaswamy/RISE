@@ -27,8 +27,13 @@ _Last updated: 2026-07-24, during the viewport render-mode follow-up._
   `ViewportPaneSchedulerTest` scenarios execute the real low-resolution
   indirect pipeline and are mutation-verified; a Mac GUI
   `Quad → indirect → Move` reproduction established the original failure.
-- **T1–T4 — pending:** layout default modes, arbitrary named scene-camera
-  vantages, pane-camera edit routing, and Last Render pane content.
+- **T1 — DONE:** the applied-once Mac and Windows layout preset now reveals
+  pane 1 as `indirect`, pane 2 as `facets`, and (in Quad) pane 3 as `direct`.
+  The existing success-only guard remains load-bearing: refused setters retry,
+  while every explicit user choice—including Preview—survives later layout
+  toggles.
+- **T2–T4 — pending:** arbitrary named scene-camera vantages, pane-camera edit
+  routing, and Last Render pane content.
 
 ## 1. P2 sweep (from the round-6 three-reviewer pass) — DONE (round 7, 2026-07-24)
 

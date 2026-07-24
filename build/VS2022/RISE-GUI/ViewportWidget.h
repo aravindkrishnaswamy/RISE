@@ -226,8 +226,9 @@ private:
     /// scene-editable or production-render state.
     void    retryPendingPaneSurfaceDims();
     /// Multi-view mode preset -- see the .cpp for the per-slot roles.
-    /// Applied on every layout change to visible secondary panes still
-    /// showing "preview" (user customization survives).
+    /// Invoked on layout and admission-retry edges, but claims each visible
+    /// secondary only after its first successful application. Later user
+    /// choices, including an explicit "preview", always survive.
     void    applyMultiViewModePreset();
     /// Generalized imageDrawRect() -- letterbox `img` inside `area`.
     QRect   paneImageDrawRect(const QImage& img, const QRect& area) const;

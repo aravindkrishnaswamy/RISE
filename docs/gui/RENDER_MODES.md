@@ -652,7 +652,13 @@ Layouts: `Single` (pane 0), `TwoH` (0|1), `OnePlusTwo` (0 big + 1,2 stacked),
 `Quad` (0-3).  Pane rects are fixed fractions computed GUI-side; the C++ core
 only needs per-pane pixel dims (`SetPaneSurfaceDims`).  **Primary** must be
 visible; when a layout shrink hides the primary, primary falls back to pane 0.
-New-in-layout panes default to `{mode: preview, vantage: SceneCamera}`.
+The core initializes every pane to `{mode: preview, vantage: SceneCamera}`.
+On a pane's first successful reveal, both shells apply the session-local
+applied-once spread: pane 1 = `indirect`, pane 2 = `facets`, pane 3 =
+`direct`.  `OnePlusTwo` therefore reveals the first two roles and `Quad`
+adds the third.  A pane with persisted non-Preview state is already
+user-owned, and after the first successful preset application every explicit
+choice—including an explicit return to `preview`—survives layout toggles.
 
 Vantage semantics: a `SceneCamera` pane tracks the live active camera (edits
 to it re-render the pane).  Tumbling in a SECONDARY pane converts that pane
@@ -851,6 +857,12 @@ statements in §7.1's audit table and §7.5).
 - **P2#2 — preset applied once per pane.**  Both shells track which panes the
   preset touched instead of inferring "untouched" from a pane still reading
   `preview`, so an EXPLICIT Preview choice survives layout changes.
+- **T1 — first-reveal layout spread (2026-07-24).**  The existing applied-once
+  shell preset now assigns pane 1 = `indirect`, pane 2 = `facets`, and pane 3
+  = `direct`.  `OnePlusTwo` reveals the first two roles; `Quad` adds the third.
+  Mac and Windows use the same wire names and retain P2#2's success-only
+  bookkeeping, so a refused setter retries and an explicit user choice is
+  never clobbered by a later layout toggle.
 - **P2#3 — primary-pane gizmo on both shells.**  Windows now paints the object
   gizmo on whichever pane is primary (was pane-0-only), matching macOS.  Both
   are exact during an object-transform gesture; the static idle-projection

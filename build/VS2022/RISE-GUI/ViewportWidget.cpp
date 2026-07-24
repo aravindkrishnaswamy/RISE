@@ -91,15 +91,16 @@ void ViewportWidget::onViewportLayoutChanged()
 // MultiPaneViewport.swift applyMultiViewModePreset).  Entering a
 // multi-pane layout should reveal a SPREAD of complementary outputs, not
 // four copies of the beauty preview.  Per-slot roles are stable across
-// layouts: 0 beauty preview (editing surface, untouched), 1 wireframe
-// (topology), 2 normals (shading), 3 depth (Z) -- the classic modeling
-// multi-view.  Applied ONLY to a visible secondary pane STILL showing
+// layouts: 0 beauty preview (editing surface, untouched), 1 indirect
+// (bounce-light isolation), 2 facets (tessellation), 3 direct
+// (direct-light isolation) -- the lighting/debug spread.  Applied ONLY to
+// a visible secondary pane STILL showing
 // "preview", so a pane the user already switched keeps its choice across
 // layout toggles.
 void ViewportWidget::applyMultiViewModePreset()
 {
     if (!m_bridge) return;
-    static const char* const kPresetBySlot[4] = { "preview", "wireframe", "normals", "depth" };
+    static const char* const kPresetBySlot[4] = { "preview", "indirect", "facets", "direct" };
     for (unsigned int pane = 1; pane < m_visiblePaneCount && pane < 4; ++pane) {
         // user-review P2#2: apply the slot preset EXACTLY ONCE per pane (the
         // first time it becomes visible).  The old current=="preview" gate
@@ -200,8 +201,9 @@ void ViewportWidget::setSceneEditable(bool editable)
         // A geometry notification can race a production/chat render's
         // admission claim. recomputePaneLayout caches only dimensions the
         // controller accepted, so becoming editable is the reliable retry
-        // edge for a refused SetPaneSurfaceDims call.
+        // edge for refused preset and SetPaneSurfaceDims calls.
         recomputePaneLayout();
+        applyMultiViewModePreset();
     }
     update();   // re-evaluate the nav-overlay draw gate at the new state
 }
@@ -1376,6 +1378,10 @@ void ViewportWidget::pollPaneChrome()
         return;
     }
     if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        // A hosted/direct agent render may own admission without toggling
+        // m_sceneEditable or production state.  Retry only panes that have
+        // not yet accepted their first-reveal preset.
+        applyMultiViewModePreset();
         retryPendingPaneSurfaceDims();
         refreshPaneChromeState();
     }
@@ -1392,7 +1398,13 @@ void ViewportWidget::onPaneModeComboChanged(int index)
     // The set CAN fail (render-owns-scene, hidden pane) -- always re-read
     // via refreshPaneChromeState() rather than trusting the click (matches
     // TopBar::onRenderModeComboChanged's discipline).
-    m_bridge->setPaneRenderMode(pane, name);
+    if (pane < ViewportBridge::kViewportPaneCount
+        && m_bridge->setPaneRenderMode(pane, name)) {
+        // A successful user choice owns this pane even if its first-reveal
+        // preset was previously refused.  The hosted-render retry must not
+        // overwrite an explicit Preview selected in that short window.
+        m_panePresetApplied[pane] = true;
+    }
     refreshPaneChromeState();
 }
 
