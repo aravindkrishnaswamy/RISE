@@ -90,7 +90,7 @@ for scene_rel in "${SCENES[@]}"; do
     fi
 
     # Compare via python
-    result=$(python3 - "${baseline_png}" "${fresh_png}" "${LUM_THRESHOLD_PCT}" "${RMS_THRESHOLD}" <<'PYEOF'
+    if result=$(python3 - "${baseline_png}" "${fresh_png}" "${LUM_THRESHOLD_PCT}" "${RMS_THRESHOLD}" <<'PYEOF'
 import sys
 import numpy as np
 from PIL import Image
@@ -139,8 +139,11 @@ identical_pct = 100.0 * identical / total_pixels
 print(f"{verdict} lum_delta={lum_pct:.3f}% log_rms={log_rms:.3f} identical={identical_pct:.1f}%")
 sys.exit(0 if verdict == "PASS" else 1)
 PYEOF
-    )
-    rc=$?
+    ); then
+        rc=0
+    else
+        rc=$?
+    fi
     if [ $rc -eq 0 ]; then
         echo "PASS ${base_name}: ${result#PASS }"
         total_pass=$((total_pass + 1))

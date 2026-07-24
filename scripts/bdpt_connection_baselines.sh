@@ -113,14 +113,27 @@ for entry in "${MANIFEST[@]}"; do
         echo "=== capture ${name} [${ptag}] ==="
         if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.a.png"; else echo "  FAIL render-a"; failures=$((failures + 1)); continue; fi
         if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.b.png"; else echo "  FAIL render-b"; failures=$((failures + 1)); continue; fi
-        floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"
+        if ! floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"; then
+            echo "  FAIL compare capture pair ${name}"
+            failures=$((failures + 1))
+            continue
+        fi
         echo "  noise-floor(a-vs-b) = ${floor}%"
     else
         base="${DIR}/${name}.a.png"
         if [ ! -f "${base}" ]; then echo "FAIL no-baseline ${name}"; failures=$((failures + 1)); continue; fi
         if render "${scene_abs}" "${outpng}"; then
-            d="$(cmp_pct "${base}" "${outpng}")"
-            floor="n/a"; [ -f "${DIR}/${name}.b.png" ] && floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"
+            if ! d="$(cmp_pct "${base}" "${outpng}")"; then
+                echo "  FAIL compare ${name}"
+                failures=$((failures + 1))
+                continue
+            fi
+            floor="n/a"
+            if [ -f "${DIR}/${name}.b.png" ] && ! floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"; then
+                echo "  FAIL compare noise floor ${name}"
+                failures=$((failures + 1))
+                continue
+            fi
             echo "  ${name} [${ptag}]: post-Δ=${d}%  (floor=${floor}%)"
         else
             echo "  FAIL render ${name}"

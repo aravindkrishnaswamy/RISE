@@ -34,7 +34,7 @@ so they do not require a version-code bump to re-extract.
 
 ## Gradle wrapper
 
-The committed Gradle wrapper points at Gradle 8.9. Use
+The committed Gradle wrapper points at Gradle 8.13. Use
 `./gradlew assembleDebug` for command-line builds; no system Gradle install
 is required.
 

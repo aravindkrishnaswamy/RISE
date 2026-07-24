@@ -456,37 +456,29 @@ Particularly load-bearing tests for this refactor:
 - `PathConnectionPrimitiveTest.cpp` (Phase 2d) — `EvaluatePathConnection<ValueT>` on synthetic BDPTVertex arrays, comparing against hand-unrolled pre-refactor math.
 - `MISPolicyBDPTTest.cpp` + `MISPolicyVCMTest.cpp` (Phase 2d) — each policy weight on synthetic inputs.
 
-### 4.2 Gate B — Bit-identical determinism + within-noise stochastic
+### 4.2 Gate B — Maintained PNG baseline smoke gate
 
-Capture baselines once before Phase 2a:
+The maintained harness covers ten curated PT, BDPT, VCM, spectral, and HWSS
+scenes. The scripts are the source of truth for the manifest.
 
-```sh
-./scripts/capture_refactor_baselines.sh
-```
-
-Renders to linear HDR (.pfm, no tone-map, no dither) under `tests/baselines_refactor/{scene}/baseline.pfm`, at fixed seeds and SPP.
-
-After every refactor commit:
+Capture one PNG baseline per scene:
 
 ```sh
-./scripts/check_refactor_baselines.sh
+bash scripts/capture_refactor_baselines.sh phase0
 ```
 
-Deterministic scenes — **bit-identical expected** (pixel abs-diff ≤ 1e-6):
-- Single-sample pinhole Lambertian cornell box in PT/BDPT/VCM × Pel/Spectral.
-- Point-light direct-only scene (NEE-only, no sampling variance).
-- MIS-weight-only scenes (shadow tests with no Monte-Carlo integration beyond per-pixel).
+Check fresh PNG renders against that tagged baseline set:
 
-Stochastic scenes — **within 2σ of per-pixel sample variance**:
-- All of `scenes/Tests/BDPT/`, `scenes/Tests/VCM/`, `scenes/Tests/PathTracing/`, `scenes/Tests/Spectral/`.
-- Selected `scenes/FeatureBased/`: `bdpt_cloister`, `bdpt_jewel_vault`, `bdpt_alchemists_sanctum`, `pt_alchemists_sanctum`, `pt_jewel_vault`, `pt_jewel_vault_guided`, `showroom`, `glass_pavilion`, `crystal_lens`, `tidepools` (volume+BSSRDF), every `hwss_*` scene, `bdpt_torus_chain_atrium`.
-- BSSRDF furnace: `furnace_sss_absorption`, `furnace_sss_zero_absorption`.
+```sh
+bash scripts/check_refactor_baselines.sh phase0
+```
 
-**Thresholds** (extending the pattern from [tests/test_ris_regression.sh](../tests/test_ris_regression.sh)):
-- Mean luminance drift per region (full, dark floor, caustic patch) < 0.5%.
-- Per-pixel log-luminance RMS < 1σ of per-pixel sample variance.
-- Firefly count (pixel > 3σ of neighborhood mean) < 2× baseline.
-- Spectral: XYZ tri-stimulus delta per region < 0.5%.
+The checker measures whole-image mean-luminance drift (default limit 0.5%)
+and log-luminance RMS (default limit 3.0), and reports the identical-pixel
+percentage as a diagnostic. It is a compact regression smoke gate, not a
+bit-identity, per-region, variance, firefly, linear-HDR, or XYZ oracle.
+Use the focused integrator tests and variance workflow for those stronger
+claims.
 
 ### 4.3 Gate C — Cross-strategy consistency
 
