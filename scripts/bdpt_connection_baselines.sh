@@ -88,7 +88,10 @@ MANIFEST=(
 
 render() {  # scene_abs output_png -> 0 if produced
     local scene="$1" outpng="$2"
-    rm -f "${outpng}"
+    if ! rm -f "${outpng}"; then
+        echo "ERROR: unable to remove stale render output: ${outpng}" >&2
+        return 1
+    fi
     printf "render\nquit\n" | "${BIN}" "${scene}" > /tmp/bdptconn_$$.log 2>&1 || true
     [ -f "${outpng}" ]
 }
