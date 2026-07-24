@@ -19,7 +19,7 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
 ## Opening the project
 
 1. In Android Studio: *File → Open* → select the `android/` directory.
-2. Wait for Gradle sync. First sync will download AGP 8.5.2 and the Compose
+2. Wait for Gradle sync. First sync will download AGP 8.13.2 and the Compose
    dependencies, then invoke CMake against `../build/cmake/rise-android/
    CMakeLists.txt` and compile ~180 library TUs. Expect the first build to
    take several minutes; incremental builds are fast.
@@ -94,10 +94,11 @@ android/
 
 ## Hot topics
 
-### Why are there no gradle-wrapper.jar, local.properties or settings.gradle 'gradle.xml'?
+### Why are `local.properties` and IDE `gradle.xml` not committed?
 
-Those are environment-specific artifacts that Android Studio regenerates on
-first open. Committing them causes more pain than they save.
+Those are environment-specific artifacts that Android Studio regenerates.
+The wrapper JAR and `settings.gradle.kts` are committed so command-line builds
+work from a fresh checkout.
 
 ### Changing the thread count
 

@@ -5,7 +5,7 @@
 #
 # For each scene:
 #   - render fresh
-#   - compute per-pixel RMS vs baseline PNG
+#   - compute log-luminance RMS vs baseline PNG
 #   - compute mean luminance delta
 #   - fail if either exceeds the configured threshold
 #
