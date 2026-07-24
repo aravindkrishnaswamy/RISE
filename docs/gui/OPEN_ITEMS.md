@@ -42,7 +42,10 @@ _Last updated: 2026-07-24, during the viewport render-mode follow-up._
   any in-flight preview before reading manager-camera state. The C ABI and
   both shells expose the same fail-closed semantics without truncating camera
   identity; pane 0 deliberately refuses this kind.
-- **T3–T4 — pending:** pane-camera edit routing and Last Render pane content.
+- **T3 — DONE:** named-camera pane navigation follows the bound camera
+  through the existing name-targeted edit/undo path; the contract is ratified
+  in `RENDER_MODES.md` §7.2.
+- **T4 — pending:** Last Render pane content.
 
 ## 1. P2 sweep (from the round-6 three-reviewer pass) — DONE (round 7, 2026-07-24)
 

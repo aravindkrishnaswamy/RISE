@@ -3737,6 +3737,22 @@ namespace RISE
 			IProgressCallback* /*next*/					///< [in] The callback to install (may be null)
 			) { return nullptr; }
 
+		//! ONB-aware tail extension of ApplyCstCameraPoseEdit.  Ordinary jobs
+		//! inherit the six-argument behavior; Job uses the realized W/V vectors
+		//! to persist an interactive edit back into `onb_pinhole_camera`
+		//! without degrading it to a lookAt camera.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual int ApplyCstCameraPoseEditWithBasis(
+			const char* camName, const char* location,
+			const char* lookat, const char* up,
+			const char* orientation, const char* targetOrientation,
+			const char* /*realizedBasisW*/, const char* /*realizedBasisV*/ )
+		{
+			return ApplyCstCameraPoseEdit(
+				camName, location, lookat, up,
+				orientation, targetOrientation );
+		}
+
 	};
 
 

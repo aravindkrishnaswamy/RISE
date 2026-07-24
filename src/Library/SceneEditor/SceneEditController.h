@@ -2515,11 +2515,14 @@ namespace RISE
 		//! (the r2/r4 contract); (b) CLICK PROMOTES PRIMARY (§7.8 ratified
 		//! decision 1); (c) parks + context-switches to the pane BEFORE the
 		//! gesture pin arms; (d) for a camera-motion tool on a SECONDARY
-		//! pane still tracking the scene camera, converts the pane to
-		//! per-pane FreeFly seeded from the scene camera (§7.2 -- the
-		//! scene camera itself is NEVER mutated by secondary-pane
-		//! navigation; pane 0 keeps the classic direct-camera-edit
-		//! semantics).  Move/Up forward to the un-indexed handlers -- the
+		//! `SceneCamera` pane, converts the pane to per-pane FreeFly seeded
+		//! from the active camera.  `SceneCameraNamed` is the exception:
+		//! it stays kind 3 and routes orbit/pan/zoom/roll through the
+		//! edit/undo path at its bound manager-camera name, never through
+		//! SetActiveCamera; a deleted target refuses rather than falling
+		//! back.  NamedView/FreeFly keep private-pose navigation, while
+		//! pane 0 keeps the classic active-camera-edit semantics (§7.2).
+		//! Move/Up forward to the un-indexed handlers -- the
 		//! pane context was established at Down and the gesture pin holds
 		//! it.  The un-indexed handlers remain byte-identical pane-0
 		//! behaviour.

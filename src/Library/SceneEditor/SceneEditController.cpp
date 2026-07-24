@@ -2423,13 +2423,28 @@ void SceneEditController::OnPointerMove( const Point2& px )
 	// Pattern matches Undo / Redo / SetProperty: take the mutex,
 	// request cancel if a pass is running, wait until the render
 	// thread flips `mRendering` to false, then mutate.
-	// P3a slice 3: a camera-motion gesture on a SECONDARY pane flies THAT
-	// pane's realized override camera (per-pane FreeFly) -- the scene
-	// camera is never touched by secondary-pane navigation (§7.2, amended
-	// 2026-07-21).  Pane 0 falls through to the classic scene-camera edit.
+	// P3a slice 3: a camera-motion gesture on an ordinary SECONDARY pane
+	// flies that pane's realized override camera.  Kind 3 is deliberately
+	// different: it stays bound and edits the named manager camera through
+	// SceneEditor's normal capture/history path.  Pane 0 falls through to
+	// the classic active-camera edit.
 	if( IsCameraMotionTool( mTool ) && mGesturePane != 0 ) {
-		ApplyPaneFlyOp_( edit );
-		return;
+		bool editBoundCamera = false;
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mPaneConfigs[mGesturePane].vantageKind
+			 == PaneVantageKind::SceneCameraNamed )
+			{
+				edit.cameraTargetName =
+					mPaneConfigs[mGesturePane].sceneCameraRef;
+				edit.allowONBPoseEdit = true;
+				editBoundCamera = true;
+			}
+		}
+		if( !editBoundCamera ) {
+			ApplyPaneFlyOp_( edit );
+			return;
+		}
 	}
 
 	if( IsObjectMotionTool( mTool ) || IsCameraMotionTool( mTool ) ) {
@@ -2458,8 +2473,12 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		if( ok ) {
 			if( IsCameraMotionTool( mTool ) )
 			{
+				const String targetName =
+					edit.cameraTargetName.size() > 1
+					? edit.cameraTargetName
+					: String( mJob.GetActiveCameraName().c_str() );
 				InvalidatePanesBoundToSceneCameraLocked_(
-					String( mJob.GetActiveCameraName().c_str() ) );
+					targetName );
 			}
 			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 			mPolishState.store( static_cast<int>( PolishState::None ),
@@ -9706,6 +9725,22 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		if( mCurrentPane != pane || mPaneRender[pane].configDirty )
 		{
 			SwitchToPaneLocked_( pane );
+		}
+
+		// Kind 3's retained snapshot is display-only after deletion.  Camera
+		// tools must resolve the desired manager identity NOW and fail closed;
+		// otherwise the generic editor fallback could touch the active camera
+		// while the pane still claims to be bound to another name.
+		if( pane != 0 && IsCameraMotionTool( mTool )
+		 && mPaneConfigs[pane].vantageKind == PaneVantageKind::SceneCameraNamed )
+		{
+			const IScene* scene = mJob.GetScene();
+			const ICameraManager* cameras = scene ? scene->GetCameras() : nullptr;
+			if( !cameras
+			 || !cameras->GetItem( mPaneConfigs[pane].sceneCameraRef.c_str() ) )
+			{
+				return false;
+			}
 		}
 
 		// §7.2: a camera-motion gesture on a SECONDARY pane still tracking

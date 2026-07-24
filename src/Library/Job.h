@@ -2895,6 +2895,12 @@ namespace RISE
 		//! target_orientation) to the retained CST as the authored chunk params.  Same 0/1/2/3 contract.
 		int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
 		                            const char* orientation, const char* targetOrientation );
+		int ApplyCstCameraPoseEditWithBasis(
+			const char* camName, const char* location,
+			const char* lookat, const char* up,
+			const char* orientation, const char* targetOrientation,
+			const char* realizedBasisW,
+			const char* realizedBasisV );
 
 		//! Model-B P5 (camera-clone CST insert): INSERT a faithful camera chunk (built by
 		//! CameraIntrospection::BuildCameraChunkText) into the retained Document so a future D2 / save reproduces the

@@ -664,10 +664,12 @@ user-owned, and after the first successful preset application every explicit
 choice—including an explicit return to `preview`—survives layout toggles.
 
 Vantage semantics: a `SceneCamera` pane tracks the live active camera (edits
-to it re-render the pane).  Tumbling in a SECONDARY pane converts that pane
-to `FreeFly` seeded from what it was showing — the per-pane generalization
-of the existing enter-free-fly rule, and like it, never mutates the scene
-camera.  **Pane 0 retains the classic direct-camera-edit navigation** (orbit
+to it re-render the pane).  Tumbling a `SceneCamera` SECONDARY pane converts
+that pane to `FreeFly` seeded from what it was showing — the per-pane
+generalization of the existing enter-free-fly rule, and like it, never mutates
+the active scene camera.  `NamedView` and `FreeFly` secondary panes keep that
+same private-pose navigation.  **Pane 0 retains the classic
+direct-camera-edit navigation** (orbit
 / pan / zoom / roll mutate the scene camera through the edit/undo system,
 exactly as the single viewport does today) — pane 0 IS the legacy-alias
 editing surface, and silently converting its navigation to free-fly would
@@ -681,11 +683,23 @@ re-resolves that camera by name during reconcile, and retains its binding-time
 snapshot as an honest deletion fallback.  A later same-name creation wakes the
 pane and resumes live tracking.  ONB pinholes are represented by an exactly
 ray-equivalent ordinary-pinhole snapshot (realized basis W/V becomes
-lookAt/up), so the supported `onb_pinhole_camera` is not excluded.  Capturing a
-manager camera follows the same cancel-and-park discipline as cloning because
-preview film resizing regenerates manager cameras during a pass.  Pane 0
+lookAt/up), so the supported `onb_pinhole_camera` is not excluded.  Its camera
+tools use that equivalent pose for the shared edit math, fold the result back
+to an explicit live basis, and persist realized W/V into the ONB chunk; undo
+restores the exact prior frame.  Capturing a manager camera follows the same
+cancel-and-park discipline as cloning because preview film resizing regenerates
+manager cameras during a pass.  Pane 0
 refuses kind 3 because pane 0 is the active-camera editing alias; selecting its
-scene camera remains the existing `SetActiveCamera` flow.
+scene camera remains the existing `SetActiveCamera` flow.  Camera navigation
+in a live `SceneCameraNamed` secondary pane is the deliberate exception to the
+private-pose rule: orbit / pan / zoom / roll remain kind 3 and edit the bound
+manager camera by its recorded name through the normal edit/composite/undo
+path, without calling `SetActiveCamera`.  Every pane bound to that same name is
+invalidated.  Undo/redo continue resolving the recorded name, even if the
+active camera changes later.  If the name no longer resolves, its retained
+snapshot remains visible but camera navigation refuses the edit rather than
+falling through to the active camera; a same-name recreation makes navigation
+live again.
 
 ### 7.3 Scheduler (the render loop, generalized)
 
@@ -838,8 +852,9 @@ statements in §7.1's audit table and §7.5).
   restricted to pane 0.  A secondary pane without its own sink no longer
   publishes into pane 0 (or the previously-attached pane).
 - **P1#2 — pick/gizmo use the pane's camera.**  A new
-  `EffectiveViewportCamera_(scene)` (the override register when free-fly is
-  active, else the scene camera) replaces the raw `scene->GetCamera()` at
+  `EffectiveViewportCamera_(scene)` (the realized pane override for
+  `FreeFly`, `NamedView`, or `SceneCameraNamed`, else the active scene camera)
+  replaces the raw `scene->GetCamera()` at
   `PickAt` + the four gizmo-projection sites.  Correct for every pane during a
   gesture (a gesture makes that pane current).  *(Round-2 concurrency fix: the
   non-gesture readers `RefreshGizmoHandles`/`RefreshNavGizmo` take `mMutex`

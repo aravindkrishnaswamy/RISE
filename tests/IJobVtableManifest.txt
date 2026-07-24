@@ -283,3 +283,4 @@ ApplyCstRemoveItemsAt
 ClearProgressIfCurrent
 SetProgressIfCurrent
 ExchangeProgress
+ApplyCstCameraPoseEditWithBasis

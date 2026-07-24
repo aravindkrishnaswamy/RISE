@@ -22,8 +22,10 @@
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/RISE_API.h"   // user-review P1-1: C-ABI contract (unindexed nav aliases pane 0)
 #include "../src/Library/Job.h"
+#include "../src/Library/Cameras/CameraCommon.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
+#include "../src/Library/SceneEditor/CameraIntrospection.h"
 
 #include <atomic>
 #include <chrono>
@@ -268,6 +270,83 @@ struct Fixture
 
 static const unsigned int kWaitMs   = 4000;
 static const unsigned int kSettleMs = 250;
+
+static bool CaptureNamedCamera( Job& job, const char* name,
+	CameraSnapshot& out )
+{
+	const IScene* scene = job.GetScene();
+	const ICameraManager* cameras = scene ? scene->GetCameras() : nullptr;
+	const ICamera* camera = cameras ? cameras->GetItem( name ) : nullptr;
+	return camera
+	    && CameraIntrospection::CaptureCameraSnapshot( *camera, out );
+}
+
+static bool SameCameraPose( const CameraSnapshot& a,
+	const CameraSnapshot& b, double eps = 1e-9 )
+{
+	for( int i = 0; i < 3; ++i ) {
+		if( std::fabs( a.location[i] - b.location[i] ) > eps
+		 || std::fabs( a.lookat[i] - b.lookat[i] ) > eps
+		 || std::fabs( a.up[i] - b.up[i] ) > eps
+		 || std::fabs( a.orientation[i] - b.orientation[i] ) > eps )
+			return false;
+	}
+	for( int i = 0; i < 2; ++i ) {
+		if( std::fabs(
+			a.target_orientation[i] - b.target_orientation[i] ) > eps )
+			return false;
+	}
+	return true;
+}
+
+struct CameraFrameSnapshot
+{
+	Point3 origin;
+	Vector3 u;
+	Vector3 v;
+	Vector3 w;
+	bool explicitONB = false;
+};
+
+static bool CaptureNamedCameraFrame( Job& job, const char* name,
+	CameraFrameSnapshot& out )
+{
+	const IScene* scene = job.GetScene();
+	const ICameraManager* cameras = scene ? scene->GetCameras() : nullptr;
+	const ICamera* camera = cameras ? cameras->GetItem( name ) : nullptr;
+	const Implementation::CameraCommon* common =
+		dynamic_cast<const Implementation::CameraCommon*>( camera );
+	if( !common ) return false;
+	const OrthonormalBasis3D basis = common->GetCurrentBasis();
+	out.origin = common->GetLocation();
+	out.u = basis.u();
+	out.v = basis.v();
+	out.w = basis.w();
+	out.explicitONB = common->IsFromONB();
+	return true;
+}
+
+static bool SameCameraFrame( const CameraFrameSnapshot& a,
+	const CameraFrameSnapshot& b, double eps = 1e-9,
+	bool compareRepresentation = true )
+{
+	const Scalar* av[] = {
+		&a.origin.x, &a.origin.y, &a.origin.z,
+		&a.u.x, &a.u.y, &a.u.z,
+		&a.v.x, &a.v.y, &a.v.z,
+		&a.w.x, &a.w.y, &a.w.z
+	};
+	const Scalar* bv[] = {
+		&b.origin.x, &b.origin.y, &b.origin.z,
+		&b.u.x, &b.u.y, &b.u.z,
+		&b.v.x, &b.v.y, &b.v.z,
+		&b.w.x, &b.w.y, &b.w.z
+	};
+	for( unsigned int i = 0; i < sizeof( av ) / sizeof( av[0] ); ++i ) {
+		if( std::fabs( *av[i] - *bv[i] ) > eps ) return false;
+	}
+	return !compareRepresentation || a.explicitONB == b.explicitONB;
+}
 
 //----------------------------------------------------------------------
 // (a) MONEY: rotation order after a scene edit -- primary first, then
@@ -1372,6 +1451,11 @@ static void RunPaneZeroAliasUnderSecondaryPrimaryTest()
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "a full Quad rotation runs (pane 2's free-fly realized)" );
+	// Let the legitimate adaptive refinement tail drain before taking the
+	// quiescence baseline.  Sampling Sequence().size() immediately after the
+	// fourth layout quantum raced that tail and made this unrelated setup
+	// assertion intermittently fail on otherwise-correct runs.
+	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
 	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "settles" );
 
 	// The primary pane reports its OWN free-fly (config-backed for a
@@ -1935,6 +2019,233 @@ static void RunActiveCameraGestureInvalidatesNamedPaneTest()
 }
 
 //----------------------------------------------------------------------
+// (n3b/T3) Camera tools in a SceneCameraNamed secondary edit that exact
+//          manager camera through history.  They never activate it, never
+//          convert the pane to FreeFly, and undo restores the named target.
+//          The same realized pane camera also drives projection + gizmos.
+//----------------------------------------------------------------------
+static void RunNamedCameraGestureRoutingTest()
+{
+	std::printf( "=== scheduler (n3b/T3): named-pane tools edit/undo the bound camera ===\n" );
+	Fixture f( "pane_sched_n3b.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection(
+			SceneEditController::Category::Camera, String( "cam" ) ),
+		"select clone source" );
+	char clonedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera(
+			String( "side" ), clonedName, sizeof( clonedName ) ),
+		"create inactive side camera" );
+	Check( f.ctrl->SetSelection(
+			SceneEditController::Category::Camera, String( "side" ) ),
+		"select side for setup" );
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "6 2 9" ) ),
+		"give side a distinct eye" );
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "lookat" ), String( "1 0 0" ) ),
+		"give side a distinct optical axis" );
+	Check( f.ctrl->SetSelection(
+			SceneEditController::Category::Camera, String( "cam" ) ),
+		"restore cam as the unrelated active camera" );
+	Check( f.ctrl->SetViewportLayout(
+			SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" ),
+		"bind pane 1 to inactive side" );
+
+	CameraSnapshot activeBefore;
+	CameraSnapshot sideRest;
+	Check( CaptureNamedCamera( *f.job, "cam", activeBefore )
+	    && CaptureNamedCamera( *f.job, "side", sideRest ),
+		"capture both manager-camera baselines" );
+
+	struct ToolCase {
+		SceneEditController::Tool tool;
+		const char* name;
+		Point2 move;
+	};
+	const ToolCase cases[] = {
+		{ SceneEditController::Tool::OrbitCamera, "orbit", Point2( 36, 24 ) },
+		{ SceneEditController::Tool::PanCamera,   "pan",   Point2( 32, 28 ) },
+		{ SceneEditController::Tool::ZoomCamera,  "zoom",  Point2( 10, 34 ) },
+		{ SceneEditController::Tool::RollCamera,  "roll",  Point2( 38, 10 ) }
+	};
+	for( const ToolCase& tc : cases )
+	{
+		f.ctrl->SetTool( tc.tool );
+		Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ),
+			std::string( tc.name ) + " Down accepted on named pane" );
+		Check( f.ctrl->OnPanePointerMove( 1, tc.move ),
+			std::string( tc.name ) + " Move accepted on named pane" );
+		Check( f.ctrl->OnPanePointerUp( 1, tc.move ),
+			std::string( tc.name ) + " Up accepted on named pane" );
+
+		CameraSnapshot activeAfter;
+		CameraSnapshot sideAfter;
+		Check( f.job->GetActiveCameraName() == "cam"
+		    && CaptureNamedCamera( *f.job, "cam", activeAfter )
+		    && SameCameraPose( activeAfter, activeBefore ),
+			std::string( "MONEY (T3/" ) + tc.name
+			+ "): active identity and pose stay untouched" );
+		Check( CaptureNamedCamera( *f.job, "side", sideAfter )
+		    && !SameCameraPose( sideAfter, sideRest ),
+			std::string( "MONEY (T3/" ) + tc.name
+			+ "): bound inactive camera pose changes" );
+		SceneEditController::PaneVantageKind kind;
+		String reference;
+		Check( f.ctrl->GetPaneVantage( 1, kind, reference )
+		    && kind == SceneEditController::PaneVantageKind::SceneCameraNamed
+		    && reference == "side",
+			std::string( "MONEY (T3/" ) + tc.name
+			+ "): pane remains kind 3, bound to side" );
+
+		f.ctrl->Undo();
+		CameraSnapshot sideUndo;
+		Check( CaptureNamedCamera( *f.job, "side", sideUndo )
+		    && SameCameraPose( sideUndo, sideRest ),
+			std::string( "MONEY (T3/" ) + tc.name
+			+ "): composite undo restores the named camera" );
+		Check( f.job->GetActiveCameraName() == "cam",
+			std::string( "T3/" ) + tc.name
+			+ ": undo does not activate the target" );
+	}
+
+	// Run one named-camera edit with the scheduler live and TWO panes bound
+	// to the same inactive camera.  This specifically guards the gesture
+	// caller's exact-name configDirty route: global render dirtiness alone
+	// can repaint a stale standalone override without reconciling its pose.
+	Check( f.ctrl->SetViewportLayout(
+			SceneEditController::ViewportLayout::Quad ),
+		"grow to Quad for live reconciliation" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 2, "side" ),
+		"bind a second pane to the same inactive side camera" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
+		"initial live Quad rotation completes" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
+	Check( f.ctrl->SettlesAt(
+			f.ctrl->Sequence().size(), kSettleMs ),
+		"initial live Quad rotation settles" );
+
+	f.ctrl->ClearSequence();
+	f.ctrl->SetTool( SceneEditController::Tool::PanCamera );
+	Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ),
+		"live named-camera pan starts on pane 1" );
+	Check( f.ctrl->OnPanePointerMove( 1, Point2( 34, 26 ) ),
+		"live named-camera pan mutates side" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+		"gesture-pinned pane 1 realizes the edited side pose" );
+
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->OnPanePointerUp( 1, Point2( 34, 26 ) ),
+		"live named-camera pan ends" );
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
+		"gesture release resumes the Quad refresh" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+	const std::vector<unsigned int> releaseSeq = f.ctrl->Sequence();
+	bool releaseSawPane2 = false;
+	for( std::size_t i = 0; i < releaseSeq.size(); ++i ) {
+		if( releaseSeq[i] == 2 ) releaseSawPane2 = true;
+	}
+	Check( releaseSawPane2
+	    && f.ctrl->SettlesAt( releaseSeq.size(), kSettleMs ),
+		"MONEY (T3/reconcile): release refreshes the sibling pane bound to side" );
+	f.ctrl->Stop();
+	CameraSnapshot liveSide;
+	CameraSnapshot livePane1;
+	CameraSnapshot livePane2;
+	Check( CaptureNamedCamera( *f.job, "side", liveSide )
+	    && f.ctrl->GetViewportPose( livePane1, 1 )
+	    && f.ctrl->GetViewportPose( livePane2, 2 )
+	    && SameCameraPose( livePane1, liveSide )
+	    && SameCameraPose( livePane2, liveSide ),
+		"MONEY (T3/reconcile): every side-bound pane realizes the edited manager pose" );
+	f.ctrl->Undo();
+	CameraSnapshot liveUndo;
+	Check( CaptureNamedCamera( *f.job, "side", liveUndo )
+	    && SameCameraPose( liveUndo, sideRest ),
+		"live reconciliation gesture undo restores side" );
+	Check( f.ctrl->SetViewportLayout(
+			SceneEditController::ViewportLayout::TwoH ),
+		"restore TwoH after the live reconciliation check" );
+
+	// Switch the live register to pane 0 and record a non-central world
+	// projection through the active camera.
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 10, 10 ) ),
+		"empty pane-0 navigation gesture switches the effective camera" );
+	double activeX = 0, activeY = 0;
+	Check( f.ctrl->ForTest_ProjectWorldToScreen(
+			1, 0, 0, activeX, activeY ),
+		"project through pane 0 active camera" );
+	Check( f.ctrl->OnPanePointerUp( 0, Point2( 10, 10 ) ),
+		"finish empty pane-0 gesture" );
+
+	Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ),
+		"empty pane-1 navigation gesture switches to bound camera" );
+	double boundX = 0, boundY = 0;
+	Check( f.ctrl->ForTest_ProjectWorldToScreen(
+			1, 0, 0, boundX, boundY ),
+		"project through pane 1 bound camera" );
+	Check( std::fabs( boundX - activeX ) > 1e-6
+	    || std::fabs( boundY - activeY ) > 1e-6,
+		"MONEY (T3/projection): named pane projection differs from active-camera projection" );
+	Check( f.ctrl->OnPanePointerUp( 1, Point2( 10, 10 ) ),
+		"finish empty pane-1 gesture" );
+
+	f.ctrl->ForTest_SetSelection(
+		SceneEditController::Category::Object, String( "obj" ) );
+	Check( f.ctrl->SetPrimaryPane( 1 ),
+		"make the named pane the gizmo-owning primary" );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->RefreshGizmoHandles();
+	double pivotX = 0, pivotY = 0;
+	Check( f.ctrl->ForTest_ProjectWorldToScreen(
+			0, 0, 0, pivotX, pivotY ),
+		"project selected-object pivot through the bound camera" );
+	int center = -1;
+	for( unsigned int i = 0; i < f.ctrl->GizmoHandleCount(); ++i ) {
+		if( f.ctrl->GizmoHandleKind( i )
+		 == static_cast<int>(
+			SceneEditController::GizmoHandle::Kind::ScreenCenter ) )
+		{
+			center = static_cast<int>( i );
+			break;
+		}
+	}
+	Check( center >= 0, "named-pane object gizmo has a screen-center handle" );
+	if( center >= 0 ) {
+		const unsigned int i = static_cast<unsigned int>( center );
+		Check( std::fabs( f.ctrl->GizmoHandleScreenX( i ) - pivotX ) < 1e-6
+		    && std::fabs( f.ctrl->GizmoHandleScreenY( i ) - pivotY ) < 1e-6,
+			"MONEY (T3/gizmo): handle projection follows pane 1's bound camera" );
+	}
+
+	Check( f.ctrl->RemoveEntity(
+			SceneEditController::Category::Camera, String( "side" ) ).applied,
+		"delete the bound camera, leaving pane 1 on its snapshot fallback" );
+	CameraSnapshot activeBeforeRefusedGesture;
+	Check( CaptureNamedCamera(
+			*f.job, "cam", activeBeforeRefusedGesture ),
+		"capture active camera before fallback navigation attempt" );
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( !f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ),
+		"MONEY (T3/deletion): camera navigation refuses a snapshot-only fallback" );
+	CameraSnapshot activeAfterRefusedGesture;
+	Check( f.job->GetActiveCameraName() == "cam"
+	    && CaptureNamedCamera( *f.job, "cam", activeAfterRefusedGesture )
+	    && SameCameraPose(
+			activeAfterRefusedGesture, activeBeforeRefusedGesture ),
+		"MONEY (T3/deletion): refusal cannot spill onto the active camera" );
+}
+
+//----------------------------------------------------------------------
 // (n4) Set Home must resolve desired kind-3 state even before that pane has
 //      ever run.  Falling back to the active camera would save the wrong view.
 //----------------------------------------------------------------------
@@ -2173,6 +2484,128 @@ static void RunNamedSceneCameraONBTest()
 	    && std::fabs( onbPose.scanningRate - 0.25 ) < 1e-9
 	    && std::fabs( onbPose.pixelRate - 0.5 ) < 1e-9,
 		"MONEY ASSERTION (p): ONB basis and optics are captured as an equivalent navigable pinhole pose" );
+
+	// The render thread is no longer needed; stopping makes each gesture /
+	// commit / undo deterministic while still exercising the retained CST.
+	f.ctrl->Stop();
+	CameraFrameSnapshot onbRest;
+	CameraSnapshot activeRest;
+	Check( CaptureNamedCameraFrame( *f.job, "onb_side", onbRest )
+	    && onbRest.explicitONB
+	    && CaptureNamedCamera( *f.job, "cam", activeRest ),
+		"capture explicit-ONB and active-camera baselines" );
+	struct ONBToolCase {
+		SceneEditController::Tool tool;
+		const char* name;
+		Point2 move;
+	};
+	const ONBToolCase cases[] = {
+		{ SceneEditController::Tool::OrbitCamera, "orbit", Point2( 36, 24 ) },
+		{ SceneEditController::Tool::PanCamera,   "pan",   Point2( 32, 28 ) },
+		{ SceneEditController::Tool::ZoomCamera,  "zoom",  Point2( 10, 34 ) },
+		{ SceneEditController::Tool::RollCamera,  "roll",  Point2( 38, 10 ) }
+	};
+	for( const ONBToolCase& tc : cases )
+	{
+		// Independent ray-equivalent ordinary camera: this is the contract
+		// the ONB adapter must implement.  Applying the canonical tool math
+		// here gives an exact forward oracle for origin + U/V/W; a sign error
+		// in synthesized lookAt/up or a va/vb persistence swap cannot pass.
+		ICamera* referenceBase = nullptr;
+		const Point3 referenceLookAt(
+			onbRest.origin.x + onbRest.w.x,
+			onbRest.origin.y + onbRest.w.y,
+			onbRest.origin.z + onbRest.w.z );
+		Check( RISE_API_CreatePinholeCamera(
+				&referenceBase, onbRest.origin, referenceLookAt, onbRest.v,
+				Scalar( 31.0 * DEG_TO_RAD ), 32, 24, Scalar( 1 ),
+				Scalar( 0.125 ), Scalar( 0.25 ), Scalar( 0.5 ),
+				Vector3( 0, 0, 0 ), Vector2( 0, 0 ) ),
+			std::string( "build ordinary reference for ONB " ) + tc.name );
+		Implementation::CameraCommon* reference =
+			dynamic_cast<Implementation::CameraCommon*>( referenceBase );
+		SceneEdit expectedEdit;
+		expectedEdit.op =
+			( tc.tool == SceneEditController::Tool::OrbitCamera )
+			? SceneEdit::OrbitCamera
+			: ( tc.tool == SceneEditController::Tool::PanCamera )
+			? SceneEdit::PanCamera
+			: ( tc.tool == SceneEditController::Tool::ZoomCamera )
+			? SceneEdit::ZoomCamera
+			: SceneEdit::RollCamera;
+		expectedEdit.v3a = Vector3(
+			tc.move.x - 10.0, tc.move.y - 10.0, 0 );
+		expectedEdit.s = tc.move.x - 10.0;
+		CameraFrameSnapshot expected;
+		if( reference ) {
+			SceneEditor::ApplyCameraOpToCamera(
+				*reference, expectedEdit, f.ctrl->Editor().SceneScale() );
+			reference->RegenerateData();
+			const OrthonormalBasis3D basis = reference->GetCurrentBasis();
+			expected.origin = reference->GetLocation();
+			expected.u = basis.u();
+			expected.v = basis.v();
+			expected.w = basis.w();
+			expected.explicitONB = false;
+		}
+
+		f.ctrl->SetTool( tc.tool );
+		Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) )
+		    && f.ctrl->OnPanePointerMove( 1, tc.move )
+		    && f.ctrl->OnPanePointerUp( 1, tc.move ),
+			std::string( "ONB " ) + tc.name + " gesture completes" );
+		CameraFrameSnapshot edited;
+		CameraSnapshot activeAfter;
+		Check( CaptureNamedCameraFrame( *f.job, "onb_side", edited )
+		    && edited.explicitONB
+		    && reference
+		    && SameCameraFrame(
+				edited, expected, 1e-9, /*compareRepresentation=*/false ),
+			std::string( "MONEY (T3/ONB/" ) + tc.name
+			+ "): explicit persisted frame exactly matches the equivalent lookAt-camera edit" );
+		Check( f.job->GetActiveCameraName() == "cam"
+		    && CaptureNamedCamera( *f.job, "cam", activeAfter )
+		    && SameCameraPose( activeAfter, activeRest ),
+			std::string( "T3/ONB/" ) + tc.name
+			+ ": inactive edit never touches the active camera" );
+		f.ctrl->Undo();
+		CameraFrameSnapshot restored;
+		Check( CaptureNamedCameraFrame( *f.job, "onb_side", restored )
+		    && SameCameraFrame( restored, onbRest ),
+			std::string( "MONEY (T3/ONB/" ) + tc.name
+			+ "): undo restores the exact original ONB frame" );
+		if( referenceBase ) referenceBase->release();
+	}
+
+	// Sibling-behavior contract: T3's ONB adapter is named-pane-only.
+	// Making the ONB camera active and navigating pane 0 retains the legacy
+	// fixed-basis/no-op behavior.
+	Check( f.ctrl->SetSelection(
+			SceneEditController::Category::Camera, String( "onb_side" ) ),
+		"make ONB camera active for the unchanged SceneCamera control" );
+	CameraFrameSnapshot activeONBBefore;
+	Check( CaptureNamedCameraFrame(
+			*f.job, "onb_side", activeONBBefore ),
+		"capture active ONB control baseline" );
+	const RISE::Cst::CstHeadVersion activeONBHeadBefore =
+		f.job->GetCstHeadVersion();
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 10, 10 ) )
+	    && f.ctrl->OnPanePointerMove( 0, Point2( 36, 24 ) )
+	    && f.ctrl->OnPanePointerUp( 0, Point2( 36, 24 ) ),
+		"legacy pane-0 ONB orbit gesture completes" );
+	CameraFrameSnapshot activeONBAfter;
+	Check( CaptureNamedCameraFrame(
+			*f.job, "onb_side", activeONBAfter )
+	    && SameCameraFrame( activeONBAfter, activeONBBefore ),
+		"MONEY (T3/sibling): active SceneCamera ONB behavior remains unchanged" );
+	f.ctrl->Undo();
+	CameraFrameSnapshot activeONBAfterUndo;
+	Check( CaptureNamedCameraFrame(
+			*f.job, "onb_side", activeONBAfterUndo )
+	    && SameCameraFrame( activeONBAfterUndo, activeONBBefore )
+	    && f.job->GetCstHeadVersion() == activeONBHeadBefore,
+		"MONEY (T3/sibling): undo preserves the active ONB frame and retained CST head" );
 }
 
 //----------------------------------------------------------------------
@@ -2322,6 +2755,7 @@ int main()
 	RunNamedSceneCameraReconcileAndFallbackTest();
 	RunNamedSceneCameraStampRecreationTest();
 	RunActiveCameraGestureInvalidatesNamedPaneTest();
+	RunNamedCameraGestureRoutingTest();
 	RunNamedSceneCameraPreRealizationHomeTest();
 	RunMultiplePanesBoundToSameCameraTest();
 	RunNamedSceneCameraTimeScrubTest();

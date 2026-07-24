@@ -10432,20 +10432,68 @@ int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* posit
 // GUI's own camera enumeration (the runtime allocator's "default" et al for unnamed chunks), never a typed
 // agent address, so the typo-retargeting hazard the gate closes cannot arise; gating would instead refuse
 // legitimate pose/delete operations on an unnamed non-active camera in a multi-camera document.
-int Job::ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
-                                 const char* orientation, const char* targetOrientation )
+int Job::ApplyCstCameraPoseEdit(
+	const char* camName, const char* location,
+	const char* lookat, const char* up,
+	const char* orientation, const char* targetOrientation )
+{
+	return ApplyCstCameraPoseEditWithBasis(
+		camName, location, lookat, up, orientation, targetOrientation,
+		nullptr, nullptr );
+}
+
+int Job::ApplyCstCameraPoseEditWithBasis(
+	const char* camName, const char* location,
+	const char* lookat, const char* up,
+	const char* orientation, const char* targetOrientation,
+	const char* realizedBasisW, const char* realizedBasisV )
 {
 	if( !pCstDocument || !camName ) return 0;
-	// All five rest params must read non-empty (every CameraCommon-derived camera supplies them); a missing one
-	// means an unexpected camera type -> refuse the pose commit rather than write a partial/empty param.
-	if( !location || !location[0] || !lookat || !lookat[0] || !up || !up[0]
-	 || !orientation || !orientation[0] || !targetOrientation || !targetOrientation[0] ) return 0;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, camName, nullptr, "camera", true );
 	if( id == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstCameraPoseEdit:: `%s` not found or ambiguous in the CST Document; pose commit rejected", camName );
 		return 0;
 	}
-	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, "location", 0, location );
+	const RISE::Cst::NodeRef cameraChunk =
+		RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+	if( cameraChunk && cameraChunk->role == "onb_pinhole_camera" ) {
+		if( !location || !location[0]
+		 || !realizedBasisW || !realizedBasisW[0]
+		 || !realizedBasisV || !realizedBasisV[0] )
+			return 0;
+		// Preserve the explicit-ONB representation.  WV is sufficient to
+		// reconstruct the complete orthonormal frame and exactly matches the
+		// realized camera basis after an interactive pose edit.
+		RISE::Cst::Document onb =
+			RISE::Cst::DocSetOrAddParamValue(
+				*pCstDocument, id, "location", 0, location );
+		onb = RISE::Cst::DocSetOrAddParamValue(
+			onb, id, "va", 0, realizedBasisW );
+		onb = RISE::Cst::DocSetOrAddParamValue(
+			onb, id, "vb", 0, realizedBasisV );
+		onb = RISE::Cst::DocSetOrAddParamValue(
+			onb, id, "components", 0, "WV" );
+		return DeriveEditedCstDocument_(
+			std::move( onb ), id, camName, "pose" );
+	}
+	// All five rest params must read non-empty for ordinary lookAt cameras;
+	// a missing one means an unexpected type, so refuse a partial commit.
+	if( !location || !location[0] || !lookat || !lookat[0] || !up || !up[0]
+	 || !orientation || !orientation[0]
+	 || !targetOrientation || !targetOrientation[0] )
+		return 0;
+	// Canonicalize the two aliased pose groups before writing them.  Camera
+	// descriptors also accept pitch/roll/yaw and theta/phi, and Finalize()
+	// deliberately applies those scalar aliases AFTER orientation /
+	// target_orientation.  Leaving an old alias in the chunk would therefore
+	// override the just-committed drag on re-derive (fresh cloned cameras
+	// author theta/phi, which made their first Orbit snap back to zero).
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "pitch" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "roll" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "yaw" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "theta" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "phi" );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "location", 0, location );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "lookat", 0, lookat );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "up", 0, up );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "orientation", 0, orientation );
