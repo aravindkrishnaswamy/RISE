@@ -100,6 +100,9 @@ import sys, numpy as np
 from PIL import Image
 b=np.array(Image.open(sys.argv[1]).convert("RGB"),dtype=np.float64)
 f=np.array(Image.open(sys.argv[2]).convert("RGB"),dtype=np.float64)
+if b.shape != f.shape:
+    print(f"image shape mismatch: baseline={b.shape} fresh={f.shape}", file=sys.stderr)
+    sys.exit(1)
 def L(x): return (x[:,:,0]*0.2126+x[:,:,1]*0.7152+x[:,:,2]*0.0722).mean()
 bm,fm=L(b),L(f)
 if bm < 1.0 or fm < 1.0:
@@ -107,6 +110,50 @@ if bm < 1.0 or fm < 1.0:
     sys.exit(1)
 print("%.4f"%(abs(bm-fm)/bm*100.0))
 PY
+}
+
+capture_pair() {  # scene output target-a target-b -> prints validated noise floor
+    local scene="$1" outpng="$2" target_a="$3" target_b="$4"
+    local tmp_a="${target_a}.tmp.$$" tmp_b="${target_b}.tmp.$$" floor
+
+    if ! rm -f "${target_a}" "${target_b}" "${tmp_a}" "${tmp_b}"; then
+        echo "ERROR: unable to clear prior baseline pair" >&2
+        return 1
+    fi
+    if ! render "${scene}" "${outpng}"; then
+        echo "ERROR: trial-a render produced no output" >&2
+        return 1
+    fi
+    if ! cp "${outpng}" "${tmp_a}"; then
+        echo "ERROR: unable to stage trial-a baseline" >&2
+        return 1
+    fi
+    if ! render "${scene}" "${outpng}"; then
+        echo "ERROR: trial-b render produced no output" >&2
+        rm -f "${tmp_a}" "${tmp_b}" || true
+        return 1
+    fi
+    if ! cp "${outpng}" "${tmp_b}"; then
+        echo "ERROR: unable to stage trial-b baseline" >&2
+        rm -f "${tmp_a}" "${tmp_b}" || true
+        return 1
+    fi
+    if ! floor="$(cmp_pct "${tmp_a}" "${tmp_b}")"; then
+        echo "ERROR: captured baseline pair is invalid" >&2
+        rm -f "${tmp_a}" "${tmp_b}" || true
+        return 1
+    fi
+    if ! mv "${tmp_b}" "${target_b}"; then
+        echo "ERROR: unable to publish trial-b baseline" >&2
+        rm -f "${tmp_a}" "${tmp_b}" || true
+        return 1
+    fi
+    if ! mv "${tmp_a}" "${target_a}"; then
+        echo "ERROR: unable to publish trial-a baseline" >&2
+        rm -f "${target_b}" "${tmp_a}" || true
+        return 1
+    fi
+    printf '%s\n' "${floor}"
 }
 
 echo "MODE=${MODE} TAG=${TAG} DIR=${DIR}"
@@ -133,45 +180,23 @@ for entry in "${MANIFEST[@]}"; do
 
     if [ "${MODE}" = "capture" ]; then
         echo "=== capture ${name} [${ptag}] ==="
-        if render "${scene_abs}" "${outpng}"; then
-            if ! cp "${outpng}" "${DIR}/${name}.a.png"; then
-                echo "  FAIL copy capture-a ${name}"
-                failures=$((failures + 1))
-                continue
-            fi
-        else
-            echo "  FAIL render-a"
-            failures=$((failures + 1))
-            continue
-        fi
-        if render "${scene_abs}" "${outpng}"; then
-            if ! cp "${outpng}" "${DIR}/${name}.b.png"; then
-                echo "  FAIL copy capture-b ${name}"
-                failures=$((failures + 1))
-                continue
-            fi
-        else
-            echo "  FAIL render-b"
-            failures=$((failures + 1))
-            continue
-        fi
-        if ! floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"; then
-            echo "  FAIL compare capture pair ${name}"
+        if ! floor="$(capture_pair "${scene_abs}" "${outpng}" "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"; then
+            echo "  FAIL capture pair ${name}"
             failures=$((failures + 1))
             continue
         fi
         echo "  noise-floor(a-vs-b) = ${floor}%"
     else
         base="${DIR}/${name}.a.png"
-        if [ ! -f "${base}" ]; then echo "FAIL no-baseline ${name}"; failures=$((failures + 1)); continue; fi
+        noise="${DIR}/${name}.b.png"
+        if [ ! -f "${base}" ] || [ ! -f "${noise}" ]; then echo "FAIL incomplete-baseline ${name}"; failures=$((failures + 1)); continue; fi
         if render "${scene_abs}" "${outpng}"; then
             if ! d="$(cmp_pct "${base}" "${outpng}")"; then
                 echo "  FAIL compare ${name}"
                 failures=$((failures + 1))
                 continue
             fi
-            floor="n/a"
-            if [ -f "${DIR}/${name}.b.png" ] && ! floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"; then
+            if ! floor="$(cmp_pct "${base}" "${noise}")"; then
                 echo "  FAIL compare noise floor ${name}"
                 failures=$((failures + 1))
                 continue
