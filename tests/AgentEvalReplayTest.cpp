@@ -908,6 +908,378 @@ static void TestIterationCapBudgetRaise()
 	}
 }
 
+//----------------------------------------------------------------------
+// T11: ask_user (stage 1a of clarifying-questions) mid-scenario -- the
+// runner intercepts the call BEFORE dispatcher->HandleLine (ask_user has
+// NO AgentRpc verb; see AgentChatCodecs.cpp / AgentRpc.cpp, untouched)
+// and synthesizes a SUCCESS available:false result itself.  Proves:
+//   (a) the run CONTINUES to final_text -- ask_user is never treated as
+//       an error, so it does not derail the scenario;
+//   (b) the trajectory records the tool call by name (ask_user) with the
+//       SYNTHESIZED response embedded (available:false + the "no
+//       interactive user" note) -- exactly like a real dispatched verb's
+//       jsonrpc.response, just never having reached HandleLine;
+//   (c) the tool-call budget counted it as a REAL round-trip: (c1) a
+//       budget of exactly 1 is satisfied without tripping, and (c2) a
+//       budget of 0 stops the run BEFORE ask_user is dispatched at all
+//       (the RED-PROVE half -- matches T7's honest-stop pattern).
+//----------------------------------------------------------------------
+static void TestAskUserMidScenario()
+{
+	std::printf( "T11: ask_user mid-scenario -- runner-synthesized available:false, run continues...\n" );
+
+	// The fixture: one Anthropic turn calling ask_user with a real
+	// options-carrying question (the shape a model would actually send
+	// per AgentChatCodecs.cpp's ask_user description), followed by a
+	// plain end_turn text turn -- the model proceeding on its own
+	// judgment after the synthesized available:false comes back, exactly
+	// as the tool's description instructs.
+	auto buildFixture = []( const std::string& path ) -> std::string {
+		std::string out;
+		{
+			const std::string body =
+				"{\"id\":\"msg_ask\",\"type\":\"message\",\"role\":\"assistant\","
+				"\"model\":\"claude-sonnet-5\",\"content\":["
+				"{\"type\":\"text\",\"text\":\"Let me check the intended mood first.\"},"
+				"{\"type\":\"tool_use\",\"id\":\"toolu_ask1\",\"name\":\"ask_user\","
+				"\"input\":{\"question\":\"Should the mood be warm sunset or cool overcast?\","
+				"\"options\":[\"warm sunset\",\"cool overcast\"]}}],"
+				"\"stop_reason\":\"tool_use\",\"stop_sequence\":null,"
+				"\"usage\":{\"input_tokens\":50,\"output_tokens\":20}}";
+			JsonValue line = JsonValue::MakeObject();
+			line.set( "provider", JsonValue::MakeString( "anthropic" ) );
+			line.set( "body", JsonValue::MakeString( body ) );
+			out += JsonSerialize( line ) + "\n";
+		}
+		{
+			const std::string body =
+				"{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\","
+				"\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"text\",\"text\":"
+				"\"No one was available to answer, so I proceeded with a warm sunset mood.\"}],"
+				"\"stop_reason\":\"end_turn\",\"stop_sequence\":null,"
+				"\"usage\":{\"input_tokens\":30,\"output_tokens\":15}}";
+			JsonValue line = JsonValue::MakeObject();
+			line.set( "provider", JsonValue::MakeString( "anthropic" ) );
+			line.set( "body", JsonValue::MakeString( body ) );
+			out += JsonSerialize( line ) + "\n";
+		}
+		WriteFile( path, out );
+		return path;
+	};
+
+	// (a) + (b): the plain run, no tightened budget.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T11a: param_edit reloads as the scene/session donor (" + err + ")" );
+		scenario.id = "ask_user_mid_scenario";
+		scenario.prompts.clear();
+		scenario.prompts.push_back( AgentEvalPrompt( "Build me a sunset scene" ) );
+		scenario.replayFixturePath.clear();   // fed via replaySourceOverride instead
+
+		const std::string dir = ScratchRunDir( "t11a_ask_user" );
+		const std::string fixturePath = buildFixture( dir + "/fixture.jsonl" );
+
+		AgentEvalReplaySource src;
+		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
+		       "T11a: the ask_user + final-text fixture loads (" + err + ")" );
+		Check( src.Total() == 2, "T11a: fixture carries 2 canned bodies" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = dir;
+		opts.replaySourceOverride = &src;
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+
+		// (a) the run CONTINUES -- ask_user is not treated as an error and
+		// does not derail the scenario.
+		Check( h.result.terminalStatus == "final_text",
+		       "T11a: the run reaches final_text despite calling ask_user (got '" +
+		       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+		Check( !h.result.budgetHit, "T11a: no budget tripped" );
+		Check( h.result.llmCalls == 2, "T11a: exactly 2 llm rounds (ask_user turn + final text turn)" );
+		Check( h.result.toolCalls == 1, "T11a: exactly 1 tool call dispatched (ask_user itself)" );
+		Check( h.result.finalText ==
+		       "No one was available to answer, so I proceeded with a warm sunset mood.",
+		       "T11a: final text captured -- the model proceeded on its own judgment" );
+
+		// (b) the trajectory: session,user,llm,tool,llm,summary, the tool
+		// record names ask_user, and its jsonrpc.response embeds the
+		// SYNTHESIZED available:false result (never having reached
+		// dispatcher->HandleLine -- ask_user has no AgentRpc verb at all).
+		std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+		const std::vector<std::string> expectedSeq = { "session", "user", "llm", "tool", "llm", "summary" };
+		Check( RunTypeSequence( recs ) == expectedSeq,
+		       "T11a: trajectory record sequence is session,user,llm,tool,llm,summary" );
+		Check( ToolNameSequence( recs ) == std::vector<std::string>{ "ask_user" },
+		       "T11a: the trajectory's one tool record names ask_user" );
+
+		bool sawToolRecord = false;
+		for( std::size_t i = 0; i < recs.size(); ++i ) {
+			if( recs[i].get( "run_type" ).asString() != "tool" ) continue;
+			sawToolRecord = true;
+			Check( recs[i].get( "name" ).asString() == "ask_user", "T11a: tool record name is ask_user" );
+			Check( !recs[i].get( "error" ).asBool(),
+			       "T11a: the synthesized result is recorded as a SUCCESS, not a JSON-RPC error" );
+			const JsonValue& resp = recs[i].get( "jsonrpc.response" );
+			Check( resp.get( "result" ).get( "available" ).asBool() == false,
+			       "T11a: the synthesized response carries available:false" );
+			Check( resp.get( "result" ).get( "note" ).asString().find( "no interactive user is available" ) !=
+			       std::string::npos,
+			       "T11a: the synthesized response's note explains no interactive user is available" );
+		}
+		Check( sawToolRecord, "T11a: a tool record was actually found and inspected" );
+	}
+
+	// (c1) a tool-call budget of exactly 1 is satisfied -- ask_user counts
+	// as the one allotted call, and the run still reaches final_text.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T11c1: param_edit reloads as the scene/session donor (" + err + ")" );
+		scenario.id = "ask_user_budget_exact";
+		scenario.prompts.clear();
+		scenario.prompts.push_back( AgentEvalPrompt( "Build me a sunset scene" ) );
+		scenario.budgets.maxToolCalls = 1;
+		scenario.replayFixturePath.clear();
+
+		const std::string dir = ScratchRunDir( "t11c1_ask_user_budget_exact" );
+		const std::string fixturePath = buildFixture( dir + "/fixture.jsonl" );
+
+		AgentEvalReplaySource src;
+		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
+		       "T11c1: fixture loads (" + err + ")" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = dir;
+		opts.replaySourceOverride = &src;
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+		Check( h.result.terminalStatus == "final_text",
+		       "T11c1: maxToolCalls=1 comfortably covers the single ask_user call (got '" +
+		       h.result.terminalStatus + "')" );
+		Check( h.result.toolCalls == 1, "T11c1: exactly 1 tool call counted" );
+		Check( !h.result.budgetHit, "T11c1: budget not hit -- 1 call against a budget of 1 is within bounds" );
+	}
+
+	// (c2) RED-PROVE: a tool-call budget of 0 stops the run BEFORE
+	// ask_user is ever dispatched -- the honest-stop contract T7 proves
+	// for a dispatched verb holds identically for the intercepted one.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T11c2: param_edit reloads as the scene/session donor (" + err + ")" );
+		scenario.id = "ask_user_budget_zero";
+		scenario.prompts.clear();
+		scenario.prompts.push_back( AgentEvalPrompt( "Build me a sunset scene" ) );
+		scenario.budgets.maxToolCalls = 0;
+		scenario.replayFixturePath.clear();
+
+		const std::string dir = ScratchRunDir( "t11c2_ask_user_budget_zero" );
+		const std::string fixturePath = buildFixture( dir + "/fixture.jsonl" );
+
+		AgentEvalReplaySource src;
+		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
+		       "T11c2: fixture loads (" + err + ")" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = dir;
+		opts.replaySourceOverride = &src;
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+		Check( h.result.terminalStatus == "budget_tool_calls",
+		       "T11c2: maxToolCalls=0 trips honestly before ask_user ever dispatches (got '" +
+		       h.result.terminalStatus + "')" );
+		Check( h.result.budgetHit, "T11c2: budgetHit is true" );
+		Check( h.result.toolCalls == 0, "T11c2: zero tool calls dispatched -- ask_user never ran" );
+
+		std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+		Check( ToolNameSequence( recs ).empty(),
+		       "T11c2: the trajectory carries NO tool record -- the honest stop happened before dispatch" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T12: PARALLEL MIXED TURN -- ONE assistant turn carries BOTH ask_user
+// AND a real dispatched tool call (read_document), as two parallel
+// tool_use blocks.  Proves the runner's interception (the `if(
+// call.name == "ask_user" )` branch inside RunScenarioDriven's per-call
+// loop) discriminates by NAME within a batch, not by turn: ask_user is
+// intercepted+synthesized, read_document is dispatched for REAL through
+// the live AgentRpcDispatcher (its jsonrpc.response carries the ACTUAL
+// document text -- proof it was not also intercepted), the tool-call
+// budget counts BOTH (T12b RED-PROVEs this: a budget of 1 stops the run
+// right after ask_user -- the FIRST call in the turn -- so
+// read_document, the second call in the SAME turn, never dispatches at
+// all), and the trajectory carries both tool records in the SAME order
+// the model requested them.  (The companion wire-invariant proof -- that
+// both results ride in ONE packed message on the actual wire -- lives in
+// AgentChatLoopTest.cpp's T39d; this runner-level test cannot inspect
+// the built request body directly since the replay fetch never sees it,
+// only the trajectory + result the run produces.)
+//----------------------------------------------------------------------
+static void TestAskUserParallelWithDispatchedTool()
+{
+	std::printf( "T12: ask_user PARALLEL with a dispatched tool call (read_document) "
+	             "in the SAME turn...\n" );
+
+	// The fixture: ONE Anthropic turn with two parallel tool_use blocks --
+	// ask_user FIRST, read_document SECOND -- followed by a plain
+	// end_turn text turn.  ask_user first (rather than last) is
+	// deliberate: it makes T12b's budget=1 RED-PROVE unambiguous (the
+	// ONE dispatched call must be ask_user itself, not read_document
+	// happening to be first).
+	auto buildFixture = []( const std::string& path ) -> std::string {
+		std::string out;
+		{
+			const std::string body =
+				"{\"id\":\"msg_parallel\",\"type\":\"message\",\"role\":\"assistant\","
+				"\"model\":\"claude-sonnet-5\",\"content\":["
+				"{\"type\":\"text\",\"text\":\"Let me confirm the mood, then read the document.\"},"
+				"{\"type\":\"tool_use\",\"id\":\"toolu_ask_par\",\"name\":\"ask_user\","
+				"\"input\":{\"question\":\"Should the mood be warm sunset or cool overcast?\","
+				"\"options\":[\"warm sunset\",\"cool overcast\"]}},"
+				"{\"type\":\"tool_use\",\"id\":\"toolu_doc_par\",\"name\":\"read_document\",\"input\":{}}],"
+				"\"stop_reason\":\"tool_use\",\"stop_sequence\":null,"
+				"\"usage\":{\"input_tokens\":60,\"output_tokens\":25}}";
+			JsonValue line = JsonValue::MakeObject();
+			line.set( "provider", JsonValue::MakeString( "anthropic" ) );
+			line.set( "body", JsonValue::MakeString( body ) );
+			out += JsonSerialize( line ) + "\n";
+		}
+		{
+			const std::string body =
+				"{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\","
+				"\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"text\",\"text\":"
+				"\"Proceeding with a warm sunset mood, using the document I read.\"}],"
+				"\"stop_reason\":\"end_turn\",\"stop_sequence\":null,"
+				"\"usage\":{\"input_tokens\":30,\"output_tokens\":15}}";
+			JsonValue line = JsonValue::MakeObject();
+			line.set( "provider", JsonValue::MakeString( "anthropic" ) );
+			line.set( "body", JsonValue::MakeString( body ) );
+			out += JsonSerialize( line ) + "\n";
+		}
+		WriteFile( path, out );
+		return path;
+	};
+
+	// (a) unbudgeted: BOTH calls dispatch (one intercepted, one real),
+	// the run reaches final_text, and the trajectory shows both, in order.
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T12a: param_edit reloads as the scene/session donor (" + err + ")" );
+		scenario.id = "ask_user_parallel_mixed";
+		scenario.prompts.clear();
+		scenario.prompts.push_back( AgentEvalPrompt( "Check the mood with me, then read the document" ) );
+		scenario.replayFixturePath.clear();   // fed via replaySourceOverride instead
+
+		const std::string dir = ScratchRunDir( "t12a_ask_user_parallel" );
+		const std::string fixturePath = buildFixture( dir + "/fixture.jsonl" );
+
+		AgentEvalReplaySource src;
+		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
+		       "T12a: the parallel ask_user+read_document fixture loads (" + err + ")" );
+		Check( src.Total() == 2, "T12a: fixture carries 2 canned bodies" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = dir;
+		opts.replaySourceOverride = &src;
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+
+		Check( h.result.terminalStatus == "final_text",
+		       "T12a: the run reaches final_text with a mixed ask_user+read_document turn (got '" +
+		       h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+		Check( !h.result.budgetHit, "T12a: no budget tripped" );
+		Check( h.result.llmCalls == 2, "T12a: exactly 2 llm rounds" );
+		Check( h.result.toolCalls == 2,
+		       "T12a: exactly 2 tool calls dispatched -- ask_user AND read_document BOTH count" );
+
+		std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+		const std::vector<std::string> expectedSeq = { "session", "user", "llm", "tool", "tool", "llm", "summary" };
+		Check( RunTypeSequence( recs ) == expectedSeq,
+		       "T12a: trajectory record sequence is session,user,llm,tool,tool,llm,summary" );
+		Check( ToolNameSequence( recs ) == ( std::vector<std::string>{ "ask_user", "read_document" } ),
+		       "T12a: the trajectory's two tool records are ask_user then read_document, IN ORDER "
+		       "(matching the model's parallel tool_use array order)" );
+
+		int toolRecordsSeen = 0;
+		for( std::size_t i = 0; i < recs.size(); ++i ) {
+			if( recs[i].get( "run_type" ).asString() != "tool" ) continue;
+			++toolRecordsSeen;
+			const std::string name = recs[i].get( "name" ).asString();
+			Check( !recs[i].get( "error" ).asBool(),
+			       "T12a: " + name + "'s result is recorded as a SUCCESS, not a JSON-RPC error" );
+			const JsonValue& resp = recs[i].get( "jsonrpc.response" );
+			if( name == "ask_user" ) {
+				// INTERCEPTED before dispatcher->HandleLine: the
+				// synthesized available:false result.
+				Check( resp.get( "result" ).get( "available" ).asBool() == false,
+				       "T12a: ask_user's response is the synthesized available:false" );
+			}
+			else if( name == "read_document" ) {
+				// DISPATCHED FOR REAL: the actual scene document text
+				// rides back -- proof this call genuinely reached
+				// AgentRpcDispatcher and was NOT also intercepted.
+				Check( resp.get( "result" ).get( "document" ).asString().find( "RISE ASCII SCENE" ) !=
+				       std::string::npos,
+				       "T12a: read_document's response carries the REAL dispatched document text" );
+			}
+			else {
+				Check( false, "T12a: unexpected tool record name '" + name + "'" );
+			}
+		}
+		Check( toolRecordsSeen == 2, "T12a: exactly two tool records were inspected" );
+	}
+
+	// (b) RED-PROVE: a tool-call budget of 1 stops the run right AFTER
+	// ask_user -- the FIRST call dispatched in the turn -- so
+	// read_document, the SECOND call in the SAME turn, never dispatches.
+	// Proves the budget genuinely counts an INTERCEPTED call the same as
+	// a dispatched one (never "free" just because it never reaches
+	// HandleLine).
+	{
+		AgentEvalScenario scenario;
+		std::string err;
+		Check( LoadEvalScenario( "evals/scenarios/param_edit.json", scenario, err ),
+		       "T12b: param_edit reloads as the scene/session donor (" + err + ")" );
+		scenario.id = "ask_user_parallel_mixed_budget1";
+		scenario.prompts.clear();
+		scenario.prompts.push_back( AgentEvalPrompt( "Check the mood with me, then read the document" ) );
+		scenario.budgets.maxToolCalls = 1;
+		scenario.replayFixturePath.clear();
+
+		const std::string dir = ScratchRunDir( "t12b_ask_user_parallel_budget1" );
+		const std::string fixturePath = buildFixture( dir + "/fixture.jsonl" );
+
+		AgentEvalReplaySource src;
+		Check( AgentEvalReplaySource::LoadFromFile( fixturePath, src, err ),
+		       "T12b: fixture loads (" + err + ")" );
+
+		AgentEvalRunOptions opts;
+		opts.runDir = dir;
+		opts.replaySourceOverride = &src;
+
+		AgentEvalRunHandle h = RunScenario( scenario, opts );
+
+		Check( h.result.terminalStatus == "budget_tool_calls",
+		       "T12b: maxToolCalls=1 trips honestly right after ask_user, the first call in the turn "
+		       "(got '" + h.result.terminalStatus + "')" );
+		Check( h.result.budgetHit, "T12b: budgetHit is true" );
+		Check( h.result.toolCalls == 1,
+		       "T12b: exactly 1 tool call dispatched -- the budget really counted the intercepted ask_user call" );
+
+		std::vector<JsonValue> recs = ReadJsonl( h.trajectoryPath );
+		Check( ToolNameSequence( recs ) == std::vector<std::string>{ "ask_user" },
+		       "T12b: the trajectory's ONE tool record is ask_user -- read_document (2nd in the turn) never ran" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalReplayTest (Eval-harness slice E2: replay backend + scenario runner) ===\n" );
@@ -922,6 +1294,8 @@ int main()
 	TestRecordOnceReplayForeverRedProve();
 	TestScenarioFileFnvStamp();
 	TestIterationCapBudgetRaise();
+	TestAskUserMidScenario();
+	TestAskUserParallelWithDispatchedTool();
 
 	std::printf( "=== AgentEvalReplayTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

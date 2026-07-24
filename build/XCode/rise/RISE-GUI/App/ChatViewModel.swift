@@ -228,6 +228,14 @@ final class ChatViewModel: ObservableObject {
             case thinking
             case error
             case notice
+            /// Stage 1b (clarifying-questions): the model's `ask_user`
+            /// question text, appended when the tool call is intercepted
+            /// (see `handleAskUserToolCall`) — this row IS the call's
+            /// transcript representation, so `ask_user` gets no separate
+            /// `.toolActivity` "→ ask_user" row.  Styled like `.assistant`
+            /// narration but with a small accent marker so questions are
+            /// scannable in history (ChatPanel's `questionRow`).
+            case question
         }
         let id = UUID()
         let kind: Kind
@@ -307,6 +315,30 @@ final class ChatViewModel: ObservableObject {
     /// exotic-but-well-formed recorded turn may be invalid on replay;
     /// Reset is the documented recovery).
     @Published private(set) var resetOffered: Bool = false
+
+    // MARK: - Clarifying questions (`ask_user`, stage 1b)
+
+    /// One `ask_user` call awaiting the user's answer — the Swift-facing
+    /// mirror of the tool's parsed arguments (see
+    /// `ChatViewModel.parseAskUserArgs`).  ChatPanel renders this as an
+    /// answer card above the composer while non-nil.
+    struct PendingQuestion: Equatable {
+        let question: String
+        let options: [String]
+        let allowFreeform: Bool
+    }
+    /// Non-nil exactly while `handleAskUserToolCall` is suspended awaiting
+    /// an answer (i.e. exactly while `pendingAnswerContinuation` is
+    /// non-nil — the two are always set/cleared together).
+    @Published private(set) var pendingQuestion: PendingQuestion? = nil
+    /// The suspended `ask_user` continuation, or nil when no question is
+    /// pending.  `resumePendingQuestion(with:)` is the ONLY place that
+    /// resumes it — it nils this property BEFORE calling `.resume`, so a
+    /// second resume attempt (a stray double-tap on an answer-card button
+    /// racing a Stop, say) finds nil and safely no-ops.  A
+    /// `CheckedContinuation` traps on a second `.resume`, so that guard is
+    /// load-bearing, not defensive dressing.
+    private var pendingAnswerContinuation: CheckedContinuation<String?, Never>?
 
     // Provider settings.  MODEL IDS persist in UserDefaults; keys go
     // to the Keychain only.
@@ -780,6 +812,41 @@ final class ChatViewModel: ObservableObject {
         UserDefaults.standard.bool(forKey: Self.detailedTranscriptKey)
     }
 
+    // MARK: - Prompt triage (GUI stage 3 of clarifying-questions)
+
+    /// SAME UserDefaults keys `ChatSettingsView`'s `@AppStorage` fields
+    /// read/write — see `detailedTranscriptKey`'s doc for why this file
+    /// re-reads rather than mirroring with a `@Published` property (read
+    /// once per `send()`, not observed continuously).
+    private static let triageEnabledKey  = "agentChatTriageEnabled"
+    private static let triageProviderKey = "agentChatTriageProvider"
+    private static let triageModelKey    = "agentChatTriageModel"
+
+    /// Default OFF — triage is an opt-in pre-pass (see `send()`'s
+    /// eligibility gate).
+    private var triageEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.triageEnabledKey)
+    }
+
+    /// "local" ($0, matches the main provider's own keyless-by-design
+    /// default posture) when unset or when the stored raw value no
+    /// longer names a real provider (e.g. a future removed case).
+    private var triageProvider: AgentChatProviderChoice {
+        let raw = UserDefaults.standard.string(forKey: Self.triageProviderKey) ?? "local"
+        return AgentChatProviderChoice(rawValue: raw) ?? .local
+    }
+
+    /// "" (provider default) is legal — `runTriage` passes it straight
+    /// to `setProvider:modelId:`, same as the main provider picker's
+    /// blank-model convention.  The DEFAULT value here (before the user
+    /// ever opens settings) is "qwen3.6:27b" — a small, fast local model
+    /// appropriate for a one-shot triage question, not the main chat's
+    /// default per-provider model.
+    private var triageModelId: String {
+        let raw = UserDefaults.standard.string(forKey: Self.triageModelKey) ?? ""
+        return raw.isEmpty ? "qwen3.6:27b" : raw
+    }
+
     /// GUI stage 2: cap a tool-call detail payload (args JSON or a raw
     /// result line) to ~4KB — Swift `String.prefix` counts Characters
     /// (grapheme clusters), so this can never split a multi-byte
@@ -1186,15 +1253,21 @@ final class ChatViewModel: ObservableObject {
     /// mid-conversation (Save Key, which seeds the cache directly) or
     /// exporting an env var and relaunching recovers without a restart
     /// — see `saveApiKey`'s cache-seed for the in-app case.
-    private func resolveApiKey() -> String? {
-        if let cached = cachedApiKeys[provider] {
+    /// GUI stage 3: `for` defaults to the main chat provider (`self.provider`)
+    /// so every pre-stage-3 call site is unchanged; the triage flow passes
+    /// its OWN (possibly different) provider explicitly.  Same cache
+    /// (`cachedApiKeys` is keyed by provider already), same Keychain-then-
+    /// env-var resolution order.
+    private func resolveApiKey(for lookupProvider: AgentChatProviderChoice? = nil) -> String? {
+        let p = lookupProvider ?? provider
+        if let cached = cachedApiKeys[p] {
             return cached
         }
-        if let key = AgentChatKeychain.read(account: provider.keychainAccount) {
-            cachedApiKeys[provider] = key
+        if let key = AgentChatKeychain.read(account: p.keychainAccount) {
+            cachedApiKeys[p] = key
             return key
         }
-        for envVar in provider.apiKeyEnvVars {
+        for envVar in p.apiKeyEnvVars {
             if let env = getenv(envVar) {
                 let key = String(cString: env)
                 if !key.isEmpty {
@@ -1202,7 +1275,7 @@ final class ChatViewModel: ObservableObject {
                     // not the thing prompting), and keeps the two
                     // sources consistent — one resolution per provider
                     // per run either way.
-                    cachedApiKeys[provider] = key
+                    cachedApiKeys[p] = key
                     return key
                 }
             }
@@ -1515,9 +1588,29 @@ final class ChatViewModel: ObservableObject {
         pendingAttachments = []
         attachmentError = nil
         clearErrorAffordances()
+
+        // GUI stage 3 (prompt triage): eligibility, computed BEFORE this
+        // message's own `.user` row is appended below -- a transcript
+        // that ALREADY has a `.user` row means this is a later turn, not
+        // the conversation's first message.  Images skip triage entirely
+        // (v1 simplicity, per the feature brief).
+        let isFirstUserMessage = !transcript.contains { $0.kind == .user }
+        let shouldTriage = triageEnabled && isFirstUserMessage
+            && attachments.isEmpty && !text.isEmpty
+
         transcript.append(Entry(
             kind: .user, text: text,
             attachmentThumbnails: attachments.map(\.thumbnail)))
+
+        if shouldTriage {
+            // runTriage decides what (if anything) actually reaches
+            // chatBridge -- the original brief, optionally augmented
+            // with clarifications/context, or nothing at all if the user
+            // abandons a clarifying question.  See its doc.
+            startTurnWithTriage(originalText: text)
+            return
+        }
+
         // AddUserMessage also flushes any tool calls abandoned by a
         // previous Stop with synthesized cancelled results — the
         // loop's designed interrupt recovery.
@@ -1558,7 +1651,60 @@ final class ChatViewModel: ObservableObject {
         stopRequested = true
         driverTask?.cancel()
         cancelAnyOutstandingChatRender()
+        // Stage 1b: a pending ask_user question is exactly the kind of
+        // synchronous-stretch-vs-await distinction this method's doc talks
+        // about — the driver is suspended AWAITING the continuation, not
+        // between HTTP rounds, so cancelling driverTask alone would leave
+        // it parked forever.  Resuming with nil is what lets it observe
+        // Task.isCancelled/stopRequested and unwind (see
+        // `handleAskUserToolCall`'s doc); a no-op when no question is
+        // pending.
+        resumePendingQuestion(with: nil)
         transcript.append(Entry(kind: .notice, text: "Stopped."))
+    }
+
+    /// Stage 1b: answer a pending `ask_user` question by tapping one of
+    /// its offered options — used VERBATIM (no trimming), matching the
+    /// tool's documented contract ("the text of the option the user
+    /// picked, verbatim"; see AgentChatCodecs.cpp's `ask_user`
+    /// description).  A no-op if no question is pending (button already
+    /// gone) or a race already resumed it (see `resumePendingQuestion`'s
+    /// double-resume guard).
+    func answerQuestion(option text: String) {
+        resumePendingQuestion(with: text)
+    }
+
+    /// Stage 1b: answer a pending `ask_user` question with typed free
+    /// text.  Empty/whitespace-only input is a no-op — there is nothing
+    /// useful to send, and the Send button in the answer card is disabled
+    /// on the same predicate.
+    func answerQuestion(freeform text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        resumePendingQuestion(with: trimmed)
+    }
+
+    /// Stage 1b: resume the suspended `ask_user` continuation exactly
+    /// once.  `answer == nil` means "no answer is coming" (Stop / scene
+    /// close / a production render starting — see every `cancelTurn()`
+    /// call site and `requestStop()` above); `handleAskUserToolCall`
+    /// reads that as the same interrupted-tool-call signal every other
+    /// mid-turn cancellation produces, and abandons without recording a
+    /// result (the next `addUserMessage`'s flush synthesizes the
+    /// cancelled result, same recovery as every other pending tool call).
+    ///
+    /// DOUBLE-RESUME GUARD: nils `pendingAnswerContinuation` BEFORE
+    /// calling `.resume` — a `CheckedContinuation` traps if resumed
+    /// twice, and two independent callers can legitimately race here (a
+    /// button tap racing a Stop click, or Stop firing from both
+    /// `requestStop()` and a `cancelTurn()` triggered by the same user
+    /// gesture). Taking the continuation out of the property first means
+    /// the SECOND caller finds nil and returns without touching it.
+    private func resumePendingQuestion(with answer: String?) {
+        guard let continuation = pendingAnswerContinuation else { return }
+        pendingAnswerContinuation = nil
+        pendingQuestion = nil
+        continuation.resume(returning: answer)
     }
 
     /// Reset the conversation (offered after repeated HTTP 400s, and
@@ -1608,6 +1754,13 @@ final class ChatViewModel: ObservableObject {
         driverTask = nil
         isBusy = false
         cancelAnyOutstandingChatRender()
+        // Stage 1b: every caller of cancelTurn() (sceneOpened, sceneClosed,
+        // applyProviderSelection, resetConversation, productionRenderStarting)
+        // is one of the transcript-clear / turn-teardown sites that must not
+        // leave a driveTurn() Task parked forever awaiting an answer nobody
+        // will give — see `requestStop()`'s matching call for the full
+        // rationale. No-op when no question is pending.
+        resumePendingQuestion(with: nil)
     }
 
     /// Model-B F2 slice S2b: trip `render_cancel` on the controller if a
@@ -1712,6 +1865,33 @@ final class ChatViewModel: ObservableObject {
             // Only the CURRENT turn's tail may clear the busy state —
             // a cancelled turn resuming late must not stomp a newer one.
             guard let self, self.turnGeneration == generation else { return }
+            self.isBusy = false
+            self.driverTask = nil
+        }
+    }
+
+    /// GUI stage 3 (prompt triage): like `startTurn()`, but runs
+    /// `runTriage` FIRST — same `driverTask`/`turnGeneration`/`isBusy`
+    /// bookkeeping, so the composer stays disabled and Stop works
+    /// identically whether the user is mid-triage-question or
+    /// mid-main-turn.  `runTriage` returning false means it was
+    /// abandoned (a nil answer to a clarifying question) — the main
+    /// turn never starts and nothing was sent.
+    private func startTurnWithTriage(originalText: String) {
+        stopRequested = false
+        isBusy = true
+        turnGeneration += 1
+        let generation = turnGeneration
+        driverTask = Task { [weak self] in
+            guard let self else { return }
+            let proceed = await self.runTriage(originalText: originalText)
+            if proceed, !Task.isCancelled, !self.stopRequested,
+               self.turnGeneration == generation {
+                await self.driveTurn()
+            }
+            // Only the CURRENT turn's tail may clear the busy state —
+            // a cancelled turn resuming late must not stomp a newer one.
+            guard self.turnGeneration == generation else { return }
             self.isBusy = false
             self.driverTask = nil
         }
@@ -1880,6 +2060,23 @@ final class ChatViewModel: ObservableObject {
                     guard let vb = viewportBridge else { return }
                     guard sceneEditableOrReportRenderConflict() else { return }
 
+                    // Stage 1b (clarifying-questions): ask_user is a
+                    // CHAT-LOOP-ONLY tool with no AgentRpc verb (see
+                    // AgentChatCodecs.cpp's layout doc) -- the HOST
+                    // intercepts it HERE, before toolCallToJsonRpcLine /
+                    // agentHandleToolCall, exactly as AgentEvalRunner.cpp's
+                    // headless interception does for stage 1a (that one
+                    // always answers available:false; this one has a real
+                    // interactive user to ask).  It gets NO "→ ask_user"
+                    // activity row -- the question row
+                    // `handleAskUserToolCall` appends IS its transcript
+                    // representation -- so this branch never falls into the
+                    // toolRowIndex/agentHandleToolCall machinery below.
+                    if call.name == "ask_user" {
+                        guard await handleAskUserToolCall(call) else { return }
+                        continue
+                    }
+
                     transcript.append(Entry(kind: .toolActivity,
                                             text: "→ \(call.name)"))
                     // GUI stage 2: this call's row — found BY INDEX (it
@@ -1970,6 +2167,400 @@ final class ChatViewModel: ObservableObject {
                 return
             }
         }
+    }
+
+    /// Stage 1b (clarifying-questions): parsed `ask_user` arguments
+    /// (mirrors the JSON-Schema in AgentChatCodecs.cpp's `ask_user`
+    /// tool definition — `question` required, `options`/`allowFreeform`
+    /// optional).
+    private struct AskUserArgs {
+        let question: String
+        let options: [String]
+        let allowFreeform: Bool
+    }
+
+    /// Parse one `ask_user` call's `argsJson`.  Returns nil on ANYTHING
+    /// short of a well-formed object with a non-blank `question` string
+    /// — malformed `options`/`allowFreeform` entries are dropped/defaulted
+    /// individually rather than failing the whole call, since they are
+    /// optional and a model that gets them slightly wrong (e.g. a number
+    /// in the `options` array) still asked a perfectly answerable
+    /// question.
+    private static func parseAskUserArgs(_ argsJson: String) -> AskUserArgs? {
+        guard let data = argsJson.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let rawQuestion = obj["question"] as? String
+        else { return nil }
+        let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return nil }
+        let options = (obj["options"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let allowFreeform = (obj["allowFreeform"] as? Bool) ?? true
+        return AskUserArgs(question: question, options: options, allowFreeform: allowFreeform)
+    }
+
+    /// Build the JSON-RPC success envelope `chatBridge.addToolResult`
+    /// expects for an answered `ask_user` call: `{"jsonrpc":"2.0",
+    /// "id":<rpcId>,"result":{"answer":"<text>"}}` — the exact shape
+    /// AgentChatLoopTest.cpp's T39b/T39c hand-feed to `AddToolResult`.
+    /// Goes through `JSONSerialization` (rather than hand-splicing
+    /// `answer` into a string literal) so an answer containing quotes,
+    /// backslashes, or newlines is escaped correctly.
+    private static func askUserResultLine(rpcId: Int, answer: String) -> String {
+        let obj: [String: Any] = ["jsonrpc": "2.0", "id": rpcId, "result": ["answer": answer]]
+        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+              let line = String(data: data, encoding: .utf8)
+        else {
+            // A plain-string `answer` value is always JSON-representable
+            // as UTF-8 -- this branch is unreachable in practice, but the
+            // function stays total (an empty answer beats a crash).
+            return "{\"jsonrpc\":\"2.0\",\"id\":\(rpcId),\"result\":{\"answer\":\"\"}}"
+        }
+        return line
+    }
+
+    /// Stage 1b (clarifying-questions): handle one `ask_user` call —
+    /// parse its arguments, publish `pendingQuestion` so ChatPanel shows
+    /// the answer card, suspend until the user answers (or the turn is
+    /// torn down), and feed the result back to `chatBridge`.
+    ///
+    /// MALFORMED ARGS: synthesized as a JSON-RPC `error` result (code
+    /// -32602, matching JSON-RPC's own "Invalid params") fed straight to
+    /// `addToolResult` — never a crash, never a transcript row (there is
+    /// no question worth showing).  The model sees the error and can
+    /// retry with valid arguments.
+    ///
+    /// CONTINUATION LIFECYCLE: `pendingAnswerContinuation` is created by
+    /// the `withCheckedContinuation` call below and consumed EXACTLY ONCE
+    /// by `resumePendingQuestion(with:)` — either with the user's answer
+    /// (`answerQuestion(option:)` / `answerQuestion(freeform:)`, driven by
+    /// ChatPanel's answer card) or with `nil` (`requestStop()` / every
+    /// `cancelTurn()` call site: scene close, provider switch, manual
+    /// reset, a production render starting).  `resumePendingQuestion`'s
+    /// own doc has the double-resume guard.
+    ///
+    /// Returns `false` when the turn is being torn down (a nil answer, OR
+    /// Stop/scene-close/a-render-starting fired in the gap between resume
+    /// and this Task actually running again — the SAME post-await
+    /// re-verification every other suspension point in `driveTurn` does)
+    /// — the caller's `guard ... else { return }` mirrors every other
+    /// post-await site in this file. On `false`, nothing is recorded for
+    /// this call: the next `addUserMessage`'s flush synthesizes the
+    /// cancelled result, the SAME recovery path every other interrupted
+    /// tool call uses.
+    private func handleAskUserToolCall(_ call: RISEAgentChatToolCall) async -> Bool {
+        let rpcId = nextRpcId
+        nextRpcId += 1
+
+        // Stamp the trajectory's request record + latency stash EXACTLY like
+        // the normal dispatch path does (line ~1999). We discard the returned
+        // JSON-RPC line — ask_user is never dispatched to the scene — but the
+        // call's side effect is load-bearing: without it, every recorded
+        // ask_user `tool` record carries an EMPTY jsonRpcRequest and a latency
+        // of 0ms, which reads as "instant" when the round-trip actually took
+        // however long the user thought about the answer. (Review P2; the
+        // eval runner's interception already stamps it — this mirrors that.)
+        _ = chatBridge.toolCallToJsonRpcLine(call, rpcId: rpcId)
+
+        guard let args = Self.parseAskUserArgs(call.argsJson) else {
+            let errorLine = "{\"jsonrpc\":\"2.0\",\"id\":\(rpcId),\"error\":" +
+                "{\"code\":-32602,\"message\":\"ask_user: malformed arguments\"}}"
+            chatBridge.addToolResult(call, jsonRpcResponseLine: errorLine)
+            return true
+        }
+
+        guard let answerText = await askQuestionAndAwaitAnswer(
+            question: args.question, options: args.options, allowFreeform: args.allowFreeform)
+        else { return false }
+
+        chatBridge.addToolResult(
+            call, jsonRpcResponseLine: Self.askUserResultLine(rpcId: rpcId, answer: answerText))
+        return true
+    }
+
+    /// GUI stage 3 (prompt triage): the shared "ask one question, await
+    /// the answer via the pendingQuestion/answer-card mechanism"
+    /// primitive — factored out of `handleAskUserToolCall` so
+    /// `runTriage`'s clarifying-question loop drives the SAME card
+    /// without a second parallel implementation.  Appends the
+    /// `.question` transcript row, suspends until the user answers (or
+    /// the turn is torn down), and — only on a real answer — appends
+    /// the matching `.user` row.  Mirrors `handleAskUserToolCall`'s
+    /// pre-refactor shape exactly (see that method's CONTINUATION
+    /// LIFECYCLE doc, still accurate): `pendingAnswerContinuation` is
+    /// consumed exactly once by `resumePendingQuestion(with:)`, either
+    /// with the user's answer or with `nil` (Stop / scene close / a
+    /// production render starting).
+    ///
+    /// Returns nil when the turn is being torn down (a nil answer, or
+    /// Stop/scene-close/a-render-starting raced the resume) — the SAME
+    /// post-await re-verification every other suspension point in this
+    /// file performs.  Callers treat nil exactly like
+    /// `handleAskUserToolCall` treats `false`: abandon, record nothing
+    /// for this step, and let the next flush/send synthesize recovery.
+    private func askQuestionAndAwaitAnswer(
+        question: String, options: [String], allowFreeform: Bool
+    ) async -> String? {
+        transcript.append(Entry(kind: .question, text: question))
+
+        let answer: String? = await withCheckedContinuation { continuation in
+            pendingAnswerContinuation = continuation
+            pendingQuestion = PendingQuestion(
+                question: question, options: options, allowFreeform: allowFreeform)
+        }
+
+        guard let answerText = answer,
+              !Task.isCancelled, !stopRequested,
+              viewportBridge != nil,
+              sceneEditableOrReportRenderConflict()
+        else { return nil }
+
+        transcript.append(Entry(kind: .user, text: answerText))
+        return answerText
+    }
+
+    // MARK: - Prompt triage (GUI stage 3 of clarifying-questions)
+
+    /// The triage assistant's system prompt — shipped VERBATIM via
+    /// `RISEAgentChatBridge.setSystemPromptOverride` (see that method's
+    /// doc: no base co-editing prompt, no skills section rides
+    /// alongside it).  Deliberately terse and JSON-only: this is a
+    /// single-turn classifier, not a conversational agent, so it gets
+    /// none of the main prompt's scene-tool guidance.
+    private static let triagePrompt =
+        "You are a scene-brief triage assistant for a 3D renderer. Given a " +
+        "user's scene request, decide if it is ambiguous in ways that " +
+        "MATERIALLY change the scene (subject identity, setting/placement, " +
+        "mood/lighting). Most briefs are fine as-is: when in doubt, do NOT " +
+        "ask. Reply with ONLY a JSON object, no prose: {\"needsClarification\": " +
+        "bool, \"questions\": [{\"question\": str, \"options\": [str,...]} up " +
+        "to 2], \"augmentedPrompt\": str}. augmentedPrompt: the user's request " +
+        "restated with any obvious defaults made explicit; empty string if no " +
+        "augmentation helps. If needsClarification is false, questions must be []."
+
+    /// One parsed `questions[]` entry of the triage verdict.
+    private struct TriageQuestion {
+        let question: String
+        let options: [String]
+    }
+
+    /// The parsed triage verdict — mirrors the JSON shape `triagePrompt`
+    /// mandates.
+    private struct TriageVerdict {
+        let needsClarification: Bool
+        /// Capped at 2 entries regardless of how many the model returned
+        /// (the prompt asks for "up to 2"; a hostile/confused model that
+        /// sends more is silently truncated rather than treated as
+        /// malformed — same "degrade the optional bits, don't fail the
+        /// whole parse" spirit as `parseAskUserArgs`).
+        let questions: [TriageQuestion]
+        let augmentedPrompt: String
+    }
+
+    /// Parse the triage model's FinalText into `TriageVerdict`.  Strips
+    /// ONE leading/trailing markdown code fence (```json ... ``` or
+    /// plain ``` ... ```) before parsing — local/open models routinely
+    /// wrap a "JSON only" reply in one despite the instruction.  Returns
+    /// nil on ANY shape mismatch (not an object, `needsClarification`
+    /// missing/non-bool) — `runTriage`'s fall-through-silently contract
+    /// handles that; a per-question shape problem instead drops just
+    /// that question (mirrors `parseAskUserArgs`'s per-field leniency).
+    private static func parseTriageVerdict(_ rawText: String) -> TriageVerdict? {
+        var text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("```") {
+            if let firstNewline = text.firstIndex(of: "\n") {
+                text = String(text[text.index(after: firstNewline)...])
+            }
+            if text.hasSuffix("```") {
+                text = String(text.dropLast(3))
+            }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let data = text.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let needsClarification = obj["needsClarification"] as? Bool
+        else { return nil }
+
+        let rawQuestions = (obj["questions"] as? [[String: Any]]) ?? []
+        let questions: [TriageQuestion] = rawQuestions.compactMap { q in
+            guard let questionText = (q["question"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !questionText.isEmpty
+            else { return nil }
+            let options = (q["options"] as? [Any])?.compactMap { $0 as? String } ?? []
+            return TriageQuestion(question: questionText, options: options)
+        }
+        let augmentedPrompt = (obj["augmentedPrompt"] as? String) ?? ""
+        return TriageVerdict(needsClarification: needsClarification,
+                              questions: Array(questions.prefix(2)),
+                              augmentedPrompt: augmentedPrompt)
+    }
+
+    /// GUI stage 3: run the triage pre-pass on `originalText` (the
+    /// user's just-sent, not-yet-forwarded brief) BEFORE the main turn.
+    /// The ONE caller is `startTurnWithTriage`, itself only reached from
+    /// `send()`'s eligibility gate (triage enabled, first user message,
+    /// no attachments, non-empty text).
+    ///
+    /// FRESH BRIDGE, ONE TURN: constructs its own `RISEAgentChatBridge`
+    /// (separate from `chatBridge`), configured from the triage settings
+    /// + the SAME Keychain/env-var lookup the main loop uses (via
+    /// `resolveApiKey(for:)`), with `setSystemPromptOverride(Self
+    /// .triagePrompt)` so it never sees the co-editing prompt or tool
+    /// guidance.  Drives exactly one AddUserMessage → BuildRequest →
+    /// URLSession → HandleResponse round; never retries.
+    ///
+    /// FALL-THROUGH CONTRACT (triage must NEVER block or degrade the
+    /// normal path): on every one of the following, `chatBridge
+    /// .addUserMessage(originalText)` is called with the UNMODIFIED
+    /// original text and this returns true, exactly as if triage were
+    /// disabled —
+    ///   * the triage provider's raw UserDefaults value no longer names
+    ///     a real provider (defensive; `triageProvider` already falls
+    ///     back to `.local`, so this is effectively unreachable),
+    ///   * no resolvable API key for the triage provider,
+    ///   * BuildRequest returns the documented empty request,
+    ///   * a network/transport error,
+    ///   * the HTTP round exceeds the 20s timeout (`urlRequest
+    ///     .timeoutInterval`),
+    ///   * the step is anything OTHER than FinalText (a tool-call step,
+    ///     a ProviderError) — a triage model that tries to call a tool
+    ///     is treated as a malformed reply, not driven further,
+    ///   * FinalText whose text does not parse as the documented JSON
+    ///     verdict shape (`parseTriageVerdict` returns nil).
+    ///
+    /// CLARIFICATION PATH: `needsClarification` with 1–2 questions
+    /// drives them SEQUENTIALLY through `askQuestionAndAwaitAnswer` (the
+    /// SAME pendingQuestion/answer-card mechanism `ask_user` uses — each
+    /// question becomes a `.question` transcript row, each answer a
+    /// `.user` row).  A nil answer (Stop / scene close / a production
+    /// render starting) ABANDONS TRIAGE ENTIRELY: nothing is sent to
+    /// `chatBridge` and this returns false — the caller does not start
+    /// the main turn.  On a full set of answers, the composed wire text
+    /// is `originalText + "\n\n[Clarifications the user provided: ...]"`
+    /// (augmentedPrompt is IGNORED here — real answers beat guesses),
+    /// followed by a `.notice` row ("Triage asked N questions") so the
+    /// behaviour is visible without cluttering the visible `.user` row
+    /// (which stays the user's own words, appended by `send()` before
+    /// this function ever runs).
+    ///
+    /// CONTEXT-ONLY PATH: `needsClarification == false` with a non-empty
+    /// `augmentedPrompt` composes `originalText` + a bracketed background note
+    /// explicitly framed as informational-not-instructions (the triage model's
+    /// output is MODEL-GENERATED, not user text -- review P2 injection framing) `+
+    /// augmentedPrompt + "]"` — the ORIGINAL text always rides FIRST,
+    /// never replaced (the user must recognize their own words in the
+    /// transcript and on the wire).  A `.notice` row ("Triage added
+    /// context") follows.
+    ///
+    /// KNOWN v1 GAP: the triage bridge has NO trajectory sink configured
+    /// (it is a throwaway instance, never `startTrajectory`'d), so this
+    /// one HTTP round-trip is NOT recorded to the eval-harness JSONL log
+    /// — only the MAIN turn is (automatic: whatever composed text this
+    /// function hands to `chatBridge.addUserMessage` is what the main
+    /// bridge's own `user` trajectory record captures, and
+    /// ComposeSystemPrompt on that side is unaffected by the triage
+    /// bridge's override — the two bridges are fully independent
+    /// objects).
+    private func runTriage(originalText: String) async -> Bool {
+        // Local, non-escaping, called only synchronously within this
+        // method -- an ordinary (strong) capture is fine, it never
+        // outlives this call.
+        func sendUnmodified() -> Bool {
+            chatBridge.addUserMessage(originalText)
+            return true
+        }
+
+        let triageBridge = RISEAgentChatBridge()
+        let triageProviderChoice = triageProvider
+        let triageModel = triageModelId
+        triageBridge.setProvider(triageProviderChoice.bridgeValue,
+                                 modelId: triageModel.isEmpty ? nil : triageModel)
+        triageBridge.setSystemPromptOverride(Self.triagePrompt)
+
+        let apiKey: String
+        if triageProviderChoice.requiresApiKey {
+            guard let resolved = resolveApiKey(for: triageProviderChoice) else {
+                return sendUnmodified()
+            }
+            apiKey = resolved
+        } else {
+            apiKey = ""
+        }
+
+        triageBridge.addUserMessage(originalText)
+        let request = triageBridge.buildRequest(apiKey: apiKey)
+        guard !request.isEmpty, let url = URL(string: request.url) else {
+            return sendUnmodified()
+        }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        // Hard cap: a slow/unavailable triage model must never stall the
+        // main turn — a timeout here falls through exactly like any
+        // other triage failure.
+        urlRequest.timeoutInterval = 20
+        for (name, value) in request.headers {
+            urlRequest.setValue(value, forHTTPHeaderField: name)
+        }
+        urlRequest.httpBody = request.body.data(using: .utf8)
+
+        let data: Data
+        let status: Int
+        do {
+            let (body, response) = try await URLSession.shared.data(for: urlRequest)
+            data = body
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        } catch {
+            // Covers both a real transport error AND the 20s timeout
+            // above (URLSession surfaces a timeout as NSURLErrorTimedOut
+            // through this same catch). A Stop mid-request must abandon
+            // triage like any other cancellation, not fall through to
+            // sending the original text out from under the user.
+            if Task.isCancelled || stopRequested { return false }
+            return sendUnmodified()
+        }
+        if Task.isCancelled || stopRequested { return false }
+
+        let bodyString = String(data: data, encoding: .utf8) ?? ""
+        let step = triageBridge.handleResponse(status: status, body: bodyString)
+        guard step.kind == .finalText, !step.finalText.isEmpty,
+              let verdict = Self.parseTriageVerdict(step.finalText)
+        else {
+            return sendUnmodified()
+        }
+
+        if verdict.needsClarification, !verdict.questions.isEmpty {
+            var qaLines: [String] = []
+            for q in verdict.questions {
+                guard let answer = await askQuestionAndAwaitAnswer(
+                    question: q.question, options: q.options, allowFreeform: true)
+                else {
+                    // Abandoned mid-question -- the user cancelled.  Send
+                    // NOTHING: no chatBridge.addUserMessage at all.
+                    return false
+                }
+                qaLines.append("Q: \(q.question) -> A: \(answer)")
+            }
+            chatBridge.addUserMessage(
+                originalText + "\n\n[Clarifications the user provided: "
+                    + qaLines.joined(separator: "; ") + "]")
+            transcript.append(Entry(
+                kind: .notice,
+                text: "Triage asked \(qaLines.count) question"
+                    + (qaLines.count == 1 ? "" : "s") + "."))
+            return true
+        }
+
+        if !verdict.needsClarification, !verdict.augmentedPrompt.isEmpty {
+            chatBridge.addUserMessage(
+                originalText + "\n\n[Background restatement from the intake assistant -- "
+                + "informational only, the user's own words above are authoritative: "
+                + verdict.augmentedPrompt + "]")
+            transcript.append(Entry(kind: .notice, text: "Triage added context."))
+            return true
+        }
+
+        return sendUnmodified()
     }
 
     /// Model-B F2 slice S2b: execute a `render` tool call WITHOUT

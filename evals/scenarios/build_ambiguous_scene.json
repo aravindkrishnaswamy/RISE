@@ -1,0 +1,116 @@
+{
+  "id": "build_ambiguous_scene",
+  "title": "A materially ambiguous build prompt -- the agent must ask before building, not guess (clarifying-questions stage 2)",
+  "//": "Member of the 'furnished scene build' family in SHAPE (same bare scaffold, same build-completeness battery) but a DIFFERENT axis under test: the prompt deliberately withholds the piece identity, the setting, and the mood, so an agent that just plows ahead is building on a guess. Pairs with the scripted ask_user responder (askUserResponses) to prove the checkpoint battery can distinguish 'asked, then built the right thing' from 'never asked, built SOMETHING'.",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 32\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "Build me a display scene for my prized collection piece. Make it look really nice."
+  ],
+  "budgets": {
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
+  },
+  "replay": {
+    "fixture": "evals/fixtures/build_ambiguous_scene.fixture.jsonl"
+  },
+  "askUserResponses": {
+    "matches": [
+      {
+        "contains": "piece",
+        "answer": "A vintage brass pocket watch, about 5cm across."
+      },
+      {
+        "contains": "what",
+        "answer": "A vintage brass pocket watch, about 5cm across."
+      },
+      {
+        "contains": "object",
+        "answer": "A vintage brass pocket watch, about 5cm across."
+      },
+      {
+        "contains": "collection",
+        "answer": "A vintage brass pocket watch, about 5cm across."
+      },
+      {
+        "contains": "setting",
+        "answer": "On a dark wood desk in a study."
+      },
+      {
+        "contains": "where",
+        "answer": "On a dark wood desk in a study."
+      },
+      {
+        "contains": "surface",
+        "answer": "On a dark wood desk in a study."
+      },
+      {
+        "contains": "display",
+        "answer": "On a dark wood desk in a study."
+      },
+      {
+        "contains": "mood",
+        "answer": "Warm evening light, cozy."
+      },
+      {
+        "contains": "light",
+        "answer": "Warm evening light, cozy."
+      },
+      {
+        "contains": "style",
+        "answer": "Warm evening light, cozy."
+      }
+    ],
+    "default": "A vintage brass pocket watch on a dark wood desk, warm evening light."
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 3,
+      "max": 40
+    },
+    {
+      "kind": "render",
+      "meanLumaMin": 0.015,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 4.0
+    },
+    {
+      "kind": "objectmap",
+      "queryAt": {
+        "x": 16,
+        "y": 12,
+        "expectName": "*"
+      }
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": [
+        "read_document",
+        "render"
+      ],
+      "askUserMin": 1,
+      "askUserMax": 3,
+      "askUserBeforeMutation": true
+    },
+    {
+      "kind": "finalText",
+      "containsAny": [
+        "watch",
+        "pocket"
+      ]
+    }
+  ],
+  "checkpointsRationale": "TYPE-AGNOSTIC battery + CLARIFICATION-SPECIFIC additions. The first four checkpoints are byte-for-byte the same build-completeness/coherence battery as the build_watch_scene/build_stilllife_scene/build_study_scene family (see those scenarios' own rationale for why it stays type-agnostic) -- they grade whether a coherent, lit, bound scene got built at all, independent of WHAT was built. The trajectory checkpoint's askUserMin/askUserMax/askUserBeforeMutation and the finalText checkpoint are what make THIS scenario measure the clarifying-questions behaviour specifically: askUserMin:1 requires the agent to actually pause on the prompt's real ambiguity (piece identity/setting/mood are all left open) rather than silently guessing; askUserMax:3 caps it at the tool's own documented budget (an agent that interrogates the user forever is also failing the task); askUserBeforeMutation:true requires the ask to happen BEFORE the first insert_chunk/insert_chunks/propose_patch/remove_chunk -- asking AFTER already committing to a guess defeats the point; the finalText containsAny:[\"watch\",\"pocket\"] proves the built scene reflects the ANSWER the scripted responder gave (a vintage brass pocket watch), not a piece the agent invented independent of what it was told. This scenario MEASURES asking, so its own committed fixture (evals/fixtures/build_ambiguous_scene.fixture.jsonl) must actually ask -- see TestAdversarialControlNeverAsksStillBuilds in tests/AgentEvalCheckTest.cpp for the control that proves a never-asks fixture fails askUserMin specifically while the build checkpoints still pass."
+}

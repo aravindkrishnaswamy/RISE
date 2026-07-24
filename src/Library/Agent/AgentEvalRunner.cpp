@@ -126,6 +126,48 @@ namespace RISE
 				return IsFiniteDouble( v );
 			}
 
+			//! ASCII-only lowercase copy -- shared by the ask_user scripted
+			//! responder's case-INSENSITIVE substring match (below) and,
+			//! were a future caller to need it, anything else wanting the
+			//! exact same fold CheckFinalTextKind's local lambda already
+			//! uses.  Non-ASCII bytes pass through unchanged (scenario
+			//! questions/answers are English prompt text in this harness).
+			std::string ToLowerAsciiEval( std::string s )
+			{
+				for( char& c : s ) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+				return s;
+			}
+
+			//! The ask_user scripted responder (stage 2 of the
+			//! clarifying-questions feature -- see
+			//! AgentEvalAskUserResponses).  Walks `responses.matches` IN
+			//! ORDER, case-INSENSITIVE substring match of each entry's
+			//! `contains` against `question`; first hit wins.  No match:
+			//! falls back to `responses.default` when present.  Returns
+			//! true and fills `outAnswer` on either hit; returns false
+			//! (leaving `outAnswer` untouched) when neither a match nor a
+			//! default applies -- the caller then synthesizes the stage-1
+			//! `{available:false}` stub, preserving that behaviour
+			//! byte-for-byte for any scenario/question the responder does
+			//! not cover.  Deterministic by construction: no regex, no
+			//! randomness, no locale dependence (ASCII-only fold).
+			bool ResolveScriptedAskUserAnswer( const AgentEvalAskUserResponses& responses,
+			                                    const std::string& question, std::string& outAnswer )
+			{
+				const std::string haystack = ToLowerAsciiEval( question );
+				for( const AgentEvalAskUserMatch& m : responses.matches ) {
+					if( haystack.find( ToLowerAsciiEval( m.contains ) ) != std::string::npos ) {
+						outAnswer = m.answer;
+						return true;
+					}
+				}
+				if( responses.hasDefault ) {
+					outAnswer = responses.defaultAnswer;
+					return true;
+				}
+				return false;
+			}
+
 			bool ParseScenarioWholeNumber( const JsonValue& value, const std::string& label,
 			                               long long minValue, long long maxValue,
 			                               long long& out, std::string& err )
@@ -857,14 +899,20 @@ namespace RISE
 			//!  toolOutcomes?:[{name:string, occurrence?:string, expect:string, argsContains?:string|[string]},...],
 			//!  toolCallAfterUserTurn?: {name:string, minUserTurns?:number,
 			//!    maxUserTurns?:number, argsContains?:string|[string], expect?:string}
-			//!    -- OR an ARRAY of such spec objects}.  toolOutcomes.expect (and
+			//!    -- OR an ARRAY of such spec objects,
+			//!  askUserMin?/askUserMax?:number (whole, >= 0),
+			//!  askUserBeforeMutation?:bool}.  toolOutcomes.expect (and
 			//!  the optional toolCallAfterUserTurn.expect) is one of
 			//!  applied|staged|rejected|error|conflict; argsContains (when
 			//!  present) is a non-empty string OR a non-empty array of non-empty
 			//!  strings, ALL of which must be substrings of the record's args --
 			//!  it FILTERS which same-named records the spec selects among.  A
 			//!  toolCallAfterUserTurn spec must carry at least one of min/max (a
-			//!  spec with neither asserts nothing).
+			//!  spec with neither asserts nothing).  askUserMin/askUserMax count
+			//!  "ask_user" tool records in the trajectory (stage 2 of the
+			//!  clarifying-questions feature); askUserBeforeMutation asserts the
+			//!  FIRST ask_user record precedes the FIRST document-mutating tool
+			//!  record (insert_chunk/insert_chunks/propose_patch/remove_chunk).
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				if( !RequireFieldType( cp, "maxToolCalls", JsonValue::Type::Number, scenarioId, idx, "maxToolCalls", err ) ) return false;
@@ -874,6 +922,15 @@ namespace RISE
 				if( !RequireFieldType( cp, "noMechanicalLoop", JsonValue::Type::Bool, scenarioId, idx, "noMechanicalLoop", err ) ) return false;
 				if( !RequireFieldType( cp, "expectAutonomyRefusal", JsonValue::Type::Bool, scenarioId, idx, "expectAutonomyRefusal", err ) ) return false;
 				if( !RequireArrayOfType( cp, "requiredToolInOrder", JsonValue::Type::String, scenarioId, idx, "requiredToolInOrder", err ) ) return false;
+				// askUserMin/askUserMax: whole numbers >= 0 (a call COUNT can
+				// never be negative or fractional).  askUserBeforeMutation: bool.
+				if( !RequireFieldType( cp, "askUserMin", JsonValue::Type::Number, scenarioId, idx, "askUserMin", err ) ) return false;
+				if( !RequireWholeNumberInRange( cp, "askUserMin", 0.0, static_cast<double>( std::numeric_limits<int>::max() ),
+					scenarioId, idx, "askUserMin", err ) ) return false;
+				if( !RequireFieldType( cp, "askUserMax", JsonValue::Type::Number, scenarioId, idx, "askUserMax", err ) ) return false;
+				if( !RequireWholeNumberInRange( cp, "askUserMax", 0.0, static_cast<double>( std::numeric_limits<int>::max() ),
+					scenarioId, idx, "askUserMax", err ) ) return false;
+				if( !RequireFieldType( cp, "askUserBeforeMutation", JsonValue::Type::Bool, scenarioId, idx, "askUserBeforeMutation", err ) ) return false;
 
 				// Shared arg/expect validators so toolOutcomes and
 				// toolCallAfterUserTurn can never diverge.  argsContains accepts
@@ -1417,6 +1474,60 @@ namespace RISE
 				}
 			}
 
+			// askUserResponses: OPTIONAL scripted responder for the
+			// ask_user chat tool (stage 2 of the clarifying-questions
+			// feature -- see AgentEvalAskUserResponses).  Validated LOUDLY
+			// here so a malformed responder is a load_error, never a
+			// silently-skipped no-op that leaves the stage-1 stub in
+			// place unbeknownst to the scenario author.
+			out.askUserResponses = AgentEvalAskUserResponses();
+			if( root.has( "askUserResponses" ) ) {
+				if( !root.get( "askUserResponses" ).isObject() ) {
+					err = "scenario '" + out.id + "': \"askUserResponses\" must be an object";
+					return false;
+				}
+				const JsonValue& aur = root.get( "askUserResponses" );
+				if( aur.has( "matches" ) ) {
+					if( !aur.get( "matches" ).isArray() ) {
+						err = "scenario '" + out.id + "': askUserResponses.matches must be an array";
+						return false;
+					}
+					const JsonValue& matches = aur.get( "matches" );
+					for( std::size_t i = 0; i < matches.size(); ++i ) {
+						const std::string idx = std::to_string( i );
+						const JsonValue& m = matches.at( i );
+						if( !m.isObject() ) {
+							err = "scenario '" + out.id + "': askUserResponses.matches[" + idx + "] must be an object";
+							return false;
+						}
+						if( !m.has( "contains" ) || !m.get( "contains" ).isString() ||
+						    m.get( "contains" ).asString().empty() ) {
+							err = "scenario '" + out.id + "': askUserResponses.matches[" + idx +
+								"].contains must be a non-empty string";
+							return false;
+						}
+						if( !m.has( "answer" ) || !m.get( "answer" ).isString() ||
+						    m.get( "answer" ).asString().empty() ) {
+							err = "scenario '" + out.id + "': askUserResponses.matches[" + idx +
+								"].answer must be a non-empty string";
+							return false;
+						}
+						AgentEvalAskUserMatch am;
+						am.contains = m.get( "contains" ).asString();
+						am.answer   = m.get( "answer" ).asString();
+						out.askUserResponses.matches.push_back( am );
+					}
+				}
+				if( aur.has( "default" ) ) {
+					if( !aur.get( "default" ).isString() || aur.get( "default" ).asString().empty() ) {
+						err = "scenario '" + out.id + "': askUserResponses.default must be a non-empty string";
+						return false;
+					}
+					out.askUserResponses.hasDefault    = true;
+					out.askUserResponses.defaultAnswer = aur.get( "default" ).asString();
+				}
+			}
+
 			return true;
 		}
 
@@ -1595,7 +1706,32 @@ namespace RISE
 			//!        problem.  Skill now says "build in coherent groups (batch),
 			//!        then render after each group and always after lighting."
 			//!        A drive change; prior cells are not comparable.
-			static const int kEvalMethodologyEpoch = 9;
+			//!   10 -> (2026-07-23) the `ask_user` chat tool shipped (stage 1a of
+			//!        the clarifying-questions feature): models now see a
+			//!        THIRTEENTH tool in every provider request and may spend a
+			//!        round calling it instead of building.  The eval runner
+			//!        intercepts ask_user before dispatch and always answers
+			//!        available:false (no interactive user in a headless run),
+			//!        so a model that asks pays a real tool-call round-trip for
+			//!        no scene progress -- a tool-DEFINITION change, not a drive
+			//!        or grading change, but it alters how a run is driven all
+			//!        the same (a model may now choose to ask rather than act).
+			//!        Prior cells were driven against a twelve-tool table and
+			//!        are not comparable.
+			//!   11 -> (2026-07-23) stage 2 of the clarifying-questions feature:
+			//!        the eval runner's ask_user interception now consults an
+			//!        OPTIONAL scripted responder (askUserResponses) before
+			//!        falling back to the stage-1 available:false stub, and the
+			//!        "trajectory" checkpoint kind gained three new assertion
+			//!        fields (askUserMin/askUserMax/askUserBeforeMutation) --
+			//!        both a DRIVE change (a scripted answer changes what the
+			//!        model does next, unlike the stage-1 stub which always told
+			//!        it to proceed unassisted) and a CHECKER-SEMANTICS change
+			//!        (a scenario grading on ask_user counts/ordering did not
+			//!        exist before this epoch).  Prior cells were driven and
+			//!        graded without a scripted responder or the new trajectory
+			//!        fields and are not comparable.
+			static const int kEvalMethodologyEpoch = 11;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
@@ -1743,6 +1879,33 @@ namespace RISE
 					ivArr.push_back( o );
 				}
 				canon += "interventions=" + JsonSerialize( ivArr ) + "\n";
+
+				// askUserResponses (stage 2 of the clarifying-questions
+				// feature): folded in unconditionally, mirroring the
+				// interventions= line above (never gated on emptiness) --
+				// it changes how a run is DRIVEN, since a scenario whose
+				// responder answers (or answers DIFFERENTLY) drives a
+				// genuinely different session than the stage-1
+				// {available:false} stub, so a cached matrix cell graded
+				// under a different responder must be treated as stale.
+				// "default" is set on the canonical object only when the
+				// scenario actually carries one, so present-vs-absent
+				// default is distinguishable from a present-but-equal-to-
+				// sentinel value.
+				{
+					JsonValue aurArr = JsonValue::MakeArray();
+					for( const auto& m : s.askUserResponses.matches ) {
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "contains", JsonValue::MakeString( m.contains ) );
+						o.set( "answer",   JsonValue::MakeString( m.answer ) );
+						aurArr.push_back( o );
+					}
+					JsonValue aurObj = JsonValue::MakeObject();
+					aurObj.set( "matches", aurArr );
+					if( s.askUserResponses.hasDefault )
+						aurObj.set( "default", JsonValue::MakeString( s.askUserResponses.defaultAnswer ) );
+					canon += "askUserResponses=" + JsonSerialize( aurObj ) + "\n";
+				}
 
 				return FnvHex( canon );
 			}
@@ -2295,9 +2458,72 @@ namespace RISE
 									terminalStatus = "budget_tool_calls"; budgetHit = true; break;
 								}
 								const ChatToolCall& call = st.toolCalls[ci];
-								const std::string line = loop.ToolCallToJsonRpcLine( call, nextRpcId++ );
-								const std::string resp = dispatcher->HandleLine( line );
+								// rpcId captured (not just incremented inline) so the
+								// ask_user interception below can stamp the SAME id
+								// into its synthesized response -- ToolCallToJsonRpcLine
+								// already embeds it into `line`'s "id" field either way.
+								const int rpcId = nextRpcId++;
+								const std::string line = loop.ToolCallToJsonRpcLine( call, rpcId );
+								std::string resp;
+								if( call.name == "ask_user" ) {
+									// PINNED DESIGN: ask_user is a chat-loop-only tool
+									// (see AgentChatCodecs.cpp) -- it has NO AgentRpc verb
+									// and is never sent to dispatcher->HandleLine.  The
+									// HOST (here: the eval runner) intercepts it BEFORE
+									// dispatch and synthesizes the result itself, exactly
+									// as the Mac/Windows GUI drive loop will (stage 1b).
+									//
+									// Stage 2: consult the scenario's OPTIONAL scripted
+									// responder (askUserResponses) first -- parse the
+									// call's "question" argument out of argsJson and try
+									// ResolveScriptedAskUserAnswer against it.  A scenario
+									// that never sets askUserResponses gets
+									// AgentEvalAskUserResponses's default-constructed
+									// (empty matches, hasDefault false) value, for which
+									// ResolveScriptedAskUserAnswer always returns false --
+									// so the fallback branch below is BYTE-IDENTICAL to
+									// stage 1's unconditional stub on every scenario that
+									// does not opt in.
+									std::string question;
+									{
+										JsonValue argsVal; std::string argsErr;
+										if( JsonParse( call.argsJson, argsVal, argsErr ) && argsVal.isObject() &&
+										    argsVal.get( "question" ).isString() )
+											question = argsVal.get( "question" ).asString();
+									}
+									std::string scriptedAnswer;
+									JsonValue resultObj = JsonValue::MakeObject();
+									if( ResolveScriptedAskUserAnswer( scenario.askUserResponses, question, scriptedAnswer ) ) {
+										resultObj.set( "answer", JsonValue::MakeString( scriptedAnswer ) );
+									} else {
+										// The stage-1 stub, unchanged: an eval run has no
+										// interactive user and no scripted answer covers
+										// this question, so synthesize a SUCCESS (never an
+										// error -- an error result would pollute the
+										// trajectory with noise the model did not cause)
+										// telling the model no one is available and it
+										// should proceed on its own judgment, matching the
+										// tool description's contract.
+										resultObj.set( "available", JsonValue::MakeBool( false ) );
+										resultObj.set( "note", JsonValue::MakeString(
+											"ask_user: no interactive user is available in this run; "
+											"use your best judgment and proceed" ) );
+									}
+									JsonValue respObj = JsonValue::MakeObject();
+									respObj.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+									respObj.set( "id", JsonValue::MakeNumber( static_cast<double>( rpcId ) ) );
+									respObj.set( "result", resultObj );
+									resp = JsonSerialize( respObj );
+								}
+								else {
+									resp = dispatcher->HandleLine( line );
+								}
 								loop.AddToolResult( call, resp );
+								// Counts the SAME as every other tool -- ask_user is a
+								// real round-trip against the scenario's tool-call
+								// budget (maxToolCalls), just like a dispatched verb;
+								// it is not free just because it never reaches the
+								// dispatcher.
 								++toolCalls;
 
 								// Scenario interventions: a scripted co-editor edit
@@ -4978,7 +5204,8 @@ namespace RISE
 
 				//! "trajectory": {maxToolCalls?,maxLlmCalls?,terminalStatus?,
 				//! noAutonomyRefusal?,requiredToolInOrder?,noMechanicalLoop?,
-				//! expectAutonomyRefusal?,toolOutcomes?,toolCallAfterUserTurn?}
+				//! expectAutonomyRefusal?,toolOutcomes?,toolCallAfterUserTurn?,
+				//! askUserMin?,askUserMax?,askUserBeforeMutation?}
 				//! -- maxToolCalls/maxLlmCalls/terminalStatus read straight off
 				//! handle.result (the SAME counters RunScenario wrote into the
 				//! summary line -- no need to re-derive them from the JSONL).
@@ -4988,7 +5215,12 @@ namespace RISE
 				//! per-call detail the summary doesn't carry; toolCallAfterUserTurn
 				//! additionally walks the full ORDERED record stream (interleaving
 				//! "user" and "tool" records) to test a tool call against a running
-				//! user-turn count.
+				//! user-turn count.  askUserMin/askUserMax (stage 2 of the
+				//! clarifying-questions feature) count "ask_user" tool records;
+				//! askUserBeforeMutation asserts the FIRST "ask_user" record
+				//! precedes the FIRST document-mutating tool record (insert_chunk/
+				//! insert_chunks/propose_patch/remove_chunk -- the same mutation
+				//! set AgentChatLoop::AddToolResult's blind-edit nudge tracks).
 				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
 				{
 					std::vector<std::string> failures;
@@ -5011,12 +5243,13 @@ namespace RISE
 
 					const bool needsRecords = cp.has( "noAutonomyRefusal" ) || cp.has( "requiredToolInOrder" ) ||
 						cp.has( "noMechanicalLoop" ) || cp.has( "expectAutonomyRefusal" ) ||
-						cp.has( "toolOutcomes" ) || cp.has( "toolCallAfterUserTurn" );
+						cp.has( "toolOutcomes" ) || cp.has( "toolCallAfterUserTurn" ) ||
+						cp.has( "askUserMin" ) || cp.has( "askUserMax" ) || cp.has( "askUserBeforeMutation" );
 					if( needsRecords ) {
 						if( handle.trajectoryPath.empty() ) {
 							failures.push_back( "trajectory file unavailable (run did not complete) -- cannot check "
 								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/expectAutonomyRefusal/"
-								"toolOutcomes/toolCallAfterUserTurn" );
+								"toolOutcomes/toolCallAfterUserTurn/askUserMin/askUserMax/askUserBeforeMutation" );
 						} else {
 							std::ifstream f( handle.trajectoryPath.c_str(), std::ios::binary );
 							if( !f ) {
@@ -5139,6 +5372,68 @@ namespace RISE
 												"' repeated consecutively (calls " + std::to_string( ti ) + "," + std::to_string( ti + 1 ) + ")" );
 											break;
 										}
+									}
+								}
+
+								// askUserMin/askUserMax (stage 2 of the clarifying-
+								// questions feature): count "ask_user" tool records
+								// in the trajectory, one shared pass over toolRecords
+								// so the two bounds can never disagree on what they
+								// counted.
+								if( cp.has( "askUserMin" ) || cp.has( "askUserMax" ) ) {
+									long long askUserCount = 0;
+									for( const auto& t : toolRecords )
+										if( t.get( "name" ).asString() == "ask_user" ) ++askUserCount;
+
+									if( cp.has( "askUserMin" ) && cp.get( "askUserMin" ).isNumber() ) {
+										const long long wantMin = static_cast<long long>( cp.get( "askUserMin" ).asNumber() );
+										if( askUserCount < wantMin )
+											failures.push_back( "askUserMin: observed " + std::to_string( askUserCount ) +
+												" ask_user call(s), want >= " + std::to_string( wantMin ) );
+									}
+									if( cp.has( "askUserMax" ) && cp.get( "askUserMax" ).isNumber() ) {
+										const long long wantMax = static_cast<long long>( cp.get( "askUserMax" ).asNumber() );
+										if( askUserCount > wantMax )
+											failures.push_back( "askUserMax: observed " + std::to_string( askUserCount ) +
+												" ask_user call(s), want <= " + std::to_string( wantMax ) );
+									}
+								}
+
+								// askUserBeforeMutation: the FIRST "ask_user" record
+								// must precede the FIRST document-mutating tool
+								// record ("asked before building") -- mirrors the
+								// blind-edit-nudge mutation set AgentChatLoop::
+								// AddToolResult already tracks (insert_chunk/
+								// insert_chunks/propose_patch/remove_chunk).
+								if( cp.has( "askUserBeforeMutation" ) && cp.get( "askUserBeforeMutation" ).isBool() &&
+								    cp.get( "askUserBeforeMutation" ).asBool() ) {
+									static const char* const kMutatingToolNames[] = {
+										"insert_chunk", "insert_chunks", "propose_patch", "remove_chunk"
+									};
+									auto isMutatingTool = [&]( const std::string& name ) -> bool {
+										for( const char* m : kMutatingToolNames ) if( name == m ) return true;
+										return false;
+									};
+									std::size_t firstAskUserIdx  = toolRecords.size();
+									std::size_t firstMutationIdx = toolRecords.size();
+									for( std::size_t ti = 0; ti < toolRecords.size(); ++ti ) {
+										const std::string name = toolRecords[ti].get( "name" ).asString();
+										if( firstAskUserIdx == toolRecords.size() && name == "ask_user" ) firstAskUserIdx = ti;
+										if( firstMutationIdx == toolRecords.size() && isMutatingTool( name ) ) firstMutationIdx = ti;
+									}
+									// VACUOUS-PASS SEMANTIC (deliberate, red-proven in
+									// TestTrajectoryAskUserAssertions): a trajectory with an
+									// ask_user call and ZERO document-mutating calls PASSES --
+									// "asked before mutating" is trivially satisfied when
+									// nothing ever mutated.  A scenario using this field pairs
+									// it with chunk_count, so a build-nothing run still fails
+									// the battery overall; this field grades ORDERING only.
+									if( firstAskUserIdx == toolRecords.size() ) {
+										failures.push_back( "askUserBeforeMutation: no ask_user tool call occurred" );
+									} else if( firstMutationIdx != toolRecords.size() && firstAskUserIdx > firstMutationIdx ) {
+										failures.push_back( "askUserBeforeMutation: first ask_user call (tool-call position " +
+											std::to_string( firstAskUserIdx ) + ") occurred AFTER the first document-mutating "
+											"tool call (position " + std::to_string( firstMutationIdx ) + ")" );
 									}
 								}
 

@@ -310,6 +310,10 @@ static NSString *ToNS(const std::string& s) {
     _loop->SetSkillIndex(ToStd(indexText));
 }
 
+- (void)setSystemPromptOverride:(NSString *)prompt {
+    _loop->SetSystemPromptOverride(ToStd(prompt));
+}
+
 - (void)addUserMessage:(NSString *)text {
     _loop->AddUserMessage(ToStd(text));
 }

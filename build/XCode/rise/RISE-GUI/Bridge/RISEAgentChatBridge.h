@@ -202,6 +202,16 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// section.  Survives reset / setProvider (provider-neutral config).
 - (void)setSkillIndex:(NSString *)indexText;
 
+/// GUI stage 3 (prompt triage): override the ENTIRE system prompt for
+/// this bridge's loop — mirrors AgentChatLoop::SetSystemPromptOverride
+/// (see its doc for the full contract).  A non-empty `prompt` REPLACES
+/// the base co-editing prompt and the skills section wholesale; an
+/// empty string clears the override.  Intended for a SEPARATE,
+/// short-lived bridge instance (a triage pass), never the main
+/// scene-editing bridge — deliberately NOT cleared by -reset or
+/// -setProvider:modelId:.
+- (void)setSystemPromptOverride:(NSString *)prompt;
+
 /// Append a user text message (resets the per-turn tool-round
 /// counter; flushes any pending tool calls with synthesized cancelled
 /// results — the designed Stop/interrupt path).  Empty or whitespace-

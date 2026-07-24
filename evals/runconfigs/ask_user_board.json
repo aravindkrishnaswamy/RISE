@@ -1,0 +1,12 @@
+{
+  "//": "Clarifying-questions measurement (epoch 11): build_ambiguous_scene across the roster. Measures ask_user ADOPTION on a materially-ambiguous brief (the scripted responder answers), whether asking precedes building (askUserBeforeMutation), and whether the built scene reflects the ANSWERS (finalText watch/pocket). The adversarial control already proves the oracle discriminates; this measures the MODELS.",
+  "scenarios": [ "evals/scenarios/build_ambiguous_scene.json" ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "gemini", "model": "gemini-3.6-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-terra",    "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "local",  "model": "qwen3.6:27b" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/ask_user_board"
+}

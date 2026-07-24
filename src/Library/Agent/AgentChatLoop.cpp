@@ -298,6 +298,13 @@ namespace RISE
 			mSkillIndexText = indexText;
 		}
 
+		void AgentChatLoop::SetSystemPromptOverride( const std::string& prompt )
+		{
+			// See the header doc: verbatim replacement for auxiliary
+			// single-purpose loops, NOT cleared by Reset()/SetProvider().
+			mSystemPromptOverride = prompt;
+		}
+
 		void AgentChatLoop::SetContextBudget( std::size_t highWaterTokens, std::size_t lowWaterTokens )
 		{
 			// Provider-neutral config (like SetSkillIndex above): stored
@@ -895,6 +902,13 @@ namespace RISE
 				                          v == "propose_patch" || v == "remove_chunk" );
 				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
 				                               v == "read_viewport" || v == "query_object_at" );
+				// ask_user is EXPLICITLY neither: it neither mutates the
+				// document nor observes the rendered result, so (like
+				// read_document/read_schema/read_skill/validate above) it
+				// falls through both branches below and leaves the streak
+				// UNCHANGED -- pausing to ask a clarifying question is not
+				// progress toward the blind-edit failure mode this nudge
+				// guards against, so it should neither reset nor grow it.
 				if( isVisualObserve ) {
 					mBlindEditStreak = 0;
 				}
@@ -1539,6 +1553,11 @@ namespace RISE
 
 		std::string AgentChatLoop::ComposeSystemPrompt() const
 		{
+			// GUI STAGE 3 (prompt triage): a non-empty override REPLACES
+			// the whole composition -- no base prompt, no skills section.
+			// See SetSystemPromptOverride's doc.
+			if( !mSystemPromptOverride.empty() ) return mSystemPromptOverride;
+
 			std::string systemPrompt = kSystemPrompt;
 			if( !mSkillIndexText.empty() ) {
 				systemPrompt += "\n\nAvailable skills:\n";

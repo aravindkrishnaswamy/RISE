@@ -26,13 +26,16 @@
 //    2. AgentEvalScenario + LoadEvalScenario -- the evals/scenarios/*.json
 //       format (docs/agentic-redesign/70-agent-eval-harness.md §2.4):
 //       {id, title, scene:{path|inline}, autonomy, prompts[], budgets?,
-//       replay?:{fixture}, checkpoints?}.  The loader validates the BASIC
-//       shape only (types, required fields, exactly-one-of scene.path/
-//       scene.inline, autonomy in the known 3-value set) and fails LOUDLY
-//       (returns false + a human message) on anything malformed.
-//       `checkpoints` is parsed but carried OPAQUELY as a JsonValue array
-//       -- interpreting checkpoint kinds is the E3 checker engine's job,
-//       not this slice's.
+//       replay?:{fixture}, checkpoints?, interventions?, askUserResponses?}.
+//       The loader validates the BASIC shape only (types, required fields,
+//       exactly-one-of scene.path/scene.inline, autonomy in the known
+//       3-value set) and fails LOUDLY (returns false + a human message) on
+//       anything malformed.  `checkpoints` is parsed but carried OPAQUELY
+//       as a JsonValue array -- interpreting checkpoint kinds is the E3
+//       checker engine's job, not this slice's.  `askUserResponses`
+//       (stage 2 of the clarifying-questions feature) is a scripted
+//       responder for the ask_user chat tool -- see
+//       AgentEvalAskUserResponses.
 //
 //    3. RunScenario -- drives the REAL AgentChatLoop + REAL
 //       AgentRpcDispatcher over a REAL (CST-loaded) Job/AgentSession,
@@ -188,6 +191,40 @@ namespace RISE
 			std::string value;                //!< the new value as scene-language text
 		};
 
+		//! One entry of `askUserResponses.matches` (evals/scenarios/*.json
+		//! stage-2 clarifying-questions scripted responder, see
+		//! AgentEvalAskUserResponses).  `contains` is matched
+		//! case-INSENSITIVELY as a substring against the ask_user call's
+		//! `question` argument; `answer` is the text handed back verbatim
+		//! as `{"answer": answer}` on a hit.
+		struct AgentEvalAskUserMatch
+		{
+			std::string contains;   //!< non-empty; matched case-insensitively as a substring of the question
+			std::string answer;     //!< non-empty; the scripted answer text
+		};
+
+		//! OPTIONAL scripted responder for the `ask_user` chat tool
+		//! (evals/scenarios/*.json `askUserResponses`; stage 2 of the
+		//! clarifying-questions feature).  RunScenarioDriven's ask_user
+		//! interception (AgentEvalRunner.cpp) consults this BEFORE falling
+		//! back to the stage-1 `{available:false}` stub: `matches` is
+		//! walked IN ORDER, case-INSENSITIVE substring match against each
+		//! entry's `contains`, first hit wins and synthesizes
+		//! `{"answer": <that entry's answer>}`.  No match: `hasDefault`
+		//! true synthesizes `{"answer": defaultAnswer}`; otherwise the
+		//! stage-1 `{available:false}` stub is unchanged.  Deterministic by
+		//! construction -- no regex, no randomness.  Default-constructed
+		//! (`matches` empty, `hasDefault` false) is IDENTICAL to a scenario
+		//! that omits `askUserResponses` entirely -- every ask_user call
+		//! gets the stage-1 stub, preserving stage-1 behaviour byte-for-
+		//! byte on every scenario that does not opt in.
+		struct AgentEvalAskUserResponses
+		{
+			std::vector<AgentEvalAskUserMatch> matches;
+			bool        hasDefault   = false;   //!< true iff `askUserResponses.default` was present
+			std::string defaultAnswer;          //!< meaningful only when hasDefault
+		};
+
 		//! One SEQUENTIAL USER TURN (evals/scenarios/*.json `prompts[i]`).
 		//! Either the bare-string shape (`text` only, `imagePaths` empty --
 		//! the pre-Wave-1 shape, unchanged) or the object shape
@@ -273,6 +310,18 @@ namespace RISE
 			//! RunScenarioLive apply each after its afterToolCalls-th tool
 			//! call through the live session.
 			std::vector<AgentEvalIntervention> interventions;
+
+			//! OPTIONAL scripted `ask_user` responder (see
+			//! AgentEvalAskUserResponses; evals/scenarios/*.json
+			//! `askUserResponses`).  Default-constructed (matches empty,
+			//! hasDefault false) when the scenario omits the field --
+			//! every ask_user call then gets the stage-1
+			//! `{available:false}` stub, unchanged from before stage 2.
+			//! LoadEvalScenario validates the shape LOUDLY: askUserResponses
+			//! must be an object; matches (if present) an array of objects
+			//! each carrying non-empty string "contains" and "answer";
+			//! default (if present) a non-empty string.
+			AgentEvalAskUserResponses askUserResponses;
 		};
 
 		//! Parse `path` (an evals/scenarios/*.json file) into `out`.
@@ -287,7 +336,12 @@ namespace RISE
 		//! rejected LOUDLY when it is neither string nor object, when
 		//! both text and images are absent/empty, when images is present
 		//! but not a non-empty array, or when any images[j] is not a
-		//! non-empty string or contains "..".
+		//! non-empty string or contains "..".  `askUserResponses` (stage 2
+		//! of the clarifying-questions feature) is rejected LOUDLY when it
+		//! is present but not an object, when `matches` is present but not
+		//! an array of objects each carrying a non-empty string
+		//! "contains" and a non-empty string "answer", or when `default`
+		//! is present but not a non-empty string.
 		bool LoadEvalScenario( const std::string& path, AgentEvalScenario& out, std::string& err );
 
 		//----------------------------------------------------------------

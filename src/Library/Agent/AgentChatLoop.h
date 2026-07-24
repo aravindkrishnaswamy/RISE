@@ -517,6 +517,40 @@ namespace RISE
 			//! model selection: it survives Reset() and SetProvider().
 			void SetSkillIndex( const std::string& indexText );
 
+			//! GUI STAGE 3 (prompt triage): override the ENTIRE system
+			//! prompt for this loop instance.  When `prompt` is non-empty,
+			//! ComposeSystemPrompt() returns it VERBATIM -- no base
+			//! kSystemPrompt, no "Available skills" section, regardless of
+			//! SetSkillIndex.  Passing an EMPTY string clears the override
+			//! (ComposeSystemPrompt reverts to the normal base+skills
+			//! composition) -- so re-calling with "" is the documented way
+			//! back, not Reset()/SetProvider() (see below).
+			//!
+			//! INTENDED USE: auxiliary, single-purpose loops -- e.g. a
+			//! prompt-triage pass that asks a cheap model one narrow
+			//! question before the real scene-editing turn -- constructed,
+			//! configured ONCE, driven for exactly one exchange, and
+			//! discarded.  It is NOT for the scene-editing loop itself:
+			//! that loop's identity IS the co-editing base prompt (plus
+			//! whatever skills are indexed), and the trajectory session
+			//! record stamps whatever ComposeSystemPrompt() returns as
+			//! `systemPrompt`/`systemPromptHash` -- an override is
+			//! therefore HONESTLY recorded (a session driven under an
+			//! override never claims to have run the base prompt), but a
+			//! long-lived loop that flips this on and off would make that
+			//! record misleading turn-to-turn.
+			//!
+			//! DELIBERATELY NOT CLEARED by Reset() or SetProvider(): both
+			//! are "same loop, fresh conversation" operations (the
+			//! provider/model selection and mSkillIndexText survive them
+			//! too, for the same reason), and an auxiliary loop is
+			//! constructed and configured exactly once before its single
+			//! use -- there is no scenario where this loop needs the
+			//! override to survive a provider switch and then silently
+			//! stop applying.  A caller that truly wants it gone calls this
+			//! again with an empty string.
+			void SetSystemPromptOverride( const std::string& prompt );
+
 			//==========================================================
 			// Context-compaction slice S1: token estimator + budget
 			// config (observability only -- see EstimateContextTokens
@@ -719,6 +753,12 @@ namespace RISE
 			//! skills section).  Provider-neutral config -- survives Reset()
 			//! and SetProvider(), like mProvider/mModelId.
 			std::string                         mSkillIndexText;
+
+			//! GUI STAGE 3 (prompt triage): the verbatim system-prompt
+			//! override ("" = no override -- see SetSystemPromptOverride).
+			//! Provider-neutral config, like mSkillIndexText: NOT cleared
+			//! by Reset()/SetProvider().
+			std::string                         mSystemPromptOverride;
 
 			//! Context-compaction slice S1: the compaction budget, in
 			//! estimated tokens (0 = disabled).  Provider-neutral config,

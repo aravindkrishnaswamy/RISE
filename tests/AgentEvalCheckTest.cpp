@@ -3188,6 +3188,16 @@ static JsonValue CompareToReferenceInput( const std::string& reference, int samp
 	return in;
 }
 
+// {question} -- the ask_user tool's sole REQUIRED argument (stage 2's
+// scripted responder tests below only ever need to control `question`;
+// `options`/`allowFreeform` are irrelevant to matching).
+static JsonValue AskUserInput( const std::string& question )
+{
+	JsonValue in = JsonValue::MakeObject();
+	in.set( "question", JsonValue::MakeString( question ) );
+	return in;
+}
+
 // Load `scenarioPath` for real (so the checkpoints under test are the
 // actual committed ones), swap in `fixtureText` as the replay source,
 // run it, and assert the SPECIFIC checkpoint at `expectFailIndex` is
@@ -4007,6 +4017,638 @@ static void TestAdversarialOracleControls()
 	}
 }
 
+//----------------------------------------------------------------------
+// T-ask(a): the ask_user SCRIPTED RESPONDER (stage 2 of the clarifying-
+// questions feature -- AgentEvalAskUserResponses / ResolveScriptedAskUserAnswer
+// in AgentEvalRunner.cpp).  Drives real RunScenario runs (not a hand-built
+// envelope) and inspects the raw trajectory file for the SYNTHESIZED
+// ask_user response, proving: first-match ARRAY ORDER wins over first-
+// substring-POSITION-in-the-question; the substring match is case-
+// INSENSITIVE; a question matching no entry falls back to "default" when
+// present; and a question matching neither any entry NOR a default falls
+// back to the STAGE-1 {available:false} stub byte-for-byte (both when the
+// scenario carries no askUserResponses at all, AND when it carries one
+// whose matches/default simply don't cover this question -- the "unit
+// path" the design calls out explicitly).
+//----------------------------------------------------------------------
+static void TestAskUserScriptedResponderMatching()
+{
+	std::printf( "T-ask(a): ask_user scripted responder -- match order / case-insensitivity / default / fallback...\n" );
+	const std::string dir = ScratchRunDir( "t_ask_responder" );
+
+	// One ask_user round, then a plain end_turn -- the minimal shape every
+	// sub-case below reuses (only the question and the scripted responder
+	// differ).
+	auto oneAskUserThenDone = [&]( const std::string& question ) -> std::string {
+		const std::string r1 = AnthropicBody( "msg_1", "Asking before building.",
+			{ { "ask_user", AskUserInput( question ) } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Proceeding.", {}, "end_turn" );
+		return JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 );
+	};
+
+	auto trajectoryText = [&]( const AgentEvalRunHandle& h ) -> std::string {
+		std::ifstream f( h.trajectoryPath.c_str(), std::ios::binary );
+		return std::string( ( std::istreambuf_iterator<char>( f ) ), std::istreambuf_iterator<char>() );
+	};
+
+	// (a) FIRST-MATCH ARRAY ORDER wins, not first-substring-position in the
+	// question text: matches[0] is "b" -> "B-answer", matches[1] is "a" ->
+	// "A-answer"; the question contains BOTH substrings ("a" appears
+	// earlier in the text than "b"), so the array-order rule must still
+	// pick "B-answer" (matches[0]) over "A-answer" (matches[1]).
+	{
+		AgentEvalScenario s = MakeScenario( "ask_order", kScene, "Ask something",
+			"commit", oneAskUserThenDone( "does this contain a and b" ), dir, "[]" );
+		AgentEvalAskUserMatch m0; m0.contains = "b"; m0.answer = "B-answer";
+		AgentEvalAskUserMatch m1; m1.contains = "a"; m1.answer = "A-answer";
+		s.askUserResponses.matches.push_back( m0 );
+		s.askUserResponses.matches.push_back( m1 );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "ask_order: run reached final_text" );
+		const std::string traj = trajectoryText( h );
+		Check( traj.find( "B-answer" ) != std::string::npos,
+			"ask_order: matches[0] (\"b\") wins -- the response carries \"B-answer\"" );
+		Check( traj.find( "A-answer" ) == std::string::npos,
+			"ask_order: matches[1] (\"a\") did NOT win despite its substring appearing earlier in the question text" );
+	}
+
+	// (b) CASE-INSENSITIVE substring match: the match entry's "contains" is
+	// lowercase ("color") but the question carries it UPPERCASE ("COLOR").
+	{
+		AgentEvalScenario s = MakeScenario( "ask_case", kScene, "Ask something",
+			"commit", oneAskUserThenDone( "What COLOR should it be?" ), dir, "[]" );
+		AgentEvalAskUserMatch m; m.contains = "color"; m.answer = "Blue-scripted-answer";
+		s.askUserResponses.matches.push_back( m );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "ask_case: run reached final_text" );
+		const std::string traj = trajectoryText( h );
+		Check( traj.find( "Blue-scripted-answer" ) != std::string::npos,
+			"ask_case: lowercase \"contains\":\"color\" matches an UPPERCASE \"COLOR\" in the question (case-insensitive)" );
+	}
+
+	// (c) DEFAULT FALLBACK: the question matches no entry, but a default is
+	// present -- the default answer is used, not the stage-1 stub.
+	{
+		AgentEvalScenario s = MakeScenario( "ask_default", kScene, "Ask something",
+			"commit", oneAskUserThenDone( "Totally unrelated question with no scripted keyword" ), dir, "[]" );
+		AgentEvalAskUserMatch m; m.contains = "color"; m.answer = "Blue-scripted-answer";
+		s.askUserResponses.matches.push_back( m );
+		s.askUserResponses.hasDefault    = true;
+		s.askUserResponses.defaultAnswer = "Default-scripted-answer";
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "ask_default: run reached final_text" );
+		const std::string traj = trajectoryText( h );
+		Check( traj.find( "Default-scripted-answer" ) != std::string::npos,
+			"ask_default: no match -> the \"default\" answer is used" );
+		Check( traj.find( "Blue-scripted-answer" ) == std::string::npos,
+			"ask_default: the non-matching \"color\" entry did NOT fire" );
+	}
+
+	// (d) NO-RESPONDER FALLBACK -- the stage-1 {available:false} stub is
+	// preserved BYTE-FOR-BYTE, in both of its two reachable shapes: a
+	// scenario that never sets askUserResponses at all (MakeScenario's
+	// default-constructed AgentEvalAskUserResponses -- empty matches, no
+	// default), AND a scenario whose askUserResponses is populated but
+	// simply does not cover this particular question (a match list with no
+	// hit and no default -- the "responder unit path" the design calls
+	// out).  Both must reach the identical stage-1 note text.
+	static const char* const kStage1Note =
+		"ask_user: no interactive user is available in this run; use your best judgment and proceed";
+	{
+		AgentEvalScenario s = MakeScenario( "ask_no_responder", kScene, "Ask something",
+			"commit", oneAskUserThenDone( "Any question at all" ), dir, "[]" );
+		// s.askUserResponses left at its MakeScenario default (empty).
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "ask_no_responder: run reached final_text" );
+		const std::string traj = trajectoryText( h );
+		Check( traj.find( kStage1Note ) != std::string::npos,
+			"ask_no_responder: a scenario with NO askUserResponses gets the stage-1 available:false stub, byte-for-byte" );
+	}
+	{
+		AgentEvalScenario s = MakeScenario( "ask_no_match_no_default", kScene, "Ask something",
+			"commit", oneAskUserThenDone( "A question about nothing the responder covers" ), dir, "[]" );
+		AgentEvalAskUserMatch m; m.contains = "color"; m.answer = "Blue-scripted-answer";
+		s.askUserResponses.matches.push_back( m );
+		// no default set -- matches non-empty, but this question hits none of them.
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "ask_no_match_no_default: run reached final_text" );
+		const std::string traj = trajectoryText( h );
+		Check( traj.find( kStage1Note ) != std::string::npos,
+			"ask_no_match_no_default: a non-matching question with no default ALSO falls back to the stage-1 stub" );
+		Check( traj.find( "Blue-scripted-answer" ) == std::string::npos,
+			"ask_no_match_no_default: the non-matching \"color\" entry did NOT fire" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-ask(b): LoadEvalScenario's LOUD validation of the "askUserResponses"
+// root-level field -- mirrors TestLoadEvalScenarioStrictCheckpointFieldTypes's
+// pattern (a hand-built scenario JSON, wrong-typed/malformed field FAILS
+// loudly naming the field; a corrected sibling loads cleanly), but at the
+// SCENARIO-ROOT level (askUserResponses is not a checkpoint field), plus
+// the three new "trajectory" checkpoint fields (askUserMin/askUserMax/
+// askUserBeforeMutation), which ARE checkpoint fields and so are added to
+// the existing writeScenario-style helper instead.
+//----------------------------------------------------------------------
+static void TestAskUserLoaderValidation()
+{
+	std::printf( "T-ask(b): LoadEvalScenario validates askUserResponses / askUser* checkpoint fields LOUDLY...\n" );
+	const std::string dir = ScratchRunDir( "t_ask_loader" );
+
+	// A minimal, otherwise-valid scenario root as a JsonValue -- callers
+	// mutate/attach an "askUserResponses" field (root level) or a
+	// "checkpoints" array (askUserMin/Max/BeforeMutation) before writing.
+	auto baseRoot = [&]( const std::string& id ) -> JsonValue {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		return root;
+	};
+	auto writeRoot = [&]( const std::string& id, JsonValue root ) -> std::string {
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		return path;
+	};
+
+	// askUserResponses must be an OBJECT.
+	{
+		JsonValue root = baseRoot( "aur_not_object" );
+		root.set( "askUserResponses", JsonValue::MakeString( "nope" ) );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeRoot( "aur_not_object", root ), s, err ),
+			"askUserResponses as a bare string FAILS to load" );
+		Check( err.find( "askUserResponses" ) != std::string::npos,
+			"the load error names \"askUserResponses\" (got: " + err + ")" );
+	}
+	// askUserResponses.matches must be an ARRAY.
+	{
+		JsonValue root = baseRoot( "aur_matches_not_array" );
+		JsonValue aur = JsonValue::MakeObject();
+		aur.set( "matches", JsonValue::MakeString( "nope" ) );
+		root.set( "askUserResponses", aur );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeRoot( "aur_matches_not_array", root ), s, err ),
+			"askUserResponses.matches as a bare string FAILS to load" );
+		Check( err.find( "matches" ) != std::string::npos,
+			"the load error names \"matches\" (got: " + err + ")" );
+	}
+	// askUserResponses.matches[i] must be an OBJECT.
+	{
+		JsonValue root = baseRoot( "aur_match_not_object" );
+		JsonValue aur = JsonValue::MakeObject();
+		JsonValue matches = JsonValue::MakeArray();
+		matches.push_back( JsonValue::MakeString( "nope" ) );
+		aur.set( "matches", matches );
+		root.set( "askUserResponses", aur );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeRoot( "aur_match_not_object", root ), s, err ),
+			"askUserResponses.matches[0] as a bare string FAILS to load" );
+		Check( err.find( "matches[0]" ) != std::string::npos,
+			"the load error names \"matches[0]\" (got: " + err + ")" );
+	}
+	// askUserResponses.matches[i].contains must be a NON-EMPTY string.
+	{
+		JsonValue root = baseRoot( "aur_match_empty_contains" );
+		JsonValue aur = JsonValue::MakeObject();
+		JsonValue matches = JsonValue::MakeArray();
+		JsonValue m = JsonValue::MakeObject();
+		m.set( "contains", JsonValue::MakeString( "" ) );
+		m.set( "answer", JsonValue::MakeString( "some answer" ) );
+		matches.push_back( m );
+		aur.set( "matches", matches );
+		root.set( "askUserResponses", aur );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeRoot( "aur_match_empty_contains", root ), s, err ),
+			"askUserResponses.matches[0].contains as an EMPTY string FAILS to load" );
+		Check( err.find( "contains" ) != std::string::npos,
+			"the load error names \"contains\" (got: " + err + ")" );
+	}
+	// askUserResponses.matches[i].answer missing entirely.
+	{
+		JsonValue root = baseRoot( "aur_match_missing_answer" );
+		JsonValue aur = JsonValue::MakeObject();
+		JsonValue matches = JsonValue::MakeArray();
+		JsonValue m = JsonValue::MakeObject();
+		m.set( "contains", JsonValue::MakeString( "color" ) );
+		matches.push_back( m );
+		aur.set( "matches", matches );
+		root.set( "askUserResponses", aur );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeRoot( "aur_match_missing_answer", root ), s, err ),
+			"askUserResponses.matches[0] missing \"answer\" FAILS to load" );
+		Check( err.find( "answer" ) != std::string::npos,
+			"the load error names \"answer\" (got: " + err + ")" );
+	}
+	// askUserResponses.default must be a NON-EMPTY string.
+	{
+		JsonValue root = baseRoot( "aur_default_wrong_type" );
+		JsonValue aur = JsonValue::MakeObject();
+		aur.set( "default", JsonValue::MakeNumber( 7 ) );
+		root.set( "askUserResponses", aur );
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeRoot( "aur_default_wrong_type", root ), s, err ),
+			"askUserResponses.default as a NUMBER FAILS to load" );
+		Check( err.find( "default" ) != std::string::npos,
+			"the load error names \"default\" (got: " + err + ")" );
+	}
+	// The fully-correct sibling loads cleanly and round-trips into the
+	// in-memory struct.
+	{
+		JsonValue root = baseRoot( "aur_good" );
+		JsonValue aur = JsonValue::MakeObject();
+		JsonValue matches = JsonValue::MakeArray();
+		JsonValue m = JsonValue::MakeObject();
+		m.set( "contains", JsonValue::MakeString( "color" ) );
+		m.set( "answer", JsonValue::MakeString( "Blue" ) );
+		matches.push_back( m );
+		aur.set( "matches", matches );
+		aur.set( "default", JsonValue::MakeString( "Whatever you think best." ) );
+		root.set( "askUserResponses", aur );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( writeRoot( "aur_good", root ), s, err ),
+			"a correctly-shaped askUserResponses loads (" + err + ")" );
+		Check( s.askUserResponses.matches.size() == 1 &&
+			s.askUserResponses.matches[0].contains == "color" && s.askUserResponses.matches[0].answer == "Blue",
+			"the loaded scenario's askUserResponses.matches[0] round-trips correctly" );
+		Check( s.askUserResponses.hasDefault && s.askUserResponses.defaultAnswer == "Whatever you think best.",
+			"the loaded scenario's askUserResponses.default round-trips correctly" );
+	}
+	// A scenario that omits askUserResponses entirely loads with the
+	// default-constructed (empty) responder.
+	{
+		JsonValue root = baseRoot( "aur_absent" );
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( writeRoot( "aur_absent", root ), s, err ),
+			"a scenario with no askUserResponses field loads (" + err + ")" );
+		Check( s.askUserResponses.matches.empty() && !s.askUserResponses.hasDefault,
+			"askUserResponses defaults to empty/no-default when the field is absent" );
+	}
+
+	// --- the trajectory checkpoint's three new fields ---
+	auto writeScenarioCps = [&]( const std::string& id, const std::string& checkpointsJson ) -> std::string {
+		JsonValue root = baseRoot( id );
+		JsonValue cps; std::string perr;
+		Check( JsonParse( checkpointsJson, cps, perr ), id + ": checkpoints JSON itself parses" );
+		root.set( "checkpoints", cps );
+		return writeRoot( id, root );
+	};
+
+	// askUserMin as a STRING (not a number) fails loudly.
+	{
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeScenarioCps( "bad_askusermin_type",
+			"[{\"kind\":\"trajectory\",\"askUserMin\":\"1\"}]" ), s, err ),
+			"wrong-typed askUserMin (string \"1\") FAILS to load" );
+		Check( err.find( "askUserMin" ) != std::string::npos,
+			"the load error names \"askUserMin\" (got: " + err + ")" );
+	}
+	// askUserMin negative fails loudly (a call COUNT can never be negative).
+	{
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeScenarioCps( "bad_askusermin_negative",
+			"[{\"kind\":\"trajectory\",\"askUserMin\":-1}]" ), s, err ),
+			"negative askUserMin (-1) FAILS to load" );
+		Check( err.find( "askUserMin" ) != std::string::npos,
+			"the load error names \"askUserMin\" (got: " + err + ")" );
+	}
+	// askUserMax as a bool (not a number) fails loudly.
+	{
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeScenarioCps( "bad_askusermax_type",
+			"[{\"kind\":\"trajectory\",\"askUserMax\":true}]" ), s, err ),
+			"wrong-typed askUserMax (bool true) FAILS to load" );
+		Check( err.find( "askUserMax" ) != std::string::npos,
+			"the load error names \"askUserMax\" (got: " + err + ")" );
+	}
+	// askUserBeforeMutation as a NUMBER (not a bool) fails loudly.
+	{
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeScenarioCps( "bad_askuserbeforemutation_type",
+			"[{\"kind\":\"trajectory\",\"askUserBeforeMutation\":1}]" ), s, err ),
+			"wrong-typed askUserBeforeMutation (number 1) FAILS to load" );
+		Check( err.find( "askUserBeforeMutation" ) != std::string::npos,
+			"the load error names \"askUserBeforeMutation\" (got: " + err + ")" );
+	}
+	// The correctly-typed siblings all load cleanly, together.
+	{
+		AgentEvalScenario s; std::string err;
+		Check( LoadEvalScenario( writeScenarioCps( "good_askuser_trajectory_fields",
+			"[{\"kind\":\"trajectory\",\"askUserMin\":1,\"askUserMax\":3,\"askUserBeforeMutation\":true}]" ), s, err ),
+			"correctly-typed askUserMin/askUserMax/askUserBeforeMutation load together (" + err + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-ask(c): the "trajectory" checkpoint kind's three new assertions --
+// askUserMin/askUserMax (call-count bounds) and askUserBeforeMutation
+// (ordering) -- each driven through a REAL RunScenario run and checked
+// BOTH directions (a crafted-to-pass case actually passes; a crafted-to-
+// fail sibling actually fails, with an actionable detail).
+//----------------------------------------------------------------------
+static void TestTrajectoryAskUserAssertions()
+{
+	std::printf( "T-ask(c): \"trajectory\" checkpoint askUserMin/askUserMax/askUserBeforeMutation...\n" );
+	const std::string dir = ScratchRunDir( "t_ask_trajectory" );
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& base, const std::string& cpJson,
+	                      bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = base; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+		} else Check( false, label + ": expected exactly one checkpoint result" );
+	};
+
+	// Run A: ONE ask_user call, BEFORE the (one) insert_chunk mutation --
+	// the substrate for every PASS case below.
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Asking first.",
+			{ { "ask_user", AskUserInput( "What colour should it be?" ) } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Building now.",
+			{ { "insert_chunk", InsertChunkInput(
+				"uniformcolor_painter\n{\n\tname pnt_new\n\tcolor 0.2 0.3 0.4\n}" ) } }, "tool_use" );
+		const std::string r3 = AnthropicBody( "msg_3", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "traj_ask_one_before", kScene, "Build it", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ) + JsonlLine( "anthropic", r3 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "traj_ask_one_before: run reached final_text" );
+		Check( h.result.toolCalls == 2, "traj_ask_one_before: exactly 2 tool calls (ask_user, insert_chunk)" );
+
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMin\":1}]", true,
+			"askUserMin:1 PASSES with exactly one ask_user call" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMin\":2}]", false,
+			"askUserMin:2 FAILS with only one ask_user call" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMax\":1}]", true,
+			"askUserMax:1 PASSES with exactly one ask_user call" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMax\":0}]", false,
+			"askUserMax:0 FAILS with one ask_user call" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserBeforeMutation\":true}]", true,
+			"askUserBeforeMutation:true PASSES -- ask_user preceded the insert_chunk" );
+	}
+
+	// Run B: the mutation happens FIRST, ask_user only AFTER -- the RED
+	// case for askUserBeforeMutation (still exactly one ask_user call, so
+	// askUserMin/Max stay green -- isolates the failure to ordering).
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Building first.",
+			{ { "insert_chunk", InsertChunkInput(
+				"uniformcolor_painter\n{\n\tname pnt_new2\n\tcolor 0.2 0.3 0.4\n}" ) } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Asking afterward (too late).",
+			{ { "ask_user", AskUserInput( "Did I get the colour right?" ) } }, "tool_use" );
+		const std::string r3 = AnthropicBody( "msg_3", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "traj_ask_after_mutation", kScene, "Build it", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ) + JsonlLine( "anthropic", r3 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "traj_ask_after_mutation: run reached final_text" );
+
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserBeforeMutation\":true}]", false,
+			"askUserBeforeMutation:true FAILS -- the insert_chunk preceded the ask_user call" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMin\":1}]", true,
+			"askUserMin:1 still PASSES (the ordering failure is isolated to askUserBeforeMutation)" );
+	}
+
+	// Run C: NO ask_user call at all -- the second RED case for
+	// askUserBeforeMutation (nothing to precede the mutation with), and the
+	// RED case for askUserMin.
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Building without asking.",
+			{ { "insert_chunk", InsertChunkInput(
+				"uniformcolor_painter\n{\n\tname pnt_new3\n\tcolor 0.2 0.3 0.4\n}" ) } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "traj_ask_never", kScene, "Build it", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "traj_ask_never: run reached final_text" );
+
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMin\":1}]", false,
+			"askUserMin:1 FAILS -- zero ask_user calls occurred" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMax\":3}]", true,
+			"askUserMax:3 still PASSES (zero calls is <= any positive max)" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserBeforeMutation\":true}]", false,
+			"askUserBeforeMutation:true FAILS -- no ask_user call occurred to precede the mutation with" );
+	}
+
+	// Run D: an ask_user call and NO document-mutating tool call at all
+	// (ask_user + render only) -- the VACUOUS-PASS case: "the first
+	// ask_user precedes the first mutation" is trivially satisfied when
+	// there is no mutation to precede, so askUserBeforeMutation:true must
+	// PASS here even though nothing was ever built.  This is intentional,
+	// not a gap -- a scenario wanting "asked AND built something" pairs
+	// askUserBeforeMutation with a separate chunk_count/build checkpoint
+	// (see build_ambiguous_scene.json), so a build-nothing run still fails
+	// overall on THAT checkpoint even though this one vacuously passes.
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Asking first.",
+			{ { "ask_user", AskUserInput( "What colour should it be?" ) } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Rendering -- nothing was ever built.",
+			{ { "render", EmptyInput() } }, "tool_use" );
+		const std::string r3 = AnthropicBody( "msg_3", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "traj_ask_no_mutation", kScene, "Build it", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ) + JsonlLine( "anthropic", r3 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "traj_ask_no_mutation: run reached final_text" );
+		Check( h.result.toolCalls == 2, "traj_ask_no_mutation: exactly 2 tool calls (ask_user, render -- no mutation)" );
+
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserBeforeMutation\":true}]", true,
+			"askUserBeforeMutation:true VACUOUSLY PASSES -- an ask_user call occurred and there is no "
+			"mutation for it to fail to precede" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMin\":1}]", true,
+			"askUserMin:1 still PASSES (the ask_user call itself is real, just nothing mutated afterward)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-ask(d): ScenarioContentHash sensitivity to askUserResponses.
+// ScenarioContentHash itself is file-local (anonymous namespace) to
+// AgentEvalRunner.cpp, so this drives it BLACK-BOX through the one place
+// it is externally observable: the "scenarioContentHash" field
+// RunScenarioDriven stamps into <runDir>/<id>.result.jsonl (see
+// AgentEvalRunner.cpp's result-summary write, ~RunScenarioDriven).  Two
+// scenarios identical in every other respect but for ONE scripted
+// answer's TEXT must stamp DIFFERENT hashes; the identical scenario run
+// twice must stamp the SAME hash (a sanity control against a flaky/
+// nondeterministic canonicalization).
+//----------------------------------------------------------------------
+static void TestScenarioContentHashAskUserResponsesSensitivity()
+{
+	std::printf( "T-ask(d): ScenarioContentHash is sensitive to askUserResponses...\n" );
+	const std::string dir = ScratchRunDir( "t_ask_hash" );
+
+	auto stampedHash = [&]( const std::string& id, const std::string& answer ) -> std::string {
+		AgentEvalScenario s = MakeScenario( id, kScene, "Recolor", "commit", kParamEditFixture, dir, "[]" );
+		AgentEvalAskUserMatch m; m.contains = "color"; m.answer = answer;
+		s.askUserResponses.matches.push_back( m );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( !h.resultPath.empty(), id + ": run wrote a result.jsonl path" );
+
+		std::ifstream f( h.resultPath.c_str(), std::ios::binary );
+		std::string body( ( std::istreambuf_iterator<char>( f ) ), std::istreambuf_iterator<char>() );
+		JsonValue v; std::string perr;
+		Check( JsonParse( body, v, perr ), id + ": result.jsonl parses as JSON (" + perr + ")" );
+		Check( v.has( "scenarioContentHash" ) && v.get( "scenarioContentHash" ).isString(),
+			id + ": result.jsonl carries a string \"scenarioContentHash\" field" );
+		return v.get( "scenarioContentHash" ).asString();
+	};
+
+	const std::string hashA1 = stampedHash( "hash_probe_a1", "Blue-answer" );
+	const std::string hashA2 = stampedHash( "hash_probe_a2", "Blue-answer" );
+	const std::string hashB  = stampedHash( "hash_probe_b",  "Green-answer" );
+
+	Check( !hashA1.empty(), "hash_probe_a1: stamped hash is non-empty" );
+	Check( hashA1 == hashA2,
+		"identical askUserResponses (same answer text) -> IDENTICAL scenarioContentHash (sanity control)" );
+	Check( hashA1 != hashB,
+		"changing ONE scripted answer's text -> DIFFERENT scenarioContentHash" );
+
+	// Control: a scenario with NO askUserResponses at all also hashes
+	// differently from one that carries a responder -- proves the field is
+	// folded into the canonicalization unconditionally, not just when two
+	// non-empty responders differ.
+	{
+		AgentEvalScenario sNone = MakeScenario( "hash_probe_none", kScene, "Recolor", "commit", kParamEditFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( sNone, opts );
+		std::ifstream f( h.resultPath.c_str(), std::ios::binary );
+		std::string body( ( std::istreambuf_iterator<char>( f ) ), std::istreambuf_iterator<char>() );
+		JsonValue v; std::string perr;
+		Check( JsonParse( body, v, perr ), "hash_probe_none: result.jsonl parses as JSON (" + perr + ")" );
+		const std::string hashNone = v.get( "scenarioContentHash" ).asString();
+		Check( hashNone != hashA1,
+			"a scenario with NO askUserResponses hashes differently from one with a responder" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-ask(e): ADVERSARIAL CONTROL for the committed build_ambiguous_scene
+// scenario, mirroring TestAdversarialOracleControls's pattern -- loads the
+// REAL committed scenario (so the checkpoints under test are the actual
+// shipped ones), swaps in a wrong-behavior fixture that builds the SAME
+// kind of scene but NEVER calls ask_user, and asserts the trajectory
+// checkpoint (askUserMin) is the SPECIFIC one that fails while the build-
+// completeness checkpoints (chunk_count/render/objectmap/diagnostics)
+// still pass -- proving the oracle discriminates on ASKING, not on
+// whether a reasonable scene got built.
+//----------------------------------------------------------------------
+static void TestAdversarialControlNeverAsksStillBuilds()
+{
+	std::printf( "T-ask(e): build_ambiguous_scene adversarial control -- never asking FAILS askUserMin, build checkpoints still pass...\n" );
+
+	// The SAME proven watch+table+window recipe evals/fixtures/
+	// build_watch_scene.fixture.jsonl uses (same scaffold: film 32x24,
+	// pinhole at z=3.5, fov 40 -- byte-identical here) -- three
+	// standard_objects (clears chunk_count's min:3) and a single white
+	// window light at the SAME position/scale already proven to land the
+	// render checkpoint's meanLuma/channelBalance band on this exact
+	// scaffold, rather than a freshly-guessed light rig that might miss the
+	// band for reasons unrelated to what THIS control is testing (asking).
+	std::vector<ToolCallSpec> chunks;
+	chunks.push_back( { "insert_chunks", [](){
+		JsonValue chunksArr = JsonValue::MakeArray();
+		static const char* const kChunks[] = {
+			"uniformcolor_painter\n{\n\tname pnt_guess\n\tcolor 0.85 0.68 0.3\n}",
+			"lambertian_material\n{\n\tname mat_guess\n\treflectance pnt_guess\n}",
+			"cylinder_geometry\n{\n\tname geo_guess\n\taxis z\n\tradius 0.35\n\theight 0.15\n\tcapped TRUE\n}",
+			"standard_object\n{\n\tname obj_guess\n\tgeometry geo_guess\n\tmaterial mat_guess\n\tposition 0 0 0\n}",
+			"uniformcolor_painter\n{\n\tname pnt_guess_table\n\tcolor 0.62 0.63 0.66\n}",
+			"lambertian_material\n{\n\tname mat_guess_table\n\treflectance pnt_guess_table\n}",
+			"box_geometry\n{\n\tname geo_guess_table\n\twidth 3.4\n\theight 0.2\n\tdepth 1.8\n}",
+			"standard_object\n{\n\tname obj_guess_table\n\tgeometry geo_guess_table\n\tmaterial mat_guess_table\n\tposition 0 -0.55 0\n}",
+			"uniformcolor_painter\n{\n\tname pnt_guess_emit\n\tcolor 1.0 1.0 1.0\n}",
+			"lambertian_luminaire_material\n{\n\tname mat_guess_emit\n\texitance pnt_guess_emit\n\tscale 9.0\n\tmaterial none\n}",
+			"clippedplane_geometry\n{\n\tname geo_guess_emit\n\tpta -1.0 1.0 3.5\n\tptb 1.0 1.0 3.5\n\tptc 1.0 -1.0 3.5\n\tptd -1.0 -1.0 3.5\n}",
+			"standard_object\n{\n\tname obj_guess_emit\n\tgeometry geo_guess_emit\n\tmaterial mat_guess_emit\n}",
+		};
+		for( const char* c : kChunks ) chunksArr.push_back( JsonValue::MakeString( c ) );
+		JsonValue in = JsonValue::MakeObject();
+		in.set( "chunks", chunksArr );
+		return in;
+	}() } );
+
+	const std::string r1 = AnthropicBody( "msg_1", "Reading first.", { { "read_document", EmptyInput() } }, "tool_use" );
+	const std::string r2 = AnthropicBody( "msg_2",
+		"Building a guessed display piece straight away -- no clarifying question asked.",
+		chunks, "tool_use" );
+	const std::string r3 = AnthropicBody( "msg_3", "Rendering.", { { "render", EmptyInput() } }, "tool_use" );
+	const std::string r4 = AnthropicBody( "msg_4",
+		"Built a display scene for a guessed collection piece and rendered it.", {}, "end_turn" );
+	const std::string wrongFixture =
+		JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ) +
+		JsonlLine( "anthropic", r3 ) + JsonlLine( "anthropic", r4 );
+
+	const std::string dir = ScratchRunDir( "t_adv_never_asks" );
+	AgentEvalScenario s; std::string err;
+	Check( LoadEvalScenario( "evals/scenarios/build_ambiguous_scene.json", s, err ),
+		"build_ambiguous_scene: committed scenario loads (" + err + ")" );
+
+	s.replayFixturePath = dir + "/wrong.fixture.jsonl";
+	Check( WriteFile( s.replayFixturePath, wrongFixture ), "never-asks fixture written to scratch" );
+
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus != "load_error", "never-asks run did not load_error (" + h.result.errorMessage + ")" );
+	Check( h.result.toolCalls == 3, "never-asks run dispatched exactly 3 tool calls (read_document, insert_chunks, render -- no ask_user)" );
+
+	AgentEvalCheckResult r = CheckScenario( h, s );
+	Check( r.checkpoints.size() == s.checkpoints.size(), "one check result per committed checkpoint" );
+	Check( !r.allPassed, "allPassed is FALSE against the never-asks fixture" );
+
+	// Find the trajectory checkpoint (its index is an implementation
+	// detail of the scenario file, not hard-coded here) and assert it is
+	// the ONE that failed, naming askUserMin specifically.
+	bool foundTrajectory = false;
+	for( std::size_t i = 0; i < r.checkpoints.size(); ++i ) {
+		if( r.checkpoints[i].kind != "trajectory" ) continue;
+		foundTrajectory = true;
+		Check( !r.checkpoints[i].passed,
+			"never-asks: the trajectory checkpoint FAILS (detail: " + r.checkpoints[i].detail + ")" );
+		Check( r.checkpoints[i].detail.find( "askUserMin" ) != std::string::npos,
+			"never-asks: the failing detail names askUserMin specifically (detail: " + r.checkpoints[i].detail + ")" );
+	}
+	Check( foundTrajectory, "build_ambiguous_scene carries a trajectory checkpoint to fail" );
+
+	// Every OTHER checkpoint (chunk_count/render/objectmap/diagnostics)
+	// still PASSES -- the oracle is discriminating on ASKING, not on
+	// whether a plausible scene got built.  finalText is exempted: the
+	// wrong-behavior fixture's guessed build never says "watch"/"pocket"
+	// (it never learned the piece identity), so that checkpoint is
+	// EXPECTED to also fail here -- it is testing the SAME underlying
+	// defect (never asked -> can't possibly reflect the answer), not a
+	// second, unrelated failure.
+	for( std::size_t i = 0; i < r.checkpoints.size(); ++i ) {
+		if( r.checkpoints[i].kind == "trajectory" || r.checkpoints[i].kind == "finalText" ) continue;
+		Check( r.checkpoints[i].passed,
+			"never-asks: checkpoints[" + std::to_string( i ) + "] (" + r.checkpoints[i].kind +
+			") -- a plausible guessed build still passes the type-agnostic build checkpoints (detail: " +
+			r.checkpoints[i].detail + ")" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
@@ -4037,6 +4679,11 @@ int main()
 	TestResultsLedgerRecordsTerminalStatus();
 	TestLoadEvalScenarioStrictCheckpointFieldTypes();
 	TestTerminalSuccessGuard();
+	TestAskUserScriptedResponderMatching();
+	TestAskUserLoaderValidation();
+	TestTrajectoryAskUserAssertions();
+	TestScenarioContentHashAskUserResponsesSensitivity();
+	TestAdversarialControlNeverAsksStillBuilds();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
