@@ -37,6 +37,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 // MARK: - Layout model
 
@@ -296,6 +297,14 @@ struct MultiPaneViewportView: View {
         }
         .onChange(of: interactionEnabled) { _, enabled in
             if enabled { retryPendingSurfaceSizes() }
+        }
+        // A hosted/direct AgentSession render can own core admission without
+        // changing either of the app-level booleans above. PaneCanvas also
+        // suppresses duplicate geometry callbacks, so keep retrying only the
+        // desired sizes that have not yet been accepted. Successful panes
+        // become no-ops through lastSurfacePixelSize.
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            if interactionEnabled { retryPendingSurfaceSizes() }
         }
     }
 

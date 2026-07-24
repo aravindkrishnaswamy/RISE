@@ -231,6 +231,10 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mRendering( false )
 , mSaving( false )
 , mAgentRenderBlocksInteractive( false )
+, mDirectRenderStateMutex()
+, mDirectRenderDoneCV()
+, mDirectRenderActiveCount( 0 )
+, mDirectRenderCancelRequested( false )
 , mCancelCount( 0 )
 , mRenderCount( 0 )
 // Model-B F2 slice S2a fix: every mint site does `mNextRenderJobId +=
@@ -897,7 +901,20 @@ void SceneEditController::StopInteractive()
 	// kernel park inside cv.wait, and miss the notify forever — which
 	// would deadlock join() below.  C++ guarantees no missed wakeups
 	// only when the notifier has held the mutex used by the waiter.
-	mCancelProgress.RequestCancel();
+	// Serialize against a direct render's admission/reset handshake. If a
+	// direct occupant is already active, preserve this explicit lifecycle
+	// cancellation across the Reset() it performs after parking the current
+	// interactive pass. A direct call admitted later is not a target of this
+	// StopInteractive invocation.
+	{
+		std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		if( mDirectRenderActiveCount > 0 )
+		{
+			mDirectRenderCancelRequested.store( true, std::memory_order_release );
+		}
+		mCancelProgress.RequestCancel();
+	}
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
 	}
@@ -1163,6 +1180,17 @@ void SceneEditController::Stop()
 	// at the top of this function for why the order (not just the union
 	// of the two teardowns) matters.
 	StopInteractive();
+
+	// RunPreviewRenderParked executes on an external caller's thread rather
+	// than mAgentRenderThread. Close admission so no direct caller can publish
+	// active after the predicate check, then wait for the currently-published
+	// occupant to make its final controller touch. This is required even when
+	// Start() was never called (StopInteractive is then intentionally a no-op).
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	std::unique_lock<std::mutex> directLk( mDirectRenderStateMutex );
+	mDirectRenderDoneCV.wait( directLk, [&] {
+		return mDirectRenderActiveCount == 0;
+	} );
 }
 
 bool SceneEditController::IsRunning() const
@@ -4073,9 +4101,17 @@ void SceneEditController::CancelAgentRender_()
 	// the per-occupant bit closes the queued-before-start window where the
 	// worker's mandatory Reset() would otherwise erase this cancellation.
 	std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+	std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	if( mAgentRenderPending )
 	{
 		mAgentRenderCancelRequested.store( true, std::memory_order_release );
+	}
+	{
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		if( mDirectRenderActiveCount > 0 )
+		{
+			mDirectRenderCancelRequested.store( true, std::memory_order_release );
+		}
 	}
 	mCancelProgress.RequestCancel();
 }
@@ -4815,6 +4851,12 @@ bool SceneEditController::RunPreviewRenderParked(
 	// this thread waited for that pass while still holding admission, every UI
 	// callback serialized by admission would queue behind the whole pass.
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderStop.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused -- controller stopped." );
+		return false;
+	}
 	// The dedicated agent/production worker claims this gate before it
 	// acquires mMutex. A direct camera/film-override preview must not slip
 	// into that queued window and overwrite the coordinated job record.
@@ -4842,6 +4884,11 @@ bool SceneEditController::RunPreviewRenderParked(
 			"SceneEditController: preview render refused while an editor transaction, gesture, or save is open." );
 		return false;
 	}
+	mDirectRenderCancelRequested.store( false, std::memory_order_release );
+	{
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		++mDirectRenderActiveCount;
+	}
 	mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
 	struct DirectRenderAdmissionGuard
 	{
@@ -4850,6 +4897,17 @@ bool SceneEditController::RunPreviewRenderParked(
 		{
 			self.mAgentRenderBlocksInteractive.store( false, std::memory_order_release );
 			self.mCV.notify_all();
+			// LAST guarded access to self: notify while the state mutex is
+			// still held. Stop() cannot finish its wait (and permit
+			// destruction) until this lock_guard has completed the unlock.
+			{
+				std::lock_guard<std::mutex> directLk( self.mDirectRenderStateMutex );
+				--self.mDirectRenderActiveCount;
+				if( self.mDirectRenderActiveCount == 0 )
+				{
+					self.mDirectRenderDoneCV.notify_all();
+				}
+			}
 		}
 	} directAdmissionGuard{ *this };
 	admissionLk.unlock();
@@ -4879,8 +4937,14 @@ bool SceneEditController::RunPreviewRenderParked(
 	// render exactly as AgentRenderWorkerLoop_ does; otherwise a camera/film
 	// override render installs an already-cancelled callback on the Job and
 	// immediately returns a partial/empty "render cancelled" result. Any
-	// cancellation arriving after this reset remains visible to fn().
+	// cancellation arriving after this reset remains visible to fn(). An
+	// explicit cancellation that arrived before Reset() is re-applied from
+	// the direct-occupant latch.
 	mCancelProgress.Reset();
+	if( mDirectRenderCancelRequested.load( std::memory_order_acquire ) )
+	{
+		mCancelProgress.RequestCancel();
+	}
 
 	// Defensive post-park validation. Controller-owned state cannot have
 	// opened after the gate claim (all such paths now refuse under
@@ -6936,6 +7000,7 @@ void SceneEditController::RenderLoop()
 		// so the restored edit (or a genuine refinement-tick re-arrival)
 		// re-wakes this loop the moment the save publishes its result.
 		RenderJobId thisPassJobId = kInvalidRenderJobId;
+		unsigned int thisPassPane = 0;
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire )
@@ -6962,8 +7027,12 @@ void SceneEditController::RenderLoop()
 			// at the mint), so the parked-registers precondition holds.
 			// Gestures pin the pick to mCurrentPane (see PickNext's doc).
 			SwitchToPaneLocked_( PickNextVisiblePaneLocked_() );
+			thisPassPane = mCurrentPane;
 			// Clear the pane's dirty AT MINT: if this pass is cancelled by
 			// a new edit, the edit path re-marks every pane dirty anyway.
+			// Cancellation by a direct/agent render has no edit path, so
+			// the post-pass cancellation branch below re-dirties this exact
+			// snapshotted pane before moving on.
 			mPaneRender[mCurrentPane].dirty = false;
 			// P3a slice 3: stamp the pane's surface dims for the pass --
 			// registers, read by DoOneRenderPass's film-swap block.
@@ -7062,6 +7131,7 @@ void SceneEditController::RenderLoop()
 		// of whether a future refactor (or a platform where thread-entry
 		// exceptions DO unwind) changes today's terminate-not-unwind
 		// behaviour.
+		bool passWasCancelled = false;
 		{
 			struct ActiveFlipGuard {
 				SceneEditController& self;
@@ -7086,6 +7156,33 @@ void SceneEditController::RenderLoop()
 
 			DoOneRenderPass();
 			mRenderCount.fetch_add( 1, std::memory_order_acq_rel );
+			// Snapshot before ActiveFlipGuard publishes mRendering=false.
+			// A parked render is waiting on that transition and may reset
+			// the shared token immediately afterward.
+			passWasCancelled = mCancelProgress.IsCancelRequested();
+		}
+
+		if( passWasCancelled )
+		{
+			// A canceled quantum did not produce a complete frame for the
+			// pane whose dirty bit was consumed at mint. Requeue that pane
+			// unless StopInteractive is tearing the loop down. Hidden panes
+			// remain dirty for their next reveal but do not arm a pointless
+			// visible-pane rotation.
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mRunning.load( std::memory_order_acquire ) )
+			{
+				mPaneRender[thisPassPane].dirty = true;
+				if( thisPassPane < PaneCountForLayout( mViewportLayout ) )
+				{
+					mPanePassPending.store( true, std::memory_order_release );
+				}
+				mCV.notify_one();
+			}
+			// A canceled FinalRegularRunning/PolishQueued pass is not a
+			// completed quality transition. Skip the polish post-roll; the
+			// replacement quantum will perform it after real completion.
+			continue;
 		}
 
 		// Polish-pass post-roll.  Three transitions land here:

@@ -1136,20 +1136,31 @@ void ViewportWidget::recomputePaneLayout()
                 }
             }
         }
-        if (m_bridge && devDims != m_paneLastPushedDims[i]) {
-            // Cache only an accepted size. A production/chat render can
-            // acquire admission after the widget measured its geometry;
-            // retaining the prior accepted value lets setSceneEditable(true)
-            // retry this desired size without requiring another resize.
-            if (m_bridge->setPaneSurfaceDims(
-                    i, static_cast<unsigned int>(devDims.width()),
-                    static_cast<unsigned int>(devDims.height()))) {
-                m_paneLastPushedDims[i] = devDims;
-            }
-        }
+        m_paneDesiredDims[i] = devDims;
     }
 
+    retryPendingPaneSurfaceDims();
     refreshPaneChromeState();
+}
+
+void ViewportWidget::retryPendingPaneSurfaceDims()
+{
+    if (!m_bridge || m_layout == ViewportBridge::ViewportLayout::Single) return;
+    for (unsigned int i = 0; i < m_visiblePaneCount; ++i) {
+        const QSize desired = m_paneDesiredDims[i];
+        if (desired.width() <= 0 || desired.height() <= 0
+            || desired == m_paneLastPushedDims[i]) {
+            continue;
+        }
+        // Cache only an accepted size. A hosted direct render may acquire
+        // admission without changing m_sceneEditable or production state;
+        // pollPaneChrome retries this retained desired value after release.
+        if (m_bridge->setPaneSurfaceDims(
+                i, static_cast<unsigned int>(desired.width()),
+                static_cast<unsigned int>(desired.height()))) {
+            m_paneLastPushedDims[i] = desired;
+        }
+    }
 }
 
 void ViewportWidget::refreshForDpiChange()
@@ -1365,6 +1376,7 @@ void ViewportWidget::pollPaneChrome()
         return;
     }
     if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        retryPendingPaneSurfaceDims();
         refreshPaneChromeState();
     }
 }

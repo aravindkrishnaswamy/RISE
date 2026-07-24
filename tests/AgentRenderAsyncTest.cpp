@@ -202,10 +202,19 @@ public:
 	std::atomic<bool> passEntered{ false };
 	std::atomic<bool> cancelObserved{ false };
 	std::atomic<bool> allowPassExit{ false };
+	std::atomic<unsigned int> passCount{ 0 };
 
 protected:
 	void DoOneRenderPass() override
 	{
+		const unsigned int pass = passCount.fetch_add( 1, std::memory_order_acq_rel );
+		if( pass > 0 )
+		{
+			// Replacement passes complete immediately. Only the first pass
+			// is held open to make the cancellation/reset handoff
+			// deterministic.
+			return;
+		}
 		passEntered.store( true, std::memory_order_release );
 		while( !IsCancelRequested() )
 			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
@@ -4995,7 +5004,87 @@ static void RunGestureRenderAdmissionTest()
 	       "z6: direct parked render proceeds after the cancelled interactive pass drains" );
 	Check( !parkedDirectStartedCancelled.load( std::memory_order_acquire ),
 	       "MONEY (z6): direct render resets the interactive pass's cancellation before its own closure" );
+	Check( delayedCancel.ForTest_WaitForRenders( 2, 5000 ),
+	       "MONEY (z6): cancellation by a direct render requeues the interrupted pane without requiring a later edit" );
 	delayedCancel.Stop();
+
+	// An explicit cancellation that arrives while the direct caller is still
+	// draining the old interactive pass must survive the direct path's
+	// mandatory per-render Reset().
+	DelayedInteractiveCancelController latchedDirectCancel( *pJob );
+	latchedDirectCancel.Start( /*suppressInitialRender=*/false );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !latchedDirectCancel.passEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( latchedDirectCancel.passEntered.load( std::memory_order_acquire ),
+	       "z6: cancellation-latch probe starts an interactive pass" );
+	std::atomic<bool> latchedDirectReturned{ false };
+	std::atomic<bool> latchedDirectSawCancel{ false };
+	std::thread latchedDirectThread( [&] {
+		const bool ok = latchedDirectCancel.RunPreviewRenderParked( [&] {
+			latchedDirectSawCancel.store(
+				latchedDirectCancel.IsCancelRequested(), std::memory_order_release );
+		} );
+		latchedDirectReturned.store( ok, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !latchedDirectCancel.cancelObserved.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( latchedDirectCancel.cancelObserved.load( std::memory_order_acquire ),
+	       "z6: cancellation-latch direct render is waiting before Reset()" );
+	latchedDirectCancel.CancelAgentRender_();
+	latchedDirectCancel.allowPassExit.store( true, std::memory_order_release );
+	latchedDirectThread.join();
+	Check( latchedDirectReturned.load( std::memory_order_acquire ),
+	       "z6: explicitly-cancelled direct render still drains normally" );
+	Check( latchedDirectSawCancel.load( std::memory_order_acquire ),
+	       "MONEY (z6): explicit direct-render cancellation survives the post-park Reset()" );
+	latchedDirectCancel.Stop();
+
+	// Full Stop is terminal for direct callers too. A controller that never
+	// started its interactive thread used to return from Stop immediately,
+	// leaving an external RunPreviewRenderParked closure able to touch a
+	// destroyed controller/Job.
+	SceneEditController directStopDrain( *pJob, /*interactiveRasterizer*/0 );
+	std::atomic<bool> directStopEntered{ false };
+	std::atomic<bool> allowDirectStopExit{ false };
+	std::atomic<bool> directStopReturned{ false };
+	std::thread directStopRenderThread( [&] {
+		directStopDrain.RunPreviewRenderParked( [&] {
+			directStopEntered.store( true, std::memory_order_release );
+			while( !allowDirectStopExit.load( std::memory_order_acquire ) )
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		} );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !directStopEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( directStopEntered.load( std::memory_order_acquire ),
+	       "z6: direct Stop-drain probe owns the scene" );
+	std::thread directStopThread( [&] {
+		directStopDrain.Stop();
+		directStopReturned.store( true, std::memory_order_release );
+	} );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	Check( !directStopReturned.load( std::memory_order_acquire ),
+	       "MONEY (z6): Stop waits for a caller-thread direct render to leave its closure" );
+	allowDirectStopExit.store( true, std::memory_order_release );
+	directStopRenderThread.join();
+	directStopThread.join();
+	Check( directStopReturned.load( std::memory_order_acquire ),
+	       "z6: Stop completes after the direct render releases the scene" );
 
 	pJob->release();
 	std::remove( scenePath.c_str() );

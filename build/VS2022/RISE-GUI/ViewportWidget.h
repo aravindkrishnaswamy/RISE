@@ -220,6 +220,11 @@ private:
     /// block doc above).  Called from resizeEvent, onViewportLayoutChanged,
     /// and pollPaneChrome (when it notices the layout changed).
     void    recomputePaneLayout();
+    /// Retry only surface dimensions measured by recomputePaneLayout but not
+    /// yet accepted by the controller. The periodic pane-chrome poll covers
+    /// hosted/direct renders that own admission without toggling the shell's
+    /// scene-editable or production-render state.
+    void    retryPendingPaneSurfaceDims();
     /// Multi-view mode preset -- see the .cpp for the per-slot roles.
     /// Applied on every layout change to visible secondary panes still
     /// showing "preview" (user customization survives).
@@ -259,6 +264,7 @@ private:
     /// admission (mirrors the core's same-dim short-circuit convention
     /// referenced in RENDER_MODES.md §7.3's invalidation matrix).
     QSize   m_paneLastPushedDims[ViewportBridge::kViewportPaneCount];
+    QSize   m_paneDesiredDims[ViewportBridge::kViewportPaneCount];
     /// user-review P2#2: panes the multi-view preset has already been
     /// applied to.  Applying it exactly once per pane (not "whenever the
     /// pane still reads preview") keeps an EXPLICIT Preview choice from

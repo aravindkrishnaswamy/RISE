@@ -3170,6 +3170,26 @@ namespace RISE
 		// exclusion semantics remain identical to a plain mutex.
 		mutable std::recursive_mutex mRenderAdmissionMutex;
 		std::atomic<bool>           mAgentRenderBlocksInteractive;
+		//! Direct RunPreviewRenderParked calls execute on their caller's
+		//! thread, outside the dedicated agent worker's joinable lifetime.
+		//! This leaf state lets Stop() cancel and drain that caller before
+		//! controller destruction. A direct render publishes active while
+		//! holding mRenderAdmissionMutex, and Stop() takes admission before
+		//! its final wait, closing the start-vs-teardown race.
+		mutable std::mutex          mDirectRenderStateMutex;
+		std::condition_variable     mDirectRenderDoneCV;
+		//! Guarded by mDirectRenderStateMutex. Normally 0/1; may transiently
+		//! reach 2 when a successor publishes after the prior caller clears
+		//! the admission gate but before its scope guard decrements. A count,
+		//! rather than a boolean, makes that legal handoff impossible to
+		//! overwrite and lets Stop() drain every admitted caller.
+		unsigned int                mDirectRenderActiveCount;
+		//! Per-direct-occupant cancellation latch. The direct path must reset
+		//! the shared progress token after draining an interactive pass; this
+		//! bit preserves an explicit Stop/render_cancel that arrives before
+		//! that reset, exactly as mAgentRenderCancelRequested does for the
+		//! dedicated worker.
+		std::atomic<bool>           mDirectRenderCancelRequested;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
 		std::atomic<unsigned int>   mRenderCount;
