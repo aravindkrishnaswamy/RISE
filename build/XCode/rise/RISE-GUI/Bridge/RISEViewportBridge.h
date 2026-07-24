@@ -358,9 +358,10 @@ typedef NS_ENUM(NSInteger, RISEViewportLayout) {
 
 /// Mirrors SceneEditController::PaneVantageKind.
 typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
-    RISEViewportVantageSceneCamera = 0,
-    RISEViewportVantageFreeFly     = 1,
-    RISEViewportVantageNamedView   = 2,
+    RISEViewportVantageSceneCamera      = 0,
+    RISEViewportVantageFreeFly          = 1,
+    RISEViewportVantageNamedView        = 2,
+    RISEViewportVantageSceneCameraNamed = 3,
 };
 
 /// The active N-up layout.  Defaults to Single (matches the
@@ -390,9 +391,12 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
 /// Per-pane vantage.  Pane 0's free-fly twins alias -enterFreeFly /
 /// -exitFreeFly (§7.4); pane 0's Scene-camera / NamedView setters have
 /// no pre-existing un-indexed equivalent, so calling them on pane 0 is
-/// a new, valid operation.
+/// a new, valid operation. Named scene-camera binding is secondary-pane
+/// only and therefore refuses pane 0.
 - (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane
     NS_SWIFT_NAME(setPaneVantageSceneCamera(_:));
+- (BOOL)setPaneVantageSceneCameraNamed:(NSUInteger)pane name:(NSString *)name
+    NS_SWIFT_NAME(setPaneVantageSceneCameraNamed(_:name:));
 - (BOOL)setPaneVantageNamedView:(NSUInteger)pane name:(NSString *)name
     NS_SWIFT_NAME(setPaneVantageNamedView(_:name:));
 - (BOOL)paneEnterFreeFly:(NSUInteger)pane
@@ -401,8 +405,8 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
     NS_SWIFT_NAME(paneExitFreeFly(_:));
 
 /// `outKind` receives the vantage kind; `outNamedView` (optional, may
-/// be NULL) receives the NamedView name when kind == NamedView (""
-/// otherwise).  Returns NO on a null controller / invalid pane
+/// be NULL) receives the referenced name for NamedView or
+/// SceneCameraNamed ("" otherwise).  Returns NO on a null controller / invalid pane
 /// (outputs left untouched in that case).
 - (BOOL)getPaneVantage:(NSUInteger)pane
                    kind:(RISEViewportVantageKind *)outKind

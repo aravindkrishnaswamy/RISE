@@ -1185,6 +1185,12 @@ private:
         _controller, static_cast<unsigned int>(pane)) ? YES : NO;
 }
 
+- (BOOL)setPaneVantageSceneCameraNamed:(NSUInteger)pane name:(NSString *)name {
+    if (!_controller || !name) return NO;
+    return RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+        _controller, static_cast<unsigned int>(pane), [name UTF8String]) ? YES : NO;
+}
+
 - (BOOL)setPaneVantageNamedView:(NSUInteger)pane name:(NSString *)name {
     if (!_controller || !name) return NO;
     return RISE_API_SceneEditController_SetPaneVantageNamedView(
@@ -1206,19 +1212,17 @@ private:
 - (BOOL)getPaneVantage:(NSUInteger)pane
                    kind:(RISEViewportVantageKind *)outKind
               namedView:(NSString * _Nullable * _Nullable)outNamedView {
-    if (outNamedView) *outNamedView = @"";
     if (!_controller || !outKind) return NO;
-    int kind = 0;
-    char nm[256] = {0};
-    if (!RISE_API_SceneEditController_GetPaneVantage(
-            _controller, static_cast<unsigned int>(pane), &kind, nm, sizeof(nm))) {
+    SceneEditController::PaneVantageKind kind;
+    String referencedName;
+    if (!_controller->GetPaneVantage(
+            static_cast<unsigned int>(pane), kind, referencedName)) {
         return NO;
     }
     *outKind = static_cast<RISEViewportVantageKind>(kind);
     if (outNamedView) {
-        if (NSString* decoded = NamedViewDisplayName(nm)) {
-            *outNamedView = decoded;
-        }
+        NSString* decoded = NamedViewDisplayName(referencedName.c_str());
+        *outNamedView = decoded ? decoded : @"";
     }
     return YES;
 }
@@ -1566,12 +1570,11 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     const int catInt = static_cast<int>(category);
     const unsigned int n = RISE_API_SceneEditController_CategoryEntityCount(_controller, catInt);
     NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:n];
-    char nameBuf[128];
     for (unsigned int i = 0; i < n; ++i) {
-        if (RISE_API_SceneEditController_CategoryEntityName(_controller, catInt, i, nameBuf, sizeof(nameBuf))) {
-            NSString *s = [NSString stringWithUTF8String:nameBuf];
-            if (s) [out addObject:s];
-        }
+        const String name = _controller->CategoryEntityName(
+            static_cast<SceneEditController::Category>(catInt), i);
+        NSString *s = NamedViewDisplayName(name.c_str());
+        if (s) [out addObject:s];
     }
     return out;
 }

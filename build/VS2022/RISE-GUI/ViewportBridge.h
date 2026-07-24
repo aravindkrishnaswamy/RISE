@@ -382,7 +382,7 @@ public:
     // -------- N-up multi-viewport pane model (docs/gui/RENDER_MODES.md §7) -
     // Mirrors the RISE_API_SceneEditController_{Set,Get}ViewportLayout /
     // {Set,Get}PrimaryPane / {Set,Get}PaneRenderMode / SetPaneSurfaceDims /
-    // SetPaneVantage{SceneCamera,NamedView} / GetPaneVantage /
+    // SetPaneVantage{SceneCamera,NamedView,SceneCameraNamed} / GetPaneVantage /
     // OnPanePointer{Down,Move,Up} / Pane{Enter,Exit}FreeFly /
     // GetPaneRefinementStatus C exports.  Four ALWAYS-PRESENT pane slots
     // (kViewportPaneCount); the layout selects the visible subset.  Pane 0
@@ -410,9 +410,10 @@ public:
 
     /// Mirrors RISE::SceneEditController::PaneVantageKind.
     enum class PaneVantageKind : int {
-        SceneCamera = 0,  ///< track the live active scene camera
-        FreeFly     = 1,  ///< per-pane free-fly pose (never mutates the scene camera)
-        NamedView   = 2   ///< re-resolved by name each pass
+        SceneCamera      = 0,  ///< track the live active scene camera
+        FreeFly          = 1,  ///< per-pane free-fly pose (never mutates the scene camera)
+        NamedView        = 2,  ///< re-resolved by name each pass
+        SceneCameraNamed = 3   ///< track one manager-registered scene camera by name
     };
 
     /// Panes a layout makes visible: Single=1, TwoH=2, OnePlusTwo=3, Quad=4.
@@ -442,9 +443,10 @@ public:
     bool setPaneSurfaceDims(unsigned int pane, unsigned int w, unsigned int h);
 
     bool setPaneVantageSceneCamera(unsigned int pane);
+    bool setPaneVantageSceneCameraNamed(unsigned int pane, const QString& name);
     bool setPaneVantageNamedView(unsigned int pane, const QString& name);
-    /// Introspection: current vantage kind (+ named-view name when
-    /// applicable, "" otherwise).  Returns false on null controller,
+    /// Introspection: current vantage kind (+ referenced name for
+    /// NamedView/SceneCameraNamed, "" otherwise). Returns false on null controller,
     /// invalid pane, or an unrecognized kind from the C-ABI.
     bool paneVantage(unsigned int pane, PaneVantageKind* outKind, QString* outNamedView) const;
 

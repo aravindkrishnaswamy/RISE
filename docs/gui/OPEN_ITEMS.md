@@ -32,8 +32,17 @@ _Last updated: 2026-07-24, during the viewport render-mode follow-up._
   The existing success-only guard remains load-bearing: refused setters retry,
   while every explicit user choice—including Preview—survives later layout
   toggles.
-- **T2–T4 — pending:** arbitrary named scene-camera vantages, pane-camera edit
-  routing, and Last Render pane content.
+- **T2 — DONE:** additive `SceneCameraNamed` vantage kind 3 binds panes 1–3
+  to any manager camera without activating it.  Desired state stores the name
+  plus a snapshot fallback, reconcile re-resolves the live camera, matching
+  camera edits (including kind-omitted agent edits, undo/redo/rollback, and
+  animated time evaluation) invalidate bound panes, and deletion preserves
+  the fallback until same-name recreation wakes it. Authored ONB pinholes are
+  captured as ray-equivalent navigable pinhole overrides, and binding parks
+  any in-flight preview before reading manager-camera state. The C ABI and
+  both shells expose the same fail-closed semantics without truncating camera
+  identity; pane 0 deliberately refuses this kind.
+- **T3–T4 — pending:** pane-camera edit routing and Last Render pane content.
 
 ## 1. P2 sweep (from the round-6 three-reviewer pass) — DONE (round 7, 2026-07-24)
 

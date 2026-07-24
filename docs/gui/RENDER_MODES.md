@@ -631,12 +631,15 @@ struct ViewportPane {
     // --- configuration (UI-mutated under mMutex + park, like every
     //     viewport setter today) ---
     mode          : registry wire name (default "preview")
-    vantageKind   : SceneCamera | FreeFly | NamedView
-    pose          : CameraSnapshot        // FreeFly, or snapshot fallback
+    vantageKind   : SceneCamera | FreeFly | NamedView | SceneCameraNamed
+    pose          : CameraSnapshot        // FreeFly, or named-target fallback
     namedViewRef  : string                // NamedView: re-resolved via
                                           // FindNamedViewPose each pass;
                                           // falls back to `pose` snapshot
                                           // if the view was deleted
+    sceneCameraRef: string                // SceneCameraNamed: re-resolved from
+                                          // the camera manager on reconcile;
+                                          // falls back to `pose` if deleted
     // --- render plumbing (render-thread-owned; swapped only while parked) ---
     overrideCamera   : ICamera*      // null => scene active camera
     frameStore       : FrameStore*   // per-pane canonical HDR buffer
@@ -672,7 +675,17 @@ break the established orbit-edits-camera workflow both GUIs are built on.
 (Implementation-time refinement, 2026-07-21: the original text said "ANY
 pane"; amended when the pointer-routing implementation surfaced the
 back-compat conflict.)  A `NamedView` pane re-resolves by name so updating
-the view updates the pane.
+the view updates the pane.  A `SceneCameraNamed` pane binds a secondary pane
+to one manager-registered camera without changing the active camera: it
+re-resolves that camera by name during reconcile, and retains its binding-time
+snapshot as an honest deletion fallback.  A later same-name creation wakes the
+pane and resumes live tracking.  ONB pinholes are represented by an exactly
+ray-equivalent ordinary-pinhole snapshot (realized basis W/V becomes
+lookAt/up), so the supported `onb_pinhole_camera` is not excluded.  Capturing a
+manager camera follows the same cancel-and-park discipline as cloning because
+preview film resizing regenerates manager cameras during a pass.  Pane 0
+refuses kind 3 because pane 0 is the active-camera editing alias; selecting its
+scene camera remains the existing `SetActiveCamera` flow.
 
 ### 7.3 Scheduler (the render loop, generalized)
 
@@ -732,6 +745,10 @@ gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
 |---|---|
 | Scene edit (any mutation) | all visible panes dirty, scales reset coarse; primary renders first |
 | Pane-local: mode / vantage / named-view update | that pane dirty only |
+| Named scene-camera edit (panel/gizmo/agent), undo/redo/rollback | affected named-camera panes are config-dirty and re-resolve; kind-omitted agent edits conservatively reconcile all kind-3 panes |
+| Time scrub | all named-camera panes config-dirty (an inactive bound camera may be animated) |
+| Named scene-camera deletion | bound panes reconcile to their stored binding-time snapshot |
+| Same-name camera creation after deletion | bound panes config-dirty and resume live re-resolution |
 | Layout switch | newly-visible panes dirty; hidden panes dropped from rotation |
 | Pane resize (layout change / window resize) | affected panes dirty (store realloc via the existing same-dim short-circuit) |
 | Production/agent render starts | `mRenderOwnsScene` no-ops pane setters; loop yields (existing single-slot coordination); on completion ALL panes dirty |
@@ -747,6 +764,7 @@ _SetViewportLayout(layout) / _GetViewportLayout()
 _SetPrimaryPane(pane) / _GetPrimaryPane()
 _SetPaneRenderMode(pane, name) / _GetPaneRenderMode(pane)
 _SetPaneVantageSceneCamera(pane)
+_SetPaneVantageSceneCameraNamed(pane, name)         // kind 3; panes 1-3 only
 _SetPaneVantageNamedView(pane, name)
 _PaneEnterFreeFly(pane) / _PaneExitFreeFly(pane)   // per-pane free-fly twins
 _SetPaneSurfaceDims(pane, w, h)
@@ -755,15 +773,18 @@ _GetPaneRefinementStatus(pane, ...)                // per-pane phase+scale
 _OnPanePointerDown/Move/Up(pane, ...)              // input carries pane id
 ```
 
-Fail-closed like every existing setter: unknown pane / hidden pane / render
-owns scene ⇒ false, nothing mutated.
+Mutating mode/vantage/input setters fail closed: unknown pane / hidden pane /
+render owns scene ⇒ false, nothing mutated.  `_SetPaneSink` is the deliberate
+hidden-pane exception: shells may pre-wire any retained pane slot before a
+layout reveals it.  Read-only getters likewise inspect retained hidden-pane
+configuration.
 
 ### 7.5 GUI shells
 
 Both platforms, same shape (parity convention): a layout picker (4 fixed
 icons) in the viewport toolbar; per-pane chrome = mode dropdown (the existing
-registry-driven control, §4) + vantage menu (Scene camera | named views list |
-Free-fly) + a primary marker.  The platform builds one
+registry-driven control, §4) + vantage menu (active Scene camera | scene-camera
+list on panes 1-3 | named views list | Free-fly) + a primary marker.  The platform builds one
 `ViewportFrameStore`/sink per pane (Mac `ViewportPreviewSink`
 [RISEViewportBridge.mm:171] and the Qt `imageUpdated` path generalize by
 instantiation, not redesign).  Input: the shell hit-tests pane rects and
@@ -863,6 +884,22 @@ statements in §7.1's audit table and §7.5).
   Mac and Windows use the same wire names and retain P2#2's success-only
   bookkeeping, so a refused setter retries and an explicit user choice is
   never clobbered by a later layout toggle.
+- **T2 — arbitrary named scene-camera vantages (2026-07-24).**
+  `SceneCameraNamed` is additive wire kind 3 (0/1/2 remain stable).  Secondary
+  pane config stores both the camera name and its binding-time snapshot;
+  reconcile captures the current live camera by name and realizes the
+  standalone override, while deletion falls back to the stored snapshot
+  without changing the desired name; same-name recreation resumes live
+  tracking.  ONB pinholes are captured from their realized basis as
+  ray-equivalent ordinary pinholes, and capture cancel-parks any in-flight
+  preview before reading camera state.  Camera property edits, camera gestures,
+  undo/redo/transaction rollback, time evaluation, kind-omitted agent edits,
+  and full re-derives invalidate affected named-camera panes.
+  Pane 0 and invalid/missing names fail closed.  Both shells enumerate scene
+  cameras in their secondary-pane vantage menus without truncating manager
+  names; Qt action metadata is typed so sentinel-like named views cannot be
+  misrouted. Read-only agent pane introspection returns the referenced name
+  for kinds 2 and 3.
 - **P2#3 — primary-pane gizmo on both shells.**  Windows now paints the object
   gizmo on whichever pane is primary (was pane-0-only), matching macOS.  Both
   are exact during an object-transform gesture; the static idle-projection

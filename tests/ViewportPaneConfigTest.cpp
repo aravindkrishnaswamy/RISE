@@ -146,6 +146,11 @@ namespace
 		SceneEditController ctrl( *pJob, nullptr );   // skeleton: slice 1 never renders
 		using Layout = SceneEditController::ViewportLayout;
 		using Kind   = SceneEditController::PaneVantageKind;
+		Check( static_cast<int>( Kind::SceneCamera ) == 0
+		    && static_cast<int>( Kind::FreeFly ) == 1
+		    && static_cast<int>( Kind::NamedView ) == 2
+		    && static_cast<int>( Kind::SceneCameraNamed ) == 3,
+			"MONEY ASSERTION: vantage wire kinds remain exactly 0/1/2/3" );
 
 		Check( ctrl.GetViewportLayout() == Layout::Single, "default layout is Single" );
 		Check( ctrl.GetPrimaryPane() == 0, "default primary pane is 0" );
@@ -350,7 +355,7 @@ namespace
 	//------------------------------------------------------------------
 	void TestVantageCrud()
 	{
-		std::printf( "P6: pane vantage CRUD (named-view + scene-camera)...\n" );
+		std::printf( "P6: pane vantage CRUD (named-view + active/named scene-camera)...\n" );
 		const std::string tmp = TempPath( "pane_vantage.RISEscene" );
 		Job* pJob = LoadScene( kPlainScene, tmp );
 		Check( pJob != nullptr, "fixture loads" );
@@ -369,6 +374,21 @@ namespace
 		// A named view that doesn't exist yet is refused regardless of
 		// whether CaptureNamedView works in skeleton mode.
 		Check( !ctrl.SetPaneVantageNamedView( 1, "no_such_view" ), "SetPaneVantageNamedView refuses a nonexistent view name" );
+		Check( !ctrl.SetPaneVantageSceneCameraNamed( 1, "no_such_camera" ),
+			"SetPaneVantageSceneCameraNamed refuses a nonexistent camera name" );
+		Check( !ctrl.SetPaneVantageSceneCameraNamed( 0, "cam" ),
+			"SetPaneVantageSceneCameraNamed refuses pane 0 (secondary-pane-only contract)" );
+
+		Check( ctrl.SetPaneVantageSceneCameraNamed( 1, "cam" ),
+			"SetPaneVantageSceneCameraNamed(1, \"cam\") succeeds" );
+		Kind kind = Kind::FreeFly;             // dirty seed
+		String namedView( "dirty" );
+		Check( ctrl.GetPaneVantage( 1, kind, namedView ),
+			"GetPaneVantage(1) succeeds after the named scene-camera set" );
+		Check( kind == Kind::SceneCameraNamed,
+			"MONEY ASSERTION: pane 1 reports the additive SceneCameraNamed kind" );
+		Check( namedView == "cam",
+			"MONEY ASSERTION: pane 1 reports the bound scene-camera name" );
 
 		// CaptureNamedView (via CaptureCurrentView) only needs a loaded
 		// scene + its active camera -- SceneEditController.cpp's
@@ -380,8 +400,8 @@ namespace
 		Check( ctrl.CaptureNamedView( "testview" ), "CaptureNamedView(\"testview\") succeeds in skeleton mode (scene-camera capture, no rasterizer needed)" );
 
 		Check( ctrl.SetPaneVantageNamedView( 1, "testview" ), "SetPaneVantageNamedView(1, \"testview\") succeeds once the view exists" );
-		Kind kind = Kind::FreeFly;             // dirty seed
-		String namedView( "dirty" );
+		kind = Kind::FreeFly;                  // dirty seed
+		namedView = String( "dirty" );
 		Check( ctrl.GetPaneVantage( 1, kind, namedView ), "GetPaneVantage(1) succeeds after the named-view set" );
 		Check( kind == Kind::NamedView, "pane 1 vantage kind is NamedView after the set" );
 		Check( namedView == "testview", "pane 1 named-view name is \"testview\"" );
@@ -418,6 +438,8 @@ namespace
 		Check( !RISE_API_SceneEditController_SetPrimaryPane( nullptr, 0 ), "C-ABI SetPrimaryPane refuses null controller" );
 		Check( !RISE_API_SceneEditController_SetPaneRenderMode( nullptr, 1, "depth" ), "C-ABI SetPaneRenderMode refuses null controller" );
 		Check( !RISE_API_SceneEditController_SetPaneVantageSceneCamera( nullptr, 1 ), "C-ABI SetPaneVantageSceneCamera refuses null controller" );
+		Check( !RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed( nullptr, 1, "cam" ),
+			"C-ABI SetPaneVantageSceneCameraNamed refuses null controller" );
 		Check( !RISE_API_SceneEditController_SetPaneVantageNamedView( nullptr, 1, "x" ), "C-ABI SetPaneVantageNamedView refuses null controller" );
 
 		// Null controller: getters fail closed to their documented defaults.
@@ -448,6 +470,22 @@ namespace
 		Check( !RISE_API_SceneEditController_GetPaneVantage( &ctrl, 1, nullptr, buf, sizeof( buf ) ), "C-ABI GetPaneVantage refuses a null outKind" );
 		Check( !RISE_API_SceneEditController_GetPaneVantage( &ctrl, 1, &kindOut, nullptr, sizeof( buf ) ), "C-ABI GetPaneVantage refuses a null outNamedView" );
 		Check( !RISE_API_SceneEditController_GetPaneVantage( &ctrl, 1, &kindOut, buf, 0 ), "C-ABI GetPaneVantage refuses cap==0" );
+		Check( !RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed( &ctrl, 0, "cam" ),
+			"C-ABI named scene-camera setter refuses pane 0" );
+		Check( !RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed( &ctrl, 1, nullptr ),
+			"C-ABI named scene-camera setter refuses null name" );
+
+		Check( RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed( &ctrl, 1, "cam" ),
+			"C-ABI SetPaneVantageSceneCameraNamed(1, \"cam\") succeeds" );
+		char cameraBuf[64] = {0};
+		int cameraKind = -1;
+		Check( RISE_API_SceneEditController_GetPaneVantage(
+				&ctrl, 1, &cameraKind, cameraBuf, sizeof( cameraBuf ) ),
+			"C-ABI GetPaneVantage succeeds for a named scene-camera binding" );
+		Check( cameraKind == 3,
+			"MONEY ASSERTION: C-ABI preserves stable additive wire kind 3" );
+		Check( std::string( cameraBuf ) == "cam",
+			"MONEY ASSERTION: C-ABI round-trips the named scene-camera reference" );
 
 		// Small-cap truncation: capture + assign a named view whose name
 		// is longer than the truncated capacity, then read it back
@@ -478,6 +516,44 @@ namespace
 		Check( RISE_API_SceneEditController_SetPaneRenderMode( &ctrl, 1, "normals" ), "C-ABI SetPaneRenderMode(1, \"normals\") succeeds" );
 		Check( std::string( RISE_API_SceneEditController_GetPaneRenderMode( &ctrl, 1 ) ) == "normals",
 			"C-ABI GetPaneRenderMode(1) round-trips \"normals\"" );
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// P7b: camera names are not capped by the shell's old 128-byte
+	// enumeration buffers.  Core + C ABI preserve the complete identity.
+	//------------------------------------------------------------------
+	void TestLongSceneCameraName()
+	{
+		std::printf( "P7b: long named scene-camera identity is preserved...\n" );
+		const std::string longName = std::string( "cam_" ) + std::string( 280, 'x' );
+		std::string scene( kPlainScene );
+		const std::string oldName( "name cam\n" );
+		const std::size_t pos = scene.find( oldName );
+		Check( pos != std::string::npos, "long-name fixture finds camera name anchor" );
+		if( pos == std::string::npos ) return;
+		scene.replace( pos, oldName.size(), std::string( "name " ) + longName + "\n" );
+
+		const std::string tmp = TempPath( "pane_long_camera_name.RISEscene" );
+		Job* pJob = LoadScene( scene, tmp );
+		Check( pJob != nullptr, "long-name fixture loads" );
+		if( !pJob ) return;
+
+		SceneEditController ctrl( *pJob, nullptr );
+		Check( ctrl.SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+			"long-name fixture reveals pane 1" );
+		Check( RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+				&ctrl, 1, longName.c_str() ),
+			"C-ABI binds a camera name longer than 127 bytes" );
+		char outName[512] = {0};
+		int outKind = -1;
+		Check( RISE_API_SceneEditController_GetPaneVantage(
+				&ctrl, 1, &outKind, outName, sizeof( outName ) ),
+			"C-ABI reads the long named-camera binding" );
+		Check( outKind == 3 && std::string( outName ) == longName,
+			"MONEY ASSERTION: long camera identity round-trips without truncation" );
 
 		pJob->release();
 		std::remove( tmp.c_str() );
@@ -545,6 +621,7 @@ int main()
 	TestPaneZeroAliasing();
 	TestVantageCrud();
 	TestCAbiWrappers();
+	TestLongSceneCameraName();
 	TestSurfaceDimsAndSinkConfig();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );

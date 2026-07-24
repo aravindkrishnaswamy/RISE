@@ -187,6 +187,61 @@ ICamera* RealizeStandaloneCamera( const CameraSnapshot& s, const IScene& scene )
 	return pCam;   // addref'd by the factory (or nullptr on failure)
 }
 
+//! Resolve a manager-registered scene camera and copy its complete
+//! CameraSnapshot.  Callers serialize scene/manager lifetime with mMutex.
+bool CaptureNamedSceneCameraSnapshot(
+	const IScene& scene, const String& name, CameraSnapshot& out )
+{
+	if( name.size() <= 1 ) return false;
+	const ICameraManager* cameras = scene.GetCameras();
+	const ICamera* camera = cameras ? cameras->GetItem( name.c_str() ) : nullptr;
+	if( !camera ) return false;
+	if( CameraIntrospection::CaptureCameraSnapshot( *camera, out ) ) return true;
+
+	// ONB pinholes cannot be persisted through CameraSnapshot because the CST
+	// form carries an explicit basis.  A viewport override only needs
+	// ray-equivalent state, however.  PinholeCamera::Recompute derives W from
+	// (lookAt - location), so location+W and basis V exactly reproduce the
+	// live camera's realized orientation via the ordinary pinhole factory.
+	const Implementation::CameraCommon* common =
+		dynamic_cast<const Implementation::CameraCommon*>( camera );
+	const Implementation::PinholeCamera* pinhole =
+		dynamic_cast<const Implementation::PinholeCamera*>( camera );
+	if( !common || !pinhole || !common->IsFromONB() ) return false;
+
+	const Point3 loc = common->GetRestLocation();
+	const OrthonormalBasis3D basis = common->GetCurrentBasis();
+	const Vector3 v = basis.v();
+	const Vector3 w = basis.w();
+	out = CameraSnapshot();
+	out.type         = CameraSnapshot::Pinhole;
+	out.location[0]  = loc.x;
+	out.location[1]  = loc.y;
+	out.location[2]  = loc.z;
+	out.lookat[0]    = loc.x + w.x;
+	out.lookat[1]    = loc.y + w.y;
+	out.lookat[2]    = loc.z + w.z;
+	out.up[0]        = v.x;
+	out.up[1]        = v.y;
+	out.up[2]        = v.z;
+	out.exposure     = common->GetExposureTimeStored();
+	out.scanningRate = common->GetScanningRateStored();
+	out.pixelRate    = common->GetPixelRateStored();
+	out.pixelAR      = common->GetPixelAR();
+	out.fov          = pinhole->GetFovStored();
+	out.iso          = pinhole->GetIsoStored();
+	out.fstop        = pinhole->GetFstop();
+	return true;
+}
+
+bool IsCameraChunkKind( const String& kind )
+{
+	const std::string value( kind.c_str() );
+	return value == "camera"
+	    || ( value.size() > 7
+	      && value.compare( value.size() - 7, 7, "_camera" ) == 0 );
+}
+
 }  // namespace
 
 SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiveRasterizer )
@@ -2401,6 +2456,11 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 		const bool ok = mEditor.Apply( edit );
 		if( ok ) {
+			if( IsCameraMotionTool( mTool ) )
+			{
+				InvalidatePanesBoundToSceneCameraLocked_(
+					String( mJob.GetActiveCameraName().c_str() ) );
+			}
 			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 			mPolishState.store( static_cast<int>( PolishState::None ),
 			                    std::memory_order_release );
@@ -2590,6 +2650,10 @@ bool SceneEditController::OnTimeScrub( Scalar t )
 	// different time than when the polish was queued.
 	if( ok )
 	{
+		// Timelines may animate any manager camera, including inactive ones
+		// displayed by SceneCameraNamed panes.  Their standalone overrides
+		// must be discarded so reconcile captures the new evaluated pose.
+		InvalidateAllSceneCameraNamedPanesLocked_();
 		mPolishState.store( static_cast<int>( PolishState::None ),
 		                    std::memory_order_release );
 		mEditPending.store( true, std::memory_order_release );
@@ -2800,6 +2864,7 @@ void SceneEditController::UndoInner_()
 		// binding's content.  Cheap to re-look-up unconditionally —
 		// it's two reverse-lookups against the registered manager.
 		ResyncObjectBoundSections_();
+		InvalidateAllSceneCameraNamedPanesLocked_();
 		mEditPending.store( true, std::memory_order_release );
 		// Bump epoch — Undo of AddCamera removes an entity, which
 		// changes the Camera category's entity list.  Cheap to bump
@@ -2847,6 +2912,7 @@ void SceneEditController::RedoInner_()
 		// from the (potentially re-applied) Object binding — same
 		// rationale as Undo's resync.
 		ResyncObjectBoundSections_();
+		InvalidateAllSceneCameraNamedPanesLocked_();
 		mEditPending.store( true, std::memory_order_release );
 		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 		lk.unlock();
@@ -3167,6 +3233,9 @@ bool SceneEditController::RollbackTransaction()
 	// the held lock (store editPending, notify after unlock) so the
 	// render thread sees the reverted scene + the pending flag together,
 	// matching the OnTimeScrub / object-drag park-and-apply idiom.
+	// The reverted history may include camera edits whose forward
+	// configDirty was already consumed by a pane pass.
+	InvalidateAllSceneCameraNamedPanesLocked_();
 	mPolishState.store( static_cast<int>( PolishState::None ),
 									  std::memory_order_release );
 	mEditPending.store( true, std::memory_order_release );
@@ -4594,6 +4663,19 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 				entityName.c_str(), param.c_str(), code );
 		}
 
+		if( entityKind.size() <= 1 )
+		{
+			// `kind` is optional on propose_patch.  A name-only camera edit
+			// can resolve and apply incrementally, but this layer does not
+			// receive Job's resolved descriptor.  Conservatively reconcile
+			// every named-camera pane; non-camera name-only edits pay only a
+			// small extra pane-camera lookup.
+			InvalidateAllSceneCameraNamedPanesLocked_();
+		}
+		else if( IsCameraChunkKind( entityKind ) )
+		{
+			InvalidatePanesBoundToSceneCameraLocked_( entityName );
+		}
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
@@ -8249,6 +8331,9 @@ bool SceneEditController::CloneActiveCamera(
 
 	const bool ok = mEditor.Apply( edit );
 	if( !ok ) return false;
+	// A bound pane retains its desired name after deletion.  If a clone
+	// recreates that name, wake the pane off its deletion fallback.
+	InvalidatePanesBoundToSceneCameraLocked_( finalName );
 
 	// Write back the chosen name — buffer fits by the precheck above.
 	{
@@ -8330,6 +8415,7 @@ bool SceneEditController::StampViewToNewCamera(
 	edit.cameraSnapshot = snapshot;
 
 	if( !mEditor.Apply( edit ) ) return false;
+	InvalidatePanesBoundToSceneCameraLocked_( finalName );
 
 	{
 		const char* s = finalName.c_str();
@@ -8383,6 +8469,13 @@ bool SceneEditController::EnterFreeFlyFromActiveCamera( unsigned int pane )
 				CameraSnapshot live;
 				if( FindNamedViewPose( pc.namedViewRef, live ) ) { snap = live; }
 				else                                             { snap = pc.pose; }   // deletion fallback
+				haveSeed = true;
+			}
+			else if( pc.vantageKind == PaneVantageKind::SceneCameraNamed )
+			{
+				CameraSnapshot live;
+				if( CaptureNamedSceneCameraSnapshot( *scene, pc.sceneCameraRef, live ) ) snap = live;
+				else                                                                     snap = pc.pose;
 				haveSeed = true;
 			}
 			else if( pc.vantageKind == PaneVantageKind::FreeFly )
@@ -8462,6 +8555,7 @@ bool SceneEditController::SetViewportPose( const CameraSnapshot& pose, unsigned 
 		mPaneConfigs[targetPane].vantageKind  = PaneVantageKind::FreeFly;
 		mPaneConfigs[targetPane].pose         = pose;
 		mPaneConfigs[targetPane].namedViewRef = String();
+		mPaneConfigs[targetPane].sceneCameraRef = String();
 	}
 
 	mEditPending.store( true, std::memory_order_release );
@@ -8519,6 +8613,7 @@ bool SceneEditController::ExitFreeFly( unsigned int pane )
 		mPaneConfigs[targetPane].vantageKind  = PaneVantageKind::SceneCamera;
 		mPaneConfigs[targetPane].pose         = CameraSnapshot();
 		mPaneConfigs[targetPane].namedViewRef = String();
+		mPaneConfigs[targetPane].sceneCameraRef = String();
 	}
 
 	mEditPending.store( true, std::memory_order_release );
@@ -8925,6 +9020,12 @@ bool SceneEditController::SetHomeView( unsigned int pane )
 				else                                             cur = pc.pose;
 				havePose = true;
 			}
+			else if( pc.vantageKind == PaneVantageKind::SceneCameraNamed ) {
+				CameraSnapshot live;
+				if( CaptureNamedSceneCameraSnapshot( *scene, pc.sceneCameraRef, live ) ) cur = live;
+				else                                                                     cur = pc.pose;
+				havePose = true;
+			}
 			else if( pc.vantageKind == PaneVantageKind::FreeFly ) {
 				cur = pc.pose;
 				havePose = true;
@@ -9088,6 +9189,47 @@ void SceneEditController::InvalidatePanesBoundToNamedView_( const String& name )
 	{
 		mPanePassPending.store( true, std::memory_order_release );
 		mCV.notify_one();
+	}
+}
+
+void SceneEditController::InvalidatePanesBoundToSceneCameraLocked_(
+	const String& name )
+{
+	if( name.size() <= 1 ) return;
+	const unsigned int visible = PaneCountForLayout( mViewportLayout );
+	bool visibleMatch = false;
+	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
+	{
+		if( mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed
+		 && mPaneConfigs[i].sceneCameraRef == name.c_str() )
+		{
+			mPaneRender[i].configDirty = true;
+			mPaneRender[i].dirty       = true;
+			visibleMatch = visibleMatch || i < visible;
+		}
+	}
+	if( visibleMatch )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+	}
+}
+
+void SceneEditController::InvalidateAllSceneCameraNamedPanesLocked_()
+{
+	const unsigned int visible = PaneCountForLayout( mViewportLayout );
+	bool visibleMatch = false;
+	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
+	{
+		if( mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed )
+		{
+			mPaneRender[i].configDirty = true;
+			mPaneRender[i].dirty       = true;
+			visibleMatch = visibleMatch || i < visible;
+		}
+	}
+	if( visibleMatch )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
 	}
 }
 
@@ -9360,7 +9502,9 @@ void SceneEditController::SnapshotPaneSetForParkedRead( PaneSetSnapshot& out ) c
 		else
 		{
 			out.panes[i].vantageKind = mPaneConfigs[i].vantageKind;
-			out.panes[i].namedView   = mPaneConfigs[i].namedViewRef;
+			out.panes[i].namedView =
+				( mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed )
+				? mPaneConfigs[i].sceneCameraRef : mPaneConfigs[i].namedViewRef;
 		}
 	}
 }
@@ -9450,7 +9594,43 @@ bool SceneEditController::SetPaneVantageSceneCamera( unsigned int pane )
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
 	mPaneConfigs[pane].vantageKind  = PaneVantageKind::SceneCamera;
 	mPaneConfigs[pane].namedViewRef = String();
+	mPaneConfigs[pane].sceneCameraRef = String();
 	mPaneRender[pane].configDirty = true;   // P3a slice 2 -- see SetPaneRenderMode
+	mPaneRender[pane].dirty       = true;
+	mPanePassPending.store( true, std::memory_order_release );
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::SetPaneVantageSceneCameraNamed(
+	unsigned int pane, const char* name )
+{
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
+	// Pane 0 is deliberately the active-camera editing surface.  Binding it
+	// to another named camera would create a second, ambiguous camera switch
+	// path beside SetActiveCamera.
+	if( pane == 0 || !name || !*name ) return false;
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	// Rendering resizes and regenerates manager cameras while a pass is
+	// active.  Park before reading pose/optics/basis so the snapshot cannot
+	// data-race those writes.
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	CameraSnapshot pose;
+	if( !CaptureNamedSceneCameraSnapshot( *scene, String( name ), pose ) ) return false;
+
+	mPaneConfigs[pane].vantageKind    = PaneVantageKind::SceneCameraNamed;
+	mPaneConfigs[pane].pose           = pose;
+	mPaneConfigs[pane].namedViewRef   = String();
+	mPaneConfigs[pane].sceneCameraRef = String( name );
+	mPaneRender[pane].configDirty = true;
 	mPaneRender[pane].dirty       = true;
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
@@ -9473,6 +9653,7 @@ bool SceneEditController::SetPaneVantageNamedView( unsigned int pane, const char
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
 	mPaneConfigs[pane].vantageKind  = PaneVantageKind::NamedView;
 	mPaneConfigs[pane].namedViewRef = String( name );
+	mPaneConfigs[pane].sceneCameraRef = String();
 	mPaneConfigs[pane].pose         = pose;   // deletion fallback snapshot
 	mPaneRender[pane].configDirty = true;   // P3a slice 2 -- see SetPaneRenderMode
 	mPaneRender[pane].dirty       = true;
@@ -9634,6 +9815,12 @@ bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
 			else                                             snap = pc.pose;
 			haveSeed = true;
 		}
+		else if( pc.vantageKind == PaneVantageKind::SceneCameraNamed ) {
+			CameraSnapshot live;
+			if( CaptureNamedSceneCameraSnapshot( *scene, pc.sceneCameraRef, live ) ) snap = live;
+			else                                                                     snap = pc.pose;
+			haveSeed = true;
+		}
 		else if( pc.vantageKind == PaneVantageKind::FreeFly ) {
 			snap = pc.pose;
 			haveSeed = true;
@@ -9645,6 +9832,7 @@ bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
 		mPaneConfigs[pane].vantageKind  = PaneVantageKind::FreeFly;
 		mPaneConfigs[pane].pose         = snap;
 		mPaneConfigs[pane].namedViewRef = String();
+		mPaneConfigs[pane].sceneCameraRef = String();
 		mPaneRender[pane].configDirty = true;   // realize at the next switch
 		mPaneRender[pane].dirty       = true;
 		mPanePassPending.store( true, std::memory_order_release );
@@ -9827,7 +10015,8 @@ bool SceneEditController::GetPaneVantage( unsigned int pane, PaneVantageKind& ou
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
 	outKind      = mPaneConfigs[pane].vantageKind;
-	outNamedView = mPaneConfigs[pane].namedViewRef;
+	outNamedView = ( outKind == PaneVantageKind::SceneCameraNamed )
+		? mPaneConfigs[pane].sceneCameraRef : mPaneConfigs[pane].namedViewRef;
 	return true;
 }
 
@@ -9960,6 +10149,22 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 			// deletion fallback.
 			CameraSnapshot live;
 			if( FindNamedViewPose( mPaneConfigs[pane].namedViewRef, live ) ) pose = live;
+		}
+		else if( mPaneConfigs[pane].vantageKind == PaneVantageKind::SceneCameraNamed )
+		{
+			// Same desired-state pattern as NamedView, but resolve from the
+			// live camera manager.  Camera edits mark bound panes configDirty;
+			// camera deletion therefore re-enters here and uses the captured
+			// binding-time snapshot when the manager lookup fails.
+			if( const IScene* scene = mJob.GetScene() )
+			{
+				CameraSnapshot live;
+				if( CaptureNamedSceneCameraSnapshot(
+						*scene, mPaneConfigs[pane].sceneCameraRef, live ) )
+				{
+					pose = live;
+				}
+			}
 		}
 		if( const IScene* scene = mJob.GetScene() )
 		{
@@ -11077,6 +11282,9 @@ bool SceneEditController::SetPropertyInner_(
 		// viewport must still repaint the replaced scene, else the user sees stale pre-edit pixels.  Kick on
 		// `ok || changed`; `return ok` keeps the edit's failure semantics unchanged for the caller.
 		if( ok || mEditor.CstLiveSceneChangedInLastApply() ) {
+			const String editedCamera = targetName.size() > 1
+				? targetName : String( mJob.GetActiveCameraName().c_str() );
+			InvalidatePanesBoundToSceneCameraLocked_( editedCamera );
 			mEditPending.store( true, std::memory_order_release );
 			lk.unlock();
 			mCV.notify_one();

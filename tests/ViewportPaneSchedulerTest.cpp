@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <fstream>
@@ -127,6 +128,13 @@ public:
 		mAllowMintedPass = true;
 		mReleaseInterleavingArmed = false;
 		mGateCV.notify_all();
+	}
+
+	bool WaitForMintedPass( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mGateMutex );
+		return mGateCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mMintObserved; } );
 	}
 
 	void ArmSaveInterleaving()
@@ -232,9 +240,10 @@ struct Fixture
 	IRayCaster*           previewCaster = nullptr;
 	IRayCaster*           polishCaster = nullptr;
 
-	explicit Fixture( const char* tmpName, bool withInteractivePipeline = false )
+	explicit Fixture( const char* tmpName, bool withInteractivePipeline = false,
+		const char* sceneText = kScene )
 	{
-		const std::string path = WriteTemp( tmpName, kScene );
+		const std::string path = WriteTemp( tmpName, sceneText );
 		job = new Job();
 		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { job->release(); job = nullptr; return; }
 		if( withInteractivePipeline &&
@@ -1467,13 +1476,763 @@ static void RunPaneFreeFlyPreservesNamedViewTest()
 }
 
 //----------------------------------------------------------------------
-// (n) Pane* C-ABI nav wrappers forward `pane` RAW.  The nav funnels must
+// (m2) Entering Free-Fly from a named scene-camera pane must seed from
+//      that bound camera, not from the unrelated active scene camera.
+//----------------------------------------------------------------------
+static void RunPaneFreeFlyPreservesNamedSceneCameraTest()
+{
+	std::printf( "=== scheduler (m2): secondary Free-Fly preserves its named scene camera ===\n" );
+	Fixture f( "pane_sched_m2.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"select clone source" );
+	char clonedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera( String( "side" ), clonedName, sizeof( clonedName ) ),
+		"clone side camera" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
+		"select side for setup edit" );
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "6 2 9" ) ),
+		"give side a pose distinct from cam" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"restore unrelated active cam" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" ),
+		"bind inactive side camera" );
+	Check( f.ctrl->PaneEnterFreeFly( 1 ),
+		"enter Free-Fly from the named scene-camera pane" );
+
+	SceneEditController::PaneVantageKind kind;
+	String reference;
+	Check( f.ctrl->GetPaneVantage( 1, kind, reference )
+	    && kind == SceneEditController::PaneVantageKind::FreeFly,
+		"pane 1 transitions from kind 3 to Free-Fly" );
+
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"kind-3 Free-Fly transition realizes exactly [0,1]" );
+	CameraSnapshot freeFlyPose;
+	Check( f.ctrl->GetViewportPose( freeFlyPose, 1 )
+	    && std::fabs( freeFlyPose.location[0] - 6.0 ) < 1e-9
+	    && std::fabs( freeFlyPose.location[1] - 2.0 ) < 1e-9
+	    && std::fabs( freeFlyPose.location[2] - 9.0 ) < 1e-9,
+		"MONEY ASSERTION (m2): kind-3 to Free-Fly seeds from side, not active cam" );
+}
+
+//----------------------------------------------------------------------
+// (n) A secondary pane can bind one manager camera by name.  It
+//     re-resolves that camera after a live camera edit, then preserves
+//     its binding-time snapshot if the camera is deleted.
+//----------------------------------------------------------------------
+static void RunNamedSceneCameraReconcileAndFallbackTest()
+{
+	std::printf( "=== scheduler (n): named scene-camera live re-resolve + deletion fallback ===\n" );
+	Fixture f( "pane_sched_n.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"select source camera" );
+	char clonedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera( String( "side" ), clonedName, sizeof( clonedName ) ),
+		"clone a durable second scene camera" );
+	Check( std::string( clonedName ) == "side", "clone uses requested unique name" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
+		"select bound camera for the later property edit" );
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "4 1 7" ) ),
+		"make the binding-time pose distinct from the remaining active-camera fallback" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"restore cam as active before initial default-vantage realization" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+		"initial TwoH rotation realizes both default SceneCamera panes" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"initial default-vantage rotation is exactly [0,1] and settles" );
+
+	// Bind AFTER pane 1's initial realization.  This is the discriminating
+	// shape for the desired-state hazard: without the setter's configDirty,
+	// same-pane scheduling would keep the old SceneCamera realization.
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" ),
+		"pane 1 binds the named scene camera after its initial realization" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+		"pane-local binding schedules one pass" );
+	const std::vector<unsigned int> bindSeq = f.ctrl->Sequence();
+	Check( bindSeq.size() == 1 && bindSeq[0] == 1,
+		"MONEY ASSERTION (n): binding config-dirties and re-renders only pane 1" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "pane-local binding settles" );
+
+	CameraSnapshot bindingSnapshot;
+	Check( f.ctrl->GetViewportPose( bindingSnapshot, 1 ),
+		"read pane 1 binding-time camera snapshot" );
+	SceneEditController::PaneVantageKind kind;
+	String referencedName;
+	Check( f.ctrl->GetPaneVantage( 1, kind, referencedName )
+	    && kind == SceneEditController::PaneVantageKind::SceneCameraNamed
+	    && referencedName == "side",
+		"pane 1 keeps kind 3 plus its scene-camera reference" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
+		"select the bound camera for subsequent property edits" );
+
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "2 1 6" ) ),
+		"edit the bound camera through the normal camera-property transaction" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+		"camera edit schedules a complete TwoH refresh" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"camera-edit refresh is exactly [0,1] and settles" );
+	CameraSnapshot editedSnapshot;
+	Check( f.ctrl->GetViewportPose( editedSnapshot, 1 ),
+		"read pane 1 after bound camera edit" );
+	Check( std::fabs( editedSnapshot.location[0] - 2.0 ) < 1e-9
+	    && std::fabs( editedSnapshot.location[1] - 1.0 ) < 1e-9
+	    && std::fabs( editedSnapshot.location[2] - 6.0 ) < 1e-9,
+		"MONEY ASSERTION (n): camera edit invalidates pane 1 and live re-resolution "
+		"updates its realized snapshot" );
+
+	// Exercise both camera-classification paths used by propose_patch:
+	// an explicit descriptor keyword and the conservative name-only fallback.
+	f.ctrl->ClearSequence();
+	const SceneEditController::AgentCommitResult explicitAgentEdit =
+		f.ctrl->ApplyAgentParamEdit(
+			String( "side" ), String( "pinhole_camera" ),
+			String( "location" ), String( "3 2 8" ), nullptr );
+	Check( explicitAgentEdit.applied, "explicit-kind agent camera edit applies" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+		"explicit-kind agent edit refreshes TwoH" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"explicit-kind agent refresh is exactly [0,1] and settles" );
+	CameraSnapshot explicitAgentSnapshot;
+	Check( f.ctrl->GetViewportPose( explicitAgentSnapshot, 1 )
+	    && std::fabs( explicitAgentSnapshot.location[0] - 3.0 ) < 1e-9
+	    && std::fabs( explicitAgentSnapshot.location[1] - 2.0 ) < 1e-9
+	    && std::fabs( explicitAgentSnapshot.location[2] - 8.0 ) < 1e-9,
+		"MONEY ASSERTION (n): explicit-kind agent camera edit re-resolves the bound pane" );
+
+	f.ctrl->ClearSequence();
+	const SceneEditController::AgentCommitResult genericAgentEdit =
+		f.ctrl->ApplyAgentParamEdit(
+			String( "side" ), String( "camera" ),
+			String( "location" ), String( "3.5 2 8" ), nullptr );
+	Check( genericAgentEdit.applied, "generic-kind agent camera edit applies" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"generic-kind agent refresh is exactly [0,1]" );
+	CameraSnapshot genericAgentSnapshot;
+	Check( f.ctrl->GetViewportPose( genericAgentSnapshot, 1 )
+	    && std::fabs( genericAgentSnapshot.location[0] - 3.5 ) < 1e-9
+	    && std::fabs( genericAgentSnapshot.location[1] - 2.0 ) < 1e-9
+	    && std::fabs( genericAgentSnapshot.location[2] - 8.0 ) < 1e-9,
+		"MONEY ASSERTION (n): generic `camera` agent kind re-resolves the bound pane" );
+
+	f.ctrl->ClearSequence();
+	const SceneEditController::AgentCommitResult agentEdit =
+		f.ctrl->ApplyAgentParamEdit(
+			String( "side" ), String(), String( "location" ), String( "4 2 8" ), nullptr );
+	Check( agentEdit.applied, "kind-omitted agent camera edit applies" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+		"kind-omitted agent edit refreshes TwoH" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"kind-omitted agent refresh is exactly [0,1] and settles" );
+	CameraSnapshot agentSnapshot;
+	Check( f.ctrl->GetViewportPose( agentSnapshot, 1 )
+	    && std::fabs( agentSnapshot.location[0] - 4.0 ) < 1e-9
+	    && std::fabs( agentSnapshot.location[1] - 2.0 ) < 1e-9
+	    && std::fabs( agentSnapshot.location[2] - 8.0 ) < 1e-9,
+		"MONEY ASSERTION (n): a kind-omitted agent camera edit re-resolves the bound pane" );
+
+	// Undo and redo each mutate the live camera without going through the
+	// property setter again.  Consume the forward realization first so each
+	// subsequent exact refresh proves its own invalidation branch.
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "5 2 8" ) ),
+		"apply forward camera edit for undo/redo coverage" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"forward undo/redo pose refresh is exactly [0,1]" );
+	f.ctrl->ClearSequence();
+	f.ctrl->Undo();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"undo camera property edit refreshes exactly [0,1]" );
+	CameraSnapshot undoSnapshot;
+	Check( f.ctrl->GetViewportPose( undoSnapshot, 1 )
+	    && std::fabs( undoSnapshot.location[0] - 4.0 ) < 1e-9,
+		"MONEY ASSERTION (n): undo invalidates and restores the bound pane pose" );
+	f.ctrl->ClearSequence();
+	f.ctrl->Redo();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"redo camera property edit refreshes exactly [0,1]" );
+	CameraSnapshot redoSnapshot;
+	Check( f.ctrl->GetViewportPose( redoSnapshot, 1 )
+	    && std::fabs( redoSnapshot.location[0] - 5.0 ) < 1e-9,
+		"MONEY ASSERTION (n): redo invalidates and reapplies the bound pane pose" );
+
+	// Transaction rollback is another camera mutation.  Let the forward
+	// pose render first so its configDirty is consumed, then roll it back.
+	Check( f.ctrl->BeginTransaction(), "begin camera-edit transaction" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "6 3 9" ) ),
+		"transactional camera edit applies" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "forward transaction pose renders" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"forward transaction refresh is exactly [0,1] and settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->RollbackTransaction(), "camera-edit transaction rolls back" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "rollback refreshes TwoH" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"rollback refresh is exactly [0,1] and settles" );
+	CameraSnapshot rollbackSnapshot;
+	Check( f.ctrl->GetViewportPose( rollbackSnapshot, 1 )
+	    && std::fabs( rollbackSnapshot.location[0] - 5.0 ) < 1e-9
+	    && std::fabs( rollbackSnapshot.location[1] - 2.0 ) < 1e-9
+	    && std::fabs( rollbackSnapshot.location[2] - 8.0 ) < 1e-9,
+		"MONEY ASSERTION (n): rollback discards the rejected realized pose and "
+		"re-resolves the restored camera" );
+
+	// Hidden panes retain desired state but are not scheduled.  Editing the
+	// camera while pane 1 is hidden must still config-dirty its slot so the
+	// later reveal cannot resurrect the stale realization.
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Single ),
+		"hide bound pane 1" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+		"layout shrink refreshes the visible primary" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0 }
+	    && f.ctrl->SettlesAt( 1, kSettleMs ),
+		"layout shrink refresh is exactly [0] and settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "7 4 10" ) ),
+		"edit bound camera while pane 1 is hidden" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+		"hidden-pane edit refreshes the one visible pane only" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "Single refresh settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"reveal the hidden bound pane" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+		"reveal schedules the formerly-hidden pane" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 1 }
+	    && f.ctrl->SettlesAt( 1, kSettleMs ),
+		"reveal refresh is exactly [1] and settles" );
+	CameraSnapshot revealedSnapshot;
+	Check( f.ctrl->GetViewportPose( revealedSnapshot, 1 )
+	    && std::fabs( revealedSnapshot.location[0] - 7.0 ) < 1e-9
+	    && std::fabs( revealedSnapshot.location[1] - 4.0 ) < 1e-9
+	    && std::fabs( revealedSnapshot.location[2] - 10.0 ) < 1e-9,
+		"MONEY ASSERTION (n): hidden bound pane re-resolves the camera on reveal" );
+
+	f.ctrl->ClearSequence();
+	const SceneEditController::AgentCommitResult removed =
+		f.ctrl->RemoveEntity( SceneEditController::Category::Camera, String( "side" ) );
+	Check( removed.applied, "remove the bound scene camera" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+		"camera deletion schedules a complete TwoH refresh" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"camera-deletion refresh is exactly [0,1] and settles" );
+	CameraSnapshot fallbackSnapshot;
+	Check( f.ctrl->GetViewportPose( fallbackSnapshot, 1 ),
+		"read pane 1 after the bound camera is deleted" );
+	Check( std::fabs( fallbackSnapshot.location[0] - bindingSnapshot.location[0] ) < 1e-9
+	    && std::fabs( fallbackSnapshot.location[1] - bindingSnapshot.location[1] ) < 1e-9
+	    && std::fabs( fallbackSnapshot.location[2] - bindingSnapshot.location[2] ) < 1e-9,
+		"MONEY ASSERTION (n): deleting the bound camera preserves the binding-time "
+		"snapshot fallback instead of jumping to the active scene camera" );
+	Check( f.ctrl->GetPaneVantage( 1, kind, referencedName )
+	    && kind == SceneEditController::PaneVantageKind::SceneCameraNamed
+	    && referencedName == "side",
+		"deletion preserves the desired kind/name for a future same-name camera" );
+
+	// Recreate the deleted name.  This is the inverse reconciliation edge:
+	// the pane must leave its old fallback without requiring the user to
+	// re-select the desired camera in the menu.
+	f.ctrl->ClearSequence();
+	char recreatedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera(
+			String( "side" ), recreatedName, sizeof( recreatedName ) ),
+		"recreate the deleted camera name from the active cam" );
+	Check( std::string( recreatedName ) == "side",
+		"same-name recreation reuses the retained desired identity" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"same-name recreation refresh is exactly [0,1]" );
+	CameraSnapshot recreatedSnapshot;
+	Check( f.ctrl->GetViewportPose( recreatedSnapshot, 1 )
+	    && std::fabs( recreatedSnapshot.location[0] - 0.0 ) < 1e-9
+	    && std::fabs( recreatedSnapshot.location[1] - 0.0 ) < 1e-9
+	    && std::fabs( recreatedSnapshot.location[2] - 5.0 ) < 1e-9,
+		"MONEY ASSERTION (n): same-name recreation wakes the pane off its deletion fallback" );
+}
+
+//----------------------------------------------------------------------
+// (n2) StampViewToNewCamera is the other manager-camera creation path.
+//      It must also wake retained same-name bindings after deletion.
+//----------------------------------------------------------------------
+static void RunNamedSceneCameraStampRecreationTest()
+{
+	std::printf( "=== scheduler (n2): stamped same-name camera resumes live binding ===\n" );
+	Fixture f( "pane_sched_n2.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"select clone source" );
+	char clonedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera( String( "side" ), clonedName, sizeof( clonedName ) ),
+		"create side camera" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
+		"select side for setup edit" );
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "4 1 7" ) ),
+		"give side a distinct fallback pose" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"restore cam active" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" ),
+		"bind pane 1 to side" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"initial binding rotation settles" );
+
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->RemoveEntity(
+			SceneEditController::Category::Camera, String( "side" ) ).applied,
+		"delete side while retaining pane desired state" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"deletion refresh is exactly [0,1]" );
+	CameraSnapshot fallback;
+	Check( f.ctrl->GetViewportPose( fallback, 1 )
+	    && std::fabs( fallback.location[0] - 4.0 ) < 1e-9,
+		"pane uses stored fallback after deletion" );
+
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->EnterFreeFlyFromActiveCamera( 0 ),
+		"prepare pane-0 active-camera view for stamping" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"pane-0 Free-Fly preparation refresh is exactly [0,1]" );
+
+	f.ctrl->ClearSequence();
+	char stampedName[64] = {0};
+	Check( f.ctrl->StampViewToNewCamera(
+			String( "side" ), stampedName, sizeof( stampedName ), 0 ),
+		"stamp a new camera under the deleted desired name" );
+	Check( std::string( stampedName ) == "side", "stamp recreates exact desired identity" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"stamp recreation refresh is exactly [0,1]" );
+	CameraSnapshot resumed;
+	Check( f.ctrl->GetViewportPose( resumed, 1 )
+	    && std::fabs( resumed.location[0] - 0.0 ) < 1e-9
+	    && std::fabs( resumed.location[1] - 0.0 ) < 1e-9
+	    && std::fabs( resumed.location[2] - 5.0 ) < 1e-9,
+		"MONEY ASSERTION (n2): stamp recreation wakes pane 1 off the old fallback" );
+}
+
+//----------------------------------------------------------------------
+// (n3) A pane-0 camera gesture edits the active scene camera.  Secondary
+//      panes explicitly bound to that same camera must re-resolve afterward.
+//----------------------------------------------------------------------
+static void RunActiveCameraGestureInvalidatesNamedPaneTest()
+{
+	std::printf( "=== scheduler (n3): active-camera gesture updates bound secondary ===\n" );
+	Fixture f( "pane_sched_n3.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"select active camera" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "cam" ),
+		"bind secondary to the active camera by name" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"initial bound-camera rotation is exactly [0,1]" );
+	CameraSnapshot before;
+	Check( f.ctrl->GetViewportPose( before, 1 ), "capture bound pane before gesture" );
+
+	f.ctrl->ClearSequence();
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 10, 10 ) ),
+		"pane-0 camera gesture starts" );
+	Check( f.ctrl->OnPanePointerMove( 0, Point2( 30, 18 ) ),
+		"pane-0 orbit mutates active cam" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+		"at least one pane-0 gesture quantum lands" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	const std::vector<unsigned int> gestureSeq = f.ctrl->Sequence();
+	bool gestureOnlyPane0 = !gestureSeq.empty();
+	for( std::size_t i = 0; i < gestureSeq.size(); ++i ) {
+		if( gestureSeq[i] != 0 ) gestureOnlyPane0 = false;
+	}
+	Check( gestureOnlyPane0, "every gesture quantum observed is pinned to pane 0" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->OnPanePointerUp( 0, Point2( 30, 18 ) ),
+		"pane-0 camera gesture ends" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+		"gesture release starts its refresh chain" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
+	const std::vector<unsigned int> releaseSeq = f.ctrl->Sequence();
+	bool releaseSawBoundPane = false;
+	for( std::size_t i = 0; i < releaseSeq.size(); ++i ) {
+		if( releaseSeq[i] == 1 ) releaseSawBoundPane = true;
+	}
+	Check( releaseSawBoundPane
+	    && f.ctrl->SettlesAt( releaseSeq.size(), kSettleMs ),
+		"gesture release refreshes the bound pane and settles" );
+
+	CameraSnapshot after;
+	Check( f.ctrl->GetViewportPose( after, 1 )
+	    && ( std::fabs( after.target_orientation[0] - before.target_orientation[0] ) > 1e-9
+	      || std::fabs( after.target_orientation[1] - before.target_orientation[1] ) > 1e-9 ),
+		"MONEY ASSERTION (n3): active-camera orbit invalidates and re-resolves bound pane 1" );
+}
+
+//----------------------------------------------------------------------
+// (n4) Set Home must resolve desired kind-3 state even before that pane has
+//      ever run.  Falling back to the active camera would save the wrong view.
+//----------------------------------------------------------------------
+static void RunNamedSceneCameraPreRealizationHomeTest()
+{
+	std::printf( "=== scheduler (n4): pre-realization Home resolves named scene camera ===\n" );
+	Fixture f( "pane_sched_n4.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"select clone source" );
+	char clonedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera( String( "side" ), clonedName, sizeof( clonedName ) ),
+		"create side camera" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
+		"select side for setup edit" );
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "6 2 9" ) ),
+		"give side a distinct Home pose" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"restore unrelated active cam" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" ),
+		"bind side before any pane realization" );
+	Check( f.ctrl->SetHomeView( 1 ),
+		"Set Home resolves the configured named camera before first pass" );
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
+		"select side for post-Home edit" );
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "2 1 7" ) ),
+		"move live side away from the saved Home pose" );
+	Check( f.ctrl->GoToHomeView( 1 ), "Go Home restores saved pane-1 pose" );
+
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"Home realization rotation is exactly [0,1]" );
+	CameraSnapshot home;
+	Check( f.ctrl->GetViewportPose( home, 1 )
+	    && std::fabs( home.location[0] - 6.0 ) < 1e-9
+	    && std::fabs( home.location[1] - 2.0 ) < 1e-9
+	    && std::fabs( home.location[2] - 9.0 ) < 1e-9,
+		"MONEY ASSERTION (n4): pre-realization Home captured side, not active cam" );
+}
+
+//----------------------------------------------------------------------
+// (n5) Exact-name invalidation is one-to-many: every pane bound to the
+//      camera must be marked configDirty, not only the first match.
+//----------------------------------------------------------------------
+static void RunMultiplePanesBoundToSameCameraTest()
+{
+	std::printf( "=== scheduler (n5): one camera edit updates every bound pane ===\n" );
+	Fixture f( "pane_sched_n5.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"select clone source" );
+	char clonedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera( String( "side" ), clonedName, sizeof( clonedName ) ),
+		"create side camera" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"keep cam active" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" )
+	    && f.ctrl->SetPaneVantageSceneCameraNamed( 2, "side" ),
+		"bind panes 1 and 2 to the same inactive camera" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3 }
+	    && f.ctrl->SettlesAt( 4, kSettleMs ),
+		"initial Quad rotation is exactly [0,1,2,3]" );
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
+		"select the shared bound camera" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPropertyForCategory(
+			SceneEditController::Category::Camera,
+			String( "location" ), String( "7 3 11" ) ),
+		"edit shared bound camera" );
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3 }
+	    && f.ctrl->SettlesAt( 4, kSettleMs ),
+		"shared-camera edit refresh is exactly [0,1,2,3]" );
+	CameraSnapshot pane1;
+	CameraSnapshot pane2;
+	Check( f.ctrl->GetViewportPose( pane1, 1 )
+	    && f.ctrl->GetViewportPose( pane2, 2 )
+	    && std::fabs( pane1.location[0] - 7.0 ) < 1e-9
+	    && std::fabs( pane1.location[1] - 3.0 ) < 1e-9
+	    && std::fabs( pane1.location[2] - 11.0 ) < 1e-9
+	    && std::fabs( pane2.location[0] - 7.0 ) < 1e-9
+	    && std::fabs( pane2.location[1] - 3.0 ) < 1e-9
+	    && std::fabs( pane2.location[2] - 11.0 ) < 1e-9,
+		"MONEY ASSERTION (n5): exact-name invalidation updates every matching pane" );
+
+}
+
+//----------------------------------------------------------------------
+// (o) Time evaluation may animate inactive named cameras.  A bound pane
+//     must discard its standalone camera and capture the evaluated pose.
+//----------------------------------------------------------------------
+static void RunNamedSceneCameraTimeScrubTest()
+{
+	std::printf( "=== scheduler (o): named scene-camera follows timeline scrub ===\n" );
+	std::string animatedScene( kScene );
+	animatedScene +=
+		"\npinhole_camera\n{\n"
+		"\tname animated_side_a\n"
+		"\tlocation 1 0 5\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 45\n"
+		"}\n"
+		"\npinhole_camera\n{\n"
+		"\tname animated_side_b\n"
+		"\tlocation 2 0 5\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 45\n"
+		"}\n"
+		"\ntimeline\n{\n"
+		"\telement_type camera\n"
+		"\telement animated_side_a\n"
+		"\tparam location\n"
+		"\ttime 0\n"
+		"\tvalue 1 0 5\n"
+		"\ttime 1\n"
+		"\tvalue 8 0 5\n"
+		"}\n"
+		"\ntimeline\n{\n"
+		"\telement_type camera\n"
+		"\telement animated_side_b\n"
+		"\tparam location\n"
+		"\ttime 0\n"
+		"\tvalue 2 0 5\n"
+		"\ttime 1\n"
+		"\tvalue 9 0 5\n"
+		"}\n";
+	Fixture f( "pane_sched_o.RISEscene", false, animatedScene.c_str() );
+	Check( f.ctrl != nullptr, "animated-camera fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"keep cam active while two inactive animated cameras are pane-bound" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "animated_side_a" )
+	    && f.ctrl->SetPaneVantageSceneCameraNamed( 2, "animated_side_b" ),
+		"panes 1 and 2 bind distinct inactive animated cameras" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
+		"initial animated-camera Quad rotation runs" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3 }
+	    && f.ctrl->SettlesAt( 4, kSettleMs ),
+		"initial animated-camera rotation is exactly [0,1,2,3] and settles" );
+
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->OnTimeScrub( Scalar( 1 ) ), "scrub scene time to 1" );
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
+		"time scrub refreshes all Quad panes" );
+	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3 }
+	    && f.ctrl->SettlesAt( 4, kSettleMs ),
+		"time-scrub refresh is exactly [0,1,2,3] and settles" );
+	CameraSnapshot scrubbedA;
+	CameraSnapshot scrubbedB;
+	Check( f.ctrl->GetViewportPose( scrubbedA, 1 )
+	    && f.ctrl->GetViewportPose( scrubbedB, 2 )
+	    && std::fabs( scrubbedA.location[0] - 8.0 ) < 1e-9
+	    && std::fabs( scrubbedB.location[0] - 9.0 ) < 1e-9,
+		"MONEY ASSERTION (o): time scrub's all-helper updates every inactive named-camera pane" );
+}
+
+//----------------------------------------------------------------------
+// (p) ONB pinhole cameras are valid manager cameras.  Binding one must
+//     realize a ray-equivalent ordinary pinhole snapshot rather than reject
+//     the authored ONB camera as the persistent clone path intentionally does.
+//----------------------------------------------------------------------
+static void RunNamedSceneCameraONBTest()
+{
+	std::printf( "=== scheduler (p): named ONB scene-camera binding ===\n" );
+	std::string onbScene( kScene );
+	onbScene +=
+		"\nonb_pinhole_camera\n{\n"
+		"\tname onb_side\n"
+		"\tlocation 9 8 7\n"
+		"\tva 1 0 0\n"
+		"\tvb 0 1 0\n"
+		"\tcomponents UV\n"
+		"\tfov 31\n"
+		"\texposure 0.125\n"
+		"\tscanning_rate 0.25\n"
+		"\tpixel_rate 0.5\n"
+		"}\n";
+	Fixture f( "pane_sched_p.RISEscene", false, onbScene.c_str() );
+	Check( f.ctrl != nullptr, "ONB fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"keep ordinary cam active while binding inactive ONB camera" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "onb_side" ),
+		"bind supported onb_pinhole_camera by manager name" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"ONB binding rotation is exactly [0,1]" );
+
+	CameraSnapshot onbPose;
+	Check( f.ctrl->GetViewportPose( onbPose, 1 )
+	    && onbPose.type == CameraSnapshot::Pinhole
+	    && std::fabs( onbPose.location[0] - 9.0 ) < 1e-9
+	    && std::fabs( onbPose.location[1] - 8.0 ) < 1e-9
+	    && std::fabs( onbPose.location[2] - 7.0 ) < 1e-9
+	    && std::fabs( onbPose.lookat[0] - 9.0 ) < 1e-9
+	    && std::fabs( onbPose.lookat[1] - 8.0 ) < 1e-9
+	    && std::fabs( onbPose.lookat[2] - 8.0 ) < 1e-9
+	    && std::fabs( onbPose.up[0] ) < 1e-9
+	    && std::fabs( onbPose.up[1] - 1.0 ) < 1e-9
+	    && std::fabs( onbPose.up[2] ) < 1e-9
+	    && std::fabs( onbPose.fov - 31.0 * DEG_TO_RAD ) < 1e-9
+	    && std::fabs( onbPose.exposure - 0.125 ) < 1e-9
+	    && std::fabs( onbPose.scanningRate - 0.25 ) < 1e-9
+	    && std::fabs( onbPose.pixelRate - 0.5 ) < 1e-9,
+		"MONEY ASSERTION (p): ONB basis and optics are captured as an equivalent navigable pinhole pose" );
+}
+
+//----------------------------------------------------------------------
+// (q) Named-camera binding snapshots manager-camera state.  If a preview
+//     pass is in flight, the setter must cancel and park before that read.
+//----------------------------------------------------------------------
+static void RunNamedSceneCameraSetterParksRenderTest()
+{
+	std::printf( "=== scheduler (q): named-camera setter cancels and parks render ===\n" );
+	Fixture f( "pane_sched_q.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"select source camera" );
+	char clonedName[64] = {0};
+	Check( f.ctrl->CloneActiveCamera( String( "side" ), clonedName, sizeof( clonedName ) ),
+		"create inactive bind target" );
+	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "cam" ) ),
+		"restore active cam" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"initial rotation settles" );
+
+	f.ctrl->ClearSequence();
+	f.ctrl->ArmReleaseInterleaving();
+	const unsigned int cancelsBefore = f.ctrl->ForTest_GetCancelCount();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForMintedPass( kWaitMs ),
+		"force an in-flight pass before calling the setter" );
+
+	std::atomic<bool> setterReturned( false );
+	bool setterResult = false;
+	std::thread setter( [&] {
+		setterResult = f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" );
+		setterReturned.store( true, std::memory_order_release );
+	} );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+	Check( !setterReturned.load( std::memory_order_acquire ),
+		"MONEY ASSERTION (q): setter remains parked while the minted pass owns camera state" );
+	Check( f.ctrl->ForTest_GetCancelCount() == cancelsBefore + 1,
+		"MONEY ASSERTION (q): setter requests exactly one cancellation before parking" );
+	f.ctrl->ReleaseMintedPass();
+	setter.join();
+	Check( setterResult && setterReturned.load( std::memory_order_acquire ),
+		"setter completes after the render releases camera state" );
+}
+
+//----------------------------------------------------------------------
+// (r) Pane* C-ABI nav wrappers forward `pane` RAW.  The nav funnels must
 //     reject both an out-of-range index and an in-range HIDDEN pane: neither
 //     may park/cancel a pass, switch the scheduler, or mutate pane state.
 //----------------------------------------------------------------------
 static void RunOutOfRangePaneNavRejectedTest()
 {
-	std::printf( "=== scheduler (n): out-of-range pane nav fails closed, no OOB (user-review round 2) ===\n" );
+	std::printf( "=== scheduler (p): out-of-range pane nav fails closed, no OOB (user-review round 2) ===\n" );
 	Fixture f( "pane_sched_m.RISEscene" );
 	Check( f.ctrl != nullptr, "fixture constructs" );
 	if( !f.ctrl ) return;
@@ -1559,6 +2318,15 @@ int main()
 	RunPaneZeroAliasUnderSecondaryPrimaryTest();
 	RunUnindexedNavAliasesPaneZeroTest();
 	RunPaneFreeFlyPreservesNamedViewTest();
+	RunPaneFreeFlyPreservesNamedSceneCameraTest();
+	RunNamedSceneCameraReconcileAndFallbackTest();
+	RunNamedSceneCameraStampRecreationTest();
+	RunActiveCameraGestureInvalidatesNamedPaneTest();
+	RunNamedSceneCameraPreRealizationHomeTest();
+	RunMultiplePanesBoundToSameCameraTest();
+	RunNamedSceneCameraTimeScrubTest();
+	RunNamedSceneCameraONBTest();
+	RunNamedSceneCameraSetterParksRenderTest();
 	RunOutOfRangePaneNavRejectedTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );

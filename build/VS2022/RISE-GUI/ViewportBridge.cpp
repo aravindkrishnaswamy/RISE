@@ -834,6 +834,13 @@ bool ViewportBridge::setPaneVantageSceneCamera(unsigned int pane)
     return RISE_API_SceneEditController_SetPaneVantageSceneCamera(m_controller, pane);
 }
 
+bool ViewportBridge::setPaneVantageSceneCameraNamed(unsigned int pane, const QString& name)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+        m_controller, pane, name.toUtf8().constData());
+}
+
 bool ViewportBridge::setPaneVantageNamedView(unsigned int pane, const QString& name)
 {
     if (!m_controller) return false;
@@ -844,13 +851,18 @@ bool ViewportBridge::setPaneVantageNamedView(unsigned int pane, const QString& n
 bool ViewportBridge::paneVantage(unsigned int pane, PaneVantageKind* outKind, QString* outNamedView) const
 {
     if (!m_controller) return false;
-    int kind = 0;
-    char nm[256] = { 0 };
-    if (!RISE_API_SceneEditController_GetPaneVantage(m_controller, pane, &kind, nm, sizeof(nm))) {
+    SceneEditController::PaneVantageKind kind;
+    String referencedName;
+    if (!m_controller->GetPaneVantage(pane, kind, referencedName)) {
         return false;
     }
-    if (outKind) *outKind = static_cast<PaneVantageKind>(kind);
-    if (outNamedView) *outNamedView = QString::fromUtf8(nm);
+    const int wireKind = static_cast<int>(kind);
+    if (wireKind < static_cast<int>(PaneVantageKind::SceneCamera)
+        || wireKind > static_cast<int>(PaneVantageKind::SceneCameraNamed)) {
+        return false;
+    }
+    if (outKind) *outKind = static_cast<PaneVantageKind>(wireKind);
+    if (outNamedView) *outNamedView = QString::fromUtf8(referencedName.c_str());
     return true;
 }
 
@@ -1166,11 +1178,10 @@ QStringList ViewportBridge::categoryEntities(Category cat) const
     const int catInt = static_cast<int>(cat);
     const unsigned int n = RISE_API_SceneEditController_CategoryEntityCount(m_controller, catInt);
     out.reserve(static_cast<int>(n));
-    char nameBuf[128];
     for (unsigned int i = 0; i < n; ++i) {
-        if (RISE_API_SceneEditController_CategoryEntityName(m_controller, catInt, i, nameBuf, sizeof(nameBuf))) {
-            out.append(QString::fromUtf8(nameBuf));
-        }
+        const String name = m_controller->CategoryEntityName(
+            static_cast<SceneEditController::Category>(catInt), i);
+        out.append(QString::fromUtf8(name.c_str()));
     }
     return out;
 }

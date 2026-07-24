@@ -7763,6 +7763,13 @@ namespace RISE
 		return p->SetPaneVantageSceneCamera( pane );
 	}
 
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneVantageSceneCameraNamed( pane, name );
+	}
+
 	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
 		SceneEditController* p, unsigned int pane, const char* name )
 	{

@@ -1307,6 +1307,7 @@ void ViewportWidget::refreshPaneChromeState()
     if (!m_bridge) return;
     const unsigned int primary = m_bridge->primaryPane();
     const QStringList namedViews = m_bridge->namedViewNames();
+    const QStringList sceneCameras = m_bridge->categoryEntities(ViewportBridge::Category::Camera);
 
     for (unsigned int i = 0; i < m_visiblePaneCount && i < ViewportBridge::kViewportPaneCount; ++i) {
         PaneChrome& chrome = m_paneChrome[i];
@@ -1332,20 +1333,35 @@ void ViewportWidget::refreshPaneChromeState()
             case ViewportBridge::PaneVantageKind::NamedView:
                 label = namedView.isEmpty() ? tr("Named View") : namedView;
                 break;
+            case ViewportBridge::PaneVantageKind::SceneCameraNamed:
+                label = namedView.isEmpty() ? tr("Scene Camera") : namedView;
+                break;
             }
         }
         chrome.vantageBtn->setText(label);
-        chrome.vantageBtn->setToolTip(tr("Vantage \xE2\x80\x94 Scene camera, a named view, or Free-Fly"));
+        chrome.vantageBtn->setToolTip(tr(
+            "Vantage \xE2\x80\x94 active or named scene camera, a named view, or Free-Fly"));
 
         chrome.vantageMenu->clear();
         QAction* sceneAct = chrome.vantageMenu->addAction(tr("Scene Camera"));
-        sceneAct->setData(QStringLiteral("__scene__"));
+        sceneAct->setProperty("vantageKind", QStringLiteral("scene"));
         QAction* freeFlyAct = chrome.vantageMenu->addAction(tr("Free-Fly"));
-        freeFlyAct->setData(QStringLiteral("__freefly__"));
+        freeFlyAct->setProperty("vantageKind", QStringLiteral("freefly"));
+        if (i != 0 && !sceneCameras.isEmpty()) {
+            chrome.vantageMenu->addSeparator();
+            QAction* cameraHeader = chrome.vantageMenu->addAction(tr("Scene Cameras"));
+            cameraHeader->setEnabled(false);
+            for (const QString& name : sceneCameras) {
+                QAction* act = chrome.vantageMenu->addAction(name);
+                act->setProperty("vantageKind", QStringLiteral("sceneCameraNamed"));
+                act->setData(name);
+            }
+        }
         if (!namedViews.isEmpty()) {
             chrome.vantageMenu->addSeparator();
             for (const QString& name : namedViews) {
                 QAction* act = chrome.vantageMenu->addAction(name);
+                act->setProperty("vantageKind", QStringLiteral("namedView"));
                 act->setData(name);
             }
         }
@@ -1414,12 +1430,15 @@ void ViewportWidget::onPaneVantageAction(QAction* action)
     auto* menu = qobject_cast<QMenu*>(sender());
     if (!menu) return;
     const unsigned int pane = menu->property("pane").toUInt();
+    const QString actionKind = action->property("vantageKind").toString();
     const QString data = action->data().toString();
-    if (data == QLatin1String("__scene__")) {
+    if (actionKind == QLatin1String("scene")) {
         m_bridge->setPaneVantageSceneCamera(pane);
-    } else if (data == QLatin1String("__freefly__")) {
+    } else if (actionKind == QLatin1String("freefly")) {
         m_bridge->paneEnterFreeFly(pane);
-    } else if (!data.isEmpty()) {
+    } else if (actionKind == QLatin1String("sceneCameraNamed") && !data.isEmpty()) {
+        m_bridge->setPaneVantageSceneCameraNamed(pane, data);
+    } else if (actionKind == QLatin1String("namedView") && !data.isEmpty()) {
         m_bridge->setPaneVantageNamedView(pane, data);
     }
     refreshPaneChromeState();

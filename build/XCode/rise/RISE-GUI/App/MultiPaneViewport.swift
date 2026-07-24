@@ -598,6 +598,8 @@ private struct PaneChromeStrip: View {
         case .sceneCamera: return "Scene Camera"
         case .freeFly:     return "Free-Fly"
         case .namedView:   return vantageNamedView.isEmpty ? "Named View" : vantageNamedView
+        case .sceneCameraNamed:
+            return vantageNamedView.isEmpty ? "Scene Camera" : vantageNamedView
         @unknown default:  return "—"
         }
     }
@@ -612,6 +614,24 @@ private struct PaneChromeStrip: View {
                     Label("Scene Camera", systemImage: "checkmark")
                 } else {
                     Text("Scene Camera")
+                }
+            }
+            let sceneCameras = bridge.categoryEntities(.camera)
+            if pane != 0 && !sceneCameras.isEmpty {
+                Divider()
+                Section("Scene Cameras") {
+                    ForEach(sceneCameras, id: \.self) { name in
+                        Button {
+                            _ = bridge.setPaneVantageSceneCameraNamed(UInt(pane), name: name)
+                            onChanged()
+                        } label: {
+                            if vantageKind == .sceneCameraNamed && vantageNamedView == name {
+                                Label(name, systemImage: "checkmark")
+                            } else {
+                                Text(name)
+                            }
+                        }
+                    }
                 }
             }
             let names = bridge.namedViewNames

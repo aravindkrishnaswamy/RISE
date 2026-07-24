@@ -2433,6 +2433,7 @@ namespace RISE
 			SceneCamera = 0,  //!< track the live active scene camera
 			FreeFly     = 1,  //!< per-pane free-fly pose (never mutates the scene camera)
 			NamedView   = 2,  //!< re-resolved by name each pass; falls back to the snapshot if deleted
+			SceneCameraNamed = 3, //!< track one manager-registered scene camera by name
 		};
 
 		static constexpr unsigned int kViewportPaneCount = 4;
@@ -2501,12 +2502,12 @@ namespace RISE
 		//! override and restores the legacy sink as pane 0's source.
 		bool SetPaneSink( unsigned int pane, IRasterizerOutput* pSink );
 
-		//! Vantage setters.  Pane 0 forwards to the existing free-fly /
-		//! named-view machinery (ExitFreeFly / SetViewportPose); panes 1-3
-		//! store configuration.  SetPaneVantageNamedView requires the named
-		//! view to exist NOW (it snapshots the pose as the deletion
-		//! fallback); the live re-resolve-by-name happens at render time
-		//! (scheduler slice).
+		//! Vantage setters.  Pane 0 forwards the existing SceneCamera /
+		//! NamedView flows, but REFUSES SceneCameraNamed: pane 0 is the
+		//! active-camera editing surface.  Panes 1-3 store configuration.
+		//! NamedView and SceneCameraNamed require their target to exist NOW
+		//! and snapshot its pose as the deletion fallback; live re-resolve by
+		//! name happens at render-time reconcile.
 		//! -------- P3a slice 3: pane-indexed pointer input ----------------
 		//!
 		//! The P3b shells hit-test their pane rects and forward events with
@@ -2543,8 +2544,10 @@ namespace RISE
 		                              unsigned int& outScaleDivisor ) const;
 
 		bool SetPaneVantageSceneCamera( unsigned int pane );
+		bool SetPaneVantageSceneCameraNamed( unsigned int pane, const char* name );
 		bool SetPaneVantageNamedView( unsigned int pane, const char* name );
-		//! Introspection: current kind (+ named-view name when applicable).
+		//! Introspection: current kind (+ referenced name for NamedView /
+		//! SceneCameraNamed).
 		bool GetPaneVantage( unsigned int pane, PaneVantageKind& outKind,
 		                     String& outNamedView ) const;
 
@@ -3656,8 +3659,9 @@ namespace RISE
 			// defines Preview first and a static_assert in the .cpp pins it).
 			Implementation::ViewportRenderMode mode {};
 			PaneVantageKind                    vantageKind = PaneVantageKind::SceneCamera;
-			CameraSnapshot                     pose {};      // NamedView snapshot fallback / future FreeFly
+			CameraSnapshot                     pose {};      // named-target deletion fallback / FreeFly
 			String                             namedViewRef; // valid when vantageKind==NamedView
+			String                             sceneCameraRef; // valid when vantageKind==SceneCameraNamed
 			//! P3a slice 3: per-pane render surface in pixels (the GUI's
 			//! pane rect).  0/0 = "use the film's rest dims" -- pane 0's
 			//! default, byte-identical single-viewport behaviour.
@@ -3778,6 +3782,13 @@ namespace RISE
 		unsigned int PickNextVisiblePaneLocked_() const;
 		bool         AnyVisiblePaneHasWorkLocked_() const;
 		void         MarkAllVisiblePanesDirtyLocked_();
+		//! Mark panes bound to one manager-registered camera for desired-state
+		//! reconcile.  REQUIRES mMutex held; includes hidden panes so a later
+		//! reveal cannot resurrect a stale realized camera.
+		void         InvalidatePanesBoundToSceneCameraLocked_( const String& name );
+		//! Undo/redo may not expose the affected edit kind here; conservatively
+		//! reconcile every SceneCameraNamed pane.  REQUIRES mMutex held.
+		void         InvalidateAllSceneCameraNamedPanesLocked_();
 		//! review-r2 P1: named-view propagation -- marks every pane bound
 		//! to `name` for reconcile.  Takes mMutex; caller must NOT hold
 		//! mNamedViewsMutex (never nested, either order).

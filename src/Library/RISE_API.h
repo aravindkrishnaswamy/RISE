@@ -3736,10 +3736,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! -------- N-up multi-viewport pane model (RENDER_MODES.md §7, P3a) ----
 	//! Layout values: 0 Single, 1 TwoH, 2 OnePlusTwo, 3 Quad (the
 	//! controller's ViewportLayout enum).  Vantage kinds: 0 SceneCamera,
-	//! 1 FreeFly, 2 NamedView.  Every function is fail-closed per the
-	//! controller contract (§7.4): unknown pane / hidden pane / render owns
-	//! scene => false, nothing mutated.  EXISTING single-viewport calls are
-	//! unchanged and alias pane 0.
+	//! 1 FreeFly, 2 NamedView, 3 SceneCameraNamed (secondary panes only;
+	//! pane 0 refuses kind 3).  Mutating vantage/render-mode calls are
+	//! fail-closed per the controller contract (§7.4): unknown or hidden
+	//! pane / render owns scene => false, nothing mutated.  Read-only getters
+	//! can inspect retained hidden-pane state, and SetPaneSink has its
+	//! documented hidden-pane pre-wiring exception below.  EXISTING
+	//! single-viewport calls are unchanged and alias pane 0.
 	//!
 	//! SCOPE NOTE (review-r2, CLOSED by slice 3): every §7.4-specified
 	//! entry now ships -- dims/sinks (display half) and the pane-indexed
@@ -3814,10 +3817,15 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
 		SceneEditController* p, unsigned int pane );
+	//! Bind a secondary pane to one manager-registered scene camera.
+	//! Pane 0 refuses: it remains the active-camera editing surface.
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+		SceneEditController* p, unsigned int pane, const char* name );
 	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
 		SceneEditController* p, unsigned int pane, const char* name );
-	//! `outKind` receives the vantage kind; `outNamedView`/`cap` receive a
-	//! NUL-terminated named-view name ("" unless kind==NamedView).  Returns
+	//! `outKind` receives the stable wire kind (0 SceneCamera / 1 FreeFly /
+	//! 2 NamedView / 3 SceneCameraNamed); `outNamedView`/`cap` receive the
+	//! NUL-terminated referenced name for kinds 2/3 ("" otherwise).  Returns
 	//! false on null controller / null outs / invalid pane / cap==0.
 	bool RISE_API_SceneEditController_GetPaneVantage(
 		SceneEditController* p, unsigned int pane, int* outKind,

@@ -190,6 +190,14 @@ namespace RISE
 				return mxTrans;
 			}
 
+			//! Current realized orientation basis.  This is the faithful
+			//! orientation source for ONB-constructed cameras because their
+			//! stored lookAt/up fields are intentionally unused.
+			inline OrthonormalBasis3D GetCurrentBasis() const
+			{
+				return frame.GetBasis();
+			}
+
 			inline unsigned int GetWidth( ) const
 			{
 				return frame.GetWidth();
@@ -224,4 +232,3 @@ namespace RISE
 }
 
 #endif
-
