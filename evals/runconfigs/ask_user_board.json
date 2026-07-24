@@ -1,11 +1,33 @@
 {
-  "//": "Clarifying-questions measurement (scope-corrected after epoch 11): build_ambiguous_scene across the roster. Measures ask_user ADOPTION on a materially-ambiguous collection-piece brief, whether an identity-relevant question precedes building (askUserQuestionContainsAny + askUserBeforeMutation), and whether the final response reflects the scripted piece-identity answer (watch/pocket). The adversarial control already proves the oracle discriminates; rerun before comparing this configuration with the historical epoch-11 board.",
-  "scenarios": [ "evals/scenarios/build_ambiguous_scene.json" ],
+  "//": "Clarifying-questions measurement (scope-corrected after epoch 11): build_ambiguous_scene across the roster (incl. Opus 4.8). Measures ask_user ADOPTION on a materially-ambiguous collection-piece brief, whether an identity-relevant question precedes building (askUserQuestionContainsAny + askUserBeforeMutation), and whether the final response reflects the scripted piece-identity answer (watch/pocket). The adversarial control already proves the oracle discriminates; rerun before comparing this configuration with the historical epoch-11 board.",
+  "scenarios": [
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
   "providers": [
-    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
-    { "provider": "gemini", "model": "gemini-3.6-flash", "keyEnvVar": "GEMINI_API_KEY" },
-    { "provider": "openai", "model": "gpt-5.6-terra",    "keyEnvVar": "OPENAI_API_KEY" },
-    { "provider": "local",  "model": "qwen3.6:27b" }
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "keyEnvVar": "ANTHROPIC_API_KEY"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash",
+      "keyEnvVar": "GEMINI_API_KEY"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "keyEnvVar": "GEMINI_API_KEY"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.6-terra",
+      "keyEnvVar": "OPENAI_API_KEY"
+    },
+    {
+      "provider": "local",
+      "model": "qwen3.6:27b"
+    }
   ],
   "repeats": 3,
   "runDir": "evals/runs/ask_user_board"
