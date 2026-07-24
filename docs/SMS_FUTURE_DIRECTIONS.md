@@ -1,12 +1,15 @@
 # SMS Future Directions: Literature & Candidate Extensions
 
-This doc captures the post-2020 SMS literature surveyed during the planning of `docs/SMS_UNIFORM_SEEDING_PLAN.md` (Option A), plus the candidate future extensions (Option B and beyond) considered and deferred.  The current work is Option A — bringing RISE's SMS into algorithmic alignment with the Zeltner 2020 paper / Mitsuba reference.  Future work may revisit any of the candidates below.
+**Status:** **LITERATURE/BACKLOG SNAPSHOT.** Option A shipped; Option B and
+beyond remain candidate research. The body preserves the pre-landing framing.
+
+This doc captures the post-2020 SMS literature surveyed during the planning of `docs/SMS_UNIFORM_SEEDING_PLAN.md` (Option A), plus the candidate future extensions (Option B and beyond) considered and deferred. Future work may revisit any of the candidates below.
 
 ## Why this doc exists
 
 After the literature survey reframed our understanding (see `docs/SMS_TWO_STAGE_SOLVER.md` and the planning thread for context), we identified three options:
 
-- **Option A — Mitsuba-faithful core, properly-cited extensions.** Refactor RISE's SMS to match the published reference for unbiased / biased / MNEE-init modes, fix the fabricated Kondapaneni 2023 citation to Weisstein 2024 PMS, restructure photon-aided seeding as a documented biased-mode extension.  See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.  **Currently in progress.**
+- **Option A — Mitsuba-faithful core, properly-cited extensions.** Refactor RISE's SMS to match the published reference for unbiased / biased / MNEE-init modes, fix the fabricated Kondapaneni 2023 citation to Weisstein 2024 PMS, restructure photon-aided seeding as a documented biased-mode extension. See `docs/SMS_UNIFORM_SEEDING_PLAN.md`. **Shipped.**
 - **Option B — Port a newer paper.** Implement one of the published post-2020 SMS extensions — most likely Specular Polynomials (Mo 2024) for deterministic seed-finding, or Manifold Path Guiding (Fan 2023) for k≥3 chain robustness.  Bigger lift than A; addresses different failure modes.  **Deferred.**
 - **Option C — Retire the "SMS for displaced meshes" goal.** Accept the literature consensus that no published paper solves heavy-vertex-displaced specular caustics inside SMS; document VCM as the production answer for that regime.  **Captured as a non-goal in `docs/SMS_TWO_STAGE_SOLVER.md` and `docs/SMS_UNIFORM_SEEDING_PLAN.md`.  Effectively the current policy.**
 

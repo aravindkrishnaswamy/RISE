@@ -27,7 +27,7 @@ directional_light
 }
 ```
 
-Source of truth: [src/Library/Lights/DirectionalLight.cpp:48](../src/Library/Lights/DirectionalLight.cpp:48):
+Source of truth: [src/Library/Lights/DirectionalLight.cpp:48](../src/Library/Lights/DirectionalLight.cpp):
 
 ```cpp
 Scalar fDot = Vector3Ops::Dot( vDirection, ri.vNormal );
@@ -102,7 +102,7 @@ Internally it computes the cone-axis shine direction as
 degrees** (converted to radians at parse time; defaults 45/90).  This
 is symmetric to how SpotLight tests `dot(toLight, -vDirection)` at hit
 time.  See
-[src/Library/Lights/SpotLight.cpp:37](../src/Library/Lights/SpotLight.cpp:37).
+[src/Library/Lights/SpotLight.cpp:37](../src/Library/Lights/SpotLight.cpp).
 
 The glTF importer for spots passes `position + shine_direction` as the
 target point — that's correct (no extra flip needed).

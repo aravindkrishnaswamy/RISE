@@ -97,7 +97,7 @@ The `pdf_env_sa(wi)` factor **cancels cleanly** in the target — no
 scene-radius dependence, no `π` factor. This is the structural property
 the refactor establishes.
 
-**Throughput compensation**: at [BDPTIntegrator.cpp:1420](../src/Library/Shaders/BDPTIntegrator.cpp:1420), `v.throughput = Le / v.pdfFwd`. After the change, throughput at v0 changes from `Le · πr²` to `Le / pdf_env_sa(wi)`. The downstream `beta /= pdfEmit` already divides by the FULL joint, so:
+**Throughput compensation**: at [BDPTIntegrator.cpp:1420](../src/Library/Shaders/BDPTIntegrator.cpp), `v.throughput = Le / v.pdfFwd`. After the change, throughput at v0 changes from `Le · πr²` to `Le / pdf_env_sa(wi)`. The downstream `beta /= pdfEmit` already divides by the FULL joint, so:
 
 ```
 Current:
@@ -221,7 +221,7 @@ made incrementally with the test suite green between steps.
 
 ### Phase 1.B — Switch SampleEnvLightEmission to SA-measure
 
-4. **[LightSampler.cpp:1133-1135](../src/Library/Lights/LightSampler.cpp:1133)** — replace:
+4. **[LightSampler.cpp:1133-1135](../src/Library/Lights/LightSampler.cpp)** — replace:
    ```cpp
    const Scalar discArea = PI * cachedSceneRadius * cachedSceneRadius;
    sample.pdfPosition = (discArea > 0) ? (1/discArea) : 0;
@@ -238,7 +238,7 @@ made incrementally with the test suite green between steps.
    — it's still used for visibility / dist² bookkeeping at the
    neighboring vertices, which `ConvertDensity` now handles correctly.
 
-5. **[BDPTIntegrator.cpp:1420](../src/Library/Shaders/BDPTIntegrator.cpp:1420)** — verify the existing
+5. **[BDPTIntegrator.cpp:1420](../src/Library/Shaders/BDPTIntegrator.cpp)** — verify the existing
    `v.pdfFwd = ls.pdfSelect * ls.pdfPosition` and `v.throughput = ls.Le
    / v.pdfFwd` line works correctly with the new convention: pdfFwd
    becomes SA, throughput becomes `Le / (pdfSelect · pdf_env_sa)`. The
@@ -247,7 +247,7 @@ made incrementally with the test suite green between steps.
    line changes needed; *semantics* change because pdfPosition's
    meaning changed.
 
-6. **[BDPTIntegrator.cpp:1467](../src/Library/Shaders/BDPTIntegrator.cpp:1467)** — `pdfFwdPrev = pdfDirArea
+6. **[BDPTIntegrator.cpp:1467](../src/Library/Shaders/BDPTIntegrator.cpp)** — `pdfFwdPrev = pdfDirArea
    = ls.pdfDirection` becomes 1.0. The downstream propagation to v[1]
    at line ~1716 (`v.pdfFwd = SolidAngleToArea(pdfFwdPrev, absCosIn,
    distSq)`) would now give `pdfFwd[v1] = cos_v1 / r²` (missing the
@@ -258,12 +258,12 @@ made incrementally with the test suite green between steps.
    up `from.pdfFwd` when source is env. Recommended: the former
    (simpler, no abstraction change to the surface vertex path).
 
-7. **[BDPTIntegrator.cpp:5183-5215](../src/Library/Shaders/BDPTIntegrator.cpp:5183)** — NM/spectral twin of
+7. **[BDPTIntegrator.cpp:5183-5215](../src/Library/Shaders/BDPTIntegrator.cpp)** — NM/spectral twin of
    the above. Same fix.
 
 ### Phase 1.C — Migrate Path A (s=1 NEE) sites
 
-8. **[BDPTIntegrator.cpp:3944-3984](../src/Library/Shaders/BDPTIntegrator.cpp:3944)** — RGB s=1 env case.
+8. **[BDPTIntegrator.cpp:3944-3984](../src/Library/Shaders/BDPTIntegrator.cpp)** — RGB s=1 env case.
    The PT-formula contribution stays. The pdfRev bookkeeping at lines
    3987-4070 currently uses `SolidAngleToArea(pdfRevSA, absCosAtLight,
    distSq_conn)` for the env light vertex; replace with
@@ -271,21 +271,21 @@ made incrementally with the test suite green between steps.
    to `pdfRevSA` (no `/r²`). The eyeEnd.pdfRev assignment for emission
    directional pdf likewise uses the new helper.
 
-9. **[BDPTIntegrator.cpp:7287-7483](../src/Library/Shaders/BDPTIntegrator.cpp:7287)** — NM/spectral twin.
+9. **[BDPTIntegrator.cpp:7287-7483](../src/Library/Shaders/BDPTIntegrator.cpp)** — NM/spectral twin.
    Same migration.
 
 ### Phase 1.D — Migrate Path B (s=0 escape) sites and drop sentinels
 
-10. **[BDPTIntegrator.cpp:2702-2757](../src/Library/Shaders/BDPTIntegrator.cpp:2702)** — RGB
+10. **[BDPTIntegrator.cpp:2702-2757](../src/Library/Shaders/BDPTIntegrator.cpp)** — RGB
     `GenerateEyeSubpath` Path B push: `vEnv.pdfFwd =
     SolidAngleToArea(pdfFwdPrev, 1.0, distSqToExit)` becomes
     `vEnv.pdfFwd = pdfFwdPrev` (SA-measure direct; PBRT-v4
     convention).
 
-11. **[BDPTIntegrator.cpp:6345-6386](../src/Library/Shaders/BDPTIntegrator.cpp:6345)** — NM/spectral twin
+11. **[BDPTIntegrator.cpp:6345-6386](../src/Library/Shaders/BDPTIntegrator.cpp)** — NM/spectral twin
     of #10.
 
-12. **[BDPTIntegrator.cpp:3434-3490](../src/Library/Shaders/BDPTIntegrator.cpp:3434)** — RGB Path B s=0
+12. **[BDPTIntegrator.cpp:3434-3490](../src/Library/Shaders/BDPTIntegrator.cpp)** — RGB Path B s=0
     `ConnectAndEvaluate`: drop `pdfPositionDisc`, drop
     `kEnvZeroSentinel`. `eyeEnd.pdfRev = envSelectProb * pdf_env_sa(wiSky)`
     (SA, no disc factor). `eyePred.pdfRev = ConvertDensity(envSelectProb
@@ -295,31 +295,31 @@ made incrementally with the test suite green between steps.
     `envSelectProb = 0` (the new pdfRev is `0 * pdf_env_sa = 0`,
     cleanly).
 
-13. **[BDPTIntegrator.cpp:7027-7072](../src/Library/Shaders/BDPTIntegrator.cpp:7027)** — NM/spectral twin
+13. **[BDPTIntegrator.cpp:7027-7072](../src/Library/Shaders/BDPTIntegrator.cpp)** — NM/spectral twin
     of #12.
 
 ### Phase 1.E — VCM caller updates
 
-14. **[VCMIntegrator.cpp:469](../src/Library/Shaders/VCMIntegrator.cpp:469)** — replace `const bool isFinite
+14. **[VCMIntegrator.cpp:469](../src/Library/Shaders/VCMIntegrator.cpp)** — replace `const bool isFinite
     = true;` with `const bool isFinite = (v.pEnvLight == 0);`. The
     `VCMRecurrence::InitLight` already handles the `!isFinite` case
     correctly per Georgiev 2012 Appendix A (line 144: `usedCosLight =
     isFiniteLight ? cosLight : 1`).
 
-15. **[VCMIntegrator.cpp:549](../src/Library/Shaders/VCMIntegrator.cpp:549)** — replace `const bool
+15. **[VCMIntegrator.cpp:549](../src/Library/Shaders/VCMIntegrator.cpp)** — replace `const bool
     applyDistSqToDVCM = true;` with `const bool applyDistSqToDVCM =
     !(i == 1 && verts[0].pEnvLight != 0);`. Skips the `dVCM *= distSq`
     factor on the first bounce off an env light, per Georgiev 2012
     Appendix A (line 199-200 in VCMRecurrence.cpp implements the
     gate).
 
-16. **[VCMIntegrator.cpp:1772](../src/Library/Shaders/VCMIntegrator.cpp:1772)** — verify symmetry for the
+16. **[VCMIntegrator.cpp:1772](../src/Library/Shaders/VCMIntegrator.cpp)** — verify symmetry for the
     NM/spectral light-subpath conversion (separate call site or
     shared per Phase 2a templatization).
 
 ### Phase 1.F — Tighten tests
 
-17. **[tests/EnvLightBalanceTest.cpp:608](../tests/EnvLightBalanceTest.cpp:608)** — replace
+17. **[tests/EnvLightBalanceTest.cpp:608](../tests/EnvLightBalanceTest.cpp)** — replace
     `kEnvTolerances{ 0.35, 0.35, 2.00 }` with `{ 0.10, 0.30, 1.00 }`
     matching `BDPTStrategyBalanceTest.cpp`'s `kStrictTolerances`
     family. Verify all topologies pass:
@@ -790,7 +790,7 @@ executes piece 2.A.
 ### What shipped
 
 A `static constexpr bool kSAMisAudit = false` guard at file scope in
-[src/Library/Shaders/BDPTIntegrator.cpp:125](../src/Library/Shaders/BDPTIntegrator.cpp:125),
+[src/Library/Shaders/BDPTIntegrator.cpp:125](../src/Library/Shaders/BDPTIntegrator.cpp),
 plus eight `if constexpr( kSAMisAudit )` parallel-computation blocks
 at the sites that pieces 2.B–2.F will migrate.  Each block computes the
 new SA-measure value, logs the disc-area / SA pair to stderr with
@@ -960,7 +960,7 @@ Strict-tolerance `{0.10, 0.30, 1.00}` was NOT re-run in this session because lax
 
 The chip spec [§5.4 Hypothesis 4 resolution](PRE_PHASE1_OPTION_C_DESIGN.md) argued that dropping the sentinel was safe because *"MISWeight's `remap0` line does NOT fire because eyeEnd is the env vertex and env.isDelta = false, so the zero passes through as a real zero."*  **This argument is incorrect for RISE's MISWeight implementation.**
 
-Looking at the actual code at [BDPTIntegrator.cpp:5049-5050](../src/Library/Shaders/BDPTIntegrator.cpp:5049) (and the mirror at :5102-5103):
+Looking at the actual code at [BDPTIntegrator.cpp:5049-5050](../src/Library/Shaders/BDPTIntegrator.cpp) (and the mirror at :5102-5103):
 
 ```cpp
 const Scalar pdfR = (vi.pdfRev != 0) ? vi.pdfRev : Scalar(1);
@@ -1029,17 +1029,17 @@ No source-file add/remove; no build-project updates required.  Leaving the worki
 
 **Date**: 2026-05-28.
 **Branch state**: working-tree only; no source-code edits this session.  Session 5's Piece 2.B (D4 RGB+NM migration) working-tree diff is unchanged.  Doc updates only — see "Files touched" below.
-**Reference spec input**: [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session 5 outcome", [docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md) v1, [src/Library/Shaders/BDPTIntegrator.cpp:5049](../src/Library/Shaders/BDPTIntegrator.cpp:5049) (`remap0`), the Path B env-vertex push sites at :2821 (RGB) and :6545 (NM), and PBRT-v4 `integrators.cpp:1732-1745` (ConvertDensity), `:1731-1743` (env short-circuit), `:1957` (`InfiniteLightDensity` override), `:2138` (PBRT remap0).
+**Reference spec input**: [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session 5 outcome", [docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md) v1, [src/Library/Shaders/BDPTIntegrator.cpp:5049](../src/Library/Shaders/BDPTIntegrator.cpp) (`remap0`), the Path B env-vertex push sites at :2821 (RGB) and :6545 (NM), and PBRT-v4 `integrators.cpp:1732-1745` (ConvertDensity), `:1731-1743` (env short-circuit), `:1957` (`InfiniteLightDensity` override), `:2138` (PBRT remap0).
 
 ### What was investigated
 
 Per the Session 6 chip's four tasks:
 
-**Task 1 — Audit missing diff-map row D19 (eye-side env-vertex pdfFwd)**: located the two sites in BDPTIntegrator.cpp where the synthetic eye-side env vertex's `pdfFwd` is assigned — [BDPTIntegrator.cpp:2821-2822](../src/Library/Shaders/BDPTIntegrator.cpp:2821) (RGB Path B push) and [BDPTIntegrator.cpp:6545-6546](../src/Library/Shaders/BDPTIntegrator.cpp:6545) (NM twin).  Current formula: `BDPTUtilities::SolidAngleToArea(pdfFwdPrev, 1, distSqToExit)` — converts the predecessor's SA pdf into area-measure at the env vertex.  Target per PBRT-v4 convention: `BDPTUtilities::ConvertDensity(pdfFwdPrev, eyePred, vEnv)` which short-circuits to SA-unchanged at env destinations (the Phase 1.A helper).  Effectively `vEnv.pdfFwd = pdfFwdPrev` (SA), matching what D4 places in `vEnv.pdfRev` in dimension.  Added as new diff-map row D19 with file:line citations and the PBRT-v4 cross-reference.  No additional missing rows found in this audit — see "Residual uncertainty" item 2 for the limit.
+**Task 1 — Audit missing diff-map row D19 (eye-side env-vertex pdfFwd)**: located the two sites in BDPTIntegrator.cpp where the synthetic eye-side env vertex's `pdfFwd` is assigned — [BDPTIntegrator.cpp:2821-2822](../src/Library/Shaders/BDPTIntegrator.cpp) (RGB Path B push) and [BDPTIntegrator.cpp:6545-6546](../src/Library/Shaders/BDPTIntegrator.cpp) (NM twin).  Current formula: `BDPTUtilities::SolidAngleToArea(pdfFwdPrev, 1, distSqToExit)` — converts the predecessor's SA pdf into area-measure at the env vertex.  Target per PBRT-v4 convention: `BDPTUtilities::ConvertDensity(pdfFwdPrev, eyePred, vEnv)` which short-circuits to SA-unchanged at env destinations (the Phase 1.A helper).  Effectively `vEnv.pdfFwd = pdfFwdPrev` (SA), matching what D4 places in `vEnv.pdfRev` in dimension.  Added as new diff-map row D19 with file:line citations and the PBRT-v4 cross-reference.  No additional missing rows found in this audit — see "Residual uncertainty" item 2 for the limit.
 
 **Task 2 — Re-decompose pieces by transport-side grouping**: analytically traced the per-strategy `ri` magnitude at the env vertex on four migration states (master, master + delta-aware remap0, master + s=0 group, master + light-subpath group, master + both groups), at both env-only Lambertian and env+omni mixed-scene topologies.  Trace data in design doc §0.4.  Conclusion: under the proposed delta-aware `remap0` (Task 3), the s=0 group (D4 + D5 + D19) and the light-subpath group (D2 + D3 + D6) are **structurally independent** because they touch disjoint vertex instances on any given BDPT path.  Without delta-aware `remap0`, the s=0 group's mixed-scene case catastrophically misfires (Session 5 evidence), forcing the two groups into a monolithic landing.  Recommended sequencing in design doc §0.2: piece 2.A audit → 2.B' delta-aware remap0 → 2.C' s=0 group → 2.D' light-subpath group → 2.E' VCM → 2.F' tests/docs.  Estimated cost up from 4.0-4.5 to ~5 sessions.
 
-**Task 3 — Evaluate delta-aware `remap0`**: confirmed by reading [BDPTIntegrator.cpp:5049-5050](../src/Library/Shaders/BDPTIntegrator.cpp:5049) (RGB) and the NM twin at 5102-5103 that RISE's `remap0` is **unconditional on `isDelta`** — the skip-rule at line 5069 (`if (vi.isDelta) continue;`) fires AFTER `ri` has been multiplied, so non-delta vertices with `pdfRev = 0` mutate the running `ri` rather than being suppressed.  PBRT-v4's `remap0` at `integrators.cpp:2138` is also unconditional, but PBRT-v4's `LightSampler::PMF` always returns nonzero for env, so the `pdfRev = 0` non-delta case doesn't arise.  RISE's `EnvSelectProbability()` returns binary 0-or-1 ([LightSampler.h:362-367](../src/Library/Lights/LightSampler.h:362)) — a RISE-specific quirk that the binary case has a clean architectural fix.  Proposed delta-aware variant in design doc §0.3 (6 lines + 0/0 guard in §0.3.5).  Confirmed to be no-op on master (no non-delta vertex has `pdfRev = 0` in master production because the existing sentinels keep them at `1e-30`).  Recommended: include as precondition piece 2.B'.
+**Task 3 — Evaluate delta-aware `remap0`**: confirmed by reading [BDPTIntegrator.cpp:5049-5050](../src/Library/Shaders/BDPTIntegrator.cpp) (RGB) and the NM twin at 5102-5103 that RISE's `remap0` is **unconditional on `isDelta`** — the skip-rule at line 5069 (`if (vi.isDelta) continue;`) fires AFTER `ri` has been multiplied, so non-delta vertices with `pdfRev = 0` mutate the running `ri` rather than being suppressed.  PBRT-v4's `remap0` at `integrators.cpp:2138` is also unconditional, but PBRT-v4's `LightSampler::PMF` always returns nonzero for env, so the `pdfRev = 0` non-delta case doesn't arise.  RISE's `EnvSelectProbability()` returns binary 0-or-1 ([LightSampler.h:362-367](../src/Library/Lights/LightSampler.h)) — a RISE-specific quirk that the binary case has a clean architectural fix.  Proposed delta-aware variant in design doc §0.3 (6 lines + 0/0 guard in §0.3.5).  Confirmed to be no-op on master (no non-delta vertex has `pdfRev = 0` in master production because the existing sentinels keep them at `1e-30`).  Recommended: include as precondition piece 2.B'.
 
 **Task 4 — Reframe gate semantics per piece**: revised the per-piece gates in design doc §0.5.  Key changes:
 - Per-piece **correctness floor** (mandatory): clean build, 116/116 tests, EnvLightBalanceTest at LAX `{0.35, 0.35, 2.00}` on all topologies (i.e. all between 65%-135% of PT), `BDPTStrategyBalanceTest` / `VCMStrategyBalanceTest` no regression.
@@ -2402,7 +2402,7 @@ Lowest genuine divergence in the whole integrator (no `if constexpr` needed), **
 - **pt/pt overloads (Pel + NM): UNCHANGED** — they still normalize and forward to the ray/dist members, which now forward to the Impl.
 - `+#include "Color/SpectralValueTraits.h"` and 3 file-scope `using RISE::SpectralDispatch::{PelTag,NMTag,SpectralValueTraits}` (mirrors VCMIntegrator.cpp).
 
-The transform was applied via a one-shot count-asserted Python script ([scripts/_apply_f1_phase2c.py](../scripts/_apply_f1_phase2c.py), kept as the audit record) that **extracts the real Pel body and applies fixed mechanical substitutions** rather than transcribing it — eliminating the tab/line-drift transcription risk; dry-run + byte-inspection preceded the real apply.
+The transform was applied via a one-shot count-asserted Python script (scripts/_apply_f1_phase2c.py, kept as the audit record) that **extracts the real Pel body and applies fixed mechanical substitutions** rather than transcribing it — eliminating the tab/line-drift transcription risk; dry-run + byte-inspection preceded the real apply.
 
 ### Gates
 - **Gate 1 — build**: `make -C build/make/rise -j8 all` + `tests` warning-free (0 warnings; `BDPTIntegrator.cpp` recompiled clean). Xcode `RISE-GUI` Development arm64 **BUILD SUCCEEDED**, **0 compiler warnings on RISE source** (the lone log "warning" is Apple's benign `appintentsmetadataprocessor` "No AppIntents.framework" note, emitted on every macOS GUI build).
@@ -2440,7 +2440,7 @@ Verification artifact: [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt
 - [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `EvalConnectionTransmittanceImpl<Tag>` + 3 helpers + 2 forwarders + include/usings (−30 net; `.h` untouched).
 - [scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene](../scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene) — new NM-transmittance regression fixture.
 - [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt_transmittance_baselines.sh) — new family baseline capture/check (sibling of `divergent_baselines.sh`).
-- [scripts/_apply_f1_phase2c.py](../scripts/_apply_f1_phase2c.py) — new; the one-shot count-asserted transform (audit record; safe to delete).
+- scripts/_apply_f1_phase2c.py — new; the one-shot count-asserted transform (audit record; safe to delete).
 - This doc (Deliverable A decomposition above + this outcome).
 
 ### Next family (per Deliverable A)
@@ -2463,7 +2463,7 @@ Verification artifact: [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt
 - **Magnitude discipline**: contribution gates (`medWeight<=0`, `f<=0`, `guidedF>NEARZERO`) use `PositiveMagnitude<Tag>` (NM bare); RR/kray-select/avgBsdf use `SpectralValueTraits<Tag>::max_value` (NM `fabs`). All sites audited by reviewer R3.
 - **2 member forwarders** (Pel → `Impl<PelTag>(…, PelTag{}, nullptr)`; NM → `Impl<NMTag>(…, NMTag(nm), pSwlHWSS)`).
 - `+#include "../Utilities/PathValueOps.h"`.
-- Applied via two count-asserted one-shot Python transforms ([scripts/_apply_f2a_phase2c.py](../scripts/_apply_f2a_phase2c.py) = Pel→Impl + helpers + forwarder; [scripts/_apply_f2a_nm_collapse.py](../scripts/_apply_f2a_nm_collapse.py) = NM body→forwarder). **Both are disposable audit artifacts — safe to delete.** The transform extracts the real Pel body and substitutes (no transcription), mirroring F1.
+- Applied via two count-asserted one-shot Python transforms (scripts/_apply_f2a_phase2c.py = Pel→Impl + helpers + forwarder; scripts/_apply_f2a_nm_collapse.py = NM body→forwarder). **Both are disposable audit artifacts — safe to delete.** The transform extracts the real Pel body and substitutes (no transcription), mirroring F1.
 
 ### Gates
 - **Gate 1 — build**: clean from-scratch recompile of `BDPTIntegrator.cpp` (`.o` deleted) + `make all` + `make tests`: **0 warnings, 0 errors**. (Intermediate Pel-only checkpoint had the 8 expected `-Wunused-function` on the NMTag helper specializations — they resolve once the NM forwarder instantiates `Impl<NMTag>`, exactly as the 2b note anticipated.) Xcode `RISE-GUI` Development arm64: **BUILD SUCCEEDED, 0 source-file warnings** (the only two `warning:` lines are Apple toolchain notes — xcodebuild's multiple-destinations note and the benign `appintentsmetadataprocessor` "No AppIntents.framework" note F1 also saw).
@@ -2518,7 +2518,7 @@ Asymmetry **#1 (vColor)** was the one worth a follow-up — it has since been **
 - [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `GenerateEyeSubpathImpl<Tag>` + 8 helpers + 2 forwarders + include (−569 net; `.h` untouched).
 - [tests/SobolDimensionBudgetTest.cpp](../tests/SobolDimensionBudgetTest.cpp) — SampleExit count guard 4→3 (eye Pel+NM merged), with rationale.
 - [scripts/bdpt_eye_subpath_baselines.sh](../scripts/bdpt_eye_subpath_baselines.sh) — **keeper**: 11-scene eye-subpath baseline harness (reused by F2b/F3).
-- [scripts/_apply_f2a_phase2c.py](../scripts/_apply_f2a_phase2c.py), [scripts/_apply_f2a_nm_collapse.py](../scripts/_apply_f2a_nm_collapse.py) — disposable one-shot transforms (safe to delete).
+- scripts/_apply_f2a_phase2c.py, scripts/_apply_f2a_nm_collapse.py — disposable one-shot transforms (safe to delete).
 - `tests/baselines_refactor/pre_f2a_bdpteye/` — pre-edit baseline PNGs (untracked; regenerable).
 - This doc + [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md).
 
@@ -2582,7 +2582,7 @@ Pattern: *"an NM SURFACE-vertex generator omits a `PopulateRIGFromVertex`-mirror
 - **Structural note (differs from F2a):** the Pel `GenerateLightSubpath` sits at line 1313 — *before* the F2a helper definitions (~1375). To reuse those helpers the Impl must be defined *after* them, so the Pel forwarder is preceded by a **forward declaration** of `GenerateLightSubpathImpl<Tag>` (anon ns); implicit instantiation is deferred to end-of-TU where the later definition is in scope. The Impl + NM forwarder live where the NM body was. (F2a needed no forward-decl because the eye Pel method was already after the helpers.)
 - **No new helpers.** F2b is the first family to add **zero** dispatch helpers — the F2a set covers the light subpath completely.
 - **2 member forwarders** (Pel → `Impl<PelTag>(…, PelTag{}, nullptr)`; NM → `Impl<NMTag>(…, NMTag( nm ), pSwlHWSS)`).
-- Applied via a count-asserted one-shot Python transform ([scripts/_apply_f2b_phase2c.py](../scripts/_apply_f2b_phase2c.py), **disposable — safe to delete**) that extracts the real Pel body and applies fixed mechanical substitutions + `if constexpr` block insertions (stage1 = Pel→Impl+forwarder+fwd-decl; stage2 = NM body→forwarder), mirroring F1/F2a. Verified Pel before touching NM.
+- Applied via a count-asserted one-shot Python transform (scripts/_apply_f2b_phase2c.py, **disposable — safe to delete**) that extracts the real Pel body and applies fixed mechanical substitutions + `if constexpr` block insertions (stage1 = Pel→Impl+forwarder+fwd-decl; stage2 = NM body→forwarder), mirroring F1/F2a. Verified Pel before touching NM.
 
 ### Genuine Pel/NM divergences carried by `if constexpr` (the F2b axes)
 1. **Le-conversion preamble** (NM-only): Pel takes `ls.Le` (RISEPel); NM computes a scalar `LeNM` at `tag.nm` — mesh luminaires via `emittedRadianceNM`, non-mesh via Rec.709 luminance projection, env-IBL via `GetRadianceNM(skyProbe)`. `if constexpr(is_pel){Le=ls.Le}else{…}`.
@@ -2647,7 +2647,7 @@ The light subpath drives: the light-EMISSION vertex 0 across light kinds (mesh-a
 - [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `GenerateLightSubpathImpl<Tag>` + forward-decl + 2 forwarders; `GenerateLightSubpathNM` collapsed to a forwarder; reuses F2a/F1 helpers (zero new). `.h` untouched. Net **−717**.
 - [tests/SobolDimensionBudgetTest.cpp](../tests/SobolDimensionBudgetTest.cpp) — SampleExit-count guard 3→2 (light Pel+NM merged), with full F2a+F2b rationale.
 - [scripts/bdpt_light_subpath_baselines.sh](../scripts/bdpt_light_subpath_baselines.sh) — **keeper**: 14-scene light-subpath baseline harness (adds the VCM-merge `cornellbox_vcm_caustics` + the two vColor-spectral fixtures vs the F2a eye manifest).
-- [scripts/_apply_f2b_phase2c.py](../scripts/_apply_f2b_phase2c.py) — disposable one-shot transform (audit record; **safe to delete**).
+- scripts/_apply_f2b_phase2c.py — disposable one-shot transform (audit record; **safe to delete**).
 - `tests/baselines_refactor/pre_f2b_bdptlight/` — pre-edit baseline PNGs (untracked; regenerable).
 
 ### Next family (per Deliverable A)
@@ -2672,7 +2672,7 @@ F3 (~2,586 ln) = `ConnectAndEvaluate{,NM}` (per-(s,t) connection evaluator, ~2,1
 - **`ConnectAndEvaluateImpl<Tag>`** — a **free function taking `const BDPTIntegrator& self` + `const LightSampler* pLightSampler`** plus the 7 original args + `Tag`. `self` is needed to call the two PUBLIC members the Impl can't replace with a free helper: `self.MISWeight(...)` (value-agnostic, shared — NOT in F3 scope) and `self.EvalConnectionTransmittance{,NM}(...)` (the F1-templatized forwarders, reached via the `EvalConnTr<Tag>` dispatch). The two PROTECTED members the Impl needed — `IsVisible` and `EvalEmitterRadianceNM` — are unreachable from a free function, so F3a adds the `ConnectionIsVisible` free replica (byte-identical) and the `SurfaceEmitterRadiance<NMTag>` verbatim mirror. Free-function form (vs a private member template) keeps the `.h` untouched.
 - **Return type via `ConnectionResultFor<Tag>::type`** (`ConnectionResult` / `ConnectionResultNM`). The structs differ: NM has no guiding fields and no `t`, and NM sets `result.s = s` at entry (Pel's aggregator sets `cr.s`/`cr.t` post-call). Handled by `if constexpr(is_nm) result.s = s;` + `if constexpr(is_pel)` around the 5 guiding-store runs.
 - **2 member forwarders** (Pel → `Impl<PelTag>(*this, pLightSampler, …, PelTag{})`; NM → `Impl<NMTag>(…, NMTag( nm ))`).
-- Applied via a count-asserted one-shot Python transform ([scripts/_apply_f3a_phase2c.py](../scripts/_apply_f3a_phase2c.py) + [scripts/_f3a_helpers.txt](../scripts/_f3a_helpers.txt), **disposable — deleted after this writeup**) that EXTRACTS the real Pel body (tabs preserved) + applies mechanical value-type substitutions + splices 4 authored `if constexpr` merge-blocks (s0-emitter radiance helper, s1 Le branch-order, t1 LIGHT sub-branch, t0 dead-code). Dry-run + full line-by-line inspection of all 6 cases preceded the apply.
+- Applied via a count-asserted one-shot Python transform (scripts/_apply_f3a_phase2c.py + scripts/_f3a_helpers.txt, **disposable — deleted after this writeup**) that EXTRACTS the real Pel body (tabs preserved) + applies mechanical value-type substitutions + splices 4 authored `if constexpr` merge-blocks (s0-emitter radiance helper, s1 Le branch-order, t1 LIGHT sub-branch, t0 dead-code). Dry-run + full line-by-line inspection of all 6 cases preceded the apply.
 
 ### Genuine Pel/NM divergences carried by `if constexpr`/helpers (preserved, NOT fixed)
 1. **t=1 LIGHT emitter-null fallback (PRE-EXISTING ASYMMETRY — flagged for the user).** The Pel original inits the shared `fLight = RISEPel(1,1,1)` and, in the t=1 LIGHT sub-branch, leaves it at `(1,1,1)` if a `LIGHT`-vertex luminary has no emitter — splatting a **white firefly** (there is no `MaxValue(fLight)<=0` guard inside that branch). The NM original inits `LeNM = 0` → splats **black**. The corner is **unreachable** (a sampled mesh-luminary vertex-0 always carries an emitter — see `BDPTIntegrator.cpp` light-sample creation). My initial merge used a shared `LeToCam = Traits::zero()`, which matched NM but flattened Pel's white fallback to black; **R1 caught this (its sole P2)**. Fixed by restoring the Pel-white fallback per-tag: `LeToCam = pLumEmitter ? LuminaryRadiance<Tag>(...) : TrOne<Tag>()` (Pel branch only) — byte-identical to the Pel original; NM keeps the `zero()` init. **The Pel `(1,1,1)` white-fallback is a latent white-firefly the user may want to eliminate (make both branches black); it is behaviourally inert today (unreachable) so it was preserved, not fixed — DO schedule a separate cleanup if you want byte-symmetry here.**
@@ -2794,7 +2794,7 @@ In the reachable case (emitter present), old `pLumEmitter ? LuminaryRadiance<Tag
 - **The Pel-only OpenPGL complete-path strategy-selection block** (`pCompletePathGuide->QueryStrategyWeight` RIS over candidates, the dedicated Sobol stream 47, `techniqueSamples` loop) is wrapped in `if constexpr( Traits::is_pel )`. The original Pel `#ifdef OPENPGL if(useComplete){A} else #endif {B}` was restructured to `#ifdef OPENPGL if constexpr(is_pel){ if(useComplete){A} } #endif  if(!useComplete){B}` — logically equivalent for Pel (A/B mutually exclusive on `useComplete`), and for NM `useComplete` is always `false` so only loop B runs (matching the NM original, which had no complete-path selection). The 3 strategy-selection atomics became pointer params (`pStrategySelectionPathCount->fetch_add` etc.); the forwarders pass `&strategySelectionPathCount` etc. (the `mutable std::atomic` members).
 - **`EvalEmitterRadiance<Tag>`** (renamed from F3a's `SurfaceEmitterRadiance<Tag>`) — the single emitter-radiance dispatch. **Per-tag input contract differs (intentional, pre-existing, documented in-code):** Pel takes the caller's already-resolved surface emitter and calls it directly (env/pLight resolved by the s=0 caller); NM ignores `pEmitter` and re-resolves env/pLight/surface from the vertex (used by BOTH the s=0 connection site AND the HWSS `RecomputeSubpathThroughputNM` light-emission ratio). The NMTag branch is byte-faithful to the removed `EvalEmitterRadianceNM` member.
 - **2 member forwarders** (Pel → `Impl<PelTag>(*this, …, pSampler, <guiding members>, PelTag{})`; NM → `Impl<NMTag>(*this, …, nullptr, <guiding members>, NMTag(nm))`).
-- Applied via two count-asserted one-shot Python transforms ([scripts/_apply_f3b_phase2c.py](../scripts/_apply_f3b_phase2c.py) Pel+fold, [scripts/_apply_f3b_phase2c_nm.py](../scripts/_apply_f3b_phase2c_nm.py) NM-forwarder — **disposable, deleted post-writeup**) that EXTRACT the real Pel body (tabs preserved) + apply 9 anchored substitutions; dry-run + in-memory unified-diff inspection preceded each apply. Pel verified + locked before the NM collapse.
+- Applied via two count-asserted one-shot Python transforms (scripts/_apply_f3b_phase2c.py Pel+fold, scripts/_apply_f3b_phase2c_nm.py NM-forwarder — **disposable, deleted post-writeup**) that EXTRACT the real Pel body (tabs preserved) + apply 9 anchored substitutions; dry-run + in-memory unified-diff inspection preceded each apply. Pel verified + locked before the NM collapse.
 
 ### Genuine Pel/NM divergences carried by `if constexpr` (preserved, NOT fixed)
 All 6 are **Pel-only** (the NM `EvaluateAllStrategiesNM` was the strict subset — no complete-path selection):

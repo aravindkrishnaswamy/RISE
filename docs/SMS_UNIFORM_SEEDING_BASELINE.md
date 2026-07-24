@@ -1,5 +1,8 @@
 # Phase 0 baseline numbers (pre-Option-A)
 
+**Status:** **HISTORICAL PRE-LANDING BASELINE.** Retained to make the Option-A
+measurement/result chain reproducible.
+
 This file captures the numerical state of RISE's SMS implementation **before** any Option-A changes (per `docs/SMS_UNIFORM_SEEDING_PLAN.md`).  Every subsequent phase's verification gate compares against these numbers.
 
 Captured: 2026-05-02 with `SMS_DIAG_ENABLED = 1` in `src/Library/Shaders/PathTracingIntegrator.cpp`.

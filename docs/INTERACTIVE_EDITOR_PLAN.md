@@ -1,8 +1,17 @@
 # RISE Interactive Scene Editor Plan
 
-**Status**: Phases 1-5 shipped (Library + macOS + Windows + Android viewports, production-render integration, descriptor-driven properties panel, multi-level adaptive scaling with idle refinement). Phase 6 (round-trip save) not yet started.
+**Status**: **COMPLETE AS AN EXECUTION PLAN.** Phases 1–5 shipped the shared
+editor and macOS/Windows/Android viewport stack. Phase 6 also shipped, but its
+first byte-splice implementation was later deleted in the July 2026 CST
+cutover. Current persistence edits the retained CST `Document` and
+[`SaveEngine`](../src/Library/SceneEditor/SaveEngine.cpp) serializes it
+byte-exactly when unedited and minimal-diff when edited. The Phase-6 body below
+is historical; see [ROUND_TRIP_SAVE_PLAN.md](ROUND_TRIP_SAVE_PLAN.md).
 **Owner**: Aravind Krishnaswamy
-**Scope**: Add a true interactive 3D viewport on top of the existing Mac, Windows, and Android RISE apps. Toolbar-driven object/camera/timeline mutation, live preview rendering as the user drags, undo/redo, and round-trip save back to `.RISEscene` (transform-only in this initiative; full re-serialize deferred).
+**Scope**: Add a true interactive 3D viewport on top of the existing Mac,
+Windows, and Android RISE apps. Toolbar-driven object/camera/timeline mutation,
+live preview rendering as the user drags, undo/redo, and round-trip save back
+to `.RISEscene`.
 
 **Progress at a glance** (see §19 for the full log):
 
@@ -13,7 +22,7 @@
 | 3 | shipped | macOS viewport: `RISEViewportBridge`, SwiftUI `ViewportView`, toolbar with cursor binding, picking, drag-to-move/orbit/scrub, properties panel |
 | 4 | shipped | Windows (`ViewportBridge`/`ViewportWidget`/Qt) + Android (`RiseBridge` viewport methods + JNI + Compose `ViewportPane`) parity |
 | 5 | shipped | "Render" button stops viewport, runs scene-declared rasterizer on mutated state, restarts viewport. Always-on viewport (no toggle). |
-| 6 | not started | Round-trip save (in-place transform rewrite) |
+| 6 | shipped, then superseded | Round-trip save; current implementation is CST-native whole-Document serialization |
 
 **Cross-cutting requirements added during implementation** (these were not in the original plan):
 
@@ -647,7 +656,7 @@ class IScene : public virtual IReference {
 
 Implementation in [src/Library/Scene.cpp](../src/Library/Scene.cpp): same as `SetSceneTime` (line 292) minus the `Regenerate(time)` calls on the six photon maps.
 
-**ABI evolution**: this adds a virtual to an existing interface. Per [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md), this changes the vtable layout for any external `IScene` implementer. RISE's only `IScene` implementer is `RISE::Implementation::Scene`, in-tree. No external impls. Safe to add as pure virtual; if a concrete user-supplied `IScene` exists in the wild we are unaware of, they will fail to compile — which is the correct early-warning signal.
+**ABI evolution**: this adds a virtual to an existing interface. Per [AGENTS.md change checklist](../AGENTS.md), this changes the vtable layout for any external `IScene` implementer. RISE's only `IScene` implementer is `RISE::Implementation::Scene`, in-tree. No external impls. Safe to add as pure virtual; if a concrete user-supplied `IScene` exists in the wild we are unaware of, they will fail to compile — which is the correct early-warning signal.
 
 ### 4.8 `RISE_API` C-API extension
 
@@ -711,7 +720,7 @@ namespace RISE {
 }
 ```
 
-Per [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md): all additions go to the **end** of the header. New functions only — no signature changes to existing ones.
+Per [AGENTS.md change checklist](../AGENTS.md): all additions go to the **end** of the header. New functions only — no signature changes to existing ones.
 
 ---
 
@@ -778,7 +787,7 @@ A tiny `pickMutex` (microsecond hold) inside `PickObject` guards `IntersectRay` 
 
 ## 7. Timeline Scrubbing
 
-`Scene::SetSceneTime` ([src/Library/Scene.cpp:292](../src/Library/Scene.cpp:292)) calls `pObjectManager->ResetRuntimeData()` then conditionally calls `Regenerate(time)` on every populated photon map. Photon regeneration is **slow** (seconds for a global map). Calling it on every scrub tick is fatal.
+`Scene::SetSceneTime` ([src/Library/Scene.cpp:292](../src/Library/Scene.cpp)) calls `pObjectManager->ResetRuntimeData()` then conditionally calls `Regenerate(time)` on every populated photon map. Photon regeneration is **slow** (seconds for a global map). Calling it on every scrub tick is fatal.
 
 The fix is the new `IScene::SetSceneTimeForPreview` (§4.7). Same path minus the `Regenerate` calls.
 
@@ -818,8 +827,8 @@ The user sees a "Preparing photons…" progress indicator during `PreparePhotons
 
 ## 8. Round-Trip Save — Phase A (in-place transform rewrite)
 
-[src/Library/Parsers/InPlaceSceneRewriter.h](../src/Library/Parsers/InPlaceSceneRewriter.h) (new, ~50 LOC)
-[src/Library/Parsers/InPlaceSceneRewriter.cpp](../src/Library/Parsers/InPlaceSceneRewriter.cpp) (new, ~200 LOC)
+src/Library/Parsers/InPlaceSceneRewriter.h (new, ~50 LOC)
+src/Library/Parsers/InPlaceSceneRewriter.cpp (new, ~200 LOC)
 
 **Algorithm**:
 
@@ -909,7 +918,7 @@ These all ship in Phase B / C — see §15.
 
 ### 9.4 Tests
 
-New executable test: [tests/SceneEditorInvariantTest.cpp](../tests/SceneEditorInvariantTest.cpp).
+New executable test: tests/SceneEditorInvariantTest.cpp.
 
 ```cpp
 // Pseudocode
@@ -944,7 +953,7 @@ int main() {
 }
 ```
 
-Wire into [tests/Makefile](../tests/Makefile) and the platform test runners ([run_all_tests.sh](../run_all_tests.sh), [run_all_tests.ps1](../run_all_tests.ps1)).
+Wire into tests/Makefile and the platform test runners ([run_all_tests.sh](../run_all_tests.sh), [run_all_tests.ps1](../run_all_tests.ps1)).
 
 ### 9.5 Validation gates (must pass to close Phase 1)
 
@@ -966,10 +975,10 @@ Launch **three reviewers in parallel** per [docs/skills/adversarial-code-review.
    - **Files**: [src/Library/SceneEditor/SceneEditor.cpp](../src/Library/SceneEditor/SceneEditor.cpp), [src/Library/SceneEditor/EditHistory.cpp](../src/Library/SceneEditor/EditHistory.cpp), [src/Library/Scene.cpp](../src/Library/Scene.cpp).
 
 2. **Reviewer B — ABI / API plumbing.** Did adding `SetSceneTimeForPreview` to `IScene` break the vtable layout for any existing implementer? Are all five build files updated for every new `.cpp`/`.h`? Does the `RISE_API_*` extension follow the existing C-API style? Are there derived-class name-hiding issues from new overloads in `SceneEditor`?
-   - **Files**: [src/Library/Interfaces/IScene.h](../src/Library/Interfaces/IScene.h), [src/Library/RISE_API.h](../src/Library/RISE_API.h), [build/make/rise/Filelist](../build/make/rise/Filelist), [build/VS2022/Library/Library.vcxproj.filters](../build/VS2022/Library/Library.vcxproj.filters), [build/XCode/rise/rise.xcodeproj/project.pbxproj](../build/XCode/rise/rise.xcodeproj/project.pbxproj). Apply [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md).
+   - **Files**: [src/Library/Interfaces/IScene.h](../src/Library/Interfaces/IScene.h), [src/Library/RISE_API.h](../src/Library/RISE_API.h), [build/make/rise/Filelist](../build/make/rise/Filelist), [build/VS2022/Library/Library.vcxproj.filters](../build/VS2022/Library/Library.vcxproj.filters), [build/XCode/rise/rise.xcodeproj/project.pbxproj](../build/XCode/rise/rise.xcodeproj/project.pbxproj). Apply [AGENTS.md change checklist](../AGENTS.md).
 
 3. **Reviewer C — Memory / lifetime / blast radius.** Does `EditHistory`'s `std::deque<SceneEdit>` correctly bound-cap at `mMaxEntries` without unbounded growth on long sessions? Does `SceneEditor::Apply` leak or double-free on the `IObjectPriv*` lookup failure path? Does `IsObjectDirtyVsBaseline` correctly distinguish "edited then undone back to baseline" (clean) from "edited" (dirty)? Find affected callers of `SetSceneTime` that must not call the new preview variant — list them.
-   - **Files**: same plus [src/Library/Managers/GenericManager.h](../src/Library/Managers/GenericManager.h), [src/Library/ObjectManager.cpp](../src/Library/ObjectManager.cpp).
+   - **Files**: same plus [src/Library/Managers/GenericManager.h](../src/Library/Managers/GenericManager.h), src/Library/ObjectManager.cpp.
 
 Each reviewer reports `severity / confidence / file:line / failure scenario` per finding, plus one named missing test. Word cap: 400.
 
@@ -1239,7 +1248,7 @@ Launch **two reviewers in parallel** per platform (4 total reviews) — Windows 
 
 ### 13.2 Tests
 
-New executable: [tests/SceneEditorProductionRenderTest.cpp](../tests/SceneEditorProductionRenderTest.cpp).
+New executable: tests/SceneEditorProductionRenderTest.cpp.
 
 ```cpp
 // Pseudocode
@@ -1299,8 +1308,8 @@ Launch **two reviewers in parallel**.
 
 ### 14.1 New files
 
-- [src/Library/Parsers/InPlaceSceneRewriter.h](../src/Library/Parsers/InPlaceSceneRewriter.h)
-- [src/Library/Parsers/InPlaceSceneRewriter.cpp](../src/Library/Parsers/InPlaceSceneRewriter.cpp)
+- src/Library/Parsers/InPlaceSceneRewriter.h
+- src/Library/Parsers/InPlaceSceneRewriter.cpp
 
 ### 14.2 Files modified
 
@@ -1314,7 +1323,7 @@ Library: Filelist, rise_sources.cmake, Library.vcxproj + filters, project.pbxpro
 
 ### 14.4 Tests
 
-New executable: [tests/SceneEditorRoundTripTest.cpp](../tests/SceneEditorRoundTripTest.cpp).
+New executable: tests/SceneEditorRoundTripTest.cpp.
 
 ```cpp
 int main() {
@@ -1364,10 +1373,10 @@ int main() {
 Launch **three reviewers in parallel**.
 
 1. **Reviewer A — Parser/rewriter contract correctness.** Does `InPlaceSceneRewriter::IndexChunks` correctly identify chunk boundaries — including chunks with nested `{ }` (e.g., a material inside an object)? Are line endings (CRLF vs. LF) preserved correctly across platforms? What happens if the scene file uses tabs vs. spaces — is indentation preserved for inserted lines? Does the rewriter handle objects whose `position` line is missing entirely (insert before `}`)?
-   - **Files**: [src/Library/Parsers/InPlaceSceneRewriter.cpp](../src/Library/Parsers/InPlaceSceneRewriter.cpp), [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp).
+   - **Files**: src/Library/Parsers/InPlaceSceneRewriter.cpp, [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp).
 
 2. **Reviewer B — Round-trip semantic equivalence.** After Save → Re-load, are all object transforms numerically identical to the in-memory state pre-Save? What's the floating-point precision of the textual representation we write — does `%g` lose precision? Does the rewriter handle scientific notation correctly (`1e-3` vs `0.001`)? Run a fuzzer that applies 1000 random transforms, saves, reloads, and asserts equivalence.
-   - **Files**: [src/Library/Parsers/InPlaceSceneRewriter.cpp](../src/Library/Parsers/InPlaceSceneRewriter.cpp), the writer's float formatter.
+   - **Files**: src/Library/Parsers/InPlaceSceneRewriter.cpp, the writer's float formatter.
 
 3. **Reviewer C — Filesystem safety.** Is the save atomic — does a crash mid-write leave the user with a half-written scene file? Does the temp-file-then-rename pattern work on Windows (where rename-over-existing is restricted)? On Android (sandboxed FS)? What about iCloud-synced directories on macOS?
    - **Files**: [src/Library/SceneEditor/SceneEditController.cpp](../src/Library/SceneEditor/SceneEditController.cpp), platform-specific file I/O helpers.
@@ -1445,7 +1454,7 @@ Per-phase axis assignments are listed in §9.6, §10.6, §11.7, §12.8, §13.4, 
 
 - [docs/ARCHITECTURE.md](ARCHITECTURE.md) — scene immutability invariant, photon regen behavior, animation race.
 - [docs/skills/adversarial-code-review.md](skills/adversarial-code-review.md) — review playbook.
-- [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md) — apply when extending `IScene` and `RISE_API.h`.
+- [AGENTS.md change checklist](../AGENTS.md) — apply when extending `IScene` and `RISE_API.h`.
 - [src/Library/README.md](../src/Library/README.md) — Library map.
 - [CLAUDE.md](../CLAUDE.md) — five-build-file checklist, thread-priority policy, source-file add/remove discipline.
 

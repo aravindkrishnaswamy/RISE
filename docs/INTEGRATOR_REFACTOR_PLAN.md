@@ -31,7 +31,7 @@ Of these, **~6,000 lines are Pel↔NM duplication**, **~1,500 lines are Pel↔HW
 
 **Non-goals.**
 - No algorithmic changes.  No new features.  No bug fixes riding along.
-- No changes to `IMaterial::GetSpecularInfoNM`, `valueNM`, `GetRandomWalkSSSParamsNM`, or any other wavelength-aware virtual (48 occurrences across 20 files — these stay as overloaded virtuals forever per [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md)).  The template layer sits *above* this API.
+- No changes to `IMaterial::GetSpecularInfoNM`, `valueNM`, `GetRandomWalkSSSParamsNM`, or any other wavelength-aware virtual (48 occurrences across 20 files — these stay as overloaded virtuals forever per [AGENTS.md change checklist](../AGENTS.md)).  The template layer sits *above* this API.
 - No fix to the VCM `RISEPelToNMProxy` luminance approximation for spectral merging.  That's a known v1 correctness limitation; fixing it properly needs per-wavelength photon stores, which is a separate piece of work.
 - No templating of the `BDPTIntegrator` / `VCMIntegrator` class itself.  Only the hot inner routines become templates.  The class stays a non-template so factory construction (`Job.cpp`, `RISE_API.h`) is unaffected.
 
@@ -160,7 +160,7 @@ PathValueOps.h                 // EvalBSDF<ValueT>, EvalPdf<ValueT> template wra
 - **Template instantiation reviewer**: can you write code that calls `EvalBSDF<RISEPel>(...)` and `EvalBSDF<ScalarNM>(...)` on the same BSDF and get bit-identical output to the direct `value(...)` / `valueNM(...)` calls?  Any overload resolution surprises?
 
 *Round 2, single reviewer after fixes:*
-- **ABI preservation reviewer**: re-read the new headers against [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md).  Do any of them leak into a public header (`RISE_API.h`, `Interfaces/*.h`) that an out-of-tree consumer might include?
+- **ABI preservation reviewer**: re-read the new headers against [AGENTS.md change checklist](../AGENTS.md).  Do any of them leak into a public header (`RISE_API.h`, `Interfaces/*.h`) that an out-of-tree consumer might include?
 
 ### 3.3 Phase 1 — Templatize existing dual-signature utility pairs
 
@@ -244,7 +244,7 @@ PT is next because it stands alone — no upstream integrator depends on it.
 - **OpenPGL reviewer**: the integrator trains path-guiding fields from path segments.  In the original, Pel records RGB directly; NM records the luminance of the scalar radiance.  In the template, the traits method does the same — verify the recorded samples are identical for each ValueT via a unit test that snapshots `pgl_sample` output on a canned scene.
 
 *Round 2:*
-- **ABI reviewer** (re-run of the skill): `PathTracingIntegrator.h` is a public-ish header included by `PathTracingShaderOp.h` and the rasterizers.  Adding template declarations — does any virtual slot shift?  Does any overload name now cause name-hiding in a derived class that had the old signature?  Per [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md).
+- **ABI reviewer** (re-run of the skill): `PathTracingIntegrator.h` is a public-ish header included by `PathTracingShaderOp.h` and the rasterizers.  Adding template declarations — does any virtual slot shift?  Does any overload name now cause name-hiding in a derived class that had the old signature?  Per [AGENTS.md change checklist](../AGENTS.md).
 - **Regression-suite reviewer**: independently run Gate B on every `scenes/Tests/PathTracing/*` and every `scenes/Tests/Spectral/hwss_*pt*` scene.  Report per-scene metrics; rerun any that appear to have drifted.
 
 *Round 3:*

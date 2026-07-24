@@ -1,5 +1,11 @@
 # Facet 2 — Derivation Engine (CST → Scene, incremental)
 
+> **Status:** **PARTIALLY IMPLEMENTED.** Full and incremental CST-to-`Job`
+> derivation, recorded reference graphs, stable-object apply, closure tracking,
+> and TLAS-aware invalidation have shipped. The complete immutable
+> `DerivedScene` → `PreparedRenderState` build/seal/publish architecture
+> described below has not.
+>
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51).** The
 > decision record is authoritative; where this doc once conflicted it now conforms
 > and points to the relevant decision. The decisions that reshaped this facet:
@@ -103,11 +109,12 @@
 > `NodeId` is the lineage identity; **name-path** is addressing) — this facet already
 > assumed that model and now cites the corrected charter.
 >
-> **Status:** design-in-progress. One facet of the [Agentic Redesign](00-CHARTER.md).
+> **Lifecycle note:** this is the original target design for one facet of the
+> [Agentic Redesign](00-CHARTER.md).
 > Read the [charter](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first —
 > this doc assumes the charter's locked decisions (L1–L7), invariants (INV-1…6), the
-> canonical-CST pivot, and the round-1 decisions (D1–D10). **Design only; no
-> code/build/scene changes.**
+> canonical-CST pivot, and the round-1 decisions (D1–D10). Its implementation
+> status is summarized at the top of the file.
 >
 > **Round 6 refinements:** **D45** — `ResolveEffectiveRenderConfig` takes the **`DerivedScene`** (not
 > CST) and runs **after** derive, because auto-routing (`auto_rasterizer`) inspects the assembled

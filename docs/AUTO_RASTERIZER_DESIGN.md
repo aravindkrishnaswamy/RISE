@@ -1,8 +1,14 @@
 # Auto-Rasterizer (Integrator Dispatcher) — Design & Plan
 
-**Status:** design — the routing mechanism for the Phase-3 decision (Candidate C,
-PT-default auto-routed hybrid). See [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)
-§4.1; data backing in [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md).
+**Status:** **SHIPPED.** `auto_rasterizer` and
+`auto_spectral_rasterizer` are registered scene chunks backed by
+[`AutoRasterizer`](../src/Library/Rendering/AutoRasterizer.cpp), with policy
+coverage in
+[`AutoRasterizerTest.cpp`](../tests/AutoRasterizerTest.cpp). The body is the
+executed design record; section-level status notes record later probe and
+spectral landings. See
+[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) §4.1 and
+[UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md).
 **Date:** 2026-06-04.
 **Goal:** a thin-shell `auto_rasterizer` that picks the right integrator
 (PT / BDPT / VCM) per scene, so authors land on the efficient choice without

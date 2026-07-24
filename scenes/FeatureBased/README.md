@@ -21,11 +21,15 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `BDPT/`: large BDPT showpieces and transport stress scenes
 - `Caustics/`: visually rich caustic showcases
 - `Combined/`: scenes that intentionally exercise several subsystems together
+- `EnamelWatch/`: vitreous-enamel watch and material-calibration showcases
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
 - `GlobalIllumination/`: heavyweight GI stress scenes
+- `GuillocheWatch/`: thin-film guilloché watch showcase and authored variants
 - `MLT/`: visually interesting Metropolis light transport scenes
+- `Materials/`: integrated material showcases (GGX, thin film, glints, enamel)
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
+- `SDF/`: visually rich signed-distance-field stress scenes
 - `Shaders/`: integrated shader, volume, and SSS showcase scenes
 
 ## Recommended Smoke Scenes

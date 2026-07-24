@@ -9,7 +9,9 @@
 > the concrete, sequenced, gated *execution* given the current state, plus the
 > findings that move work earlier than the design assumed.
 >
-> **Status: PLAN — for review. No source/build/scene changes are made by this doc.**
+> **Status: COMPLETED EXECUTION PLAN.** The corpus migrated to native v7, the
+> CST path became the sole runtime loader, and the legacy streaming parser was
+> deleted. The body preserves the gates and sequence used for the cutover.
 
 ---
 

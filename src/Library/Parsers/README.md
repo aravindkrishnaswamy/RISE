@@ -54,6 +54,31 @@ syntactic correctness.
 
 The whole streaming front-end was **deleted in the Model-B CST cutover** (slice 6c). Native-v7 scenes do not use `>`/macros/`FOR`/`> load`; the migrator flattened the corpus. The CST derive path (`Cst.cpp`) supports a separate, smaller `expr( ... )` value sublanguage (arithmetic + `let`-bound named constants) — NOT the legacy `$(...)`/`hal`/`FOR` machinery. Block and line comments are handled by the CST tokenizer (`ParseToCst`).
 
+### Migrating an out-of-tree legacy scene
+
+For a v5 scene, first move camera dimensions into a `film` chunk:
+
+```sh
+python tools/migrate_scenes_v5_to_v7.py path/to/scene.RISEscene
+```
+
+That script only performs the camera/film rewrite. If the file also contains
+retired includes, macros, `$(...)`, `hal()`, or `FOR` loops, build and run the
+canonical CST migrator, which folds those constructs into native declarative
+scene text:
+
+```sh
+make -C build/make/rise MigrateScenesV6toV7
+bin/tools/MigrateScenesV6toV7 path/to/scene.RISEscene > /tmp/scene.RISEscene
+mv /tmp/scene.RISEscene path/to/scene.RISEscene
+```
+
+Despite its historical v6-to-v7 name, the migrator's body transform is
+header-blind and can finish a v5 file after the film script has stamped it
+v7. It writes migrated text to stdout, so always redirect to a separate file;
+never redirect onto the input path. Inspect the diff and perform a short render
+after migration.
+
 ## Chunk-Parser Architecture (descriptor-driven)
 
 Every chunk parser derives from `IAsciiChunkParser` ([IAsciiChunkParser.h](IAsciiChunkParser.h)) and overrides exactly two virtual methods:

@@ -3,11 +3,18 @@
 > **⚠ ERRATUM (2026-07-02, post-CST-cutover).** Two things changed under this spec since it was written:
 >
 > 1. **The byte-splice round-trip save engine it cites is gone** (Model-B P5 Slice 6d, 2026-07-01): Mode A in-place splice, Mode B managed override block, Phase B/C re-emit, `SourceSpanIndex` / `IJobPriv::GetSourceSpanIndex`, and `tests/SaveEngineTest.cpp` were all deleted. Today every scene loads via `Cst::ParseToCst` + `DeriveToJob` with the `Job` retaining the canonical **CST `Document`**; edits route into it (`Job::ApplyCstParamEdit` and friends); `SaveEngine::Save` serializes the whole Document (`Cst::SerializeCst` — byte-exact unedited, minimal-diff on edits), refuses on the external-modification `FileIdentity` guard, and writes atomically. Persistence is therefore **uniform** — the "needs RT-save" / "cameras-only Phase C" distinctions in §4's legend are obsolete (anything in the Document persists), and the "in-memory scene-text accessor" (§3.1) is no longer net-new engine work: current text = `SerializeCst` of the retained Document; a construction-free parse of a string = `ParseToCst`.
-> 2. **The agent surface has started landing**: F5 slice 0 (headless read/schema/validate/propose_patch/render over JSON-RPC/stdio) is built under `src/Library/Agent/` (`AgentRpc`, `AgentSession`, `SchemaGen`, …) — so "DESIGN. No code." below is stale for that slice.
+> 2. **The agent surface has substantially landed**: the original F5 slice-0
+> read/schema/validate/propose/render surface grew into the runtime described by
+> the status header below.
 >
 > References below to `SourceSpanIndex`, byte-splice persistence, Phase B/C, and `SaveEngineTest.cpp` are pre-cutover history; targeted corrections are marked inline.
 
-**Status:** DESIGN (see erratum above — slice 0 of the agent surface now exists in `src/Library/Agent/`). This is the deep-dive spec for Direction E of the GUI roadmap, owning open questions #3 and #5 from [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §13.
+**Status:** **SUBSTANTIALLY IMPLEMENTED.** `src/Library/Agent/` now provides
+schema/read/validate/edit/chunk CRUD, render and image/viewport observation,
+object queries, reference comparison, proposals, JSON-RPC/stdio, MCP, and
+loopback HTTP surfaces. The body remains the original catalog/design and
+contains superseded names and phase boundaries; current wire truth is
+`AgentRpc.h` plus `AgentMcpAdapter.cpp`.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Design the first-party **RISE agent tool surface** (the MCP-protocol server) that lives in the shared C++ library (`src/Library/Agent/`), the full **resource** and **tool** catalog it exposes, the central reliability mechanism (**tool/resource schemas auto-generated from `SceneGrammar::Describe()`** as a first-pass filter held honest by a conformance test — see [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md) §5), the keystone **`validate(scene_text)`** dry-run, the permission/scope tiers, the LLM-correctable error format, and the transport choices that let the in-app chat client and external clients (Claude Desktop, IDEs) share one engine instance. Excludes the agent loop, provider adapters, and chat UX — those are [LLM_AGENT_RUNTIME.md](LLM_AGENT_RUNTIME.md).
 

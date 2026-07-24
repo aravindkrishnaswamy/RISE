@@ -1,6 +1,9 @@
 # RISE GUI — Cross-Platform Architecture & Code-Sharing Strategy
 
-**Status:** DESIGN. No new code; this is the architectural backbone the other GUI deep-dives defer to on the shared-vs-platform boundary.
+**Status:** **PARTIALLY IMPLEMENTED ARCHITECTURE.** The shared C++ editor,
+rendering, CST, and agent cores with thin macOS/Windows/Android bridges are the
+shipped shape. The unified render coordinator, credential backends, auxiliary
+GPU abstractions, and some generated bridge tooling remain design work.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make `GUI_ROADMAP.md` §10 (and principles §1.2 "maximize shared C++" + §1.3 "Android is not left behind") concrete and authoritative. Defines, with code-confirmed facts: what *must* be shared C++, the small set that is genuinely forced platform-specific, the plan to consolidate the duplicated viewport bridges into one C-ABI core, the secure-credential and GPU-present-surface abstractions, the Android staged-fallback tiering (P3), and where new code should land given the 5-build-project registration cost. The other deep-dives (`MCP_TOOL_SURFACE`, `LLM_AGENT_RUNTIME`, `APPROACHABILITY_FOUNDATION`, `CAMERAS_AND_VIEWS`, `MATERIAL_EDITOR`, `SPECTRAL_DIFFERENTIATORS`, and the foundational [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) / [RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) / [ENTITY_CREATION.md](ENTITY_CREATION.md)) each carry an "Android tier + interaction" note that this doc governs.
 
@@ -35,9 +38,9 @@ These already are, or must be, in `src/Library/`. None of them may be reimplemen
 | Descriptor reflection / properties model (`CameraIntrospection`, `MaterialIntrospection`, `*Introspection`, `ChunkDescriptor`) | `src/Library/SceneEditor/` + `src/Library/Parsers/` | The properties panel is *generated* from descriptors; per-platform UI only renders rows. |
 | Render orchestration (`InteractivePelRasterizer`, `ViewportFrameStore`, `FrameStore`, polling/generation counter) | `src/Library/Rendering/` | CPU pixels; produced once, displayed three ways. |
 | Spectral math (JH uplift, `IPainter`/`IScalarPainter`, Sellmeier, blackbody, thin-film) | `src/Library/` | Physics is platform-invariant; spectral pickers are thin UIs over it. |
-| **Agent tool surface (MCP protocol) server + tool/resource dispatch** (planned) | new `src/Library/Agent/` (§16: avoid the bare `MCP` dir/type token — `src/DRISE/MCPClientConnection` already means *Master Control Program*) | The single definition of "what an LLM can do to RISE." Written once. |
-| **LLM agent loop + provider adapters** (planned) | new `src/Library/Agent/` | Agent state machine, streaming, tool-call translation for Claude/Gemini/OpenAI-compatible. Written once. |
-| **Chat transcript model** (planned) | new `src/Library/Agent/` | Turns, tool calls, diffs, approval state — a data model, not a view. |
+| **Agent tool surface (MCP protocol) server + tool/resource dispatch** (shipped core) | `src/Library/Agent/` (§16: avoid the bare `MCP` dir/type token — `src/DRISE/MCPClientConnection` already means *Master Control Program*) | The single definition of what an LLM can do to RISE. |
+| **LLM agent loop + provider adapters** (shipped core) | `src/Library/Agent/` | Agent state machine, streaming, and provider tool-call translation, written once. |
+| **Chat transcript model** (shipped) | `src/Library/Agent/` | Turns, tool calls, diffs, approval state, compaction, and trajectories are data models, not views. |
 | Asset-library index (planned), named-views model (planned), material-graph model + serialization (planned) | new `src/Library/` files | All data models with platform-invariant behavior. |
 
 ### 1.2 The small set that is forced platform-specific

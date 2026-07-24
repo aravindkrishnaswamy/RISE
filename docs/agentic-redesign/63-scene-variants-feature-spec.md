@@ -6,7 +6,13 @@ the imperative `> modify` command block (being **deprecated**). Surfaced by the 
 `scene_variant`, make it flexible enough to do almost anything, require a name (so it's UI-switchable), store a
 selected active variant, single-select; a variant can set the active camera and specify materials.*
 
-Status: **SPEC for ratification** (§9). No code yet.
+Status: **SHIPPED.** `scene_variant` and `active_scene_variant` are registered
+chunks, variant bake-at-derive lives in
+[`Cst.cpp`](../../src/Library/Cst/Cst.cpp), GUI switching is handled by
+`SceneEditController`, and coverage lives in
+[`SceneVariantTest.cpp`](../../tests/SceneVariantTest.cpp) and
+[`SceneEditorSceneVariantTest.cpp`](../../tests/SceneEditorSceneVariantTest.cpp).
+The body remains the feature specification and decision record.
 
 ## 0. Summary
 

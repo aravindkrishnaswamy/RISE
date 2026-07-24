@@ -1,5 +1,11 @@
 # Facet 6 — Supersession Inventory, Migration Path & Risk Register
 
+> **Status:** **CUTOVER COMPLETE; BROADER SUPERSESSION PARTIAL.** The v6 corpus
+> migration, v7-only runtime, CST-native save, and deletion of the legacy
+> streaming/span machinery are complete. Rows concerning the future immutable
+> derived/prepared architecture and remaining GUI/security work are still
+> roadmap material.
+>
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6).** Where this
 > doc previously hedged behind open decisions (O1/O2/O3) or offered forks, it now
 > conforms to the ratified decisions **D1–D51** (round 2's D11–D20 … round 5's D38–D44, and **round
@@ -85,14 +91,13 @@
 > charter L5/INV-5** so the foundation matches D9/D15/D26/D36 — **`NodeId` is the lineage
 > identity** (survives rename + reparse), **name-path is the addressing scheme**.
 
-> **Status:** design-in-progress. One of six parallel facet docs under the
+> **Lifecycle note:** one of six original parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). This facet is **cross-cutting**: it
 > inventories the *entire* current architecture, assigns each component a fate
 > under Model B (delete / evolve / reuse / unchanged), lays out a phased,
 > non-big-bang migration, specs the scene-corpus migration tooling, and carries
 > the risk register (including the two tar-pits). It reconciles Facets 1–5.
->
-> **Design only. No source, build, or scene changes are made by this doc.**
+> The current cutover/supersession status is summarized at the top.
 
 **Reconciliation note.** [`01-DECISIONS.md`](01-DECISIONS.md) is now authoritative
 (rounds 1–5) and resolves the cross-facet contradictions this doc previously

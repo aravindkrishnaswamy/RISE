@@ -1,6 +1,12 @@
 # RISE GUI — Approachability Foundation (Direction A)
 
-**Status:** DESIGN. No code. Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §5 (Direction A), §11 (Phase 1), and §13 spikes #1–#2.
+**Status:** **PARTIALLY IMPLEMENTED.** The redesigned desktop workspaces,
+three-path start screen, automatic preview/render transport, entity creation,
+and environment editor have shipped. Asset-browser/drag-and-drop workflows and
+the full Direction-A polish remain design work. See
+[REDESIGN_IMPLEMENTATION.md](REDESIGN_IMPLEMENTATION.md),
+[START_SCREEN.md](START_SCREEN.md), and
+[ENVIRONMENT_SECTION.md](ENVIRONMENT_SECTION.md).
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make a freshly-opened RISE produce a good image with zero clicks, make the viewport behave like the renderer (progressive, pause-on-navigation, restart-on-edit), and let users *assign* materials/HDRIs by dragging thumbnails — all built so macOS, Windows, and (staged) Android stay in lock-step by construction. This is the interaction-and-approachability layer the roadmap calls the highest-leverage gap. It leans on engine pieces RISE already owns: the `auto_rasterizer` integrator dispatcher, always-on OIDN, the shipped `SceneEditController` cancel-restart render loop, the multi-level adaptive preview scaler, `IJobPriv::ScaleFilmToFit` / `IScenePriv::ResizeFilm`, and the `IRasterizer::RasterizeScene(scene, const Rect* pRect, …)` region parameter that is already plumbed but always passed `nullptr` today.
 

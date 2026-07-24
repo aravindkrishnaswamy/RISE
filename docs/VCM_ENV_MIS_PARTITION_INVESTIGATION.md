@@ -428,7 +428,7 @@ The supervisor agent should sequence these as one atomic landing:
    call-site.
 4. **OpenPGL guiding pdf** — any place that reads `pdfFwd` on a
    light-subpath env vertex must use the SA value too. Audit
-   [src/Library/Guiding/](../src/Library/Guiding/) for env pdf consumers.
+   src/Library/Guiding/ for env pdf consumers.
 5. **Re-evaluate Session 10 divides**: with SA convention, are the
    `/pdfSelect` etc. divides still needed for the JOINT-vs-geometric
    conversion at the consumer sites, or can they be removed cleanly?

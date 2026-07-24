@@ -30,7 +30,7 @@ Completed **Phases 0, 1, and 2a** of the 8-phase integrator-refactor plan.  That
 - [tests/SpectralValueTraitsTest.cpp](../tests/SpectralValueTraitsTest.cpp) — 5 tests
 - [tests/PathValueOpsTest.cpp](../tests/PathValueOpsTest.cpp) — 6 tests (incl. real LambertianMaterial and medium-vertex coverage added after adversarial review)
 - [scripts/capture_refactor_baselines.sh](../scripts/capture_refactor_baselines.sh), [scripts/check_refactor_baselines.sh](../scripts/check_refactor_baselines.sh)
-- [tests/baselines_refactor/pre_phase2a/](../tests/baselines_refactor/pre_phase2a/) — 10 PNG baselines
+- tests/baselines_refactor/pre_phase2a/ — 10 PNG baselines
 - [docs/INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md) — the plan you reviewed
 - [docs/INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) — this file
 

@@ -1,7 +1,11 @@
 # Facet 5 — Agentic Surface & Product
 
-> **Status:** design-in-progress. One of six parallel facet docs under
-> [00-CHARTER.md](00-CHARTER.md). **Design only — no source, build, or scene changes.**
+> **Status:** **CORE PRODUCT SURFACE SHIPPED.** The in-tree agent runtime,
+> schema/read/validate/edit/propose/commit tools, render and image observation,
+> JSON-RPC/stdio/MCP/loopback transports, desktop chat surfaces, trajectories,
+> evals, and compaction are implemented. Immutable prepared-stamp
+> orchestration and several security/autonomy refinements remain design work.
+> One of six facet docs under [00-CHARTER.md](00-CHARTER.md).
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51):** added external-file
 > conflict handling (atomic save + content-hash fingerprint, D6/D17); v7 is single-file (D7);
 > the read/patch contracts expose the coherent version surface with **full

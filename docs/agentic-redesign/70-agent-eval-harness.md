@@ -30,7 +30,8 @@ and promote the trajectory to a permanent replay regression fixture.
 
 ## 1. What the research established
 
-**In-tree (all file:line-verified):**
+**Historical pre-E1 baseline (all claims were file:line-verified when the plan
+was written; the shipped E1–E5 work supersedes the absences below):**
 - `ChatTranscriptEntry` already holds the replay-faithful conversation (`rawJson`
   provider-native + verbatim byte-preserved for assistant turns, `displayText`) — the
   trajectory's core exists.

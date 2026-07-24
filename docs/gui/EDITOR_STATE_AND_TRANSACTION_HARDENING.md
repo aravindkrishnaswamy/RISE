@@ -1,7 +1,9 @@
 # Editor-State & Transaction Hardening — de-brittling the SceneEditor
 
-**Status:** PLAN (post-mortem + go-forward). Distilled from eight review
-rounds on the snapshot/transaction foundation (`feature/gui-snapshot-prototype`).
+**Status:** **EXECUTED HARDENING RECORD.** H1, H2, and the narrowed H3 shipped;
+the sections retain their failure analysis, implementation sequence, and named
+residuals. Distilled from eight review rounds on the
+snapshot/transaction foundation (`feature/gui-snapshot-prototype`).
 **Owner:** Aravind Krishnaswamy
 **Why now:** the *remaining* GUI lift — the LLM/MCP agent that "fully operates the
 scene," entity creation, the material editor — all drive `SceneEditController`

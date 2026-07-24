@@ -1,5 +1,9 @@
 # Two-Stage SMS Solver: Design and Implementation
 
+**Status:** **SHIPPED DESIGN/IMPLEMENTATION RECORD.** Later SMS investigation
+documents narrow when the two-stage path is useful; use `SMS.md` for the
+current overview.
+
 ## Background
 
 `ManifoldSolver` (Specular Manifold Sampling, Zeltner et al. 2020) Newton-iterates a half-vector chain through specular surfaces between a diffuse shading point and a light. On smooth analytical surfaces (sphere, ellipsoid) it converges 96 % of the time. On Phong-shaded triangle meshes (displaced or normal-mapped) the strict convergence rate collapses to ≤ 30 %, and the rendered caustic is dim because PT's emission-suppression machinery removes ~the same amount of energy regardless of whether SMS recovers it. Diagnostics (see [SMS investigation thread](MLT_POSTMORTEM.md) — actually the live investigation) localised the failure mode: Newton's *line search* fails to make progress when its step crosses a triangle edge, because the per-triangle Jacobian (built from per-triangle UV-Jacobian-inverted derivatives) is C1-discontinuous at edges. Newton stalls near the chord-vs-arc tessellation precision floor (~1e-3 for `detail=128`) without reaching the strict convergence threshold (1e-4).

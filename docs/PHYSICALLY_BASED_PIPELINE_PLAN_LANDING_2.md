@@ -1,5 +1,7 @@
 # Landing 2 Design — Ray differentials, mip LOD, stochastic mip selection
 
+**Status:** **SHIPPED.** Retained as the executed design record.
+
 Detailed implementation design for Landing 2 of the
 [Physically Based Pipeline Plan](PHYSICALLY_BASED_PIPELINE_PLAN.md).
 Builds on Landing 1 (HDR primary output) — the EXR baseline that

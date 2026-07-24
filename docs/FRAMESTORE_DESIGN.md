@@ -1,12 +1,19 @@
 # FrameStore Redesign — Detailed Design
 
-**Status**: **Phase 1 mostly landed.** L0 (math foundation), L1 (FrameStore + Channel + locks + Render readback + observers), L2 (IFrameEncoder + 7 byte-identical-to-legacy encoders + registry), L3 (FrameSink + FileEncoderObserver + FileRasterizerOutput shim), and L4 platform-agnostic primitives (`ViewportFrameStore` for the GUI viewport facade) are complete and warning-free with full regression coverage. The CLI runs end-to-end through the new pipeline (verified manually with `scenes/Tests/Geometry/shapes.RISEscene`). Platform-specific GUI wiring (macOS SwiftUI / Windows Qt / Android Compose) and L5+ (HDR display, Phase 2 rasterizer rewrite) not yet started. See §11 for per-landing status.
-**Author**: design conversation 2026-05-07; updated through L4 on 2026-05-08.
+**Status**: **SUBSTANTIALLY IMPLEMENTED.** L0–L5 shipped across the CLI,
+macOS EDR, Windows scRGB, Android, and HDR10 encoding. The L6 direct-FrameStore
+transition is broadly deployed behind `AcceptsFrameStorePush`, while legacy
+output shims remain; L7 retains albedo/normal AOVs in the FrameStore, but the
+planned general multichannel-EXR surface remains incomplete. The body is the
+chronological design/landing record; later status rows supersede early
+"pending" prose.
+**Author**: design conversation 2026-05-07; audited against current landings
+2026-07-24.
 **Scope**: Replace today's "rasterizer-pushes-IRasterImage-into-IRasterizerOutput-sinks-which-each-bake-format-and-tone-mapping" architecture with a canonical-HDR-buffer model that decouples accumulation, notification, and encoding. Targets: keep the CLI byte-identical, give the UI a persistent HDR buffer it can read for live display (LDR or HDR-EDR), live exposure scrubbing, and arbitrary-format Save-As.
 **Related**: [INTERACTIVE_EDITOR_PLAN.md](INTERACTIVE_EDITOR_PLAN.md) §19.8 ("Persistent IRasterImage on every rasterizer") which started this direction; this proposal generalises that beachhead.
 **ABI break**: yes, allowed. Phase 2 changes `RISE_API_Create*Rasterizer` signatures and reshapes `IRasterizer` and `IRasterizerOutput`.
 
-## Implementation status (through L4 platform-agnostic primitives)
+## Implementation status
 
 **Total: 563 test assertions, 0 failures, 0 warnings on `-O3 -flto -ffast-math -Wall -pedantic`.**
 
@@ -17,13 +24,13 @@
 | L2 — IFrameEncoder + registry + 7 encoders + byte-identical regression | ✅ shipped | 69 | `IFrameEncoder.h`, `FrameEncoders.{h,cpp}`, `tests/FrameEncoderTest.cpp` |
 | L3 — FrameSink + FileEncoderObserver + FileRasterizerOutput shim | ✅ shipped | 60 | `FrameSink.{h,cpp}`, `FileEncoderObserver.{h,cpp}`, rewritten `FileRasterizerOutput.cpp`, `tests/FileRasterizerOutputShimTest.cpp` |
 | L4a — Platform-agnostic `ViewportFrameStore` primitives | ✅ shipped (3 review rounds + L4b/c/d rounds 4 & 7 hardening) | 53 | `ViewportFrameStore.{h,cpp}`, `tests/ViewportFrameStoreTest.cpp`. Plus L1 hardening: `BeautyRasterImageView::DumpImage` now acquires all per-tile shared_locks for the duration of the dump (L4 round-1 HIGH-1), making encoder paths (L2 / L3 / L4) safe to call mid-render. Plus L4-round-2 fixes: `OutputIntermediateImage` now copies the affected region tile-by-tile and fires per-tile `OnTileComplete` callbacks (P1-1 — was a no-op, dropping live viewport tile updates); reader paths (`RenderToBuffer` / `SaveAs` / `SaveTo` / `Generation` / `SetCameraExposureCompensationEV`) now snapshot-and-addref the FrameStore under a facade-level `chainMutex_` so a concurrent resolution-change reallocation in the rasterizer thread can't UAF the reader's pointer (P1-2). Plus L4-round-3 fix: `OutputIntermediateImage` was treating the `Rect*` argument as half-open at the IRasterizerOutput boundary even though RISE rasterizers (per `PixelBasedRasterizerHelper::BoundsFromRect`) emit INCLUSIVE bounds; single-pixel regions sitting exactly on a tile boundary (e.g. `Rect(32, 32, 32, 32)`) silently fired zero tile callbacks (P2). Fixed: convert `pRegion->bottom + 1` / `right + 1`, clamped to image size, before the half-open ceiling-division tile-coverage math; tests use the inclusive convention; new boundary regression test for `Rect(32, 32, 32, 32)` → exactly one callback. |
-| L4b — macOS SwiftUI viewport wiring | ⏳ next | — | Use `ViewportFrameStore` to replace `BlockRasterizerOutput` in `RISEBridge.mm`; Save-As menu in ContentView.swift; exposure slider |
-| L4c — Windows Qt viewport wiring | ⏳ pending | — | Replace `ImageOutputAdapter` + `ViewportPreviewSink` in `RenderEngine.cpp` / `ViewportBridge.cpp` |
-| L4d — Android Compose viewport wiring | ⏳ pending | — | Replace `RiseBridge` viewport sink |
-| L4 — GUI viewport integration | ⏳ pending | — | — |
-| L5a/b/c — Mac EDR + Windows HDR + PQ encoder | ⏳ pending | — | — |
-| L6 — Phase 2 rasterizer rewrite (ABI break) | ⏳ pending | — | — |
-| L7 — AOV plumbing through rasterizers | ⏳ pending | — | — |
+| L4b — macOS SwiftUI viewport wiring | ✅ shipped | — | `ViewportFrameStore`-backed bridge, Save-As, and live exposure |
+| L4c — Windows Qt viewport wiring | ✅ shipped | — | `ViewportFrameStore`-backed render/viewport bridges |
+| L4d — Android Compose viewport wiring | ✅ shipped | — | `RiseBridge` production and interactive FrameStore paths |
+| L4 — GUI viewport integration | ✅ shipped | — | Shared facade used by all three platform shells |
+| L5a/b/c — Mac EDR + Windows HDR + PQ encoder | ✅ shipped | — | Mac Metal EDR, Windows DXGI/scRGB, HDR10 PNG/video paths |
+| L6 — Phase 2 rasterizer rewrite | ◐ substantially shipped | — | Canonical FrameStore push across production rasterizers; compatibility sinks remain |
+| L7 — AOV plumbing through rasterizers | ◐ partial | — | Albedo/normal propagation shipped; general multichannel EXR remains |
 | L8 — Remove `IRasterizerOutput` + `AOVBuffers` | ⏳ pending | — | — |
 
 ### L4 platform integration pattern
@@ -583,7 +590,7 @@ The `IRasterizer` abstract interface gets:
 virtual std::shared_ptr<FrameStore> GetFrameStore() const = 0;
 ```
 
-This is a vtable change — see [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md). Plan: bump the API version, change all factories in one merge, audit derived classes for name hiding.
+This is a vtable change — see [AGENTS.md change checklist](../AGENTS.md). Plan: bump the API version, change all factories in one merge, audit derived classes for name hiding.
 
 ### `PixelBasedRasterizerHelper` rewrite
 
@@ -824,7 +831,7 @@ Windows offers two HDR display paths; both compose with our existing `TargetForm
 |---|---|---|---|
 | `FrameStore`, `Channel<T>`, `ViewTransform`, `TargetFormat`, `ColorSpace`, `IFrameEncoder`, `FrameEncoderRegistry`, `IRenderObserver` | 1 | New types, additive | None — opt-in |
 | `FrameStore::AddObserver/RemoveObserver/EnumerateObservers` | 1 | New methods on a new type | None (FrameStore is new). Note: observers attach to FrameStore, **not** to `IRasterizer` — see §7.5 |
-| `IJob::GetFrameStore() / OnFrameStoreReplaced(callback)` | 1 | New virtuals (vtable grow) | Audit `IJob` derived classes for name collisions per [skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md) |
+| `IJob::GetFrameStore() / OnFrameStoreReplaced(callback)` | 1 | New virtuals (vtable grow) | Audit `IJob` derived classes for name collisions per [AGENTS.md change checklist](../AGENTS.md) |
 | `FileRasterizerOutput` constructor signature | 1 | Unchanged externally; reimplemented internally | None |
 | `RISE_API_Create*Rasterizer` factories | 2 | Add leading `shared_ptr<FrameStore>` param | All callers updated; bump `RISE_API` version |
 | `IRasterizer::GetFrameStore()` | 2 | New virtual | Audit derived classes |
@@ -836,7 +843,7 @@ Windows offers two HDR display paths; both compose with our existing `TargetForm
 
 ## 11. Recommended landing order
 
-Status legend: ✅ shipped, ⏳ pending.
+Status legend: ✅ shipped, ◐ partially/substantially shipped, ⏳ pending.
 
 | Landing | Status | Deliverable | Verification |
 |---|---|---|---|
@@ -847,10 +854,10 @@ Status legend: ✅ shipped, ⏳ pending.
 | **L4a** | ✅ | Platform-agnostic `ViewportFrameStore`: facade owning (FrameStore + FrameSink + observer) with Attach/Detach/RenderToBuffer/SaveAs API + tile/frame/preDenoise/denoise callbacks for platforms to wire up.  L1 `BeautyRasterImageView::DumpImage` hardened to acquire all per-tile shared_locks (mid-render Save-As is now data-race-free). | 43-assertion test: lazy chain alloc, callbacks fire on the right events with the right (frame, generation), `RenderToBuffer` reads correctly + respects exposure, `SaveAs` byte-identical to L2 IFrameEncoder direct path, rasterizer-swap simulation, resolution-change reallocation, multi-frame reuse, mid-render concurrent SaveAs (writer + reader threads) produces non-empty files, cameraExposureEV propagates through Meta() and survives reallocation. |
 | **L4b/c/d** | ✅ shipped (4 review rounds) | 53 (L4a regression incl. region-bounded RenderToBuffer guard) | GUI viewport wiring per platform — production-render path migrated on all three: macOS SwiftUI `RISEBridge.mm` replaces `BlockRasterizerOutput` with VFS + RGBA16_sRGB read-back into a `ViewportFrameStoreCallbacks` helper that fires the existing `RISEImageOutputBlock`; Windows Qt `RenderEngine.{cpp,h}` replaces `ImageOutputAdapter` with VFS + RGBA8_sRGB direct into `m_pixelBuffer` + `imageUpdated()` Qt signal; Android `RiseBridge.{cpp,h}` + `RiseCallbacks.{cpp,h}` + `rise_jni.cpp` replaces `RasterizerOutputAdapter` with VFS + RGBA8_sRGB direct into `m_framebuffer` + `onRegionInvalidated()` JNI callback.  Each platform adds `setViewExposureEV(ev)` (live exposure scrubbing without re-render) and `saveAs(path, format, ev)` (multi-format Save-As via L2 IFrameEncoder).  Interactive-viewport `ViewportPreviewSink` (macOS / Android) deferred to a follow-up landing — this landing covers the production-render path only.  **Note**: Xcode RISE-GUI target now requires `gnu++17` (`std::shared_mutex` is C++17); was `compiler-default` = C++14.  Project file bumped. |
 | **L5a** | ✅ shipped (2 review rounds) | manual EDR-capable Mac smoke | GUI: Mac EDR display path (`RGBA16F_ExtendedLinearSRGB` via CAMetalLayer + MTKView render pipeline).  Bridge: new `RISEHDRImageOutputBlock` typedef (binary16 / extended-linear-sRGB), `-setHDRImageOutputBlock:`, `-setHDREnabled:`, `-displayMaxEDRHeadroom`.  ViewportFrameStoreCallbacks helper now selects `RGBA16F_ExtendedLinearSRGB + ForHDRDisplay(ev)` vs `RGBA16_sRGB + ForLDRDisplay(ev)` per the HDR toggle; both are 8 bpp so the same staging buffer fits both modes.  Swift: new `MetalEDRView` (NSViewRepresentable wrapping MTKView) + durable `MetalEDRRenderer` (owned by RenderViewModel; binds the HDR block exactly once for the model's lifetime to avoid SwiftUI Coordinator-resurrection races).  Render pipeline samples the source MTLTexture with bilinear filtering + aspect-fit letterboxing in a fullscreen-quad fragment shader (no `drawableSize` mutation; preserves Retina sharpness).  EDR availability probe queries `window.screen.maximumExtendedDynamicRangeColorComponentValue` (not `mainScreen` which follows keyboard focus); subscribes to `NSWindow.didChangeScreenNotification` so the toggle dims the moment the user drags the window between EDR-capable and SDR monitors.  ContentView toggle disabled when `!edrAvailable`; interactive editor pointer events suspended while EDR preview is on.  See "Review rounds completed" below for L5a round-1 + round-2 review summaries. |
-| **L5b** | ⏳ | GUI: Windows HDR display path (scRGB via DXGI swap chain) | Manual: same scene on HDR10-capable Windows monitor; verify HDR headroom detection on `WM_DISPLAYCHANGE` |
-| **L5c** | ⏳ (optional, follow-up) | PQ encoding path for HDR-aware file export | Encoder-level test: round-trip a known HDR pattern through PQ encode/decode |
-| **L6** | ⏳ | Phase 2: rasterizer factories take `FrameStore`; `PixelBasedRasterizerHelper` writes directly | Performance test: per-tile copy eliminated; render walltime ≥ pre-redesign |
-| **L7** | ⏳ | AOV channels populated by rasterizers; multichannel-EXR encoder | New `.RISEscene` test scenes that emit albedo/normal/depth |
+| **L5b** | ✅ shipped | GUI: Windows HDR display path (scRGB via DXGI swap chain) | `HDRRenderWidget` + shared HDR FrameStore transform |
+| **L5c** | ✅ shipped | PQ encoding path for HDR-aware file export | HDR10 PNG and desktop video encoders carry PQ/BT.2020 metadata |
+| **L6** | ◐ substantially shipped | Direct/canonical FrameStore ownership and push across rasterizers | `AcceptsFrameStorePush` gates supported rasterizers; compatibility output paths remain |
+| **L7** | ◐ partial | AOV channels populated by rasterizers | Albedo/normal persistence is shipped; general multichannel EXR/depth surface remains |
 | **L8** | ⏳ | `IRasterizerOutput` removed; `AOVBuffers` removed | Build + tests pass with old paths gone |
 
 L0-L4 are Phase 1 (B); L6+ is Phase 2 (C). L5a / L5b (HDR display on Mac and Windows) are Phase 1 + small platform-specific additions; they can ship in parallel with each other and do not depend on L6. L5c (PQ encoding) is a follow-up encoder, not a display path.

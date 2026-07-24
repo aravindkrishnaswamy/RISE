@@ -33,44 +33,38 @@ Build behavior comes from [../build/cmake/rise-tests/CMakeLists.txt](../build/cm
 
 Built binaries land in `bin/tests/` (Release) or `dbin/tests/` (Debug).
 
-## Current Test Inventory
+## Test Map
 
-77 standalone executables, grouped by subsystem. The build glob picks up every `tests/*.cpp` automatically, so this list reflects whatever's on disk — when adding or removing a test, update the relevant group below.
+There are 219 standalone `tests/*.cpp` executables as of 2026-07-24. Do not
+maintain a hand-counted filename inventory here: the CST, editor, GUI,
+FrameStore, agent, and eval work adds tests often enough that such lists become
+wrong within days. The filesystem and build globs are authoritative:
 
-- Geometry and intersection (11):
-  `BSPMailboxingTest.cpp`, `BSPTreeSAHTest.cpp`, `BezierClippingUnitsTest.cpp`, `CSGObjectIdentityTest.cpp`, `ClippedPlaneGeometryTest.cpp`, `DisplacedGeometryTest.cpp`, `GeometrySurfaceDerivativesTest.cpp`, `RISEMeshLegacyBSPCompatibilityTest.cpp`, `RayBoxIntersectionTest.cpp`, `RayTriangleIntersectionTest.cpp`, `TessellatedShapeDerivativesTest.cpp`
-- BVH (2):
-  `BVHBuilderTest.cpp` (object/spatial split builder, leaf packing, bounds), `BVHSerializationTest.cpp` (v4 cached-BVH on-disk format round-trip)
-- Math and utility coverage (8):
-  `ColorUtilsTest.cpp`, `FiniteMathTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `MortonCodeTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
-- Noise and procedural-texture generators (10):
-  `CurlNoise3DTest.cpp`, `DomainWarpNoise3DTest.cpp`, `GaborNoise3DTest.cpp`, `PerlinWorleyNoise3DTest.cpp`, `ReactionDiffusion3DTest.cpp`, `SDFPrimitive3DTest.cpp`, `SimplexNoise3DTest.cpp`, `TurbulenceNoise3DTest.cpp`, `WaveletNoise3DTest.cpp`, `WorleyNoise3DTest.cpp`
-- Sampling, shading, and cache behavior (13):
-  `BSSRDFEntryPointTest.cpp`, `BSSRDFSamplingTest.cpp`, `FinalGatherShaderOpTest.cpp`, `GGXFresnelModeTest.cpp`, `GGXMetalRoughGridTest.cpp`, `GGXWhiteFurnaceTest.cpp`, `IORStackBehaviorTest.cpp`, `IORStackTest.cpp`, `IrradianceCacheTest.cpp`, `LightExitanceTest.cpp`, `RandomWalkSSSTest.cpp`, `SPFBSDFConsistencyTest.cpp`, `SPFPdfConsistencyTest.cpp`
-- Light sampling and volumes (3):
-  `LightBVHTest.cpp`, `MajorantGridTest.cpp`, `PainterVolumeAccessorTest.cpp`
-- MIS and integrator building blocks (6):
-  `BDPTStrategyBalanceTest.cpp` (per-strategy contribution audit), `BDPTVertexRIGRebuildTest.cpp` (RIG mirror invariant on vertex rebuild), `MISWeightsTest.cpp`, `OptimalMISAccumulatorTest.cpp` (Kondapaneni 2019 second-moment binning), `PathValueOpsTest.cpp`, `VCMStrategyBalanceTest.cpp` (per-strategy contribution audit for VCM)
-- Spectral support (2):
-  `SampledWavelengthsTest.cpp`, `SpectralValueTraitsTest.cpp`
-- SMS (Specular Manifold Sampling) (1):
-  `ManifoldSolverTest.cpp` (block-tridiagonal Jacobian, specular-direction math, chain geometry/throughput, TIR, light-to-first-vertex Jacobian determinant)
-- VCM (Vertex Connection and Merging) (5):
-  `VCMEyePostPassTest.cpp`, `VCMLightPostPassTest.cpp`, `VCMLightVertexStoreTest.cpp`, `VCMRecurrenceTest.cpp`, `VCMSpectralRecurrenceTest.cpp`
-- Sampler and dimension budget (3):
-  `PSSMLTStreamAliasingTest.cpp`, `SobolDimensionBudgetTest.cpp`, `ZSobolSamplerTest.cpp`
-- Cameras (2):
-  `CameraUnitConversionTest.cpp` (mm ↔ scene-unit conversion, sensor presets), `MultipleCamerasTest.cpp` (named-camera registration, default-camera selection)
-- Mesh and loader importers (4):
-  `GLTFLoaderTest.cpp` (Khronos-asset round-trip + tangent storage), `PLYLoaderExtraPropertiesTest.cpp` (vertex colour, custom property pass-through), `RAW2VertexColorTest.cpp` (per-vertex colour in legacy RAW2 mesh), `VertexColorRoundtripTest.cpp` (vertex-colour painter round-trip across mesh formats)
-- Scene editor / interactive viewport (8):
-  `ViewportPaneConfigTest.cpp` (N-up pane config layer: layout/primary/mode/vantage contracts, pane-0 aliasing, C-ABI fail-closed), `ViewportPaneSchedulerTest.cpp` (N-up rotation evidence via a recording DoOneRenderPass: priority order, pane-local invalidation, gesture pinning, quiescence; mutation-tested), `SceneEditorBasicsTest.cpp` (SceneEditor + EditHistory invariants), `SceneEditorCameraAnglesTest.cpp` (orbit/roll on `target_orientation` + `orientation.z`, gimbal-lock clamp), `SceneEditorCancelRestartTest.cpp` (cancellable progress callback, kick-render flow), `SceneEditorMemoryStressTest.cpp` (long-running edit-loop allocation footprint), `SceneEditorSuggestionsTest.cpp` (descriptor-driven property completion), `EntityTemplatesTest.cpp` (Add-Entity template validity gate, duplicate/remove entity round-trip, Category::Painter enumeration + CST-routed painter edit)
-- Image comparison, diagnostics, and instrumentation (2):
-  `RasterSanityScanTest.cpp` (silent-negative-pixel detector at output time), `RenderETAEstimatorTest.cpp`
-  (CLI diagnostic utilities like `ImageDiffTest`, `FindFireflyTest`,
-  `ExrRegionCompareTest`, `ExrFireflyInspect`, and `MailboxingBenchmark` live in `tools/`,
-  not here, because they require file arguments and are not
-  assertion-based tests.)
+```sh
+rg --files tests -g '*Test.cpp' | sort
+find tests -maxdepth 1 -type f -name '*.cpp' | wc -l
+```
+
+Useful filename families:
+
+- `Agent*Test.cpp`: agent session, chat loop, MCP/stdio/HTTP transports,
+  autonomy, proposals, renders, viewport reads, trajectories, and evals
+- `Cst*Test.cpp`: lossless parsing, derive contracts, minimal-diff edits,
+  identity, reference graphs, scene variants, incremental apply, and cost gates
+- `SceneEditor*Test.cpp`, `Viewport*Test.cpp`, `SourceTraceTest.cpp`, and
+  `EntityTemplatesTest.cpp`: editing, persistence, source traceability,
+  render modes, N-up panes, and entity creation
+- `FrameStore*Test.cpp`, `FrameEncoderTest.cpp`, and
+  `ViewportFrameStoreTest.cpp`: framebuffer storage, color math, encoders, and
+  GUI delivery
+- `AutoRasterizerTest.cpp`, `BDPT*Test.cpp`, `VCM*Test.cpp`,
+  `ManifoldSolverTest.cpp`, and the `*Spectral*Test.cpp` family: transport,
+  MIS, SMS, and spectral behavior
+- geometry, materials, painters, samplers, volumes, importers, color, and
+  utility code use descriptive subsystem prefixes
+
+CLI diagnostics and data-processing programs that require file arguments live
+under `tools/`; they are not assertion-based `run_all_tests` executables.
 
 ## Style Of Test Used Here
 
@@ -95,22 +89,14 @@ No makefile edit is needed for a new `tests/*.cpp` file because the existing wil
 
 ## Transport Correctness Scenes (Roadmap Step 2)
 
-These scenes validate spectral, SMS, and Russian roulette correctness. They require visual or statistical comparison rather than deterministic assertions.
+These scenes validate spectral and SMS correctness. They require visual or
+statistical comparison rather than deterministic assertions.
 
 Assume `RISE_MEDIA_PATH` is set to the repo root before running any of the scene-based checks below:
 
 ```sh
 export RISE_MEDIA_PATH="$(pwd)/"
 ```
-
-### Russian Roulette (2A)
-
-```sh
-printf "render\nquit\n" | ./bin/rise scenes/Tests/RussianRoulette/cornellbox_highalbedo_pt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/RussianRoulette/cornellbox_highalbedo_bdpt.RISEscene
-```
-
-**Expected**: PT and BDPT produce images of comparable brightness. The high-albedo (0.9) walls amplify any bias in path termination. Russian roulette controls path termination; compare mean luminance — PT should be within 5% of BDPT.
 
 ### Spectral Non-Mesh Lights (2B)
 
@@ -146,76 +132,6 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/SMS/sms_slab_close_pt_sms_hisp
 
 **Expected**: The PT+SMS render's caustic mean luminance should match the VCM reference within ~5%.
 
-## Production Stability Controls (Roadmap Step 3)
-
-These scenes validate the production stability controls. Each control is disabled by default (zero or UINT_MAX) so existing scenes are unaffected.
-
-### Sample Clamping (3A)
-
-```sh
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/clamp_baseline_pt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/clamp_active_pt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/clamp_active_bdpt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/clamp_active_spectral_pt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/clamp_active_spectral_bdpt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/clamp_indirect_pt.RISEscene
-```
-
-**Expected**: The baseline (no clamps) shows firefly noise from the small bright light (scale 800). The clamped variants (`direct_clamp 10`, `indirect_clamp 5`) suppress fireflies with only mild darkening. The PT clamped scene also outputs HDR for quantitative comparison. The spectral PT and spectral BDPT variants validate that stability controls propagate through the `pixelintegratingspectral_rasterizer` and `bdpt_spectral_rasterizer` pipelines respectively. Spectral scenes use the reference Cornell box spectral painters and standard light (scale 10) with higher clamp values (`direct_clamp 500`, `indirect_clamp 250`) because single-wavelength scalar radiance is larger than per-channel RGB — CIE conversion and sample averaging happen after clamping. The `clamp_indirect_pt` scene uses a glass sphere and gold sphere to drive multi-bounce indirect paths that exercise `indirect_clamp` more heavily than the basic Cornell box.
-
-### Russian Roulette Tuning (3C)
-
-```sh
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/rr_baseline_pt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/rr_tuning_pt.RISEscene
-```
-
-**Expected**: The baseline uses default RR settings (rr_min_depth 3, rr_threshold 0.05). The tuned variant uses `rr_min_depth 1` and `rr_threshold 0.5` for aggressive path termination. The tuned image should be noticeably noisier than the baseline but correctly illuminated. High-albedo walls (0.9) amplify any RR bias.
-
-### Per-Type Bounce Limits (3D)
-
-```sh
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/bounce_limits_pt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/bounce_limits_bdpt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/bounce_limits_glossy_translucent_pt.RISEscene
-```
-
-**Expected**: Glass sphere renders with full transmission (`max_transmission_bounce 50`) while diffuse inter-reflection is limited (`max_diffuse_bounce 2`). The ceiling should appear slightly darker than unlimited bounces. The sphere should remain clear and refractive. PT and BDPT variants should produce comparable results. The `bounce_limits_glossy_translucent_pt` scene adds a glossy gold sphere (`max_glossy_bounce 2`) and two nested translucent spheres (`max_translucent_bounce 2`, `scattering 0.9`) to exercise the glossy and translucent bounce counters. The high scattering coefficient ensures back-face translucent events fire, and the nested geometry forces 4+ translucent bounces per through-path so the limit of 2 actively engages.
-
-### Glossy Filtering (3B)
-
-```sh
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/glossy_filter_baseline_pt.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/Tests/StabilityControls/glossy_filter_pt.RISEscene
-```
-
-**Expected**: Both scenes feature a gold metallic sphere (Cook-Torrance, facets 0.15). The baseline has no glossy filtering. The filtered variant (`filter_glossy 0.5`) should show slightly softened secondary reflections from the sphere onto walls. The direct specular highlight on the sphere itself should be unaffected (filtering only applies after the first glossy bounce).
-
-### Scene File Keywords
-
-All keywords below are valid in `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, `bdpt_pel_rasterizer`, and `bdpt_spectral_rasterizer` blocks (except `filter_glossy` which is PT-only):
-
-```
-direct_clamp        10.0    # 0 = disabled (default)
-indirect_clamp      5.0     # 0 = disabled (default)
-filter_glossy       0.5     # 0 = disabled (default); PT blocks only
-rr_min_depth        3       # default: 3
-rr_threshold        0.05    # default: 0.05
-max_diffuse_bounce       4       # default: unlimited
-max_glossy_bounce        8       # default: unlimited
-max_transmission_bounce  32      # default: unlimited
-max_translucent_bounce   8       # default: unlimited
-```
-
-### Known Limitations
-
-- **Glossy filtering + BDPT**: The `filter_glossy` control only affects the PT shader path. BDPT connection evaluations construct synthetic intersection records and do not carry the accumulated filter width, so glossy filtering has no effect on BDPT-evaluated strategies.
-- **Spectral clamp scaling**: Spectral rasterizers clamp single-wavelength scalar radiance values before CIE color matching function multiplication and sample averaging. This means the same clamp threshold produces a much stronger effect in spectral mode than in RGB mode. Spectral scenes should use clamp values roughly 10–20× higher than equivalent RGB scenes.
-
-### Output Location
-
-All renders write to `rendered/`. File names match the scene file base name.
-
 ## BSSRDF Furnace Tests (Energy Conservation)
 
 These scenes validate that the BSSRDF subsurface scattering implementation conserves energy. They use a large sphere (R=10, ~40x mean free path) in a uniform emissive box so the geometry approaches the flat-slab limit where analytical predictions are available.
@@ -225,7 +141,10 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/BSSRDFFurnace/furnace_sss_abso
 printf "render\nquit\n" | ./bin/rise scenes/Tests/BSSRDFFurnace/furnace_sss_zero_absorption.RISEscene
 ```
 
-**Output format**: HDR in ROMMRGB_Linear (no color space conversion, enabling accurate per-channel ratio analysis).
+**Output format**: HDR explicitly converted to `ROMMRGB_Linear`. RISE's working
+space is Rec.709 Linear, so this is no longer a verbatim-store path; the ratios
+below are intentionally measured after the same output conversion in both
+renders.
 
 **Verification procedure**:
 1. Render both scenes

@@ -1,9 +1,8 @@
 # 71 — Long-Session Text Compaction (design)
 
-Status: **design only** (no code). Companion to the prompt-cache-breakpoint work
-(#1, shipped in `AgentChatCodecs.cpp` `AnthropicChatCodec::BuildRequest`). A
-design doc alongside the rest of the `docs/agentic-redesign/` series (the
-narrative blog chronicle is the only file in this area kept off-tree).
+Status: **SHIPPED.** `AgentChatLoop::CompactTranscript` and
+`WouldCompactNow` implement the compaction policy; prompt-cache breakpoints live
+in `AgentChatCodecs.cpp`. This file is the executed design record.
 
 ## 1. Problem
 

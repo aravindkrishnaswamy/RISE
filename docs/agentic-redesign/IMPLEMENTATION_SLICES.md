@@ -1,6 +1,10 @@
 # Agentic Redesign — Implementation Slices (review guide)
 
-> **Status (2026-06-23):** the design package (00–60 + `01-DECISIONS.md` D1–D51) is
+> **Status:** **HISTORICAL IMPLEMENTATION/REVIEW LOG.** The prototype transfer
+> gate, in-tree CST kernel, stable apply, and resolver work described here
+> landed and were followed by the v7 cutover. Statements below about unpushed
+> prototype branches or the kernel not being live describe intermediate states.
+> The design package (00–60 + `01-DECISIONS.md` D1–D51) is
 > backed by the four original prototype slices **and** an in-tree CST kernel
 > (`src/Library/Cst/Cst.{h,cpp}` + `tests/Cst*Test`) carrying transfer-gate items
 > 1–8. A bulk review of items 5–8 returned **nine P1 blockers**; item 8's first
@@ -179,14 +183,14 @@ halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_arra
 1. **Build the render-equivalence harness first** (the pre-P0 regression oracle). **✅ DONE** —
    [`tests/CstRenderEquivalence.h`](../../tests/CstRenderEquivalence.h) (`ParseLegacy` drives the
    real `AsciiSceneParser`; `DumpJob` is the canonical structural equivalence metric) +
-   [`tests/CstRenderEquivalenceTest.cpp`](../../tests/CstRenderEquivalenceTest.cpp) (9/9: the legacy
+   `tests/CstRenderEquivalenceTest.cpp` (9/9: the legacy
    parse is deterministic, and the metric discriminates a changed scene). The CST slices will assert
    `DumpJob(cstJob) == DumpJob(legacyJob)` against this.
 2. Create the actual **`src/Library/Cst` kernel** (touches the five build projects). **✅ DONE** —
    [`src/Library/Cst/Cst.{h,cpp}`](../../src/Library/Cst/Cst.h) (`ParseToCst`/`SerializeCst`/
    `DeriveToJob`) wired into all five build projects (Filelist make-verified; cmake/vcxproj/filters
    updated; Xcode pbxproj replicated from the SDFGeometry pattern + a `Cst` group, `plutil -lint`
-   OK). Gated by [`tests/CstKernelTest.cpp`](../../tests/CstKernelTest.cpp) (11/11): G1 lossless
+   OK). Gated by `tests/CstKernelTest.cpp` (11/11): G1 lossless
    round-trip on real scenes (header / multi-chunk / tar-pit) AND `DumpJob(cstJob) ==
    DumpJob(legacyJob)` for sphere scenes, driving the real `Job::AddSphereGeometry`. (The
    `RISE ASCII SCENE 6` header is preserved losslessly as stray tokens that `DeriveToJob` ignores;

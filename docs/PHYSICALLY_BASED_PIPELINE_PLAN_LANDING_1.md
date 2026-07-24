@@ -1,5 +1,7 @@
 # Landing 1 Design — HDR primary output + separated display transform
 
+**Status:** **SHIPPED.** Retained as the executed design record.
+
 Detailed implementation design for Landing 1 of the
 [Physically Based Pipeline Plan](PHYSICALLY_BASED_PIPELINE_PLAN.md).
 
@@ -43,7 +45,7 @@ existing `RISE_API_CreateFileRasterizerOutput` signature working.
   [src/Library/RasterImages/EXRWriter.cpp](../src/Library/RasterImages/EXRWriter.cpp).
 - `EXRReader` for round-trip verification.
 - Chunk parser entry at
-  [AsciiSceneParser.cpp:7058–7072](../src/Library/Parsers/AsciiSceneParser.cpp).
+  [AsciiSceneParser.cpp:7058–7072](../src/Library/Parsers/ChunkParserRegistry.cpp).
 - Build wiring: vcpkg on Windows; Homebrew auto-detect on macOS;
   off on Linux (`-DNO_EXR_SUPPORT`).
 - Internal working space is `RISEPel = ROMMRGBPel` (linear ROMM RGB,
@@ -297,7 +299,7 @@ file_rasterizeroutput
 ```
 
 ChunkDescriptor entries get appended in
-[AsciiSceneParser.cpp:7066–7068](../src/Library/Parsers/AsciiSceneParser.cpp);
+[AsciiSceneParser.cpp:7066–7068](../src/Library/Parsers/ChunkParserRegistry.cpp);
 the `Finalize` method reads them via
 `bag.GetDouble("exposure", 0.0)` etc.
 

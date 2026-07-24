@@ -1,6 +1,10 @@
 # RISE GUI — Cameras & Views (Direction B)
 
-**Status:** DESIGN — pending review. No code.
+**Status:** **MOSTLY IMPLEMENTED.** Named views, promote/stamp-to-camera,
+axis-ball navigation and snaps, transient viewport poses, render-camera
+overrides, and desktop N-up panes have shipped. Camera-cut/time-range authoring
+and remaining polish are still roadmap items. N-up implementation details are
+tracked in [RENDER_MODES.md](RENDER_MODES.md) §7.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Design the camera & view *management* layer for the RISE desktop GUIs (macOS + Windows) and an Android tier note. Five deliverables — **B1** Named Views (session/UI state) + promote-to-scene-camera; **B2** axis-ball nav gizmo + axis snaps + Home; **B3** fly-then-stamp; **B4** camera list panel + bind-camera-to-time-range; **B5** right-sized split view (3 GL/wireframe orientation panes + 1 render pane). Built on the shipped multi-camera infrastructure ([../CAMERAS_ROADMAP.md](../CAMERAS_ROADMAP.md) Phase 1.3/1.4). Parent: [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §6, §10.4, §11 (Phase 2), §12, §13.
 **Predecessors:** Multi-camera `ICameraManager` (Phase 1.3, shipped), Camera/Film/Output split (Phase 1.4, shipped), Interactive viewport Phases 1–5 ([../INTERACTIVE_EDITOR_PLAN.md](../INTERACTIVE_EDITOR_PLAN.md)).

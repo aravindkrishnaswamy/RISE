@@ -2,7 +2,11 @@
 
 This directory contains a Blender renderer integration for RISE that lives entirely outside the core library.
 
-The structure mirrors the host-bridge style of [`src/3DSMax`](/src/3DSMax): Blender-specific code stays in `src/Blender`, while the bridge talks to RISE only through the existing public APIs in [`src/Library/RISE_API.h`](/src/Library/RISE_API.h) and [`src/Library/Interfaces/IJob.h`](/src/Library/Interfaces/IJob.h).
+The structure mirrors the host-bridge style of
+[`src/3DSMax`](../3DSMax): Blender-specific code stays in `src/Blender`, while
+the bridge talks to RISE only through the existing public APIs in
+[`src/Library/RISE_API.h`](../Library/RISE_API.h) and
+[`src/Library/Interfaces/IJob.h`](../Library/Interfaces/IJob.h).
 
 ## Layout
 

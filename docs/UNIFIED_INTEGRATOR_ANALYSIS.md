@@ -1,6 +1,11 @@
 # Unified Integrator Analysis Plan
 
-**Status:** Plan of analysis — no implementation decisions yet.
+**Status:** **HISTORICAL ANALYSIS PLAN — COMPLETED.** Measurements are in
+[UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md), the
+decision is in
+[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md), and its
+auto-routing implementation is documented in
+[AUTO_RASTERIZER_DESIGN.md](AUTO_RASTERIZER_DESIGN.md).
 **First written:** 2026-05-07.
 **Revised:** 2026-05-27 — folds in the spectral parity audit outcomes
 (2026-05-07 / 2026-05-24), the env-IBL Path A+B fix (2026-05-25), the

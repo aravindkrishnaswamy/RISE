@@ -16,10 +16,25 @@ or the agent will lose its anchor.
 
 ## Last audit
 
-- **Date (UTC):** 2026-05-01
-- **Commit at audit time:** (none — initial seed before first agent run)
+- **Date (UTC):** 2026-07-24
+- **Commit at audit time:** `1514297d`
+- **Canonical report:** [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md)
 
 ## Accumulated lessons (most recent first)
+
+### 2026-07-24 — repository-wide audit
+
+- **Treat lifecycle as first-class metadata.** Proposed, partially
+  implemented, shipped, superseded, and historical plans must not be mixed in
+  an undifferentiated index.
+- **The CST cutover is a high-drift surface.** Parser paths, extension
+  instructions, and descriptions of macros and loops must be checked against
+  the current loader and registry.
+- **Generate test inventories.** Count `tests/*.cpp` from the tree instead of
+  maintaining a numbered catalog.
+- **Separate active and historical link debt.** Broken links in active
+  references should be fixed immediately. Deleted prototypes referenced by
+  historical experiment logs are a consolidation signal.
 
 ### 2026-05-01 — initial seed (manual)
 

@@ -1,5 +1,10 @@
 # 62 — Model-B P5: save-as-CST execution plan
 
+> **Status:** **COMPLETED EXECUTION PLAN.** `Job` retains the CST `Document`,
+> editor mutations update it, and `SaveEngine` serializes it; the byte-splice
+> save engine and span indexes were deleted. The body captures the prerequisite
+> analysis and landing sequence.
+
 Scopes the gated prerequisite for the v6→v7 cutover's Phase C/D (see
 [61-v6v7-parser-cutover-execution-plan.md](61-v6v7-parser-cutover-execution-plan.md) §"Phase C/D"). **P5 =
 "save = serialize the CST" + the editor off `AsciiSceneParser`'s `SourceSpanIndex` (finding F3).** Grounded

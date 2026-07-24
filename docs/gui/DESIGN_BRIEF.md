@@ -1,5 +1,9 @@
 # RISE UI Redesign — Design Brief
 
+**Status:** **EXECUTED DESIGN INPUT.** The macOS and Windows workspace redesign
+shipped from this brief; it remains the product-principles and requirements
+record, while `REDESIGN_IMPLEMENTATION.md` describes the delivered UI.
+
 **Purpose of this document:** input to a ground-up UI redesign of the RISE desktop application (macOS + Windows). It describes what RISE is, who uses it, what the UI does today, what the redesigned UI must cover (current features plus the committed roadmap), the design principles the product has already adopted, hard technical constraints, and explicit non-goals.
 
 **Owner:** Aravind Krishnaswamy

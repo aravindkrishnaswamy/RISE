@@ -56,7 +56,7 @@ These were settled in discussion before this plan was written. Recorded here so 
 | D2 | **Compile-time SIMD width selection.** `RISE_BVH_WIDTH` ∈ {2, 4, 8}, auto-detected from the active SIMD ISA, overridable. No runtime dispatch. Default 4 on AVX2/NEON/SVE2-128, 8 only on AVX-512, 2 elsewhere. **In practice, all three of the project's primary dev machines (Apple Silicon, modern Intel i9, Galaxy Fold 7) default to BVH4** — see §10.7. | Single binary per platform, no dispatch overhead. Simpler. |
 | D3 | **Apple Silicon stays at NEON BVH4.** No 2×NEON BVH8. | Phase 4 stops; evaluation precedes any wider Apple Silicon work. |
 | D4 | **No backward compatibility.** Remove old parser keys, old API signatures, and the octree/BSP integration in triangle-mesh classes. Sweep scene files. | Clean codebase end-state. |
-| D5 | **`AccelerationConfig` struct**, no defaults in headers. Per [feedback memory rule](../../../.claude/projects/-Users-aravind-Documents-GitHub-RISE/memory/feedback_no_default_params.md), all parameters explicit at the call site. | Project convention. |
+| D5 | **`AccelerationConfig` struct**, no defaults in headers. Per `feedback memory rule` (private historical note), all parameters explicit at the call site. | Project convention. |
 | D6 | **Stop at Phase 4 and evaluate.** Phases 5 (compressed nodes) and 6 (TLAS BVH) are deferred until we measure Phase 4 results. | Keeps initiative bounded. |
 | D7 | **BLAS-only.** Object-level acceleration (ObjectManager) keeps its current octree/BSP. | TLAS cost is small relative to BLAS cost given typical RISE scene object counts. |
 | D8 | **Templated BVH** mirroring existing `Octree<Element>` + `TreeElementProcessor<Element>` contract. | Mesh classes drop in via the same callbacks. Indexed and non-indexed mesh types share the template. |
@@ -178,7 +178,7 @@ Per-mesh chunks (3DS, RAW, RAW2, PLY, PSurf, indexed variants) accept new keys, 
 | — | `bvh_bin_count = 32` |
 | — | `bvh_build_sbvh = TRUE` |
 
-Acceleration is always BVH for triangle meshes; there's no longer a per-mesh "which structure" knob. The schema reflection ([AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) lines ~5018, 5081, 5146 etc.) gets updated to advertise the new keys.
+Acceleration is always BVH for triangle meshes; there's no longer a per-mesh "which structure" knob. The schema reflection ([AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) lines ~5018, 5081, 5146 etc.) gets updated to advertise the new keys.
 
 ### 4.4 Scene file sweep
 
@@ -400,16 +400,16 @@ All added to **all five** build projects per [CLAUDE.md](../CLAUDE.md):
 | [src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h](../src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h) | Mirror |
 | [src/Library/RISE_API.h](../src/Library/RISE_API.h) | Replace mesh constructor signatures (§4.1, §4.2) |
 | [src/Library/Job.cpp](../src/Library/Job.cpp) | Update `Add*TriangleMesh*` implementations |
-| [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) | Replace mesh chunks (~lines 5018, 5081, 5146 for 3DS/RAW/RAW2; corresponding indexed and PLY/PSurf). Update schema reflection. Update reaction-diffusion / displaced / bezier sites that reference removed keys, only where they propagate |
+| [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) | Replace mesh chunks (~lines 5018, 5081, 5146 for 3DS/RAW/RAW2; corresponding indexed and PLY/PSurf). Update schema reflection. Update reaction-diffusion / displaced / bezier sites that reference removed keys, only where they propagate |
 | `scenes/**/*.RISEscene` | Sweep for `bsp =`, `maxpolygons =`, `maxrecursion =` in mesh chunks; rewrite per §4.4 |
 | [src/RISE/meshconverter.cpp](../src/RISE/meshconverter.cpp) | Rewrite per §4.5: new CLI, accepts `.3ds`/`.ply`/`.risemesh` as input, uses `AccelerationConfig` |
 | [models/risemesh/*.risemesh](../models/risemesh/) | Re-bake from v1/v2 → v3 via `tools/rebake_risemesh.sh` (bunny, creature, dragon_small, she_*, torusknot, plus any others) |
 | [src/Library/Geometry/DisplacedGeometry.h](../src/Library/Geometry/DisplacedGeometry.h) and `.cpp` | Constructor signature change (drop `max_polys_per_node` / `max_recursion_level` / `bUseBSP`); rewrite observer lambda to use refit path with rebuild fallback; introduce `TopologyStableSinceConstruction()` predicate; hardcode internal animation `AccelerationConfig` (plain SAH, not SBVH) per §4.6 |
-| [src/Library/Interfaces/ITriangleMeshGeometryIndexed.h](../src/Library/Interfaces/ITriangleMeshGeometryIndexed.h) | Add `virtual void UpdateVertices(const VerticesListType&, const NormalsListType&) = 0;` per §4.6.3. Pure-virtual addition is an ABI break — acceptable per [no-back-compat decision D4]; check [skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md) for reasoning still applicable to in-tree subclasses |
+| src/Library/Interfaces/ITriangleMeshGeometryIndexed.h | Add `virtual void UpdateVertices(const VerticesListType&, const NormalsListType&) = 0;` per §4.6.3. Pure-virtual addition is an ABI break — acceptable per [no-back-compat decision D4]; check [AGENTS.md change checklist](../AGENTS.md) for reasoning still applicable to in-tree subclasses |
 | [src/Library/Interfaces/ITriangleMeshGeometry.h](../src/Library/Interfaces/ITriangleMeshGeometry.h) | Same `UpdateVertices` addition for non-indexed (symmetry; not used by DisplacedGeometry today, but kept consistent) |
 | [src/Library/Job.cpp](../src/Library/Job.cpp) | Update `AddDisplacedGeometry` to construct with new signature |
 | [src/Library/RISE_API.h](../src/Library/RISE_API.h) | `RISE_API_AddDisplacedGeometry` signature change |
-| [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) (`displaced_geometry` chunk, lines ~3441+) | Drop `poly_bsp`, `maxpolygons`, `maxpolydepth` from accepted-parameter set; update schema reflection |
+| [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) (`displaced_geometry` chunk, lines ~3441+) | Drop `poly_bsp`, `maxpolygons`, `maxpolydepth` from accepted-parameter set; update schema reflection |
 
 ### 5.3 SBVH builder details
 
@@ -844,7 +844,7 @@ Every BVH width must produce deterministic, reproducible hits given the same sce
 In addition to this plan:
 - Update [docs/PERFORMANCE.md](PERFORMANCE.md) "Acceleration structures" section after Phase 1 ships.
 - Update [docs/ARCHITECTURE.md](ARCHITECTURE.md) to reference BVH instead of octree/BSP for triangle meshes.
-- Update [src/Library/README.md](../src/Library/README.md) and [src/Library/Geometry/README.md](../src/Library/Geometry/README.md) (if it exists) to point at the new acceleration directory.
+- Update [src/Library/README.md](../src/Library/README.md) and src/Library/Geometry/README.md (if it exists) to point at the new acceleration directory.
 - Update [CLAUDE.md](../CLAUDE.md) "High-Value Facts" section to mention BVH for triangle meshes.
 
 ### 10.4 Profiling
@@ -872,7 +872,7 @@ Report at scene load. Compare against pre-BVH octree baseline in the regression 
 
 - [adversarial-code-review](skills/adversarial-code-review.md) — fire after each phase lands. Three orthogonal reviewers: correctness (precision split, hit equivalence), performance (SAH metrics, SIMD utilization), platform (compile and run on macOS/Linux/Windows/Android).
 - [performance-work-with-baselines](skills/performance-work-with-baselines.md) — every phase needs a documented baseline before code, single-variable measurements, stddev, correctness invariant, numeric report.
-- [abi-preserving-api-evolution](skills/abi-preserving-api-evolution.md) — even though we're explicitly breaking the ABI, the reasoning in this skill applies to any further changes that try to layer on top mid-flight. Keep the new API tight from day one.
+- retired `abi-preserving-api-evolution` skill — even though we're explicitly breaking the ABI, the reasoning in this skill applies to any further changes that try to layer on top mid-flight. Keep the new API tight from day one.
 - [const-correctness-over-escape-hatches](skills/const-correctness-over-escape-hatches.md) — BVH build mutates the tree; traversal is logically const. Use the decision tree, not `mutable`.
 
 ### 10.7 Target Hardware Matrix

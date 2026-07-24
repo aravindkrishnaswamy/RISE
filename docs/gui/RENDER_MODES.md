@@ -1,6 +1,10 @@
 # Render Modes, N-up Viewports, and Agent Visualization Skills
 
-Status: **DESIGN RATIFIED 2026-07-16 — P1 in progress**
+Status: **P1–P3 SHIPPED.** The registry/data modes, beauty variants and light
+solo, agent `render{mode,view}`, and macOS/Windows N-up pane scheduler/shells
+are implemented and covered by `ViewportRenderModeTest`,
+`ViewportPaneConfigTest`, and `ViewportPaneSchedulerTest`. P4 refinements
+remain future work.
 
 Owner surface: both GUIs (Mac + Windows), core library (`src/Library/Rendering`,
 `src/Library/SceneEditor`, `src/Library/Agent`), agent skills (`skills/agent/`).
@@ -573,9 +577,10 @@ string comparison.
 
 ## 7. N-up multi-viewport (P3)
 
-**Status: DESIGN (2026-07-20).**  Grounded in a code audit of the shipped
-single-viewport architecture; every load-bearing claim cites file:line.  The
-five ratified decisions (§1) still bind — in particular decision 3 (fixed
+**Status: SHIPPED (2026-07-21).** The macOS and Windows N-up pane shells,
+scheduler, pane-local mode/view selection, and agent-facing pane support are
+implemented. The five ratified decisions (§1) still bind — in particular
+decision 3 (fixed
 layout set, max 4 panes).
 
 ### 7.0 Thesis and scope

@@ -1,5 +1,11 @@
 # Physically Based Rendering Pipeline Plan
 
+**Status:** **PARTIALLY EXECUTED ROADMAP.** HDR output, ray differentials/mip
+LOD, Rec.709 spectral uplift plus analytic spectral sky, physical exposure,
+light units, several glTF material extensions, volume, and importer-fidelity
+landings have shipped. The table below is the item-level source of truth for
+remaining work; the three landing documents are executed design records.
+
 End-to-end plan for closing the gap between RISE's path tracer and a
 defensibly physically based renderer, motivated by the
 `scenes/FeatureBased/Geometry/sponza_new.RISEscene` render coming out
@@ -184,7 +190,7 @@ that builds on the foundation.
 |---|---|---|---|---|---|
 | 1 | HDR primary output (EXR + separated exposure / display transform) | Output | No | None | **DONE** |
 | 2 | Ray differentials → mip LOD → stochastic mip selection | Texture | No | None | **DONE** (a78593b) |
-| 3 | Spectral upsampling (Jakob-Hanika) + spectral Hosek-Wilkie sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | TODO |
+| 3 | Spectral upsampling (Jakob-Hanika) + analytic spectral sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | **DONE — v1**. Rec.709 JH uplift and the `hosek_wilkie_skylight` API/chunk shipped; the sky model retains the documented Preetham-v1 internals rather than the planned Hosek-Wilkie coefficient fit. |
 | 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None | **DONE** (Group A bundle) |
 | 5 | Physical camera model (ISO + fstop + shutter → EV stack into LDR outputs) | Camera | No (additive) | 1 | **DONE — minimal variant** (Group A bundle).  No new chunk; ISO is opt-in on existing `pinhole_camera` / `thinlens_camera`.  Realistic-camera (lens-element ray tracing) is a separate future landing. |
 | 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit + sheen fix shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 8 configs.  Sheen grazing divergence (Findings B / configs #2, #6) FIXED via Imageworks production-friendly Charlie Λ (Estevez & Kulla 2017).  Composite recursion-budget loss (Finding A / configs #3, #7) remains its own future landing.  Detailed disposition in §"Landing 6" below. |
@@ -642,7 +648,7 @@ clearcoat-over-paint scenes; its own landing.
 | 4 | Composite: GGX / Lambertian | 1.025 | 1.027 | 1.036 | 1.051 | PASS @ 6% — non-delta GGX top doesn't trigger the recursion-loss path; gain matches GGX baseline + a tiny systematic walk bias |
 | 5 | Composite: GGX / GGX-PBR (clearcoat over PBR), white inputs | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — passes with white baseColor; the importer's "near-black" warning was suspected stale based on this alone, but #7 below shows it's regime-dependent. |
 | 6 | Composite: Sheen / GGX-PBR | 0.087 | 0.128 | 0.280 | 0.547 | PASS @ 5% bounded — Imageworks Λ keeps the layered case bounded too; sheen-over-PBR no longer blows up at grazing. |
-| 7 | Composite: clearcoat / red GGX-PBR (Finding D) | **0.040** | **0.040** | **0.068** | **0.205** | KNOWN-FAIL — same loss profile as #3.  Confirms the importer warning at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp:851) is real for diffuse-dominant materials.  Tied to Finding A — same recursion-budget bug, different regime. |
+| 7 | Composite: clearcoat / red GGX-PBR (Finding D) | **0.040** | **0.040** | **0.068** | **0.205** | KNOWN-FAIL — same loss profile as #3.  Confirms the importer warning at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp) is real for diffuse-dominant materials.  Tied to Finding A — same recursion-budget bug, different regime. |
 
 ### Findings, in priority order
 
@@ -695,7 +701,7 @@ near-delta dielectric, and the diffuse-dominant base's exit
 paths get clipped by the same `CompositeSPF` recursion budget
 that clobbers #3.  Disposition: tied to Finding A — both are the
 same bug, surfacing in different regimes.  The importer warning
-at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp:851)
+at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp)
 SHOULD remain in place until Finding A's recursion-budget fix
 lands.
 

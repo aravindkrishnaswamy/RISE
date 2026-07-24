@@ -12,7 +12,7 @@
 
 ## 1. Executive Summary
 
-**The problem.** Displacement maps are today available only on `BezierPatchGeometry`. The tessellation + displacement pipeline ([BezierValueGenerator.h:83](../src/Library/Geometry/BezierValueGenerator.h)) is cleanly separated but locked inside the Bezier path. Users cannot displace a sphere, torus, box, or any triangle mesh without manually authoring control patches.
+**The problem.** Displacement maps are today available only on `BezierPatchGeometry`. The tessellation + displacement pipeline (BezierValueGenerator.h:83) is cleanly separated but locked inside the Bezier path. Users cannot displace a sphere, torus, box, or any triangle mesh without manually authoring control patches.
 
 **The idea.** Introduce a composite `DisplacedGeometry` that wraps any existing `IGeometry`, tessellates it to a triangle mesh at scene-construction time, and applies an `IFunction2D` displacement along vertex normals — mirroring the existing Bezier path but as a reusable wrapper. To make this work for primitives that aren't natively meshes (sphere, torus, box, etc.), add one new method to `IGeometry`:
 
@@ -82,7 +82,7 @@ Adding a pure virtual to `IGeometry` would break out-of-tree subclasses silently
 
 Logging of "tessellation unsupported for geometry X" moves to the **caller** (`DisplacedGeometry` constructor and `Job::AddDisplacedGeometry`), where the user-assigned geometry name and scene-parse context are available; RTTI in a base-class default would only yield mangled type names.
 
-Refined from original §3.2 draft during Phase 0 after discovering that `src/3DSMax/MAXGeometry*` inherits from `IGeometry` directly (not via `Geometry` base). An inline header default keeps those plugin targets unaffected. See [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md).
+Refined from original §3.2 draft during Phase 0 after discovering that `src/3DSMax/MAXGeometry*` inherits from `IGeometry` directly (not via `Geometry` base). An inline header default keeps those plugin targets unaffected. See [AGENTS.md change checklist](../AGENTS.md).
 
 ### 3.3 Output is 4 plain `std::vector`s, not `ITriangleMeshGeometryIndexed`
 Exactly the signature used by `GeneratePolygonsFromBezierPatch` in [BezierTesselation.cpp:77](../src/Library/Geometry/BezierTesselation.cpp). Three reasons:
@@ -102,7 +102,7 @@ After `ApplyDisplacementMapToObject`, recompute face normals then re-average to 
 For closed parametric surfaces (sphere, torus, cylinder side), the `u=0`/`u=1` meridian vertices are generated as separate vertices with different UVs. Prevents cracks at displacement discontinuities caused by the UV tent-remap in `RemapTextureCoords`.
 
 ### 3.7 No default parameter values in headers
-Per [feedback_no_default_params](../../../.claude/projects/-Users-aravind-Documents-GitHub-RISE/memory/feedback_no_default_params.md). Every call site passes every argument explicitly. Parser chunk supplies defaults.
+Per `feedback_no_default_params` (private historical note). Every call site passes every argument explicitly. Parser chunk supplies defaults.
 
 ### 3.8 Ownership
 `DisplacedGeometry` takes an `IGeometry*` and `IFunction2D*`, AddRef's both in its constructor, Release's on destruction. Base geometry stays in `GeometryManager` and can be referenced by other objects independently — wrapping doesn't transfer ownership.
@@ -117,7 +117,7 @@ Per user confirmation: `GenerateMesh()` was a placeholder added for exactly this
 - Base-class implementation at [src/Library/Geometry/Geometry.cpp:29](../src/Library/Geometry/Geometry.cpp) and its declaration in `Geometry.h`.
 - All 14 per-type override declarations and empty implementations (SphereGeometry, EllipsoidGeometry, TorusGeometry, CylinderGeometry, BoxGeometry, CircularDiskGeometry, ClippedPlaneGeometry, InfinitePlaneGeometry, TriangleMeshGeometry, TriangleMeshGeometryIndexed, BezierPatchGeometry, BilinearPatchGeometry).
 
-This is a vtable-layout change on `IGeometry`. Out-of-tree subclasses that overrode `GenerateMesh` would fail to link — we've verified no such consumers exist. See [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md) for the general discipline.
+This is a vtable-layout change on `IGeometry`. Out-of-tree subclasses that overrode `GenerateMesh` would fail to link — we've verified no such consumers exist. See [AGENTS.md change checklist](../AGENTS.md) for the general discipline.
 
 Removal is interleaved with Phase 1 (interface) and Phase 2 (per-type), since the same files are being edited for `TessellateToMesh` addition. One logical change per file.
 
@@ -164,7 +164,7 @@ Each phase lists: goal, tasks (checkboxes), files touched, acceptance, rough eff
 **Goal**: no-code phase. Confirm the locked decisions in §3 still hold after a careful re-read, and answer §4 questions before any source changes.
 
 **Tasks**:
-- [ ] Re-read [BezierValueGenerator.h:83 `Get()`](../src/Library/Geometry/BezierValueGenerator.h) top to bottom.
+- [ ] Re-read BezierValueGenerator.h:83 `Get()` top to bottom.
 - [ ] Re-read [GeometryUtilities.cpp:438 `ApplyDisplacementMapToObject`](../src/Library/Geometry/GeometryUtilities.cpp) and `RemapTextureCoords` at line 205.
 - [ ] Re-read [BezierTesselation.cpp:77 `GeneratePolygonsFromBezierPatch`](../src/Library/Geometry/BezierTesselation.cpp).
 - [ ] Resolve §4 Q1–Q7 with user.
@@ -312,7 +312,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 
 **Tasks**:
 - [ ] Decide implementation site — evaluate both during the edit:
-  - Option A: modify `BezierValueGenerator::Get` at [BezierValueGenerator.h:83](../src/Library/Geometry/BezierValueGenerator.h) to call `RecomputeVertexNormalsFromTopology` after `ApplyDisplacementMapToObject`, gated by `!bUseFaceNormals`.
+  - Option A: modify `BezierValueGenerator::Get` at BezierValueGenerator.h:83 to call `RecomputeVertexNormalsFromTopology` after `ApplyDisplacementMapToObject`, gated by `!bUseFaceNormals`.
   - Option B: modify `ApplyDisplacementMapToObject` in [GeometryUtilities.cpp:438](../src/Library/Geometry/GeometryUtilities.cpp) to recompute internally.
   - **Preferred: Option A.** Keeps `ApplyDisplacementMapToObject` focused on position-only mutation; call sites opt in to the normal recompute. Lower blast radius if some future caller genuinely wants displaced positions with old normals (no current case, but cheaper future-proofing).
 - [ ] Apply the fix.
@@ -427,7 +427,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 **Goal**: `displaced_geometry { ... }` works in `.RISEscene` files.
 
 **Tasks**:
-- [ ] Add `DisplacedGeometryAsciiChunkParser` struct to [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) next to `BezierPatchGeometryAsciiChunkParser` (~line 3952). Parameters and defaults:
+- [ ] Add `DisplacedGeometryAsciiChunkParser` struct to [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) next to `BezierPatchGeometryAsciiChunkParser` (~line 3952). Parameters and defaults:
 
   | Param | Type | Default |
   |-------|------|---------|
@@ -469,7 +469,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 - [ ] `displaced_zero_scale.RISEscene` — sphere + `disp_scale=0.0`. Invariant: must render identically (to within float epsilon) to a plain tessellated sphere at same `detail`. Anchors the "displacement truly off" path.
 - [ ] `displaced_infiniteplane_fails.RISEscene` — wraps an `InfinitePlaneGeometry`. Intended to fail scene parse (§4 Q6). Add a test-runner entry that asserts parse *failure* rather than success.
 - [ ] **Existing** [scenes/FeatureBased/Geometry/teapot.RISEscene](../scenes/FeatureBased/Geometry/teapot.RISEscene) — no file change; after Phase 3b, re-render and replace its baseline. The visual output will change slightly (bumps cast more faithful micro-shadows). Document the baseline delta in the commit message.
-- [ ] Update [scenes/Tests/Geometry/README.md](../scenes/Tests/Geometry/README.md) or [scenes/Tests/README.md](../scenes/Tests/README.md) to list the new scenes.
+- [ ] Update scenes/Tests/Geometry/README.md or [scenes/Tests/README.md](../scenes/Tests/README.md) to list the new scenes.
 - [ ] Render each scene manually to confirm it produces a sensible image (eyeballing, no baseline yet — baseline capture is Phase 10).
 
 **Files touched**: 7 new `.RISEscene` files + README.
@@ -512,7 +512,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 
 **Tasks**:
 - [ ] Use or extend `scripts/capture_refactor_baselines.sh` / `scripts/check_refactor_baselines.sh` (introduced by the integrator refactor) — if it covers arbitrary scenes, reuse; otherwise add a small capture script.
-- [ ] Render each of the 7 scenes at a fixed seed and low samples. Render **sequentially** per [feedback_sequential_renders](../../../.claude/projects/-Users-aravind-Documents-GitHub-RISE/memory/feedback_sequential_renders.md).
+- [ ] Render each of the 7 scenes at a fixed seed and low samples. Render **sequentially** per `feedback_sequential_renders` (private historical note).
 - [ ] Commit baselines under `tests/baselines_refactor/pre_displaced_geometry/` (or similar subdir — match whatever the repo uses now; `tests/baselines_refactor/` already exists as untracked per current git status).
 - [ ] Add a post-build regression step that compares current renders to baselines. Tolerance: ~0.27% mean-luminance noise floor (matches the integrator-refactor plan's measured floor).
 - [ ] Document the regression command in [tests/README.md](../tests/README.md).
@@ -537,7 +537,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 - [ ] Write or extend a "Displacement" section in [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) documenting the `displaced_geometry` chunk, every parameter, and per-base-geometry `detail` semantics.
 - [ ] In [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md), add a note that `IGeometry::TessellateToMesh` is the forward hook for GPU mesh export and composite geometries.
 - [ ] Update the High-Value Facts list in [CLAUDE.md](../CLAUDE.md) ONLY if this feature becomes load-bearing for other subsystems (e.g., if a GPU path lands). Otherwise leave CLAUDE.md thin per its convention.
-- [ ] Brief entry in [scenes/Tests/Geometry/README.md](../scenes/Tests/Geometry/README.md) listing the new test scenes.
+- [ ] Brief entry in scenes/Tests/Geometry/README.md listing the new test scenes.
 
 **Files touched**: as listed.
 
@@ -656,7 +656,7 @@ Captured for reference; not part of this plan.
 
 - [ ] Plan approved — OK to flip Phase 0 to "In progress".
 
-On approval, I'll begin Phase 0: re-read the three precedent files ([BezierValueGenerator.h:83](../src/Library/Geometry/BezierValueGenerator.h), [GeometryUtilities.cpp:438](../src/Library/Geometry/GeometryUtilities.cpp), [BezierTesselation.cpp:77](../src/Library/Geometry/BezierTesselation.cpp)) and the `: public.*IGeometry` external-consumer grep, record any surprises in §3 of this plan, then proceed to Phase 1. The §2 Progress Summary is updated after each phase completes.
+On approval, I'll begin Phase 0: re-read the three precedent files (BezierValueGenerator.h:83, [GeometryUtilities.cpp:438](../src/Library/Geometry/GeometryUtilities.cpp), [BezierTesselation.cpp:77](../src/Library/Geometry/BezierTesselation.cpp)) and the `: public.*IGeometry` external-consumer grep, record any surprises in §3 of this plan, then proceed to Phase 1. The §2 Progress Summary is updated after each phase completes.
 
 ---
 

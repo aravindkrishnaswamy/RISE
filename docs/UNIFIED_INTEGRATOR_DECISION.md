@@ -1,14 +1,16 @@
 # Unified Integrator Decision (Phase 3)
 
-**Status:** Phase-3 decision — the synthesis the measurement arc was built for.
+**Status:** **RATIFIED AND IMPLEMENTED.** The selected PT-default,
+probe-routed hybrid ships as `auto_rasterizer` and
+`auto_spectral_rasterizer`; this is the Phase-3 decision record.
 **Date:** 2026-06-04.
 **Inputs:** the empirical [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md)
 matrix (Phase 1, now clean — see "What changed" below), the candidate
 end-states + criteria in [UNIFIED_INTEGRATOR_ANALYSIS.md](UNIFIED_INTEGRATOR_ANALYSIS.md)
 §6, the per-scene decision tree in [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md),
 and the [INTEGRATOR_BUGFIX_FINDINGS.md](INTEGRATOR_BUGFIX_FINDINGS.md) bug-fix arc.
-**Nature:** a data-grounded *recommendation* for the user to ratify; it picks a
-near-term direction and a sequenced research overlay per §6.3.
+**Nature:** the data-grounded recommendation that was ratified and implemented,
+plus its sequenced research overlay per §6.3.
 
 ---
 

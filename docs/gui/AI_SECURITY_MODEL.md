@@ -1,6 +1,10 @@
 # RISE AI Integration — Threat Model & Security Design
 
-**Status:** DESIGN. No code. The threat-model companion to the two AI deep-dives — [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) (the agent tool/resource surface, transports, scopes) and [LLM_AGENT_RUNTIME.md](LLM_AGENT_RUNTIME.md) (provider adapters, the agent loop, autonomy L0–L3, credentials). Those two specs design *what the AI can do*; this doc designs *what must never happen when it does*. An adversarial review found the AI integration "has scopes but no threat model" — this is that threat model.
+**Status:** **PARTIALLY IMPLEMENTED THREAT MODEL.** Server-side
+read/propose/commit policy, owner-vs-external authority, proposal approval,
+head-version conflicts, loopback transport restrictions, and trajectory secret
+redaction have shipped. Project-root jailing, outbound-URL policy, credential
+store, and the full untrusted-content sandbox remain design requirements.
 **Owner:** Aravind Krishnaswamy
 **Scope:** A concrete, attacker-centric threat model for the in-app AI agent and the first-party RISE agent tool surface (the MCP-protocol server in `src/Library/Agent/`), with mitigations mapped to the autonomy levels (L0 Advisor → L3 Autonomous) and the three scopes (`read` / `edit` / `render-and-spend`). Covers: prompt injection from untrusted content, cloud-data disclosure + consent, SSRF / endpoint abuse, filesystem-capability / path-root enforcement, secret redaction, the destructive-command policy, curated external-MCP ownership, and multi-client trust. Excludes the tool catalog itself (sibling) and engine-internal correctness (the rendering docs).
 

@@ -17,7 +17,7 @@ work lands; never delete history — move items to the **Shipped** or
   changes. When the picture meaningfully shifts, write a new dated audit
   section below it rather than rewriting the baseline.
 - Pair changes with the
-  [abi-preserving-api-evolution](skills/abi-preserving-api-evolution.md) skill
+  retired `abi-preserving-api-evolution` skill
   whenever a touched signature crosses `RISE_API.h` or `IJob.h`, and the
   [performance-work-with-baselines](skills/performance-work-with-baselines.md)
   skill for any item that claims a wall-clock win — measure, don't assume.
@@ -52,7 +52,7 @@ Single concrete pipeline in
 
 Scene-language entry: a single `oidn_denoise` Bool parameter on each rasterizer
 chunk in
-[AsciiSceneParser.cpp:599](../src/Library/Parsers/AsciiSceneParser.cpp#L599).
+[AsciiSceneParser.cpp:599](../src/Library/Parsers/ChunkParserRegistry.cpp).
 
 ### Exact OIDN API surface RISE calls
 
@@ -190,7 +190,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   stored even when `oidn_denoise=false` so MLT keeps the parameter
   consistent — irrelevant when denoise is off but cheap to keep parseable.
 - **Touch:**
-  [AsciiSceneParser.cpp:599](../src/Library/Parsers/AsciiSceneParser.cpp#L599)
+  [AsciiSceneParser.cpp:599](../src/Library/Parsers/ChunkParserRegistry.cpp)
   region (and every chunk's `Finalize`),
   [Rasterizer.h](../src/Library/Rendering/Rasterizer.h),
   [OIDNDenoiser.{h,cpp}](../src/Library/Rendering/OIDNDenoiser.cpp),
@@ -208,7 +208,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   log denoise time, eyeball output. Render at SPP-low and SPP-high and verify
   `auto` flips between FAST / BALANCED / HIGH around the documented
   thresholds. ABI-evolving change → review against the
-  [abi-preserving-api-evolution](skills/abi-preserving-api-evolution.md) skill.
+  retired `abi-preserving-api-evolution` skill.
 - **Result:**
   - `make -C build/make/rise -j8 all` clean (no new warnings).
   - `./run_all_tests.sh` clean: **72/72 pass**.

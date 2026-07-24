@@ -1,8 +1,11 @@
 # Vitreous Enamel — Physics, Optics, and a RISE Rendering Plan
 
-**Status:** Planning / research. No code written. Reference footage received
-(two lighting-bracketed frames, 2026-06-30); the captured-watch target spec is
-in §9.
+**Status:** **PARTIALLY EXECUTED / HERO SHIPPED.** The spectral-medium,
+gold-ruby, glint, AR-coating, and enamel scene work described by the landed
+markers below is in the tree, with the hero and calibration scenes under
+[`scenes/FeatureBased/EnamelWatch/`](../scenes/FeatureBased/EnamelWatch/).
+The remaining sections are the broader research plan for general
+spatially-varying enamel, not a claim that no code exists.
 
 **Hero target:** a genuine **anOrdain Model 1** — grand-feu fumé
 (smoked-gradient) **red / oxblood↔raspberry** vitreous-enamel dial with a strong
@@ -283,7 +286,7 @@ wholesale and swaps the dial material+geometry.**
   onto the substrate needs it.
 - **Wavelength sampling — NOT decided in favour of HWSS (review P1).** RISE's
   HWSS volume path samples free-flight at the **hero wavelength**
-  ([PathTracingIntegrator.cpp:3586,4256](src/Library/Shaders/PathTracingIntegrator.cpp:3586));
+  ([PathTracingIntegrator.cpp:3586,4256](../src/Library/Shaders/PathTracingIntegrator.cpp));
   once G1 makes σ_a/σ_s **wavelength-dependent**, the per-wavelength event and
   survival probabilities diverge from the hero's, so HWSS is **not assumed
   physically exact** for colored media. **Ground truth is the analytic Beer slab,
@@ -337,12 +340,12 @@ over a mirror violates). In RISE terms: a `DielectricMaterial` surface + an
 conductor bottom — *not* `subsurfacescattering_material`. **The bottom boundary
 must be the conductor, not a dielectric face** (§10.1): `DielectricSPF` pops the
 IOR stack and refracts out at any dielectric exit
-([DielectricSPF.cpp:97](src/Library/Materials/DielectricSPF.cpp:97)), so a naïvely
+([DielectricSPF.cpp:97](../src/Library/Materials/DielectricSPF.cpp)), so a naïvely
 closed dielectric slab would add a fake glass→air interface in front of the
 silver. **Hard authoring rule (review P1):** author the top dielectric with an
 **explicit `tau 1.0`** (never omit it, never `none` — those fail construction;
 §10.9) — dielectric `tau` is applied as Beer-Lambert distance attenuation
-`pow(tau, distance)` on exit ([DielectricSPF.cpp:218](src/Library/Materials/DielectricSPF.cpp:218)),
+`pow(tau, distance)` on exit ([DielectricSPF.cpp:218](../src/Library/Materials/DielectricSPF.cpp)),
 so a non-unity `tau` *plus* the medium's Beer transmittance **double-counts
 absorption**. **All colour absorption lives in `HomogeneousMedium` σ_a(λ); the
 dielectric interface is colour-neutral (`tau 1.0`).** (§10.9)
@@ -384,12 +387,12 @@ Lambertian backing under the glass (§10.10).
 
 | # | Gap | Load-bearing? | Resolution |
 |---|---|---|---|
-| **G1** | **Without a spectral curve, the medium collapses to gray luminance.** `HomogeneousMedium::GetCoefficientsNM()` falls back to `Luminance(m_sigma_t)` ([HomogeneousMedium.cpp:139](src/Library/Materials/HomogeneousMedium.cpp:139)) for RGB-authored media — so a red enamel with no `σ(λ)` curve renders **achromatic** under `*_spectral_*`; it's not merely "RGB-approximated." **G1-a shipped the fix** (curve path [HomogeneousMedium.cpp:121](src/Library/Materials/HomogeneousMedium.cpp:121)); see §10.13 for the increment breakdown and current state. | **YES — the core fidelity item (LOCKED: build it).** A green-absorbing gold-ruby red, cobalt's triple notch, etc. cannot exist at all in spectral mode without this. | **Cross-cutting fix — see §10.13 for the a/b/c/d decomposition and status, plus the "Net" paragraph + §11:** spectral **storage + distance sampling + majorant + transmittance** in `HomogeneousMedium` (**G1-a DONE**, commit `7b77082a`); the **pure-absorber double-attenuation + HWSS free-flight reweighting** estimator work (§10.3, §10.13 **G1-c**); and a **spectral-curve authoring path** (§10.13 **G1-b**) — the chunk advertises `DoubleVec3` ([AsciiSceneParser.cpp:5996](src/Library/Parsers/AsciiSceneParser.cpp:5996)) and `IJob`/`RISE_API` took RGB, so the authoring surface gains a λ-curve binding via the existing coordinate-free named `IFunction1D` — plus the analytic-slab spectral gate (**G1-d**). Hero needs only a **position-independent λ-curve** (gradient is geometry, §2.1). Spatial-×-spectral is a **separate, bigger build** (§10.7, §11): a volume-coordinate mapping (`IMedium` queries by `Point3` [IMedium.h:85](src/Library/Interfaces/IMedium.h:85), not a surface painter) **plus** fixing `HeterogeneousMedium`'s luminance collapse — **built, sequenced after the hero**, not abandoned. |
+| **G1** | **Without a spectral curve, the medium collapses to gray luminance.** `HomogeneousMedium::GetCoefficientsNM()` falls back to `Luminance(m_sigma_t)` ([HomogeneousMedium.cpp:139](../src/Library/Materials/HomogeneousMedium.cpp)) for RGB-authored media — so a red enamel with no `σ(λ)` curve renders **achromatic** under `*_spectral_*`; it's not merely "RGB-approximated." **G1-a shipped the fix** (curve path [HomogeneousMedium.cpp:121](../src/Library/Materials/HomogeneousMedium.cpp)); see §10.13 for the increment breakdown and current state. | **YES — the core fidelity item (LOCKED: build it).** A green-absorbing gold-ruby red, cobalt's triple notch, etc. cannot exist at all in spectral mode without this. | **Cross-cutting fix — see §10.13 for the a/b/c/d decomposition and status, plus the "Net" paragraph + §11:** spectral **storage + distance sampling + majorant + transmittance** in `HomogeneousMedium` (**G1-a DONE**, commit `7b77082a`); the **pure-absorber double-attenuation + HWSS free-flight reweighting** estimator work (§10.3, §10.13 **G1-c**); and a **spectral-curve authoring path** (§10.13 **G1-b**) — the chunk advertises `DoubleVec3` ([AsciiSceneParser.cpp:5996](../src/Library/Parsers/ChunkParserRegistry.cpp)) and `IJob`/`RISE_API` took RGB, so the authoring surface gains a λ-curve binding via the existing coordinate-free named `IFunction1D` — plus the analytic-slab spectral gate (**G1-d**). Hero needs only a **position-independent λ-curve** (gradient is geometry, §2.1). Spatial-×-spectral is a **separate, bigger build** (§10.7, §11): a volume-coordinate mapping (`IMedium` queries by `Point3` [IMedium.h:85](../src/Library/Interfaces/IMedium.h), not a surface painter) **plus** fixing `HeterogeneousMedium`'s luminance collapse — **built, sequenced after the hero**, not abandoned. |
 | G2 | **No rough-dielectric GGX transmission (BTDF).** | No for the hero (fire-polished); surface relief is real displacement, not a rough BTDF. | Sequenced on need (§11): if any enamel reads satin, **build a proper GGX dielectric BTDF**, not the `scattering`-Phong-widening heuristic. Distinct from the §10.2 crystalline relief (real microgeometry). |
 | G3 | **BSSRDF is semi-infinite** (wrong for thin slab over mirror). | N/A — design decision, not a code gap. | Use bounded `interior_medium`, per §4. |
 | G4 | Thin-film is **single-layer** (>1-layer interference absent). | No — only for multi-stack optical coatings / strong opalescence. | Genuinely out of scope (§11 "S"). The *single*-layer thin-film **ambient-IOR** under enamel is covered by G6/§10.8, not this. |
 | **G5** | Geometry: enamel must be the **volume between the flat top and the substrate height field** (a **dome** for fumé, a **guilloché relief** for flinqué). | Yes (modeling). | Model the enamel as a heightfield/SDF slab: underside = substrate height field (dome or guilloché), top = flat/gently-domed; assign `interior_medium`. The SDF heightfield path already does both. Silver substrate ⇒ GGX conductor with **silver n,k** + G6. |
-| **G6** | **GGX conductor Fresnel hardcodes air incidence** (Ni = `RISEPel(1,1,1)` [GGXSPF.cpp:266](src/Library/Materials/GGXSPF.cpp:266); `1.0` NM [GGXSPF.cpp:509](src/Library/Materials/GGXSPF.cpp:509), and GGXBRDF). The buried silver is seen **through glass**, so its Fresnel must use **Ni = n_enamel(λ)**, not air. | **YES** — silver-under-glass reflects differently than silver-in-air; without it the substrate is physically wrong even with correct geometry. | `Optics::CalculateConductorReflectance` already takes an explicit `Ni` ([Optics.h:53](src/Library/Utilities/Optics.h:53)). **General fix: read `ior_stack.top()`** as the ambient IOR (= `n_enamel(λ)` under the burial convention — automatic + dispersion-correct, no authoring). **SPF/Pdf already receive the stack** ([ISPF.h:135](src/Library/Interfaces/ISPF.h:135)) → zero-interface edit (stop hardcoding air); **`IBSDF::value()`/`valueNM()` do not** ([IBSDF.h:55](src/Library/Interfaces/IBSDF.h:55)) → thread ambient IOR into the BSDF-eval interface (vtable/ABI event). Cover **all** sites: SPF Fresnel, BRDF value, **Kulla-Conty `F_avg`** ([GGXBRDF.cpp:288](src/Library/Materials/GGXBRDF.cpp:288)/[:435](src/Library/Materials/GGXBRDF.cpp:435)), albedo/AOV. Scene `incident_ior` = **optional override only**. See §10.6. |
+| **G6** | **GGX conductor Fresnel hardcodes air incidence** (Ni = `RISEPel(1,1,1)` [GGXSPF.cpp:266](../src/Library/Materials/GGXSPF.cpp); `1.0` NM [GGXSPF.cpp:509](../src/Library/Materials/GGXSPF.cpp), and GGXBRDF). The buried silver is seen **through glass**, so its Fresnel must use **Ni = n_enamel(λ)**, not air. | **YES** — silver-under-glass reflects differently than silver-in-air; without it the substrate is physically wrong even with correct geometry. | `Optics::CalculateConductorReflectance` already takes an explicit `Ni` ([Optics.h:53](../src/Library/Utilities/Optics.h)). **General fix: read `ior_stack.top()`** as the ambient IOR (= `n_enamel(λ)` under the burial convention — automatic + dispersion-correct, no authoring). **SPF/Pdf already receive the stack** ([ISPF.h:135](../src/Library/Interfaces/ISPF.h)) → zero-interface edit (stop hardcoding air); **`IBSDF::value()`/`valueNM()` do not** ([IBSDF.h:55](../src/Library/Interfaces/IBSDF.h)) → thread ambient IOR into the BSDF-eval interface (vtable/ABI event). Cover **all** sites: SPF Fresnel, BRDF value, **Kulla-Conty `F_avg`** ([GGXBRDF.cpp:288](../src/Library/Materials/GGXBRDF.cpp)/[:435](../src/Library/Materials/GGXBRDF.cpp)), albedo/AOV. Scene `incident_ior` = **optional override only**. See §10.6. |
 | — | Foil/paillon flecks, plique-à-jour backlight, uranium fluorescence. | No. | Explicit out-of-scope extensions; note for later. |
 
 **Net (do not under-scope — see §11):** v1 reuses the watch scaffolding for geometry
@@ -397,9 +400,9 @@ and lighting, but its *physics* requires two coordinated, cross-cutting RISE cha
 not "two small features":
 - **G1 (chromatic medium) spans the whole construction stack**, because medium
   coefficients are RGB-only end to end today: the scene chunk advertises
-  `DoubleVec3` `absorption`/`scattering` ([AsciiSceneParser.cpp:5996](src/Library/Parsers/AsciiSceneParser.cpp:5996)),
-  `IJob::AddHomogeneousMedium` takes `double[3]` ([IJob.h:1450](src/Library/Interfaces/IJob.h:1450)),
-  `RISE_API_CreateHomogeneousMedium` takes `RISEPel` ([RISE_API.h:3216](src/Library/RISE_API.h:3216)),
+  `DoubleVec3` `absorption`/`scattering` ([AsciiSceneParser.cpp:5996](../src/Library/Parsers/ChunkParserRegistry.cpp)),
+  `IJob::AddHomogeneousMedium` takes `double[3]` ([IJob.h:1450](../src/Library/Interfaces/IJob.h)),
+  `RISE_API_CreateHomogeneousMedium` takes `RISEPel` ([RISE_API.h:3216](../src/Library/RISE_API.h)),
   and `GetCoefficientsNM` collapses to luminance. So G1 = **spectral storage +
   spectral distance sampling/majorant/transmittance in `HomogeneousMedium`**, the
   **HWSS free-flight reweighting + the pure-absorber double-attenuation fix** (§10.3),
@@ -615,9 +618,9 @@ opacifier data so the result is *hack-free*, not appearance-fit.
 
 ### 10.1 Boundary mechanism — the medium must be bottomed by the conductor (P1)
 RISE tracks object media via the IOR stack
-([MediumTracking.h:45](src/Library/Utilities/MediumTracking.h:45)), and
+([MediumTracking.h:45](../src/Library/Utilities/MediumTracking.h)), and
 `DielectricSPF` **pops the stack and refracts out at any dielectric exit**
-([DielectricSPF.cpp:97](src/Library/Materials/DielectricSPF.cpp:97)). A naïvely
+([DielectricSPF.cpp:97](../src/Library/Materials/DielectricSPF.cpp)). A naïvely
 *closed* dielectric enamel slab therefore has a **bottom dielectric face that
 refracts/Fresnels into whatever is beneath it** — a fake glass→air interface in
 front of the silver, which is unphysical (the enamel is fused *to* the metal).
@@ -692,17 +695,17 @@ crosses the colored glass before and after). **Protocol:**
 NM.** NM and HWSS are *both* estimators to validate against it. This matters because
 the base medium estimator has a credible **double-attenuation risk for pure
 absorbers**: PT samples a free-flight distance from σ_t
-([HomogeneousMedium.cpp:132](src/Library/Materials/HomogeneousMedium.cpp:132)) —
+([HomogeneousMedium.cpp:132](../src/Library/Materials/HomogeneousMedium.cpp)) —
 so reaching the surface already happens with probability `exp(−σ_t·d)` — and then
 the no-scatter surface-hit branch **multiplies Beer transmittance again**
-([PathTracingIntegrator.cpp:1665](src/Library/Shaders/PathTracingIntegrator.cpp:1665)).
+([PathTracingIntegrator.cpp:1665](../src/Library/Shaders/PathTracingIntegrator.cpp)).
 If those are not algebraically cancelling (analog estimator should weight the
 survived path by 1, not by `exp(−σ_t·d)`), an absorbing enamel renders **too dark**.
 **Gate (part of G1):** (1) validate the **base non-HWSS NM** estimator against the
 analytic slab for a **pure absorber** (σ_s=0) across thicknesses/angles — fix the
 estimator if it fails; (2) only then compare **HWSS** against NM+analytic. RISE's
 HWSS volume path samples free-flight at the **hero wavelength**
-([PathTracingIntegrator.cpp:3586,4256](src/Library/Shaders/PathTracingIntegrator.cpp:3586)),
+([PathTracingIntegrator.cpp:3586,4256](../src/Library/Shaders/PathTracingIntegrator.cpp)),
 so with wavelength-dependent σ (G1) the per-wavelength survival diverges from the
 hero's. **Per the project principle (§11) we *fix* the HWSS reweighting for
 wavelength-dependent media** (spectral-MIS / residual-ratio reweighting of the
@@ -719,7 +722,7 @@ spectral-bundle-bias notes in CLAUDE.md.)
 > helper (= 1 for NM/monochrome, preserves per-channel colour for RGB — verified the
 > colored case stays colored, *not* desaturated). **[Superseded 2026-07-01, commit
 > ad739554]** — `pSurvival` was originally `MinValue(Tr) = PTTrReduced(Tr)`; it is now the
-> **deterministic `IMedium::EvalDistancePdf[NM](scattered=false)`** (byte-identical for
+> **deterministic `IMedium::EvalDistancePdfNM(scattered=false)`** (byte-identical for
 > homogeneous, correct for *heterogeneous* media where `EvalTransmittance` is stochastic
 > ratio tracking and `MinValue(EvalTransmittance)` was a biased random denominator). §10.12. New `tests/VolumeAbsorptionAttenuationTest.cpp` (gray RGB / colored RGB
 > / NM) asserts exp(−σ_a·d); fails on the old tree, passes now; full suite 142/142,
@@ -747,9 +750,9 @@ spectral-bundle-bias notes in CLAUDE.md.)
 
 ### 10.4 Units & scene-scale for σ — RESOLVED: inverse scene units (P2)
 **Settled by the code:** `HomogeneousMedium::EvalTransmittance` evaluates
-`exp(−σ_t · dist)` on the **raw** ray distance ([HomogeneousMedium.cpp:200](src/Library/Materials/HomogeneousMedium.cpp:200)),
+`exp(−σ_t · dist)` on the **raw** ray distance ([HomogeneousMedium.cpp:200](../src/Library/Materials/HomogeneousMedium.cpp)),
 `SampleDistance` likewise; `scene_unit` is parser/camera state and is **not**
-consumed by the medium path ([AsciiSceneParser.cpp:564](src/Library/Parsers/AsciiSceneParser.cpp:564)).
+consumed by the medium path ([AsciiSceneParser.cpp:564](../src/Library/Parsers/ChunkParserRegistry.cpp)).
 Therefore **all σ values are in inverse scene units** (the doc-comment "[1/m]" is
 nominal). **Authoring rule:** convert a physical coefficient to renderer units by
 `σ[1/scene-unit] = σ[1/m] × scene_unit[m/unit]`. For watch_dial
@@ -779,7 +782,7 @@ n(λ), matrix n, volume loading — §1 has TiO₂/SnO₂/zircon sizes & indices
 Henyey-Greenstein `g` is itself an approximation to the Mie angular lobe** (which is
 forward-peaked with structured side/back lobes), and RISE's `IPhaseFunction` has **no
 wavelength parameter** today — `Evaluate(wi,wo)`/`Sample`/`Pdf` only
-([IPhaseFunction.h:63](src/Library/Interfaces/IPhaseFunction.h:63)). So the **no-corners
+([IPhaseFunction.h:63](../src/Library/Interfaces/IPhaseFunction.h)). So the **no-corners
 fix is a tabulated/spectral Mie phase function** (per-wavelength angular distribution),
 which **requires extending `IPhaseFunction` with a wavelength argument** (a vtable/ABI
 event — same discipline as G6). HG-`g` remains an explicitly *labelled* fallback for
@@ -787,11 +790,11 @@ quick previews.
 
 **The interface arg is the small part — the renderer plumbing is the real work
 (review).** Phase `Sample`/`Pdf`/`Evaluate` are called **without a wavelength** at ~31
-sites across PT ([PathTracingIntegrator.cpp:1544,4313](src/Library/Shaders/PathTracingIntegrator.cpp:1544)),
-BDPT ([BDPTIntegrator.cpp:1723](src/Library/Shaders/BDPTIntegrator.cpp:1723)), and the
+sites across PT ([PathTracingIntegrator.cpp:1544,4313](../src/Library/Shaders/PathTracingIntegrator.cpp)),
+BDPT ([BDPTIntegrator.cpp:1723](../src/Library/Shaders/BDPTIntegrator.cpp)), and the
 RayCaster shader-dispatch path; and BDPT's stored-subpath machinery **explicitly assumes
 a wavelength-independent medium phase** — "phase function is wavelength-independent
-(ratio = 1.0 for scattering)" ([BDPTIntegrator.cpp:6089](src/Library/Shaders/BDPTIntegrator.cpp:6089)).
+(ratio = 1.0 for scattering)" ([BDPTIntegrator.cpp:6089](../src/Library/Shaders/BDPTIntegrator.cpp)).
 So a spectral phase function **silently degrades to wavelength-independent in every
 non-hero path** unless we thread `nm` through: **(a)** every phase `Sample`/`Pdf`/
 `Evaluate` call (PT, BDPT, MLT-via-BDPT, RayCaster); **(b)** the **stored medium-subpath
@@ -804,9 +807,9 @@ this isn't a hero blocker) — but when built it is threaded **everywhere**, not
 the hero path, or it's a corner cut.
 
 **Authoring path is also missing, not just the interface (review).** Today a medium's
-phase is a **string** `phase = isotropic | hg <g>` ([AsciiSceneParser.cpp:5998](src/Library/Parsers/AsciiSceneParser.cpp:5998));
-`IJob::AddHomogeneousMedium` takes only `(phase_type, phase_g)` ([IJob.h:1454](src/Library/Interfaces/IJob.h:1454));
-and `Job::AddHomogeneousMedium` constructs **only** isotropic/HG ([Job.cpp:5371](src/Library/Job.cpp:5371)).
+phase is a **string** `phase = isotropic | hg <g>` ([AsciiSceneParser.cpp:5998](../src/Library/Parsers/ChunkParserRegistry.cpp));
+`IJob::AddHomogeneousMedium` takes only `(phase_type, phase_g)` ([IJob.h:1454](../src/Library/Interfaces/IJob.h));
+and `Job::AddHomogeneousMedium` constructs **only** isotropic/HG ([Job.cpp:5371](../src/Library/Job.cpp)).
 There is **no way to bind a tabulated/measured phase function to a medium.** So the
 no-corners item also includes a **constructible phase-function authoring path**: either
 **named phase-function chunks + a manager** (a `phase_function` chunk one can reference,
@@ -835,8 +838,8 @@ the hero, built properly (real Mie + a real authoring path, not a fitted `g`) pe
 > value()-signature plan below.
 
 RISE's GGX conductor Fresnel hardcodes the incident medium as air: `Ni =
-RISEPel(1,1,1)` ([GGXSPF.cpp:266](src/Library/Materials/GGXSPF.cpp:266)), `1.0` in
-the NM path ([GGXSPF.cpp:509](src/Library/Materials/GGXSPF.cpp:509)), and the same
+RISEPel(1,1,1)` ([GGXSPF.cpp:266](../src/Library/Materials/GGXSPF.cpp)), `1.0` in
+the NM path ([GGXSPF.cpp:509](../src/Library/Materials/GGXSPF.cpp)), and the same
 in `GGXBRDF`. The buried silver substrate is viewed **through the enamel**, so its
 reflectance must be evaluated for **glass incidence** `Ni = n_enamel(λ)` — silver
 under n≈1.55 glass reflects measurably *less* than silver in air.
@@ -850,14 +853,14 @@ path's `ior_stack.top()` is `n_enamel(λ)` — so reading the stack gives the ri
 than a scene-authored constant. So the fix is **"read `ior_stack.top()`"**, applied at
 every conductor ambient-IOR site:
 - **(i) `GGXSPF` sampling Fresnel (RGB + NM)** and **(ii) `Pdf`/`PdfNM`** — these
-  **already receive `const IORStack&`** ([ISPF.h:135,162](src/Library/Interfaces/ISPF.h:135);
-  `GGXSPF::Scatter`/`ScatterNM` take it [GGXSPF.cpp:127,384](src/Library/Materials/GGXSPF.cpp:127)),
+  **already receive `const IORStack&`** ([ISPF.h:135,162](../src/Library/Interfaces/ISPF.h);
+  `GGXSPF::Scatter`/`ScatterNM` take it [GGXSPF.cpp:127,384](../src/Library/Materials/GGXSPF.cpp)),
   so this is a **zero-interface-change** edit: stop hardcoding air, read the top.
 - **(iii) `GGXBRDF::value()`/`valueNM()` Fresnel** and **(iv) the Kulla-Conty
   multiscatter `F_avg`** computed there (today hardcoded air —
-  `ComputeFresnelAvg(n, RISEPel(1,1,1), …)` [GGXBRDF.cpp:288](src/Library/Materials/GGXBRDF.cpp:288),
-  `(n, 1.0, …)` [GGXBRDF.cpp:435](src/Library/Materials/GGXBRDF.cpp:435)) — the **one
-  real gap**: `IBSDF::value()`/`valueNM()` receive **no IOR stack** ([IBSDF.h:55](src/Library/Interfaces/IBSDF.h:55)).
+  `ComputeFresnelAvg(n, RISEPel(1,1,1), …)` [GGXBRDF.cpp:288](../src/Library/Materials/GGXBRDF.cpp),
+  `(n, 1.0, …)` [GGXBRDF.cpp:435](../src/Library/Materials/GGXBRDF.cpp)) — the **one
+  real gap**: `IBSDF::value()`/`valueNM()` receive **no IOR stack** ([IBSDF.h:55](../src/Library/Interfaces/IBSDF.h)).
   The integrator *does* hold the stack at the `value()` call site (NEE/MIS at a known
   hit), so the fix is to **thread the ambient IOR (`ior_stack.top()`, a single
   scalar/`Ni(λ)`) into the BSDF-evaluation interface.** That keeps `Scatter`, `Pdf`,
@@ -869,13 +872,13 @@ every conductor ambient-IOR site:
   LUT keyed on air); if the energy LUT is air-baked, that's extra work.
 
 `Optics::CalculateConductorReflectance` already exposes `Ni`
-([Optics.h:53](src/Library/Utilities/Optics.h:53)), so the per-site change is just
+([Optics.h:53](../src/Library/Utilities/Optics.h)), so the per-site change is just
 passing `ior_stack.top()` instead of `1.0`. A scene-authored **`incident_ior`
 `IScalarPainter` is kept only as an *optional override*** (default = read the stack)
 for media not modeled as a nested dielectric, or for diagnostics — **not** required for
 the enamel. **Accuracy note — NM is dispersion-correct, RGB is representative-grade.**
-`IORStack::top()` returns a **single `Scalar`** ([IORStack.h:184](src/Library/Utilities/IORStack.h:184)).
-In the NM path `DielectricSPF` pushes `GetValueAtNM(nm)` ([DielectricSPF.h:127](src/Library/Materials/DielectricSPF.h:127)),
+`IORStack::top()` returns a **single `Scalar`** ([IORStack.h:184](../src/Library/Utilities/IORStack.h)).
+In the NM path `DielectricSPF` pushes `GetValueAtNM(nm)` ([DielectricSPF.h:127](../src/Library/Materials/DielectricSPF.h)),
 so the stack top is the true `n_enamel(λ)` — **exact** for the spectral hero. In the
 RGB/Pel path the stack carries one representative scalar IOR, so the conductor's
 ambient index is **representative-grade** (no per-channel ambient dispersion). The
@@ -897,9 +900,9 @@ read it.)
 
 ### 10.7 Medium coefficients need a coordinate-free curve, then a volume mapping (P2)
 **Even the homogeneous hero cannot ride a surface `IScalarPainter`.** `IMedium`
-queries coefficients at a **world-space `Point3`** ([IMedium.h:90](src/Library/Interfaces/IMedium.h:90)),
+queries coefficients at a **world-space `Point3`** ([IMedium.h:90](../src/Library/Interfaces/IMedium.h)),
 but `IScalarPainter::GetValueAtNM` requires a **surface `RayIntersectionGeometric`**
-([IScalarPainter.h:133](src/Library/Interfaces/IScalarPainter.h:133)) — a medium event
+([IScalarPainter.h:133](../src/Library/Interfaces/IScalarPainter.h)) — a medium event
 has no surface hit. So the G1 authoring path must be a **coordinate-free spectral-curve
 abstraction** (a `λ → value` interface that takes *no* `ri` — e.g. an `ISpectralCurve`
 backed by piecewise-linear/`.spectra`/Sellmeier-like data), and the medium chunk must
@@ -912,7 +915,7 @@ by construction). The hero is exactly this coordinate-free λ-curve.
 cells, painted work, concentration-graded fumé), the coordinate-free curve gains a
 **position argument** — but mapped from the medium's `Point3`, not a surface UV:
 `IScalarPainter` evaluates at a **surface `RayIntersectionGeometric`** (hit
-UVs/normal) ([IScalarPainter.h:124](src/Library/Interfaces/IScalarPainter.h:124)).
+UVs/normal) ([IScalarPainter.h:124](../src/Library/Interfaces/IScalarPainter.h)).
 A medium event has no surface UV. So spatial-×-spectral coefficients require a
 **volume-coordinate or object-local mapping** (e.g. project the `Point3` into the
 dial's local frame / a 2D dial coordinate, or a 3D field), authored as a distinct
@@ -921,9 +924,9 @@ abstraction — **not** a surface painter.
 **But coordinate mapping is only half the gap (review).** The spatial path is
 `HeterogeneousMedium`, which **also collapses spectral to luminance** — in *three*
 places: the per-point coefficients `c.sigma_* = Luminance(m_max_sigma_*)·density`
-([HeterogeneousMedium.cpp:236](src/Library/Materials/HeterogeneousMedium.cpp:236)),
-the **delta-tracking majorant** ([:379](src/Library/Materials/HeterogeneousMedium.cpp:379)),
-and the **distance-sampling σ_t** ([:598](src/Library/Materials/HeterogeneousMedium.cpp:598)).
+([HeterogeneousMedium.cpp:236](../src/Library/Materials/HeterogeneousMedium.cpp)),
+the **delta-tracking majorant** ([:379](../src/Library/Materials/HeterogeneousMedium.cpp)),
+and the **distance-sampling σ_t** ([:598](../src/Library/Materials/HeterogeneousMedium.cpp)).
 So even with a correct coordinate map, cloisonné/painted enamel would render
 **spectrally gray** — the same class of bug as G1, but in the heterogeneous path and
 its *tracking* machinery. **No-corners scope for the spatial medium therefore = (a)
@@ -936,7 +939,7 @@ is **built properly**, not a permanently-accepted limitation, and not mis-scoped
 
 ### 10.8 Buried thin-film/oxide accents — fixed via G6, sequenced after the hero (P3)
 G6 fixes the **bare-conductor** Fresnel ambient IOR, but the **thin-film** GGX paths
-*also* hardcode an **air ambient** (`1.0, 0.0`) — [GGXSPF.cpp:498](src/Library/Materials/GGXSPF.cpp:498),
+*also* hardcode an **air ambient** (`1.0, 0.0`) — [GGXSPF.cpp:498](../src/Library/Materials/GGXSPF.cpp),
 `GGXBRDF` likewise, with a comment stating "ambient = air (1+0i)". So a
 **heat-tinted / oxide / iridescent accent placed *under* the enamel** (e.g. a
 flinqué dial with an anodized substrate) would be shaded with the wrong ambient.
@@ -949,23 +952,23 @@ conductor path, but it is **fixed, not excluded**. Thin-film accents in **air**
 ### 10.9 Dielectric `tau` must be white when using `interior_medium` (P1)
 `DielectricMaterial::tau` is **not** a flat interface tint — it is applied as
 **Beer-Lambert distance attenuation** `kray = pow(tau, distance)` on the exit ray
-([DielectricSPF.cpp:218](src/Library/Materials/DielectricSPF.cpp:218) RGB,
-[:315](src/Library/Materials/DielectricSPF.cpp:315) NM). The `interior_medium`
+([DielectricSPF.cpp:218](../src/Library/Materials/DielectricSPF.cpp) RGB,
+[:315](../src/Library/Materials/DielectricSPF.cpp) NM). The `interior_medium`
 applies its **own** Beer transmittance over the same path. So a colored top-dielectric
 `tau` **double-counts** the enamel's absorption (renders too dark / wrong hue).
 **Hard rule:** author the top dielectric's `tau` as an **explicit `tau 1.0`** (or a
 named `scalar_painter { value 1.0 }`); **all colour absorption lives in
 `HomogeneousMedium` σ_a(λ)**. **Do NOT omit `tau` and do NOT use `none`:** omitting
-it defaults to `"none"` ([AsciiSceneParser.cpp:3223](src/Library/Parsers/AsciiSceneParser.cpp:3223)),
+it defaults to `"none"` ([AsciiSceneParser.cpp:3223](../src/Library/Parsers/ChunkParserRegistry.cpp)),
 which resolves to the **black legacy `IPainter`** that the scalar resolver **rejects**
-([Job.cpp:2745](src/Library/Job.cpp:2745)) → the material **fails to construct**; and
+([Job.cpp:2745](../src/Library/Job.cpp)) → the material **fails to construct**; and
 `tau` is a **scalar** applied as `pow(tau, distance)`, so any value < 1 attenuates and
 **0 would render the glass fully black**. Ideally add a scene-lint warning when a
 non-unity `tau` co-occurs with an `interior_medium`.
 
 ### 10.10 Silver substrate GGX must set `diffuse = black` (P1)
 RISE's GGX adds a **diffuse lobe unconditionally** — `diffuse = pDiffuse->GetColor(ri)
-· INV_PI` ([GGXBRDF.cpp:299](src/Library/Materials/GGXBRDF.cpp:299)); only the
+· INV_PI` ([GGXBRDF.cpp:299](../src/Library/Materials/GGXBRDF.cpp)); only the
 Schlick-F0 *modulation* is conditional, so **conductor mode still adds whatever
 diffuse painter is bound**. A silver substrate with a non-black `diffuse` would
 become "glass over conductor **plus** a fake Lambertian backing." **Hard rule for
@@ -978,7 +981,7 @@ never for the reflective metal substrate.)
 ### 10.11 `transparent_shadows` is preview-only — never in final/reference renders (P1)
 `transparent_shadows` is an explicit **approximation**: the shadow ray passes
 **straight through** dielectrics (no refractive bend), **ignores internal
-multi-bounce**, and uses one representative eta ([RayCaster.cpp:1421](src/Library/Rendering/RayCaster.cpp:1421)).
+multi-bounce**, and uses one representative eta ([RayCaster.cpp:1421](../src/Library/Rendering/RayCaster.cpp)).
 It's a NEE-variance shortcut — exactly the kind of hack this plan's principle forbids on
 the scene's transport path. **Rule (no escape hatch):** **all reference, validation,
 *and final/beauty* renders run with `transparent_shadows false`.** It is permitted
@@ -1126,7 +1129,7 @@ a genuinely separate feature legitimately out of this material's scope.
 | **G6 "scene-authored fixed `incident_ior`, interface change out of scope"** (§10.6) | **F** | **Read the IOR stack** (`ior_stack.top()` = `n_enamel(λ)`, automatic + dispersion-correct). SPF/Pdf already have the stack (zero-interface); thread the ambient IOR into `IBSDF::value()` (the one ABI event). Cover SPF + BRDF-value + Kulla-Conty `F_avg` + AOV. `incident_ior` demoted to optional override. |
 | **Buried thin-film "excluded"** (§10.8) | **F** | **The G6 fix extends to the thin-film Airy stack** — buried oxide accents become correct; merely *sequenced* after the bare-conductor path. |
 | **Spatial×spectral medium "deferred"** (§10.7) | **F** | **Build the spatial medium properly: volume-coordinate mapping + fix `HeterogeneousMedium`'s luminance collapse** (coefficients, tracking majorants, distance PDFs — §10.7) + spectral transmittance validation. Coordinate mapping alone leaves it gray. Sequenced after the homogeneous hero, not abandoned. |
-| Opacifier HG + gray σ_s (§10.5) | **F** | HG-`g` is a *labelled fallback*; the no-corners fix is Mie-derived σ_s(λ)/σ_a(λ) + a **tabulated/spectral Mie phase function** — needing **(a)** an `IPhaseFunction` wavelength arg (vtable/ABI), **(b)** a **constructible phase-function authoring path** (today only `isotropic\|hg <g>` string), **and (c)** **threading `nm` through ~31 phase call sites + the BDPT stored-vertex/HWSS-companion `ratio=1.0` assumption + reverse-PDF/MIS** ([BDPTIntegrator.cpp:6089](src/Library/Shaders/BDPTIntegrator.cpp:6089)). Not "derive a `g`." Calibration tunes only the unknown loading. |
+| Opacifier HG + gray σ_s (§10.5) | **F** | HG-`g` is a *labelled fallback*; the no-corners fix is Mie-derived σ_s(λ)/σ_a(λ) + a **tabulated/spectral Mie phase function** — needing **(a)** an `IPhaseFunction` wavelength arg (vtable/ABI), **(b)** a **constructible phase-function authoring path** (today only `isotropic\|hg <g>` string), **and (c)** **threading `nm` through ~31 phase call sites + the BDPT stored-vertex/HWSS-companion `ratio=1.0` assumption + reverse-PDF/MIS** ([BDPTIntegrator.cpp:6089](../src/Library/Shaders/BDPTIntegrator.cpp)). Not "derive a `g`." Calibration tunes only the unknown loading. |
 | Rough-dielectric "use `scattering`-Phong-widening" (G2) | **F (if needed)** | If any enamel reads satin, add a **proper GGX dielectric BTDF** rather than the widening heuristic. Hero is fire-polished, so gated on need — but the real fix, not the heuristic, is the answer. |
 | Surface texture as a normal-map (§9 old) | **F** | **Real microgeometry** on the §10.2-classified layer; normal map is preview-only. |
 | Enamel/conductor boundary = **burial convention** (§10.1 A) | **E** | Physically *exact* composition of existing primitives (correct transport: dielectric interface → medium → conductor). Acceptable. The full `CoatedConductorBxDF` (§10.1 B) remains the more *flexible* long-term form and stays on the roadmap. |

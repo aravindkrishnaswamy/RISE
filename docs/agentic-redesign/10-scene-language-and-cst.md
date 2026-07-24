@@ -8,7 +8,10 @@
 > rewritten to conform; this doc now points to the decision record as authoritative and
 > contradicts none of D1–D51.
 >
-> **Status:** design-in-progress. Part of the RISE agentic redesign (Model B). Read
+> **Status:** **CORE FACET SHIPPED.** The lossless CST, v7-only load/derive
+> path, persistent node identity, edits, serialization, migration, and retained
+> `Document` are implemented under `src/Library/Cst/`. Some performance and
+> broader immutable-scene goals remain elsewhere in the package. Read
 > [`00-CHARTER.md`](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first — this doc
 > inherits the charter's locked decisions (L1–L7, **as corrected by D44** — `NodeId` is the
 > lineage identity, name-path is addressing), open decisions (O1–O3), invariants
@@ -38,7 +41,8 @@
 > replacing `FOR`/`DEFINE`/`hal`/`$(...)`/macros (L3);
 > coverage of all ~138 chunk types; the **single-file** scene-format version bump (O3 / D7).
 >
-> **Design only.** No source, build, or scene files are modified by this document.
+> **Historical authoring note:** this document itself made no code changes; its
+> core design has since been implemented.
 
 ---
 
@@ -47,7 +51,7 @@
 ### 1.1 The scene file today: two layers
 
 A `.RISEscene` file (header `RISE ASCII SCENE 6`) is processed by
-[`AsciiSceneParser::ParseAndLoadScene`](../../src/Library/Parsers/AsciiSceneParser.cpp)
+[`AsciiSceneParser::ParseAndLoadScene`](../../src/Library/Parsers/ChunkParserRegistry.cpp)
 (`AsciiSceneParser.cpp:10431`). There are **two distinct language layers**, and only one of
 them is descriptor-driven:
 
@@ -86,14 +90,14 @@ byte-splice machinery described next.
 The round-trip-save effort already built **two-thirds of a CST** to survive the one-way loss.
 This facet formalizes and *retains* what those phases compute transiently:
 
-- **[`RawTokenCapture`](../../src/Library/Parsers/RawTokenCapture.h)** (Phase 0): captures,
+- **`RawTokenCapture`** (Phase 0): captures,
   per source line, every raw token's `text` + `[byteBegin, byteEnd)` + `isSymbolic` flag
   (set when the token contains `$`), plus the trailing-comment byte range. It already gets the
   hard lexing right: `"..."` quoted strings are one token; `$(...)` balanced expressions are
   one token with internal whitespace/nesting preserved. It explicitly does **not** macro-
   substitute. Its FOR-loop note documents that `in.seekg()` re-reads produce duplicate
   `RawLine` entries with identical byte offsets, deduped downstream by `(byteBegin, byteEnd)`.
-- **[`SourceSpanIndex`](../../src/Library/SceneEditor/SourceSpanIndex.h)** (Phase 6.1): per
+- **`SourceSpanIndex`** (Phase 6.1): per
   entity, the chunk's byte range, `{` / `}` offsets, per-parameter `ParameterSpan`
   (`lineBeginOffset`, `valueBegin/valueEnd`, `commentBegin`, `isSymbolic`), an `AuthorMode`
   (Euler/Quaternion/Matrix — mirroring `standard_object` precedence), a `chunkRevisited` flag
@@ -1020,8 +1024,8 @@ entry); the expanded sub-scene is a derivation product, not CST content. (This m
 
 | Component (current) | Fate | Notes |
 |---|---|---|
-| [`RawTokenCapture`](../../src/Library/Parsers/RawTokenCapture.h) (lexer + token widths + symbolic flags) | **Evolve → reuse** | Promote from save-side Phase 0 to the front-line CST lexer; it produces green-node content (relative widths, not absolute spans). Lexing rules (quoted strings, `expr(...)` balancing, comment ranges) are exactly what the CST needs. Add comment/blank emission instead of stripping. (The `$(...)` balancing it already does is consumed only by the v6→v7 migrator, D8.) |
-| [`SourceSpanIndex`](../../src/Library/SceneEditor/SourceSpanIndex.h) (per-entity/param **absolute** byte ranges, `AuthorMode`, `ApplyOffsetDeltas`) | **Delete (replaced by the red cursor, D2/D16)** | D2 forbids stored absolute offsets in shared nodes. Green nodes store **relative widths only** (the per-occurrence `NodeId` lives in the `Version`'s persistent `identityRoot` side-map, **not** on the green node — D26/D15); absolute positions are computed on demand by the version-specific red cursor over the rope-cached widths (§2.4, O(log N), D16). The standalone absolute-offset side-table and **`ApplyOffsetDeltas`** (offset-shift-on-splice) are **deleted**, not evolved — there is nothing to shift. `chunkRevisited`/FOR-dedup logic is gone with v6 (no legacy nodes, D8). `insideManagedBlock` becomes obsolete (no managed override block — see SaveEngine row). `AuthorMode` (Euler/Quaternion/Matrix precedence) is retained as green-node content where needed. |
+| `RawTokenCapture` (lexer + token widths + symbolic flags) | **Evolve → reuse** | Promote from save-side Phase 0 to the front-line CST lexer; it produces green-node content (relative widths, not absolute spans). Lexing rules (quoted strings, `expr(...)` balancing, comment ranges) are exactly what the CST needs. Add comment/blank emission instead of stripping. (The `$(...)` balancing it already does is consumed only by the v6→v7 migrator, D8.) |
+| `SourceSpanIndex` (per-entity/param **absolute** byte ranges, `AuthorMode`, `ApplyOffsetDeltas`) | **Delete (replaced by the red cursor, D2/D16)** | D2 forbids stored absolute offsets in shared nodes. Green nodes store **relative widths only** (the per-occurrence `NodeId` lives in the `Version`'s persistent `identityRoot` side-map, **not** on the green node — D26/D15); absolute positions are computed on demand by the version-specific red cursor over the rope-cached widths (§2.4, O(log N), D16). The standalone absolute-offset side-table and **`ApplyOffsetDeltas`** (offset-shift-on-splice) are **deleted**, not evolved — there is nothing to shift. `chunkRevisited`/FOR-dedup logic is gone with v6 (no legacy nodes, D8). `insideManagedBlock` becomes obsolete (no managed override block — see SaveEngine row). `AuthorMode` (Euler/Quaternion/Matrix precedence) is retained as green-node content where needed. |
 | Descriptor schema ([`ChunkDescriptor.h`](../../src/Library/Parsers/ChunkDescriptor.h), `IAsciiChunkParser::Describe()`) | **Reuse verbatim** | L6. The CST references it; no structural change required for this facet. It gains a fourth consumer (CST binding) alongside parser/highlighter/suggestions. |
 | `DispatchChunkParameters` / generic `ParseChunk` (`AsciiSceneParser.cpp:697`, `:9861`) | **Evolve** | Becomes the descriptor-binding step of `ParseToCst` (validate names → typed `ValueAtom`s), **minus** the abort-on-error behavior (→ error nodes, §2.9) and **minus** `Finalize` invocation. |
 | `IAsciiChunkParser::Finalize` bodies (the `pJob.AddX` emission) | **Evolve → move to derivation (Facet 2)** | The "typed values → engine objects" logic relocates into Facet 2, which calls the **same `Job::Add*` apply layer**. The apply layer (`Job.cpp`, `RISE_API`) is **reused unchanged**. |

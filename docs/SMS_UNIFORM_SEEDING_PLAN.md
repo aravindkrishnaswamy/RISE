@@ -1,5 +1,9 @@
 # Path 3: Mitsuba-faithful SMS port — execution plan
 
+> **Status:** **COMPLETED EXECUTION PLAN.** Uniform/Mitsuba-faithful seeding,
+> multi-trial sampling, and the cited photon-aided extension shipped. Sections
+> called out below as branching-related are historical.
+>
 > **2026-05 update**: Path-tree branching (`branchingThreshold` + `BuildSeedChainBranching`) was excised from RISE.  Sections referencing Option C / Fresnel-branching / `branching_threshold` describe historical context and are no longer accurate for the live codebase.  SMS uniform mode now uses single-chain stochastic seeds with `multi_trials` for variance reduction — matches Mitsuba SOTA convention.
 
 ## Background — what the literature says

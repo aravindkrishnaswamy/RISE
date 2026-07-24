@@ -1,5 +1,11 @@
 # 21 — Stable-Object Incremental Apply + Shared Reference Resolver
 
+> **Status:** **SUBSTANTIALLY IMPLEMENTED.** Stable-object incremental apply,
+> shared/recorded reference resolution, rename/reference safety, maintained
+> closure data, and non-spatial TLAS skipping landed. The body is the design and
+> review record; consult current `Cst.cpp`, `Job.cpp`, and `Cst*Test.cpp`
+> coverage for exact behavior.
+
 Extends [20-derivation-engine.md](20-derivation-engine.md). This is the "Facet-2"
 apply work the transfer-gate item-8 entry kept deferring, promoted to real design
 after a bulk review of items 5–8 found **nine P1 blockers** in the first
@@ -59,7 +65,7 @@ the derive-apply and every consumer (rename, closure). No parallel scan.
   generation. Rename/closure read that stamped graph; a stale graph (artifact
   re-derived) is detected by the stamp, never silently trusted.
 - **Resolution is descriptor-driven at the apply layer**, replacing the scattered
-  per-parser `GetX()->GetItem(name)` ([AsciiSceneParser.cpp:1411,1451,…](../../src/Library/Parsers/AsciiSceneParser.cpp))
+  per-parser `GetX()->GetItem(name)` ([AsciiSceneParser.cpp:1411,1451,…](../../src/Library/Parsers/ChunkParserRegistry.cpp))
   as the *recording* path. (Phase: the parser's internal lookups remain, but the
   recorded graph is what consumers use; a later phase routes the parser lookups
   through the resolver so the two cannot drift even in principle.)
@@ -70,7 +76,7 @@ the derive-apply and every consumer (rename, closure). No parallel scan.
 - **⚠ Static-graph gap to close before slice 2 (rename): `timeline`.** A `timeline`
   references its animated target (`element`) and its owning `animation` as
   `ValueKind::String`, NOT `Reference`
-  ([AsciiSceneParser.cpp:9555](../../src/Library/Parsers/AsciiSceneParser.cpp)), so
+  ([AsciiSceneParser.cpp:9555](../../src/Library/Parsers/ChunkParserRegistry.cpp)), so
   those chunk→chunk edges are **invisible to the descriptor scan** — this is a
   *static* edge the scan structurally misses, not the dynamic-helper case above.
   Renaming or recreating an animated entity on the static graph would silently
@@ -175,7 +181,7 @@ the managers a typed removal clears. Classification:
     Painter-category gate today).
   - **`gltf_import` is the worst case: it is `ChunkCategory::Geometry`** but its
     `Finalize` spawns many objects/materials/painters/lights/a camera
-    ([AsciiSceneParser.cpp:5164](../../src/Library/Parsers/AsciiSceneParser.cpp)).
+    ([AsciiSceneParser.cpp:5164](../../src/Library/Parsers/ChunkParserRegistry.cpp)).
     `IsMaterialComposed` (material-only) does NOT catch it, and the Geometry gate
     ALLOWS it — so it must be refused explicitly. The Hosek-Wilkie sky similarly
     spawns a hidden `__hw_sun__` light (currently caught only because it has no

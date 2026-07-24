@@ -18,7 +18,7 @@ features, and what should stay external.
 ## 1. What the scene language can already do
 
 Three scripting layers exist today (all in
-[AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) /
+[AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) /
 [AsciiCommandParser.cpp](../src/Library/Parsers/AsciiCommandParser.cpp) /
 [AsciiScriptParser.cpp](../src/Library/Parsers/AsciiScriptParser.cpp)):
 

@@ -1,6 +1,10 @@
 # Thin-Film Interference for Heat-Colored Metals — Design Doc
 
-**Status:** Phase 3 COMPLETE (+ extensions) — the guilloché watch dial ships on `feature/thin-film-interference`: a Cartesian-grid relief mesh (kills the polar-singularity centre wash), scene-tunable heat-tint, dark-hero 2-softbox lighting, dispersive sapphire + data-based MgF₂ AR coating, a blue-leather-strap hero on a polished surface, **GUI-switchable base metal (Ti/Nb/Ta/steel — per-metal n,k + oxide + nm window + dose shape), torch-pattern + colour-palette oxide variants, and a native-timeline turntable+dolly animation (with new keyframeable camera azimuth/phi)**.  Phases 1+2 (optics + material) complete; full suite 130/130, `make` + Xcode-arm64 warning-free · **Created:** 2026-06-07 · **Updated:** 2026-06-09 · **Owner:** master-controller session
+**Status:** **SHIPPED (+ extensions).** The named feature branch is historical;
+the general thin-film material and guilloché watch work are on `master`.
+Phase 3 delivered the Cartesian-grid relief mesh, scene-tunable heat tint,
+dispersive sapphire/MgF₂ coating, metal/oxide variants, and native-timeline
+animation. **Created:** 2026-06-07 · **Audited:** 2026-07-24.
 **Goal artifact:** a rendered guilloché titanium watch dial — engraved rose-engine pattern,
 torch-gradient oxide coloring, physically-based iridescence — plus a general thin-film
 BRDF that also covers steel, tantalum, and niobium heat-tint/anodize colors.
@@ -50,16 +54,16 @@ documented extension point.
 
 | Fact | Where | Consequence |
 |---|---|---|
-| **One conductor-Fresnel chokepoint**, templated on `T ∈ {Scalar, RISEPel}` | `Optics::CalculateConductorReflectance<T>` [Optics.hpp:34](../src/Library/Utilities/Optics.hpp:34) | Thin-film is a sibling evaluator + a new `FresnelMode`, not a refactor. Called from GGX ([GGXSPF.cpp:225/427](../src/Library/Materials/GGXSPF.cpp:225), [GGXBRDF.cpp:177/283](../src/Library/Materials/GGXBRDF.cpp:177)) and 5 Cook-Torrance sites. |
-| **A BSDF sees its wavelength on the spectral path** | `valueNM(vLightIn, ri, const Scalar nm)` [IBSDF.h:61](../src/Library/Interfaces/IBSDF.h:61); `ScatterNM(ri, sampler, nm, …)` [ISPF.h:141](../src/Library/Interfaces/ISPF.h:141) | We evaluate Airy reflectance **directly per hero wavelength** — no spectral antialiasing needed on the primary path. The single most important fact for the feature. |
-| All 4 hero wavelengths evaluated independently; HWSS companions via `EvaluateKrayNM` else `valueNM` | [PathTracingIntegrator.cpp:4046/4053](../src/Library/Shaders/PathTracingIntegrator.cpp:4046); `EvaluateKrayNM` [ISPF.h:206](../src/Library/Interfaces/ISPF.h:206) | Must implement the thin-film term identically in `ScatterNM`, `valueNM`, and `EvaluateKrayNM` (RGB/NM twin hazard — [audit-by-bug-pattern](skills/audit-by-bug-pattern.md)). |
-| **Tabulated `(nm, value)` asset path already exists** | `PiecewiseLinearScalarPainter` [PiecewiseLinearScalarPainter.h](../src/Library/Painters/PiecewiseLinearScalarPainter.h); `scalar_painter { file … }` [AsciiSceneParser.cpp:1180](../src/Library/Parsers/AsciiSceneParser.cpp:1180) | refractiveindex.info n/k drops straight in (2-col, bare numeric, nm; split n and k files). |
+| **One conductor-Fresnel chokepoint**, templated on `T ∈ {Scalar, RISEPel}` | `Optics::CalculateConductorReflectance<T>` [Optics.hpp:34](../src/Library/Utilities/Optics.hpp) | Thin-film is a sibling evaluator + a new `FresnelMode`, not a refactor. Called from GGX ([GGXSPF.cpp:225/427](../src/Library/Materials/GGXSPF.cpp), [GGXBRDF.cpp:177/283](../src/Library/Materials/GGXBRDF.cpp)) and 5 Cook-Torrance sites. |
+| **A BSDF sees its wavelength on the spectral path** | `valueNM(vLightIn, ri, const Scalar nm)` [IBSDF.h:61](../src/Library/Interfaces/IBSDF.h); `ScatterNM(ri, sampler, nm, …)` [ISPF.h:141](../src/Library/Interfaces/ISPF.h) | We evaluate Airy reflectance **directly per hero wavelength** — no spectral antialiasing needed on the primary path. The single most important fact for the feature. |
+| All 4 hero wavelengths evaluated independently; HWSS companions via `EvaluateKrayNM` else `valueNM` | [PathTracingIntegrator.cpp:4046/4053](../src/Library/Shaders/PathTracingIntegrator.cpp); `EvaluateKrayNM` [ISPF.h:206](../src/Library/Interfaces/ISPF.h) | Must implement the thin-film term identically in `ScatterNM`, `valueNM`, and `EvaluateKrayNM` (RGB/NM twin hazard — [audit-by-bug-pattern](skills/audit-by-bug-pattern.md)). |
+| **Tabulated `(nm, value)` asset path already exists** | `PiecewiseLinearScalarPainter` [PiecewiseLinearScalarPainter.h](../src/Library/Painters/PiecewiseLinearScalarPainter.h); `scalar_painter { file … }` [AsciiSceneParser.cpp:1180](../src/Library/Parsers/ChunkParserRegistry.cpp) | refractiveindex.info n/k drops straight in (2-col, bare numeric, nm; split n and k files). |
 | n, k, roughness are `IScalarPainter` (no JH uplift); reflectance/tint are `IPainter` | GGXBRDF/GGXSPF slot types | New film slots (`film_ior`, `film_extinction`, `film_thickness`) are `IScalarPainter`. Routing IOR through `IPainter` mangles it via JH uplift. |
 | GGX has anisotropy (`alphax`/`alphay` + tangent rotation) | GGXBRDF.h | Guilloché cut-direction micro-roughness is already supported — no new aniso work. |
 | **Kulla-Conty geometric tables baked at F=1** (Fresnel-agnostic) | `E_ss`/`E_avg` [MicrofacetEnergyLUT.h](../src/Library/Utilities/MicrofacetEnergyLUT.h) | No table regeneration. Only `ComputeFresnelAvg` (LUT.h:146) hardwires conductor Fresnel → needs a thin-film-aware hemispherical average for the multiscatter term. |
 | Tests are standalone `tests/*.cpp`, auto-discovered (top-level glob) | `tests/README.md`; `make`/CMake globs | New test = **no build-file edits**. Subdir headers (`tests/thinfilm/*.h`) are glob-safe. Template: `HosekWilkieReferenceTest.cpp`. |
 | PNG out from a test: `RISE_API_CreatePNGWriter(…, 8, eColorSpace_sRGB)` + `RISE_API_CreateDiskFileWriteBuffer` | [RISE_API.h](../src/Library/RISE_API.h) | No `RISE_MEDIA_PATH`, no extra link deps. |
-| Color path: `ColorUtils::XYZFromNM` + `XYZtoRec709RGB` | [ColorUtils.cpp:313](../src/Library/Utilities/Color/ColorUtils.cpp:313), [ColorConversion.h:26](../src/Library/Utilities/Color/ColorConversion.h:26) | Reuse the renderer's CMFs + matrix so swatch ≡ render. **No samplable per-nm D65 SPD exists** → embed the standard CIE D65 table (the only piece we add). |
+| Color path: `ColorUtils::XYZFromNM` + `XYZtoRec709RGB` | [ColorUtils.cpp:313](../src/Library/Utilities/Color/ColorUtils.cpp), [ColorConversion.h:26](../src/Library/Utilities/Color/ColorConversion.h) | Reuse the renderer's CMFs + matrix so swatch ≡ render. **No samplable per-nm D65 SPD exists** → embed the standard CIE D65 table (the only piece we add). |
 | Adding `src/Library` files touches FIVE build projects | CLAUDE.md "touch ALL five" | Phase 2 only (Phase 1 is `tests/`-only). |
 
 ---
@@ -213,7 +217,7 @@ conductor Fresnel. Plan: **measure** the white-furnace energy error of reusing t
 per-sample Fresnel weight changes. Reciprocity + white-furnace are Phase-2 exit gates.
 
 **ABI discipline.** `RISE_API_CreateGGXMaterial` grows parameters → follow
-[abi-preserving-api-evolution](skills) (append/overload; don't break the existing signature).
+[AGENTS.md change checklist](../AGENTS.md) (append/overload; don't break the existing signature).
 Adding `ThinFilm.h` (+ any `.cpp`, + the LUT if a `.cpp`) touches the five build projects.
 
 **Cook-Torrance:** reject `fresnel_mode thinfilm` on the legacy Cook-Torrance with a clear

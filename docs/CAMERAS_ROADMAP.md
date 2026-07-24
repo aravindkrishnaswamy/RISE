@@ -45,7 +45,7 @@ Cross-cutting infrastructure already in place:
 - **Photographic EV compensation** (Phase 1.5 / Landing 5). `iso` / `fstop` / `exposure` on pinhole + thinlens give ISO-12232 EV that propagates to `FileRasterizerOutput`. LDR outputs apply it; HDR outputs preserve linear radiance.
 - **Time-resolved sensor scaffolding.** `exposureTime` / `scanningRate` / `pixelRate` are wired through `ICamera` already — the rolling-shutter and motion-blur weighting plumbing partially exists but isn't a first-class shutter model yet.
 - **Lens-sample injection for MLT.** `ThinLensCamera::GenerateRayWithLensSample` takes a primary `Point2` lens sample directly so PSSMLT's small-step mutations on the aperture coordinate stay continuous. The handle is **non-virtual** by design (`MLTRasterizer` `dynamic_cast`s; `ICamera` vtable preservation is load-bearing for out-of-tree implementors — see [ICamera.h](../src/Library/Interfaces/ICamera.h)). Any new lens camera must follow this pattern, not extend the vtable.
-- **Descriptor-driven chunk parsing.** Each camera = one `IAsciiChunkParser` subclass with `Describe()` + `Finalize()` ([AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) §"Cameras"). Adding a camera is one new struct + one register call.
+- **Descriptor-driven chunk parsing.** Each camera = one `IAsciiChunkParser` subclass with `Describe()` + `Finalize()` ([AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) §"Cameras"). Adding a camera is one new struct + one register call.
 
 What is conspicuously **absent**:
 
@@ -166,7 +166,7 @@ Three axes:
 
 Read before any phase below. These are RISE-specific landmines.
 
-- **`ICamera` vtable is frozen.** Adding a virtual breaks out-of-tree camera plugins compiled against the old interface. Pattern: any new method (e.g., camera importance `We()`, exit-pupil sampler, lens-sample injector) lives as a non-virtual class method, and call sites use `dynamic_cast<NewCamera*>(cam)` to opt in. See the existing `ThinLensCamera::GenerateRayWithLensSample` precedent. Also consult [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md) before each phase.
+- **`ICamera` vtable is frozen.** Adding a virtual breaks out-of-tree camera plugins compiled against the old interface. Pattern: any new method (e.g., camera importance `We()`, exit-pupil sampler, lens-sample injector) lives as a non-virtual class method, and call sites use `dynamic_cast<NewCamera*>(cam)` to opt in. See the existing `ThinLensCamera::GenerateRayWithLensSample` precedent. Also consult [AGENTS.md change checklist](../AGENTS.md) before each phase.
 - **Descriptor-driven parser.** Adding a camera = new `IAsciiChunkParser` subclass with `Describe()` + `Finalize()`, register in `CreateAllChunkParsers()`. Adding a parameter to an existing camera = one descriptor entry + one `bag.GetX(...)`. The descriptor *is* the accepted parameter set — syntax-highlighter / suggestion-engine drift is structurally impossible.
 - **Five build-project files when adding `.cpp` / `.h`.** [CLAUDE.md](../CLAUDE.md) lists them: `build/make/rise/Filelist`, `build/cmake/rise-android/rise_sources.cmake`, `build/VS2022/Library/Library.vcxproj`, `Library.vcxproj.filters`, `build/XCode/rise/rise.xcodeproj/project.pbxproj`. None auto-discovers.
 - **MLT requires `GenerateRayWithLensSample`.** Any camera with an aperture must expose a non-virtual lens-sample-taking primary-ray generator so PSSMLT mutations stay continuous on the aperture coordinate. PT/BDPT/VCM/photon paths can use the random-context version.
@@ -194,7 +194,7 @@ Phases are ordered by ROI under the constraints above. Each phase is independent
 
 ### Phase 1.0 — Thin-lens parameter overhaul + polygonal/anamorphic aperture *(LANDED)*
 
-**Goal.** Replace the over-specified, scene-unit `(fov, aperture_size, focal_length, focus_distance)` quartet with the photographic quartet `(sensor_size, focal_length, fstop, focus_distance)` matching every production renderer (Cycles, Arnold, V-Ray, RenderMan, Karma). Same change folds in polygonal aperture + anamorphic squeeze — the only Phase-1.1 enrichments that share the constructor signature, avoiding a second ABI break. Plan: [/Users/aravind/.claude/plans/cozy-snacking-sunrise.md](/Users/aravind/.claude/plans/cozy-snacking-sunrise.md).
+**Goal.** Replace the over-specified, scene-unit `(fov, aperture_size, focal_length, focus_distance)` quartet with the photographic quartet `(sensor_size, focal_length, fstop, focus_distance)` matching every production renderer (Cycles, Arnold, V-Ray, RenderMan, Karma). Same change folds in polygonal aperture + anamorphic squeeze — the only Phase-1.1 enrichments that share the constructor signature, avoiding a second ABI break. Plan: `/Users/aravind/.claude/plans/cozy-snacking-sunrise.md` (private historical note).
 
 **New parameter set** (defaults in parentheses): `sensor_size` (36, full-frame mm-equivalent), `focal_length` (35, "natural"), `fstop` (2.8), `focus_distance` (**required, no default**), `aperture_blades` (0 = disk), `aperture_rotation` (0°), `anamorphic_squeeze` (1.0). FOV is derived; aperture diameter is derived. The `realistic_camera` keyword is now reserved for Phase 4 (multi-element lens) — its photographer-friendly stub semantics moved into the new `thinlens_camera`. Sensor-format presets table is documented in [src/Library/Parsers/README.md](../src/Library/Parsers/README.md).
 
@@ -215,7 +215,7 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 - [src/Library/Cameras/ThinLensCamera.h,cpp](../src/Library/Cameras/) — new constructor, new member fields, polygonal+anamorphic aperture sampler with inverse-CDF radial bias correction, load-bearing setter contract docs (caller must call `RegenerateData()` after a Set*; matches the existing `CameraCommon` pattern), updated keyframe handling.
 - [src/Library/RISE_API.h,cpp](../src/Library/) — `RISE_API_CreateThinlensCamera` re-signed.
 - [src/Library/Interfaces/IJob.h](../src/Library/Interfaces/IJob.h) + [src/Library/Job.h,cpp](../src/Library/) — `SetThinlensCamera` virtual + impl re-signed.
-- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) — `ThinlensCameraAsciiChunkParser` rewritten; `RealisticCameraAsciiChunkParser` removed; `realistic_camera` no longer registered (descriptor-driven validation auto-rejects retired `fov` / `aperture_size`).
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) — `ThinlensCameraAsciiChunkParser` rewritten; `RealisticCameraAsciiChunkParser` removed; `realistic_camera` no longer registered (descriptor-driven validation auto-rejects retired `fov` / `aperture_size`).
 - [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) — sensor-format preset table, chunk-count + AddCameraCommonParams reference updated to "5 cameras".
 - [src/Library/SceneEditor/CameraIntrospection.cpp](../src/Library/SceneEditor/CameraIntrospection.cpp) — properties-panel get/set wired to new params (sensor_size, fstop, aperture_blades, aperture_rotation, anamorphic_squeeze; `fov` row dropped for ThinLens since it's derived).
 - [build/XCode/rise/RISE-GUI/App/PropertiesPanel.swift](../build/XCode/rise/RISE-GUI/App/PropertiesPanel.swift) — Mac UI: `aperture_rotation` added to the angular-field list (0.5°/px scrub rate). Other new params surface automatically because the panel iterates the descriptor.
@@ -248,7 +248,7 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 - `focus_distance > focal_length` validation now compares both in scene units (parser converts focal mm → scene units before the check), with a unit-aware error message.
 
 **Files touched.**
-- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp): new `SceneOptionsAsciiChunkParser`, `s_sceneOptions` thread-local state, `thinlens_camera` reads scene_unit and passes through. Descriptor texts updated to say "MILLIMETRES".
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp): new `SceneOptionsAsciiChunkParser`, `s_sceneOptions` thread-local state, `thinlens_camera` reads scene_unit and passes through. Descriptor texts updated to say "MILLIMETRES".
 - [src/Library/Parsers/ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h): no schema change (presets already there from 1.1).
 - [src/Library/Cameras/ThinLensCamera.h,cpp](../src/Library/Cameras/): `sensorSize`/`focalLength`/`shiftX`/`shiftY` semantics changed from "scene units" to "mm"; new `sceneUnitMeters` member + `GetSceneUnitMeters/SetSceneUnitMeters`; `Recompute` does mm→scene conversion; cached `shiftX_sceneUnits/shiftY_sceneUnits` for the hot path.
 - [src/Library/RISE_API.h,cpp](../src/Library/), [src/Library/Interfaces/IJob.h](../src/Library/Interfaces/IJob.h), [src/Library/Job.h,cpp](../src/Library/): added `sceneUnitMeters` parameter to the thinlens entry points.
@@ -298,7 +298,7 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 - [src/Library/Cameras/ThinLensCamera.h,cpp](../src/Library/Cameras/) — tilt/shift members, focal-plane equation cache (`nFocusX/Y/Z`, `kFocus`), refactored `Recompute()` and `GenerateRay`/`GenerateRayWithLensSample` to use the general formulation.
 - [src/Library/RISE_API.h,cpp](../src/Library/), [src/Library/Interfaces/IJob.h](../src/Library/Interfaces/IJob.h), [src/Library/Job.h,cpp](../src/Library/) — extended `RISE_API_CreateThinlensCamera` / `IJob::SetThinlensCamera` with 4 new tilt-shift params.
 - [src/Library/Parsers/ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h) — new `ParameterPreset` struct and `presets` field on `ParameterDescriptor`.
-- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) — `CameraDefaultsAsciiChunkParser` (new), tilt-shift params on `ThinlensCameraAsciiChunkParser`, sensor-size presets baked into both descriptors, parser-state reset.
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) — `CameraDefaultsAsciiChunkParser` (new), tilt-shift params on `ThinlensCameraAsciiChunkParser`, sensor-size presets baked into both descriptors, parser-state reset.
 - [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) — new sections for `camera_defaults` and tilt-shift; preset table cross-links to the descriptor.
 - [src/Library/SceneEditor/CameraIntrospection.h,cpp](../src/Library/SceneEditor/) — `CameraProperty.presets` field, GET/SET wiring for tilt/shift in radians/degrees with the standard editor unit conversions.
 - [src/Library/SceneEditor/SceneEditController.h,cpp](../src/Library/SceneEditor/) — `PropertyPresetCount/Label/Value` accessors.
@@ -490,7 +490,7 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 - `scenes/Tests/Bench/cornellbox_realistic_dgauss50.RISEscene` — perf bench scene paired with a thin-lens baseline.
 
 **Modified existing files:**
-- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) — re-introduce `RealisticCameraAsciiChunkParser` (the keyword is reserved per Phase 0). New `Describe()` per the headline parameter set above. `Finalize()` resolves `lens_file` via `RISE_MEDIA_PATH`, attempts companion `.glass` sidecar load (silent on absence), calls `pJob.SetRealisticCameraFromLensFile(...)`. Reject `focal_length` with the explicit error: *"focal_length is determined by the lens prescription; remove this parameter or use thinlens_camera if you want direct focal-length control."*
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) — re-introduce `RealisticCameraAsciiChunkParser` (the keyword is reserved per Phase 0). New `Describe()` per the headline parameter set above. `Finalize()` resolves `lens_file` via `RISE_MEDIA_PATH`, attempts companion `.glass` sidecar load (silent on absence), calls `pJob.SetRealisticCameraFromLensFile(...)`. Reject `focal_length` with the explicit error: *"focal_length is determined by the lens prescription; remove this parameter or use thinlens_camera if you want direct focal-length control."*
 - [src/Library/Interfaces/IJob.h](../src/Library/Interfaces/IJob.h) — append pure-virtual `SetRealisticCameraFromLensFile`. Safe vtable extension because `IJob` is the construction interface; out-of-tree subclassers fail at compile time, not at runtime.
 - [src/Library/Job.{h,cpp}](../src/Library/) — concrete override calls `RISE_API_CreateRealisticCamera`.
 - [src/Library/RISE_API.{h,cpp}](../src/Library/) — new exported `RISE_API_CreateRealisticCamera(ICamera**, lensFilePath, sensorSize, fstop, focusDistance, sceneUnitMeters, ...common-camera-params...)`. Distinct symbol; ABI-additive.
@@ -516,7 +516,7 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 
 #### ABI
 
-Three layers per [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md):
+Three layers per [AGENTS.md change checklist](../AGENTS.md):
 
 - **Layer 1 (exported function signatures).** `RISE_API_CreateRealisticCamera` is a *new* symbol — purely additive. No existing exports change.
 - **Layer 2 (vtable layout).** `ICamera` vtable **unchanged**; `GenerateRaySpectral` / `GenerateRayWithLensSampleSpectral` are non-virtual on `RealisticCamera` and reached via `dynamic_cast`. `IJob` gains an appended pure-virtual `SetRealisticCameraFromLensFile` — safe because `IJob` is the construction interface; out-of-tree subclassers fail loud at compile time.
@@ -585,10 +585,10 @@ Profile before optimizing: `xcrun xctrace` (macOS) or `perf record` (Linux) agai
 
 - **4.0:** [`write-highly-effective-tests`](skills/write-highly-effective-tests.md) (Sellmeier table is foundational; tight unit tests vs tabulated values pay off through every later phase).
 - **4.1:** [`precision-fix-the-formulation`](skills/precision-fix-the-formulation.md) (resist the urge to bump aperture-clip thresholds when per-surface residuals accumulate; find the formulation), [`write-highly-effective-tests`](skills/write-highly-effective-tests.md).
-- **4.2:** [`abi-preserving-api-evolution`](skills/abi-preserving-api-evolution.md) (the load-bearing skill — `ICamera` vtable preservation, safe `IJob` extension, non-virtual `RealisticCamera` methods), [`const-correctness-over-escape-hatches`](skills/const-correctness-over-escape-hatches.md) (exit-pupil cache is conceptually-const + lazily-built; run the decision tree before reaching for `mutable`).
+- **4.2:** [AGENTS.md change checklist](../AGENTS.md) (the load-bearing skill — `ICamera` vtable preservation, safe `IJob` extension, non-virtual `RealisticCamera` methods), [`const-correctness-over-escape-hatches`](skills/const-correctness-over-escape-hatches.md) (exit-pupil cache is conceptually-const + lazily-built; run the decision tree before reaching for `mutable`).
 - **4.3:** [`variance-measurement`](skills/variance-measurement.md) (spectral CA changes the variance profile of every spectral render; confirm RMSE-vs-truth reduces, not just looks different).
 - **4.4:** [`bdpt-vcm-mis-balance`](skills/bdpt-vcm-mis-balance.md) (the PT-vs-BDPT-vs-VCM agreement test is the diagnostic for camera-connection correctness), [`performance-work-with-baselines`](skills/performance-work-with-baselines.md) (the 2.5× threshold for Phase 5 escalation).
-- **4.5:** [`adversarial-code-review`](skills/adversarial-code-review.md) (Phase 4 is correctness-sensitive; 2–3 reviewers in parallel with orthogonal concerns), [`simplify`](skills/simplify.md) (after the dust settles, scan for reuse — e.g. shared Snell-refraction code with `DielectricSPF`).
+- **4.5:** [`adversarial-code-review`](skills/adversarial-code-review.md) (Phase 4 is correctness-sensitive; 2–3 reviewers in parallel with orthogonal concerns), [post-implementation simplification guidance](../AGENTS.md) (after the dust settles, scan for reuse — e.g. shared Snell-refraction code with `DielectricSPF`).
 
 #### Open questions deferred to phase boundaries (measurement-driven)
 
@@ -673,7 +673,7 @@ Profile before optimizing: `xcrun xctrace` (macOS) or `perf record` (Linux) agai
 
 For *every* phase:
 
-- **Skill checklist:** [abi-preserving-api-evolution](skills/abi-preserving-api-evolution.md) before any header change, [performance-work-with-baselines](skills/performance-work-with-baselines.md) for any change with a perf claim, [adversarial-code-review](skills/adversarial-code-review.md) for non-trivial changes (Phase 4 absolutely qualifies), [const-correctness-over-escape-hatches](skills/const-correctness-over-escape-hatches.md) before reaching for `mutable` on the exit-pupil cache (it almost certainly is conceptually-const, lazily-built — same shape as the camera's frame matrix).
+- **Skill checklist:** retired `abi-preserving-api-evolution` skill before any header change, [performance-work-with-baselines](skills/performance-work-with-baselines.md) for any change with a perf claim, [adversarial-code-review](skills/adversarial-code-review.md) for non-trivial changes (Phase 4 absolutely qualifies), [const-correctness-over-escape-hatches](skills/const-correctness-over-escape-hatches.md) before reaching for `mutable` on the exit-pupil cache (it almost certainly is conceptually-const, lazily-built — same shape as the camera's frame matrix).
 - **Build matrix:** clean `make -C build/make/rise -j8 all` and clean Xcode `RISE-GUI` rebuild, both warning-free. Increment build also clean — `find src/Library/Cameras -name '*.o' -delete` then full rebuild — to catch warnings on files that didn't recompile.
 - **Tests:** `./run_all_tests.sh` (macOS/Linux) or `.\run_all_tests.ps1` (Windows). New regression scenes go under [scenes/Tests/Cameras/](../scenes/Tests/) following the existing taxonomy in [scenes/README.md](../scenes/README.md).
 - **Docs:** parser additions documented in [src/Library/Parsers/README.md](../src/Library/Parsers/README.md). New cameras listed in [src/Library/README.md](../src/Library/README.md) and [scenes/FeatureBased/README.md](../scenes/FeatureBased/README.md) once a showcase scene exists.

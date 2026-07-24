@@ -1,10 +1,24 @@
 # RISE GUI Roadmap — From Render Viewer to AI-Operable Creative Tool
 
-**Status:** IDEATION / DESIGN. No code. This is the umbrella vision + phasing doc; the per-stage deep-dive specs under [gui/](gui/) carry the detailed designs.
+**Status:** **PARTIALLY EXECUTED UMBRELLA ROADMAP.** The shared editor,
+CST-native persistence, redesigned macOS/Windows workspaces, start screen,
+entity creation, environment editing, camera/view tools, render modes, N-up
+viewports, and the in-app/external agent surface have shipped. The advanced
+material graph, spectral differentiators, and some orchestration/security
+hardening remain roadmap work. Consult
+[gui/REDESIGN_IMPLEMENTATION.md](gui/REDESIGN_IMPLEMENTATION.md),
+[gui/RENDER_MODES.md](gui/RENDER_MODES.md), and
+[agentic-redesign/50-agentic-surface.md](agentic-redesign/50-agentic-surface.md)
+before treating a phase below as pending.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make the RISE GUI (macOS, Windows, and — staged — Android) materially more capable and more *approachable*, without cloning Blender/Maya. Three pillars: (1) an approachability foundation, (2) creative-power features (cameras/views, material editor, spectral-only differentiators), and (3) a first-class **LLM/agent integration** that can fully operate scenes and the engine. All three rest on one architectural spine: **the `.RISEscene` text file is the canonical source of truth, and the shared C++ library owns everything that isn't a native widget.**
 
-This doc supersedes nothing — it sits alongside [INTERACTIVE_EDITOR_PLAN.md](INTERACTIVE_EDITOR_PLAN.md) (the viewport that shipped), [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md) (optics), and [ROUND_TRIP_SAVE_PLAN.md](ROUND_TRIP_SAVE_PLAN.md) (persistence — design record; **largely implemented**, see §2), and pulls their GUI-facing threads into one picture.
+This doc supersedes nothing — it sits alongside
+[INTERACTIVE_EDITOR_PLAN.md](INTERACTIVE_EDITOR_PLAN.md) (the viewport
+execution record), [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md) (optics), and
+[ROUND_TRIP_SAVE_PLAN.md](ROUND_TRIP_SAVE_PLAN.md) (historical persistence
+design plus current CST-save header), and pulls their GUI-facing threads into
+one picture.
 
 ---
 
@@ -40,11 +54,21 @@ Full audit lives in the deep-dive specs; the load-bearing facts:
 
 **The descriptor-driven properties panel is a force multiplier.** Any scene parameter with a `ChunkDescriptor` entry auto-appears as an editable row — no per-parameter UI code. The MCP tool schemas and the AI's grammar view are generated from the same `SceneGrammar::Describe()` source — but the descriptor is *tolerant* (it checks finite-numeric tokens, not cardinality / enum membership), so a generated schema can **over-reject** the real parser; it is a first-pass filter held honest by a conformance test, not a drift-proof oracle ([gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md)).
 
-**Correction (2026-06-19 review): round-trip save is largely IMPLEMENTED, not pending.** An earlier draft of this section trusted [ROUND_TRIP_SAVE_PLAN.md](ROUND_TRIP_SAVE_PLAN.md)'s stale *"Design — pending"* header instead of reading the code — the repo's documented "read the status, not the plan" trap. Reality: [../src/Library/SceneEditor/SaveEngine.cpp](../src/Library/SceneEditor/SaveEngine.cpp) (1,898 lines, "Phase 6.4") implements transform round-trip (Mode A in-place splice + Mode B managed `override_object`), **property** round-trip for cameras/lights/materials/media (Phase B), and **created-camera** persistence (Phase C), all covered by [../tests/SaveEngineTest.cpp](../tests/SaveEngineTest.cpp) (2,372 lines, incl. *"cloned camera persisted through save → reload"*). **The genuine gap is creation, not persistence:** created *non-camera* entities don't persist yet, and there is no GUI entity-creation workflow at all — `SceneEditController::CloneActiveCamera` is the only creation path (no outliner / add / delete / import). See §11 Phase 0 (re-scoped) and the new entity-creation spec (§14).
+**Persistence is now CST-native.** The July 2026 cutover deleted the interim
+byte-splice/managed-override engine described by the older correction that used
+to live here. A `Job` retains the canonical CST `Document`; edits, entity
+insertion/removal, and variants operate on that document, and
+[`SaveEngine`](../src/Library/SceneEditor/SaveEngine.cpp) serializes it
+byte-exactly when unedited and minimal-diff when edited.
 
-**Not built on either desktop platform yet:** canonical axis views (top/front/side), split/quad viewport, entity *creation* from the GUI (only mutation of existing entities), material editing beyond raw text, region render, asset libraries, sensible-default scene, any AI integration.
-
-**Parity note to verify:** a Windows-side audit guessed macOS already has axis/split views; a direct read of the macOS code says it does not. Treat both desktop platforms as lacking these until confirmed by eye (spike in §11).
+**Major roadmap slices have shipped on both desktop platforms:** redesigned
+workspaces and start screen, outliner/entity creation, environment editing,
+canonical and named camera views, render modes, N-up panes, and the in-app plus
+external agent surface. Current gaps include the dedicated material graph,
+spectral-differentiator UX, region rendering, asset-library workflow, and some
+cross-client orchestration/security hardening. The sections below remain the
+umbrella rationale and backlog; their original phase language is not a
+present-day capability audit.
 
 ---
 

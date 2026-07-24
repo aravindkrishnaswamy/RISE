@@ -21,10 +21,13 @@ The most common scene-authoring bug is `directional_light.direction` — RISE us
 
 ## Root-Level Utilities
 
-The root of `scenes/` still contains a few utility or historical files used by many scenes:
+The root of `scenes/` still contains a few migration inputs and historical
+standalone scenes:
 
-- `colors.RISEscript`: shared color definitions loader
-- `standard_colors.RISEscene`, `povray_colors.RISEscene`: shared color scene fragments
+- `colors.RISEscript`: retired streaming-script loader retained as migration
+  history; native-v7 scenes have its color chunks flattened inline
+- `standard_colors.RISEscene`, `povray_colors.RISEscene`: historical color
+  fragments used by the old script loader
 - `iorstack.RISEscene`, `pr.RISEscene`: older standalone utility scenes
 
 These are support assets, not the preferred place for new sample organization.

@@ -1,9 +1,15 @@
 # glTF 2.0 Import for RISE — Analysis & Plan
 
+**Current status (2026-07-24): SUBSTANTIALLY IMPLEMENTED.** Mesh and scene
+import, PBR material mapping, cameras/lights, embedded textures, alpha,
+normal/tangent handling, volume/transmission, and many KHR fidelity features
+have shipped. Animation, skinning, morph targets, full Basis Universal decode,
+and selected material extensions remain deferred. References below to "this
+branch (uncommitted)" are dated landing notes, not current repository state.
+
 This document started life as a forward-looking plan; the design rationale is
-still useful, but the **Implementation status** table below is the canonical
-view of what has actually shipped.  Sections that describe pending work are
-marked.
+still useful, but later per-phase/per-item status annotations supersede the
+early branch snapshot and original plan tables.
 
 **Scope decision (revised 2026-04-30):** Phase 1 (mesh-only import) ships
 first as a self-contained commit.  Tangent-space normal mapping —
@@ -98,7 +104,7 @@ the standalone `sheen_material` chunk is fully working for hand-
 authored fabric scenes.  See §15 below for the delivered + deferred
 breakdown.
 
-## Implementation status
+## Historical implementation snapshot
 
 | Area | Committed | This branch (uncommitted) | Pending |
 |---|---|---|---|
@@ -326,7 +332,7 @@ From [src/Library/Materials/GGXSPF.h](../src/Library/Materials/GGXSPF.h) (header
 >
 > Height-correlated Smith G2 (Heitz 2014), Kulla-Conty multiscattering (2017).
 
-Chunk parameters ([AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp), keyword `ggx_material`):
+Chunk parameters ([AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), keyword `ggx_material`):
 
 - `rd` — diffuse reflectance (painter)
 - `rs` — specular reflectance / **F0** (painter)

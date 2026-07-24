@@ -1,5 +1,11 @@
 # Landing 3 Design — Spectral upsampling + spectral sun-and-sky
 
+**Status:** **SHIPPED v1; PLANNED v2 MODEL SWAP DEFERRED.** Rec.709
+Jakob-Hanika uplift, the analytic spectral radiance map, API, and
+`hosek_wilkie_skylight` scene chunk are present. The internal sky fit remains
+the documented Preetham-1999 v1 rather than the proposed Hosek-Wilkie
+coefficient implementation.
+
 Detailed implementation design for Landing 3 of the
 [Physically Based Pipeline Plan](PHYSICALLY_BASED_PIPELINE_PLAN.md).
 Builds on Landing 1 (HDR primary output) — without a high-dynamic-
@@ -11,7 +17,7 @@ that section gets marked DONE with a pointer here when this lands.
 
 ## Status — v1 shipped, v2 deviations called out
 
-**v1 shipped (commit pending review):** L3.A spectral infrastructure +
+**v1 shipped:** L3.A spectral infrastructure +
 L3.B UniformColorPainter + VertexColorPainter + L3.C TexturePainter
 sample-time uplift + L3.D analytic sun-and-sky (Preetham 1999 form
 internally; HW reference data is the v2 swap) + RISE_API factory for
@@ -50,8 +56,8 @@ pass.  Existing 11-test focus suite (BDPT/VCM/sheen) holds green.
    (`AddPNG/JPEGTexturePainter` and the in-memory variants) and the
    pre-decode batch path (`TexturePainterBatchRequest.spectrumKind`)
    now select `eSpectrumKind_Unbounded` for `role == "emissive"` in
-   [GLTFSceneImporter.cpp:643-657](../src/Library/Importers/GLTFSceneImporter.cpp:643)
-   and [:2767-2774](../src/Library/Importers/GLTFSceneImporter.cpp:2767).
+   [GLTFSceneImporter.cpp:643-657](../src/Library/Importers/GLTFSceneImporter.cpp)
+   and [:2767-2774](../src/Library/Importers/GLTFSceneImporter.cpp).
    IJob's PNG/JPEG/InMemory* virtuals gained a defaulted
    `SpectrumKind` parameter (Albedo default for back-compat); HDR/EXR
    default to Unbounded since those formats are intrinsically HDR.
@@ -85,7 +91,7 @@ pass.  Existing 11-test focus suite (BDPT/VCM/sheen) holds green.
   scenes with white-RGB lights).  Regenerated LUT against flat
   illuminant; round-trip + render now self-consistent.
 - **L3.D hosek_wilkie_skylight chunk parser landed**:
-  [src/Library/Parsers/AsciiSceneParser.cpp:5263](../src/Library/Parsers/AsciiSceneParser.cpp:5263)
+  [src/Library/Parsers/AsciiSceneParser.cpp:5263](../src/Library/Parsers/ChunkParserRegistry.cpp)
   + new IJob virtuals `SetGlobalRadianceMap` / `AddHosekWilkieSkylight`.
   Atomic factory creates radiance map + matched `__hw_sun__`
   directional light in one chunk.  Sky env visible in renders;
@@ -185,7 +191,7 @@ subclass).
   [VCMSpectralRasterizer.cpp](../src/Library/Rendering/VCMSpectralRasterizer.cpp),
   [MLTSpectralRasterizer.cpp](../src/Library/Rendering/MLTSpectralRasterizer.cpp)).  Per-ray
   hero + companion wavelengths flow through `GetColorNM(ri, nm)` calls.
-- **`SpectralPacket`** ([SpectralPacket.h:35](../src/Library/Utilities/Color/SpectralPacket.h:35))
+- **`SpectralPacket`** ([SpectralPacket.h:35](../src/Library/Utilities/Color/SpectralPacket.h))
   is heap-allocated, variable-bin.  Used for code paths that need a
   full SPD; not on the per-sample hot path.
 - **`SpectralColorPainter`** ([SpectralColorPainter.h](../src/Library/Painters/SpectralColorPainter.h))
@@ -196,11 +202,11 @@ subclass).
 
 ### What's broken
 
-- `Painter::GetColorNM` ([Painter.cpp:21](../src/Library/Painters/Painter.cpp:21))
+- `Painter::GetColorNM` ([Painter.cpp:21](../src/Library/Painters/Painter.cpp))
   returns 0.  Any RGB-only painter (UniformColorPainter,
   TexturePainter, etc.) that doesn't override silently zeros the
   spectral path.
-- `Painter::GetSpectrum` ([Painter.cpp:27](../src/Library/Painters/Painter.cpp:27))
+- `Painter::GetSpectrum` ([Painter.cpp:27](../src/Library/Painters/Painter.cpp))
   returns a default `dummy_spectrum (400-700, 1 bin)`.  Same issue.
 - TexturePainter — the load-bearing painter for every glTF asset —
   has neither override.  **glTF on the spectral path renders black
@@ -473,7 +479,7 @@ the spectral path.
   / `RISE_API_AddJPEGTexturePainter` / `RISE_API_AddTexturePaintersBatch`
   gain an optional `kind` parameter (default `Albedo` for back-compat).
 - `src/Library/Interfaces/IJob.h` — same; appended at the END of
-  the IJob class (per the [abi-preserving-api-evolution skill](skills/abi-preserving-api-evolution.md)).
+  the IJob class (per the [AGENTS.md change checklist](../AGENTS.md)).
 - `src/Library/Job.{h,cpp}` — Job overrides match.
 - `src/Library/Parsers/...` — any chunk that references texture-
   painter creation gains the optional parameter.
@@ -862,7 +868,7 @@ declaring L3.D done.
 | `Painter::GetColorNM`, `Painter::GetSpectrum` | Default impls unchanged; subclasses gain overrides | No break (subclasses are libraries' own) |
 | `IPainter` interface | Unchanged | No break |
 | `IJob::AddTexCoord1Painter` (existing) | Unchanged | — |
-| `IJob::Add{PNG,JPEG}TexturePainter` | Optional `kind` param appended; default `Albedo` | Source-compat preserved.  ABI: appended-arg signatures = different vtable slot, so vtable-position guard rules per the [abi-preserving-api-evolution skill](skills/abi-preserving-api-evolution.md) apply.  Action: keep old signature as deprecated overload, add new one with `kind` |
+| `IJob::Add{PNG,JPEG}TexturePainter` | Optional `kind` param appended; default `Albedo` | Source-compat preserved.  ABI: appended-arg signatures = different vtable slot, so vtable-position guard rules per the [AGENTS.md change checklist](../AGENTS.md) apply.  Action: keep old signature as deprecated overload, add new one with `kind` |
 | `RISE_API_Add{PNG,JPEG}TexturePainter` | Same | Source-compat preserved via overloading at the API layer |
 | `RISE_API_AddTexturePaintersBatch` | `TexturePainterBatchRequest` struct gains `SpectrumKind kind` field | Existing scene files never set it; default `Albedo` preserves them bit-identically |
 | New chunk `hosek_wilkie_skylight` | New | Additive |

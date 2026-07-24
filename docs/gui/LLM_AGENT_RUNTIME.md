@@ -1,6 +1,11 @@
 # RISE LLM / Agent Runtime — Provider Adapters, the Agent Loop, Chat UX, and Staged Autonomy
 
-**Status:** DESIGN (no code). One of two AI deep-dives spun off [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §9. The sibling [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) owns the **tool/resource catalog** (what an LLM can read/do to RISE, schema auto-generation from `SceneGrammar::Describe()`, `validate`, framebuffer resource, transport, permissions). This doc owns the **agent runtime**: the provider-adapter abstraction, the agent loop, auth & secrets, the chat panel, the "show me the code" duality, staged autonomy (L0–L3), and guardrails/cost. Where the two meet (the tool catalog the adapter translates; the permission scopes the runtime enforces) this doc references the MCP doc rather than re-specifying it.
+**Status:** **CORE RUNTIME SHIPPED.** Provider codecs, the shared agent loop,
+desktop chat panels, tool calling, proposal/commit authority, render tools,
+prompt caching, transcript compaction, trajectories/evals, and clarification
+requests are implemented under `src/Library/Agent/` and the desktop bridges.
+Credential/security and future-provider sections remain design guidance. The
+sibling [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) owns the tool catalog.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make the in-app AI a first-class authoring surface over the canonical `.RISEscene` text, on macOS, Windows, and (Tier A) Android, with **the entire runtime in the shared C++ library** and only credential storage + the chat bubble UI per-platform. Answers GUI_ROADMAP §13 open-question #4 (the minimal provider-adapter interface) and maps to the A0–A3 AI spine of GUI_ROADMAP §11.
 **Honors:** GUI_ROADMAP §1 principles — text is canonical (#1), maximize shared C++ (#2), Android keeps the core incl. LLM (#3), one mutation path through `SceneEditController` (#6) — and §16 confirmed decisions: the credential interface is a single reference-counted **`ICredentialStore : IReference`** in **`src/Library/Agent/`** (drop `ISecretStore`); the agent subsystem **avoids the bare `MCP` token** in type/dir names; cloud auth ships **API-key paste first**.

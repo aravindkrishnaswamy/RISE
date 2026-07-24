@@ -8,10 +8,12 @@
 >
 > **Superseded by the above:** Executive-summary items **1, 2, 12** (and item 14's framing), **§1** (whole section — historical), and **§12**'s "Job does NOT retain scene source text" / `SourceSpanIndex` / `ParseAndLoadScene` claims (`ISceneParser::ParseAndLoadScene` was also removed in Slice 6c-3c; `Cst::ParseToCst(const std::string&)` IS a string-input, construction-free parse). The rest of the audit (entity creation, introspection, picking, ROI, environment, present paths, probe, MCP absence — though the F5 agent surface has since started landing under `src/Library/Agent/`) was not re-verified but is not known to be invalidated.
 
-**Status:** GROUND TRUTH (code-verified, 2026-06-19). This document supersedes
-any `Status:` header in the seven `docs/gui/` specs and `docs/GUI_ROADMAP.md`
-where they disagree. It was produced by reading `src/` and `tests/` directly —
-**plan-doc status headers were treated as suspect and re-derived from code.**
+**Status:** **HISTORICAL SNAPSHOT (code-verified 2026-06-19; no longer ground
+truth).** The July CST, GUI redesign, agent, entity-creation, camera/view,
+render-mode, N-up, and document-concurrency landings invalidate substantial
+parts beyond the 2026-07-02 erratum above. Use current source/tests and the
+implementation records linked from [../README.md](../README.md). This audit is
+retained as the pre-cutover baseline.
 **Owner:** Aravind Krishnaswamy
 **Scope:** The interactive scene-editor / GUI substrate: round-trip save, entity
 creation, introspection, property editing, region render, picking, environment,

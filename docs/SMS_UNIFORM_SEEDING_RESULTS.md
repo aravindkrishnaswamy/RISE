@@ -1,5 +1,8 @@
 # Phase 8 measurements — Mitsuba-faithful SMS port
 
+> **Status:** **COMPLETED HISTORICAL MEASUREMENT OUTPUT.** These results drove
+> the shipped default; use `SMS.md` for current behavior.
+>
 > **2026-05 update**: Path-tree branching (`branching_threshold` + `BuildSeedChainBranching`) was excised from RISE.  The "Option C" Fresnel-branching seed extension described later in this document is no longer in the codebase.  Uniform-mode SMS now uses single-chain stochastic seeds with `multi_trials` for variance reduction on multi-modal scenes — matches Mitsuba SOTA convention.  Sections referencing `branchingThreshold` describe historical context.
 
 This file captures the per-mode comparison data that informed the Phase 9 default decision (per `docs/SMS_UNIFORM_SEEDING_PLAN.md`).

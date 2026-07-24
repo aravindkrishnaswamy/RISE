@@ -2,7 +2,11 @@
 
 > **⚠ ERRATUM (2026-07-02, post-CST-cutover) — this spec's persistence design is premised on the byte-splice save engine DELETED in Model-B P5 Slice 6d (2026-07-01).** The machinery it builds on — the managed override block, Phase C created-entity re-emit, the `> remove {family}` **managed-tombstone** deletion design (Confirmed decision #1, §5.4, §7.6), `SaveEngine.cpp:1351/:1373` refusals, `OverrideSpanIndex`, `tests/SaveEngineTest.cpp` — **no longer exists**. Today every scene loads via `Cst::ParseToCst` + `DeriveToJob` with the `Job` retaining the canonical **CST `Document`**; entity creation persists by **inserting the entity's chunk into the retained Document** (see `Job::ApplyCstInsertCameraChunk` / `Cst::DocInsertItem` — the shipped camera instance of the pattern), deletion by **removing the chunk** (`Job::ApplyCstRemoveCameraChunk` — works on file-authored cameras; **no tombstone needed**), and `SaveEngine::Save` serializes the whole Document (`Cst::SerializeCst`). The spec's *product* design (outliner, all-families coverage, reference-safe deletion, dependency graph, import-as-one-transaction, naming) stands; its *persistence mechanics* (§5.4 tombstones, §7 "extending Phase C", the re-emit ordering/refusal machinery) must be re-read as: **add per-family Document chunk-insert/remove ops modeled on the camera pair, and the whole-Document save does the rest.** Sentences below claiming the old machinery exists now are corrected inline where load-bearing; the §5.4/§7 design bodies are retained as history of the superseded approach.
 
-**Status:** DESIGN. **Hardened 2026-06-20** after a *second* adversarial review,
+**Status:** **PARTIALLY IMPLEMENTED.** The CST-native template registry,
+desktop Insert/outliner CRUD, painter category, and reference-aware refusal
+path have shipped. The spec's all-family dependency graph, bulk import
+transaction, and several advanced family templates remain design work.
+**Hardened 2026-06-20** after a *second* adversarial review,
 against the two now-CONFIRMED decisions below. That pass found five mechanical
 gaps (deletion persistence was undesigned and contradicted the CAMERAS spec; the
 "every family" claim silently excluded geometry / painters / shaders / modifiers;

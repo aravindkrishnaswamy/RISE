@@ -1,5 +1,13 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
+> **Current status (2026-07-24): PARTIALLY IMPLEMENTED.** The CST/v7 cutover,
+> CST-native editor/save/history, scene variants, schema-driven desktop
+> surfaces, first-party agent runtime/tool surface, eval harness, and transcript
+> compaction have shipped. The complete immutable
+> `DerivedScene`/`PreparedRenderState` publication architecture and several
+> security/orchestration layers remain design work. The dated transfer-gate
+> narrative below is retained as the execution record.
+>
 > **Implementation update (2026-06-21):** the design is backed by **four prototype slices**
 > (`tests/Cst*SliceTest.cpp`; see [`IMPLEMENTATION_SLICES.md`](IMPLEMENTATION_SLICES.md)) that
 > validate the model's semantics and cost *model*, each three-way adversarially reviewed. An

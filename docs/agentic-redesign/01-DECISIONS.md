@@ -1,6 +1,10 @@
 # RISE Agentic Redesign — Decision Record (review rounds 1–6)
 
-> **Status:** authoritative. r1 → **D1–D10**; r2 → **D11–D20**; r3 → **D21–D28**; r4 → **D29–D37**;
+> **Status:** **RATIFIED DESIGN RECORD.** Many core decisions now have shipped
+> implementations, but this file is not a claim that D1–D51 are all complete;
+> source, tests, and the current facet headers are implementation truth. Within
+> the design package it remains authoritative: r1 → **D1–D10**; r2 →
+> **D11–D20**; r3 → **D21–D28**; r4 → **D29–D37**;
 > r5 → **D38–D44**; r6 → **D45–D51**. Later decisions *amend* earlier ones (r2: D11/D12 amend D1, D14
 > amends D9, D15/D16 amend D2, D17 amends D5/D6, D18 amends D10, D20 amends D4; r3: D21/D22 amend D12,
 > D22 amends D5, D23 amends D11/D20, D24 amends D11, D25 amends D14, D26 completes D15, D27 amends D19,

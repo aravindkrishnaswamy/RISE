@@ -1,7 +1,8 @@
 # Guilloché / Rose-Engine Fidelity — 3-Way Study (bump vs displaced-mesh vs SDF)
 
-Status: **Phase 0 complete (measured 2026-06-13); 3-way build underway.** Target branch
-`feature/thin-film-interference`. Decision record for taking the GuillocheWatch dial from a
+Status: **COMPLETED STUDY.** The three-way build and measurements landed; read
+[GUILLOCHE_3WAY_RESULTS.md](GUILLOCHE_3WAY_RESULTS.md) for the result. The
+branch named below is historical; the work is on `master`. Decision record for taking the GuillocheWatch dial from a
 phenomenological displacement field to a **physically-grounded, geometry-faithful** engine-turned
 surface — and for **objectively measuring** which realization (cheap normal-perturbation bump,
 memory-bounded displaced mesh, or exact SDF ground truth) actually earns its cost.

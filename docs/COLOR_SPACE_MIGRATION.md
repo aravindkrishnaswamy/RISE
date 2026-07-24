@@ -1,7 +1,12 @@
 # RISE Internal Colour Space — Migration Brief
 
-**Date:** 2026-05-09 (Stage A landed 2026-05-24)
-**Status:** **Stage A done — LUT retrained for Rec.709 + parameterized toolchain.  Stage B in progress.**
+**Date:** 2026-05-09 (Stages A and B landed 2026-05-24)
+**Status:** **COMPLETE.** Stage A retrained the LUT for Rec.709; Stage B
+changed `RISEPel` to `Rec709RGBPel`. Current declarations are
+[`Color.h`](../src/Library/Utilities/Color/Color.h) and
+[`RGBToSpectrumTable.h`](../src/Library/Utilities/Color/RGBToSpectrumTable.h).
+Sections that discuss `RISEPel = ROMMRGBPel`, kickoff choices, or future Stage
+B work are the pre-landing design record.
 **Triggered by:** Landing 3 v2 spectral pipeline correctness work (commit `a763141`) surfaced two structural costs of the current ROMM-RGB-as-`RISEPel` choice that a different working space would resolve cleanly.
 **Related:** [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md), [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
 
@@ -19,13 +24,17 @@
 - Old `extlib/jakob-hanika-luts/romm.coeff` deleted.
 - `tests/JakobHanikaRoundTripTest.cpp` rewritten with the Rec.709 forward model; passes 8/8 with mean L2 error 0.0001 on the in-gamut interior sweep.
 
-Net effect: the LUT-quality issue documented in [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md) is largely resolved; spectral pipeline routes through the new LUT correctly; `RISEPel` is still `ROMMRGBPel` so no rendered output changes visibly.  Stage B follows immediately.
+Net effect at the Stage-A landing: the LUT-quality issue documented in
+[JH_LUT_GAMUT.md](JH_LUT_GAMUT.md) was largely resolved while
+`RISEPel` temporarily remained `ROMMRGBPel`. Stage B landed later the same day
+and made Rec.709 Linear the working space.
 
 ---
 
-## Why we're considering a change
+## Why the change was made
 
-`RISEPel = ROMMRGBPel` (declared in [src/Library/Utilities/Color/Color.h:45](../src/Library/Utilities/Color/Color.h)) propagates ROMM RGB through every layer:
+Before Stage B, `RISEPel = ROMMRGBPel` propagated ROMM RGB through every
+layer:
 
 - texture decode (sRGB / Rec.709 sources → ROMM internally)
 - BSDF math (diffuse / specular / Fresnel multiplications happen in ROMM)
@@ -135,18 +144,18 @@ Two-stage migration, sized to spread the risk:
 - Not changing user-visible scene-file syntax. The `colorspace` parameter on painters and `color_space` on `file_rasterizeroutput` keep working — they describe the SOURCE / TARGET space the user wants, the renderer converts at the boundary.
 - Not changing what scenes look like, except where the change is the actual fix (e.g. JH-uplifted highly-saturated colours become physically reachable).
 
-## Open questions for the kickoff session
+## Kickoff questions and landed decisions
 
-1. **sRGB Linear vs ACES AP1?** sRGB is simpler and matches displays 1:1; AP1 is wider and matches industry CG / VFX practice. Both are physically clean.
-2. **Stage A only, or commit to A + B together?** Stage A alone closes the LUT-quality issue. Stage B is the structural cleanup.
-3. **Calibration validation strategy for Stage B.** Which scenes / materials need before/after comparison renders to confirm we haven't shifted any production reference?
-4. **Scope of `colorspace ROMMRGB_Linear` user-painter support.** Keep supporting it as a source format (convert-on-load), drop it, or warn?
-5. **Texture decode — gamma + space conversion.** sRGB-encoded textures currently decode through `sRGBPel → Rec709 → ROMM`. With Stage B they'd decode `sRGB → Rec709` and stop there (one fewer conversion per texel). Worth measuring.
+1. **Working space:** Rec.709 Linear was selected; `AP1RGBPel` was pre-staged
+   for a possible later ACEScg migration.
+2. **Scope:** both Stage A and Stage B landed.
+3. **ROMM compatibility:** `ROMMRGB_Linear` remains supported as an explicit
+   source/output space and converts at the boundary.
+4. **Texture decode:** sRGB/Rec.709 sources now stop in the Rec.709 working
+   space rather than converting through ROMM.
 
-## What lives in `extlib/jakob-hanika-luts/` after this lands
+## What lives in `extlib/jakob-hanika-luts/`
 
-The current `romm.coeff` becomes either:
-- **Stage A**: replaced by `srgb.coeff` (or `acescg.coeff`), with a new entry baked into `RGBToSpectrumTable_ROMMData.cpp` (rename the file accordingly).
-- **Stage B**: same as Stage A, the runtime never sees ROMM at the LUT lookup.
-
-The OLD `romm.coeff` may be kept in extlib for a while as a reference / for any tests that still target ROMM directly, then deleted.
+The production table is `rec709.coeff`; the old `romm.coeff` and
+`RGBToSpectrumTable_ROMMData.*` names were removed. Baked data lives in
+`RGBToSpectrumTable_LUTData.*`.

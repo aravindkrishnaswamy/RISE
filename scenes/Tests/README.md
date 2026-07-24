@@ -17,19 +17,21 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `BDPT/`: bidirectional path tracing baselines and comparison scenes
 - `BSSRDFFurnace/`: energy-conservation regression scenes for subsurface scattering
 - `Bench/`: standardized benchmark scenes used by `bench.sh` for wall-time comparisons across commits.  `bench_pt` / `bench_bdpt` / `bench_vcm` are the small Cornell-class controls; `bench_pt_bigmesh` is a procedurally-displaced ~1M-tri ellipsoid (geometry-bound, single deep-BVH mesh) added as the third regime in the BVH-stack benchmark sweep so wide-tree / SoA-leaf optimisations get a fair test (the small bench scenes top out at 47K tris where wide-SIMD never pays off — see [docs/BVH_RETROSPECTIVE.md](../../docs/BVH_RETROSPECTIVE.md) Tier D2-rev for context)
+- `Camera/`: isolated physical-exposure validation
 - `Cameras/`: isolated camera-model checks (sensor-format presets, tilt-shift, named-camera selection)
 - `Caustics/`: compact caustic and SMS comparison scenes
 - `Geometry/`: primitive and CSG sanity scenes
 - `GlobalIllumination/`: focused GI baselines such as final gather
 - `Importers/`: glTF import regression scenes (Khronos sample assets, alpha modes, embedded textures, light-control)
 - `LightBVH/`: many-light regression scenes comparing alias-table sampling vs. light BVH (corridor 20/100 lights, spotlights stage, BDPT mixed-light Cornell)
+- `Lighting/`: physically based unit and environment-map lighting checks
+- `Lights/`: environment, mesh-emitter, and analytic-sky comparisons
 - `MLT/`: Metropolis light transport baselines
 - `Materials/`: isolated material demonstrations and regression scenes
 - `Painters/`: painter- and texture-accessor-specific scenes
 - `Parser/`: parser-language regression scenes
 - `PathTracing/`: unidirectional PT baselines and path-guiding comparisons
 - `PixelFilters/`: filter comparison scenes
-- `RussianRoulette/`: continuation-probability correctness scenes
 - `SDF/`: signed-distance-field (sphere-traced implicit) geometry checks — `sdf_shadows` (melded blob + analytic sphere/box, mutual shadows + inter-geometry depth), `sdf_volume` (glass SDF bounding a fog interior_medium, ray-march entry/exit driving the IOR stack), `sdf_caustic` (glass SDF torus refracting a ring caustic via the caustic photon map), `sdf_arealight` (a glowing SDF torus as a true NEE-sampled area light), `sdf_luminaire_fog` / `sdf_luminaire_heterofog` (a blobby SDF luminaire inside homogeneous / heterogeneous scattering fog, with nested interior media — the volumetric-media stress pair). The SDF part lists are authored inline in each scene's `sdf_geometry` chunk (repeatable `part` lines; an external `file` remains available for very large SDFs)
 - `SMS/`: specular manifold sampling comparisons and visibility checks
 - `Shaders/`: shader-op and rasterizer behavior checks
@@ -43,7 +45,9 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ## Recommended Quick Checks
 
 - Geometry sanity: `Geometry/shapes.RISEscene`
-- Parser sanity: `Parser/loops.RISEscene`
+- CST/parser sanity: `Parser/loops.RISEscene` (a flattened native-v7 fixture;
+  the filename and historical header comment predate retirement of the
+  streaming loop language)
 - Path tracing baseline: `PathTracing/cornellbox_pathtracer.RISEscene`
 - Pure PT with OIDN: `PathTracing/cornellbox_pt_oidn.RISEscene`
 - Spectral baseline: `Spectral/cornellbox_spectral.RISEscene`

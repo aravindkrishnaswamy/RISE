@@ -13,7 +13,7 @@ requirement).
 ## File format (STRICT — the loader is a bare `fscanf`)
 
 The parser path for `scalar_painter { file … }`
-([`AsciiSceneParser.cpp` ~L1249](../../src/Library/Parsers/AsciiSceneParser.cpp))
+([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp))
 reads each file with a bare
 
 ```c

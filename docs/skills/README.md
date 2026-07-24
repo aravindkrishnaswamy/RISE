@@ -61,6 +61,7 @@ point back here when a tool requires a shim.
 | [effective-rise-scene-authoring](effective-rise-scene-authoring.md) | Authoring a new `.RISEscene` from scratch, porting from another tool (glTF / Blender / Unity / Unreal), or diagnosing a scene that renders unexpectedly dark / wrong-coloured / oriented backwards.  Walks the [SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) checklist + the Lambertian-control-sphere diagnostic. |
 | [bdpt-vcm-mis-balance](bdpt-vcm-mis-balance.md) | BDPT or VCM render disagrees with PT (mean off, max blown out, splotches not fading with sample count); user reports "fireflies even at high spp"; you've just changed MIS code (`MISWeight`, `EvaluateNEE`, `EvaluateMerges`, `Convert*Subpath`, the auto-radius pre-pass). |
 | [audit-by-bug-pattern](audit-by-bug-pattern.md) | You just fixed a non-trivial bug.  Before declaring done, sweep the codebase for sibling sites carrying the same pattern — RGB / NM twins, snell / uniform variants, biased / unbiased branches, fallback / photon-aided paths.  The fix isn't done when the user-reported site is fixed; it's done when no sibling carries the same pattern. |
+| [rise-animation-render](rise-animation-render.md) | Render a RISE animation to an HDR movie, encode EXR frames as ProRes/HDR10, or diagnose a `.mov` that plays back as SDR. |
 
 ## Authoring New Skills
 

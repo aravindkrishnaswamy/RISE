@@ -152,7 +152,7 @@ user clicks Render. Full architecture in
 
 Not every rasterizer wires every optional feature. The matrix below
 reflects the helper-template invocations in
-[`CreateAllChunkParsers()`](../src/Library/Parsers/AsciiSceneParser.cpp);
+[`CreateAllChunkParsers()`](../src/Library/Parsers/ChunkParserRegistry.cpp);
 the table in [Parsers/README.md](../src/Library/Parsers/README.md)
 "Helper Templates" is the source of truth. ✓ = supported, ✗ = not
 wired, partial = subset.

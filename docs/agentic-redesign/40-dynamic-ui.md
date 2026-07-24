@@ -1,7 +1,11 @@
 # Facet 4 — Dynamic Schema-Driven UI
 
-> **Status:** design-in-progress. One of the parallel facet docs under the
-> [Agentic Redesign Charter](00-CHARTER.md). DESIGN ONLY — no code yet.
+> **Status:** **PARTIALLY IMPLEMENTED.** Descriptor/CST-driven properties,
+> outliner/entity/environment/camera/render-mode surfaces, source trace, and
+> macOS/Windows workspace shells have shipped. The fully generic widget tree,
+> immutable-snapshot status model, and some Android/advanced panels remain
+> design work. One of the parallel facet docs under the
+> [Agentic Redesign Charter](00-CHARTER.md).
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51):** binding keys on the
 > immutable **NodeId** (lineage identity, D9/D15, and now the *locked* charter L5/INV-5 after **D44**),
 > **stored as a real field** on `Widget`/`ViewNode`/`EditIntent`/selection (D36); the `NodeId` resolves
@@ -152,7 +156,7 @@ and makes the *vocabulary* (enums, widget kinds) generated, never hand-mirrored.
 
 ### 1.5 What already maps text ↔ node (reusable)
 
-`SourceSpanIndex` ([SourceSpanIndex.h](../../src/Library/SceneEditor/SourceSpanIndex.h))
+`SourceSpanIndex` (SourceSpanIndex.h)
 already records, per entity, byte ranges for the chunk, the body braces, and
 **each parameter's value/comment span** (`ParameterSpan{valueBegin, valueEnd,
 commentBegin, …}`), plus `loadedPropertyValues`. This is the embryo of the

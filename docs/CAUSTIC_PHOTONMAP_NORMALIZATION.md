@@ -173,7 +173,7 @@ VM region-mean == caustic-photon-map / area-light-PT.
 a Phong refraction-cone sharpness exponent
 ([DielectricSPF.cpp:148](../src/Library/Materials/DielectricSPF.cpp),
 `alpha = acos(rand^(1/(scat+1)))`; default 10000 at
-[AsciiSceneParser.cpp:3086](../src/Library/Parsers/AsciiSceneParser.cpp)).  At
+[AsciiSceneParser.cpp:3086](../src/Library/Parsers/ChunkParserRegistry.cpp)).  At
 10000 the cone half-angle is ~0.67° (near-deterministic); attenuation is via
 `tau` (Beer-Lambert) only; no volume/ray-march/phase-function path exists.
 Empirically, re-rendering at `scattering 1000000` (perfect refraction): VCM

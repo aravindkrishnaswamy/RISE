@@ -1,5 +1,9 @@
 # GUI Environment / HDRI Section — design & implementation
 
+**Status:** **IMPLEMENTED.** CST-backed HDRI selection, intensity, rotation,
+background visibility, desktop panels, and shared bridge/API support shipped;
+the body is the design and implementation record.
+
 Task 17 of the UI redesign: a first-class **Environment** section that lets a
 user see and edit the scene's image-based-lighting (IBL) environment — swap the
 HDRI, dim/brighten it, rotate it, and toggle its camera-background visibility —

@@ -205,7 +205,7 @@ RISE doesn't have `INCLUDE` today, but the design needs to be forward-compatible
 
 ### 4.6 The parser pipeline — why we need Phase 0
 
-The current `AsciiSceneParser::ParseScene` loop ([AsciiSceneParser.cpp:8820+](../src/Library/Parsers/AsciiSceneParser.cpp)) is:
+The current `AsciiSceneParser::ParseScene` loop ([AsciiSceneParser.cpp:8820+](../src/Library/Parsers/ChunkParserRegistry.cpp)) is:
 
 ```
 while not EOF:
@@ -827,7 +827,7 @@ A simple round-trip (load → no edits → save) must produce a file byte-identi
 
 ### 8.9 Parser implementation outline
 
-The new class is named `OverrideObjectAsciiChunkParser` and lives **in [`AsciiSceneParser.cpp`](../src/Library/Parsers/AsciiSceneParser.cpp)** alongside `StandardObjectAsciiChunkParser` — there is no separate `ObjectAsciiChunkParsers.cpp` (R1 fix to §13.2; see §20 R1.1).  API surface matches existing chunks:
+The new class is named `OverrideObjectAsciiChunkParser` and lives **in [`AsciiSceneParser.cpp`](../src/Library/Parsers/ChunkParserRegistry.cpp)** alongside `StandardObjectAsciiChunkParser` — there is no separate `ObjectAsciiChunkParsers.cpp` (R1 fix to §13.2; see §20 R1.1).  API surface matches existing chunks:
 
 ```cpp
 class OverrideObjectAsciiChunkParser : public IAsciiChunkParser
@@ -2380,7 +2380,7 @@ Recorded here for traceability; not blocked by Phase 6.
 
 - [docs/INTERACTIVE_EDITOR_PLAN.md](INTERACTIVE_EDITOR_PLAN.md) — overall editor plan; Phase 6 was scoped at §14 of that doc, this design supersedes that scope.
 - [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) — chunk parser pattern; how to add `override_object`.
-- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) — parser core; where SourceSpanIndex hooks plug in.
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) — parser core; where SourceSpanIndex hooks plug in.
 - [src/Library/SceneEditor/SceneEdit.h](../src/Library/SceneEditor/SceneEdit.h) — SceneEdit op list; the four parameter classes covered in V1.
 - [src/Library/SceneEditor/SceneEditor.cpp](../src/Library/SceneEditor/SceneEditor.cpp) — `ApplyObjectOpForward` dispatch; where `DirtyTracker.MarkDirty` is called.
 - [docs/SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) — semantic conventions for transforms (right-handed, radians, etc.); save formatting follows the same.

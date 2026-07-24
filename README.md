@@ -2,7 +2,12 @@
 
 Contributor map for the Realistic Image Synthesis Engine.
 
-The historical user manual remains in [README.txt](README.txt). This file is the landing page for humans; [AGENTS.md](AGENTS.md) is the shared agent quickstart, [CLAUDE.md](CLAUDE.md) is the Claude-compatible shim, and [docs/README.md](docs/README.md) indexes deeper design notes and roadmaps.
+The frozen 2006 user manual remains in [README.txt](README.txt) for historical
+context; its version numbers, platform notes, and commands are not current.
+This file is the landing page for humans; [AGENTS.md](AGENTS.md) is the shared
+agent quickstart, [CLAUDE.md](CLAUDE.md) is the Claude-compatible shim, and
+[docs/README.md](docs/README.md) indexes current references, active plans, and
+historical design records.
 
 ## Start Here
 
@@ -42,7 +47,10 @@ The historical user manual remains in [README.txt](README.txt). This file is the
 
 1. [src/RISE/commandconsole.cpp](src/RISE/commandconsole.cpp) creates a `Job`.
 2. [src/Library/Job.cpp](src/Library/Job.cpp) initializes the `Scene`, managers, default null assets, and default shader ops.
-3. [src/Library/Parsers/AsciiSceneParser.cpp](src/Library/Parsers/AsciiSceneParser.cpp) loads `.RISEscene` content into the `Job`.
+3. [src/Library/Cst/Cst.cpp](src/Library/Cst/Cst.cpp) parses `.RISEscene`
+   content into the canonical CST and derives it into the `Job`; the chunk
+   registry lives in
+   [src/Library/Parsers/ChunkParserRegistry.cpp](src/Library/Parsers/ChunkParserRegistry.cpp).
 4. The `Job` resolves named assets, configures shaders and rasterizers, and attaches outputs.
 5. [src/Library/Rendering/PixelBasedRasterizerHelper.cpp](src/Library/Rendering/PixelBasedRasterizerHelper.cpp) drives the render passes.
 

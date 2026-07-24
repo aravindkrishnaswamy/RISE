@@ -239,7 +239,7 @@ directional, a portal-shaped distant source):
 4. **Wire up parser + API + Job** the usual way
    ([src/Library/Parsers/README.md](../src/Library/Parsers/README.md)
    "Adding A New Chunk Parser",
-   [skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md)).
+   [AGENTS.md change checklist](../AGENTS.md)).
 5. **Update the LightBVH bounding contract.** In `LightBVH::Build`,
    add a case that returns your light's `OrientationCone` (axis +
    half-angle) and AABB. Without this, the BVH cannot reason about

@@ -1,6 +1,8 @@
 # Unified Integrator Baselines — Phase 1 Empirical Scene→Integrator Matrix
 
-**Status:** Phase-1 measurement output (per [UNIFIED_INTEGRATOR_ANALYSIS.md](UNIFIED_INTEGRATOR_ANALYSIS.md) §4).
+**Status:** **COMPLETED HISTORICAL MEASUREMENT OUTPUT** used by the shipped
+auto-rasterizer decision (per
+[UNIFIED_INTEGRATOR_ANALYSIS.md](UNIFIED_INTEGRATOR_ANALYSIS.md) §4).
 **Produced:** 2026-06-03.
 **Foundation:** current production (disc-area) baseline — the documented ~11-28 %
 VCM env-only strict residual (Sessions 9-13,

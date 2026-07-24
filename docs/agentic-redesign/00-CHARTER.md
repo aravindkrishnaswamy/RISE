@@ -1,10 +1,11 @@
 # RISE Agentic Redesign — Design Charter
 
-> **Status:** design-in-progress. This charter is the shared foundation for a set of
-> parallel design documents. It is NOT yet implemented and is intended to **supersede
-> the current GUI/edit/scene-construction architecture** once ratified. Nothing here
-> changes engine behavior yet — this is a design effort to be reviewed for holes before
-> any code is written.
+> **Status:** **RATIFIED CHARTER, PARTIALLY REALIZED.** The canonical CST,
+> v7-only scene path, CST-native edit/save/history, dynamic desktop UI, and agent
+> surface have shipped. The full immutable derived/prepared-scene architecture
+> remains incomplete. This is the original foundation and decision context, not
+> a current implementation-status ledger; use source/tests and the facet
+> headers for what exists today.
 
 ## 1. Thesis & positioning
 
@@ -147,4 +148,5 @@ Each doc must contain, in this order:
   `RayCaster::AttachScene`).
 - Scene language quirks to be removed/migrated: FOR/DEFINE, `hal()`, `$(...)`, macros.
 
-> **Design only. Do NOT modify any source, build, or scene files. Write design docs only.**
+> **Historical authoring constraint:** this charter was written before
+> implementation and therefore made no source/build/scene changes itself.

@@ -53,12 +53,16 @@ To understand real behavior, read:
 
 - If you know an interface name, search for `public virtual <InterfaceName>`.
 - If you know a creation API, search in `RISE_API.cpp` to find the concrete class used.
-- If you know a scene chunk name, search in `AsciiSceneParser.cpp` to find the parser class and then the corresponding `Job` method or API constructor.
+- If you know a scene chunk name, search in
+  [../Parsers/ChunkParserRegistry.cpp](../Parsers/ChunkParserRegistry.cpp) to
+  find its descriptor/finalizer and then the corresponding `Job` method or API
+  constructor.
 
 ## High-Leverage Files
 
 - Scene construction: [IJob.h](IJob.h)
-- Scene parsing: [ISceneParser.h](ISceneParser.h)
+- Legacy parser interface (retained for compatibility; native scene loading is
+  CST-only): [ISceneParser.h](ISceneParser.h)
 - Rendering: [IRasterizer.h](IRasterizer.h)
 - Shading: [IShader.h](IShader.h), [IShaderOp.h](IShaderOp.h), [IMaterial.h](IMaterial.h)
 - Ownership: [IReference.h](IReference.h), [IManager.h](IManager.h)

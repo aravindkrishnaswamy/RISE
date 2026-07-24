@@ -15,7 +15,8 @@ Navigation aid for LLM-powered contributors. Use [README.txt](README.txt) for hi
 - High-level convenience interface: [src/Library/Interfaces/IJob.h](src/Library/Interfaces/IJob.h)
 - Main assembly implementation: [src/Library/Job.cpp](src/Library/Job.cpp)
 - Runtime scene object: [src/Library/Scene.h](src/Library/Scene.h)
-- Scene syntax and chunk registry: [src/Library/Parsers/AsciiSceneParser.cpp](src/Library/Parsers/AsciiSceneParser.cpp)
+- Canonical scene parse/derive path: [src/Library/Cst/Cst.cpp](src/Library/Cst/Cst.cpp)
+- Scene chunk registry: [src/Library/Parsers/ChunkParserRegistry.cpp](src/Library/Parsers/ChunkParserRegistry.cpp)
 - Pixel render loop: [src/Library/Rendering/PixelBasedRasterizerHelper.cpp](src/Library/Rendering/PixelBasedRasterizerHelper.cpp)
 - Iterative PT integrator: [src/Library/Shaders/PathTracingIntegrator.h](src/Library/Shaders/PathTracingIntegrator.h)
 - Main CLI entry point: [src/RISE/commandconsole.cpp](src/RISE/commandconsole.cpp)
@@ -38,9 +39,16 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 - `Job::SetPrimaryAcceleration()` replaces the object manager. Calling it after adding objects discards them. Default since 2026-05 is **top-level BVH4** (SAH-binned, BVH4 SIMD collapse — same `BVH<>` template as the per-mesh accelerator) with leaf cap 4 and depth cap 32. Pre-2026-05 was no top-level structure (linear loop). Constructor flag `bUseBSPtree` is the historical name; semantically it now means "build a top-level BVH" (the BSPTreeSAH path was removed when ObjectManager moved to `BVH<>`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Top-Level Acceleration (TLAS)" and the BVH retrospective Tier D1 entry.
 - Most scene elements are named and stored in managers. Parser chunks usually resolve dependencies by name through those managers.
 - `Job::InitializeContainers()` installs `"none"` defaults for a null material and null painter, and also creates several default shader ops.
-- The scene parser currently expects the header `RISE ASCII SCENE 7` (post-CST-cutover; the version-agnostic CST loader still accepts the transitional `6` on read, so un-migrated scenes keep loading). v5 scenes (legacy: width/height/pixelAR authored inside camera chunks) must be migrated — see the `Build And Test` → `Migrate a v5 scene to v6` recipe below for the script invocation, properties (idempotent, multi-camera handling, macro/CRLF preservation), and when NOT to use it. The parser emits a clear error pointing at the same recipe if it loads a v5 scene.
+- Native scenes use the header `RISE ASCII SCENE 7` (post-CST-cutover). The
+  version-agnostic CST parser can tokenize a transitional `6` header, but the
+  native-v7 gate rejects legacy streaming constructs. v5 scenes (legacy:
+  width/height/pixelAR authored inside camera chunks) must be migrated — see
+  the `Build And Test` migration recipe below.
 - In `.RISEscene` files, chunk braces must appear on their own lines.
-- Parser support for macros, math expressions, embedded commands, and `FOR` / `ENDFOR` loops is implemented centrally in `AsciiSceneParser.cpp`.
+- The legacy streaming language (`$(...)`, macros, `FOR` / `ENDFOR`, and
+  render-affecting `>` directives) was retired in the July 2026 CST cutover.
+  Native scenes use CST `expr(...)` values and document-level `let` constants.
+  See [src/Library/Parsers/README.md](src/Library/Parsers/README.md).
 - Tests are standalone executables, not a framework-based suite.
 - Two rendering pipelines exist: **shader-dispatch** (RayCaster → ShaderOp chain) and **pure integrator** (PathTracingIntegrator called directly by `pathtracing_pel_rasterizer` / `pathtracing_spectral_rasterizer`). Changes to path tracing logic should go in `PathTracingIntegrator`, which serves both pipelines.
 - **OIDN + FilteredFilm invariant**: When OIDN denoising is enabled, the filtered film resolve is skipped. OIDN needs raw MC noise, not filter-reconstructed images. See `docs/ARCHITECTURE.md` for details.
@@ -58,7 +66,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 ## Change Checklist
 
 - New render feature: implement the class, expose it through `RISE_API` if externally constructible, add a `Job` wrapper if needed, register a scene chunk if user-authored, add a sample scene, add a focused test, and update **every** build project for new `.cpp` / `.h` files (see next item).
-- **Adding a scene chunk OR a parameter to an existing chunk**: chunk parsers are descriptor-driven (since 2026-04). Each `IAsciiChunkParser` overrides `Describe()` (returns a `ChunkDescriptor` that enumerates every accepted parameter) and `Finalize(const ParseStateBag&, IJob&)` (reads typed values out of the bag and emits the `pJob.AddX` call) — no chunk parser overrides `ParseChunk` directly; the default impl dispatches via the descriptor. The descriptor IS the parser's accepted-parameter set, so drift between "what gets parsed" and "what the syntax highlighter / suggestion engine advertise" is structurally impossible. To add a new chunk: define a new `IAsciiChunkParser` subclass (`Describe` + `Finalize`) and register it in `CreateAllChunkParsers()`; both syntax highlighters and the scene-editor suggestion engine pick it up automatically. To add a parameter: append one entry to the chunk's `Describe()` parameter list and read it via `bag.GetX(...)` in `Finalize`. Full how-to (with skeleton, helper-template catalog, and `ParseStateBag` accessor reference) lives in [src/Library/Parsers/README.md](src/Library/Parsers/README.md). The architecture overview is also documented in the header of [src/Library/Parsers/AsciiSceneParser.cpp](src/Library/Parsers/AsciiSceneParser.cpp).
+- **Adding a scene chunk OR a parameter to an existing chunk**: chunk parsers are descriptor-driven (since 2026-04). Each `IAsciiChunkParser` overrides `Describe()` (returns a `ChunkDescriptor` that enumerates every accepted parameter) and `Finalize(const ParseStateBag&, IJob&)` (reads typed values out of the bag and emits the `pJob.AddX` call) — no chunk parser overrides `ParseChunk` directly; the default impl dispatches via the descriptor. The descriptor IS the parser's accepted-parameter set, so drift between "what gets parsed" and "what the syntax highlighter / suggestion engine advertise" is structurally impossible. To add a new chunk: define a new `IAsciiChunkParser` subclass (`Describe` + `Finalize`) in `ChunkParserRegistry.cpp` and register it in `CreateAllChunkParsers()`; both syntax highlighters and the scene-editor suggestion engine pick it up automatically. To add a parameter: append one entry to the chunk's `Describe()` parameter list and read it via `bag.GetX(...)` in `Finalize`. Full how-to (with skeleton, helper-template catalog, and `ParseStateBag` accessor reference) lives in [src/Library/Parsers/README.md](src/Library/Parsers/README.md). The architecture overview is documented in the header of [src/Library/Parsers/ChunkParserRegistry.cpp](src/Library/Parsers/ChunkParserRegistry.cpp).
 - **Adding OR removing a source file anywhere under `src/Library/`**: the same five build projects must be updated in lock-step, whether you are adding new files or deleting existing ones. Missing any one leaves at least one platform broken. All five are authoritative — none auto-discovers files:
   - `build/make/rise/Filelist` — SRCLIB sub-list for `.cpp` (the canonical Unix/Linux build).
   - `build/cmake/rise-android/rise_sources.cmake` — `RISE_LIB_SOURCES` list for `.cpp` (Android NDK build, mirrors `Filelist` SRCLIB by hand). The Android Gradle build reads this via `build/cmake/rise-android/CMakeLists.txt`; no other file in `android/` references the library source list.
@@ -66,7 +74,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
   - `build/VS2022/Library/Library.vcxproj.filters` — same entries with `<Filter>` tags mirroring the existing folder taxonomy. Keep `.cpp` in `ClCompile` and `.h` in `ClInclude` so Visual Studio's Solution Explorer tree matches what's actually built.
   - `build/XCode/rise/rise.xcodeproj/project.pbxproj` — `PBXFileReference` + `PBXBuildFile` + group + build-phase entries. When removing a file, every matching ID must be deleted from the `PBXBuildFile` section, the `PBXFileReference` section, the containing `PBXGroup`, and the `Sources` / `Headers` build phases (there is one pair per target — library + GUI — so removals typically touch each ID in two places in each section).
   - Exclusions: `ManagedJob.cpp` (C++/CLI only), Windows-only files (`ThreadsWin32.cpp`, `LoadLibraryWin32.cpp`, `Win32Console.cpp`, `Win32WindowRasterizerOutput.cpp`), and the `Utilities/Communications/*` DRISE socket stack stay out of the Android cmake — everything else should appear in all five projects.
-- When a change is wider than just `src/Library/` (new parser chunk, new API, new test, etc.), also update the other surfaces the feature touches: `src/Library/RISE_API.{h,cpp}`, `src/Library/Interfaces/IJob.h`, `src/Library/Job.{h,cpp}`, `src/Library/Parsers/AsciiSceneParser.cpp` chunk registry, `tests/` and its build rules in `build/make/rise/Filelist`, and the relevant scene coverage under `scenes/`.
+- When a change is wider than just `src/Library/` (new parser chunk, new API, new test, etc.), also update the other surfaces the feature touches: `src/Library/RISE_API.{h,cpp}`, `src/Library/Interfaces/IJob.h`, `src/Library/Job.{h,cpp}`, `src/Library/Parsers/ChunkParserRegistry.cpp`, `tests/` and its build rules in `build/make/rise/Filelist`, and the relevant scene coverage under `scenes/`.
 - **Integrator wavelength variants — check ALL three (Pel / NM / HWSS) on any fix or feature**: integrators (PT, BDPT, VCM, MLT, …) are implemented as parallel RGB-per-lobe (`Pel`, e.g. `IntegrateFromHit`), single-wavelength (`NM`, e.g. `IntegrateFromHitNM`), and hero-wavelength spectral sampling (`HWSS`, e.g. `IntegrateFromHitHWSS`) variants in the same file. They diverge in subtle ways — e.g. NM and HWSS sites must call `RandomlySelect(xi, true)` so lobe selection uses spectral `krayNM` weights matching the spectral selectProb compensation, while Pel uses `RandomlySelect(xi, false)` for RGB max-channel selection — so a correctness bug or new feature almost never applies identically to all three but almost always applies to MORE than one. When touching any single variant, grep for the matching code in the other two (same function-name stem, parallel structure) and explicitly decide for each: does this fix/feature apply here too, does it need a variant-specific form, or is it genuinely inapplicable? Document the answer for the inapplicable cases so the next agent doesn't re-audit. Prior incidents (both fixed in 2026-05): (1) missing `/selectProb` division at multi-lobe scatter sites in PT's iterative path biased RGB renders dim and amplified RR fireflies; (2) NM/HWSS sites called `RandomlySelect(xi, false)` (RGB-domain selection) while compensating with spectral `selectProb` — biased the spectral estimator at every multi-lobe vertex.  Both were caught by adversarial review after path-tree branching was excised.
 - Scene language change: inspect the parser registry, decide whether `CURRENT_SCENE_VERSION` should change, update representative scenes, and keep [src/Library/Parsers/README.md](src/Library/Parsers/README.md) aligned.
 - Sample coverage change: use `scenes/FeatureBased` for curated showcase or torture scenes, and `scenes/Tests` for isolated baselines, feature checks, and regression coverage.
@@ -123,7 +131,7 @@ Background and full design are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Camera / Film / Output
 Separation".
 
-### Migrate a v5 scene to v6
+### Migrate a v5 scene to native v7
 
 If the parser fails to load a scene with an error mentioning "Scene is
 version 5" or you're handed a `.RISEscene` that still authors
@@ -156,18 +164,21 @@ What the script does to each v5 file:
 
 Properties to rely on:
 
-- **Idempotent.** Running it on a v6 scene (or a v5 scene that already
+- **Idempotent for the film migration.** Running it on a v6/v7 scene (or a v5 scene that already
   has a `film` chunk and no camera-chunk dims) is a no-op.
-- **Preserves macros, math expressions (`$(...)`), `@FOO` references,
-  and CRLF vs LF line endings.** It edits only the lines it relocates;
-  every other byte is left alone.
+- **Preserves CRLF vs LF line endings and leaves unrelated bytes alone.**
+  It does not translate retired macros, `$(...)`, `FOR` loops, or includes.
+  A v5 file containing those constructs needs the canonical CST migration
+  flow described in
+  [src/Library/Parsers/README.md](src/Library/Parsers/README.md), not just
+  this camera/film rewrite.
 - **Never touches an existing `film` chunk.** Files that already have
   one get the version bump only.
 
 When NOT to use it:
 
 - The scene already loads cleanly — leave it alone.
-- You're authoring a new scene from scratch — write a v6 header and a
+- You're authoring a new scene from scratch — write a v7 header and a
   `film` chunk directly; no need to run the migrator.
 - The "scene" is actually a glTF / OBJ / 3DS file — the migrator only
   handles `.RISEscene` text.
@@ -267,11 +278,16 @@ precisely because ad-hoc judgment reliably misses them.
 
 | Skill | Trigger |
 |---|---|
+| [implementation-review-loop](docs/skills/implementation-review-loop.md) | Definition of done for non-trivial implementation work: gate, independent review, fix, and repeat until a fresh round has no P1 findings. |
 | [adversarial-code-review](docs/skills/adversarial-code-review.md) | Validate a non-trivial change; user asks for multiple / adversarial reviewers. |
+| [audit-by-bug-pattern](docs/skills/audit-by-bug-pattern.md) | After fixing a non-trivial bug, sweep sibling variants and downstream consumers for the same pattern. |
+| [bdpt-vcm-mis-balance](docs/skills/bdpt-vcm-mis-balance.md) | BDPT/VCM disagrees with PT, or MIS code is being changed. |
 | [performance-work-with-baselines](docs/skills/performance-work-with-baselines.md) | Optimize runtime or memory; any change framed as "make X faster." |
 | [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — apply this decision tree first. |
 | [precision-fix-the-formulation](docs/skills/precision-fix-the-formulation.md) | Tempted to widen a `< NEARZERO` / `< EPSILON` check, add an ε fudge, or pick a magic `1e-N` to silence FP-noise speckle / firefly / near-zero misclassification.  Find the cancellation and reformulate. |
+| [rise-animation-render](docs/skills/rise-animation-render.md) | Render an animation to HDR video or diagnose an SDR-tagged `.mov`. |
 | [sms-firefly-diagnosis](docs/skills/sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; user reports "fireflies" in an SMS scene. |
+| [variance-measurement](docs/skills/variance-measurement.md) | Prove a rendering change reduces variance or RMSE using repeated EXR trials. |
 | [write-highly-effective-tests](docs/skills/write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into strong regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
 | [effective-rise-scene-authoring](docs/skills/effective-rise-scene-authoring.md) | Author a new `.RISEscene`, port from another tool (glTF / Blender / Unity / Unreal), or diagnose a scene that renders unexpectedly dark / wrong-coloured / oriented backwards.  Walks the [SCENE_CONVENTIONS.md](docs/SCENE_CONVENTIONS.md) checklist + Lambertian-control-sphere diagnostic. |
 

@@ -83,7 +83,7 @@ patterns like `\tsamples\b`.
 K=16 is the floor for honest stats, K=4 only for sanity.  The variance
 source in RISE comes from non-deterministic OpenPGL training
 (`pglFieldArgumentsSetDefaults(..., false, ...)` is what gets passed
-in [PathGuidingField.cpp:66-72](../../src/Library/Utilities/PathGuidingField.cpp:66))
+in [PathGuidingField.cpp:66-72](../../src/Library/Utilities/PathGuidingField.cpp))
 plus multithreaded sample collection.  Two consecutive runs with the
 same scene file WILL differ — you don't need a seed knob.
 
@@ -248,7 +248,7 @@ re-open the convergence-bias investigation.
    measurement.
 
 2. **RISE's HDRReader has a bug in old-format RLE.** Lines 200–203 of
-   [HDRReader.cpp](../../src/Library/RasterImages/HDRReader.cpp:200)
+   [HDRReader.cpp](../../src/Library/RasterImages/HDRReader.cpp)
    write from the stale `buf` instead of the just-read `col`.  RISE
    scene output uses old-format RLE for HDR, so RISE can't reliably
    read its own .hdr files and pixel exponents come out garbage (1e-24
@@ -322,7 +322,7 @@ re-open the convergence-bias investigation.
     guided mean σ² is ~9.3 and unguided is ~3.3 — *PGL nearly triples
     the variance.*  Per-trial training non-determinism
     (`pglFieldArgumentsSetDefaults(..., false, ...)` in
-    [PathGuidingField.cpp:66](../../src/Library/Utilities/PathGuidingField.cpp:66)
+    [PathGuidingField.cpp:66](../../src/Library/Utilities/PathGuidingField.cpp)
     means each K=16 run trains a different field) overwhelms whatever
     sampling-quality benefit the guide provides.  Bias is not the
     issue — channel means agree to ~0.6%.  This isn't a bug; it's

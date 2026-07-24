@@ -146,7 +146,7 @@ the unit story.
 ## 8. Material catalogue (parser keywords)
 
 These are the 25 material chunks registered in
-[`CreateAllChunkParsers()`](../src/Library/Parsers/AsciiSceneParser.cpp).
+[`CreateAllChunkParsers()`](../src/Library/Parsers/ChunkParserRegistry.cpp).
 Grouped by primary lobe shape — see the corresponding `*Material.h`
 file for parameter-by-parameter behaviour.
 
@@ -164,7 +164,7 @@ file for parameter-by-parameter behaviour.
 
 **Microfacet:**
 - `ggx_material` — anisotropic GGX with two Fresnel modes
-  ([`FresnelMode`](../src/Library/Interfaces/IMaterial.h:49)):
+  ([`FresnelMode`](../src/Library/Interfaces/IMaterial.h)):
   `eFresnelConductor` (default; multiplies real `ior`/`ext` Fresnel by a
   `specular` painter as a tint) and `eFresnelSchlickF0` (treats `specular`
   as F0; required by glTF metallicRoughness).
@@ -225,7 +225,7 @@ file for parameter-by-parameter behaviour.
    in `kray` (random-walk SSS, participating media bounded by surfaces).
 6. **Wire up parser + API + Job:**
    - New `RISE_API_AddXxxMaterial` (preserve ABI;
-     [skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md))
+     [AGENTS.md change checklist](../AGENTS.md))
    - New `Job::AddXxxMaterial` and `IJob::AddXxxMaterial`
    - New `XxxMaterialAsciiChunkParser` registered via `add(...)` in
      `CreateAllChunkParsers()` ([Parsers/README.md](../src/Library/Parsers/README.md)
