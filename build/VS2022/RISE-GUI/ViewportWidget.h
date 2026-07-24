@@ -104,6 +104,16 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every widget with token-
+    // dependent styling hooks QEvent::PaletteChange here and calls its
+    // own restyleTheme(). This widget's overlays (region/gizmo/nav) are
+    // custom-painted and already read Theme:: tokens live in paintEvent,
+    // so they need nothing extra -- but buildPaneChrome()'s per-pane
+    // mode-combo / vantage-button QSS IS baked once at construction time
+    // (a genuine cached-token gap this hook closes; see restyleTheme()'s
+    // doc). See MainWindow::changeEvent for the reference implementation
+    // this mirrors.
+    void changeEvent(QEvent* e) override;
     /// N-up multi-viewport: recomputes pane rects + repositions chrome +
     /// pushes fresh SetPaneSurfaceDims on every geometry change.  A no-op
     /// (early-out) while Single is the active layout -- see
@@ -212,6 +222,21 @@ private:
     };
 
     void    buildPaneChrome();
+    /// LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies buildPaneChrome()'s
+    /// per-pane mode-combo / vantage-button QSS (the only token-dependent
+    /// styling in this widget that's baked into a setStyleSheet() string
+    /// rather than read live in paintEvent) from the CURRENT Theme::
+    /// token values. Called once at the end of the constructor and again
+    /// from changeEvent() on QEvent::PaletteChange. Idempotent, creates
+    /// no widgets.
+    void    restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
+
     /// Recomputes m_paneRects/m_paneImageAreaRects for the CURRENT widget
     /// size + m_layout, repositions/shows/hides the chrome widgets, and
     /// pushes SetPaneSurfaceDims for every visible pane -- EXCEPT pane 0

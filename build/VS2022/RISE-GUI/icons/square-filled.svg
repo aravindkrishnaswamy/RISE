@@ -1,0 +1,15 @@
+<!-- Hand-authored fill variant of Lucide's square.svg -- same path geometry
+     (ISC license, see LICENSE-lucide.txt), fill="currentColor" instead of
+     stroke="currentColor" fill="none".  Used for ViewportTimeline.cpp's
+     stopped-state glyph, mirroring TimelineSlider.swift:76's
+     `Image(systemName: "stop.fill")`. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="currentColor"
+  stroke="none"
+>
+  <rect width="18" height="18" x="3" y="3" rx="2" />
+</svg>

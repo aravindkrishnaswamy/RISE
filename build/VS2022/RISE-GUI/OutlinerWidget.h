@@ -91,6 +91,12 @@ signals:
     /// itself, so there is exactly one place that dialog can appear.
     void deleteRequested(ViewportBridge::Category category, const QString& name);
 
+protected:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): hook QEvent::PaletteChange
+    // here and call restyleTheme() -- mirrors MainWindow::changeEvent,
+    // the contract's reference implementation.
+    void changeEvent(QEvent* e) override;
+
 private:
     using Category = ViewportBridge::Category;
 
@@ -105,11 +111,39 @@ private:
     void toggleCategory(const CategoryDef& def);
     void selectChild(Category cat, const QString& name);
 
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies this widget's
+    // PERSISTENT-CHROME token-dependent styling (this widget's own
+    // palette + border-bottom stylesheet, the "Scene" title label, the
+    // entity-count label, the scroll-area background, and the list
+    // holder's palette) -- none of which rebuild() ever revisits (it
+    // only touches m_listLayout's CHILDREN, plus m_countLabel's TEXT).
+    // See the doc comment at this method's definition for why the
+    // category/child rows themselves don't need a SYNCHRONOUS forced
+    // rebuild here -- P2 fix (2026-07-23 review, LIVE THEME-SWITCH
+    // CONTRACT point 5) instead QUEUES one via QTimer::singleShot(0, ...)
+    // for the idle-viewport case nothing else would self-heal.  Called
+    // once at the end of the constructor and again from changeEvent() on
+    // QEvent::PaletteChange.  Idempotent, creates no widgets
+    // SYNCHRONOUSLY (the queued follow-up runs on the next event-loop
+    // turn, outside this call).
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
+
     ViewportBridge* m_bridge = nullptr;
     QScrollArea*    m_scroll = nullptr;
     QWidget*        m_listHolder = nullptr;
     QVBoxLayout*    m_listLayout = nullptr;
     QLabel*         m_countLabel = nullptr;
+    // "Scene" title label -- promoted from a constructor-local (was
+    // `title`) so restyleTheme() can re-apply its token-dependent
+    // stylesheet on a live theme switch; it's persistent chrome (never
+    // touched by rebuild()).
+    QLabel*         m_titleLabel = nullptr;
 
     // categoryEntities() results, epoch-gated like
     // ViewportProperties::rebuildEntityLists.

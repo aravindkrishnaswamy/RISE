@@ -13,6 +13,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPalette>
@@ -20,6 +21,8 @@
 #include <QAction>
 #include <QToolButton>
 #include <QFont>
+#include <QSize>
+#include <QTimer>
 
 #include <functional>
 #include <utility>
@@ -61,12 +64,9 @@ OutlinerWidget::OutlinerWidget(QWidget* parent)
     : QWidget(parent)
 {
     setAutoFillBackground(true);
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, Theme::bgPanel);
-        setPalette(pal);
-    }
-    setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    // Palette fill + border-bottom stylesheet set in restyleTheme()
+    // (LIVE THEME-SWITCH CONTRACT, Theme.h) -- persistent chrome that
+    // rebuild() never revisits.
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -77,14 +77,15 @@ OutlinerWidget::OutlinerWidget(QWidget* parent)
     headerLayout->setContentsMargins(14, 12, 14, 6);
     headerLayout->setSpacing(8);
 
-    auto* title = new QLabel(tr("Scene"), header);
-    title->setFont(Theme::sans(12, QFont::DemiBold));
-    title->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
-    headerLayout->addWidget(title);
+    m_titleLabel = new QLabel(tr("Scene"), header);
+    m_titleLabel->setFont(Theme::sans(12, QFont::DemiBold));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
+    headerLayout->addWidget(m_titleLabel);
 
     m_countLabel = new QLabel(header);
     m_countLabel->setFont(Theme::mono(10));
-    m_countLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Stylesheet set in restyleTheme() -- persistent chrome (only the
+    // text is touched by rebuild()).
     headerLayout->addWidget(m_countLabel);
     headerLayout->addStretch(1);
 
@@ -94,16 +95,11 @@ OutlinerWidget::OutlinerWidget(QWidget* parent)
     m_scroll->setWidgetResizable(true);
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setMaximumHeight(305);
-    m_scroll->setStyleSheet(QStringLiteral("QScrollArea { background-color: %1; }")
-        .arg(Theme::hex(Theme::bgPanel)));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
 
     m_listHolder = new QWidget();
-    {
-        QPalette pal = m_listHolder->palette();
-        pal.setColor(QPalette::Window, Theme::bgPanel);
-        m_listHolder->setAutoFillBackground(true);
-        m_listHolder->setPalette(pal);
-    }
+    m_listHolder->setAutoFillBackground(true);
+    // Palette fill set in restyleTheme() -- persistent chrome.
     m_listLayout = new QVBoxLayout(m_listHolder);
     m_listLayout->setContentsMargins(8, 2, 8, 10);
     m_listLayout->setSpacing(0);
@@ -112,6 +108,119 @@ OutlinerWidget::OutlinerWidget(QWidget* parent)
     root->addWidget(m_scroll);
 
     rebuild();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): run once at construction so
+    // the persistent chrome above (no longer set inline) actually gets
+    // styled -- restyleTheme() is the single source of truth for it.
+    m_themeReady = true;
+    restyleTheme();
+}
+
+// ============================================================
+// LIVE THEME-SWITCH CONTRACT (Theme.h)
+// ============================================================
+
+void OutlinerWidget::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void OutlinerWidget::restyleTheme()
+{
+    m_themeEpochSeen = Theme::paletteEpoch();
+    // Persistent chrome only: `this` widget's palette + border-bottom
+    // stylesheet, the "Scene" title label, the entity-count label, the
+    // scroll area's background, and the list holder's palette -- all
+    // set once in the constructor and never revisited by rebuild()
+    // (which only touches m_listLayout's CHILDREN, plus m_countLabel's
+    // TEXT).
+    //
+    // Deliberately does NOT call rebuild() SYNCHRONOUSLY here to refresh
+    // the category/child rows it builds (tag chips using per-category
+    // Theme::cat* tokens, the expand chevron, per-row selection tint,
+    // "Add Entity" buttons, etc.). Those rows already read every Theme::
+    // token live at build time (every setStyleSheet()/Theme::icon() call
+    // inside rebuild() itself) -- rebuild() just needs to run again to
+    // pick up new colors, and it already does UNCONDITIONALLY on every
+    // single call to refresh(), which rides every ViewportBridge::
+    // imageUpdated frame for as long as a scene is loaded (see
+    // MainWindow's imageUpdated -> OutlinerWidget::refresh connection)
+    // and fires immediately on the next selection/expansion change
+    // regardless. Calling rebuild() SYNCHRONOUSLY FROM restyleTheme()
+    // would violate the contract's "must not create widgets" rule
+    // (rebuild() deleteLater()s and recreates every row) -- the only
+    // window where it would matter is a completely idle viewport (no
+    // pending frame) mid theme-switch; P2 fix (2026-07-23 review)
+    // below QUEUES a rebuild() for exactly that case instead, via
+    // QTimer::singleShot(0, ...), landing on the next event-loop turn
+    // rather than inside this synchronous palette-change cascade. Both
+    // palettes define every
+    // Theme::cat* token used by the tag chips (verified in Theme.cpp's
+    // DarkPalette()/LightPalette(); catMaterial/catFilm/catVariant are
+    // explicit per-palette fields, the rest -- catRender/catCamera/
+    // catLight/catObject/catAnimation/catMedia -- are re-derived from
+    // other palette-switched tokens in applyThemeTokens()), so the next
+    // rebuild() always renders correctly regardless of which mode is
+    // active. The expand chevron (bindIconLabel in rebuild() below) is
+    // additionally self-updating on its own via bindIconLabel's
+    // installed PaletteChange filter (Theme.h), independent of
+    // rebuild().
+    setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        setPalette(pal);
+    }
+
+    if (m_titleLabel) {
+        m_titleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+    if (m_countLabel) {
+        m_countLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    }
+    if (m_scroll) {
+        m_scroll->setStyleSheet(QStringLiteral("QScrollArea { background-color: %1; }")
+            .arg(Theme::hex(Theme::bgPanel)));
+        // Slim themed scrollbars (Task A): applied directly to the
+        // QScrollArea's own scrollbar widgets, not the scroll area itself,
+        // so the QSS can't leak into any other selector. Bakes token
+        // colors, so re-applied on every restyleTheme() call.
+        if (QScrollBar* vbar = m_scroll->verticalScrollBar()) {
+            vbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+        if (QScrollBar* hbar = m_scroll->horizontalScrollBar()) {
+            hbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+    }
+    if (m_listHolder) {
+        QPalette pal = m_listHolder->palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        m_listHolder->setPalette(pal);
+    }
+
+    // Idle-viewport queued rebuild (P2 fix, 2026-07-23 review; blessed by
+    // Theme.h's LIVE THEME-SWITCH CONTRACT point 5): rebuild() is skipped
+    // above deliberately (see this method's long comment) because a
+    // pending render frame or the next selection/expansion change
+    // self-heals it -- but if the theme switches while the viewport is
+    // completely IDLE (no imageUpdated frame coming, nothing selected),
+    // nothing re-triggers refresh()/rebuild() and these rows stay baked
+    // with the OLD palette's colors until the next real interaction.
+    // QTimer::singleShot(0, ...) defers the rebuild OUT of this
+    // synchronous palette-change cascade -- restyleTheme() itself must
+    // not create widgets (contract point 2) -- and onto the next event-
+    // loop turn, where deleteLater()/recreate is safe.  rebuild(), not
+    // refresh(), is the cheapest path: it replays straight from the
+    // already-cached m_entitiesByCategory plus a handful of already-in-
+    // memory ViewportBridge accessors (isSectionExpanded/
+    // activeNameForCategory/selectionCategory/selectionName) -- no
+    // categoryEntities()/sceneEpoch() engine round-trip.  Harmless no-op
+    // if a real refresh()/rebuild() already ran first (rebuild() is
+    // idempotent against the same cached state).
+    QTimer::singleShot(0, this, [this]() { rebuild(); });
 }
 
 void OutlinerWidget::setBridge(ViewportBridge* bridge)
@@ -230,14 +339,24 @@ void OutlinerWidget::rebuild()
         headerLayout->setContentsMargins(8, 4, 8, 4);
         headerLayout->setSpacing(7);
 
-        auto* arrow = new QLabel((expanded && !children.isEmpty())
-            ? QString::fromUtf8("\xE2\x96\xBE")    // ▾
-            : QString::fromUtf8("\xE2\x96\xB8"),   // ▸
-            headerRow);
-        arrow->setFont(Theme::sans(8));
-        arrow->setFixedWidth(10);
+        // Bundled-SVG chevron, replacing the ▾/▸ Unicode triangles -- those
+        // fall back through IBM Plex -> Segoe UI Symbol on Windows and
+        // render inconsistently (mirrors OutlinerView.swift's expand
+        // indicator, which stays a plain SF-adjacent glyph on Mac since
+        // that platform doesn't hit the fallback problem). Deliberate
+        // Windows-side exception: Mac renders ▾/▸ as text, Windows uses
+        // the chevron SVGs here for cross-panel consistency with the
+        // chat/log disclosure chevrons (approved by the orchestrating
+        // session, 2026-07-23).
+        auto* arrow = new QLabel(headerRow);
+        arrow->setFixedSize(10, 10);
         arrow->setAlignment(Qt::AlignCenter);
-        arrow->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        // Theme::bindIconLabel keeps this pixmap correct across a mixed-DPI
+        // monitor drag (plain setPixmap(iconPixmap(..., devicePixelRatioF()))
+        // captures DPR once at construction and goes stale).
+        Theme::bindIconLabel(arrow,
+            (expanded && !children.isEmpty()) ? QStringLiteral("chevron-down") : QStringLiteral("chevron-right"),
+            9, []{ return Theme::textDim; });
         headerLayout->addWidget(arrow);
 
         auto* tag = new QLabel(QString::fromUtf8(def.tag), headerRow);
@@ -262,19 +381,27 @@ void OutlinerWidget::rebuild()
         const unsigned int templateCount = m_bridge ? m_bridge->entityTemplateCount(def.category) : 0;
         if (templateCount > 0) {
             auto* addBtn = new QToolButton(headerRow);
-            addBtn->setText(QStringLiteral("+"));
-            addBtn->setFont(Theme::sans(11, QFont::DemiBold));
+            // Bundled-SVG "circle-plus" icon, replacing the "+" text glyph
+            // -- mirrors OutlinerView.swift:184's category-header add menu
+            // (`Image(systemName: "plus.circle")`).  Qt auto-swaps to the
+            // Disabled-mode tint (registered via the icon() overload below)
+            // when the button's enabled state flips off, so the QSS
+            // :disabled color rule below stays in effect via the icon
+            // rather than text color.  The third (Active) tint restores
+            // the textPrimary hover accent the old QSS `:hover { color:
+            // ... }` rule provided before this button became icon-only --
+            // autoRaise + State_MouseOver maps to QIcon::Active via
+            // QCommonStyle::CE_ToolButtonLabel.
+            addBtn->setIcon(Theme::icon("circle-plus", 11, Theme::textDim, Theme::textDisabled, Theme::textPrimary));
+            addBtn->setIconSize(QSize(11, 11));
             addBtn->setAutoRaise(true);
             addBtn->setCursor(Qt::PointingHandCursor);
             addBtn->setPopupMode(QToolButton::InstantPopup);
             addBtn->setEnabled(m_sceneEditable);
             addBtn->setFixedSize(16, 16);
             addBtn->setStyleSheet(QStringLiteral(
-                "QToolButton { color: %1; border: none; padding: 0; }"
-                "QToolButton::menu-indicator { image: none; }"
-                "QToolButton:hover { color: %2; }"
-                "QToolButton:disabled { color: %3; }")
-                .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::textPrimary), Theme::hex(Theme::textDisabled)));
+                "QToolButton { border: none; padding: 0; }"
+                "QToolButton::menu-indicator { image: none; }"));
             const QString singular = QString::fromUtf8(def.title).endsWith(QLatin1Char('s'))
                 ? QString::fromUtf8(def.title).chopped(1) : QString::fromUtf8(def.title);
             addBtn->setToolTip(tr("Add %1").arg(singular));
@@ -317,8 +444,14 @@ void OutlinerWidget::rebuild()
 
                 auto* childLabel = new QLabel(childName, childRow);
                 childLabel->setFont(Theme::sans(11));
+                // Selected text is Theme::textPrimary, not the Mac's literal
+                // `.white` (OutlinerView.swift:296): the selected fill is only
+                // a 14%-alpha accent tint over bgPanel, so pure white is
+                // unreadable on the Light palette's near-white bgPanel.
+                // textPrimary is near-white in Dark (matches the Mac look)
+                // and flips to near-black in Light.
                 childLabel->setStyleSheet(QStringLiteral("color: %1;")
-                    .arg(isSelected ? QStringLiteral("#ffffff") : Theme::hex(Theme::textMuted)));
+                    .arg(Theme::hex(isSelected ? Theme::textPrimary : Theme::textMuted)));
                 childLabel->setToolTip(childName);
                 childLayout->addWidget(childLabel);
                 childLayout->addStretch(1);

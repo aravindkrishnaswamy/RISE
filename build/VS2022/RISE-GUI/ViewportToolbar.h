@@ -47,6 +47,8 @@
 class QLabel;
 class QTimer;
 class QMenu;
+class QColor;
+class QFrame;
 
 // QSlider subclass that emits `resetRequested` on a double-click
 // anywhere in the widget rect.  Lives here (rather than MainWindow.h,
@@ -164,7 +166,33 @@ private slots:
     /// afterward rather than trusting the click.
     void onLayoutButtonClicked();
 
+protected:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every widget with token-
+    // dependent styling hooks QEvent::PaletteChange here and calls its
+    // own restyleTheme(). See MainWindow::changeEvent for the reference
+    // implementation this mirrors.
+    void changeEvent(QEvent* e) override;
+
 private:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of this
+    // toolbar's own token-dependent styling sites -- this widget's own
+    // QSS + palette fill, the tool/layout button groups' bordered-
+    // container QSS, every separator's border color, the undo/redo icon
+    // tints, the camera chip's QSS, the EV chip/popup's QSS, the
+    // checked-tool icon re-tint (via refreshAllToolButtons(), which also
+    // re-resolves Theme::iconOnAccent), and the state-dependent REGION/
+    // EDR chip stylesheets (via updateRegionChip() / setEdrChecked()) --
+    // from the CURRENT Theme:: token values. Called once at the end of
+    // the constructor and again from changeEvent() on QEvent::
+    // PaletteChange. Idempotent, creates no widgets.
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
+
     /// One always-visible tool button.  Holds the tool and a pointer to
     /// the QToolButton that renders it; `refreshAllToolButtons()` syncs
     /// every button's checked state to `m_current` on every tool change.
@@ -176,7 +204,12 @@ private:
     QToolButton* makeToolButton(ViewportTool t);
     void         refreshAllToolButtons();
     void         applyToolSelection(ViewportTool t);
-    QIcon        iconForTool(ViewportTool t) const;
+    /// Bundled Lucide SVG (Theme::icon) for `t`, tinted `color` at
+    /// `sizePx` -- mirrors ViewportToolbar.swift's per-tool SF Symbol.
+    /// Called from refreshAllToolButtons() with a tint that depends on
+    /// the button's checked state, so it takes color/size as parameters
+    /// rather than baking a single icon per tool at construction time.
+    QIcon        iconForTool(ViewportTool t, const QColor& color, int sizePx) const;
     QString      labelForTool(ViewportTool t) const;
     /// Per-tool tooltip — every button gets its own descriptive text
     /// now that there's no category-level flyout to describe instead.
@@ -218,6 +251,19 @@ private:
     QVector<ToolButtonEntry> m_toolButtons;
     ViewportTool     m_current = ViewportTool::Select;
     ViewportBridge*  m_bridge  = nullptr;   // borrowed; outlives the toolbar
+
+    // ---- LIVE THEME-SWITCH CONTRACT member promotions -------------------
+    // These were construction-time-local QWidget*/QFrame*/QLabel* before
+    // the Phase-2 live-switch conversion -- restyleTheme() needs a
+    // pointer to re-run their token-dependent setStyleSheet() calls, so
+    // each is now a member instead of a dangling ctor local.
+    QWidget* m_toolGroup = nullptr;
+    QWidget* m_layoutGroup = nullptr;
+    QVector<QFrame*> m_categoryDividers;   // between Select|Camera|Object clusters
+    QFrame*  m_sep1 = nullptr;             // after the tool-button group
+    QFrame*  m_sep2 = nullptr;             // after undo/redo
+    QFrame*  m_sep3 = nullptr;             // after the layout-picker group
+    QLabel*  m_evTitleLabel = nullptr;     // "Exposure" label in the EV popup
 
     // ---- Right-hand status cluster --------------------------------------
     QLabel*      m_cameraChip = nullptr;

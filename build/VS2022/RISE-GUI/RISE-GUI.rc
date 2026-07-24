@@ -1,3 +1,16 @@
 // RISE-GUI Windows Resource File
-// Application icon can be added here when available:
-// IDI_ICON1 ICON "app.ico"
+//
+// Application icon, mirroring the macOS client's AppIcon.appiconset
+// (build/XCode/rise/RISE-GUI/Assets.xcassets/AppIcon.appiconset/) --
+// app_icon.ico was generated from that set's app_logo_1024.png and
+// contains 16/32/48/64/256 px frames (see icons/ and Theme.cpp for the
+// in-app SVG icon system; this .ico is only the .exe/taskbar/Alt-Tab
+// icon, which Windows requires in ICO container form rather than SVG).
+//
+// This .rc is compiled via the <ResourceCompile Include="RISE-GUI.rc" />
+// item in RISE-GUI.vcxproj (see VCXPROJ_NOTES.md item 1, now resolved).
+// Plain numeric resource ID (no resource.h in this project to supply an
+// IDI_ICON1-style macro) -- id 1 is the conventional "first/main icon"
+// slot and is what the linker/loader picks up as the .exe's default
+// icon when there's exactly one ICON resource in the module.
+1 ICON "app_icon.ico"

@@ -14,12 +14,13 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPointer>
-#include <QPolygonF>
+#include <QSize>
 #include <QToolButton>
 #include <QMenu>
 #include <QFileDialog>
@@ -28,6 +29,7 @@
 #include <QMessageBox>
 #include <QSet>
 #include <QStringList>
+#include <QTimer>
 
 #include <cmath>
 #include <functional>
@@ -111,9 +113,13 @@ public:
         , m_beginBracket(std::move(beginBracket))
         , m_endBracket(std::move(endBracket))
     {
-        // Glyph is painted in paintEvent -- we draw two filled triangles
-        // rather than rely on a Unicode arrow glyph being present in the
-        // system font.
+        // Glyph is painted in paintEvent -- two stacked chevron icons
+        // (bundled-SVG "chevron-up"/"chevron-down", Theme::icon), mirroring
+        // PropertiesPanel.swift:1141's ScrubHandle
+        // (`Image(systemName: "chevron.up.chevron.down")`).  Drawing the
+        // pixmaps directly rather than parenting two QLabels keeps this a
+        // single lightweight widget for the drag hit-target, same as the
+        // hand-drawn-triangle version this replaces.
         setFixedSize(16, 18);
         setCursor(Qt::SizeVerCursor);
         setToolTip(QObject::tr(
@@ -180,26 +186,16 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setPen(Qt::NoPen);
-        p.setBrush(Theme::textDim);
+        const qreal dpr = devicePixelRatioF();
+        const int w = width();
+        const int h = height();
+        const int glyphSize = 9;
+        const int half = h / 2;
 
-        const qreal w  = width();
-        const qreal h  = height();
-        const qreal pad = 2.0;
-        const qreal triH = (h - 2 * pad - 1.0) * 0.5;   // 1 px gap between
-
-        QPolygonF up;
-        up << QPointF(pad,          pad + triH)
-           << QPointF(w - pad,      pad + triH)
-           << QPointF(w * 0.5,      pad);
-        p.drawPolygon(up);
-
-        QPolygonF down;
-        down << QPointF(pad,        h - pad - triH)
-             << QPointF(w - pad,    h - pad - triH)
-             << QPointF(w * 0.5,    h - pad);
-        p.drawPolygon(down);
+        const QPixmap up = Theme::iconPixmap(QStringLiteral("chevron-up"), glyphSize, Theme::textDim, dpr);
+        const QPixmap down = Theme::iconPixmap(QStringLiteral("chevron-down"), glyphSize, Theme::textDim, dpr);
+        p.drawPixmap(QRect((w - glyphSize) / 2, (half - glyphSize) / 2, glyphSize, glyphSize), up);
+        p.drawPixmap(QRect((w - glyphSize) / 2, half + (half - glyphSize) / 2, glyphSize, glyphSize), down);
     }
 
 private:
@@ -354,21 +350,30 @@ QString ViewportProperties::categoryTitle(Category cat)
     }
 }
 
-QString ViewportProperties::categoryGlyph(Category cat)
+// Bundled-SVG icon system (Theme::iconPixmap/icon -- see Theme.h).  This
+// used to return raw Unicode glyphs (◉ ◆ ☀ ◐ ⚙ ▦ ≈ ▶ ⧉ ▧), mirroring
+// PropertiesPanel.swift's categoryGlyph(_:).  On macOS those glyphs are
+// SF-adjacent and render fine; on Windows several of them (notably ☀ and
+// ▶) fall back through IBM Plex -> Segoe UI Symbol -> Segoe UI Emoji,
+// landing as full-color emoji glyphs inside a monochrome chip -- a
+// visible polish bug that doesn't reproduce on Mac.  Returns an empty
+// string for categories with no dedicated icon (None); the caller falls
+// back to the "•" text glyph in that case, same as before.
+QString ViewportProperties::categoryIconName(Category cat)
 {
     switch (cat) {
-    case Category::Camera:       return QString::fromUtf8("\xE2\x97\x89");   // ◉
-    case Category::Object:       return QString::fromUtf8("\xE2\x97\x86");   // ◆
-    case Category::Light:        return QString::fromUtf8("\xE2\x98\x80");   // ☀
-    case Category::Material:     return QString::fromUtf8("\xE2\x97\x90");   // ◐
-    case Category::Rasterizer:   return QString::fromUtf8("\xE2\x9A\x99");   // ⚙
-    case Category::Film:         return QString::fromUtf8("\xE2\x96\xA6");   // ▦
-    case Category::Medium:       return QString::fromUtf8("\xE2\x89\x88");   // ≈
-    case Category::Animation:    return QString::fromUtf8("\xE2\x96\xB6");   // ▶
-    case Category::SceneVariant: return QString::fromUtf8("\xE2\xA7\x89");   // ⧉
-    case Category::Painter:      return QString::fromUtf8("\xE2\x96\xA7");   // ▧
+    case Category::Camera:       return QStringLiteral("camera");
+    case Category::Object:       return QStringLiteral("box");
+    case Category::Light:        return QStringLiteral("lightbulb");
+    case Category::Material:     return QStringLiteral("circle-dot");
+    case Category::Rasterizer:   return QStringLiteral("cog");
+    case Category::Film:         return QStringLiteral("film");
+    case Category::Medium:       return QStringLiteral("waves");
+    case Category::Animation:    return QStringLiteral("play");
+    case Category::SceneVariant: return QStringLiteral("layers");
+    case Category::Painter:      return QStringLiteral("paintbrush");
     case Category::None:
-    default:                     return QString::fromUtf8("\xE2\x80\xA2");   // •
+    default:                     return QString();   // no dedicated icon -- "•" text fallback
     }
 }
 
@@ -403,11 +408,10 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     m_iconChip->setFixedSize(26, 26);
     m_iconChip->setAlignment(Qt::AlignCenter);
     m_iconChip->setFont(Theme::sans(12));
-    m_iconChip->setStyleSheet(QStringLiteral(
-        "background-color: %1; border: 1px solid %2; border-radius: 6px; color: %3;")
-        .arg(Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.15 * 255))),
-             Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.3 * 255))),
-             Theme::hex(Theme::accentLight)));
+    // Accent-tinted bg/border/color stylesheet is set in restyleTheme()
+    // (LIVE THEME-SWITCH CONTRACT, Theme.h) -- persistent chrome that
+    // rebuildEntityHeader() never revisits (it only touches this
+    // label's pixmap/text).
     headerRowLayout->addWidget(m_iconChip);
 
     auto* nameCol = new QWidget(headerRow);
@@ -424,19 +428,14 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     titleRowLayout->setSpacing(6);
     m_nameLabel = new QLabel(titleRow);
     m_nameLabel->setFont(Theme::sans(12, QFont::DemiBold));
-    m_nameLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
     titleRowLayout->addWidget(m_nameLabel);
 
     m_sourceLineChip = new QToolButton(titleRow);
     m_sourceLineChip->setFont(Theme::mono(10));
     m_sourceLineChip->setCursor(Qt::PointingHandCursor);
     m_sourceLineChip->setToolTip(tr("Reveal in scene file"));
-    m_sourceLineChip->setStyleSheet(QStringLiteral(
-        "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 2px 6px; }"
-        "QToolButton:hover { color: %4; border-color: %5; }")
-        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderHairline))
-        .arg(Theme::radiusSmall)
-        .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderStrong)));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
     m_sourceLineChip->hide();
     connect(m_sourceLineChip, &QToolButton::clicked, this, [this]() {
         emit revealRequested(m_currentSelectionCat, m_currentSelectionName);
@@ -447,7 +446,7 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
 
     m_metaLabel = new QLabel(nameCol);
     m_metaLabel->setFont(Theme::mono(10));
-    m_metaLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
     nameColLayout->addWidget(m_metaLabel);
     headerRowLayout->addWidget(nameCol);
     headerRowLayout->addStretch(1);
@@ -464,23 +463,20 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     m_useInViewportBtn->setText(tr("Use in viewport"));
     m_useInViewportBtn->setFont(Theme::sans(11));
     m_useInViewportBtn->setCursor(Qt::PointingHandCursor);
-    m_useInViewportBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 7px 0; }"
-        "QToolButton:disabled { color: %4; border-color: %5; }")
-        .arg(Theme::hex(Theme::accentLight),
-             Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.35 * 255))))
-        .arg(Theme::radiusMedium)
-        .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
     connect(m_useInViewportBtn, &QToolButton::clicked, this, &ViewportProperties::onUseInViewportClicked);
     camLayout->addWidget(m_useInViewportBtn);
 
     m_addCameraBtn = new QToolButton(m_cameraAffordances);
-    m_addCameraBtn->setText(QStringLiteral("+ ") + tr("Add Camera"));
+    // Bundled-SVG "circle-plus" icon beside the label, replacing the
+    // "+ " text prefix -- mirrors PropertiesPanel.swift:331's
+    // `Image(systemName: "plus.circle")` + Text("Add Camera") pairing.
+    // Icon + stylesheet set in restyleTheme() -- persistent chrome.
+    m_addCameraBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_addCameraBtn->setIconSize(QSize(10, 10));
+    m_addCameraBtn->setText(tr("Add Camera"));
     m_addCameraBtn->setFont(Theme::mono(10));
     m_addCameraBtn->setCursor(Qt::PointingHandCursor);
-    m_addCameraBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { color: %1; border: none; padding: 2px 0; }")
-        .arg(Theme::hex(Theme::textDim)));
     connect(m_addCameraBtn, &QToolButton::clicked, this, &ViewportProperties::onAddCameraClicked);
     camLayout->addWidget(m_addCameraBtn);
 
@@ -490,7 +486,8 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     m_emptyMessage = new QLabel(body);
     m_emptyMessage->setFont(Theme::sans(11));
     m_emptyMessage->setWordWrap(true);
-    m_emptyMessage->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Stylesheet set in restyleTheme() -- persistent chrome (only the
+    // text/visibility are touched by rebuildPropertyRows()).
     m_bodyLayout->addWidget(m_emptyMessage);
 
     // ---- Basic property rows --------------------------------------------
@@ -506,18 +503,19 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     auto* advToggleLayout = new QHBoxLayout(m_advancedToggleRow);
     advToggleLayout->setContentsMargins(0, 0, 0, 0);
     advToggleLayout->setSpacing(6);
-    auto* advLabel = new QLabel(tr("Advanced"), m_advancedToggleRow);
-    advLabel->setFont(Theme::sans(11));
-    advLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
-    advToggleLayout->addWidget(advLabel);
+    m_advancedLabel = new QLabel(tr("Advanced"), m_advancedToggleRow);
+    m_advancedLabel->setFont(Theme::sans(11));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
+    advToggleLayout->addWidget(m_advancedLabel);
     m_advancedArrowLabel = new QLabel(m_advancedToggleRow);
-    m_advancedArrowLabel->setFont(Theme::sans(9));
-    m_advancedArrowLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    m_advancedArrowLabel->setFixedSize(10, 10);
+    m_advancedArrowLabel->setAlignment(Qt::AlignCenter);
     advToggleLayout->addWidget(m_advancedArrowLabel);
     advToggleLayout->addStretch(1);
     m_advancedCountLabel = new QLabel(m_advancedToggleRow);
     m_advancedCountLabel->setFont(Theme::mono(9));
-    m_advancedCountLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDisabled)));
+    // Stylesheet set in restyleTheme() -- persistent chrome (only the
+    // text is touched by updateAdvancedToggleLabel()).
     advToggleLayout->addWidget(m_advancedCountLabel);
     m_bodyLayout->addWidget(m_advancedToggleRow);
 
@@ -533,10 +531,10 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     root->addWidget(m_scroll, 1);
 
     // ---- Footer: Save / Save As... ----------------------------------------
-    auto* sep = new QFrame(this);
-    sep->setFrameShape(QFrame::HLine);
-    sep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderHairline)));
-    root->addWidget(sep);
+    // Style set in restyleTheme() -- persistent chrome.
+    m_footerSeparator = new QFrame(this);
+    m_footerSeparator->setFrameShape(QFrame::HLine);
+    root->addWidget(m_footerSeparator);
 
     auto* footer = new QWidget(this);
     auto* footerLayout = new QHBoxLayout(footer);
@@ -548,12 +546,7 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     m_saveButton->setFont(Theme::sans(11, QFont::DemiBold));
     m_saveButton->setEnabled(false);
     m_saveButton->setToolTip(tr("No changes to save"));
-    m_saveButton->setStyleSheet(QStringLiteral(
-        "QToolButton { color: #0d1116; background-color: %1; border: none; border-radius: %2px; padding: 5px 11px; }"
-        "QToolButton:disabled { color: %3; background-color: %4; }")
-        .arg(Theme::hex(Theme::textPrimary))
-        .arg(Theme::radiusMedium)
-        .arg(Theme::hex(Theme::textDisabled), Theme::rgba(Theme::whiteAlpha(int(0.08 * 255)))));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
     connect(m_saveButton, &QToolButton::clicked,
             this, [this]() { performSceneSave(/*useLoadedPath=*/true); });
     footerLayout->addWidget(m_saveButton);
@@ -563,34 +556,28 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     m_saveAsButton->setFont(Theme::sans(11));
     m_saveAsButton->setEnabled(false);
     m_saveAsButton->setToolTip(tr("No changes to save"));
-    m_saveAsButton->setStyleSheet(QStringLiteral(
-        "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 5px 11px; }"
-        "QToolButton:disabled { color: %4; border-color: %5; }")
-        .arg(Theme::hex(Theme::textTertiary), Theme::hex(Theme::borderStrong))
-        .arg(Theme::radiusMedium)
-        .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    // Stylesheet set in restyleTheme() -- persistent chrome.
     connect(m_saveAsButton, &QToolButton::clicked,
             this, [this]() { performSceneSave(/*useLoadedPath=*/false); });
     footerLayout->addWidget(m_saveAsButton);
 
     footerLayout->addStretch(1);
 
-    auto* refreshBtn = new QToolButton(footer);
-    refreshBtn->setText(QString::fromUtf8("\xE2\x86\xBB"));   // ↻
-    refreshBtn->setToolTip(tr("Refresh from the live scene"));
-    refreshBtn->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
-        .arg(Theme::hex(Theme::textDim)));
-    connect(refreshBtn, &QToolButton::clicked, this, &ViewportProperties::refresh);
-    footerLayout->addWidget(refreshBtn);
+    m_refreshButton = new QToolButton(footer);
+    // Tinted SVG icon (mirrors PropertiesPanel.swift's SF `arrow.clockwise`
+    // refresh affordance).  Icon set in restyleTheme() -- persistent
+    // chrome (QToolButton::setIcon bakes a QIcon; unlike bindIconLabel
+    // there's no self-updating filter for it).
+    m_refreshButton->setIconSize(QSize(12, 12));
+    m_refreshButton->setToolTip(tr("Refresh from the live scene"));
+    m_refreshButton->setStyleSheet(QStringLiteral("QToolButton { border: none; }"));
+    connect(m_refreshButton, &QToolButton::clicked, this, &ViewportProperties::refresh);
+    footerLayout->addWidget(m_refreshButton);
 
     root->addWidget(footer);
 
     setAutoFillBackground(true);
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, Theme::bgPanel);
-        setPalette(pal);
-    }
+    // Palette Window fill set in restyleTheme() -- persistent chrome.
 
     // The dirtyChanged signal is emitted via QueuedConnection from
     // the bridge's C-trampoline (see ViewportBridge ctor), so a
@@ -602,8 +589,215 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
 
     setMinimumWidth(260);
 
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): run once at construction so
+    // every persistent-chrome site above (which no longer sets its own
+    // stylesheet/icon inline) actually gets styled -- restyleTheme() is
+    // the single source of truth for all of it, not a redundant re-
+    // application. See restyleTheme()'s doc comment below for the full
+    // persistent-chrome/dynamic-content split.
+    m_themeReady = true;
+    restyleTheme();
+
     // Initial pull so the panel renders immediately.
     refresh();
+}
+
+// ============================================================
+// LIVE THEME-SWITCH CONTRACT (Theme.h)
+// ============================================================
+
+void ViewportProperties::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void ViewportProperties::restyleTheme()
+{
+    m_themeEpochSeen = Theme::paletteEpoch();
+    // Persistent chrome only -- every widget below is a MEMBER created
+    // once in the constructor and never recreated, so its stylesheet/
+    // icon must be re-applied explicitly on a theme switch (the
+    // constructor no longer sets any of this inline; this is the sole
+    // place it happens).  Idempotent, creates no widgets.
+    //
+    // Deliberately does NOT touch the Basic/Advanced property rows
+    // (rebuildPropertyRows()/buildPropertyRow()) or the entity-header's
+    // icon PIXMAP (rebuildEntityHeader() -> Theme::bindIconLabel, which
+    // self-updates on QEvent::PaletteChange via its own installed event
+    // filter -- see Theme.h). Those rows already read every Theme::
+    // token live at build time via wellStyleSheet()/lineEditStyleSheet()
+    // (this file's anonymous-namespace helpers) -- rebuildPropertyRows()
+    // would need to run again for a WAITING (not yet visible) frame to
+    // pick up new colors, and it already does: refresh() rides every
+    // ViewportBridge::imageUpdated frame during a live render, and fires
+    // immediately on the next selection change, edit, or explicit
+    // Refresh click regardless.  A SYNCHRONOUS rebuildPropertyRows()
+    // call from here would violate the contract's "must not create
+    // widgets" rule (it deleteLater()s and recreates every row); the
+    // idle-viewport case (switch with no pending frame) is instead
+    // covered by the QUEUED rebuild at the END of this method -- see
+    // the comment there.  BoolPill/ScrubHandle (both in the anonymous namespace
+    // above) paint their own colors straight from Theme:: tokens in
+    // paintEvent(), so they repaint correctly on Qt's own post-palette-
+    // change update() with no extra code (contract item 3).
+
+    if (m_iconChip) {
+        m_iconChip->setStyleSheet(QStringLiteral(
+            "background-color: %1; border: 1px solid %2; border-radius: 6px; color: %3;")
+            .arg(Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.15 * 255))),
+                 Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.3 * 255))),
+                 Theme::hex(Theme::accentLight)));
+    }
+
+    if (m_sourceLineChip) {
+        m_sourceLineChip->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 2px 6px; }"
+            "QToolButton:hover { color: %4; border-color: %5; }")
+            .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderHairline))
+            .arg(Theme::radiusSmall)
+            .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderStrong)));
+    }
+
+    // Entity name + category subtitle (2026-07-23 round-2 review fix:
+    // these were baked once at construction and survived a live switch
+    // with stale colors -- the exact defect class this contract exists
+    // to prevent).
+    if (m_nameLabel) {
+        m_nameLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+    if (m_metaLabel) {
+        m_metaLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    }
+
+    if (m_useInViewportBtn) {
+        m_useInViewportBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 7px 0; }"
+            "QToolButton:disabled { color: %4; border-color: %5; }")
+            .arg(Theme::hex(Theme::accentLight),
+                 Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.35 * 255))))
+            .arg(Theme::radiusMedium)
+            .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    }
+
+    if (m_addCameraBtn) {
+        m_addCameraBtn->setIcon(Theme::icon("circle-plus", 10, Theme::textDim));
+        m_addCameraBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: none; padding: 2px 0; }")
+            .arg(Theme::hex(Theme::textDim)));
+    }
+
+    if (m_emptyMessage) {
+        m_emptyMessage->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    }
+
+    if (m_advancedLabel) {
+        m_advancedLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    }
+    if (m_advancedCountLabel) {
+        m_advancedCountLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDisabled)));
+    }
+
+    if (m_footerSeparator) {
+        m_footerSeparator->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderHairline)));
+    }
+
+    if (m_saveButton) {
+        // Disabled-state background: Theme::fillTrough (a theme-aware
+        // white/black-alpha fill token), NOT the raw Theme::whiteAlpha()
+        // this used to bake directly -- whiteAlpha() is a "stays white
+        // regardless of theme" primitive (Theme.h), which is wrong here:
+        // in Light mode a white overlay on an already-light disabled
+        // button reads as almost no dimming at all. fillTrough resolves
+        // to whiteAlpha(26) in Dark and blackAlpha(20) in Light, so the
+        // disabled fill actually darkens/mutes in both modes.
+        //
+        // Enabled-state fill/text: Theme::accent / Theme::textOnAccent,
+        // NOT a hardcoded "#0d1116 on Theme::textPrimary" fill (P1 fix,
+        // 2026-07-23 review) -- in Light mode textPrimary is near-black
+        // (~0x1a1b1e) and the hardcoded text was ALSO near-black
+        // (0x0d1116), giving ~1.1:1 contrast -- the button was there but
+        // functionally invisible.  Diverges from the Mac counterpart
+        // (PropertiesPanel.swift:1075-1080), which fills with
+        // Theme.textPrimary too and has the SAME light-mode defect --
+        // Windows uses the accent/textOnAccent idiom instead (the same
+        // one ProposalCard's Apply button already uses), which stays
+        // legible in both modes since Theme::textOnAccent is chosen for
+        // contrast against Theme::accent specifically (see Theme.h/
+        // Theme.cpp's LightPalette doc on textOnAccent).
+        m_saveButton->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; background-color: %2; border: none; border-radius: %3px; padding: 5px 11px; }"
+            "QToolButton:disabled { color: %4; background-color: %5; }")
+            .arg(Theme::hex(Theme::textOnAccent), Theme::hex(Theme::accent))
+            .arg(Theme::radiusMedium)
+            .arg(Theme::hex(Theme::textDisabled), Theme::rgba(Theme::fillTrough)));
+    }
+
+    if (m_saveAsButton) {
+        m_saveAsButton->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 5px 11px; }"
+            "QToolButton:disabled { color: %4; border-color: %5; }")
+            .arg(Theme::hex(Theme::textTertiary), Theme::hex(Theme::borderStrong))
+            .arg(Theme::radiusMedium)
+            .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    }
+
+    if (m_refreshButton) {
+        m_refreshButton->setIcon(Theme::icon(QStringLiteral("refresh-cw"), 12, Theme::textDim));
+    }
+
+    if (m_scroll) {
+        // Slim themed scrollbars (Task A): applied directly to the
+        // QScrollArea's own scrollbar widgets, not the scroll area
+        // itself, so the QSS can't leak into any other selector. Bakes
+        // token colors, so re-applied on every restyleTheme() call.
+        if (QScrollBar* vbar = m_scroll->verticalScrollBar()) {
+            vbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+        if (QScrollBar* hbar = m_scroll->horizontalScrollBar()) {
+            hbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+    }
+
+    {
+        // setAutoFillBackground(true) was set once in the constructor
+        // (structural, not token-dependent); the fill color itself is
+        // re-applied here every time, matching MainWindow::restyleTheme's
+        // m_leftPanel/m_rightPanel pattern.
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        setPalette(pal);
+    }
+
+    // Idle-viewport queued rebuild (P2 fix, 2026-07-23 review; blessed by
+    // Theme.h's LIVE THEME-SWITCH CONTRACT point 5): the long comment
+    // above explains why this method deliberately skips forcing an
+    // IMMEDIATE rebuildPropertyRows() call -- a pending render frame or
+    // the next selection/edit/Refresh click self-heals it.  But a theme
+    // switch landing while the viewport is completely IDLE (no
+    // imageUpdated frame coming) leaves these rows baked with the OLD
+    // palette's colors until the next real interaction.  QTimer::
+    // singleShot(0, ...) defers the rebuild OUT of this synchronous
+    // palette-change cascade -- restyleTheme() itself must not create
+    // widgets (contract point 2) -- and onto the next event-loop turn,
+    // where it's safe.  Uses `pullFreshSnapshot=false`
+    // (rebuildPropertyRows()'s header doc) to replay from the
+    // controller's ALREADY-cached snapshot rather than risking a fresh
+    // RefreshProperties round-trip from inside a deferred callback;
+    // skips entirely while a ScrubHandle drag is in flight (same
+    // m_scrubbing guard refresh() uses) or once the bridge has since
+    // gone away (rebuildPropertyRows() itself no-ops then too, but the
+    // early return here also skips the otherwise-harmless
+    // rebuildEntityHeader() call for a torn-down panel).
+    // rebuildEntityHeader() is cheap regardless -- it only reads already-
+    // cached members (m_currentSelectionCat/Name), no bridge call at all.
+    QTimer::singleShot(0, this, [this]() {
+        if (m_scrubbing || !m_bridge) return;
+        rebuildEntityHeader();
+        rebuildPropertyRows(/*pullFreshSnapshot=*/false);
+    });
 }
 
 // ============================================================
@@ -705,7 +899,27 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
 
 void ViewportProperties::rebuildEntityHeader()
 {
-    m_iconChip->setText(categoryGlyph(m_currentSelectionCat));
+    // Tinted SVG icon, Theme::accentLight -- matches the chip's fixed
+    // accent-tinted background/border (set once at construction, see the
+    // ctor below) rather than a per-category color; PropertiesPanel.swift's
+    // entityHeader uses the same fixed Theme.accentLight tint regardless of
+    // category, so this mirrors Mac exactly rather than inventing a new
+    // per-category coloring the design doesn't otherwise use here (the
+    // outliner's RND/CAM/LGT/... tag chips are the per-category-colored
+    // affordance; this header icon is deliberately uniform).
+    const QString iconName = categoryIconName(m_currentSelectionCat);
+    if (iconName.isEmpty()) {
+        m_iconChip->setText(QString::fromUtf8("\xE2\x80\xA2"));   // • -- no dedicated icon (None)
+    } else {
+        // Theme::bindIconLabel keeps this pixmap correct across a
+        // mixed-DPI monitor drag (plain setPixmap(iconPixmap(...,
+        // devicePixelRatioF())) captures DPR once at construction and
+        // goes stale) -- this label is also re-rendered repeatedly across
+        // the widget's lifetime as the selection changes, which
+        // bindIconLabel's re-bind path handles cleanly (no stacked event
+        // filters).
+        Theme::bindIconLabel(m_iconChip, iconName, 14, []{ return Theme::accentLight; });
+    }
 
     const QString title = !m_currentSelectionName.isEmpty()
         ? m_currentSelectionName
@@ -759,9 +973,21 @@ void ViewportProperties::clearPropertyRows()
 
 void ViewportProperties::updateAdvancedToggleLabel(int advancedCount)
 {
-    m_advancedArrowLabel->setText(m_advancedExpanded
-        ? QString::fromUtf8("\xE2\x96\xBE")    // ▾
-        : QString::fromUtf8("\xE2\x96\xB8"));  // ▸
+    // Bundled-SVG chevron, replacing the ▾/▸ Unicode triangles (same
+    // Windows font-fallback rationale as categoryIconName above).
+    // Deliberate Windows-side exception: Mac renders ▾/▸ as text, Windows
+    // uses the chevron SVGs for cross-panel consistency with the
+    // chat/log disclosure chevrons (approved by the orchestrating
+    // session, 2026-07-23).
+    // Theme::bindIconLabel keeps this pixmap correct across a mixed-DPI
+    // monitor drag (plain setPixmap(iconPixmap(..., devicePixelRatioF()))
+    // captures DPR once at construction and goes stale) -- this label is
+    // also re-rendered repeatedly across the widget's lifetime as the
+    // advanced section is toggled, which bindIconLabel's re-bind path
+    // handles cleanly (no stacked event filters).
+    Theme::bindIconLabel(m_advancedArrowLabel,
+        m_advancedExpanded ? QStringLiteral("chevron-down") : QStringLiteral("chevron-right"),
+        9, []{ return Theme::textFaint; });
     m_advancedCountLabel->setText(tr("%1 more").arg(advancedCount));
 }
 
@@ -772,14 +998,20 @@ void ViewportProperties::onAdvancedToggleClicked()
     updateAdvancedToggleLabel(m_advancedLayout ? m_advancedLayout->count() : 0);
 }
 
-void ViewportProperties::rebuildPropertyRows()
+void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
 {
     if (!m_bridge) return;
     clearPropertyRows();
 
     // Force a refresh so the controller's per-category snapshot for the
-    // PRIMARY selection is up to date before we read it.
-    (void)m_bridge->propertySnapshot();
+    // PRIMARY selection is up to date before we read it -- SKIPPED when
+    // `pullFreshSnapshot` is false (see this method's header doc): that
+    // path deliberately reuses whatever `propertySnapshotFor` last has
+    // cached on the controller side rather than paying a fresh
+    // RefreshProperties round-trip.
+    if (pullFreshSnapshot) {
+        (void)m_bridge->propertySnapshot();
+    }
 
     const QVector<ViewportProperty> props = m_bridge->propertySnapshotFor(m_currentSelectionCat);
 
@@ -1003,10 +1235,16 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
 
         if (p.kind == 7 /* Filename */) {
             auto* browseBtn = new QToolButton;
-            browseBtn->setText(QString::fromUtf8("\xE2\x80\xA6"));   // …
+            // Bundled-SVG "folder" icon, replacing the "…" ellipsis --
+            // mirrors PropertiesPanel.swift:940's FilenameCell browse
+            // button (`Image(systemName: "folder")`).
+            browseBtn->setIcon(Theme::icon("folder", 10, Theme::textDim));
+            browseBtn->setIconSize(QSize(10, 10));
             browseBtn->setToolTip(tr("Browse\xE2\x80\xA6"));
-            browseBtn->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
-                .arg(Theme::hex(Theme::textDim)));
+            // `color` is dead here now that the button is icon-only (the
+            // icon carries its own tint via Theme::icon above); border
+            // suppression is the only thing this rule still does.
+            browseBtn->setStyleSheet(QStringLiteral("QToolButton { border: none; }"));
             const QString name = p.name;
             connect(browseBtn, &QToolButton::clicked, this, [this, edit, name]() {
                 const QString picked = QFileDialog::getOpenFileName(this, tr("Choose File"));
@@ -1017,11 +1255,17 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
             fieldRowLayout->addWidget(browseBtn);
         } else if (!p.presets.isEmpty()) {
             auto* presetButton = new QToolButton;
-            presetButton->setText(QStringLiteral("\xE2\x8B\xAE"));   // ⋮
+            // Bundled-SVG "list" icon, replacing the "⋮" glyph -- mirrors
+            // PropertiesPanel.swift:725's PresetMenu label
+            // (`Image(systemName: "list.bullet")`).
+            presetButton->setIcon(Theme::icon("list", 10, Theme::textDim));
+            presetButton->setIconSize(QSize(10, 10));
             presetButton->setToolTip(tr("Quick-pick presets"));
             presetButton->setPopupMode(QToolButton::InstantPopup);
-            presetButton->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
-                .arg(Theme::hex(Theme::textDim)));
+            // `color` is dead here now that the button is icon-only (the
+            // icon carries its own tint via Theme::icon above); border
+            // suppression is the only thing this rule still does.
+            presetButton->setStyleSheet(QStringLiteral("QToolButton { border: none; }"));
             auto* menu = new QMenu(presetButton);
             const QString propName = p.name;
             for (const ViewportPropertyPreset& preset : p.presets) {

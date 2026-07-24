@@ -9,13 +9,13 @@
 #include "ViewportToolbar.h"
 #include "Theme.h"
 
+#include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QMenu>
 #include <QWidgetAction>
-#include <QStyle>
 #include <QStringList>
 #include <QSize>
 #include <QTimer>
@@ -30,11 +30,6 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     // within the taller row (QHBoxLayout's default vertical centering).
     setFixedHeight(52);
     setAutoFillBackground(true);
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, Theme::bgCenter);
-        setPalette(pal);
-    }
     // objectName-scoped selector (rather than a bare declaration list)
     // so it can safely combine with the QToolButton{...} rules appended
     // below in one setStyleSheet call -- mixing a bare "prop: value;"
@@ -52,35 +47,14 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     // right-click flyout.  Three visually separated clusters inside one
     // bordered container: Select | Camera (Orbit/Pan/Zoom/Roll) |
     // Object (Move/Rotate/Scale).
-    auto* toolGroup = new QWidget(this);
-    toolGroup->setObjectName(QStringLiteral("toolGroup"));
-    toolGroup->setStyleSheet(QStringLiteral(
-        "#toolGroup { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
-        .arg(Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
-        .arg(Theme::radiusMedium));
-    auto* toolGroupLayout = new QHBoxLayout(toolGroup);
+    // Promoted to a member (was a ctor-local) so restyleTheme() can
+    // re-apply its token-dependent QSS on a live theme switch -- see the
+    // LIVE THEME-SWITCH CONTRACT in Theme.h.
+    m_toolGroup = new QWidget(this);
+    m_toolGroup->setObjectName(QStringLiteral("toolGroup"));
+    auto* toolGroupLayout = new QHBoxLayout(m_toolGroup);
     toolGroupLayout->setContentsMargins(2, 2, 2, 2);
     toolGroupLayout->setSpacing(0);
-
-    setStyleSheet(QStringLiteral(
-        "#viewportToolbar { border-bottom: 1px solid %1; }"
-        "QToolButton#toolBtn {"
-        "  border: none;"
-        "  border-bottom: 2px solid transparent;"
-        "  border-radius: %2px;"
-        "  padding: 2px 4px;"
-        "  color: %3;"
-        "}"
-        "QToolButton#toolBtn:hover { background: %4; }"
-        "QToolButton#toolBtn:checked {"
-        "  background: %5;"
-        "  color: #ffffff;"
-        "  border-bottom: 2px solid %6;"
-        "}")
-        .arg(Theme::hex(Theme::borderHairline))
-        .arg(Theme::radiusSmall)
-        .arg(Theme::hex(Theme::textTertiary))
-        .arg(Theme::rgba(Theme::fillHover), Theme::rgba(Theme::fillActive), Theme::hex(Theme::accent)));
 
     // Numeric category values mirror RISE::SceneEditController::ToolCategory
     // and the C-API SceneEditToolCategory_* constants; `subToolsForCategory`
@@ -95,11 +69,13 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     bool firstGroup = true;
     for (auto c : cats) {
         if (!firstGroup) {
-            auto* divider = new QFrame(toolGroup);
+            // Promoted to m_categoryDividers (was a loop-local) so
+            // restyleTheme() can re-apply its border color.
+            auto* divider = new QFrame(m_toolGroup);
             divider->setFrameShape(QFrame::VLine);
             divider->setFixedHeight(30);
-            divider->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
             toolGroupLayout->addWidget(divider);
+            m_categoryDividers.append(divider);
         }
         firstGroup = false;
         for (ViewportTool t : subToolsForCategory(c)) {
@@ -110,43 +86,48 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
             m_toolButtons.append(entry);
         }
     }
-    layout->addWidget(toolGroup);
+    layout->addWidget(m_toolGroup);
 
-    auto* sep1 = new QFrame(this);
-    sep1->setFrameShape(QFrame::VLine);
-    sep1->setFixedHeight(18);
-    sep1->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
-    layout->addWidget(sep1);
+    // Promoted to a member (was a ctor-local) -- see restyleTheme().
+    m_sep1 = new QFrame(this);
+    m_sep1->setFrameShape(QFrame::VLine);
+    m_sep1->setFixedHeight(18);
+    layout->addWidget(m_sep1);
 
+    // Bundled Lucide icons (undo-2/redo-2), tinted to the same
+    // textTertiary/textDisabled pair the #toolBtn cluster to their left
+    // uses for its unchecked/disabled states -- Theme::icon's 3-arg
+    // overload registers the disabled tint as QIcon::Disabled so
+    // setUndoRedoEnabled's setEnabled(false) dims the glyph automatically,
+    // matching the tooltip swap already below.
     m_undoBtn = new QToolButton(this);
-    m_undoBtn->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+    m_undoBtn->setIcon(Theme::icon(QStringLiteral("undo-2"), 16, Theme::textTertiary, Theme::textDisabled));
+    m_undoBtn->setIconSize(QSize(16, 16));
     m_undoBtn->setToolTip(tr("Undo — revert the last edit (per-drag composites are one entry)"));
     connect(m_undoBtn, &QToolButton::clicked, this, &ViewportToolbar::undoClicked);
     layout->addWidget(m_undoBtn);
 
     m_redoBtn = new QToolButton(this);
-    m_redoBtn->setIcon(style()->standardIcon(QStyle::SP_ArrowForward));
+    m_redoBtn->setIcon(Theme::icon(QStringLiteral("redo-2"), 16, Theme::textTertiary, Theme::textDisabled));
+    m_redoBtn->setIconSize(QSize(16, 16));
     m_redoBtn->setToolTip(tr("Redo — re-apply the most recently undone edit"));
     connect(m_redoBtn, &QToolButton::clicked, this, &ViewportToolbar::redoClicked);
     layout->addWidget(m_redoBtn);
 
-    auto* sep2 = new QFrame(this);
-    sep2->setFrameShape(QFrame::VLine);
-    sep2->setFixedHeight(18);
-    sep2->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
-    layout->addWidget(sep2);
+    // Promoted to a member (was a ctor-local) -- see restyleTheme().
+    m_sep2 = new QFrame(this);
+    m_sep2->setFrameShape(QFrame::VLine);
+    m_sep2->setFixedHeight(18);
+    layout->addWidget(m_sep2);
 
     // ---- N-up multi-viewport layout picker (docs/gui/RENDER_MODES.md §7.5) -
     // 4 fixed icons -- reuses #toolGroup's bordered-container styling (the
-    // stylesheet installed above already covers #toolBtn's hover/checked
-    // states, which these buttons also use).
-    auto* layoutGroup = new QWidget(this);
-    layoutGroup->setObjectName(QStringLiteral("toolGroup"));
-    layoutGroup->setStyleSheet(QStringLiteral(
-        "#toolGroup { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
-        .arg(Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
-        .arg(Theme::radiusMedium));
-    auto* layoutGroupLayout = new QHBoxLayout(layoutGroup);
+    // stylesheet installed on `this` covers #toolBtn's hover/checked
+    // states, which these buttons also use). Promoted to a member (was a
+    // ctor-local) so restyleTheme() can re-apply its token-dependent QSS.
+    m_layoutGroup = new QWidget(this);
+    m_layoutGroup->setObjectName(QStringLiteral("toolGroup"));
+    auto* layoutGroupLayout = new QHBoxLayout(m_layoutGroup);
     layoutGroupLayout->setContentsMargins(2, 2, 2, 2);
     layoutGroupLayout->setSpacing(0);
     const ViewportBridge::ViewportLayout layouts[] = {
@@ -162,21 +143,17 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
         layoutGroupLayout->addWidget(entry.button);
         m_layoutButtons.append(entry);
     }
-    layout->addWidget(layoutGroup);
+    layout->addWidget(m_layoutGroup);
 
-    auto* sep3 = new QFrame(this);
-    sep3->setFrameShape(QFrame::VLine);
-    sep3->setFixedHeight(18);
-    sep3->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
-    layout->addWidget(sep3);
+    // Promoted to a member (was a ctor-local) -- see restyleTheme().
+    m_sep3 = new QFrame(this);
+    m_sep3->setFrameShape(QFrame::VLine);
+    m_sep3->setFixedHeight(18);
+    layout->addWidget(m_sep3);
 
     // ---- Active-camera chip (read-only) ----------------------------------
     m_cameraChip = new QLabel(this);
     m_cameraChip->setFont(Theme::sans(11));
-    m_cameraChip->setStyleSheet(QStringLiteral(
-        "color: %1; background-color: %2; border: 1px solid %3; border-radius: %4px; padding: 5px 11px;")
-        .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
-        .arg(Theme::radiusMedium));
     layout->addWidget(m_cameraChip);
 
     layout->addStretch(1);
@@ -194,20 +171,16 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     m_evChip->setFont(Theme::mono(10));
     m_evChip->setCursor(Qt::PointingHandCursor);
     m_evChip->setPopupMode(QToolButton::InstantPopup);
-    m_evChip->setStyleSheet(QStringLiteral(
-        "QToolButton { color: %1; border: 1px solid %2; border-radius: 4px; padding: 2px 7px; }"
-        "QToolButton::menu-indicator { image: none; }")
-        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
 
     m_evMenu = new QMenu(m_evChip);
     auto* evPopup = new QWidget();
     auto* evPopupLayout = new QVBoxLayout(evPopup);
     evPopupLayout->setContentsMargins(12, 10, 12, 10);
     evPopupLayout->setSpacing(6);
-    auto* evTitle = new QLabel(tr("Exposure"), evPopup);
-    evTitle->setFont(Theme::sans(10));
-    evTitle->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
-    evPopupLayout->addWidget(evTitle);
+    // Promoted to a member (was a ctor-local) -- see restyleTheme().
+    m_evTitleLabel = new QLabel(tr("Exposure"), evPopup);
+    m_evTitleLabel->setFont(Theme::sans(10));
+    evPopupLayout->addWidget(m_evTitleLabel);
     m_exposureSlider = new ExposureSlider(evPopup);
     m_exposureSlider->setRange(kExposureSliderMin, kExposureSliderMax);
     m_exposureSlider->setValue(0);
@@ -219,7 +192,6 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     m_evValueLabel = new QLabel(QStringLiteral("0.0 EV"), evPopup);
     m_evValueLabel->setFont(Theme::mono(10));
     m_evValueLabel->setAlignment(Qt::AlignRight);
-    m_evValueLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
     evPopupLayout->addWidget(m_evValueLabel);
     auto* evWidgetAction = new QWidgetAction(m_evMenu);
     evWidgetAction->setDefaultWidget(evPopup);
@@ -243,13 +215,118 @@ ViewportToolbar::ViewportToolbar(QWidget* parent)
     connect(m_pollTimer, &QTimer::timeout, this, &ViewportToolbar::pollState);
     m_pollTimer->start();
 
-    refreshAllToolButtons();
     refreshLayoutButtons();
-    updateRegionChip();
     updateCameraChip();
     updateEvChipLabel(0);
-    setEdrChecked(false);
     setEdrEnabled(false);
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): applies every token-dependent
+    // stylesheet/icon/palette site above from the CURRENT Theme:: values
+    // -- also covers refreshAllToolButtons() / updateRegionChip() /
+    // setEdrChecked(), which is why those three aren't called directly
+    // above the way they used to be pre-conversion.
+    m_themeReady = true;
+    restyleTheme();
+}
+
+void ViewportToolbar::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void ViewportToolbar::restyleTheme()
+{
+    m_themeEpochSeen = Theme::paletteEpoch();
+    // Reapplies every one of this toolbar's own token-dependent styling
+    // sites from the CURRENT Theme:: token values. Called once at the
+    // end of the constructor and again from changeEvent() on every
+    // QEvent::PaletteChange. Idempotent, creates no widgets. See Theme.h's
+    // LIVE THEME-SWITCH CONTRACT (MainWindow::restyleTheme is the
+    // reference implementation this mirrors).
+
+    // setPalette() is an explicit per-widget override, so it does NOT
+    // automatically track QApplication::setPalette() -- has to be
+    // re-applied here from the current token.
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgCenter);
+        setPalette(pal);
+    }
+
+    // This widget's own border + the shared #toolBtn selector (tool
+    // cluster AND layout-picker buttons, which both use objectName
+    // "toolBtn"/"toolGroup"). The checked-state tint is Theme::
+    // iconOnAccent, not a bare #ffffff literal -- see that token's doc
+    // in Theme.h for why (matches Mac's hardcoded white unconditionally
+    // of mode).
+    setStyleSheet(QStringLiteral(
+        "#viewportToolbar { border-bottom: 1px solid %1; }"
+        "QToolButton#toolBtn {"
+        "  border: none;"
+        "  border-bottom: 2px solid transparent;"
+        "  border-radius: %2px;"
+        "  padding: 2px 4px;"
+        "  color: %3;"
+        "}"
+        "QToolButton#toolBtn:hover { background: %4; }"
+        "QToolButton#toolBtn:checked {"
+        "  background: %5;"
+        "  color: %6;"
+        "  border-bottom: 2px solid %7;"
+        "}")
+        .arg(Theme::hex(Theme::borderHairline))
+        .arg(Theme::radiusSmall)
+        .arg(Theme::hex(Theme::textTertiary))
+        .arg(Theme::rgba(Theme::fillHover), Theme::rgba(Theme::fillActive),
+             Theme::hex(Theme::iconOnAccent), Theme::hex(Theme::accent)));
+
+    const QString toolGroupQss = QStringLiteral(
+        "#toolGroup { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+        .arg(Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
+        .arg(Theme::radiusMedium);
+    if (m_toolGroup) m_toolGroup->setStyleSheet(toolGroupQss);
+    if (m_layoutGroup) m_layoutGroup->setStyleSheet(toolGroupQss);
+
+    const QString dividerQss = QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight));
+    for (QFrame* divider : m_categoryDividers) {
+        if (divider) divider->setStyleSheet(dividerQss);
+    }
+    if (m_sep1) m_sep1->setStyleSheet(dividerQss);
+    if (m_sep2) m_sep2->setStyleSheet(dividerQss);
+    if (m_sep3) m_sep3->setStyleSheet(dividerQss);
+
+    // Bundled Lucide icons (undo-2/redo-2), tinted to the same
+    // textTertiary/textDisabled pair the #toolBtn cluster uses for its
+    // unchecked/disabled states.
+    if (m_undoBtn) m_undoBtn->setIcon(Theme::icon(QStringLiteral("undo-2"), 16, Theme::textTertiary, Theme::textDisabled));
+    if (m_redoBtn) m_redoBtn->setIcon(Theme::icon(QStringLiteral("redo-2"), 16, Theme::textTertiary, Theme::textDisabled));
+
+    if (m_cameraChip) {
+        m_cameraChip->setStyleSheet(QStringLiteral(
+            "color: %1; background-color: %2; border: 1px solid %3; border-radius: %4px; padding: 5px 11px;")
+            .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderHairline))
+            .arg(Theme::radiusMedium));
+    }
+
+    if (m_evChip) {
+        m_evChip->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: 1px solid %2; border-radius: 4px; padding: 2px 7px; }"
+            "QToolButton::menu-indicator { image: none; }")
+            .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+    }
+    if (m_evTitleLabel) m_evTitleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    if (m_evValueLabel) m_evValueLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+
+    // Icon tint + state-dependent stylesheets that are already re-derived
+    // from live state on every call -- re-run them here so a theme switch
+    // also refreshes their token-derived colors, not just the static QSS
+    // above.
+    refreshAllToolButtons();
+    updateRegionChip();
+    setEdrChecked(m_edrChecked);
 }
 
 void ViewportToolbar::setUndoRedoEnabled(bool enabled)
@@ -290,13 +367,13 @@ QToolButton* ViewportToolbar::makeToolButton(ViewportTool t)
     btn->setIconSize(QSize(15, 15));
     btn->setFont(Theme::sans(9));
 
-    const QIcon icon = iconForTool(t);
-    if (!icon.isNull()) {
-        btn->setIcon(icon);
-    }
-    // Full label always shown below the icon (or alone, when the local
-    // icon theme has no themed glyph for this tool) -- every tool is
-    // discoverable by name now, not just by a 2-letter abbreviation.
+    // Icon is left unset here -- refreshAllToolButtons() (called once at
+    // the end of the ctor, and on every tool/bridge change thereafter)
+    // is the single place that sets both the checked state AND the icon
+    // tint together, since the two must always agree.
+    //
+    // Full label always shown below the icon -- every tool is
+    // discoverable by name, not just by pictogram.
     btn->setText(labelForTool(t));
 
     connect(btn, &QToolButton::clicked, this, &ViewportToolbar::onToolButtonClicked);
@@ -322,24 +399,30 @@ QVector<ViewportTool> ViewportToolbar::subToolsForCategory(
     return {};
 }
 
-QIcon ViewportToolbar::iconForTool(ViewportTool t) const
+QIcon ViewportToolbar::iconForTool(ViewportTool t, const QColor& color, int sizePx) const
 {
-    // Themed icon names (KDE / freedesktop).  Falls back to no icon
-    // on Windows where icon themes aren't installed by default; the
-    // tooltip + slot color still convey the active tool.
-    const char* themeName = "";
+    // Bundled Lucide SVGs (Theme::icon), tinted per call site -- replaces
+    // the old QIcon::fromTheme(KDE/freedesktop name) lookup, which never
+    // resolved on Windows (no icon theme installed by default) and left
+    // these buttons icon-less.  Mirrors ViewportToolbar.swift's per-tool
+    // SF Symbol: cursorarrow, move.3d, rotate.3d, scale.3d,
+    // arrow.trianglehead.2.counterclockwise.rotate.90 (orbit), hand.draw,
+    // plus.magnifyingglass, timeline.selection (scrub), rotate.right.
+    const char* iconName = "";
     switch (t) {
-    case ViewportTool::Select:          themeName = "edit-select";              break;
-    case ViewportTool::TranslateObject: themeName = "transform-move";           break;
-    case ViewportTool::RotateObject:    themeName = "transform-rotate";         break;
-    case ViewportTool::ScaleObject:     themeName = "transform-scale";          break;
-    case ViewportTool::OrbitCamera:     themeName = "view-rotate";              break;
-    case ViewportTool::PanCamera:       themeName = "transform-move-horizontal";break;
-    case ViewportTool::ZoomCamera:      themeName = "zoom-in";                  break;
-    case ViewportTool::RollCamera:      themeName = "object-rotate-right";      break;
-    case ViewportTool::ScrubTimeline:   themeName = "media-seek-forward";       break;
+    case ViewportTool::Select:          iconName = "mouse-pointer-2";     break;
+    case ViewportTool::TranslateObject: iconName = "move-3d";             break;
+    case ViewportTool::RotateObject:    iconName = "rotate-3d";           break;
+    case ViewportTool::ScaleObject:     iconName = "scale-3d";            break;
+    case ViewportTool::OrbitCamera:     iconName = "orbit";               break;
+    case ViewportTool::PanCamera:       iconName = "hand";                break;
+    case ViewportTool::ZoomCamera:      iconName = "zoom-in";             break;
+    // "rotate-cw" (not "iteration-cw", which reads as repeat/loop) --
+    // mirrors ViewportToolbar.swift's SF "rotate.right".
+    case ViewportTool::RollCamera:      iconName = "rotate-cw";           break;
+    case ViewportTool::ScrubTimeline:   iconName = "sliders-horizontal";  break;
     }
-    return QIcon::fromTheme(themeName);
+    return Theme::icon(QString::fromLatin1(iconName), sizePx, color);
 }
 
 QString ViewportToolbar::labelForTool(ViewportTool t) const
@@ -393,8 +476,20 @@ QString ViewportToolbar::tooltipForTool(ViewportTool t) const
 
 void ViewportToolbar::refreshAllToolButtons()
 {
+    // Icon tint follows the same checked/unchecked split the #toolBtn
+    // QSS already applies to background/text (checked -> Theme::
+    // iconOnAccent on the accent fill; unchecked -> textTertiary) --
+    // QIcon has no CSS hook, so the pixmap has to be re-tinted and
+    // re-set here in lockstep with setChecked() rather than baked once
+    // at button-construction time. Reading Theme::iconOnAccent live
+    // (rather than a local static) is also what makes this correct to
+    // call again from restyleTheme() on a live theme switch -- see
+    // Theme.h's doc on that token for why it's the same value in both
+    // palettes today.
     for (const auto& entry : m_toolButtons) {
-        entry.button->setChecked(entry.tool == m_current);
+        const bool checked = (entry.tool == m_current);
+        entry.button->setChecked(checked);
+        entry.button->setIcon(iconForTool(entry.tool, checked ? Theme::iconOnAccent : Theme::textTertiary, 15));
     }
 }
 
@@ -629,8 +724,10 @@ QToolButton* ViewportToolbar::makeLayoutButton(ViewportBridge::ViewportLayout la
 
 QString ViewportToolbar::labelForLayout(ViewportBridge::ViewportLayout layout) const
 {
-    // Compact glyphs -- no icon theme guarantee on Windows (see
-    // iconForTool's comment above), so the label itself is the affordance.
+    // Compact glyphs -- the N-up layout picker intentionally stays
+    // text-only (no Lucide glyph reads as "2H" / "1+2" at a glance the
+    // way the tool cluster's icons read as their tool), so the label
+    // itself is the affordance.
     switch (layout) {
     case ViewportBridge::ViewportLayout::Single:     return QStringLiteral("1");
     case ViewportBridge::ViewportLayout::TwoH:       return QStringLiteral("2H");

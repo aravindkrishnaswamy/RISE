@@ -8,4 +8,64 @@
         <file>fonts/IBMPlexMono-Medium.ttf</file>
         <file>fonts/IBMPlexMono-SemiBold.ttf</file>
     </qresource>
+    <qresource prefix="/icons">
+        <file alias="box.svg">icons/box.svg</file>
+        <file alias="camera.svg">icons/camera.svg</file>
+        <file alias="check.svg">icons/check.svg</file>
+        <file alias="chevron-down.svg">icons/chevron-down.svg</file>
+        <file alias="chevron-left.svg">icons/chevron-left.svg</file>
+        <file alias="chevron-right.svg">icons/chevron-right.svg</file>
+        <file alias="chevron-up.svg">icons/chevron-up.svg</file>
+        <file alias="circle-dot.svg">icons/circle-dot.svg</file>
+        <file alias="circle-plus.svg">icons/circle-plus.svg</file>
+        <file alias="circle-stop.svg">icons/circle-stop.svg</file>
+        <file alias="circle-x.svg">icons/circle-x.svg</file>
+        <file alias="clapperboard.svg">icons/clapperboard.svg</file>
+        <file alias="cog.svg">icons/cog.svg</file>
+        <file alias="copy.svg">icons/copy.svg</file>
+        <file alias="eye.svg">icons/eye.svg</file>
+        <file alias="film.svg">icons/film.svg</file>
+        <file alias="folder-open.svg">icons/folder-open.svg</file>
+        <file alias="folder.svg">icons/folder.svg</file>
+        <file alias="grid-3x3.svg">icons/grid-3x3.svg</file>
+        <file alias="hand.svg">icons/hand.svg</file>
+        <file alias="image.svg">icons/image.svg</file>
+        <file alias="iteration-cw.svg">icons/iteration-cw.svg</file>
+        <file alias="layers.svg">icons/layers.svg</file>
+        <file alias="lightbulb.svg">icons/lightbulb.svg</file>
+        <file alias="list.svg">icons/list.svg</file>
+        <file alias="mouse-pointer-2.svg">icons/mouse-pointer-2.svg</file>
+        <file alias="move-3d.svg">icons/move-3d.svg</file>
+        <file alias="orbit.svg">icons/orbit.svg</file>
+        <file alias="paintbrush.svg">icons/paintbrush.svg</file>
+        <file alias="paperclip.svg">icons/paperclip.svg</file>
+        <file alias="pencil.svg">icons/pencil.svg</file>
+        <file alias="play.svg">icons/play.svg</file>
+        <file alias="play-filled.svg">icons/play-filled.svg</file>
+        <file alias="plus.svg">icons/plus.svg</file>
+        <file alias="redo-2.svg">icons/redo-2.svg</file>
+        <file alias="refresh-cw.svg">icons/refresh-cw.svg</file>
+        <file alias="rotate-3d.svg">icons/rotate-3d.svg</file>
+        <file alias="rotate-ccw.svg">icons/rotate-ccw.svg</file>
+        <file alias="rotate-cw.svg">icons/rotate-cw.svg</file>
+        <file alias="scale-3d.svg">icons/scale-3d.svg</file>
+        <file alias="send.svg">icons/send.svg</file>
+        <file alias="settings.svg">icons/settings.svg</file>
+        <file alias="skip-back.svg">icons/skip-back.svg</file>
+        <file alias="skip-forward.svg">icons/skip-forward.svg</file>
+        <file alias="sliders-horizontal.svg">icons/sliders-horizontal.svg</file>
+        <file alias="sparkles.svg">icons/sparkles.svg</file>
+        <file alias="square.svg">icons/square.svg</file>
+        <file alias="square-filled.svg">icons/square-filled.svg</file>
+        <file alias="star.svg">icons/star.svg</file>
+        <file alias="sun.svg">icons/sun.svg</file>
+        <file alias="trash-2.svg">icons/trash-2.svg</file>
+        <file alias="triangle-alert.svg">icons/triangle-alert.svg</file>
+        <file alias="undo-2.svg">icons/undo-2.svg</file>
+        <file alias="wand-sparkles.svg">icons/wand-sparkles.svg</file>
+        <file alias="waves.svg">icons/waves.svg</file>
+        <file alias="x.svg">icons/x.svg</file>
+        <file alias="zoom-in.svg">icons/zoom-in.svg</file>
+        <file alias="app_logo_256.png">icons/app_logo_256.png</file>
+    </qresource>
 </RCC>

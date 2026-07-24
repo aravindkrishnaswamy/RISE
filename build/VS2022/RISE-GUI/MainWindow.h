@@ -58,6 +58,16 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+    // Shutdown-order fix (2026-07-24): QObject::deleteChildren destroys
+    // children in CREATION order, and m_engine (created first, in the
+    // constructor) precedes m_viewportBridge (created on scene load) in
+    // that list -- so the default teardown freed the RenderEngine before
+    // the bridge's destructor ran its detach sequence against it
+    // (attachSceneEditController(nullptr) wrote into freed memory,
+    // 0xC0000005 on every exit with a scene loaded).  The destructor
+    // deletes the bridge explicitly while the engine is still alive.
+    ~MainWindow() override;
+
 private slots:
     void onOpenScene();
     void onOpenRecentScene(const QString& filePath);
@@ -130,6 +140,12 @@ protected:
     // QStackedWidget and won't receive ScreenChangeInternal events.
     bool event(QEvent* ev) override;
 
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every widget class with
+    // token-dependent styling hooks QEvent::PaletteChange here and
+    // calls its own restyleTheme(). MainWindow is the reference
+    // implementation the per-panel conversions cite.
+    void changeEvent(QEvent* e) override;
+
 private:
     void createMenuBar();
     void createStatusBar();
@@ -177,6 +193,32 @@ private:
     QWidget* buildRightPanel();
     QWidget* buildLogDrawer();
     void     setLeftTab(int index);
+    /// Refreshes just the Agent/Scene-file tab buttons' font weight +
+    /// border-underline stylesheet from the CURRENTLY checked button and
+    /// the CURRENT Theme:: token values -- factored out of setLeftTab()
+    /// so restyleTheme() can re-apply it on a theme switch WITHOUT
+    /// re-triggering setLeftTab()'s scene-file-reload side effect.
+    void     updateTabButtonStyles();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of
+    // MainWindow's own token-dependent styling sites (splitter handle,
+    // left/right panel border stylesheets + QPalette::Window fills, the
+    // tab-strip border, the tab buttons' active/inactive stylesheets,
+    // the center column's QPalette::Window fill) from the CURRENT
+    // Theme:: token values. Called once at the end of the constructor
+    // and again from changeEvent() on QEvent::PaletteChange. Must stay
+    // idempotent and must not create widgets -- see the contract.
+    void     restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // m_themeReady gates changeEvent()'s restyleTheme() call until the
+    // ctor has actually reached its own restyleTheme() call (member
+    // pointers touched by restyleTheme() may still be null before that).
+    // m_themeEpochSeen dedupes so a setStyleSheet-triggered synchronous
+    // re-entrant PaletteChange (delivered mid-restyleTheme()) can't
+    // recurse. Uniform across every changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
 
     // Single gate for every menu-action enable/label state that depends
     // on render state and/or viewport-bridge presence.  Driven from the
@@ -408,6 +450,10 @@ private:
     QStackedWidget* m_leftPanelStack = nullptr;
     QToolButton*  m_agentTabBtn = nullptr;
     QToolButton*  m_sceneTabBtn = nullptr;
+    // Agent/Scene-file tab strip container -- stored (rather than kept
+    // as a buildLeftPanel()-local) so restyleTheme() can re-apply its
+    // border-bottom stylesheet on a live theme switch.
+    QWidget*      m_leftTabStrip = nullptr;
 
     // Right panel: fixed-width host for the outliner (persistent, built
     // once) over the per-scene ViewportProperties (rebuilt per scene).
@@ -426,6 +472,10 @@ private:
     // created/destroyed alongside the per-scene viewport bridge).
     QVBoxLayout* m_centerColumnLayout = nullptr;
     QWidget*     m_logDrawerContainer = nullptr;
+    // Center column container itself -- stored (rather than kept as a
+    // constructor-local) so restyleTheme() can re-apply its
+    // QPalette::Window (bgCenter) fill on a live theme switch.
+    QWidget*     m_centerColumn = nullptr;
 
 
     // Interactive viewport — created lazily on scene load.  No more

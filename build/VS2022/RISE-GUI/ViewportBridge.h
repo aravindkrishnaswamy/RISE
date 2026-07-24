@@ -14,6 +14,7 @@
 
 #include <QObject>
 #include <QImage>
+#include <QPointer>
 #include <QString>
 #include <QVector>
 #include <QtGlobal>
@@ -958,7 +959,14 @@ private:
     void buildLivePreview();
     void releaseLivePreview();
 
-    RenderEngine*             m_engine = nullptr;
+    // QPointer, not a raw pointer (2026-07-24 shutdown-crash fix):
+    // the lifetime contract says the engine must outlive the bridge,
+    // and MainWindow::~MainWindow now enforces that ordering -- but if
+    // it ever regresses (both are QObject children of MainWindow, and
+    // creation-order teardown destroys the engine FIRST), every
+    // `if (m_engine)` guard in this class degrades to a safe no-op
+    // instead of writing into freed memory.
+    QPointer<RenderEngine>    m_engine;
     RISE::SceneEditController* m_controller = nullptr;
     RISE::IRayCaster*          m_caster = nullptr;        // preview caster, max-recursion 1
     RISE::IRayCaster*          m_polishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)

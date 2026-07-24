@@ -234,6 +234,25 @@ bool HDRRenderWidget::event(QEvent* ev)
         refreshHDRAvailability(); // emits hdrAvailabilityChanged on transition
 #endif
     }
+
+    // A DPR change without a size change (window dragged to a monitor
+    // with a different scale factor, or the user changes Settings >
+    // Display scale) fires NO resizeEvent -- the logical widget size is
+    // unchanged -- but the swap chain's PHYSICAL size (width() * dpr)
+    // is now wrong, leaving stale/blurry HDR output scaled by DXGI.
+    // Qt delivers DevicePixelRatioChange to the widget in exactly this
+    // case; mirror resizeEvent's resize + re-present sequence so the
+    // latched frame shows crisp at the new scale immediately.
+    if (ev->type() == QEvent::DevicePixelRatioChange) {
+#if defined(_WIN32)
+        if (m_swapChain) {
+            resizeBackBuffer();
+            if (!m_lastFrame.isEmpty() && m_srcW > 0 && m_srcH > 0) {
+                presentFrame(m_lastFrame, m_srcW, m_srcH);
+            }
+        }
+#endif
+    }
     return QWidget::event(ev);
 }
 
@@ -318,8 +337,14 @@ bool HDRRenderWidget::ensureDevice()
     if (FAILED(hr)) { m_initFailed = true; return false; }
 
     DXGI_SWAP_CHAIN_DESC1 scDesc = {};
-    scDesc.Width        = std::max(1, width()  * static_cast<int>(devicePixelRatioF()));
-    scDesc.Height       = std::max(1, height() * static_cast<int>(devicePixelRatioF()));
+    // float, not int: PassThrough DPI rounding (main.cpp) makes
+    // fractional DPRs (1.25/1.5) real -- an int cast truncates them to 1
+    // and undersizes the swapchain by up to 33%.  Mirrors the float
+    // handling in resizeBackBuffer()/presentFrame() below.
+    scDesc.Width        = static_cast<UINT>(std::max(1, static_cast<int>(
+                              width()  * static_cast<float>(devicePixelRatioF()) + 0.5f)));
+    scDesc.Height       = static_cast<UINT>(std::max(1, static_cast<int>(
+                              height() * static_cast<float>(devicePixelRatioF()) + 0.5f)));
     scDesc.Format       = DXGI_FORMAT_R16G16B16A16_FLOAT;  // scRGB
     scDesc.SampleDesc.Count = 1;
     scDesc.BufferUsage  = DXGI_USAGE_RENDER_TARGET_OUTPUT;

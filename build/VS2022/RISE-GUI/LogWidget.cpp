@@ -28,6 +28,7 @@
 #include <QTextCursor>
 #include <QPlainTextEdit>
 #include <QFont>
+#include <QSize>
 #include <QTime>
 #include <QRegularExpression>
 #include <QMouseEvent>
@@ -99,26 +100,20 @@ LogWidget::LogWidget(QWidget* parent)
     fullLayout->setContentsMargins(0, 0, 0, 0);
     fullLayout->setSpacing(0);
 
-    auto* header = new QWidget(fullView);
+    m_header = new QWidget(fullView);
+    QWidget* header = m_header;
     header->setFixedHeight(32);
     header->setAutoFillBackground(true);
-    {
-        QPalette pal = header->palette();
-        pal.setColor(QPalette::Window, Theme::bgHeader);
-        header->setPalette(pal);
-    }
-    header->setStyleSheet(QStringLiteral(
-        "QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 3px 9px; }"
-        "QToolButton:checked { background-color: %1; color: %2; }")
-        .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::textPrimary)));
+    // Palette fill + stylesheet: styled in restyleTheme() -- LIVE THEME-
+    // SWITCH CONTRACT (Theme.h).
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(10, 0, 10, 0);
     headerLayout->setSpacing(10);
 
-    auto* title = new QLabel(tr("Log"), header);
-    title->setFont(Theme::sans(11, QFont::DemiBold));
-    title->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
-    headerLayout->addWidget(title);
+    m_headerTitle = new QLabel(tr("Log"), header);
+    m_headerTitle->setFont(Theme::sans(11, QFont::DemiBold));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    headerLayout->addWidget(m_headerTitle);
 
     // Severity filter pills.
     auto* severityGroup = new QButtonGroup(this);
@@ -130,7 +125,7 @@ LogWidget::LogWidget(QWidget* parent)
         btn->setCheckable(true);
         btn->setChecked(def.mask == 0);
         btn->setProperty("severityMask", def.mask);
-        btn->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+        // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
         severityGroup->addButton(btn);
         connect(btn, &QToolButton::clicked, this, &LogWidget::onSeverityFilterClicked);
         headerLayout->addWidget(btn);
@@ -143,18 +138,14 @@ LogWidget::LogWidget(QWidget* parent)
 
     m_errCountChip = new QLabel(header);
     m_errCountChip->setFont(Theme::mono(9));
-    m_errCountChip->setStyleSheet(QStringLiteral(
-        "color: %1; border: 1px solid %2; border-radius: 4px; padding: 2px 6px;")
-        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     headerLayout->addWidget(m_errCountChip);
 
     m_filterEdit = new QLineEdit(header);
     m_filterEdit->setPlaceholderText(QString::fromUtf8("\xE2\x8C\x95 filter\xE2\x80\xA6"));
     m_filterEdit->setFont(Theme::mono(10));
     m_filterEdit->setMaximumWidth(200);
-    m_filterEdit->setStyleSheet(QStringLiteral(
-        "QLineEdit { background-color: %1; border: 1px solid %2; border-radius: 6px; padding: 4px 9px; color: %3; }")
-        .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight), Theme::hex(Theme::textSecondary)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     connect(m_filterEdit, &QLineEdit::textChanged, this, &LogWidget::onTextFilterChanged);
     headerLayout->addWidget(m_filterEdit, 1);
 
@@ -171,15 +162,17 @@ LogWidget::LogWidget(QWidget* parent)
     m_clearBtn->setFlat(true);
     m_clearBtn->setFont(Theme::sans(10));
     m_clearBtn->setEnabled(false);
-    m_clearBtn->setStyleSheet(QStringLiteral("QPushButton { color: %1; border: none; }"
-        "QPushButton:disabled { color: %2; }")
-        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::textDisabled)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     headerLayout->addWidget(m_clearBtn);
 
+    // Icon-system upgrade: mirrors LogOutputView.swift's collapse button
+    // (Image(systemName: "chevron.down"), size 11, Theme.textDim) --
+    // Lucide "chevron-down", sized to match the glyph it replaces.
     m_collapseBtn = new QToolButton(header);
-    m_collapseBtn->setText(QString::fromUtf8("\xE2\x8C\x84"));   // ⌄
+    m_collapseBtn->setIconSize(QSize(12, 12));
+    // Icon: styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT
+    // (Theme.h).
     m_collapseBtn->setToolTip(tr("Collapse to status strip (Alt+L)"));
-    m_collapseBtn->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
     connect(m_collapseBtn, &QToolButton::clicked, this, &LogWidget::onCollapseToggled);
     headerLayout->addWidget(m_collapseBtn);
 
@@ -192,12 +185,8 @@ LogWidget::LogWidget(QWidget* parent)
     m_textEdit->setFont(Theme::mono(10));
     m_textEdit->setFrameShape(QFrame::NoFrame);
     m_textEdit->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
-    {
-        QPalette pal = m_textEdit->palette();
-        pal.setColor(QPalette::Base, Theme::bgWell);
-        pal.setColor(QPalette::Text, Theme::textMuted);
-        m_textEdit->setPalette(pal);
-    }
+    // Palette (Base/Text): styled in restyleTheme() -- LIVE THEME-SWITCH
+    // CONTRACT (Theme.h).
     fullLayout->addWidget(m_textEdit, 1);
 
     m_stack->addWidget(fullView);   // index 0
@@ -205,26 +194,24 @@ LogWidget::LogWidget(QWidget* parent)
     // ================================================================
     // Collapsed strip (28px)
     // ================================================================
-    auto* strip = new ClickableStrip([this]() { setCollapsed(false); }, m_stack);
+    m_collapsedStrip = new ClickableStrip([this]() { setCollapsed(false); }, m_stack);
+    QWidget* strip = m_collapsedStrip;
     strip->setFixedHeight(28);
     strip->setAutoFillBackground(true);
-    {
-        QPalette pal = strip->palette();
-        pal.setColor(QPalette::Window, Theme::bgWell);
-        strip->setPalette(pal);
-    }
+    // Palette fill: styled in restyleTheme() -- LIVE THEME-SWITCH
+    // CONTRACT (Theme.h).
     auto* stripLayout = new QHBoxLayout(strip);
     stripLayout->setContentsMargins(10, 0, 10, 0);
     stripLayout->setSpacing(10);
 
-    auto* stripTitle = new QLabel(tr("Log"), strip);
-    stripTitle->setFont(Theme::sans(11, QFont::DemiBold));
-    stripTitle->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
-    stripLayout->addWidget(stripTitle);
+    m_collapsedStripTitle = new QLabel(tr("Log"), strip);
+    m_collapsedStripTitle->setFont(Theme::sans(11, QFont::DemiBold));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    stripLayout->addWidget(m_collapsedStripTitle);
 
     m_collapsedText = new QLabel(strip);
     m_collapsedText->setFont(Theme::mono(10));
-    m_collapsedText->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textMuted)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_collapsedText->setMaximumWidth(640);
     stripLayout->addWidget(m_collapsedText, 1);
 
@@ -235,8 +222,21 @@ LogWidget::LogWidget(QWidget* parent)
         .arg(Theme::hex(Theme::warn), Theme::rgba(QColor(Theme::warn.red(), Theme::warn.green(), Theme::warn.blue(), static_cast<int>(0.35 * 255)))));
     stripLayout->addWidget(m_collapsedWarnChip);
 
-    auto* stripChevron = new QLabel(QString::fromUtf8("\xE2\x8C\x83"), strip);   // ⌃
-    stripChevron->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Icon-system upgrade: mirrors ContentView.swift's collapsedLogStrip
+    // (Image(systemName: "chevron.up"), size 11, Theme.textDim) --
+    // Lucide "chevron-up", sized to match the glyph it replaces.
+    auto* stripChevron = new QLabel(strip);
+    // Theme::bindIconLabel keeps this pixmap correct across a mixed-DPI
+    // monitor drag (plain setPixmap(iconPixmap(..., devicePixelRatioF()))
+    // captures DPR once at construction and goes stale) AND across a
+    // live theme switch (Theme.h's bindIconLabel doc: the PROVIDER
+    // overload is required, not the fixed-color one, whenever the color
+    // is a Theme:: token -- Theme::textDim reassigns in place on
+    // Theme::setMode, so a plain-color bind here would silently go
+    // stale on the next switch).  No member/restyleTheme() entry needed
+    // for this label -- the installed event filter already repaints it
+    // on QEvent::PaletteChange.
+    Theme::bindIconLabel(stripChevron, QStringLiteral("chevron-up"), 12, []() { return Theme::textDim; });
     stripLayout->addWidget(stripChevron);
 
     m_stack->addWidget(strip);   // index 1
@@ -245,6 +245,116 @@ LogWidget::LogWidget(QWidget* parent)
 
     updateCounters();
     updateCollapsedStrip();
+    m_themeReady = true;
+    restyleTheme();
+}
+
+void LogWidget::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void LogWidget::restyleTheme()
+{
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every one of LogWidget's own
+    // token-dependent styling sites, re-applied from the CURRENT Theme::
+    // token values. Called once at the end of the constructor and again
+    // from changeEvent() on every QEvent::PaletteChange. Idempotent,
+    // creates no widgets.
+    m_themeEpochSeen = Theme::paletteEpoch();
+
+    if (m_header) {
+        QPalette pal = m_header->palette();
+        pal.setColor(QPalette::Window, Theme::bgHeader);
+        m_header->setPalette(pal);
+        m_header->setStyleSheet(QStringLiteral(
+            "QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 3px 9px; }"
+            "QToolButton:checked { background-color: %1; color: %2; }")
+            .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::textPrimary)));
+    }
+    if (m_headerTitle) {
+        m_headerTitle->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+
+    for (QToolButton* btn : m_severityButtons) {
+        if (btn) btn->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textFaint)));
+    }
+
+    if (m_errCountChip) {
+        m_errCountChip->setStyleSheet(QStringLiteral(
+            "color: %1; border: 1px solid %2; border-radius: 4px; padding: 2px 6px;")
+            .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight)));
+    }
+
+    if (m_filterEdit) {
+        m_filterEdit->setStyleSheet(QStringLiteral(
+            "QLineEdit { background-color: %1; border: 1px solid %2; border-radius: 6px; padding: 4px 9px; color: %3; }")
+            .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight), Theme::hex(Theme::textSecondary)));
+    }
+
+    if (m_clearBtn) {
+        m_clearBtn->setStyleSheet(QStringLiteral("QPushButton { color: %1; border: none; }"
+            "QPushButton:disabled { color: %2; }")
+            .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::textDisabled)));
+    }
+
+    if (m_collapseBtn) {
+        // Theme::icon() is a one-shot pixmap render (cached per (name,
+        // size, color, dpr) -- see Theme.h's iconPixmap doc), not a live
+        // binding, so it needs an explicit re-set here.
+        m_collapseBtn->setIcon(Theme::icon(QStringLiteral("chevron-down"), 12, Theme::textDim));
+    }
+
+    if (m_textEdit) {
+        QPalette pal = m_textEdit->palette();
+        pal.setColor(QPalette::Base, Theme::bgWell);
+        pal.setColor(QPalette::Text, Theme::textMuted);
+        m_textEdit->setPalette(pal);
+
+        // Slim themed scrollbars (Task A): applied directly to the log
+        // view's own scrollbar widgets, not the QTextEdit itself. Bakes
+        // token colors, so re-applied on every restyleTheme() call.
+        if (QScrollBar* vbar = m_textEdit->verticalScrollBar()) {
+            vbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+        if (QScrollBar* hbar = m_textEdit->horizontalScrollBar()) {
+            hbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+    }
+
+    if (m_collapsedStrip) {
+        QPalette pal = m_collapsedStrip->palette();
+        pal.setColor(QPalette::Window, Theme::bgWell);
+        m_collapsedStrip->setPalette(pal);
+    }
+    if (m_collapsedStripTitle) {
+        m_collapsedStripTitle->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+    if (m_collapsedText) {
+        m_collapsedText->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textMuted)));
+    }
+
+    // updateCounters()/updateCollapsedStrip() already recompute their
+    // styling from live Theme:: tokens each call (m_warnCountChip and
+    // m_collapsedWarnChip's warn-tinted borders/backgrounds) -- re-invoke
+    // rather than duplicate that logic here.
+    updateCounters();
+    updateCollapsedStrip();
+
+    // Log lines already appended to m_textEdit carry their color baked
+    // into a QTextCharFormat at append time (colorForLevel, called from
+    // appendEntryIfVisible) -- editing the QTextDocument's existing
+    // character formats in place isn't worth the complexity for a
+    // once-in-a-while theme switch, and rebuildVisibleText() is cheap
+    // (in-memory QVector<LogEntry> replay, no I/O), so re-run it here to
+    // keep already-visible lines' colors correct too, not just future
+    // ones.
+    if (m_textEdit) {
+        rebuildVisibleText();
+    }
 }
 
 QColor LogWidget::colorForLevel(int level) const

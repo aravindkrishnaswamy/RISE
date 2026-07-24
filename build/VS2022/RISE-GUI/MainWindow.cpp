@@ -46,6 +46,7 @@
 #include <QScreen>
 #include <QSettings>
 #include <QPalette>
+#include <QEvent>
 #include <QSlider>
 #include <QStackedWidget>
 #include <QSplitter>
@@ -133,7 +134,7 @@ MainWindow::MainWindow(QWidget* parent)
     // The right panel stays a fixed-width sibling outside the splitter
     // (design brief only calls for the left edge to be resizable).
     m_leftPanel = buildLeftPanel();
-    QWidget* centerColumn = buildCenterColumn();
+    m_centerColumn = buildCenterColumn();
 
     m_leftSplitter = new QSplitter(Qt::Horizontal, mainArea);
     m_leftSplitter->setHandleWidth(5);
@@ -142,7 +143,7 @@ MainWindow::MainWindow(QWidget* parent)
     // drag bound instead of just a soft hint.
     m_leftSplitter->setChildrenCollapsible(false);
     m_leftSplitter->addWidget(m_leftPanel);
-    m_leftSplitter->addWidget(centerColumn);
+    m_leftSplitter->addWidget(m_centerColumn);
     m_leftSplitter->setStretchFactor(0, 0);   // left panel: user-sized
     m_leftSplitter->setStretchFactor(1, 1);   // center column: takes the rest
     m_leftSplitter->setStyleSheet(QStringLiteral(
@@ -308,6 +309,30 @@ MainWindow::MainWindow(QWidget* parent)
     // onStateChanged/teardownViewport, but nothing has fired yet at
     // construction time.
     updateCenterViewStack();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): run once at construction so
+    // MainWindow's own styling matches whatever restyleTheme() would
+    // produce from scratch -- redundant with the inline styling above
+    // right now, but keeps restyleTheme() itself as the single source of
+    // truth from day one, matching every panel that adopts the contract
+    // afterward.
+    m_themeReady = true;
+    restyleTheme();
+}
+
+MainWindow::~MainWindow()
+{
+    // See the header doc: the bridge's destructor detaches itself from
+    // m_engine (attachSceneEditController(nullptr) and the dispatcher
+    // AttachController(nullptr) calls), so it MUST run while the engine
+    // -- created before it, hence destroyed before it by Qt's
+    // creation-order deleteChildren -- is still alive.  delete also
+    // unregisters the bridge from the children list, so the subsequent
+    // QObject teardown won't touch it again.  The rest of
+    // teardownViewport() (pane swapping, updateCenterViewStack) is
+    // pointless at shutdown and is deliberately not run here.
+    delete m_viewportBridge;
+    m_viewportBridge = nullptr;
 }
 
 // ============================================================
@@ -341,6 +366,7 @@ QWidget* MainWindow::buildLeftPanel()
     // Slim tab strip: "Agent" / "Scene file", spectral-underline on
     // the active tab.  Mirrors ContentView.swift's leftPanelTabStrip.
     auto* tabStrip = new QWidget(panel);
+    m_leftTabStrip = tabStrip;
     tabStrip->setFixedHeight(42);
     tabStrip->setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
 
@@ -393,6 +419,24 @@ void MainWindow::setLeftTab(int index)
     const bool agentActive = (index == 0);
     m_agentTabBtn->setChecked(agentActive);
     m_sceneTabBtn->setChecked(!agentActive);
+    updateTabButtonStyles();
+
+    // Matches the pre-redesign Edit-toggle behavior: switching into
+    // the Scene file tab (re-)loads the current file from disk.
+    if (!agentActive && m_engine && !m_engine->loadedFilePath().isEmpty()) {
+        m_sceneEditor->loadFile(m_engine->loadedFilePath());
+    }
+}
+
+void MainWindow::updateTabButtonStyles()
+{
+    if (!m_agentTabBtn || !m_sceneTabBtn) return;
+
+    // Reads whichever button is CURRENTLY checked -- setLeftTab() sets
+    // that before calling this, and a theme switch (restyleTheme()) just
+    // wants to re-paint whatever's already active without touching
+    // which tab is selected.
+    const bool agentActive = m_agentTabBtn->isChecked();
     m_agentTabBtn->setFont(Theme::sans(12, agentActive ? QFont::DemiBold : QFont::Normal));
     m_sceneTabBtn->setFont(Theme::sans(12, !agentActive ? QFont::DemiBold : QFont::Normal));
 
@@ -404,12 +448,6 @@ void MainWindow::setLeftTab(int index)
         .arg(Theme::hex(Theme::textFaint));
     m_agentTabBtn->setStyleSheet(agentActive ? activeStyle : inactiveStyle);
     m_sceneTabBtn->setStyleSheet(!agentActive ? activeStyle : inactiveStyle);
-
-    // Matches the pre-redesign Edit-toggle behavior: switching into
-    // the Scene file tab (re-)loads the current file from disk.
-    if (!agentActive && m_engine && !m_engine->loadedFilePath().isEmpty()) {
-        m_sceneEditor->loadFile(m_engine->loadedFilePath());
-    }
 }
 
 QWidget* MainWindow::buildCenterColumn()
@@ -597,14 +635,17 @@ void MainWindow::createMenuBar()
 
     fileMenu->addSeparator();
 
-    // UI refinement item 3: light/dark theme switch (File > Theme).
-    // Theme::setMode persists the choice via QSettings, reassigns every
-    // Theme:: token global, and re-applies the QPalette + app font to
-    // the running QApplication live -- see onThemeModeChanged for the
-    // "some panels update after restarting" honest-gap notice this
-    // mechanism implies (Theme.cpp's doc has the full inventory of
-    // widgets that bake colors into a setStyleSheet string at
-    // construction time and so don't repaint from this alone).
+    // UI refinement item 3 (Phase 2 — live switching + "Follow system"):
+    // File > Theme. Theme::setMode persists the choice via QSettings,
+    // reassigns every Theme:: token global, and re-applies the QPalette
+    // + app font to the running QApplication live -- Qt cascades that as
+    // QEvent::PaletteChange down through every widget that follows the
+    // LIVE THEME-SWITCH CONTRACT (Theme.h), so this is a genuine live
+    // switch now, no restart notice needed. "Follow system" persists
+    // ThemeMode::System, which resolves to Dark/Light via
+    // QStyleHints::colorScheme() and re-resolves live if the OS theme
+    // changes while RISE is running (Theme::installSystemThemeWatcher,
+    // wired once in main.cpp) -- see Theme.h's "System mode" section.
     auto* themeMenu = fileMenu->addMenu("&Theme");
     auto* themeGroup = new QActionGroup(this);
     themeGroup->setExclusive(true);
@@ -612,12 +653,17 @@ void MainWindow::createMenuBar()
     darkThemeAction->setCheckable(true);
     auto* lightThemeAction = themeMenu->addAction("&Light");
     lightThemeAction->setCheckable(true);
+    auto* systemThemeAction = themeMenu->addAction("Follow &System");
+    systemThemeAction->setCheckable(true);
     themeGroup->addAction(darkThemeAction);
     themeGroup->addAction(lightThemeAction);
+    themeGroup->addAction(systemThemeAction);
     darkThemeAction->setChecked(Theme::mode() == Theme::ThemeMode::Dark);
     lightThemeAction->setChecked(Theme::mode() == Theme::ThemeMode::Light);
+    systemThemeAction->setChecked(Theme::mode() == Theme::ThemeMode::System);
     connect(darkThemeAction, &QAction::triggered, this, [this]() { onThemeModeChanged(Theme::ThemeMode::Dark); });
     connect(lightThemeAction, &QAction::triggered, this, [this]() { onThemeModeChanged(Theme::ThemeMode::Light); });
+    connect(systemThemeAction, &QAction::triggered, this, [this]() { onThemeModeChanged(Theme::ThemeMode::System); });
 
     fileMenu->addSeparator();
     auto* exitAction = fileMenu->addAction("E&xit", this, &QWidget::close);
@@ -1088,20 +1134,74 @@ void MainWindow::createStatusBar()
 }
 
 // ============================================================
-// UI refinement item 3 — light/dark theme switch
+// UI refinement item 3 — light/dark theme switch (Phase 2: live)
 // ============================================================
 
 void MainWindow::onThemeModeChanged(Theme::ThemeMode newMode)
 {
     if (newMode == Theme::mode()) return;
+    // Theme::setMode reassigns every Theme:: token global, persists the
+    // choice, and re-applies the QPalette -- which Qt then cascades as
+    // QEvent::PaletteChange down through every widget in the app (see
+    // Theme.h's LIVE THEME-SWITCH CONTRACT). No restart, no notice: every
+    // widget that follows the contract (MainWindow's own restyleTheme()
+    // below is the reference implementation) repaints immediately.
     Theme::setMode(newMode, *qApp);
-    // Honest gap (see Theme.cpp's doc): most of this app's custom-
-    // styled widgets bake Theme:: colors into a setStyleSheet() string
-    // at construction time, not a live repaint -- those keep their
-    // stale colors until reconstructed.  One-time notice per switch
-    // rather than silently claiming a full live switch that isn't one.
-    QMessageBox::information(this, tr("Theme Changed"),
-        tr("Some panels update after restarting RISE."));
+}
+
+void MainWindow::changeEvent(QEvent* e)
+{
+    QMainWindow::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void MainWindow::restyleTheme()
+{
+    // Reference implementation of the LIVE THEME-SWITCH CONTRACT
+    // (Theme.h): every one of MainWindow's own token-dependent styling
+    // sites, re-applied from the CURRENT Theme:: token values. Called
+    // once at the end of the constructor and again from changeEvent()
+    // on every QEvent::PaletteChange. Idempotent, creates no widgets.
+    m_themeEpochSeen = Theme::paletteEpoch();
+
+    if (m_leftSplitter) {
+        m_leftSplitter->setStyleSheet(QStringLiteral(
+            "QSplitter::handle { background-color: %1; }"
+            "QSplitter::handle:hover { background-color: %2; }")
+            .arg(Theme::hex(Theme::borderHairline), Theme::hex(Theme::borderHover)));
+    }
+
+    if (m_leftPanel) {
+        // setPalette() is an explicit per-widget override, so it does
+        // NOT automatically track QApplication::setPalette() -- has to
+        // be re-applied here from the current token, same as the
+        // stylesheet below it.
+        QPalette pal = m_leftPanel->palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        m_leftPanel->setPalette(pal);
+        m_leftPanel->setStyleSheet(QStringLiteral("border-right: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    }
+
+    if (m_leftTabStrip) {
+        m_leftTabStrip->setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    }
+
+    updateTabButtonStyles();
+
+    if (m_centerColumn) {
+        QPalette pal = m_centerColumn->palette();
+        pal.setColor(QPalette::Window, Theme::bgCenter);
+        m_centerColumn->setPalette(pal);
+    }
+
+    if (m_rightPanel) {
+        QPalette pal = m_rightPanel->palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        m_rightPanel->setPalette(pal);
+        m_rightPanel->setStyleSheet(QStringLiteral("border-left: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    }
 }
 
 // ============================================================

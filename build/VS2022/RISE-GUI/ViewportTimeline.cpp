@@ -7,14 +7,15 @@
 #include "ViewportTimeline.h"
 #include "Theme.h"
 
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPalette>
 #include <QSlider>
 #include <QToolButton>
 #include <QTimer>
-#include <QStyle>
 #include <QSignalBlocker>
+#include <QSize>
 
 #include <algorithm>
 
@@ -23,14 +24,7 @@ ViewportTimeline::ViewportTimeline(QWidget* parent)
 {
     setFixedHeight(58);
     setAutoFillBackground(true);
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, Theme::bgTimeline);
-        setPalette(pal);
-    }
     setObjectName(QStringLiteral("viewportTimeline"));
-    setStyleSheet(QStringLiteral("#viewportTimeline { border-top: 1px solid %1; }")
-        .arg(Theme::hex(Theme::borderHairline)));
 
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(12, 0, 12, 0);
@@ -42,33 +36,38 @@ ViewportTimeline::ViewportTimeline(QWidget* parent)
     transportLayout->setContentsMargins(0, 0, 0, 0);
     transportLayout->setSpacing(7);
 
+    // Icon-system upgrade: TimelineSlider.swift:68/89 actually keeps these
+    // two as plain Text("⏮")/Text("⏭") glyphs (NOT SF Symbols -- only the
+    // play/stop button below uses Image(systemName:)), foregroundColor
+    // Theme.textFaint.  On Windows those Miscellaneous Symbols glyphs are
+    // a color-emoji fallback risk (Segoe UI Symbol -> Segoe UI Emoji),
+    // the same font-fallback problem documented elsewhere in this app --
+    // swap for the Lucide "skip-back"/"skip-forward" outline glyphs
+    // (closest visual analogue to ⏮/⏭) at the same Theme.textFaint tint
+    // Mac already uses here (matching the QSS color this replaces, not
+    // the play button's textPrimary -- play/stop is a filled action
+    // button, this is a plain transport affordance like Mac's).
     m_rewindButton = new QToolButton(transport);
-    m_rewindButton->setText(QString::fromUtf8("\xE2\x8F\xAE"));   // ⏮
+    m_rewindButton->setIconSize(QSize(14, 14));
     m_rewindButton->setToolTip(tr("Jump to start"));
-    m_rewindButton->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
-        .arg(Theme::hex(Theme::textFaint)));
+    m_rewindButton->setStyleSheet(QStringLiteral("QToolButton { border: none; }"));
     transportLayout->addWidget(m_rewindButton);
 
-    // Play/Stop toggle.  Checkable — checked = playing.  Uses the
-    // platform style's media-play icon so the affordance reads as a
-    // transport control rather than a generic button.
+    // Play/Stop toggle.  Checkable — checked = playing.  Bundled Lucide
+    // "play-filled"/"square-filled" glyphs (Theme::icon), swapped in
+    // onPlayToggled, mirror TimelineSlider.swift:76's SF
+    // play.fill/stop.fill (filled, not the outline "play"/"square").
     m_playButton = new QToolButton(transport);
     m_playButton->setCheckable(true);
     m_playButton->setFixedSize(24, 24);
+    m_playButton->setIconSize(QSize(14, 14));
     m_playButton->setToolTip("Play the active animation (loops until stopped)");
-    m_playButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    m_playButton->setStyleSheet(QStringLiteral(
-        "QToolButton { background-color: %1; border-radius: 6px; color: %2; }"
-        "QToolButton:checked { background-color: %3; }")
-        .arg(Theme::rgba(Theme::whiteAlpha(int(0.1 * 255))), Theme::hex(Theme::textPrimary),
-             Theme::rgba(Theme::whiteAlpha(int(0.2 * 255)))));
     transportLayout->addWidget(m_playButton);
 
     m_toEndButton = new QToolButton(transport);
-    m_toEndButton->setText(QString::fromUtf8("\xE2\x8F\xAD"));   // ⏭
+    m_toEndButton->setIconSize(QSize(14, 14));
     m_toEndButton->setToolTip(tr("Jump to end"));
-    m_toEndButton->setStyleSheet(QStringLiteral("QToolButton { color: %1; border: none; }")
-        .arg(Theme::hex(Theme::textFaint)));
+    m_toEndButton->setStyleSheet(QStringLiteral("QToolButton { border: none; }"));
     transportLayout->addWidget(m_toEndButton);
 
     layout->addWidget(transport);
@@ -80,13 +79,11 @@ ViewportTimeline::ViewportTimeline(QWidget* parent)
     // before the track, matching the comp) changed.
     m_currentLabel = new QLabel(this);
     m_currentLabel->setFont(Theme::mono(11));
-    m_currentLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
     m_currentLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     layout->addWidget(m_currentLabel);
 
     m_maxLabel = new QLabel(this);
     m_maxLabel->setFont(Theme::mono(11));
-    m_maxLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
     m_maxLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     layout->addWidget(m_maxLabel);
 
@@ -98,22 +95,12 @@ ViewportTimeline::ViewportTimeline(QWidget* parent)
     m_slider = new QSlider(Qt::Horizontal, this);
     m_slider->setRange(0, 1000);   // virtual ticks; we map to [m_minT, m_maxT]
     m_slider->setValue(0);
-    m_slider->setStyleSheet(QStringLiteral(
-        "QSlider::groove:horizontal { height: 2px; background: %1; border-radius: 1px; }"
-        "QSlider::sub-page:horizontal { height: 2px; background: %2; border-radius: 1px; }"
-        "QSlider::handle:horizontal { width: 2px; margin: -6px 0; background: %3; border-radius: 1px; }")
-        .arg(Theme::rgba(Theme::whiteAlpha(int(0.12 * 255))), Theme::hex(Theme::accent), Theme::hex(Theme::textPrimary)));
     layout->addWidget(m_slider, 1);
 
     m_renderMovieBtn = new QToolButton(this);
     m_renderMovieBtn->setText(tr("Render movie\xE2\x80\xA6"));
     m_renderMovieBtn->setFont(Theme::sans(11));
     m_renderMovieBtn->setCursor(Qt::PointingHandCursor);
-    m_renderMovieBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 5px 11px; }"
-        "QToolButton:disabled { color: %3; border-color: %4; }")
-        .arg(Theme::hex(Theme::textTertiary), Theme::hex(Theme::borderLight),
-             Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderHairline)));
     connect(m_renderMovieBtn, &QToolButton::clicked, this, &ViewportTimeline::renderMovieClicked);
     layout->addWidget(m_renderMovieBtn);
 
@@ -135,6 +122,96 @@ ViewportTimeline::ViewportTimeline(QWidget* parent)
     connect(m_toEndButton,  &QToolButton::clicked, this, &ViewportTimeline::onToEndClicked);
 
     updateLabels();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): applies every token-dependent
+    // stylesheet/icon/palette site above from the CURRENT Theme:: values.
+    m_themeReady = true;
+    restyleTheme();
+}
+
+void ViewportTimeline::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void ViewportTimeline::restyleTheme()
+{
+    // Reapplies every one of this widget's own token-dependent styling
+    // sites from the CURRENT Theme:: token values. Called once at the
+    // end of the constructor and again from changeEvent() on every
+    // QEvent::PaletteChange. Idempotent, creates no widgets. See Theme.h's
+    // LIVE THEME-SWITCH CONTRACT (MainWindow::restyleTheme is the
+    // reference implementation this mirrors).
+    m_themeEpochSeen = Theme::paletteEpoch();
+
+    // setPalette() is an explicit per-widget override, so it does NOT
+    // automatically track QApplication::setPalette() -- has to be
+    // re-applied here from the current token.
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgTimeline);
+        setPalette(pal);
+    }
+
+    setStyleSheet(QStringLiteral("#viewportTimeline { border-top: 1px solid %1; }")
+        .arg(Theme::hex(Theme::borderHairline)));
+
+    if (m_rewindButton) m_rewindButton->setIcon(Theme::icon(QStringLiteral("skip-back"), 14, Theme::textFaint));
+    if (m_toEndButton) m_toEndButton->setIcon(Theme::icon(QStringLiteral("skip-forward"), 14, Theme::textFaint));
+
+    if (m_playButton) {
+        // Icon depends on live playback state, not just the theme --
+        // re-derive from m_playing rather than assuming "play-filled"
+        // (this is also called mid-playback on a live theme switch).
+        m_playButton->setIcon(Theme::icon(
+            m_playing ? QStringLiteral("square-filled") : QStringLiteral("play-filled"),
+            14, Theme::textPrimary));
+        // Token-audit (whiteAlpha -> semantic fill token): this used to
+        // hardcode Theme::whiteAlpha(0.1)/(0.2) directly, which stays
+        // white-tinted even in light mode. Theme::fillHover/fillActive
+        // are the same alpha family already flipped to black-opacity in
+        // LightPalette (see Theme.cpp) -- "Active" also reads naturally
+        // as "the button IS active/checked", matching the QSS selector
+        // below it drives. Mirrors TimelineSlider.swift:80's
+        // `Theme.fillActive` background for this same button (Mac uses
+        // ONE constant fill regardless of playing state; Windows keeps
+        // the existing two-state distinction -- fillHover baseline,
+        // fillActive when checked -- rather than flattening it, since
+        // that visual distinction predates this theme-switch conversion
+        // and isn't this pass's concern).
+        m_playButton->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: %1; border-radius: 6px; color: %2; }"
+            "QToolButton:checked { background-color: %3; }")
+            .arg(Theme::rgba(Theme::fillHover), Theme::hex(Theme::textPrimary), Theme::rgba(Theme::fillActive)));
+    }
+
+    if (m_currentLabel) m_currentLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    if (m_maxLabel) m_maxLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+
+    if (m_slider) {
+        // Token-audit (whiteAlpha -> semantic fill token): this used to
+        // hardcode Theme::whiteAlpha(0.12) for the groove background,
+        // which stays white-tinted even in light mode. Theme::fillTrough
+        // is the mode-aware token for exactly this "recessed track"
+        // surface -- mirrors TimelineSlider.swift:109's
+        // `Theme.fillTrough` fill on the same scrub-track groove.
+        m_slider->setStyleSheet(QStringLiteral(
+            "QSlider::groove:horizontal { height: 2px; background: %1; border-radius: 1px; }"
+            "QSlider::sub-page:horizontal { height: 2px; background: %2; border-radius: 1px; }"
+            "QSlider::handle:horizontal { width: 2px; margin: -6px 0; background: %3; border-radius: 1px; }")
+            .arg(Theme::rgba(Theme::fillTrough), Theme::hex(Theme::accent), Theme::hex(Theme::textPrimary)));
+    }
+
+    if (m_renderMovieBtn) {
+        m_renderMovieBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 5px 11px; }"
+            "QToolButton:disabled { color: %3; border-color: %4; }")
+            .arg(Theme::hex(Theme::textTertiary), Theme::hex(Theme::borderLight),
+                 Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderHairline)));
+    }
 }
 
 void ViewportTimeline::setRange(double minT, double maxT)
@@ -230,7 +307,7 @@ void ViewportTimeline::onPlayToggled(bool play)
     if (play) {
         m_playing = true;
         if (m_playButton) {
-            m_playButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+            m_playButton->setIcon(Theme::icon(QStringLiteral("square-filled"), 14, Theme::textPrimary));
         }
         // Start the play run at time_start so the loop is deterministic
         // regardless of where the slider happened to be.  Bracket the
@@ -245,7 +322,7 @@ void ViewportTimeline::onPlayToggled(bool play)
         m_playing = false;
         m_playTimer->stop();
         if (m_playButton) {
-            m_playButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+            m_playButton->setIcon(Theme::icon(QStringLiteral("play-filled"), 14, Theme::textPrimary));
         }
         emit scrubEnd();
     }

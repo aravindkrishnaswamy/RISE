@@ -21,6 +21,8 @@
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSize>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -81,12 +83,12 @@ StartWidget::StartWidget(QWidget* parent)
 {
     setAcceptDrops(true);
 
+    // Window fill: styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT
+    // (Theme.h). setAutoFillBackground(true) is structural (not token-
+    // dependent) and stays here; the color itself is applied once by the
+    // ctor-end restyleTheme() call below, which runs before this widget
+    // is ever shown.
     setAutoFillBackground(true);
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, Theme::bgCenter);
-        setPalette(pal);
-    }
 
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -107,35 +109,41 @@ StartWidget::StartWidget(QWidget* parent)
     auto* bannerLayout = new QHBoxLayout(m_errorBanner);
     bannerLayout->setContentsMargins(12, 8, 12, 8);
     bannerLayout->setSpacing(8);
-    auto* bannerIcon = new QLabel(QString::fromUtf8("\xE2\x9A\xA0"), m_errorBanner);   // ⚠
-    bannerIcon->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::error)));
+    // Icon-system upgrade: mirrors StartView.swift's errorBanner
+    // (Image(systemName: "exclamationmark.triangle"), size 12,
+    // Theme.error) -- Lucide "triangle-alert" tinted error.
+    auto* bannerIcon = new QLabel(m_errorBanner);
+    // Theme::bindIconLabel keeps this pixmap correct across a mixed-DPI
+    // monitor drag (plain setPixmap(iconPixmap(..., devicePixelRatioF()))
+    // captures DPR once at construction and goes stale) AND across a
+    // live theme switch -- the PROVIDER overload is required here since
+    // Theme::error is a Theme:: token (Theme.h's bindIconLabel doc); the
+    // fixed-color overload would silently go stale on the next switch.
+    Theme::bindIconLabel(bannerIcon, QStringLiteral("triangle-alert"), 14, []() { return Theme::error; });
     bannerLayout->addWidget(bannerIcon);
     m_errorLabel = new QLabel(m_errorBanner);
     m_errorLabel->setWordWrap(true);
     m_errorLabel->setFont(Theme::sans(12));
-    m_errorLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     bannerLayout->addWidget(m_errorLabel, 1);
-    m_errorBanner->setStyleSheet(QStringLiteral(
-        "background-color: rgba(%1, %2, %3, 20); border: 1px solid rgba(%1, %2, %3, 90); border-radius: %4px;")
-        .arg(Theme::error.red()).arg(Theme::error.green()).arg(Theme::error.blue())
-        .arg(Theme::radiusMedium));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_errorBanner->hide();
     containerLayout->addWidget(m_errorBanner);
     containerLayout->addSpacing(18);
 
     // ---- Title + subtitle ----------------------------------------------
-    auto* title = new QLabel(tr("Start a session"), container);
-    title->setFont(Theme::sans(20, QFont::Medium));
-    title->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
-    containerLayout->addWidget(title);
+    m_titleLabel = new QLabel(tr("Start a session"), container);
+    m_titleLabel->setFont(Theme::sans(20, QFont::Medium));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    containerLayout->addWidget(m_titleLabel);
 
-    auto* subtitle = new QLabel(
+    m_subtitleLabel = new QLabel(
         tr("Open a scene you've worked on, browse for a file, or describe one for the agent to build."),
         container);
-    subtitle->setWordWrap(true);
-    subtitle->setFont(Theme::sans(12));
-    subtitle->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
-    containerLayout->addWidget(subtitle);
+    m_subtitleLabel->setWordWrap(true);
+    m_subtitleLabel->setFont(Theme::sans(12));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    containerLayout->addWidget(m_subtitleLabel);
     containerLayout->addSpacing(22);
 
     // ---- Two-column row (decision #1: grouped 2-column, not 3 equal) --
@@ -152,6 +160,133 @@ StartWidget::StartWidget(QWidget* parent)
 
     rebuildRecentsList();
     updateReadinessUI();
+    m_themeReady = true;
+    restyleTheme();
+}
+
+void StartWidget::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void StartWidget::restyleTheme()
+{
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every one of StartWidget's
+    // own token-dependent styling sites, re-applied from the CURRENT
+    // Theme:: token values. Called once at the end of the constructor
+    // and again from changeEvent() on every QEvent::PaletteChange.
+    // Idempotent.
+    m_themeEpochSeen = Theme::paletteEpoch();
+
+    {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgCenter);
+        setPalette(pal);
+    }
+
+    if (m_errorBanner) {
+        m_errorBanner->setStyleSheet(QStringLiteral(
+            "background-color: rgba(%1, %2, %3, 20); border: 1px solid rgba(%1, %2, %3, 90); border-radius: %4px;")
+            .arg(Theme::error.red()).arg(Theme::error.green()).arg(Theme::error.blue())
+            .arg(Theme::radiusMedium));
+    }
+    if (m_errorLabel) {
+        m_errorLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    }
+
+    if (m_titleLabel) {
+        m_titleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+    if (m_subtitleLabel) {
+        m_subtitleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    }
+
+    // ---- Left column (open) --------------------------------------------
+    if (m_openColumnHeader) {
+        m_openColumnHeader->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    }
+    if (m_recentsContainer) {
+        // P1 fix (2026-07-23 review): scoped to #recentsCard, not a bare
+        // "QFrame { ... }" type selector -- QLabel derives from QFrame, so
+        // an unscoped rule here boxed every child label inside the recent-
+        // rows list (nameLabel/subLabel/iconLabel/chevron) with this card's
+        // background+border+radius. The HLine separators built in
+        // rebuildRecentsList() are unaffected either way -- they always set
+        // their own more-specific inline stylesheet (border:none, a flat
+        // borderHairline background), which already wins over any ambient
+        // QFrame rule regardless of scoping.
+        m_recentsContainer->setStyleSheet(QStringLiteral(
+            "QFrame#recentsCard { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+            .arg(Theme::hex(Theme::bgCard), Theme::hex(Theme::borderLight)).arg(Theme::radiusMedium));
+    }
+    if (m_browseBtn) {
+        m_browseBtn->setIcon(Theme::icon(QStringLiteral("folder"), 14, Theme::textPrimary));
+        m_browseBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 8px; background: transparent; }"
+            "QPushButton:hover { border-color: %4; }")
+            .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::borderLight))
+            .arg(Theme::radiusMedium)
+            .arg(Theme::hex(Theme::borderHover)));
+    }
+    if (m_dropHintLabel) {
+        m_dropHintLabel->setStyleSheet(QStringLiteral("color: %1; margin-top: 4px;").arg(Theme::hex(Theme::textDim)));
+    }
+    // Recent rows are entirely data-driven (rebuilt from
+    // m_recentPaths/m_recentMeta) -- rebuildRecentsList() tears them
+    // down and recreates them from the CURRENT Theme:: tokens, which is
+    // cheap at <=10 rows.  See this method's declaration doc in the
+    // header for why this is a deliberate, documented exception to the
+    // general restyleTheme() "creates no widgets" rule.
+    rebuildRecentsList();
+
+    // ---- Right column (create) -------------------------------------------
+    if (m_createColumnHeader) {
+        m_createColumnHeader->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    }
+    if (m_providerChip) {
+        m_providerChip->setStyleSheet(QStringLiteral(
+            "QLabel { color: %1; background-color: rgba(%2, %3, %4, 31); border-radius: 8px; padding: 2px 8px; }")
+            .arg(Theme::hex(Theme::accentLight))
+            .arg(Theme::accent.red()).arg(Theme::accent.green()).arg(Theme::accent.blue()));
+    }
+    if (m_configBtn) {
+        m_configBtn->setIcon(Theme::icon(QStringLiteral("cog"), 13, Theme::textDim, Theme::textDisabled, Theme::textPrimary));
+        // Stylesheet has no Theme:: tokens (border: none / transparent
+        // only) -- nothing to re-apply there.
+    }
+    if (m_promptEdit) {
+        m_promptEdit->setStyleSheet(QStringLiteral(
+            "QPlainTextEdit { color: %1; background-color: %2; border: 1px solid %3; border-radius: %4px; padding: 6px; }")
+            .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderHairline))
+            .arg(Theme::radiusMedium));
+    }
+    if (m_createBtn) {
+        m_createBtn->setIcon(Theme::icon(QStringLiteral("sparkles"), 14, Theme::accentLight, Theme::textDisabled));
+        m_createBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { color: %1; border: 1px solid rgba(%2, %3, %4, 140); border-radius: %5px; padding: 8px; background: transparent; }"
+            "QPushButton:disabled { color: %6; border-color: %7; }")
+            .arg(Theme::hex(Theme::accentLight))
+            .arg(Theme::accent.red()).arg(Theme::accent.green()).arg(Theme::accent.blue())
+            .arg(Theme::radiusMedium)
+            .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    }
+    if (m_createFootnote) {
+        m_createFootnote->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    }
+    if (m_connectLabel) {
+        m_connectLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
+    }
+    if (m_setupBtn) {
+        m_setupBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 6px 14px; background: transparent; }"
+            "QPushButton:hover { border-color: %4; }")
+            .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::borderLight))
+            .arg(Theme::radiusMedium)
+            .arg(Theme::hex(Theme::borderHover)));
+    }
 }
 
 // ============================================================
@@ -165,42 +300,46 @@ QWidget* StartWidget::buildOpenColumn()
     colLayout->setContentsMargins(0, 0, 0, 0);
     colLayout->setSpacing(10);
 
-    auto* header = new QLabel(tr("Recent scenes"), col);
-    header->setFont(Theme::sans(12, QFont::DemiBold));
-    header->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
-    colLayout->addWidget(header);
+    m_openColumnHeader = new QLabel(tr("Recent scenes"), col);
+    m_openColumnHeader->setFont(Theme::sans(12, QFont::DemiBold));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    colLayout->addWidget(m_openColumnHeader);
 
     m_recentsContainer = new QFrame(col);
     m_recentsContainer->setFrameShape(QFrame::NoFrame);
+    // objectName so restyleTheme()'s QSS can scope to THIS frame only
+    // (#recentsCard) rather than an unscoped "QFrame { ... }" type
+    // selector, which would also match every descendant QLabel (QLabel
+    // derives from QFrame) -- see restyleTheme()'s comment on this same
+    // rule for the P1 fix this avoided (2026-07-23 review).
+    m_recentsContainer->setObjectName(QStringLiteral("recentsCard"));
     // Option-B restyle: the list is a RAISED surface (bgCard) with a
     // visible border -- controls sit ON it instead of text floating on the
-    // window background (contrast feedback 2026-07-16).
-    m_recentsContainer->setStyleSheet(QStringLiteral(
-        "QFrame { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
-        .arg(Theme::hex(Theme::bgCard), Theme::hex(Theme::borderLight)).arg(Theme::radiusMedium));
+    // window background (contrast feedback 2026-07-16). Styled in
+    // restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_recentsLayout = new QVBoxLayout(m_recentsContainer);
     m_recentsLayout->setContentsMargins(0, 0, 0, 0);
     m_recentsLayout->setSpacing(0);
     colLayout->addWidget(m_recentsContainer);
 
-    auto* browseBtn = new QPushButton(tr("Browse files\xE2\x80\xA6"), col);
-    browseBtn->setFont(Theme::sans(12, QFont::DemiBold));
-    browseBtn->setCursor(Qt::PointingHandCursor);
-    browseBtn->setFlat(true);
-    browseBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 8px; background: transparent; }"
-        "QPushButton:hover { border-color: %4; }")
-        .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::borderLight))
-        .arg(Theme::radiusMedium)
-        .arg(Theme::hex(Theme::borderHover)));
-    connect(browseBtn, &QPushButton::clicked, this, [this]() { emit browseRequested(); });
-    colLayout->addWidget(browseBtn);
+    m_browseBtn = new QPushButton(tr("Browse files\xE2\x80\xA6"), col);
+    m_browseBtn->setFont(Theme::sans(12, QFont::DemiBold));
+    m_browseBtn->setCursor(Qt::PointingHandCursor);
+    m_browseBtn->setFlat(true);
+    // Icon-system upgrade: mirrors StartView.swift's "Browse files…"
+    // button (Image(systemName: "folder"), size 12, Theme.textPrimary)
+    // -- Lucide "folder" tinted textPrimary.
+    m_browseBtn->setIconSize(QSize(14, 14));
+    // Icon + stylesheet: styled in restyleTheme() -- LIVE THEME-SWITCH
+    // CONTRACT (Theme.h).
+    connect(m_browseBtn, &QPushButton::clicked, this, [this]() { emit browseRequested(); });
+    colLayout->addWidget(m_browseBtn);
 
-    auto* dropHint = new QLabel(tr("or drop a .RISEscene here"), col);
-    dropHint->setFont(Theme::sans(11));
-    dropHint->setAlignment(Qt::AlignHCenter);
-    dropHint->setStyleSheet(QStringLiteral("color: %1; margin-top: 4px;").arg(Theme::hex(Theme::textDim)));
-    colLayout->addWidget(dropHint);
+    m_dropHintLabel = new QLabel(tr("or drop a .RISEscene here"), col);
+    m_dropHintLabel->setFont(Theme::sans(11));
+    m_dropHintLabel->setAlignment(Qt::AlignHCenter);
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    colLayout->addWidget(m_dropHintLabel);
 
     colLayout->addStretch(1);
     return col;
@@ -230,11 +369,23 @@ QWidget* StartWidget::buildRecentRow(const QString& path, qint64 epochSeconds)
     // scene glyph, medium-weight primary name, ONE textSecondary meta line
     // ("Tests/VCM · 2m ago"; full path in the tooltip), and an always-
     // visible accent chevron.
-    auto* iconLabel = new QLabel(QString::fromUtf8("\xE2\x97\x86"), row);   // ◆
-    iconLabel->setFont(Theme::sans(11));
+    // Scene glyph: tinted SVG icon (mirrors StartView.swift's SF `cube` /
+    // `cube.transparent` recent-row symbol; "box" is the Lucide analogue).
+    auto* iconLabel = new QLabel(row);
+    // Theme::bindIconLabel keeps this pixmap correct across a mixed-DPI
+    // monitor drag (plain setPixmap(iconPixmap(..., devicePixelRatioF()))
+    // captures DPR once at construction and goes stale) AND across a
+    // live theme switch -- PROVIDER overload since both colors are
+    // Theme:: tokens.  (Belt-and-suspenders: this whole row is also torn
+    // down and rebuilt by restyleTheme()'s rebuildRecentsList() call on
+    // every theme switch, so this row never actually survives to see a
+    // stale repaint -- but binding it correctly costs nothing and keeps
+    // the pattern consistent everywhere it's used.)
+    Theme::bindIconLabel(iconLabel, QStringLiteral("box"), 12,
+        [exists]() { return exists ? Theme::accentLight : Theme::textMuted; });
     iconLabel->setFixedWidth(16);
-    iconLabel->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-        .arg(Theme::hex(exists ? Theme::accentLight : Theme::textMuted)));
+    iconLabel->setAlignment(Qt::AlignCenter);
+    iconLabel->setStyleSheet(QStringLiteral("background: transparent;"));
     rowLayout->addWidget(iconLabel);
 
     auto* textCol = new QVBoxLayout();
@@ -271,22 +422,39 @@ QWidget* StartWidget::buildRecentRow(const QString& path, qint64 epochSeconds)
     rowLayout->addLayout(textCol, 1);
 
     if (exists) {
-        auto* chevron = new QLabel(QString::fromUtf8("\xE2\x80\xBA"), row);   // ›
-        chevron->setFont(Theme::sans(14, QFont::DemiBold));
-        chevron->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-            .arg(Theme::hex(Theme::accentLight)));
+        // Icon-system upgrade: mirrors StartView.swift's recentRow
+        // (Image(systemName: "chevron.right"), size 11 semibold,
+        // Theme.accentLight) -- Lucide "chevron-right" tinted accentLight.
+        auto* chevron = new QLabel(row);
+        // Theme::bindIconLabel keeps this pixmap correct across a mixed-DPI
+        // monitor drag (plain setPixmap(iconPixmap(..., devicePixelRatioF()))
+        // captures DPR once at construction and goes stale) AND across a
+        // live theme switch -- PROVIDER overload since Theme::accentLight
+        // is a Theme:: token (see the iconLabel comment above for why
+        // this row is also rebuilt wholesale on every switch anyway).
+        Theme::bindIconLabel(chevron, QStringLiteral("chevron-right"), 13, []() { return Theme::accentLight; });
+        chevron->setStyleSheet(QStringLiteral("background: transparent;"));
         rowLayout->addWidget(chevron);
     } else {
-        auto* removeBtn = new QPushButton(QString::fromUtf8("\xE2\x9C\x95"), row);   // ✕
-        removeBtn->setFlat(true);
+        // QToolButton (converted from QPushButton) so autoRaise + hover
+        // maps to QIcon::Active: QCommonStyle::CE_ToolButtonLabel promotes
+        // an autoRaise button's State_MouseOver to Active, which restores
+        // the textPrimary hover tint the old QSS `:hover { color: ... }`
+        // rule provided before this button became icon-only (QPushButton
+        // hover does not drive QIcon::Active, only State_HasFocus does).
+        auto* removeBtn = new QToolButton(row);
+        removeBtn->setAutoRaise(true);
         removeBtn->setCursor(Qt::PointingHandCursor);
         removeBtn->setToolTip(tr("Remove from recent scenes"));
         removeBtn->setFixedSize(20, 20);
+        // Icon-system upgrade: mirrors StartView.swift's recentRow
+        // (Image(systemName: "xmark"), size 10 medium, Theme.textMuted)
+        // -- Lucide "x" tinted textMuted, textPrimary on hover.
+        removeBtn->setIconSize(QSize(11, 11));
+        removeBtn->setIcon(Theme::icon(QStringLiteral("x"), 11, Theme::textMuted, Theme::textDisabled, Theme::textPrimary));
         removeBtn->setStyleSheet(QStringLiteral(
-            "QPushButton { color: %1; border: none; background: transparent; }"
-            "QPushButton:hover { color: %2; }")
-            .arg(Theme::hex(Theme::textMuted), Theme::hex(Theme::textPrimary)));
-        connect(removeBtn, &QPushButton::clicked, this, [this, path]() { emit removeRecentRequested(path); });
+            "QToolButton { border: none; background: transparent; }"));
+        connect(removeBtn, &QToolButton::clicked, this, [this, path]() { emit removeRecentRequested(path); });
         rowLayout->addWidget(removeBtn);
     }
 
@@ -360,18 +528,15 @@ QWidget* StartWidget::buildCreateColumn()
     colLayout->setSpacing(10);
 
     auto* headerRow = new QHBoxLayout();
-    auto* header = new QLabel(tr("Create with the agent"), col);
-    header->setFont(Theme::sans(12, QFont::DemiBold));
-    header->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
-    headerRow->addWidget(header);
+    m_createColumnHeader = new QLabel(tr("Create with the agent"), col);
+    m_createColumnHeader->setFont(Theme::sans(12, QFont::DemiBold));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    headerRow->addWidget(m_createColumnHeader);
     headerRow->addStretch(1);
 
     m_providerChip = new QLabel(col);
     m_providerChip->setFont(Theme::sans(10));
-    m_providerChip->setStyleSheet(QStringLiteral(
-        "QLabel { color: %1; background-color: rgba(%2, %3, %4, 31); border-radius: 8px; padding: 2px 8px; }")
-        .arg(Theme::hex(Theme::accentLight))
-        .arg(Theme::accent.red()).arg(Theme::accent.green()).arg(Theme::accent.blue()));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_providerChip->hide();
     headerRow->addWidget(m_providerChip);
 
@@ -379,17 +544,28 @@ QWidget* StartWidget::buildCreateColumn()
     // switch models / add keys from the start screen even when already
     // configured -- routes to the same place the unconfigured Set up...
     // button does (the Agent tab's inline provider/model/key row).
-    auto* configBtn = new QPushButton(QString::fromUtf8("\xE2\x9A\x99"), col);   // gear (house idiom, see ViewportProperties)
-    configBtn->setFont(Theme::sans(11));
-    configBtn->setCursor(Qt::PointingHandCursor);
-    configBtn->setFlat(true);
-    configBtn->setToolTip(tr("Provider, model, and API-key settings"));
-    configBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; border: none; background: transparent; padding: 0 2px; }"
-        "QPushButton:hover { color: %2; }")
-        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::textPrimary)));
-    connect(configBtn, &QPushButton::clicked, this, [this]() { emit setupAgentRequested(); });
-    headerRow->addWidget(configBtn);
+    // Icon-system upgrade: mirrors StartView.swift's header settings
+    // button (Image(systemName: "gearshape"), size 11, Theme.textDim)
+    // -- Lucide "cog" (closest visual match to the plain gearshape
+    // outline) tinted textDim.
+    // QToolButton (converted from QPushButton) so autoRaise + hover maps
+    // to QIcon::Active: QCommonStyle::CE_ToolButtonLabel promotes an
+    // autoRaise button's State_MouseOver to Active, which restores the
+    // textPrimary hover tint the old QSS `:hover { color: ... }` rule
+    // provided before this button became icon-only (QPushButton hover
+    // does not drive QIcon::Active, only State_HasFocus does).
+    m_configBtn = new QToolButton(col);
+    m_configBtn->setAutoRaise(true);
+    m_configBtn->setCursor(Qt::PointingHandCursor);
+    m_configBtn->setToolTip(tr("Provider, model, and API-key settings"));
+    m_configBtn->setIconSize(QSize(13, 13));
+    // Icon: styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT
+    // (Theme.h). The stylesheet has no Theme:: tokens (border:none /
+    // transparent only), so it's set once here and never revisited.
+    m_configBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { border: none; background: transparent; padding: 0 2px; }"));
+    connect(m_configBtn, &QToolButton::clicked, this, [this]() { emit setupAgentRequested(); });
+    headerRow->addWidget(m_configBtn);
     colLayout->addLayout(headerRow);
 
     m_promptEdit = new QPlainTextEdit(col);
@@ -397,23 +573,19 @@ QWidget* StartWidget::buildCreateColumn()
         tr("A brushed-gold watch dial on black velvet, dramatic side light, shallow depth of field."));
     m_promptEdit->setFont(Theme::sans(12));
     m_promptEdit->setFixedHeight(96);
-    m_promptEdit->setStyleSheet(QStringLiteral(
-        "QPlainTextEdit { color: %1; background-color: %2; border: 1px solid %3; border-radius: %4px; padding: 6px; }")
-        .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderHairline))
-        .arg(Theme::radiusMedium));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     colLayout->addWidget(m_promptEdit);
 
-    m_createBtn = new QPushButton(tr("\xE2\x9C\xA6 Create scene"), col);   // ✦ Create scene
+    m_createBtn = new QPushButton(tr("Create scene"), col);
     m_createBtn->setFont(Theme::sans(12, QFont::DemiBold));
     m_createBtn->setCursor(Qt::PointingHandCursor);
     m_createBtn->setFlat(true);
-    m_createBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; border: 1px solid rgba(%2, %3, %4, 140); border-radius: %5px; padding: 8px; background: transparent; }"
-        "QPushButton:disabled { color: %6; border-color: %7; }")
-        .arg(Theme::hex(Theme::accentLight))
-        .arg(Theme::accent.red()).arg(Theme::accent.green()).arg(Theme::accent.blue())
-        .arg(Theme::radiusMedium)
-        .arg(Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight)));
+    // Icon-system upgrade: mirrors StartView.swift's "Create scene"
+    // button (Image(systemName: "sparkles"), size 12, Theme.accentLight,
+    // dimmed to textDisabled while disabled) -- Lucide "sparkles".
+    m_createBtn->setIconSize(QSize(14, 14));
+    // Icon + stylesheet: styled in restyleTheme() -- LIVE THEME-SWITCH
+    // CONTRACT (Theme.h).
     connect(m_createBtn, &QPushButton::clicked, this, &StartWidget::onCreateClicked);
     colLayout->addWidget(m_createBtn);
 
@@ -421,7 +593,7 @@ QWidget* StartWidget::buildCreateColumn()
         tr("Loads a blank stage, then the agent builds your scene from the description."), col);
     m_createFootnote->setWordWrap(true);
     m_createFootnote->setFont(Theme::sans(11));
-    m_createFootnote->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     colLayout->addWidget(m_createFootnote);
 
     // Unconfigured state (spec §6): path 3 must never dead-end.
@@ -430,25 +602,20 @@ QWidget* StartWidget::buildCreateColumn()
     uLayout->setContentsMargins(0, 2, 0, 0);
     uLayout->setSpacing(8);
 
-    auto* connectLabel = new QLabel(
+    m_connectLabel = new QLabel(
         tr("Connect an agent to create scenes from a prompt."), m_unconfiguredContainer);
-    connectLabel->setWordWrap(true);
-    connectLabel->setFont(Theme::sans(11));
-    connectLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
-    uLayout->addWidget(connectLabel);
+    m_connectLabel->setWordWrap(true);
+    m_connectLabel->setFont(Theme::sans(11));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    uLayout->addWidget(m_connectLabel);
 
-    auto* setupBtn = new QPushButton(tr("Set up\xE2\x80\xA6"), m_unconfiguredContainer);
-    setupBtn->setFont(Theme::sans(12, QFont::DemiBold));
-    setupBtn->setCursor(Qt::PointingHandCursor);
-    setupBtn->setFlat(true);
-    setupBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 6px 14px; background: transparent; }"
-        "QPushButton:hover { border-color: %4; }")
-        .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::borderLight))
-        .arg(Theme::radiusMedium)
-        .arg(Theme::hex(Theme::borderHover)));
-    connect(setupBtn, &QPushButton::clicked, this, [this]() { emit setupAgentRequested(); });
-    uLayout->addWidget(setupBtn, 0, Qt::AlignLeft);
+    m_setupBtn = new QPushButton(tr("Set up\xE2\x80\xA6"), m_unconfiguredContainer);
+    m_setupBtn->setFont(Theme::sans(12, QFont::DemiBold));
+    m_setupBtn->setCursor(Qt::PointingHandCursor);
+    m_setupBtn->setFlat(true);
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    connect(m_setupBtn, &QPushButton::clicked, this, [this]() { emit setupAgentRequested(); });
+    uLayout->addWidget(m_setupBtn, 0, Qt::AlignLeft);
 
     colLayout->addWidget(m_unconfiguredContainer);
     m_unconfiguredContainer->hide();
@@ -513,7 +680,7 @@ void StartWidget::updateReadinessUI()
 
     m_createBtn->setText(m_createInFlight
         ? tr("Creating\xE2\x80\xA6")
-        : QString::fromUtf8("\xE2\x9C\xA6 Create scene"));
+        : tr("Create scene"));
     m_createBtn->setEnabled(!m_createInFlight);
 
     const bool showChip = m_agentConfigured && !m_providerName.isEmpty();

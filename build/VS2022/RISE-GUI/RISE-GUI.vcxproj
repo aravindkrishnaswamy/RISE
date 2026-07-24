@@ -60,7 +60,7 @@
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;QT_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtNetwork;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtNetwork;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtSvg;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -70,7 +70,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;Qt6Networkd.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Networkd.lib;Qt6Svgd.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -80,7 +80,7 @@
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Full</Optimization>
       <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;QT_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtNetwork;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtCore;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtGui;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtWidgets;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtNetwork;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Qt6\QtSvg;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -90,7 +90,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;Qt6Network.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Network.lib;Qt6Svg.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -268,9 +268,20 @@
       <Command>"$(QtRccExe)" -name resources "%(FullPath)" -o "$(QtRccOutDir)qrc_%(Filename).cpp"</Command>
       <Message>RCC %(Filename).qrc</Message>
       <Outputs>$(QtRccOutDir)qrc_%(Filename).cpp</Outputs>
-      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+      <!-- Every file resources.qrc references, so rcc reruns when an
+           existing font/SVG/png is EDITED, not just when the .qrc itself
+           changes (%(FullPath) alone only tracked the .qrc). Generated
+           from resources.qrc's <file> entries; keep in sync when adding/
+           removing a resource. Applies to both Debug|x64 and Release|x64
+           (this CustomBuild item has no per-configuration Condition). -->
+      <AdditionalInputs>%(FullPath);$(ProjectDir)fonts\IBMPlexSans-Regular.ttf;$(ProjectDir)fonts\IBMPlexSans-Medium.ttf;$(ProjectDir)fonts\IBMPlexSans-SemiBold.ttf;$(ProjectDir)fonts\IBMPlexSans-Bold.ttf;$(ProjectDir)fonts\IBMPlexMono-Regular.ttf;$(ProjectDir)fonts\IBMPlexMono-Medium.ttf;$(ProjectDir)fonts\IBMPlexMono-SemiBold.ttf;$(ProjectDir)icons\box.svg;$(ProjectDir)icons\camera.svg;$(ProjectDir)icons\check.svg;$(ProjectDir)icons\chevron-down.svg;$(ProjectDir)icons\chevron-left.svg;$(ProjectDir)icons\chevron-right.svg;$(ProjectDir)icons\chevron-up.svg;$(ProjectDir)icons\circle-dot.svg;$(ProjectDir)icons\circle-plus.svg;$(ProjectDir)icons\circle-stop.svg;$(ProjectDir)icons\circle-x.svg;$(ProjectDir)icons\clapperboard.svg;$(ProjectDir)icons\cog.svg;$(ProjectDir)icons\copy.svg;$(ProjectDir)icons\eye.svg;$(ProjectDir)icons\film.svg;$(ProjectDir)icons\folder-open.svg;$(ProjectDir)icons\folder.svg;$(ProjectDir)icons\grid-3x3.svg;$(ProjectDir)icons\hand.svg;$(ProjectDir)icons\image.svg;$(ProjectDir)icons\iteration-cw.svg;$(ProjectDir)icons\layers.svg;$(ProjectDir)icons\lightbulb.svg;$(ProjectDir)icons\list.svg;$(ProjectDir)icons\mouse-pointer-2.svg;$(ProjectDir)icons\move-3d.svg;$(ProjectDir)icons\orbit.svg;$(ProjectDir)icons\paintbrush.svg;$(ProjectDir)icons\paperclip.svg;$(ProjectDir)icons\pencil.svg;$(ProjectDir)icons\play.svg;$(ProjectDir)icons\play-filled.svg;$(ProjectDir)icons\plus.svg;$(ProjectDir)icons\redo-2.svg;$(ProjectDir)icons\refresh-cw.svg;$(ProjectDir)icons\rotate-3d.svg;$(ProjectDir)icons\rotate-ccw.svg;$(ProjectDir)icons\rotate-cw.svg;$(ProjectDir)icons\scale-3d.svg;$(ProjectDir)icons\send.svg;$(ProjectDir)icons\settings.svg;$(ProjectDir)icons\skip-back.svg;$(ProjectDir)icons\skip-forward.svg;$(ProjectDir)icons\sliders-horizontal.svg;$(ProjectDir)icons\sparkles.svg;$(ProjectDir)icons\square.svg;$(ProjectDir)icons\square-filled.svg;$(ProjectDir)icons\star.svg;$(ProjectDir)icons\sun.svg;$(ProjectDir)icons\trash-2.svg;$(ProjectDir)icons\triangle-alert.svg;$(ProjectDir)icons\undo-2.svg;$(ProjectDir)icons\wand-sparkles.svg;$(ProjectDir)icons\waves.svg;$(ProjectDir)icons\x.svg;$(ProjectDir)icons\zoom-in.svg;$(ProjectDir)icons\app_logo_256.png</AdditionalInputs>
     </CustomBuild>
     <ClCompile Include="$(QtRccOutDir)qrc_resources.cpp" />
+  </ItemGroup>
+  <!-- Win32 resources: app_icon.ico via RISE-GUI.rc (taskbar / Alt-Tab /
+       Explorer icon for the .exe) -->
+  <ItemGroup>
+    <ResourceCompile Include="RISE-GUI.rc" />
   </ItemGroup>
   <!-- Create the MOC/RCC output directories before building -->
   <Target Name="CreateMocDir" BeforeTargets="CustomBuild">
@@ -308,15 +319,20 @@
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
 if not exist "$(OutDir)tls" mkdir "$(OutDir)tls"
+if not exist "$(OutDir)iconengines" mkdir "$(OutDir)iconengines"
+if not exist "$(OutDir)imageformats" mkdir "$(OutDir)imageformats"
 if not exist "$(OutDir)Templates" mkdir "$(OutDir)Templates"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\platforms\qwindowsd.dll" "$(OutDir)platforms\"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qcertonlybackendd.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qopensslbackendd.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\tls\qschannelbackendd.dll" "$(OutDir)tls\"
+copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\iconengines\qsvgicond.dll" "$(OutDir)iconengines\"
+copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\imageformats\qsvgd.dll" "$(OutDir)imageformats\"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Cored.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Guid.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Widgetsd.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Networkd.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Svgd.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libcrypto-3-x64.dll" "$(OutDir)"
 copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
@@ -329,15 +345,20 @@ copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
 if not exist "$(OutDir)tls" mkdir "$(OutDir)tls"
+if not exist "$(OutDir)iconengines" mkdir "$(OutDir)iconengines"
+if not exist "$(OutDir)imageformats" mkdir "$(OutDir)imageformats"
 if not exist "$(OutDir)Templates" mkdir "$(OutDir)Templates"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\platforms\qwindows.dll" "$(OutDir)platforms\"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qcertonlybackend.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qopensslbackend.dll" "$(OutDir)tls\"
 copy /Y "$(QtVcpkgInstalled)Qt6\plugins\tls\qschannelbackend.dll" "$(OutDir)tls\"
+copy /Y "$(QtVcpkgInstalled)Qt6\plugins\iconengines\qsvgicon.dll" "$(OutDir)iconengines\"
+copy /Y "$(QtVcpkgInstalled)Qt6\plugins\imageformats\qsvg.dll" "$(OutDir)imageformats\"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Core.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Gui.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Widgets.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\Qt6Network.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)bin\Qt6Svg.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libcrypto-3-x64.dll" "$(OutDir)"
 copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"

@@ -10,6 +10,7 @@
 
 #include <QPainter>
 #include <QPaintEvent>
+#include <QEvent>
 #include <QResizeEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
@@ -58,6 +59,19 @@ ViewportWidget::ViewportWidget(ViewportBridge* bridge, QWidget* parent)
     buildPaneChrome();
     m_paneRects[0] = rect();
     m_paneImageAreaRects[0] = rect();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): applies buildPaneChrome()'s
+    // token-dependent QSS from the CURRENT Theme:: values.
+    m_themeReady = true;
+    restyleTheme();
+}
+
+void ViewportWidget::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
 }
 
 void ViewportWidget::setImage(const QImage& image)
@@ -962,9 +976,9 @@ void ViewportWidget::buildPaneChrome()
         chrome.modeCombo = new QComboBox(this);
         chrome.modeCombo->setFont(Theme::mono(9));
         chrome.modeCombo->setProperty("pane", pane);
-        chrome.modeCombo->setStyleSheet(QStringLiteral(
-            "QComboBox { color: %1; background-color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 4px; }")
-            .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderLight)));
+        // Styling moved to restyleTheme() (LIVE THEME-SWITCH CONTRACT,
+        // Theme.h) -- this used to bake the QSS here once, going stale
+        // after a live theme switch.
         for (const ViewportRenderModeInfo& info : ViewportBridge::viewportRenderModes()) {
             const int idx = chrome.modeCombo->count();
             chrome.modeCombo->addItem(info.title);
@@ -987,10 +1001,8 @@ void ViewportWidget::buildPaneChrome()
         chrome.vantageBtn->setPopupMode(QToolButton::InstantPopup);
         chrome.vantageBtn->setMenu(chrome.vantageMenu);
         chrome.vantageBtn->setProperty("pane", pane);
-        chrome.vantageBtn->setStyleSheet(QStringLiteral(
-            "QToolButton { color: %1; border: 1px solid %2; border-radius: 3px; padding: 1px 4px; }"
-            "QToolButton::menu-indicator { image: none; }")
-            .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+        // Styling moved to restyleTheme() (LIVE THEME-SWITCH CONTRACT,
+        // Theme.h) -- see the modeCombo comment above for why.
         chrome.vantageBtn->hide();
 
         // Primary marker -- read-only (§7.8 decision 1: a non-navigation
@@ -1000,6 +1012,35 @@ void ViewportWidget::buildPaneChrome()
         chrome.primaryDot->setFont(Theme::sans(10));
         chrome.primaryDot->setAlignment(Qt::AlignCenter);
         chrome.primaryDot->hide();
+    }
+}
+
+void ViewportWidget::restyleTheme()
+{
+    // Reapplies buildPaneChrome()'s per-pane mode-combo / vantage-button
+    // QSS from the CURRENT Theme:: token values. Called once at the end
+    // of the constructor and again from changeEvent() on every
+    // QEvent::PaletteChange. Idempotent, creates no widgets. See Theme.h's
+    // LIVE THEME-SWITCH CONTRACT (MainWindow::restyleTheme is the
+    // reference implementation this mirrors).
+    m_themeEpochSeen = Theme::paletteEpoch();
+    //
+    // Everything else in this widget is a custom-painted overlay
+    // (region/gizmo/nav) that already reads Theme:: tokens live inside
+    // paintEvent -- per the contract's point 3, those need no code here.
+    // chrome.primaryDot's color is likewise re-derived every poll tick
+    // in refreshPaneChromeState(), so it isn't repeated here either.
+    const QString modeComboQss = QStringLiteral(
+        "QComboBox { color: %1; background-color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 4px; }")
+        .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgPanel), Theme::hex(Theme::borderLight));
+    const QString vantageBtnQss = QStringLiteral(
+        "QToolButton { color: %1; border: 1px solid %2; border-radius: 3px; padding: 1px 4px; }"
+        "QToolButton::menu-indicator { image: none; }")
+        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight));
+    for (unsigned int pane = 0; pane < ViewportBridge::kViewportPaneCount; ++pane) {
+        PaneChrome& chrome = m_paneChrome[pane];
+        if (chrome.modeCombo) chrome.modeCombo->setStyleSheet(modeComboQss);
+        if (chrome.vantageBtn) chrome.vantageBtn->setStyleSheet(vantageBtnQss);
     }
 }
 

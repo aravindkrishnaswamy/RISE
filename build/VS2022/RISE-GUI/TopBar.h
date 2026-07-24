@@ -3,9 +3,12 @@
 //  TopBar.h - The workspace's persistent 44 pt top bar (design brief
 //    "Top bar"): scene identity (left), refinement-status cluster
 //    (center: restart + status readout + progress strip + integrator
-//    chip), render transport + Cancel + Save (right).  The refinement
-//    pause/resume button was removed from the center cluster -- see
-//    the tombstone comment on onRestartClicked's declaration below.
+//    chip), free-standing render-mode combo + X-ray chips (P1 fix,
+//    2026-07-23 review -- their own bordered chips beside the status
+//    cluster, not boxed inside it), render transport + Cancel + Save
+//    (right).  The refinement pause/resume button was removed from the
+//    center cluster -- see the tombstone comment on onRestartClicked's
+//    declaration below.
 //
 //  Mirrors the macOS TopBar.swift + RefinementStatusFormatter.swift.
 //  Native menu bar (MainWindow::createMenuBar) covers File / Edit /
@@ -165,8 +168,28 @@ private slots:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    /// LIVE THEME-SWITCH CONTRACT (Theme.h): calls the base implementation
+    /// first, then restyleTheme() on QEvent::PaletteChange.
+    void changeEvent(QEvent* e) override;
 
 private:
+    /// LIVE THEME-SWITCH CONTRACT (Theme.h) reference-pattern follower:
+    /// re-applies every one of TopBar's token-dependent styling sites
+    /// (static chrome stylesheets/palettes/icon tints, PLUS re-invoking
+    /// the existing update*() methods whose bodies already recompute
+    /// their styling from live Theme:: tokens -- see restyleTheme()'s
+    /// own doc comment in TopBar.cpp for the full site inventory).
+    /// Called once at the end of the constructor and again from
+    /// changeEvent() on every QEvent::PaletteChange. Idempotent, creates
+    /// no widgets.
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
+
     void updateSceneIdentity();
     void updateReadout();
     void updateReadoutTooltip();
@@ -223,6 +246,11 @@ private:
 
     // Left: scene identity ------------------------------------------
     TopBarLogoSwatch* m_logoSwatch = nullptr;
+    // Promoted from a ctor-local to a member so restyleTheme() can
+    // re-apply their baked Theme:: colors on a live theme switch --
+    // neither is ever restyled by any other code path.
+    QLabel* m_wordmarkLabel = nullptr;
+    QFrame* m_identitySep = nullptr;
     QLabel* m_sceneFileLabel = nullptr;
     QLabel* m_dirtyDotLabel = nullptr;
     QLabel* m_dirtyTextLabel = nullptr;
@@ -233,6 +261,10 @@ private:
     // (m_pauseResumeBtn -- the refinement pause/resume tool button --
     // was removed by user request; see the tombstone comment in the
     // `private slots:` section above.)
+    // Promoted from a ctor-local to a member so restyleTheme() can
+    // re-apply its objectName-scoped QSS (bgWell/borderLight) on a live
+    // theme switch.
+    QWidget*     m_cluster = nullptr;
     QToolButton* m_restartBtn = nullptr;
     QLabel*      m_statusRowLabel = nullptr;
     QLabel*      m_statusTagLabel = nullptr;
@@ -247,26 +279,32 @@ private:
 
     // P1 (docs/gui/RENDER_MODES.md §5): compact viewport render-mode
     // combo -- "the viewport chrome ... Windows: TopBar combobox" per
-    // §5's GUI bullet.  Lives in the center cluster, right of the
-    // integrator chip.  Populated ONCE at construction from the
-    // controller-independent registry (ViewportBridge::viewportRenderModes,
-    // a pure/static function); its enabled state and current index are
-    // resynced by refreshRenderModeCombo() at every scene load/reload/
-    // close and on the 500ms refinement poll (session-only, no QSettings
-    // persistence -- every fresh scene load reads back "preview" from the
+    // §5's GUI bullet.  P1 fix (2026-07-23 review): a FREE-STANDING chip
+    // parented to the top bar itself, right of the #topBarCluster status
+    // card -- NOT inside that card's own layout.  Mac's TopBar.swift
+    // renderStatusCluster boxes only restart + readout + integrator
+    // chip; the mode combo and X-ray toggle are separate viewport-chrome
+    // chips there too (ContentView.swift:574-629).  Populated ONCE at
+    // construction from the controller-independent registry
+    // (ViewportBridge::viewportRenderModes, a pure/static function); its
+    // enabled state and current index are resynced by
+    // refreshRenderModeCombo() at every scene load/reload/close and on
+    // the 500ms refinement poll (session-only, no QSettings persistence
+    // -- every fresh scene load reads back "preview" from the
     // controller's own reset, never assumed locally).
-    QFrame*      m_renderModeSep = nullptr;
     QComboBox*   m_renderModeCombo = nullptr;
 
     // P1 (docs/gui/RENDER_MODES.md "X-ray axis"): compact checkable
     // toggle, right of the render-mode combo -- an orthogonal boolean
     // that composes with EVERY render mode, including the shaded
     // preview (default ON; user decision 2026-07-17), not just the four
-    // data modes (normals/depth/facets/wireframe).  Enabled state and
-    // checked state are entirely owned by refreshRenderModeCombo() (same
-    // treatment as m_renderModeCombo above); no separate construction-
-    // time item list since it's a single toggle, not a registry-backed
-    // combo.
+    // data modes (normals/depth/facets/wireframe).  Same free-standing-
+    // chip placement as m_renderModeCombo above (P1 fix, 2026-07-23
+    // review) -- its own bordered chip in the top bar's main row, not
+    // boxed inside #topBarCluster.  Enabled state and checked state are
+    // entirely owned by refreshRenderModeCombo() (same treatment as
+    // m_renderModeCombo above); no separate construction-time item list
+    // since it's a single toggle, not a registry-backed combo.
     QToolButton* m_xrayBtn = nullptr;
 
     // Right: render transport (Render -> Pause -> Resume, + Cancel) -------

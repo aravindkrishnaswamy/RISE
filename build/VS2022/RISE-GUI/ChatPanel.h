@@ -190,6 +190,13 @@ private slots:
     void onProposalRejectClicked(quint64 proposalId);
     void onProposalUndoClicked();
 
+protected:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every widget class with
+    // token-dependent styling hooks QEvent::PaletteChange here and calls
+    // its own restyleTheme() -- see MainWindow::changeEvent for the
+    // reference implementation this mirrors.
+    void changeEvent(QEvent* e) override;
+
 private:
     enum class Provider {
         OpenAI = 0,
@@ -230,6 +237,37 @@ private:
     void revertProviderModelWidgets();
     void refreshTranscript(const QString& statusLine = QString());
     void updateButtonStates();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of this
+    // panel's own token-dependent styling sites (panel background, the
+    // Retry/Reset pill buttons, provider combo / model / API-key fields,
+    // the transcript scroll area + its content palette, the composer
+    // well + input field + Send/Stop buttons, the autonomy chips, the
+    // status label, and every currently-live proposal "joins the shared
+    // undo history" note label) from the CURRENT Theme:: token values,
+    // then schedules a QUEUED transcript-widget rebuild (data-driven from
+    // m_loop's transcript -- safe to call any time, see
+    // rebuildTranscriptWidgets' doc) so per-row colors and disclosure-
+    // chevron icon tints pick up the new tokens too; queued via
+    // QTimer::singleShot(0, ...) per the LIVE THEME-SWITCH CONTRACT
+    // point 5 (Theme.h), because the transcript is unbounded and widget
+    // creation must stay out of the synchronous PaletteChange cascade.
+    // Does NOT rebuild the proposals column -- each live ProposalCard
+    // follows the contract itself (its own restyleTheme()/changeEvent),
+    // so it restyles independently; only the note labels ChatPanel itself
+    // parents need a direct re-apply here (see m_proposalNoteLabels).
+    // Called once at the end of the constructor and again from
+    // changeEvent() on QEvent::PaletteChange.  Idempotent; creates no
+    // widgets synchronously (the deferred rebuild runs on the next
+    // event-loop turn).
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
+
     void runNextStep();
     void finishBusy(const QString& statusLine = QString());
     void fetchSkillIndex();
@@ -411,6 +449,18 @@ private:
     // entries, mirroring ChatViewModel.resolvedProposalObservedAt.
     QMap<quint64, QDateTime> m_resolvedProposalObservedAt;
     static constexpr double kResolvedProposalLingerSeconds = 4.0;
+    // LIVE THEME-SWITCH CONTRACT: the "-> joins the shared undo history"
+    // note QLabel rebuildProposalsUI() parents directly under
+    // m_proposalsLayout for each PENDING proposal (i.e. NOT part of a
+    // ProposalCard, which restyles itself) -- tracked here, parallel to
+    // m_currentProposalCards, so restyleTheme() can re-apply its color
+    // without a full proposals rebuild.  Cleared/repopulated at the same
+    // two points m_currentProposalCards is.
+    QVector<QLabel*> m_proposalNoteLabels;
+
+    // LIVE THEME-SWITCH CONTRACT: promoted from a constructor-local so
+    // restyleTheme() can re-apply its border/background stylesheet.
+    QWidget* m_composerWell = nullptr;
 
     QLineEdit* m_inputEdit = nullptr;
     QPushButton* m_sendBtn = nullptr;

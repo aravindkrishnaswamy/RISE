@@ -12,9 +12,11 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -24,12 +26,16 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPainter>
+#include <QPainterPath>
 #include <QPalette>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSize>
 #include <QStandardPaths>
 #include <QTextEdit>
 #include <QTimer>
@@ -158,6 +164,33 @@ namespace {
 // store is separate), just a nice cross-platform naming consistency.
 const char* const kAutonomyLevelSettingsKey = "agentAutonomyLevel";
 
+// Returns `c` with its alpha channel replaced by `alphaFraction` (0..1) --
+// a small live-token-friendly stand-in for the QColor(r,g,b,alpha)
+// reconstructions scattered through this file's styling code, so an
+// alpha-blended fill is always computed from whatever Theme:: token value
+// is CURRENT at call time (never a value frozen at some earlier point).
+QColor withAlpha(const QColor& c, double alphaFraction)
+{
+    QColor result = c;
+    result.setAlphaF(alphaFraction);
+    return result;
+}
+
+// LIVE THEME-SWITCH CONTRACT (Theme.h): factored out of makePillButton
+// so ChatPanel::restyleTheme() can re-apply the SAME formula to
+// m_retryBtn/m_resetBtn from the CURRENT token values without
+// duplicating (and risking drifting) the stylesheet string.
+QString pillButtonStyleSheet()
+{
+    return QStringLiteral(
+        "QPushButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 3px 10px; background: transparent; }"
+        "QPushButton:disabled { color: %3; border-color: %4; }"
+        "QPushButton:hover:!disabled { border-color: %5; }")
+        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderStrong),
+             Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight),
+             Theme::hex(Theme::borderHover));
+}
+
 // Small bordered pill button shared by the header's Retry/Reset and the
 // provider/model chips below -- mirrors the comp's hairline-bordered
 // affordances (composerFooter's model chip, errorAffordances' pill
@@ -168,15 +201,182 @@ QPushButton* makePillButton(const QString& text, QWidget* parent)
     btn->setFont(Theme::sans(11));
     btn->setCursor(Qt::PointingHandCursor);
     btn->setFlat(true);
-    btn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 3px 10px; background: transparent; }"
-        "QPushButton:disabled { color: %3; border-color: %4; }"
-        "QPushButton:hover:!disabled { border-color: %5; }")
-        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderStrong),
-             Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight),
-             Theme::hex(Theme::borderHover)));
+    btn->setStyleSheet(pillButtonStyleSheet());
     return btn;
 }
+
+// LIVE THEME-SWITCH CONTRACT: factored out of the constructor's m_sendBtn
+// setup so restyleTheme() can re-apply it. The enabled background is a
+// live 16%-alpha tint of Theme::accent (computed via withAlpha() above,
+// never a frozen literal); the disabled background used to be a bare
+// Theme::whiteAlpha(6%) -- always white regardless of mode, wrong in
+// Light -- now Theme::fillHover, the theme-aware "faint inactive fill"
+// token (whiteAlpha(20) ~8% in Dark, blackAlpha(15) ~6% in Light, i.e.
+// the same visual weight the old hardcoded 6% white aimed for in Dark).
+QString sendButtonStyleSheet()
+{
+    return QStringLiteral(
+        "QPushButton { color: %1; background-color: %2; border: none; border-radius: 7px; padding: 6px 12px; }"
+        "QPushButton:disabled { color: %3; background-color: %4; }")
+        .arg(Theme::hex(Theme::accentLight), Theme::rgba(withAlpha(Theme::accent, 0.16)),
+             Theme::hex(Theme::textDisabled), Theme::rgba(Theme::fillHover));
+}
+
+// Bundled-SVG-icon disclosure chevron shared by buildThinkingRow's and
+// buildToolRow's checkable QToolButtons -- replaces the native Fusion
+// QStyle::PE_IndicatorArrow* triangle (setArrowType) with the same
+// Lucide glyph pair the icon system ships (chevron-right / chevron-
+// down), tinted to whatever token color the row's text uses.  Mirrors
+// the Mac client's SF chevron.right/chevron.down swap on these two
+// rows (ChatPanel.swift:556 thinking row, :595 tool row).
+//
+// One QIcon carries BOTH states (QIcon::Off = chevron-right, QIcon::On
+// = chevron-down) so Qt's standard checkable-button icon lookup
+// (QCommonStyle::drawControl(CE_ToolButtonLabel): State_On -> QIcon::On)
+// swaps the glyph automatically as the button's checked state flips --
+// the toggled() handlers below only need to keep updating the text /
+// detail-visibility they already touched, not poke the icon.
+QIcon disclosureChevronIcon(const QColor& color, int sizePx)
+{
+    QIcon result;
+    static const qreal kDprs[] = { 1.0, 1.25, 1.5, 2.0 };
+    for (qreal dpr : kDprs) {
+        const QPixmap collapsed = Theme::iconPixmap(QStringLiteral("chevron-right"), sizePx, color, dpr);
+        if (!collapsed.isNull()) result.addPixmap(collapsed, QIcon::Normal, QIcon::Off);
+        const QPixmap expanded = Theme::iconPixmap(QStringLiteral("chevron-down"), sizePx, color, dpr);
+        if (!expanded.isNull()) result.addPixmap(expanded, QIcon::Normal, QIcon::On);
+    }
+    return result;
+}
+
+// Phase-3 crispness, task B: slim, theme-aware scrollbars for the
+// transcript QScrollArea and the tool-detail QTextEdit boxes inside
+// buildToolRow -- replaces the stock Fusion scrollbar (a thick, boxy
+// bar that doesn't match the comp's overlay-thin feel).  A SHARED
+// string so both call sites (ChatPanel::restyleTheme() for the
+// transcript scroll area, and buildToolRow() -- rebuilt per-row on
+// every transcript refresh -- for each detail QTextEdit) read the
+// SAME live tokens at build time rather than risking the two drifting
+// apart: Theme::fillActive for the resting handle fill (already
+// theme-aware -- whiteAlpha in Dark, blackAlpha in Light, see
+// Theme.cpp's DarkPalette/LightPalette) and Theme::borderStrong for
+// the hover fill (a hairline stronger in both palettes -- the same
+// pair ViewportProperties' ScrubHandle-adjacent BoolPill-style
+// widgets lean on for "resting fill / stronger hover fill").  No
+// arrow buttons (add-line/sub-line height/width 0), transparent
+// track, a slim 8px bar with a rounded 4px handle -- unobtrusive,
+// overlay-thin, matching the Mac client's native NSScroller rather
+// than a heavy desktop-chrome scrollbar.  Sibling helper:
+// Theme::scrollBarStyleSheet() (Theme.cpp) serves the OTHER panels and
+// deliberately uses a stronger resting token (borderStrong) because
+// those surfaces include pure-white light-mode wells where fillActive
+// is near-invisible; this transcript variant sits on bgPanel where
+// fillActive reads correctly.  If you tweak the geometry (widths,
+// radii, zero-size buttons), change BOTH helpers.  The caller APPENDS this
+// (rather than replacing) onto its own QScrollArea/QTextEdit
+// stylesheet string and sets it directly on that one widget, so the
+// rule stays scoped to that widget's own stylesheet cascade and can't
+// leak into any other panel's scrollbars.
+QString transcriptScrollBarStyleSheet()
+{
+    return QStringLiteral(
+        "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
+        "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 24px; }"
+        "QScrollBar::handle:vertical:hover { background: %2; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; background: transparent; border: none; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
+        "QScrollBar:horizontal { background: transparent; height: 8px; margin: 0px; }"
+        "QScrollBar::handle:horizontal { background: %1; border-radius: 4px; min-width: 24px; }"
+        "QScrollBar::handle:horizontal:hover { background: %2; }"
+        "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; background: transparent; border: none; }"
+        "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
+        .arg(Theme::rgba(Theme::fillActive), Theme::rgba(Theme::borderStrong));
+}
+
+// Phase-3 crispness, task A: the user chat bubble's uneven-rounded
+// background.  Mirrors ChatPanel.swift:496-498's
+//   .clipShape(UnevenRoundedRectangle(
+//       topLeadingRadius: 12, bottomLeadingRadius: 12,
+//       bottomTrailingRadius: 4, topTrailingRadius: 12))
+// -- SwiftUI resolves leading/trailing against layout direction, and
+// this app (like the Mac client) is fixed LTR, so topLeading/
+// topTrailing/bottomLeading/bottomTrailing map 1:1 onto Qt's
+// top-left/top-right/bottom-left/bottom-right: topLeft 12, topRight
+// 12, bottomLeft 12, bottomRight 4.  The bottomRight corner is the
+// small one -- the "tail" -- which reads correctly because the Mac
+// bubble (like this one) is right-aligned in its row, so the small
+// corner sits at the bubble's inner/reading-direction edge, not out
+// at the panel's outer edge.  A plain QLabel + QSS `border-radius`
+// can only express a single UNIFORM radius (Qt stylesheets have no
+// per-corner border-radius-* longhand), hence this small QLabel
+// subclass: paintEvent fills a hand-built QPainterPath with the
+// per-corner radii above, then falls through to QLabel::paintEvent
+// for the text.  Follows this file's existing no-Q_OBJECT
+// file-local-widget convention (see ScrubHandle/BoolPill in
+// ViewportProperties.cpp, ClickableRow in OutlinerWidget.cpp).
+//
+// Theme::bgBubbleUser is read LIVE in paintEvent (LIVE THEME-SWITCH
+// CONTRACT point 3, Theme.h) rather than baked once at construction,
+// so a theme switch repaints the correct fill the instant Qt's own
+// post-palette-change update() fires -- BEFORE restyleTheme()'s
+// queued rebuildTranscriptWidgets() even runs, avoiding a stale-color
+// flash while that queued rebuild is pending.  The text color is set
+// once via a QSS `color:` at construction time; that's fine per the
+// SAME contract point, because -- unlike the background fill -- there
+// is no live-paint alternative for QLabel's own text color, and this
+// whole row is torn down and rebuilt wholesale by
+// rebuildTranscriptWidgets() on every theme switch anyway (queued
+// from restyleTheme()), the same mechanism every other transcript row
+// already relies on for its baked colors.
+class BubbleLabel : public QLabel
+{
+public:
+    explicit BubbleLabel(const QString& text, QWidget* parent = nullptr)
+        : QLabel(text, parent)
+    {
+        // Background is painted by paintEvent below -- QSS only carries
+        // the text color plus a transparent background so QLabel's own
+        // stock rect-fill (from border-radius/background-color) doesn't
+        // fight the custom uneven shape.
+        setStyleSheet(QStringLiteral("QLabel { background: transparent; color: %1; }")
+            .arg(Theme::hex(Theme::textPrimary)));
+        setContentsMargins(13, 10, 13, 10);
+    }
+
+protected:
+    void paintEvent(QPaintEvent* e) override
+    {
+        // The fill painter must END before QLabel::paintEvent runs --
+        // QLabel constructs its own QPainter on this widget for the text,
+        // and Qt allows only one active painter per paint device (a live
+        // one here would make the base's begin() fail and silently skip
+        // the text). Hence the explicit brace scope.
+        {
+            QPainter p(this);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(Theme::bgBubbleUser);
+
+            const QRectF r(rect());
+            constexpr qreal tl = 12.0, tr = 12.0, br = 4.0, bl = 12.0;
+
+            QPainterPath path;
+            path.moveTo(r.left() + tl, r.top());
+            path.lineTo(r.right() - tr, r.top());
+            path.arcTo(r.right() - 2 * tr, r.top(), 2 * tr, 2 * tr, 90, -90);
+            path.lineTo(r.right(), r.bottom() - br);
+            path.arcTo(r.right() - 2 * br, r.bottom() - 2 * br, 2 * br, 2 * br, 0, -90);
+            path.lineTo(r.left() + bl, r.bottom());
+            path.arcTo(r.left(), r.bottom() - 2 * bl, 2 * bl, 2 * bl, -90, -90);
+            path.lineTo(r.left(), r.top() + tl);
+            path.arcTo(r.left(), r.top(), 2 * tl, 2 * tl, 180, -90);
+            path.closeSubpath();
+
+            p.drawPath(path);
+        }
+        QLabel::paintEvent(e);
+    }
+};
 
 // Recursively empties `layout`, deleteLater()-ing every widget it
 // directly owned and destroying every nested QLayout it wrapped (e.g.
@@ -210,12 +410,9 @@ ChatPanel::ChatPanel(QWidget* parent)
     // wait poll queued behind it) indefinitely.
     m_network->setTransferTimeout(300000);
 
+    // Window fill: styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT
+    // (Theme.h). setAutoFillBackground(true) is structural and stays here.
     setAutoFillBackground(true);
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, Theme::bgPanel);
-        setPalette(pal);
-    }
 
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(14, 12, 14, 14);
@@ -245,15 +442,11 @@ ChatPanel::ChatPanel(QWidget* parent)
     // Provider enum 1:1.
     m_providerCombo->setCurrentIndex(static_cast<int>(Provider::Local));
     m_providerCombo->setFont(Theme::mono(10));
-    m_providerCombo->setStyleSheet(QStringLiteral(
-        "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
-        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_modelEdit = new QLineEdit(defaultModelFor(Provider::Local));
     m_modelEdit->setPlaceholderText("model");
     m_modelEdit->setFont(Theme::mono(10));
-    m_modelEdit->setStyleSheet(QStringLiteral(
-        "QLineEdit { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
-        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     providerRow->addWidget(m_providerCombo);
     providerRow->addWidget(m_modelEdit, 1);
     outer->addLayout(providerRow);
@@ -262,9 +455,7 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_apiKeyEdit->setEchoMode(QLineEdit::Password);
     m_apiKeyEdit->setPlaceholderText("API key");
     m_apiKeyEdit->setFont(Theme::mono(10));
-    m_apiKeyEdit->setStyleSheet(QStringLiteral(
-        "QLineEdit { color: %1; background: %2; border: 1px solid %3; border-radius: 6px; padding: 4px 8px; }")
-        .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_apiKeyEdit->setText(envKeyFor(Provider::Local));
     outer->addWidget(m_apiKeyEdit);
 
@@ -295,24 +486,17 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_transcriptScroll->setWidgetResizable(true);
     m_transcriptScroll->setFrameShape(QFrame::NoFrame);
     m_transcriptScroll->setMinimumHeight(160);
-    m_transcriptScroll->setStyleSheet(QStringLiteral("QScrollArea { background-color: %1; }")
-        .arg(Theme::hex(Theme::bgPanel)));
-    {
-        QPalette pal = m_transcriptContent->palette();
-        pal.setColor(QPalette::Window, Theme::bgPanel);
-        m_transcriptContent->setAutoFillBackground(true);
-        m_transcriptContent->setPalette(pal);
-    }
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    m_transcriptContent->setAutoFillBackground(true);
+    // Palette fill: styled in restyleTheme() -- LIVE THEME-SWITCH
+    // CONTRACT (Theme.h).
     outer->addWidget(m_transcriptScroll, 1);
 
     // Composer -- input well + accent Send pill, per the comp.
-    auto* composerWell = new QWidget(this);
-    composerWell->setObjectName(QStringLiteral("chatComposerWell"));
-    composerWell->setStyleSheet(QStringLiteral(
-        "#chatComposerWell { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
-        .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight))
-        .arg(Theme::radiusCard));
-    auto* inputRow = new QHBoxLayout(composerWell);
+    m_composerWell = new QWidget(this);
+    m_composerWell->setObjectName(QStringLiteral("chatComposerWell"));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    auto* inputRow = new QHBoxLayout(m_composerWell);
     inputRow->setContentsMargins(12, 6, 6, 6);
     inputRow->setSpacing(8);
 
@@ -320,32 +504,24 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_inputEdit->setPlaceholderText(QStringLiteral("Ask the agent \xE2\x80\x94 reads, edits, validates, renders\xE2\x80\xA6"));
     m_inputEdit->setFont(Theme::sans(12));
     m_inputEdit->setFrame(false);
-    m_inputEdit->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; color: %1; border: none; }")
-        .arg(Theme::hex(Theme::textPrimary)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     inputRow->addWidget(m_inputEdit, 1);
 
     m_sendBtn = new QPushButton(QStringLiteral("Send"));
     m_sendBtn->setFont(Theme::sans(11, QFont::DemiBold));
     m_sendBtn->setCursor(Qt::PointingHandCursor);
     m_sendBtn->setFlat(true);
-    m_sendBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; background-color: %2; border: none; border-radius: 7px; padding: 6px 12px; }"
-        "QPushButton:disabled { color: %3; background-color: %4; }")
-        .arg(Theme::hex(Theme::accentLight),
-             Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(), Theme::accent.blue(), static_cast<int>(0.16 * 255))),
-             Theme::hex(Theme::textDisabled), Theme::rgba(Theme::whiteAlpha(int(0.06 * 255)))));
+    m_sendBtn->setStyleSheet(sendButtonStyleSheet());
     inputRow->addWidget(m_sendBtn);
 
     m_stopBtn = new QPushButton(QStringLiteral("Stop"));
     m_stopBtn->setFont(Theme::sans(11, QFont::DemiBold));
     m_stopBtn->setCursor(Qt::PointingHandCursor);
     m_stopBtn->setFlat(true);
-    m_stopBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; background: transparent; border: 1px solid %2; border-radius: 7px; padding: 6px 12px; }")
-        .arg(Theme::hex(Theme::error), Theme::hex(Theme::borderStrong)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     inputRow->addWidget(m_stopBtn);
 
-    outer->addWidget(composerWell);
+    outer->addWidget(m_composerWell);
 
     // ---- Agent autonomy selector (2026-07 GUI composer chips) ---------
     // "Read" / "Propose" / "Apply" -- mirrors the design comp's L0/L1/L2
@@ -425,7 +601,7 @@ ChatPanel::ChatPanel(QWidget* parent)
 
     m_statusLabel = new QLabel();
     m_statusLabel->setFont(Theme::sans(11));
-    m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_statusLabel->setWordWrap(true);
     outer->addWidget(m_statusLabel);
 
@@ -463,6 +639,15 @@ ChatPanel::ChatPanel(QWidget* parent)
 
     applyProviderToLoop(false);
     updateButtonStates();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every token-
+    // dependent style above from the CURRENT Theme:: values (a harmless
+    // redundant re-write at construction time, since the widgets above
+    // were already built from those same CURRENT values) and installs
+    // this as the single source of truth changeEvent() re-invokes on
+    // every QEvent::PaletteChange.
+    m_themeReady = true;
+    restyleTheme();
 }
 
 ChatPanel::~ChatPanel()
@@ -473,6 +658,120 @@ ChatPanel::~ChatPanel()
         m_reply->deleteLater();
         m_reply = nullptr;
     }
+}
+
+// ============================================================
+// LIVE THEME-SWITCH CONTRACT (Theme.h) -- see MainWindow::restyleTheme
+// for the reference implementation this mirrors.
+// ============================================================
+
+void ChatPanel::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void ChatPanel::restyleTheme()
+{
+    m_themeEpochSeen = Theme::paletteEpoch();
+    // See the header doc for the full list of what this covers and what
+    // it deliberately leaves to other widgets' own contract compliance
+    // (ProposalCard instances, native-palette-driven QCheckBoxes).
+
+    {
+        // setPalette() is an explicit per-widget override (set in the
+        // constructor via setAutoFillBackground(true)), so it does NOT
+        // automatically track QApplication::setPalette() -- re-applied
+        // here from the current token, same reasoning as every
+        // QPalette::Window fill in MainWindow::restyleTheme().
+        QPalette pal = palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        setPalette(pal);
+    }
+
+    if (m_retryBtn) m_retryBtn->setStyleSheet(pillButtonStyleSheet());
+    if (m_resetBtn) m_resetBtn->setStyleSheet(pillButtonStyleSheet());
+
+    if (m_providerCombo) {
+        m_providerCombo->setStyleSheet(QStringLiteral(
+            "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
+            .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+    }
+    if (m_modelEdit) {
+        m_modelEdit->setStyleSheet(QStringLiteral(
+            "QLineEdit { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 3px 8px; }")
+            .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderLight)));
+    }
+    if (m_apiKeyEdit) {
+        m_apiKeyEdit->setStyleSheet(QStringLiteral(
+            "QLineEdit { color: %1; background: %2; border: 1px solid %3; border-radius: 6px; padding: 4px 8px; }")
+            .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight)));
+    }
+
+    if (m_transcriptScroll) {
+        // Task B (Phase-3 crispness): slim themed scrollbar, appended
+        // onto the QScrollArea's own background rule -- see
+        // transcriptScrollBarStyleSheet()'s doc for why this is scoped
+        // to just this widget and shares its live tokens with
+        // buildToolRow()'s detail QTextEdit boxes below.
+        m_transcriptScroll->setStyleSheet(QStringLiteral("QScrollArea { background-color: %1; }")
+            .arg(Theme::hex(Theme::bgPanel)) + transcriptScrollBarStyleSheet());
+    }
+    if (m_transcriptContent) {
+        QPalette pal = m_transcriptContent->palette();
+        pal.setColor(QPalette::Window, Theme::bgPanel);
+        m_transcriptContent->setPalette(pal);
+    }
+
+    if (m_composerWell) {
+        m_composerWell->setStyleSheet(QStringLiteral(
+            "#chatComposerWell { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+            .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight))
+            .arg(Theme::radiusCard));
+    }
+    if (m_inputEdit) {
+        m_inputEdit->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; color: %1; border: none; }")
+            .arg(Theme::hex(Theme::textPrimary)));
+    }
+    if (m_sendBtn) m_sendBtn->setStyleSheet(sendButtonStyleSheet());
+    if (m_stopBtn) {
+        m_stopBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { color: %1; background: transparent; border: 1px solid %2; border-radius: 7px; padding: 6px 12px; }")
+            .arg(Theme::hex(Theme::error), Theme::hex(Theme::borderStrong)));
+    }
+
+    // Agent autonomy selector: already reads live tokens (Theme::accentLight
+    // / Theme::textDim) from m_autonomyLevel -- just re-invoke.
+    updateAutonomyChipsStyle();
+
+    if (m_statusLabel) {
+        m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    }
+
+    // Secure-MCP proposals column: each live ProposalCard restyles itself
+    // (its own restyleTheme()/changeEvent -- see ProposalCard.cpp), but
+    // the "-> joins the shared undo history" note labels are parented
+    // directly by this panel and need their own re-apply.
+    for (QLabel* note : std::as_const(m_proposalNoteLabels)) {
+        if (note) note->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    }
+
+    // Transcript rows are torn down and rebuilt wholesale from m_loop's
+    // transcript data (see rebuildTranscriptWidgets' doc) -- the simplest
+    // way to refresh every row's baked colors plus the buildThinkingRow/
+    // buildToolRow disclosure chevrons' Theme::iconPixmap tints, which
+    // are baked at row-build time rather than read live in a paintEvent.
+    // QUEUED per Theme.h's LIVE THEME-SWITCH CONTRACT point 5 (2026-07-23
+    // round-2 review fix): a long conversation's transcript is unbounded,
+    // and rebuilding it synchronously inside the PaletteChange cascade
+    // both violates the "creates no widgets" rule (contract point 2) and
+    // stutters the GUI thread on a theme flip.  The 3-arg context-object
+    // form auto-cancels if this panel is destroyed first.
+    QTimer::singleShot(0, this, [this]() {
+        rebuildTranscriptWidgets();
+    });
 }
 
 // ============================================================
@@ -1032,10 +1331,11 @@ QWidget* ChatPanel::buildThinkingRow(const QString& reasoningText, bool expanded
     auto* chevron = new QToolButton(container);
     chevron->setCheckable(true);
     chevron->setChecked(expandedByDefault);
-    chevron->setArrowType(expandedByDefault ? Qt::DownArrow : Qt::RightArrow);
     chevron->setAutoRaise(true);
     chevron->setCursor(Qt::PointingHandCursor);
     chevron->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    chevron->setIcon(disclosureChevronIcon(Theme::textDim, 9));
+    chevron->setIconSize(QSize(9, 9));
     chevron->setText(expandedByDefault ? expandedLabel : collapsedLabel);
     QFont chevronFont = Theme::sans(11);
     chevronFont.setItalic(true);
@@ -1059,7 +1359,8 @@ QWidget* ChatPanel::buildThinkingRow(const QString& reasoningText, bool expanded
     // Qt disconnects this lambda automatically -- no dangling capture.
     connect(chevron, &QToolButton::toggled, container,
             [chevron, detail, collapsedLabel, expandedLabel](bool checked) {
-        chevron->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+        // Icon swap is automatic (see disclosureChevronIcon's doc) --
+        // only the text label and detail visibility need updating here.
         chevron->setText(checked ? expandedLabel : collapsedLabel);
         detail->setVisible(checked);
     });
@@ -1101,10 +1402,11 @@ QWidget* ChatPanel::buildToolRow(const QString& headerText, const QString& detai
     auto* chevron = new QToolButton(chip);
     chevron->setCheckable(true);
     chevron->setChecked(startExpanded);
-    chevron->setArrowType(startExpanded ? Qt::DownArrow : Qt::RightArrow);
     chevron->setAutoRaise(true);
     chevron->setCursor(Qt::PointingHandCursor);
     chevron->setFixedSize(16, 16);
+    chevron->setIcon(disclosureChevronIcon(Theme::textMuted, 10));
+    chevron->setIconSize(QSize(10, 10));
     chevron->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
     chevron->setVisible(hasDetail);
     chevron->setEnabled(hasDetail);
@@ -1117,17 +1419,23 @@ QWidget* ChatPanel::buildToolRow(const QString& headerText, const QString& detai
     detail->setPlainText(detailText);
     detail->setFont(Theme::mono(9));
     detail->setFixedHeight(120);
+    // Task B (Phase-3 crispness): same slim themed scrollbar as the
+    // transcript QScrollArea (transcriptScrollBarStyleSheet(), shared
+    // helper so both read the same live tokens at build time) -- this
+    // row is rebuilt per-call by rebuildTranscriptWidgets(), so the
+    // tokens baked in here are already current on every theme switch.
     detail->setStyleSheet(QStringLiteral(
         "QTextEdit { color: %1; background-color: %2; border: none; border-radius: 6px; }")
-        .arg(Theme::hex(Theme::textMuted), Theme::hex(Theme::bgPanel)));
+        .arg(Theme::hex(Theme::textMuted), Theme::hex(Theme::bgPanel)) + transcriptScrollBarStyleSheet());
     detail->setVisible(hasDetail && startExpanded);
     vlayout->addWidget(detail);
 
     // Same auto-disconnect-on-destroy reasoning as buildThinkingRow's
     // connection above -- chevron and detail are both children of
     // `container`, so they share its lifetime.
-    connect(chevron, &QToolButton::toggled, container, [chevron, detail](bool checked) {
-        chevron->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+    connect(chevron, &QToolButton::toggled, container, [detail](bool checked) {
+        // Icon swap is automatic (see disclosureChevronIcon's doc) --
+        // only detail visibility needs updating here.
         if (detail) detail->setVisible(checked);
     });
 
@@ -1202,16 +1510,18 @@ void ChatPanel::rebuildTranscriptWidgets()
         const QString body = toQString(entry.displayText).trimmed();
 
         if (entry.role == Role::User) {
-            // Right-aligned bubble -- Theme::bgBubbleUser, rounded
-            // 12/12/4/12 (approximated here with a uniform radius; Qt
-            // stylesheets don't support Swift's UnevenRoundedRectangle).
-            auto* bubble = new QLabel(body.isEmpty() ? tr("[no text]") : body);
+            // Right-aligned bubble -- Theme::bgBubbleUser fill, uneven
+            // corners 12/12/4/12 (topLeft/topRight/bottomLeft/
+            // bottomRight) via BubbleLabel's custom paintEvent -- see
+            // that class's doc (cites ChatPanel.swift:496-498) for the
+            // exact corner mapping.  Padding (13px horizontal, 10px
+            // vertical) is baked into BubbleLabel's own contents
+            // margins, matching the Mac bubble's `.padding(.horizontal,
+            // 13).padding(.vertical, 10)`.
+            auto* bubble = new BubbleLabel(body.isEmpty() ? tr("[no text]") : body);
             bubble->setFont(Theme::sans(12));
             bubble->setWordWrap(true);
             bubble->setMaximumWidth(320);
-            bubble->setStyleSheet(QStringLiteral(
-                "QLabel { color: %1; background-color: %2; border-radius: 12px; padding: 10px 13px; }")
-                .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::bgBubbleUser)));
             auto* row = new QHBoxLayout();
             row->addStretch(1);
             row->addWidget(bubble, 0, Qt::AlignRight);
@@ -1885,6 +2195,7 @@ void ChatPanel::rebuildProposalsUI(const QVector<ProposalEntry>& proposals)
 {
     clearLayout(m_proposalsLayout);
     m_currentProposalCards.clear();
+    m_proposalNoteLabels.clear();
 
     // The scene file the proposal targets -- read from the SAME
     // loadedFilePath the TopBar uses for the window title, so this is
@@ -1908,6 +2219,7 @@ void ChatPanel::rebuildProposalsUI(const QVector<ProposalEntry>& proposals)
             note->setFont(Theme::mono(10));
             note->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
             m_proposalsLayout->addWidget(note);
+            m_proposalNoteLabels.append(note);
         }
     }
 

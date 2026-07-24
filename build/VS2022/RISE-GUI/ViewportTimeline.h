@@ -43,6 +43,13 @@ public slots:
     /// isn't either.
     void setRenderMovieEnabled(bool enabled);
 
+protected:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every widget with token-
+    // dependent styling hooks QEvent::PaletteChange here and calls its
+    // own restyleTheme(). See MainWindow::changeEvent for the reference
+    // implementation this mirrors.
+    void changeEvent(QEvent* e) override;
+
 signals:
     void scrubBegin();
     void scrubEnd();
@@ -67,6 +74,22 @@ private slots:
     void onToEndClicked();
 
 private:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of this
+    // widget's own token-dependent styling sites -- the palette fill,
+    // the widget's own border QSS, the rewind/play/skip icon tints, the
+    // play button's/slider's/render-movie chip's QSS, and the current/
+    // max time label colors -- from the CURRENT Theme:: token values.
+    // Called once at the end of the constructor and again from
+    // changeEvent() on QEvent::PaletteChange. Idempotent, creates no
+    // widgets.
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
+
     void updateLabels();
 
     // Set the slider + m_time to a given scene time WITHOUT emitting

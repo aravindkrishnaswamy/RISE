@@ -108,7 +108,10 @@ protected:
     void paintEvent(QPaintEvent* event) override;
 
     // Track screen changes (window drag between displays) so we can
-    // re-probe HDR headroom on the new screen.
+    // re-probe HDR headroom on the new screen, and DevicePixelRatio-
+    // Change so the swap chain re-sizes to the new physical size even
+    // when the LOGICAL widget size is unchanged (different-scale
+    // monitor drag / OS scale change fires no resizeEvent).
     bool event(QEvent* ev) override;
 
 private:
@@ -125,8 +128,9 @@ private:
     void refreshHDRAvailability();
 
     // Resize swap chain back buffers to match the widget's current
-    // device-pixel size.  Called from resizeEvent after the swap
-    // chain exists.
+    // device-pixel size.  Called from resizeEvent and from the
+    // DevicePixelRatioChange branch of event() after the swap chain
+    // exists.
     void resizeBackBuffer();
 
     // Upload a half-float RGBA frame to the staging texture and

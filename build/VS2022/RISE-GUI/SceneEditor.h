@@ -106,9 +106,39 @@ public slots:
 private slots:
     void onTextChanged();
 
+protected:
+    /// LIVE THEME-SWITCH CONTRACT (Theme.h): calls the base
+    /// implementation first, then restyleTheme() on QEvent::PaletteChange.
+    void changeEvent(QEvent* e) override;
+
 private:
+    /// LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of
+    /// SceneEditor's own token-dependent styling sites (header/status-
+    /// bar chrome, the header pill buttons, the editor backdrop palette)
+    /// from the CURRENT Theme:: token values, and calls
+    /// m_highlighter->applyTheme() so the syntax-highlighter palette
+    /// (a genuinely separate Dark/Light hex table -- see
+    /// RISESyntaxHighlighter.h's doc) switches too; that call is a no-op
+    /// unless the mode actually changed, and only rehighlights the
+    /// document when it does something. Called once at the end of the
+    /// constructor and again from changeEvent() on every
+    /// QEvent::PaletteChange. Idempotent, creates no widgets.
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
+
     SceneTextEdit* m_editor = nullptr;
     RISESyntaxHighlighter* m_highlighter = nullptr;
+    // Promoted from ctor-locals to members so restyleTheme() can
+    // re-apply their baked Theme:: styling on a live theme switch --
+    // neither is otherwise touched by any update*() method.
+    QWidget* m_header = nullptr;
+    QLabel* m_titleLabel = nullptr;
+    QWidget* m_statusBar = nullptr;
     QPushButton* m_revertBtn = nullptr;
     QPushButton* m_saveBtn = nullptr;
     QPushButton* m_saveReloadBtn = nullptr;

@@ -19,11 +19,12 @@
 #include <QToolButton>
 #include <QPushButton>
 #include <QComboBox>
+#include <QEvent>
 #include <QSignalBlocker>
+#include <QSize>
 #include <QTimer>
 #include <QPainter>
 #include <QLinearGradient>
-#include <QStyle>
 #include <QFileInfo>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
@@ -200,30 +201,34 @@ TopBar::TopBar(QWidget* parent)
     m_logoSwatch = new TopBarLogoSwatch(identity);
     idLayout->addWidget(m_logoSwatch);
 
-    auto* wordmark = new QLabel(QStringLiteral("RISE"), identity);
-    wordmark->setFont(Theme::sans(13, QFont::Bold));
-    wordmark->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
-    idLayout->addWidget(wordmark);
+    m_wordmarkLabel = new QLabel(QStringLiteral("RISE"), identity);
+    m_wordmarkLabel->setFont(Theme::sans(13, QFont::Bold));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    idLayout->addWidget(m_wordmarkLabel);
 
-    auto* sep1 = new QFrame(identity);
-    sep1->setFrameShape(QFrame::VLine);
-    sep1->setFixedHeight(20);
-    sep1->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
-    idLayout->addWidget(sep1);
+    m_identitySep = new QFrame(identity);
+    m_identitySep->setFrameShape(QFrame::VLine);
+    m_identitySep->setFixedHeight(20);
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    idLayout->addWidget(m_identitySep);
 
     m_sceneFileLabel = new QLabel(QStringLiteral("No scene"), identity);
     m_sceneFileLabel->setFont(Theme::mono(12));
-    m_sceneFileLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Styled by updateSceneIdentity() -- re-invoked from restyleTheme()
+    // (LIVE THEME-SWITCH CONTRACT, Theme.h); this initial text/color is
+    // the SAME "No scene"/textDim state updateSceneIdentity() computes
+    // for an unloaded/unbridged TopBar, so this is overwritten (not
+    // contradicted) the instant the ctor-end restyleTheme() call runs.
     idLayout->addWidget(m_sceneFileLabel);
 
     m_dirtyDotLabel = new QLabel(QString::fromUtf8("\xE2\x97\x8F"), identity);   // U+25CF BLACK CIRCLE
-    m_dirtyDotLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 6px;").arg(Theme::hex(Theme::dirty)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_dirtyDotLabel->hide();
     idLayout->addWidget(m_dirtyDotLabel);
 
     m_dirtyTextLabel = new QLabel(QStringLiteral("edited"), identity);
     m_dirtyTextLabel->setFont(Theme::sans(10));
-    m_dirtyTextLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::dirty)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_dirtyTextLabel->hide();
     idLayout->addWidget(m_dirtyTextLabel);
 
@@ -231,12 +236,10 @@ TopBar::TopBar(QWidget* parent)
     layout->addStretch(1);
 
     // ---- Center: render-status cluster -------------------------------
-    auto* cluster = new QWidget(this);
+    m_cluster = new QWidget(this);
+    QWidget* cluster = m_cluster;
     cluster->setObjectName(QStringLiteral("topBarCluster"));
-    cluster->setStyleSheet(QStringLiteral(
-        "#topBarCluster { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
-        .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight))
-        .arg(Theme::radiusLarge));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     auto* clusterLayout = new QHBoxLayout(cluster);
     clusterLayout->setContentsMargins(6, 5, 6, 5);
     clusterLayout->setSpacing(10);
@@ -250,7 +253,13 @@ TopBar::TopBar(QWidget* parent)
     m_restartBtn = new QToolButton(cluster);
     m_restartBtn->setFixedSize(26, 26);
     m_restartBtn->setToolTip(QStringLiteral("Restart refinement"));
-    m_restartBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    // Icon-system upgrade: mirrors TopBar.swift's restartButton (SF
+    // Symbol "arrow.clockwise", size 12, Theme.textMuted, disabled by
+    // refinementControlsDisabled) -- Lucide "refresh-cw" tinted
+    // textMuted/textDisabled to match.
+    m_restartBtn->setIconSize(QSize(12, 12));
+    // Icon: styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT
+    // (Theme.h).
     connect(m_restartBtn, &QToolButton::clicked, this, &TopBar::onRestartClicked);
     clusterLayout->addWidget(m_restartBtn);
 
@@ -266,7 +275,7 @@ TopBar::TopBar(QWidget* parent)
 
     m_statusRowLabel = new QLabel(QStringLiteral("—"), readoutRow);
     m_statusRowLabel->setFont(Theme::mono(11));
-    m_statusRowLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     readoutRowLayout->addWidget(m_statusRowLabel);
 
     m_statusTagLabel = new QLabel(QStringLiteral("—"), readoutRow);
@@ -285,7 +294,7 @@ TopBar::TopBar(QWidget* parent)
     m_integratorSep = new QFrame(cluster);
     m_integratorSep->setFrameShape(QFrame::VLine);
     m_integratorSep->setFixedHeight(22);
-    m_integratorSep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     clusterLayout->addWidget(m_integratorSep);
 
     // P2 fix: placeholder text only -- both this label AND
@@ -298,22 +307,33 @@ TopBar::TopBar(QWidget* parent)
     m_integratorChip->setStyleSheet(QStringLiteral("color: %1; padding: 0 4px;").arg(Theme::hex(Theme::textDim)));
     clusterLayout->addWidget(m_integratorChip);
 
+    layout->addWidget(cluster);
+
+    // P1 fix (2026-07-23 review): the render-mode combo and X-ray toggle
+    // are free-standing viewport-chrome chips, parented to the TOP BAR
+    // (`this`), NOT the #topBarCluster status card above -- they used to
+    // live inside `cluster`'s own clusterLayout, sharing its single
+    // bordered box with the restart button + readout.  Mac's TopBar.swift
+    // renderStatusCluster (lines 97-118) boxes ONLY restart + readout (+
+    // integrator chip); the mode combo and X-ray toggle are separate
+    // viewport-chrome chips (ContentView.swift:574-629), never inside the
+    // status card.  Windows keeps both controls IN the top bar rather
+    // than moving them into the viewport chrome proper (ratified by
+    // docs/gui/RENDER_MODES.md:162-163), but they now get their OWN
+    // bordered-chip look here, each a standalone card, instead of being
+    // boxed together with the render-status readout.  `layout`'s
+    // setSpacing(14) (set at the top of this constructor) gives these
+    // chips the bar's existing 14px rhythm automatically, same as every
+    // other top-level item in this row.
+
     // P1 (docs/gui/RENDER_MODES.md §5): viewport render-mode combo --
     // "TopBar combobox" per §5's GUI bullet.  Always visible (never
     // hidden -- matches m_restartBtn's disable-not-hide convention, not
     // m_saveBtn's hide-when-nothing-loaded convention); enabled state
     // and current index are entirely owned by refreshRenderModeCombo().
-    m_renderModeSep = new QFrame(cluster);
-    m_renderModeSep->setFrameShape(QFrame::VLine);
-    m_renderModeSep->setFixedHeight(22);
-    m_renderModeSep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
-    clusterLayout->addWidget(m_renderModeSep);
-
-    m_renderModeCombo = new QComboBox(cluster);
+    m_renderModeCombo = new QComboBox(this);
     m_renderModeCombo->setFont(Theme::mono(10));
-    m_renderModeCombo->setStyleSheet(QStringLiteral(
-        "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 2px 6px; }")
-        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     // Fixed built-in mode set (RENDER_MODES.md decision 2) -- populated
     // ONCE from the controller-independent registry; refreshRenderModeCombo()
     // only ever moves the current-index pointer afterward, never touches
@@ -333,7 +353,7 @@ TopBar::TopBar(QWidget* parent)
     m_renderModeCombo->setEnabled(false);   // no bridge yet -- refreshRenderModeCombo() re-enables on scene load
     connect(m_renderModeCombo, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
             this, &TopBar::onRenderModeComboChanged);
-    clusterLayout->addWidget(m_renderModeCombo);
+    layout->addWidget(m_renderModeCombo);
 
     // P1 (docs/gui/RENDER_MODES.md "X-ray axis"): compact checkable
     // toggle, right of the mode combo.  Applies to EVERY viewport render
@@ -344,21 +364,17 @@ TopBar::TopBar(QWidget* parent)
     // Style mirrors m_renderModeCombo's bordered chip look, with an
     // accent-tinted `:checked` state so the toggle reads clearly at a
     // glance (same pattern as LogWidget's severity filter pills).
-    m_xrayBtn = new QToolButton(cluster);
+    m_xrayBtn = new QToolButton(this);
     m_xrayBtn->setText(QStringLiteral("X-Ray"));
     m_xrayBtn->setFont(Theme::mono(10));
     m_xrayBtn->setCheckable(true);
     m_xrayBtn->setToolTip(QStringLiteral(
         "See through transmissive surfaces (straight-line) — applies to every view mode, on by default"));
-    m_xrayBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 2px 6px; }"
-        "QToolButton:checked { color: %3; border-color: %3; }")
-        .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight), Theme::hex(Theme::accent)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_xrayBtn->setEnabled(false);   // no bridge yet -- refreshRenderModeCombo() re-enables on scene load
     connect(m_xrayBtn, &QToolButton::clicked, this, &TopBar::onXrayButtonToggled);
-    clusterLayout->addWidget(m_xrayBtn);
+    layout->addWidget(m_xrayBtn);
 
-    layout->addWidget(cluster);
     layout->addStretch(1);
 
     // ---- Right: render transport (Render -> Pause -> Resume) ------------
@@ -420,6 +436,8 @@ TopBar::TopBar(QWidget* parent)
     updateIntegratorChip();
     updateControlsEnabled();
     updateSaveChip();
+    m_themeReady = true;
+    restyleTheme();
 }
 
 void TopBar::paintEvent(QPaintEvent* event)
@@ -429,6 +447,99 @@ void TopBar::paintEvent(QPaintEvent* event)
     p.setPen(Theme::borderHairline);
     p.drawLine(0, height() - 1, width(), height() - 1);
     QWidget::paintEvent(event);
+}
+
+void TopBar::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void TopBar::restyleTheme()
+{
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every one of TopBar's own
+    // token-dependent styling sites, re-applied from the CURRENT Theme::
+    // token values. Called once at the end of the constructor and again
+    // from changeEvent() on every QEvent::PaletteChange. Idempotent,
+    // creates no widgets.
+    m_themeEpochSeen = Theme::paletteEpoch();
+    //
+    // Two kinds of site here:
+    //  (1) chrome that's baked ONCE at construction and never touched
+    //      again by any other code path (wordmark, separators, the
+    //      cluster's objectName-scoped QSS, the combo/x-ray chip
+    //      stylesheets, the restart icon's tint) -- re-applied directly
+    //      below.
+    //  (2) chrome that ALREADY has a dedicated update*() method invoked
+    //      on every relevant state change (scene identity, the save
+    //      chip, the status readout/tag, the integrator chip, the
+    //      transport/cancel pills) -- those methods already read
+    //      Theme:: tokens live at call time, so re-invoking them here is
+    //      enough; no separate restyle logic is duplicated for them.
+
+    if (m_wordmarkLabel) {
+        m_wordmarkLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+    if (m_identitySep) {
+        m_identitySep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    }
+    if (m_dirtyDotLabel) {
+        m_dirtyDotLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 6px;").arg(Theme::hex(Theme::dirty)));
+    }
+    if (m_dirtyTextLabel) {
+        m_dirtyTextLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::dirty)));
+    }
+
+    if (m_cluster) {
+        m_cluster->setStyleSheet(QStringLiteral(
+            "#topBarCluster { background-color: %1; border: 1px solid %2; border-radius: %3px; }")
+            .arg(Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight))
+            .arg(Theme::radiusLarge));
+    }
+
+    if (m_restartBtn) {
+        // Icon re-tint: Theme::icon() caches pixmaps keyed on (name,
+        // size, color, dpr) -- see Theme.h's iconPixmap doc -- so this
+        // is a cheap cache hit/insert, not a re-render from scratch.
+        m_restartBtn->setIcon(Theme::icon(QStringLiteral("refresh-cw"), 12, Theme::textMuted, Theme::textDisabled));
+    }
+
+    if (m_statusRowLabel) {
+        m_statusRowLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+
+    if (m_integratorSep) {
+        m_integratorSep->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::borderLight)));
+    }
+
+    if (m_renderModeCombo) {
+        m_renderModeCombo->setStyleSheet(QStringLiteral(
+            "QComboBox { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 2px 6px; }")
+            .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight)));
+    }
+
+    if (m_xrayBtn) {
+        m_xrayBtn->setStyleSheet(QStringLiteral(
+            "QToolButton { color: %1; background: transparent; border: 1px solid %2; border-radius: 5px; padding: 2px 6px; }"
+            "QToolButton:checked { color: %3; border-color: %3; }")
+            .arg(Theme::hex(Theme::textDim), Theme::hex(Theme::borderLight), Theme::hex(Theme::accent)));
+    }
+
+    // (2) -- re-invoke the existing update*() methods so their
+    // already-live-token-reading bodies repaint with the new palette.
+    updateSceneIdentity();
+    updateSaveChip();
+    updateReadout();
+    updateIntegratorChip();
+    updateTransportButton();
+
+    // TopBarLogoSwatch and TopBarProgressStrip (m_logoSwatch,
+    // m_progressStrip) are custom-painted widgets that read Theme::
+    // tokens directly in paintEvent() every frame -- per the LIVE
+    // THEME-SWITCH CONTRACT point 3, they need no code here; Qt's own
+    // palette-change cascade already calls update() on them.
 }
 
 void TopBar::setEngine(RenderEngine* engine)
@@ -960,11 +1071,17 @@ void TopBar::updateTransportButton()
 
     // Shared "filled" pill style (accent bg, near-black text) --
     // used for the idle "Render" state and the paused "Resume" state.
-    // Mirrors TopBar.swift's transportPill(filled: true).
+    // Mirrors TopBar.swift's transportPill(filled: true).  P3 fix
+    // (2026-07-23 review): Theme::textOnAccent, not a hardcoded
+    // `rgba(0,0,0,0.92)` -- that literal is Dark-mode-correct (near-
+    // black on the brighter Dark accent) but goes low-contrast against
+    // Light's darkened accent, the same defect fix 3 already corrected
+    // for Theme::textOnAccent itself (now white in Light, near-black in
+    // Dark -- see Theme.cpp's LightPalette doc on that token).
     const QString filledStyle = QStringLiteral(
-        "QPushButton { background-color: %1; color: rgba(0,0,0,0.92); border: none;"
-        " border-radius: %2px; padding: 6px 15px; }")
-        .arg(Theme::hex(Theme::accent))
+        "QPushButton { background-color: %1; color: %2; border: none;"
+        " border-radius: %3px; padding: 6px 15px; }")
+        .arg(Theme::hex(Theme::accent), Theme::hex(Theme::textOnAccent))
         .arg(Theme::radiusMedium);
     // Shared "outlined" pill style (warn border/text, transparent bg) --
     // used for the Rendering-and-not-paused "Pause" state.  Mirrors

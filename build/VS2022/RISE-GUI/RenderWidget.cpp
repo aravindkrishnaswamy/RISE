@@ -7,6 +7,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "RenderWidget.h"
+#include "Theme.h"
 
 #include <QPainter>
 #include <QVBoxLayout>
@@ -18,18 +19,37 @@ RenderWidget::RenderWidget(QWidget* parent)
 {
     setMinimumSize(200, 150);
 
-    // Loading overlay (hidden by default)
+    // Loading overlay (hidden by default). Token-audit (LIVE THEME-
+    // SWITCH CONTRACT pass, Theme.h): this used to hardcode
+    // "rgba(0, 0, 0, 160)" / "color: white" as magic CSS literals with
+    // no Theme:: involvement at all. Routed through Theme::blackAlpha /
+    // Theme::whiteAlpha instead -- both are documented pure functions
+    // that deliberately stay unaffected by the mode switch (Theme.h:
+    // "some scattered setStyleSheet call sites hardcode whiteAlpha(...)
+    // directly for effects that are meant to stay a white overlay
+    // regardless of theme"), which is exactly right here: this is a
+    // dark modal scrim with light text drawn on top of it, sitting over
+    // either the rendered image or the placeholder background -- both
+    // of which are themselves theme-invariant content, not a chrome
+    // surface that should flip with Dark/Light. Because neither value
+    // varies with Theme::setMode(), this widget has nothing for a
+    // QEvent::PaletteChange hook to refresh (see the contract's point 3)
+    // -- no changeEvent/restyleTheme() needed here, unlike every other
+    // Phase-2 widget in this pass.
     m_loadingOverlay = new QWidget(this);
     m_loadingOverlay->setFixedSize(250, 120);
-    m_loadingOverlay->setStyleSheet(
-        "background-color: rgba(0, 0, 0, 160); border-radius: 12px;");
+    m_loadingOverlay->setStyleSheet(QStringLiteral(
+        "background-color: %1; border-radius: 12px;")
+        .arg(Theme::rgba(Theme::blackAlpha(160))));
     m_loadingOverlay->hide();
 
     auto* overlayLayout = new QVBoxLayout(m_loadingOverlay);
     overlayLayout->setAlignment(Qt::AlignCenter);
 
     m_loadingLabel = new QLabel("Loading scene...", m_loadingOverlay);
-    m_loadingLabel->setStyleSheet("color: white; font-size: 14px;");
+    m_loadingLabel->setStyleSheet(QStringLiteral(
+        "color: %1; font-size: 14px;")
+        .arg(Theme::rgba(Theme::whiteAlpha(255))));
     m_loadingLabel->setAlignment(Qt::AlignCenter);
     overlayLayout->addWidget(m_loadingLabel);
 
@@ -40,7 +60,9 @@ RenderWidget::RenderWidget(QWidget* parent)
     overlayLayout->addWidget(m_loadingProgress, 0, Qt::AlignCenter);
 
     m_loadingPercent = new QLabel("", m_loadingOverlay);
-    m_loadingPercent->setStyleSheet("color: white; font-family: monospace;");
+    m_loadingPercent->setStyleSheet(QStringLiteral(
+        "color: %1; font-family: monospace;")
+        .arg(Theme::rgba(Theme::whiteAlpha(255))));
     m_loadingPercent->setAlignment(Qt::AlignCenter);
     m_loadingPercent->hide();
     overlayLayout->addWidget(m_loadingPercent);

@@ -24,6 +24,8 @@
 #include <QMessageBox>
 #include <QLayoutItem>
 #include <QColor>
+#include <QSize>
+#include <QTimer>
 
 #include <cmath>
 #include <utility>
@@ -101,18 +103,81 @@ EnvironmentPanel::EnvironmentPanel(QWidget* parent)
     : QWidget(parent)
 {
     setAutoFillBackground(true);
-    {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Window, Theme::bgPanel);
-        setPalette(pal);
-    }
-    setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    // Palette fill + border-bottom stylesheet are set in restyleTheme()
+    // (LIVE THEME-SWITCH CONTRACT, Theme.h) -- persistent chrome that
+    // rebuild() never revisits (it only touches m_rootLayout's CHILDREN,
+    // never `this` widget's own palette/stylesheet).
 
     m_rootLayout = new QVBoxLayout(this);
     m_rootLayout->setContentsMargins(0, 0, 0, 0);
     m_rootLayout->setSpacing(0);
 
     rebuild();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): run once at construction so
+    // the persistent chrome above (no longer set inline) actually gets
+    // styled -- restyleTheme() is the single source of truth for it.
+    m_themeReady = true;
+    restyleTheme();
+}
+
+// ============================================================
+// LIVE THEME-SWITCH CONTRACT (Theme.h)
+// ============================================================
+
+void EnvironmentPanel::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void EnvironmentPanel::restyleTheme()
+{
+    m_themeEpochSeen = Theme::paletteEpoch();
+    // Persistent chrome only: `this` widget's own palette fill +
+    // border-bottom stylesheet, set once in the constructor and never
+    // revisited by rebuild() (rebuild() only clears/rebuilds
+    // m_rootLayout's CHILDREN, never touches `this` widget's own
+    // palette/stylesheet).
+    //
+    // Deliberately does NOT call rebuild() SYNCHRONOUSLY here to refresh
+    // the header/content rows it builds. Those rows already read every
+    // Theme:: token live at build time (wellStyleSheet()/
+    // lineEditStyleSheet() above, and every inline setStyleSheet() call
+    // inside rebuild() itself) -- rebuild() just needs to run again to
+    // pick up new colors, and it already does: reload() (which calls
+    // rebuild()) rides every ViewportBridge::imageUpdated frame for as
+    // long as a scene is loaded (see MainWindow's imageUpdated ->
+    // EnvironmentPanel::reload connection), and fires immediately on the
+    // next setBridge() call or edit regardless. Calling rebuild()
+    // SYNCHRONOUSLY FROM restyleTheme() would violate the contract's
+    // "must not create widgets" rule (rebuild() deleteLater()s and
+    // recreates every row, including the header) -- the only window
+    // where it would matter is a completely idle viewport (no pending
+    // frame) mid theme-switch; P2 fix (2026-07-23 review) below QUEUES a
+    // rebuild() for exactly that case instead, via QTimer::singleShot(0,
+    // ...).  The bindIconLabel-driven header chevron (see rebuild()
+    // below) is additionally self-updating on its own via bindIconLabel's
+    // installed PaletteChange filter (Theme.h), independent of rebuild().
+    setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, Theme::bgPanel);
+    setPalette(pal);
+
+    // Idle-viewport queued rebuild (P2 fix, 2026-07-23 review; blessed by
+    // Theme.h's LIVE THEME-SWITCH CONTRACT point 5): rebuild() here reads
+    // ONLY the already-cached m_hasInfo/m_env members -- it never touches
+    // the bridge at all (that's reload()'s job, gated behind
+    // m_sceneEditable + anyFieldFocused()) -- so unlike ViewportProperties'
+    // equivalent fix, there is no engine-round-trip risk to guard against;
+    // QTimer::singleShot(0, ...) simply defers the widget-recreation work
+    // out of this synchronous palette-change cascade (restyleTheme()
+    // itself must not create widgets -- contract point 2) and onto the
+    // next event-loop turn.  Harmless no-op if a real reload() already
+    // ran first.
+    QTimer::singleShot(0, this, [this]() { rebuild(); });
 }
 
 // ============================================================
@@ -221,14 +286,24 @@ void EnvironmentPanel::rebuild()
     headerLayout->setContentsMargins(14, 12, 14, m_expanded ? 8 : 12);
     headerLayout->setSpacing(8);
 
-    auto* arrow = new QLabel(m_expanded
-        ? QString::fromUtf8("\xE2\x96\xBE")    // v (down triangle)
-        : QString::fromUtf8("\xE2\x96\xB8"),   // > (right triangle)
-        header);
-    arrow->setFont(Theme::sans(8));
-    arrow->setFixedWidth(10);
+    // Bundled-SVG chevron, replacing the v/> Unicode triangles -- same
+    // Windows font-fallback rationale as OutlinerWidget.cpp's identical
+    // expand/collapse arrow (both mirror OutlinerView.swift's category
+    // header pattern; this panel has no entity-category glyph of its own
+    // to migrate, just this one expand indicator). Deliberate
+    // Windows-side exception: Mac renders this indicator as text, Windows
+    // uses the chevron SVGs for cross-panel consistency with the
+    // chat/log disclosure chevrons (approved by the orchestrating
+    // session, 2026-07-23).
+    auto* arrow = new QLabel(header);
+    arrow->setFixedSize(10, 10);
     arrow->setAlignment(Qt::AlignCenter);
-    arrow->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Theme::bindIconLabel keeps this pixmap correct across a mixed-DPI
+    // monitor drag (plain setPixmap(iconPixmap(..., devicePixelRatioF()))
+    // captures DPR once at construction and goes stale).
+    Theme::bindIconLabel(arrow,
+        m_expanded ? QStringLiteral("chevron-down") : QStringLiteral("chevron-right"),
+        9, []{ return Theme::textDim; });
     headerLayout->addWidget(arrow);
 
     auto* title = new QLabel(tr("Environment"), header);
@@ -303,6 +378,13 @@ void EnvironmentPanel::rebuild()
             addBtn->setText(tr("Add HDRI\xE2\x80\xA6"));
             addBtn->setFont(Theme::sans(11, QFont::Medium));
             addBtn->setCursor(Qt::PointingHandCursor);
+            // Icon-system upgrade: mirrors EnvironmentPanel.swift:134's
+            // "Add HDRI…" button (Image(systemName: "photo.on.rectangle"))
+            // -- Lucide "image" tinted to the button's existing text
+            // token (accentLight).
+            addBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            addBtn->setIconSize(QSize(14, 14));
+            addBtn->setIcon(Theme::icon(QStringLiteral("image"), 14, Theme::accentLight));
             addBtn->setStyleSheet(QStringLiteral(
                 "QToolButton { color: %1; border: 1px solid %2; border-radius: %3px; padding: 6px 12px; }")
                 .arg(Theme::hex(Theme::accentLight),

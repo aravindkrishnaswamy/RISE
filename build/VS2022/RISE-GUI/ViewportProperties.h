@@ -98,11 +98,44 @@ private slots:
     /// tooltip text.
     void onDirtyChanged(bool hasUnsavedChanges);
 
+protected:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): hook QEvent::PaletteChange
+    // here and call restyleTheme() -- mirrors MainWindow::changeEvent,
+    // the contract's reference implementation.
+    void changeEvent(QEvent* e) override;
+
 private:
     using Category = ViewportBridge::Category;
 
     void performSceneSave(bool useLoadedPath);
     void clearPropertyRows();
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of
+    // this panel's PERSISTENT-CHROME token-dependent styling sites
+    // (the ones a rebuild*() call never revisits -- panel palette
+    // fill, entity-header icon chip, source-line chip, camera
+    // affordance buttons, empty-selection message, Advanced-disclosure
+    // label + count, footer separator, Save/Save As buttons, refresh
+    // button icon) from the CURRENT Theme:: token values.  Does NOT
+    // synchronously touch the Basic/Advanced property rows (see the doc
+    // comment at this method's definition for why that's safe to leave
+    // to the next natural refresh() instead of forcing one here) --
+    // P2 fix (2026-07-23 review, LIVE THEME-SWITCH CONTRACT point 5)
+    // instead QUEUES a rebuildEntityHeader()/rebuildPropertyRows() pair
+    // via QTimer::singleShot(0, ...) for the idle-viewport case where
+    // nothing else would re-trigger one; the queued call is itself
+    // idempotent-safe against a real refresh() that beats it there.
+    // Called once at the end of the constructor and again from
+    // changeEvent() on QEvent::PaletteChange.  Idempotent, creates no
+    // widgets SYNCHRONOUSLY (the queued follow-up runs on the next
+    // event-loop turn, outside this call).
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
 
     /// Rebuild the entity-header row (icon chip + name + meta line)
     /// from the bridge's current primary selection.
@@ -114,7 +147,19 @@ private:
     /// pick presets first, then remaining descriptor-order rows until
     /// the cap; DISPLAY order for both groups stays original descriptor
     /// order (the priority pass only decides membership).
-    void rebuildPropertyRows();
+    ///
+    /// `pullFreshSnapshot` (default true): when true, forces a fresh
+    /// `m_bridge->propertySnapshot()` pull first -- this calls
+    /// `RISE_API_SceneEditController_RefreshProperties`, a genuine
+    /// engine round-trip, so it's the right default for every normal
+    /// caller (refresh(), an edit commit, a selection change). Pass
+    /// false to rebuild straight from the controller's LAST-refreshed
+    /// snapshot via `propertySnapshotFor` alone -- cheap, no recompute
+    /// -- used by restyleTheme()'s queued idle-viewport rebuild (Theme.h
+    /// LIVE THEME-SWITCH CONTRACT point 5), which must not risk a
+    /// controller round-trip from inside a deferred palette-change
+    /// callback.
+    void rebuildPropertyRows(bool pullFreshSnapshot = true);
 
     /// Build one label + value-cell row for `p`, appended to `into`.
     void buildPropertyRow(const ViewportProperty& p, QVBoxLayout* into);
@@ -130,7 +175,7 @@ private:
     void onAddCameraClicked();
 
     static QString categoryTitle(Category cat);
-    static QString categoryGlyph(Category cat);
+    static QString categoryIconName(Category cat);
 
     ViewportBridge* m_bridge = nullptr;
 
@@ -152,6 +197,11 @@ private:
     // ---- Property body: Basic (always shown) + Advanced disclosure --
     QVBoxLayout* m_basicLayout    = nullptr;
     QWidget*     m_advancedToggleRow   = nullptr;
+    // "Advanced" text label inside m_advancedToggleRow -- promoted from
+    // a constructor-local (was `advLabel`) so restyleTheme() can
+    // re-apply its token-dependent stylesheet on a live theme switch;
+    // it's persistent chrome (never touched by rebuildPropertyRows()).
+    QLabel*      m_advancedLabel        = nullptr;
     QLabel*      m_advancedArrowLabel  = nullptr;
     QLabel*      m_advancedCountLabel  = nullptr;
     QWidget*     m_advancedContainer   = nullptr;
@@ -165,6 +215,11 @@ private:
     // ---- Footer: Save / Save As... -----------------------------------
     QToolButton* m_saveButton   = nullptr;
     QToolButton* m_saveAsButton = nullptr;
+    // Footer separator + refresh button -- promoted from constructor-
+    // locals (were `sep` / `refreshBtn`) so restyleTheme() can re-apply
+    // their token-dependent stylesheet / icon tint.
+    QFrame*      m_footerSeparator = nullptr;
+    QToolButton* m_refreshButton   = nullptr;
 
     QHash<QString, QLineEdit*> m_fields;     // editable rows by parameter name
     QHash<QString, QLabel*>    m_readOnly;   // read-only rows by parameter name

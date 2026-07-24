@@ -8,6 +8,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "RISESyntaxHighlighter.h"
+#include "Theme.h"
 
 #include <QFont>
 #include <QFontDatabase>
@@ -50,56 +51,76 @@ RISESyntaxHighlighter::RISESyntaxHighlighter(QTextDocument* parent)
     QFont boldFont = monoFont;
     boldFont.setBold(true);
 
-    // Colors mirror the macOS RISESceneSyntaxHighlighter.swift's
-    // RISESceneTheme hex values exactly, per the design comp.
-
-    // Comment: dim gray (Theme::textDisabled)
-    m_commentFmt.setForeground(QColor(0x5c, 0x5f, 0x66));
     m_commentFmt.setFont(monoFont);
-
-    // File header: purple bold
-    m_fileHeaderFmt.setForeground(QColor(0xc8, 0xa0, 0xe8));
     m_fileHeaderFmt.setFont(boldFont);
-
-    // Block keyword: soft blue bold (Theme::accentSoft)
-    m_blockKeywordFmt.setForeground(QColor(0x8f, 0xb8, 0xe8));
     m_blockKeywordFmt.setFont(boldFont);
-
-    // Property key: muted gray (Theme::textMuted)
-    m_propertyKeyFmt.setForeground(QColor(0x9a, 0x9d, 0xa4));
     m_propertyKeyFmt.setFont(monoFont);
-
-    // Command (> directive): teal
-    m_commandFmt.setForeground(QColor(0x8f, 0xd4, 0xc4));
     m_commandFmt.setFont(monoFont);
-
-    // Preprocessor: amber (Theme::warn)
-    m_preprocessorFmt.setForeground(QColor(0xe0, 0xb2, 0x5a));
     m_preprocessorFmt.setFont(monoFont);
-
-    // Loop directive: amber bold
-    m_loopDirectiveFmt.setForeground(QColor(0xe0, 0xb2, 0x5a));
     m_loopDirectiveFmt.setFont(boldFont);
-
-    // Macro reference (@NAME): purple
-    m_macroRefFmt.setForeground(QColor(0xc8, 0xa0, 0xe8));
     m_macroRefFmt.setFont(monoFont);
-
-    // Math expression $(...): muted purple/pink
-    m_mathExprFmt.setForeground(QColor(0xc9, 0xa0, 0xd4));
     m_mathExprFmt.setFont(monoFont);
-
-    // Number / vector literal: soft green (Theme::successLight)
-    m_numberFmt.setForeground(QColor(0xa9, 0xd4, 0xb1));
     m_numberFmt.setFont(monoFont);
-
-    // Braces: dim gray (Theme::textDim)
-    m_bracesFmt.setForeground(QColor(0x6f, 0x72, 0x78));
     m_bracesFmt.setFont(monoFont);
-
-    // Quoted string / file-path values: gold (Theme::gold)
-    m_stringFmt.setForeground(QColor(0xd4, 0xb9, 0x8a));
     m_stringFmt.setFont(monoFont);
+
+    // Dark is RISE's primary/first-class theme (Theme.h) and the mode
+    // Theme:: tokens hold before Theme::loadPersistedMode() ever runs at
+    // startup -- matches this constructor's pre-Phase-2 hardcoded dark
+    // values 1:1, so a scene loaded before the persisted mode resolves
+    // still starts correctly themed.
+    setFormatColors(/*dark=*/true);
+}
+
+void RISESyntaxHighlighter::setFormatColors(bool dark)
+{
+    // Colors mirror the macOS RISESceneSyntaxHighlighter.swift's
+    // RISESceneTheme.init() hex values exactly, per mode (verified
+    // against that file's `.dark`/`.light` switch branches). These are
+    // a deliberately INDEPENDENT literal palette, not derived from
+    // Theme:: tokens at call time -- most categories happen to equal a
+    // Theme:: token's value in a given mode (e.g. m_commentFmt mirrors
+    // textDisabled/textDim), but blockKeyword's LIGHT value (0x2e6da8)
+    // is a bespoke darker/more-saturated blue chosen for legibility on
+    // a light editor background that does NOT equal Theme::accentSoft's
+    // light value (0x3a77ad) -- mirroring Mac exactly means keeping our
+    // own hex table here rather than reading Theme:: tokens directly.
+    if (dark) {
+        m_commentFmt.setForeground(QColor(0x5c, 0x5f, 0x66));
+        m_fileHeaderFmt.setForeground(QColor(0xc8, 0xa0, 0xe8));
+        m_blockKeywordFmt.setForeground(QColor(0x8f, 0xb8, 0xe8));
+        m_propertyKeyFmt.setForeground(QColor(0x9a, 0x9d, 0xa4));
+        m_commandFmt.setForeground(QColor(0x8f, 0xd4, 0xc4));
+        m_preprocessorFmt.setForeground(QColor(0xe0, 0xb2, 0x5a));
+        m_loopDirectiveFmt.setForeground(QColor(0xe0, 0xb2, 0x5a));
+        m_macroRefFmt.setForeground(QColor(0xc8, 0xa0, 0xe8));
+        m_mathExprFmt.setForeground(QColor(0xc9, 0xa0, 0xd4));
+        m_numberFmt.setForeground(QColor(0xa9, 0xd4, 0xb1));
+        m_bracesFmt.setForeground(QColor(0x6f, 0x72, 0x78));
+        m_stringFmt.setForeground(QColor(0xd4, 0xb9, 0x8a));
+    } else {
+        m_commentFmt.setForeground(QColor(0x8f, 0x93, 0x9c));
+        m_fileHeaderFmt.setForeground(QColor(0x7b, 0x4f, 0xa6));
+        m_blockKeywordFmt.setForeground(QColor(0x2e, 0x6d, 0xa8));
+        m_propertyKeyFmt.setForeground(QColor(0x5f, 0x63, 0x6b));
+        m_commandFmt.setForeground(QColor(0x2b, 0x7d, 0x6e));
+        m_preprocessorFmt.setForeground(QColor(0x9a, 0x6b, 0x10));
+        m_loopDirectiveFmt.setForeground(QColor(0x9a, 0x6b, 0x10));
+        m_macroRefFmt.setForeground(QColor(0x7b, 0x4f, 0xa6));
+        m_mathExprFmt.setForeground(QColor(0x8a, 0x5a, 0x9e));
+        m_numberFmt.setForeground(QColor(0x2e, 0x7d, 0x43));
+        m_bracesFmt.setForeground(QColor(0xa6, 0xaa, 0xb2));
+        m_stringFmt.setForeground(QColor(0x8a, 0x6c, 0x2f));
+    }
+}
+
+void RISESyntaxHighlighter::applyTheme()
+{
+    const bool wantDark = (Theme::effectiveMode() != Theme::ThemeMode::Light);
+    if (wantDark == m_darkApplied) return;   // no real mode change -- no-op
+    m_darkApplied = wantDark;
+    setFormatColors(wantDark);
+    rehighlight();
 }
 
 void RISESyntaxHighlighter::highlightBlock(const QString& text)

@@ -34,6 +34,7 @@
 class QLabel;
 class QVBoxLayout;
 class QPushButton;
+class QToolButton;
 class QPlainTextEdit;
 class QFrame;
 class QDragEnterEvent;
@@ -103,6 +104,9 @@ signals:
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    /// LIVE THEME-SWITCH CONTRACT (Theme.h): calls the base
+    /// implementation first, then restyleTheme() on QEvent::PaletteChange.
+    void changeEvent(QEvent* e) override;
 
 private:
     QWidget* buildOpenColumn();
@@ -113,21 +117,51 @@ private:
     void updateReadinessUI();
     void onCreateClicked();
     static QString relativeTimeString(qint64 epochSeconds);
+    /// LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies every one of
+    /// StartWidget's token-dependent styling sites from the CURRENT
+    /// Theme:: token values, PLUS re-invokes rebuildRecentsList() --
+    /// deliberate, documented exception to the "creates no widgets"
+    /// rule: the recent-row widgets are entirely data-driven (rebuilt
+    /// from m_recentPaths/m_recentMeta on every call regardless of
+    /// theme), so tearing down and rebuilding them from live tokens on
+    /// a theme switch is cheap (<=10 rows) and correct, not a
+    /// contract violation in spirit. Called once at the end of the
+    /// constructor and again from changeEvent() on every
+    /// QEvent::PaletteChange. Idempotent.
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
 
     // Recent-scenes data, pushed by MainWindow via setRecents().
     QStringList m_recentPaths;
     QMap<QString, qint64> m_recentMeta;
 
     // Left column -- recents list.
+    // Promoted from ctor-locals to members so restyleTheme() can
+    // re-apply their baked Theme:: styling on a live theme switch --
+    // none of these are otherwise touched by any update*() method.
+    QLabel* m_titleLabel = nullptr;
+    QLabel* m_subtitleLabel = nullptr;
+    QLabel* m_openColumnHeader = nullptr;
     QFrame* m_recentsContainer = nullptr;
     QVBoxLayout* m_recentsLayout = nullptr;
+    QPushButton* m_browseBtn = nullptr;
+    QLabel* m_dropHintLabel = nullptr;
 
     // Right column -- create-with-agent.
+    QLabel* m_createColumnHeader = nullptr;
     QLabel* m_providerChip = nullptr;
+    QToolButton* m_configBtn = nullptr;
     QPlainTextEdit* m_promptEdit = nullptr;
     QPushButton* m_createBtn = nullptr;
     QLabel* m_createFootnote = nullptr;
     QWidget* m_unconfiguredContainer = nullptr;
+    QLabel* m_connectLabel = nullptr;
+    QPushButton* m_setupBtn = nullptr;
     bool m_agentConfigured = false;
     QString m_providerName;
     bool m_createInFlight = false;

@@ -18,6 +18,7 @@
 #include <QFile>
 #include <QFrame>
 #include <QPalette>
+#include <QScrollBar>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
@@ -27,6 +28,19 @@
 
 namespace {
 
+// Shared by makeHeaderPill() (construction) and SceneEditor::restyleTheme()
+// (live theme switch) so the two can never hand-copy-drift apart.
+QString headerPillStyleSheet()
+{
+    return QStringLiteral(
+        "QPushButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 3px 10px; background: transparent; }"
+        "QPushButton:disabled { color: %3; border-color: %4; }"
+        "QPushButton:hover:!disabled { border-color: %5; }")
+        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderStrong),
+             Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight),
+             Theme::hex(Theme::borderHover));
+}
+
 // Compact bordered pill button shared by Revert/Save/Save&Reload/close —
 // mirrors the design comp's header affordances.
 QPushButton* makeHeaderPill(const QString& text, QWidget* parent)
@@ -35,13 +49,7 @@ QPushButton* makeHeaderPill(const QString& text, QWidget* parent)
     btn->setFont(Theme::sans(11));
     btn->setCursor(Qt::PointingHandCursor);
     btn->setFlat(true);
-    btn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; border: 1px solid %2; border-radius: 6px; padding: 3px 10px; background: transparent; }"
-        "QPushButton:disabled { color: %3; border-color: %4; }"
-        "QPushButton:hover:!disabled { border-color: %5; }")
-        .arg(Theme::hex(Theme::textFaint), Theme::hex(Theme::borderStrong),
-             Theme::hex(Theme::textDisabled), Theme::hex(Theme::borderLight),
-             Theme::hex(Theme::borderHover)));
+    btn->setStyleSheet(headerPillStyleSheet());
     return btn;
 }
 
@@ -56,27 +64,24 @@ SceneEditor::SceneEditor(QWidget* parent)
 
     // ---- Header strip: "Scene file" + dirty dot, Revert/Save/Save&Reload
     // pills, close.  Theme::bgHeader background, matching the comp.
-    auto* header = new QWidget(this);
+    m_header = new QWidget(this);
+    QWidget* header = m_header;
     header->setFixedHeight(38);
     header->setAutoFillBackground(true);
-    {
-        QPalette pal = header->palette();
-        pal.setColor(QPalette::Window, Theme::bgHeader);
-        header->setPalette(pal);
-    }
-    header->setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    // Palette fill + stylesheet: styled in restyleTheme() -- LIVE THEME-
+    // SWITCH CONTRACT (Theme.h).
 
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(12, 0, 10, 0);
     headerLayout->setSpacing(8);
 
-    auto* titleLabel = new QLabel(QStringLiteral("Scene file"), header);
-    titleLabel->setFont(Theme::sans(11, QFont::DemiBold));
-    titleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
-    headerLayout->addWidget(titleLabel);
+    m_titleLabel = new QLabel(QStringLiteral("Scene file"), header);
+    m_titleLabel->setFont(Theme::sans(11, QFont::DemiBold));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
+    headerLayout->addWidget(m_titleLabel);
 
     m_dirtyDot = new QLabel(QString::fromUtf8("\xE2\x97\x8F"), header);   // U+25CF BLACK CIRCLE
-    m_dirtyDot->setStyleSheet(QStringLiteral("color: %1; font-size: 7px;").arg(Theme::hex(Theme::dirty)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_dirtyDot->hide();
     headerLayout->addWidget(m_dirtyDot);
 
@@ -99,22 +104,20 @@ SceneEditor::SceneEditor(QWidget* parent)
     layout->addWidget(header);
 
     // Editor — SceneTextEdit adds right-click suggestions pulled from the
-    // library's SceneEditorSuggestions::SuggestionEngine.  Theme::mono(12)
-    // with a dark bg/selection palette so the editor commits to the same
-    // fixed dark surface as the rest of the redesigned chrome.
+    // library's SceneEditorSuggestions::SuggestionEngine.  Theme::mono(12);
+    // the bg/selection palette is per-mode (Dark/Light), set below by
+    // restyleTheme() -- mirrors the Mac editor, which also switches with
+    // RISE's own theme mode rather than committing to one fixed surface.
     m_editor = new SceneTextEdit();
     m_editor->setFont(Theme::mono(12));
     m_editor->setLineWrapMode(QPlainTextEdit::NoWrap);
     m_editor->setTabStopDistance(4 * m_editor->fontMetrics().horizontalAdvance(' '));
     m_editor->setFrameShape(QFrame::NoFrame);
-    {
-        QPalette pal = m_editor->palette();
-        pal.setColor(QPalette::Base, Theme::bgPanel);
-        pal.setColor(QPalette::Text, Theme::textPrimary);
-        pal.setColor(QPalette::Highlight, Theme::accent);
-        pal.setColor(QPalette::HighlightedText, QColor(0x0d, 0x11, 0x16));
-        m_editor->setPalette(pal);
-    }
+    // Editor backdrop palette (Base/Text/Highlight/HighlightedText) is
+    // set by restyleTheme() below (called at the end of this
+    // constructor) -- see that method for why it's a per-mode literal
+    // table mirroring the Mac editor's editorBackground/selectionBackground,
+    // not a straight Theme::bgPanel forward.
     layout->addWidget(m_editor, 1);
 
     // Syntax highlighter
@@ -125,15 +128,12 @@ SceneEditor::SceneEditor(QWidget* parent)
     // client removed the ⌘S-equivalent for a collision with the
     // production-render shortcut; mirrored here by simply never binding
     // one (m_saveBtn is a plain click target only).
-    auto* statusBar = new QWidget(this);
+    m_statusBar = new QWidget(this);
+    QWidget* statusBar = m_statusBar;
     statusBar->setFixedHeight(28);
     statusBar->setAutoFillBackground(true);
-    {
-        QPalette pal = statusBar->palette();
-        pal.setColor(QPalette::Window, Theme::bgHeader);
-        statusBar->setPalette(pal);
-    }
-    statusBar->setStyleSheet(QStringLiteral("border-top: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    // Palette fill + stylesheet: styled in restyleTheme() -- LIVE THEME-
+    // SWITCH CONTRACT (Theme.h).
     auto* statusLayout = new QHBoxLayout(statusBar);
     statusLayout->setContentsMargins(12, 0, 12, 0);
     statusLayout->setSpacing(10);
@@ -149,7 +149,7 @@ SceneEditor::SceneEditor(QWidget* parent)
     m_staleWarningLabel = new QLabel(
         QString::fromUtf8("\xE2\x9A\xA0 scene changed elsewhere \xE2\x80\x94 buffer is stale"), statusBar);
     m_staleWarningLabel->setFont(Theme::mono(10));
-    m_staleWarningLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::warn)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     m_staleWarningLabel->hide();
     statusLayout->addWidget(m_staleWarningLabel);
 
@@ -157,7 +157,7 @@ SceneEditor::SceneEditor(QWidget* parent)
 
     m_countsLabel = new QLabel(statusBar);
     m_countsLabel->setFont(Theme::mono(10));
-    m_countsLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
     statusLayout->addWidget(m_countsLabel);
 
     layout->addWidget(statusBar);
@@ -173,6 +173,114 @@ SceneEditor::SceneEditor(QWidget* parent)
     connect(m_editor, &SceneTextEdit::selectEntityAtByteOffsetRequested,
             this, &SceneEditor::selectEntityAtByteOffsetRequested);
 
+    updateDirtyState();
+    m_themeReady = true;
+    restyleTheme();
+}
+
+void SceneEditor::changeEvent(QEvent* e)
+{
+    QWidget::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
+        restyleTheme();
+    }
+}
+
+void SceneEditor::restyleTheme()
+{
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): every one of SceneEditor's
+    // own token-dependent styling sites, re-applied from the CURRENT
+    // Theme:: token values. Called once at the end of the constructor
+    // and again from changeEvent() on every QEvent::PaletteChange.
+    // Idempotent, creates no widgets.
+    m_themeEpochSeen = Theme::paletteEpoch();
+
+    if (m_header) {
+        QPalette pal = m_header->palette();
+        pal.setColor(QPalette::Window, Theme::bgHeader);
+        m_header->setPalette(pal);
+        m_header->setStyleSheet(QStringLiteral("border-bottom: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    }
+    if (m_titleLabel) {
+        m_titleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textPrimary)));
+    }
+    if (m_dirtyDot) {
+        m_dirtyDot->setStyleSheet(QStringLiteral("color: %1; font-size: 7px;").arg(Theme::hex(Theme::dirty)));
+    }
+    for (QPushButton* btn : { m_revertBtn, m_saveBtn, m_saveReloadBtn, m_closeBtn }) {
+        if (btn) btn->setStyleSheet(headerPillStyleSheet());
+    }
+
+    if (m_statusBar) {
+        QPalette pal = m_statusBar->palette();
+        pal.setColor(QPalette::Window, Theme::bgHeader);
+        m_statusBar->setPalette(pal);
+        m_statusBar->setStyleSheet(QStringLiteral("border-top: 1px solid %1;").arg(Theme::hex(Theme::borderHairline)));
+    }
+    if (m_staleWarningLabel) {
+        m_staleWarningLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::warn)));
+    }
+    if (m_countsLabel) {
+        m_countsLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+    }
+    // m_saveStateLabel's color is dirty-vs-clean state-dependent
+    // (Theme::dirty / Theme::success) and already fully recomputed by
+    // updateDirtyState() below -- no separate line needed here.
+
+    // ---- Editor backdrop (Base/Text/Highlight/HighlightedText) --------
+    // Deliberately NOT a straight Theme::bgPanel/textPrimary/accent
+    // forward: verified against the Mac SceneEditorWindow.swift +
+    // RISESceneSyntaxHighlighter.swift RISESceneTheme.init(), whose
+    // `.light` branch commits the editor to a bright white raised
+    // surface (its own literal 0xffffff, matching Theme::bgWell's light
+    // value, NOT Theme::bgPanel's dimmer 0xf0f0f2) while `.dark` uses
+    // the same literal value Theme::bgPanel's dark value already has
+    // (0x17181b). Mirrored here 1:1, per mode, rather than deriving
+    // from whichever Theme:: token happens to coincide in one mode but
+    // not the other.
+    if (m_editor) {
+        const bool dark = (Theme::effectiveMode() != Theme::ThemeMode::Light);
+        QPalette pal = m_editor->palette();
+        if (dark) {
+            pal.setColor(QPalette::Base, QColor(0x17, 0x18, 0x1b));
+            pal.setColor(QPalette::Text, QColor(0xe6, 0xe7, 0xe9));
+            pal.setColor(QPalette::Highlight, QColor(0x6d, 0xb8, 0xe8));
+            pal.setColor(QPalette::HighlightedText, QColor(0x0d, 0x11, 0x16));
+        } else {
+            pal.setColor(QPalette::Base, QColor(0xff, 0xff, 0xff));
+            pal.setColor(QPalette::Text, QColor(0x1a, 0x1b, 0x1e));
+            pal.setColor(QPalette::Highlight, QColor(0x1a, 0x6f, 0xa8));
+            pal.setColor(QPalette::HighlightedText, QColor(0xff, 0xff, 0xff));
+        }
+        m_editor->setPalette(pal);
+
+        // Slim themed scrollbars (Task A): applied directly to the
+        // QPlainTextEdit's own scrollbar widgets, not the editor itself,
+        // so the QSS can't leak into any other selector. Re-applied here
+        // every restyleTheme() call since the QSS bakes token colors.
+        if (QScrollBar* vbar = m_editor->verticalScrollBar()) {
+            vbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+        if (QScrollBar* hbar = m_editor->horizontalScrollBar()) {
+            hbar->setStyleSheet(Theme::scrollBarStyleSheet());
+        }
+    }
+
+    // Syntax-highlighter palette: a genuinely separate Dark/Light hex
+    // table (RISESyntaxHighlighter.h's doc) -- applyTheme() itself is a
+    // no-op unless Theme::effectiveMode() actually changed since the
+    // last call, and only rehighlights the document when it does
+    // something, per this method's own "creates no widgets, idempotent"
+    // contract.
+    if (m_highlighter) {
+        m_highlighter->applyTheme();
+    }
+
+    // Re-derive the dirty-dependent labels (save-state color/text,
+    // revert/save/save&reload enablement+tooltip) from the CURRENT
+    // Theme:: tokens too -- updateDirtyState() already reads them live
+    // at call time, so re-invoking it here is enough; no separate
+    // restyle logic duplicated for m_saveStateLabel.
     updateDirtyState();
 }
 

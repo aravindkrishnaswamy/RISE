@@ -86,10 +86,39 @@ signals:
     /// (Rasterizer = 2, Painter = 10), matching MainWindow::revealSourceSpan.
     void revealEnvParamRequested(int category, const QString& name, const QString& param);
 
+protected:
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): hook QEvent::PaletteChange
+    // here and call restyleTheme() -- mirrors MainWindow::changeEvent,
+    // the contract's reference implementation.
+    void changeEvent(QEvent* e) override;
+
 private:
     /// True iff editing is currently allowed: an editable bound
     /// environment AND the scene isn't wedged by an in-flight render.
     bool canEdit() const;
+
+    // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies this panel's
+    // PERSISTENT-CHROME token-dependent styling -- just the outer
+    // widget's palette fill + border-bottom stylesheet, set once in the
+    // constructor and never revisited by rebuild().  Does NOT
+    // SYNCHRONOUSLY touch rebuild()'s own content (header/rows): see the
+    // doc comment at this method's definition for why that's safe to
+    // leave alone -- P2 fix (2026-07-23 review, LIVE THEME-SWITCH
+    // CONTRACT point 5) instead QUEUES a rebuild() via
+    // QTimer::singleShot(0, ...) for the idle-viewport case nothing else
+    // would self-heal (rebuild() here reads only cached members, no
+    // bridge round-trip, so this is unconditional -- no scrubbing-style
+    // guard needed).  Called once at the end of the constructor and
+    // again from changeEvent() on QEvent::PaletteChange.  Idempotent,
+    // creates no widgets SYNCHRONOUSLY (the queued follow-up runs on the
+    // next event-loop turn, outside this call).
+    void restyleTheme();
+
+    // LIVE THEME-SWITCH CONTRACT point 4 (Theme.h) -- re-entrancy guard.
+    // See MainWindow.h for the full rationale; uniform across every
+    // changeEvent()-overriding class.
+    bool m_themeReady = false;
+    int  m_themeEpochSeen = -1;
 
     void rebuild();
     bool anyFieldFocused() const;
