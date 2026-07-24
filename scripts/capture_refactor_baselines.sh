@@ -58,6 +58,8 @@ echo "Capturing baselines to: ${BASELINE_DIR}"
 echo "Total scenes: ${#SCENES[@]}"
 echo
 
+total_fail=0
+
 for scene_rel in "${SCENES[@]}"; do
     scene_abs="${ROOT}/${scene_rel}"
     if [ ! -f "${scene_abs}" ]; then
@@ -92,6 +94,7 @@ for scene_rel in "${SCENES[@]}"; do
         echo "  captured ${base_name}.png (${size} bytes, ${elapsed}s)"
     else
         echo "  FAIL: ${candidate_png} not produced (rise exit ${rise_exit})"
+        total_fail=$((total_fail + 1))
         tail -10 /tmp/rise_capture_$$.log
         ls "${RENDERED_DIR}/${base_name}"* 2>/dev/null || true
     fi
@@ -101,3 +104,7 @@ done
 echo
 echo "Baseline capture complete.  ${BASELINE_DIR}"
 ls -la "${BASELINE_DIR}"
+if [ "${total_fail}" -gt 0 ]; then
+    echo "ERROR: ${total_fail} configured render(s) failed" >&2
+    exit 1
+fi

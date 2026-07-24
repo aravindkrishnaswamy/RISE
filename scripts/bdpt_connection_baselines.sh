@@ -88,27 +88,45 @@ PY
 }
 
 echo "MODE=${MODE} TAG=${TAG} DIR=${DIR}"
+case "${MODE}" in
+    capture|check) ;;
+    *) echo "ERROR: MODE must be capture or check" >&2; exit 2 ;;
+esac
+
+failures=0
+for entry in "${MANIFEST[@]}"; do
+    scene_rel="${entry%%:*}"
+    if [ ! -f "${ROOT}/${scene_rel}" ]; then
+        echo "ERROR: configured scene is missing: ${scene_rel}" >&2
+        failures=$((failures + 1))
+    fi
+done
+[ "${failures}" -eq 0 ] || exit 1
+
 for entry in "${MANIFEST[@]}"; do
     scene_rel="${entry%%:*}"; rest="${entry#*:}"; out_base="${rest%%:*}"; ptag="${rest#*:}"
     scene_abs="${ROOT}/${scene_rel}"; name="$(basename "${scene_rel}" .RISEscene)"
-    if [ ! -f "${scene_abs}" ]; then echo "SKIP-missing ${name}"; continue; fi
+    if [ ! -f "${scene_abs}" ]; then echo "FAIL missing ${name}"; failures=$((failures + 1)); continue; fi
     outpng="${RENDERED}/${out_base}.png"
 
     if [ "${MODE}" = "capture" ]; then
         echo "=== capture ${name} [${ptag}] ==="
-        if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.a.png"; else echo "  FAIL render-a"; continue; fi
-        if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.b.png"; else echo "  FAIL render-b"; continue; fi
+        if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.a.png"; else echo "  FAIL render-a"; failures=$((failures + 1)); continue; fi
+        if render "${scene_abs}" "${outpng}"; then cp "${outpng}" "${DIR}/${name}.b.png"; else echo "  FAIL render-b"; failures=$((failures + 1)); continue; fi
         floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"
         echo "  noise-floor(a-vs-b) = ${floor}%"
     else
         base="${DIR}/${name}.a.png"
-        if [ ! -f "${base}" ]; then echo "SKIP-nobaseline ${name}"; continue; fi
+        if [ ! -f "${base}" ]; then echo "FAIL no-baseline ${name}"; failures=$((failures + 1)); continue; fi
         if render "${scene_abs}" "${outpng}"; then
             d="$(cmp_pct "${base}" "${outpng}")"
             floor="n/a"; [ -f "${DIR}/${name}.b.png" ] && floor="$(cmp_pct "${DIR}/${name}.a.png" "${DIR}/${name}.b.png")"
             echo "  ${name} [${ptag}]: post-Δ=${d}%  (floor=${floor}%)"
         else
             echo "  FAIL render ${name}"
+            failures=$((failures + 1))
         fi
     fi
 done
+
+[ "${failures}" -eq 0 ] || exit 1

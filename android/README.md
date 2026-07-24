@@ -34,11 +34,9 @@ so they do not require a version-code bump to re-extract.
 
 ## Gradle wrapper
 
-The `gradle/wrapper/gradle-wrapper.properties` file points at Gradle 8.9,
-but the `gradle-wrapper.jar` is NOT committed — Android Studio will generate
-it automatically on first sync. If you prefer command-line builds, run
-`gradle wrapper` once in this directory (requires a system Gradle install)
-and then use `./gradlew assembleDebug` thereafter.
+The committed Gradle wrapper points at Gradle 8.9. Use
+`./gradlew assembleDebug` for command-line builds; no system Gradle install
+is required.
 
 ## Running the instrumented test
 

@@ -15,9 +15,10 @@ import java.io.FileOutputStream
  *
  * Staleness is keyed on a SHA-256 fingerprint of the bundled asset tree
  * (computed by `app/build.gradle.kts` and surfaced as
- * [com.risegfx.android.BuildConfig.RISE_ASSETS_FINGERPRINT]).  Editing a
- * scene under `scenes/` upstream changes the fingerprint, so the next
- * install re-extracts without needing a `versionCode` bump.
+ * [com.risegfx.android.BuildConfig.RISE_ASSETS_FINGERPRINT]). Editing a
+ * bundled scene or one of its dependency-closure assets changes the
+ * fingerprint, so the next install re-extracts without needing a
+ * `versionCode` bump.
  */
 object AssetExtractor {
 

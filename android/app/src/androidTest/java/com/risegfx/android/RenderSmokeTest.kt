@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.risegfx.android.nativebridge.RiseCallback
 import com.risegfx.android.nativebridge.RiseNative
+import com.risegfx.android.ui.SceneCatalog
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
@@ -25,8 +26,7 @@ import org.junit.runner.RunWith
  *   4. Confirm [RiseCallback.onSceneReady] fires, tile callbacks land, and
  *      the final framebuffer contains at least one non-zero pixel.
  *
- * shapes.RISEscene has no texture or mesh dependencies beyond the small
- * colours script that is also bundled, so any failure here is a real library
+ * shapes.RISEscene is self-contained, so any failure here is a real library
  * or bridge issue rather than a missing-asset issue.
  */
 @RunWith(AndroidJUnit4::class)
@@ -37,7 +37,7 @@ class RenderSmokeTest {
         val app = ApplicationProvider.getApplicationContext<RiseApplication>()
         runBlocking { app.ensureInitialized() }
 
-        val sceneFile = File(app.riseRoot, "scenes/Tests/Geometry/shapes.RISEscene")
+        val sceneFile = File(app.riseRoot, SceneCatalog.smokeTests.single().relativePath)
         assertTrue("scene should exist at $sceneFile", sceneFile.isFile)
 
         val sceneReadyLatch = CountDownLatch(1)

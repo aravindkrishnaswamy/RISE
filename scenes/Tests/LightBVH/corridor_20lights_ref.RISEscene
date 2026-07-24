@@ -32,9 +32,6 @@ file_rasterizeroutput
 {
 	pattern				rendered/corridor_20lights_ref
 	type				HDR
-	type				PNG
-	bpp					8
-	color_space			sRGB
 }
 
 ##################################################
@@ -487,4 +484,3 @@ standard_object
 	geometry			farwallgeom
 	material			white
 }
-

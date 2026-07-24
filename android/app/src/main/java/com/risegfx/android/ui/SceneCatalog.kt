@@ -36,6 +36,15 @@ data class SceneEntry(
 )
 
 object SceneCatalog {
+    /** Assets bundled for instrumentation without appearing in the scene picker. */
+    val smokeTests: List<SceneEntry> = listOf(
+        SceneEntry(
+            displayName = "Geometry Shapes Smoke Test",
+            relativePath = "scenes/Tests/Geometry/shapes.RISEscene",
+            description = "Small self-contained geometry fixture used by RenderSmokeTest.",
+        ),
+    )
+
     val bundled: List<SceneEntry> = listOf(
         SceneEntry(
             displayName = "PT Jewel Vault",
