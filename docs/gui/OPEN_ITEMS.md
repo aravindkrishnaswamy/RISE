@@ -8,9 +8,27 @@ open.  History and rationale live in
 [PROPERTIES_AND_REFERENCES.md](PROPERTIES_AND_REFERENCES.md) §6–8 and
 [ADR_DOCUMENT_FIRST_EDITOR.md](ADR_DOCUMENT_FIRST_EDITOR.md).
 
-_Last updated: 2026-07-24, at commit `ce629e26` (the round-7 P2 sweep)._
+_Last updated: 2026-07-24, during the viewport render-mode follow-up._
 
 ---
+
+## 0. Viewport render-mode follow-up (in progress)
+
+- **T0 — DONE:** fixed the gesture-pinned scheduler spin exposed by
+  BeautyVariant + object-gizmo interaction.  Dirty frozen siblings no longer
+  self-arm an infinite stream of passes on the pinned pane.  Pointer-up polish
+  ownership is now atomic with release; dropped property-End and pointer-Up
+  lifecycle paths (including edits begun while paused) resume deferred panes;
+  repeated Stop remains prompt during coordinated renders while plain Pause
+  preserves owed polish; pane-0 mode/pose/exit setters cannot switch live
+  registers during a secondary gesture; and layout shrink no longer confuses a
+  stale pointer pane with a property scrub or drops a concurrent scrub's motion
+  divisor.  The expanded
+  `ViewportPaneSchedulerTest` scenarios execute the real low-resolution
+  indirect pipeline and are mutation-verified; a Mac GUI
+  `Quad → indirect → Move` reproduction established the original failure.
+- **T1–T4 — pending:** layout default modes, arbitrary named scene-camera
+  vantages, pane-camera edit routing, and Last Render pane content.
 
 ## 1. P2 sweep (from the round-6 three-reviewer pass) — DONE (round 7, 2026-07-24)
 
@@ -88,9 +106,9 @@ first.  See ADR §4.
 
 ## 5. Merge gate
 
-§1 is clean (round 7): fresh adversarial round with zero P1s, full suite
-220/220, warning-free clean core rebuild, Mac arm64 GUI build succeeded.
-The branch is ready for the user's merge-to-master decision.  (x86_64 Mac
-links fail against arm64 Homebrew dylibs — environmental, not a
-regression.  The Windows-shell build/run pass in §4 remains outstanding
-for merge consideration.)
+§1 remains clean from round 7, but the branch has a new active viewport
+follow-up (§0) and is no longer at its merge gate.  Re-establish the full
+suite, warning-free clean core rebuild, Mac arm64 GUI build, and zero-P1
+adversarial gate after T4.  (x86_64 Mac links fail against arm64 Homebrew
+dylibs — environmental, not a regression.  The Windows-shell build/run pass
+in §4 remains outstanding for merge consideration.)

@@ -1764,6 +1764,30 @@ namespace RISE
 			return mCurrentPane;
 		}
 
+		//! T0 polish-order oracle: whether `pane` owns the
+		//! FinalRegularRunning marker in either the live register or its
+		//! saved slot.  Lets the forced release-interleaving test verify
+		//! ownership, not merely a scheduler-dependent eventual pass count.
+		bool ForTest_PaneHasFinalRegularPolish( unsigned int pane ) const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( pane >= kViewportPaneCount ) return false;
+			const int state = ( pane == mCurrentPane )
+				? mPolishState.load( std::memory_order_acquire )
+				: mPaneRender[pane].polishSaved;
+			return state == static_cast<int>( PolishState::FinalRegularRunning );
+		}
+
+		//! T0 pause-state oracle setup: arm the current pane's normal
+		//! final-to-polish transition without synthesizing a pointer gesture.
+		void ForTest_ArmFinalRegularPolish()
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			mPolishState.store(
+				static_cast<int>( PolishState::FinalRegularRunning ),
+				std::memory_order_release );
+		}
+
 		const SceneEditor& Editor() const { return mEditor; }
 		SceneEditor&       Editor()       { return mEditor; }
 
@@ -2595,6 +2619,20 @@ namespace RISE
 		//! closes.  No-op in production (empty base implementation);
 		//! test overrides can block here until released.
 		virtual void ForTest_OnAboutToMintInteractivePass() {}
+
+		//! T0 RED-PROVE seam: called after the scheduler has selected and
+		//! minted an interactive pass, with mMutex released but before the
+		//! pass body runs.  Tests use it to force observation of the first
+		//! post-gesture context switch.
+		virtual void ForTest_OnInteractivePassMinted() {}
+
+		//! T0 RED-PROVE seam: called by OnPointerUp after the gesture pane's
+		//! final-render/polish state and edit wake have been published as one
+		//! mMutex-serialized transition.  A test can wait here until the render
+		//! thread has selected its first post-release pane, proving that the
+		//! polish marker was installed before (and on the correct side of) that
+		//! context switch.  No-op in production.
+		virtual void ForTest_OnPointerUpAfterFinalRenderArmed() {}
 
 		//! Fix-round-4 P2 RED-PROVE test hook, the WORKER-side twin of
 		//! ForTest_OnAboutToMintInteractivePass above.  Called by

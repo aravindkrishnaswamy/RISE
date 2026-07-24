@@ -712,7 +712,13 @@ under `mMutex`.
 the scheduler renders pane *i* EXCLUSIVELY with the existing during-motion
 scale adaptation (kTargetMs=33); other panes freeze at their last frame.  This
 is the generalization of today's behavior (the single pane IS the gestured
-pane) and keeps interaction latency identical to single-viewport.
+pane) and keeps interaction latency identical to single-viewport.  A completed
+gesture quantum does **not** self-arm from those intentionally-frozen panes'
+dirty bits: each in-gesture edit supplies its own kick, and gesture-end supplies
+the kick that resumes ordinary rotation.  This distinction is load-bearing for
+BeautyVariant panes, whose fixed divisor/sample budget would otherwise turn one
+gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
+2026-07-24).
 
 **Invalidation matrix**:
 
@@ -864,6 +870,34 @@ statements in §7.1's audit table and §7.5).
   `ScreenChangeInternal` to `ViewportWidget::refreshForDpiChange()`, which
   re-pushes the pane device-pixel dims (a fixed-size window firing no
   resizeEvent otherwise left them stale for the new screen).
+- **T0 — gesture-pinned rotation no longer self-arms forever (2026-07-24).**
+  A scene edit during a gesture dirties every visible pane, while gesture
+  exclusivity deliberately freezes the siblings.  The completion path used to
+  observe those dirty siblings, set `mPanePassPending`, and immediately render
+  the current pane again because `PickNextVisiblePaneLocked_` correctly honored
+  the gesture pin.  The current pane's dirty bit was already clear, the siblings
+  stayed dirty, and the cycle repeated until pointer-up.  Under `indirect` this
+  was a continuous fixed 12-SPP/OIDN render and appeared to hang the Mac GUI.
+  End-of-quantum rotation arming is now suppressed while a pointer/property
+  gesture is active; per-edit kicks still repaint the gestured pane.  Pointer-up
+  atomically closes the pin, installs the correct pane's final/polish state, and
+  publishes the all-pane wake; `EndPropertyScrub` supplies the equivalent kick.
+  The lost-property-End watchdog and `StopInteractive` lifecycle boundary now
+  perform the same recovery—even when a gesture begins while refinement is
+  already paused—so dropped platform callbacks cannot strand panes or block
+  coordinated renders.  Repeated `StopInteractive` remains nonblocking while a
+  coordinated render owns the scene, and a plain no-gesture Pause preserves an
+  owed refinement/polish state.  Gesture exclusivity also covers the live
+  pane-register set: pane-0 mode/pose/ExitFreeFly setters refuse a context
+  switch during a secondary-pane gesture instead of redirecting its next camera
+  edit.  Layout shrink treats
+  `mGesturePane` as pointer-only state instead of cancelling an unrelated
+  property scrub from a stale pane number, and a concurrent property scrub
+  keeps its motion-quality divisor when the hidden pointer pane is finalized.
+  Scheduler scenarios (c2–c5/j2b) execute a real interactive pipeline and cover
+  object-gizmo, property-watchdog, lifecycle/pause, setter exclusion, and shrink
+  paths.  Removing the pin guard is RED (12 focused failures and tens of
+  thousands of redundant low-resolution passes); restoring it is GREEN.
 
 ## 8. Agent surface + skills
 

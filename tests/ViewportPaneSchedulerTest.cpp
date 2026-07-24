@@ -23,7 +23,9 @@
 #include "../src/Library/RISE_API.h"   // user-review P1-1: C-ABI contract (unindexed nav aliases pane 0)
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Rendering/InteractivePelRasterizer.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -74,8 +76,10 @@ static std::string WriteTemp( const char* name, const char* content )
 class RecordingController : public SceneEditController
 {
 public:
-	RecordingController( IJobPriv& job )
-	: SceneEditController( job, /*interactiveRasterizer*/ nullptr )
+	RecordingController( IJobPriv& job, IRasterizer* interactiveRasterizer = nullptr,
+		bool runRealPass = false )
+	: SceneEditController( job, interactiveRasterizer )
+	, mRunRealPass( runRealPass )
 	{}
 
 	std::vector<unsigned int> Sequence() const
@@ -109,6 +113,45 @@ public:
 		mSeq.clear();
 	}
 
+	void ArmReleaseInterleaving()
+	{
+		std::lock_guard<std::mutex> lk( mGateMutex );
+		mReleaseInterleavingArmed = true;
+		mMintObserved = false;
+		mAllowMintedPass = false;
+	}
+
+	void ReleaseMintedPass()
+	{
+		std::lock_guard<std::mutex> lk( mGateMutex );
+		mAllowMintedPass = true;
+		mReleaseInterleavingArmed = false;
+		mGateCV.notify_all();
+	}
+
+	void ArmSaveInterleaving()
+	{
+		std::lock_guard<std::mutex> lk( mSaveGateMutex );
+		mSaveGateArmed = true;
+		mSaveGateReached = false;
+		mReleaseSaveGate = false;
+	}
+
+	bool WaitForSaveInterleaving( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mSaveGateMutex );
+		return mSaveGateCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mSaveGateReached; } );
+	}
+
+	void ReleaseSaveInterleaving()
+	{
+		std::lock_guard<std::mutex> lk( mSaveGateMutex );
+		mReleaseSaveGate = true;
+		mSaveGateArmed = false;
+		mSaveGateCV.notify_all();
+	}
+
 protected:
 	void DoOneRenderPass() override
 	{
@@ -117,36 +160,99 @@ protected:
 		// scope closes at the mint block's end), and mCurrentPane is
 		// stable for the whole pass (only mutated inside the mint lock,
 		// before mRendering flips true).
+		const unsigned int pane = ForTest_CurrentPane();
+		if( mRunRealPass )
+		{
+			SceneEditController::DoOneRenderPass();
+		}
 		{
 			std::lock_guard<std::mutex> lk( mSeqMutex );
-			mSeq.push_back( ForTest_CurrentPane() );
+			mSeq.push_back( pane );
 		}
 		mSeqCV.notify_all();
-		// A small real duration so gesture scenarios can overlap a pass.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+		if( !mRunRealPass )
+		{
+			// A small real duration so gesture scenarios can overlap a pass.
+			std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+		}
+	}
+
+	void ForTest_OnInteractivePassMinted() override
+	{
+		std::unique_lock<std::mutex> lk( mGateMutex );
+		if( mReleaseInterleavingArmed )
+		{
+			mMintObserved = true;
+			mGateCV.notify_all();
+			mGateCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+				[&]{ return mAllowMintedPass || !mReleaseInterleavingArmed; } );
+		}
+	}
+
+	void ForTest_OnPointerUpAfterFinalRenderArmed() override
+	{
+		std::unique_lock<std::mutex> lk( mGateMutex );
+		if( !mReleaseInterleavingArmed ) return;
+		mGateCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mMintObserved; } );
+	}
+
+	void ForTest_OnSaveEngineAboutToRun() override
+	{
+		std::unique_lock<std::mutex> lk( mSaveGateMutex );
+		if( !mSaveGateArmed ) return;
+		mSaveGateReached = true;
+		mSaveGateCV.notify_all();
+		mSaveGateCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mReleaseSaveGate || !mSaveGateArmed; } );
 	}
 
 private:
 	mutable std::mutex          mSeqMutex;
 	std::condition_variable     mSeqCV;
 	std::vector<unsigned int>   mSeq;
+	bool                        mRunRealPass = false;
+	std::mutex                  mGateMutex;
+	std::condition_variable     mGateCV;
+	bool                        mReleaseInterleavingArmed = false;
+	bool                        mMintObserved = false;
+	bool                        mAllowMintedPass = false;
+	std::mutex                  mSaveGateMutex;
+	std::condition_variable     mSaveGateCV;
+	bool                        mSaveGateArmed = false;
+	bool                        mSaveGateReached = false;
+	bool                        mReleaseSaveGate = false;
 };
 
 struct Fixture
 {
 	Job*                  job = nullptr;
 	RecordingController*  ctrl = nullptr;
+	IRasterizer*          rasterizer = nullptr;
+	IRayCaster*           previewCaster = nullptr;
+	IRayCaster*           polishCaster = nullptr;
 
-	explicit Fixture( const char* tmpName )
+	explicit Fixture( const char* tmpName, bool withInteractivePipeline = false )
 	{
 		const std::string path = WriteTemp( tmpName, kScene );
 		job = new Job();
 		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { job->release(); job = nullptr; return; }
-		ctrl = new RecordingController( *job );
+		if( withInteractivePipeline &&
+		    !Implementation::CreateInteractiveMaterialPreviewPipeline(
+			    &rasterizer, &previewCaster, &polishCaster ) )
+		{
+			job->release();
+			job = nullptr;
+			return;
+		}
+		ctrl = new RecordingController( *job, rasterizer, withInteractivePipeline );
 	}
 	~Fixture()
 	{
 		if( ctrl ) { ctrl->Stop(); delete ctrl; }
+		if( rasterizer ) rasterizer->release();
+		if( previewCaster ) previewCaster->release();
+		if( polishCaster ) polishCaster->release();
 		if( job ) job->release();
 	}
 };
@@ -168,13 +274,18 @@ static void RunRotationOrderTest()
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
 	Check( f.ctrl->SetPrimaryPane( 2 ), "primary = pane 2" );
 
-	// Start SUPPRESSING the initial render: the loop parks until the kick
-	// below, so the recorded sequence begins at OUR edit, deterministic.
+	// SetViewportLayout queued a grow wake before Start.  Drain that
+	// construction/default-dirty rotation first; otherwise racing an explicit
+	// Kick against the queued grow can legitimately render the primary twice
+	// (grow quantum, then edit quantum) and make the order oracle flaky.
 	f.ctrl->Start( /*suppressInitialRender*/ true );
-	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "layout-grow rotation completes" );
+	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "layout-grow rotation settles" );
+	f.ctrl->ClearSequence();
 
 	// One scene edit -> all four visible panes dirty -> exactly 4 passes:
 	// primary (2) first, then 0, 1, 3.
+	f.ctrl->ForTest_KickRender();
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "4 passes complete after one edit" );
 	const std::vector<unsigned int> seq = f.ctrl->Sequence();
 	Check( seq.size() >= 4 && seq[0] == 2,
@@ -184,12 +295,7 @@ static void RunRotationOrderTest()
 	Check( f.ctrl->SettlesAt( seq.size(), kSettleMs ),
 	       "rotation QUIESCES once every pane has rendered (no runaway passes)" );
 
-	// ROUND 2 -- the same contract driven by a REAL edit-invalidation.
-	// Round 1 alone is a weak witness: PaneRenderState.dirty defaults
-	// TRUE at construction, so the first rotation ever runs off default
-	// state and passes even if the edit path never marks a pane (caught
-	// by mutation-testing MarkAllVisiblePanesDirtyLocked_: round 1
-	// survived the mutation, round 2 does not).
+	// ROUND 2 -- repeat the same real edit-invalidation contract.
 	f.ctrl->ClearSequence();
 	f.ctrl->ForTest_KickRender();
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
@@ -288,7 +394,19 @@ static void RunGesturePinningTest()
 	// continuation, yielding a 4th pass on pane 1 -- distinguishable by
 	// count, not by quiescence.
 	const std::size_t nAtRelease = f.ctrl->Sequence().size();
+	// Deterministically force the render thread to select/mint its first
+	// post-release pane before OnPointerUp returns.  The polish marker must
+	// already belong to pane 0 when that switch happens; a Kick-then-store
+	// implementation races and stamps the sibling's live register instead.
+	f.ctrl->ArmReleaseInterleaving();
 	f.ctrl->OnPointerUp( Point2( 5, 5 ) );
+	Check( f.ctrl->ForTest_CurrentPane() == 1,
+	       "forced interleaving minted the dirty primary sibling first" );
+	Check( f.ctrl->ForTest_PaneHasFinalRegularPolish( 0 ),
+	       "MONEY ASSERTION (c/T0): gestured pane 0 owns FinalRegularRunning after the sibling switch" );
+	Check( !f.ctrl->ForTest_PaneHasFinalRegularPolish( 1 ),
+	       "MONEY ASSERTION (c/T0): sibling pane 1 never inherits the gestured pane's polish marker" );
+	f.ctrl->ReleaseMintedPass();
 	Check( f.ctrl->WaitForPassCount( nAtRelease + 3, kWaitMs ),
 	       "the 3-pass release sequence lands (primary, final-regular, polish)" );
 	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );   // drain any EXTRA passes
@@ -306,6 +424,380 @@ static void RunGesturePinningTest()
 		       "the polish continuation faked a scene edit and re-rendered settled panes "
 		       "(review-r2-B P2 regression guard, count-exact this time)" );
 	}
+}
+
+//----------------------------------------------------------------------
+// (c2) T0 regression: a BeautyVariant object-gizmo edit dirties every
+//      visible pane, but gesture exclusivity must NOT turn that deferred
+//      sibling work into a self-sustaining stream of passes on the pinned
+//      pane.  The live macOS repro was Quad + Indirect + Move: the variant
+//      divisor stays pinned, so the runaway rendered full 12-SPP/OIDN
+//      quanta continuously and made the GUI appear hung.
+//----------------------------------------------------------------------
+static void RunVariantGizmoGestureDoesNotSpinTest()
+{
+	std::printf( "=== scheduler (c2/T0): variant gizmo gesture renders once per edit, never spins on frozen siblings ===\n" );
+	Fixture f( "pane_sched_c2.RISEscene", true );
+	Check( f.ctrl != nullptr, "live-pipeline fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+	Check( f.ctrl->SetViewportRenderMode( "indirect" ), "pane 0 switches to indirect BeautyVariant" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial TwoH rotation completes" );
+	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "initial rotation settles" );
+	f.ctrl->ClearSequence();
+
+	f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->RefreshGizmoHandles();
+	int center = -1;
+	for( unsigned int i = 0; i < f.ctrl->GizmoHandleCount(); ++i ) {
+		if( f.ctrl->GizmoHandleKind( i )
+		    == static_cast<int>( SceneEditController::GizmoHandle::Kind::ScreenCenter ) ) {
+			center = static_cast<int>( i );
+			break;
+		}
+	}
+	Check( center >= 0, "a ScreenCenter transform handle is available" );
+	if( center < 0 ) return;
+	const Point2 down( f.ctrl->GizmoHandleScreenX( static_cast<unsigned int>( center ) ),
+	                   f.ctrl->GizmoHandleScreenY( static_cast<unsigned int>( center ) ) );
+	Check( f.ctrl->OnPanePointerDown( 0, down ), "variant-pane gizmo Down accepted" );
+	Check( f.ctrl->IsGizmoDragActive() && f.ctrl->Editor().IsCompositeOpen(),
+	       "the ScreenCenter hit captured a real gizmo drag and opened its composite" );
+	Check( f.ctrl->OnPanePointerMove( 0, Point2( down.x + 4.0, down.y + 3.0 ) ),
+	       "variant-pane gizmo Move accepted" );
+	Check( f.ctrl->Editor().HasPendingCstObjectTransforms(),
+	       "the gizmo Move accumulated a real CST-pending object transform" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "the gizmo edit produces one pinned-pane pass" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
+	       "MONEY (c2/T0): while the pointer stays down, deferred dirty siblings DO NOT "
+	       "self-rearm the pinned pane -- one edit produces one pass, not an infinite variant loop" );
+	Check( f.ctrl->OnPanePointerUp( 0, Point2( down.x + 4.0, down.y + 3.0 ) ),
+	       "variant-pane gizmo Up accepted" );
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ),
+	       "variant gesture release repaints both visible panes" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		bool sawSibling = false;
+		for( std::size_t i = 1; i < seq.size(); ++i ) {
+			if( seq[i] == 1 ) sawSibling = true;
+		}
+		Check( sawSibling,
+		       "MONEY (c2/T0): pointer-up resumes the deferred sibling rotation" );
+		Check( f.ctrl->SettlesAt( 3, kSettleMs ),
+		       "variant post-gesture rotation quiesces" );
+	}
+}
+
+//----------------------------------------------------------------------
+// (c3) Property-panel scrubs use the same scheduler pin as pointer
+// gestures.  Exercise both the explicit End path and the watchdog path
+// that recovers a dropped End while a fixed-divisor variant is active.
+//----------------------------------------------------------------------
+static void RunVariantPropertyScrubRecoveryTest()
+{
+	std::printf( "=== scheduler (c3/T0): variant property scrub neither spins nor strands siblings ===\n" );
+	Fixture f( "pane_sched_c3.RISEscene", true );
+	Check( f.ctrl != nullptr, "live-pipeline fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial TwoH rotation completes" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "initial rotation settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPaneRenderMode( 1, "indirect" ),
+	       "current pane 1 switches to indirect" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "variant pane realization completes" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "variant realization settles" );
+	f.ctrl->ClearSequence();
+
+	f.ctrl->BeginPropertyScrub();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "one property-scrub edit pass lands" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
+	       "MONEY (c3/T0): an active property scrub also suppresses sibling self-rearm" );
+	f.ctrl->EndPropertyScrub();
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ),
+	       "explicit EndPropertyScrub repaints both panes" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		bool sawSibling = false;
+		for( std::size_t i = 1; i < seq.size(); ++i ) {
+			if( seq[i] == 0 ) sawSibling = true;
+		}
+		Check( sawSibling, "explicit property-scrub End resumes the deferred sibling" );
+		Check( f.ctrl->SettlesAt( 3, kSettleMs ),
+		       "explicit property-scrub recovery quiesces" );
+	}
+
+	f.ctrl->ClearSequence();
+	// Omit EndPropertyScrub deliberately.  The 1500-ms watchdog must clear
+	// the pin, restore final quality, and mint an all-pane recovery rotation.
+	f.ctrl->BeginPropertyScrub();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "lost-End scrub's edit pass lands" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
+	       "lost-End scrub is quiescent while still inside the watchdog window" );
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ),
+	       "watchdog mints the final-quality two-pane recovery" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		bool sawSibling = false;
+		for( std::size_t i = 1; i < seq.size(); ++i ) {
+			if( seq[i] == 0 ) sawSibling = true;
+		}
+		Check( sawSibling,
+		       "MONEY (c3/T0): watchdog recovery renders the sibling a dropped End had deferred" );
+		Check( f.ctrl->SettlesAt( 3, kSettleMs ),
+		       "watchdog recovery quiesces instead of restarting a loop" );
+	}
+}
+
+//----------------------------------------------------------------------
+// (c4) Stopping the interactive loop is the cancellation boundary for a
+// pointer/property gesture whose platform release callback was dropped.
+//----------------------------------------------------------------------
+static void RunStopRecoversLostPointerUpTest()
+{
+	std::printf( "=== scheduler (c4/T0): StopInteractive recovers a lost pointer-up ===\n" );
+	Fixture f( "pane_sched_c4.RISEscene", true );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "initial rotation settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPaneRenderMode( 1, "indirect" ),
+	       "current pane 1 switches to fixed-divisor indirect mode" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "variant pane realization completes" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "variant realization settles" );
+	f.ctrl->ClearSequence();
+
+	f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->RefreshGizmoHandles();
+	int center = -1;
+	for( unsigned int i = 0; i < f.ctrl->GizmoHandleCount(); ++i ) {
+		if( f.ctrl->GizmoHandleKind( i )
+		    == static_cast<int>( SceneEditController::GizmoHandle::Kind::ScreenCenter ) ) {
+			center = static_cast<int>( i );
+			break;
+		}
+	}
+	Check( center >= 0, "a ScreenCenter transform handle is available" );
+	if( center < 0 ) return;
+	const Point2 down( f.ctrl->GizmoHandleScreenX( static_cast<unsigned int>( center ) ),
+	                   f.ctrl->GizmoHandleScreenY( static_cast<unsigned int>( center ) ) );
+	Check( f.ctrl->OnPanePointerDown( 1, down ), "pane-1 transform Down accepted" );
+	Check( f.ctrl->OnPanePointerMove( 1, Point2( down.x + 4.0, down.y + 3.0 ) ),
+	       "pane-1 transform Move accepted" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "one pinned edit pass lands" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "lost-Up gesture no longer spins" );
+
+	// Deliberately omit Up.  A lifecycle stop must commit/close/clear before
+	// any coordinated render or later interactive restart is admitted.
+	f.ctrl->StopInteractive();
+	Check( !f.ctrl->Editor().IsCompositeOpen(),
+	       "MONEY (c4/T0): stop closes the orphaned gesture composite" );
+	Check( !f.ctrl->Editor().HasPendingCstObjectTransforms(),
+	       "stop commits the orphaned gizmo's pending CST transform" );
+	Check( !f.ctrl->IsGizmoDragActive(), "stop clears the orphaned gizmo drag" );
+
+	std::mutex heldMutex;
+	std::condition_variable heldCV;
+	bool heldStarted = false;
+	bool releaseHeld = false;
+	std::atomic<bool> productionAccepted( false );
+	std::thread productionThread( [&]{
+		SceneEditController::RenderJobId heldJobId =
+			SceneEditController::kInvalidRenderJobId;
+		const bool ok = f.ctrl->SubmitProductionRenderSync(
+			[&]{
+				std::unique_lock<std::mutex> lk( heldMutex );
+				heldStarted = true;
+				heldCV.notify_all();
+				heldCV.wait( lk, [&]{ return releaseHeld; } );
+			},
+			String( "t0-stop-recovery-held" ), &heldJobId, kWaitMs );
+		productionAccepted.store( ok, std::memory_order_release );
+	} );
+	{
+		std::unique_lock<std::mutex> lk( heldMutex );
+		Check( heldCV.wait_for( lk, std::chrono::milliseconds( kWaitMs ),
+			[&]{ return heldStarted; } ),
+		       "coordinated render is admitted after stop clears the stale gesture" );
+	}
+	std::atomic<bool> repeatedStopReturned( false );
+	std::thread repeatedStop( [&]{
+		f.ctrl->StopInteractive();
+		repeatedStopReturned.store( true, std::memory_order_release );
+	} );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	Check( repeatedStopReturned.load( std::memory_order_acquire ),
+	       "MONEY (c4/T0): repeated Stop returns promptly while a coordinated render owns the scene" );
+	{
+		std::lock_guard<std::mutex> lk( heldMutex );
+		releaseHeld = true;
+	}
+	heldCV.notify_all();
+	repeatedStop.join();
+	productionThread.join();
+	Check( productionAccepted.load( std::memory_order_acquire ),
+	       "held coordinated render completed normally after repeated Stop" );
+
+	f.ctrl->ClearSequence();
+	f.ctrl->Start( true );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+	       "restart consumes the deferred edit and repaints both panes" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		bool sawSibling = false;
+		for( std::size_t i = 0; i < seq.size(); ++i ) {
+			if( seq[i] == 0 ) sawSibling = true;
+		}
+		Check( sawSibling,
+		       "MONEY (c4/T0): restart settles the sibling deferred by the lost pointer-up" );
+		Check( f.ctrl->SettlesAt( 2, kSettleMs ), "restart rotation quiesces" );
+	}
+
+	// The same cleanup must be idempotent while already paused: controller
+	// edits intentionally remain available with the render loop stopped.
+	f.ctrl->PauseRefinement();
+	f.ctrl->ClearSequence();
+	f.ctrl->RefreshGizmoHandles();
+	center = -1;
+	for( unsigned int i = 0; i < f.ctrl->GizmoHandleCount(); ++i ) {
+		if( f.ctrl->GizmoHandleKind( i )
+		    == static_cast<int>( SceneEditController::GizmoHandle::Kind::ScreenCenter ) ) {
+			center = static_cast<int>( i );
+			break;
+		}
+	}
+	Check( center >= 0, "paused controller still exposes the transform gizmo" );
+	if( center < 0 ) return;
+	const Point2 pausedDown(
+		f.ctrl->GizmoHandleScreenX( static_cast<unsigned int>( center ) ),
+		f.ctrl->GizmoHandleScreenY( static_cast<unsigned int>( center ) ) );
+	Check( f.ctrl->OnPanePointerDown( 1, pausedDown ),
+	       "pointer Down is accepted while refinement is paused" );
+	Check( f.ctrl->OnPanePointerMove(
+		       1, Point2( pausedDown.x + 3.0, pausedDown.y + 2.0 ) ),
+	       "pointer Move is accepted while refinement is paused" );
+	Check( f.ctrl->Editor().IsCompositeOpen(),
+	       "precondition: paused lost-Up gesture opened a composite" );
+	const std::string saveRacePath = "/tmp/pane_sched_c4_save_race.RISEscene";
+	std::remove( saveRacePath.c_str() );
+	SaveResult saveRaceResult;
+	f.ctrl->ArmSaveInterleaving();
+	std::thread saveThread( [&]{
+		saveRaceResult = f.ctrl->RequestSave( saveRacePath );
+	} );
+	Check( f.ctrl->WaitForSaveInterleaving( kWaitMs ),
+	       "save reaches post-snapshot IO window while paused gesture is pending" );
+	f.ctrl->StopInteractive();   // already stopped + saving: must still sanitize
+	Check( !f.ctrl->Editor().IsCompositeOpen(),
+	       "MONEY (c4/T0): repeated Stop cleans a paused gesture during save IO" );
+	Check( !f.ctrl->Editor().HasPendingCstObjectTransforms(),
+	       "repeated Stop commits the paused gesture while save uses its old snapshot" );
+	f.ctrl->ReleaseSaveInterleaving();
+	saveThread.join();
+	Check( Succeeded( saveRaceResult.status ), "held save completes" );
+	Check( f.ctrl->Editor().Dirty().HasAnyDirty(),
+	       "MONEY (c4/T0): head change during save remains dirty instead of baselining stale bytes" );
+	f.ctrl->ResumeRefinement();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+	       "Resume after paused cleanup repaints both panes" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ),
+	       "MONEY (c4/T0): paused lost-Up recovery resumes without a stale scheduler pin" );
+}
+
+//----------------------------------------------------------------------
+// (c4b) A plain pause with no live gesture preserves the pane's owed
+// final->polish state; gesture sanitation must not erase normal refinement.
+//----------------------------------------------------------------------
+static void RunPausePreservesPolishStateTest()
+{
+	std::printf( "=== scheduler (c4b/T0): no-interaction pause preserves owed polish ===\n" );
+	Fixture f( "pane_sched_c4b.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "initial pass completes" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "initial pass settles" );
+	f.ctrl->ClearSequence();
+	f.ctrl->ForTest_ArmFinalRegularPolish();
+	f.ctrl->PauseRefinement();
+	Check( f.ctrl->ForTest_PaneHasFinalRegularPolish( 0 ),
+	       "MONEY (c4b/T0): plain Pause preserves FinalRegularRunning" );
+	f.ctrl->ResumeRefinement();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
+	       "Resume completes the preserved final pass and its polish continuation" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ),
+	       "preserved polish sequence quiesces exactly" );
+}
+
+//----------------------------------------------------------------------
+// (c5) Gesture exclusivity includes the live register set itself.  A
+// pane-0 setter must not context-switch away from a secondary gesture.
+//----------------------------------------------------------------------
+static void RunMidGesturePaneSwitchRefusedTest()
+{
+	std::printf( "=== scheduler (c5/T0): pane-0 setter cannot switch registers mid-secondary gesture ===\n" );
+	Fixture f( "pane_sched_c5.RISEscene", true );
+	Check( f.ctrl != nullptr, "live-pipeline fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "initial rotation settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->PaneEnterFreeFly( 0 ), "preconfigure pane 0 as FreeFly" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "pane-0 FreeFly change repaints both panes" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "pane-0 FreeFly rotation settles" );
+	CameraSnapshot pane0Pose;
+	Check( f.ctrl->GetViewportPose( pane0Pose, 0 ), "capture pane-0 FreeFly pose" );
+	f.ctrl->ClearSequence();
+
+	Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ),
+	       "secondary orbit Down accepted" );
+	Check( f.ctrl->ForTest_CurrentPane() == 1,
+	       "secondary gesture owns the live pane registers" );
+	Check( !f.ctrl->SetViewportPose( pane0Pose, 0 ),
+	       "pane-0 pose setter is refused during the pane-1 gesture" );
+	Check( !f.ctrl->ExitFreeFly( 0 ),
+	       "pane-0 ExitFreeFly is refused during the pane-1 gesture" );
+	Check( f.ctrl->IsFreeFlyActive( 0 ),
+	       "refused pose/exit setters preserve pane 0's FreeFly state" );
+	Check( !f.ctrl->SetViewportRenderMode( "normals" ),
+	       "MONEY (c5/T0): pane-0 mode setter is refused during the pane-1 gesture" );
+	Check( std::string( f.ctrl->GetViewportRenderMode() ) == "preview",
+	       "refused setter leaves pane 0's configured mode unchanged" );
+	Check( f.ctrl->ForTest_CurrentPane() == 1,
+	       "refused setter cannot switch the live registers away from pane 1" );
+	Check( f.ctrl->OnPanePointerMove( 1, Point2( 36, 24 ) ),
+	       "the owning pane's next orbit Move remains accepted" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "pane-1 move renders once" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		Check( seq.size() == 1 && seq[0] == 1,
+		       "MONEY (c5/T0): post-refusal gesture work stays on pane 1" );
+	}
+	Check( f.ctrl->OnPanePointerUp( 1, Point2( 36, 24 ) ), "secondary orbit Up accepted" );
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "release final/polish sequence completes" );
+	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "release sequence quiesces" );
 }
 
 //----------------------------------------------------------------------
@@ -500,6 +992,9 @@ static void RunPaneIndexedGestureTest()
 		       "not pane 0" );
 	}
 	Check( f.ctrl->OnPanePointerUp( 1, Point2( 60, 34 ) ), "pane-indexed Up accepted" );
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
+	       "orbit release drains its two-pane final/polish sequence" );
+	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "orbit release sequence quiesces" );
 
 	// The scene camera must be untouched: pane 1's fly went to ITS
 	// override camera.  (IsFreeFlyActive reads pane 0's state via the
@@ -522,6 +1017,10 @@ static void RunPaneIndexedGestureTest()
 	Check( f.ctrl->GetPrimaryPane() == 1,
 	       "MONEY ASSERTION (h/§7.8): a NON-navigation click PROMOTES pane 1 to primary" );
 	f.ctrl->OnPanePointerUp( 1, Point2( 12, 12 ) );
+	Check( f.ctrl->WaitForPassCount( 6, kWaitMs ),
+	       "pointer release sequences drain before the free-fly twin checks" );
+	Check( f.ctrl->SettlesAt( 6, kSettleMs ),
+	       "pane-indexed gesture release sequences quiesce" );
 
 	// review-s3 P2 coverage: hidden-pane and free-fly-twin contracts.
 	Check( !f.ctrl->OnPanePointerDown( 3, Point2( 5, 5 ) ),
@@ -668,6 +1167,119 @@ static void RunShrinkFinalizesHiddenGestureTest()
 	}
 	Check( !renderedHidden,
 	       "MONEY (j2): no post-shrink render targets hidden pane 3 after a finalized drag" );
+}
+
+//----------------------------------------------------------------------
+// (j2b) mGesturePane belongs to pointer gestures only.  A later property
+// scrub must not be cancelled merely because a layout shrink hides the
+// stale pane number left by an already-completed pointer gesture.
+//----------------------------------------------------------------------
+static void RunShrinkPreservesUnrelatedPropertyScrubTest()
+{
+	std::printf( "=== scheduler (j2b/T0): shrink ignores stale pointer pane during property scrub ===\n" );
+	Fixture f( "pane_sched_j2b.RISEscene", true );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "initial Quad rotation completes" );
+	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "Quad settles" );
+
+	// Complete a pane-3 pointer gesture, leaving mGesturePane's historical
+	// value at 3, then force the scheduler's current context to pane 0.
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 3, Point2( 5, 5 ) ), "pane-3 Down accepted" );
+	Check( f.ctrl->OnPanePointerUp( 3, Point2( 5, 5 ) ), "pane-3 Up accepted" );
+	Check( f.ctrl->WaitForPassCount( 9, kWaitMs ),
+	       "completed pane-3 gesture drains its Quad final/polish sequence" );
+	Check( f.ctrl->SettlesAt( 9, kSettleMs ), "completed pointer gesture settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPrimaryPane( 3 ),
+	       "make pane 3 primary so the next Quad rotation finishes on visible pane 2" );
+	Check( f.ctrl->SetViewportRenderMode( "normals" ),
+	       "pane-0 mode switch makes pane 0 current" );
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "mode change repaints Quad" );
+	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "pane-0 mode rotation settles" );
+	Check( f.ctrl->ForTest_CurrentPane() == 2,
+	       "precondition: current pane 2 remains visible after OnePlusTwo shrink" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPaneRenderMode( 2, "indirect" ),
+	       "current pane 2 uses a fixed-divisor variant during the scrub oracle" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "pane-2 variant realization completes" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "pane-2 variant realization settles" );
+	f.ctrl->ClearSequence();
+
+	f.ctrl->BeginPropertyScrub();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::OnePlusTwo ),
+	       "shrink Quad -> OnePlusTwo hides only the stale pointer pane 3" );
+	Check( f.ctrl->SettlesAt( 0, kSettleMs ),
+	       "MONEY (j2b/T0): stale pointer pane does not make the shrink queue a spurious pass" );
+	f.ctrl->ClearSequence();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "one scrub edit pass lands" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
+	       "MONEY (j2b/T0): the unrelated property scrub remains active and pins pane 0" );
+	f.ctrl->EndPropertyScrub();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
+	       "explicit scrub End resumes all three visible panes" );
+	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "post-End three-pane rotation quiesces" );
+
+	// Concurrent gestures are legal controller state: hiding the pointer
+	// gesture's pane must finalize only that pointer gesture and preserve the
+	// independent property scrub's motion-quality divisor on the new pane.
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetViewportRenderMode( "preview" ),
+	       "destination pane 0 is unpinned Preview for the divisor-transfer oracle" );
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ), "pane-0 Preview change repaints three panes" );
+	Check( f.ctrl->SettlesAt( 3, kSettleMs ), "pane-0 Preview rotation settles" );
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+	       "grow OnePlusTwo -> Quad for concurrent-gesture shrink" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "revealed pane 3 renders" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "grow settles on pane 3" );
+	f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->RefreshGizmoHandles();
+	int center = -1;
+	for( unsigned int i = 0; i < f.ctrl->GizmoHandleCount(); ++i ) {
+		if( f.ctrl->GizmoHandleKind( i )
+		    == static_cast<int>( SceneEditController::GizmoHandle::Kind::ScreenCenter ) ) {
+			center = static_cast<int>( i );
+			break;
+		}
+	}
+	Check( center >= 0, "concurrent-shrink ScreenCenter handle exists" );
+	if( center < 0 ) return;
+	const Point2 down( f.ctrl->GizmoHandleScreenX( static_cast<unsigned int>( center ) ),
+	                   f.ctrl->GizmoHandleScreenY( static_cast<unsigned int>( center ) ) );
+	Check( f.ctrl->OnPanePointerDown( 3, down ), "pane-3 pointer gesture starts" );
+	f.ctrl->BeginPropertyScrub();
+	int phase = -1;
+	unsigned int expectedMotionDivisor = 0;
+	Check( f.ctrl->GetPaneRefinementStatus( 3, phase, expectedMotionDivisor )
+	    && expectedMotionDivisor > 1,
+	       "precondition: property scrub establishes a motion divisor on pane 3" );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::OnePlusTwo ),
+	       "shrink finalizes hidden pointer gesture while property scrub remains active" );
+	unsigned int divisor = 0;
+	Check( f.ctrl->GetPaneRefinementStatus( 0, phase, divisor )
+	    && divisor == expectedMotionDivisor,
+	       "MONEY (j2c/T0): surviving scrub transfers the exact motion divisor to unpinned pane 0" );
+	f.ctrl->ClearSequence();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "surviving scrub edit renders once" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		Check( seq.size() == 1 && seq[0] == 0,
+		       "surviving property scrub keeps the edit on new current pane 0" );
+	}
+	f.ctrl->EndPropertyScrub();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
+	       "concurrent-shrink scrub End resumes all three panes" );
+	Check( f.ctrl->SettlesAt( 4, kSettleMs ),
+	       "concurrent-shrink recovery quiesces" );
 }
 
 //----------------------------------------------------------------------
@@ -930,6 +1542,11 @@ int main()
 	RunRotationOrderTest();
 	RunPaneLocalInvalidationTest();
 	RunGesturePinningTest();
+	RunVariantGizmoGestureDoesNotSpinTest();
+	RunVariantPropertyScrubRecoveryTest();
+	RunStopRecoversLostPointerUpTest();
+	RunPausePreservesPolishStateTest();
+	RunMidGesturePaneSwitchRefusedTest();
 	RunSingleLayoutBaselineTest();
 	RunHiddenPaneNeverRendersTest();
 	RunLayoutGrowWakesLoopTest();
@@ -937,6 +1554,7 @@ int main()
 	RunPaneIndexedGestureTest();
 	RunShrinkCancelsHiddenPaneTest();
 	RunShrinkFinalizesHiddenGestureTest();
+	RunShrinkPreservesUnrelatedPropertyScrubTest();
 	RunLayoutSnapshotsDoNotBlockParkedRenderTest();
 	RunPaneZeroAliasUnderSecondaryPrimaryTest();
 	RunUnindexedNavAliasesPaneZeroTest();

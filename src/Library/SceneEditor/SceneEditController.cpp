@@ -904,40 +904,110 @@ void SceneEditController::StopInteractive()
 	// Review-round-1 P1: see Start() / mLifecycleMutex's doc.
 	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
 
-	bool expected = true;
-	if( !mRunning.compare_exchange_strong( expected, false ) )
+	const bool wasRunning = mRunning.exchange( false, std::memory_order_acq_rel );
+	if( wasRunning )
 	{
-		return;  // interactive loop was not running
+		// Trip cancel BEFORE notifying.  Hold mMutex around the wakeup to
+		// prevent a lost wakeup: if we notified outside the lock, the
+		// render thread could be between its predicate check and the
+		// kernel park inside cv.wait, and miss the notify forever — which
+		// would deadlock join() below.  C++ guarantees no missed wakeups
+		// only when the notifier has held the mutex used by the waiter.
+		// Serialize against a direct render's admission/reset handshake. If a
+		// direct occupant is already active, preserve this explicit lifecycle
+		// cancellation across the Reset() it performs after parking the current
+		// interactive pass. A direct call admitted later is not a target of this
+		// StopInteractive invocation.
+		{
+			std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+			std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+			if( mDirectRenderCallCount > 0 )
+			{
+				mDirectRenderCancelRequested.store( true, std::memory_order_release );
+			}
+			mCancelProgress.RequestCancel();
+		}
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+		}
+		mCV.notify_one();
+
+		if( mRenderThread.joinable() )
+		{
+			mRenderThread.join();
+		}
 	}
 
-	// Trip cancel BEFORE notifying.  Hold mMutex around the wakeup to
-	// prevent a lost wakeup: if we notified outside the lock, the
-	// render thread could be between its predicate check and the
-	// kernel park inside cv.wait, and miss the notify forever — which
-	// would deadlock join() below.  C++ guarantees no missed wakeups
-	// only when the notifier has held the mutex used by the waiter.
-	// Serialize against a direct render's admission/reset handshake. If a
-	// direct occupant is already active, preserve this explicit lifecycle
-	// cancellation across the Reset() it performs after parking the current
-	// interactive pass. A direct call admitted later is not a target of this
-	// StopInteractive invocation.
+	// T0 review: lifecycle teardown is a gesture-cancellation boundary.
+	// Window/view teardown can discard PointerUp / EndPropertyScrub, and a
+	// stale gesture flag would permanently pin a later Start() to one pane
+	// (as well as refusing coordinated renders).  The render thread is joined,
+	// so finalize any live edit, close the matching composites, and publish a
+	// deferred edit for the next Start() to repaint every visible pane.
+	// This cleanup is intentionally idempotent even when `wasRunning` is
+	// false: property/pointer edits are supported while refinement is paused,
+	// so Pause -> gesture -> lost release -> repeated Stop must sanitize the
+	// interaction before Resume starts a new render thread.
+	std::unique_lock<std::recursive_mutex> cleanupAdmission(
+		mRenderAdmissionMutex, std::defer_lock );
+	// Admission is held only for the brief claim/refusal transition, never for
+	// a render's duration.  Wait it out even on an idempotent stop: a paused
+	// lost gesture may be the very reason a concurrent render claim refuses,
+	// and returning on try_lock failure would leave neither side clearing it.
+	// The owner-state check below is what avoids the render-duration mMutex
+	// wait after a claim succeeds.
+	cleanupAdmission.lock();
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 	{
-		std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
-		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
-		if( mDirectRenderCallCount > 0 )
-		{
-			mDirectRenderCancelRequested.store( true, std::memory_order_release );
-		}
-		mCancelProgress.RequestCancel();
+		// Coordinated renders can hold mMutex for their whole duration.  They
+		// cannot coexist with a live gesture (the same admission gate refuses
+		// one side), so a repeated already-stopped call has nothing to clean and
+		// must return promptly instead of waiting minutes.  Saving is
+		// deliberately NOT an owner here: it writes an immutable snapshot with
+		// mMutex released, can coexist with a paused lost gesture, and its final
+		// head-equality check correctly leaves the scene dirty if this cleanup
+		// commits that gesture while IO is in flight.
+		return;
 	}
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
-	}
-	mCV.notify_one();
-
-	if( mRenderThread.joinable() )
-	{
-		mRenderThread.join();
+		const bool hadPending =
+			mEditor.HasPendingCstObjectTransforms()
+			|| mEditor.HasPendingCstCameraPose();
+		const bool hadInteraction =
+			mPointerDown.load( std::memory_order_acquire )
+		 || mScrubInProgress.load( std::memory_order_acquire )
+		 || mGestureOpenedComposite
+		 || mScrubOpenedComposite
+		 || hadPending;
+		if( hadInteraction )
+		{
+			if( hadPending )
+			{
+				mEditor.CommitPendingCstObjectTransforms();
+				mEditor.CommitPendingCstCameraPose();
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			}
+			if( mGestureOpenedComposite )
+			{
+				mEditor.EndComposite();
+				mGestureOpenedComposite = false;
+			}
+			if( mScrubOpenedComposite )
+			{
+				mEditor.EndComposite();
+				mScrubOpenedComposite = false;
+			}
+			mPointerDown.store( false, std::memory_order_release );
+			mScrubInProgress.store( false, std::memory_order_release );
+			mGizmoDrag.active = false;
+			SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+			mPolishState.store( static_cast<int>( PolishState::None ),
+			                    std::memory_order_release );
+			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+			mEditPending.store( true, std::memory_order_release );
+		}
 	}
 }
 
@@ -2344,18 +2414,23 @@ void SceneEditController::OnPointerMove( const Point2& px )
 void SceneEditController::OnPointerUp( const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
-	// Closing mPointerDown is itself an admission transition: without
-	// this lock a render could claim the gate after the false store but
-	// before the pending CST/composite finalization acquired mMutex.
+	// Closing mPointerDown is itself an admission transition.  Keep the
+	// admission lock through CST/composite finalization and final-pass arming
+	// so a coordinated render cannot claim the scene in between.
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	(void)px;
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
-	mPointerDown.store( false, std::memory_order_release );
 
-	bool notifyAfterFinalize = false;
+	const bool wasMotion =
+		IsCameraMotionTool( mTool ) || IsObjectMotionTool( mTool );
 	{
-		// Finalize the whole gesture under one controller critical section.
+		// Finalize and arm the whole gesture under one controller critical
+		// section.  In particular, pointerDown=false, the all-pane edit wake,
+		// and FinalRegularRunning MUST be one atomic scheduler transition:
+		// otherwise the render thread can switch to a dirty sibling between a
+		// KickRender and the polish store, landing the marker on the wrong
+		// pane's live register after that sibling already snapshotted None.
 		// Keep its composite OPEN while waiting for the render to park: wait()
 		// releases mMutex, and the open composite makes an agent D2 that enters
 		// during that interval refuse/retry instead of replacing the scene
@@ -2389,9 +2464,7 @@ void SceneEditController::OnPointerUp( const Point2& px )
 			// `mEditPending` set unconditionally after this block.
 			mEditor.CommitPendingCstObjectTransforms();   // object gizmo drag -> `matrix` param
 			mEditor.CommitPendingCstCameraPose();          // camera orbit/pan/zoom/roll -> pose params
-			mEditPending.store( true, std::memory_order_release );
 			mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
-			notifyAfterFinalize = true;
 		}
 
 		// Close the composite only AFTER the persistence flush.  This also
@@ -2400,51 +2473,26 @@ void SceneEditController::OnPointerUp( const Point2& px )
 			mEditor.EndComposite();
 			mGestureOpenedComposite = false;
 		}
-	}
-	if( notifyAfterFinalize ) mCV.notify_one();
-	// Always clear the drag state (incl. the armed-but-no-motion case).
-	mGizmoDrag.active = false;
 
-	// Whether to queue the 4-SPP polish pass after the regular 1-SPP final pass.
-	const bool wasMotion =
-		IsCameraMotionTool( mTool ) || IsObjectMotionTool( mTool );
-
-	// Mouse up — return to full resolution so the user sees a sharp
-	// final image.  Kick the render thread so the scale=1 pass runs
-	// immediately rather than waiting for the next edit.  Then queue
-	// the polish pass: KickRender resets polish state to None, so we
-	// store FinalRegularRunning AFTER kicking — RenderLoop's post-pass
-	// logic will see this state and chain the 4-SPP polish pass.
-	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
-	KickRender();
-	// External review P2 fix: a BeautyVariant mode (mPreviewScalePinned --
-	// see its header doc) renders at a FIXED spp/divisor with its own OIDN
-	// policy baked into CreateBeautyVariantPipeline -- there is no 1-SPP-
-	// then-4-SPP-polish refinement ladder for it to chain, so queuing
-	// FinalRegularRunning here would just make RenderLoop's post-roll
-	// (polishStateBefore == FinalRegularRunning) schedule a second,
-	// identical full pass + polish/denoise pass against mVariantRasterizer
-	// for no visual gain -- pure wasted work, and it misreports the pass
-	// as still-refining (see GetRefinementStatus's variant carve-out).
-	// KickRender() just above already reset mPolishState to None (its own
-	// idiom for "no polish is owed"); leave it there instead of overriding
-	// to FinalRegularRunning when a variant mode is active.
-	// review-r4 (pre-existing, first staked on by the round-3 count-exact
-	// test): this store used to run UNLOCKED, while every other
-	// mPolishState touch is serialized under mMutex.  Two hazards: (a) the
-	// render thread's SwitchToPaneLocked_ could save/load mPolishState
-	// concurrently, so the FinalRegularRunning could land on a DIFFERENT
-	// pane's restored register than the gestured one (a real N-up
-	// mis-mark, not just test flake); (b) the round-3 exactly-3-passes
-	// assertion could false-fail if the switch read None before this store
-	// landed.  Under mMutex both orderings serialize: the gesture pin
-	// keeps the gestured pane current until mPointerDown clears, and this
-	// lock ensures no switch interleaves with the store.
-	if( wasMotion && !mPreviewScalePinned.load( std::memory_order_acquire ) ) {
-		std::lock_guard<std::mutex> lk( mMutex );
-		mPolishState.store( static_cast<int>( PolishState::FinalRegularRunning ),
-		                    std::memory_order_release );
+		// Always clear the drag state (including armed-without-motion), snap
+		// to final quality, and resume the deferred all-pane rotation.
+		mGizmoDrag.active = false;
+		SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+		const PolishState finalState =
+			( wasMotion && !mPreviewScalePinned.load( std::memory_order_acquire ) )
+			? PolishState::FinalRegularRunning : PolishState::None;
+		mPolishState.store( static_cast<int>( finalState ), std::memory_order_release );
+		mPointerDown.store( false, std::memory_order_release );
+		mEditPending.store( true, std::memory_order_release );
+		if( mRendering.load( std::memory_order_acquire ) )
+		{
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
 	}
+	mCV.notify_one();
+	ForTest_OnPointerUpAfterFinalRenderArmed();
 }
 
 // Direct controls -----------------------------------------------------
@@ -2589,10 +2637,10 @@ void SceneEditController::BeginPropertyScrub()
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 			return;
 		std::lock_guard<std::mutex> lk( mMutex );
+		SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
+		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 		mScrubInProgress.store( true, std::memory_order_release );
 	}
-	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
-	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 }
 
 void SceneEditController::EndPropertyScrub()
@@ -6901,11 +6949,30 @@ void SceneEditController::RenderLoop()
 		// but only after this flag clears (otherwise gestureActive
 		// stays true and the during-motion adaptation re-bumps the
 		// scale on every refinement pass).
-		if( mScrubInProgress.load( std::memory_order_acquire ) ) {
-			const long long sinceEditMs =
-				NowMs() - mLastEditTimeMs.load( std::memory_order_acquire );
-			if( sinceEditMs > kScrubWatchdogMs ) {
-				mScrubInProgress.store( false, std::memory_order_release );
+		{
+			// Re-check the flag AND age under the same lock BeginPropertyScrub
+			// uses to publish its refreshed timestamp + true flag.  Without
+			// this serialization, a stale watchdog observation could clear a
+			// newly-begun scrub that refreshed the timestamp concurrently.
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mScrubInProgress.load( std::memory_order_acquire ) )
+			{
+				const long long sinceEditMs =
+					NowMs() - mLastEditTimeMs.load( std::memory_order_acquire );
+				if( sinceEditMs > kScrubWatchdogMs )
+				{
+					// A lost EndPropertyScrub must perform the same scheduler
+					// recovery as the real End: restore final quality and mint
+					// an all-visible-pane repaint now.  Merely clearing the pin
+					// strands dirty siblings forever for a pinned BeautyVariant,
+					// because its idle-refinement branch intentionally skips.
+					mScrubInProgress.store( false, std::memory_order_release );
+					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					mPolishState.store( static_cast<int>( PolishState::None ),
+					                    std::memory_order_release );
+					MarkAllVisiblePanesDirtyLocked_();
+					rotationTick = true;
+				}
 			}
 		}
 
@@ -7164,6 +7231,7 @@ void SceneEditController::RenderLoop()
 				thisPassJobId = mCurrentRenderJob.id;
 			}
 		}
+		ForTest_OnInteractivePassMinted();
 
 		// Fix-round-4 P3-1: RAII active-flip guard around the pass itself,
 		// matching the shape RunPreviewRenderParked's ActiveFlipGuard and
@@ -7329,12 +7397,26 @@ void SceneEditController::RenderLoop()
 		// to them (PickNextVisiblePaneLocked_'s priority order).  Under
 		// mMutex: AnyVisiblePaneHasWorkLocked_ reads pane slots.  No
 		// notify needed -- this is the loop's own thread; the predicate is
-		// evaluated on wait entry.  Gesture activity does NOT suppress the
-		// arm: the pick pins to the gestured pane while the gesture lasts,
-		// and the armed flag lets the rotation resume the moment it ends.
+		// evaluated on wait entry.
+		//
+		// T0 (2026-07-24): DO suppress the self-arm while a gesture pins the
+		// scheduler.  The old code armed for dirty sibling panes, then
+		// PickNextVisiblePaneLocked_ honored gesture exclusivity and picked
+		// the CURRENT pane again.  Its dirty bit had already been consumed
+		// at mint, but the siblings stayed dirty, so completion armed again:
+		// an infinite render loop on the pinned pane until pointer-up.  A
+		// BeautyVariant made this look like a hard GUI hang because every
+		// useless iteration was a fixed 12-SPP/OIDN pass.  Pointer-up publishes
+		// its final edit wake atomically with gesture closure, and
+		// EndPropertyScrub calls KickRender(); both resume deferred sibling
+		// rotation immediately.  Each in-gesture edit already carries its own
+		// explicit kick, so no useful pass is lost by waiting here.
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
-			if( AnyVisiblePaneHasWorkLocked_() )
+			const bool gestureActive =
+				mPointerDown.load( std::memory_order_acquire )
+			 || mScrubInProgress.load( std::memory_order_acquire );
+			if( !gestureActive && AnyVisiblePaneHasWorkLocked_() )
 			{
 				mPanePassPending.store( true, std::memory_order_release );
 			}
@@ -8342,6 +8424,12 @@ bool SceneEditController::SetViewportPose( const CameraSnapshot& pose, unsigned 
 	// without needlessly cancelling an in-flight preview pass.
 	const unsigned int targetPane = ( pane == kViewportNavPrimary ) ? mPrimaryPane : pane;
 	if( targetPane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   || mScrubInProgress.load( std::memory_order_acquire ) )
+	 && targetPane != mCurrentPane )
+	{
+		return false;   // gesture exclusivity: never switch live pane registers mid-gesture
+	}
 
 	// Cancel-and-park: the render thread reads mViewportOverrideCamera at the top
 	// of a pass; we must swap it while no pass is in flight.
@@ -8395,6 +8483,12 @@ bool SceneEditController::ExitFreeFly( unsigned int pane )
 	// wrappers forward `pane` raw, so an out-of-range index would OOB-index
 	// mPaneRender/mPaneConfigs here.  Fail closed, like every other pane setter.
 	if( targetPane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   || mScrubInProgress.load( std::memory_order_acquire ) )
+	 && targetPane != mCurrentPane )
+	{
+		return false;   // gesture exclusivity: never switch live pane registers mid-gesture
+	}
 	{
 		const bool active = ( mCurrentPane == targetPane )
 			? mViewportPoseActive : mPaneRender[targetPane].poseActive;
@@ -8535,6 +8629,16 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 	// RebindEditorToJob) -- no unsynchronized read of the member, mirroring
 	// SetViewportPose's mViewportOverrideCamera contract above.
 	std::unique_lock<std::mutex> lk( mMutex );
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   || mScrubInProgress.load( std::memory_order_acquire ) )
+	 && mCurrentPane != 0 )
+	{
+		// Pane-0 mode changes force pane 0 into the live register set.  Doing
+		// that during a secondary-pane gesture would make the next Move edit
+		// pane 0's camera/scale while recording the result into the gestured
+		// pane's config.  Refuse until release instead of breaking exclusivity.
+		return false;
+	}
 	if( info->mode == mViewportRenderMode )
 	{
 		return true;   // no-op -- already the active mode
@@ -9144,10 +9248,17 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	// mark that primary dirty so it repaints.
 	else if( newVisible < oldVisible )
 	{
-		const bool gestureActive = mPointerDown.load( std::memory_order_acquire )
-		                        || mScrubInProgress.load( std::memory_order_acquire );
+		const bool pointerGestureActive =
+			mPointerDown.load( std::memory_order_acquire );
+		const bool propertyScrubActive =
+			mScrubInProgress.load( std::memory_order_acquire );
 		const bool currentHidden = ( mCurrentPane >= newVisible );
-		const bool gestureHidden = gestureActive && ( mGesturePane >= newVisible );
+		// mGesturePane belongs only to pointer gestures.  A property scrub
+		// has no pane token and pins the currently scheduled pane; consulting a
+		// stale pointer gesture's pane here spuriously terminated an unrelated
+		// later scrub when a layout shrink hid that old pane.
+		const bool gestureHidden =
+			pointerGestureActive && ( mGesturePane >= newVisible );
 		if( currentHidden || gestureHidden )
 		{
 			// Park FIRST so the gesture finalization + the switch below run
@@ -9183,13 +9294,23 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 					}
 					mGizmoDrag.active = false;
 					mPointerDown.store( false, std::memory_order_release );
-					mScrubInProgress.store( false, std::memory_order_release );
-					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					if( !propertyScrubActive )
+					{
+						SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					}
 					mPolishState.store( static_cast<int>( PolishState::None ),
 					                    std::memory_order_release );
 			}
 			if( mCurrentPane >= newVisible ) {
 				SwitchToPaneLocked_( mPrimaryPane );
+			}
+			if( propertyScrubActive )
+			{
+				// The pointer gesture ended because its pane disappeared, but
+				// an independent property scrub remains live.  Re-establish its
+				// motion divisor on the newly loaded visible-pane registers;
+				// otherwise the next scrub tick runs an accidental full-res pass.
+				SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 			}
 			mPaneRender[mPrimaryPane].dirty = true;
 			mPanePassPending.store( true, std::memory_order_release );
