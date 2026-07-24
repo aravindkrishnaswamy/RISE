@@ -4809,9 +4809,12 @@ bool SceneEditController::RunPreviewRenderParked(
 		return false;
 	}
 
-	// Admission is a short outer lock, not a render-duration lock. It makes
-	// "gate is clear -> acquire mMutex -> publish gate" atomic against UI
-	// gesture/save entry points and the dedicated worker's submit path.
+	// Admission is a short outer lock, not a render-duration lock. Claim the
+	// gate BEFORE waiting for mMutex, then release admission immediately.
+	// This is load-bearing for UI responsiveness: an interactive BeautyVariant
+	// pass can hold mRendering for much longer than the cheap preview path. If
+	// this thread waited for that pass while still holding admission, every UI
+	// callback serialized by admission would queue behind the whole pass.
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	// The dedicated agent/production worker claims this gate before it
 	// acquires mMutex. A direct camera/film-override preview must not slip
@@ -4825,32 +4828,19 @@ bool SceneEditController::RunPreviewRenderParked(
 			"SceneEditController: preview render refused while another coordinated render is queued or running." );
 		return false;
 	}
-	std::unique_lock<std::mutex> lk( mMutex );
-	// BeginTransaction publishes mTxnOpen while holding this same mutex.
-	// Recheck after acquiring it to close false -> Begin -> render between
-	// the prompt atomic check above and this critical section.
-	if( mTxnOpen.load( std::memory_order_acquire ) )
-	{
-		GlobalLog()->PrintEx( eLog_Warning,
-			"SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
-		return false;
-	}
-	// Camera/film-override agent renders use this direct parked path rather
-	// than the dedicated coordinator worker. They must obey the same
-	// gesture exclusion rule: otherwise pointer-up returns while
-	// mRenderOwnsScene is true and leaves the EditHistory composite open.
-	if( mPointerDown.load( std::memory_order_acquire )
+	// Every controller path that opens a transaction/gesture/save takes this
+	// same admission lock. Check those published states before claiming the
+	// gate, so a render never strands an already-open gesture while it parks
+	// the interactive pass. IsCompositeOpen additionally catches direct
+	// SceneEditor test/tooling use that did not originate in the controller.
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mSaving.load( std::memory_order_acquire )
+	 || mPointerDown.load( std::memory_order_acquire )
 	 || mScrubInProgress.load( std::memory_order_acquire )
 	 || mEditor.IsCompositeOpen() )
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
-			"SceneEditController: preview render refused while an editor gesture is open." );
-		return false;
-	}
-	if( mSaving.load( std::memory_order_acquire ) )
-	{
-		GlobalLog()->PrintEx( eLog_Warning,
-			"SceneEditController: preview render refused while a save is in progress." );
+			"SceneEditController: preview render refused while an editor transaction, gesture, or save is open." );
 		return false;
 	}
 	mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
@@ -4864,7 +4854,41 @@ bool SceneEditController::RunPreviewRenderParked(
 		}
 	} directAdmissionGuard{ *this };
 	admissionLk.unlock();
-	CancelAndParkRender_( lk );
+
+	// Trip cancellation without first taking mMutex. The render loop needs
+	// that mutex only for its completion transition; acquiring it before the
+	// cancel would make this admission handshake wait for the pass naturally.
+	bool interactiveCancelSent = false;
+	if( mRendering.load( std::memory_order_acquire ) )
+	{
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		interactiveCancelSent = true;
+	}
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( !interactiveCancelSent && mRendering.load( std::memory_order_acquire ) )
+	{
+		// A pass may have crossed its final gate check just before our gate
+		// claim and published mRendering while we were acquiring mMutex.
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	// Defensive post-park validation. Controller-owned state cannot have
+	// opened after the gate claim (all such paths now refuse under
+	// admission), but direct SceneEditor test/tooling access is outside that
+	// contract and must still fail closed rather than render mid-composite.
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mSaving.load( std::memory_order_acquire )
+	 || mPointerDown.load( std::memory_order_acquire )
+	 || mScrubInProgress.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused because editor state changed during admission." );
+		return false;
+	}
 
 	RenderJobId jobId;
 	{

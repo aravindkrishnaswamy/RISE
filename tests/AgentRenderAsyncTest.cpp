@@ -188,6 +188,33 @@ private:
 	unsigned int      mSimulatedRenderMs;
 };
 
+// Admission responsiveness seam: hold an interactive pass open even after
+// it observes cancellation. A direct parked render must release the narrow
+// admission mutex BEFORE waiting for this pass to drain, so UI callbacks can
+// see the published render gate and refuse promptly rather than queueing
+// behind the deliberately stalled cancellation.
+class DelayedInteractiveCancelController : public SceneEditController
+{
+public:
+	explicit DelayedInteractiveCancelController( IJobPriv& job )
+	: SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	std::atomic<bool> passEntered{ false };
+	std::atomic<bool> cancelObserved{ false };
+	std::atomic<bool> allowPassExit{ false };
+
+protected:
+	void DoOneRenderPass() override
+	{
+		passEntered.store( true, std::memory_order_release );
+		while( !IsCancelRequested() )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		cancelObserved.store( true, std::memory_order_release );
+		while( !allowPassExit.load( std::memory_order_acquire ) )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+};
+
 // A Job subclass whose Rasterize() override participates in the SAME
 // ConcurrencyProof counter around the REAL base Job::Rasterize() call --
 // this is the exact call site AgentSession::RenderCore_'s doRenderWork
@@ -4897,6 +4924,49 @@ static void RunGestureRenderAdmissionTest()
 	Check( direct.WaitForRenderJob( coordinatedId, 2000 ),
 	       "z6: coordinated running-render probe completes after release" );
 	direct.Stop();
+
+	// A direct parked render also has to cancel any interactive pass already
+	// in flight. Keep that pass deliberately stalled AFTER it observes the
+	// cancel and prove the direct caller does not retain admission while it
+	// waits. Retaining admission here wedges every guarded UI callback for
+	// the full cancellation delay even though the render gate is already
+	// published and the callback should simply refuse.
+	DelayedInteractiveCancelController delayedCancel( *pJob );
+	delayedCancel.Start( /*suppressInitialRender=*/false );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !delayedCancel.passEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( delayedCancel.passEntered.load( std::memory_order_acquire ),
+	       "z6: delayed-cancel interactive pass is running" );
+	std::atomic<bool> parkedDirectReturned{ false };
+	std::thread parkedDirectThread( [&] {
+		const bool ok = delayedCancel.RunPreviewRenderParked( [] {} );
+		parkedDirectReturned.store( ok, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !delayedCancel.cancelObserved.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( delayedCancel.cancelObserved.load( std::memory_order_acquire ),
+	       "z6: direct parked render requested interactive cancellation" );
+	Check( RunWatchdogged( "UI callback while direct admission waits for interactive cancellation", 200, [&] {
+		       delayedCancel.OnTimeScrubBegin();
+	       } ),
+	       "MONEY (z6): direct render releases admission before waiting for an interactive pass to drain" );
+	Check( !delayedCancel.Editor().IsCompositeOpen(),
+	       "MONEY (z6): the prompt callback observes the render gate and leaves no scrub composite" );
+	delayedCancel.allowPassExit.store( true, std::memory_order_release );
+	parkedDirectThread.join();
+	Check( parkedDirectReturned.load( std::memory_order_acquire ),
+	       "z6: direct parked render proceeds after the cancelled interactive pass drains" );
+	delayedCancel.Stop();
 
 	pJob->release();
 	std::remove( scenePath.c_str() );
