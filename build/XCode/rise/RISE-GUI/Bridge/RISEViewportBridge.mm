@@ -1148,9 +1148,10 @@ private:
     return static_cast<RISEViewportLayout>(out);
 }
 
-- (void)setViewportLayout:(RISEViewportLayout)layout {
-    if (!_controller) return;
-    RISE_API_SceneEditController_SetViewportLayout(_controller, static_cast<int>(layout));
+- (BOOL)applyViewportLayout:(RISEViewportLayout)layout {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_SetViewportLayout(
+        _controller, static_cast<int>(layout)) ? YES : NO;
 }
 
 - (NSUInteger)primaryPane {

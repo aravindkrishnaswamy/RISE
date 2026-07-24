@@ -140,8 +140,15 @@ struct ViewportLayoutPicker: View {
         HStack(spacing: 2) {
             ForEach(ViewportLayoutOption.allCases) { option in
                 Button {
-                    layout = option
-                    bridge.viewportLayout = option.bridgeValue
+                    // Layout admission is fallible: a coordinated render
+                    // can start after the toolbar's enabled-state snapshot.
+                    // Publish the SwiftUI mirror only after the controller
+                    // accepts the mutation, otherwise ContentView would
+                    // construct panes the core never made visible and its
+                    // onChange handler would clear region state spuriously.
+                    if bridge.setViewportLayout(option.bridgeValue) {
+                        layout = option
+                    }
                 } label: {
                     LayoutGlyph(option: option, isSelected: layout == option)
                         .frame(width: 24, height: 18)

@@ -365,7 +365,13 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
 
 /// The active N-up layout.  Defaults to Single (matches the
 /// controller's construction default) when no controller is attached.
-@property (nonatomic) RISEViewportLayout viewportLayout;
+/// Mutations are explicitly fallible: a coordinated render may acquire
+/// admission after the toolbar was enabled but before the click reaches
+/// the controller, so callers must update their local UI state only when
+/// this method returns YES.
+@property (nonatomic, readonly) RISEViewportLayout viewportLayout;
+- (BOOL)applyViewportLayout:(RISEViewportLayout)layout
+    NS_SWIFT_NAME(setViewportLayout(_:));
 
 /// The primary pane index (0-3; §7.8 decision 1: a non-navigation
 /// click in any pane promotes it).  0 when no controller is attached.
