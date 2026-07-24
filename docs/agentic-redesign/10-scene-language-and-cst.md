@@ -807,7 +807,9 @@ earlier "seven `> modify`" census, which used a naive non-comment-aware line gre
 - **`> load` and `> run` are deprecated and removed from v7 (D7).** The one-shot v6→v7 migrator
   (§6 / Facet 6) **flattens** every include/run by inlining the referenced content into the
   consuming document — e.g. the shared `standard_colors` painters (`> run
-  scenes/colors.RISEscript` → `load scenes/standard_colors.RISEscene`) are inlined where used.
+  scenes/colors.RISEscript` → `load scenes/standard_colors.RISEscene`) were
+  inlined where used; those include-era support files were removed from the
+  public corpus after the native-v7 cutover.
 - **`> set` becomes declarative, by form (D19/D27).** The migrator rewrites each `> set` into a
   declarative target:
   - *Structural settings* — `> set accelerator B 10 8` → an `acceleration { … }` chunk; the global

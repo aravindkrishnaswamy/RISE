@@ -1,7 +1,7 @@
 # SMS Photon-Aided Seeding: Two Latent Correctness Bugs + The Real Limit on Displaced Geometry
 
 **Captured:** 2026-05-03 on the displaced Veach egg
-(`scenes/FeatureBased/MLT/mlt_veach_egg_pt_sms_displaced.RISEscene` — outer
+(`scenes/Tests/SMS/sms_veach_egg_displaced.RISEscene` — outer
 glass shell + interior `air_cavity` dielectric + interior point luminaire,
 displaced via `perlin2d_painter` at varying `disp_scale`).  Diagnostic
 gates: `SMS_DIAG_ENABLED=1` in
@@ -294,7 +294,7 @@ Captured in
 make -C build/make/rise -j8 all
 
 # 2. Generate the disp 0..10 sweep at 100×100 (fast iteration)
-#    by editing mlt_veach_egg_pt_sms_displaced.RISEscene's
+#    by editing sms_veach_egg_displaced.RISEscene's
 #    `disp_scale` and `width/height`.  See egg_sweep/scenes_*/ for
 #    a reference set.
 

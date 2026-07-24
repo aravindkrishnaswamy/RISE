@@ -1,13 +1,12 @@
 RISE ASCII SCENE 7
+# Taxonomy: focused animation/caustic regression.
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           cornellbox_mixed_lights_bdpt.RISEscene                                                  #
-#   Description:    Same scene as cornellbox_mixed_lights_pt but rendered with BDPT.                        #
-#                   The converged images should match, validating that the unified                            #
-#                   light sampler produces the same result across both integrators.                          #
+#   File:           motion_blurred_caustic.RISEscene                                                        #
+#   Description:    Tests animations with caustics                                                          #
 #   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      March 30, 2026                                                                          #
+#   Birthdate:      May 27, 2004                                                                            #
 #                                                                                                           #
 #############################################################################################################
 
@@ -18,23 +17,26 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name		global
-	shaderop	DefaultPathTracing
+#	shaderop	DefaultDirectLighting
+	shaderop	DefaultReflection
+	shaderop	DefaultRefraction
+	shaderop	DefaultCausticPelPhotonMap
 }
 
-bdpt_pel_rasterizer
+pixelpel_rasterizer
 {
-	max_eye_depth		8
-	max_light_depth		8
-	samples				64
-	light_bvh			false
+	max_recursion		5
+	samples				16
+	lum_samples			9
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/cornellbox_mixed_bdpt_alias
+	pattern				rendered/motion_blurred_caustic
 	type				PNG
 	bpp					8
 	color_space			sRGB
+	multiple			TRUE
 }
 
 ##################################################
@@ -49,15 +51,17 @@ film
 
 pinhole_camera
 {
-	location			278 273 -800
-	lookat				278 273 200
+	location			0 0 0.5
+	lookat				0 0 0
 	up					0 1 0
-	fov					37.0
+	fov					30.0
+	exposure			0.5
 }
 
 ##################################################
 # Painters
 ##################################################
+
 #############################################################################################################
 #									RISE Ascii Scene File													#
 #																											#
@@ -90,17 +94,7 @@ uniformcolor_painter
 
 
 
-uniformcolor_painter
-{
-	name		color_cornellgreen
-	color		0.15 0.5 0.15
-}
 
-uniformcolor_painter
-{
-	name		color_cornellred
-	color		0.64 0.15 0.1
-}
 
 
 
@@ -131,89 +125,88 @@ uniformcolor_painter
 
 
 
-
-
-
-
-
-
-	
-	
-
-	
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 uniformcolor_painter
 {
-	name				pnt_light
-	color				1.0 0.9 0.7
+	name		color_gold
+	color		0.8 0.498039 0.196078 
 }
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ##################################################
 # Materials
@@ -225,173 +218,103 @@ lambertian_material
 	reflectance			color_white
 }
 
-lambertian_material
+perfectrefractor_material
 {
-	name				green
-	reflectance			color_cornellgreen
-}
-
-lambertian_material
-{
-	name				red
-	reflectance			color_cornellred
+	name				glass
+	refractance			color_gold
+	ior					1.45
 }
 
 lambertian_luminaire_material
 {
 	name				white_lum
-	exitance			pnt_light
-	scale				50.0
+	exitance			color_white
+	scale				30.0
 	material			none
 }
 
 ##################################################
-# Lights — one point light (delta) for testing
-# unified sampler with mixed light types
+# Objects
 ##################################################
 
-omni_light
+sphere_geometry
 {
-	name				pointlight
-	power				150000.0
-	color				0.7 0.8 1.0
-	position			150 400 200
-}
-
-##################################################
-# Objects - walls
-##################################################
-
-clippedplane_geometry
-{
-	name				floorgeom
-	pta					552.8 0 0
-	ptb					0 0 0
-	ptc					0 0 559.2
-	ptd					549.6 0 559.2
-}
-
-clippedplane_geometry
-{
-	name				ceilinggeom
-	pta					556.0 548.8 0.0
-	ptb					556.0 548.8 559.2
-	ptc					0 548.8 559.2
-	ptd					0.0 548.8 0.0
-}
-
-clippedplane_geometry
-{
-	name				bwallgeom
-	pta					549.6 0 559.2
-	ptb					0 0 559.2
-	ptc					0 548.8 559.2
-	ptd					556.0 548.8 559.2
-}
-
-clippedplane_geometry
-{
-	name				rwallgeom
-	pta					0 0 559.2
-	ptb					0 0 0
-	ptc					0 548.8 0.0
-	ptd					0 548.8 559.2
-}
-
-clippedplane_geometry
-{
-	name				lwallgeom
-	pta					552.8 0 0
-	ptb					549.6 0 559.2
-	ptc					556.0 548.8 559.2
-	ptd					556.0 548.8 0
-}
-
-# Smaller ceiling light — half the area to balance with the point light
-clippedplane_geometry
-{
-	name				lightgeom
-	pta					320.0 548.7999 260.0
-	ptb					320.0 548.7999 320.0
-	ptc					240.0 548.7999 320.0
-	ptd					240.0 548.7999 260.0
+	name			spheregeom
+	radius			0.05
 }
 
 standard_object
 {
-	name				floor
-	geometry			floorgeom
+	name				sphere
+	geometry			spheregeom
+	position			-0.1 0 0.0
+	material			glass
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				1.0
+	ytile				1.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0 -0.1 0
+	orientation			-90 0 0
 	material			white
 }
 
-standard_object
+clippedplane_geometry
 {
-	name				ceiling
-	geometry			ceilinggeom
-	material			white
+	name				lightgeom2
+	pta					-0.1 0.1 0.0
+	ptb					-0.1 -0.1 0.0
+	ptc					0.1 -0.1 0.0
+	ptd					0.1 0.1 0.0
 }
 
 standard_object
 {
-	name				bwall
-	geometry			bwallgeom
-	material			white
-}
-
-standard_object
-{
-	name				rwall
-	geometry			rwallgeom
-	material			green
-}
-
-standard_object
-{
-	name				lwall
-	geometry			lwallgeom
-	material			red
-}
-
-standard_object
-{
-	name				light
-	geometry			lightgeom
+	name				light2
+	geometry			lightgeom2
+	position			0 0.5 0.0
+	orientation			90 0 0
 	material			white_lum
 }
 
 ##################################################
-# Objects - blocks
+# Keyframes
 ##################################################
 
-rawmesh_geometry
+timeline
 {
-	name				tallblockgeom
-	file				models/raw/cornellbox_tallblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
+	element		sphere
+	param		position
+	
+	time		0.0
+	value		-0.1 0 0.0
+	
+	time		1.0
+	value		0.1 0 0.0
 }
 
-rawmesh_geometry
+caustic_pel_photonmap
 {
-	name				shortblockgeom
-	file				models/raw/cornellbox_shortblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
+	num					50000
+	max_recursion		5
+	min_importance		0.001
+	branch				TRUE
+	reflect				FALSE
+	refract				TRUE
+	power_scale			21.24	
 }
 
-standard_object
+caustic_pel_gather
 {
-	name				tallblock
-	geometry			tallblockgeom
-	material			white
+	max_photons			150
 }
 
-standard_object
-{
-	name				shortblock
-	geometry			shortblockgeom
-	material			white
-}
 

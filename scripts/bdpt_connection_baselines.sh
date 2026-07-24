@@ -20,7 +20,7 @@
 #   - connection Tr through media NM    : bdpt_homogeneous_fog_spectral(EvalConnectionTransmittanceNM)
 #   - s=0 env-escape + s=1 env-NEE Pel  : env_bounded_fog_bdpt         (pEnvLight, continuous-PMF, escape Tr)
 #   - NM HWSS connection bundle         : hwss_cornellbox_bdpt         (connection in HWSS mode)
-#   - MLT consumer (Gate F)             : mlt_veach_egg_bdpt           (MLT -> EvaluateAllStrategies -> ConnectAndEvaluate)
+#   - MLT consumer (Gate F)             : mlt_veach_egg                (MLT -> EvaluateAllStrategies -> ConnectAndEvaluate)
 #   - VCM Pel (Gate 6, no-touch net)    : cornellbox_vcm_simple        (VCM does NOT reach ConnectAndEvaluate)
 #   - VCM NM  (Gate 6, no-touch net)    : cornellbox_vcm_spectral
 #   - VCM env-escape (Gate 6)           : env_bounded_fog_vcm
@@ -59,7 +59,7 @@ MANIFEST=(
     "scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene:bdpt_homogeneous_fog_spectral:connTr-NM"
     "scenes/Tests/Volumes/env_bounded_fog_bdpt.RISEscene:env_bounded_fog_bdpt:envEscape+envNEE+escTr-Pel"
     "scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene:hwss_cornellbox_bdpt:NM-HWSS-connection"
-    "scenes/FeatureBased/MLT/mlt_veach_egg_bdpt.RISEscene:mlt_veach_egg_bdpt:MLT-consumer(GateF)"
+    "scenes/FeatureBased/MLT/mlt_veach_egg.RISEscene:mlt_veach_egg:MLT-consumer(GateF)"
     "scenes/Tests/VCM/cornellbox_vcm_simple.RISEscene:cornellbox_vcm_simple:VCM-Pel(Gate6-noTouch)"
     "scenes/Tests/VCM/cornellbox_vcm_spectral.RISEscene:cornellbox_vcm_spectral:VCM-NM(Gate6-noTouch)"
     "scenes/Tests/Volumes/env_bounded_fog_vcm.RISEscene:env_bounded_fog_vcm:VCM-envEscape(Gate6)"

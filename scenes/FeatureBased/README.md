@@ -21,7 +21,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `BDPT/`: large BDPT showpieces and transport stress scenes
 - `Caustics/`: visually rich caustic showcases
 - `Combined/`: scenes that intentionally exercise several subsystems together
-- `EnamelWatch/`: vitreous-enamel watch and material-calibration showcases
+- `EnamelWatch/`: the complete vitreous-enamel watch hero
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
 - `GlobalIllumination/`: heavyweight GI stress scenes
 - `GuillocheWatch/`: thin-film guilloché watch showcase and authored variants
@@ -31,6 +31,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes
 - `Shaders/`: integrated shader, volume, and SSS showcase scenes
+- `VCM/`: vertex-connection-and-merging showpieces
 
 ## Recommended Smoke Scenes
 
@@ -38,7 +39,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - Parser showcase: `Parser/pillow.RISEscene`
 - Multi-feature gallery scene: `Combined/showroom.RISEscene`
 - Caustic showcase: `Caustics/pool_caustics.RISEscene`
-- BDPT showcase: `BDPT/bdpt_jewel_vault.RISEscene`
+- BDPT showcase: `BDPT/bdpt_crystal_garden.RISEscene`
 - Path tracing showcase: `PathTracing/pt_jewel_vault.RISEscene`
 - GI stress scene: `GlobalIllumination/irradiance_cache_torture.RISEscene`
 - Volume or SSS showcase: `Shaders/visiblehuman.RISEscene` or `Shaders/SSS/sss_gi_dragon.RISEscene`
@@ -48,7 +49,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - Need a showcase-quality parser example:
   inspect `Parser/kaleidoscope_atrium.RISEscene`, `Parser/photon_cloister.RISEscene`, or `Parser/pillow.RISEscene`.
 - Need a stronger multi-system lighting scene:
-  inspect `Combined/`, `BDPT/`, or `PathTracing/`.
+  inspect `Combined/`, `BDPT/`, `PathTracing/`, or `VCM/`.
 - Need a focused one-feature example instead of a showcase:
   start in [../Tests/README.md](../Tests/README.md) instead.
 
@@ -59,4 +60,5 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - When adding a new user-visible rendering feature, consider landing two scenes:
   a focused regression scene under `scenes/Tests` and a stronger showcase scene here.
 - Keep directory names stable. If a category only contains isolated single-feature checks, that category probably belongs under `scenes/Tests` instead.
-- A handful of standalone `.RISEscene` files live directly under `scenes/` (e.g. `iorstack`, `povray_colors`, `pr`, `standard_colors`). These are ad hoc or utility scenes, not part of the organized feature suite.
+- The root-level `pr.RISEscene` is the CLI's no-argument runtime default, not
+  part of the showcase taxonomy.

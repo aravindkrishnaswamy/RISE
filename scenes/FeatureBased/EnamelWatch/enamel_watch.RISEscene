@@ -1,4 +1,4 @@
-RISE ASCII SCENE 6
+RISE ASCII SCENE 7
 #############################################################################################################
 #   File:           enamel_watch.RISEscene
 #   Description:    anOrdain-style vitreous-enamel wristwatch: a deep oxblood fume dial.  The dial is a
@@ -1417,7 +1417,7 @@ ggx_material
 #       (sigma_s 0).  Bind one of these on `enamel` instead of a fume medium; the
 #       substrate is hidden so `en_dome`/floor choice no longer matters.  OIDN is
 #       needed (multiple-scattering media are noisy).  Validated swatch:
-#       scenes/FeatureBased/EnamelWatch/enamel_grandfeu_opaque.RISEscene.
+#       scenes/FeatureBased/Materials/enamel_grandfeu_opaque.RISEscene.
 ##################################################
 
 # Gentle cobalt (opaque blue): small contrast, blue passes, red mildly absorbed.

@@ -19,6 +19,7 @@ standard_shader
 pathtracing_pel_rasterizer
 {
 	samples                       64
+	light_bvh                     false
 }
 
 file_rasterizeroutput
@@ -27,6 +28,12 @@ file_rasterizeroutput
 	type				PNG
 	bpp					8
 	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/corridor_100lights_alias
+	type				HDR
 }
 
 film
@@ -1106,5 +1113,4 @@ standard_object
 	geometry			farwallgeom
 	material			white
 }
-
 

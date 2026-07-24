@@ -1,0 +1,202 @@
+RISE ASCII SCENE 7
+# Taxonomy: flat SDF enamel control.
+
+# ---------------------------------------------------------------------------
+# enamel_dial_sdf.RISEscene — M3a of the vitreous-enamel hero modeling.
+#
+# Migrates the enamel body from a box (M2) to a CLOSED SDF HEIGHTFIELD solid,
+# so its top face is an addressable surface we can micro-displace for the
+# crystalline dimple field (M3b) -- and so the dial is a round disk, matching
+# the hero.  This step keeps the top FLAT (heightfield expr = 1) to prove the
+# SDF solid + interior_medium + dome burial reproduce the M2 Beer gradient
+# before adding the dimples.
+#
+# The SDF heightfield solid is the half-space z <= scale*f(u,v) clipped to a
+# disk of radius heightfield_radius (src/Library/Geometry/SDFGeometry.cpp Map()
+# heightfield branch), bbox-bottomed at z=0 -- a closed disk-slab.  The silver
+# sphere dome pokes up into it from below (same shallow dome as M2, shifted so
+# the enamel top sits at z=0.30):
+#   enamel top (flat)  z = 0.30
+#   dome top           z = 0.22 (centre) -> 0.077 (rim, r=1.6)
+#   thickness t(r)     = 0.30 - (-8.78 + sqrt(81 - r^2))
+#                      -> t(0)=0.08, t(1.6)=0.223   (== M2).
+#
+# Uniform white env (pure Beer, as M2).  Rendered spectral (non-HWSS NM).
+# ---------------------------------------------------------------------------
+
+uniformcolor_painter
+{
+	name pnt_env
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_white
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_black
+	color 0.0 0.0 0.0
+}
+
+scalar_painter
+{
+	name Ag_n
+	file colors/conductors/Ag.n
+}
+
+scalar_painter
+{
+	name Ag_k
+	file colors/conductors/Ag.k
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultDirectLighting
+}
+
+# Flat top: heightfield f(u,v) = 1 everywhere -> z = heightfield_scale.
+expression_function2d
+{
+	name enamel_top_flat
+	expr 1
+}
+
+# Gold-ruby sigma_a(lambda) — swatch shape scaled x8 (thin concentrated enamel,
+# sec 10.4); exact scale is the M5 calibration knob.
+piecewise_linear_function
+{
+	name goldruby_abs
+	cp 400 19.84
+	cp 420 20.88
+	cp 440 22.32
+	cp 460 25.20
+	cp 480 29.52
+	cp 500 33.84
+	cp 515 36.00
+	cp 530 34.96
+	cp 550 30.64
+	cp 570 22.32
+	cp 590 14.40
+	cp 610 8.64
+	cp 630 5.04
+	cp 650 2.88
+	cp 680 1.84
+	cp 700 1.28
+	cp 720 1.12
+}
+
+homogeneous_medium
+{
+	name goldruby
+	absorption 3.5 3.9 0.4
+	scattering 0.0 0.0 0.0
+	absorption_spectral goldruby_abs
+	phase isotropic
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples 256
+	max_volume_bounce 16
+	max_diffuse_bounce 4
+	pixel_filter box
+	nmbegin 380
+	nmend 720
+	num_wavelengths 12
+	spectral_samples 1
+	hwss false
+	radiance_map pnt_env
+	radiance_scale 1.0
+	radiance_background TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_dial_sdf
+	type PNG
+	bpp 8
+	color_space sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_dial_sdf_hdr
+	type EXR
+	color_space Rec709RGB_Linear
+}
+
+film
+{
+	width 384
+	height 384
+}
+
+pinhole_camera
+{
+	location 0 0 5
+	lookat 0 0 0
+	up 0 1 0
+	fov 40.0
+}
+
+# Fire-polished top interface: IOR 1.55, tau 1.0 (colour-neutral; sec 10.9).
+dielectric_material
+{
+	name enamel_glass
+	tau 1.0
+	ior 1.55
+	scattering 100000
+}
+
+# Measured-silver GGX conductor substrate (diffuse black sec 10.10; ambient
+# IOR = n_enamel from the IOR stack via G6).
+ggx_material
+{
+	name floor_silver
+	rd pnt_black
+	rs pnt_white
+	alphax 0.03
+	alphay 0.03
+	fresnel_mode conductor
+	ior Ag_n
+	extinction Ag_k
+}
+
+# Enamel disk: closed SDF heightfield solid, radius 1.6, flat top at z=0.30.
+sdf_geometry
+{
+	name enamelgeom
+	heightfield_function enamel_top_flat
+	heightfield_radius 1.6
+	heightfield_scale 0.30
+}
+
+# Silver dome: shallow sphere radius 9.0, top at z=0.22 (centre).
+sphere_geometry
+{
+	name domegeom
+	radius 9.0
+}
+
+standard_object
+{
+	name enamel
+	geometry enamelgeom
+	position 0 0 0
+	material enamel_glass
+	interior_medium goldruby
+}
+
+standard_object
+{
+	name dome
+	geometry domegeom
+	position 0 0 -8.78
+	material floor_silver
+}

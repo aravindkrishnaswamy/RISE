@@ -2,8 +2,12 @@
 
 **Status:** **PARTIALLY EXECUTED / HERO SHIPPED.** The spectral-medium,
 gold-ruby, glint, AR-coating, and enamel scene work described by the landed
-markers below is in the tree, with the hero and calibration scenes under
-[`scenes/FeatureBased/EnamelWatch/`](../scenes/FeatureBased/EnamelWatch/).
+markers below is in the tree. The watch hero lives under
+[`scenes/FeatureBased/EnamelWatch/`](../scenes/FeatureBased/EnamelWatch/),
+the opaque grand-feu showcase under
+[`scenes/FeatureBased/Materials/`](../scenes/FeatureBased/Materials/), and the
+focused calibration scenes under
+[`scenes/Tests/Materials/Enamel/`](../scenes/Tests/Materials/Enamel/).
 The remaining sections are the broader research plan for general
 spatially-varying enamel, not a claim that no code exists.
 

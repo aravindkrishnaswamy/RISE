@@ -27,6 +27,7 @@ standard_shader
 pathtracing_pel_rasterizer
 {
 	samples                       64
+	light_bvh                     false
 }
 
 file_rasterizeroutput
@@ -486,5 +487,4 @@ standard_object
 	material			white
 	position			250 10 250
 }
-
 

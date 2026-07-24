@@ -51,9 +51,9 @@ benchmarks:
 - `scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene` — slot-
   window single-light Cornell vault, dominant indirect, Lambertian
   walls.  Best for guiding / NEE-direct measurements.
-- `scenes/FeatureBased/BDPT/bdpt_jewel_vault.RISEscene` — same scene,
+- `scenes/Tests/BDPT/bdpt_jewel_vault.RISEscene` — same scene,
   BDPT pipeline.
-- `scenes/FeatureBased/BDPT/pt_torus_chain_atrium.RISEscene` and the
+- `scenes/Tests/PathTracing/pt_torus_chain_atrium.RISEscene` and the
   bdpt variant — refractive-heavy (glass torus chain), where
   parallax-aware VMM `eta` matters.
 - `scenes/FeatureBased/BDPT/bdpt_cloister.RISEscene` — outdoor

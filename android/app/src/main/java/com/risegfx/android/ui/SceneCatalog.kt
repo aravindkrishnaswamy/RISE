@@ -48,9 +48,9 @@ object SceneCatalog {
             description = "Parser-generated mirrored atrium — recursive reflections without external assets.",
         ),
         SceneEntry(
-            displayName = "MLT Veach Egg (VCM displaced)",
-            relativePath = "scenes/FeatureBased/MLT/mlt_veach_egg_vcm_displaced.RISEscene",
-            description = "Metropolis Light Transport on the displaced Veach-egg: caustics through a heavily-deformed dielectric shell. Slow, rewarding.",
+            displayName = "VCM Veach Egg (displaced)",
+            relativePath = "scenes/FeatureBased/VCM/vcm_veach_egg_displaced.RISEscene",
+            description = "Vertex connection and merging on a displaced Veach egg: caustics through a heavily deformed dielectric shell. Slow, rewarding.",
         ),
         SceneEntry(
             displayName = "GGX Showcase",

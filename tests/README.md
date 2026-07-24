@@ -181,8 +181,8 @@ The script generates a minimal Cornell box scene on the fly, so it does not depe
 
 - `scenes/Tests/PathTracing/pt_guiding_stress_ris.RISEscene` — small-opening stress test with RIS guiding.
 - `scenes/Tests/PathTracing/pt_indirect_test_ris.RISEscene` — indirect-only Cornell box with RIS guiding.
-- `scenes/FeatureBased/BDPT/bdpt_jewel_vault_ris.RISEscene` — BDPT jewel vault with RIS guiding.
-- `scenes/FeatureBased/PathTracing/pt_jewel_vault_guided.RISEscene` — PT jewel vault with RIS guiding.
+- `scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene` — PT jewel vault with RIS guiding.
+- `scenes/Tests/BDPT/bdpt_jewel_vault.RISEscene` — unguided BDPT comparison for the same composition.
 
 ### Adaptive Alpha
 

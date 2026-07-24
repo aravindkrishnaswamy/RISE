@@ -5,6 +5,12 @@
 **Plan**: [docs/UNIFIED_INTEGRATOR_ANALYSIS.md](UNIFIED_INTEGRATOR_ANALYSIS.md) §8.5 + §8.6
 **Branch state (session 2 end)**: commit `a4a24b85` Phase 1.A on master (additive only).  Phases 1.B–1.E were attempted and reverted after `EnvLightBalanceTest` collapsed at LAX tolerances post-refactor (11 failures vs 0 on master); see "Session 2 outcome" below.
 
+> **2026-07-24 scene-audit correction:** the historical Gate-F rows below
+> labeled `bdpt_veach_egg` as an MLT consumer, but that scene actually uses
+> `bdpt_pel_rasterizer`. Those rows are retained as historical measurements,
+> not evidence of MLT coverage. The three live baseline harnesses now use the
+> real `FeatureBased/MLT/mlt_veach_egg.RISEscene` for Gate F.
+
 ---
 
 ## TL;DR
@@ -2479,7 +2485,7 @@ Verification artifact: [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt
 | **NM std walk (non-HWSS, pSwlHWSS=NULL)** | `cornellbox_bdpt_spectral` | 0.0376% (0.0413%) |
 | **NM in-medium scatter (eye-walk)** | `bdpt_homogeneous_fog_spectral` | 0.0505% (0.0021%) |
 | **NM HWSS bundle (pSwlHWSS=&swl)** | `hwss_cornellbox_bdpt` | 0.0150% (0.0016%) |
-| MLT consumer (Gate F) | `mlt_veach_egg_bdpt` | 0.0100% (0.0179%) |
+| MLT consumer (Gate F) | `bdpt_veach_egg` | 0.0100% (0.0179%) |
 | VCM Pel consumer (Gate 6) | `cornellbox_vcm_simple` | 0.0275% (0.0254%) |
 | VCM NM consumer (Gate 6) | `cornellbox_vcm_spectral` | 0.0007% (0.0067%) |
 | VCM env-escape (Gate 6) | `env_bounded_fog_vcm` | 0.0176% (0.0979%) |
@@ -2488,7 +2494,7 @@ Verification artifact: [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt
 - **Gate 4 — recent work preserved**: `env_bounded_fog_bdpt` (escape-Tr, commit `2b58236b`) within floor; `EnvLightBalanceTest` (env-IBL continuous-PMF, commit `bb5ecc6a`) 80/80. The escape-Tr (`betaEsc = beta * EvalTransmittance{,NM}` before the synthetic env vertex's throughput) and env-IBL Path-B (ray-sphere far-root exit) are now single templated sites; both reviewers confirmed Pel/NM equivalence.
 - **Gate 5 — perf**: no path added; `if constexpr` compiles to compile-time branches, `inline` helpers to the same instruction stream. Exact-arithmetic refactor — not separately benchmarked.
 - **Gate 6 — VCM unchanged** (cross-integrator ABI): `cornellbox_vcm_simple`/`_spectral`/`env_bounded_fog_vcm` within floor; VCM unit oracles pass. VCM owns a `BDPTIntegrator` and calls `GenerateEyeSubpath{,NM}` directly (`VCMPelRasterizer.cpp:333`, `VCMSpectralRasterizer.cpp:354`) → forwarders preserve behaviour.
-- **Gate F — MLT non-regression**: `mlt_veach_egg_bdpt` 0.0100% (MLTRasterizer → `GenerateEyeSubpath`).
+- **Gate F — MLT non-regression**: `bdpt_veach_egg` 0.0100% (MLTRasterizer → `GenerateEyeSubpath`).
 - **Gate 7 — adversarial review**: see ledger.
 
 ### Divergent-path coverage map (what makes the zero-behaviour-change claim credible)
@@ -2609,7 +2615,7 @@ Pattern: *"an NM SURFACE-vertex generator omits a `PopulateRIGFromVertex`-mirror
 | **std NM + Le-conv mesh (non-HWSS)** | `cornellbox_bdpt_spectral` | 0.0222% (0.0145%) | noise (multi-trial pairwise 0.040%) |
 | **in-medium scatter NM (light-walk)** | `bdpt_homogeneous_fog_spectral` | 0.0573% (0.0057%) | noise (multi-trial pairwise 0.020%) |
 | **NM HWSS companion-Le bundle** | `hwss_cornellbox_bdpt` | 0.0020% (0.0122%) | **under floor** |
-| MLT consumer (Gate F) | `mlt_veach_egg_bdpt` | 0.0022% (0.0117%) | under floor |
+| MLT consumer (Gate F) | `bdpt_veach_egg` | 0.0022% (0.0117%) | under floor |
 | VCM Pel light-store (Gate 6) | `cornellbox_vcm_simple` | 0.0283% (0.0194%) | noise (multi-trial pairwise 0.067%) |
 | VCM NM light-store (Gate 6) | `cornellbox_vcm_spectral` | 0.0261% (0.0110%) | noise (vs-pre ≈ 2-trial floor) |
 | VCM env-escape (Gate 6) | `env_bounded_fog_vcm` | 0.0255% (0.0088%) | noise (multi-trial pairwise 0.056%) |
@@ -2621,7 +2627,7 @@ Pattern: *"an NM SURFACE-vertex generator omits a `PopulateRIGFromVertex`-mirror
 - **Gate 4 — recent work preserved**: `EnvLightBalanceTest` 80/80 (env-IBL continuous-PMF, incl. the light-subpath **`pdfSelect`** vertex-0 field which F2b preserves verbatim); the `vertex_colors_quad_{bdpt,vcm}_spectral` fixtures within noise (the **vColor fold** — the F2a-era NM vColor writes folded into the shared template with no `if constexpr`, both tags set them identically — is preserved).
 - **Gate 5 — perf**: no runtime path added; `if constexpr` compiles to compile-time branches, `inline` helpers to the same instruction stream. Exact-arithmetic refactor — not separately benchmarked (same posture as F1/F2a).
 - **Gate 6 — VCM unchanged** (cross-integrator ABI, F2b's highest risk — VCM's *entire* light-vertex store derives from this method): `cornellbox_vcm_simple`/`_spectral`/`env_bounded_fog_vcm`/`cornellbox_vcm_caustics` all within noise (the **merge** scene at floor); VCM unit oracles (`VCMLightVertexStoreTest`, `VCMLightPostPassTest`, `VCMSpectralRecurrenceTest`) pass. All 9 consumer call sites (BDPT Pel/Spectral, MLT Pel/Spectral, VCM Pel/Base/Spectral) bind to the unchanged 6-arg Pel / 8-arg NM signatures.
-- **Gate F — MLT non-regression**: `mlt_veach_egg_bdpt` 0.0022% (MLTRasterizer → `GenerateLightSubpath`).
+- **Gate F — MLT non-regression**: `bdpt_veach_egg` 0.0022% (MLTRasterizer → `GenerateLightSubpath`).
 - **Gate 7 — adversarial review**: see ledger.
 
 ### Preserved Pel/NM asymmetry — the eye/light guided-direction acceptance gate (reproduced via `Traits::max_value`, NOT fixed; a genuine pre-existing difference, behaviourally inert)
@@ -2641,7 +2647,7 @@ So the correct unification differs by family: the **eye** Impl (F2a) correctly u
 **0 P1 / 0 P2 final** (1 P2 found and fixed; 5 P3 within-noise/cosmetic). Adversarial-review stop rule satisfied — the fix is a provably-correct one-token change R2 itself recommended; no re-review round needed.
 
 ### Divergent-path coverage map
-The light subpath drives: the light-EMISSION vertex 0 across light kinds (mesh-area `cornellbox_bdpt`, env-IBL `env_bounded_fog_bdpt` + `EnvLightBalanceTest`), the surface/medium walk (`bdpt_homogeneous_fog{,_spectral}`), glossy (`cornellbox_bdpt_glossy`), both NM modes — single-λ (`cornellbox_bdpt_spectral`, `pSwlHWSS=NULL`) and HWSS bundle (`hwss_cornellbox_bdpt`, `pSwlHWSS=&swl`) — the Le-conversion preamble (mesh `emittedRadianceNM` + env `GetRadianceNM`), and **the cross-integrator consumers whose light-vertex store derives entirely from this method**: VCM connection (`cornellbox_vcm_simple/_spectral`), VCM **merge** (`cornellbox_vcm_caustics`, the F2b-specific addition vs the F2a manifest), VCM env-escape (`env_bounded_fog_vcm`), and MLT (`mlt_veach_egg_bdpt`). No divergent light-subpath path is uncovered.
+The light subpath drives: the light-EMISSION vertex 0 across light kinds (mesh-area `cornellbox_bdpt`, env-IBL `env_bounded_fog_bdpt` + `EnvLightBalanceTest`), the surface/medium walk (`bdpt_homogeneous_fog{,_spectral}`), glossy (`cornellbox_bdpt_glossy`), both NM modes — single-λ (`cornellbox_bdpt_spectral`, `pSwlHWSS=NULL`) and HWSS bundle (`hwss_cornellbox_bdpt`, `pSwlHWSS=&swl`) — the Le-conversion preamble (mesh `emittedRadianceNM` + env `GetRadianceNM`), and **the cross-integrator consumers whose light-vertex store derives entirely from this method**: VCM connection (`cornellbox_vcm_simple/_spectral`), VCM **merge** (`cornellbox_vcm_caustics`, the F2b-specific addition vs the F2a manifest), VCM env-escape (`env_bounded_fog_vcm`), and MLT (`bdpt_veach_egg`). No divergent light-subpath path is uncovered.
 
 ### Files
 - [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `GenerateLightSubpathImpl<Tag>` + forward-decl + 2 forwarders; `GenerateLightSubpathNM` collapsed to a forwarder; reuses F2a/F1 helpers (zero new). `.h` untouched. Net **−717**.
@@ -2698,7 +2704,7 @@ F3 (~2,586 ln) = `ConnectAndEvaluate{,NM}` (per-(s,t) connection evaluator, ~2,1
 | connection-Tr NM | `bdpt_homogeneous_fog_spectral` | 0.0832% (0.0556%) | **6-trial CONFIRMED NOISE** |
 | env-escape+env-NEE+escTr Pel | `env_bounded_fog_bdpt` | 0.0236% (0.0354%) | under floor |
 | NM HWSS connection | `hwss_cornellbox_bdpt` | 0.0026% (0.0387%) | under floor |
-| MLT consumer (Gate F) | `mlt_veach_egg_bdpt` | 0.0015% (0.0017%) | under floor |
+| MLT consumer (Gate F) | `bdpt_veach_egg` | 0.0015% (0.0017%) | under floor |
 | VCM Pel (Gate 6, no-touch) | `cornellbox_vcm_simple` | 0.0709% (0.0136%) | multi-trial NOISE |
 | VCM NM (Gate 6) | `cornellbox_vcm_spectral` | 0.0327% (0.0311%) | ≈ floor |
 | VCM env (Gate 6) | `env_bounded_fog_vcm` | 0.0099% (0.0558%) | under floor |
@@ -2710,7 +2716,7 @@ F3 (~2,586 ln) = `ConnectAndEvaluate{,NM}` (per-(s,t) connection evaluator, ~2,1
 - **Gate 4 — recent work preserved**: `EnvLightBalanceTest` 80/80 lax (env-IBL continuous-PMF, commit `bb5ecc6a` — s=0 escape `pdfRev` install + s=1 env-NEE `EnvSelectProbability()` rescale reproduced verbatim); the escape-Tr `EvalConnTr<Tag>` connection sites call the F1-templatized member (not a re-inlined walk); `vertex_colors_quad_{bdpt,vcm}_spectral` within noise (the connection-time `vColor` read through `PopulateRIGFromVertex`).
 - **Gate 5 — no fireflies** (the `pdfRev`-mutation-trick risk site): K-trial max/p99 on a glossy + an env scene — `cornellbox_bdpt_glossy` max 254→254, p99 228.56/228.73→228.20 (within pre spread); `env_bounded_fog_bdpt` max 192/191→190, p99 178→178 (identical). No outliers, no growth. `EnvLightBalanceTest` (which asserts BDPT p99/max ≈ PT) independently bounds this 80/80.
 - **Gate 6 — VCM unchanged**: VCM does **not** call `ConnectAndEvaluate` (confirmed by grep + R3); the 4 VCM scenes are within noise (a no-touch safety net). `VCMStrategyBalanceTest`/`VCMRecurrenceTest`/`VCMSpectralRecurrenceTest` pass.
-- **Gate F — MLT non-regression**: `mlt_veach_egg_bdpt` 0.0015% (MLTRasterizer → `EvaluateAllStrategies` → `ConnectAndEvaluate`, the live external consumer).
+- **Gate F — MLT non-regression**: `bdpt_veach_egg` 0.0015% (MLTRasterizer → `EvaluateAllStrategies` → `ConnectAndEvaluate`, the live external consumer).
 - **Gate 7 — perf**: no runtime path added; `if constexpr` compiles to compile-time branches, `inline` helpers to the same instruction stream. Exact-arithmetic refactor — not separately benchmarked (same posture as F1/F2a/F2b).
 
 ### Adversarial review ledger (Gate 8 — 3 reviewers, orthogonal axes)
@@ -2824,7 +2830,7 @@ All 6 are **Pel-only** (the NM `EvaluateAllStrategiesNM` was the strict subset �
   | pLight NM lum-proj (s1/t1) | `cornellbox_bdpt_pointlight_spectral` | 0.0173% (0.0062%) | multi-trial noise |
   | connection-Tr NM | `bdpt_homogeneous_fog_spectral` | 0.0125% (0.0222%) | under floor |
   | NM HWSS connection (+ fold reroute) | `hwss_cornellbox_bdpt` | 0.0177% (0.0149%) | multi-trial noise |
-  | MLT consumer (Gate F) | `mlt_veach_egg_bdpt` | 0.0092% (0.0061%) | multi-trial noise |
+  | MLT consumer (Gate F) | `bdpt_veach_egg` | 0.0092% (0.0061%) | multi-trial noise |
   | VCM Pel / NM / env / merge (Gate 6) | `cornellbox_vcm_{simple,spectral,caustics}`, `env_bounded_fog_vcm` | 0.0047–0.0146% | within noise (no-touch) |
   | NM connection-time vColor (Gate 4) | `vertex_colors_quad_bdpt_spectral` | 0.5614% (0.1391%) | **multi-trial CONFIRMED noise** (binary's own 3-render max pairwise spread **0.5779%** > 0.5614%) |
   | NM vColor transitive | `vertex_colors_quad_vcm_spectral` | 0.1519% (0.1129%) | noisy spectral-VCM |
@@ -2833,7 +2839,7 @@ All 6 are **Pel-only** (the NM `EvaluateAllStrategiesNM` was the strict subset �
 - **Gate 4 — recent work preserved**: `EnvLightBalanceTest` 80/0 lax (env-IBL continuous-PMF intact); `ConnectAndEvaluateImpl<Tag>` (F3a) + the latent-white-firefly fix are CALLED via `DispatchConnectAndEvaluate` → the public `ConnectAndEvaluate{,NM}` forwarders, **not re-inlined**; the `EvalEmitterRadiance<Tag>` rename preserves the F3a s=0 call. **Strict-tolerance env-MIS oracle**: strict `{0.10,0.30,1.00}` failure count is **run-to-run MC jitter that never exceeds the pre value** — PRE=6, post-Stage-1=6, post-NM across 4 fresh renders = {5,5,6,6}; the single flipping sub-check is `BDPT.mean @ env-only-Lambertian-spectral-hwss=false`, the noisiest spectral topology (where untouched PT itself moves ±5.3% on MC noise). Not worse → stop rule (strict count increases) NOT triggered.
 - **Gate 5 — perf**: no runtime path added; `if constexpr` → compile-time branches, the dispatch helper inlines to the same `ConnectAndEvaluate{,NM}` calls the original made. Exact-arithmetic refactor (same posture as F1/F2a/F2b/F3a).
 - **Gate 6 — VCM unchanged**: VCM does **not** call `EvaluateAllStrategies` (R3 confirmed 0 grep hits in `VCMIntegrator.cpp`); the 4 VCM scenes within noise (no-touch net). VCM unit oracles pass.
-- **Gate F — MLT non-regression** (the live consumer that DRIVES `EvaluateAllStrategies`): MLT **Pel** `mlt_veach_egg_bdpt` 0.0092% (within noise); MLT **NM** `hwss_mlt_spectral_cornellbox` (the `MLTSpectralRasterizer` → `EvaluateAllStrategiesNM` → `Impl<NMTag>` + the HWSS fold) renders sane (meanL 72.1, bootstrap normalization b=22166.9) — the NM MLT consumer + the rerouted HWSS path both work.
+- **Gate F — MLT non-regression** (the live consumer that DRIVES `EvaluateAllStrategies`): MLT **Pel** `bdpt_veach_egg` 0.0092% (within noise); MLT **NM** `hwss_mlt_spectral_cornellbox` (the `MLTSpectralRasterizer` → `EvaluateAllStrategiesNM` → `Impl<NMTag>` + the HWSS fold) renders sane (meanL 72.1, bootstrap normalization b=22166.9) — the NM MLT consumer + the rerouted HWSS path both work.
 
 ### Adversarial review ledger (Gate 7 — 3 reviewers, orthogonal axes, **read-only Explore agents — no `spawn_task`**)
 | Reviewer | Axis | Result |
@@ -2845,7 +2851,7 @@ All 6 are **Pel-only** (the NM `EvaluateAllStrategiesNM` was the strict subset �
 **0 P1 / 0 P2 final** (and 0 P2-to-fix this round — unlike F2b/F3a, the Pel-was-locked-before-NM sequencing + the lower divergence meant no reviewer found a behavioural defect). Adversarial-review stop rule satisfied.
 
 ### Divergent-path coverage map
-`EvaluateAllStrategies` drives every (s,t) connection strategy for BDPT + MLT: the simple double-loop (`cornellbox_bdpt` Pel + `_spectral` NM), the OpenPGL complete-path RIS prologue (Pel-only, exercised when a `pCompletePathGuide` is trained — the test scenes lack one, so it's covered by code-read + the clean build), the zero-exitance directional/ambient deterministic block (both tags), the training-record epilogue, and the cross-integrator consumers — MLT **Pel** (`mlt_veach_egg_bdpt`) and MLT **NM** (`hwss_mlt_spectral_cornellbox`). VCM is the no-touch safety net. The emitter fold's NM branch is covered by the HWSS scenes (`hwss_cornellbox_bdpt`, `hwss_mlt_spectral_cornellbox`) + the s=0 connection scenes.
+`EvaluateAllStrategies` drives every (s,t) connection strategy for BDPT + MLT: the simple double-loop (`cornellbox_bdpt` Pel + `_spectral` NM), the OpenPGL complete-path RIS prologue (Pel-only, exercised when a `pCompletePathGuide` is trained — the test scenes lack one, so it's covered by code-read + the clean build), the zero-exitance directional/ambient deterministic block (both tags), the training-record epilogue, and the cross-integrator consumers — MLT **Pel** (`bdpt_veach_egg`) and MLT **NM** (`hwss_mlt_spectral_cornellbox`). VCM is the no-touch safety net. The emitter fold's NM branch is covered by the HWSS scenes (`hwss_cornellbox_bdpt`, `hwss_mlt_spectral_cornellbox`) + the s=0 connection scenes.
 
 ### Files
 - [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `EvaluateAllStrategiesImpl<Tag>` + `DispatchConnectAndEvaluate<Tag>` + 2 forwarders; both NM/Pel bodies collapsed; `SurfaceEmitterRadiance`→`EvalEmitterRadiance` rename; `EvalEmitterRadianceNM` member removed + 2 HWSS sites rerouted. Net **−9**.

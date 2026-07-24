@@ -30,6 +30,12 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+file_rasterizeroutput
+{
+	pattern				rendered/corridor_100lights_bvh_hdr
+	type				HDR
+}
+
 film
 {
 	width			512
@@ -1107,5 +1113,3 @@ standard_object
 	geometry			farwallgeom
 	material			white
 }
-
-

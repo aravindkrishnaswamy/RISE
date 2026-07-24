@@ -19,9 +19,9 @@ Captured: 2026-05-02 with `SMS_DIAG_ENABLED = 1` in `src/Library/Shaders/PathTra
 
 | Scene | spp | mode | Notes |
 |---|---|---|---|
-| `mlt_veach_egg_pt_sms.RISEscene` | 4 | PT+SMS, biased=TRUE | Smooth analytic ellipsoid + air cavity (k=2 chains). **Gold reference** — correctness gate at every phase. |
-| `mlt_veach_egg_pt_sms_bumpmap.RISEscene` | 4 | PT+SMS, biased=TRUE, two_stage=TRUE | Smooth ellipsoid + bumpmap. Validates two-stage solver work. |
-| `mlt_veach_egg_pt_sms_displaced.RISEscene` | 4 | PT+SMS, biased=TRUE, multi_trials=16, photon_count=1e5 | Heavily-displaced outer ellipsoid. Literature open problem. |
+| `sms_veach_egg.RISEscene` | 4 | PT+SMS, biased=TRUE | Smooth analytic ellipsoid + air cavity (k=2 chains). **Gold reference** — correctness gate at every phase. |
+| `sms_veach_egg_bumpmap.RISEscene` | 4 | PT+SMS, biased=TRUE, two_stage=TRUE | Smooth ellipsoid + bumpmap. Validates two-stage solver work. |
+| `sms_veach_egg_displaced.RISEscene` | 4 | PT+SMS, biased=TRUE, multi_trials=16, photon_count=1e5 | Heavily-displaced outer ellipsoid. Literature open problem. |
 | `scenes/Tests/SMS/sms_k1_refract.RISEscene` | 4 | PT+SMS, biased=TRUE | k=1 refraction unit test. |
 | `scenes/Tests/SMS/sms_k1_botonly.RISEscene` | 4 | PT+SMS, biased=TRUE | k=1 with single-side caster. |
 | `scenes/Tests/SMS/sms_k2_glasssphere.RISEscene` | 4 | PT+SMS, biased=TRUE | k=2 nested-glass scene. |

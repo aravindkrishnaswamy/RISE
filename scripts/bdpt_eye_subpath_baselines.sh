@@ -22,7 +22,7 @@
 #   - std NM (non-HWSS)         : cornellbox_bdpt_spectral        (GenerateEyeSubpathNM, pSwlHWSS=NULL)
 #   - in-medium scatter NM      : bdpt_homogeneous_fog_spectral   (NM eye-walk medium vertex + TrNM)
 #   - NM HWSS bundle            : hwss_cornellbox_bdpt            (GenerateEyeSubpathNM, pSwlHWSS=&swl)
-#   - MLT consumer (Gate F)     : mlt_veach_egg_bdpt              (MLTRasterizer -> GenerateEyeSubpath)
+#   - MLT consumer (Gate F)     : mlt_veach_egg                   (MLTRasterizer -> GenerateEyeSubpath)
 #   - VCM Pel consumer (Gate 6) : cornellbox_vcm_simple           (VCMPelRasterizer -> GenerateEyeSubpath)
 #   - VCM NM consumer (Gate 6)  : cornellbox_vcm_spectral         (VCMSpectralRasterizer -> GenerateEyeSubpathNM)
 #   - VCM env-escape (Gate 6)   : env_bounded_fog_vcm             (VCM s=0 env-escape via shared generator)
@@ -60,7 +60,7 @@ MANIFEST=(
     "scenes/Tests/BDPT/cornellbox_bdpt_spectral.RISEscene:cornellbox_bdpt_spectral:std-NM(non-HWSS)"
     "scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene:bdpt_homogeneous_fog_spectral:media-NM(eye-walk)"
     "scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene:hwss_cornellbox_bdpt:NM-HWSS-bundle"
-    "scenes/FeatureBased/MLT/mlt_veach_egg_bdpt.RISEscene:mlt_veach_egg_bdpt:MLT-consumer(GateF)"
+    "scenes/FeatureBased/MLT/mlt_veach_egg.RISEscene:mlt_veach_egg:MLT-consumer(GateF)"
     "scenes/Tests/VCM/cornellbox_vcm_simple.RISEscene:cornellbox_vcm_simple:VCM-Pel-consumer(Gate6)"
     "scenes/Tests/VCM/cornellbox_vcm_spectral.RISEscene:cornellbox_vcm_spectral:VCM-NM-consumer(Gate6)"
     "scenes/Tests/Volumes/env_bounded_fog_vcm.RISEscene:env_bounded_fog_vcm:VCM-envEscape(Gate6)"

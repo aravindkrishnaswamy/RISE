@@ -61,8 +61,8 @@ Defined ONCE in Phase 0; reused at every gate.
 
 ### Required scenes
 1. **Smooth Veach-egg** (`scenes/FeatureBased/MLT/mlt_veach_egg.RISEscene`) — gold reference; ΣL_sms/ΣL_supp ≈ 1.0 in any correctly-implemented unbiased SMS.
-2. **Bumpmap Veach-egg** (`scenes/FeatureBased/MLT/mlt_veach_egg_pt_sms_bumpmap.RISEscene`) — verifies normal-perturbing maps work; ΣL_sms/ΣL_supp ≈ 1.15 with two-stage today.
-3. **Displaced Veach-egg** (`scenes/FeatureBased/MLT/mlt_veach_egg_pt_sms_displaced.RISEscene`) — current ΣL_sms/ΣL_supp ≈ 0.13; expected to remain ≤ 0.5 (literature open problem).
+2. **Bumpmap Veach-egg** (`scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene`) — verifies normal-perturbing maps work; ΣL_sms/ΣL_supp ≈ 1.15 with two-stage today.
+3. **Displaced Veach-egg** (`scenes/Tests/SMS/sms_veach_egg_displaced.RISEscene`) — current ΣL_sms/ΣL_supp ≈ 0.13; expected to remain ≤ 0.5 (literature open problem).
 4. **All `scenes/Tests/SMS/*.RISEscene`** — existing SMS regression suite.
 5. **VCM-coupled scene with photon-aided SMS** — pick the existing scene whose `sms_photon_count > 0` shows clear caustic improvement, to validate Phase 7.
 6. **At least one BDPT-spectral scene with SMS enabled** — to validate the spectral path doesn't regress.

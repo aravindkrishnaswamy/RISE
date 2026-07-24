@@ -135,7 +135,7 @@ The expected-outcome section above predicted gains on the displaced Veach-egg.  
 
 ### Where two-stage works (verified)
 
-**Regime: smooth analytic geometry + perturbed normals.**  Test scene: `scenes/FeatureBased/MLT/mlt_veach_egg_pt_sms_bumpmap.RISEscene` (smooth `ellipsoid_geometry` + `bumpmap_modifier` driving normal perturbation via the same Perlin painter the displaced scene uses for vertex displacement).  At sane bump amplitudes, the two-stage solver delivers the energy-ratio shift the design targets.
+**Regime: smooth analytic geometry + perturbed normals.**  Test scene: `scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene` (smooth `ellipsoid_geometry` + `bumpmap_modifier` driving normal perturbation via the same Perlin painter the displaced scene uses for vertex displacement).  At sane bump amplitudes, the two-stage solver delivers the energy-ratio shift the design targets.
 
 | Bump scale (max angle) | Single-stage `valid` / `ΣL_sms/ΣL_supp` | Two-stage `valid` / `ΣL_sms/ΣL_supp` | Two-stage advantage |
 |---|---|---|---|

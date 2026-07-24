@@ -198,8 +198,8 @@ brightness gap is not volumetric.
 
 All matched-still variants are derived mechanically from the two scenes above
 (strip `animation_options`/`timeline`/`DEFINE FRAMES`; film 400×300; EXR
-`bpp 32` `multiple FALSE`; `pixel_filter box`; `oidn_denoise false`).  Render
-from the repo root so `> run scenes/colors.RISEscript` resolves:
+`bpp 32` `multiple FALSE`; `pixel_filter box`; `oidn_denoise false`). Render
+from the repo root so relative media paths resolve:
 
 ```sh
 printf "render\nquit\n" | RISE_MEDIA_PATH="$(pwd)/" ./bin/rise <scene>

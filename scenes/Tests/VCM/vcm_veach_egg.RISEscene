@@ -1,19 +1,8 @@
 RISE ASCII SCENE 7
-#############################################################################################################
-#                                      RISE Ascii Scene File                                                #
-#                                                                                                           #
-#   File:           cornellbox_mixed_lights_bdpt.RISEscene                                                  #
-#   Description:    Same scene as cornellbox_mixed_lights_pt but rendered with BDPT.                        #
-#                   The converged images should match, validating that the unified                            #
-#                   light sampler produces the same result across both integrators.                          #
-#   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      March 30, 2026                                                                          #
-#                                                                                                           #
-#############################################################################################################
-
-##################################################
-# Setup a renderer
-##################################################
+# Taxonomy: VCM comparison for the MLT Veach-egg showcase.
+# VCM version of Veach's sealed glass egg scene.
+# Same geometry/materials as mlt_veach_egg.RISEscene, with the MLT rasterizer
+# swapped for VCM so we can compare convergence on the same SDS-heavy paths.
 
 standard_shader
 {
@@ -21,43 +10,35 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-bdpt_pel_rasterizer
+vcm_pel_rasterizer
 {
-	max_eye_depth		8
-	max_light_depth		8
-	samples				64
-	light_bvh			false
+	samples                       128
+	max_eye_depth                 12
+	max_light_depth               12
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/cornellbox_mixed_bdpt_alias
+	pattern				rendered/vcm_veach_egg
 	type				PNG
 	bpp					8
 	color_space			sRGB
 }
 
-##################################################
-# Cameras
-##################################################
-
 film
 {
-	width			512
-	height			512
+	width			400
+	height			400
 }
 
 pinhole_camera
 {
-	location			278 273 -800
-	lookat				278 273 200
+	location			278 350 -650
+	lookat				278 200 278
 	up					0 1 0
-	fov					37.0
+	fov					40.0
 }
 
-##################################################
-# Painters
-##################################################
 #############################################################################################################
 #									RISE Ascii Scene File													#
 #																											#
@@ -212,12 +193,8 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_light
-	color				1.0 0.9 0.7
+	color				1.0 0.95 0.85
 }
-
-##################################################
-# Materials
-##################################################
 
 lambertian_material
 {
@@ -239,28 +216,25 @@ lambertian_material
 
 lambertian_luminaire_material
 {
-	name				white_lum
+	name				bright_lum
 	exitance			pnt_light
-	scale				50.0
+	scale				800.0
 	material			none
 }
 
-##################################################
-# Lights — one point light (delta) for testing
-# unified sampler with mixed light types
-##################################################
-
-omni_light
+dielectric_material
 {
-	name				pointlight
-	power				150000.0
-	color				0.7 0.8 1.0
-	position			150 400 200
+	name				glass
+	tau					1.0
+	ior					1.5
 }
 
-##################################################
-# Objects - walls
-##################################################
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
+}
 
 clippedplane_geometry
 {
@@ -307,16 +281,6 @@ clippedplane_geometry
 	ptd					556.0 548.8 0
 }
 
-# Smaller ceiling light — half the area to balance with the point light
-clippedplane_geometry
-{
-	name				lightgeom
-	pta					320.0 548.7999 260.0
-	ptb					320.0 548.7999 320.0
-	ptc					240.0 548.7999 320.0
-	ptd					240.0 548.7999 260.0
-}
-
 standard_object
 {
 	name				floor
@@ -352,46 +316,44 @@ standard_object
 	material			red
 }
 
-standard_object
+ellipsoid_geometry
 {
-	name				light
-	geometry			lightgeom
-	material			white_lum
+	name				egg_outer_geom
+	radii				70 95 70
 }
 
-##################################################
-# Objects - blocks
-##################################################
-
-rawmesh_geometry
+ellipsoid_geometry
 {
-	name				tallblockgeom
-	file				models/raw/cornellbox_tallblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
-}
-
-rawmesh_geometry
-{
-	name				shortblockgeom
-	file				models/raw/cornellbox_shortblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
+	name				egg_inner_geom
+	radii				56 79 56
 }
 
 standard_object
 {
-	name				tallblock
-	geometry			tallblockgeom
-	material			white
+	name				egg_outer
+	geometry			egg_outer_geom
+	material			glass
+	position			278 200 278
 }
 
 standard_object
 {
-	name				shortblock
-	geometry			shortblockgeom
-	material			white
+	name				egg_inner
+	geometry			egg_inner_geom
+	material			air_cavity
+	position			278 200 278
 }
 
+sphere_geometry
+{
+	name				light_geom
+	radius				15
+}
+
+standard_object
+{
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 200 278
+}

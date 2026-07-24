@@ -3,12 +3,13 @@
 migrate_scenes_iscalarpainter.py — convert pre-IScalarPainter scenes to
 the post-refactor scene language.
 
-v3 (2026-05): cross-file aware.  RISE scene files frequently
-`> run scenes/colors.RISEscript` to pull in shared `uniformcolor_painter`
-chunks (`color_white`, `color_silver`, etc.) and `spectral_painter`
-chunks.  v1/v2 of this tool only inspected the local file; v3 pre-
-scans every `.RISEscene` and `.RISEscript` under the root and builds
-a global painter table.
+v3 (2026-05): cross-file aware.  Pre-native-v7 RISE scene trees frequently
+used `> run` scripts to pull in shared `uniformcolor_painter` chunks
+(`color_white`, `color_silver`, etc.) and `spectral_painter` chunks.  Those
+tracked include-era support files were removed after the CST cutover, but the
+migrator still accepts external legacy trees containing `.RISEscript` files.
+v1/v2 only inspected the local file; v3 pre-scans every `.RISEscene` and
+`.RISEscript` under the requested root and builds a global painter table.
 
 Each scalar slot (per `MATERIAL_SCALAR_PARAMS`) bound to a name:
   - is inline numeric / triple → no change.

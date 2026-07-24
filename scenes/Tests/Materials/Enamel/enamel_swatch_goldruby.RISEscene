@@ -1,0 +1,166 @@
+RISE ASCII SCENE 7
+# Taxonomy: focused enamel material-stack regression.
+
+# ---------------------------------------------------------------------------
+# enamel_swatch_goldruby.RISEscene — the first real vitreous-enamel material
+# composition (G1-d capstone).  Proves the bounded three-layer stack of
+# docs/VITREOUS_ENAMEL.md sec 4 renders a genuine gold-ruby colour in spectral
+# mode:
+#
+#   (1) smooth DIELECTRIC top interface (fire-polished, IOR 1.55, tau 1.0 so
+#       the interface is colour-neutral — sec 10.9; all colour lives in the
+#       medium),
+#   (2) gold-ruby PARTICIPATING MEDIUM interior (spectral sigma_a(lambda),
+#       plasmon peak ~515nm -> absorbs green, transmits red; G1),
+#   (3) reflective FLOOR reached via the BURIAL convention (sec 10.1 A): the
+#       enamel box's bottom face is buried INSIDE the opaque floor solid, so
+#       the first downward hit inside the enamel is always the reflective
+#       floor (reflect, no IOR pop) — no spurious glass->air interface.
+#
+# The floor here is a neutral perfect reflector (a bright substrate is all the
+# medium proof needs); the measured-silver GGX conductor + G6 glass-incidence
+# Fresnel is the modeling-phase upgrade.  Rendered spectral (non-HWSS NM).
+# ---------------------------------------------------------------------------
+
+uniformcolor_painter
+{
+	name pnt_env
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_white
+	color 1.0 1.0 1.0
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultDirectLighting
+}
+
+# Gold-ruby sigma_a(lambda) — inline mirror of goldruby_sigma_a.txt
+# (colloidal-gold plasmon peak ~515nm + blue inter-band shoulder; 1/scene-unit).
+piecewise_linear_function
+{
+	name goldruby_abs
+	cp 400 2.48
+	cp 420 2.61
+	cp 440 2.79
+	cp 460 3.15
+	cp 480 3.69
+	cp 500 4.23
+	cp 515 4.50
+	cp 530 4.37
+	cp 550 3.83
+	cp 570 2.79
+	cp 590 1.80
+	cp 610 1.08
+	cp 630 0.63
+	cp 650 0.36
+	cp 680 0.23
+	cp 700 0.16
+	cp 720 0.14
+}
+
+homogeneous_medium
+{
+	name goldruby
+	absorption 3.5 3.9 0.4
+	scattering 0.0 0.0 0.0
+	absorption_spectral goldruby_abs
+	phase isotropic
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples 256
+	max_volume_bounce 16
+	max_diffuse_bounce 4
+	pixel_filter box
+	nmbegin 380
+	nmend 720
+	num_wavelengths 12
+	spectral_samples 1
+	hwss false
+	radiance_map pnt_env
+	radiance_scale 1.0
+	radiance_background TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_swatch_goldruby
+	type PNG
+	bpp 8
+	color_space sRGB
+}
+
+film
+{
+	width 256
+	height 256
+}
+
+pinhole_camera
+{
+	location 0 0 4
+	lookat 0 0 0
+	up 0 1 0
+	fov 20.0
+}
+
+# Fire-polished top interface: IOR 1.55, tau 1.0 (colour-neutral; sec 10.9).
+dielectric_material
+{
+	name enamel_glass
+	tau 1.0
+	ior 1.55
+	scattering 100000
+}
+
+# Neutral reflective floor (stands in for the measured-silver GGX).
+perfectreflector_material
+{
+	name floor_mirror
+	reflectance pnt_white
+}
+
+# Enamel body: top face at z=+0.5 (dielectric interface); bottom face at
+# z=-0.5, buried inside the floor solid below.
+box_geometry
+{
+	name enamelgeom
+	width 3.0
+	height 3.0
+	depth 1.0
+}
+
+# Reflective floor solid: top face at z=0, extends down to z=-1.0.  The
+# enamel's bottom (z=-0.5) sits INSIDE it, so a downward ray in the enamel
+# hits this floor's top (z=0) first — the burial convention (sec 10.1 A).
+box_geometry
+{
+	name floorgeom
+	width 4.0
+	height 4.0
+	depth 1.0
+}
+
+standard_object
+{
+	name enamel
+	geometry enamelgeom
+	position 0 0 0
+	material enamel_glass
+	interior_medium goldruby
+}
+
+standard_object
+{
+	name floor
+	geometry floorgeom
+	position 0 0 -0.5
+	material floor_mirror
+}

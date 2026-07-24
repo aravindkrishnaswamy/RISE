@@ -1,0 +1,305 @@
+RISE ASCII SCENE 7
+# Taxonomy: dimple-field/SDF enamel regression.
+
+# ---------------------------------------------------------------------------
+# enamel_dial_sdf.RISEscene — M3a of the vitreous-enamel hero modeling.
+#
+# Migrates the enamel body from a box (M2) to a CLOSED SDF HEIGHTFIELD solid,
+# so its top face is an addressable surface we can micro-displace for the
+# crystalline dimple field (M3b) -- and so the dial is a round disk, matching
+# the hero.  This step keeps the top FLAT (heightfield expr = 1) to prove the
+# SDF solid + interior_medium + dome burial reproduce the M2 Beer gradient
+# before adding the dimples.
+#
+# The SDF heightfield solid is the half-space z <= scale*f(u,v) clipped to a
+# disk of radius heightfield_radius (src/Library/Geometry/SDFGeometry.cpp Map()
+# heightfield branch), bbox-bottomed at z=0 -- a closed disk-slab.  The silver
+# sphere dome pokes up into it from below (same shallow dome as M2, shifted so
+# the enamel top sits at z=0.30):
+#   enamel top (flat)  z = 0.30
+#   dome top           z = 0.22 (centre) -> 0.077 (rim, r=1.6)
+#   thickness t(r)     = 0.30 - (-8.78 + sqrt(81 - r^2))
+#                      -> t(0)=0.08, t(1.6)=0.223   (== M2).
+#
+# Uniform white env (pure Beer, as M2).  Rendered spectral (non-HWSS NM).
+# ---------------------------------------------------------------------------
+
+uniformcolor_painter
+{
+	name pnt_env
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_white
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_black
+	color 0.0 0.0 0.0
+}
+
+scalar_painter
+{
+	name Ag_n
+	file colors/conductors/Ag.n
+}
+
+scalar_painter
+{
+	name Ag_k
+	file colors/conductors/Ag.k
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultDirectLighting
+}
+
+# Flat top: heightfield f(u,v) = 1 everywhere -> z = heightfield_scale.
+# Crystalline "orange-peel" dimple field -- a Worley/cellular F1 heightfield
+# (real micro-displacement of the top dielectric interface, sec 10.2 RESOLVED:
+# top-surface fired-glass relief, NOT a normal map).  f in [1-amp, 1] over the
+# disk; feature-point cells are shallow PITS, ridges the raised walls.  The
+# glints are colour-neutral Fresnel reflections off the bump slopes and gate
+# with light angle -- they are NOT tinted by the ruby medium (the light does
+# not cross the colorant before reflecting off the air-glass interface).
+expression_function2d
+{
+	name enamel_top_dimpled
+	param N 44
+	param amp 0.06
+	def gu u*N
+	def gv v*N
+	def cx floor(gu)
+	def cy floor(gv)
+	def h0a frac(sin((cx+(-1))*127.1+(cy+(-1))*311.7)*43758.5453)
+	def h0b frac(sin((cx+(-1))*269.5+(cy+(-1))*183.3)*43758.5453)
+	def fx0 (cx+(-1))+h0a
+	def fy0 (cy+(-1))+h0b
+	def d0 hypot(gu-fx0,gv-fy0)
+	def h1a frac(sin((cx+(-1))*127.1+(cy+(0))*311.7)*43758.5453)
+	def h1b frac(sin((cx+(-1))*269.5+(cy+(0))*183.3)*43758.5453)
+	def fx1 (cx+(-1))+h1a
+	def fy1 (cy+(0))+h1b
+	def d1 hypot(gu-fx1,gv-fy1)
+	def h2a frac(sin((cx+(-1))*127.1+(cy+(1))*311.7)*43758.5453)
+	def h2b frac(sin((cx+(-1))*269.5+(cy+(1))*183.3)*43758.5453)
+	def fx2 (cx+(-1))+h2a
+	def fy2 (cy+(1))+h2b
+	def d2 hypot(gu-fx2,gv-fy2)
+	def h3a frac(sin((cx+(0))*127.1+(cy+(-1))*311.7)*43758.5453)
+	def h3b frac(sin((cx+(0))*269.5+(cy+(-1))*183.3)*43758.5453)
+	def fx3 (cx+(0))+h3a
+	def fy3 (cy+(-1))+h3b
+	def d3 hypot(gu-fx3,gv-fy3)
+	def h4a frac(sin((cx+(0))*127.1+(cy+(0))*311.7)*43758.5453)
+	def h4b frac(sin((cx+(0))*269.5+(cy+(0))*183.3)*43758.5453)
+	def fx4 (cx+(0))+h4a
+	def fy4 (cy+(0))+h4b
+	def d4 hypot(gu-fx4,gv-fy4)
+	def h5a frac(sin((cx+(0))*127.1+(cy+(1))*311.7)*43758.5453)
+	def h5b frac(sin((cx+(0))*269.5+(cy+(1))*183.3)*43758.5453)
+	def fx5 (cx+(0))+h5a
+	def fy5 (cy+(1))+h5b
+	def d5 hypot(gu-fx5,gv-fy5)
+	def h6a frac(sin((cx+(1))*127.1+(cy+(-1))*311.7)*43758.5453)
+	def h6b frac(sin((cx+(1))*269.5+(cy+(-1))*183.3)*43758.5453)
+	def fx6 (cx+(1))+h6a
+	def fy6 (cy+(-1))+h6b
+	def d6 hypot(gu-fx6,gv-fy6)
+	def h7a frac(sin((cx+(1))*127.1+(cy+(0))*311.7)*43758.5453)
+	def h7b frac(sin((cx+(1))*269.5+(cy+(0))*183.3)*43758.5453)
+	def fx7 (cx+(1))+h7a
+	def fy7 (cy+(0))+h7b
+	def d7 hypot(gu-fx7,gv-fy7)
+	def h8a frac(sin((cx+(1))*127.1+(cy+(1))*311.7)*43758.5453)
+	def h8b frac(sin((cx+(1))*269.5+(cy+(1))*183.3)*43758.5453)
+	def fx8 (cx+(1))+h8a
+	def fy8 (cy+(1))+h8b
+	def d8 hypot(gu-fx8,gv-fy8)
+	def F1 min(min(min(min(min(min(min(min(d0,d1),d2),d3),d4),d5),d6),d7),d8)
+	def F1c clamp(F1,0,1)
+	expr 1-amp*(1-F1c)
+}
+
+# Gold-ruby sigma_a(lambda) — swatch shape scaled x8 (thin concentrated enamel,
+# sec 10.4); exact scale is the M5 calibration knob.
+piecewise_linear_function
+{
+	name goldruby_abs
+	cp 400 19.84
+	cp 420 20.88
+	cp 440 22.32
+	cp 460 25.20
+	cp 480 29.52
+	cp 500 33.84
+	cp 515 36.00
+	cp 530 34.96
+	cp 550 30.64
+	cp 570 22.32
+	cp 590 14.40
+	cp 610 8.64
+	cp 630 5.04
+	cp 650 2.88
+	cp 680 1.84
+	cp 700 1.28
+	cp 720 1.12
+}
+
+homogeneous_medium
+{
+	name goldruby
+	absorption 3.5 3.9 0.4
+	scattering 0.0 0.0 0.0
+	absorption_spectral goldruby_abs
+	phase isotropic
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples 192
+	max_volume_bounce 16
+	max_diffuse_bounce 4
+	pixel_filter box
+	nmbegin 380
+	nmend 720
+	num_wavelengths 12
+	spectral_samples 1
+	hwss false
+	radiance_map pnt_env
+	radiance_scale 0.25
+	radiance_background TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_dial_dimpled
+	type PNG
+	bpp 8
+	color_space sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_dial_dimpled_hdr
+	type EXR
+	color_space Rec709RGB_Linear
+}
+
+film
+{
+	width 256
+	height 256
+}
+
+pinhole_camera
+{
+	location 0 0 5
+	lookat 0 0 0
+	up 0 1 0
+	fov 40.0
+}
+
+# Fire-polished top interface: IOR 1.55, tau 1.0 (colour-neutral; sec 10.9).
+dielectric_material
+{
+	name enamel_glass
+	tau 1.0
+	ior 1.55
+	scattering 100000
+}
+
+# Measured-silver GGX conductor substrate (diffuse black sec 10.10; ambient
+# IOR = n_enamel from the IOR stack via G6).
+ggx_material
+{
+	name floor_silver
+	rd pnt_black
+	rs pnt_white
+	alphax 0.03
+	alphay 0.03
+	fresnel_mode conductor
+	ior Ag_n
+	extinction Ag_k
+}
+
+# Enamel disk: closed SDF heightfield solid, radius 1.6, flat top at z=0.30.
+sdf_geometry
+{
+	name enamelgeom
+	heightfield_function enamel_top_dimpled
+	heightfield_radius 1.6
+	heightfield_scale 0.30
+}
+
+# Silver dome: shallow sphere radius 9.0, top at z=0.22 (centre).
+sphere_geometry
+{
+	name domegeom
+	radius 9.0
+}
+
+
+# Raking directional light for the crystalline glints (FROM-surface-TO-light
+# convention, sec SCENE_CONVENTIONS): upper-right and toward the camera so bump
+# slopes facing it flash colour-neutral white.
+directional_light
+{
+	name keylight
+	power 3.0
+	direction 0.55 0.55 0.45
+	color 1.0 1.0 1.0
+}
+
+
+uniformcolor_painter
+{
+	name pnt_soft
+	color 1.0 1.0 1.0
+}
+
+lambertian_luminaire_material
+{
+	name softbox_emit
+	exitance pnt_soft
+	scale 14.0
+}
+
+box_geometry
+{
+	name softboxgeom
+	width 3.0
+	height 3.0
+	depth 0.05
+}
+
+standard_object
+{
+	name softbox
+	geometry softboxgeom
+	position 1.8 1.8 3.0
+	orientation -35 40 0
+	material softbox_emit
+}
+
+standard_object
+{
+	name enamel
+	geometry enamelgeom
+	position 0 0 0
+	material enamel_glass
+	interior_medium goldruby
+}
+
+standard_object
+{
+	name dome
+	geometry domegeom
+	position 0 0 -8.78
+	material floor_silver
+}

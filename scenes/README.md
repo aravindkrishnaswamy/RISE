@@ -6,6 +6,9 @@ This directory contains the authored scene assets used to exercise RISE. The top
 - [Tests/README.md](Tests/README.md): focused regression, baseline, comparison, and validation scenes
 - `Internal/`: local or historical internal scenes that are not part of the curated public taxonomy
 
+The completed public-corpus deduplication and placement record is
+[SCENE_AUDIT_2026-07-24.md](SCENE_AUDIT_2026-07-24.md).
+
 ## Placement Rules
 
 - Put a scene in `FeatureBased/` when its main value is presentation, multi-feature stress, or end-to-end showcase coverage.
@@ -19,15 +22,9 @@ Before writing a new scene from scratch — and especially before debugging one 
 
 The most common scene-authoring bug is `directional_light.direction` — RISE uses the FROM-surface-TO-light convention, NOT the shine-direction convention used by some foreign tools. Get this wrong and camera-facing surfaces render unlit.
 
-## Root-Level Utilities
+## Root-Level Runtime Scene
 
-The root of `scenes/` still contains a few migration inputs and historical
-standalone scenes:
-
-- `colors.RISEscript`: retired streaming-script loader retained as migration
-  history; native-v7 scenes have its color chunks flattened inline
-- `standard_colors.RISEscene`, `povray_colors.RISEscene`: historical color
-  fragments used by the old script loader
-- `iorstack.RISEscene`, `pr.RISEscene`: older standalone utility scenes
-
-These are support assets, not the preferred place for new sample organization.
+`pr.RISEscene` remains at the root because the CLI loads it when launched
+without an explicit scene path. It is a runtime default, not a taxonomy
+example. The old include-era color fragments were removed after the native-v7
+cutover; public scenes contain the required painter chunks inline.

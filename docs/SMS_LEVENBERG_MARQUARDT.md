@@ -149,7 +149,7 @@ LM adds zero per-iter cost beyond the diagonal damping (~2k floating
 adds per iter), but **escalation iterations** count against the
 `maxIterations` budget.
 
-Measured on the production scene (`mlt_veach_egg_pt_sms_displaced.RISEscene`,
+Measured on the production scene (`sms_veach_egg_displaced.RISEscene`,
 400×400, M=16, two_stage=TRUE, disp_scale=4, 4 spp):
 
 - 5.08 M Solve calls

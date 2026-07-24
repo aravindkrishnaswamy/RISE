@@ -1,21 +1,26 @@
 RISE ASCII SCENE 7
+# Taxonomy: SMS comparison for the MLT luminous-orb showcase.
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           torture_corridor_pt.RISEscene                                                           #
-#   Description:    Torture test: long corridor (4000 units) with 20 equally-spaced                         #
-#                   point lights.  From any shading point, only 2-3 nearby lights                           #
-#                   contribute significantly (1/d^2), but the alias table distributes                       #
-#                   samples uniformly across all 20.  ~85% of sampling budget wasted.                       #
-#   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      March 30, 2026                                                                          #
+#   File:           sms_luminous_orb.RISEscene                                                               #
+#   Description:    Path tracer + Specular Manifold Sampling variant of the luminous glass orb.            #
+#                                                                                                           #
+#   SMS (Hanika et al. 2015) efficiently samples the SDS caustic on the floor around the glass sphere      #
+#   by manifold-walking from the floor hit point back through the glass shell to the interior light.       #
+#   This is the exact path type that plain PT + next-event-estimation cannot construct deterministically.  #
+#                                                                                                           #
+#   Compare against:                                                                                         #
+#     - mlt_luminous_orb.RISEscene      (MLT reference)                                                      #
+#     - bdpt_luminous_orb.RISEscene     (BDPT)                                                               #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      April 18, 2026                                                                           #
 #                                                                                                           #
 #############################################################################################################
 
-> set accelerator B 10 8
-
 ##################################################
-# Setup a renderer
+# Renderer setup - PT with SMS enabled
 ##################################################
 
 standard_shader
@@ -26,39 +31,45 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples                       64
-	light_bvh                     false
+	samples                       256
+	oidn_denoise                  TRUE
+	sms_enabled                   TRUE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/corridor_20lights_alias
+	pattern				rendered/sms_luminous_orb
 	type				PNG
 	bpp					8
 	color_space			sRGB
 }
 
 ##################################################
-# Camera near start of corridor
+# Camera - identical to MLT/BDPT versions
 ##################################################
 
 film
 {
-	width			512
-	height			512
+	width			400
+	height			400
 }
 
 pinhole_camera
 {
-	location			100 100 200
-	lookat				100 80 2000
+	location			278 450 -650
+	lookat				278 50 278
 	up					0 1 0
-	fov					70.0
+	fov					42.0
 }
 
 ##################################################
-# Painters
+# Painters & Materials
 ##################################################
+
 #############################################################################################################
 #									RISE Ascii Scene File													#
 #																											#
@@ -79,6 +90,11 @@ pinhole_camera
 #############################################################################################################
 
 
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
 
 
 
@@ -86,7 +102,17 @@ pinhole_camera
 
 
 
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
 
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
 
 
 
@@ -197,254 +223,97 @@ pinhole_camera
 
 uniformcolor_painter
 {
-	name				pnt_warm_white
-	color				0.73 0.71 0.68
+	name				pnt_light
+	color				1.0 0.95 0.85
 }
-
-uniformcolor_painter
-{
-	name				pnt_lightgray
-	color				0.6 0.6 0.6
-}
-
-##################################################
-# Materials
-##################################################
 
 lambertian_material
 {
 	name				white
-	reflectance			pnt_warm_white
+	reflectance			color_white
 }
 
 lambertian_material
 {
-	name				gray
-	reflectance			pnt_lightgray
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				600.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass
+	tau					1.0
+	ior					1.5
+}
+
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
 }
 
 ##################################################
-# 20 point lights evenly spaced along corridor ceiling
-# Corridor: x=[0,200], y=[0,200], z=[0,4000]
-# Lights at y=190 (near ceiling), spacing=200
-##################################################
-
-omni_light
-{
-	name		light_01
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 100
-}
-
-omni_light
-{
-	name		light_02
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 300
-}
-
-omni_light
-{
-	name		light_03
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 500
-}
-
-omni_light
-{
-	name		light_04
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 700
-}
-
-omni_light
-{
-	name		light_05
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 900
-}
-
-omni_light
-{
-	name		light_06
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 1100
-}
-
-omni_light
-{
-	name		light_07
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 1300
-}
-
-omni_light
-{
-	name		light_08
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 1500
-}
-
-omni_light
-{
-	name		light_09
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 1700
-}
-
-omni_light
-{
-	name		light_10
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 1900
-}
-
-omni_light
-{
-	name		light_11
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 2100
-}
-
-omni_light
-{
-	name		light_12
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 2300
-}
-
-omni_light
-{
-	name		light_13
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 2500
-}
-
-omni_light
-{
-	name		light_14
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 2700
-}
-
-omni_light
-{
-	name		light_15
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 2900
-}
-
-omni_light
-{
-	name		light_16
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 3100
-}
-
-omni_light
-{
-	name		light_17
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 3300
-}
-
-omni_light
-{
-	name		light_18
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 3500
-}
-
-omni_light
-{
-	name		light_19
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 3700
-}
-
-omni_light
-{
-	name		light_20
-	power		80000.0
-	color		1.0 0.95 0.85
-	position	100 190 3900
-}
-
-##################################################
-# Corridor geometry: 200 wide, 200 tall, 4000 deep
+# Cornell box walls
 ##################################################
 
 clippedplane_geometry
 {
 	name				floorgeom
-	pta					200 0 0
+	pta					552.8 0 0
 	ptb					0 0 0
-	ptc					0 0 4000
-	ptd					200 0 4000
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
 }
 
 clippedplane_geometry
 {
 	name				ceilinggeom
-	pta					200 200 0
-	ptb					200 200 4000
-	ptc					0 200 4000
-	ptd					0 200 0
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
 }
 
 clippedplane_geometry
 {
-	name				leftwallgeom
-	pta					0 0 4000
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
 	ptb					0 0 0
-	ptc					0 200 0
-	ptd					0 200 4000
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
 }
 
 clippedplane_geometry
 {
-	name				rightwallgeom
-	pta					200 0 0
-	ptb					200 0 4000
-	ptc					200 200 4000
-	ptd					200 200 0
-}
-
-clippedplane_geometry
-{
-	name				backwallgeom
-	pta					200 0 0
-	ptb					200 200 0
-	ptc					0 200 0
-	ptd					0 0 0
-}
-
-clippedplane_geometry
-{
-	name				farwallgeom
-	pta					0 0 4000
-	ptb					0 200 4000
-	ptc					200 200 4000
-	ptd					200 0 4000
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
 }
 
 standard_object
@@ -463,29 +332,71 @@ standard_object
 
 standard_object
 {
-	name				leftwall
-	geometry			leftwallgeom
-	material			gray
-}
-
-standard_object
-{
-	name				rightwall
-	geometry			rightwallgeom
-	material			gray
-}
-
-standard_object
-{
-	name				backwall
-	geometry			backwallgeom
+	name				bwall
+	geometry			bwallgeom
 	material			white
 }
 
 standard_object
 {
-	name				farwall
-	geometry			farwallgeom
-	material			white
+	name				rwall
+	geometry			rwallgeom
+	material			green
 }
 
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# Hollow glass sphere on the floor (same as MLT/BDPT)
+##################################################
+
+sphere_geometry
+{
+	name				orb_outer_geom
+	radius				100
+}
+
+sphere_geometry
+{
+	name				orb_inner_geom
+	radius				80
+}
+
+standard_object
+{
+	name				orb_outer
+	geometry			orb_outer_geom
+	material			glass
+	position			278 100 278
+}
+
+standard_object
+{
+	name				orb_inner
+	geometry			orb_inner_geom
+	material			air_cavity
+	position			278 100 278
+}
+
+##################################################
+# Interior light
+##################################################
+
+sphere_geometry
+{
+	name				light_geom
+	radius				10
+}
+
+standard_object
+{
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 100 278
+}

@@ -1,13 +1,12 @@
 RISE ASCII SCENE 7
+# Taxonomy: focused IOR-stack regression.
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           cornellbox_mixed_lights_bdpt.RISEscene                                                  #
-#   Description:    Same scene as cornellbox_mixed_lights_pt but rendered with BDPT.                        #
-#                   The converged images should match, validating that the unified                            #
-#                   light sampler produces the same result across both integrators.                          #
+#   File:           iorstack.RISEscene                                                                      #
+#   Description:    Tests the ior stack                                                                     #
 #   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      March 30, 2026                                                                          #
+#   Birthdate:      May 11, 2004                                                                            #
 #                                                                                                           #
 #############################################################################################################
 
@@ -17,24 +16,25 @@ RISE ASCII SCENE 7
 
 standard_shader
 {
-	name		global
-	shaderop	DefaultPathTracing
+	name				global
+	shaderop			DefaultDirectLighting
+	shaderop			DefaultRefraction
+	shaderop			DefaultReflection
 }
 
-bdpt_pel_rasterizer
+pixelpel_rasterizer
 {
-	max_eye_depth		8
-	max_light_depth		8
-	samples				64
-	light_bvh			false
+	max_recursion		10
+	samples				4
+	lum_samples			1
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/cornellbox_mixed_bdpt_alias
+	pattern				rendered/iorstack
 	type				PNG
-	bpp					8
-	color_space			sRGB
+	bpp				16
+	color_space			ProPhotoRGB
 }
 
 ##################################################
@@ -43,21 +43,22 @@ file_rasterizeroutput
 
 film
 {
-	width			512
-	height			512
+	width			500
+	height			500
 }
 
 pinhole_camera
 {
-	location			278 273 -800
-	lookat				278 273 200
+	location			0 0 0.45
+	lookat				0 0 0
 	up					0 1 0
-	fov					37.0
+	fov					30.0
 }
 
 ##################################################
 # Painters
 ##################################################
+
 #############################################################################################################
 #									RISE Ascii Scene File													#
 #																											#
@@ -90,17 +91,7 @@ uniformcolor_painter
 
 
 
-uniformcolor_painter
-{
-	name		color_cornellgreen
-	color		0.15 0.5 0.15
-}
 
-uniformcolor_painter
-{
-	name		color_cornellred
-	color		0.64 0.15 0.1
-}
 
 
 
@@ -131,88 +122,93 @@ uniformcolor_painter
 
 
 
-
-
-
-
-
-
-	
-	
-
-	
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 uniformcolor_painter
 {
-	name				pnt_light
-	color				1.0 0.9 0.7
+	name		color_gold
+	color		0.8 0.498039 0.196078 
+}
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+png_painter
+{
+	name				flower
+	file				textures/paradise.png
 }
 
 ##################################################
@@ -221,177 +217,117 @@ uniformcolor_painter
 
 lambertian_material
 {
-	name				white
-	reflectance			color_white
+	name				gold
+	reflectance			color_gold
 }
 
 lambertian_material
 {
-	name				green
-	reflectance			color_cornellgreen
+	name				flower
+	reflectance			flower
 }
 
-lambertian_material
+perfectrefractor_material
 {
-	name				red
-	reflectance			color_cornellred
+	name				water
+	refractance			color_white
+	ior					1.33
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_white
+	ior					1.57
+}
+
+perfectrefractor_material
+{
+	name				air
+	refractance			color_white
+	ior					1.00027
 }
 
 lambertian_luminaire_material
 {
 	name				white_lum
-	exitance			pnt_light
-	scale				50.0
+	exitance			color_white
+	scale				40.0
 	material			none
 }
 
+
 ##################################################
-# Lights — one point light (delta) for testing
-# unified sampler with mixed light types
+# Objects
 ##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.1
+}
+
+sphere_geometry
+{
+	name				spheregeom2
+	radius				0.05
+}
+
+cylinder_geometry
+{
+	name				cylgeom
+	axis				y
+	radius				0.005
+	height				0.24
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.4
+	ytile				0.4
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	material			water
+	orientation			0 0 0
+}
+
+standard_object
+{
+	name				sphere2
+	geometry			spheregeom2
+	material			air
+	orientation			0 0 0
+}
+
+standard_object
+{
+	name				cylinder
+	geometry			cylgeom
+	material			gold
+	orientation			0 0 15
+	receives_shadows	FALSE
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.2 0.2 -0.3
+	material			flower
+	receives_shadows	FALSE
+}
 
 omni_light
 {
-	name				pointlight
-	power				150000.0
-	color				0.7 0.8 1.0
-	position			150 400 200
+	name		lightA
+	power		3.14
+	color		1.0 1.0 1.0
+	position	0.0 0.0 0.65
 }
 
-##################################################
-# Objects - walls
-##################################################
-
-clippedplane_geometry
-{
-	name				floorgeom
-	pta					552.8 0 0
-	ptb					0 0 0
-	ptc					0 0 559.2
-	ptd					549.6 0 559.2
-}
-
-clippedplane_geometry
-{
-	name				ceilinggeom
-	pta					556.0 548.8 0.0
-	ptb					556.0 548.8 559.2
-	ptc					0 548.8 559.2
-	ptd					0.0 548.8 0.0
-}
-
-clippedplane_geometry
-{
-	name				bwallgeom
-	pta					549.6 0 559.2
-	ptb					0 0 559.2
-	ptc					0 548.8 559.2
-	ptd					556.0 548.8 559.2
-}
-
-clippedplane_geometry
-{
-	name				rwallgeom
-	pta					0 0 559.2
-	ptb					0 0 0
-	ptc					0 548.8 0.0
-	ptd					0 548.8 559.2
-}
-
-clippedplane_geometry
-{
-	name				lwallgeom
-	pta					552.8 0 0
-	ptb					549.6 0 559.2
-	ptc					556.0 548.8 559.2
-	ptd					556.0 548.8 0
-}
-
-# Smaller ceiling light — half the area to balance with the point light
-clippedplane_geometry
-{
-	name				lightgeom
-	pta					320.0 548.7999 260.0
-	ptb					320.0 548.7999 320.0
-	ptc					240.0 548.7999 320.0
-	ptd					240.0 548.7999 260.0
-}
-
-standard_object
-{
-	name				floor
-	geometry			floorgeom
-	material			white
-}
-
-standard_object
-{
-	name				ceiling
-	geometry			ceilinggeom
-	material			white
-}
-
-standard_object
-{
-	name				bwall
-	geometry			bwallgeom
-	material			white
-}
-
-standard_object
-{
-	name				rwall
-	geometry			rwallgeom
-	material			green
-}
-
-standard_object
-{
-	name				lwall
-	geometry			lwallgeom
-	material			red
-}
-
-standard_object
-{
-	name				light
-	geometry			lightgeom
-	material			white_lum
-}
-
-##################################################
-# Objects - blocks
-##################################################
-
-rawmesh_geometry
-{
-	name				tallblockgeom
-	file				models/raw/cornellbox_tallblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
-}
-
-rawmesh_geometry
-{
-	name				shortblockgeom
-	file				models/raw/cornellbox_shortblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
-}
-
-standard_object
-{
-	name				tallblock
-	geometry			tallblockgeom
-	material			white
-}
-
-standard_object
-{
-	name				shortblock
-	geometry			shortblockgeom
-	material			white
-}
 

@@ -509,7 +509,7 @@ Pre-refactor baseline capture, once:
 ./bench.sh scenes/Tests/Spectral/hwss_cornellbox_pt.RISEscene 5
 ./bench.sh scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene 5
 ./bench.sh scenes/FeatureBased/Combined/crystal_lens.RISEscene 3
-./bench.sh scenes/FeatureBased/BDPT/bdpt_jewel_vault.RISEscene 3
+./bench.sh scenes/Tests/BDPT/bdpt_jewel_vault.RISEscene 3
 ```
 
 Per [docs/skills/performance-work-with-baselines.md](skills/performance-work-with-baselines.md): 5 runs per measurement, report stddev, single-variable commit-by-commit measurement.
@@ -532,7 +532,7 @@ MLT reuses `BDPTIntegrator`.  Must render bit-identical-within-noise:
 ```sh
 printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_keyhole.RISEscene
 printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_caustic_chain.RISEscene
-printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_torus_chain_atrium.RISEscene
+printf "render\nquit\n" | ./bin/rise scenes/Tests/MLT/mlt_torus_chain_atrium.RISEscene
 printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_reflected_caustic.RISEscene
 printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/MLT/mlt_chromatic_caustic.RISEscene
 ```

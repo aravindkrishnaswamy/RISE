@@ -263,7 +263,7 @@ Two meaningful fixes came out of the PathMLT investigation, both kept:
   solution. Fix: `ManifoldVertex` gained `etaI`/`etaT` fields,
   `BuildSeedChain` populates both from the IOR stack, and the half-
   vector / Jacobian / Fresnel sites all use the correct two-IOR form.
-  The post-fix `mlt_veach_egg_pt_sms` render is 265 % brighter overall
+  The post-fix `sms_veach_egg` render is 265 % brighter overall
   (+1220 % in the mid-pixel range) — the cavity walls finally receive
   their caustic illumination. 3 new regression tests in
   `ManifoldSolverTest.cpp`.

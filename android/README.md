@@ -25,8 +25,8 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
    take several minutes; incremental builds are fast.
 3. Select the `app` run configuration and an arm64 emulator, then Run.
 
-The first launch extracts bundled scenes (`scenes/Tests/Geometry/shapes.RISEscene`
-and its `colors.RISEscript` dependencies) from the APK to `filesDir/rise/`.
+The first launch extracts bundled self-contained native-v7 scenes (including
+`scenes/Tests/Geometry/shapes.RISEscene`) from the APK to `filesDir/rise/`.
 Subsequent launches skip extraction if `BuildConfig.VERSION_CODE` is
 unchanged.
 

@@ -1,0 +1,205 @@
+RISE ASCII SCENE 7
+# Taxonomy: integrated enamel-material showcase.
+
+# ---------------------------------------------------------------------------
+# enamel_grandfeu_opaque.RISEscene — OPAQUE grand-feu enamel showcase.
+#
+# The companion to enamel_swatch_goldruby (which proves TRANSLUCENT fume).  This
+# proves the OTHER enamel optical class: OPAQUE grand feu (Jaquet Droz ivory &
+# black, Moritz Grossmann ivory, Chronoswiss blue, the opaque cells of Patek /
+# Vacheron cloisonne).  Opaque enamel is NOT a translucent tint over a mirror --
+# the colour lives in a DENSE volume-SCATTERING glass body (tin/zirconia
+# opacifier crystals) and the metal beneath is never seen through.
+#
+# Physically this is the SAME bounded slab as the fume (Dielectric top -> Homo-
+# geneousMedium interior -> reflective substrate), with the sigma_s SCATTERING
+# knob turned UP.  Two things differ from the translucent single-pass curves:
+#   (1) multiple scattering AMPLIFIES a small sigma_a contrast into saturated
+#       colour, so the opaque colorant curves are GENTLE (low contrast);
+#   (2) sigma_s ~8-15 makes the slab opaque; black is a pure absorber (sigma_s 0).
+# Left -> right: WHITE, IVORY, BLACK, cobalt BLUE, over a silver-stand-in floor.
+# Multiple-scattering media are noisy -> OIDN denoise is expected (see _denoised).
+#
+#   export RISE_MEDIA_PATH="$(pwd)/"
+#   printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Materials/enamel_grandfeu_opaque.RISEscene
+# ---------------------------------------------------------------------------
+
+uniformcolor_painter
+{
+	name pnt_env
+	color 1.0 1.0 1.0
+}
+uniformcolor_painter
+{
+	name pnt_silver
+	color 0.9 0.9 0.9
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultDirectLighting
+}
+
+# Gentle cobalt (opaque): small contrast, blue passes, red mildly absorbed.
+piecewise_linear_function
+{
+	name cobalt_op
+	cp 400 0.6
+	cp 440 0.3
+	cp 470 0.4
+	cp 500 1.2
+	cp 530 3.0
+	cp 560 4.5
+	cp 600 6.0
+	cp 650 6.5
+	cp 700 5.0
+	cp 720 4.2
+}
+# Gentle warm ivory: absorb a touch more blue than red.
+piecewise_linear_function
+{
+	name ivory_op
+	cp 400 0.55
+	cp 460 0.42
+	cp 520 0.28
+	cp 580 0.18
+	cp 650 0.12
+	cp 720 0.10
+}
+
+homogeneous_medium
+{
+	name gf_white
+	absorption 0.02 0.02 0.02
+	scattering 8.0 8.0 8.0
+	phase isotropic
+}
+homogeneous_medium
+{
+	name gf_ivory
+	absorption 0.3 0.3 0.3
+	scattering 9.0 9.0 9.0
+	absorption_spectral ivory_op
+	phase isotropic
+}
+homogeneous_medium
+{
+	name gf_black
+	absorption 45.0 45.0 45.0
+	scattering 0.0 0.0 0.0
+	phase isotropic
+}
+homogeneous_medium
+{
+	name gf_blue
+	absorption 2.0 1.5 0.4
+	scattering 8.0 8.0 8.0
+	absorption_spectral cobalt_op
+	phase isotropic
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples 384
+	max_volume_bounce 64
+	max_diffuse_bounce 4
+	pixel_filter box
+	nmbegin 380
+	nmend 720
+	num_wavelengths 12
+	spectral_samples 1
+	hwss false
+	radiance_map pnt_env
+	radiance_scale 1.0
+	radiance_background TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_grandfeu_opaque
+	type PNG
+	bpp 8
+	color_space sRGB
+}
+film
+{
+	width 720
+	height 200
+}
+
+pinhole_camera
+{
+	location 0 0 16
+	lookat 0 0 0
+	up 0 1 0
+	fov 30.0
+}
+
+dielectric_material
+{
+	name enamel_glass
+	tau 1.0
+	ior 1.55
+	scattering 100000
+}
+perfectreflector_material
+{
+	name floor_silver
+	reflectance pnt_silver
+}
+
+box_geometry
+{
+	name bg
+	width 2.0
+	height 2.0
+	depth 1.0
+}
+box_geometry
+{
+	name floorgeom
+	width 12.0
+	height 4.0
+	depth 1.0
+}
+
+standard_object
+{
+	name e_white
+	geometry bg
+	position -3.3 0 0
+	material enamel_glass
+	interior_medium gf_white
+}
+standard_object
+{
+	name e_ivory
+	geometry bg
+	position -1.1 0 0
+	material enamel_glass
+	interior_medium gf_ivory
+}
+standard_object
+{
+	name e_black
+	geometry bg
+	position 1.1 0 0
+	material enamel_glass
+	interior_medium gf_black
+}
+standard_object
+{
+	name e_blue
+	geometry bg
+	position 3.3 0 0
+	material enamel_glass
+	interior_medium gf_blue
+}
+standard_object
+{
+	name floor
+	geometry floorgeom
+	position 0 0 -0.5
+	material floor_silver
+}

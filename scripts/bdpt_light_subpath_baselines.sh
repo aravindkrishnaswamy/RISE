@@ -22,7 +22,7 @@
 #   - std NM (non-HWSS) + Le-conv mesh   : cornellbox_bdpt_spectral     (emittedRadianceNM v0)
 #   - in-medium scatter NM (light-walk)  : bdpt_homogeneous_fog_spectral(NM MEDIUM vertex + TrNM)
 #   - NM HWSS companion-Le bundle        : hwss_cornellbox_bdpt         (hwssBetaNM init from Le)
-#   - MLT consumer (Gate F)              : mlt_veach_egg_bdpt           (MLT -> GenerateLightSubpath)
+#   - MLT consumer (Gate F)              : mlt_veach_egg                (MLT -> GenerateLightSubpath)
 #   - VCM Pel light-store (Gate 6)       : cornellbox_vcm_simple        (VCM connect light verts)
 #   - VCM NM light-store (Gate 6)        : cornellbox_vcm_spectral      (VCM connect light verts NM)
 #   - VCM env-escape (Gate 6)            : env_bounded_fog_vcm          (VCM s=0 via shared gen)
@@ -66,7 +66,7 @@ MANIFEST=(
     "scenes/Tests/BDPT/cornellbox_bdpt_spectral.RISEscene:cornellbox_bdpt_spectral:std-NM+LeConvMesh"
     "scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene:bdpt_homogeneous_fog_spectral:media-NM(light-walk)"
     "scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene:hwss_cornellbox_bdpt:NM-HWSS-companionLe"
-    "scenes/FeatureBased/MLT/mlt_veach_egg_bdpt.RISEscene:mlt_veach_egg_bdpt:MLT-consumer(GateF)"
+    "scenes/FeatureBased/MLT/mlt_veach_egg.RISEscene:mlt_veach_egg:MLT-consumer(GateF)"
     "scenes/Tests/VCM/cornellbox_vcm_simple.RISEscene:cornellbox_vcm_simple:VCM-Pel-lightStore(Gate6)"
     "scenes/Tests/VCM/cornellbox_vcm_spectral.RISEscene:cornellbox_vcm_spectral:VCM-NM-lightStore(Gate6)"
     "scenes/Tests/Volumes/env_bounded_fog_vcm.RISEscene:env_bounded_fog_vcm:VCM-envEscape(Gate6)"

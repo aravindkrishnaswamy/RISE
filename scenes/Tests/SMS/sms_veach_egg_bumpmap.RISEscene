@@ -1,18 +1,30 @@
 RISE ASCII SCENE 7
+# Taxonomy: SMS bump-map regression for the MLT Veach-egg composition.
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           cornellbox_mixed_lights_bdpt.RISEscene                                                  #
-#   Description:    Same scene as cornellbox_mixed_lights_pt but rendered with BDPT.                        #
-#                   The converged images should match, validating that the unified                            #
-#                   light sampler produces the same result across both integrators.                          #
-#   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      March 30, 2026                                                                          #
+#   File:           sms_veach_egg_bumpmap.RISEscene                                                          #
+#   Description:    Smooth-ellipsoid Veach egg with a Perlin bump-map modifier — companion test scene to     #
+#                   exercise the SMS two-stage solver in the regime the paper (Zeltner 2020 §5) actually    #
+#                   targets: a normal field perturbed by high-frequency detail without changing positions.  #
+#                                                                                                           #
+#   The outer egg geometry is a smooth ellipsoid (no `displaced_geometry`).  A `bumpmap_modifier` applied   #
+#   on the outer object perturbs the normal at intersection time via the same 2D Perlin function the        #
+#   displaced scene used for vertex displacement.  Positions are unchanged; only normals are bumpy.  This   #
+#   matches Mitsuba's normal-mapped pedestals scenes and tests whether SMS Stage 1 (smoothing=1, smooth     #
+#   ellipsoid) can seed Stage 2 (smoothing=0, bumpy normals) effectively.                                   #
+#                                                                                                           #
+#   Compare to:                                                                                              #
+#     - sms_veach_egg.RISEscene           (baseline, smooth — no bumps)                                      #
+#     - sms_veach_egg_displaced.RISEscene (displaced — large position perturbation)                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      May 2, 2026                                                                              #
 #                                                                                                           #
 #############################################################################################################
 
 ##################################################
-# Setup a renderer
+# Renderer setup - PT with SMS enabled, two-stage on
 ##################################################
 
 standard_shader
@@ -21,43 +33,48 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-bdpt_pel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_eye_depth		8
-	max_light_depth		8
-	samples				64
-	light_bvh			false
+	samples                       4
+	oidn_denoise                  TRUE
+	sms_enabled                   TRUE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_two_stage                 TRUE
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/cornellbox_mixed_bdpt_alias
+	pattern				rendered/sms_veach_egg_bumpmap
 	type				PNG
 	bpp					8
 	color_space			sRGB
 }
 
 ##################################################
-# Cameras
+# Camera - identical to the smooth / displaced versions
 ##################################################
 
 film
 {
-	width			512
-	height			512
+	width			400
+	height			400
 }
 
 pinhole_camera
 {
-	location			278 273 -800
-	lookat				278 273 200
+	location			278 450 -650
+	lookat				278 250 278
 	up					0 1 0
-	fov					37.0
+	fov					40.0
 }
 
 ##################################################
-# Painters
+# Painters & Materials
 ##################################################
+
 #############################################################################################################
 #									RISE Ascii Scene File													#
 #																											#
@@ -77,6 +94,11 @@ pinhole_camera
 #                                                                                                           #
 #############################################################################################################
 
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
 
 uniformcolor_painter
 {
@@ -212,12 +234,42 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_light
-	color				1.0 0.9 0.7
+	color				1.0 0.95 0.85
 }
 
-##################################################
-# Materials
-##################################################
+# Same Perlin function the displaced scene used; here it drives the
+# bump-map modifier instead of vertex displacement.
+perlin2d_painter
+{
+	name				pnt_egg_bumps
+	colora				color_black
+	colorb				color_white
+	persistence			0.55
+	octaves				4
+	scale				8.0 8.0
+	shift				0 0
+}
+
+# Bump-map modifier: perturbs the surface normal using the FD gradient of
+# pnt_egg_bumps.  `scale` controls the bump amplitude; `windowsize` the
+# FD step on the (u, v) parameter (smaller = higher-frequency detail
+# captured but more sensitivity to texture noise).
+#
+# Empirically `scale × windowsize × ~16` (perlin gradient magnitude over
+# its period) is the bumpU/bumpV magnitude.  At scale=10, windowsize=0.001
+# this gives ≈ 0.16 → arctan(0.16) ≈ 9° max normal perturbation — within
+# the regime where single-chain SMS (one specular path per shading point)
+# can capture most of the suppressed caustic energy.  Crank scale higher
+# and the bumpy normal field scatters light across many caustic chains,
+# which a single-trial SMS can't cover (would need multi-trial / photon-
+# aided seeding to track the diffuse caustic).
+bumpmap_modifier
+{
+	name				bump_egg
+	function			pnt_egg_bumps
+	scale				10.0
+	windowsize			0.001
+}
 
 lambertian_material
 {
@@ -239,27 +291,28 @@ lambertian_material
 
 lambertian_luminaire_material
 {
-	name				white_lum
+	name				bright_lum
 	exitance			pnt_light
-	scale				50.0
+	scale				800.0
 	material			none
 }
 
-##################################################
-# Lights — one point light (delta) for testing
-# unified sampler with mixed light types
-##################################################
-
-omni_light
+dielectric_material
 {
-	name				pointlight
-	power				150000.0
-	color				0.7 0.8 1.0
-	position			150 400 200
+	name				glass
+	tau					1.0
+	ior					1.5
+}
+
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
 }
 
 ##################################################
-# Objects - walls
+# Cornell box walls
 ##################################################
 
 clippedplane_geometry
@@ -307,16 +360,6 @@ clippedplane_geometry
 	ptd					556.0 548.8 0
 }
 
-# Smaller ceiling light — half the area to balance with the point light
-clippedplane_geometry
-{
-	name				lightgeom
-	pta					320.0 548.7999 260.0
-	ptb					320.0 548.7999 320.0
-	ptc					240.0 548.7999 320.0
-	ptd					240.0 548.7999 260.0
-}
-
 standard_object
 {
 	name				floor
@@ -352,46 +395,54 @@ standard_object
 	material			red
 }
 
+##################################################
+# The sealed glass egg — both shells SMOOTH ellipsoids.
+# The OUTER egg gets the bump-map modifier; INNER stays unperturbed.
+##################################################
+
+ellipsoid_geometry
+{
+	name				egg_outer_geom
+	radii				70 95 70
+}
+
+ellipsoid_geometry
+{
+	name				egg_inner_geom
+	radii				56 79 56
+}
+
 standard_object
 {
-	name				light
-	geometry			lightgeom
-	material			white_lum
+	name				egg_outer
+	geometry			egg_outer_geom
+	material			glass
+	modifier			bump_egg
+	position			278 200 278
+}
+
+standard_object
+{
+	name				egg_inner
+	geometry			egg_inner_geom
+	material			air_cavity
+	position			278 200 278
 }
 
 ##################################################
-# Objects - blocks
+# Interior light
 ##################################################
 
-rawmesh_geometry
+sphere_geometry
 {
-	name				tallblockgeom
-	file				models/raw/cornellbox_tallblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
-}
-
-rawmesh_geometry
-{
-	name				shortblockgeom
-	file				models/raw/cornellbox_shortblock.rawmesh
-	maxpolygons			100
-	maxdepth			6
-	bsp					true
+	name				light_geom
+	radius				15
 }
 
 standard_object
 {
-	name				tallblock
-	geometry			tallblockgeom
-	material			white
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 200 278
 }
-
-standard_object
-{
-	name				shortblock
-	geometry			shortblockgeom
-	material			white
-}
-
