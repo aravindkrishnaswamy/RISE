@@ -24,6 +24,7 @@
 #   bash scripts/bdpt_transmittance_baselines.sh check   <tag>  # 1 render, vs trial-a
 # Check limit: max(MAX_DELTA_PCT, captured a-vs-b floor); default 0.5%.
 # Captures/checks reject images with mean encoded luma below 1.0.
+# Failed or interrupted captures leave the tag blocked until capture succeeds.
 #
 # Mean-luminance % delta is the reliable metric (Phase 2a finding).  Capture
 # records the per-scene run-to-run noise floor (trial-a vs trial-b) so "within
@@ -48,6 +49,7 @@ then
     exit 2
 fi
 DIR="${ROOT}/tests/baselines_refactor/${TAG}_bdpttr"
+CAPTURE_MARKER="${DIR}/.capture-incomplete"
 RENDERED="${ROOT}/rendered"
 export RISE_MEDIA_PATH="${ROOT}/"
 case "${MODE}" in
@@ -143,6 +145,15 @@ capture_pair() {  # scene output target-a target-b -> prints validated noise flo
 }
 
 echo "MODE=${MODE} TAG=${TAG} DIR=${DIR}"
+if [ "${MODE}" = "capture" ]; then
+    if ! touch "${CAPTURE_MARKER}"; then
+        echo "ERROR: unable to mark baseline capture incomplete: ${CAPTURE_MARKER}" >&2
+        exit 1
+    fi
+elif [ -e "${CAPTURE_MARKER}" ]; then
+    echo "ERROR: baseline capture is incomplete: ${DIR}" >&2
+    exit 1
+fi
 failures=0
 for entry in "${MANIFEST[@]}"; do
     scene_rel="${entry%%:*}"
@@ -202,4 +213,8 @@ for entry in "${MANIFEST[@]}"; do
 done
 rm -f /tmp/bdpttr_$$.log
 [ "${failures}" -eq 0 ] || exit 1
+if [ "${MODE}" = "capture" ] && ! rm -f "${CAPTURE_MARKER}"; then
+    echo "ERROR: unable to mark baseline capture complete: ${CAPTURE_MARKER}" >&2
+    exit 1
+fi
 echo "DONE ${MODE}"
