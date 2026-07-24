@@ -2180,12 +2180,15 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Parse one `ask_user` call's `argsJson`.  Returns nil on ANYTHING
-    /// short of a well-formed object with a non-blank `question` string
-    /// — malformed `options`/`allowFreeform` entries are dropped/defaulted
-    /// individually rather than failing the whole call, since they are
-    /// optional and a model that gets them slightly wrong (e.g. a number
-    /// in the `options` array) still asked a perfectly answerable
-    /// question.
+    /// short of a well-formed object with a non-blank `question` string,
+    /// OR an unanswerable card: `allowFreeform:false` requires a valid
+    /// 2...5-item options list.  This latter invariant is load-bearing:
+    /// without it, an optional/malformed options array plus
+    /// `allowFreeform:false` would render neither choice buttons nor a text
+    /// field while the ordinary composer is disabled for `pendingQuestion`.
+    /// When freeform remains allowed, invalid options safely degrade to a
+    /// freeform-only question instead of trapping the user on a malformed
+    /// model call.
     private static func parseAskUserArgs(_ argsJson: String) -> AskUserArgs? {
         guard let data = argsJson.data(using: .utf8),
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -2193,8 +2196,14 @@ final class ChatViewModel: ObservableObject {
         else { return nil }
         let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return nil }
-        let options = (obj["options"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let rawOptions = (obj["options"] as? [Any])?.compactMap { value -> String? in
+            guard let text = value as? String else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } ?? []
+        let options = (2...5).contains(rawOptions.count) ? rawOptions : []
         let allowFreeform = (obj["allowFreeform"] as? Bool) ?? true
+        guard allowFreeform || !options.isEmpty else { return nil }
         return AskUserArgs(question: question, options: options, allowFreeform: allowFreeform)
     }
 

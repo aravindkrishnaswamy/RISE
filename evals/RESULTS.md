@@ -274,11 +274,12 @@ Three findings:
 Research finding: **0 of 132** build runs ever asked a clarifying question
 spontaneously. The `ask_user` tool + a materially-ambiguous scenario
 (`build_ambiguous_scene`: "my prized collection piece" — the scripted responder
-answers "a vintage brass pocket watch on a dark wood desk, warm evening light")
-measures whether models ask when it matters, ask BEFORE building, and build what
-the answer said.
+answers "a vintage brass pocket watch, about 5cm across") measures whether
+models ask when piece identity matters, ask BEFORE building, and reflect that
+identity in their final response. Setting and mood are deliberately left to the
+agent's ordinary judgment and are not an adoption metric.
 
-| model | asked ≥1 | asked-before-building | answer reflected | meanCkpt | full pass |
+| model | asked ≥1 | asked-before-building | piece identity reflected | meanCkpt | full pass |
 |---|---|---|---|---|---|
 | gemini-3.5-flash | 3/3 | 3/3 | 3/3 | **0.94** | 2/3 |
 | gemini-3.6-flash | 3/3 | 3/3 | 3/3 | 0.89 | 1/3 |
@@ -288,11 +289,15 @@ the answer said.
 *qwen's trajectory failures are mechanical-loop (repeated identical
 propose_patch), not ask-ordering.
 
-**Takeaways.** (1) **Tool adoption is near-universal — 11/12 runs asked** —
+> **Historical/stale after the scope correction above.** The 11/12 board was
+> graded against the earlier compound-question scenario; re-run
+> `ask_user_board` before treating any row as a current result.
+
+**Historical takeaways.** (1) **Tool adoption was near-universal — 11/12 runs asked** —
 against 0/132 spontaneous asks without the tool: the tools-over-prose lesson
-confirmed a fourth time, now including the LOCAL model. (2) **Answers are
-actually consumed**: 11/12 built the pocket watch they were told about rather
-than a guess. (3) gpt, the best *reactive* clarifier (3/3 on
+confirmed a fourth time, now including the LOCAL model. (2) **Piece-identity
+answers were consumed**: 11/12 built the pocket watch they were told about
+rather than a guess. (3) gpt, the best *reactive* clarifier (3/3 on
 reserved_name_clarify), is the *weakest proactive* asker here (one run built
 without asking) — reactive and proactive clarification are different
 dispositions. N=3 caveats apply throughout.

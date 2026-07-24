@@ -901,7 +901,8 @@ namespace RISE
 			//!    maxUserTurns?:number, argsContains?:string|[string], expect?:string}
 			//!    -- OR an ARRAY of such spec objects,
 			//!  askUserMin?/askUserMax?:number (whole, >= 0),
-			//!  askUserBeforeMutation?:bool}.  toolOutcomes.expect (and
+			//!  askUserBeforeMutation?:bool,
+			//!  askUserQuestionContainsAny?:non-empty string array}.  toolOutcomes.expect (and
 			//!  the optional toolCallAfterUserTurn.expect) is one of
 			//!  applied|staged|rejected|error|conflict; argsContains (when
 			//!  present) is a non-empty string OR a non-empty array of non-empty
@@ -912,7 +913,9 @@ namespace RISE
 			//!  "ask_user" tool records in the trajectory (stage 2 of the
 			//!  clarifying-questions feature); askUserBeforeMutation asserts the
 			//!  FIRST ask_user record precedes the FIRST document-mutating tool
-			//!  record (insert_chunk/insert_chunks/propose_patch/remove_chunk).
+			//!  record (insert_chunk/insert_chunks/propose_patch/remove_chunk);
+			//!  askUserQuestionContainsAny requires at least one ask_user
+			//!  question string to contain one of its case-insensitive terms.
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
 			{
 				if( !RequireFieldType( cp, "maxToolCalls", JsonValue::Type::Number, scenarioId, idx, "maxToolCalls", err ) ) return false;
@@ -931,6 +934,21 @@ namespace RISE
 				if( !RequireWholeNumberInRange( cp, "askUserMax", 0.0, static_cast<double>( std::numeric_limits<int>::max() ),
 					scenarioId, idx, "askUserMax", err ) ) return false;
 				if( !RequireFieldType( cp, "askUserBeforeMutation", JsonValue::Type::Bool, scenarioId, idx, "askUserBeforeMutation", err ) ) return false;
+				if( cp.has( "askUserQuestionContainsAny" ) ) {
+					const JsonValue& terms = cp.get( "askUserQuestionContainsAny" );
+					if( !terms.isArray() || terms.size() == 0 ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "].askUserQuestionContainsAny must be a non-empty array of non-empty strings";
+						return false;
+					}
+					for( std::size_t i = 0; i < terms.size(); ++i ) {
+						if( !terms.at( i ).isString() || terms.at( i ).asString().empty() ) {
+							err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+							      "].askUserQuestionContainsAny[" + std::to_string( i ) + "] must be a non-empty string";
+							return false;
+						}
+					}
+				}
 
 				// Shared arg/expect validators so toolOutcomes and
 				// toolCallAfterUserTurn can never diverge.  argsContains accepts
@@ -5244,12 +5262,13 @@ namespace RISE
 					const bool needsRecords = cp.has( "noAutonomyRefusal" ) || cp.has( "requiredToolInOrder" ) ||
 						cp.has( "noMechanicalLoop" ) || cp.has( "expectAutonomyRefusal" ) ||
 						cp.has( "toolOutcomes" ) || cp.has( "toolCallAfterUserTurn" ) ||
-						cp.has( "askUserMin" ) || cp.has( "askUserMax" ) || cp.has( "askUserBeforeMutation" );
+						cp.has( "askUserMin" ) || cp.has( "askUserMax" ) || cp.has( "askUserBeforeMutation" ) ||
+						cp.has( "askUserQuestionContainsAny" );
 					if( needsRecords ) {
 						if( handle.trajectoryPath.empty() ) {
 							failures.push_back( "trajectory file unavailable (run did not complete) -- cannot check "
 								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/expectAutonomyRefusal/"
-								"toolOutcomes/toolCallAfterUserTurn/askUserMin/askUserMax/askUserBeforeMutation" );
+								"toolOutcomes/toolCallAfterUserTurn/askUserMin/askUserMax/askUserBeforeMutation/askUserQuestionContainsAny" );
 						} else {
 							std::ifstream f( handle.trajectoryPath.c_str(), std::ios::binary );
 							if( !f ) {
@@ -5397,6 +5416,33 @@ namespace RISE
 											failures.push_back( "askUserMax: observed " + std::to_string( askUserCount ) +
 												" ask_user call(s), want <= " + std::to_string( wantMax ) );
 									}
+								}
+
+								// A count alone says only that the model invoked ask_user, not
+								// that it asked about the ambiguity under test.  This optional
+								// assertion inspects the structured question field itself (not
+								// options or serialized tool JSON) and accepts any configured
+								// case-insensitive identity term.  It lets a scenario reject a
+								// color/style question that happened to receive a broad default
+								// response, without overfitting to one exact sentence.
+								if( cp.has( "askUserQuestionContainsAny" ) && cp.get( "askUserQuestionContainsAny" ).isArray() ) {
+									bool matched = false;
+									for( const auto& t : toolRecords ) {
+										if( t.get( "name" ).asString() != "ask_user" ) continue;
+										const JsonValue& args = t.get( "args" );
+										if( !args.isObject() || !args.get( "question" ).isString() ) continue;
+										const std::string question = ToLowerAsciiEval( args.get( "question" ).asString() );
+										for( std::size_t i = 0; i < cp.get( "askUserQuestionContainsAny" ).size(); ++i ) {
+											const JsonValue& term = cp.get( "askUserQuestionContainsAny" ).at( i );
+											if( term.isString() && question.find( ToLowerAsciiEval( term.asString() ) ) != std::string::npos ) {
+												matched = true;
+												break;
+											}
+										}
+										if( matched ) break;
+									}
+									if( !matched )
+										failures.push_back( "askUserQuestionContainsAny: no ask_user question contained an accepted term" );
 								}
 
 								// askUserBeforeMutation: the FIRST "ask_user" record

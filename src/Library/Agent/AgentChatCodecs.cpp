@@ -502,7 +502,7 @@ namespace RISE
 					"{\"type\":\"object\",\"properties\":{"
 						"\"question\":{\"type\":\"string\",\"description\":"
 						"\"Required. ONE specific question, phrased so a short answer resolves it (e.g. \\\"Should the mood be warm sunset or cool overcast?\\\").\"},"
-						"\"options\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"options\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"minItems\":2,\"maxItems\":5,\"description\":"
 						"\"Optional, 2-5 short strings the user can pick from with one click. Preferred over leaving the question fully open-ended -- offer options whenever the plausible answers are enumerable.\"},"
 						"\"allowFreeform\":{\"type\":\"boolean\",\"description\":"
 						"\"Optional, default true. Whether a typed answer (instead of clicking one of options) is acceptable. Set false only when options is exhaustive and a freeform reply would not make sense.\"}"

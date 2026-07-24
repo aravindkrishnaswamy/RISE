@@ -5182,6 +5182,10 @@ static void TestAskUserToolSchema()
 			       "T39a: anthropic ask_user.options is an array" );
 			Check( props.get( "options" ).get( "items" ).get( "type" ).asString() == "string",
 			       "T39a: anthropic ask_user.options items are strings" );
+			Check( props.get( "options" ).get( "minItems" ).asNumber() == 2.0,
+			       "T39a: anthropic ask_user.options requires at least two choices" );
+			Check( props.get( "options" ).get( "maxItems" ).asNumber() == 5.0,
+			       "T39a: anthropic ask_user.options permits at most five choices" );
 			Check( props.get( "allowFreeform" ).get( "type" ).asString() == "boolean",
 			       "T39a: anthropic ask_user.allowFreeform is a boolean" );
 			const JsonValue& req = schema.get( "required" );
@@ -5214,6 +5218,10 @@ static void TestAskUserToolSchema()
 			       "T39a: openai ask_user.question is a string" );
 			Check( props.get( "options" ).get( "type" ).asString() == "array",
 			       "T39a: openai ask_user.options is an array" );
+			Check( props.get( "options" ).get( "minItems" ).asNumber() == 2.0,
+			       "T39a: openai ask_user.options requires at least two choices" );
+			Check( props.get( "options" ).get( "maxItems" ).asNumber() == 5.0,
+			       "T39a: openai ask_user.options permits at most five choices" );
 			Check( props.get( "allowFreeform" ).get( "type" ).asString() == "boolean",
 			       "T39a: openai ask_user.allowFreeform is a boolean" );
 			bool questionRequired = false;
@@ -5241,6 +5249,10 @@ static void TestAskUserToolSchema()
 			       "T39a: gemini ask_user.question is a string" );
 			Check( props.get( "options" ).get( "type" ).asString() == "array",
 			       "T39a: gemini ask_user.options is an array" );
+			Check( props.get( "options" ).get( "minItems" ).asNumber() == 2.0,
+			       "T39a: gemini ask_user.options requires at least two choices" );
+			Check( props.get( "options" ).get( "maxItems" ).asNumber() == 5.0,
+			       "T39a: gemini ask_user.options permits at most five choices" );
 			Check( props.get( "allowFreeform" ).get( "type" ).asString() == "boolean",
 			       "T39a: gemini ask_user.allowFreeform is a boolean" );
 		}

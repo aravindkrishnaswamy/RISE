@@ -4300,7 +4300,7 @@ static void TestAskUserLoaderValidation()
 			"askUserResponses defaults to empty/no-default when the field is absent" );
 	}
 
-	// --- the trajectory checkpoint's three new fields ---
+	// --- the trajectory checkpoint's ask_user fields ---
 	auto writeScenarioCps = [&]( const std::string& id, const std::string& checkpointsJson ) -> std::string {
 		JsonValue root = baseRoot( id );
 		JsonValue cps; std::string perr;
@@ -4345,25 +4345,36 @@ static void TestAskUserLoaderValidation()
 		Check( err.find( "askUserBeforeMutation" ) != std::string::npos,
 			"the load error names \"askUserBeforeMutation\" (got: " + err + ")" );
 	}
+	// askUserQuestionContainsAny must be a non-empty string array: an empty
+	// or wrong-typed vocabulary would make a relevance assertion vacuous.
+	{
+		AgentEvalScenario s; std::string err;
+		Check( !LoadEvalScenario( writeScenarioCps( "bad_askuser_question_terms",
+			"[{\"kind\":\"trajectory\",\"askUserQuestionContainsAny\":[]}]" ), s, err ),
+			"empty askUserQuestionContainsAny FAILS to load" );
+		Check( err.find( "askUserQuestionContainsAny" ) != std::string::npos,
+			"the load error names \"askUserQuestionContainsAny\" (got: " + err + ")" );
+	}
 	// The correctly-typed siblings all load cleanly, together.
 	{
 		AgentEvalScenario s; std::string err;
 		Check( LoadEvalScenario( writeScenarioCps( "good_askuser_trajectory_fields",
-			"[{\"kind\":\"trajectory\",\"askUserMin\":1,\"askUserMax\":3,\"askUserBeforeMutation\":true}]" ), s, err ),
-			"correctly-typed askUserMin/askUserMax/askUserBeforeMutation load together (" + err + ")" );
+			"[{\"kind\":\"trajectory\",\"askUserMin\":1,\"askUserMax\":3,\"askUserBeforeMutation\":true,\"askUserQuestionContainsAny\":[\"piece\",\"object\"]}]" ), s, err ),
+			"correctly-typed ask_user trajectory fields load together (" + err + ")" );
 	}
 }
 
 //----------------------------------------------------------------------
-// T-ask(c): the "trajectory" checkpoint kind's three new assertions --
-// askUserMin/askUserMax (call-count bounds) and askUserBeforeMutation
-// (ordering) -- each driven through a REAL RunScenario run and checked
-// BOTH directions (a crafted-to-pass case actually passes; a crafted-to-
-// fail sibling actually fails, with an actionable detail).
+// T-ask(c): the "trajectory" checkpoint kind's ask_user assertions --
+// askUserMin/askUserMax (call-count bounds), askUserBeforeMutation
+// (ordering), and askUserQuestionContainsAny (question relevance) -- each
+// driven through a REAL RunScenario run and checked BOTH directions (a
+// crafted-to-pass case actually passes; a crafted-to-fail sibling actually
+// fails, with an actionable detail).
 //----------------------------------------------------------------------
 static void TestTrajectoryAskUserAssertions()
 {
-	std::printf( "T-ask(c): \"trajectory\" checkpoint askUserMin/askUserMax/askUserBeforeMutation...\n" );
+	std::printf( "T-ask(c): \"trajectory\" checkpoint askUserMin/askUserMax/askUserBeforeMutation/askUserQuestionContainsAny...\n" );
 	const std::string dir = ScratchRunDir( "t_ask_trajectory" );
 
 	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& base, const std::string& cpJson,
@@ -4405,6 +4416,10 @@ static void TestTrajectoryAskUserAssertions()
 			"askUserMax:0 FAILS with one ask_user call" );
 		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserBeforeMutation\":true}]", true,
 			"askUserBeforeMutation:true PASSES -- ask_user preceded the insert_chunk" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserQuestionContainsAny\":[\"colour\",\"color\"]}]", true,
+			"askUserQuestionContainsAny PASSES case-insensitively when the question is relevant" );
+		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserQuestionContainsAny\":[\"piece\"]}]", false,
+			"askUserQuestionContainsAny FAILS when the ask_user question lacks the required topic" );
 	}
 
 	// Run B: the mutation happens FIRST, ask_user only AFTER -- the RED
