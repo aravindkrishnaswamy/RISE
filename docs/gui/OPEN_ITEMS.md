@@ -8,13 +8,13 @@ open.  History and rationale live in
 [PROPERTIES_AND_REFERENCES.md](PROPERTIES_AND_REFERENCES.md) §6–8 and
 [ADR_DOCUMENT_FIRST_EDITOR.md](ADR_DOCUMENT_FIRST_EDITOR.md).
 
-_Last updated: 2026-07-24 (round-7 P2 sweep landed; cite the round-7 commit)._
+_Last updated: 2026-07-24, at commit `ce629e26` (the round-7 P2 sweep)._
 
 ---
 
 ## 1. P2 sweep (from the round-6 three-reviewer pass) — DONE (round 7, 2026-07-24)
 
-All six items landed in one commit ("round 7"); a fresh 3-reviewer
+All six items landed in `ce629e26`; a fresh 3-reviewer
 adversarial round on the sweep returned ZERO P1s (one review-found P2 —
 the destructive remove-side test hole — was fixed and mutation-verified
 in the same round).
