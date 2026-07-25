@@ -1,0 +1,12 @@
+{
+  "//": "Proof board for the OpenAI Responses migration: N=5 for both Terra and Sol.",
+  "scenarios": [
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-sol", "keyEnvVar": "OPENAI_API_KEY" }
+  ],
+  "repeats": 5,
+  "runDir": "evals/runs/ask_user_openai_responses"
+}

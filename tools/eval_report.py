@@ -137,6 +137,7 @@ PROVIDER_PRICING = {
         # (tiny prompts). cached_input is the cache-READ rate (cache writes bill
         # at 1.25x input, not modelled here -- same as every other openai entry).
         "gpt-5.6-terra": {"input": 2.50, "output": 15.00, "cached_input": 0.25},
+        "gpt-5.6-sol": {"input": 5.00, "output": 30.00, "cached_input": 0.50},
     },
     "gemini": {
         "cached_in_input": True,
@@ -1318,6 +1319,10 @@ def selftest():
     if not terra_priced:
         raise AssertionError("gpt-5.6-terra has a specific pricing entry -> must be priced")
     _assert_close(terra_cost, 2.50, 1e-9, "gpt-5.6-terra input rate")
+    sol_cost, sol_priced = estimate_cost("openai", "gpt-5.6-sol", 1_000_000, 0, 0)
+    if not sol_priced:
+        raise AssertionError("gpt-5.6-sol has a specific pricing entry -> must be priced")
+    _assert_close(sol_cost, 5.00, 1e-9, "gpt-5.6-sol input rate")
     grok45_cost, grok45_priced = estimate_cost("xai", "grok-4.5", 1_000_000, 0, 0)
     if not grok45_priced:
         raise AssertionError("grok-4.5 has a specific pricing entry -> must be priced")

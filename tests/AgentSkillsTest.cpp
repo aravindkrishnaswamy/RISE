@@ -676,7 +676,7 @@ static void TestChatLoopWiring()
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
-	// OpenAI/ChatGPT: thirteen function tools, read_skill present.
+	// OpenAI Responses: thirteen flat function tools, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::OpenAI );
@@ -686,11 +686,11 @@ static void TestChatLoopWiring()
 		Check( tools.isArray() && tools.size() == 13, "openai body carries thirteen tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
-			const JsonValue& fn = tools.at( i ).get( "function" );
 			if( tools.at( i ).get( "type" ).asString() == "function" &&
-			    fn.get( "name" ).asString() == "read_skill" ) {
+			    tools.at( i ).get( "name" ).asString() == "read_skill" ) {
 				saw = true;
-				Check( fn.get( "parameters" ).isObject(), "openai read_skill has parameters" );
+				Check( tools.at( i ).get( "parameters" ).isObject(),
+				       "openai read_skill has parameters" );
 			}
 		}
 		Check( saw, "openai tools include read_skill" );

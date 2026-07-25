@@ -1531,8 +1531,9 @@ namespace RISE
 				const std::vector<std::pair<std::string, JsonValue> >& members = root.members();
 				for( std::size_t i = 0; i < members.size(); ++i ) {
 					const std::string& key = members[i].first;
-					if( key == "messages" || key == "contents" || key == "tools" ||
-					    key == "system" || key == "systemInstruction" || key == "toolConfig" )
+					if( key == "messages" || key == "input" || key == "contents" ||
+					    key == "tools" || key == "instructions" || key == "system" ||
+					    key == "systemInstruction" || key == "toolConfig" )
 						continue;
 					params.set( key, members[i].second );
 				}

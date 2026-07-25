@@ -23,9 +23,10 @@
 //        functionResponse {id,name,response,parts[]} where parts is an
 //        array of FunctionResponsePart {inlineData:{mimeType,data}}
 //        ("Ordered Parts that constitute a function response").
-//      * OpenAIChatCodec -- OpenAI Chat Completions
-//        (POST https://api.openai.com/v1/chat/completions, auth via
-//        `Authorization: Bearer ...`), surfaced in the GUI as ChatGPT.
+//      * OpenAIChatCodec -- OpenAI Responses API by default; parameterized
+//        OpenAI-compatible providers continue to use Chat Completions.
+//        Both use `Authorization: Bearer ...`; OpenAI is surfaced in the
+//        GUI as ChatGPT.
 //
 //    KEY DESIGN RULES (see AgentChatLoop.h for the loop contract):
 //      * The API key appears ONLY in the auth header the codec emits --
@@ -282,9 +283,11 @@ namespace RISE
 			//! its sticky state so every later BuildRequest (including the
 			//! retry) explicitly sends `"reasoning_effort":"none"`.  This is
 			//! NOT an omission -- this codebase never sends a
-			//! reasoning_effort field on its own, so the 400 comes from the
-			//! model's server-side default; the codec must actively ADD the
-			//! override.  The DRIVER should re-issue the SAME round once
+			//! reasoning_effort field on Chat-Completions requests unless
+			//! this recovery fires, so the 400 comes from the model's
+			//! server-side default; the codec must actively ADD the override.
+			//! OpenAI's native Responses mode does not need this recovery.
+			//! The DRIVER should re-issue the SAME round once
 			//! (rebuild via BuildRequest, fetch, and RecordHttpRound with
 			//! attempt=2/retryOf=1 so the retry is an honest sibling llm
 			//! record) instead of terminating.  Enforced once-per-round by
@@ -403,11 +406,9 @@ namespace RISE
 			//! provider-native message JSON produced by this codec).
 			//! `forceReasoningEffortNone` (REASONING-MODEL TOOLS-VS-EFFORT
 			//! 400 RECOVERY, see ChatStepResult::retryReasoningEffortNone):
-			//! when true, EXPLICITLY add `"reasoning_effort":"none"` to the
-			//! request body.  Only OpenAIChatCodec acts on it -- Anthropic
-			//! and Gemini accept and ignore the parameter, since neither
-			//! provider has this field.  Defaults false so every pre-
-			//! existing call site is unaffected.
+			//! when true, EXPLICITLY add `"reasoning_effort":"none"` to a
+			//! Chat-Completions request body.  OpenAIChatCodec ignores it in
+			//! Responses mode; Anthropic and Gemini ignore it always.
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -492,21 +493,11 @@ namespace RISE
 			virtual std::size_t ToolsWireBytes() const;
 		};
 
-		//! OpenAI Chat Completions codec (see file header).  The GUI
-		//! labels this provider "ChatGPT"; the wire endpoint is OpenAI's
-		//! chat/completions API because its messages/tool_calls transcript
-		//! shape matches this loop's provider-native raw-entry model.
-		//!
-		//! PARAMETERIZED (2026-07): the SAME wire codec drives every
-		//! OpenAI-Chat-Completions-compatible provider -- OpenAI itself,
-		//! xAI (Grok), and a local/Ollama-style server -- because the
-		//! request/response shape (messages, tools, tool_calls,
-		//! finish_reason, usage) is identical across them; only the
-		//! endpoint URL, provider label, default model id, and whether an
-		//! Authorization header is emitted differ.  Those four knobs are
-		//! captured in `Config`; the default constructor reproduces the
-		//! OpenAI wire behaviour byte-for-byte.  Do NOT copy-paste this
-		//! codec for a new compatible provider -- add a Config instead.
+		//! OpenAI uses the Responses API so reasoning and function tools work
+		//! together.  The parameterized form remains the shared Chat
+		//! Completions codec for compatible providers (xAI and local/Ollama).
+		//! Do NOT opt another provider into Responses merely because its Chat
+		//! Completions schema resembles OpenAI's.
 		class OpenAIChatCodec : public IChatProviderCodec
 		{
 		public:
@@ -520,7 +511,7 @@ namespace RISE
 			struct Config
 			{
 				std::string providerName;    //!< "openai" / "xai" / "local" -- the ProviderName() label
-				std::string baseUrl;         //!< full chat/completions endpoint URL
+				std::string baseUrl;         //!< full endpoint URL for the selected wire mode
 				std::string defaultModelId;  //!< model id when the caller leaves it empty
 				bool        requiresAuth = true;  //!< see the struct doc above; defaults fail-closed (require auth) so a default-constructed Config never reads indeterminate
 
@@ -533,10 +524,10 @@ namespace RISE
 				//! generation legitimately exceeds the hosted-provider
 				//! budget and was observed timing out at 300s.
 				long        requestTimeoutSeconds = 300;
+				bool        useResponsesApi = false; //!< OpenAI-native Responses wire; false for compatible providers
 			};
 
-			//! Default: the OpenAI provider (byte-identical wire behaviour
-			//! to the pre-parameterization codec).
+			//! Default: OpenAI's native Responses API.
 			OpenAIChatCodec();
 
 			//! Parameterized: any OpenAI-compatible provider.  The caller

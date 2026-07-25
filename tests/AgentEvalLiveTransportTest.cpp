@@ -1016,15 +1016,9 @@ static void TestLiveHttp400NotRetried()
 }
 
 //----------------------------------------------------------------------
-// T15: provider-compat fix -- an OpenAI-family reasoning model's 400
-//      "Function tools with reasoning_effort are not supported ... To use
-//      function tools, use /v1/responses or set reasoning_effort to
-//      'none'." (observed on every gpt-5.6-terra live eval round) is
-//      retried ONCE with an explicit "reasoning_effort":"none" override;
-//      the second attempt succeeds -> the scenario reaches final_text,
-//      having driven 2 llm rounds (an honest attempt-2/retry-of-1 sibling
-//      trajectory record), proving the RunScenarioLive attempt-loop wiring
-//      (not just the AgentChatLoopTest.cpp T34 codec-level unit test).
+// T15: an archived legacy Chat-Completions effort error still takes the
+//      generic one-shot runner retry, but the rebuilt native OpenAI request
+//      remains a Responses request with medium reasoning.
 //----------------------------------------------------------------------
 static void TestLiveReasoningEffort400RetrySucceeds()
 {
@@ -1068,12 +1062,13 @@ static void TestLiveReasoningEffort400RetrySucceeds()
 	Check( h.result.llmCalls == 2, "both the 400 attempt and the retry are counted as llm rounds" );
 	Check( mock.seenRequests.size() == 2, "the transport saw exactly 2 POSTs (the retry rebuilt the SAME round)" );
 
-	// The FIRST request carries no reasoning_effort key (this codec never
-	// sends one on its own); the RETRY explicitly overrides it to "none".
+	// OpenAI-native requests stay on Responses with medium reasoning even
+	// when a legacy Chat-Completions error fixture triggers the generic
+	// one-shot retry path.
 	Check( mock.seenRequests[0].body.find( "reasoning_effort" ) == std::string::npos,
 	       "the first request carries no reasoning_effort key" );
-	Check( mock.seenRequests[1].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
-	       "the retry request explicitly sets reasoning_effort:\"none\"" );
+	Check( mock.seenRequests[1].body.find( "\"reasoning\":{\"effort\":\"medium\"}" ) != std::string::npos,
+	       "the retry remains a Responses request with medium reasoning" );
 
 	// The trajectory carries an honest sibling llm record: attempt 1 (the
 	// 400) and attempt 2 / retry_of 1 (the successful retry).
@@ -1090,14 +1085,8 @@ static void TestLiveReasoningEffort400RetrySucceeds()
 }
 
 //----------------------------------------------------------------------
-// T15b: the reasoning_effort-400 retry (T15) must preserve a user-message
-// image attachment across the rebuilt request -- a vision-shaped mirror of
-// T15, combined with T13's attachment setup.  Guards against a retry path
-// that rebuilds the request body WITHOUT the attachments (a live-baseline
-// hypothesis: gpt-5.6-terra vision runs die inconsistently on the reasoning-
-// effort 400, which was traced to confirm the retry genuinely re-sends the
-// SAME transcript, images included -- not a rebuild-from-scratch that could
-// silently drop them).
+// T15b: the compatibility retry must preserve a Responses input_image
+// attachment when it rebuilds the same round.
 //----------------------------------------------------------------------
 static void TestLiveReasoningEffort400RetryPreservesImages()
 {
@@ -1160,8 +1149,8 @@ static void TestLiveReasoningEffort400RetryPreservesImages()
 	       "T15b: the first request carries no reasoning_effort key" );
 
 	Check( mock.seenRequests.size() == 2 &&
-	       mock.seenRequests[1].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
-	       "T15b: the retry request explicitly sets reasoning_effort:\"none\"" );
+	       mock.seenRequests[1].body.find( "\"reasoning\":{\"effort\":\"medium\"}" ) != std::string::npos,
+	       "T15b: the retry remains a Responses request with medium reasoning" );
 	Check( mock.seenRequests.size() == 2 &&
 	       mock.seenRequests[1].body.find( expectedB64 ) != std::string::npos,
 	       "T15b: the RETRY request body STILL carries the reference image's base64 payload -- the "
@@ -1169,20 +1158,9 @@ static void TestLiveReasoningEffort400RetryPreservesImages()
 }
 
 //----------------------------------------------------------------------
-// T15c: PROCESS-WIDE reasoning-effort memoization at the RUNNER level --
-// the root-cause fix for the vision-baseline waste.  T15 above already
-// taught the process-wide capability cache (see
-// ReasoningEffortNoneAlreadyKnown in AgentChatLoop.cpp) that its model id
-// needs reasoning_effort:"none"; a SECOND RunScenarioLive against the
-// SAME (provider, model) -- a brand-new AgentChatLoop, exactly like every
-// new eval cell or GUI session -- must now start pre-armed: ONE POST,
-// no 400, the first request already carrying the override.  Before the
-// memoization, EVERY session against a gpt-5.6-terra-class model re-paid
-// the wasted 400 round-trip (re-sending the full image payload on vision
-// scenarios -- the token cost that rate-limited the live baseline).
-// ORDER DEPENDENCY (deliberate): this test MUST run after T15 in main();
-// it shares T15's model id because the shared cache entry IS the thing
-// under test.
+// T15c: a process-wide legacy compatibility lesson may persist, but a new
+// native OpenAI session must still start directly on Responses with medium
+// reasoning and make only the expected request.
 //----------------------------------------------------------------------
 static void TestLiveReasoningEffortMemoizedAcrossSessions()
 {
@@ -1214,8 +1192,8 @@ static void TestLiveReasoningEffortMemoizedAcrossSessions()
 	Check( h.result.llmCalls == 1, "T15c: exactly ONE llm round -- the wasted 400 round-trip is gone" );
 	Check( mock.seenRequests.size() == 1, "T15c: the transport saw exactly 1 POST" );
 	Check( !mock.seenRequests.empty() &&
-	       mock.seenRequests[0].body.find( "\"reasoning_effort\":\"none\"" ) != std::string::npos,
-	       "T15c: the FIRST request already carries reasoning_effort:\"none\" (pre-armed from the cache)" );
+	       mock.seenRequests[0].body.find( "\"reasoning\":{\"effort\":\"medium\"}" ) != std::string::npos,
+	       "T15c: the first request uses Responses with medium reasoning" );
 }
 
 //----------------------------------------------------------------------

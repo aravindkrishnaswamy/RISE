@@ -579,6 +579,30 @@ namespace RISE
 				return json;
 			}
 
+			//! Responses-native tools put name/description/parameters directly
+			//! on the tool object (there is no Chat-Completions `function`
+			//! wrapper).
+			const std::string& OpenAIResponsesToolsJson()
+			{
+				static const std::string json = []() {
+					std::string out = "[";
+					for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+						if( i ) out += ",";
+						out += "{\"type\":\"function\",\"name\":";
+						JsonAppendEscapedString( out, kToolDefs[i].name );
+						out += ",\"description\":";
+						JsonAppendEscapedString( out, kToolDefs[i].description );
+						out += ",\"parameters\":";
+						out += kToolDefs[i].schemaJson ? kToolDefs[i].schemaJson
+						                               : "{\"type\":\"object\",\"properties\":{}}";
+						out += "}";
+					}
+					out += "]";
+					return out;
+				}();
+				return json;
+			}
+
 			//------------------------------------------------------------------
 			// (2) Raw-span JSON scanner.
 			//
@@ -910,6 +934,24 @@ namespace RISE
 				return block;
 			}
 
+			JsonValue MakeOpenAIResponsesImageBlock( const std::string& mimeType,
+			                                         const std::string& b64 )
+			{
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "input_image" ) );
+				block.set( "image_url", JsonValue::MakeString(
+					"data:" + mimeType + ";base64," + b64 ) );
+				return block;
+			}
+
+			JsonValue MakeOpenAIResponsesTextBlock( const std::string& text )
+			{
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "input_text" ) );
+				block.set( "text", JsonValue::MakeString( text ) );
+				return block;
+			}
+
 			//! True when `text` is empty or contains only ASCII whitespace --
 			//! nothing a user could read.  Mirrors AgentChatLoop's user-side
 			//! IsBlank (kept local: the codec is a separate TU).
@@ -970,10 +1012,12 @@ namespace RISE
 				for( std::size_t i = 0; i < parts.size(); ++i )
 					if( parts.at( i ).get( "inlineData" ).isObject() ) ++count;
 			}
-			// OpenAI shape: {"role":"user","content":[{"type":"image_url",...},...]}
+			// OpenAI Chat/Responses shapes use image_url/input_image respectively.
 			if( root.get( "role" ).asString() == "user" && content.isArray() ) {
-				for( std::size_t i = 0; i < content.size(); ++i )
-					if( content.at( i ).get( "type" ).asString() == "image_url" ) ++count;
+				for( std::size_t i = 0; i < content.size(); ++i ) {
+					const std::string type = content.at( i ).get( "type" ).asString();
+					if( type == "image_url" || type == "input_image" ) ++count;
+				}
 			}
 			return count;
 		}
@@ -2137,13 +2181,11 @@ namespace RISE
 
 		OpenAIChatCodec::OpenAIChatCodec()
 		{
-			// The default OpenAI provider -- byte-identical wire behaviour to
-			// the pre-parameterization codec (the AgentChatLoopTest URL/header
-			// assertions pin this).
 			mConfig.providerName   = "openai";
-			mConfig.baseUrl        = "https://api.openai.com/v1/chat/completions";
+			mConfig.baseUrl        = "https://api.openai.com/v1/responses";
 			mConfig.defaultModelId = "gpt-5.6-terra";
 			mConfig.requiresAuth   = true;
+			mConfig.useResponsesApi = true;
 		}
 
 		OpenAIChatCodec::OpenAIChatCodec( const Config& config ) : mConfig( config )
@@ -2159,6 +2201,19 @@ namespace RISE
 		{
 			JsonValue msg = JsonValue::MakeObject();
 			msg.set( "role", JsonValue::MakeString( "user" ) );
+			if( mConfig.useResponsesApi ) {
+				if( attachments.empty() ) {
+					msg.set( "content", JsonValue::MakeString( text ) );
+					return JsonSerialize( msg );
+				}
+				JsonValue content = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < attachments.size(); ++i )
+					content.push_back( MakeOpenAIResponsesImageBlock(
+						attachments[i].mimeType, attachments[i].base64Data ) );
+				if( !text.empty() ) content.push_back( MakeOpenAIResponsesTextBlock( text ) );
+				msg.set( "content", content );
+				return JsonSerialize( msg );
+			}
 			if( attachments.empty() ) {
 				msg.set( "content", JsonValue::MakeString( text ) );
 				return JsonSerialize( msg );
@@ -2190,8 +2245,11 @@ namespace RISE
 			JsonValue newContent = JsonValue::MakeArray();
 			for( std::size_t i = 0; i < content.size(); ++i ) {
 				const JsonValue& b = content.at( i );
-				if( b.get( "type" ).asString() == "image_url" && remaining > 0 ) {
-					newContent.push_back( MakeOpenAITextContentBlock( kUserImageElidedNote ) );
+				const std::string blockType = b.get( "type" ).asString();
+				if( ( blockType == "image_url" || blockType == "input_image" ) && remaining > 0 ) {
+					newContent.push_back( mConfig.useResponsesApi
+						? MakeOpenAIResponsesTextBlock( kUserImageElidedNote )
+						: MakeOpenAITextContentBlock( kUserImageElidedNote ) );
 					--remaining;
 					changed = true;
 				}
@@ -2261,17 +2319,27 @@ namespace RISE
 				}
 
 				JsonValue msg = JsonValue::MakeObject();
-				msg.set( "role", JsonValue::MakeString( "tool" ) );
-				msg.set( "tool_call_id", JsonValue::MakeString( call.id ) );
-				msg.set( "content", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				if( mConfig.useResponsesApi ) {
+					msg.set( "type", JsonValue::MakeString( "function_call_output" ) );
+					msg.set( "call_id", JsonValue::MakeString( call.id ) );
+					msg.set( "output", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				}
+				else {
+					msg.set( "role", JsonValue::MakeString( "tool" ) );
+					msg.set( "tool_call_id", JsonValue::MakeString( call.id ) );
+					msg.set( "content", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				}
 				messages.push_back( msg );
 			}
 
 			if( !liveB64.empty() ) {
 				JsonValue content = JsonValue::MakeArray();
-				content.push_back( MakeOpenAITextContentBlock(
-					"The PNG returned by read_image is attached below." ) );
-				content.push_back( MakeOpenAIImageUrlBlock( "image/png", liveB64 ) );
+				content.push_back( mConfig.useResponsesApi
+					? MakeOpenAIResponsesTextBlock( "The PNG returned by read_image is attached below." )
+					: MakeOpenAITextContentBlock( "The PNG returned by read_image is attached below." ) );
+				content.push_back( mConfig.useResponsesApi
+					? MakeOpenAIResponsesImageBlock( "image/png", liveB64 )
+					: MakeOpenAIImageUrlBlock( "image/png", liveB64 ) );
 				JsonValue imageMsg = JsonValue::MakeObject();
 				imageMsg.set( "role", JsonValue::MakeString( "user" ) );
 				imageMsg.set( "content", content );
@@ -2293,15 +2361,19 @@ namespace RISE
 			JsonValue out = JsonValue::MakeArray();
 			for( std::size_t i = 0; i < root.size(); ++i ) {
 				const JsonValue& msg = root.at( i );
-				if( msg.get( "role" ).asString() == "tool" && msg.get( "content" ).isString() ) {
+				const bool chatTool = msg.get( "role" ).asString() == "tool" &&
+				                      msg.get( "content" ).isString();
+				const bool responsesTool = msg.get( "type" ).asString() == "function_call_output" &&
+				                           msg.get( "output" ).isString();
+				if( chatTool || responsesTool ) {
 					const std::string rewritten =
-						RewriteElidedSummaryText( msg.get( "content" ).asString() );
-					if( rewritten != msg.get( "content" ).asString() ) changed = true;
+						RewriteElidedSummaryText( msg.get( chatTool ? "content" : "output" ).asString() );
+					if( rewritten != msg.get( chatTool ? "content" : "output" ).asString() ) changed = true;
 					JsonValue newMsg = JsonValue::MakeObject();
 					const std::vector<std::pair<std::string, JsonValue>>& mem = msg.members();
 					for( std::size_t j = 0; j < mem.size(); ++j )
-						newMsg.set( mem[j].first,
-							mem[j].first == "content" ? JsonValue::MakeString( rewritten ) : mem[j].second );
+						newMsg.set( mem[j].first, mem[j].first == ( chatTool ? "content" : "output" )
+							? JsonValue::MakeString( rewritten ) : mem[j].second );
 					out.push_back( newMsg );
 					continue;
 				}
@@ -2312,17 +2384,21 @@ namespace RISE
 					bool msgChanged = false;
 					for( std::size_t j = 0; j < content.size(); ++j ) {
 						const JsonValue& b = content.at( j );
-						if( b.get( "type" ).asString() == "image_url" ) {
-							newContent.push_back( MakeOpenAITextContentBlock( kImageElidedNote ) );
+						const std::string blockType = b.get( "type" ).asString();
+						if( blockType == "image_url" || blockType == "input_image" ) {
+							newContent.push_back( mConfig.useResponsesApi
+								? MakeOpenAIResponsesTextBlock( kImageElidedNote )
+								: MakeOpenAITextContentBlock( kImageElidedNote ) );
 							msgChanged = true;
 						}
-						else if( b.get( "type" ).asString() == "text" ) {
+						else if( blockType == "text" || blockType == "input_text" ) {
 							std::string t = b.get( "text" ).asString();
 							if( t.find( "attached" ) != std::string::npos ) {
 								t = kImageElidedNote;
 								msgChanged = true;
 							}
-							newContent.push_back( MakeOpenAITextContentBlock( t ) );
+							newContent.push_back( mConfig.useResponsesApi
+								? MakeOpenAIResponsesTextBlock( t ) : MakeOpenAITextContentBlock( t ) );
 						}
 						else {
 							newContent.push_back( b );
@@ -2369,7 +2445,39 @@ namespace RISE
 
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );
-			body += ",\"max_completion_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens );
+			body += mConfig.useResponsesApi
+				? ",\"max_output_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens )
+				: ",\"max_completion_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens );
+			if( mConfig.useResponsesApi ) {
+				// OpenAI recommends medium as the balanced default for agentic,
+				// multi-step tool workflows.  Naming it explicitly makes the
+				// eval configuration reproducible across server-default changes.
+				body += ",\"reasoning\":{\"effort\":\"medium\"},\"instructions\":";
+				JsonAppendEscapedString( body, systemPrompt );
+				body += ",\"input\":[";
+				bool firstInput = true;
+				for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+					JsonValue e;
+					std::string perr;
+					if( JsonParse( rawEntries[i], e, perr ) && e.isArray() ) {
+						for( std::size_t j = 0; j < e.size(); ++j ) {
+							if( !firstInput ) body += ",";
+							body += JsonSerialize( e.at( j ) );
+							firstInput = false;
+						}
+					}
+					else {
+						if( !firstInput ) body += ",";
+						body += rawEntries[i];
+						firstInput = false;
+					}
+				}
+				body += "],\"tools\":";
+				body += OpenAIResponsesToolsJson();
+				body += ",\"store\":false}";
+				r.body = body;
+				return r;
+			}
 			// REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY (see
 			// ChatStepResult::retryReasoningEffortNone): a reasoning-family
 			// model's server-side default reasoning_effort is incompatible
@@ -2418,6 +2526,159 @@ namespace RISE
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) {
 				out.step = MakeProviderError( ChatErrorKind::Parse,
 					"openai response did not parse as JSON: " + perr );
+				return out;
+			}
+			// Parse by response shape rather than configured request mode.  This
+			// keeps the codec useful for archived Chat-Completions trajectories
+			// and OpenAI-compatible fixture tests during the migration.
+			if( mConfig.useResponsesApi && ( root.find( "output" ) || root.find( "status" ) ) ) {
+				const std::string status = root.get( "status" ).asString();
+				if( status == "incomplete" ) {
+					const std::string reason = root.get( "incomplete_details" ).get( "reason" ).asString();
+					out.step = MakeProviderError(
+						reason == "max_output_tokens" ? ChatErrorKind::MaxTokens : ChatErrorKind::Provider,
+						"openai response incomplete" + ( reason.empty() ? std::string() : ": " + reason ) );
+					return out;
+				}
+				if( status != "completed" ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai response status is \"" + status + "\" instead of \"completed\"" );
+					return out;
+				}
+				const JsonValue& output = root.get( "output" );
+				if( !output.isArray() ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai response carries no output array" );
+					return out;
+				}
+
+				std::vector<ChatToolCall> calls;
+				std::string text;
+				std::string refusal;
+				std::string reasoningText;
+				for( std::size_t i = 0; i < output.size(); ++i ) {
+					const JsonValue& item = output.at( i );
+					if( !item.isObject() || !item.get( "type" ).isString() ) {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai Responses output item lacks an object type" );
+						return out;
+					}
+					const std::string type = item.get( "type" ).asString();
+					if( type == "function_call" ) {
+						ChatToolCall c;
+						c.id = item.get( "call_id" ).asString();
+						c.name = item.get( "name" ).asString();
+						if( c.id.empty() || c.name.empty() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses function_call lacks call_id or name" );
+							return out;
+						}
+						for( std::size_t k = 0; k < calls.size(); ++k ) {
+							if( calls[k].id == c.id ) {
+								out.step = MakeProviderError( ChatErrorKind::Provider,
+									"openai response repeats function call_id \"" + c.id + "\"" );
+								return out;
+							}
+						}
+						JsonValue args;
+						std::string aerr;
+						if( !JsonParse( item.get( "arguments" ).asString(), args, aerr ) ||
+						    !args.isObject() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai function_call \"" + c.name +
+								"\" carries malformed arguments JSON" );
+							return out;
+						}
+						c.argsJson = JsonSerialize( args );
+						calls.push_back( c );
+					}
+					else if( type == "message" ) {
+						if( item.get( "role" ).asString() != "assistant" ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses message role is not assistant" );
+							return out;
+						}
+						const JsonValue& content = item.get( "content" );
+						if( !content.isArray() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses message content is not an array" );
+							return out;
+						}
+						for( std::size_t j = 0; j < content.size(); ++j ) {
+							const JsonValue& part = content.at( j );
+							const std::string partType = part.get( "type" ).asString();
+							if( partType == "output_text" ) {
+								if( !part.get( "text" ).isString() ) {
+									out.step = MakeProviderError( ChatErrorKind::Provider,
+										"openai Responses output_text has no text string" );
+									return out;
+								}
+								if( !text.empty() ) text += "\n";
+								text += part.get( "text" ).asString();
+							}
+							else if( partType == "refusal" ) {
+								if( !part.get( "refusal" ).isString() ) {
+									out.step = MakeProviderError( ChatErrorKind::Provider,
+										"openai Responses refusal has no refusal string" );
+									return out;
+								}
+								if( !refusal.empty() ) refusal += "\n";
+								refusal += part.get( "refusal" ).asString();
+							}
+							else {
+								out.step = MakeProviderError( ChatErrorKind::Provider,
+									"openai Responses message has unsupported content type \"" +
+									partType + "\"" );
+								return out;
+							}
+						}
+					}
+					else if( type == "reasoning" ) {
+						const JsonValue& summary = item.get( "summary" );
+						if( !summary.isArray() ) continue;
+						for( std::size_t j = 0; j < summary.size(); ++j ) {
+							const std::string s = summary.at( j ).get( "text" ).asString();
+							if( s.empty() ) continue;
+							if( !reasoningText.empty() ) reasoningText += "\n\n";
+							reasoningText += s;
+						}
+					}
+					else {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai Responses output has unsupported item type \"" +
+							type + "\"" );
+						return out;
+					}
+				}
+
+				if( !calls.empty() ) {
+					out.step.kind = ChatStepResult::Kind::ToolCalls;
+					out.step.toolCalls = calls;
+				}
+				else if( !refusal.empty() ) {
+					out.step = MakeProviderError( ChatErrorKind::Refusal,
+						"openai declined this request: " + refusal );
+					return out;
+				}
+				else if( ChatContentIsBlank( text ) ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai ended the response with no text or function calls" );
+					return out;
+				}
+				else {
+					out.step.kind = ChatStepResult::Kind::FinalText;
+					out.step.finalText = text;
+				}
+				out.assistantDisplayText = text;
+				out.step.assistantDisplayText = text;
+				out.reasoningText = reasoningText;
+				out.step.reasoningText = reasoningText;
+
+				std::size_t ob = 0, oe = 0;
+				if( RawObjectMember( rawBody, 0, "output", ob, oe ) )
+					out.assistantEntryJson = rawBody.substr( ob, oe - ob );
+				if( out.assistantEntryJson.empty() )
+					out.assistantEntryJson = JsonSerialize( output );
 				return out;
 			}
 			const JsonValue& choices = root.get( "choices" );
@@ -2607,6 +2868,17 @@ namespace RISE
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
 			const JsonValue& usage = root.get( "usage" );
 			if( !usage.isObject() ) return u;
+			if( usage.find( "input_tokens" ) || usage.find( "output_tokens" ) ) {
+				if( usage.get( "input_tokens" ).isNumber() )
+					u.inputTokens = static_cast<long long>( usage.get( "input_tokens" ).asNumber() );
+				if( usage.get( "output_tokens" ).isNumber() )
+					u.outputTokens = static_cast<long long>( usage.get( "output_tokens" ).asNumber() );
+				const JsonValue& details = usage.get( "input_tokens_details" );
+				if( details.isObject() && details.get( "cached_tokens" ).isNumber() )
+					u.cacheReadInputTokens =
+						static_cast<long long>( details.get( "cached_tokens" ).asNumber() );
+				return u;
+			}
 			if( usage.get( "prompt_tokens" ).isNumber() )
 				u.inputTokens = static_cast<long long>( usage.get( "prompt_tokens" ).asNumber() );
 			if( usage.get( "completion_tokens" ).isNumber() )
@@ -2619,7 +2891,7 @@ namespace RISE
 
 		std::size_t OpenAIChatCodec::ToolsWireBytes() const
 		{
-			return OpenAIToolsJson().size();
+			return ( mConfig.useResponsesApi ? OpenAIResponsesToolsJson() : OpenAIToolsJson() ).size();
 		}
 
 		//======================================================================
