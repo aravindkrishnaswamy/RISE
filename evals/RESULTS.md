@@ -269,7 +269,7 @@ Three findings:
    lighting is the one unsolved gap and would need a non-prose lever (a nudge or a
    hard requirement), not more skill text.
 
-### 2c. Clarifying questions — `ask_user` board (2026-07-23, epoch 11)
+### 2c. Clarifying questions — `ask_user` board (2026-07-25, epoch 11)
 
 Research finding: **0 of 132** build runs ever asked a clarifying question
 spontaneously. The `ask_user` tool + a materially-ambiguous scenario
@@ -279,28 +279,56 @@ models ask when piece identity matters, ask BEFORE building, and reflect that
 identity in their final response. Setting and mood are deliberately left to the
 agent's ordinary judgment and are not an adoption metric.
 
-| model | asked ≥1 | asked-before-building | piece identity reflected | meanCkpt | full pass |
-|---|---|---|---|---|---|
-| gemini-3.5-flash | 3/3 | 3/3 | 3/3 | **0.94** | 2/3 |
-| gemini-3.6-flash | 3/3 | 3/3 | 3/3 | 0.89 | 1/3 |
-| **qwen3.6:27b (local)** | **3/3** | 1/3* | **3/3** | 0.83 | 1/3 |
-| gpt-5.6-terra | 2/3 | 2/3 | 2/3 | 0.78 | 0/3 |
+Two run dirs feed this table: `ask_user_board` (N=3) for every model, and
+`ask_user_openai_responses` (N=5) for the two GPT-5.6 tiers after the OpenAI
+Responses-API migration (`607d7302`). The pre-migration GPT row is kept as the
+BEFORE half of that comparison — it is not a current result.
 
-*qwen's trajectory failures are mechanical-loop (repeated identical
-propose_patch), not ask-ordering.
+| model | N | pass@1 | meanCkpt | asked | $/success | wall(s) |
+|---|---|---|---|---|---|---|
+| claude-opus-4-8 | 3 | **100%** | **1.000** | 3/3 | $13.75 | 387 |
+| **gpt-5.6-sol** (Responses) | 5 | **80%** | 0.967 | **5/5** | **$1.83** | 171 |
+| gemini-3.5-flash | 3 | 66.7% | 0.889 | 2/3 | $1.03 | 221 |
+| gemini-3.6-flash | 3 | 66.7% | 0.833 | 2/3 | $5.25 | 394 |
+| gpt-5.6-terra (Responses) | 5 | 40% | 0.867 | 4/5 | $0.84 | **73** |
+| qwen3.6:27b (local) | 3 | 0% | 0.611 | 1/3 | $0 | 1552 |
+| ~~gpt-5.6-terra (pre-fix, Chat Completions)~~ | 3 | 0% | 0.611 | 1/3 | n/a | 35 |
 
-> **Historical/stale after the scope correction above.** The 11/12 board was
-> graded against the earlier compound-question scenario; re-run
-> `ask_user_board` before treating any row as a current result.
+**The OpenAI Responses migration (`607d7302`) — a harness bug, not a model
+limit.** gpt-5.6-terra scored 0/3 with two near-black renders and asked only
+1/3. Root cause: OpenAI 400-rejects function tools + `reasoning_effort` on
+`/v1/chat/completions`, and the harness's documented recovery was to force
+`reasoning_effort:"none"` — which ran gpt with **reasoning disabled for the
+whole task**. Migrating the OpenAI codec to `/v1/responses` (where tools and
+reasoning coexist) restored it: **pass@1 0% → 40%, meanCkpt 0.611 → 0.867,
+asking 1/3 → 4/5, and both dark-render failures vanished.** The migration is
+scoped to OpenAI only — xAI, local Ollama, and other OpenAI-*compatible*
+providers keep Chat Completions and keep the 400-recovery.
 
-**Historical takeaways.** (1) **Tool adoption was near-universal — 11/12 runs asked** —
-against 0/132 spontaneous asks without the tool: the tools-over-prose lesson
-confirmed a fourth time, now including the LOCAL model. (2) **Piece-identity
-answers were consumed**: 11/12 built the pocket watch they were told about
-rather than a guess. (3) gpt, the best *reactive* clarifier (3/3 on
-reserved_name_clarify), is the *weakest proactive* asker here (one run built
-without asking) — reactive and proactive clarification are different
-dispositions. N=3 caveats apply throughout.
+**Where the models stand.** Opus is the only perfect score but costs **7.5×**
+sol per success and runs 2.3× slower; sol's 80% at N=5 and Opus's 100% at N=3
+have heavily overlapping Wilson intervals ([37.6%, 96.4%] vs [43.8%, 100%]), so
+**sol is the value pick and Opus the reliability pick** — the two are not
+statistically separated. gemini-3.5 remains the cheap middle. gemini-3.6 is
+strictly worse than 3.5 here (same pass@1, 5× the cost, one budget exhaustion) —
+its chattiness regression persists. qwen3.6 fresh-graded at 0/3 (a stale earlier
+reading showed 1/3): it asks, but loops mechanically and mis-builds.
+
+**`channelBalance` is now the dominant residual failure** (sol 1, terra 2,
+gemini-3.6 1, qwen 1) — near-black renders are gone; what fails now is
+over-warm colour. A brass pocket watch under warm key light legitimately pushes
+R/B past the 4.0 ratio cap. **Open question: is `channelBalanceMax 4.0` fair to
+a warm-lit brass subject, or is it grading the scenario's own scripted answer as
+a failure?** Resolve with reference renders before tuning it — and never tune it
+per-model.
+
+**Takeaways.** (1) **Tool adoption holds under stricter grading** — 12/14 runs
+asked on the corrected scenario, against 0/132 spontaneous asks without the
+tool: the tools-over-prose lesson, fifth confirmation. (2) **A provider
+integration detail can look exactly like a capability wall** — gpt's 0/3 read as
+"gpt can't build," and was a forced-off reasoning flag. Check the wire before
+concluding anything about a model. (3) **Reactive ≠ proactive clarification**
+still holds, but the gap narrowed once reasoning was restored.
 
 ---
 
@@ -340,5 +368,5 @@ object+lighting+stage+env; graded by RMSE vs committed references.
 
 ---
 
-_Last updated: 2026-07-23 (ask_user clarification arc). Raw runs under `evals/runs/`; runconfigs under
+_Last updated: 2026-07-25 (ask_user board complete + OpenAI Responses migration). Raw runs under `evals/runs/`; runconfigs under
 `evals/runconfigs/`._
