@@ -24,6 +24,7 @@
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/SMSPhotonMap.h"
+#include <atomic>
 #include <stdint.h>
 
 namespace RISE
@@ -43,6 +44,7 @@ namespace RISE
 			unsigned int			mVariantMaxPathDepth;
 			bool					mVariantIndirectOnly;
 			bool					mVariantClayOverride;
+			std::atomic<bool>		mInteractiveDenoiseSuppressed;
 
 			/// SMS photon-aided seeding store.  See BDPTRasterizerBase for
 			/// the full rationale.  Null when smsConfig.photonCount was 0.
@@ -52,6 +54,10 @@ namespace RISE
 			/// Progressive rendering should run to adaptive_max_samples
 			/// when adaptive sampling is enabled.
 			unsigned int GetProgressiveTotalSPP() const override;
+
+#ifdef RISE_ENABLE_OIDN
+			bool ShouldDenoise() const override;
+#endif
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -116,6 +122,20 @@ namespace RISE
 			/// to the render loop.
 			void SetIndirectOnly( bool b );
 			void SetClayOverride( bool b );
+
+			//! Atomically suppresses end-of-pass OIDN for a BeautyVariant pass
+			//! that became obsolete when a new interaction began.  This is safe
+			//! to set while RasterizeScene is winding down after cancellation.
+			void SetInteractiveDenoiseSuppressed( bool suppressed )
+			{
+				mInteractiveDenoiseSuppressed.store(
+					suppressed, std::memory_order_release );
+			}
+			bool ForTest_IsInteractiveDenoiseSuppressed() const
+			{
+				return mInteractiveDenoiseSuppressed.load(
+					std::memory_order_acquire );
+			}
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const override;
 

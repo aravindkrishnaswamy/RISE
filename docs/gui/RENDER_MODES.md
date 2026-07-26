@@ -455,12 +455,14 @@ per-pass attachment the preview one gets), `EnsureInteractiveFrameStore_`
 (now takes `activeRast` as an explicit parameter instead of always targeting
 `mInteractiveRasterizer`), the `SetViewportCameraOverride` free-fly wiring
 (`PixelBasedRasterizerHelper` downcast), and the terminal `RasterizeScene`
-call. The pre-pass config block in `RenderLoop` that calls
-`mInteractiveImpl->SetPreviewDenoiseMode`/`SetSampleCount` is **skipped
-entirely** while a variant mode is active — those are InteractivePelRasterizer-
-specific knobs for a rasterizer this pass isn't driving; a variant pass is a
-plain full pass at its fixed config, and the polish/denoise state machine
-(`mPolishState`) is left running as a no-op against `mVariantRasterizer` so
+call. The `InteractivePelRasterizer`-specific preview configuration remains
+skipped while a variant mode is active because that is not the rasterizer being
+driven. Instead, the mint block calls `ConfigureBeautyVariantPass` on the
+active variant: pointer, property, and timeline gestures render at 1 SPP with
+OIDN suppressed; the release/idle mint restores the registry-authored SPP and
+OIDN. Starting a new gesture also suppresses the obsolete release quantum's
+non-cancel-interruptible OIDN tail before cancellation. The polish state
+machine (`mPolishState`) remains a no-op against `mVariantRasterizer`, so
 leaving the mode later finds it consistent.
 
 ### Resolution-divisor pin

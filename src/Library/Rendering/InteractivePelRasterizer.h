@@ -335,6 +335,21 @@ namespace RISE
 			IRayCaster** ppCaster,
 			IShader* pDefaultShader = 0 );
 
+		//! Configure one BeautyVariant pass for the current interaction state.
+		//! Active gestures use one sample and suppress OIDN; the release/idle
+		//! pass restores the registry-authored sample count and OIDN policy.
+		//! Returns false without changing the rasterizer when `mode` is not a
+		//! BeautyVariant or the rasterizer cannot honor the sample override.
+		bool ConfigureBeautyVariantPass(
+			IRasterizer& rasterizer,
+			ViewportRenderMode mode,
+			bool liveGesture );
+
+		//! Mark an in-flight BeautyVariant quantum obsolete before requesting
+		//! cancellation.  Its path loop still exits at the normal cancel point,
+		//! but its non-cancel-interruptible OIDN tail is skipped atomically.
+		bool SuppressBeautyVariantDenoise( IRasterizer& rasterizer );
+
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{
 		public:

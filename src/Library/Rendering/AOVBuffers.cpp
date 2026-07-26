@@ -32,7 +32,7 @@ void AOVBuffers::Reset( unsigned int w, unsigned int h )
 {
 	width = w;
 	height = h;
-	bHasData = false;
+	bHasData.store( false, std::memory_order_relaxed );
 	const size_t count = static_cast<size_t>( w ) * h * 3;
 	if( albedo.size() != count ) {
 		albedo.assign( count, 0.0f );
@@ -50,7 +50,7 @@ void AOVBuffers::AccumulateAlbedo(
 	Scalar weight
 	)
 {
-	bHasData = true;
+	bHasData.store( true, std::memory_order_relaxed );
 	const unsigned int idx = (y * width + x) * 3;
 	// Saturate each channel to [0, 1]: OIDN expects albedo in that
 	// range.  IBSDF::albedo() should normally already be in range, but

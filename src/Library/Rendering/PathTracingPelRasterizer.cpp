@@ -46,6 +46,7 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	  mVariantMaxPathDepth( 128 ),
 	  mVariantIndirectOnly( false ),
 	  mVariantClayOverride( false ),
+	  mInteractiveDenoiseSuppressed( false ),
   pSMSPhotonMap( 0 ),
   mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
@@ -54,6 +55,14 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 		stabilityConfig
 		);
 }
+
+#ifdef RISE_ENABLE_OIDN
+bool PathTracingPelRasterizer::ShouldDenoise() const
+{
+	return !mInteractiveDenoiseSuppressed.load( std::memory_order_acquire )
+		&& PixelBasedPelRasterizer::ShouldDenoise();
+}
+#endif
 
 void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
 {

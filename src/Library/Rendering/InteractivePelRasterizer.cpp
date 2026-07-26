@@ -19,6 +19,7 @@
 #include "pch.h"
 #include "InteractivePelRasterizer.h"
 #include "PathTracingPelRasterizer.h"
+#include "Rasterizer.h"
 #include "../Shaders/PathTracingShaderOp.h"
 #include "BlockRasterizeSequence.h"
 #include "RayCaster.h"
@@ -1778,6 +1779,47 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	// rasterizer's internal one are independent and both must be released.
 	*ppRasterizer = pRaster;
 	*ppCaster = pCaster;
+	return true;
+}
+
+bool RISE::Implementation::ConfigureBeautyVariantPass(
+	IRasterizer& rasterizer,
+	ViewportRenderMode mode,
+	bool liveGesture )
+{
+	const ViewportRenderModeInfo* info = FindViewportRenderModeInfo( mode );
+	if( !info || !IsBeautyVariantMode( mode ) ) {
+		return false;
+	}
+#ifdef RISE_ENABLE_OIDN
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>( &rasterizer );
+	if( !concrete ) {
+		return false;
+	}
+#endif
+	const int samples = liveGesture
+		? 1 : static_cast<int>( info->variantSamplesPerPass );
+	if( !rasterizer.SetSampleCountOverride( samples ) ) {
+		return false;
+	}
+	if( PathTracingPelRasterizer* pt =
+			dynamic_cast<PathTracingPelRasterizer*>( &rasterizer ) )
+	{
+		pt->SetInteractiveDenoiseSuppressed( liveGesture );
+	}
+#ifdef RISE_ENABLE_OIDN
+	concrete->SetDenoisingEnabled( !liveGesture && info->wantsDenoise );
+#endif
+	return true;
+}
+
+bool RISE::Implementation::SuppressBeautyVariantDenoise(
+	IRasterizer& rasterizer )
+{
+	PathTracingPelRasterizer* pt =
+		dynamic_cast<PathTracingPelRasterizer*>( &rasterizer );
+	if( !pt ) return false;
+	pt->SetInteractiveDenoiseSuppressed( true );
 	return true;
 }
 

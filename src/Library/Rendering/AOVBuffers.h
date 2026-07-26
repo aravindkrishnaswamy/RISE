@@ -17,6 +17,7 @@
 #ifndef AOV_BUFFERS_H_
 #define AOV_BUFFERS_H_
 
+#include <atomic>
 #include <vector>
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
@@ -44,7 +45,7 @@ namespace RISE
 		{
 			unsigned int width;
 			unsigned int height;
-			bool bHasData;					///< True once any sample has been accumulated
+			std::atomic<bool> bHasData;		///< True once any sample has been accumulated
 			std::vector<float> albedo;		///< width*height*3, RGB interleaved
 			std::vector<float> normals;		///< width*height*3, XYZ interleaved
 
@@ -83,7 +84,7 @@ namespace RISE
 				);
 
 			/// Returns true if any AOV data has been accumulated.
-			bool HasData() const { return bHasData; }
+			bool HasData() const { return bHasData.load( std::memory_order_relaxed ); }
 
 			const float* GetAlbedoPtr() const { return albedo.data(); }
 			const float* GetNormalPtr() const { return normals.data(); }

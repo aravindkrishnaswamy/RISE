@@ -1071,16 +1071,21 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	if( bDenoisingEnabled ) {
+	if( ShouldDenoise() ) {
 		if( !pAOVBuffers ) {
 			pAOVBuffers = new AOVBuffers( width, height );
 		} else {
 			pAOVBuffers->Reset( width, height );
 		}
+	} else {
+		// A previous denoised pass may have left a buffer at different film
+		// dimensions.  A no-denoise pass must neither accumulate the stale
+		// AOV nor pay its per-sample cost; clearing the pointer makes every
+		// integrator's existing `pAOVBuffers ?` gate safe and cheap.
+		delete pAOVBuffers;
+		pAOVBuffers = 0;
 	}
 #endif
-
-	bool mainPassCompleted = true;
 
 	if( progressiveConfig.enabled && pSampling )
 	{
@@ -1161,7 +1166,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				GlobalLog()->PrintEx( eLog_Event,
 					"Progressive:: Cancelled after pass %u/%u",
 					passIdx+1, numPasses );
-				mainPassCompleted = false;
 				break;
 			}
 
@@ -1219,7 +1223,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 	else
 	{
-		mainPassCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
+		RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 	}
 
 	// Resolve filtered film: overwrites per-pixel inline estimates with
@@ -1263,27 +1267,20 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	// `mainPassCompleted` is intentionally NOT passed: cancelled
-	// renders still get OIDN'd on whatever was accumulated up to the
+	// Cancelled renders still get OIDN'd on whatever was accumulated up to the
 	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
 	// log (2026-04-29).
-	(void)mainPassCompleted;
 	// Skip OIDN entirely when show_adaptive_map is on — the
 	// authoritative output is the heatmap from the progressive
 	// resolve, denoising it would mangle the grayscale ramp.
 	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoise() && !GetAdaptiveShowMap() );
-#else
-	const bool bWillDenoise = false;
-#endif
-
-	if( bWillDenoise ) {
+	if( bWillDenoise && ShouldDenoise() ) {
 		// Write the pre-denoised (but fully splatted) image to file-based
 		// outputs under the normal filename.  Non-file outputs no-op and
 		// wait for the denoised final via FlushDenoisedToOutputs.
 		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
 
-#ifdef RISE_ENABLE_OIDN
-		if( !pAOVBuffers->HasData() ) {
+		if( ShouldDenoise() && !pAOVBuffers->HasData() ) {
 			OIDNDenoiser::CollectFirstHitAOVs(
 				pScene,
 				*pCaster,
@@ -1298,8 +1295,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		// the FrameStore's lifetime.  Cheap (one full-image copy
 		// at end of render); bracketed for concurrent-reader
 		// correctness.
-		PropagateAOVsToFrameStore_( *pAOVBuffers );
-		{
+		bool appliedDenoise = false;
+		if( ShouldDenoise() ) {
+			PropagateAOVsToFrameStore_( *pAOVBuffers );
+		}
+		if( ShouldDenoise() ) {
 			// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 			// ApplyDenoise reads `*pImage` row-by-row and overwrites
 			// every pixel with the denoised output; a concurrent
@@ -1311,19 +1311,35 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			// where the previous Begin/End-pair pattern would have
 			// leaked all tile locks → process-wide deadlock.
 			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+			// Acquiring the bulk bracket may block behind a UI reader.  A new
+			// gesture can suppress this now-obsolete denoise while we wait, so
+			// close that final admission window before entering OIDN.
+			if( ShouldDenoise() ) {
+				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+					GetRenderElapsedSeconds() );
+				appliedDenoise = true;
+			}
 		}
-#endif
+		if( !appliedDenoise ) {
+			// A new interactive gesture superseded this release quantum after
+			// the initial denoise decision.  Publish the raw completed image;
+			// never enter the obsolete non-cancel-interruptible OIDN call.
+			FlushToOutputs( *pImage, pRect, 0 );
+		}
 
 		// File outputs write the denoised image with a "_denoised" suffix;
 		// non-file outputs forward to OutputImage so they still see the
 		// denoised final (matching pre-change behavior).
-		FlushDenoisedToOutputs( *pImage, pRect, 0 );
+		if( appliedDenoise ) {
+			FlushDenoisedToOutputs( *pImage, pRect, 0 );
+		}
 	} else {
 		FlushToOutputs( *pImage, pRect, 0 );
 	}
+#else
+	FlushToOutputs( *pImage, pRect, 0 );
+#endif
 
 	// Post-render hook (e.g. path guiding cleanup)
 	PostRenderCleanup();
@@ -1447,7 +1463,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// each frame is its own render, so the AOV state must be fresh.
 	// Without the reset, multi-frame animation accumulates AOVs across
 	// frames and the denoiser sees a smeared aux signal.
-	if( bDenoisingEnabled ) {
+	if( ShouldDenoise() ) {
 		const unsigned int width = image.GetWidth();
 		const unsigned int height = image.GetHeight();
 		if( !pAOVBuffers ) {
@@ -1455,6 +1471,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		} else {
 			pAOVBuffers->Reset( width, height );
 		}
+	} else {
+		delete pAOVBuffers;
+		pAOVBuffers = 0;
 	}
 #endif
 

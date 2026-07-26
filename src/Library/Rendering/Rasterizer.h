@@ -223,6 +223,7 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
+			bool GetDenoisingEnabled() const { return bDenoisingEnabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }
 			void SetDenoisingDevice( OidnDevice device ) { mDenoisingDevice = device; }
 			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }

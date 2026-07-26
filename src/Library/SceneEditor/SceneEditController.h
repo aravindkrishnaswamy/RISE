@@ -1847,6 +1847,12 @@ namespace RISE
 		{
 			mPointerWatchdogMs.store( ms, std::memory_order_release );
 		}
+		bool ForTest_VariantAdmissionPendingForPane( unsigned int pane ) const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			return mVariantInteractionAdmissionPending
+			    && mVariantInteractionAdmissionPane == pane;
+		}
 
 		//! Round-8 test oracle: has the render thread declared the live
 		//! pointer gesture abandoned (see mPointerGestureStale)?
@@ -2761,6 +2767,12 @@ namespace RISE
 		//! pass body runs.  Tests use it to force observation of the first
 		//! post-gesture context switch.
 		virtual void ForTest_OnInteractivePassMinted() {}
+		//! Called after a BeautyVariant pass's live/final quality policy was
+		//! applied and the mint lock was released, while the pass rasterizer
+		//! is retained.  Test subclasses inspect the effective sample/denoise
+		//! state and the interaction classification that production will run.
+		virtual void ForTest_OnBeautyVariantPassConfigured(
+			IRasterizer&, Implementation::ViewportRenderMode, bool ) {}
 		//! Called after mRendering=false is published for a completed/cancelled
 		//! quantum but before the rasterizer drops its retained output refs.
 		//! Tests use it to force controller sink detachment while the rasterizer
@@ -3187,6 +3199,13 @@ namespace RISE
 		// P1: true iff THIS time-scrub opened an editor composite (OnTimeScrubBegin).
 		// A missing End / repeated Begin must not strand it -- mirrors the pointer guard.
 		bool                        mScrubOpenedComposite;
+		bool                        mTimelineScrubWatchdogRecovered = false;
+		//! Guarded by mMutex.  Bridges the interval between a BeautyVariant
+		//! interaction's admission and publication of its normal pointer/scrub
+		//! flag.  If cancellation retirement re-mints in that interval, the
+		//! replacement is still configured at live quality, never full OIDN.
+		bool                        mVariantInteractionAdmissionPending = false;
+		unsigned int                mVariantInteractionAdmissionPane = 0;
 
 		// Property-panel chevron scrub is in progress.  Tracked
 		// SEPARATELY from mPointerDown so a panel scrub doesn't
@@ -3787,10 +3806,10 @@ namespace RISE
 		//! stamped only AFTER OnPointerMove's render-completion wait
 		//! (`mCV.wait(!mRendering)`) and a successful Apply, so during a slow
 		//! pass it does not advance even while the user is actively dragging.
-		//! On exactly the panes this feature targets -- BeautyVariant, whose
-		//! pinned divisor makes every in-drag quantum a full fixed-spp + OIDN
-		//! pass, and whose denoise is not cancel-interruptible -- a single
-		//! pass can exceed the watchdog window, and gating on mLastEditTimeMs
+		//! On exactly the panes this feature targets -- BeautyVariant -- an
+		//! older full-quality quantum could outlive the next gesture (the live
+		//! policy now cancels it and atomically suppresses its OIDN tail), so a
+		//! single pass can exceed the watchdog window, and gating on mLastEditTimeMs
 		//! would mark a genuinely-live drag stale and silently freeze it.
 		//! Stamped at gesture start and at the TOP of OnPointerMove, before
 		//! any wait.
@@ -3805,6 +3824,10 @@ namespace RISE
 		//! activity by definition, so the watchdog stands down while this is
 		//! non-zero.
 		std::atomic<int>            mPointerMovesInFlight { 0 };
+		//! Timeline counterpart to mPointerMovesInFlight.  Prevents the lost-End
+		//! watchdog from closing/reclassifying a scrub callback while that callback
+		//! is parked behind an obsolete render quantum.
+		std::atomic<int>            mTimeScrubsInFlight { 0 };
 
 		// Set by ~SceneEditController BEFORE Stop(),
 		// so StopInteractive's orphaned-gesture cleanup skips its
@@ -4125,6 +4148,12 @@ namespace RISE
 		//! False (and *out untouched) on factory failure.
 		bool         BuildVariantRasterizer_( Implementation::ViewportRenderMode mode,
 		                                      IRasterizer** out );
+		//! Begins a BeautyVariant interaction while mMutex is held: pins any
+		//! cancellation replacement to `pane`, suppresses obsolete OIDN, and
+		//! parks.  Shared by pointer, property, and timeline admission so their
+		//! preemption semantics cannot drift.
+		void         PreemptVariantForInteractionLocked_(
+			unsigned int pane, std::unique_lock<std::mutex>& lk );
 		unsigned int PickNextVisiblePaneLocked_() const;
 		bool         AnyVisiblePaneHasWorkLocked_() const;
 		void         MarkAllVisiblePanesDirtyLocked_();

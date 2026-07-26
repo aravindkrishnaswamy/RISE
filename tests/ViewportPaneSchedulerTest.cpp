@@ -26,6 +26,8 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
+#include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/Rendering/PathTracingPelRasterizer.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/Utilities/Reference.h"
 
@@ -96,6 +98,15 @@ static std::string WriteTemp( const char* name, const char* content )
 class RecordingController : public SceneEditController
 {
 public:
+	struct VariantPassRecord
+	{
+		Implementation::ViewportRenderMode mode;
+		bool liveGesture;
+		int samples;
+		bool denoiseKnown;
+		bool denoiseEnabled;
+	};
+
 	RecordingController( IJobPriv& job, IRasterizer* interactiveRasterizer = nullptr,
 		bool runRealPass = false )
 	: SceneEditController( job, interactiveRasterizer )
@@ -106,6 +117,49 @@ public:
 	{
 		std::lock_guard<std::mutex> lk( mSeqMutex );
 		return mSeq;
+	}
+
+	std::vector<VariantPassRecord> VariantPassRecords() const
+	{
+		std::lock_guard<std::mutex> lk( mVariantPassMutex );
+		return mVariantPassRecords;
+	}
+
+	void ClearVariantPassRecords()
+	{
+		std::lock_guard<std::mutex> lk( mVariantPassMutex );
+		mVariantPassRecords.clear();
+	}
+
+	bool WaitForVariantPassCount( std::size_t count, unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mVariantPassMutex );
+		return mVariantPassCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mVariantPassRecords.size() >= count; } );
+	}
+
+	bool LastVariantDenoiseSuppressed() const
+	{
+		std::lock_guard<std::mutex> lk( mVariantPassMutex );
+		const Implementation::PathTracingPelRasterizer* pt =
+			dynamic_cast<const Implementation::PathTracingPelRasterizer*>(
+				mLastVariantRasterizer );
+		return pt && pt->ForTest_IsInteractiveDenoiseSuppressed();
+	}
+
+	bool LastVariantAOVDimensions( unsigned int& width, unsigned int& height ) const
+	{
+		std::lock_guard<std::mutex> lk( mVariantPassMutex );
+#ifdef RISE_ENABLE_OIDN
+		const Implementation::PixelBasedRasterizerHelper* helper =
+			dynamic_cast<const Implementation::PixelBasedRasterizerHelper*>(
+				mLastVariantRasterizer );
+		return helper && helper->ForTest_GetAOVBufferDimensions( width, height );
+#else
+		(void)width;
+		(void)height;
+		return false;
+#endif
 	}
 
 	//! Blocks until the recorded sequence reaches `count` passes (true)
@@ -346,6 +400,33 @@ public:
 	}
 
 protected:
+	void ForTest_OnBeautyVariantPassConfigured(
+		IRasterizer& rasterizer,
+		Implementation::ViewportRenderMode mode,
+		bool liveGesture ) override
+	{
+		VariantPassRecord record;
+		record.mode = mode;
+		record.liveGesture = liveGesture;
+		record.samples = rasterizer.GetSampleCountOverride();
+		record.denoiseKnown = false;
+		record.denoiseEnabled = false;
+#ifdef RISE_ENABLE_OIDN
+		if( Implementation::Rasterizer* concrete =
+				dynamic_cast<Implementation::Rasterizer*>( &rasterizer ) )
+		{
+			record.denoiseKnown = true;
+			record.denoiseEnabled = concrete->GetDenoisingEnabled();
+		}
+#endif
+		{
+			std::lock_guard<std::mutex> lk( mVariantPassMutex );
+			mLastVariantRasterizer = &rasterizer;
+			mVariantPassRecords.push_back( record );
+		}
+		mVariantPassCV.notify_all();
+	}
+
 	void DoOneRenderPass() override
 	{
 		// ForTest_CurrentPane locks mMutex -- safe HERE because the mint
@@ -540,6 +621,10 @@ private:
 	std::condition_variable     mLastRenderAttemptCV;
 	unsigned int                mLastRenderAttemptPane = ~0u;
 	bool                        mLastRenderAttemptReached = false;
+	mutable std::mutex          mVariantPassMutex;
+	std::condition_variable     mVariantPassCV;
+	std::vector<VariantPassRecord> mVariantPassRecords;
+	IRasterizer*                 mLastVariantRasterizer = nullptr;
 };
 
 class RecordingPaneSink
@@ -5043,6 +5128,284 @@ static void RunCallbackPrepareRetryPersistsGestureTest()
 	std::remove( path.c_str() );
 }
 
+static void RunBeautyVariantLiveQualityPolicyTest()
+{
+	std::printf( "=== scheduler (perf): BeautyVariant live/final quality policy ===\n" );
+	Fixture f( "pane_sched_variant_quality.RISEscene", true );
+	Check( f.ctrl != nullptr, "live-pipeline fixture constructs" );
+	if( !f.ctrl ) return;
+	Check( f.ctrl->SetViewportRenderMode( "direct" ),
+	       "direct BeautyVariant installs" );
+	f.ctrl->Start( true );
+	Check( f.ctrl->WaitForVariantPassCount( 1, kWaitMs ),
+	       "initial final-quality variant pass mints" );
+	Check( f.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
+	       "initial variant pass retires" );
+#ifdef RISE_ENABLE_OIDN
+	unsigned int initialAOVW = 0, initialAOVH = 0;
+	Check( f.ctrl->LastVariantAOVDimensions( initialAOVW, initialAOVH )
+	    && initialAOVW == 16 && initialAOVH == 12,
+	       "initial full-quality pass retains correctly-sized 16x12 AOVs" );
+#endif
+	f.ctrl->ClearSequence();
+	f.ctrl->ClearVariantPassRecords();
+
+	auto checkBracket = [&]( const char* label, const auto& begin, const auto& end ) {
+		begin();
+		f.ctrl->ForTest_KickRender();
+		Check( f.ctrl->WaitForVariantPassCount( 1, kWaitMs ),
+		       std::string( label ) + ": live pass mints" );
+		end();
+		Check( f.ctrl->WaitForVariantPassCount( 2, kWaitMs ),
+		       std::string( label ) + ": release pass mints" );
+		const std::vector<RecordingController::VariantPassRecord> records =
+			f.ctrl->VariantPassRecords();
+		Check( records.size() >= 2 && records.front().liveGesture
+		    && records.front().samples == 1,
+		       std::string( "MONEY: " ) + label +
+		       " controller mint classifies live work at 1 SPP" );
+		Check( records.size() >= 2 && !records.back().liveGesture
+		    && records.back().samples == 8,
+		       std::string( "MONEY: " ) + label +
+		       " controller release restores Direct's 8 SPP" );
+#ifdef RISE_ENABLE_OIDN
+		Check( records.size() >= 2 && records.front().denoiseKnown
+		    && !records.front().denoiseEnabled,
+		       std::string( "MONEY: " ) + label +
+		       " live mint suppresses OIDN" );
+		Check( records.size() >= 2 && records.back().denoiseKnown
+		    && records.back().denoiseEnabled,
+		       std::string( "MONEY: " ) + label +
+		       " release mint restores OIDN" );
+#endif
+		Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+		       std::string( label ) + ": both passes retire" );
+		f.ctrl->ClearSequence();
+		f.ctrl->ClearVariantPassRecords();
+	};
+
+	// Deterministically hold a full-quality mint, begin a new pointer gesture
+	// on another thread, and prove the admission path atomically suppresses
+	// the obsolete quantum's OIDN tail before waiting for retirement.
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	f.ctrl->ArmReleaseInterleaving();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForMintedPass( kWaitMs ),
+	       "full-quality predecessor is held after mint" );
+	std::atomic<bool> pointerDownReturned{ false };
+	std::thread pointerDownThread( [&] {
+		f.ctrl->OnPointerDown( Point2( 8, 8 ) );
+		pointerDownReturned.store( true, std::memory_order_release );
+	} );
+	for( unsigned int i = 0;
+	     i < 2000 && !f.ctrl->LastVariantDenoiseSuppressed(); ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( f.ctrl->LastVariantDenoiseSuppressed(),
+	       "MONEY: new gesture suppresses the in-flight full pass's OIDN tail" );
+	Check( !pointerDownReturned.load( std::memory_order_acquire ),
+	       "gesture admission waits only for the deliberately held path quantum" );
+	f.ctrl->ReleaseMintedPass();
+	pointerDownThread.join();
+	Check( pointerDownReturned.load( std::memory_order_acquire ),
+	       "gesture admission returns after obsolete quantum retires" );
+	const std::size_t beforeSurfaceRecords =
+		f.ctrl->VariantPassRecords().size();
+	const std::size_t beforeSurfacePasses = f.ctrl->Sequence().size();
+	Check( f.ctrl->SetPaneSurfaceDims( 0, 20, 14 ),
+	       "live pointer pass changes surface dimensions" );
+	Check( f.ctrl->WaitForVariantPassCount( beforeSurfaceRecords + 1, kWaitMs )
+	    && f.ctrl->WaitForCompletedPassCount( beforeSurfacePasses + 1, kWaitMs ),
+	       "1-SPP live pass at changed dimensions retires" );
+	{
+		const std::vector<RecordingController::VariantPassRecord> records =
+			f.ctrl->VariantPassRecords();
+		Check( records.size() >= 2 && records.back().liveGesture
+		    && records.back().samples == 1,
+		       "MONEY: replacement pointer pass is 1 SPP" );
+	}
+#ifdef RISE_ENABLE_OIDN
+	unsigned int liveAOVW = 0, liveAOVH = 0;
+	Check( !f.ctrl->LastVariantAOVDimensions( liveAOVW, liveAOVH ),
+	       "MONEY: live no-OIDN pass deletes stale prior-resolution AOV storage" );
+#endif
+	f.ctrl->OnPointerUp( Point2( 8, 8 ) );
+	const std::size_t beforeReleaseRecords = beforeSurfaceRecords + 1;
+	const std::size_t beforeReleasePasses = beforeSurfacePasses + 1;
+	Check( f.ctrl->WaitForVariantPassCount( beforeReleaseRecords + 1, kWaitMs )
+	    && f.ctrl->WaitForCompletedPassCount( beforeReleasePasses + 1, kWaitMs ),
+	       "pointer release full-quality pass retires" );
+	{
+		const std::vector<RecordingController::VariantPassRecord> records =
+			f.ctrl->VariantPassRecords();
+		Check( records.size() >= beforeReleaseRecords + 1
+		    && !records.back().liveGesture
+		    && records.back().samples == 8,
+		       "pointer release restores Direct's 8 SPP" );
+	}
+#ifdef RISE_ENABLE_OIDN
+	unsigned int restoredAOVW = 0, restoredAOVH = 0;
+	Check( f.ctrl->LastVariantAOVDimensions( restoredAOVW, restoredAOVH )
+	    && restoredAOVW == 10 && restoredAOVH == 7,
+	       "release recreates AOV storage at the changed 10x7 dimensions" );
+#endif
+	f.ctrl->ClearSequence();
+	f.ctrl->ClearVariantPassRecords();
+
+	checkBracket( "property scrub",
+		[&]{ f.ctrl->BeginPropertyScrub(); },
+		[&]{ f.ctrl->EndPropertyScrub(); } );
+	checkBracket( "timeline scrub",
+		[&]{ Check( f.ctrl->OnTimeScrubBegin(), "timeline scrub begins" ); },
+		[&]{ Check( f.ctrl->OnTimeScrubEnd(), "timeline scrub ends" ); } );
+
+	// Deliberately omit the timeline End.  The shared scrub watchdog must
+	// close the editor composite and restore a final-quality pass rather than
+	// leaving every later variant quantum at 1 SPP forever.
+	f.ctrl->ClearSequence();
+	f.ctrl->ClearVariantPassRecords();
+	Check( f.ctrl->OnTimeScrubBegin(), "lost-End timeline scrub begins" );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForVariantPassCount( 1, kWaitMs ),
+	       "lost-End timeline live pass mints" );
+	Check( f.ctrl->WaitForVariantPassCount( 2, kWaitMs ),
+	       "timeline watchdog mints a recovery pass" );
+	{
+		const std::vector<RecordingController::VariantPassRecord> records =
+			f.ctrl->VariantPassRecords();
+		Check( records.size() >= 2 && records.front().liveGesture
+		    && records.front().samples == 1,
+		       "lost-End timeline starts at live 1-SPP quality" );
+		Check( records.size() >= 2 && !records.back().liveGesture
+		    && records.back().samples == 8,
+		       "MONEY: timeline watchdog restores Direct's final 8-SPP quality" );
+	}
+	Check( !f.ctrl->Editor().IsCompositeOpen(),
+	       "timeline watchdog closes the orphaned editor composite" );
+
+	// A legitimate user can pause on one frame past the watchdog and then
+	// resume without a second Begin callback.  The next value event must
+	// reclaim live quality and a fresh undo group until the eventual End.
+	f.ctrl->ClearSequence();
+	f.ctrl->ClearVariantPassRecords();
+	Check( f.ctrl->OnTimeScrub( 0.25 ),
+	       "timeline motion after watchdog recovery is accepted" );
+	Check( f.ctrl->Editor().IsCompositeOpen(),
+	       "resumed timeline motion reopens its editor composite" );
+	Check( f.ctrl->WaitForVariantPassCount( 1, kWaitMs ),
+	       "resumed timeline motion mints a variant pass" );
+	{
+		const std::vector<RecordingController::VariantPassRecord> records =
+			f.ctrl->VariantPassRecords();
+		Check( !records.empty() && records.front().liveGesture
+		    && records.front().samples == 1,
+		       "MONEY: resumed timeline motion reclaims 1-SPP live quality" );
+	}
+	Check( f.ctrl->OnTimeScrubEnd(), "resumed timeline scrub ends cleanly" );
+}
+
+static void RunCrossPaneVariantAdmissionPolicyTest()
+{
+	std::printf( "=== scheduler (perf2): Preview-to-variant admission pins live quality ===\n" );
+	Fixture f( "pane_sched_cross_variant_admission.RISEscene", true );
+	Check( f.ctrl != nullptr, "live-pipeline fixture constructs" );
+	if( !f.ctrl ) return;
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+	       "layout TwoH" );
+	Check( f.ctrl->SetPaneRenderMode( 1, "direct" ),
+	       "pane 1 installs Direct while pane 0 remains Preview" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+	       "initial two-pane rotation retires" );
+	f.ctrl->ClearSequence();
+	f.ctrl->ClearVariantPassRecords();
+
+	// Hold a minted Preview pass.  The pane-1 Down must arm its destination
+	// variant before the cancel/park wait, even though the currently loaded
+	// pane has no variant rasterizer to suppress.
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	f.ctrl->ArmReleaseInterleaving();
+	// An all-pane kick leaves Direct dirty while primary Preview is held.
+	// This is the exact retirement shape that used to let the dirty target
+	// re-mint at final quality before pointer-down was published.
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForMintedPass( kWaitMs ), "Preview pass is held after mint" );
+	std::atomic<bool> downAccepted{ false };
+	std::thread downThread( [&] {
+		downAccepted.store(
+			f.ctrl->OnPanePointerDown( 1, Point2( 8, 8 ) ),
+			std::memory_order_release );
+	} );
+	for( unsigned int i = 0;
+	     i < 2000 && !f.ctrl->ForTest_VariantAdmissionPendingForPane( 1 ); ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( f.ctrl->ForTest_VariantAdmissionPendingForPane( 1 ),
+	       "MONEY: destination Direct pane is pinned live before the wrapper's first cancel wait" );
+	f.ctrl->ReleaseMintedPass();
+	downThread.join();
+	Check( downAccepted.load( std::memory_order_acquire ),
+	       "cross-pane pointer Down is admitted after Preview retires" );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForVariantPassCount( 1, kWaitMs ),
+	       "target Direct pane mints after cross-pane admission" );
+	{
+		const std::vector<RecordingController::VariantPassRecord> records =
+			f.ctrl->VariantPassRecords();
+		Check( !records.empty() && records.front().liveGesture
+		    && records.front().samples == 1,
+		       "MONEY: Preview-to-Direct admission cannot mint a full-quality pass before pointer-down publishes" );
+	}
+	Check( f.ctrl->OnPanePointerUp( 1, Point2( 8, 8 ) ),
+	       "cross-pane gesture releases cleanly" );
+
+	// Inverse direction: a Preview destination does not need a pending
+	// quality pin, but it still must suppress the currently-running Direct
+	// predecessor before the wrapper's first cancel/wait.
+	Fixture inverse( "pane_sched_cross_variant_predecessor.RISEscene", true );
+	Check( inverse.ctrl != nullptr, "inverse live-pipeline fixture constructs" );
+	if( !inverse.ctrl ) return;
+	Check( inverse.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+	       "inverse layout TwoH" );
+	Check( inverse.ctrl->SetPaneRenderMode( 1, "direct" ),
+	       "inverse pane 1 installs Direct" );
+	Check( inverse.ctrl->SetPrimaryPane( 1 ),
+	       "inverse all-pane kick starts on Direct" );
+	inverse.ctrl->Start( true );
+	inverse.ctrl->ForTest_KickRender();
+	Check( inverse.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+	       "inverse initial rotation retires" );
+	inverse.ctrl->ClearSequence();
+	inverse.ctrl->ClearVariantPassRecords();
+	inverse.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	inverse.ctrl->ArmReleaseInterleaving();
+	inverse.ctrl->ForTest_KickRender();
+	Check( inverse.ctrl->WaitForMintedPass( kWaitMs ),
+	       "Direct predecessor is held after mint" );
+	std::atomic<bool> inverseDownAccepted{ false };
+	std::thread inverseDownThread( [&] {
+		inverseDownAccepted.store(
+			inverse.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ),
+			std::memory_order_release );
+	} );
+	for( unsigned int i = 0;
+	     i < 2000 && !inverse.ctrl->LastVariantDenoiseSuppressed(); ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( inverse.ctrl->LastVariantDenoiseSuppressed(),
+	       "MONEY: Direct-to-Preview admission suppresses the obsolete Direct OIDN tail" );
+	inverse.ctrl->ReleaseMintedPass();
+	inverseDownThread.join();
+	Check( inverseDownAccepted.load( std::memory_order_acquire ),
+	       "Direct-to-Preview pointer Down retires cleanly" );
+	Check( inverse.ctrl->OnPanePointerUp( 0, Point2( 8, 8 ) ),
+	       "inverse cross-pane gesture releases cleanly" );
+}
+
 int main()
 {
 	RunRotationOrderTest();
@@ -5107,6 +5470,8 @@ int main()
 	RunStopFromLastRenderCallbackIsRejectedTest();
 	RunRawDestructorClaimsBeforeDrainQuiescenceTest();
 	RunCallbackPrepareRetryPersistsGestureTest();
+	RunBeautyVariantLiveQualityPolicyTest();
+	RunCrossPaneVariantAdmissionPolicyTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

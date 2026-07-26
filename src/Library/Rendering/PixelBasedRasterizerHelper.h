@@ -633,6 +633,19 @@ namespace RISE
 			//!     to the true original null/1-spp state.
 			virtual bool SetSampleCountOverride( int samples ) override;
 
+#ifdef RISE_ENABLE_OIDN
+			//! Test-only parked-render oracle for live/full OIDN lifecycle tests.
+			//! Call only when no RasterizeScene invocation is in flight.
+			bool ForTest_GetAOVBufferDimensions(
+				unsigned int& width, unsigned int& height ) const
+			{
+				if( !pAOVBuffers ) return false;
+				width = pAOVBuffers->GetWidth();
+				height = pAOVBuffers->GetHeight();
+				return true;
+			}
+#endif
+
 			//! The samples-per-pixel this rasterizer will actually use on
 			//! its next RasterizeScene call: `pSampling->GetNumSamples()`
 			//! when a kernel is installed, else 1 (implicit single-ray

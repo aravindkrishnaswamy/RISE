@@ -1213,6 +1213,7 @@ void SceneEditController::StopInteractive()
 			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 			mEditPending.store( true, std::memory_order_release );
 		}
+		mTimelineScrubWatchdogRecovered = false;
 	}
 }
 
@@ -1230,20 +1231,27 @@ bool SceneEditController::FinalizeOpenInteractions()
 	{
 		OnPointerUp( mLastPx );
 	}
-	if( mScrubOpenedComposite )
+	bool timelineScrubOpen = false;
 	{
-		if( !OnTimeScrubEnd() ) return false;
+		std::lock_guard<std::mutex> lk( mMutex );
+		timelineScrubOpen = mScrubOpenedComposite;
+		mTimelineScrubWatchdogRecovered = false;
 	}
+	if( timelineScrubOpen && !OnTimeScrubEnd() ) return false;
 	if( mScrubInProgress.load( std::memory_order_acquire ) )
 	{
 		EndPropertyScrub();
 	}
 
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		timelineScrubOpen = mScrubOpenedComposite;
+	}
 	return !mInteractionPersistenceFailed.load( std::memory_order_acquire )
 	    && !mPointerDown.load( std::memory_order_acquire )
 	    && !mScrubInProgress.load( std::memory_order_acquire )
 	    && !mGestureOpenedComposite
-	    && !mScrubOpenedComposite;
+	    && !timelineScrubOpen;
 }
 
 bool SceneEditController::IsInLastRenderSinkCallbackOnThisThread() const
@@ -1393,7 +1401,7 @@ SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
 	// the mode.  That pin is not the ladder's "still walking down toward 1"
 	// signal the `outScaleDivisor > kPreviewScaleMin` tests below encode
 	// for the non-variant case -- there IS no ladder or polish chain for a
-	// variant pass (fixed spp/OIDN baked into CreateBeautyVariantPipeline),
+	// variant pass (registry SPP/OIDN at rest; 1 SPP/OIDN-off while live),
 	// so without this carve-out a fully-settled variant render (divisor
 	// pinned e.g. to 4, mRendering false) would permanently read
 	// divisor(4) > kPreviewScaleMin(1) and report Refining forever.  Derive
@@ -2167,6 +2175,28 @@ int SceneEditController::NavGizmoNubAt( double px, double py ) const
 
 // Pointer events ------------------------------------------------------
 
+void SceneEditController::PreemptVariantForInteractionLocked_(
+	unsigned int pane,
+	std::unique_lock<std::mutex>& lk )
+{
+	const Implementation::ViewportRenderMode targetMode =
+		( pane == 0 ) ? mViewportRenderMode : mPaneConfigs[pane].mode;
+	// These are independent decisions: any currently-running variant has an
+	// obsolete OIDN tail to suppress, even when the destination is Preview;
+	// any variant destination must be pinned live, even when Preview is current.
+	if( mVariantRasterizer ) {
+		Implementation::SuppressBeautyVariantDenoise( *mVariantRasterizer );
+	}
+	if( !Implementation::IsBeautyVariantMode( targetMode ) ) return;
+	mVariantInteractionAdmissionPending = true;
+	mVariantInteractionAdmissionPane = pane;
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+}
+
 void SceneEditController::OnPointerDown( const Point2& px )
 {
 	// P3a slice 2: pointer input is pane-0-scoped until slice 3 adds pane
@@ -2216,13 +2246,23 @@ void SceneEditController::OnPointerDown( const Point2& px )
 		// targets mGesturePane (0 for all legacy un-indexed input;
 		// OnPanePointerDown stamps it, under this same mutex, before
 		// forwarding here).  The pin then holds the gestured pane.
-		if( mCurrentPane != mGesturePane )
-		{
+		// A new gesture supersedes any full-quality release quantum even when
+		// it targets the already-current pane.  Suppress the obsolete pass's
+		// non-cancel-interruptible OIDN tail before cancelling it, then park so
+		// the first live mint can safely swap to 1 SPP.
+		PreemptVariantForInteractionLocked_( mGesturePane, lk );
+		if( !mVariantInteractionAdmissionPending
+		 && mCurrentPane != mGesturePane ) {
+			// Preserve the pre-existing cross-pane park for ordinary preview/
+			// data modes; same-pane non-variant Down remains non-blocking.
 			if( mRendering.load( std::memory_order_acquire ) ) {
 				mCancelProgress.RequestCancel();
 				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 			}
 			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		}
+		if( mCurrentPane != mGesturePane )
+		{
 			SwitchToPaneLocked_( mGesturePane );
 		}
 		// Round-8: a fresh gesture is never stale (clear before publishing
@@ -2237,6 +2277,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 		mPointerGestureStale.store( false, std::memory_order_release );
 		mLastPointerActivityMs.store( NowMs(), std::memory_order_release );
 		mPointerDown.store( true, std::memory_order_release );
+		mVariantInteractionAdmissionPending = false;
 	}
 	ForTest_OnPointerDownAdmitted();
 	mLastPx = px;
@@ -2972,13 +3013,17 @@ bool SceneEditController::OnTimeScrubBegin()
 	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 		return false;
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::unique_lock<std::mutex> lk( mMutex );
 		if( mScrubOpenedComposite ) {
 			mEditor.EndComposite();
 			mScrubOpenedComposite = false;
 		}
+		PreemptVariantForInteractionLocked_( mCurrentPane, lk );
 		mEditor.BeginComposite( "Scrub" );
 		mScrubOpenedComposite = true;
+		mTimelineScrubWatchdogRecovered = false;
+		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+		mVariantInteractionAdmissionPending = false;
 	}
 	ForTest_OnTimeScrubBeginAdmitted();
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
@@ -3029,6 +3074,30 @@ bool SceneEditController::OnTimeScrub( Scalar t )
 	// Time-scrub is the only mutation that can destroy live geometry
 	// while the render thread is reading it.
 	std::unique_lock<std::mutex> lk( mMutex );
+	mTimeScrubsInFlight.fetch_add( 1, std::memory_order_acq_rel );
+	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	struct TimeScrubInFlightGuard
+	{
+		std::atomic<int>& count;
+		std::atomic<long long>& activity;
+		~TimeScrubInFlightGuard()
+		{
+			activity.store( NowMs(), std::memory_order_release );
+			count.fetch_sub( 1, std::memory_order_acq_rel );
+		}
+	} timeScrubInFlight_{ mTimeScrubsInFlight, mLastEditTimeMs };
+	// If the lost-End watchdog closed a long-held scrub, the next slider move
+	// is definitive proof that the interaction is still alive.  Re-open its
+	// undo group and live-quality classification before applying the edit.
+	bool reopenedScrub = false;
+	if( !mScrubOpenedComposite && mTimelineScrubWatchdogRecovered ) {
+		PreemptVariantForInteractionLocked_( mCurrentPane, lk );
+		mEditor.BeginComposite( "Scrub" );
+		mScrubOpenedComposite = true;
+		mTimelineScrubWatchdogRecovered = false;
+		mVariantInteractionAdmissionPending = false;
+		reopenedScrub = true;
+	}
 	if( mRendering.load( std::memory_order_acquire ) )
 	{
 		mCancelProgress.RequestCancel();
@@ -3044,6 +3113,10 @@ bool SceneEditController::OnTimeScrub( Scalar t )
 	edit.op = SceneEdit::SetSceneTime;
 	edit.s  = t;
 	const bool ok = mEditor.Apply( edit );
+	if( !ok && reopenedScrub ) {
+		mEditor.EndComposite();
+		mScrubOpenedComposite = false;
+	}
 
 	// Inline the KickRender effect under the held lock — store
 	// editPending, then notify after dropping the lock.  Keeping
@@ -3080,10 +3153,13 @@ bool SceneEditController::OnTimeScrubEnd()
 	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// P1: close only the composite THIS scrub opened -- a stray End with no open scrub
 	// must not under-flow the composite depth.
-	if( mScrubOpenedComposite ) {
+	{
 		std::lock_guard<std::mutex> lk( mMutex );
-		mEditor.EndComposite();
-		mScrubOpenedComposite = false;
+		if( mScrubOpenedComposite ) {
+			mEditor.EndComposite();
+			mScrubOpenedComposite = false;
+		}
+		mTimelineScrubWatchdogRecovered = false;
 	}
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 	KickRender();
@@ -3106,10 +3182,12 @@ void SceneEditController::BeginPropertyScrub()
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 			return;
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::unique_lock<std::mutex> lk( mMutex );
+		PreemptVariantForInteractionLocked_( mCurrentPane, lk );
 		SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 		mScrubInProgress.store( true, std::memory_order_release );
+		mVariantInteractionAdmissionPending = false;
 	}
 }
 
@@ -3616,6 +3694,9 @@ bool SceneEditController::RollbackTransaction()
 	mScrubInProgress.store( false, std::memory_order_release );
 	mGestureOpenedComposite = false;   // P1: a mid-gesture rollback also clears the open-composite flag
 	mScrubOpenedComposite   = false;   // P1: ...and the scrub-composite flag
+	mTimelineScrubWatchdogRecovered = false;
+	mVariantInteractionAdmissionPending = false;
+	mVariantInteractionAdmissionPane = 0;
 
 	// F7: restore the dirty channels + selection to the pre-transaction
 	// baseline so a fully reverted document doesn't keep showing unsaved
@@ -7406,7 +7487,8 @@ void SceneEditController::RenderLoop()
 			// drives the same adaptive-scaling logic.
 			const bool gestureActive =
 				mPointerDown.load( std::memory_order_acquire )
-			 || mScrubInProgress.load( std::memory_order_acquire );
+			 || mScrubInProgress.load( std::memory_order_acquire )
+			 || mScrubOpenedComposite;
 			const bool refineMode =
 				gestureActive
 				 && mPreviewScale.load( std::memory_order_acquire ) > kPreviewScaleMin;
@@ -7416,6 +7498,7 @@ void SceneEditController::RenderLoop()
 			// gesture, long before the 10-second lost-End threshold could fire.
 			const bool watchdogMode =
 				mScrubInProgress.load( std::memory_order_acquire )
+				|| mScrubOpenedComposite
 				|| ( mPointerDown.load( std::memory_order_acquire )
 				  && !mPointerGestureStale.load( std::memory_order_acquire )
 				  && mPointerWatchdogMs.load( std::memory_order_acquire ) > 0 );
@@ -7519,6 +7602,23 @@ void SceneEditController::RenderLoop()
 					// strands dirty siblings forever for a pinned BeautyVariant,
 					// because its idle-refinement branch intentionally skips.
 					mScrubInProgress.store( false, std::memory_order_release );
+					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					mPolishState.store( static_cast<int>( PolishState::None ),
+					                    std::memory_order_release );
+					MarkAllVisiblePanesDirtyLocked_();
+					rotationTick = true;
+				}
+			}
+			if( mScrubOpenedComposite
+			 && mTimeScrubsInFlight.load( std::memory_order_acquire ) == 0 )
+			{
+				const long long sinceEditMs =
+					NowMs() - mLastEditTimeMs.load( std::memory_order_acquire );
+				if( sinceEditMs > kScrubWatchdogMs )
+				{
+					mEditor.EndComposite();
+					mScrubOpenedComposite = false;
+					mTimelineScrubWatchdogRecovered = true;
 					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 					mPolishState.store( static_cast<int>( PolishState::None ),
 					                    std::memory_order_release );
@@ -7720,6 +7820,10 @@ void SceneEditController::RenderLoop()
 		RenderJobId thisPassJobId = kInvalidRenderJobId;
 		unsigned int thisPassPane = 0;
 		IRasterizer* thisPassRasterizer = nullptr;
+		bool thisPassVariantConfigured = false;
+		bool thisPassVariantLiveGesture = false;
+		Implementation::ViewportRenderMode thisPassVariantMode =
+			Implementation::ViewportRenderMode::Preview;
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire )
@@ -7784,16 +7888,28 @@ void SceneEditController::RenderLoop()
 			polishStateBefore =
 				static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
 			isPolishPass = ( polishStateBefore == PolishState::PolishQueued );
-			// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): SKIP this
-			// InteractivePelRasterizer-specific config entirely while a
-			// BeautyVariant mode is active -- mInteractiveImpl is not the
-			// rasterizer DoOneRenderPass will drive this pass (mVariantRasterizer
-			// is), and the variant pipeline's OIDN/sample-count are FIXED at
-			// construction (CreateBeautyVariantPipeline), not per-pass tunable.
-			// A variant pass is a plain full pass at that fixed config; the
-			// polish/denoise state machine (isPolishPass, mPolishState) is left
-			// running as-is (it's a no-op against mVariantRasterizer either way)
-			// so leaving the mode later finds it in a consistent state.
+			// BeautyVariant passes have their own interaction policy.  While a
+			// real pointer/scrub gesture is live, run exactly 1 SPP with OIDN
+			// suppressed: intermediate frames are quickly superseded and must
+			// minimize latency.  Pointer-up/scrub-end mints with the registry's
+			// authored SPP and OIDN restored.  Configure only here, while the
+			// render is parked and mMutex excludes mode/pane replacement.
+			if( mVariantRasterizer ) {
+				const Implementation::ViewportRenderMode mode =
+					( mCurrentPane == 0 ) ? mViewportRenderMode
+					                      : mPaneConfigs[mCurrentPane].mode;
+				const bool liveGesture =
+					( mPointerDown.load( std::memory_order_acquire )
+					  && !mPointerGestureStale.load( std::memory_order_acquire ) )
+					|| mScrubInProgress.load( std::memory_order_acquire )
+					|| mScrubOpenedComposite
+					|| mVariantInteractionAdmissionPending;
+				thisPassVariantConfigured = Implementation::ConfigureBeautyVariantPass(
+					*mVariantRasterizer, mode, liveGesture );
+				thisPassVariantMode = mode;
+				thisPassVariantLiveGesture = liveGesture;
+			}
+			// The ordinary preview rasterizer retains its existing polish policy.
 			if( mInteractiveImpl && !mVariantRasterizer ) {
 				Implementation::InteractivePelRasterizer::PreviewDenoiseMode denoiseMode =
 					Implementation::InteractivePelRasterizer::PreviewDenoise_Off;
@@ -7826,6 +7942,11 @@ void SceneEditController::RenderLoop()
 				mCurrentRenderJob.clientLabel = String();   // Fix-round-1 P3-c: an Interactive-class job has no client label -- clear any stale value left by a prior AgentPreview job record
 				thisPassJobId = mCurrentRenderJob.id;
 			}
+		}
+		if( thisPassVariantConfigured ) {
+			ForTest_OnBeautyVariantPassConfigured(
+				*thisPassRasterizer, thisPassVariantMode,
+				thisPassVariantLiveGesture );
 		}
 		ForTest_OnInteractivePassMinted();
 
@@ -8038,7 +8159,9 @@ void SceneEditController::RenderLoop()
 			const bool gestureActive =
 				( mPointerDown.load( std::memory_order_acquire )
 				  && !mPointerGestureStale.load( std::memory_order_acquire ) )
-			 || mScrubInProgress.load( std::memory_order_acquire );
+			 || mScrubInProgress.load( std::memory_order_acquire )
+			 || mScrubOpenedComposite
+			 || mVariantInteractionAdmissionPending;
 			if( !gestureActive && AnyVisiblePaneHasWorkLocked_() )
 			{
 				mPanePassPending.store( true, std::memory_order_release );
@@ -10428,6 +10551,10 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		// mutated them concurrently with an in-flight pass (a genuine data
 		// race; non-crashing today only by the SceneCamera=>null-override
 		// invariant coincidence).  Park always; switch conditionally.
+		// A BeautyVariant destination must be armed BEFORE this first wait.
+		// Otherwise cancellation retirement can select a dirty target variant
+		// and mint it at full quality while pointer-down is still unpublished.
+		PreemptVariantForInteractionLocked_( pane, lk );
 		if( mRendering.load( std::memory_order_acquire ) ) {
 			mCancelProgress.RequestCancel();
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
@@ -10450,6 +10577,7 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 			if( !cameras
 			 || !cameras->GetItem( mPaneConfigs[pane].sceneCameraRef.c_str() ) )
 			{
+				mVariantInteractionAdmissionPending = false;
 				return false;
 			}
 		}
@@ -11067,12 +11195,18 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 //! AnyVisiblePaneHasWorkLocked_ before treating the answer as work).
 unsigned int SceneEditController::PickNextVisiblePaneLocked_() const
 {
+	if( mVariantInteractionAdmissionPending
+	 && IsInteractivePaneLocked_( mVariantInteractionAdmissionPane ) )
+	{
+		return mVariantInteractionAdmissionPane;
+	}
 	// Round-8: a STALE pointer gesture (kPointerWatchdogMs) stops pinning, so
 	// the deferred siblings can rotate again; the flag itself stays set until
 	// a real gesture boundary clears it.
 	if( ( mPointerDown.load( std::memory_order_acquire )
 	   && !mPointerGestureStale.load( std::memory_order_acquire ) )
-	 || mScrubInProgress.load( std::memory_order_acquire ) )
+	 || mScrubInProgress.load( std::memory_order_acquire )
+	 || mScrubOpenedComposite )
 	{
 		if( IsInteractivePaneLocked_( mCurrentPane ) ) return mCurrentPane;
 	}
