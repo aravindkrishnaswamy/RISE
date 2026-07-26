@@ -178,6 +178,15 @@ namespace RISE
 			//! indexing PNGWriter with a caller typo.
 			void SetOutputColorSpace( int colorSpace );
 
+			//! Account for a prior successful perception sidecar that remains
+			//! live while this replacement render executes. AgentSession calls
+			//! this before rendering so auxiliaryPeakBytes describes the actual
+			//! session feature peak, not only the new frame in isolation.
+			void SetConcurrentCachedPerceptionBytes( std::uint64_t bytes )
+			{
+				mConcurrentCachedPerceptionBytes = bytes;
+			}
+
 			//! Serialize the captured frame to 8-bit sRGB PNG bytes, reusing
 			//! the tree's `PNGWriter` (sRGB Integerize + libpng) targeting a
 			//! `MemoryBuffer` rather than a file.  When a non-identity display
@@ -252,6 +261,8 @@ namespace RISE
 			std::vector<unsigned char> mPerceptionNormal; //!< RGB8 sRGB display bytes
 			std::vector<unsigned char> mPerceptionDepth;  //!< 8-bit log-depth display bytes
 			PerceptionInfo mPerceptionInfo;
+			std::uint64_t mConcurrentCachedPerceptionBytes;
+			std::uint64_t mObservedAuxiliaryPeakBytes;
 
 			void CapturePerception_();
 		};

@@ -237,7 +237,8 @@ Two AOV collection strategies exist:
 canonical typed channels. Agent renders use a private FrameStore, compact those
 channels to a 7-byte/pixel cached observation, and restore the production store.
 See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the API, semantics, and exact
-87-byte/pixel peak accounting.
+session-aware peak accounting (83 B/pixel cold, 87 B/pixel animation, and
+90 B/pixel for an equal-sized replacement render).
 
 ## Design Decisions
 

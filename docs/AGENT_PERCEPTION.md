@@ -120,7 +120,7 @@ For `P = width * height`, the perception-only payload is:
 | **Peak while compacting** | 24-byte guide scratch + FrameStore + sidecar | **83** |
 | **Persistent after render** | compact sidecar only | **7** |
 
-Accordingly:
+For a cold single-frame render, accordingly:
 
 ```text
 auxiliaryPeakBytes = 83 * P
@@ -129,13 +129,23 @@ persistentBytes    =  7 * P
 
 These are exact logical payload bytes managed by this feature; allocator and
 container bookkeeping, the pre-existing beauty cache, and OIDN's own filter
-internals are excluded. At 1920x1080 this is about 164.1 MiB peak and 13.8 MiB
-retained. Perception depth scratch is released immediately after propagation;
-the private FrameStore is restored after capture. If OIDN is enabled, its independently-required albedo/normal
+internals are excluded. At 1920x1080 the cold peak is about 164.1 MiB and the
+retained sidecar is about 13.8 MiB. Perception depth scratch is released
+immediately after propagation; the private FrameStore is restored after
+capture. If OIDN is enabled, its independently-required albedo/normal
 cache retains 24 bytes/pixel for reuse; perception does not retain an
 additional float depth plane. Consequently 83 bytes/pixel is the complete
-feature payload at peak, not the incremental cost over an already-enabled OIDN
-render.
+current-frame payload at its cold peak, not the incremental cost over an
+already-enabled OIDN render.
+
+`auxiliaryPeakBytes` is session-aware. RISE preserves the last successful
+observation until its replacement render and PNG encode succeed, so the prior
+7-byte/pixel sidecar is still live during a repeated render. For equal-sized
+frames this reports 90 bytes/pixel (83 current + 7 prior). A multi-frame sink
+also retains the preceding animation frame while the next frame renders, so a
+cold animation peaks at 87 bytes/pixel; replacing an equal-sized cached still
+with a multi-frame render can peak at 94 bytes/pixel. Different-sized renders
+use the exact prior sidecar byte count rather than either approximation.
 
 The atlas encoder sends one RGBA scanline at a time directly to libpng and
 reports that bounded uncompressed working set as `encoderRowBytes = 4 *
@@ -173,7 +183,8 @@ in the auxiliary-memory figures.
 albedo/normal/depth propagation, and the zero-consumer plan. The end-to-end
 `AgentFirstSliceTest` locks transport defaults, the stable atlas layout, PNG
 validity and dimensions, bounded encoder-row metadata, depth metadata,
-83/7-byte accounting, whole-atlas `maxEdge`, invalid representation handling,
+83/7-byte cold accounting, 90-byte replacement and 87-byte animation peaks,
+whole-atlas `maxEdge`, invalid representation handling,
 the allocation/stale-cache behavior of `perception:false`, and byte parity
 between conventional and atlas beauty under a non-sRGB output color space.
 `AgentFrameStoreIsolationTest` additionally crosses shader dispatch, PT, BDPT,

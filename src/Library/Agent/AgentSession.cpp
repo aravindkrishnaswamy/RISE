@@ -3804,6 +3804,20 @@ namespace RISE
 				return res;
 			}
 
+			// Preserve the last successful frame until this render and its PNG
+			// encode succeed, but make that retained compact perception sidecar
+			// visible to the replacement sink's peak accounting. The cache lock
+			// is intentionally narrow; the old sink remains owned by mLastSink
+			// until the success tail swaps it out.
+			std::uint64_t cachedPerceptionBytesAtStart = 0;
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				if( mLastSink ) {
+					cachedPerceptionBytesAtStart =
+						mLastSink->GetPerceptionInfo().persistentBytes;
+				}
+			}
+
 			// A render MUST NOT mutate the retained Document.  The earlier
 			// slice-0b draft honoured `samplesOverride` by routing it through
 			// ProposePatch -> ApplyCstParamEdit, which permanently rewrote the
@@ -5115,6 +5129,7 @@ namespace RISE
 				// OUR ref via safe_release(sink) after this lambda returns --
 				// no extra addref here.
 				sink = new InMemoryRasterizerOutput();
+				sink->SetConcurrentCachedPerceptionBytes( cachedPerceptionBytesAtStart );
 				// Beauty render: encode through the scene's effective display
 				// transform (exposure + tone curve) so decode(rr.png) matches
 				// the CLI file-output / viewport pipeline for the SAME head --

@@ -36,6 +36,8 @@ InMemoryRasterizerOutput::InMemoryRasterizerOutput()
 	, mDisplayTransform( eDisplayTransform_None )   // identity until SetDisplayTransform is called
 	, mColorSpace( eColorSpace_sRGB )               // matches this sink's pre-fix hardcoded default until SetOutputColorSpace is called
 	, mFrameStore( 0 )
+	, mConcurrentCachedPerceptionBytes( 0 )
+	, mObservedAuxiliaryPeakBytes( 0 )
 {
 }
 
@@ -76,6 +78,7 @@ void InMemoryRasterizerOutput::OnRasterizerFrameStoreChanged(
 
 void InMemoryRasterizerOutput::CapturePerception_()
 {
+	const std::uint64_t previousPersistentBytes = mPerceptionInfo.persistentBytes;
 	// A new completed image replaces the entire observation.  Release the
 	// prior compact planes when this render did not request compatible AOVs.
 	auto clearSidecar = [this]() {
@@ -159,11 +162,21 @@ void InMemoryRasterizerOutput::CapturePerception_()
 	mPerceptionInfo.persistentBytes =
 		static_cast<std::uint64_t>( mPerceptionAlbedo.size()
 			+ mPerceptionNormal.size() + mPerceptionDepth.size() );
-	// At compaction, depth float scratch has already been released: the live
-	// feature payload is 24 B/pixel guide scratch + 52 B/pixel FrameStore AOVs
-	// plus the compact retained planes above.
-	mPerceptionInfo.auxiliaryPeakBytes = mPerceptionInfo.persistentBytes
-		+ static_cast<std::uint64_t>( pixels ) * 76u;
+	// Two moments can dominate the live session feature payload:
+	//   * render: 80 B/pixel scratch + private FrameStore, while this sink's
+	//     preceding animation-frame sidecar is still cached;
+	//   * compaction: 76 B/pixel guide scratch + FrameStore after depth
+	//     scratch release, plus the newly compacted 7-B/pixel sidecar.
+	// A prior successful session sink also remains live until this replacement
+	// render and its PNG encode succeed. Track it explicitly so the reported
+	// peak stays exact across repeated still renders and animations.
+	const std::uint64_t renderPeak = mConcurrentCachedPerceptionBytes
+		+ previousPersistentBytes + static_cast<std::uint64_t>( pixels ) * 80u;
+	const std::uint64_t compactionPeak = mConcurrentCachedPerceptionBytes
+		+ mPerceptionInfo.persistentBytes + static_cast<std::uint64_t>( pixels ) * 76u;
+	if( renderPeak > mObservedAuxiliaryPeakBytes ) mObservedAuxiliaryPeakBytes = renderPeak;
+	if( compactionPeak > mObservedAuxiliaryPeakBytes ) mObservedAuxiliaryPeakBytes = compactionPeak;
+	mPerceptionInfo.auxiliaryPeakBytes = mObservedAuxiliaryPeakBytes;
 }
 
 void InMemoryRasterizerOutput::AdoptCoherentSnapshot(
@@ -510,16 +523,17 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	return out;
 #else
 	const std::size_t rowBytes = static_cast<std::size_t>( outWidth ) * 4u;
-	std::vector<unsigned char> row( rowBytes );
-	outInfo.encoderRowBytes = rowBytes;
+	std::vector<unsigned char> row;
 	std::vector<unsigned char>* encoded = 0;
 	try {
+		row.resize( rowBytes );
 		encoded = new std::vector<unsigned char>();
 	}
 	catch( ... ) {
 		markUnavailable();
 		return out;
 	}
+	outInfo.encoderRowBytes = rowBytes;
 
 	png_structp png = png_create_write_struct( PNG_LIBPNG_VER_STRING, 0, 0, 0 );
 	if( !png ) { delete encoded; markUnavailable(); return out; }

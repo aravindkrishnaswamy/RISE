@@ -217,6 +217,14 @@ static void TestPerceptionBeautyColorSpaceParity()
 		       "perception beauty panel honors the configured output color space byte-for-byte" );
 	}
 
+	// A sink reused for animation retains the preceding frame's compact
+	// 7-B/pixel sidecar while the next frame renders. The reported peak must
+	// include that live cache (80 + 7 = 87 B/pixel), not repeat the cold-frame
+	// 83-B/pixel compaction peak.
+	sink->OutputImage( *image, 0, 1 );
+	Check( sink->GetPerceptionInfo().auxiliaryPeakBytes == 87u,
+	       "multi-frame sink peak includes the preceding compact sidecar" );
+
 	safe_release( image );
 	safe_release( sink );
 	safe_release( store );
@@ -398,6 +406,8 @@ int main()
 		const std::string resp = rpc.HandleLine( Req( 9, "render", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 9 );
 		const JsonValue& r = env.get( "result" );
+		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 90.0,
+		       "replacement render peak includes the prior successful 7-byte/pixel sidecar" );
 		noiseFloor =
 			std::fabs( r.get( "meanR" ).asNumber() - firstMeanR ) +
 			std::fabs( r.get( "meanG" ).asNumber() - firstMeanG ) +
@@ -833,8 +843,8 @@ int main()
 		       r.get( "depthMax" ).asNumber() >= r.get( "depthMin" ).asNumber(),
 		       "depth range is finite, positive, and ordered" );
 		Check( r.get( "persistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0 &&
-		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 83.0,
-		       "read_image exposes exact managed perception memory" );
+		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 90.0,
+		       "read_image exposes exact replacement-render perception memory" );
 		Check( r.get( "encoderRowBytes" ).asNumber() == 32.0 * 4.0,
 		       "perception encoder uses one RGBA scanline rather than a full atlas staging image" );
 		std::vector<unsigned char> png;
