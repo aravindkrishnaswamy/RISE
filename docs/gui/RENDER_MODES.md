@@ -779,6 +779,23 @@ BeautyVariant panes, whose fixed divisor/sample budget would otherwise turn one
 gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
 2026-07-24).
 
+**Gesture exclusivity is watchdog-bounded** (round-8 review fix, 2026-07-25).
+Because the pin both selects the pane AND suppresses the rotation arm, a
+gesture flag that never clears would freeze every sibling permanently — and a
+shell CAN drop the pointer-up (both viewports guard their pointer handlers on
+an `interactionEnabled` flag that a chat/agent render request flips, while the
+core-side render is separately REFUSED because a gesture is open, so no
+teardown path runs either).  After `kPointerWatchdogMs` (10 s) of pointer
+inactivity the render thread marks the gesture STALE: the pin releases and the
+rotation arm re-enables, so siblings recover.  `mPointerDown` deliberately
+stays SET — clearing it would make a late `OnPointerUp` early-return and
+strand the gesture's open composite, which blocks agent D2 renders
+indefinitely.  `OnPointerMove` refuses while stale (the live pane registers
+may now belong to a sibling, so applying a delta would move the WRONG pane's
+camera), so a resumed drag is inert until release + re-click.  Every gesture
+boundary clears the flag.  The scrub twin of this recovery is
+`kScrubWatchdogMs`; teardown is covered by `StopInteractive`.
+
 **Invalidation matrix**:
 
 | Event | Effect |
@@ -795,8 +812,26 @@ gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
 | Pane source → Interactive / interactive mode selected | preserve mode/vantage, mark that pane config-dirty + dirty, wake one fresh pane-local pass |
 | N-up → Single while pane 0 is Last Render | restore pane 0 to Interactive and wake an immediate repaint; Single refuses selecting Last Render |
 | Production/agent render starts | `mRenderOwnsScene` no-ops pane setters; loop yields (existing single-slot coordination) |
-| Successful production/agent render completes | replace the retained full-resolution copy and push it once to every Last Render pane sink; Interactive panes resume through their existing post-render wake policy |
+| Successful production/agent render completes | replace the retained full-resolution copy and push it once to every Last Render pane sink (RECORDED under `mMutex`, DELIVERED after it is released — see the deferred-publish note below); Interactive panes resume through their existing post-render wake policy |
 | Failed/cancelled production/agent render completes | retained copy and Last Render panes unchanged |
+
+**Last Render delivery is DEFERRED** (round-8 review fix, 2026-07-25), per ADR
+rule 5 ("notifications fire outside locks").  The publish used to call
+`sink->OutputImage` with `mMutex` held — a latent deadlock for any sink that
+re-enters the controller, and a full per-pixel conversion on the UI thread
+inside the lock (a visible hitch at production resolutions, blocking every
+other `mMutex` caller meanwhile).  Now
+`QueueLastRenderPublishLocked_` RECORDS the delivery under the lock
+(addref'ing both sink and image, coalescing per pane so the queue is bounded
+by the pane count and only the newest frame is delivered), and
+`DrainLastRenderPublishes_` performs it with NO controller lock held.  Drain
+sites: the two pane setters (right after their own unlock),
+`RunPreviewRenderParked` and the agent render worker (which CANNOT drain at
+the completion site — they hold `mMutex` for the render's whole duration), and
+a per-frame catch-all in `RefreshProperties`, so a missed site degrades to a
+one-frame delay rather than a lost image.  Queue order is established under
+`mMutex` and drains are serialized, so a stale frame can never land after a
+newer one.
 
 ### 7.4 C-ABI (additive; existing calls = pane 0)
 

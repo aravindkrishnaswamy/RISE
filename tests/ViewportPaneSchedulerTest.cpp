@@ -38,6 +38,13 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
+#include <memory>
 #include <vector>
 
 using namespace RISE;
@@ -66,7 +73,14 @@ static const char* const kScene =
 
 static std::string WriteTemp( const char* name, const char* content )
 {
-	std::string path = std::string( "/tmp/" ) + name;
+	// Round-8: per-process filename.  These were fixed /tmp paths, so two
+	// instances of this binary running at once (a stray earlier run, a
+	// developer running it while the suite does) clobbered each other's
+	// scene files mid-load and surfaced as a bogus "fixture constructs"
+	// failure.  Reproduced by running 12 copies concurrently: 3 failed that
+	// way; with the pid suffix, 0 do.
+	std::string path = std::string( "/tmp/" ) + std::to_string( (long)getpid() )
+	                 + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::trunc );
 	if( !f ) return std::string();
 	f << content;
@@ -116,6 +130,11 @@ public:
 	{
 		std::lock_guard<std::mutex> lk( mSeqMutex );
 		mSeq.clear();
+	}
+
+	void SetSlowPassMs( unsigned int ms )
+	{
+		mSlowPassMs.store( ms, std::memory_order_release );
 	}
 
 	void ArmReleaseInterleaving()
@@ -185,7 +204,12 @@ protected:
 		if( !mRunRealPass )
 		{
 			// A small real duration so gesture scenarios can overlap a pass.
-			std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+			// Round-8 w4: a configurable SLOW pass models a BeautyVariant
+			// quantum (fixed spp + a non-cancel-interruptible OIDN denoise),
+			// which is what makes the watchdog's clock choice load-bearing.
+			const unsigned int ms = mSlowPassMs.load( std::memory_order_acquire );
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds( ms ? ms : 2 ) );
 		}
 	}
 
@@ -224,6 +248,7 @@ private:
 	std::condition_variable     mSeqCV;
 	std::vector<unsigned int>   mSeq;
 	bool                        mRunRealPass = false;
+	std::atomic<unsigned int>   mSlowPassMs { 0 };
 	std::mutex                  mGateMutex;
 	std::condition_variable     mGateCV;
 	bool                        mReleaseInterleavingArmed = false;
@@ -312,6 +337,16 @@ struct Fixture
 			return;
 		}
 		ctrl = new RecordingController( *job, rasterizer, withInteractivePipeline );
+		// Round-8: neutralize the pointer-gesture watchdog by default.  These
+		// scenarios assert the PIN contract, which is wall-clock-independent;
+		// leaving the production threshold live made them load-sensitive (a
+		// heavily oversubscribed machine can starve a scenario past it, and
+		// scenario (h) then legitimately observes the unpinned rotation and
+		// fails).  0 means EXPLICITLY OFF -- review P1: "a very large
+		// threshold" does NOT disable it, because the clock is steady-time
+		// since boot, so an unstamped read exceeds any finite value.  The
+		// watchdog's own behavior is covered by w1, which opts back in.
+		ctrl->ForTest_SetPointerWatchdogMs( 0 );   // 0 = explicitly OFF
 	}
 	~Fixture()
 	{
@@ -2958,6 +2993,274 @@ static void RunLastRenderPaneSourceTest()
 	sink2->release();
 }
 
+//----------------------------------------------------------------------
+// Round-8 review P2 #1: a pointer gesture whose Up is never delivered must
+// not freeze the sibling panes forever.
+//
+// T0 stopped a completed quantum from self-arming the rotation while a
+// gesture pins the scheduler (that was the spin fix).  The cost: a gesture
+// flag that never clears freezes every other pane permanently.  That IS
+// reachable live -- both shells guard their pointer handlers on an
+// `interactionEnabled` flag that a chat/agent render request flips, while
+// the core-side render is separately REFUSED because a gesture is open, so
+// no teardown path runs either.  The watchdog is the recovery.
+//
+// Pinned here: (1) the siblings actually repaint again; (2) mPointerDown is
+// deliberately still set, so (3) a late-arriving pointer-up still takes its
+// normal finalization path instead of early-returning and stranding the
+// gesture's open composite.
+//----------------------------------------------------------------------
+static void RunLostPointerUpWatchdogTest()
+{
+	std::printf( "=== scheduler (w1/round-8): a lost pointer-up does not freeze sibling panes ===\n" );
+	Fixture f( "pane_sched_w1_lost_pointer_up.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	f.ctrl->ForTest_SetPointerWatchdogMs( 150 );   // keep the test fast
+	f.ctrl->Start( /*suppressInitialRender*/ true );
+
+	// Open an orbit gesture on pane 0 and let it pin the scheduler.
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ), "pointer down on pane 0" );
+	f.ctrl->OnPointerMove( Point2( 12, 9 ) );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "the gestured pane renders" );
+
+	// Dirty every pane (the in-gesture edit already did) and then simply never
+	// deliver the Up -- exactly what the shell does when it drops the event.
+	f.ctrl->ClearSequence();
+	f.ctrl->ForTest_KickRender();
+
+	// The watchdog must declare the gesture stale and resume the rotation.
+	bool sawSibling = false;
+	for( unsigned int i = 0; i < 40 && !sawSibling; ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		for( std::size_t k = 0; k < seq.size(); ++k )
+			if( seq[k] != 0 ) { sawSibling = true; break; }
+	}
+	Check( sawSibling,
+		"MONEY (w1): sibling panes repaint again after the watchdog fires (they froze forever pre-fix)" );
+	Check( f.ctrl->ForTest_PointerGestureStale(),
+		"w1: the gesture is marked stale" );
+	Check( f.ctrl->ForTest_PointerDown(),
+		"MONEY (w1): mPointerDown is deliberately STILL SET -- clearing it would make the late Up early-return and strand its composite" );
+
+	// The late Up still finalizes normally, and clears the stale marker.
+	f.ctrl->OnPointerUp( Point2( 12, 9 ) );
+	Check( !f.ctrl->ForTest_PointerDown() && !f.ctrl->ForTest_PointerGestureStale(),
+		"MONEY (w1): the late pointer-up still runs its normal finalization" );
+	Check( !f.ctrl->Editor().IsCompositeOpen(),
+		"MONEY (w1): the gesture's composite is closed, not stranded (a stranded one blocks agent D2 renders)" );
+
+	// A fresh gesture is never born stale.
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ), "a new gesture starts" );
+	Check( !f.ctrl->ForTest_PointerGestureStale(),
+		"w1: a fresh gesture is not stale" );
+	f.ctrl->OnPointerUp( Point2( 8, 8 ) );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
+// Round-8 review P1: the watchdog must NEVER fire during a genuinely active
+// drag, even when a single render pass outlasts the whole watchdog window.
+//
+// The first cut gated on mLastEditTimeMs, which OnPointerMove only stamps
+// AFTER its render-completion wait and a successful Apply.  On exactly the
+// panes this feature exists for -- BeautyVariant, whose pinned divisor makes
+// every in-drag quantum a full fixed-spp + OIDN pass, and whose denoise is
+// not cancel-interruptible -- one pass can outlast the window, so a user
+// still actively dragging got marked stale and the drag silently froze.
+// The fix separates POINTER ACTIVITY from EDIT COMPLETION and additionally
+// stands the watchdog down while a move is parked in that wait.
+//
+// Here: a 400 ms pass against a 120 ms watchdog, with moves driven
+// continuously.  The gesture must stay live throughout.
+//----------------------------------------------------------------------
+static void RunActiveDragSurvivesSlowPassesTest()
+{
+	std::printf( "=== scheduler (w4/round-8): an active drag is never declared stale, even across slow passes ===\n" );
+	Fixture f( "pane_sched_w4_slow_pass_drag.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	f.ctrl->SetSlowPassMs( 400 );                     // a BeautyVariant-class quantum
+	f.ctrl->ForTest_SetPointerWatchdogMs( 120 );      // far SHORTER than one pass
+	f.ctrl->Start( /*suppressInitialRender*/ true );
+
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ), "pointer down on pane 0" );
+
+	// Drive a continuous drag for well over the watchdog window.  Each move
+	// blocks for the in-flight pass, which is the whole point: the pointer is
+	// active the entire time even though few edits complete.
+	bool wentStale = false;
+	for( unsigned int i = 0; i < 12 && !wentStale; ++i )
+	{
+		f.ctrl->OnPointerMove( Point2( 9.0 + i, 8.0 + i ) );
+		if( f.ctrl->ForTest_PointerGestureStale() ) wentStale = true;
+	}
+	Check( !wentStale,
+		"MONEY (w4): a continuously-dragging pointer is NEVER marked stale, even though each pass outlasts the watchdog window" );
+	Check( f.ctrl->ForTest_PointerDown(), "w4: the gesture is still live" );
+
+	f.ctrl->OnPointerUp( Point2( 24, 20 ) );
+	f.ctrl->SetSlowPassMs( 0 );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
+// Round-8 review P2 #2: ~SceneEditController must not touch mJob.
+//
+// T0 gave StopInteractive an orphaned-gesture cleanup that commits pending
+// CST edits, and the destructor reaches it via Stop().  Every leg of that
+// cleanup routes to mJob -- CommitPendingCstObjectTransforms directly, and
+// even EndComposite through SceneEditor::Apply's HasRetainedCstDocument
+// probe.  The dtor's own NOTE says it CANNOT touch mJob: owners legitimately
+// release the Job first, so a stale-but-non-null mJob is a use-after-free.
+//
+// Rather than rely on a sanitizer to catch the UAF, this observes the
+// invariant directly: a Job subclass records any late access, and the
+// destructor must produce none.
+//----------------------------------------------------------------------
+namespace {
+class JobAccessRecordingJob : public Job
+{
+public:
+	void ArmAccessRecording() { mArmed = true; mTouched = false; }
+	bool Touched() const { return mTouched; }
+
+	int CstObjectTransformKind( const char* name ) const override
+	{
+		if( mArmed ) mTouched = true;
+		return Job::CstObjectTransformKind( name );
+	}
+	bool HasRetainedCstDocument() const override
+	{
+		if( mArmed ) mTouched = true;
+		return Job::HasRetainedCstDocument();
+	}
+
+private:
+	bool         mArmed = false;
+	mutable bool mTouched = false;
+};
+}  // namespace
+
+static void RunDestructorDoesNotTouchJobTest()
+{
+	std::printf( "=== scheduler (w2/round-8): the destructor never reaches mJob ===\n" );
+	const std::string path = WriteTemp( "pane_sched_w2_dtor_job.RISEscene", kScene );
+	JobAccessRecordingJob* job = new JobAccessRecordingJob();
+	Check( job->LoadAsciiSceneViaCst( path.c_str() ), "fixture scene loads" );
+
+	SceneEditController* ctrl = new SceneEditController( *job, nullptr );
+	// Open an object-gizmo gesture so the cleanup has pending CST work to do
+	// -- without pending state the cleanup is a no-op and proves nothing.
+	ctrl->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	ctrl->OnPointerDown( Point2( 8, 8 ) );
+	ctrl->OnPointerMove( Point2( 24, 20 ) );
+	const bool hasPending = ctrl->Editor().HasPendingCstObjectTransforms();
+	Check( hasPending,
+		"w2: the gizmo drag left a pending CST transform (the cleanup's trigger)" );
+
+	// From here on, ANY mJob access is a contract violation.
+	job->ArmAccessRecording();
+	delete ctrl;
+	Check( !job->Touched(),
+		"MONEY (w2): destroying the controller mid-gesture makes NO mJob access (pre-fix it committed pending CST through a possibly-released Job)" );
+
+	job->release();
+	std::remove( path.c_str() );
+}
+
+//----------------------------------------------------------------------
+// Round-8 review P2 #3: the last-render sink push must not run under mMutex.
+//
+// ADR rule 5 ("notifications fire outside locks").  Beyond the latent
+// deadlock for any sink that re-enters the controller, the pre-fix path ran
+// a full per-pixel conversion on the UI thread inside the lock.
+//
+// The oracle: from inside OutputImage, a HELPER THREAD calls a controller
+// method that takes mMutex with a blocking lock.  If the publisher still
+// held mMutex, that helper cannot complete.  Bounded by a timeout so a
+// regression fails rather than hangs.
+//----------------------------------------------------------------------
+namespace {
+class LockProbingPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	void Bind( SceneEditController* c ) { mCtrl = c; }
+	bool Probed() const   { return mProbed; }
+	bool LockWasFree() const { return mLockWasFree; }
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		if( !mCtrl || mProbed ) return;
+		mProbed = true;
+		// DETACHED, and the flag is a shared_ptr the probe co-owns: if the
+		// publisher really is holding mMutex, the probe stays blocked until
+		// that lock releases -- long after this callback returns.  Joining it
+		// here (the obvious first cut) DEADLOCKS on regression instead of
+		// failing, because the lock cannot release until the callback
+		// returns.  A regression must produce a clean FAIL, not a hang.
+		std::shared_ptr< std::atomic<bool> > done =
+			std::make_shared< std::atomic<bool> >( false );
+		SceneEditController* ctrl = mCtrl;
+		std::thread( [ctrl, done]{
+			(void)ctrl->ForTest_CurrentPane();   // blocking mMutex acquisition
+			done->store( true, std::memory_order_release );
+		} ).detach();
+		for( unsigned int i = 0; i < 100 && !done->load( std::memory_order_acquire ); ++i )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+		mLockWasFree = done->load( std::memory_order_acquire );
+	}
+
+protected:
+	~LockProbingPaneSink() override = default;
+
+private:
+	SceneEditController* mCtrl = nullptr;
+	bool                 mProbed = false;
+	bool                 mLockWasFree = false;
+};
+}  // namespace
+
+static void RunLastRenderPublishOutsideLockTest()
+{
+	std::printf( "=== scheduler (w3/round-8): last-render delivery happens outside mMutex ===\n" );
+	Fixture f( "pane_sched_w3_publish_lock.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	LockProbingPaneSink* sink = new LockProbingPaneSink();
+	sink->Bind( f.ctrl );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	Check( f.ctrl->SetPaneSink( 1, sink ), "probing sink installed" );
+
+	// Selecting Last Render publishes the placeholder through the sink.
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"pane 1 becomes a Last Render pane" );
+	Check( sink->Probed(),
+		"w3: the sink was actually invoked (otherwise the oracle proves nothing)" );
+	Check( sink->LockWasFree(),
+		"MONEY (w3): mMutex was FREE during the sink callback (pre-fix the publisher held it across OutputImage)" );
+
+	sink->release();
+}
+
 int main()
 {
 	RunRotationOrderTest();
@@ -2992,6 +3295,10 @@ int main()
 	RunNamedSceneCameraSetterParksRenderTest();
 	RunOutOfRangePaneNavRejectedTest();
 	RunLastRenderPaneSourceTest();
+	RunLostPointerUpWatchdogTest();
+	RunActiveDragSurvivesSlowPassesTest();
+	RunDestructorDoesNotTouchJobTest();
+	RunLastRenderPublishOutsideLockTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

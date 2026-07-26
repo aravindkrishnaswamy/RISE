@@ -825,6 +825,11 @@ SceneEditController::~SceneEditController()
 	// returns the listener is empty, so no further callback can re-enter this
 	// controller while the rest of the dtor (and member destruction) proceeds.
 	mEditor.SetDirtyChangedListener( SceneEditor::DirtyChangedFn() );
+	// Round-8 review P2 fix: mark the teardown BEFORE Stop() so
+	// StopInteractive's orphaned-gesture cleanup skips the mJob-routed
+	// CommitPendingCst* calls -- see mInDestructorTeardown's doc and the
+	// no-mJob NOTE just below.
+	mInDestructorTeardown.store( true, std::memory_order_release );
 	Stop();
 	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
 	// mJob.ClearProgressIfCurrent( &mCancelProgress )) -- this dtor CANNOT touch mJob: several
@@ -889,6 +894,21 @@ SceneEditController::~SceneEditController()
 	{
 		mLastRenderImage->release();
 		mLastRenderImage = nullptr;
+	}
+	// Round-8 review P2 fix: drop any last-render delivery that was recorded
+	// but never drained.  Each entry holds an addref on a sink AND on a
+	// (full-resolution) image, so leaking them would leak both.  Do NOT
+	// deliver here -- a sink outliving the controller is not this dtor's
+	// contract to exercise; releasing is the whole cleanup.  Pure
+	// refcounting, same as every other release above (no mJob access).
+	{
+		std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+		for( size_t i = 0; i < mPendingLastRenderPublishes.size(); ++i )
+		{
+			if( mPendingLastRenderPublishes[i].sink  ) mPendingLastRenderPublishes[i].sink->release();
+			if( mPendingLastRenderPublishes[i].image ) mPendingLastRenderPublishes[i].image->release();
+		}
+		mPendingLastRenderPublishes.clear();
 	}
 	// Inverse-edit rollback holds NO snapshot — a transaction left open
 	// at teardown needs no resource release; the (uncommitted) live edits
@@ -1008,6 +1028,28 @@ void SceneEditController::StopInteractive()
 	// false: property/pointer edits are supported while refinement is paused,
 	// so Pause -> gesture -> lost release -> repeated Stop must sanitize the
 	// interaction before Resume starts a new render thread.
+	// Round-8 review P2 fix: NOT on the destructor path.  Every leg of the
+	// cleanup below reaches mJob -- the CommitPendingCst* calls directly
+	// (CstObjectTransformKind -> a full D2 re-derive), and even EndComposite
+	// via SceneEditor::Apply's `mJob->HasRetainedCstDocument()` probe.  This
+	// dtor CANNOT touch mJob: owners legitimately release the Job first (the
+	// `controller.Stop(); pJob->release();` pattern with a stack controller
+	// destroyed afterwards), so a stale-but-non-null mJob here is precisely
+	// the use-after-free the dtor's NOTE documents.  The cleanup's flag/
+	// composite legs exist to sanitize interaction state for a LATER Start(),
+	// and after destruction there is none.  This also keeps the dtor from
+	// blocking on the admission mutex.
+	// KNOWN COST, not "loses nothing" (review): when the Job OUTLIVES the
+	// controller -- which is the normal shell teardown, e.g. closing a window
+	// mid-gizmo-drag -- the drag's final delta stays in the live scene but is
+	// never routed into the Document, so a later save from that surviving Job
+	// writes the pre-drag value.  This matches pre-T0 behavior (the commit leg
+	// did not exist before 2fe61d6c) and is strictly better than the UAF it
+	// replaces, but the honest fix is an explicit PrepareForDestruction() the
+	// C-ABI destroy shims call while the caller can still vouch that the Job
+	// is alive.  Tracked in docs/gui/OPEN_ITEMS.md.
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return;
+
 	std::unique_lock<std::recursive_mutex> cleanupAdmission(
 		mRenderAdmissionMutex, std::defer_lock );
 	// Admission is held only for the brief claim/refusal transition, never for
@@ -1060,6 +1102,7 @@ void SceneEditController::StopInteractive()
 				mScrubOpenedComposite = false;
 			}
 			mPointerDown.store( false, std::memory_order_release );
+			mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
 			mScrubInProgress.store( false, std::memory_order_release );
 			mGizmoDrag.active = false;
 			SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
@@ -1919,6 +1962,17 @@ void SceneEditController::OnPointerDown( const Point2& px )
 			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 			SwitchToPaneLocked_( mGesturePane );
 		}
+		// Round-8: a fresh gesture is never stale (clear before publishing
+		// mPointerDown so the render thread cannot observe down-and-stale).
+		// Review P1: the activity clock MUST be stamped in this same lock
+		// hold.  It is zero-initialized and NowMs() is steady-clock since
+		// BOOT, so a watchdog read of `NowMs() - 0` is ~1e8 ms -- past any
+		// threshold.  Publishing mPointerDown first and stamping after the
+		// unlock left a two-statement window in which the render thread
+		// could mark the very FIRST gesture of a session stale and silently
+		// kill the drag.
+		mPointerGestureStale.store( false, std::memory_order_release );
+		mLastPointerActivityMs.store( NowMs(), std::memory_order_release );
 		mPointerDown.store( true, std::memory_order_release );
 	}
 	mLastPx = px;
@@ -2128,6 +2182,26 @@ void SceneEditController::OnPointerMove( const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
+	// Round-8: the watchdog declared this gesture abandoned and released the
+	// scheduler pin, so mCurrentPane may no longer be mGesturePane -- the live
+	// camera/scale registers this handler mutates could belong to a sibling.
+	// Refuse rather than apply the delta to the wrong pane; the eventual
+	// pointer-up still finalizes normally, and the next pointer-down starts a
+	// fresh (unstale) gesture.
+	if( mPointerGestureStale.load( std::memory_order_acquire ) ) return;
+
+	// Round-8 review P1 fix: publish pointer activity BEFORE anything that can
+	// block (the render-completion wait below can park here for a whole slow
+	// BeautyVariant/OIDN pass).  The in-flight guard is what covers that park
+	// itself -- see both members' docs.
+	struct PointerMoveInFlightGuard
+	{
+		std::atomic<int>& n;
+		explicit PointerMoveInFlightGuard( std::atomic<int>& c ) : n( c )
+		{ n.fetch_add( 1, std::memory_order_acq_rel ); }
+		~PointerMoveInFlightGuard() { n.fetch_sub( 1, std::memory_order_acq_rel ); }
+	} moveInFlight_( mPointerMovesInFlight );
+	mLastPointerActivityMs.store( NowMs(), std::memory_order_release );
 
 	// Resume-after-pause snap.  If the pointer has been still long
 	// enough that the idle-refinement loop walked the scale toward
@@ -2563,11 +2637,23 @@ void SceneEditController::OnPointerUp( const Point2& px )
 		mGizmoDrag.active = false;
 		SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+		// Review P3: a STALE gesture no longer pins the scheduler, so
+		// mCurrentPane may have rotated away from mGesturePane -- the live
+		// scale/polish registers now belong to a SIBLING.  Writing the
+		// gesture's final-pass polish marker into them would mis-mark that
+		// sibling (exactly the hazard the under-mMutex store above guards
+		// against for the non-stale case).  A stale gesture also already had
+		// its scale restored and its panes re-dirtied by the watchdog, so
+		// there is no owed polish to record: leave the registers alone.
+		const bool staleGesture = mPointerGestureStale.load( std::memory_order_acquire );
 		const PolishState finalState =
-			( wasMotion && !mPreviewScalePinned.load( std::memory_order_acquire ) )
+			( wasMotion && !staleGesture
+			  && !mPreviewScalePinned.load( std::memory_order_acquire ) )
 			? PolishState::FinalRegularRunning : PolishState::None;
-		mPolishState.store( static_cast<int>( finalState ), std::memory_order_release );
+		if( !staleGesture )
+			mPolishState.store( static_cast<int>( finalState ), std::memory_order_release );
 		mPointerDown.store( false, std::memory_order_release );
+		mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
 		mEditPending.store( true, std::memory_order_release );
 		if( mRendering.load( std::memory_order_acquire ) )
 		{
@@ -3231,6 +3317,7 @@ bool SceneEditController::RollbackTransaction()
 	// interaction state too -- otherwise the next pointer move resumes the
 	// rejected gesture outside the (now-closed) transaction.
 	mPointerDown.store( false, std::memory_order_release );
+	mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
 	mGizmoDrag.active = false;
 	mScrubInProgress.store( false, std::memory_order_release );
 	mGestureOpenedComposite = false;   // P1: a mid-gesture rollback also clears the open-composite flag
@@ -5231,6 +5318,15 @@ bool SceneEditController::RunPreviewRenderParked(
 		if( fn ) fn();
 	}
 
+	// Round-8 review P2 fix: a successful completion inside `fn` records the
+	// frame for every Last Render pane (QueueLastRenderPublishLocked_) but
+	// CANNOT deliver it -- mMutex is held for the render's whole duration
+	// here.  Release, then drain, so the delivery does not wait for a UI
+	// frame tick (RefreshProperties' catch-all) and headless/agent embedders
+	// with no frame loop get it at all.
+	lk.unlock();
+	DrainLastRenderPublishes_();
+
 	// Unlock (end of scope) resumes the render loop's normal wait/cycle --
 	// no kick needed: we made no Document/scene edit, so the interactive
 	// loop's own refinement watchdog resumes exactly where it left off.
@@ -5391,6 +5487,13 @@ void SceneEditController::AgentRenderWorkerLoop_()
 			}
 		}   // renderLk released here -- BEFORE the slot is cleared below,
 		    // so mMutex is never held while touching the slot.
+
+		// Round-8 review P2 fix: deliver any Last Render frame this render
+		// recorded.  renderLk (mMutex) is released just above and no other
+		// controller lock is held here, which is exactly this drain's
+		// contract -- the completion site itself could not deliver, since it
+		// runs with mMutex held for the render's whole duration.
+		DrainLastRenderPublishes_();
 
 		// Wake the interactive loop NOW that mAgentRenderBlocksInteractive
 		// is clear -- it may have a pending edit queued up behind the
@@ -7098,6 +7201,37 @@ void SceneEditController::RenderLoop()
 					rotationTick = true;
 				}
 			}
+			// Round-8 pointer-gesture watchdog (see kPointerWatchdogMs).  The
+			// same recovery the scrub arm performs, EXCEPT that mPointerDown
+			// is deliberately left set -- only the pin/suppression are lifted
+			// (mPointerGestureStale's doc explains why clearing the flag here
+			// would strand the gesture's open composite).  Re-checked under
+			// the same lock the pointer paths publish their state with.
+			if( mPointerDown.load( std::memory_order_acquire )
+			 && !mPointerGestureStale.load( std::memory_order_acquire )
+			 // Round-8 review P1 fix: a move parked in this loop's own
+			 // completion wait IS live pointer activity -- never declare a
+			 // gesture abandoned while one is in flight.
+			 && mPointerMovesInFlight.load( std::memory_order_acquire ) == 0 )
+			{
+				// Review P1: <= 0 is an EXPLICIT disable, not a zero
+				// threshold.  The scheduler tests need the watchdog off, and
+				// "a very large number" is not a safe way to say that when the
+				// clock is steady-time-since-boot (a big elapsed value can
+				// exceed any finite threshold before the first stamp lands).
+				const int limitMs = mPointerWatchdogMs.load( std::memory_order_acquire );
+				const long long sincePointerMs =
+					NowMs() - mLastPointerActivityMs.load( std::memory_order_acquire );
+				if( limitMs > 0 && sincePointerMs > limitMs )
+				{
+					mPointerGestureStale.store( true, std::memory_order_release );
+					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					mPolishState.store( static_cast<int>( PolishState::None ),
+					                    std::memory_order_release );
+					MarkAllVisiblePanesDirtyLocked_();
+					rotationTick = true;
+				}
+			}
 		}
 
 		if( !isExplicitEdit && !rotationTick )
@@ -7543,7 +7677,8 @@ void SceneEditController::RenderLoop()
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			const bool gestureActive =
-				mPointerDown.load( std::memory_order_acquire )
+				( mPointerDown.load( std::memory_order_acquire )
+				  && !mPointerGestureStale.load( std::memory_order_acquire ) )
 			 || mScrubInProgress.load( std::memory_order_acquire );
 			if( !gestureActive && AnyVisiblePaneHasWorkLocked_() )
 			{
@@ -7666,6 +7801,15 @@ void SceneEditController::RefreshProperties()
 	// to a one-frame notification delay instead of a lost transition.  Runs
 	// BEFORE the try_lock below, i.e. outside any controller lock.
 	if( !mEditor.DrainDirtyNotification() ) return;
+	// Round-8 review P2 fix: the same per-frame catch-all for deferred
+	// last-render deliveries (QueueLastRenderPublishLocked_).  Placed AFTER
+	// the dirty drain's dead-owner check (that call is what detects a
+	// controller destroyed inside a dirty callback) and BEFORE the
+	// render-owns-scene early return, so a frame captured by a production or
+	// agent render -- whose completion path cannot drain, since it holds
+	// mMutex for the render's whole duration -- still reaches the pane's sink
+	// on the next frame tick.  Takes no controller lock.
+	DrainLastRenderPublishes_( /*blocking*/ false );
 	// External-review P1 (2026-07-22): the row build below reads LIVE scene /
 	// CST / manager state (buildRowsFor across every expanded category --
 	// geometry enumeration, material-slot classification, CST introspection,
@@ -9500,6 +9644,7 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 					}
 					mGizmoDrag.active = false;
 					mPointerDown.store( false, std::memory_order_release );
+					mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
 					if( !propertyScrubActive )
 					{
 						SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
@@ -9693,10 +9838,25 @@ bool SceneEditController::SetPaneContentSource(
 	if( source == PaneContentSource::LastRender )
 	{
 		mPaneRender[pane].dirty = false;
-		PublishLastRenderToSinkLocked_( pane );
+		QueueLastRenderPublishLocked_( pane );
 	}
 	else
 	{
+		// Review P3: drop any still-queued Last Render frame for this pane.
+		// Otherwise a drain could deliver the stale frozen frame AFTER the
+		// pane's first interactive pass, leaving it showing the old render
+		// with dirty already consumed and no further repaint scheduled.
+		{
+			std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+			for( size_t i = 0; i < mPendingLastRenderPublishes.size(); ++i )
+			{
+				if( mPendingLastRenderPublishes[i].pane != pane ) continue;
+				if( mPendingLastRenderPublishes[i].sink  ) mPendingLastRenderPublishes[i].sink->release();
+				if( mPendingLastRenderPublishes[i].image ) mPendingLastRenderPublishes[i].image->release();
+				mPendingLastRenderPublishes.erase( mPendingLastRenderPublishes.begin() + i );
+				break;   // at most one entry per pane (the queue coalesces)
+			}
+		}
 		mPaneRender[pane].configDirty = true;
 		mPaneRender[pane].dirty = true;
 	}
@@ -9706,6 +9866,12 @@ bool SceneEditController::SetPaneContentSource(
 		mPanePassPending.store( true, std::memory_order_release );
 		mCV.notify_one();
 	}
+	// ADR rule 5: deliver with NO controller lock held -- including the
+	// admission lock, which every setter and both render-admission paths take
+	// (holding it across a sink callback is the same hazard as holding mMutex).
+	lk.unlock();
+	admissionLk.unlock();
+	DrainLastRenderPublishes_();
 	return true;
 }
 
@@ -9929,6 +10095,17 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		// one prevents a render from slipping into the lock-release handoff:
 		// any submission that wins before the forward sees pointerDown and
 		// refuses, leaving the pane routing intact.
+		// Round-8: a fresh gesture is never stale (clear before publishing
+		// mPointerDown so the render thread cannot observe down-and-stale).
+		// Review P1: the activity clock MUST be stamped in this same lock
+		// hold.  It is zero-initialized and NowMs() is steady-clock since
+		// BOOT, so a watchdog read of `NowMs() - 0` is ~1e8 ms -- past any
+		// threshold.  Publishing mPointerDown first and stamping after the
+		// unlock left a two-statement window in which the render thread
+		// could mark the very FIRST gesture of a session stale and silently
+		// kill the drag.
+		mPointerGestureStale.store( false, std::memory_order_release );
+		mLastPointerActivityMs.store( NowMs(), std::memory_order_release );
 		mPointerDown.store( true, std::memory_order_release );
 	}
 	OnPointerDown( px );
@@ -10192,8 +10369,11 @@ bool SceneEditController::SetPaneSink( unsigned int pane, IRasterizerOutput* pSi
 	if( pSink
 	 && mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
 	{
-		PublishLastRenderToSinkLocked_( pane );
+		QueueLastRenderPublishLocked_( pane );
 	}
+	lk.unlock();            // ADR rule 5: no controller lock across the sink call
+	admissionLk.unlock();
+	DrainLastRenderPublishes_();
 	return true;
 }
 
@@ -10481,7 +10661,11 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 //! AnyVisiblePaneHasWorkLocked_ before treating the answer as work).
 unsigned int SceneEditController::PickNextVisiblePaneLocked_() const
 {
-	if( mPointerDown.load( std::memory_order_acquire )
+	// Round-8: a STALE pointer gesture (kPointerWatchdogMs) stops pinning, so
+	// the deferred siblings can rotate again; the flag itself stays set until
+	// a real gesture boundary clears it.
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   && !mPointerGestureStale.load( std::memory_order_acquire ) )
 	 || mScrubInProgress.load( std::memory_order_acquire ) )
 	{
 		if( IsInteractivePaneLocked_( mCurrentPane ) ) return mCurrentPane;
@@ -10564,7 +10748,7 @@ bool SceneEditController::AdoptLastRenderImageLocked_( IRasterImage*& image )
 	image = nullptr;
 	for( unsigned int pane = 0; pane < kViewportPaneCount; ++pane ) {
 		if( mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
-			PublishLastRenderToSinkLocked_( pane );
+			QueueLastRenderPublishLocked_( pane );
 	}
 	return true;
 }
@@ -10572,7 +10756,13 @@ bool SceneEditController::AdoptLastRenderImageLocked_( IRasterImage*& image )
 //! REQUIRES mMutex held.  Hidden panes are included: their sinks are
 //! pre-wired by both shells, so the retained image is already present when
 //! a later layout reveal makes the pane visible.
-void SceneEditController::PublishLastRenderToSinkLocked_( unsigned int pane )
+//!
+//! Round-8 review P2 fix: this RECORDS the delivery instead of performing it.
+//! `sink->OutputImage` used to run right here with mMutex held (ADR rule 5
+//! violation + a full per-pixel conversion on the UI thread inside the lock).
+//! Both the sink and the image are addref'd into the queue so neither can be
+//! swapped out from under the drain (SetPaneSink / a newer render completing).
+void SceneEditController::QueueLastRenderPublishLocked_( unsigned int pane )
 {
 	if( pane >= kViewportPaneCount ) return;
 	IRasterizerOutput* sink = ( pane == 0 )
@@ -10581,25 +10771,90 @@ void SceneEditController::PublishLastRenderToSinkLocked_( unsigned int pane )
 		: mPaneRender[pane].paneSink;
 	if( !sink ) return;
 
-	if( mLastRenderImage )
+	IRasterImage* image = mLastRenderImage;
+	if( image )
 	{
-		sink->OutputImage( *mLastRenderImage, nullptr, 0 );
-		return;
+		image->addref();
+	}
+	else
+	{
+		// Honest empty state: overwrite any stale preview pixels with a
+		// transparent 1x1 placeholder until the first full render completes.
+		// Negative alpha is an internal clear sentinel, not coverage:
+		// ViewportShellDisplayAlpha8 maps it to transparent while normal
+		// alpha-0 render pixels retain the viewport's legacy opacity.
+		if( !RISE_API_CreateRISEColorRasterImage(
+				&image, 1, 1, RISEColor( RISEPel( 0, 0, 0 ), -1.0 ) )
+		 || !image )
+			return;   // allocation failed: nothing to deliver
 	}
 
-	// Honest empty state: overwrite any stale preview pixels with a
-	// transparent 1x1 placeholder until the first full render completes.
-	IRasterImage* placeholder = nullptr;
-	if( RISE_API_CreateRISEColorRasterImage(
-			&placeholder, 1, 1,
-			// Negative alpha is an internal clear sentinel, not coverage:
-			// ViewportShellDisplayAlpha8 maps it to transparent while normal
-			// alpha-0 render pixels retain the viewport's legacy opacity.
-			RISEColor( RISEPel( 0, 0, 0 ), -1.0 ) )
-	 && placeholder )
+	PendingLastRenderPublish rec;
+	rec.pane  = pane;
+	rec.sink  = sink;
+	rec.image = image;   // takes the addref above (or the create's initial ref)
+	sink->addref();
+
+	std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+	// Coalesce per pane: only the newest frame is worth delivering, and this
+	// bounds the queue at kViewportPaneCount regardless of drain cadence.
+	for( size_t i = 0; i < mPendingLastRenderPublishes.size(); ++i )
 	{
-		sink->OutputImage( *placeholder, nullptr, 0 );
-		placeholder->release();
+		if( mPendingLastRenderPublishes[i].pane != pane ) continue;
+		if( mPendingLastRenderPublishes[i].sink  ) mPendingLastRenderPublishes[i].sink->release();
+		if( mPendingLastRenderPublishes[i].image ) mPendingLastRenderPublishes[i].image->release();
+		mPendingLastRenderPublishes.erase( mPendingLastRenderPublishes.begin() + i );
+		break;   // at most one entry per pane by this same invariant
+	}
+	mPendingLastRenderPublishes.push_back( rec );
+}
+
+//! Round-8 review P2 fix: deliver queued last-render frames with NO controller
+//! lock held -- the ADR rule-5 half of QueueLastRenderPublishLocked_.
+//! mLastRenderDrainMutex serializes drains so the queue order established
+//! under mMutex is the delivery order; it is never taken while holding mMutex
+//! or mRenderAdmissionMutex, so the lock graph stays acyclic.
+//!
+//! NOT re-entrant: mLastRenderDrainMutex IS held across the sink call, so a
+//! sink that synchronously re-enters a drain site on this thread would
+//! recursively lock a plain std::mutex.  Both shipping sinks marshal
+//! asynchronously (dispatch_async / queued connection), which is the property
+//! this relies on -- stated plainly rather than claimed away, since holding
+//! the mutex is what makes the delivery order total.
+void SceneEditController::DrainLastRenderPublishes_( bool blocking )
+{
+	std::unique_lock<std::mutex> dlk( mLastRenderDrainMutex, std::defer_lock );
+	if( blocking ) dlk.lock();
+	else if( !dlk.try_lock() ) return;   // someone else is delivering; one frame late at worst
+	for(;;)
+	{
+		std::vector<PendingLastRenderPublish> batch;
+		{
+			std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+			if( mPendingLastRenderPublishes.empty() ) return;
+			batch.swap( mPendingLastRenderPublishes );
+		}
+		// Release EVERY entry even if a sink throws: `batch` holds raw
+		// addref'd pointers, so an escaping exception would otherwise leak
+		// both the sink and a full-resolution image for the rest of the batch.
+		struct BatchReleaseGuard
+		{
+			std::vector<PendingLastRenderPublish>& b;
+			~BatchReleaseGuard()
+			{
+				for( size_t i = 0; i < b.size(); ++i )
+				{
+					if( b[i].sink  ) b[i].sink->release();
+					if( b[i].image ) b[i].image->release();
+				}
+				b.clear();
+			}
+		} releaseGuard_{ batch };
+		for( size_t i = 0; i < batch.size(); ++i )
+		{
+			if( batch[i].sink && batch[i].image )
+				batch[i].sink->OutputImage( *batch[i].image, nullptr, 0 );
+		}
 	}
 }
 

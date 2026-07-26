@@ -1790,6 +1790,28 @@ namespace RISE
 			return state == static_cast<int>( PolishState::FinalRegularRunning );
 		}
 
+		//! Round-8 test seam: shorten the pointer-gesture watchdog so the
+		//! regression test does not have to wait kPointerWatchdogMs.
+		void ForTest_SetPointerWatchdogMs( int ms )
+		{
+			mPointerWatchdogMs.store( ms, std::memory_order_release );
+		}
+
+		//! Round-8 test oracle: has the render thread declared the live
+		//! pointer gesture abandoned (see mPointerGestureStale)?
+		bool ForTest_PointerGestureStale() const
+		{
+			return mPointerGestureStale.load( std::memory_order_acquire );
+		}
+
+		//! Round-8 test oracle: the raw pointer-gesture flag.  The watchdog
+		//! must leave this SET while marking the gesture stale, so a late
+		//! pointer-up still finalizes instead of early-returning.
+		bool ForTest_PointerDown() const
+		{
+			return mPointerDown.load( std::memory_order_acquire );
+		}
+
 		//! T0 pause-state oracle setup: arm the current pane's normal
 		//! final-to-polish transition without synthesizing a pointer gesture.
 		void ForTest_ArmFinalRegularPolish()
@@ -3597,12 +3619,95 @@ namespace RISE
 		// recovers within a noticeable beat.
 		static constexpr int        kScrubWatchdogMs = 1500;
 
+		// Pointer-gesture watchdog (round-8 review P2 fix).  T0 made a
+		// completed quantum stop self-arming the rotation while a gesture
+		// pins the scheduler, which is what killed the pinned-pane spin --
+		// but it also means a gesture flag that is never cleared freezes
+		// every sibling pane for good.  That is reachable in a live
+		// session: a shell can DROP the pointer-up (both viewports guard
+		// their pointer handlers on an `interactionEnabled` flag that a
+		// chat/agent render request flips, while the core-side render is
+		// separately REFUSED because a gesture is open -- so no teardown
+		// path runs either).  StopInteractive covers teardown and
+		// kScrubWatchdogMs covers a lost property-End; this covers the
+		// remaining live-session pointer case.  MUCH longer than the scrub
+		// window: a held-still drag is legitimate and common (the user is
+		// looking, not dragging), and the recovery ends that gesture, so
+		// the threshold must be well past any plausible deliberate pause.
+		// SCOPE, stated honestly (review): this restores SIBLING-PANE
+		// ROTATION only.  It does NOT break the render-refusal cycle in the
+		// scenario above -- every admission check keys on raw mPointerDown
+		// and on IsCompositeOpen(), both still true by design (the flag stays
+		// set precisely so a late pointer-up can finalize, and finalizing is
+		// what closes the composite).  Breaking that cycle would mean
+		// finalizing a gesture from the render thread; the frozen-viewport
+		// symptom recovered here is the filed defect.
+		static constexpr int        kPointerWatchdogMs = 10000;
+
+		//! Live threshold for the arm above.  A member (not the constant
+		//! directly) purely so the regression test can shorten it -- a test
+		//! that really waited 10 s would be a 10 s test.  Production never
+		//! writes it.
+		std::atomic<int>            mPointerWatchdogMs { kPointerWatchdogMs };
+
 		// Time of the most recent KickRender (ms since steady-clock
 		// epoch).  Read by the render thread to decide whether the
 		// pointer has been idle long enough to refine.  Read by
 		// OnPointerMove to decide whether to snap scale back up after
 		// a pause.
 		std::atomic<long long>      mLastEditTimeMs;
+
+		// Round-8: set by the render thread's kPointerWatchdogMs arm when a
+		// pointer gesture looks abandoned (see that constant).  A STALE
+		// gesture stops pinning the scheduler and stops suppressing the
+		// end-of-quantum rotation arm, so frozen siblings recover -- but
+		// mPointerDown itself stays TRUE on purpose, so a late-arriving
+		// OnPointerUp still takes its normal finalization path (composite
+		// close + pending-CST commit).  Clearing mPointerDown here instead
+		// would make that pointer-up early-return and strand the open
+		// composite, which blocks agent D2 renders indefinitely.
+		// OnPointerMove refuses while stale (the gesture is over; the live
+		// pane registers may now belong to a different pane, so applying a
+		// delta would orbit the WRONG pane's camera).  Cleared by every
+		// gesture-boundary path: pointer down/up on either entry point,
+		// StopInteractive's orphan cleanup, and the layout-shrink clear.
+		std::atomic<bool>           mPointerGestureStale{ false };
+
+		//! Round-8 review P1 fix: POINTER-ACTIVITY clock for the watchdog
+		//! above -- deliberately NOT mLastEditTimeMs.  That timestamp is
+		//! stamped only AFTER OnPointerMove's render-completion wait
+		//! (`mCV.wait(!mRendering)`) and a successful Apply, so during a slow
+		//! pass it does not advance even while the user is actively dragging.
+		//! On exactly the panes this feature targets -- BeautyVariant, whose
+		//! pinned divisor makes every in-drag quantum a full fixed-spp + OIDN
+		//! pass, and whose denoise is not cancel-interruptible -- a single
+		//! pass can exceed the watchdog window, and gating on mLastEditTimeMs
+		//! would mark a genuinely-live drag stale and silently freeze it.
+		//! Stamped at gesture start and at the TOP of OnPointerMove, before
+		//! any wait.
+		std::atomic<long long>      mLastPointerActivityMs { 0 };
+
+		//! Round-8 review P1 fix: count of OnPointerMove calls currently
+		//! executing (including one parked in the render-completion wait).
+		//! The activity stamp alone is not sufficient: while a long pass runs,
+		//! the UI thread is BLOCKED inside OnPointerMove, so no new stamp can
+		//! arrive, and the loop's watchdog check can win the wake race against
+		//! the unblocked move's own stamp.  A move in flight IS pointer
+		//! activity by definition, so the watchdog stands down while this is
+		//! non-zero.
+		std::atomic<int>            mPointerMovesInFlight { 0 };
+
+		// Round-8 review P2 fix: set by ~SceneEditController BEFORE Stop(),
+		// so StopInteractive's orphaned-gesture cleanup skips its
+		// CommitPendingCst* calls on the destructor path.  Those route
+		// through mJob (CstObjectTransformKind -> a full D2 re-derive), and
+		// this dtor CANNOT touch mJob -- several owners legitimately destroy
+		// the Job first (the `controller.Stop(); pJob->release();` pattern
+		// with a stack controller destroyed afterwards), which is exactly the
+		// use-after-free the dtor's own NOTE documents.  The cleanup exists
+		// to sanitize interaction state for a LATER Start(); on destruction
+		// there is no later Start(), so skipping it loses nothing.
+		std::atomic<bool>           mInDestructorTeardown{ false };
 
 		// Set by RenderLoop before DoOneRenderPass when the upcoming
 		// pass was triggered by an idle-refinement timeout (not by a
@@ -3792,6 +3897,49 @@ namespace RISE
 		//! interactive FrameStores, retained until replacement/teardown.
 		IRasterImage*               mLastRenderImage = nullptr;
 
+		//! Round-8 review P2 fix: deferred last-render sink delivery.  The
+		//! publish used to call `sink->OutputImage` with mMutex HELD, which
+		//! (a) violates ADR rule 5 ("notifications fire outside locks") and
+		//! is a latent deadlock for any future sink that calls back into the
+		//! controller, and (b) ran a full per-pixel conversion on the UI
+		//! thread inside the lock -- a visible hitch at production
+		//! resolutions, blocking every other mMutex caller meanwhile.
+		//! Same shape as the editor's DrainDirtyNotification: RECORD under
+		//! the lock, DRAIN after releasing it, with a per-frame catch-all in
+		//! RefreshProperties so a missed drain site degrades to a one-frame
+		//! delay rather than a lost image.
+		struct PendingLastRenderPublish
+		{
+			IRasterizerOutput* sink  = nullptr;   //!< owning addref
+			IRasterImage*      image = nullptr;   //!< owning addref (the retained frame or a placeholder)
+			unsigned int       pane  = 0;
+		};
+		//! LEAF mutex: guards the queue only.  Acquired while holding mMutex
+		//! (record side) and alone (drain side) -- never the reverse, and no
+		//! other lock is ever taken while it is held.
+		mutable std::mutex          mLastRenderPublishMutex;
+		std::vector<PendingLastRenderPublish> mPendingLastRenderPublishes;
+		//! Serializes DRAINS so queue order (established under mMutex) is the
+		//! delivery order.  Never acquired while holding mMutex.
+		std::mutex                  mLastRenderDrainMutex;
+
+		//! Record a pane's last-render delivery.  REQUIRES mMutex held.
+		//! Coalesces per pane (only the newest frame matters), which also
+		//! bounds the queue at kViewportPaneCount entries.
+		void         QueueLastRenderPublishLocked_( unsigned int pane );
+		//! Deliver every queued frame.  MUST be called with NO controller lock
+		//! held -- including mRenderAdmissionMutex, which the pane setters
+		//! take (holding it across a sink callback is the same ADR rule-5
+		//! hazard as holding mMutex).  Safe to call when the queue is empty
+		//! (the common case).
+		//! `blocking` false = give up if another thread is already delivering.
+		//! The per-frame UI catch-all passes false: RefreshProperties'
+		//! contract is that it NEVER blocks the UI thread (it try_locks mMutex
+		//! for exactly this reason), and a sink's per-pixel conversion of a
+		//! full-resolution frame can hold the drain for tens of ms per pane.
+		//! Missing a drain there costs one frame; blocking costs a stall.
+		void         DrainLastRenderPublishes_( bool blocking = true );
+
 		//! P3a slice 3: the CURRENT pane's surface dims, stamped at the
 		//! mint (inside the same lock hold as the context switch) and read
 		//! by DoOneRenderPass -- registers, like every per-quantum input.
@@ -3834,7 +3982,6 @@ namespace RISE
 		bool         IsInteractivePaneLocked_( unsigned int pane ) const;
 		bool         CaptureLastRenderImageLocked_( const IRasterImage& image );
 		bool         AdoptLastRenderImageLocked_( IRasterImage*& image );
-		void         PublishLastRenderToSinkLocked_( unsigned int pane );
 		//! Mark panes bound to one manager-registered camera for desired-state
 		//! reconcile.  REQUIRES mMutex held; includes hidden panes so a later
 		//! reveal cannot resurrect a stale realized camera.
