@@ -59,9 +59,14 @@ case "$(uname -m)" in
 	*)      die "unsupported architecture: $(uname -m)" ;;
 esac
 
-for tool in curl shasum tar; do
+for tool in curl otool shasum tar; do
 	command -v "${tool}" >/dev/null 2>&1 || die "required command not found: ${tool}"
 done
+
+# The "(compatibility version X" half of an image's own LC_ID_DYLIB.
+dylib_compat_version() {
+	otool -L "$1" | sed -n '2s/.*(\(compatibility version [^,]*\),.*/\1/p'
+}
 
 # Refuse to install a binary that does not correspond to the source
 # revision the repository pins, so the two can never silently diverge.
@@ -88,6 +93,37 @@ echo "==> Unpacking to ${INSTALL_DIR}"
 rm -rf "${INSTALL_DIR}"
 mkdir -p "${INSTALL_DIR}"
 tar xzf "${WORK_DIR}/${TARBALL}" -C "${INSTALL_DIR}" --strip-components=1
+
+# --- oneTBB: one runtime per process ---------------------------------------
+# The binary release is packaged in OIDN's "zip mode", which vendors a private
+# oneTBB next to the libraries. A source build (build.sh) never installs one --
+# it links whatever oneTBB the system provides. RISE always links Homebrew's
+# openpgl, which records an *absolute* dependency on the system oneTBB, so
+# keeping the vendored copy loads two oneTBB runtimes, and two thread pools,
+# into one process. Drop the vendored copy when a compatible system oneTBB is
+# reachable on the same search path RISE's build configs already use; that
+# leaves this install byte-equivalent in behaviour to a build.sh one.
+VENDORED_TBB="${INSTALL_DIR}/lib/libtbb.12.dylib"
+if [ -e "${VENDORED_TBB}" ]; then
+	VENDORED_TBB_ABI="$(dylib_compat_version "${VENDORED_TBB}")"
+	SYSTEM_TBB=""
+	for dir in "$(command -v brew >/dev/null 2>&1 && brew --prefix 2>/dev/null || true)/lib" \
+		/opt/homebrew/lib /usr/local/lib; do
+		[ -f "${dir}/libtbb.12.dylib" ] || continue
+		[ "$(dylib_compat_version "${dir}/libtbb.12.dylib")" = "${VENDORED_TBB_ABI}" ] || continue
+		SYSTEM_TBB="${dir}/libtbb.12.dylib"
+		break
+	done
+	if [ -n "${SYSTEM_TBB}" ]; then
+		rm -f "${INSTALL_DIR}"/lib/libtbb*.dylib
+		echo "==> Dropped the vendored oneTBB (${VENDORED_TBB_ABI})"
+		echo "    OIDN will bind to ${SYSTEM_TBB}, which openpgl already requires,"
+		echo "    so only one TBB runtime is loaded per process."
+	else
+		echo "WARNING: no compatible system oneTBB found; keeping the vendored copy." >&2
+		echo "         If openpgl brings its own, two TBB runtimes will load." >&2
+	fi
+fi
 
 # The whole point of not using the Homebrew bottle: confirm the GPU device
 # module is actually here rather than discovering it at render time.

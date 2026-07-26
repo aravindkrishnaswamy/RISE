@@ -1181,12 +1181,27 @@ from a reviewer, or has its priority moved. Most recent first.
   start without a Metal device module in it, verifies after bundling
   that the module actually landed in `Contents/Frameworks`, and records
   the shipped device backends in `Release-Info.txt`.
-- **oneTBB unification.**  Intel's OIDN distribution vendors its own
-  `libtbb.12.dylib` while Homebrew's openpgl links
-  `/opt/homebrew/opt/tbb/lib/libtbb.12.dylib`.  Both are oneTBB
-  interface 12 (compatibility 12.0.0, current 12.17.0), so the bundler
-  now unifies same-basename libraries whose LC_ID_DYLIB ABI version pair
-  matches — one threading runtime per process — and still hard-fails
+- **oneTBB: one runtime per process.**  Intel's binary release is
+  packaged in OIDN's `OIDN_ZIP_MODE`, which vendors a private
+  `libtbb.12.dylib` next to the libraries and gives every module an
+  `@loader_path/../lib` runpath.  A source build never installs one — it
+  links whatever oneTBB the system provides.  RISE always links
+  Homebrew's openpgl, which records an **absolute** dependency on
+  `/opt/homebrew/opt/tbb/lib/libtbb.12.dylib`, so with the vendored copy
+  in place dyld loaded *two* oneTBB images (verified via
+  `DYLD_PRINT_LIBRARIES`) — two thread pools in one process, and nothing
+  in the link line can redirect an absolute dependency.  The fix is at
+  the install layer, not the link layer: `fetch_prebuilt.sh` drops the
+  vendored copy once it has confirmed a system oneTBB with a matching
+  `compatibility version` is reachable on the search path the build
+  configs already use, so OIDN's `@rpath/libtbb.12.dylib` falls through
+  to the same image openpgl uses.  That makes the prebuilt and
+  source-built installs behave identically and fixes the make build, the
+  Xcode build, and the release at once.  If no compatible system copy
+  exists the vendored one is kept (with a warning) — there is no
+  duplication in that case anyway, because openpgl could not have loaded
+  either.  As a backstop the release bundler also unifies same-basename
+  libraries whose LC_ID_DYLIB ABI version pair matches, and hard-fails
   when the versions differ.
 - Verified by controlled experiment on an M-series host: with the Metal
   module present, a render with `oidn_device gpu` emits no fallback
