@@ -13,7 +13,11 @@
 #include <QImage>
 #include <QMetaObject>
 #include <QPointer>
+#include <QCoreApplication>
+#include <QThreadPool>
 #include <atomic>
+#include <limits>
+#include <memory>
 #include <vector>
 
 #include "RISE_API.h"
@@ -28,6 +32,40 @@
 #include "Agent/AgentRpc.h"
 
 using namespace RISE;
+
+namespace {
+
+template<typename IsCurrent>
+QImage RasterImageToQImage(const IRasterImage& image, IsCurrent&& isCurrent)
+{
+    const unsigned int width = image.GetWidth();
+    const unsigned int height = image.GetHeight();
+    if (width == 0 || height == 0
+        || width > static_cast<unsigned int>(std::numeric_limits<int>::max())
+        || height > static_cast<unsigned int>(std::numeric_limits<int>::max()))
+        return QImage();
+    QImage result(static_cast<int>(width), static_cast<int>(height), QImage::Format_RGBA8888);
+    if (result.isNull()) return QImage();
+    for (unsigned int y = 0; y < height; ++y) {
+        if (!isCurrent()) return QImage();
+        uchar* row = result.scanLine(static_cast<int>(y));
+        for (unsigned int x = 0; x < width; ++x) {
+            const RISEColor c = image.GetPEL(x, y);
+            auto clamp8 = [](double v) -> uchar {
+                if (v <= 0.0) return 0;
+                if (v >= 1.0) return 255;
+                return static_cast<uchar>(v * 255.0 + 0.5);
+            };
+            *row++ = clamp8(c.base.r);
+            *row++ = clamp8(c.base.g);
+            *row++ = clamp8(c.base.b);
+            *row++ = ViewportShellDisplayAlpha8(c);
+        }
+    }
+    return result;
+}
+
+}  // namespace
 
 // =====================================================================
 // ViewportPreviewSink — IRasterizerOutput that converts the final frame
@@ -52,12 +90,29 @@ class ViewportPreviewSink : public IRasterizerOutput,
                             public Implementation::Reference
 {
 public:
-    explicit ViewportPreviewSink(ViewportBridge* bridge) : m_bridge(bridge) {}
-    ~ViewportPreviewSink() override = default;
+    explicit ViewportPreviewSink(ViewportBridge* bridge)
+        : m_bridge(bridge)
+        , m_presentGeneration(std::make_shared<std::atomic<unsigned long long>>(0))
+        , m_lastRenderGeneration(std::make_shared<std::atomic<unsigned long long>>(0)) {}
+    ~ViewportPreviewSink() override {
+        InvalidatePresentation();
+    }
 
     // Borrowed; the bridge keeps the controller alive for the sink's
     // lifetime.  Used to query IsCancelRequested at end-of-pass.
     void SetController(SceneEditController* c) { m_controller = c; }
+    void InvalidatePresentation() {
+        m_presentGeneration->fetch_add(1, std::memory_order_acq_rel);
+        m_lastRenderGeneration->fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    template<typename Fn>
+    bool RunPresentationTransition(Fn&& fn, bool invalidateLastOnSuccess) {
+        const bool ok = fn();
+        if (ok && invalidateLastOnSuccess)
+            m_lastRenderGeneration->fetch_add(1, std::memory_order_acq_rel);
+        return ok;
+    }
 
     // Per-tile callback fires many times per render pass — explicitly
     // ignore so the user doesn't see tile-by-tile fills.
@@ -74,48 +129,68 @@ public:
     // order keeps partial buffers visually usable.
     void OutputImage(const IRasterImage& pImage,
                      const RISE::Rect* /*pRegion*/,
-                     const unsigned int /*frame*/) override {
+                     const unsigned int frame) override {
         if (!m_bridge) return;
         const unsigned int W = pImage.GetWidth();
         const unsigned int H = pImage.GetHeight();
         if (W == 0 || H == 0) return;
-
-        QImage img(static_cast<int>(W), static_cast<int>(H), QImage::Format_RGBA8888);
-
-        for (unsigned int y = 0; y < H; ++y) {
-            uchar* row = img.scanLine(static_cast<int>(y));
-            for (unsigned int x = 0; x < W; ++x) {
-                RISEColor c = pImage.GetPEL(x, y);
-                auto clamp8 = [](double v) -> uchar {
-                    if (v <= 0.0) return 0;
-                    if (v >= 1.0) return 255;
-                    return static_cast<uchar>(v * 255.0 + 0.5);
-                };
-                *row++ = clamp8(c.base.r);
-                *row++ = clamp8(c.base.g);
-                *row++ = clamp8(c.base.b);
-                *row++ = ViewportShellDisplayAlpha8(c);
-            }
-        }
-
-        // Queue a UI-thread emission.  Capture the bridge via QPointer
-        // so the lambda no-ops if the QObject was destroyed between
-        // the worker thread enqueueing this call and the UI thread
-        // running it.  Without QPointer, dereferencing a raw pointer
-        // to a destroyed QObject is undefined behaviour (Qt unhooks
-        // queued events whose receiver dies, but our lambda dereferences
-        // its captured pointer directly, bypassing that protection).
         QPointer<ViewportBridge> guard(m_bridge);
-        QMetaObject::invokeMethod(m_bridge, [guard, img]() {
-            if (ViewportBridge* b = guard.data()) {
-                emit b->imageUpdated(img);
-            }
-        }, Qt::QueuedConnection);
+        const auto generationState = m_presentGeneration;
+        const unsigned long long generation =
+            generationState->load(std::memory_order_acquire);
+        const auto lastRenderState = m_lastRenderGeneration;
+        auto queuePresent = [guard, generationState, generation,
+                             lastRenderState](QImage img,
+                                              unsigned long long lastRenderGeneration) {
+            if (img.isNull()) return;
+            QCoreApplication* app = QCoreApplication::instance();
+            if (!app) return;
+            QMetaObject::invokeMethod(app,
+                [guard, generationState, generation, lastRenderState,
+                 lastRenderGeneration, img]() {
+                    if (generationState->load(std::memory_order_acquire) != generation) return;
+                    if (lastRenderGeneration != 0
+                        && lastRenderState->load(std::memory_order_acquire)
+                           != lastRenderGeneration) return;
+                    if (ViewportBridge* b = guard.data()) emit b->imageUpdated(img);
+                }, Qt::QueuedConnection);
+        };
+        if (frame == SceneEditController::kLastRenderSinkFrame) {
+            const unsigned long long lastRenderGeneration =
+                lastRenderState->fetch_add(1, std::memory_order_acq_rel) + 1;
+            pImage.addref();
+            const IRasterImage* image = &pImage;
+            QThreadPool::globalInstance()->start(
+                [image, generationState, generation, lastRenderState,
+                 lastRenderGeneration, queuePresent]() {
+                    if (generationState->load(std::memory_order_acquire) != generation
+                        || lastRenderState->load(std::memory_order_acquire)
+                           != lastRenderGeneration) {
+                        image->release();
+                        return;
+                    }
+                    QImage converted = RasterImageToQImage(*image, [&]() {
+                        return generationState->load(std::memory_order_acquire) == generation
+                            && lastRenderState->load(std::memory_order_acquire)
+                               == lastRenderGeneration;
+                    });
+                    image->release();
+                    if (generationState->load(std::memory_order_acquire) == generation
+                        && lastRenderState->load(std::memory_order_acquire)
+                           == lastRenderGeneration)
+                        queuePresent(converted, lastRenderGeneration);
+                });
+            return;
+        }
+        lastRenderState->fetch_add(1, std::memory_order_acq_rel);
+        queuePresent(RasterImageToQImage(pImage, [] { return true; }), 0);
     }
 
 private:
     ViewportBridge*      m_bridge = nullptr;
     SceneEditController* m_controller = nullptr;   // borrowed
+    std::shared_ptr<std::atomic<unsigned long long>> m_presentGeneration;
+    std::shared_ptr<std::atomic<unsigned long long>> m_lastRenderGeneration;
 };
 
 // =====================================================================
@@ -133,52 +208,96 @@ class ViewportPaneSink : public IRasterizerOutput,
 {
 public:
     ViewportPaneSink(ViewportBridge* bridge, unsigned int pane)
-        : m_bridge(bridge), m_pane(pane) {}
-    ~ViewportPaneSink() override = default;
+        : m_bridge(bridge)
+        , m_pane(pane)
+        , m_presentGeneration(std::make_shared<std::atomic<unsigned long long>>(0))
+        , m_lastRenderGeneration(std::make_shared<std::atomic<unsigned long long>>(0)) {}
+    ~ViewportPaneSink() override {
+        InvalidatePresentation();
+    }
+
+    void InvalidatePresentation() {
+        m_presentGeneration->fetch_add(1, std::memory_order_acq_rel);
+        m_lastRenderGeneration->fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    template<typename Fn>
+    bool RunPresentationTransition(Fn&& fn, bool invalidateLastOnSuccess) {
+        const bool ok = fn();
+        if (ok && invalidateLastOnSuccess)
+            m_lastRenderGeneration->fetch_add(1, std::memory_order_acq_rel);
+        return ok;
+    }
 
     void OutputIntermediateImage(const IRasterImage& /*pImage*/,
                                  const RISE::Rect* /*pRegion*/) override {}
 
     void OutputImage(const IRasterImage& pImage,
                      const RISE::Rect* /*pRegion*/,
-                     const unsigned int /*frame*/) override {
+                     const unsigned int frame) override {
         if (!m_bridge) return;
         const unsigned int W = pImage.GetWidth();
         const unsigned int H = pImage.GetHeight();
         if (W == 0 || H == 0) return;
 
-        QImage img(static_cast<int>(W), static_cast<int>(H), QImage::Format_RGBA8888);
-
-        for (unsigned int y = 0; y < H; ++y) {
-            uchar* row = img.scanLine(static_cast<int>(y));
-            for (unsigned int x = 0; x < W; ++x) {
-                RISEColor c = pImage.GetPEL(x, y);
-                auto clamp8 = [](double v) -> uchar {
-                    if (v <= 0.0) return 0;
-                    if (v >= 1.0) return 255;
-                    return static_cast<uchar>(v * 255.0 + 0.5);
-                };
-                *row++ = clamp8(c.base.r);
-                *row++ = clamp8(c.base.g);
-                *row++ = clamp8(c.base.b);
-                *row++ = ViewportShellDisplayAlpha8(c);
-            }
-        }
-
-        // Same QPointer-guarded queued emission as ViewportPreviewSink
-        // above; see that class's doc for why the guard is required.
         const unsigned int pane = m_pane;
         QPointer<ViewportBridge> guard(m_bridge);
-        QMetaObject::invokeMethod(m_bridge, [guard, pane, img]() {
-            if (ViewportBridge* b = guard.data()) {
-                emit b->paneImageUpdated(pane, img);
-            }
-        }, Qt::QueuedConnection);
+        const auto generationState = m_presentGeneration;
+        const unsigned long long generation =
+            generationState->load(std::memory_order_acquire);
+        const auto lastRenderState = m_lastRenderGeneration;
+        auto queuePresent = [guard, pane, generationState, generation,
+                             lastRenderState](QImage img,
+                                              unsigned long long lastRenderGeneration) {
+            if (img.isNull()) return;
+            QCoreApplication* app = QCoreApplication::instance();
+            if (!app) return;
+            QMetaObject::invokeMethod(app,
+                [guard, pane, generationState, generation, lastRenderState,
+                 lastRenderGeneration, img]() {
+                    if (generationState->load(std::memory_order_acquire) != generation) return;
+                    if (lastRenderGeneration != 0
+                        && lastRenderState->load(std::memory_order_acquire)
+                           != lastRenderGeneration) return;
+                    if (ViewportBridge* b = guard.data()) emit b->paneImageUpdated(pane, img);
+                }, Qt::QueuedConnection);
+        };
+        if (frame == SceneEditController::kLastRenderSinkFrame) {
+            const unsigned long long lastRenderGeneration =
+                lastRenderState->fetch_add(1, std::memory_order_acq_rel) + 1;
+            pImage.addref();
+            const IRasterImage* image = &pImage;
+            QThreadPool::globalInstance()->start(
+                [image, generationState, generation, lastRenderState,
+                 lastRenderGeneration, queuePresent]() {
+                    if (generationState->load(std::memory_order_acquire) != generation
+                        || lastRenderState->load(std::memory_order_acquire)
+                           != lastRenderGeneration) {
+                        image->release();
+                        return;
+                    }
+                    QImage converted = RasterImageToQImage(*image, [&]() {
+                        return generationState->load(std::memory_order_acquire) == generation
+                            && lastRenderState->load(std::memory_order_acquire)
+                               == lastRenderGeneration;
+                    });
+                    image->release();
+                    if (generationState->load(std::memory_order_acquire) == generation
+                        && lastRenderState->load(std::memory_order_acquire)
+                           == lastRenderGeneration)
+                        queuePresent(converted, lastRenderGeneration);
+                });
+            return;
+        }
+        lastRenderState->fetch_add(1, std::memory_order_acq_rel);
+        queuePresent(RasterImageToQImage(pImage, [] { return true; }), 0);
     }
 
 private:
     ViewportBridge* m_bridge = nullptr;
     unsigned int    m_pane = 0;
+    std::shared_ptr<std::atomic<unsigned long long>> m_presentGeneration;
+    std::shared_ptr<std::atomic<unsigned long long>> m_lastRenderGeneration;
 };
 
 // =====================================================================
@@ -419,6 +538,12 @@ void ViewportBridge::stop()
     // destructor call to the real Stop() retires the agent worker.
     RISE_API_SceneEditController_StopInteractive(m_controller);
     m_running = false;
+}
+
+bool ViewportBridge::finalizeOpenInteractions()
+{
+    return m_controller
+        && RISE_API_SceneEditController_FinalizeOpenInteractions(m_controller);
 }
 
 void ViewportBridge::setTool(ViewportTool t)
@@ -743,8 +868,12 @@ bool ViewportBridge::viewportRenderModeWantsDenoise() const
 bool ViewportBridge::setViewportRenderMode(const QString& name)
 {
     if (!m_controller) return false;
-    return RISE_API_SceneEditController_SetViewportRenderMode(
-        m_controller, name.toUtf8().constData());
+    const auto apply = [&]() {
+        return RISE_API_SceneEditController_SetViewportRenderMode(
+            m_controller, name.toUtf8().constData());
+    };
+    return m_previewSink
+        ? m_previewSink->RunPresentationTransition(apply, true) : apply();
 }
 
 // -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") -----------
@@ -781,8 +910,12 @@ unsigned int ViewportBridge::paneCountForLayout(ViewportLayout layout)
 bool ViewportBridge::setViewportLayout(ViewportLayout layout)
 {
     if (!m_controller) return false;
-    return RISE_API_SceneEditController_SetViewportLayout(
-        m_controller, static_cast<int>(layout));
+    const auto apply = [&]() {
+        return RISE_API_SceneEditController_SetViewportLayout(
+            m_controller, static_cast<int>(layout));
+    };
+    return layout == ViewportLayout::Single && m_previewSink
+        ? m_previewSink->RunPresentationTransition(apply, true) : apply();
 }
 
 ViewportBridge::ViewportLayout ViewportBridge::viewportLayout() const
@@ -812,8 +945,15 @@ unsigned int ViewportBridge::primaryPane() const
 bool ViewportBridge::setPaneRenderMode(unsigned int pane, const QString& name)
 {
     if (!m_controller) return false;
-    return RISE_API_SceneEditController_SetPaneRenderMode(
-        m_controller, pane, name.toUtf8().constData());
+    const auto apply = [&]() {
+        return RISE_API_SceneEditController_SetPaneRenderMode(
+            m_controller, pane, name.toUtf8().constData());
+    };
+    if (pane == 0 && m_previewSink)
+        return m_previewSink->RunPresentationTransition(apply, true);
+    if (pane < kViewportPaneCount && m_paneSinks[pane])
+        return m_paneSinks[pane]->RunPresentationTransition(apply, true);
+    return apply();
 }
 
 QString ViewportBridge::paneRenderMode(unsigned int pane) const
@@ -826,8 +966,16 @@ bool ViewportBridge::setPaneContentSource(
     unsigned int pane, PaneContentSource source)
 {
     if (!m_controller) return false;
-    return RISE_API_SceneEditController_SetPaneContentSource(
-        m_controller, pane, static_cast<int>(source));
+    const auto apply = [&]() {
+        return RISE_API_SceneEditController_SetPaneContentSource(
+            m_controller, pane, static_cast<int>(source));
+    };
+    const bool invalidateLast = source == PaneContentSource::Interactive;
+    if (pane == 0 && m_previewSink)
+        return m_previewSink->RunPresentationTransition(apply, invalidateLast);
+    if (pane < kViewportPaneCount && m_paneSinks[pane])
+        return m_paneSinks[pane]->RunPresentationTransition(apply, invalidateLast);
+    return apply();
 }
 
 ViewportBridge::PaneContentSource

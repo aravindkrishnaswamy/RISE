@@ -326,6 +326,7 @@ struct ViewportView: View {
                 // clears before the render); re-arming after the
                 // render finishes is one click away via the chip.
                 if !newValue {
+                    _ = bridge.finalizeOpenInteractions()
                     regionDragStart = nil
                     regionDragCurrent = nil
                     suppressPointerUntilUp = false

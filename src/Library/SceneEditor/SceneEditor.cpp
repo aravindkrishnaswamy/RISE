@@ -194,7 +194,7 @@ SceneEditor::~SceneEditor()
 {
 	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
 	state->ownerAlive.store( false, std::memory_order_release );
-	SetDirtyChangedListener( DirtyChangedFn() );
+	CloseDirtyChangedListener();
 }
 
 namespace {

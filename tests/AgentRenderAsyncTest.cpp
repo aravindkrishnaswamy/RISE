@@ -4682,8 +4682,9 @@ static void RunLegacyProductionPreservesAgentWorkerTest()
 }
 
 // (z6) A coordinated render and an editor gesture must never overlap.
-// Gesture-first submissions refuse; render-first admission owns a gate that
-// makes pointer/scrub begin no-op until the queued worker completes.
+// Gesture-first submissions atomically finalize the interaction before
+// claiming the render gate; render-first admission makes pointer/scrub begin
+// no-op until the queued worker completes.
 static void RunGestureRenderAdmissionTest()
 {
 	std::printf( "=== AgentRenderAsyncTest: (z6) gestures and coordinated renders exclude each other ===\n" );
@@ -4694,12 +4695,13 @@ static void RunGestureRenderAdmissionTest()
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
 	       "Job loads the gesture-admission scene (z6)" );
 
-	// Gesture wins: every coordinated submission must refuse without
-	// invoking its closure, and ending the gesture closes the composite.
+	// Gesture first: every render boundary must finalize the live interaction,
+	// close its composite, and only then invoke the render closure.
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
 	controller.Start( /*suppressInitialRender=*/true );
 	controller.SetTool( SceneEditController::Tool::OrbitCamera );
-	std::atomic<unsigned int> refusedCalls{ 0 };
+	std::atomic<unsigned int> finalizedRenderCalls{ 0 };
+	std::atomic<unsigned int> finalizationOrderFailures{ 0 };
 	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
 	Check( session != nullptr, "z6: AgentSession wraps the gesture-admission Job" );
 	if( session ) session->AttachController( &controller );
@@ -4707,44 +4709,61 @@ static void RunGestureRenderAdmissionTest()
 	controller.OnPointerDown( Point2( 8.0, 8.0 ) );
 	Check( controller.Editor().IsCompositeOpen(),
 	       "z6: pointer-down opens the camera gesture composite" );
-	Check( !controller.SubmitAgentRenderSync(
-		       [&] { refusedCalls.fetch_add( 1, std::memory_order_acq_rel ); },
+	Check( controller.SubmitAgentRenderSync(
+		       [&] {
+			       if( controller.ForTest_PointerDown()
+			        || controller.Editor().IsCompositeOpen() )
+				       finalizationOrderFailures.fetch_add( 1, std::memory_order_acq_rel );
+			       finalizedRenderCalls.fetch_add( 1, std::memory_order_acq_rel );
+		       },
 		       String( "pointer-gesture-render" ), nullptr, 500 ),
-	       "MONEY (z6): a coordinated render is refused while a pointer gesture is open" );
+	       "MONEY (z6): a coordinated render finalizes an open pointer gesture before running" );
+	Check( !controller.Editor().IsCompositeOpen(),
+	       "MONEY (z6): coordinated render closes the pointer composite before its scene claim" );
 	if( session )
 	{
 		AgentRenderParams withCameraOverride;
 		withCameraOverride.camera.hasLocation = true;
 		withCameraOverride.camera.location = "0 0 4";
 		const AgentRenderResult overrideResult = session->Render( withCameraOverride );
-		Check( !overrideResult.ok,
-		       "MONEY (z6): a direct parked camera-override render is refused while the pointer composite is open" );
-		Check( controller.Editor().IsCompositeOpen(),
-		       "z6: the refused override render leaves the active composite intact for pointer-up" );
+		Check( overrideResult.ok,
+		       "MONEY (z6): a direct parked camera-override render runs after pointer finalization" );
 	}
 	controller.OnPointerUp( Point2( 8.0, 8.0 ) );
 	Check( !controller.Editor().IsCompositeOpen(),
-	       "z6: pointer-up closes the camera gesture composite" );
+	       "z6: a late pointer-up is harmless after render-boundary finalization" );
 
 	controller.OnTimeScrubBegin();
 	Check( controller.Editor().IsCompositeOpen(),
 	       "z6: timeline scrub begin opens its composite" );
-	Check( !controller.SubmitProductionRenderSync(
-		       [&] { refusedCalls.fetch_add( 1, std::memory_order_acq_rel ); },
+	Check( controller.SubmitProductionRenderSync(
+		       [&] {
+			       if( controller.Editor().IsCompositeOpen() )
+				       finalizationOrderFailures.fetch_add( 1, std::memory_order_acq_rel );
+			       finalizedRenderCalls.fetch_add( 1, std::memory_order_acq_rel );
+		       },
 		       String( "timeline-gesture-render" ), nullptr, 500 ),
-	       "MONEY (z6): a production render is refused while a timeline composite is open" );
+	       "MONEY (z6): a production render finalizes an open timeline scrub before running" );
+	Check( !controller.Editor().IsCompositeOpen(),
+	       "MONEY (z6): production render closes the timeline composite before its scene claim" );
 	controller.OnTimeScrubEnd();
 	Check( !controller.Editor().IsCompositeOpen(),
-	       "z6: timeline scrub end closes its composite" );
+	       "z6: a late timeline end is harmless after render-boundary finalization" );
 
 	controller.BeginPropertyScrub();
-	Check( !controller.SubmitAgentRenderSync(
-		       [&] { refusedCalls.fetch_add( 1, std::memory_order_acq_rel ); },
+	Check( controller.SubmitAgentRenderSync(
+		       [&] {
+			       if( controller.ForTest_ScrubInProgress() )
+				       finalizationOrderFailures.fetch_add( 1, std::memory_order_acq_rel );
+			       finalizedRenderCalls.fetch_add( 1, std::memory_order_acq_rel );
+		       },
 		       String( "property-gesture-render" ), nullptr, 500 ),
-	       "MONEY (z6): a coordinated render is refused while a property scrub is active" );
+	       "MONEY (z6): a coordinated render finalizes an active property scrub before running" );
 	controller.EndPropertyScrub();
-	Check( refusedCalls.load( std::memory_order_acquire ) == 0,
-	       "z6: no closure from a gesture-refused render was invoked" );
+	Check( finalizedRenderCalls.load( std::memory_order_acquire ) == 3,
+	       "MONEY (z6): every gesture-first render closure ran exactly once" );
+	Check( finalizationOrderFailures.load( std::memory_order_acquire ) == 0,
+	       "MONEY (z6): every render closure observes its interaction already finalized at closure entry" );
 	if( session ) session->AttachController( nullptr );
 	controller.Stop();
 

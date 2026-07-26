@@ -491,25 +491,71 @@ namespace RISE
 		//! re-setting clears the previous listener.  Pass `nullptr`
 		//! to detach.
 		using DirtyChangedFn = std::function<void(bool hasUnsavedChanges)>;
-		void SetDirtyChangedListener( DirtyChangedFn fn )
+		//! Atomically replace the listener and wait for any copied previous
+		//! callback to quiesce, but RETURN the retired target instead of releasing
+		//! it.  Controller teardown uses this to postpone arbitrary capture
+		//! destructors until its terminal mutation gates are established.
+		DirtyChangedFn ExchangeDirtyChangedListener( DirtyChangedFn fn )
 		{
 			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
-			std::unique_lock<std::mutex> lk( state->mutex );
-			state->listener = std::move( fn );
-			// Replacing/detaching is a quiescence barrier for the PREVIOUS
-			// callback.  Platform listeners capture raw bridge userData, so
-			// returning while another thread still invokes its copied
-			// std::function would let bridge teardown free that pointer first.
-			// A callback may itself destroy the controller/editor; that same
-			// callback thread must not wait for its own return.
-			if( state->callbacksInFlight != 0
-			 && state->callbackThread != std::this_thread::get_id() ) {
-				state->callbackCV.wait( lk, [&] {
-					return state->callbacksInFlight == 0;
-				} );
+			DirtyChangedFn retired;
+			{
+				std::unique_lock<std::mutex> lk( state->mutex );
+				// A std::function target's final destructor is an arbitrary user
+				// callout.  Detach the previous target with swaps so neither its
+				// destruction nor the incoming target's destruction can occur while
+				// the notification mutex is held.
+				if( !state->registrationClosed )
+				{
+					retired.swap( state->listener );
+					state->listener.swap( fn );
+				}
+				// Replacing/detaching is a quiescence barrier for the PREVIOUS
+				// callback.  Platform listeners capture raw bridge userData, so
+				// returning while another thread still invokes its copied
+				// std::function would let bridge teardown free that pointer first.
+				// A callback may itself destroy the controller/editor; that same
+				// callback thread must not wait for its own return.
+				if( state->callbacksInFlight != 0
+				 && state->callbackThread != std::this_thread::get_id() ) {
+					state->callbackCV.wait( lk, [&] {
+						return state->callbacksInFlight == 0;
+					} );
+				}
 			}
 			// Don't fire on attach — the bridge already knows the
 			// initial state (it can call HasUnsavedChanges()).
+			return retired;
+		}
+
+		//! Terminal detach used by controller/editor teardown.  Closing
+		//! registration and removing the stored listener happen under the same
+		//! mutex, so an in-flight callback cannot install a replacement while
+		//! this call releases the mutex inside its quiescence wait.  The retired
+		//! target is returned for release at the caller's safe lifecycle point.
+		DirtyChangedFn CloseDirtyChangedListener()
+		{
+			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+			DirtyChangedFn retired;
+			{
+				std::unique_lock<std::mutex> lk( state->mutex );
+				state->registrationClosed = true;
+				retired.swap( state->listener );
+				if( state->callbacksInFlight != 0
+				 && state->callbackThread != std::this_thread::get_id() ) {
+					state->callbackCV.wait( lk, [&] {
+						return state->callbacksInFlight == 0;
+					} );
+				}
+			}
+			return retired;
+		}
+
+		void SetDirtyChangedListener( DirtyChangedFn fn )
+		{
+			// The returned previous target releases after Exchange has dropped
+			// the notification mutex and completed its callback barrier.
+			ExchangeDirtyChangedListener( std::move( fn ) );
 		}
 
 	private:
@@ -655,6 +701,7 @@ namespace RISE
 		struct DirtyNotificationState
 		{
 			DirtyChangedFn   listener;
+			bool             registrationClosed = false;
 			bool             prevHasUnsavedChanges = false;
 			std::atomic<bool> currentHasUnsavedChanges{ false };
 			std::atomic<bool> pending{ false };

@@ -115,6 +115,11 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// function's doc and SceneEditController::StopInteractive's header doc.
 - (void)stop;
 
+/// Commit and close any controller-owned gesture whose platform release
+/// event is about to be suppressed (for example when a render disables
+/// interaction mid-drag).  Safe to call when no gesture is active.
+- (BOOL)finalizeOpenInteractions;
+
 @property (nonatomic, readonly) BOOL isRunning;
 
 /// Shrink the scene Film so the interactive preview renders at a

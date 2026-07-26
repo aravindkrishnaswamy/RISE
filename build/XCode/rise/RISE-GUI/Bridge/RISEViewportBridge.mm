@@ -177,9 +177,12 @@ public:
     : mBlock( nil )
     , mController( nullptr )
     , mFanoutVFS( nullptr )
+    , mPresentGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
+    , mLastRenderGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
     {}
 
     virtual ~ViewportPreviewSink() {
+        InvalidatePresentation();
         // _block is __strong; nilling on dealloc lets ARC release it.
         mBlock = nil;
         // L5a round-4 — release our addref on the fan-out VFS.
@@ -190,12 +193,30 @@ public:
     }
 
     void SetBlock( RISEViewportImageBlock block ) {
+        InvalidatePresentation();
         mBlock = [block copy];
     }
 
     // Borrowed; the bridge keeps the controller alive for the sink's
     // lifetime.  Used to query IsCancelRequested at end-of-pass.
     void SetController( SceneEditController* c ) { mController = c; }
+
+    // Cancel every queued/background presentation when the block/sink
+    // lifetime changes.  Source setters use RunPresentationTransition below,
+    // which cancels only Last Render work and only after a successful core
+    // transition, preserving every ordinary interactive frame.
+    void InvalidatePresentation() {
+        mPresentGeneration->fetch_add( 1, std::memory_order_acq_rel );
+        mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+    }
+
+    template<typename Fn>
+    bool RunPresentationTransition( Fn&& fn, bool invalidateLastOnSuccess ) {
+        const bool ok = fn();
+        if( ok && invalidateLastOnSuccess )
+            mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+        return ok;
+    }
 
     // L5a round-4 — fan-out target for EDR.  When set, every
     // OutputImage call ALSO drives `vfs->OutputImage(pImage, ...)`,
@@ -273,16 +294,56 @@ public:
         // L5a round-4 — fan into VFS first so EDR mode gets the
         // frame-complete observer fire (which drives the Metal
         // layer present).  Then run the legacy NSImage path.
-        if( mFanoutVFS ) {
+        // Last Render is a retained immutable image, not a live rasterizer
+        // frame-store completion.  Sending its sentinel frame through the
+        // interactive VFS would synchronously convert/present it here and
+        // defeat the background legacy-image path below (and could overwrite
+        // a newer interactive source).  Pane 0 receives the same Last Render
+        // image through its normal block, just like secondary panes.
+        if( mFanoutVFS && frame != SceneEditController::kLastRenderSinkFrame ) {
             mFanoutVFS->OutputImage( pImage, pRegion, frame );
         }
-        BlitWholeAndDispatch( pImage );
+        RISEViewportImageBlock block = mBlock;
+        if( !block ) return;
+        const std::shared_ptr<std::atomic<unsigned long long>> generationState =
+            mPresentGeneration;
+        const unsigned long long generation =
+            generationState->load( std::memory_order_acquire );
+        if( frame == SceneEditController::kLastRenderSinkFrame ) {
+            // The controller's retained Last Render image is immutable and
+            // addref-owned for this delivery.  Keep one reference for the
+            // background conversion so selecting a 4K frame returns to the
+            // UI immediately.  Ordinary interactive buffers remain on the
+            // established synchronous capture path because rasterizers may
+            // reuse them as soon as OutputImage returns.
+            pImage.addref();
+            const IRasterImage* image = &pImage;
+            const std::shared_ptr<std::atomic<unsigned long long>> lastRenderState =
+                mLastRenderGeneration;
+            const unsigned long long lastRenderGeneration =
+                lastRenderState->fetch_add( 1, std::memory_order_acq_rel ) + 1;
+            dispatch_async(
+                dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^{
+                    BlitWholeAndDispatch(
+                        *image, block, generationState, generation,
+                        lastRenderState, lastRenderGeneration );
+                    image->release();
+                } );
+        } else {
+            // Preserve every interactive frame, but supersede any older
+            // background Last Render conversion for this pane.
+            mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+            BlitWholeAndDispatch(
+                pImage, block, generationState, generation, nullptr, 0 );
+        }
     }
 
 private:
     __strong RISEViewportImageBlock                mBlock;
     SceneEditController*                            mController;   // borrowed
     Implementation::ViewportFrameStore*             mFanoutVFS;    // strong (addref'd in SetFanoutVFS)
+    std::shared_ptr<std::atomic<unsigned long long>> mPresentGeneration;
+    std::shared_ptr<std::atomic<unsigned long long>> mLastRenderGeneration;
 
     static unsigned char Clamp8( double v ) {
         if( v <= 0.0 ) return 0;
@@ -290,9 +351,18 @@ private:
         return static_cast<unsigned char>( v * 255.0 + 0.5 );
     }
 
-    void BlitWholeAndDispatch( const IRasterImage& img ) {
-        RISEViewportImageBlock block = mBlock;
-        if( !block ) return;
+    static void BlitWholeAndDispatch(
+        const IRasterImage& img,
+        RISEViewportImageBlock block,
+        const std::shared_ptr<std::atomic<unsigned long long>>& generationState,
+        unsigned long long generation,
+        const std::shared_ptr<std::atomic<unsigned long long>>& lastRenderState,
+        unsigned long long lastRenderGeneration ) {
+        if( !block
+         || generationState->load( std::memory_order_acquire ) != generation
+         || ( lastRenderState
+           && lastRenderState->load( std::memory_order_acquire )
+              != lastRenderGeneration ) ) return;
 
         const unsigned int W = img.GetWidth();
         const unsigned int H = img.GetHeight();
@@ -340,6 +410,14 @@ private:
             // per tile, which was thousands of times).
             unsigned char* p = rep.bitmapData;
             for( unsigned int y = 0; y < H; ++y ) {
+                // A source switch can invalidate an 8K Last Render while
+                // conversion is running.  Stop at the next scanline instead
+                // of burning the remaining CPU/memory bandwidth on pixels
+                // that are guaranteed never to present.
+                if( generationState->load( std::memory_order_acquire ) != generation
+                 || ( lastRenderState
+                   && lastRenderState->load( std::memory_order_acquire )
+                      != lastRenderGeneration ) ) return;
                 for( unsigned int x = 0; x < W; ++x ) {
                     RISEColor c = img.GetPEL( x, y );
                     *p++ = Clamp8( c.base.r );
@@ -349,11 +427,21 @@ private:
                 }
             }
 
+            if( generationState->load( std::memory_order_acquire ) != generation
+             || ( lastRenderState
+               && lastRenderState->load( std::memory_order_acquire )
+                  != lastRenderGeneration ) )
+                return;
+
             NSImage* nsImg = [[NSImage alloc] initWithSize:NSMakeSize(W, H)];
             [nsImg addRepresentation:rep];
 
             dispatch_async( dispatch_get_main_queue(), ^{
-                block( nsImg );
+                if( generationState->load( std::memory_order_acquire ) == generation
+                 && ( !lastRenderState
+                   || lastRenderState->load( std::memory_order_acquire )
+                      == lastRenderGeneration ) )
+                    block( nsImg );
             });
         }
     }
@@ -805,6 +893,11 @@ private:
     _ownsRunning = NO;
 }
 
+- (BOOL)finalizeOpenInteractions {
+    return _controller
+        && RISE_API_SceneEditController_FinalizeOpenInteractions(_controller);
+}
+
 - (void)scaleFilmToFitSurfaceW:(NSUInteger)surfaceW
                        surfaceH:(NSUInteger)surfaceH
                     maxLongEdge:(NSUInteger)maxLongEdge {
@@ -1119,8 +1212,13 @@ private:
 
 - (BOOL)setViewportRenderMode:(NSString *)name {
     if (!_controller || !name) return NO;
-    return RISE_API_SceneEditController_SetViewportRenderMode(
-        _controller, [name UTF8String]) ? YES : NO;
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetViewportRenderMode(
+            _controller, [name UTF8String]);
+    };
+    return ( _previewSink
+        ? _previewSink->RunPresentationTransition( apply, true ) : apply() )
+        ? YES : NO;
 }
 
 #pragma mark - Viewport X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis")
@@ -1150,8 +1248,13 @@ private:
 
 - (BOOL)applyViewportLayout:(RISEViewportLayout)layout {
     if (!_controller) return NO;
-    return RISE_API_SceneEditController_SetViewportLayout(
-        _controller, static_cast<int>(layout)) ? YES : NO;
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetViewportLayout(
+            _controller, static_cast<int>(layout));
+    };
+    return ( layout == RISEViewportLayoutSingle && _previewSink
+        ? _previewSink->RunPresentationTransition( apply, true ) : apply() )
+        ? YES : NO;
 }
 
 - (NSUInteger)primaryPane {
@@ -1175,8 +1278,14 @@ private:
 
 - (BOOL)setPaneRenderMode:(NSUInteger)pane name:(NSString *)name {
     if (!_controller || !name) return NO;
-    return RISE_API_SceneEditController_SetPaneRenderMode(
-        _controller, static_cast<unsigned int>(pane), [name UTF8String]) ? YES : NO;
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetPaneRenderMode(
+            _controller, static_cast<unsigned int>(pane), [name UTF8String]);
+    };
+    ViewportPreviewSink* sink = pane == 0 ? _previewSink
+        : ( pane < 4 ? _paneSinks[pane] : nullptr );
+    return ( sink ? sink->RunPresentationTransition( apply, true ) : apply() )
+        ? YES : NO;
 }
 
 - (RISEViewportPaneContentSource)paneContentSource:(NSUInteger)pane {
@@ -1192,9 +1301,22 @@ private:
 
 - (BOOL)setPaneContentSource:(NSUInteger)pane source:(RISEViewportPaneContentSource)source {
     if (!_controller) return NO;
-    return RISE_API_SceneEditController_SetPaneContentSource(
-        _controller, static_cast<unsigned int>(pane),
-        static_cast<int>(source)) ? YES : NO;
+    // Entering Last Render synchronously calls the sink and advances its own
+    // Last Render ticket.  Leaving it cancels that ticket only if the core
+    // transition succeeds.  The core callback/start barrier orders old frozen
+    // delivery against the source change; the atomic ticket then cancels any
+    // conversion the callback already launched without a cross-layer lock.
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetPaneContentSource(
+            _controller, static_cast<unsigned int>(pane),
+            static_cast<int>(source));
+    };
+    ViewportPreviewSink* sink = pane == 0 ? _previewSink
+        : ( pane < 4 ? _paneSinks[pane] : nullptr );
+    const bool invalidateLast = source == RISEViewportPaneContentInteractive;
+    return ( sink
+        ? sink->RunPresentationTransition( apply, invalidateLast ) : apply() )
+        ? YES : NO;
 }
 
 - (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane {

@@ -7354,7 +7354,37 @@ namespace RISE
 
 	void RISE_API_DestroySceneEditController( SceneEditController* p )
 	{
+		if( !p ) return;
+		if( p->IsRawDestructionInProgress() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: a raw destructor already owns this controller; recursive destruction is rejected." );
+			return;
+		}
+		if( p->IsInLastRenderSinkCallbackOnThisThread() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: destruction from a Last Render sink callback/final release is rejected; return from the callout and destroy from the owner thread." );
+			return;
+		}
+		// Reserve BOTH preparation and the eventual delete before entering any
+		// drain/listener wait.  A dirty callback may call Destroy while an owner
+		// is waiting for it; only the lifecycle claimant may proceed to delete.
+		if( !p->PrepareForDestructionForDelete() ) return;
 		delete p;
+	}
+
+	bool RISE_API_SceneEditController_PrepareForDestruction(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->PrepareForDestruction();
+	}
+
+	bool RISE_API_SceneEditController_FinalizeOpenInteractions(
+		SceneEditController* p )
+	{
+		return p && p->FinalizeOpenInteractions();
 	}
 
 	bool RISE_API_SceneEditController_Start( SceneEditController* p )

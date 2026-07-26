@@ -192,6 +192,11 @@ void ViewportWidget::setSceneEditable(bool editable)
         if (chrome.vantageBtn) chrome.vantageBtn->setEnabled(editable);
     }
     if (!editable) {
+        // The matching mouse release is deliberately suppressed below while
+        // a render owns interaction. Finalize the core gesture first so its
+        // live delta reaches the Document and render admission is not left
+        // blocked by an orphaned composite.
+        if (m_bridge) m_bridge->finalizeOpenInteractions();
         // A render now owns the scene: cancel any armed / in-progress region
         // interaction so a mid-render release can't commit it
         // (setInteractiveRegion -> KickRender -> mMutex) and it doesn't linger

@@ -45,6 +45,7 @@
 	#include <unistd.h>			// getpid()
 #endif
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 using namespace RISE;
@@ -116,6 +117,28 @@ public:
 			[&]{ return mSeq.size() >= count; } );
 	}
 
+	bool WaitForCompletedPassCount( std::size_t count, unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mSeqMutex );
+		return mSeqCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mCompletedPasses >= count; } );
+	}
+
+	bool WaitForPaneVantage( unsigned int pane,
+		SceneEditController::PaneVantageKind expected,
+		String& outName, unsigned int timeoutMs )
+	{
+		const auto deadline = std::chrono::steady_clock::now()
+			+ std::chrono::milliseconds( timeoutMs );
+		do {
+			SceneEditController::PaneVantageKind actual;
+			if( GetPaneVantage( pane, actual, outName ) && actual == expected )
+				return true;
+			std::this_thread::yield();
+		} while( std::chrono::steady_clock::now() < deadline );
+		return false;
+	}
+
 	//! True when NO further pass lands within `settleMs` -- rotation
 	//! quiescence.  (A sleeping loop stays asleep; a runaway one keeps
 	//! appending and fails this.)
@@ -128,8 +151,18 @@ public:
 
 	void ClearSequence()
 	{
-		std::lock_guard<std::mutex> lk( mSeqMutex );
+		std::unique_lock<std::mutex> lk( mSeqMutex );
+		// DoOneRenderPass records at entry, while retirement (including output
+		// detachment and mRendering=false publication) happens later.  A phase
+		// reset must not erase an active pass and let its retirement/next quantum
+		// leak into the new accounting window.
+		const bool retired = mSeqCV.wait_for(
+			lk, std::chrono::milliseconds( 4000 ), [&] {
+			return mCompletedPasses >= mSeq.size();
+		} );
+		if( !retired ) return;   // preserve evidence; the next phase must fail
 		mSeq.clear();
+		mCompletedPasses = 0;
 	}
 
 	void SetSlowPassMs( unsigned int ms )
@@ -183,6 +216,135 @@ public:
 		mSaveGateCV.notify_all();
 	}
 
+	void ArmPointerMoveAdmissionInterleaving()
+	{
+		std::lock_guard<std::mutex> lk( mMoveGateMutex );
+		mMoveGateArmed = true;
+		mMoveGateReached = false;
+		mReleaseMoveGate = false;
+	}
+
+	void ArmPointerDownAdmissionInterleaving()
+	{
+		std::lock_guard<std::mutex> lk( mDownGateMutex );
+		mDownGateArmed = true;
+		mDownGateReached = false;
+		mReleaseDownGate = false;
+	}
+
+	bool WaitForPointerDownAdmission( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mDownGateMutex );
+		return mDownGateCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mDownGateReached; } );
+	}
+
+	void ReleasePointerDownAdmission()
+	{
+		std::lock_guard<std::mutex> lk( mDownGateMutex );
+		mReleaseDownGate = true;
+		mDownGateArmed = false;
+		mDownGateCV.notify_all();
+	}
+
+	bool WaitForPointerMoveAdmission( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mMoveGateMutex );
+		return mMoveGateCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mMoveGateReached; } );
+	}
+
+	void ReleasePointerMoveAdmission()
+	{
+		std::lock_guard<std::mutex> lk( mMoveGateMutex );
+		mReleaseMoveGate = true;
+		mMoveGateArmed = false;
+		mMoveGateCV.notify_all();
+	}
+
+	void ArmLastRenderDrainRegistration()
+	{
+		std::lock_guard<std::mutex> lk( mDrainGateMutex );
+		mDrainGateArmed = true;
+		mDrainGateReached = false;
+		mReleaseDrainGate = false;
+		mQuiesceReached = false;
+	}
+
+	bool WaitForLastRenderDrainRegistration( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mDrainGateMutex );
+		return mDrainGateCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mDrainGateReached; } );
+	}
+
+	void ReleaseLastRenderDrainRegistration()
+	{
+		std::lock_guard<std::mutex> lk( mDrainGateMutex );
+		mReleaseDrainGate = true;
+		mDrainGateArmed = false;
+		mDrainGateCV.notify_all();
+	}
+
+	void ArmRenderAdmissionAttempt()
+	{
+		std::lock_guard<std::mutex> lk( mRenderAttemptMutex );
+		mRenderAttemptArmed = true;
+		mRenderAttemptReached = false;
+	}
+
+	bool WaitForRenderAdmissionAttempt( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mRenderAttemptMutex );
+		return mRenderAttemptCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mRenderAttemptReached; } );
+	}
+
+	void ArmLastRenderTransitionAttempt( unsigned int pane )
+	{
+		std::lock_guard<std::mutex> lk( mLastRenderAttemptMutex );
+		mLastRenderAttemptPane = pane;
+		mLastRenderAttemptReached = false;
+	}
+
+	bool WaitForLastRenderTransitionAttempt( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mLastRenderAttemptMutex );
+		return mLastRenderAttemptCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mLastRenderAttemptReached; } );
+	}
+
+	bool WaitForLastRenderQuiesce( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mDrainGateMutex );
+		return mDrainGateCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mQuiesceReached; } );
+	}
+
+	void ArmOutputDetachGate( unsigned int pane )
+	{
+		std::lock_guard<std::mutex> lk( mOutputDetachMutex );
+		mOutputDetachPane = pane;
+		mOutputDetachArmed = true;
+		mOutputDetachReached = false;
+		mReleaseOutputDetach = false;
+	}
+
+	bool WaitForOutputDetachGate( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mOutputDetachMutex );
+		return mOutputDetachCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mOutputDetachReached; } );
+	}
+
+	void ReleaseOutputDetachGate()
+	{
+		std::lock_guard<std::mutex> lk( mOutputDetachMutex );
+		mReleaseOutputDetach = true;
+		mOutputDetachArmed = false;
+		mOutputDetachCV.notify_all();
+	}
+
 protected:
 	void DoOneRenderPass() override
 	{
@@ -213,6 +375,23 @@ protected:
 		}
 	}
 
+	void ForTest_OnInteractivePassRetired() override
+	{
+		std::lock_guard<std::mutex> lk( mSeqMutex );
+		++mCompletedPasses;
+		mSeqCV.notify_all();
+	}
+
+	void ForTest_OnInteractivePassBeforeOutputDetach() override
+	{
+		std::unique_lock<std::mutex> lk( mOutputDetachMutex );
+		if( !mOutputDetachArmed || ForTest_CurrentPane() != mOutputDetachPane ) return;
+		mOutputDetachReached = true;
+		mOutputDetachCV.notify_all();
+		mOutputDetachCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mReleaseOutputDetach || !mOutputDetachArmed; } );
+	}
+
 	void ForTest_OnInteractivePassMinted() override
 	{
 		std::unique_lock<std::mutex> lk( mGateMutex );
@@ -233,6 +412,77 @@ protected:
 			[&]{ return mMintObserved; } );
 	}
 
+	void ForTest_OnPointerMoveAdmitted() override
+	{
+		std::unique_lock<std::mutex> lk( mMoveGateMutex );
+		if( !mMoveGateArmed ) return;
+		mMoveGateReached = true;
+		mMoveGateCV.notify_all();
+		mMoveGateCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mReleaseMoveGate || !mMoveGateArmed; } );
+	}
+
+	void ForTest_OnPointerDownAdmitted() override
+	{
+		std::unique_lock<std::mutex> lk( mDownGateMutex );
+		if( !mDownGateArmed ) return;
+		mDownGateReached = true;
+		mDownGateCV.notify_all();
+		mDownGateCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mReleaseDownGate || !mDownGateArmed; } );
+	}
+
+	void ForTest_OnTimeScrubBeginAdmitted() override
+	{
+		std::unique_lock<std::mutex> lk( mDownGateMutex );
+		if( !mDownGateArmed ) return;
+		mDownGateReached = true;
+		mDownGateCV.notify_all();
+		mDownGateCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mReleaseDownGate || !mDownGateArmed; } );
+	}
+
+	void ForTest_OnLastRenderDrainRegistered() override
+	{
+		std::unique_lock<std::mutex> lk( mDrainGateMutex );
+		if( !mDrainGateArmed ) return;
+		mDrainGateReached = true;
+		mDrainGateCV.notify_all();
+		mDrainGateCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mReleaseDrainGate || !mDrainGateArmed; } );
+	}
+
+	void ForTest_OnLastRenderQuiesceStarted() override
+	{
+		std::lock_guard<std::mutex> lk( mDrainGateMutex );
+		mQuiesceReached = true;
+		mDrainGateCV.notify_all();
+	}
+
+	void ForTest_OnAgentWorkerAboutToParkRender() override
+	{
+		std::lock_guard<std::mutex> lk( mRenderAttemptMutex );
+		if( !mRenderAttemptArmed ) return;
+		mRenderAttemptReached = true;
+		mRenderAttemptCV.notify_all();
+	}
+
+	void ForTest_OnCoordinatedRenderAdmissionAttempt() override
+	{
+		std::lock_guard<std::mutex> lk( mRenderAttemptMutex );
+		if( !mRenderAttemptArmed ) return;
+		mRenderAttemptReached = true;
+		mRenderAttemptCV.notify_all();
+	}
+
+	void ForTest_OnLastRenderTransitionAttempt( unsigned int pane ) override
+	{
+		std::lock_guard<std::mutex> lk( mLastRenderAttemptMutex );
+		if( pane != mLastRenderAttemptPane ) return;
+		mLastRenderAttemptReached = true;
+		mLastRenderAttemptCV.notify_all();
+	}
+
 	void ForTest_OnSaveEngineAboutToRun() override
 	{
 		std::unique_lock<std::mutex> lk( mSaveGateMutex );
@@ -247,6 +497,7 @@ private:
 	mutable std::mutex          mSeqMutex;
 	std::condition_variable     mSeqCV;
 	std::vector<unsigned int>   mSeq;
+	std::size_t                 mCompletedPasses = 0;
 	bool                        mRunRealPass = false;
 	std::atomic<unsigned int>   mSlowPassMs { 0 };
 	std::mutex                  mGateMutex;
@@ -259,6 +510,36 @@ private:
 	bool                        mSaveGateArmed = false;
 	bool                        mSaveGateReached = false;
 	bool                        mReleaseSaveGate = false;
+	std::mutex                  mMoveGateMutex;
+	std::condition_variable     mMoveGateCV;
+	bool                        mMoveGateArmed = false;
+	bool                        mMoveGateReached = false;
+	bool                        mReleaseMoveGate = false;
+	std::mutex                  mDownGateMutex;
+	std::condition_variable     mDownGateCV;
+	bool                        mDownGateArmed = false;
+	bool                        mDownGateReached = false;
+	bool                        mReleaseDownGate = false;
+	std::mutex                  mDrainGateMutex;
+	std::condition_variable     mDrainGateCV;
+	bool                        mDrainGateArmed = false;
+	bool                        mDrainGateReached = false;
+	bool                        mReleaseDrainGate = false;
+	bool                        mQuiesceReached = false;
+	std::mutex                  mOutputDetachMutex;
+	std::condition_variable     mOutputDetachCV;
+	unsigned int                mOutputDetachPane = 0;
+	bool                        mOutputDetachArmed = false;
+	bool                        mOutputDetachReached = false;
+	bool                        mReleaseOutputDetach = false;
+	std::mutex                  mRenderAttemptMutex;
+	std::condition_variable     mRenderAttemptCV;
+	bool                        mRenderAttemptArmed = false;
+	bool                        mRenderAttemptReached = false;
+	std::mutex                  mLastRenderAttemptMutex;
+	std::condition_variable     mLastRenderAttemptCV;
+	unsigned int                mLastRenderAttemptPane = ~0u;
+	bool                        mLastRenderAttemptReached = false;
 };
 
 class RecordingPaneSink
@@ -284,6 +565,15 @@ public:
 		return mHeight;
 	}
 
+	bool WaitForDimensions( unsigned int width, unsigned int height,
+		unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		return mCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ), [&]{
+			return mWidth == width && mHeight == height;
+		} );
+	}
+
 	RISEColor FirstPixel() const
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
@@ -301,6 +591,7 @@ public:
 		mFirstPixel = ( mWidth && mHeight )
 			? image.GetPEL( 0, 0 ) : RISEColor();
 		++mCount;
+		mCV.notify_all();
 	}
 
 protected:
@@ -308,10 +599,323 @@ protected:
 
 private:
 	mutable std::mutex mMutex;
+	std::condition_variable mCV;
 	unsigned int       mCount = 0;
 	unsigned int       mWidth = 0;
 	unsigned int       mHeight = 0;
 	RISEColor           mFirstPixel;
+};
+
+class BlockingPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	bool Entered() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mEntered;
+	}
+	bool WaitUntilEntered( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		return mCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mEntered; } );
+	}
+
+	void Release()
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mReleased = true;
+		mCV.notify_all();
+	}
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		mEntered = true;
+		mCV.notify_all();
+		mCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&]{ return mReleased; } );
+	}
+
+protected:
+	~BlockingPaneSink() override = default;
+
+private:
+	mutable std::mutex      mMutex;
+	std::condition_variable mCV;
+	bool                    mEntered = false;
+	bool                    mReleased = false;
+};
+
+class ThrowingPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	explicit ThrowingPaneSink( bool throwUnknown = false )
+		: mThrowUnknown( throwUnknown ) {}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		if( mThrowUnknown ) throw 17;
+		throw std::runtime_error( "intentional Last Render sink failure" );
+	}
+protected:
+	~ThrowingPaneSink() override = default;
+private:
+	bool mThrowUnknown;
+};
+
+class DrainBlockingPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	void Arm()
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mArmed = true;
+		mEntered = false;
+		mRelease = false;
+	}
+	bool WaitUntilEntered( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		return mCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&] { return mEntered; } );
+	}
+	void Release()
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mRelease = true;
+		mArmed = false;
+		mCV.notify_all();
+	}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( !mArmed ) return;
+		mEntered = true;
+		mCV.notify_all();
+		mCV.wait_for( lk, std::chrono::milliseconds( 4000 ),
+			[&] { return mRelease || !mArmed; } );
+	}
+protected:
+	~DrainBlockingPaneSink() override = default;
+private:
+	std::mutex mMutex;
+	std::condition_variable mCV;
+	bool mArmed = false;
+	bool mEntered = false;
+	bool mRelease = false;
+};
+
+class ReentrantPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	enum class Action { RegisterSelf, FreezeOther, RegisterOtherSink, StopController, PrepareController };
+	ReentrantPaneSink( Action action, unsigned int pane, unsigned int otherPane )
+		: mAction( action ), mPane( pane ), mOtherPane( otherPane ) {}
+	void Bind( SceneEditController* ctrl, IRasterizerOutput* otherSink = nullptr )
+	{
+		mCtrl = ctrl;
+		mOtherSink = otherSink;
+	}
+	unsigned int Count() const { return mCount.load( std::memory_order_acquire ); }
+	bool ActionSucceeded() const { return mActionSucceeded.load( std::memory_order_acquire ); }
+	void Arm() { mArmed.store( true, std::memory_order_release ); }
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		mCount.fetch_add( 1, std::memory_order_acq_rel );
+		if( mAction == Action::StopController )
+		{
+			if( mArmed.load( std::memory_order_acquire ) )
+			{
+				mCtrl->Stop();
+				mActionSucceeded.store( true, std::memory_order_release );
+			}
+			return;
+		}
+		if( mAction == Action::PrepareController )
+		{
+			if( mArmed.load( std::memory_order_acquire ) )
+			{
+				mActionSucceeded.store(
+					!mCtrl->PrepareForDestruction(), std::memory_order_release );
+			}
+			return;
+		}
+		bool ok = false;
+		if( mAction == Action::RegisterSelf )
+			ok = mCtrl->SetPaneSink( mPane, this );
+		else if( mAction == Action::FreezeOther )
+			ok = mCtrl->SetPaneContentSource(
+				mOtherPane, SceneEditController::PaneContentSource::LastRender );
+		else
+			ok = mCtrl->SetPaneSink( mOtherPane, mOtherSink );
+		mActionSucceeded.store( ok, std::memory_order_release );
+	}
+
+protected:
+	~ReentrantPaneSink() override = default;
+
+private:
+	Action                    mAction;
+	unsigned int              mPane;
+	unsigned int              mOtherPane;
+	SceneEditController*      mCtrl = nullptr;
+	IRasterizerOutput*        mOtherSink = nullptr;
+	std::atomic<unsigned int> mCount { 0 };
+	std::atomic<bool>         mActionSucceeded { false };
+	std::atomic<bool>         mArmed { false };
+};
+
+class DestroyingPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	void Bind( SceneEditController* ctrl ) { mCtrl = ctrl; }
+	bool DestroyReturned() const { return mDestroyReturned.load( std::memory_order_acquire ); }
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		if( mDestroyStarted.exchange( true, std::memory_order_acq_rel ) ) return;
+		RISE_API_DestroySceneEditController( mCtrl );
+		mDestroyReturned.store( true, std::memory_order_release );
+	}
+protected:
+	~DestroyingPaneSink() override = default;
+private:
+	SceneEditController* mCtrl = nullptr;
+	std::atomic<bool> mDestroyStarted { false };
+	std::atomic<bool> mDestroyReturned { false };
+};
+
+struct DestructorDestroyState
+{
+	std::atomic<bool> detached { false };
+	std::atomic<bool> destructorDestroyReturned { false };
+};
+
+struct DestructorReentryState
+{
+	std::atomic<bool> destructorRan { false };
+	std::atomic<bool> setterReturned { false };
+};
+
+class DestructorReenteringPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	DestructorReenteringPaneSink( SceneEditController* ctrl, unsigned int pane,
+		std::shared_ptr<DestructorReentryState> state, bool shrinkLayout = false )
+		: mCtrl( ctrl ), mPane( pane ), mState( std::move( state ) )
+		, mShrinkLayout( shrinkLayout ) {}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override {}
+protected:
+	~DestructorReenteringPaneSink() override
+	{
+		// Redundant deregistration is representative owner cleanup and exercises
+		// ordinary controller re-entry, not the explicit lifecycle rejection path.
+		const bool returned = mShrinkLayout
+			? mCtrl->SetViewportLayout( SceneEditController::ViewportLayout::Single )
+			: mCtrl->SetPaneSink( mPane, nullptr );
+		mState->setterReturned.store( returned, std::memory_order_release );
+		mState->destructorRan.store( true, std::memory_order_release );
+	}
+private:
+	SceneEditController* mCtrl;
+	unsigned int mPane;
+	std::shared_ptr<DestructorReentryState> mState;
+	bool mShrinkLayout;
+};
+
+class DestructorQueuesLastRenderPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	DestructorQueuesLastRenderPaneSink( SceneEditController* ctrl,
+		unsigned int targetPane, std::shared_ptr<DestructorReentryState> state )
+		: mCtrl( ctrl ), mTargetPane( targetPane ), mState( std::move( state ) ) {}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override {}
+protected:
+	~DestructorQueuesLastRenderPaneSink() override
+	{
+		mState->setterReturned.store(
+			mCtrl->SetPaneContentSource(
+				mTargetPane, SceneEditController::PaneContentSource::LastRender ),
+			std::memory_order_release );
+		mState->destructorRan.store( true, std::memory_order_release );
+	}
+private:
+	SceneEditController* mCtrl;
+	unsigned int mTargetPane;
+	std::shared_ptr<DestructorReentryState> mState;
+};
+
+class DestructorRollsBackTransactionPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	DestructorRollsBackTransactionPaneSink( SceneEditController* ctrl,
+		std::shared_ptr<DestructorReentryState> state )
+		: mCtrl( ctrl ), mState( std::move( state ) ) {}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override {}
+protected:
+	~DestructorRollsBackTransactionPaneSink() override
+	{
+		mState->setterReturned.store(
+			mCtrl->RollbackTransaction(), std::memory_order_release );
+		mState->destructorRan.store( true, std::memory_order_release );
+	}
+private:
+	SceneEditController* mCtrl;
+	std::shared_ptr<DestructorReentryState> mState;
+};
+
+class DestructorDestroyingPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	DestructorDestroyingPaneSink( SceneEditController* ctrl, unsigned int pane,
+		std::shared_ptr<DestructorDestroyState> state )
+		: mCtrl( ctrl ), mPane( pane ), mState( std::move( state ) ) {}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		if( mDetached ) return;
+		mDetached = true;
+		mState->detached.store(
+			mCtrl->SetPaneSink( mPane, nullptr ), std::memory_order_release );
+	}
+protected:
+	~DestructorDestroyingPaneSink() override
+	{
+		RISE_API_DestroySceneEditController( mCtrl );
+		mState->destructorDestroyReturned.store( true, std::memory_order_release );
+	}
+private:
+	SceneEditController* mCtrl;
+	unsigned int mPane;
+	std::shared_ptr<DestructorDestroyState> mState;
+	bool mDetached = false;
 };
 
 struct Fixture
@@ -686,7 +1290,17 @@ static void RunVariantPropertyScrubRecoveryTest()
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial TwoH rotation completes" );
-	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "initial rotation settles" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
+	{
+		const std::vector<unsigned int> initial = f.ctrl->Sequence();
+		bool saw0 = false, saw1 = false;
+		for( std::size_t i = 0; i < initial.size(); ++i ) {
+			if( initial[i] == 0 ) saw0 = true;
+			if( initial[i] == 1 ) saw1 = true;
+		}
+		Check( saw0 && saw1 && f.ctrl->SettlesAt( initial.size(), kSettleMs ),
+		       "initial rotation covers both panes and quiesces" );
+	}
 	f.ctrl->ClearSequence();
 	Check( f.ctrl->SetPaneRenderMode( 1, "indirect" ),
 	       "current pane 1 switches to indirect" );
@@ -991,16 +1605,17 @@ static void RunSingleLayoutBaselineTest()
 
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
-	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "the edit's single pass lands" );
+	Check( f.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
+		"the edit's single pass retires" );
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
+	       "MONEY ASSERTION (d): ONE pass per edit -- the pane machinery adds no extra passes in "
+	       "Single layout (byte-identical single-viewport behaviour)" );
 	const std::vector<unsigned int> seq = f.ctrl->Sequence();
 	bool allPane0 = !seq.empty();
 	for( std::size_t i = 0; i < seq.size(); ++i ) {
 		if( seq[i] != 0 ) allPane0 = false;
 	}
 	Check( allPane0, "every pass is pane 0" );
-	Check( f.ctrl->SettlesAt( seq.size(), kSettleMs ),
-	       "MONEY ASSERTION (d): ONE pass per edit -- the pane machinery adds no extra passes in "
-	       "Single layout (byte-identical single-viewport behaviour)" );
 }
 
 //----------------------------------------------------------------------
@@ -1020,7 +1635,10 @@ static void RunHiddenPaneNeverRendersTest()
 
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
-	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "the two VISIBLE panes render" );
+	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+		"the two VISIBLE pane passes retire" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ),
+		"rotation quiesces at the visible-pane count" );
 	const std::vector<unsigned int> seq = f.ctrl->Sequence();
 	bool sawHidden = false;
 	for( std::size_t i = 0; i < seq.size(); ++i ) {
@@ -1028,7 +1646,6 @@ static void RunHiddenPaneNeverRendersTest()
 	}
 	Check( !sawHidden,
 	       "MONEY ASSERTION (e): panes 2/3 (hidden by the shrink) never render, dirty or not" );
-	Check( f.ctrl->SettlesAt( seq.size(), kSettleMs ), "rotation quiesces at the visible-pane count" );
 }
 
 //----------------------------------------------------------------------
@@ -1123,7 +1740,10 @@ static void RunPaneIndexedGestureTest()
 	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
-	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
+	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+		"initial rotation retires both visible-pane passes" );
+	Check( f.ctrl->SettlesAt( 2, kSettleMs ),
+		"initial rotation quiesces before gesture accounting starts" );
 	f.ctrl->ClearSequence();
 
 	// Scene-camera pose BEFORE the secondary-pane fly (free-fly is not
@@ -1172,7 +1792,11 @@ static void RunPaneIndexedGestureTest()
 	Check( f.ctrl->OnPanePointerUp( 1, Point2( 60, 34 ) ), "pane-indexed Up accepted" );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 	       "orbit release drains its two-pane final/polish sequence" );
-	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "orbit release sequence quiesces" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
+	const std::size_t orbitReleaseCount = f.ctrl->Sequence().size();
+	Check( orbitReleaseCount >= 4
+	    && f.ctrl->SettlesAt( orbitReleaseCount, kSettleMs ),
+	       "orbit release sequence quiesces" );
 
 	// The scene camera must be untouched: pane 1's fly went to ITS
 	// override camera.  (IsFreeFlyActive reads pane 0's state via the
@@ -1195,9 +1819,12 @@ static void RunPaneIndexedGestureTest()
 	Check( f.ctrl->GetPrimaryPane() == 1,
 	       "MONEY ASSERTION (h/§7.8): a NON-navigation click PROMOTES pane 1 to primary" );
 	f.ctrl->OnPanePointerUp( 1, Point2( 12, 12 ) );
-	Check( f.ctrl->WaitForPassCount( 6, kWaitMs ),
+	Check( f.ctrl->WaitForPassCount( orbitReleaseCount + 2, kWaitMs ),
 	       "pointer release sequences drain before the free-fly twin checks" );
-	Check( f.ctrl->SettlesAt( 6, kSettleMs ),
+	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
+	const std::size_t releaseCount = f.ctrl->Sequence().size();
+	Check( releaseCount >= orbitReleaseCount + 2
+	    && f.ctrl->SettlesAt( releaseCount, kSettleMs ),
 	       "pane-indexed gesture release sequences quiesce" );
 
 	// review-s3 P2 coverage: hidden-pane and free-fly-twin contracts.
@@ -1205,18 +1832,16 @@ static void RunPaneIndexedGestureTest()
 	       "pane-indexed Down on a HIDDEN pane (3 in TwoH) is refused" );
 	Check( f.ctrl->PaneEnterFreeFly( 1 ), "PaneEnterFreeFly(1) accepted" );
 	{
-		SceneEditController::PaneVantageKind kind;
 		String nv;
-		Check( f.ctrl->GetPaneVantage( 1, kind, nv )
-		    && kind == SceneEditController::PaneVantageKind::FreeFly,
+		Check( f.ctrl->WaitForPaneVantage( 1,
+			SceneEditController::PaneVantageKind::FreeFly, nv, kWaitMs ),
 		       "PaneEnterFreeFly set the pane's vantage to FreeFly" );
 	}
 	Check( f.ctrl->PaneExitFreeFly( 1 ), "PaneExitFreeFly(1) accepted" );
 	{
-		SceneEditController::PaneVantageKind kind;
 		String nv;
-		Check( f.ctrl->GetPaneVantage( 1, kind, nv )
-		    && kind == SceneEditController::PaneVantageKind::SceneCamera,
+		Check( f.ctrl->WaitForPaneVantage( 1,
+			SceneEditController::PaneVantageKind::SceneCamera, nv, kWaitMs ),
 		       "PaneExitFreeFly returned the pane to SceneCamera tracking" );
 	}
 	{
@@ -1453,11 +2078,29 @@ static void RunShrinkPreservesUnrelatedPropertyScrubTest()
 		Check( seq.size() == 1 && seq[0] == 0,
 		       "surviving property scrub keeps the edit on new current pane 0" );
 	}
+	// WaitForPassCount observes pass START.  Use the recorder's separate
+	// completion counter before ending the scrub; otherwise EndPropertyScrub
+	// can race that quantum's completion transition and legitimately
+	// coalesce/mint a different recovery sequence.
+	Check( f.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
+	       "surviving property-scrub quantum completes before its End transition" );
 	f.ctrl->EndPropertyScrub();
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 	       "concurrent-shrink scrub End resumes all three panes" );
-	Check( f.ctrl->SettlesAt( 4, kSettleMs ),
-	       "concurrent-shrink recovery quiesces" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
+	{
+		const std::vector<unsigned int> recovery = f.ctrl->Sequence();
+		bool saw0 = false, saw1 = false, saw2 = false, sawHidden = false;
+		for( std::size_t i = 0; i < recovery.size(); ++i ) {
+			if( recovery[i] == 0 ) saw0 = true;
+			else if( recovery[i] == 1 ) saw1 = true;
+			else if( recovery[i] == 2 ) saw2 = true;
+			else sawHidden = true;
+		}
+		Check( saw0 && saw1 && saw2 && !sawHidden
+		    && f.ctrl->SettlesAt( recovery.size(), kSettleMs ),
+		       "concurrent-shrink recovery covers every visible pane and quiesces" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -1637,7 +2280,11 @@ static void RunPaneFreeFlyPreservesNamedViewTest()
 	// Realize the configured pane once, then inspect its saved/free-fly pose.
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
-	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "both TwoH panes render" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->WaitForCompletedPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+	       "both TwoH panes retire exactly once" );
 	CameraSnapshot actual;
 	Check( f.ctrl->GetViewportPose( actual, 1 ), "pane 1 has a realized Free-Fly pose" );
 	Check( actual.location[0] == expected.location[0]
@@ -1734,6 +2381,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
 		"initial TwoH rotation realizes both default SceneCamera panes" );
 	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->WaitForCompletedPassCount( 2, kWaitMs )
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"initial default-vantage rotation is exactly [0,1] and settles" );
 
@@ -1748,7 +2396,9 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	const std::vector<unsigned int> bindSeq = f.ctrl->Sequence();
 	Check( bindSeq.size() == 1 && bindSeq[0] == 1,
 		"MONEY ASSERTION (n): binding config-dirties and re-renders only pane 1" );
-	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "pane-local binding settles" );
+	Check( f.ctrl->WaitForCompletedPassCount( 1, kWaitMs )
+	    && f.ctrl->SettlesAt( 1, kSettleMs ),
+		"pane-local binding fully retires and settles" );
 
 	CameraSnapshot bindingSnapshot;
 	Check( f.ctrl->GetViewportPose( bindingSnapshot, 1 ),
@@ -1759,8 +2409,14 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && kind == SceneEditController::PaneVantageKind::SceneCameraNamed
 	    && referencedName == "side",
 		"pane 1 keeps kind 3 plus its scene-camera reference" );
+	f.ctrl->ClearSequence();
 	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
 		"select the bound camera for subsequent property edits" );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->WaitForCompletedPassCount( 2, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"camera activation refresh retires before property-edit accounting" );
 
 	f.ctrl->ClearSequence();
 	Check( f.ctrl->SetPropertyForCategory(
@@ -1769,12 +2425,28 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 		"edit the bound camera through the normal camera-property transaction" );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
 		"camera edit schedules a complete TwoH refresh" );
-	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
-	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+		"camera-edit refresh fully retires before exact sequence accounting" );
+	const std::vector<unsigned int> cameraEditSeq = f.ctrl->Sequence();
+	const bool cameraEditSettled = f.ctrl->SettlesAt( 2, kSettleMs );
+	if( cameraEditSeq != std::vector<unsigned int>{ 0, 1 } || !cameraEditSettled )
+	{
+		std::printf( "  camera-edit sequence:" );
+		for( unsigned int pane : cameraEditSeq ) std::printf( " %u", pane );
+		std::printf( " (settled=%d)\n", cameraEditSettled ? 1 : 0 );
+	}
+	Check( cameraEditSeq == std::vector<unsigned int>{ 0, 1 } && cameraEditSettled,
 		"camera-edit refresh is exactly [0,1] and settles" );
 	CameraSnapshot editedSnapshot;
 	Check( f.ctrl->GetViewportPose( editedSnapshot, 1 ),
 		"read pane 1 after bound camera edit" );
+	if( std::fabs( editedSnapshot.location[0] - 2.0 ) >= 1e-9
+	 || std::fabs( editedSnapshot.location[1] - 1.0 ) >= 1e-9
+	 || std::fabs( editedSnapshot.location[2] - 6.0 ) >= 1e-9 )
+	{
+		std::printf( "  camera-edit pane-1 pose: %.17g %.17g %.17g\n",
+			editedSnapshot.location[0], editedSnapshot.location[1], editedSnapshot.location[2] );
+	}
 	Check( std::fabs( editedSnapshot.location[0] - 2.0 ) < 1e-9
 	    && std::fabs( editedSnapshot.location[1] - 1.0 ) < 1e-9
 	    && std::fabs( editedSnapshot.location[2] - 6.0 ) < 1e-9,
@@ -2064,9 +2736,13 @@ static void RunActiveCameraGestureInvalidatesNamedPaneTest()
 		"bind secondary to the active camera by name" );
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
-	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
-	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
-	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+	// A pass is recorded at DoOneRenderPass entry, before its retirement hook.
+	// Wait for both retirements before reading the pose or clearing the recorder;
+	// otherwise a still-active pane-1 pass can make GetViewportPose's try-lock
+	// fail and append into the next gesture phase after ClearSequence().
+	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs )
+	    && f.ctrl->SettlesAt( 2, kSettleMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 },
 		"initial bound-camera rotation is exactly [0,1]" );
 	CameraSnapshot before;
 	Check( f.ctrl->GetViewportPose( before, 1 ), "capture bound pane before gesture" );
@@ -3005,10 +3681,9 @@ static void RunLastRenderPaneSourceTest()
 // the core-side render is separately REFUSED because a gesture is open, so
 // no teardown path runs either.  The watchdog is the recovery.
 //
-// Pinned here: (1) the siblings actually repaint again; (2) mPointerDown is
-// deliberately still set, so (3) a late-arriving pointer-up still takes its
-// normal finalization path instead of early-returning and stranding the
-// gesture's open composite.
+// Pinned here: (1) siblings repaint during the stationary hold; (2)
+// mPointerDown stays set; (3) renewed Move reclaims the gesture pane and
+// resumes instead of going inert; (4) Up still finalizes normally.
 //----------------------------------------------------------------------
 static void RunLostPointerUpWatchdogTest()
 {
@@ -3049,8 +3724,17 @@ static void RunLostPointerUpWatchdogTest()
 	Check( f.ctrl->ForTest_PointerDown(),
 		"MONEY (w1): mPointerDown is deliberately STILL SET -- clearing it would make the late Up early-return and strand its composite" );
 
+	// A legitimate long hold is not an implicit cancel.  Continuing the
+	// physical drag must reclaim pane 0 and clear stale before applying the
+	// resumed delta; the round-8 behavior discarded this move and forced a
+	// release/re-click.
+	f.ctrl->OnPointerMove( Point2( 16, 11 ) );
+	Check( !f.ctrl->ForTest_PointerGestureStale()
+	    && f.ctrl->ForTest_CurrentPane() == 0,
+		"MONEY (w1): motion after a >watchdog hold resumes the same gesture on its original pane" );
+
 	// The late Up still finalizes normally, and clears the stale marker.
-	f.ctrl->OnPointerUp( Point2( 12, 9 ) );
+	f.ctrl->OnPointerUp( Point2( 16, 11 ) );
 	Check( !f.ctrl->ForTest_PointerDown() && !f.ctrl->ForTest_PointerGestureStale(),
 		"MONEY (w1): the late pointer-up still runs its normal finalization" );
 	Check( !f.ctrl->Editor().IsCompositeOpen(),
@@ -3061,6 +3745,57 @@ static void RunLostPointerUpWatchdogTest()
 	Check( !f.ctrl->ForTest_PointerGestureStale(),
 		"w1: a fresh gesture is not stale" );
 	f.ctrl->OnPointerUp( Point2( 8, 8 ) );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
+// The lost-Up watchdog must remain clocked after the idle-refinement ladder
+// reaches divisor 1.  The original timed wait was gated only by scale>1, so
+// it became an indefinite wait before the production 10-second timeout and
+// could never run without an unrelated wake.
+//----------------------------------------------------------------------
+static void RunPointerWatchdogAfterRefinementSettlesTest()
+{
+	std::printf( "=== scheduler (w1b): pointer watchdog survives scale-1 refinement idle ===\n" );
+	Fixture f( "pane_sched_w1b_watchdog_after_refine.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	f.ctrl->ForTest_SetPointerWatchdogMs( 1200 );
+	f.ctrl->Start( true );
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ),
+		"pointer down on pane 0" );
+	f.ctrl->OnPointerMove( Point2( 12, 9 ) );
+
+	bool reachedScaleOne = false;
+	for( unsigned int i = 0; i < 20 && !reachedScaleOne; ++i )
+	{
+		int phase = -1;
+		unsigned int divisor = 0;
+		reachedScaleOne = f.ctrl->GetPaneRefinementStatus( 0, phase, divisor )
+			&& divisor == 1;
+		if( !reachedScaleOne )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+	}
+	Check( reachedScaleOne && !f.ctrl->ForTest_PointerGestureStale(),
+		"precondition: the gesture reaches scale 1 before its watchdog deadline" );
+
+	f.ctrl->ClearSequence();
+	f.ctrl->ForTest_KickRender();
+	bool sawSibling = false;
+	for( unsigned int i = 0; i < 45 && !sawSibling; ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		for( std::size_t k = 0; k < seq.size(); ++k )
+			if( seq[k] != 0 ) { sawSibling = true; break; }
+	}
+	Check( f.ctrl->ForTest_PointerGestureStale() && sawSibling,
+		"MONEY (w1b): watchdog still fires and releases siblings after refinement already reached scale 1" );
+	f.ctrl->OnPointerUp( Point2( 12, 9 ) );
 	f.ctrl->Stop();
 }
 
@@ -3115,6 +3850,223 @@ static void RunActiveDragSurvivesSlowPassesTest()
 }
 
 //----------------------------------------------------------------------
+// Review-validation P1: move admission and the watchdog stale handoff must
+// be one mMutex transition.  The hook holds the exact point after the move
+// is accepted/counted.  Even after several watchdog windows, the render
+// thread cannot mark it stale until the move leaves that protected handoff.
+//----------------------------------------------------------------------
+static void RunPointerMoveWatchdogHandoffTest()
+{
+	std::printf( "=== scheduler (w5): admitted pointer move cannot race watchdog stale handoff ===\n" );
+	Fixture f( "pane_sched_w5_move_watchdog_handoff.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	f.ctrl->ForTest_SetPointerWatchdogMs( 80 );
+	f.ctrl->Start( true );
+	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
+	Check( f.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ),
+		"pointer down on pane 0" );
+	f.ctrl->ArmPointerMoveAdmissionInterleaving();
+	std::thread moveThread( [&]{
+		f.ctrl->OnPointerMove( Point2( 14, 10 ) );
+	} );
+	Check( f.ctrl->WaitForPointerMoveAdmission( kWaitMs ),
+		"move reached the definitive admitted/in-flight handoff" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 240 ) );
+	Check( !f.ctrl->ForTest_PointerGestureStale(),
+		"MONEY (w5): watchdog cannot stale a move after it was admitted but before its in-flight publication" );
+	f.ctrl->ForTest_SetPointerWatchdogMs( 0 );
+	f.ctrl->ReleasePointerMoveAdmission();
+	moveThread.join();
+	Check( !f.ctrl->ForTest_PointerGestureStale(),
+		"the admitted move completes as a live gesture" );
+	f.ctrl->OnPointerUp( Point2( 14, 10 ) );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
+// PointerDown itself is a multi-step admission transition: it publishes the
+// live pointer flag, then opens the tool's composite.  A render must not
+// finalize in between those steps and leave the tail of Down to open an
+// orphaned composite after the render has already been admitted.
+//----------------------------------------------------------------------
+static void RunPointerDownRenderAdmissionHandoffTest()
+{
+	std::printf( "=== scheduler (w5b): render cannot finalize a half-constructed pointer down ===\n" );
+	Fixture f( "pane_sched_w5b_down_render_handoff.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	f.ctrl->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->ArmPointerDownAdmissionInterleaving();
+	std::thread downThread( [&]{
+		f.ctrl->OnPointerDown( Point2( 8, 8 ) );
+	} );
+	Check( f.ctrl->WaitForPointerDownAdmission( kWaitMs ),
+		"pointer down reached the published-before-composite seam" );
+
+	std::atomic<bool> renderRan( false );
+	std::atomic<bool> renderAccepted( false );
+	f.ctrl->ArmRenderAdmissionAttempt();
+	std::thread renderThread( [&]{
+		SceneEditController::RenderJobId jobId =
+			SceneEditController::kInvalidRenderJobId;
+		renderAccepted.store(
+			f.ctrl->SubmitProductionRenderSync(
+				[&]{ renderRan.store( true, std::memory_order_release ); },
+				String( "w5b-down-before-render" ), &jobId, kWaitMs ),
+			std::memory_order_release );
+	} );
+	Check( f.ctrl->WaitForRenderAdmissionAttempt( kWaitMs ),
+		"render worker reached the admission attempt" );
+	Check( !renderRan.load( std::memory_order_acquire ),
+		"MONEY (w5b): render admission waits for PointerDown to finish constructing its composite" );
+
+	f.ctrl->ReleasePointerDownAdmission();
+	downThread.join();
+	renderThread.join();
+	Check( renderAccepted.load( std::memory_order_acquire )
+	    && renderRan.load( std::memory_order_acquire ),
+		"render runs after the completed Down transition is finalized" );
+	Check( !f.ctrl->ForTest_PointerDown()
+	    && !f.ctrl->Editor().IsCompositeOpen(),
+		"MONEY (w5b): no live pointer or orphaned composite remains after the render" );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
+// TimeScrubBegin has the same begin/finalize handoff shape as PointerDown:
+// opening the composite and installing motion quality must be one admission
+// turn, or a render can close the just-opened composite before Begin returns.
+//----------------------------------------------------------------------
+static void RunTimeScrubBeginRenderAdmissionHandoffTest()
+{
+	std::printf( "=== scheduler (w5c): render cannot finalize a half-constructed time scrub ===\n" );
+	Fixture f( "pane_sched_w5c_scrub_render_handoff.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	f.ctrl->ArmPointerDownAdmissionInterleaving();
+	std::atomic<bool> scrubBegan( false );
+	std::thread scrubThread( [&]{
+		scrubBegan.store( f.ctrl->OnTimeScrubBegin(), std::memory_order_release );
+	} );
+	Check( f.ctrl->WaitForPointerDownAdmission( kWaitMs ),
+		"time scrub reached the opened-composite-before-return seam" );
+
+	std::atomic<bool> renderRan( false );
+	std::atomic<bool> renderAccepted( false );
+	f.ctrl->ArmRenderAdmissionAttempt();
+	std::thread renderThread( [&]{
+		SceneEditController::RenderJobId jobId =
+			SceneEditController::kInvalidRenderJobId;
+		renderAccepted.store(
+			f.ctrl->SubmitProductionRenderSync(
+				[&]{ renderRan.store( true, std::memory_order_release ); },
+				String( "w5c-scrub-before-render" ), &jobId, kWaitMs ),
+			std::memory_order_release );
+	} );
+	Check( f.ctrl->WaitForRenderAdmissionAttempt( kWaitMs ),
+		"render worker reached the time-scrub admission attempt" );
+	Check( !renderRan.load( std::memory_order_acquire ),
+		"MONEY (w5c): render admission waits for TimeScrubBegin to finish" );
+
+	f.ctrl->ReleasePointerDownAdmission();
+	scrubThread.join();
+	renderThread.join();
+	Check( scrubBegan.load( std::memory_order_acquire )
+	    && renderAccepted.load( std::memory_order_acquire )
+	    && renderRan.load( std::memory_order_acquire ),
+		"time scrub begins, then the render finalizes and runs" );
+	Check( !f.ctrl->Editor().IsCompositeOpen(),
+		"MONEY (w5c): the render leaves no time-scrub composite stranded" );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
+// Lost-Up render admission: render requests are a controller-owned gesture
+// finalization boundary.  A pending live transform must reach the Document,
+// close its composite, and then allow the render closure to run.
+//----------------------------------------------------------------------
+static void RunRenderFinalizesLostPointerUpTest()
+{
+	std::printf( "=== scheduler (w6): render admission finalizes a lost pointer-up ===\n" );
+	Fixture f( "pane_sched_w6_render_finalizes_gesture.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	f.ctrl->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->OnPointerDown( Point2( 8, 8 ) );
+	f.ctrl->OnPointerMove( Point2( 24, 20 ) );
+	Check( f.ctrl->Editor().HasPendingCstObjectTransforms()
+	    && f.ctrl->Editor().IsCompositeOpen(),
+		"lost-Up setup has a pending transform and open composite" );
+
+	bool renderRan = false;
+	SceneEditController::RenderJobId jobId =
+		SceneEditController::kInvalidRenderJobId;
+	const bool accepted = f.ctrl->SubmitProductionRenderSync(
+		[&]{ renderRan = true; }, String( "w6-finalize-before-render" ),
+		&jobId, kWaitMs );
+	Check( accepted && renderRan,
+		"MONEY (w6): the render is admitted instead of permanently refused" );
+	Check( !f.ctrl->ForTest_PointerDown()
+	    && !f.ctrl->Editor().IsCompositeOpen()
+	    && !f.ctrl->Editor().HasPendingCstObjectTransforms(),
+		"MONEY (w6): render admission persisted and closed the dropped-Up gesture" );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
+// The legacy synchronous preview-render entry point owns an independent
+// admission path from SubmitProductionRenderSync.  It must perform the same
+// controller-owned interaction finalization, including the property-scrub
+// branch that has no editor composite to expose a stranded-state failure.
+//----------------------------------------------------------------------
+static void RunDirectRenderFinalizesOpenInteractionsTest()
+{
+	std::printf( "=== scheduler (w6b): direct preview render finalizes open interactions ===\n" );
+	Fixture f( "pane_sched_w6b_direct_render_finalizes.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	f.ctrl->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	f.ctrl->OnPointerDown( Point2( 8, 8 ) );
+	f.ctrl->OnPointerMove( Point2( 24, 20 ) );
+	Check( f.ctrl->Editor().HasPendingCstObjectTransforms()
+	    && f.ctrl->Editor().IsCompositeOpen(),
+		"direct-render setup has a pending transform and open pointer composite" );
+
+	bool pointerRenderRan = false;
+	Check( f.ctrl->RunPreviewRenderParked( [&]{ pointerRenderRan = true; } )
+	    && pointerRenderRan,
+		"direct preview render is admitted after finalizing the lost pointer-up" );
+	Check( !f.ctrl->ForTest_PointerDown()
+	    && !f.ctrl->Editor().IsCompositeOpen()
+	    && !f.ctrl->Editor().HasPendingCstObjectTransforms(),
+		"MONEY (w6b): direct preview admission persists and closes the dropped-Up gesture" );
+
+	f.ctrl->BeginPropertyScrub();
+	int phase = -1;
+	unsigned int divisor = 0;
+	Check( f.ctrl->GetPaneRefinementStatus( 0, phase, divisor ) && divisor > 1,
+		"property scrub installs motion-quality state before direct admission" );
+	bool scrubRenderRan = false;
+	Check( f.ctrl->RunPreviewRenderParked( [&]{ scrubRenderRan = true; } )
+	    && scrubRenderRan,
+		"direct preview render is admitted after finalizing the property scrub" );
+	Check( f.ctrl->GetPaneRefinementStatus( 0, phase, divisor ) && divisor == 1,
+		"MONEY (w6b): direct preview admission clears property-scrub motion quality" );
+	f.ctrl->Stop();
+}
+
+//----------------------------------------------------------------------
 // Round-8 review P2 #2: ~SceneEditController must not touch mJob.
 //
 // T0 gave StopInteractive an orphaned-gesture cleanup that commits pending
@@ -3150,6 +4102,19 @@ private:
 	bool         mArmed = false;
 	mutable bool mTouched = false;
 };
+
+class FailingGestureCommitJob : public Job
+{
+public:
+	void SetFailCommits( bool fail ) { mFailCommits = fail; }
+	int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix ) override
+	{
+		return mFailCommits ? 0
+			: Job::ApplyCstObjectMatrixEdit( objectName, matrix );
+	}
+private:
+	bool mFailCommits = true;
+};
 }  // namespace
 
 static void RunDestructorDoesNotTouchJobTest()
@@ -3180,6 +4145,92 @@ static void RunDestructorDoesNotTouchJobTest()
 	std::remove( path.c_str() );
 }
 
+static void RunCAbiDestructionPersistsGestureTest()
+{
+	std::printf( "=== scheduler (w7): C-ABI destruction persists an open gesture while Job is alive ===\n" );
+	const std::string path = WriteTemp( "pane_sched_w7_cabi_prepare.RISEscene", kScene );
+	Job* job = new Job();
+	Check( job->LoadAsciiSceneViaCst( path.c_str() ), "fixture scene loads" );
+	if( !job->HasRetainedCstDocument() )
+	{
+		Check( false, "fixture retains a CST Document" );
+		job->release();
+		std::remove( path.c_str() );
+		return;
+	}
+	const std::string before = Cst::SerializeCst( *job->GetCstDocument() );
+	SceneEditController* ctrl = nullptr;
+	Check( RISE_API_CreateSceneEditController( job, nullptr, &ctrl ) && ctrl,
+		"C-ABI controller constructs" );
+	if( ctrl )
+	{
+		ctrl->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+		ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+		ctrl->OnPointerDown( Point2( 8, 8 ) );
+		ctrl->OnPointerMove( Point2( 24, 20 ) );
+		Check( ctrl->Editor().HasPendingCstObjectTransforms(),
+			"open drag has a pending live-only transform" );
+		RISE_API_DestroySceneEditController( ctrl );
+	}
+	const std::string after = Cst::SerializeCst( *job->GetCstDocument() );
+	Check( after != before && after.find( "\nmatrix " ) != std::string::npos,
+		"MONEY (w7): destroy shim commits the final transform into the surviving Document" );
+	job->release();
+	std::remove( path.c_str() );
+}
+
+static void RunGestureCommitFailureIsReportedTest()
+{
+	std::printf( "=== scheduler (w7b): interaction persistence failures are reported truthfully ===\n" );
+	const std::string path = WriteTemp( "pane_sched_w7b_commit_failure.RISEscene", kScene );
+	FailingGestureCommitJob* job = new FailingGestureCommitJob();
+	Check( job->LoadAsciiSceneViaCst( path.c_str() ), "fixture scene loads" );
+	SceneEditController* ctrl = new SceneEditController( *job, nullptr );
+	ctrl->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	ctrl->OnPointerDown( Point2( 8, 8 ) );
+	ctrl->OnPointerMove( Point2( 24, 20 ) );
+	Check( ctrl->Editor().HasPendingCstObjectTransforms(),
+		"failing-route setup has a pending transform" );
+	Check( !RISE_API_SceneEditController_FinalizeOpenInteractions( ctrl ),
+		"MONEY (w7b): FinalizeOpenInteractions reports the failed CST persistence route" );
+	bool renderRan = false;
+	Check( !ctrl->RunPreviewRenderParked( [&]{ renderRan = true; } ) && !renderRan,
+		"MONEY (w7b): direct render admission remains closed after persistence failure" );
+	Check( !RISE_API_SceneEditController_PrepareForDestruction( ctrl ),
+		"MONEY (w7b): Job-live Prepare does not claim a failed interaction was persisted" );
+	RISE_API_DestroySceneEditController( ctrl );
+	job->release();
+	std::remove( path.c_str() );
+}
+
+static void RunUndoCommitFailureClosesRenderAdmissionTest()
+{
+	std::printf( "=== scheduler (w7c): Undo persistence failure closes render admission ===\n" );
+	const std::string path = WriteTemp( "pane_sched_w7c_undo_commit_failure.RISEscene", kScene );
+	FailingGestureCommitJob* job = new FailingGestureCommitJob();
+	job->SetFailCommits( false );
+	Check( job->LoadAsciiSceneViaCst( path.c_str() ), "fixture scene loads" );
+	SceneEditController* ctrl = new SceneEditController( *job, nullptr );
+	ctrl->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	ctrl->SetTool( SceneEditController::Tool::TranslateObject );
+	ctrl->OnPointerDown( Point2( 8, 8 ) );
+	ctrl->OnPointerMove( Point2( 24, 20 ) );
+	ctrl->OnPointerUp( Point2( 24, 20 ) );
+	Check( ctrl->Editor().History().UndoDepth() > 0,
+		"successful gesture commit produced undo history" );
+	job->SetFailCommits( true );
+	ctrl->Undo();
+	Check( !ctrl->FinalizeOpenInteractions(),
+		"MONEY (w7c): failed Undo CST route trips the sticky persistence result" );
+	bool renderRan = false;
+	Check( !ctrl->RunPreviewRenderParked( [&]{ renderRan = true; } ) && !renderRan,
+		"MONEY (w7c): render admission refuses the unrecorded live Undo" );
+	RISE_API_DestroySceneEditController( ctrl );
+	job->release();
+	std::remove( path.c_str() );
+}
+
 //----------------------------------------------------------------------
 // Round-8 review P2 #3: the last-render sink push must not run under mMutex.
 //
@@ -3201,6 +4252,7 @@ public:
 	void Bind( SceneEditController* c ) { mCtrl = c; }
 	bool Probed() const   { return mProbed; }
 	bool LockWasFree() const { return mLockWasFree; }
+	void JoinProbe() { if( mProbe.joinable() ) mProbe.join(); }
 
 	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
 
@@ -3208,31 +4260,31 @@ public:
 	{
 		if( !mCtrl || mProbed ) return;
 		mProbed = true;
-		// DETACHED, and the flag is a shared_ptr the probe co-owns: if the
-		// publisher really is holding mMutex, the probe stays blocked until
-		// that lock releases -- long after this callback returns.  Joining it
-		// here (the obvious first cut) DEADLOCKS on regression instead of
-		// failing, because the lock cannot release until the callback
-		// returns.  A regression must produce a clean FAIL, not a hang.
+		// Keep the probe JOINABLE on the sink.  If the publisher regresses to
+		// holding mMutex, the bounded poll below fails and returns from this
+		// callback; only then can the setter release mMutex and the test's
+		// post-setter JoinProbe complete.  This produces a clean failure without
+		// a detached raw-controller thread outliving the fixture.
 		std::shared_ptr< std::atomic<bool> > done =
 			std::make_shared< std::atomic<bool> >( false );
 		SceneEditController* ctrl = mCtrl;
-		std::thread( [ctrl, done]{
+		mProbe = std::thread( [ctrl, done]{
 			(void)ctrl->ForTest_CurrentPane();   // blocking mMutex acquisition
 			done->store( true, std::memory_order_release );
-		} ).detach();
+		} );
 		for( unsigned int i = 0; i < 100 && !done->load( std::memory_order_acquire ); ++i )
 			std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
 		mLockWasFree = done->load( std::memory_order_acquire );
 	}
 
 protected:
-	~LockProbingPaneSink() override = default;
+	~LockProbingPaneSink() override { JoinProbe(); }
 
 private:
 	SceneEditController* mCtrl = nullptr;
 	bool                 mProbed = false;
 	bool                 mLockWasFree = false;
+	std::thread          mProbe;
 };
 }  // namespace
 
@@ -3253,12 +4305,653 @@ static void RunLastRenderPublishOutsideLockTest()
 	Check( f.ctrl->SetPaneContentSource(
 			1, SceneEditController::PaneContentSource::LastRender ),
 		"pane 1 becomes a Last Render pane" );
+	sink->JoinProbe();
 	Check( sink->Probed(),
 		"w3: the sink was actually invoked (otherwise the oracle proves nothing)" );
 	Check( sink->LockWasFree(),
 		"MONEY (w3): mMutex was FREE during the sink callback (pre-fix the publisher held it across OutputImage)" );
 
 	sink->release();
+}
+
+static void RunLastRenderReentrantCallbacksAreBoundedTest()
+{
+	std::printf( "=== scheduler (w8): same/cross-pane sink re-entry is bounded and deadlock-free ===\n" );
+	Fixture f( "pane_sched_w8_last_render_reentry.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	ReentrantPaneSink* self = new ReentrantPaneSink(
+		ReentrantPaneSink::Action::RegisterSelf, 1, 1 );
+	ReentrantPaneSink* first = new ReentrantPaneSink(
+		ReentrantPaneSink::Action::FreezeOther, 1, 2 );
+	ReentrantPaneSink* second = new ReentrantPaneSink(
+		ReentrantPaneSink::Action::RegisterOtherSink, 2, 1 );
+	self->Bind( f.ctrl );
+	first->Bind( f.ctrl );
+	second->Bind( f.ctrl, first );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	Check( f.ctrl->SetPaneSink( 1, self ), "self-registering sink installed" );
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"self-registering Last Render callback returns" );
+	Check( self->Count() == 1 && self->ActionSucceeded(),
+		"MONEY (w8): idempotent same-sink re-registration produces one callback, not recursive delivery" );
+
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::Interactive )
+	    && f.ctrl->SetPaneSink( 1, first )
+	    && f.ctrl->SetPaneSink( 2, second ),
+		"cross-pane reentrant sinks installed" );
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"pane-1 callback synchronously freezes pane 2" );
+	Check( first->Count() == 1 && second->Count() == 1
+	    && first->ActionSucceeded() && second->ActionSucceeded(),
+		"MONEY (w8): cross-pane setter re-entry drains sequentially and returns without AB/BA deadlock" );
+
+	BlockingPaneSink* blockA = new BlockingPaneSink();
+	BlockingPaneSink* blockB = new BlockingPaneSink();
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::Interactive )
+	    && f.ctrl->SetPaneContentSource(
+			2, SceneEditController::PaneContentSource::Interactive )
+	    && f.ctrl->SetPaneSink( 1, blockA )
+	    && f.ctrl->SetPaneSink( 2, blockB ),
+		"two cross-pane serialization probes installed" );
+	std::thread paneOne( [&]{
+		(void)f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender );
+	} );
+	Check( blockA->WaitUntilEntered( kWaitMs ),
+		"pane-1 callback owns the global callback barrier" );
+	f.ctrl->ArmLastRenderTransitionAttempt( 2 );
+	std::thread paneTwo( [&]{
+		(void)f.ctrl->SetPaneContentSource(
+			2, SceneEditController::PaneContentSource::LastRender );
+	} );
+	Check( f.ctrl->WaitForLastRenderTransitionAttempt( kWaitMs ),
+		"pane-2 transition reached the global barrier attempt" );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	Check( !blockB->Entered(),
+		"MONEY (w8): callbacks for distinct panes cannot enter concurrently" );
+	blockA->Release();
+	paneOne.join();
+	Check( blockB->WaitUntilEntered( kWaitMs ),
+		"pane-2 callback enters after pane 1 releases the global barrier" );
+	blockB->Release();
+	paneTwo.join();
+
+	Check( f.ctrl->SetPaneSink( 1, nullptr )
+	    && f.ctrl->SetPaneSink( 2, nullptr ),
+		"pane sinks detached" );
+	self->release();
+	first->release();
+	second->release();
+	blockA->release();
+	blockB->release();
+}
+
+//----------------------------------------------------------------------
+// A successful source switch is a callback-start barrier: if an old frozen
+// callback is already running, the setter waits for it; otherwise the pane
+// generation changes before that callback can begin.  This closes the
+// generation-check -> virtual-call TOCTOU window.
+//----------------------------------------------------------------------
+static void RunLastRenderSourceSwitchBarrierTest()
+{
+	std::printf( "=== scheduler (w9): source switch is atomic with Last Render callback start ===\n" );
+	Fixture f( "pane_sched_w9_last_render_callback_barrier.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	BlockingPaneSink* sink = new BlockingPaneSink();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	Check( f.ctrl->SetPaneSink( 1, sink ), "blocking sink installed" );
+
+	std::atomic<bool> frozenReturned( false );
+	std::thread freezeThread( [&]{
+		(void)f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender );
+		frozenReturned.store( true, std::memory_order_release );
+	} );
+	Check( sink->WaitUntilEntered( kWaitMs ),
+		"old Last Render callback is in flight" );
+
+	std::atomic<bool> interactiveReturned( false );
+	f.ctrl->ArmLastRenderTransitionAttempt( 1 );
+	std::thread sourceThread( [&]{
+		(void)f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::Interactive );
+		interactiveReturned.store( true, std::memory_order_release );
+	} );
+	Check( f.ctrl->WaitForLastRenderTransitionAttempt( kWaitMs ),
+		"interactive source setter reached the callback/start barrier attempt" );
+	Check( !interactiveReturned.load( std::memory_order_acquire ),
+		"MONEY (w9): source setter cannot return while the old callback is still running" );
+
+	sink->Release();
+	freezeThread.join();
+	sourceThread.join();
+	Check( frozenReturned.load( std::memory_order_acquire )
+	    && interactiveReturned.load( std::memory_order_acquire )
+	    && f.ctrl->GetPaneContentSource( 1 )
+	       == SceneEditController::PaneContentSource::Interactive,
+		"MONEY (w9): callback drains first, then the source transition completes" );
+	Check( f.ctrl->SetPaneSink( 1, nullptr ), "blocking sink detached" );
+	sink->release();
+}
+
+//----------------------------------------------------------------------
+// IRasterizerOutput is not noexcept.  A custom sink failure must be contained
+// at the notification boundary instead of escaping the agent worker thread
+// (which would call std::terminate).
+//----------------------------------------------------------------------
+static void RunThrowingLastRenderSinkIsContainedTest()
+{
+	std::printf( "=== scheduler (w10): Last Render sink exceptions are contained ===\n" );
+	Fixture f( "pane_sched_w10_throwing_last_render_sink.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	ThrowingPaneSink* sink = new ThrowingPaneSink();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	Check( f.ctrl->SetPaneSink( 1, sink ), "throwing sink installed" );
+	bool escaped = false;
+	bool changed = false;
+	try
+	{
+		changed = f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender );
+	}
+	catch( ... )
+	{
+		escaped = true;
+	}
+	Check( changed && !escaped,
+		"MONEY (w10): throwing sink is logged/contained and the source setter still completes" );
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::Interactive )
+	    && f.ctrl->SetPaneSink( 1, nullptr ),
+		"standard-exception sink detached" );
+	sink->release();
+
+	ThrowingPaneSink* unknown = new ThrowingPaneSink( true );
+	Check( f.ctrl->SetPaneSink( 2, unknown ), "unknown-exception sink installed" );
+	escaped = false;
+	changed = false;
+	try
+	{
+		changed = f.ctrl->SetPaneContentSource(
+			2, SceneEditController::PaneContentSource::LastRender );
+	}
+	catch( ... )
+	{
+		escaped = true;
+	}
+	Check( changed && !escaped,
+		"MONEY (w10): non-std sink exceptions are also contained" );
+	Check( f.ctrl->SetPaneSink( 2, nullptr ), "unknown-exception sink detached" );
+	unknown->release();
+}
+
+//----------------------------------------------------------------------
+// Teardown closes new drain registration, then waits without holding the
+// delivery barrier a previously-registered drain still needs.  The two hooks
+// deterministically expose the exact count++ -> delivery-lock seam.
+//----------------------------------------------------------------------
+static void RunLastRenderDrainQuiescenceTest()
+{
+	std::printf( "=== scheduler (w11): teardown quiesces a registered Last Render drain ===\n" );
+	Fixture f( "pane_sched_w11_drain_quiescence.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	RecordingPaneSink* sink = new RecordingPaneSink();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->SetPaneSink( 1, sink )
+	    && f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"Last Render pane and sink installed" );
+	IRasterImage* image = nullptr;
+	Check( RISE_API_CreateRISEColorRasterImage(
+			&image, 2, 2, RISEColor( RISEPel( 0.2, 0.4, 0.6 ), 1.0 ) )
+	    && image,
+		"replacement image constructs" );
+	if( !image ) { sink->release(); return; }
+
+	f.ctrl->ArmLastRenderDrainRegistration();
+	std::atomic<bool> renderReturned( false );
+	std::thread renderThread( [&]{
+		(void)f.ctrl->RunPreviewRenderParked( [&]{
+			(void)f.ctrl->PublishAgentRenderImageParked( *image );
+		} );
+		renderReturned.store( true, std::memory_order_release );
+	} );
+	Check( f.ctrl->WaitForLastRenderDrainRegistration( kWaitMs ),
+		"render completion drain registered before taking delivery barrier" );
+
+	std::atomic<bool> prepareReturned( false );
+	std::atomic<bool> prepareResult( false );
+	std::thread prepareThread( [&]{
+		prepareResult.store( f.ctrl->PrepareForDestruction(), std::memory_order_release );
+		prepareReturned.store( true, std::memory_order_release );
+	} );
+	Check( f.ctrl->WaitForLastRenderQuiesce( kWaitMs ),
+		"teardown closed new drain registration and reached its wait" );
+	Check( !prepareReturned.load( std::memory_order_acquire ),
+		"MONEY (w11): Prepare waits for the already-registered drain" );
+
+	f.ctrl->ReleaseLastRenderDrainRegistration();
+	renderThread.join();
+	prepareThread.join();
+	Check( renderReturned.load( std::memory_order_acquire )
+	    && prepareReturned.load( std::memory_order_acquire )
+	    && prepareResult.load( std::memory_order_acquire ),
+		"MONEY (w11): registered drain and teardown both retire without barrier/count deadlock" );
+	image->release();
+	sink->release();
+}
+
+static void RunDestroyFromLastRenderCallbackIsRejectedTest()
+{
+	std::printf( "=== scheduler (w12): callback-local Destroy is safely rejected ===\n" );
+	Fixture f( "pane_sched_w12_callback_destroy_rejected.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	DestroyingPaneSink* sink = new DestroyingPaneSink();
+	sink->Bind( f.ctrl );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->SetPaneSink( 1, sink ),
+		"destroy-attempting sink installed" );
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"Last Render callback returns after its Destroy attempt" );
+	Check( sink->DestroyReturned()
+	    && f.ctrl->GetViewportLayout() == SceneEditController::ViewportLayout::Quad,
+		"MONEY (w12): callback-local Destroy returns without deleting the active drain/controller" );
+	Check( f.ctrl->SetPaneSink( 1, nullptr ),
+		"owner can detach callback sink and perform ordinary teardown afterward" );
+	sink->release();
+}
+
+static void RunDestroyFromSinkDestructorIsRejectedTest()
+{
+	std::printf( "=== scheduler (w12b): sink-destructor Destroy is safely rejected ===\n" );
+	Fixture f( "pane_sched_w12b_sink_destructor_destroy.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	auto state = std::make_shared<DestructorDestroyState>();
+	DestructorDestroyingPaneSink* sink = new DestructorDestroyingPaneSink(
+		f.ctrl, 1, state );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->SetPaneSink( 1, sink ),
+		"self-detaching destructor-destroy sink installed" );
+	// Leave the pane and detached drain batch as the only owners.  OutputImage
+	// removes the pane reference; BatchReleaseGuard's later final release runs
+	// the sink destructor while the drain registration is still active.
+	sink->release();
+	Check( f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"self-detaching callback and sink destructor return" );
+	Check( state->detached.load( std::memory_order_acquire )
+	    && state->destructorDestroyReturned.load( std::memory_order_acquire )
+	    && f.ctrl->GetViewportLayout() == SceneEditController::ViewportLayout::Quad,
+		"MONEY (w12b): drain-wide callback scope rejects destructor cleanup Destroy instead of self-waiting" );
+}
+
+static void RunDestroyFromOrdinarySinkDetachIsRejectedTest()
+{
+	std::printf( "=== scheduler (w12c): ordinary sink-detach destructor Destroy is safely rejected ===\n" );
+	Fixture f( "pane_sched_w12c_sink_detach_destroy.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	auto state = std::make_shared<DestructorDestroyState>();
+	DestructorDestroyingPaneSink* sink = new DestructorDestroyingPaneSink(
+		f.ctrl, 1, state );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->SetPaneSink( 1, sink ),
+		"destructor-destroy sink installed for ordinary detach" );
+	// Leave the pane slot as the only owner.  SetPaneSink(nullptr) detaches under
+	// its mutation barriers, then performs the final release after dropping the
+	// non-recursive locks; lifecycle teardown is still rejected for the duration
+	// of that unlocked destructor callout.
+	sink->release();
+	Check( f.ctrl->SetPaneSink( 1, nullptr ),
+		"ordinary pane-sink detach returns after final-release cleanup" );
+	Check( state->destructorDestroyReturned.load( std::memory_order_acquire )
+	    && f.ctrl->GetViewportLayout() == SceneEditController::ViewportLayout::Quad,
+		"MONEY (w12c): ordinary final release rejects recursive Destroy and preserves the controller" );
+}
+
+static void RunDestroyFromQueuedSinkCleanupIsRejectedTest()
+{
+	std::printf( "=== scheduler (w12d): queued-sink teardown destructor Destroy is safely rejected ===\n" );
+	Fixture f( "pane_sched_w12d_queued_sink_destroy.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	auto state = std::make_shared<DestructorDestroyState>();
+	DestructorDestroyingPaneSink* sink = new DestructorDestroyingPaneSink(
+		f.ctrl, 2, state );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->SetPaneSink( 2, sink ),
+		"destructor-destroy sink installed for queued teardown" );
+	sink->release();
+
+	// Close drain registration first, then queue a Last Render placeholder.
+	// Its tail drain refuses registration, deliberately leaving one retained
+	// queue record for the destructor-cleanup path.
+	Check( f.ctrl->PrepareForDestruction(), "terminal preparation closes drain registration" );
+	Check( f.ctrl->SetPaneContentSource(
+			2, SceneEditController::PaneContentSource::LastRender ),
+		"post-prepare source transition leaves a bounded pending record" );
+	RISE_API_DestroySceneEditController( f.ctrl );
+	f.ctrl = nullptr;
+	Check( state->destructorDestroyReturned.load( std::memory_order_acquire ),
+		"MONEY (w12d): queued-record final release rejects recursive Destroy during controller teardown" );
+}
+
+static void RunOrdinarySinkDestructorReentryTest()
+{
+	std::printf( "=== scheduler (w12e): ordinary sink destructor may re-enter a setter ===\n" );
+	Fixture f( "pane_sched_w12e_sink_setter_reentry.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	auto state = std::make_shared<DestructorReentryState>();
+	DestructorReenteringPaneSink* sink = new DestructorReenteringPaneSink(
+		f.ctrl, 1, state );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->SetPaneSink( 1, sink ),
+		"setter-reentering sink installed" );
+	sink->release();
+	Check( f.ctrl->SetPaneSink( 1, nullptr ),
+		"outer ordinary sink detach returns" );
+	Check( state->destructorRan.load( std::memory_order_acquire )
+	    && state->setterReturned.load( std::memory_order_acquire ),
+		"MONEY (w12e): final sink release runs after controller locks are dropped, so redundant setter re-entry returns" );
+}
+
+static void RunRasterizerOwnedSinkDestructorReentryTest()
+{
+	std::printf( "=== scheduler (w12f): rasterizer-final sink destructor may re-enter a setter ===\n" );
+	Fixture f( "pane_sched_w12f_rasterizer_sink_reentry.RISEscene", true );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	auto state = std::make_shared<DestructorReentryState>();
+	DestructorReenteringPaneSink* sink = new DestructorReenteringPaneSink(
+		f.ctrl, 1, state, /*shrinkLayout*/ true );
+	Check( f.ctrl->SetPaneSink( 1, sink ), "rendered setter-reentering sink installed" );
+	sink->release();
+
+	f.ctrl->ArmOutputDetachGate( 1 );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForOutputDetachGate( kWaitMs ),
+		"pane-1 pass published mRendering=false while rasterizer still owns its sink" );
+	Check( f.ctrl->SetPaneSink( 1, nullptr ),
+		"controller pane ref detaches while rasterizer remains the final owner" );
+	Check( !state->destructorRan.load( std::memory_order_acquire ),
+		"precondition: rasterizer output ref keeps the detached sink alive" );
+	f.ctrl->ReleaseOutputDetachGate();
+	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+		"rasterizer output retirement completes" );
+	Check( state->destructorRan.load( std::memory_order_acquire )
+	    && state->setterReturned.load( std::memory_order_acquire )
+	    && f.ctrl->GetViewportLayout() == SceneEditController::ViewportLayout::Single,
+		"MONEY (w12f): rasterizer-final release occurs unlocked after mRendering=false, so a park-capable layout mutation returns" );
+}
+
+static void RunRasterizerSinkDestructorQueuesLastRenderTest()
+{
+	std::printf( "=== scheduler (w12g): rasterizer-final destructor publish drains immediately ===\n" );
+	Fixture f( "pane_sched_w12g_rasterizer_destructor_publish.RISEscene", true );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	RecordingPaneSink* pane0Sink = new RecordingPaneSink();
+	auto state = std::make_shared<DestructorReentryState>();
+	DestructorQueuesLastRenderPaneSink* pane1Sink =
+		new DestructorQueuesLastRenderPaneSink( f.ctrl, 0, state );
+	Check( f.ctrl->SetPaneSink( 0, pane0Sink )
+	    && f.ctrl->SetPaneSink( 1, pane1Sink ),
+		"pane-0 witness and pane-1 destructor-publish sink install" );
+	pane1Sink->release();
+
+	f.ctrl->ArmOutputDetachGate( 1 );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForOutputDetachGate( kWaitMs ),
+		"pane-1 rasterizer retains the destructor-publish sink" );
+	Check( f.ctrl->SetPaneSink( 1, nullptr ),
+		"controller pane-1 ref detaches before rasterizer retirement" );
+	f.ctrl->ReleaseOutputDetachGate();
+	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+		"pane-1 output retirement completes" );
+	Check( state->destructorRan.load( std::memory_order_acquire )
+	    && state->setterReturned.load( std::memory_order_acquire ),
+		"rasterizer-final destructor queues pane 0 as Last Render" );
+	Check( pane0Sink->WaitForDimensions( 1, 1, kWaitMs ),
+		"MONEY (w12g): destructor-queued Last Render placeholder drains without an unrelated UI tick/pass" );
+	Check( f.ctrl->SetPaneSink( 0, nullptr ), "pane-0 witness detaches" );
+	pane0Sink->release();
+}
+
+static void RunDestructorRejectsOrdinarySinkReentryTest()
+{
+	std::printf( "=== scheduler (w12h): controller teardown rejects ordinary sink re-entry ===\n" );
+	Fixture f( "pane_sched_w12h_teardown_setter_reentry.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+		"layout Quad" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForPassCount( 4, kWaitMs )
+	    && f.ctrl->WaitForCompletedPassCount( 4, kWaitMs )
+	    && f.ctrl->SettlesAt( 4, kSettleMs )
+	    && f.ctrl->ForTest_CurrentPane() == 3,
+		"precondition: teardown begins with pane 3 current" );
+	auto state = std::make_shared<DestructorReentryState>();
+	DestructorReenteringPaneSink* sink = new DestructorReenteringPaneSink(
+		f.ctrl, 3, state, /*shrinkLayout*/ true );
+	Check( f.ctrl->SetPaneSink( 3, sink ),
+		"teardown setter-reentry sink installed on current pane 3" );
+	sink->release();
+	RISE_API_DestroySceneEditController( f.ctrl );
+	f.ctrl = nullptr;
+	Check( state->destructorRan.load( std::memory_order_acquire )
+	    && !state->setterReturned.load( std::memory_order_acquire ),
+		"MONEY (w12h): destructor-body sink release rejects Quad-to-Single mutation against partially retired state" );
+}
+
+static void RunDestructorRejectsRollbackReentryTest()
+{
+	std::printf( "=== scheduler (w12i): controller teardown rejects transaction rollback re-entry ===\n" );
+	Fixture f( "pane_sched_w12i_teardown_rollback_reentry.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->BeginTransaction(),
+		"open transaction exists at teardown" );
+	auto state = std::make_shared<DestructorReentryState>();
+	DestructorRollsBackTransactionPaneSink* sink =
+		new DestructorRollsBackTransactionPaneSink( f.ctrl, state );
+	Check( f.ctrl->SetPaneSink( 3, sink ),
+		"rollback-attempting sink installed" );
+	sink->release();
+	RISE_API_DestroySceneEditController( f.ctrl );
+	f.ctrl = nullptr;
+	Check( state->destructorRan.load( std::memory_order_acquire )
+	    && !state->setterReturned.load( std::memory_order_acquire ),
+		"MONEY (w12i): destructor-body RollbackTransaction fails closed before touching borrowed Job/editor state" );
+}
+
+static void RunStopFromLastRenderCallbackIsRejectedTest()
+{
+	std::printf( "=== scheduler (w13): callback-local Stop is safely rejected ===\n" );
+	Fixture f( "pane_sched_w13_callback_stop_rejected.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+	ReentrantPaneSink* sink = new ReentrantPaneSink(
+		ReentrantPaneSink::Action::StopController, 1, 1 );
+	sink->Bind( f.ctrl );
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && f.ctrl->SetPaneSink( 1, sink )
+	    && f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"stop-attempting Last Render sink installed unarmed" );
+	IRasterImage* image = nullptr;
+	Check( RISE_API_CreateRISEColorRasterImage(
+			&image, 2, 2, RISEColor( RISEPel( 0.3, 0.5, 0.7 ), 1.0 ) )
+	    && image,
+		"callback-stop image constructs" );
+	if( !image ) { sink->release(); return; }
+
+	sink->Arm();
+	bool directPublished = false;
+	Check( f.ctrl->RunPreviewRenderParked( [&]{
+			directPublished = f.ctrl->PublishAgentRenderImageParked( *image );
+		} ) && directPublished,
+		"MONEY (w13): direct-render tail returns when its sink attempts Stop" );
+	SceneEditController::RenderJobId jobId = SceneEditController::kInvalidRenderJobId;
+	bool agentPublished = false;
+	Check( f.ctrl->SubmitAgentRenderSync( [&]{
+			agentPublished = f.ctrl->PublishAgentRenderImageParked( *image );
+		}, String( "w13_agent_callback_stop" ), &jobId, kWaitMs )
+	    && agentPublished && sink->ActionSucceeded(),
+		"MONEY (w13): agent-worker completion callback rejects Stop instead of self-joining" );
+	Check( f.ctrl->SetPaneSink( 1, nullptr ),
+		"owner detaches stop-attempting sink for ordinary teardown" );
+	image->release();
+	sink->release();
+}
+
+static void RunRawDestructorClaimsBeforeDrainQuiescenceTest()
+{
+	std::printf( "=== scheduler (w14): raw destructor claims ownership before drain quiescence ===\n" );
+	const std::string path = WriteTemp( "pane_sched_w14_raw_destroy_claim.RISEscene", kScene );
+	Job* job = new Job();
+	Check( job->LoadAsciiSceneViaCst( path.c_str() ), "fixture scene loads" );
+	SceneEditController* controller = new SceneEditController( *job, nullptr );
+	DrainBlockingPaneSink* sink = new DrainBlockingPaneSink();
+	Check( controller->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && controller->SetPaneSink( 1, sink )
+	    && controller->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"Last Render drain fixture installs" );
+	IRasterImage* image = nullptr;
+	Check( RISE_API_CreateRISEColorRasterImage(
+			&image, 2, 2, RISEColor( RISEPel( 0.2, 0.4, 0.6 ), 1.0 ) )
+	    && image,
+		"drain image constructs" );
+	if( !image ) { sink->release(); return; }
+
+	// Hold a dirty callback first.  Its mutating SetProperty has already
+	// released controller/render admission before notification delivery, so a
+	// direct render can independently reach the registered-drain gate below.
+	Check( controller->SetSelection(
+			SceneEditController::Category::Camera, String( "cam" ) ),
+		"camera selected for dirty callback" );
+	std::atomic<bool> callbackEntered{ false };
+	std::atomic<bool> allowCallbackDestroy{ false };
+	std::atomic<bool> callbackDestroyReturned{ false };
+	controller->SetDirtyChangedListener( [&]( bool ) {
+		callbackEntered.store( true, std::memory_order_release );
+		while( !allowCallbackDestroy.load( std::memory_order_acquire ) )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		RISE_API_DestroySceneEditController( controller );
+		callbackDestroyReturned.store( true, std::memory_order_release );
+	} );
+	std::thread editThread( [&] {
+		(void)controller->SetProperty( String( "fov" ), String( "42" ) );
+	} );
+	for( unsigned int i = 0;
+	     i < 5000 && !callbackEntered.load( std::memory_order_acquire ); ++i )
+		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	Check( callbackEntered.load( std::memory_order_acquire ),
+		"dirty callback is held in flight" );
+
+	sink->Arm();
+	std::atomic<bool> renderReturned{ false };
+	std::thread renderThread( [&] {
+		(void)controller->RunPreviewRenderParked( [&] {
+			(void)controller->PublishAgentRenderImageParked( *image );
+		} );
+		renderReturned.store( true, std::memory_order_release );
+	} );
+	Check( sink->WaitUntilEntered( kWaitMs ),
+		"registered Last Render callback is held before raw destruction" );
+	std::atomic<bool> rawDestroyReturned{ false };
+	std::thread destroyThread( [&] {
+		delete controller;
+		rawDestroyReturned.store( true, std::memory_order_release );
+	} );
+	for( unsigned int i = 0;
+	     i < 5000 && !controller->IsRawDestructionInProgress(); ++i )
+		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	Check( controller->IsRawDestructionInProgress(),
+		"raw destructor publishes ownership before waiting on the registered drain" );
+	allowCallbackDestroy.store( true, std::memory_order_release );
+	editThread.join();
+	Check( callbackDestroyReturned.load( std::memory_order_acquire )
+	    && !rawDestroyReturned.load( std::memory_order_acquire ),
+		"MONEY (w14): callback C Destroy is rejected while the raw owner remains blocked on its earlier drain" );
+	sink->Release();
+	renderThread.join();
+	destroyThread.join();
+	controller = nullptr;
+	Check( renderReturned.load( std::memory_order_acquire )
+	    && rawDestroyReturned.load( std::memory_order_acquire ),
+		"raw owner completes after the registered drain retires" );
+	image->release();
+	sink->release();
+	job->release();
+	std::remove( path.c_str() );
+}
+
+static void RunCallbackPrepareRetryPersistsGestureTest()
+{
+	std::printf( "=== scheduler (w15): callback-local Prepare rejects without poisoning owner retry ===\n" );
+	const std::string path = WriteTemp( "pane_sched_w15_callback_prepare.RISEscene", kScene );
+	Job* job = new Job();
+	Check( job->LoadAsciiSceneViaCst( path.c_str() ), "fixture scene loads" );
+	const std::string before = Cst::SerializeCst( *job->GetCstDocument() );
+	SceneEditController* controller = new SceneEditController( *job, nullptr );
+	ReentrantPaneSink* sink = new ReentrantPaneSink(
+		ReentrantPaneSink::Action::PrepareController, 1, 1 );
+	sink->Bind( controller );
+	Check( controller->SetViewportLayout( SceneEditController::ViewportLayout::Quad )
+	    && controller->SetPaneSink( 1, sink ),
+		"prepare-attempting Last Render sink installs unarmed" );
+	controller->SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	controller->SetTool( SceneEditController::Tool::TranslateObject );
+	controller->OnPointerDown( Point2( 8, 8 ) );
+	controller->OnPointerMove( Point2( 24, 20 ) );
+	Check( controller->Editor().HasPendingCstObjectTransforms(),
+		"open drag has a pending live-only transform" );
+	sink->Arm();
+	Check( controller->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender )
+	    && sink->ActionSucceeded(),
+		"callback-local Prepare returns false without deadlock" );
+	Check( controller->Editor().HasPendingCstObjectTransforms(),
+		"callback-local refusal leaves the open interaction for the owner" );
+	Check( controller->PrepareForDestruction(),
+		"owner retries Prepare successfully after the callback returns" );
+	const std::string after = Cst::SerializeCst( *job->GetCstDocument() );
+	Check( after != before
+	    && !controller->Editor().HasPendingCstObjectTransforms(),
+		"MONEY (w15): owner retry persists and clears the open transform instead of inheriting a poisoned Prepared state" );
+	RISE_API_DestroySceneEditController( controller );
+	sink->release();
+	job->release();
+	std::remove( path.c_str() );
 }
 
 int main()
@@ -3296,9 +4989,34 @@ int main()
 	RunOutOfRangePaneNavRejectedTest();
 	RunLastRenderPaneSourceTest();
 	RunLostPointerUpWatchdogTest();
+	RunPointerWatchdogAfterRefinementSettlesTest();
 	RunActiveDragSurvivesSlowPassesTest();
+	RunPointerMoveWatchdogHandoffTest();
+	RunPointerDownRenderAdmissionHandoffTest();
+	RunTimeScrubBeginRenderAdmissionHandoffTest();
+	RunRenderFinalizesLostPointerUpTest();
+	RunDirectRenderFinalizesOpenInteractionsTest();
 	RunDestructorDoesNotTouchJobTest();
+	RunCAbiDestructionPersistsGestureTest();
+	RunGestureCommitFailureIsReportedTest();
+	RunUndoCommitFailureClosesRenderAdmissionTest();
 	RunLastRenderPublishOutsideLockTest();
+	RunLastRenderReentrantCallbacksAreBoundedTest();
+	RunLastRenderSourceSwitchBarrierTest();
+	RunThrowingLastRenderSinkIsContainedTest();
+	RunLastRenderDrainQuiescenceTest();
+	RunDestroyFromLastRenderCallbackIsRejectedTest();
+	RunDestroyFromSinkDestructorIsRejectedTest();
+	RunDestroyFromOrdinarySinkDetachIsRejectedTest();
+	RunDestroyFromQueuedSinkCleanupIsRejectedTest();
+	RunOrdinarySinkDestructorReentryTest();
+	RunRasterizerOwnedSinkDestructorReentryTest();
+	RunRasterizerSinkDestructorQueuesLastRenderTest();
+	RunDestructorRejectsOrdinarySinkReentryTest();
+	RunDestructorRejectsRollbackReentryTest();
+	RunStopFromLastRenderCallbackIsRejectedTest();
+	RunRawDestructorClaimsBeforeDrainQuiescenceTest();
+	RunCallbackPrepareRetryPersistsGestureTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

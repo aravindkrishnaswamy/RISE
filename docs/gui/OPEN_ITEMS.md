@@ -75,8 +75,10 @@ optimistic).  All three are fixed, each mutation-verified:
    reaches it via `Stop()` — violating the dtor's own documented no-`mJob`
    invariant, which exists because it previously caused a SIGSEGV.  The dtor
    now sets `mInDestructorTeardown` before `Stop()` and the cleanup is
-   skipped there.  Known, accepted: pending CST edits are dropped on
-   destruction rather than committed (matches pre-T0 behavior).
+   skipped there.  The public C-ABI destroy path now calls
+   `PrepareForDestruction()` while its owning Job is still guaranteed alive,
+   so normal shell teardown persists the final delta; only a raw C++
+   destructor retains the no-Job-touch safety fallback.
 3. **Last Render published under `mMutex`** — ADR rule 5 violation plus a
    UI-thread hitch.  Split into record-under-lock / drain-after-unlock.
    `RENDER_MODES.md` §7.3.
@@ -112,28 +114,46 @@ is Windows-guarded (a bare `<unistd.h>` would have broken the MSVC test
 build).  Pinned by scenario w4 (an active drag across passes 3× longer than
 the watchdog window).
 
-DEFERRED from that round, both documented in code:
-- **Destructor CST commit when the Job outlives the controller.**  Skipping
-  the cleanup is right when `mJob` may be dead, but the flag cannot tell the
-  two apart, and the normal shell teardown (window close mid-gizmo-drag)
-  DOES have a live Job — so that drag's final delta stays in the live scene
-  and never reaches the Document.  Matches pre-T0 behavior and is strictly
-  better than the UAF it replaces.  Real fix: an explicit
-  `PrepareForDestruction()` that the C-ABI destroy shims call while the
-  caller can still vouch the Job is alive.
-- **The watchdog does not break the render-refusal cycle it cites.**  It
-  restores sibling-pane rotation only; admission still refuses on raw
-  `mPointerDown` + `IsCompositeOpen()`, both true by design.  Breaking that
-  cycle means finalizing a gesture from the render thread.
+The two deferred lifecycle issues from that round are now closed:
+- **Job-live destruction persists the open gesture.**  The C-ABI destroy
+  shim calls `PrepareForDestruction()` before the destructor raises its
+  no-Job-touch guard.  The raw C++ destructor still deliberately performs
+  only the safe fallback because it cannot prove the borrowed Job is alive.
+- **A lost pointer-up no longer refuses a render forever.**  Full-render
+  admission calls `FinalizeOpenInteractions()` under the same recursive
+  admission lock as the complete Pointer Down/Move/Up transitions.  It
+  persists pending CST edits, closes the composite, then claims the scene as
+  one indivisible handoff.  Both desktop shells also finalize when disabling
+  interaction, so an Up dropped by the UI gate is recovered immediately.
+  A resumed move after watchdog expiry reclaims its original pane and
+  continues the same composite instead of remaining inert.
 
-**Pre-existing test flakiness (measured, NOT introduced here):**
-`ViewportPaneSchedulerTest` flakes at roughly 1 run in 10, always on a
-timing/"settles"/"quiesces" assertion (a different scenario each time).
-Measured at HEAD `b1e38e4e` with the round-8 changes stashed: 1 failure in
-10 runs ("initial rotation settles"); with them applied: 1 in 10
-("concurrent-shrink recovery quiesces", and separately scenario (n)).  Same
-rate, same class, so the fixes neither cause nor worsen it — but the settle
-assertions want a retry/backoff before this file is trusted in CI.
+Last Render delivery was hardened in the same sweep: each queued pane record
+carries both a content-source generation and a publish generation.  A
+global recursive delivery barrier makes validation plus callback start
+atomic with successful source/sink transitions and allows controller re-entry
+without cross-pane AB/BA deadlock; nested drains defer to the outer callback,
+and sink exceptions are contained at the notification boundary.  Teardown
+closes drain registration and waits for active callbacks; callback-local or
+controller-owned-final-release `Stop` / Destroy (including sink-destructor
+cleanup from ordinary replacement and teardown) is explicitly rejected and
+retried by the owner after return.  Slot/queue references are detached under
+their locks and final-released afterward; rasterizer output references are
+cleared after `mRendering=false`, also unlocked, and any destructor-queued Last
+Render record is drained immediately after that callout.  Destructor-body
+resource retirement permanently closes the established agent/render mutation
+gates, so ordinary setter re-entry from a final sink destructor fails closed
+before it can touch partially dismantled state.  The
+macOS and Windows shells convert immutable
+production-sized Last Render images off the UI thread, cancel invalidated
+work at scanline boundaries, and keep a separate frozen-image ticket so every
+ordinary interactive frame still presents in order.
+
+**Scheduler test-oracle hardening completed in this sweep:** pass-start counts
+were separated from true pass retirement, nonblocking getters are retried by
+contract, and selection-triggered refreshes are fully retired before sequence
+windows are cleared.  Repeated focused runs are now stable; failures from the
+new lifecycle scenarios are mutation-proven rather than timing-only witnesses.
 
 Round-8 P3s NOT acted on: `RENDER_MODES.md` claimed "12 focused failures" on
 removing the T0 guard (measured 14); the T0 scrub watchdog now also snaps the
@@ -166,8 +186,13 @@ in the same round).
    `Cst::RoleMatchesKindConstraint`, also used by the remove-chunk kind
    re-verify and CstIntrospection's defensive check (which previously
    suffix-only-refused registry-classified kinds, e.g. function-as-painter).
-3. **Destructor quiescence barrier** — `~SceneEditController` now detaches
-   the dirty listener (a quiescence barrier) as its FIRST statement.
+3. **Destructor quiescence barrier** — `~SceneEditController` now publishes
+   its raw-destruction ownership gate as its first action, then closes Last
+   Render drain registration and terminally closes dirty-listener registration.
+   The detached listener target is released only after `Stop()` and the
+   permanent mutation gates, outside the listener mutex.  C-API Destroy and
+   explicit Prepare use the same single-owner lifecycle state machine, so a
+   dirty callback cannot recursively prepare/delete while its owner waits.
 4. **`OnTimeScrub{Begin,,End}` refusal returns** — documented in
    `RISE_API.h` (verified claim-by-claim against the implementations).
 5. **Test holes** — T20 (positive cross-category narrowing) + T22

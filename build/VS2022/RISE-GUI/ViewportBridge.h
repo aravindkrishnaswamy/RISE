@@ -157,6 +157,9 @@ public:
     /// stopped".  Wired to RISE_API_SceneEditController_StopInteractive
     /// instead; see that function's doc.
     void stop();
+    /// Persist and close any controller-owned gesture before the shell drops
+    /// its matching release event. Safe when no interaction is active.
+    bool finalizeOpenInteractions();
     bool isRunning() const { return m_running; }
 
     /// Shrink the scene Film so the interactive preview renders at a

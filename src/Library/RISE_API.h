@@ -3462,8 +3462,28 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController** ppOut
 		);
 
-	//! Destroy a controller.  Stops the render thread first.
+	//! Destroy a controller.  The borrowed Job must still be alive (the same
+	//! lifetime contract as Create); pending interactions are finalized first.
+	//! A call re-entered synchronously from a Last Render sink callback or final
+	//! controller-owned sink release is rejected: the callout may be inside its
+	//! own drain or a controller mutation, and asynchronous delete would violate
+	//! the synchronous lifetime contract for borrowed sinks.  Return from the
+	//! callout and call Destroy from the owner thread.  A concurrent/re-entrant
+	//! call after a raw C++ destructor has begun is likewise rejected.
 	void RISE_API_DestroySceneEditController( SceneEditController* p );
+
+	//! Explicit terminal Job-alive teardown preparation.  Detaches callbacks,
+	//! stops the controller, and is safe to call redundantly.  Returns false if
+	//! pending interaction persistence fails or if called from a Last Render
+	//! callback/final release that cannot synchronously tear down its owner;
+	//! DestroySceneEditController calls it automatically.
+	bool RISE_API_SceneEditController_PrepareForDestruction(
+		SceneEditController* p );
+
+	//! Finalize controller-owned pointer/time/property interactions whose
+	//! platform End event may have been dropped.
+	bool RISE_API_SceneEditController_FinalizeOpenInteractions(
+		SceneEditController* p );
 
 	//! Start the controller's render thread.
 	bool RISE_API_SceneEditController_Start( SceneEditController* p );

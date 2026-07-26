@@ -781,20 +781,26 @@ gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
 
 **Gesture exclusivity is watchdog-bounded** (round-8 review fix, 2026-07-25).
 Because the pin both selects the pane AND suppresses the rotation arm, a
-gesture flag that never clears would freeze every sibling permanently — and a
-shell CAN drop the pointer-up (both viewports guard their pointer handlers on
-an `interactionEnabled` flag that a chat/agent render request flips, while the
-core-side render is separately REFUSED because a gesture is open, so no
-teardown path runs either).  After `kPointerWatchdogMs` (10 s) of pointer
+gesture flag that never clears would freeze every sibling permanently.  This
+was reachable when a shell's `interactionEnabled` gate dropped pointer-up as a
+chat/agent render started; explicit shell/core finalization now closes that
+path, while the watchdog remains a platform-loss safety net.  After
+`kPointerWatchdogMs` (10 s) of pointer
 inactivity the render thread marks the gesture STALE: the pin releases and the
 rotation arm re-enables, so siblings recover.  `mPointerDown` deliberately
 stays SET — clearing it would make a late `OnPointerUp` early-return and
-strand the gesture's open composite, which blocks agent D2 renders
-indefinitely.  `OnPointerMove` refuses while stale (the live pane registers
-may now belong to a sibling, so applying a delta would move the WRONG pane's
-camera), so a resumed drag is inert until release + re-click.  Every gesture
-boundary clears the flag.  The scrub twin of this recovery is
-`kScrubWatchdogMs`; teardown is covered by `StopInteractive`.
+strand the gesture's open composite.  A resumed `OnPointerMove` cancels and
+parks any sibling pass, reloads the original gesture pane, clears stale, and
+continues the SAME composite.  Render requests and shell interaction-disable
+transitions call `FinalizeOpenInteractions()`: Pointer Down/Move/Up and this
+finalizer share one recursive admission lock, so pending CST state is
+persisted and the composite closes before a full render can claim the scene.
+The scrub twin of this recovery is `kScrubWatchdogMs`; Job-live C-ABI teardown
+calls `PrepareForDestruction()`, while the raw C++ destructor keeps its
+no-borrowed-Job-touch fallback.  The render thread keeps a bounded watchdog
+wake armed even after motion refinement reaches divisor 1; otherwise a lost
+Up at full preview resolution could sleep indefinitely with no event left to
+drive the stale transition.
 
 **Invalidation matrix**:
 
@@ -825,13 +831,47 @@ other `mMutex` caller meanwhile).  Now
 (addref'ing both sink and image, coalescing per pane so the queue is bounded
 by the pane count and only the newest frame is delivered), and
 `DrainLastRenderPublishes_` performs it with NO controller lock held.  Drain
-sites: the two pane setters (right after their own unlock),
+also retires displaced/evicted records: their owning references are transferred
+to a release-only list under the queue lock and released only after every
+non-recursive controller/queue lock is dropped, because a final sink destructor
+is arbitrary owner code and may re-enter an ordinary getter or setter.  Drain
+sites are the two pane setters (right after their own unlock),
 `RunPreviewRenderParked` and the agent render worker (which CANNOT drain at
 the completion site — they hold `mMutex` for the render's whole duration), and
 a per-frame catch-all in `RefreshProperties`, so a missed site degrades to a
-one-frame delay rather than a lost image.  Queue order is established under
-`mMutex` and drains are serialized, so a stale frame can never land after a
-newer one.
+one-frame delay rather than a lost image.  Each record captures both the
+pane's content-source generation and its latest publish generation.  A
+global recursive delivery barrier makes the generation check plus callback
+start atomic with successful source/sink setters and permits same-thread sink
+re-entry.  Global serialization is intentional: independent pane callbacks may
+re-enter setters for each other's panes, which makes per-pane callback-held
+locks susceptible to AB/BA deadlock.  Nested drains are deferred until the
+outer callback returns, and sink exceptions are logged and contained at this
+notification boundary.  Destruction waits for registered drains; synchronous
+`Stop` / Destroy from inside a Last Render callback or any controller-owned
+final sink release/destructor cleanup is rejected and must be retried by the
+owner after the callout returns.  Once the controller destructor itself begins
+resource retirement, it claims lifecycle ownership before any drain wait.
+Job-live Prepare/C-API Destroy and raw destruction share a single-owner state
+machine, so concurrent or callback-reentrant preparation/deletion is rejected.
+Dirty-listener registration closes atomically with detach; its retired callback
+target is released outside the listener mutex only after Stop and the permanent
+agent/render mutation gates.  Ordinary callback/sink-destructor setter re-entry
+then fails closed instead of touching partially dismantled state or adding
+references the destructor has already swept.  Desktop sinks tag these records with
+`kLastRenderSinkFrame`: unlike live rasterizer buffers, the retained images
+are immutable and addref-owned, so macOS and Windows convert them off the UI
+thread, stop invalidated conversions at scanline boundaries, and use a
+separate Last Render ticket so every ordinary interactive frame still reaches
+the UI in order.
+
+Interactive rasterizers retain their output sink too.  Each render quantum now
+retains the exact rasterizer it used, publishes `mRendering=false`, and only
+then clears that rasterizer's outputs in an unlocked lifecycle-callout scope.
+This makes a rasterizer-owned final sink destructor safe to re-enter a
+park-capable controller mutation.  Any Last Render record queued by that
+destructor is drained immediately after the lifecycle scope ends, so a headless
+or idle owner does not need an unrelated UI refresh to receive it.
 
 ### 7.4 C-ABI (additive; existing calls = pane 0)
 

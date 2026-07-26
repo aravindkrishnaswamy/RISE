@@ -1255,6 +1255,44 @@ namespace RISE
 		//! a full Stop(), since Start() only ever looks at mRunning.
 		void StopInteractive();
 
+		//! Finalize every controller-owned UI interaction that may have lost
+		//! its platform End event.  Pending object/camera deltas are committed
+		//! to the retained Document and only controller-owned composites are
+		//! closed.  Coordinated render admission calls this before claiming the
+		//! scene, so a render requested mid-drag cannot strand the gesture.
+		bool FinalizeOpenInteractions();
+
+		//! Job-alive destruction boundary.  Raw C++ destruction cannot safely
+		//! touch mJob because some direct owners destroy the Job first; C-ABI
+		//! owners promise the borrowed Job outlives this controller.  Their
+		//! destroy shim calls this before delete so callbacks are detached and an
+		//! open gesture is persisted.  This is a terminal preparation call.
+		//! Returns false if persistence failed, or if invoked synchronously from
+		//! a Last Render sink callback/controller-owned final release (that
+		//! callout may be inside its own drain or a controller mutation).
+		bool PrepareForDestruction();
+
+		//! C destroy shim's single-owner terminal claim.  Unlike the public
+		//! idempotent Prepare call, this atomically reserves the eventual delete
+		//! before any callback/drain quiescence wait.  Returns false when another
+		//! Prepare/Destroy/raw destructor already owns the lifecycle transition.
+		bool PrepareForDestructionForDelete();
+
+		//! True after a raw C++ destructor has begun.  The C destroy shim uses
+		//! this to reject a concurrent/re-entrant second delete while the raw
+		//! destructor is quiescing an in-flight dirty callback.
+		bool IsRawDestructionInProgress() const
+		{
+			return mInDestructorTeardown.load( std::memory_order_acquire );
+		}
+
+		//! C-ABI teardown helper: true while this thread is executing one of this
+		//! controller's Last Render sink callbacks or releasing a controller-owned
+		//! sink reference that may invoke its final destructor.  Synchronous
+		//! Destroy is rejected in that state; the owner must retry after the
+		//! callout returns.
+		bool IsInLastRenderSinkCallbackOnThisThread() const;
+
 		// Refinement pause + status (UI redesign, design brief A2) ------
 		// "The viewport is the renderer": explicit user-facing Pause /
 		// Resume of progressive refinement, plus an HONEST status
@@ -1335,6 +1373,10 @@ namespace RISE
 		//! Idempotent.  This is the FULL teardown; it's what the
 		//! destructor calls (via RISE_API_DestroySceneEditController) and
 		//! is correct there because the controller itself is going away.
+		//! Rejected synchronously from a Last Render sink callback or final
+		//! controller-owned sink release; that callout may be inside a counted
+		//! direct call, the agent worker, a setter, or teardown itself, so lifecycle
+		//! teardown must be retried by the owner after the callout returns.
 		//! It is very likely NOT what a platform shell wants to call
 		//! merely to pause the interactive viewport ahead of a production
 		//! render -- see StopInteractive() above for that case.
@@ -1810,6 +1852,17 @@ namespace RISE
 		bool ForTest_PointerDown() const
 		{
 			return mPointerDown.load( std::memory_order_acquire );
+		}
+
+		bool ForTest_ScrubInProgress() const
+		{
+			return mScrubInProgress.load( std::memory_order_acquire );
+		}
+
+		bool ForTest_DestructionClaimed() const
+		{
+			return mDestructionState.load( std::memory_order_acquire )
+			    != DestructionOpen;
 		}
 
 		//! T0 pause-state oracle setup: arm the current pane's normal
@@ -2479,6 +2532,9 @@ namespace RISE
 		};
 
 		static constexpr unsigned int kViewportPaneCount = 4;
+		//! Frame marker used for persistent Last Render sink delivery.  Shipping
+		//! GUI sinks use it to move full-resolution conversion off the UI caller.
+		static constexpr unsigned int kLastRenderSinkFrame = ~0u;
 
 		//! user-review P1-3: an atomic snapshot of the whole pane set, captured
 		//! WITH the interactive frame (not read back through the individual
@@ -2693,6 +2749,14 @@ namespace RISE
 		//! pass body runs.  Tests use it to force observation of the first
 		//! post-gesture context switch.
 		virtual void ForTest_OnInteractivePassMinted() {}
+		//! Called after mRendering=false is published for a completed/cancelled
+		//! quantum but before the rasterizer drops its retained output refs.
+		//! Tests use it to force controller sink detachment while the rasterizer
+		//! remains the final sink owner.
+		virtual void ForTest_OnInteractivePassBeforeOutputDetach() {}
+		//! Called after a pass body and every base RenderLoop post-pass transition
+		//! (cancellation requeue or polish/rotation arm) have fully retired.
+		virtual void ForTest_OnInteractivePassRetired() {}
 
 		//! T0 RED-PROVE seam: called by OnPointerUp after the gesture pane's
 		//! final-render/polish state and edit wake have been published as one
@@ -2701,6 +2765,34 @@ namespace RISE
 		//! polish marker was installed before (and on the correct side of) that
 		//! context switch.  No-op in production.
 		virtual void ForTest_OnPointerUpAfterFinalRenderArmed() {}
+
+		//! Called after PointerDown publishes the live gesture but before it
+		//! opens the tool composite.  The full Down transition must still own
+		//! render admission here; tests hold this point to prove a render cannot
+		//! finalize a half-constructed gesture.
+		virtual void ForTest_OnPointerDownAdmitted() {}
+
+		//! Called after TimeScrubBegin opens its composite but before returning.
+		//! The begin transition must still own admission here so a render cannot
+		//! finalize the scrub halfway through its construction.
+		virtual void ForTest_OnTimeScrubBeginAdmitted() {}
+
+		//! Called while mMutex protects the definitive move/watchdog handoff,
+		//! after the move is counted in-flight.  Test subclasses can hold this
+		//! point to prove the watchdog cannot stale an admitted move.
+		virtual void ForTest_OnPointerMoveAdmitted() {}
+
+		//! Called after a Last Render drain has registered its lifetime use but
+		//! before it acquires the callback/start barrier.  Tests hold this seam
+		//! to prove teardown closes registration without deadlocking a registered
+		//! drain that still needs the barrier.
+		virtual void ForTest_OnLastRenderDrainRegistered() {}
+		//! Called after teardown has closed new Last Render drain registration,
+		//! immediately before it waits for existing registrations to retire.
+		virtual void ForTest_OnLastRenderQuiesceStarted() {}
+		//! Called immediately before a pane source transition attempts the global
+		//! Last Render callback/start barrier.
+		virtual void ForTest_OnLastRenderTransitionAttempt( unsigned int ) {}
 
 		//! Fix-round-4 P2 RED-PROVE test hook, the WORKER-side twin of
 		//! ForTest_OnAboutToMintInteractivePass above.  Called by
@@ -2715,6 +2807,9 @@ namespace RISE
 		//! deterministic shot at that race instead of relying on raw
 		//! scheduler timing.  No-op in production.
 		virtual void ForTest_OnAgentWorkerAboutToParkRender() {}
+		//! Called by coordinated submission immediately before it attempts the
+		//! render-admission mutex used by interaction begin/finalize transitions.
+		virtual void ForTest_OnCoordinatedRenderAdmissionAttempt() {}
 
 		//! Direct-render teardown RED-PROVE hook. Called after a
 		//! RunPreviewRenderParked caller has registered its lifetime with
@@ -2737,6 +2832,7 @@ namespace RISE
 		virtual void ForTest_OnSaveEngineAboutToRun() {}
 
 	private:
+		bool PrepareForDestructionClaimed_();
 		void RenderLoop();
 		void KickRender();
 
@@ -3634,14 +3730,11 @@ namespace RISE
 		// window: a held-still drag is legitimate and common (the user is
 		// looking, not dragging), and the recovery ends that gesture, so
 		// the threshold must be well past any plausible deliberate pause.
-		// SCOPE, stated honestly (review): this restores SIBLING-PANE
-		// ROTATION only.  It does NOT break the render-refusal cycle in the
-		// scenario above -- every admission check keys on raw mPointerDown
-		// and on IsCompositeOpen(), both still true by design (the flag stays
-		// set precisely so a late pointer-up can finalize, and finalizing is
-		// what closes the composite).  Breaking that cycle would mean
-		// finalizing a gesture from the render thread; the frozen-viewport
-		// symptom recovered here is the filed defect.
+		// The stale state releases sibling rotation while the pointer is idle.
+		// A later Move atomically reclaims mGesturePane and resumes the same
+		// composite, so a legitimate long hold is not made inert.  A render
+		// request instead calls FinalizeOpenInteractions before admission,
+		// closing the composite and clearing raw mPointerDown.
 		static constexpr int        kPointerWatchdogMs = 10000;
 
 		//! Live threshold for the arm above.  A member (not the constant
@@ -3666,12 +3759,16 @@ namespace RISE
 		// close + pending-CST commit).  Clearing mPointerDown here instead
 		// would make that pointer-up early-return and strand the open
 		// composite, which blocks agent D2 renders indefinitely.
-		// OnPointerMove refuses while stale (the gesture is over; the live
-		// pane registers may now belong to a different pane, so applying a
-		// delta would orbit the WRONG pane's camera).  Cleared by every
+		// OnPointerMove parks any sibling pass, reloads mGesturePane, and then
+		// clears stale before applying the resumed delta.  Cleared by every
 		// gesture-boundary path: pointer down/up on either entry point,
 		// StopInteractive's orphan cleanup, and the layout-shrink clear.
 		std::atomic<bool>           mPointerGestureStale{ false };
+		//! Sticky truth flag for a gesture-finalization route failure.  Commit
+		//! helpers consume their pending sets even on failure, so admitting a
+		//! later render as though persistence succeeded would silently lose the
+		//! live edit on re-derive.  Finalize/Prepare report false once tripped.
+		std::atomic<bool>           mInteractionPersistenceFailed { false };
 
 		//! Round-8 review P1 fix: POINTER-ACTIVITY clock for the watchdog
 		//! above -- deliberately NOT mLastEditTimeMs.  That timestamp is
@@ -3687,7 +3784,7 @@ namespace RISE
 		//! any wait.
 		std::atomic<long long>      mLastPointerActivityMs { 0 };
 
-		//! Round-8 review P1 fix: count of OnPointerMove calls currently
+		//! Count of OnPointerMove calls currently
 		//! executing (including one parked in the render-completion wait).
 		//! The activity stamp alone is not sufficient: while a long pass runs,
 		//! the UI thread is BLOCKED inside OnPointerMove, so no new stamp can
@@ -3697,17 +3794,27 @@ namespace RISE
 		//! non-zero.
 		std::atomic<int>            mPointerMovesInFlight { 0 };
 
-		// Round-8 review P2 fix: set by ~SceneEditController BEFORE Stop(),
+		// Set by ~SceneEditController BEFORE Stop(),
 		// so StopInteractive's orphaned-gesture cleanup skips its
 		// CommitPendingCst* calls on the destructor path.  Those route
 		// through mJob (CstObjectTransformKind -> a full D2 re-derive), and
 		// this dtor CANNOT touch mJob -- several owners legitimately destroy
 		// the Job first (the `controller.Stop(); pJob->release();` pattern
 		// with a stack controller destroyed afterwards), which is exactly the
-		// use-after-free the dtor's own NOTE documents.  The cleanup exists
-		// to sanitize interaction state for a LATER Start(); on destruction
-		// there is no later Start(), so skipping it loses nothing.
+		// use-after-free the dtor's own NOTE documents.  C-ABI destruction
+		// first calls PrepareForDestruction while its Job-outlives-controller
+		// contract still holds; only raw fallback destruction skips the flush.
 		std::atomic<bool>           mInDestructorTeardown{ false };
+		enum DestructionState
+		{
+			DestructionOpen = 0,
+			DestructionPreparing,
+			DestructionPrepared,
+			DestructionDeletePreparing,
+			DestructionDestroying
+		};
+		std::atomic<int>            mDestructionState{ DestructionOpen };
+		std::atomic<bool>           mPreparationSucceeded{ true };
 
 		// Set by RenderLoop before DoOneRenderPass when the upcoming
 		// pass was triggered by an idle-refinement timeout (not by a
@@ -3913,31 +4020,56 @@ namespace RISE
 			IRasterizerOutput* sink  = nullptr;   //!< owning addref
 			IRasterImage*      image = nullptr;   //!< owning addref (the retained frame or a placeholder)
 			unsigned int       pane  = 0;
+			unsigned long long sourceGeneration = 0;
+			unsigned long long publishGeneration = 0;
 		};
+		//! Incremented on every content-source transition.  Deferred records
+		//! whose captured generation no longer matches are discarded before
+		//! they can overwrite a pane that has returned to Interactive output.
+		std::atomic<unsigned long long> mPaneContentGeneration[kViewportPaneCount] {};
+		//! Latest queued image identity per pane.  A newer production frame or
+		//! sink replacement invalidates an older detached batch even when the
+		//! content source itself has not changed.
+		std::atomic<unsigned long long> mPaneLastRenderPublishGeneration[kViewportPaneCount] {};
 		//! LEAF mutex: guards the queue only.  Acquired while holding mMutex
 		//! (record side) and alone (drain side) -- never the reverse, and no
 		//! other lock is ever taken while it is held.
 		mutable std::mutex          mLastRenderPublishMutex;
 		std::vector<PendingLastRenderPublish> mPendingLastRenderPublishes;
-		//! Serializes DRAINS so queue order (established under mMutex) is the
-		//! delivery order.  Never acquired while holding mMutex.
-		std::mutex                  mLastRenderDrainMutex;
+		//! Superseded/evicted records whose owning refs must be released only
+		//! after controller and queue locks are dropped.  Normal setter/render
+		//! tails drain this immediately; teardown drains any residual entries.
+		std::vector<PendingLastRenderPublish> mRetiredLastRenderPublishes;
+		//! One callback/start barrier for every pane.  A global recursive barrier
+		//! deliberately serializes arbitrary sink callbacks: per-pane locks allow
+		//! two callbacks to re-enter setters for each other's panes and AB/BA
+		//! deadlock.  Recursive is required for same-thread controller re-entry;
+		//! nested drains themselves are deferred until the outer callback returns.
+		std::recursive_mutex        mLastRenderDeliveryMutex;
+
+		//! Every DrainLastRenderPublishes_ call registers before touching queue,
+		//! barrier, or callback state.  Job-live teardown closes registration and
+		//! waits for the active count to reach zero, preventing deletion while a
+		//! callback or detached batch still uses controller members.
+		mutable std::mutex          mLastRenderDrainStateMutex;
+		std::condition_variable     mLastRenderDrainDoneCV;
+		unsigned int                mLastRenderDrainCalls = 0;
+		bool                        mLastRenderDrainsStopping = false;
+		bool         BeginLastRenderDrain_();
+		void         EndLastRenderDrain_();
+		void         QuiesceLastRenderDrains_();
 
 		//! Record a pane's last-render delivery.  REQUIRES mMutex held.
 		//! Coalesces per pane (only the newest frame matters), which also
 		//! bounds the queue at kViewportPaneCount entries.
 		void         QueueLastRenderPublishLocked_( unsigned int pane );
-		//! Deliver every queued frame.  MUST be called with NO controller lock
+		//! Deliver every queued frame and retire displaced records.  MUST be called with NO controller lock
 		//! held -- including mRenderAdmissionMutex, which the pane setters
 		//! take (holding it across a sink callback is the same ADR rule-5
 		//! hazard as holding mMutex).  Safe to call when the queue is empty
 		//! (the common case).
-		//! `blocking` false = give up if another thread is already delivering.
-		//! The per-frame UI catch-all passes false: RefreshProperties'
-		//! contract is that it NEVER blocks the UI thread (it try_locks mMutex
-		//! for exactly this reason), and a sink's per-pixel conversion of a
-		//! full-resolution frame can hold the drain for tens of ms per pane.
-		//! Missing a drain there costs one frame; blocking costs a stall.
+		//! `blocking` controls whether the global callback/start barrier may wait;
+		//! stale detached batches are generation-skipped.
 		void         DrainLastRenderPublishes_( bool blocking = true );
 
 		//! P3a slice 3: the CURRENT pane's surface dims, stamped at the

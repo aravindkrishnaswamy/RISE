@@ -299,6 +299,11 @@ struct MultiPaneViewportView: View {
             if enabled {
                 applyMultiViewModePreset()
                 retryPendingSurfaceSizes()
+            } else {
+                // The matching pointer-up will be gated below once interaction
+                // is disabled.  Persist/close the core gesture first so an
+                // agent or production render cannot inherit an open composite.
+                _ = bridge.finalizeOpenInteractions()
             }
         }
         // A hosted/direct AgentSession render can own core admission without
