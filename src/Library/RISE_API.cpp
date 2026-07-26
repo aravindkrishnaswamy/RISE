@@ -6186,7 +6186,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 #ifndef RISE_ENABLE_OPENPGL
@@ -6241,7 +6241,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		if( pSamples && pFilter ) {
@@ -6309,7 +6309,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -6366,7 +6366,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -6464,7 +6464,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -6536,7 +6536,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -6613,7 +6613,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -6795,7 +6795,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -6858,7 +6858,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		// Install the pixel filter (and sampler, if any) on the base
@@ -6941,7 +6941,7 @@ namespace RISE
 		}
 		(void)oidnQuality;
 		(void)oidnDevice;
-		(void)oidnPrefilter;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		// See RISE_API_CreateMLTRasterizerWithFilter above — install the

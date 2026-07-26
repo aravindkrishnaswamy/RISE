@@ -208,8 +208,11 @@ namespace RISE
 			//! Encode a conventional 2x2 diagnostic atlas from the compact
 			//! sidecar captured with the last frame: beauty | albedo on the
 			//! first row, world normal | log depth on the second.  maxEdge
-			//! bounds the whole atlas and never upscales.  Encoding holds one
-			//! RGBA scanline at a time; PerceptionInfo::encoderRowBytes reports
+			//! bounds the whole atlas and never upscales. Beauty honors
+			//! SetOutputColorSpace; guide panels remain stable
+			//! sRGB display fields independent of the beauty output setting.
+			//! Encoding holds one RGBA scanline at a time;
+			//! PerceptionInfo::encoderRowBytes reports
 			//! that bounded uncompressed working set (the returned compressed
 			//! PNG vector is the response payload and is necessarily retained).
 			std::vector<unsigned char> ToPerceptionPng(

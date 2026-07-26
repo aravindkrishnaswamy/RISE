@@ -108,6 +108,30 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// Owns a RISE ref-counted image through a raw reference slot. Binding
+	// the guard before RenderFrameOfMLT also covers an exception after that
+	// function has populated its out-parameter.
+	class RasterImageGuard
+	{
+	public:
+		explicit RasterImageGuard( IRasterImage*& image_ ) : image( image_ ) {}
+		~RasterImageGuard()
+		{
+			if( image ) {
+				image->release();
+				image = 0;
+			}
+		}
+
+	private:
+		RasterImageGuard( const RasterImageGuard& );
+		RasterImageGuard& operator=( const RasterImageGuard& );
+		IRasterImage*& image;
+	};
+}
+
 //////////////////////////////////////////////////////////////////////
 // Constructor / Destructor
 //////////////////////////////////////////////////////////////////////
@@ -1137,6 +1161,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 		// intermediate image after sending its preview; the final
 		// round's image is transferred to the caller via pImageOut.
 		IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
+		RasterImageGuard imageGuard( pImage );
 		pSplatFilm->Resolve( *pImage, fraction );
 
 		if( !isFinalRound )
@@ -1184,10 +1209,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 				safe_release( pImageOut );
 			}
 			pImageOut = pImage;	// transfer refcount
-		}
-		else
-		{
-			safe_release( pImage );
+			pImage = 0;
 		}
 	}
 
@@ -1254,6 +1276,7 @@ void MLTRasterizer::RasterizeScene(
 	pIntegrator->SetLightSampler( pLS );
 
 	IRasterImage* pImage = 0;
+	RasterImageGuard imageGuard( pImage );
 	(void) RenderFrameOfMLT( pScene, *pCamera, width, height, pImage );
 
 	// Flush the final image at frameIdx=0.  Even on cancel we still
@@ -1295,8 +1318,6 @@ void MLTRasterizer::RasterizeScene(
 		{
 			FlushToOutputs( *pImage, 0, 0 );
 		}
-
-		safe_release( pImage );
 	}
 }
 
@@ -1400,6 +1421,7 @@ void MLTRasterizer::RasterizeSceneAnimation(
 #endif
 
 		IRasterImage* pImage = 0;
+		RasterImageGuard imageGuard( pImage );
 		// Whole-animation progress: redirect the per-frame progress sink
 		// through a FrameSlotProgressCallback so MLT's phase-based 0..1
 		// reporting advances the OVERALL bar across this frame's slot
@@ -1424,9 +1446,6 @@ void MLTRasterizer::RasterizeSceneAnimation(
 			// denoise — the MOV writer's tail must stay clean so
 			// prior completed frames play back correctly after
 			// the caller finalize()s the writer.
-			if( pImage ) {
-				safe_release( pImage );
-			}
 			cancelled = true;
 			GlobalLog()->PrintEx( eLog_Event,
 				"MLTRasterizer:: Animation cancelled during frame %u of %u; "
@@ -1469,8 +1488,6 @@ void MLTRasterizer::RasterizeSceneAnimation(
 			{
 				FlushToOutputs( *pImage, 0, frameIdx );
 			}
-
-			safe_release( pImage );
 		}
 	}
 

@@ -66,7 +66,8 @@ they have no PNG transport encoder.
 The planes use these meanings:
 
 - **Beauty:** the same linear render cached for ordinary `read_image`, with
-  the scene's display exposure/tone curve applied during atlas encoding.
+  the scene's display exposure/tone curve and output color space applied
+  during atlas encoding. Guide panels remain stable sRGB display fields.
 - **Albedo:** first useful surface's diffuse reflectance, clamped to `[0,1]`.
 - **Normal:** world-space shading normal, mapped from `[-1,1]` to display RGB;
   misses are black.
@@ -79,8 +80,9 @@ The planes use these meanings:
 The normal/albedo surface follows the existing OIDN prefilter rule: `fast`
 means camera first hit, while `accurate` may walk through delta/specular
 vertices to the first non-delta surface. Depth never walks with that selection.
-This is intentional sharing with the renderer's established auxiliary-signal
-semantics.
+This semantic selection is honored whether or not the build includes OIDN;
+it is intentional sharing with the renderer's established auxiliary-signal
+semantics, not a dependency on the denoiser.
 
 ## One render, planned channels
 
@@ -172,7 +174,8 @@ albedo/normal/depth propagation, and the zero-consumer plan. The end-to-end
 `AgentFirstSliceTest` locks transport defaults, the stable atlas layout, PNG
 validity and dimensions, bounded encoder-row metadata, depth metadata,
 83/7-byte accounting, whole-atlas `maxEdge`, invalid representation handling,
-and the allocation/stale-cache behavior of `perception:false`.
+the allocation/stale-cache behavior of `perception:false`, and byte parity
+between conventional and atlas beauty under a non-sRGB output color space.
 `AgentFrameStoreIsolationTest` additionally crosses shader dispatch, PT, BDPT,
 and VCM across their supported RGB/spectral modes to lock primary-hit depth
 semantics through glass. Shader dispatch covers RGB, scalar wavelength, and

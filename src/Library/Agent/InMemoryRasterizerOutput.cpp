@@ -232,6 +232,23 @@ void InMemoryRasterizerOutput::SetOutputColorSpace( int colorSpace )
 
 namespace
 {
+#ifndef NO_PNG_SUPPORT
+	RGBA8 IntegerizePerceptionBeauty( const RISEColor& color, int colorSpace )
+	{
+		switch( static_cast<COLOR_SPACE>( colorSpace ) ) {
+		case eColorSpace_Rec709RGB_Linear:
+			return color.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
+		case eColorSpace_ROMMRGB_Linear:
+			return color.Integerize<ROMMRGBPel, unsigned char>( 255.0 );
+		case eColorSpace_ProPhotoRGB:
+			return color.Integerize<ProPhotoRGBPel, unsigned char>( 255.0 );
+		case eColorSpace_sRGB:
+		default:
+			return color.Integerize<sRGBPel, unsigned char>( 255.0 );
+		}
+	}
+#endif
+
 	//! Shared PNG-encode tail for ToPng / ToPngDownscaled: write `w`x`h`
 	//! pixels from `pels` (row-major) through the tree's PNGWriter (the
 	//! REQUESTED `colorSpace`'s Integerize + libpng) into an in-memory
@@ -585,7 +602,14 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 				mapped.b *= exposureMul;
 				mapped = DisplayTransforms::Apply( dt, mapped );
 			}
-			const RGBA8 pixel = RISEColor( mapped, 1.0 ).Integerize<sRGBPel, unsigned char>( 255.0 );
+			const RISEColor encodedColor( mapped, 1.0 );
+			// Beauty follows the configured output colour space exactly like
+			// ToPng()/PNGWriter.  Diagnostic guide panels deliberately remain
+			// stable sRGB display fields so their interpretation is independent
+			// of the authored beauty-output colour space.
+			const RGBA8 pixel = panel == 0
+				? IntegerizePerceptionBeauty( encodedColor, mColorSpace )
+				: encodedColor.Integerize<sRGBPel, unsigned char>( 255.0 );
 			const std::size_t byte = static_cast<std::size_t>( ax ) * 4u;
 			row[byte + 0] = pixel.r;
 			row[byte + 1] = pixel.g;

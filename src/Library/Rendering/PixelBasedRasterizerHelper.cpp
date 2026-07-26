@@ -95,12 +95,10 @@ void PixelBasedRasterizerHelper::PrepareRuntimeContext( RuntimeContext& rc ) con
 	// Forward the rasterizer's prefilter mode into the per-thread
 	// RuntimeContext so integrators that inline-accumulate AOVs know
 	// whether to record at first hit (Fast) or first non-delta scatter
-	// (Accurate).  Field is harmless on integrators that don't read it.
-#ifdef RISE_ENABLE_OIDN
+	// (Accurate).  Perception AOV capture is available independently of
+	// OIDN, so preserve the requested semantic mode in no-OIDN builds too.
+	// The field is harmless on integrators that don't read it.
 	rc.aovPrefilterMode = mDenoisingPrefilter;
-#else
-	rc.aovPrefilterMode = OidnPrefilter::Fast;
-#endif
 }
 
 void PixelBasedRasterizerHelper::PrepareAOVBuffers_( unsigned int width, unsigned int height ) const

@@ -43,8 +43,11 @@
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Agent/Base64.h"
+#include "../src/Library/Agent/InMemoryRasterizerOutput.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Reference.h"
@@ -178,9 +181,51 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	return JsonSerialize( r );
 }
 
+static void TestPerceptionBeautyColorSpaceParity()
+{
+	using namespace RISE::FrameStoreOutput;
+	using RISE::Implementation::FrameStore;
+
+	FrameStore::Spec spec;
+	spec.width = spec.height = 1;
+	spec.tileEdge = 1;
+	spec.aovChannels = { ChannelId::Albedo, ChannelId::Normal, ChannelId::Depth };
+	FrameStore* store = new FrameStore( spec );
+	store->GetChannel<ChannelId::Albedo>()->At( 0, 0 ) = RISEPel( 0.2, 0.4, 0.6 );
+	store->GetChannel<ChannelId::Normal>()->At( 0, 0 ) = Vector3( 0.0, 0.0, 1.0 );
+	store->GetChannel<ChannelId::Depth>()->At( 0, 0 ) = 2.0f;
+
+	InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
+	sink->OnRasterizerFrameStoreChanged( store );
+	sink->SetOutputColorSpace( eColorSpace_Rec709RGB_Linear );
+	RISERasterImage* image = new RISERasterImage( 1, 1, RISEColor( 0.25, 0.5, 0.75, 1.0 ) );
+	sink->OutputImage( *image, 0, 0 );
+
+	const std::vector<unsigned char> beautyPng = sink->ToPng();
+	unsigned int atlasW = 0, atlasH = 0;
+	InMemoryRasterizerOutput::PerceptionInfo info;
+	const std::vector<unsigned char> atlasPng = sink->ToPerceptionPng( 2, atlasW, atlasH, info );
+	DecodedPng beauty;
+	DecodedPng atlas;
+	const bool decodedBeauty = DecodePng( beautyPng, beauty );
+	const bool decodedAtlas = DecodePng( atlasPng, atlas );
+	Check( decodedBeauty && decodedAtlas && beauty.width == 1 && beauty.height == 1 &&
+	       atlas.width == 2 && atlas.height == 2,
+	       "non-sRGB beauty and perception atlas decode at expected dimensions" );
+	if( decodedBeauty && decodedAtlas && !beauty.pixels.empty() && !atlas.pixels.empty() ) {
+		Check( beauty.At( 0, 0 ) == atlas.At( 0, 0 ),
+		       "perception beauty panel honors the configured output color space byte-for-byte" );
+	}
+
+	safe_release( image );
+	safe_release( sink );
+	safe_release( store );
+}
+
 int main()
 {
 	std::printf( "=== AgentFirstSliceTest (Facet 5 slice 0c: JSON-RPC end-to-end loop) ===\n" );
+	TestPerceptionBeautyColorSpaceParity();
 
 	const std::string scenePath = WriteTemp( "rise_agent_slice0c.RISEscene", kScene );
 	Check( !scenePath.empty(), "wrote the scene to a temp file" );

@@ -25,11 +25,11 @@ using namespace RISE::Implementation;
 Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
   ,mFrameStore( frameStore )
+  ,mDenoisingPrefilter( OidnPrefilter::Fast )
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
   ,mDenoisingDevice( OidnDevice::Auto )
-  ,mDenoisingPrefilter( OidnPrefilter::Fast )
   ,mRenderStartTime( std::chrono::steady_clock::now() )
   ,mDenoiser( new OIDNDenoiser() )
 #endif
@@ -182,4 +182,3 @@ void Rasterizer::ReannounceFrameStore()
 		(*it)->OnRasterizerFrameStoreChanged( mFrameStore );
 	}
 }
-

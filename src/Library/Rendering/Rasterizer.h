@@ -83,11 +83,14 @@ namespace RISE
 			//! commit).
 			FrameStore*								mFrameStore;
 
+			//! Auxiliary-surface selection is also consumed by agent
+			//! perception AOVs, so it must survive in builds without OIDN.
+			OidnPrefilter							mDenoisingPrefilter;
+
 #ifdef RISE_ENABLE_OIDN
 			bool									bDenoisingEnabled;
 			OidnQuality								mDenoisingQuality;
 			OidnDevice								mDenoisingDevice;
-			OidnPrefilter							mDenoisingPrefilter;
 
 			//! Wall-clock timestamp captured at the start of RasterizeScene
 			//! by derived rasterizers via BeginRenderTimer().  Read by the
@@ -225,8 +228,10 @@ namespace RISE
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }
 			void SetDenoisingDevice( OidnDevice device ) { mDenoisingDevice = device; }
-			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }
 #endif
+			//! Retained without OIDN because agent albedo/normal capture uses
+			//! the same fast-versus-accurate surface semantics.
+			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }
 		};
 	}
 }
