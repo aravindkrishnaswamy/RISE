@@ -4096,13 +4096,13 @@ namespace RISE
 				bool armed = false;
 
 				void Arm( IRasterizer* r, IRasterizerOutput* o ) {
+					if( r ) r->addref();
 					rasterizer = r;
 					concreteRasterizer = dynamic_cast<Implementation::Rasterizer*>( r );
 					output = o;
-					if( rasterizer ) rasterizer->addref();
 					armed = rasterizer && output;
 				}
-				~JobSinkAttachmentUnwindGuard() noexcept {
+				void Detach() noexcept {
 					if( armed && rasterizer ) {
 						try {
 							if( concreteRasterizer ) {
@@ -4124,6 +4124,7 @@ namespace RISE
 					output = nullptr;
 					armed = false;
 				}
+				~JobSinkAttachmentUnwindGuard() noexcept { Detach(); }
 			} sinkAttachmentUnwindGuard;
 
 			// P1-B (belt-and-braces): if ANY requested camera field fails to
@@ -5185,6 +5186,17 @@ namespace RISE
 				// depends on being closed (see ResolveBeautyDisplayTransform_).
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
 				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
+				// This local is deliberately scoped to doRenderWork, which is the
+				// closure executed while the controller's render park is held. Exact
+				// detachment must happen before that closure returns: rasterizer
+				// output iteration is intentionally unlocked during a render, so
+				// deferring removal to RenderCore_'s outer PNG/cache tail would race
+				// a newly resumed interactive render. The outer guard remains the
+				// fallback if attachment setup itself throws.
+				struct ParkedSinkDetachGuard {
+					JobSinkAttachmentUnwindGuard& attachment;
+					~ParkedSinkDetachGuard() noexcept { attachment.Detach(); }
+				} parkedSinkDetachGuard{ sinkAttachmentUnwindGuard };
 				sinkAttachmentUnwindGuard.Arm( rast, sink );
 				rast->AddRasterizerOutput( sink );
 

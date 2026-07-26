@@ -34,6 +34,12 @@ namespace RISE
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
 			RasterizerOutputListType				outs;
 
+			//! Registers one output under outsMutex and reports whether this call
+			//! inserted it (false means the dedup path).  AutoRasterizer uses the
+			//! result to roll back only its own wrapper insertion if delegate
+			//! registration throws.
+			bool RegisterRasterizerOutput( IRasterizerOutput* ro );
+
 			//! L8 review round 5 — protects `outs` against concurrent
 			//! mutation from non-render threads.
 			//!

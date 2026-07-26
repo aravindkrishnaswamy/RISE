@@ -950,9 +950,20 @@ void AutoRasterizer::SetProgressCallback( IProgressCallback* pFunc )
 
 void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
-	Rasterizer::AddRasterizerOutput( ro );
-	if( mDelegate ) {
-		mDelegate->AddRasterizerOutput( ro );
+	const bool wrapperAdded = RegisterRasterizerOutput( ro );
+	try {
+		if( mDelegate ) {
+			mDelegate->AddRasterizerOutput( ro );
+		}
+	}
+	catch( ... ) {
+		// Preserve the wrapper's pre-call state. The delegate's base
+		// registration is itself strongly exception-safe; remove only an entry
+		// inserted by this call, never a pre-existing deduplicated entry.
+		if( wrapperAdded ) {
+			Rasterizer::RemoveRasterizerOutput( ro );
+		}
+		throw;
 	}
 }
 

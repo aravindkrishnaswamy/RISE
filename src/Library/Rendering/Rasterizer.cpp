@@ -69,7 +69,12 @@ int Rasterizer::HowManyThreadsToSpawn() const
 
 void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
-	if( !ro ) return;
+	RegisterRasterizerOutput( ro );
+}
+
+bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
+{
+	if( !ro ) return false;
 
 	// L8 review round 5 — mutex + dedup.  See `outsMutex` comment in
 	// Rasterizer.h.  Dedup eliminates the unbounded-vector-growth
@@ -80,7 +85,7 @@ void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 	std::lock_guard<std::mutex> lock( outsMutex );
 	for( IRasterizerOutput* existing : outs ) {
 		if( existing == ro ) {
-			return;  // already registered, no-op
+			return false;  // already registered, no-op
 		}
 	}
 	// Take the list's reference first, but roll it back if vector growth
@@ -95,6 +100,7 @@ void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 		ro->release();
 		throw;
 	}
+	return true;
 }
 
 void Rasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )

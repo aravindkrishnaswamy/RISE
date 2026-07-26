@@ -721,12 +721,13 @@ struct CountingOutputsEnumCallback : public IEnumCallback<IRasterizerOutput>
 	bool operator()( const IRasterizerOutput& ) override { ++count; return true; }
 };
 
-static void RunProductionSinkDetachmentTest()
+static void RunProductionSinkDetachmentProbe( const char* label, const char* rasterizerChunk )
 {
-	std::printf( "=== AgentFrameStoreIsolationTest: transactional production-sink detachment ===\n" );
+	std::printf( "=== AgentFrameStoreIsolationTest: transactional production-sink detachment (%s) ===\n", label );
 
+	const std::string tempName = std::string( "agent_framestore_sink_detachment_" ) + label + ".RISEscene";
 	const std::string scenePath = WriteTemp(
-		"agent_framestore_sink_detachment.RISEscene", BuildScene( kPtRasterizer ) );
+		tempName.c_str(), BuildScene( rasterizerChunk ) );
 	Check( !scenePath.empty(), "sink-detachment: scratch scene file written" );
 
 	Job* pJob = new Job();
@@ -766,7 +767,8 @@ static void RunProductionSinkDetachmentTest()
 
 	pJob->release();
 	std::remove( scenePath.c_str() );
-	std::printf( "=== production-sink detachment: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+	std::printf( "=== production-sink detachment (%s): %d passed, %d failed (cumulative) ===\n",
+		label, g_pass, g_fail );
 }
 
 static void RunDraftIsolationTest()
@@ -988,7 +990,8 @@ int main()
 
 	RunThrowDuringOverrideTest();
 	RunThrowNoOverrideTest();
-	RunProductionSinkDetachmentTest();
+	RunProductionSinkDetachmentProbe( "pt", kPtRasterizer );
+	RunProductionSinkDetachmentProbe( "auto", kAutoRasterizer );
 	RunDraftIsolationTest();
 	RunDraftThrowTest();
 
