@@ -99,10 +99,11 @@
 // no-OIDN configuration with "incomplete type" errors on
 // `mFrameStore->...` member access.
 #include "FrameStore.h"
-#ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
+#ifdef RISE_ENABLE_OIDN
 #include "OIDNDenoiser.h"
 #endif
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1261,30 +1262,29 @@ void MLTRasterizer::RasterizeScene(
 	if( pImage )
 	{
 #ifdef RISE_ENABLE_OIDN
+		const bool willDenoise = bDenoisingEnabled;
+#else
+		const bool willDenoise = false;
+#endif
+		const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+		std::unique_ptr<AOVBuffers> aovBuffers(
+			aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+		if( aovBuffers ) {
+			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+			PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+		}
+#ifdef RISE_ENABLE_OIDN
 		if( bDenoisingEnabled ) {
 			// Pre-denoised (but fully splatted) image goes to file
 			// outputs under the normal filename first.
 			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
 
-			AOVBuffers aovBuffers( width, height );
-			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-			// L7 follow-up — propagate AOVs into the canonical
-			// FrameStore so direct observers (multichannel EXR,
-			// AOV-aware viewports) see MLT's albedo + normal
-			// alongside its beauty.  Pre-fix MLT's CollectFirstHitAOVs
-			// data was used by ApplyDenoise then discarded, leaving
-			// the canonical's Albedo/Normal channels black for MLT
-			// scenes — silent stale-AOV bug surfaced by L7's
-			// canonical-AOV exposure.  See PT/BDPT for the matching
-			// pattern.
-			RISE::Implementation::PropagateAOVsToFrameStore(
-				mFrameStore, aovBuffers );
 			// MLT always uses Fast prefilter regardless of the
 			// `mDenoisingPrefilter` setting — its splat film is
 			// incompatible with the inline accumulation that
 			// Accurate mode relies on.  See docs/OIDN.md
 			// (OIDN-P1-1) for the project invariant.
-			mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
 				GetRenderElapsedSeconds() );
 
@@ -1438,23 +1438,26 @@ void MLTRasterizer::RasterizeSceneAnimation(
 		if( pImage )
 		{
 #ifdef RISE_ENABLE_OIDN
+			const bool willDenoise = bDenoisingEnabled;
+#else
+			const bool willDenoise = false;
+#endif
+			const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+			std::unique_ptr<AOVBuffers> aovBuffers(
+				aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+			if( aovBuffers ) {
+				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+				PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+			}
+#ifdef RISE_ENABLE_OIDN
 			if( bDenoisingEnabled ) {
 				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
 
-				AOVBuffers aovBuffers( width, height );
-				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				// L7 follow-up — propagate AOVs into the canonical
-				// FrameStore for this frame.  Animation per-frame:
-				// each PropagateAOVsToFrameStore overwrites the
-				// previous frame's AOV data; observers reading after
-				// frameIdx's MarkFrameComplete see frameIdx's AOVs.
-				RISE::Implementation::PropagateAOVsToFrameStore(
-					mFrameStore, aovBuffers );
 				// MLT always uses Fast prefilter (see RasterizeScene
 				// for the rationale).  Cache hits across frames thanks
 				// to OIDN-P0-2 device/filter caching — only frame 1
 				// pays the cold-rebuild cost.
-				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
 					GetRenderElapsedSeconds() );
 

@@ -665,6 +665,22 @@ namespace RISE
 			//! evaluate scene lighting at all, matching the quality/samples/
 			//! xray-ignored precedent used throughout this struct.
 			std::string          light;
+			//! Opt-in for direct C++ callers.  The JSON-RPC/MCP render verb
+			//! defaults this to true for production beauty renders, requesting
+			//! albedo+normal+depth sidecars without changing beauty pixels.
+			bool                 perception = false;
+		};
+
+		struct AgentPerceptionInfo
+		{
+			bool available = false;
+			unsigned int sourceWidth = 0;
+			unsigned int sourceHeight = 0;
+			unsigned int validDepthPixels = 0;
+			double depthMin = 0.0;
+			double depthMax = 0.0;
+			std::uint64_t persistentBytes = 0;
+			std::uint64_t auxiliaryPeakBytes = 0;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides
@@ -856,6 +872,9 @@ namespace RISE
 			//! (production/draft) render.  Entries are in deterministic
 			//! (sorted-object-name) order.  See LegendEntry's doc.
 			std::vector<LegendEntry>   legend;
+			bool                       perceptionAvailable = false;
+			std::uint64_t              perceptionPersistentBytes = 0;
+			std::uint64_t              perceptionAuxiliaryPeakBytes = 0;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -1876,8 +1895,17 @@ namespace RISE
 			//! cached full-resolution linear pixel buffer of the last
 			//! render -- it does NOT re-render.
 			std::vector<unsigned char> ReadImage( unsigned int maxEdge,
-			                                      unsigned int& outWidth,
-			                                      unsigned int& outHeight ) const;
+			                                            unsigned int& outWidth,
+			                                            unsigned int& outHeight ) const;
+
+			//! Conventional image observation compiled from the last render's
+			//! AOVs: 2x2 beauty/albedo/world-normal/log-depth atlas plus
+			//! structured range and exact managed-memory metadata.
+			std::vector<unsigned char> ReadPerception(
+				unsigned int maxEdge,
+				unsigned int& outWidth,
+				unsigned int& outHeight,
+				AgentPerceptionInfo& outInfo ) const;
 
 			//! P3c (RENDER_MODES.md §7.8 ratified decision 3): READ-ONLY
 			//! introspection of the N-up pane set, so an agent can reason

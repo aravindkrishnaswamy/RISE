@@ -335,8 +335,7 @@ void VCMPelRasterizer::IntegratePixel(
 				continue;
 			}
 
-#ifdef RISE_ENABLE_OIDN
-			// Extract AOV data for the denoiser by walking the eye
+			// Extract AOV data by walking the eye
 			// subpath until the first non-delta SURFACE vertex.
 			// Mirrors BDPTPelRasterizer::IntegratePixelRGB — see
 			// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
@@ -350,6 +349,8 @@ void VCMPelRasterizer::IntegratePixel(
 					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 						PixelAOV aov;
 						aov.normal = v.normal;
+						aov.depth = Vector3Ops::Magnitude(
+							Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
 						if( v.pMaterial->GetBSDF() ) {
 							// Real camera-ray dir + canonical PathVertexEval
 							// helper so the BSDF sees ptCoord / vColor /
@@ -365,11 +366,11 @@ void VCMPelRasterizer::IntegratePixel(
 						aov.valid = true;
 						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+						pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 						break;
 					}
 				}
 			}
-#endif
 
 			RISEPel sampleColor( 0, 0, 0 );
 
@@ -516,11 +517,9 @@ void VCMPelRasterizer::IntegratePixel(
 		AddAdaptiveSamples( batchSize );
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphasAccrued > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphasAccrued );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar( globalSampleIndex ) / Scalar( targetSamples );

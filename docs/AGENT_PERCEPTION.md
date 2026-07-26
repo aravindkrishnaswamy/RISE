@@ -1,0 +1,147 @@
+# Agent Perception AOVs
+
+**Status:** implemented for production beauty renders on the JSON-RPC, MCP,
+and chat-tool surfaces (2026-07-26).
+
+## Why the claim holds
+
+Beauty RGB is a lossy projection of scene state. Different geometry,
+materials, lighting, and camera arrangements can produce similar RGB pixels.
+Depth, surface orientation, and albedo constrain different parts of that
+inverse problem, so in general they have positive conditional information
+about a scene or task even after beauty is known:
+
+```text
+I(task answer; albedo, normal, depth | beauty) > 0
+```
+
+This validates the information-theoretic claim, not a universal model-quality
+claim. An agent benefits only if its vision stack can interpret the encoding,
+the AOV semantics match the task, and the extra image tokens do not crowd out
+more useful context. The implementation therefore exposes a bounded,
+conventional image plus structured metadata instead of assuming a model API
+can ingest arbitrary float tensors.
+
+## Shipped contract
+
+Agent transports enable perception by default for a production beauty render:
+
+```json
+{"method":"render","params":{"perception":true}}
+```
+
+`AgentRenderParams` keeps `perception=false` as its direct-C++ default, so
+existing embedders and display renders do not acquire new allocation. Draft,
+object-map, and diagnostic view modes ignore the flag because they already
+have specialized observation contracts.
+
+After a successful eligible render:
+
+```json
+{"method":"read_image","params":{"representation":"perception","maxEdge":768}}
+```
+
+returns one PNG atlas in stable row-major panel order:
+
+```text
++----------------+----------------+
+| beauty         | diffuse albedo |
++----------------+----------------+
+| world normal   | log depth      |
++----------------+----------------+
+```
+
+`maxEdge` bounds the complete atlas, not each panel. The result also reports
+`sourceWidth`, `sourceHeight`, `validDepthPixels`, `depthMin`, `depthMax`,
+`persistentBytes`, and `auxiliaryPeakBytes`. `representation:"beauty"`
+remains the default and is backward-compatible. An unknown representation is
+an invalid-params error. If perception was disabled or the last render was
+ineligible, the perception result is explicitly unavailable and contains no
+stale image.
+
+The planes use these meanings:
+
+- **Beauty:** the same linear render cached for ordinary `read_image`, with
+  the scene's display exposure/tone curve applied during atlas encoding.
+- **Albedo:** first useful surface's diffuse reflectance, clamped to `[0,1]`.
+- **Normal:** world-space shading normal, mapped from `[-1,1]` to display RGB;
+  misses are black.
+- **Depth:** positive camera-ray surface distance. It is normalized over valid
+  pixels in log space, near-to-far as white-to-black; misses are black. The
+  numeric min/max and valid count make the visualization interpretable.
+
+The normal/albedo surface follows the existing OIDN prefilter rule when OIDN
+is active: `fast` means camera first hit, while `accurate` may walk through
+delta/specular vertices to the first non-delta surface. This is intentional
+sharing with the renderer's established auxiliary-signal semantics.
+
+## One render, planned channels
+
+`FrameStore::Spec` is the demand signal. An eligible agent render installs a
+private store with only `Albedo`, `Normal`, and `Depth`. `MakeAOVPlan` unions
+those requests with OIDN's albedo/normal requirement. `AOVBuffers` then
+allocates only the requested float planes; a normal display FrameStore and a
+render with `perception:false` allocate none of them.
+
+PT, spectral PT, BDPT, VCM, and the shader-dispatch path attach `PixelAOV` to
+the beauty estimator and collect the requested data during the render.
+Progressive and adaptive paths use the same sample weights and normalize once.
+MLT and any legacy estimator that cannot attach a `PixelAOV` use one bounded,
+parallel primary-ray fallback after beauty. Thus the common paths are a true
+single estimator pass; the API remains correct on every rasterizer without
+pretending MLT's Markov-chain samples have a per-pixel first-hit identity.
+
+The private FrameStore is restored before the render call returns, so an agent
+render cannot mutate or enlarge the GUI/display store. The cached agent sink
+also detaches from the restored display store after compacting its data.
+
+## Exact managed payload cost
+
+For `P = width * height`, the perception-only payload is:
+
+| Lifetime | Payload | Bytes/pixel |
+|---|---|---:|
+| Render scratch | 3 float albedo + 3 float normal + 1 float depth | 28 |
+| Private FrameStore | `RISEPel` albedo + `Vector3` normal + float depth | 52 |
+| Cached sidecar | RGB8 albedo + RGB8 normal + 8-bit log depth | 7 |
+| **Peak while compacting** | all three rows above | **87** |
+| **Persistent after render** | compact sidecar only | **7** |
+
+Accordingly:
+
+```text
+auxiliaryPeakBytes = 87 * P
+persistentBytes    =  7 * P
+```
+
+These are exact logical payload bytes managed by this feature; allocator and
+container bookkeeping, the pre-existing beauty cache, and OIDN's own filter
+internals are excluded. At 1920x1080 this is about 172.0 MiB peak and 13.8 MiB
+retained. The float scratch and private FrameStore are released after capture.
+The atlas encoder streams pixels directly to the PNG writer and never builds
+four additional full-resolution RGB images or an uncompressed atlas.
+
+## Deliberate limits and extension path
+
+- Direct and indirect lighting are not synthesized from beauty. Their split
+  depends on an explicit transport convention (emission, NEE, specular chains,
+  volumes, and denoising), and a misleading decomposition is worse than no
+  channel. RISE's existing `mode:"direct"` and `mode:"indirect"` diagnostic
+  renders remain available on demand at extra render cost.
+- The compact atlas is an observation product, not an archival AOV format.
+  Raw float/EXR transport can be added behind an explicit request when a model
+  endpoint can consume it without base64/token inflation.
+- Object and primitive IDs remain separate typed FrameStore channels and the
+  existing object-map/query tools remain the more precise semantic interface.
+- Accuracy improvement should be measured on task suites (spatial relations,
+  occlusion, material diagnosis, relighting, and edit localization), comparing
+  beauty-only against beauty-plus-perception at equal model/token budgets.
+
+## Regression gates
+
+`FrameStoreTest` locks channel planning, 4/28-byte scratch costs, typed
+albedo/normal/depth propagation, and the zero-consumer plan. The end-to-end
+`AgentFirstSliceTest` locks transport defaults, the stable atlas layout, PNG
+validity, depth metadata, 87/7-byte accounting, whole-atlas `maxEdge`, invalid
+representation handling, and the allocation/stale-cache behavior of
+`perception:false`.

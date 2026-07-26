@@ -39,6 +39,7 @@
 #define RISE_AGENT_INMEMORYRASTERIZEROUTPUT_
 
 #include <vector>
+#include <cstdint>
 
 #include "../Interfaces/IRasterizerOutput.h"
 #include "../Utilities/Reference.h"
@@ -58,6 +59,18 @@ namespace RISE
 			, public virtual Implementation::Reference
 		{
 		public:
+			struct PerceptionInfo
+			{
+				bool available = false;
+				unsigned int sourceWidth = 0;
+				unsigned int sourceHeight = 0;
+				unsigned int validDepthPixels = 0;
+				double depthMin = 0.0;
+				double depthMax = 0.0;
+				std::uint64_t persistentBytes = 0;
+				std::uint64_t auxiliaryPeakBytes = 0;
+			};
+
 			InMemoryRasterizerOutput();
 
 			//! Captures the full final image (region ignored -- file-style
@@ -68,6 +81,11 @@ namespace RISE
 			//! Intermediate scanlines are not retained (headless final-image
 			//! sink; matches FileRasterizerOutput ignoring intermediates).
 			void OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
+
+			//! Bind the canonical store whose optional AOVs accompany the
+			//! next OutputImage callback.  Capture is compacted during that
+			//! callback, before an agent render restores the display store.
+			void OnRasterizerFrameStoreChanged( Implementation::FrameStore* framestore ) override;
 
 			//! Toolkit slice 1 (read_viewport): adopt an ALREADY-COHERENT
 			//! pixel buffer produced OUT-OF-BAND (the caller performed a
@@ -186,6 +204,18 @@ namespace RISE
 			                                            unsigned int& outWidth,
 			                                            unsigned int& outHeight ) const;
 
+			//! Encode a conventional 2x2 diagnostic atlas from the compact
+			//! sidecar captured with the last frame: beauty | albedo on the
+			//! first row, world normal | log depth on the second.  maxEdge
+			//! bounds the whole atlas and never upscales.
+			std::vector<unsigned char> ToPerceptionPng(
+				unsigned int maxEdge,
+				unsigned int& outWidth,
+				unsigned int& outHeight,
+				PerceptionInfo& outInfo ) const;
+			bool HasPerception() const { return mPerceptionInfo.available; }
+			PerceptionInfo GetPerceptionInfo() const { return mPerceptionInfo; }
+
 		protected:
 			~InMemoryRasterizerOutput() override;
 
@@ -209,6 +239,14 @@ namespace RISE
 			//! eColorSpace_sRGB (0), matching this sink's pre-fix hardcoded
 			//! behaviour.
 			int                    mColorSpace;
+
+			Implementation::FrameStore* mFrameStore;
+			std::vector<unsigned char> mPerceptionAlbedo; //!< RGB8 sRGB display bytes
+			std::vector<unsigned char> mPerceptionNormal; //!< RGB8 sRGB display bytes
+			std::vector<unsigned char> mPerceptionDepth;  //!< 8-bit log-depth display bytes
+			PerceptionInfo mPerceptionInfo;
+
+			void CapturePerception_();
 		};
 	}
 }

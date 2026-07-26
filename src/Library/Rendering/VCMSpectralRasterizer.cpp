@@ -359,7 +359,6 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
 
-#ifdef RISE_ENABLE_OIDN
 				// AOV capture (hero wavelength, first bundle).  Walks the
 				// eye subpath until the first non-delta SURFACE vertex,
 				// matching BDPT{Pel,Spectral}Rasterizer's pattern — see
@@ -377,6 +376,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 						if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 							PixelAOV aov;
 							aov.normal = v.normal;
+							aov.depth = Vector3Ops::Magnitude(
+								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
 							if( v.pMaterial->GetBSDF() ) {
 								const Vector3 rayDir = Vector3Ops::Normalize(
 									Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
@@ -389,11 +390,11 @@ void VCMSpectralRasterizer::IntegratePixel(
 							aov.valid = true;
 							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+							pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 							break;
 						}
 					}
 				}
-#endif
 
 				Scalar heroValue = 0;
 
@@ -655,11 +656,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 		AddAdaptiveSamples( batchSize );
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphasAccrued > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphasAccrued );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		// Heatmap mode: write a grayscale ramp proportional to the

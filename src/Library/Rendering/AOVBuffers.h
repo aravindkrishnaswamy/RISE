@@ -1,9 +1,9 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  AOVBuffers.h - Float-precision AOV (Arbitrary Output Variable)
-//  buffers for denoiser input.  Stores first-hit albedo and
-//  world-space normals as interleaved RGB float arrays, suitable
-//  for direct consumption by Intel OIDN.
+//  buffers for denoiser and agent-perception input.  Storage is
+//  channel-planned: callers pay only for the first-hit albedo,
+//  world-space normal, and/or camera-distance planes they request.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
@@ -17,44 +17,65 @@
 #ifndef AOV_BUFFERS_H_
 #define AOV_BUFFERS_H_
 
+#include <atomic>
 #include <vector>
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
 
 namespace RISE
 {
+	class IScene;
+	class IRayCaster;
+
 	/// First-hit AOV data extracted from a path sample.
-	/// Used to populate the denoiser's auxiliary buffers.
+	/// Used to populate denoiser and agent-perception auxiliary buffers.
 	struct PixelAOV
 	{
 		RISEPel		albedo;
 		Vector3		normal;
+		Scalar		depth;
 		bool		valid;
 
-		PixelAOV() : valid( false ) {}
+		PixelAOV() : depth( 0 ), valid( false ) {}
 	};
 
 	namespace Implementation
 	{
-		/// Stores first-hit albedo and normal AOVs as float buffers.
+		/// Stores requested first-hit AOVs as float buffers.
 		/// Thread-safe for concurrent writes when each pixel is
 		/// written by exactly one thread (guaranteed by RISE's
 		/// non-overlapping block dispatch).
 		class AOVBuffers
 		{
+		public:
+			struct Plan
+			{
+				bool albedo;
+				bool normal;
+				bool depth;
+
+				Plan( bool albedo_ = true, bool normal_ = true, bool depth_ = false ) :
+				  albedo( albedo_ ), normal( normal_ ), depth( depth_ ) {}
+
+				bool Any() const { return albedo || normal || depth; }
+			};
+
+		private:
 			unsigned int width;
 			unsigned int height;
-			bool bHasData;					///< True once any sample has been accumulated
+			std::atomic<bool> bHasData;		///< True once any sample has been accumulated
+			Plan plan;
 			std::vector<float> albedo;		///< width*height*3, RGB interleaved
 			std::vector<float> normals;		///< width*height*3, XYZ interleaved
+			std::vector<float> depths;		///< width*height, camera-ray hit distance
 
 		public:
-			AOVBuffers( unsigned int w, unsigned int h );
+			AOVBuffers( unsigned int w, unsigned int h, const Plan& requested = Plan() );
 
 			/// Clears existing contents for reuse.  Reallocates only
 			/// when dimensions change; otherwise preserves vector
 			/// capacity and zeroes the existing storage.
-			void Reset( unsigned int w, unsigned int h );
+			void Reset( unsigned int w, unsigned int h, const Plan& requested = Plan() );
 
 			/// Accumulates a weighted albedo sample at (x,y).
 			/// The RISEPel channels (double) are narrowed to float.
@@ -74,7 +95,15 @@ namespace RISE
 				Scalar weight
 				);
 
-			/// Divides accumulated albedo and normal at (x,y) by the
+			/// Accumulates a weighted camera-ray hit distance at (x,y).
+			void AccumulateDepth(
+				unsigned int x,
+				unsigned int y,
+				Scalar depth,
+				Scalar weight
+				);
+
+			/// Divides every allocated AOV at (x,y) by the
 			/// total weight to produce the final per-pixel average.
 			void Normalize(
 				unsigned int x,
@@ -83,13 +112,28 @@ namespace RISE
 				);
 
 			/// Returns true if any AOV data has been accumulated.
-			bool HasData() const { return bHasData; }
+			bool HasData() const { return bHasData.load( std::memory_order_relaxed ); }
+			const Plan& GetPlan() const { return plan; }
 
-			const float* GetAlbedoPtr() const { return albedo.data(); }
-			const float* GetNormalPtr() const { return normals.data(); }
+			const float* GetAlbedoPtr() const { return albedo.empty() ? 0 : albedo.data(); }
+			const float* GetNormalPtr() const { return normals.empty() ? 0 : normals.data(); }
+			const float* GetDepthPtr() const { return depths.empty() ? 0 : depths.data(); }
+			size_t StorageBytes() const {
+				return ( albedo.size() + normals.size() + depths.size() ) * sizeof( float );
+			}
 			unsigned int GetWidth() const { return width; }
 			unsigned int GetHeight() const { return height; }
 		};
+
+		/// Generic first-hit fallback for rasterizers that cannot attach an
+		/// inline PixelAOV to their estimator (notably MLT and legacy shader
+		/// pipelines).  This is deliberately independent of OIDN.
+		void CollectFirstHitAOVs(
+			const IScene& scene,
+			IRayCaster& caster,
+			AOVBuffers& aovBuffers,
+			unsigned int samplesPerPixel = 1
+			);
 	}
 }
 

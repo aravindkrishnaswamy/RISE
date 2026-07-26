@@ -2721,17 +2721,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// branch.  Gated on the AOV-capable tag (supports_aov): NM
 					// gains the inline hook once its supports_aov flag is set.
 					if constexpr ( Traits::supports_aov ) {
-#ifdef RISE_ENABLE_OIDN
 						if( pAOV && !pAOV->valid &&
 						    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 						{
 							pAOV->normal = ri.geometric.vNormal;
+							pAOV->depth = ri.geometric.range;
 							pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
 								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
 								: RISEPel( 1, 1, 1 );
 							pAOV->valid = true;
 						}
-#endif
 					}
 				}
 
@@ -3283,7 +3282,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			} else {
 				bPassedThroughSpecular = false;
 				bHadNonSpecularShading = true;
-#ifdef RISE_ENABLE_OIDN
 				// Accurate-mode inline AOV: first non-delta BSDF scatter.  Sibling
 				// of the SPF-only hook above (the !pBRDF block) and the HWSS hook in
 				// IntegrateFromHitHWSS.  Without this, a camera looking through glass
@@ -3296,12 +3294,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 					{
 						pAOV->normal = ri.geometric.vNormal;
+						pAOV->depth = ri.geometric.range;
 						pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
 						                     : RISEPel( 1, 1, 1 );
 						pAOV->valid = true;
 					}
 				}
-#endif
 			}
 
 			currentRay = traceRay;
@@ -3505,6 +3503,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 		{
 			pAOV->normal = ri.geometric.vNormal;
+			pAOV->depth = ri.geometric.range;
 			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
 			// under mClayOverride every surface's REFLECTANCE is the
 			// substituted clay BRDF (see SetClayOverride's doc) -- the
@@ -3893,7 +3892,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		hwssResult[i] = 0;
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	// Fast-mode inline AOV (OIDN aux): record the camera ray's first hit.
 	// Matches the post-render first-hit retrace fallback's semantics but
 	// inline, so no extra retrace pass is needed.  Accurate mode skips this
@@ -3903,6 +3901,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
 		pAOV->normal = firstHit.geometric.vNormal;
+		pAOV->depth = firstHit.geometric.range;
 		// GUI render modes P2b `clay_lights` (review-p2c P2-d fix, HWSS
 		// twin of the RGB/NM IntegrateRay fast-mode hook -- see that
 		// site's fuller comment).
@@ -3912,7 +3911,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				: RISEPel( 1, 1, 1 ) );
 		pAOV->valid = true;
 	}
-#endif
 
 	// Check material at first hit to determine path strategy
 	const IBSDF* pBRDF = firstHit.pMaterial ? firstHit.pMaterial->GetBSDF() : 0;
@@ -4566,7 +4564,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			break;
 		}
 
-#ifdef RISE_ENABLE_OIDN
 		// Accurate-mode inline AOV (OIDN aux): record at the first non-delta
 		// scatter on the HWSS path — glass / mirror delta vertices are walked
 		// through, so a camera looking through the glass records the surface
@@ -4577,11 +4574,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 		{
 			pAOV->normal = ri.geometric.vNormal;
+			pAOV->depth = ri.geometric.range;
 			pAOV->albedo = pBRDFCur ? pBRDFCur->albedo( ri.geometric )
 			                        : RISEPel( 1, 1, 1 );
 			pAOV->valid = true;
 		}
-#endif
 
 		// Dispersive specular termination
 		if( pS->isDelta && !swl.SecondaryTerminated() )

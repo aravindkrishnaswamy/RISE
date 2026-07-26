@@ -23,6 +23,7 @@
 #include "pch.h"
 #include "PathTracingShaderOp.h"
 #include "PathTracingIntegrator.h"
+#include "../Rendering/AOVBuffers.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/Color/Color.h"
 
@@ -96,6 +97,16 @@ void PathTracingShaderOp::PerformOperation(
 
 	IndependentSampler sampler( rc.random );
 	IORStack localIorStack( ior_stack );
+	if( rc.pAOV && !rc.pAOV->valid && ri.geometric.bHit &&
+	    rc.aovPrefilterMode == OidnPrefilter::Fast )
+	{
+		rc.pAOV->normal = ri.geometric.vNormal;
+		rc.pAOV->depth = ri.geometric.range;
+		rc.pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+			? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+			: RISEPel( 1, 1, 1 );
+		rc.pAOV->valid = true;
+	}
 
 	c = pIntegrator->IntegrateFromHit(
 		rc, ri.geometric.rast, ri, *pScene, caster, sampler,
@@ -106,7 +117,8 @@ void PathTracingShaderOp::PerformOperation(
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
 		0, rs.glossyFilterWidth,
-		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading );
+		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
+		rc.pAOV );
 }
 
 
@@ -134,6 +146,16 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 	IndependentSampler sampler( rc.random );
 	IORStack localIorStack( ior_stack );
+	if( rc.pAOV && !rc.pAOV->valid && ri.geometric.bHit &&
+	    rc.aovPrefilterMode == OidnPrefilter::Fast )
+	{
+		rc.pAOV->normal = ri.geometric.vNormal;
+		rc.pAOV->depth = ri.geometric.range;
+		rc.pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+			? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+			: RISEPel( 1, 1, 1 );
+		rc.pAOV->valid = true;
+	}
 
 	// bsdfTimesCos is stored as RISEPel; extract the scalar NM value
 	const Scalar bsdfTimesCosNM = rs.bsdfTimesCos.r;

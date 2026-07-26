@@ -96,6 +96,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -224,12 +225,28 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 		ProbeObserver probe;
 		displayStore->AddObserver( &probe );
 
-		AgentRenderResult res = session->Render( -1 );
+		AgentRenderParams params;
+		params.perception = true;
+		AgentRenderResult res = session->Render( params );
 
 		displayStore->RemoveObserver( &probe );
 
 		Check( res.ok, label + " (no-override): render succeeds" );
 		Check( !res.png.empty(), label + " (no-override): PNG bytes are non-empty" );
+		Check( res.perceptionAvailable,
+			label + " (no-override): explicit perception is available for this rasterizer family" );
+		Check( res.perceptionPersistentBytes == 24u * 24u * 7u &&
+		       res.perceptionAuxiliaryPeakBytes == 24u * 24u * 87u,
+			label + " (no-override): perception reports exact compact/peak payload bytes" );
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo perceptionInfo;
+		const std::vector<unsigned char> atlas = session->ReadPerception(
+			0, atlasW, atlasH, perceptionInfo );
+		Check( !atlas.empty() && perceptionInfo.available && atlasW == 48 && atlasH == 48,
+			label + " (no-override): perception atlas is cached at native 2x2 dimensions" );
+		Check( perceptionInfo.validDepthPixels > 0 && perceptionInfo.depthMin > 0.0 &&
+		       perceptionInfo.depthMax >= perceptionInfo.depthMin,
+			label + " (no-override): perception depth is populated and ordered" );
 		Check( displayStore->Generation() == genBefore,
 			label + " (no-override): canonical FrameStore Generation() did NOT advance across the agent render" );
 		Check( probe.tileCompleteCount == 0,

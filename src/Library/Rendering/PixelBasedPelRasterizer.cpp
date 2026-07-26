@@ -651,7 +651,15 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 				Ray ray;
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
+					PixelAOV aov;
+					rc.pAOV = pAOVBuffers ? &aov : 0;
 					bool bHit = pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 );
+					rc.pAOV = 0;
+					if( pAOVBuffers && aov.valid ) {
+						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+						pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					}
 
 					if( filmMode ) {
 						// Always splat to the film, even on miss (c stays zero).
@@ -725,6 +733,10 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			px.converged = converged;
 		}
 
+		if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
+			pAOVBuffers->Normalize( x, y, 1.0 / alphas );
+		}
+
 		if( adaptive && adaptiveConfig.showMap ) {
 			const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
 			cret = RISEColor( RISEPel(t, t, t), 1.0 );
@@ -753,8 +765,17 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		RISEPel	c;
 		Ray ray;
 		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {
+			PixelAOV aov;
+			rc.pAOV = pAOVBuffers ? &aov : 0;
 			if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 ) ) {
 				cret = RISEColor( c, 1.0 );
+			}
+			rc.pAOV = 0;
+			if( pAOVBuffers && aov.valid ) {
+				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+				pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+				pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
+				pAOVBuffers->Normalize( x, y, 1.0 );
 			}
 		}
 

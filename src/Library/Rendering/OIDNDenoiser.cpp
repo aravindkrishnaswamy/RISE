@@ -715,84 +715,8 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 	unsigned int samplesPerPixel
 	)
 {
-	// Snapshot once — structural changes serialize against rendering.
-	const ICamera* pCamera = scene.GetCamera();
-	if( !pCamera ) {
-		return;
-	}
-
-	const IObjectManager* pObjects = scene.GetObjects();
-	if( !pObjects ) {
-		return;
-	}
-
-	const IFilm* pFilm = scene.GetFilm();
-	const unsigned int width = pFilm->GetWidth();
-	const unsigned int height = pFilm->GetHeight();
-
-	// Multi-sample per pixel so the AOVs match the beauty's effective
-	// projection.  Each call to GenerateRay() re-samples the aperture
-	// (thin-lens cameras), so accumulating N samples gives natural DOF
-	// blur in the AOV; subpixel jitter additionally smooths geometry
-	// edges.  Without this, OIDN sees a sharp AOV alongside a blurred
-	// beauty and "recovers" the sharp signal as if it were noise — DOF
-	// gets undone and silhouette edges sharpen unnaturally.  4 samples
-	// is the sweet spot: enough aperture coverage to track the beauty's
-	// blur, cheap enough that the retrace stays under a second on
-	// scenes with thin-lens cameras.
-	if( samplesPerPixel == 0 ) {
-		samplesPerPixel = 1;
-	}
-	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
-
-	// Parallelize over rows.  Each row uses a thread-local RNG so the
-	// process-wide GlobalRNG isn't contended by N workers calling
-	// CanonicalRandom() concurrently.
-	GlobalThreadPool().ParallelFor( height, [&]( unsigned int y ) {
-		static thread_local RandomNumberGenerator tl_rng;
-		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
-
-		for( unsigned int x = 0; x < width; x++ )
-		{
-			for( unsigned int s = 0; s < samplesPerPixel; ++s )
-			{
-				const Scalar jx = tl_rng.CanonicalRandom();
-				const Scalar jy = tl_rng.CanonicalRandom();
-				Point2 ptOnScreen( x + jx, ( height - y ) - jy );
-
-				Ray ray;
-				// Per OIDN docs, sky / miss pixels should report
-				// albedo (1,1,1) and normal (0,0,0).  Accumulating
-				// those for missing samples — instead of silently
-				// dropping them — correctly blends the AOV across
-				// silhouette / DOF-soft edges to match the beauty's
-				// blend of surface + background.  Without this OIDN
-				// sees a sharp surface AOV behind a blurred beauty and
-				// "recovers" the sharp signal, undoing aperture
-				// defocus at those edges.
-				Vector3 sampleNormal( 0, 0, 0 );
-				RISEPel sampleAlbedo( 1, 1, 1 );
-				if( pCamera->GenerateRay( rc, ray, ptOnScreen ) ) {
-					RasterizerState rast;
-					rast.x = x;
-					rast.y = y;
-					RayIntersection ri( ray, rast );
-					pObjects->IntersectRay( ri, true, true, false );
-					if( ri.geometric.bHit ) {
-						sampleNormal = ri.geometric.vNormal;
-						// Delta / transparent surfaces (GetBSDF()==NULL)
-						// use white per OIDN documentation.
-						sampleAlbedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-							: RISEPel( 1, 1, 1 );
-					}
-				}
-				aovBuffers.AccumulateAlbedo( x, y, sampleAlbedo, 1.0 );
-				aovBuffers.AccumulateNormal( x, y, sampleNormal, 1.0 );
-			}
-			aovBuffers.Normalize( x, y, invSamples );
-		}
-	} );
+	RISE::Implementation::CollectFirstHitAOVs(
+		scene, caster, aovBuffers, samplesPerPixel );
 }
 
 void OIDNDenoiser::ApplyDenoise(

@@ -93,7 +93,7 @@ namespace RISE
 		//! storage is just a std::vector<T>; no virtual dispatch.
 		//!
 		//! NOT thread-safe by itself.  FrameStore wraps Channel
-		//! access in a tile-level seqlock for write/read ordering;
+		//! access in a tile-level shared-mutex protocol for write/read ordering;
 		//! direct callers (single-threaded fill, post-render
 		//! encoder readback under FrameStore guarantees) bypass it.
 		template <typename T>

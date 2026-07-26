@@ -77,20 +77,28 @@ device.getError( errorMessage );
 
 ### Properties of RISE's AOV collection
 
-[OIDNDenoiser.cpp:155](../src/Library/Rendering/OIDNDenoiser.cpp#L155)
-`CollectFirstHitAOVs` is a separate retrace pass after rendering completes:
+`AOVBuffers` is now a channel-planned shared facility for OIDN and agent
+perception, rather than an OIDN-only allocation. PT, spectral PT, BDPT, VCM,
+and path-tracing shader dispatch accumulate albedo/normal (and depth when a
+FrameStore requests it) inline with the beauty samples. Fast mode records the
+camera first hit; Accurate mode records the first non-delta surface and runs
+OIDN's auxiliary prefilters, preserving the established clean/noisy-aux
+contract.
 
-- 4 primary rays per pixel through `ICamera::GenerateRay`, accumulating albedo
-  via `IBSDF::albedo()` and geometric normal at first hit.
-- Subpixel jitter + aperture re-sampling per ray → AOVs naturally inherit the
-  beauty's DOF / AA blend.
-- Sky/miss → albedo (1,1,1), normal (0,0,0) per OIDN docs.
-- Transparent / NULL-BSDF surfaces → albedo (1,1,1) — partially correct (see
-  `OIDN-P1-4`).
-- Parallelized over rows via `GlobalThreadPool`, thread-local RNG.
-- Because AOVs are a deterministic 4-sample retrace (not noisy MC accumulation),
-  setting `cleanAux=true` is **legitimate** — most renderers cannot honestly
-  do this without prefiltering.
+`CollectFirstHitAOVs` remains the fallback for an estimator without a usable
+inline hook, notably MLT. It lives in `AOVBuffers.cpp`; the legacy
+`OIDNDenoiser::CollectFirstHitAOVs` entry point delegates to it. The fallback:
+
+- fires the requested number of primary rays per pixel through
+  `ICamera::GenerateRay`, collecting albedo, world normal, and requested depth;
+- uses subpixel jitter and aperture re-sampling so DOF/AA boundaries blend;
+- maps a miss to albedo `(1,1,1)`, normal `(0,0,0)`, depth `0`;
+- parallelizes over rows with a thread-local RNG.
+
+The storage plan is the union of OIDN's albedo/normal requirement and typed
+FrameStore channel demand, so a normal non-denoised render still allocates no
+AOV scratch. See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the agent
+consumer and memory accounting.
 
 ### OIDN 2.4 feature surface vs. RISE usage
 

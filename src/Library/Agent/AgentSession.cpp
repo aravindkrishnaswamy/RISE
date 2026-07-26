@@ -2933,6 +2933,21 @@ namespace RISE
 				void Arm()    { mArmed = true; }
 				void Disarm() { mArmed = false; }
 
+				// Ordinary-path counterpart to the destructor.  Keep the guard
+				// armed until SetFrameStore succeeds: if that call ever throws,
+				// stack unwinding reaches the destructor, which retries the restore
+				// without leaking the owned capture.  On success this consumes the
+				// capture and leaves the destructor as a no-op.
+				void RestoreAndDisarm()
+				{
+					if( !mArmed ) return;
+					if( mRast ) {
+						mRast->SetFrameStore( mCaptured );
+					}
+					safe_release( mCaptured );
+					mArmed = false;
+				}
+
 				~FrameStoreIsolationGuard()
 				{
 					if( !mArmed ) return;
@@ -4177,12 +4192,15 @@ namespace RISE
 			// sink's per-pixel bytes are not colour-managed at all).
 			int    beautyColorSpace       = eColorSpace_sRGB;
 			// Toolkit slice 2 (quality:"draft"): the EPHEMERAL preview-
-			// pipeline render body.  Never references `rast` (the production
+			// pipeline render body.  Never renders through `rast` (the production
 			// rasterizer), its FrameStore, or mJob->RemoveRasterizerOutputs()
 			// -- a fresh, throwaway InteractivePelRasterizer pipeline (studio-
 			// preview shading only -- see CreateInteractiveMaterialPreviewPipeline
 			// and AgentRenderQuality's doc) is constructed, used for exactly
-			// this one render, and released before this lambda returns.
+			// this one render, and released before this lambda returns.  Film
+			// overrides still call Job::SetFilm, which indirectly pushes a new
+			// FrameStore to `rast`; the common dispatcher below isolates that
+			// production-store side effect around every ephemeral branch.
 			auto doDraftRenderWork = [&]()
 			{
 				IRasterizer* ephemeralRast = nullptr;
@@ -4201,8 +4219,8 @@ namespace RISE
 				// below (OIDN is a documented real throw site for the
 				// production path; the interactive preview pipeline never
 				// denoises, but this stays exception-safe on general
-				// principle).  No production state is touched by this
-				// branch, so there is nothing else to restore.
+				// principle).  The common dispatcher's FrameStore guard restores
+				// the one production-side effect of Job::SetFilm.
 				//
 				// Round-2 P3 (documented limitation, deliberate): there is
 				// NO test coverage proving these three owned pointers are
@@ -4225,10 +4243,9 @@ namespace RISE
 				// production path (see the helpers above) -- they mutate
 				// Job/Scene state the ephemeral pipeline's RasterizeScene
 				// call reads through `*scenePriv` below, so they compose for
-				// free.  This instance's RenderOverrideRestoreGuard has none
-				// of the fsGuard-ordering constraints the production branch
-				// documents (there is no FrameStore identity to protect
-				// here), so it is simply constructed+armed up front.
+				// free.  This inner guard is deliberately constructed AFTER
+				// the common dispatcher's outer FrameStore guard.  On unwind,
+				// film dimensions restore first and FrameStore identity wins last.
 				RenderOverrideRestoreGuard restoreGuard( *mJob,
 					overrodeFilm, origFilmW, origFilmH, origFilmPAR,
 					activeCam, capturedCam );
@@ -4340,8 +4357,9 @@ namespace RISE
 			// NEVER installs a sampling kernel or a samples override (the
 			// EXACTNESS INVARIANT: every pixel must take IntegratePixel's
 			// single-ray branch so its identity byte is un-blended).  Never
-			// references the production rasterizer, its FrameStore, or
-			// mJob->RemoveRasterizerOutputs().
+			// renders through the production rasterizer, its FrameStore, or
+			// mJob->RemoveRasterizerOutputs(); Job::SetFilm's indirect store
+			// push is isolated by the common dispatcher below.
 			auto doObjectMapRenderWork = [&]()
 			{
 				// Build the identity registry + palette FIRST (read-only over
@@ -4432,8 +4450,9 @@ namespace RISE
 			// view mode has no per-object registry) and it NEVER installs a
 			// sampling kernel or a samples override, matching the objectmap
 			// EXACTNESS INVARIANT: a diagnostic image is a single exact 1-spp
-			// pass.  Never references the production rasterizer, its
-			// FrameStore, or mJob->RemoveRasterizerOutputs().
+			// pass.  Never renders through the production rasterizer, its
+			// FrameStore, or mJob->RemoveRasterizerOutputs(); Job::SetFilm's
+			// indirect store push is isolated by the common dispatcher below.
 			auto doViewModeRenderWork = [&]()
 			{
 				IRasterizer* ephemeralRast = nullptr;
@@ -4888,20 +4907,45 @@ namespace RISE
 						effectiveCamera.hasUp || effectiveCamera.hasOrientation ||
 						effectiveCamera.hasTargetOrientation || effectiveCamera.hasFov );
 
+				// Every ephemeral pipeline is independent of the production
+				// rasterizer for actual rendering, but a shared film override calls
+				// Job::SetFilm.  That method pushes its newly allocated canonical
+				// FrameStore to every production rasterizer.  Capture and hold the
+				// current display-store identity across the whole ephemeral call so
+				// it remains alive and is rebound last, after the branch's inner
+				// RenderOverrideRestoreGuard restores the original film dimensions.
+				// This wrapper also covers early returns and exceptions uniformly.
+				auto runEphemeralIsolated = [&]( auto&& renderWork )
+				{
+					Implementation::Rasterizer* productionRast =
+						dynamic_cast<Implementation::Rasterizer*>( rast );
+					Implementation::FrameStore* capturedStore =
+						productionRast ? productionRast->GetFrameStore() : nullptr;
+					if( capturedStore ) {
+						capturedStore->addref();
+					}
+					FrameStoreIsolationGuard fsGuard( productionRast, capturedStore );
+					fsGuard.Arm();
+
+					renderWork();
+
+					fsGuard.RestoreAndDisarm();
+				};
+
 				if( isObjectMap ) {
-					doObjectMapRenderWork();
+					runEphemeralIsolated( doObjectMapRenderWork );
 					return;
 				}
 				if( isViewMode ) {
 					if( isBeautyVariant ) {
-						doBeautyVariantRenderWork();
+						runEphemeralIsolated( doBeautyVariantRenderWork );
 					} else {
-						doViewModeRenderWork();
+						runEphemeralIsolated( doViewModeRenderWork );
 					}
 					return;
 				}
 				if( isDraft ) {
-					doDraftRenderWork();
+					runEphemeralIsolated( doDraftRenderWork );
 					return;
 				}
 
@@ -5146,15 +5190,15 @@ namespace RISE
 					spec.width    = renderW;
 					spec.height   = renderH;
 					spec.tileEdge = 32;
-					// aovChannels intentionally left empty: this is SAFE, not
-					// merely "AOV writes are elsewhere" -- in production,
-					// PropagateAOVsToFrameStore DOES populate a FrameStore's
-					// Albedo/Normal AOV channels from the rasterizer's AOV
-					// buffers when they are present, but it is per-channel
-					// null-safe (it skips any channel the FrameStore didn't
-					// allocate storage for). An agent render has no consumer
-					// reading AOV storage back out, so simply not allocating
-					// it here is a safe, deliberate omission, not a gap.
+					// Perception capture is isolated to this throwaway store: the
+					// production/display FrameStore remains byte- and allocation-
+					// identical.  Other agent render modes already ARE diagnostics;
+					// only a production beauty render compiles this multi-AOV view.
+					if( params.perception && !isDraft && !isObjectMap && !isViewMode ) {
+						spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Albedo );
+						spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Normal );
+						spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Depth );
+					}
 					Implementation::FrameStore* privateStore = new Implementation::FrameStore( spec );
 					concreteRast->SetFrameStore( privateStore );
 					safe_release( privateStore );   // the rasterizer's own addref (inside SetFrameStore) keeps it alive for the render
@@ -5299,11 +5343,7 @@ namespace RISE
 				// viewport would be left observing a stale, now-orphaned
 				// store after every override-render.  No-op (safe) when
 				// `concreteRast` or `capturedDisplayStore` is null.
-				if( concreteRast && capturedDisplayStore ) {
-					concreteRast->SetFrameStore( capturedDisplayStore );
-				}
-				safe_release( capturedDisplayStore );
-				fsGuard.Disarm();
+				fsGuard.RestoreAndDisarm();
 
 				// Model-B F2 slice S3: explicit ordinary-path restore of
 				// the sample-count override, same "Disarm after explicit
@@ -5607,10 +5647,23 @@ namespace RISE
 				return res;
 			}
 
+			// The AOVs were compacted during OutputImage, while the private
+			// FrameStore was still bound.  FrameStore restoration subsequently
+			// re-announces the production/display store to every output.  Do not
+			// let the cached agent sink retain that (potentially very large) store:
+			// beauty pixels and the 7-B/pixel sidecar are now self-contained.
+			sink->OnRasterizerFrameStoreChanged( nullptr );
+
 			res.width  = sink->Width();
 			res.height = sink->Height();
 			res.png    = sink->ToPng();
 			sink->MeanChannels( res.meanR, res.meanG, res.meanB );
+			{
+				const InMemoryRasterizerOutput::PerceptionInfo pi = sink->GetPerceptionInfo();
+				res.perceptionAvailable = pi.available;
+				res.perceptionPersistentBytes = pi.persistentBytes;
+				res.perceptionAuxiliaryPeakBytes = pi.auxiliaryPeakBytes;
+			}
 			res.ok     = !res.png.empty();
 			res.message = res.ok ? "ok" : "PNG encode produced no bytes";
 			res.previewWidth     = res.width;
@@ -6909,6 +6962,30 @@ namespace RISE
 			}
 			if( !mLastSink ) return std::vector<unsigned char>();   // nothing rendered yet
 			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
+		}
+
+		std::vector<unsigned char> AgentSession::ReadPerception(
+			unsigned int maxEdge,
+			unsigned int& outWidth,
+			unsigned int& outHeight,
+			AgentPerceptionInfo& outInfo ) const
+		{
+			outWidth = outHeight = 0;
+			outInfo = AgentPerceptionInfo();
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+			if( !mLastSink ) return std::vector<unsigned char>();
+			InMemoryRasterizerOutput::PerceptionInfo pi;
+			std::vector<unsigned char> png =
+				mLastSink->ToPerceptionPng( maxEdge, outWidth, outHeight, pi );
+			outInfo.available = pi.available;
+			outInfo.sourceWidth = pi.sourceWidth;
+			outInfo.sourceHeight = pi.sourceHeight;
+			outInfo.validDepthPixels = pi.validDepthPixels;
+			outInfo.depthMin = pi.depthMin;
+			outInfo.depthMax = pi.depthMax;
+			outInfo.persistentBytes = pi.persistentBytes;
+			outInfo.auxiliaryPeakBytes = pi.auxiliaryPeakBytes;
+			return png;
 		}
 
 		// user-review P1-3 (round 2): the standalone DescribeViewportPanes was

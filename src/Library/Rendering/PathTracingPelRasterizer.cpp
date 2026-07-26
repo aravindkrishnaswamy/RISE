@@ -345,7 +345,6 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 			rc.pSampler = &sampler;
 
-#ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
 			const RISEPel sampleColor = IntegratePixelRGB(
 				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
@@ -353,11 +352,8 @@ void PathTracingPelRasterizer::IntegratePixel(
 			if( pAOVBuffers && aov.valid ) {
 				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 			}
-#else
-			const RISEPel sampleColor = IntegratePixelRGB(
-				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap, 0 );
-#endif
 
 			RISE_PROFILE_INC(nSamplesAccumulated);
 
@@ -423,11 +419,9 @@ void PathTracingPelRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);

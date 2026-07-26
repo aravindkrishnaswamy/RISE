@@ -215,13 +215,29 @@ BDPT is not affected by this because `BDPTRasterizerBase::RasterizeScene()` is a
 
 ### AOV Pipeline
 
-AOV (Arbitrary Output Variable) buffers for OIDN are managed by `AOVBuffers` (`Rendering/AOVBuffers.h`). The base class `PixelBasedRasterizerHelper` owns a `pAOVBuffers` member allocated before the render pass when `bDenoisingEnabled` is true.
+AOV (Arbitrary Output Variable) scratch is managed by `AOVBuffers`
+(`Rendering/AOVBuffers.h`) for both OIDN and agent perception. Allocation is
+channel-planned: `MakeAOVPlan` unions OIDN's albedo/normal requirement with the
+bound FrameStore's requested albedo, normal, and depth channels. If neither
+consumer requests a channel, no AOV scratch is allocated. The full agent plan
+is seven floats, or 28 bytes/pixel.
 
 Two AOV collection strategies exist:
-1. **Per-sample accumulation** (preferred): Rasterizers that use `PathTracingIntegrator` (e.g., `PathTracingPelRasterizer`) populate a `PixelAOV` struct per sample during integration. The rasterizer accumulates these into `pAOVBuffers` per pixel, weighted by the sample weight, and normalizes after the sample loop. This sets `AOVBuffers::HasData()` to true.
-2. **Post-render retrace** (fallback): If `HasData()` is false after the render pass (e.g., standard shader-dispatch rasterizers), `OIDNDenoiser::CollectFirstHitAOVs()` fires camera rays to collect first-hit albedo and normals in a separate single-threaded pass.
+1. **Per-sample accumulation** (preferred): PT, spectral PT, BDPT, VCM, and
+   path-tracing shader dispatch populate a `PixelAOV` during beauty integration.
+   The owning pixel thread accumulates requested albedo, world normal, and depth
+   with the sample weight, then normalizes after the sample loop. The shared
+   `HasData` flag is atomic because many owning pixel threads publish to it.
+2. **Post-render primary retrace** (fallback): If an estimator cannot attach
+   inline data (notably MLT), the OIDN-independent `CollectFirstHitAOVs` helper
+   traces a bounded set of camera rays in parallel over rows. OIDN's historical
+   method delegates to this helper.
 
-The `PixelAOV` struct is shared between PT and BDPT rasterizers, defined in `AOVBuffers.h`.
+`PropagateAOVsToFrameStore` copies only matching allocated planes into the
+canonical typed channels. Agent renders use a private FrameStore, compact those
+channels to a 7-byte/pixel cached observation, and restore the production store.
+See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the API, semantics, and exact
+87-byte/pixel peak accounting.
 
 ## Design Decisions
 

@@ -12,10 +12,14 @@
 #include "../RISE_API.h"
 #include "../Rendering/DisplayTransform.h"       // DISPLAY_TRANSFORM enum (encode-time tone-curve parity with the CLI PNG path)
 #include "../Rendering/DisplayTransformWriter.h" // exposure + tone-curve stage the CLI file-output pipeline applies before sRGB
+#include "../Rendering/FrameStore.h"
 #include "../Utilities/Color/Color.h"           // eColorSpace_sRGB
+#include "../Utilities/Color/ColorUtils.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/MemoryBuffer.h"
 
 #include <cmath>   // P3: std::round for the downscale dims rounding rule
+#include <limits>
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -27,11 +31,13 @@ InMemoryRasterizerOutput::InMemoryRasterizerOutput()
 	, mExposureEV( 0.0 )
 	, mDisplayTransform( eDisplayTransform_None )   // identity until SetDisplayTransform is called
 	, mColorSpace( eColorSpace_sRGB )               // matches this sink's pre-fix hardcoded default until SetOutputColorSpace is called
+	, mFrameStore( 0 )
 {
 }
 
 InMemoryRasterizerOutput::~InMemoryRasterizerOutput()
 {
+	safe_release( mFrameStore );
 }
 
 void InMemoryRasterizerOutput::OutputIntermediateImage( const IRasterImage&, const Rect* )
@@ -53,6 +59,102 @@ void InMemoryRasterizerOutput::OutputImage( const IRasterImage& pImage, const Re
 		}
 	}
 	mHasImage = true;
+	CapturePerception_();
+}
+
+void InMemoryRasterizerOutput::OnRasterizerFrameStoreChanged(
+	Implementation::FrameStore* framestore )
+{
+	if( framestore ) framestore->addref();
+	safe_release( mFrameStore );
+	mFrameStore = framestore;
+}
+
+void InMemoryRasterizerOutput::CapturePerception_()
+{
+	// A new completed image replaces the entire observation.  Release the
+	// prior compact planes when this render did not request compatible AOVs.
+	auto clearSidecar = [this]() {
+		std::vector<unsigned char>().swap( mPerceptionAlbedo );
+		std::vector<unsigned char>().swap( mPerceptionNormal );
+		std::vector<unsigned char>().swap( mPerceptionDepth );
+		mPerceptionInfo = PerceptionInfo();
+	};
+	clearSidecar();
+	if( !mFrameStore || !mHasImage || mFrameStore->Width() != mWidth || mFrameStore->Height() != mHeight ) return;
+
+	using namespace RISE::FrameStoreOutput;
+	const Channel<RISEPel>* albedo = mFrameStore->GetChannel<ChannelId::Albedo>();
+	const Channel<Vector3>* normal = mFrameStore->GetChannel<ChannelId::Normal>();
+	const Channel<float>* depth = mFrameStore->GetChannel<ChannelId::Depth>();
+	if( !albedo || !normal || !depth ) return;
+
+	const size_t pixels = static_cast<size_t>( mWidth ) * mHeight;
+	double depthMin = std::numeric_limits<double>::max();
+	double depthMax = 0.0;
+	unsigned int validDepth = 0;
+	for( size_t i = 0; i < pixels; ++i ) {
+		const double d = static_cast<double>( depth->Data()[i] );
+		if( RISE::IsFiniteDouble( d ) && d > 0.0 ) {
+			if( d < depthMin ) depthMin = d;
+			if( d > depthMax ) depthMax = d;
+			++validDepth;
+		}
+	}
+	if( validDepth == 0 ) depthMin = depthMax = 0.0;
+
+	mPerceptionAlbedo.resize( pixels * 3 );
+	mPerceptionNormal.resize( pixels * 3 );
+	mPerceptionDepth.resize( pixels );
+	const double logMin = depthMin > 0.0 ? std::log( depthMin ) : 0.0;
+	const double logMax = depthMax > depthMin ? std::log( depthMax ) : logMin;
+	const double invLogRange = logMax > logMin ? 1.0 / ( logMax - logMin ) : 0.0;
+	auto displayByte = []( double linear ) -> unsigned char {
+		if( !RISE::IsFiniteDouble( linear ) || linear <= 0.0 ) return 0;
+		if( linear >= 1.0 ) return 255;
+		double encoded = ColorUtils::SRGBTransferFunction( linear );
+		if( encoded < 0.0 ) encoded = 0.0;
+		if( encoded > 1.0 ) encoded = 1.0;
+		return static_cast<unsigned char>( encoded * 255.0 + 0.5 );
+	};
+	for( size_t i = 0; i < pixels; ++i ) {
+		const RISEPel& a = albedo->Data()[i];
+		mPerceptionAlbedo[i * 3 + 0] = displayByte( a.r );
+		mPerceptionAlbedo[i * 3 + 1] = displayByte( a.g );
+		mPerceptionAlbedo[i * 3 + 2] = displayByte( a.b );
+
+		const double d = static_cast<double>( depth->Data()[i] );
+		const bool hit = RISE::IsFiniteDouble( d ) && d > 0.0;
+		if( hit ) {
+			const Vector3& n = normal->Data()[i];
+			mPerceptionNormal[i * 3 + 0] = displayByte( n.x * 0.5 + 0.5 );
+			mPerceptionNormal[i * 3 + 1] = displayByte( n.y * 0.5 + 0.5 );
+			mPerceptionNormal[i * 3 + 2] = displayByte( n.z * 0.5 + 0.5 );
+			double t = invLogRange > 0.0 ? ( std::log( d ) - logMin ) * invLogRange : 0.0;
+			if( t < 0.0 ) t = 0.0;
+			if( t > 1.0 ) t = 1.0;
+			mPerceptionDepth[i] = static_cast<unsigned char>( ( 1.0 - t ) * 255.0 + 0.5 );
+		} else {
+			mPerceptionNormal[i * 3 + 0] = 0;
+			mPerceptionNormal[i * 3 + 1] = 0;
+			mPerceptionNormal[i * 3 + 2] = 0;
+			mPerceptionDepth[i] = 0;
+		}
+	}
+
+	mPerceptionInfo.available = true;
+	mPerceptionInfo.sourceWidth = mWidth;
+	mPerceptionInfo.sourceHeight = mHeight;
+	mPerceptionInfo.validDepthPixels = validDepth;
+	mPerceptionInfo.depthMin = depthMin;
+	mPerceptionInfo.depthMax = depthMax;
+	mPerceptionInfo.persistentBytes =
+		static_cast<std::uint64_t>( mPerceptionAlbedo.size()
+			+ mPerceptionNormal.size() + mPerceptionDepth.size() );
+	// Planned capture owns 28 B/pixel in the float tap, 52 B/pixel in
+	// FrameStore's typed AOV channels, and the compact retained planes above.
+	mPerceptionInfo.auxiliaryPeakBytes = mPerceptionInfo.persistentBytes
+		+ static_cast<std::uint64_t>( pixels ) * 80u;
 }
 
 void InMemoryRasterizerOutput::AdoptCoherentSnapshot(
@@ -288,4 +390,109 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
 	outWidth  = newW;
 	outHeight = newH;
 	return EncodePng( down, newW, newH, mExposureEV, mDisplayTransform, mColorSpace );
+}
+
+std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
+	unsigned int maxEdge,
+	unsigned int& outWidth,
+	unsigned int& outHeight,
+	PerceptionInfo& outInfo ) const
+{
+	outWidth = outHeight = 0;
+	outInfo = mPerceptionInfo;
+	std::vector<unsigned char> out;
+	if( !mPerceptionInfo.available || !mHasImage || mWidth == 0 || mHeight == 0 ) return out;
+
+	const unsigned int nativeLong = 2u * ( mWidth >= mHeight ? mWidth : mHeight );
+	double scale = 1.0;
+	if( maxEdge > 0 && maxEdge < nativeLong ) {
+		scale = static_cast<double>( maxEdge ) / static_cast<double>( nativeLong );
+	}
+	unsigned int panelW = static_cast<unsigned int>( std::round( scale * mWidth ) );
+	unsigned int panelH = static_cast<unsigned int>( std::round( scale * mHeight ) );
+	if( panelW < 1 ) panelW = 1;
+	if( panelH < 1 ) panelH = 1;
+	outWidth = panelW * 2;
+	outHeight = panelH * 2;
+
+	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer();
+	IRasterImageWriter* writer = nullptr;
+	if( !RISE_API_CreatePNGWriter( &writer, *buffer, 8, eColorSpace_sRGB ) || !writer ) {
+		safe_release( buffer );
+		outWidth = outHeight = 0;
+		return out;
+	}
+
+	const Scalar exposureMul = std::pow( Scalar( 2 ), static_cast<Scalar>( mExposureEV ) );
+	const DISPLAY_TRANSFORM dt = static_cast<DISPLAY_TRANSFORM>( mDisplayTransform );
+	auto decodeByte = []( unsigned char b ) -> double {
+		return ColorUtils::SRGBTransferFunctionInverse( static_cast<double>( b ) / 255.0 );
+	};
+
+	writer->BeginWrite( outWidth, outHeight );
+	for( unsigned int ay = 0; ay < outHeight; ++ay ) {
+		const unsigned int panelY = ay >= panelH ? 1u : 0u;
+		const unsigned int dy = ay - panelY * panelH;
+		const unsigned int sy0 = static_cast<unsigned int>( ( static_cast<double>( dy ) * mHeight ) / panelH );
+		unsigned int sy1 = static_cast<unsigned int>( ( static_cast<double>( dy + 1 ) * mHeight ) / panelH );
+		if( sy1 <= sy0 ) sy1 = sy0 + 1;
+		if( sy1 > mHeight ) sy1 = mHeight;
+
+		for( unsigned int ax = 0; ax < outWidth; ++ax ) {
+			const unsigned int panelX = ax >= panelW ? 1u : 0u;
+			const unsigned int dx = ax - panelX * panelW;
+			const unsigned int sx0 = static_cast<unsigned int>( ( static_cast<double>( dx ) * mWidth ) / panelW );
+			unsigned int sx1 = static_cast<unsigned int>( ( static_cast<double>( dx + 1 ) * mWidth ) / panelW );
+			if( sx1 <= sx0 ) sx1 = sx0 + 1;
+			if( sx1 > mWidth ) sx1 = mWidth;
+
+			double r = 0.0, g = 0.0, b = 0.0;
+			unsigned int count = 0;
+			const unsigned int panel = panelY * 2 + panelX;
+			for( unsigned int sy = sy0; sy < sy1; ++sy ) {
+				for( unsigned int sx = sx0; sx < sx1; ++sx ) {
+					const size_t i = static_cast<size_t>( sy ) * mWidth + sx;
+					if( panel == 0 ) {
+						const RISEPel& c = mPixels[i].base;
+						r += c.r; g += c.g; b += c.b;
+					} else if( panel == 1 ) {
+						r += decodeByte( mPerceptionAlbedo[i * 3 + 0] );
+						g += decodeByte( mPerceptionAlbedo[i * 3 + 1] );
+						b += decodeByte( mPerceptionAlbedo[i * 3 + 2] );
+					} else if( panel == 2 ) {
+						r += decodeByte( mPerceptionNormal[i * 3 + 0] );
+						g += decodeByte( mPerceptionNormal[i * 3 + 1] );
+						b += decodeByte( mPerceptionNormal[i * 3 + 2] );
+					} else {
+						const double d = decodeByte( mPerceptionDepth[i] );
+						r += d; g += d; b += d;
+					}
+					++count;
+				}
+			}
+			if( count > 0 ) {
+				const double inv = 1.0 / static_cast<double>( count );
+				r *= inv; g *= inv; b *= inv;
+			}
+			RISEPel mapped( r, g, b );
+			if( panel == 0 ) {
+				mapped.r *= exposureMul;
+				mapped.g *= exposureMul;
+				mapped.b *= exposureMul;
+				mapped = DisplayTransforms::Apply( dt, mapped );
+			}
+			writer->WriteColor( RISEColor( mapped, 1.0 ), ax, ay );
+		}
+	}
+	writer->EndWrite();
+
+	const unsigned int nBytes = buffer->getCurPos();
+	const char* bytes = buffer->Pointer();
+	if( bytes && nBytes > 0 ) {
+		out.assign( reinterpret_cast<const unsigned char*>( bytes ),
+			reinterpret_cast<const unsigned char*>( bytes ) + nBytes );
+	}
+	safe_release( writer );
+	safe_release( buffer );
+	return out;
 }

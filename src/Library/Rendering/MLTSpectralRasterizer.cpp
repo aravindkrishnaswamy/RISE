@@ -62,10 +62,11 @@
 // L7 follow-up — `FrameStore.h` needed unconditionally for the AOV
 // propagation utility.  See MLTRasterizer.cpp for the same fix.
 #include "FrameStore.h"
-#ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
+#ifdef RISE_ENABLE_OIDN
 #include "OIDNDenoiser.h"
 #endif
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1024,15 +1025,22 @@ void MLTSpectralRasterizer::RasterizeScene(
 	if( pImage )
 	{
 #ifdef RISE_ENABLE_OIDN
+		const bool willDenoise = bDenoisingEnabled;
+#else
+		const bool willDenoise = false;
+#endif
+		const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+		std::unique_ptr<AOVBuffers> aovBuffers(
+			aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+		if( aovBuffers ) {
+			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+			PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+		}
+#ifdef RISE_ENABLE_OIDN
 		if( bDenoisingEnabled ) {
 			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
 
-			AOVBuffers aovBuffers( width, height );
-			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-			// L7 follow-up — propagate AOVs into canonical FrameStore.
-			RISE::Implementation::PropagateAOVsToFrameStore(
-				mFrameStore, aovBuffers );
-			mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
 				GetRenderElapsedSeconds() );
 
@@ -1151,16 +1159,22 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 		if( pImage )
 		{
 #ifdef RISE_ENABLE_OIDN
+			const bool willDenoise = bDenoisingEnabled;
+#else
+			const bool willDenoise = false;
+#endif
+			const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+			std::unique_ptr<AOVBuffers> aovBuffers(
+				aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+			if( aovBuffers ) {
+				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+				PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+			}
+#ifdef RISE_ENABLE_OIDN
 			if( bDenoisingEnabled ) {
 				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
 
-				AOVBuffers aovBuffers( width, height );
-				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				// L7 follow-up — propagate AOVs to canonical FrameStore
-				// per frame.  Animation: latest frame's data wins.
-				RISE::Implementation::PropagateAOVsToFrameStore(
-					mFrameStore, aovBuffers );
-				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
 					GetRenderElapsedSeconds() );
 

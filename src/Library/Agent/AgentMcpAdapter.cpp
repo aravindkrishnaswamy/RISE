@@ -534,6 +534,8 @@ namespace RISE
 						"OPTIONAL name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with EVERY `mode` above. Equivalent to transferring the full shared pose (location, lookat, up, Euler orientation, target orientation) plus a pinhole FOV, by name instead of raw numbers -- if both are supplied, `view` wins. PINHOLE-ONLY: the override cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (`ok:false`) naming the unsupported type rather than silently rendering with the active camera's optics. An ONB-style active camera that cannot round-trip this pose also fails loudly. An unresolvable name likewise FAILS with the available-name list in `message`. Use this to compare the SAME render mode from several saved angles without re-deriving camera math each time." ) );
 					props.set( "light", StringProp(
 						"OPTIONAL name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting (not a dim/approximate preview of it). Valid with mode:\"beauty\" (the default) and the four production-transport BeautyVariant view modes (deep_reflect/direct/indirect/clay_lights); silently IGNORED (honestly noted in `message`) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:\"draft\" -- none of those evaluate scene lighting at all. An unresolvable name FAILS the render (`ok:false`) with the available-name list in `message`, same contract as an unresolvable `view`. Use this to check one light's contribution in isolation (shadow shape, colour, falloff) without the others visually competing for attention." ) );
+					props.set( "perception", BoolProp(
+						"OPTIONAL, default true. For a production beauty render, captures albedo, world-space normal, and camera-distance depth in the SAME render without changing beauty pixels. Then call read_image with representation:\"perception\" for one 2x2 atlas plus structured depth/memory metadata. Set false to avoid all auxiliary allocation when beauty alone is sufficient. Ignored for draft/objectmap/view modes." ) );
 					tools.push_back( MakeTool( "render",
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
@@ -622,17 +624,20 @@ namespace RISE
 				{
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "maxEdge", NumberProp( "OPTIONAL long-edge bound in pixels, CLAMPED to [16,1024]. Downscales the cached image (box filter, aspect-preserving, NEVER upscales) before encoding -- no re-render. Omit for the native render resolution." ) );
+					props.set( "representation", StringProp( "OPTIONAL, \"beauty\" (default) or \"perception\". perception returns a conventional 2x2 atlas ordered [beauty, albedo; world-space normal, log depth] from the SAME production beauty render, plus source dimensions, depth range, valid-depth count, and exact managed auxiliary-memory bytes. It is unavailable after draft/objectmap/view renders or render{perception:false}." ) );
 					tools.push_back( MakeTool( "read_image",
 						"Read the last successful render's image. Returns an MCP image content "
 						"block (inline PNG, so an MCP vision-capable client sees the rendered frame "
 						"directly) PLUS a text block with the metadata "
-						"{png_base64,byteLength,width,height} (the same fields the underlying RPC "
+						"{png_base64,byteLength,width,height,representation} (the same fields the underlying RPC "
 						"verb returns, for a client that wants the raw base64/dims rather than the "
 						"image block). Call `render` at least once first -- before any render this "
 						"returns an image for whatever is cached (empty/default if nothing has "
 						"rendered yet). IF THE LAST RENDER WAS mode:\"objectmap\": read at NATIVE "
 						"size -- OMIT maxEdge. Downscaling box-blends the flat identity colours, "
-						"corrupting the exact-byte legend match (maxEdge is for beauty/draft only).",
+						"corrupting the exact-byte legend match (maxEdge is for beauty/draft only). "
+						"For richer scene understanding after production beauty, use representation:\"perception\": "
+						"the returned single image carries beauty, reflectance, orientation, and log-distance together.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 

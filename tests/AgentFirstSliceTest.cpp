@@ -24,8 +24,11 @@
 //                         yields zero error diagnostics.
 //    * propose_patch   -> set a real param; then read_document shows the new
 //                         value (the loop mutated the head).
-//    * render          -> ok==true, dims match the film; capture meanR/G/B.
+//    * render          -> ok==true, dims match the film; capture meanR/G/B;
+//                         default agent perception reports exact memory.
 //    * read_image      -> png_base64 non-empty + decodes to a PNG signature.
+//    * perception      -> same-render beauty/albedo/normal/depth atlas,
+//                         metadata, max-edge bound, and zero-allocation opt-out.
 //    * loop coherence  -> propose a VISIBLE change, render again, assert the
 //                         channel means shifted FAR beyond the noise floor.
 //    * error paths     -> unknown method -32601, malformed line -32700,
@@ -236,7 +239,7 @@ int main()
 	// render — ok, dims match the film; capture the channel-mean signature.
 	//----------------------------------------------------------------------
 	std::printf( "[render]\n" );
-	double firstMeanR = 0.0, firstMeanG = 0.0, firstMeanB = 0.0;
+		double firstMeanR = 0.0, firstMeanG = 0.0, firstMeanB = 0.0;
 	{
 		const std::string resp = rpc.HandleLine( Req( 7, "render", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 7 );
@@ -247,6 +250,12 @@ int main()
 		firstMeanR = r.get( "meanR" ).asNumber();
 		firstMeanG = r.get( "meanG" ).asNumber();
 		firstMeanB = r.get( "meanB" ).asNumber();
+		Check( r.get( "perceptionAvailable" ).asBool(),
+		       "agent transport enables same-render perception by default" );
+		Check( r.get( "perceptionPersistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0,
+		       "render reports exact compact sidecar cost (7 bytes/pixel)" );
+		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 87.0,
+		       "render reports exact managed auxiliary peak (87 bytes/pixel)" );
 		// render stays lean: no image bytes in the render result.
 		Check( !r.has( "png_base64" ), "render result does NOT carry the image bytes (read_image does)" );
 	}
@@ -685,6 +694,76 @@ int main()
 		JsonValue env = ParseResponse( resp, 39 );
 		Check( env.get( "result" ).get( "width" ).asNumber() == 24.0,
 		       "read_image() with no maxEdge reports the native 24x24 (back-compat + additive width/height)" );
+	}
+
+	//----------------------------------------------------------------------
+	// Perception representation: a single conventional 2x2 image assembled
+	// from the SAME render.  `maxEdge` bounds the complete atlas, not each
+	// panel, so model image-token and transfer cost stay predictable.
+	//----------------------------------------------------------------------
+	std::printf( "[perception] same-render atlas + structured depth/memory metadata\n" );
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "representation", JsonValue::MakeString( "perception" ) );
+		params.set( "maxEdge", JsonValue::MakeNumber( 32.0 ) );
+		const std::string resp = rpc.HandleLine( Req( 70, "read_image", params ) );
+		JsonValue env = ParseResponse( resp, 70 );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "available" ).asBool(), "perception atlas is available after production beauty" );
+		Check( r.get( "representation" ).asString() == "perception", "read_image echoes perception representation" );
+		Check( r.get( "width" ).asNumber() == 32.0 && r.get( "height" ).asNumber() == 32.0,
+		       "maxEdge bounds the whole 2x2 atlas" );
+		Check( r.get( "sourceWidth" ).asNumber() == 24.0 && r.get( "sourceHeight" ).asNumber() == 24.0,
+		       "perception metadata preserves source dimensions" );
+		const JsonValue& panels = r.get( "panels" );
+		Check( panels.isArray() && panels.size() == 4,
+		       "perception atlas declares four typed panels" );
+		Check( panels.at( 0 ).asString() == "beauty" &&
+		       panels.at( 1 ).asString() == "albedo" &&
+		       panels.at( 2 ).asString() == "world_normal" &&
+		       panels.at( 3 ).asString() == "log_depth",
+		       "perception panel order is stable" );
+		Check( r.get( "validDepthPixels" ).asNumber() > 0.0,
+		       "same-render depth contains visible surface hits" );
+		Check( r.get( "depthMin" ).asNumber() > 0.0 &&
+		       r.get( "depthMax" ).asNumber() >= r.get( "depthMin" ).asNumber(),
+		       "depth range is finite, positive, and ordered" );
+		Check( r.get( "persistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0 &&
+		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 87.0,
+		       "read_image exposes exact managed perception memory" );
+		std::vector<unsigned char> png;
+		Check( Base64Decode( r.get( "png_base64" ).asString(), png ),
+		       "perception png_base64 decodes cleanly" );
+		Check( png.size() >= 8 && png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+		       "perception payload is a PNG" );
+	}
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "representation", JsonValue::MakeString( "tensor" ) );
+		JsonValue env = ParseResponse( rpc.HandleLine( Req( 71, "read_image", params ) ), 71 );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "unknown read_image representation is rejected" );
+	}
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "perception", JsonValue::MakeBool( false ) );
+		JsonValue env = ParseResponse( rpc.HandleLine( Req( 72, "render", params ) ), 72 );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "perception:false render succeeds" );
+		Check( !r.get( "perceptionAvailable" ).asBool() &&
+		       r.get( "perceptionPersistentBytes" ).asNumber() == 0.0 &&
+		       r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 0.0,
+		       "perception:false removes all auxiliary perception allocation" );
+
+		JsonValue read = JsonValue::MakeObject();
+		read.set( "representation", JsonValue::MakeString( "perception" ) );
+		JsonValue readEnv = ParseResponse( rpc.HandleLine( Req( 73, "read_image", read ) ), 73 );
+		const JsonValue& readResult = readEnv.get( "result" );
+		Check( !readResult.get( "available" ).asBool() &&
+		       readResult.get( "png_base64" ).asString().empty() &&
+		       readResult.get( "width" ).asNumber() == 0.0 &&
+		       readResult.get( "height" ).asNumber() == 0.0,
+		       "perception:false leaves no stale atlas from the prior render" );
 	}
 
 	//----------------------------------------------------------------------

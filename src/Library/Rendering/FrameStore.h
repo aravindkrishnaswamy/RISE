@@ -4,9 +4,9 @@
 //  redesign.
 //
 //  Holds RISEPel-precision linear beauty + optional AOV channels
-//  (albedo, normal, depth, etc.).  Tile-level seqlock concurrency
-//  lets the rasterizer write and the UI / encoders read concurrently
-//  without a mutex.  Render() is the polymorphic readback that
+//  (albedo, normal, depth, etc.).  Tile-level shared-mutex concurrency
+//  lets the rasterizer write and the UI / encoders read concurrently.
+//  Render() is the polymorphic readback that
 //  applies a ViewTransform and produces target-format bytes for
 //  display surfaces and file encoders.
 //
@@ -46,6 +46,7 @@
 #include "../Utilities/Threads/Threads.h"
 
 #include "Channel.h"
+#include "AOVBuffers.h"
 #include "FrameStoreColorSpace.h"
 #include "TargetFormat.h"
 #include "ViewTransform.h"
@@ -85,7 +86,7 @@ namespace RISE
 			size_t height = 0;
 
 			//! Tile edge length in pixels.  Should match the
-			//! rasterizer's tile size to align the seqlock with
+			//! rasterizer's tile size to align the lock with
 			//! the actual write granularity.  32 is the RISE default.
 			size_t tileEdge = 32;
 
@@ -105,8 +106,7 @@ namespace RISE
 		//! Canonical HDR frame buffer.  Multiple readers (UI repaint,
 		//! file encoders, network mirror) and one writer (the
 		//! rasterizer or its FrameSink adapter) communicate through
-		//! the tile-level seqlock; no mutex required for the
-		//! common-case read.
+		//! the tile-level shared-mutex protocol.
 		//!
 		//! Lifetime: managed via Reference / addref / release.
 		//! Construction examples in tests/FrameStoreTest.cpp.
@@ -153,13 +153,13 @@ namespace RISE
 
 			// ── write-side API (rasterizer / FrameSink) ───────────
 
-			//! Begin a tile write.  Increments the tile's seqlock to
-			//! odd; readers will retry until the matching EndTile.
+			//! Begin a tile write.  Takes the tile's exclusive lock;
+			//! readers block until the matching EndTile.
 			//! Tile coordinates are in tile units (not pixel units).
 			void BeginTile( size_t tileX, size_t tileY );
 
-			//! End a tile write.  Increments seqlock to even and
-			//! bumps the global generation counter; observers'
+			//! End a tile write.  Releases the exclusive lock and bumps
+			//! the global generation counter; observers'
 			//! OnTileComplete fires here.
 			void EndTile( size_t tileX, size_t tileY );
 
@@ -167,7 +167,7 @@ namespace RISE
 			//! sub-rectangle of an IRasterImage.  Used by the Phase 1
 			//! FrameSink to ingest data from the existing
 			//! IRasterizerOutput push API.  Asserts srcRect aligns
-			//! with the FrameStore's tile grid; the seqlock is
+			//! with the FrameStore's tile grid; the tile lock is
 			//! managed internally (BeginTile/EndTile bracketing
 			//! happen inside).
 			void CopyTileFromRasterImage( size_t tileX, size_t tileY,
@@ -258,7 +258,7 @@ namespace RISE
 
 			//! Mutable accessor for producer-side metadata writes
 			//! (sample count updates, camera EV).  Note: this is
-			//! NOT seqlock-protected; callers should write metadata
+			//! NOT tile-lock-protected; callers should write metadata
 			//! at frame boundaries (before MarkFrameComplete).
 			Metadata& MutableMeta() { return meta_; }
 
@@ -453,12 +453,8 @@ namespace RISE
 		// bracket window — `std::shared_mutex` is non-recursive, so a
 		// second `BeginTile` on a tile already locked by the same thread
 		// would deadlock.
-		// Forward-decl for the L7 propagation helper.  Full type in
-		// `Rendering/AOVBuffers.h` (gated on `RISE_ENABLE_OIDN`).
-		class AOVBuffers;
-
-		// L7 — Copy AOVBuffers contents into FrameStore's Albedo +
-		// Normal channels.  No-op when:
+		// L7 — Copy AOVBuffers contents into FrameStore's Albedo,
+		// Normal, and Depth channels.  No-op when:
 		//   * `fs` is null.
 		//   * `aov`'s dims are zero.
 		//   * `fs` and `aov` dim-mismatch.
@@ -476,6 +472,10 @@ namespace RISE
 		// `CollectFirstHitAOVs` calls — see commit messages for
 		// L7 + the L7 follow-up that wired MLT.
 		void PropagateAOVsToFrameStore( FrameStore* fs, const AOVBuffers& aov );
+
+		//! Builds the smallest float-sidecar plan needed by a FrameStore,
+		//! optionally unioned with the albedo+normal pair required by OIDN.
+		AOVBuffers::Plan MakeAOVPlan( const FrameStore* fs, bool denoiserAux );
 
 		class FrameStoreBulkBracket
 		{

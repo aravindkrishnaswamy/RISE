@@ -5,11 +5,8 @@
 //  See FrameStore.h for the design context, lifetime conventions,
 //  and observer-attachment semantics.
 //
-//  Concurrency: tile-level seqlock per docs/FRAMESTORE_DESIGN.md §4.
-//  Each tile carries an atomic uint64 sequence counter.  Writers
-//  bump it odd→even around their write; readers retry on
-//  mid-write collisions.  Writers never block readers.  No mutex
-//  on the per-pixel hot path.
+//  Concurrency: tile-level shared/exclusive locking per
+//  docs/FRAMESTORE_DESIGN.md §4.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -18,9 +15,7 @@
 #include "../Interfaces/IRenderObserver.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/FiniteMath.h"
-#ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"  // L7 — PropagateAOVsToFrameStore
-#endif
 
 #include <algorithm>
 #include <cassert>
@@ -557,7 +552,6 @@ namespace RISE
 		// ─────────────────────────────────────────────────────────────
 		void PropagateAOVsToFrameStore( FrameStore* fs, const AOVBuffers& aov )
 		{
-#ifdef RISE_ENABLE_OIDN
 			if( !fs ) return;
 
 			const unsigned int aovW = aov.GetWidth();
@@ -570,34 +564,47 @@ namespace RISE
 
 			auto* albedoCh = fs->GetChannel<FrameStoreOutput::ChannelId::Albedo>();
 			auto* normalCh = fs->GetChannel<FrameStoreOutput::ChannelId::Normal>();
-			if( !albedoCh && !normalCh ) return;
+			auto* depthCh = fs->GetChannel<FrameStoreOutput::ChannelId::Depth>();
+			if( !albedoCh && !normalCh && !depthCh ) return;
 
 			const float* albedoSrc = aov.GetAlbedoPtr();
 			const float* normalSrc = aov.GetNormalPtr();
+			const float* depthSrc = aov.GetDepthPtr();
 
 			{
 				FrameStoreBulkBracket bracket( fs, fs->AsBeautyRasterImage() );
 				for( unsigned int y = 0; y < aovH; ++y ) {
 					for( unsigned int x = 0; x < aovW; ++x ) {
 						const size_t idx = ( static_cast<size_t>( y ) * aovW + x ) * 3u;
-						if( albedoCh ) {
+						if( albedoCh && albedoSrc ) {
 							RISEPel& pel = albedoCh->At( x, y );
 							pel.r = static_cast<Chel>( albedoSrc[idx + 0] );
 							pel.g = static_cast<Chel>( albedoSrc[idx + 1] );
 							pel.b = static_cast<Chel>( albedoSrc[idx + 2] );
 						}
-						if( normalCh ) {
+						if( normalCh && normalSrc ) {
 							Vector3& n = normalCh->At( x, y );
 							n.x = static_cast<Scalar>( normalSrc[idx + 0] );
 							n.y = static_cast<Scalar>( normalSrc[idx + 1] );
 							n.z = static_cast<Scalar>( normalSrc[idx + 2] );
 						}
+						if( depthCh && depthSrc ) {
+							depthCh->At( x, y ) = depthSrc[ static_cast<size_t>( y ) * aovW + x ];
+						}
 					}
 				}
 			}
-#else
-			(void)fs; (void)aov;  // OIDN compiled out → no AOVBuffers type
-#endif
+		}
+
+		AOVBuffers::Plan MakeAOVPlan( const FrameStore* fs, bool denoiserAux )
+		{
+			AOVBuffers::Plan plan( denoiserAux, denoiserAux, false );
+			if( fs ) {
+				plan.albedo = plan.albedo || fs->HasChannel( FrameStoreOutput::ChannelId::Albedo );
+				plan.normal = plan.normal || fs->HasChannel( FrameStoreOutput::ChannelId::Normal );
+				plan.depth = fs->HasChannel( FrameStoreOutput::ChannelId::Depth );
+			}
+			return plan;
 		}
 
 		// Snapshot the observer list under the mutex, increment the

@@ -149,6 +149,8 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 			const BDPTVertex& v = eyeVerts[iv];
 			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 				pAOV->normal = v.normal;
+				pAOV->depth = Vector3Ops::Magnitude(
+					Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
 				if( v.pMaterial->GetBSDF() ) {
 					// Rebuild the RayIntersectionGeometric from the vertex
 					// via the canonical PathVertexEval helper so we don't
@@ -384,18 +386,14 @@ void BDPTPelRasterizer::IntegratePixel(
 				? ((mortonIndex << log2SPP) | globalSampleIndex)
 				: globalSampleIndex;
 
-#ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
 			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
 				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
 			if( pAOVBuffers && aov.valid ) {
 				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 			}
-#else
-			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-				effectiveIndex, pixelSeed, 0 );
-#endif
 
 			// Approach C: cross-pixel filter-weighted splat.  With a
 			// wide-support filter, this spreads every eye-subpath
@@ -484,11 +482,9 @@ void BDPTPelRasterizer::IntegratePixel(
 		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);

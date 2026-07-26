@@ -348,7 +348,6 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 				rc.pSampler = &sampler;
 
-#ifdef RISE_ENABLE_OIDN
 				PixelAOV aov;
 				const XYZPel sampleXYZ = IntegratePixelSpectral(
 					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
@@ -356,11 +355,8 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				if( pAOVBuffers && aov.valid ) {
 					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 				}
-#else
-				const XYZPel sampleXYZ = IntegratePixelSpectral(
-					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap );
-#endif
 				// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 				// now accumulates XYZ; no per-sample chromaticity clip.
 
@@ -420,14 +416,12 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			px.converged = converged;
 		}
 
-#ifdef RISE_ENABLE_OIDN
 		// Normalize accumulated AOVs by total weight (non-progressive only;
 		// the progressive path normalizes in PixelBasedRasterizerHelper after
 		// the final pass).  Mirrors PathTracingPelRasterizer.
 		if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 			pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 		}
-#endif
 
 		if( adaptive && adaptiveConfig.showMap ) {
 			const Scalar t = Scalar(sampleIndex) / Scalar(targetSamples);
@@ -456,7 +450,6 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 		rc.pSampler = &sampler;
 
-#ifdef RISE_ENABLE_OIDN
 		PixelAOV aov;
 		const XYZPel sampleXYZ = IntegratePixelSpectral(
 			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap,
@@ -464,12 +457,9 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 		if( pAOVBuffers && aov.valid ) {
 			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
 			pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+			pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
 			pAOVBuffers->Normalize( x, y, 1.0 );
 		}
-#else
-		const XYZPel sampleXYZ = IntegratePixelSpectral(
-			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap );
-#endif
 
 		// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel).
 		cret = RISEColor( RISEPel( sampleXYZ ), 1.0 );

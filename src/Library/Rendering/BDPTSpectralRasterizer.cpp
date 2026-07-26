@@ -157,6 +157,8 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 			const BDPTVertex& v = eyeVerts[i];
 			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 				pAOV->normal = v.normal;
+				pAOV->depth = Vector3Ops::Magnitude(
+					Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
 				if( v.pMaterial->GetBSDF() ) {
 					const Vector3 rayDir = Vector3Ops::Normalize(
 						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
@@ -322,6 +324,8 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 					const BDPTVertex& v = eyeVerts[iv];
 					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 						pAOV->normal = v.normal;
+						pAOV->depth = Vector3Ops::Magnitude(
+							Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
 						if( v.pMaterial->GetBSDF() ) {
 							const Vector3 rayDir = Vector3Ops::Normalize(
 								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
@@ -670,18 +674,14 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			// The Morton remapping is done inside IntegratePixelSpectral per
 			// spectral sample, so pass the raw pixelSampleIndex here.
 
-#ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
 			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
 				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0 );
 			if( pAOVBuffers && aov.valid ) {
 				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 			}
-#else
-			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
-				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, 0 );
-#endif
 			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 			// now accumulates XYZ; no per-sample chromaticity clip.
 
@@ -741,11 +741,9 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		}
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && weights > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / weights );
 	}
-#endif
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );

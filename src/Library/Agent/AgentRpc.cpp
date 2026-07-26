@@ -529,6 +529,11 @@ namespace RISE
 				// the head's ACTIVE (production) rasterizer regardless of
 				// which mode this render actually used.
 				result.set( "renderMode", JsonValue::MakeString( rr.renderMode ) );
+				result.set( "perceptionAvailable", JsonValue::MakeBool( rr.perceptionAvailable ) );
+				result.set( "perceptionPersistentBytes", JsonValue::MakeNumber(
+					static_cast<double>( rr.perceptionPersistentBytes ) ) );
+				result.set( "perceptionAuxiliaryPeakBytes", JsonValue::MakeNumber(
+					static_cast<double>( rr.perceptionAuxiliaryPeakBytes ) ) );
 				// Toolkit slice 3a ADDITIVE wire field: the object-colour
 				// `legend` of an OBJECTMAP render.  Emitted ONLY when this
 				// render was an objectmap (renderMode=="objectmap") -- a
@@ -1375,6 +1380,14 @@ namespace RISE
 					// ratio).
 					AgentRenderParams rparams;
 					rparams.samples = samples;
+					// Agent transports roll perception out by default; direct C++
+					// callers retain AgentRenderParams' opt-in false default.
+					rparams.perception = true;
+					if( const JsonValue* pv = params.find( "perception" ) ) {
+						if( pv->isBool() ) rparams.perception = pv->asBool();
+						else if( !pv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'perception' must be a boolean" );
+					}
 					unsigned int width = 0, height = 0;
 					std::string dimErr;
 					const int wPresent = ParseClampedUInt( params, "width",  16, 512, width,  dimErr );
@@ -1735,7 +1748,7 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// read_image {maxEdge?} -> {png_base64:string,byteLength:number,
+				// read_image {maxEdge?,representation?} -> {png_base64:string,byteLength:number,
 				//                           width:number,height:number}
 				//   Reads the LAST successful render's cached PNG bytes and
 				//   base64-encodes them so the binary travels in JSON.
@@ -1750,15 +1763,46 @@ namespace RISE
 					std::string meErr;
 					const int mePresent = ParseClampedUInt( params, "maxEdge", 16, 1024, maxEdge, meErr );
 					if( mePresent < 0 ) return MakeError( idValue, kInvalidParams, meErr );
+					std::string representation = "beauty";
+					if( const JsonValue* rv = params.find( "representation" ) ) {
+						if( rv->isString() ) representation = rv->asString();
+						else if( !rv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'representation' must be a string" );
+					}
+					if( representation != "beauty" && representation != "perception" ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'representation' must be \"beauty\" or \"perception\"" );
+					}
 					unsigned int imgW = 0, imgH = 0;
-					const std::vector<unsigned char> png =
-						( mePresent == 1 ) ? s->ReadImage( maxEdge, imgW, imgH )
-						                   : s->ReadImage( 0, imgW, imgH );
+					AgentPerceptionInfo perceptionInfo;
+					const std::vector<unsigned char> png = representation == "perception"
+						? s->ReadPerception( mePresent == 1 ? maxEdge : 0, imgW, imgH, perceptionInfo )
+						: ( ( mePresent == 1 ) ? s->ReadImage( maxEdge, imgW, imgH )
+						                           : s->ReadImage( 0, imgW, imgH ) );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "png_base64", JsonValue::MakeString( Base64Encode( png ) ) );
 					result.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
 					result.set( "width",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 					result.set( "height", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+					result.set( "representation", JsonValue::MakeString( representation ) );
+					if( representation == "perception" ) {
+						result.set( "available", JsonValue::MakeBool( perceptionInfo.available && !png.empty() ) );
+						JsonValue panels = JsonValue::MakeArray();
+						panels.push_back( JsonValue::MakeString( "beauty" ) );
+						panels.push_back( JsonValue::MakeString( "albedo" ) );
+						panels.push_back( JsonValue::MakeString( "world_normal" ) );
+						panels.push_back( JsonValue::MakeString( "log_depth" ) );
+						result.set( "panels", panels );
+						result.set( "sourceWidth", JsonValue::MakeNumber( perceptionInfo.sourceWidth ) );
+						result.set( "sourceHeight", JsonValue::MakeNumber( perceptionInfo.sourceHeight ) );
+						result.set( "validDepthPixels", JsonValue::MakeNumber( perceptionInfo.validDepthPixels ) );
+						result.set( "depthMin", JsonValue::MakeNumber( perceptionInfo.depthMin ) );
+						result.set( "depthMax", JsonValue::MakeNumber( perceptionInfo.depthMax ) );
+						result.set( "persistentBytes", JsonValue::MakeNumber(
+							static_cast<double>( perceptionInfo.persistentBytes ) ) );
+						result.set( "auxiliaryPeakBytes", JsonValue::MakeNumber(
+							static_cast<double>( perceptionInfo.auxiliaryPeakBytes ) ) );
+					}
 					return MakeSuccess( idValue, result );
 				}
 
