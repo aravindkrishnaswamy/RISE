@@ -31,6 +31,7 @@
 #define RISE_AGENT_AGENTSESSION_
 
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -1145,7 +1146,8 @@ namespace RISE
 		//! surface, and the actual contract is:
 		//!
 		//!   * mAsyncCacheMutex-guarded state (mLastPng, mLastSink,
-		//!     mActiveSinkReadLeases, mAsyncOutstandingJobId) is the ONLY
+		//!     mActiveSinkReadLeases, mSinkReadsClosing,
+		//!     mAsyncOutstandingJobId) is the ONLY
 		//!     state touched from more
 		//!     than one thread -- written by the async worker thread
 		//!     (RenderCore_'s cache-population tail; RenderAsync's
@@ -1172,6 +1174,11 @@ namespace RISE
 		//!     session (or detach) while an async render could still be in
 		//!     flight relies on this drain for correctness; it is automatic
 		//!     (no caller action required) as of this fix.
+		//!   * Teardown also closes the bounded ReadImage/ReadPerception
+		//!     admission gate and waits for every already-registered sink
+		//!     lease. Callers must not initiate a new member call after
+		//!     destruction begins, but an encode that acquired its lease
+		//!     before teardown is allowed to finish safely.
 		class AgentSession
 		{
 		public:
@@ -2111,6 +2118,14 @@ namespace RISE
 				mReadPerceptionAfterLeaseHookForTest = std::move( hook );
 			}
 
+			//! Invoked by ~AgentSession after it closes new bounded image reads
+			//! and observes at least one outstanding sink lease, immediately
+			//! before waiting for those readers. Test-only teardown seam.
+			void ForTest_SetSinkReadShutdownWaitHook( std::function<void()> hook )
+			{
+				mSinkReadShutdownWaitHookForTest = std::move( hook );
+			}
+
 			//! Round-2 P1-2 test hook: read mAsyncOutstandingJobId directly
 			//! (under mAsyncCacheMutex, like every other access to this
 			//! field).  Exists so a test can red-prove the publish-before-
@@ -2369,6 +2384,9 @@ namespace RISE
 			//! does not change the cached frame or scene, and the mutex makes
 			//! simultaneous const observations safe.
 			mutable std::map<InMemoryRasterizerOutput*, unsigned int> mActiveSinkReadLeases;
+			//! Guarded by mAsyncCacheMutex. Once set by ~AgentSession, bounded
+			//! image reads return empty instead of acquiring another sink lease.
+			bool mSinkReadsClosing = false;
 
 			//! Model-B F2 slice S2b: the full AgentRenderResult of the LAST
 			//! async render to complete, plus the renderJobId it belongs to
@@ -2423,6 +2441,9 @@ namespace RISE
 			//! worker populates the cache.  A plain std::mutex, not
 			//! reentrant -- mirrors the controller's own mMutex discipline.
 			mutable std::mutex mAsyncCacheMutex;
+			//! Teardown waits here until mActiveSinkReadLeases becomes empty.
+			//! Mutable because logically-const readers notify on lease release.
+			mutable std::condition_variable mSinkReadLeaseCv;
 
 			//! Fix-round-1 P1-A: the renderJobId of the MOST RECENT
 			//! RenderAsync submission that has not yet been observed
@@ -2450,6 +2471,8 @@ namespace RISE
 			//! Test-only instrumentation for the same logically-const observation
 			//! seam; it is set before and cleared after the joined reader thread.
 			mutable std::function<void()> mReadPerceptionAfterLeaseHookForTest;
+			//! See ForTest_SetSinkReadShutdownWaitHook.
+			std::function<void()> mSinkReadShutdownWaitHookForTest;
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled

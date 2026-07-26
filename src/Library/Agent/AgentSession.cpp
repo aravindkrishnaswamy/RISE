@@ -568,15 +568,20 @@ namespace RISE
 		void AgentSession::ReleaseSinkReadLease_( InMemoryRasterizerOutput* sink ) const
 		{
 			if( !sink ) return;
-			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-			auto it = mActiveSinkReadLeases.find( sink );
-			if( it != mActiveSinkReadLeases.end() ) {
-				if( it->second > 1 ) --it->second;
-				else mActiveSinkReadLeases.erase( it );
+			bool drained = false;
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				auto it = mActiveSinkReadLeases.find( sink );
+				if( it != mActiveSinkReadLeases.end() ) {
+					if( it->second > 1 ) --it->second;
+					else mActiveSinkReadLeases.erase( it );
+				}
+				// Keep release inside the same lock as erasure. A replacement render
+				// can never snapshot "not leased" while this sidecar is still alive.
+				safe_release( sink );
+				drained = mActiveSinkReadLeases.empty();
 			}
-			// Keep release inside the same lock as erasure. A replacement render
-			// can never snapshot "not leased" while this sidecar is still alive.
-			safe_release( sink );
+			if( drained ) mSinkReadLeaseCv.notify_all();
 		}
 
 		AgentSession::~AgentSession()
@@ -587,8 +592,9 @@ namespace RISE
 			// now.  DrainAsyncRender_ cancels (so the render aborts
 			// promptly rather than running to completion) then blocks
 			// until the controller reports the job no longer active, so by
-			// the time we reach the lines below, no other thread can be
-			// mid-call into this object.
+			// the time we reach the lines below, no async render worker can be
+			// mid-call into this object. Bounded image readers are independent
+			// of that worker lifetime and are closed/drained below.
 			DrainAsyncRender_();
 
 			// Fix-round-1 P1-A: take mAsyncCacheMutex for the sink release
@@ -603,7 +609,17 @@ namespace RISE
 			// drain's bound (e.g. a shorter timeout) without re-deriving
 			// this invariant from scratch.
 			{
-				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
+				// Bounded ReadImage/ReadPerception calls drop this mutex while
+				// encoding and retain their sink through mActiveSinkReadLeases. Close
+				// admission before waiting, then keep the session (and this mutex/map)
+				// alive until every already-admitted reader has released its lease.
+				mSinkReadsClosing = true;
+				if( !mActiveSinkReadLeases.empty() && mSinkReadShutdownWaitHookForTest ) {
+					mSinkReadShutdownWaitHookForTest();
+				}
+				mSinkReadLeaseCv.wait( cacheLk,
+					[this]() { return mActiveSinkReadLeases.empty(); } );
 				safe_release( mLastSink );
 				mLastSink = nullptr;
 			}
@@ -7056,6 +7072,7 @@ namespace RISE
 			InMemoryRasterizerOutput* sink = 0;
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				if( mSinkReadsClosing ) return std::vector<unsigned char>();
 				if( maxEdge == 0 ) {
 					// No bound requested -- byte-compatible with ReadImage(): same
 					// cached bytes, dims read off the cached sink when available.
@@ -7101,6 +7118,7 @@ namespace RISE
 			InMemoryRasterizerOutput* sink = 0;
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				if( mSinkReadsClosing ) return std::vector<unsigned char>();
 				sink = mLastSink;
 				if( sink ) {
 					// See ReadImage(maxEdge): registry insertion must precede the

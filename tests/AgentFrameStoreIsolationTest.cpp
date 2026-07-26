@@ -1072,6 +1072,105 @@ static void RunConcurrentReadLeasePeakProbe()
 	std::remove( scenePath.c_str() );
 }
 
+static void RunConcurrentReadLeaseTeardownProbe()
+{
+	const std::string scenePath = WriteTemp(
+		"agent_perception_read_lease_teardown.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "read-lease teardown: scratch scene file written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		"read-lease teardown: scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "read-lease teardown: session wraps job" );
+	if( !session ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	AgentRenderParams params;
+	params.perception = true;
+	Check( session->Render( params ).ok,
+		"read-lease teardown: perception source render succeeds" );
+
+	std::mutex hookMutex;
+	std::condition_variable hookCv;
+	bool leaseAcquired = false;
+	bool releaseReader = false;
+	bool teardownWaiting = false;
+	bool teardownReturned = false;
+	session->ForTest_SetReadPerceptionAfterLeaseHook( [&]() {
+		std::unique_lock<std::mutex> lk( hookMutex );
+		leaseAcquired = true;
+		hookCv.notify_all();
+		hookCv.wait( lk, [&]() { return releaseReader; } );
+	} );
+	session->ForTest_SetSinkReadShutdownWaitHook( [&]() {
+		std::lock_guard<std::mutex> lk( hookMutex );
+		teardownWaiting = true;
+		hookCv.notify_all();
+	} );
+
+	AgentSession* rawSession = session.get();
+	std::vector<unsigned char> readerPng;
+	AgentPerceptionInfo readerInfo;
+	std::thread reader( [&]() {
+		unsigned int atlasW = 0, atlasH = 0;
+		readerPng = rawSession->ReadPerception( 48, atlasW, atlasH, readerInfo );
+	} );
+	bool readerIsLeased = false;
+	{
+		std::unique_lock<std::mutex> lk( hookMutex );
+		readerIsLeased = hookCv.wait_for( lk, std::chrono::seconds( 5 ),
+			[&]() { return leaseAcquired; } );
+	}
+	Check( readerIsLeased,
+		"read-lease teardown: reader reaches the registered-lease hook" );
+	if( !readerIsLeased ) {
+		{
+			std::lock_guard<std::mutex> lk( hookMutex );
+			releaseReader = true;
+		}
+		hookCv.notify_all();
+		reader.join();
+		session.reset();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+		return;
+	}
+
+	std::thread teardown( [owned = std::move( session ), &hookMutex,
+		&hookCv, &teardownReturned]() mutable {
+		owned.reset();
+		{
+			std::lock_guard<std::mutex> lk( hookMutex );
+			teardownReturned = true;
+		}
+		hookCv.notify_all();
+	} );
+	bool destructorReachedWait = false;
+	{
+		std::unique_lock<std::mutex> lk( hookMutex );
+		destructorReachedWait = hookCv.wait_for( lk, std::chrono::seconds( 5 ),
+			[&]() { return teardownWaiting; } );
+		Check( !teardownReturned,
+			"read-lease teardown: destructor has not returned past a live reader" );
+		releaseReader = true;
+	}
+	Check( destructorReachedWait,
+		"read-lease teardown: destructor closes reads and waits for the lease" );
+	hookCv.notify_all();
+	reader.join();
+	teardown.join();
+
+	Check( !readerPng.empty() && readerInfo.available,
+		"read-lease teardown: admitted reader completes before session destruction" );
+	{
+		std::lock_guard<std::mutex> lk( hookMutex );
+		Check( teardownReturned,
+			"read-lease teardown: destructor returns after the reader releases" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFrameStoreIsolationTest ===\n" );
@@ -1133,6 +1232,7 @@ int main()
 	RunProductionSinkDetachmentProbe( "pt", kPtRasterizer );
 	RunProductionSinkDetachmentProbe( "auto", kAutoRasterizer );
 	RunConcurrentReadLeasePeakProbe();
+	RunConcurrentReadLeaseTeardownProbe();
 	RunDraftIsolationTest();
 	RunDraftThrowTest();
 
