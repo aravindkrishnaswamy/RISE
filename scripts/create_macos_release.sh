@@ -119,10 +119,11 @@ done
 [ "$(uname -s)" = "Darwin" ] || die "macOS is required"
 [ "$(uname -m)" = "arm64" ] || die "the current release pipeline requires an Apple Silicon build host"
 
-for tool in awk codesign ditto file find git hdiutil install_name_tool lipo \
-	otool plutil sed shasum xcodebuild xcrun; do
+for tool in awk codesign ditto find git hdiutil install_name_tool lipo \
+	otool paste plutil readlink sed shasum spctl xcodebuild xcrun; do
 	require_command "${tool}"
 done
+[ -x /usr/libexec/PlistBuddy ] || die "required command not found: /usr/libexec/PlistBuddy"
 HOMEBREW_PREFIX=""
 if command -v brew >/dev/null 2>&1; then
 	HOMEBREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
@@ -147,19 +148,38 @@ SOURCE_ROOT="${WORK_DIR}/source"
 PUBLISH_DIR=""
 LOCK_DIR=""
 LOCK_HELD=0
+RELEASE_COMPLETED=0
 cleanup() {
+	# A bash EXIT trap that ends on a successful command rewrites the
+	# shell's exit status, and bash enters the trap with $? already 0 after
+	# a fatal shell error such as an unbound variable -- so capturing the
+	# status is necessary but not sufficient. RELEASE_COMPLETED below is
+	# what actually keeps an aborted release from reporting success.
+	local status=$?
 	[ -z "${PUBLISH_DIR}" ] || rm -rf "${PUBLISH_DIR}"
 	if [ "${LOCK_HELD}" -eq 1 ]; then
 		rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true
 	fi
 	if [ "${KEEP_WORK_DIR}" -eq 1 ]; then
 		echo "Preserved work directory: ${WORK_DIR}"
+		if [ -d "${SOURCE_ROOT}" ]; then
+			echo "Release it with: git -C ${REPO_ROOT} worktree remove --force ${SOURCE_ROOT}"
+		fi
 	else
 		if [ -d "${SOURCE_ROOT}" ]; then
 			git -C "${REPO_ROOT}" worktree remove --force "${SOURCE_ROOT}" >/dev/null 2>&1 || true
 		fi
 		rm -rf "${WORK_DIR}"
+		# rm -rf leaves the registration behind whenever the remove above
+		# failed, so prune to keep repeated releases from accumulating
+		# stale worktree entries in the repository.
+		git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
 	fi
+	if [ "${RELEASE_COMPLETED}" -ne 1 ] && [ "${status}" -eq 0 ]; then
+		echo "ERROR: release aborted before completion" >&2
+		exit 1
+	fi
+	return "${status}"
 }
 trap cleanup EXIT
 
@@ -200,6 +220,17 @@ IFS=. read -r VERSION_MAJOR VERSION_MINOR VERSION_REVISION <<< "${VERSION}"
 DEPLOYMENT_TARGET="$(read_project_setting MACOSX_DEPLOYMENT_TARGET)"
 [ -n "${DEPLOYMENT_TARGET}" ] || die "unable to determine MACOSX_DEPLOYMENT_TARGET"
 
+# Every signature below is applied by hand after a CODE_SIGNING_ALLOWED=NO
+# build, so any entitlement the project grows would be silently dropped from
+# the shipped app. Refuse to release until the signing steps learn to carry
+# them.
+PROJECT_ENTITLEMENTS="$(read_project_setting CODE_SIGN_ENTITLEMENTS)"
+PROJECT_APP_SANDBOX="$(read_project_setting ENABLE_APP_SANDBOX)"
+[ -z "${PROJECT_ENTITLEMENTS}" ] || \
+	die "project sets CODE_SIGN_ENTITLEMENTS (${PROJECT_ENTITLEMENTS}); teach the codesign steps to pass --entitlements before releasing"
+[ "${PROJECT_APP_SANDBOX}" != "YES" ] || \
+	die "project enables App Sandbox; the manual signing here ships no entitlements, so teach the codesign steps to pass --entitlements before releasing"
+
 DERIVED_DATA="${WORK_DIR}/DerivedData"
 ARTIFACT_BASENAME="RISE-${VERSION}-build${BUILD_NUMBER}-macOS-${ARTIFACT_ARCH}"
 BUILD_LOG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}-build.log"
@@ -235,7 +266,7 @@ xcodebuild -project "${PROJECT}" -scheme "${SCHEME}" \
 	-derivedDataPath "${DERIVED_DATA}" build \
 	ARCHS="${XCODE_ARCHS}" ONLY_ACTIVE_ARCH=NO \
 	MARKETING_VERSION="${VERSION}" CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
-	GCC_PREPROCESSOR_DEFINITIONS="RISE_VER_MAJOR_VERSION=${VERSION_MAJOR} RISE_VER_MINOR_VERSION=${VERSION_MINOR} RISE_VER_REVISION_VERSION=${VERSION_REVISION} RISE_VER_BUILD_VERSION=${BUILD_NUMBER}" \
+	GCC_PREPROCESSOR_DEFINITIONS="\$(inherited) RISE_VER_MAJOR_VERSION=${VERSION_MAJOR} RISE_VER_MINOR_VERSION=${VERSION_MINOR} RISE_VER_REVISION_VERSION=${VERSION_REVISION} RISE_VER_BUILD_VERSION=${BUILD_NUMBER}" \
 	CODE_SIGNING_ALLOWED=NO GCC_TREAT_WARNINGS_AS_ERRORS=YES \
 	SWIFT_TREAT_WARNINGS_AS_ERRORS=YES 2>&1 | tee "${STAGED_BUILD_LOG}"
 build_status=${PIPESTATUS[0]}
@@ -251,6 +282,8 @@ plutil -lint "${APP}/Contents/Info.plist" >/dev/null
 	die "built app marketing version does not match ${VERSION}"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP}/Contents/Info.plist")" = "${BUILD_NUMBER}" ] || \
 	die "built app build number does not match ${BUILD_NUMBER}"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "${APP}/Contents/Info.plist")" = "${DEPLOYMENT_TARGET}" ] || \
+	die "built app LSMinimumSystemVersion does not match the advertised minimum macOS ${DEPLOYMENT_TARGET}"
 for definition in \
 	"RISE_VER_MAJOR_VERSION=${VERSION_MAJOR}" \
 	"RISE_VER_MINOR_VERSION=${VERSION_MINOR}" \
@@ -268,9 +301,14 @@ BUNDLED_NAMES=()
 BUNDLED_SOURCES=()
 SCAN_BINARIES=("${APP_EXECUTABLE}")
 SCAN_INDEX=0
+# The Xcode project links its entire third-party stack out of the Homebrew
+# prefix. extlib/oidn/install is build output consumed only by the make and
+# VS2022 builds, so it is never present in the detached source snapshot and
+# is deliberately not searched here.
 SEARCH_DIRS=("${FRAMEWORKS_DIR}" "/opt/homebrew/lib" "/usr/local/lib")
-[ -n "${HOMEBREW_PREFIX}" ] && SEARCH_DIRS+=("${HOMEBREW_PREFIX}/lib")
-[ -d "${SOURCE_ROOT}/extlib/oidn/install/lib" ] && SEARCH_DIRS+=("${SOURCE_ROOT}/extlib/oidn/install/lib")
+if [ -n "${HOMEBREW_PREFIX}" ]; then
+	SEARCH_DIRS+=("${HOMEBREW_PREFIX}/lib")
+fi
 
 is_system_dependency() {
 	case "$1" in
@@ -324,8 +362,24 @@ resolve_dependency() {
 	return 1
 }
 
+physical_path() {
+	local path="$1" link guard=0
+	while [ -L "${path}" ]; do
+		guard=$((guard + 1))
+		[ "${guard}" -le 32 ] || die "symlink chain too deep resolving $1"
+		link="$(readlink "${path}")"
+		case "${link}" in
+			/*) path="${link}" ;;
+			*) path="$(dirname "${path}")/${link}" ;;
+		esac
+	done
+	printf '%s/%s\n' "$(cd "$(dirname "${path}")" && pwd -P)" "$(basename "${path}")"
+}
+
 copy_dependency_license() {
 	local source="$1" package_root="" package_name="" license_file destination
+	local physical copied=0
+	physical="$(physical_path "${source}")"
 	if [ -n "${HOMEBREW_PREFIX}" ]; then
 		case "${source}" in
 		"${HOMEBREW_PREFIX}"/opt/*/*)
@@ -343,24 +397,35 @@ copy_dependency_license() {
 			package_root="${HOMEBREW_PREFIX}/share/doc/openpgl"
 			;;
 		esac
+		# A bare prefix/lib entry is normally a symlink into the Cellar; follow
+		# it so ordinary brew installs resolve without a per-formula case arm.
+		if [ -z "${package_root}" ]; then
+			case "${physical}" in
+			"${HOMEBREW_PREFIX}"/Cellar/*/*)
+				package_name="${physical#${HOMEBREW_PREFIX}/Cellar/}"
+				package_name="${package_name%%/*}"
+				package_root="${HOMEBREW_PREFIX}/opt/${package_name}"
+				;;
+			esac
+		fi
 	fi
-	case "${source}" in
-		"${SOURCE_ROOT}"/extlib/oidn/install/lib/*)
-			package_name="open-image-denoise"
-			package_root="${SOURCE_ROOT}/extlib/oidn/source"
-			;;
-	esac
-	[ -n "${package_root}" ] || return 0
-	[ -d "${package_root}" ] || return 0
+	[ -n "${package_root}" ] || \
+		die "no third-party notice mapping for bundled library ${source}; extend copy_dependency_license"
+	[ -d "${package_root}" ] || \
+		die "third-party notice directory for ${package_name} is missing: ${package_root}"
 	destination="${APP}/Contents/Resources/Third-Party Licenses/${package_name}"
 	while IFS= read -r license_file; do
 		[ -f "${license_file}" ] || continue
 		mkdir -p "${destination}"
-		cp -pL "${license_file}" "${destination}/$(basename "${license_file}")"
+		cp -pfL "${license_file}" "${destination}/$(basename "${license_file}")"
+		chmod 0644 "${destination}/$(basename "${license_file}")"
+		copied=$((copied + 1))
 	done < <(find -L "${package_root}" -maxdepth 5 -type f \( \
 		-iname 'LICENSE' -o -iname 'LICENSE.*' -o -iname 'COPYING' -o \
 		-iname 'COPYING.*' -o -iname 'NOTICE' -o -iname 'NOTICE.*' -o \
 		-iname 'third-party-programs*.txt' \) -print)
+	[ "${copied}" -gt 0 ] || \
+		die "no license file found under ${package_root} for bundled library ${source}"
 }
 
 add_library() {
@@ -372,8 +437,7 @@ add_library() {
 		if [ "${BUNDLED_NAMES[$index]}" = "${name}" ]; then
 			existing_source="${BUNDLED_SOURCES[$index]}"
 			[ "${source}" = "${destination}" ] && return 0
-			[ "$(cd "$(dirname "${existing_source}")" && pwd -P)/$(basename "${existing_source}")" = \
-			  "$(cd "$(dirname "${source}")" && pwd -P)/$(basename "${source}")" ] || \
+			[ "$(physical_path "${existing_source}")" = "$(physical_path "${source}")" ] || \
 				die "two external libraries share basename ${name}: ${existing_source} and ${source}"
 			return 0
 		fi
@@ -421,16 +485,18 @@ while [ "${SCAN_INDEX}" -lt "${#SCAN_BINARIES[@]}" ]; do
 done
 
 normalize_rpaths() {
-	local binary="$1" desired rpaths rpath
+	local binary="$1" desired rpath guard=0
 	case "${binary}" in
 		"${FRAMEWORKS_DIR}"/*) desired="@loader_path" ;;
 		*) desired="@executable_path/../Frameworks" ;;
 	esac
-	rpaths="$(otool -l "${binary}" | awk '/cmd LC_RPATH/{want=1; next} want && /path /{if (!seen[$2]++) print $2; want=0}')"
-	while IFS= read -r rpath; do
-		[ -n "${rpath}" ] || continue
+	while :; do
+		rpath="$(otool -l "${binary}" | awk '/cmd LC_RPATH/{want=1; next} want && /path /{print $2; exit}')"
+		[ -n "${rpath}" ] || break
+		guard=$((guard + 1))
+		[ "${guard}" -le 64 ] || die "unable to clear LC_RPATH entries from ${binary}"
 		install_name_tool -delete_rpath "${rpath}" "${binary}"
-	done <<< "${rpaths}"
+	done
 	install_name_tool -add_rpath "${desired}" "${binary}"
 }
 
@@ -442,13 +508,22 @@ for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
 	normalize_rpaths "${binary}"
 done
 
-cp -p "${SOURCE_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
-mkdir -p "${APP}/Contents/Resources/Third-Party Licenses/cgltf"
-cp -p "${SOURCE_ROOT}/extlib/cgltf/LICENSE.txt" \
-	"${APP}/Contents/Resources/Third-Party Licenses/cgltf/LICENSE.txt"
-mkdir -p "${APP}/Contents/Resources/Third-Party Licenses/mt19937"
-cp -p "${SOURCE_ROOT}/extlib/mt19937/LICENSE.txt" \
-	"${APP}/Contents/Resources/Third-Party Licenses/mt19937/LICENSE.txt"
+# Notices for third-party sources compiled directly into the executable;
+# these have no bundled dylib for copy_dependency_license to hang off.
+copy_static_license() {
+	local source="$1" package="$2" destination
+	[ -f "${source}" ] || die "in-tree third-party notice is missing: ${source}"
+	destination="${APP}/Contents/Resources/Third-Party Licenses/${package}"
+	mkdir -p "${destination}"
+	cp -pfL "${source}" "${destination}/$(basename "${source}")"
+	chmod 0644 "${destination}/$(basename "${source}")"
+}
+
+cp -pfL "${SOURCE_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
+chmod 0644 "${APP}/Contents/Resources/RISE-LICENSE.txt"
+copy_static_license "${SOURCE_ROOT}/extlib/cgltf/LICENSE.txt" cgltf
+copy_static_license "${SOURCE_ROOT}/extlib/mt19937/LICENSE.txt" mt19937
+copy_static_license "${SOURCE_ROOT}/extlib/stb/LICENSE.txt" stb
 
 expected_arches="${XCODE_ARCHS}"
 verify_architectures() {
@@ -487,6 +562,20 @@ verify_rpaths() {
 	done < <(otool -l "${binary}" | awk '/cmd LC_RPATH/{want=1; next} want && /path /{print $2; want=0}')
 	[ "${count}" -eq 1 ] || die "${binary} must contain exactly one bundle-local LC_RPATH"
 }
+
+# The scan above starts at the main executable only. Anything else Mach-O
+# in the bundle would ship unrelinked and unverified, so fail closed rather
+# than quietly shipping a binary still bound to this build machine.
+# `lipo -archs` succeeds on thin and universal Mach-O alike and fails on
+# everything else, which beats parsing file(1) -- its per-architecture
+# lines turn one universal binary into several mangled paths.
+while IFS= read -r -d '' macho; do
+	lipo -archs "${macho}" >/dev/null 2>&1 || continue
+	case "${macho}" in
+		"${APP_EXECUTABLE}"|"${FRAMEWORKS_DIR}"/*.dylib) ;;
+		*) die "unprocessed Mach-O image in the app bundle: ${macho} (extend the bundling scan)" ;;
+	esac
+done < <(find "${APP}" -type f -print0)
 
 verify_architectures "${APP_EXECUTABLE}"
 verify_dependencies "${APP_EXECUTABLE}"
@@ -530,7 +619,8 @@ VOLUME_DIR="${WORK_DIR}/dmg-root"
 mkdir -p "${VOLUME_DIR}"
 ditto "${APP}" "${VOLUME_DIR}/RISE-GUI.app"
 cp -p "${INFO_FILE}" "${VOLUME_DIR}/Release-Info.txt"
-cp -p "${SOURCE_ROOT}/LICENSE.TXT" "${VOLUME_DIR}/LICENSE.txt"
+cp -pfL "${SOURCE_ROOT}/LICENSE.TXT" "${VOLUME_DIR}/LICENSE.txt"
+chmod 0644 "${VOLUME_DIR}/LICENSE.txt"
 ln -s /Applications "${VOLUME_DIR}/Applications"
 
 echo "==> Creating DMG"
@@ -558,6 +648,7 @@ ditto -c -k --sequesterRsrc --keepParent "${DSYM}" "${STAGED_DSYM_ZIP}"
 	: > "$(basename "${STAGED_CHECKSUMS}")"
 	shasum -a 256 "$(basename "${STAGED_DMG}")" >> "$(basename "${STAGED_CHECKSUMS}")"
 	shasum -a 256 "$(basename "${STAGED_DSYM_ZIP}")" >> "$(basename "${STAGED_CHECKSUMS}")"
+	shasum -a 256 "$(basename "${STAGED_BUILD_LOG}")" >> "$(basename "${STAGED_CHECKSUMS}")"
 )
 
 current_source_head="$(git -C "${SOURCE_ROOT}" rev-parse HEAD)"
@@ -594,11 +685,12 @@ rmdir "${PUBLISH_DIR}"
 PUBLISH_DIR=""
 rmdir "${LOCK_DIR}"
 LOCK_HELD=0
+RELEASE_COMPLETED=1
 
 echo
 echo "Release complete:"
 echo "  DMG:       ${DMG}"
-[ -f "${DSYM_ZIP}" ] && echo "  dSYM:      ${DSYM_ZIP}"
+echo "  dSYM:      ${DSYM_ZIP}"
 echo "  Checksums: ${CHECKSUMS}"
 echo "  Build log: ${BUILD_LOG}"
 if [ "${SIGN_IDENTITY}" = "-" ]; then

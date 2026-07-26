@@ -96,6 +96,15 @@ overrides update both the compiled library and app bundle metadata, and version
 overrides use canonical `X.Y.Z` form. Artifacts include both version and build
 number and are written to `dist/macos/` by default.
 
+The script fails closed on anything it cannot account for: a bundled dylib with
+no third-party notice mapping, a notice directory with no licence file, a Mach-O
+image in the app bundle that the relinking pass never visited, or an entitlement
+the manual signing steps do not carry. Third-party notices land in
+`RISE-GUI.app/Contents/Resources/Third-Party Licenses/`, so a new dependency
+needs a mapping in `copy_dependency_license` (bundled dylibs) or a
+`copy_static_license` call (sources compiled straight into the executable)
+before a release will complete.
+
 ### Windows
 
 ```powershell
