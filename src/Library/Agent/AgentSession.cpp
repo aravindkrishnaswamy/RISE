@@ -4067,6 +4067,7 @@ namespace RISE
 			// reliable signal that the render was actually cut short.
 			bool wasCancelled = false;
 			InMemoryRasterizerOutput* sink = nullptr;
+			bool sinkAttachedToJobRasterizer = false;
 
 			// Unwind guard for OUR owning ref on `sink` (refcount 1 from
 			// `new` below): if mJob->Rasterize() throws (OIDN is a real
@@ -4079,6 +4080,31 @@ namespace RISE
 				InMemoryRasterizerOutput*& p;
 				~SinkUnwindGuard() { safe_release( p ); }
 			} sinkUnwindGuard{ sink };
+
+			// AddRasterizerOutput owns a second reference. Releasing only our
+			// local reference on a failed production render would leave the new
+			// sink registered until some later render happened to replace the
+			// output list, retaining any partial image/sidecar in the meantime.
+			// Remove that rasterizer-owned reference on every failed/throwing
+			// exit. Successful cache publication deliberately preserves the
+			// historical attached-output behavior and dismisses this guard.
+			struct JobSinkAttachmentUnwindGuard {
+				IJobPriv* job;
+				bool& attached;
+				~JobSinkAttachmentUnwindGuard() noexcept {
+					if( attached && job ) {
+						try {
+							job->RemoveRasterizerOutputs();
+						}
+						catch( ... ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"AgentSession::Render: exception while detaching failed in-memory output" );
+						}
+						attached = false;
+					}
+				}
+				void Dismiss() noexcept { attached = false; }
+			} sinkAttachmentUnwindGuard{ mJob, sinkAttachedToJobRasterizer };
 
 			// P1-B (belt-and-braces): if ANY requested camera field fails to
 			// apply, fail loud -- restore what was already applied THIS call
@@ -5124,10 +5150,11 @@ namespace RISE
 				// a production output that happened to still be attached.
 				mJob->RemoveRasterizerOutputs();
 				// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
-				// addrefs it (the rasterizer's `outs` keeps that ref until the
-				// next RemoveRasterizerOutputs / rasterizer teardown).  We drop
-				// OUR ref via safe_release(sink) after this lambda returns --
-				// no extra addref here.
+				// addrefs it. A successful render keeps that historical rasterizer
+				// ownership until the next RemoveRasterizerOutputs / teardown; the
+				// attachment unwind guard removes it immediately on every failed or
+				// throwing exit. We drop OUR ref via safe_release(sink) after this
+				// lambda returns -- no extra addref here.
 				sink = new InMemoryRasterizerOutput();
 				sink->SetConcurrentCachedPerceptionBytes( cachedPerceptionBytesAtStart );
 				// Beauty render: encode through the scene's effective display
@@ -5138,6 +5165,7 @@ namespace RISE
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
 				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
 				rast->AddRasterizerOutput( sink );
+				sinkAttachedToJobRasterizer = true;
 
 				// ---- Film-dims override: capture -> set -> (render happens
 				// after this lambda's camera section) -- restore happens at
@@ -5610,11 +5638,8 @@ namespace RISE
 			// and attached (that setup runs ahead of the camera-override
 			// block; see doRenderWork's "moved ahead of the film-dims /
 			// camera-pose override blocks" comment), so it does still exist
-			// here.  Nothing to do about it explicitly, though: `sink` is
-			// still owned by `sinkUnwindGuard` (declared in the enclosing
-			// scope, still in scope at this `return`), which releases it
-			// when this function returns -- no leak, just not this
-			// early-return's job to handle.
+			// here. The paired unwind guards release both our local reference
+			// and the rasterizer's registered-output reference on this return.
 			if( cameraOverrideFailed ) {
 				// P2 fix (2026-07-19 mutation review): NOT a fresh read here --
 				// doRenderWork already ran on this call (cameraOverrideFailed can
@@ -5884,6 +5909,7 @@ namespace RISE
 				safe_release( mLastSink );
 				mLastSink = sink;
 				sink = nullptr;   // ownership transferred -- the unwind guard must not release it
+				sinkAttachmentUnwindGuard.Dismiss();
 				return res;
 			}
 

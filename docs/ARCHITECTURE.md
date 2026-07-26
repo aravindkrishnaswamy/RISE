@@ -241,6 +241,8 @@ canonical typed channels. Agent renders use a private FrameStore, compact those
 channels to a 7-byte/pixel cached observation, and restore the production store.
 Failed renders release all AOV member storage during unwind; only a successful
 OIDN render may retain its documented 24-byte/pixel albedo/normal cache.
+The agent session likewise detaches a newly registered in-memory output on
+failure while preserving the separately owned last-successful observation.
 See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the API, semantics, and exact
 session-aware peak accounting (83 B/pixel cold, 87 B/pixel animation, and
 90 B/pixel for an equal-sized replacement render).
