@@ -172,9 +172,10 @@ void InMemoryRasterizerOutput::CapturePerception_()
 	//     preceding animation-frame sidecar is still cached;
 	//   * compaction: guide scratch + FrameStore after depth
 	//     scratch release, plus the newly compacted 7-B/pixel sidecar.
-	// A prior successful session sink also remains live until this replacement
-	// render and its PNG encode succeed. Track it explicitly so the reported
-	// peak stays exact across repeated still renders and animations.
+	// Successful session sinks may also remain live until this replacement
+	// render and its PNG encode succeed (including superseded sinks leased by
+	// readers). Track them explicitly so the reported peak stays exact across
+	// repeated still renders, animations, and lock-dropped encodes.
 	const std::uint64_t renderBytesPerPixel = kGuideScratchBytesPerPixel
 		+ kDepthScratchBytesPerPixel + kPerceptionFrameStoreBytesPerPixel;
 	const std::uint64_t compactionBytesPerPixel = kGuideScratchBytesPerPixel
@@ -265,23 +266,6 @@ void InMemoryRasterizerOutput::SetOutputColorSpace( int colorSpace )
 
 namespace
 {
-#ifndef NO_PNG_SUPPORT
-	RGBA8 IntegerizePerceptionBeauty( const RISEColor& color, int colorSpace )
-	{
-		switch( static_cast<COLOR_SPACE>( colorSpace ) ) {
-		case eColorSpace_Rec709RGB_Linear:
-			return color.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
-		case eColorSpace_ROMMRGB_Linear:
-			return color.Integerize<ROMMRGBPel, unsigned char>( 255.0 );
-		case eColorSpace_ProPhotoRGB:
-			return color.Integerize<ProPhotoRGBPel, unsigned char>( 255.0 );
-		case eColorSpace_sRGB:
-		default:
-			return color.Integerize<sRGBPel, unsigned char>( 255.0 );
-		}
-	}
-#endif
-
 	//! Shared PNG-encode tail for ToPng / ToPngDownscaled: write `w`x`h`
 	//! pixels from `pels` (row-major) through the tree's PNGWriter (the
 	//! REQUESTED `colorSpace`'s Integerize + libpng) into an in-memory
@@ -585,11 +569,12 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	png_set_write_fn( png, &writeContext, PerceptionPngWrite, PerceptionPngFlush );
 	png_set_filter( png, 0, PNG_NO_FILTERS );
 	png_set_compression_level( png, Z_BEST_COMPRESSION );
-	// Deliberately omit a global gamma tag: the beauty panel honors the
-	// configured output color space while the guide panels are sRGB display
-	// encodings, so no single PNG-wide transfer function describes the atlas.
 	png_set_IHDR( png, info, outWidth, outHeight, 8, PNG_COLOR_TYPE_RGB_ALPHA,
 		PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT );
+	// Perception is one conventional display image. Encode every quadrant in
+	// sRGB and declare it once at image scope so standard decoders display the
+	// beauty and diagnostic panels consistently.
+	png_set_sRGB( png, info, PNG_sRGB_INTENT_PERCEPTUAL );
 	png_write_info( png, info );
 
 	const Scalar exposureMul = std::pow( Scalar( 2 ), static_cast<Scalar>( mExposureEV ) );
@@ -650,13 +635,7 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 				mapped = DisplayTransforms::Apply( dt, mapped );
 			}
 			const RISEColor encodedColor( mapped, 1.0 );
-			// Beauty follows the configured output colour space exactly like
-			// ToPng()/PNGWriter.  Diagnostic guide panels deliberately remain
-			// stable sRGB display fields so their interpretation is independent
-			// of the authored beauty-output colour space.
-			const RGBA8 pixel = panel == 0
-				? IntegerizePerceptionBeauty( encodedColor, mColorSpace )
-				: encodedColor.Integerize<sRGBPel, unsigned char>( 255.0 );
+			const RGBA8 pixel = encodedColor.Integerize<sRGBPel, unsigned char>( 255.0 );
 			const std::size_t byte = static_cast<std::size_t>( ax ) * 4u;
 			row[byte + 0] = pixel.r;
 			row[byte + 1] = pixel.g;

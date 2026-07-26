@@ -74,8 +74,9 @@ they have no PNG transport encoder.
 The planes use these meanings:
 
 - **Beauty:** the same linear render cached for ordinary `read_image`, with
-  the scene's display exposure/tone curve and output color space applied
-  during atlas encoding. Guide panels remain stable sRGB display fields.
+  the scene's display exposure/tone curve applied and then encoded to sRGB.
+  Ordinary beauty may honor another authored output space, but the observation
+  atlas intentionally uses one conventional sRGB encoding for every panel.
 - **Albedo:** first useful surface's diffuse reflectance, clamped to `[0,1]`.
 - **Normal:** world-space shading normal, mapped from `[-1,1]` to display RGB;
   misses are black.
@@ -174,6 +175,11 @@ also retains the preceding animation frame while the next frame renders, so a
 cold animation peaks at 91 bytes/pixel; replacing an equal-sized cached still
 with a multi-frame render can peak at 98 bytes/pixel. Different-sized renders
 use the exact prior sidecar byte count rather than either approximation.
+Lock-dropped image reads register their sink leases too: if a slow reader still
+holds an older observation across multiple replacements, every distinct live
+7-byte/pixel sidecar is included in the next render's reported peak. There is
+therefore no fixed concurrency ceiling; the value remains an exact byte count
+for the actual set of feature-managed sidecars live at render start.
 
 The atlas encoder sends one RGBA scanline at a time directly to libpng and
 reports that bounded uncompressed working set as `encoderRowBytes = 4 *
@@ -181,9 +187,8 @@ atlasWidth`. It never builds four additional full-resolution RGB images or an
 uncompressed atlas. The returned compressed PNG byte vector is the response
 payload itself and is necessarily retained until transport; it is not included
 in the auxiliary-memory figures. Base64 text, the JSON envelope, and any
-MCP/chat transport copies are likewise excluded. The atlas has no PNG-wide
-gamma tag because beauty may use the scene's output color space while the
-three guide panels are stable sRGB display encodings.
+MCP/chat transport copies are likewise excluded. Every atlas panel is sRGB and
+the PNG carries an `sRGB` chunk, so one image-wide declaration is truthful.
 
 ## Deliberate limits and extension path
 
@@ -220,10 +225,11 @@ three guide panels are stable sRGB display encodings.
 albedo/normal/depth propagation, and the zero-consumer plan. The end-to-end
 `AgentFirstSliceTest` locks transport defaults, the stable atlas layout, PNG
 validity and dimensions, bounded encoder-row metadata, depth metadata,
-84/7-byte cold accounting and 91-byte replacement/animation peaks,
+84/7-byte cold accounting, 91-byte replacement/animation peaks, and additional
+concurrent read-leased sidecars,
 whole-atlas `maxEdge`, invalid representation handling,
 the allocation/stale-cache behavior of `perception:false`, and byte parity
-between conventional and atlas beauty under a non-sRGB output color space. It
+of the atlas's declared sRGB beauty under a non-sRGB ordinary output setting. It
 also locks Accurate guide continuation after an HWSS primary-medium scatter
 and MLT's bounded Accurate retrace through transparent geometry.
 `AgentFrameStoreIsolationTest` additionally crosses shader dispatch, PT, BDPT,

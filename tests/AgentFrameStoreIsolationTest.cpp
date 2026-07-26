@@ -92,11 +92,15 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
+#include <condition_variable>
 #include <exception>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace RISE;
@@ -236,7 +240,7 @@ static const char* const kVcmRasterizer =
 static const char* const kMltRasterizer =
 	"mlt_rasterizer\n{\n\tbootstrap_samples 200\n\tchains 4\n\tmutations_per_pixel 4\n\tpixel_filter box\n\toidn_denoise false\n}";
 static const char* const kAutoRasterizer =
-	"auto_rasterizer\n{\n\tintegrator pt\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
+	"auto_rasterizer\n{\n\tintegrator pt\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 
 // Depth is a geometry/camera fact, independent of the beauty integrator and
 // of the surface selected for the albedo/normal prefilter.  Keep this matrix
@@ -364,7 +368,8 @@ struct ProbeObserver : public IRenderObserver
 // (which may not honour the width/height override the same way PT
 // does) report a finding rather than silently skip -- see the call
 // sites' comments.
-static void RunIsolationProbe( const std::string& label, const std::string& rasterizerChunk )
+static void RunIsolationProbe( const std::string& label, const std::string& rasterizerChunk,
+	const char* expectedPrefilter = "fast" )
 {
 	const std::string scenePath = WriteTemp(
 		( "agent_framestore_isolation_" + label + ".RISEscene" ).c_str(),
@@ -431,6 +436,8 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 		Check( perceptionInfo.validDepthPixels > 0 && perceptionInfo.depthMin > 0.0 &&
 		       perceptionInfo.depthMax >= perceptionInfo.depthMin,
 			label + " (no-override): perception depth is populated and ordered" );
+		Check( perceptionInfo.guidePrefilter == expectedPrefilter,
+			label + " (no-override): guidePrefilter reports the configured producer semantics" );
 		Check( displayStore->Generation() == genBefore,
 			label + " (no-override): canonical FrameStore Generation() did NOT advance across the agent render" );
 		Check( probe.tileCompleteCount == 0,
@@ -992,6 +999,79 @@ static void RunDraftThrowTest()
 	std::remove( scenePath.c_str() );
 }
 
+static void RunConcurrentReadLeasePeakProbe()
+{
+	const std::string scenePath = WriteTemp(
+		"agent_perception_read_lease_peak.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "read-lease peak: scratch scene file written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		"read-lease peak: scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "read-lease peak: session wraps job" );
+	if( !session ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	AgentRenderParams params;
+	params.perception = true;
+	const AgentRenderResult first = session->Render( params );
+	Check( first.ok && first.perceptionAuxiliaryPeakBytes == 24u * 24u * 84u,
+		"read-lease peak: first render has the cold 84-byte peak" );
+
+	std::mutex hookMutex;
+	std::condition_variable hookCv;
+	bool leaseAcquired = false;
+	bool releaseReader = false;
+	session->ForTest_SetReadPerceptionAfterLeaseHook( [&]() {
+		std::unique_lock<std::mutex> lk( hookMutex );
+		leaseAcquired = true;
+		hookCv.notify_all();
+		hookCv.wait( lk, [&]() { return releaseReader; } );
+	} );
+	std::thread reader( [&]() {
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		session->ReadPerception( 48, atlasW, atlasH, info );
+	} );
+	bool readerIsLeased = false;
+	{
+		std::unique_lock<std::mutex> lk( hookMutex );
+		readerIsLeased = hookCv.wait_for( lk, std::chrono::seconds( 5 ),
+			[&]() { return leaseAcquired; } );
+	}
+	Check( readerIsLeased,
+		"read-lease peak: reader registers its sink before unlocked encoding" );
+	if( !readerIsLeased ) {
+		{
+			std::lock_guard<std::mutex> lk( hookMutex );
+			releaseReader = true;
+		}
+		hookCv.notify_all();
+		reader.join();
+		session.reset();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+		return;
+	}
+
+	const AgentRenderResult second = session->Render( params );
+	const AgentRenderResult third = session->Render( params );
+	Check( second.ok && second.perceptionAuxiliaryPeakBytes == 24u * 24u * 91u,
+		"read-lease peak: first replacement counts the current leased sidecar once" );
+	Check( third.ok && third.perceptionAuxiliaryPeakBytes == 24u * 24u * 98u,
+		"read-lease peak: second replacement counts current plus superseded leased sidecars" );
+
+	{
+		std::lock_guard<std::mutex> lk( hookMutex );
+		releaseReader = true;
+	}
+	hookCv.notify_all();
+	reader.join();
+	session->ForTest_SetReadPerceptionAfterLeaseHook( std::function<void()>() );
+	session.reset();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFrameStoreIsolationTest ===\n" );
@@ -1016,7 +1096,7 @@ int main()
 	// today (AcceptsFrameStorePush() == true), so it must be covered
 	// here, not just PT/BDPT/VCM.
 	RunIsolationProbe( "mlt", kMltRasterizer );
-	RunIsolationProbe( "auto", kAutoRasterizer );
+	RunIsolationProbe( "auto", kAutoRasterizer, "accurate" );
 
 	RunDepthContractProbe( "shader_pel", kDepthShaderPel );
 	RunDepthContractProbe( "shader_spectral_nm", kDepthShaderSpectralNM );
@@ -1052,6 +1132,7 @@ int main()
 	RunThrowNoOverrideTest();
 	RunProductionSinkDetachmentProbe( "pt", kPtRasterizer );
 	RunProductionSinkDetachmentProbe( "auto", kAutoRasterizer );
+	RunConcurrentReadLeasePeakProbe();
 	RunDraftIsolationTest();
 	RunDraftThrowTest();
 

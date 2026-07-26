@@ -246,8 +246,8 @@ OIDN render may retain its documented 24-byte/pixel albedo/normal cache.
 The agent session likewise detaches a newly registered in-memory output on
 failure while preserving the separately owned last-successful observation.
 See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the API, semantics, and exact
-session-aware peak accounting (83 B/pixel cold, 87 B/pixel animation, and
-90 B/pixel for an equal-sized replacement render).
+session-aware peak accounting (84 B/pixel cold and 91 B/pixel for an
+equal-sized animation or replacement render; active read leases are counted).
 
 ## Design Decisions
 

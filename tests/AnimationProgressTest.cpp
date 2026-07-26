@@ -59,8 +59,11 @@
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IAnimator.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
+#include "../src/Library/Rendering/AOVBuffers.h"
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Log/Log.h"
@@ -385,6 +388,90 @@ static void RunInterlacedAOVCase( const char* rasterizerChunk )
 }
 
 //////////////////////////////////////////////////////////////////////
+// The bounded fallback retrace used by an integrator without an inline
+// first-hit producer must preserve each interlaced field's scene time.
+// Exercise the row-subset primitive directly at two animator times: even
+// rows observe a quad translated left, odd rows observe it translated right.
+// A whole-frame retrace at the second time would erase that separation.
+//////////////////////////////////////////////////////////////////////
+static void RunInterlacedFallbackTimingCase( const char* rasterizerChunk )
+{
+	const char* label = "PT-fields-fallback-time";
+	std::cout << "Interlaced fallback timing: " << label << std::endl;
+
+	std::string scene = BuildScene( rasterizerChunk );
+	scene +=
+		"\ntimeline\n{\n\telement obj_quad\n\tparam position\n"
+		"\ttime 0\n\tvalue -0.75 0 0\n"
+		"\ttime 1\n\tvalue 0.75 0 0\n}\n";
+	const std::string path = WriteSceneToTempFile( scene, label );
+	Check( !path.empty(), std::string(label) + ": temp scene written" );
+	if( path.empty() ) return;
+
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
+		Check( false, std::string(label) + ": job created" );
+		return;
+	}
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+		Check( false, std::string(label) + ": scene loaded" );
+		safe_release( pJob );
+		return;
+	}
+
+	Implementation::PixelBasedRasterizerHelper* helper =
+		dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( pJob->GetRasterizer() );
+	IScenePriv* scenePriv = pJob->GetScene();
+	Check( helper != nullptr && scenePriv != nullptr,
+		std::string(label) + ": fallback producer inputs available" );
+	if( helper && scenePriv ) {
+		IRayCaster* caster = helper->GetRayCaster();
+		Check( caster != nullptr, std::string(label) + ": ray caster available" );
+		if( caster ) {
+			caster->AttachScene( scenePriv );
+			Implementation::AOVBuffers aovs( 128, 128,
+				Implementation::AOVBuffers::Plan( false, false, true ) );
+			const Implementation::AOVBuffers::Plan depthOnly( false, false, true );
+
+			auto evaluate = [&]( Scalar time ) {
+				scenePriv->GetAnimator()->EvaluateAtTime( time );
+				scenePriv->GetObjects()->InvalidateSpatialStructure();
+				scenePriv->GetObjects()->PrepareForRendering();
+				scenePriv->SetSceneTime( time );
+			};
+			evaluate( 0.0 );
+			Implementation::CollectFirstHitAOVRows( *scenePriv, *caster, aovs,
+				depthOnly, 0, 2, 1, OidnPrefilter::Fast );
+			evaluate( 1.0 );
+			Implementation::CollectFirstHitAOVRows( *scenePriv, *caster, aovs,
+				depthOnly, 1, 2, 1, OidnPrefilter::Fast );
+
+			const float* depth = aovs.GetDepthPtr();
+			double evenX = 0.0, oddX = 0.0;
+			size_t evenHits = 0, oddHits = 0;
+			for( unsigned int y=0; y<128; ++y ) {
+				for( unsigned int x=0; x<128; ++x ) {
+					if( depth[static_cast<size_t>( y ) * 128 + x] <= 0.0f ) continue;
+					if( y & 1u ) { oddX += x; ++oddHits; }
+					else { evenX += x; ++evenHits; }
+				}
+			}
+			Check( evenHits > 0 && oddHits > 0,
+				std::string(label) + ": both field times produce depth" );
+			if( evenHits && oddHits ) {
+				evenX /= static_cast<double>( evenHits );
+				oddX /= static_cast<double>( oddHits );
+				Check( oddX > evenX + 20.0,
+					std::string(label) + ": row parities retain distinct animated positions" );
+			}
+		}
+	}
+
+	std::remove( path.c_str() );
+	safe_release( pJob );
+}
+
+//////////////////////////////////////////////////////////////////////
 
 int main()
 {
@@ -415,6 +502,7 @@ int main()
 	RunSingleFrameCase( "PT-still",  kPT,  /*strictMonotonic*/ true );
 	RunSingleFrameCase( "MLT-still", kMLT, /*strictMonotonic*/ false );
 	RunInterlacedAOVCase( kPT );
+	RunInterlacedFallbackTimingCase( kPT );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

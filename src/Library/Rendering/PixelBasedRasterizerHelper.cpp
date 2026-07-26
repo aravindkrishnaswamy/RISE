@@ -1709,11 +1709,15 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// Normalize per-pixel AOV by progressive-film alpha sum so the
 		// consumers see averaged aux samples regardless of how many
 		// passes accumulated into each pixel.  Mirrors RasterizeScene's
-		// progressive branch.  Pixels with zero alphaSum (no samples
-		// yet — pre-cancel) are left at zero; the denoiser handles
-		// these via cleanAux fallback.
+		// progressive branch, restricted to the current parity for an
+		// interlaced field so the other field is never normalized twice.
+		// Pixels with zero alphaSum (no samples yet — pre-cancel) are left
+		// at zero; the denoiser handles these via cleanAux fallback.
 		if( pAOVBuffers ) {
 			for( unsigned int y=0; y<height; y++ ) {
+				if( field != FIELD_BOTH && ( y & 1u ) != static_cast<unsigned int>( field ) ) {
+					continue;
+				}
 				for( unsigned int x=0; x<width; x++ ) {
 					const ProgressivePixel& px = progFilm.Get( x, y );
 					if( px.alphaSum > 0 ) {
@@ -1911,6 +1915,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	bool cancelled = false;
 	for( unsigned int i=0; i<total_frames && !cancelled; i++ )
 	{
+#ifdef RISE_ENABLE_OIDN
+		const unsigned int fallbackSPP = GetDenoiseAOVSamplesPerPixel();
+#else
+		const unsigned int fallbackSPP = 1;
+#endif
+		AOVBuffers::Plan interlacedFallbackPlan( false, false, false );
 		if( do_fields ) {
 			// Render to fields
 			Scalar curtime_upper = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
@@ -1938,6 +1948,19 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				cancelled = true;
 				break;
 			}
+			// A fallback retrace must observe the same animated scene state as
+			// the field whose beauty rows it describes. Capture the missing
+			// producer plan once, then fill only this field's parity before
+			// advancing the animator to the lower-field time.
+			if( pAOVBuffers ) {
+				interlacedFallbackPlan = pAOVBuffers->MissingPlan();
+				if( interlacedFallbackPlan.Any() ) {
+					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
+					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
+						interlacedFallbackPlan, static_cast<unsigned int>( upperField ), 2,
+						fallbackSPP, mDenoisingPrefilter );
+				}
+			}
 
 			// Lower field
 			pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
@@ -1950,6 +1973,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			mProgressBase = accumulatedProgress;
 			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence, false );
 			accumulatedProgress += unitsPerCall;
+			if( pAOVBuffers && interlacedFallbackPlan.Any() ) {
+				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
+				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
+					interlacedFallbackPlan, static_cast<unsigned int>( lowerField ), 2,
+					fallbackSPP, mDenoisingPrefilter );
+			}
 		} else {
 			// Render to frames
 			const Scalar curtime = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
@@ -1992,12 +2021,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		// log (2026-04-29 animation denoise).
 		const unsigned int frameIdx = specificFrame?*specificFrame:i;
 		if( pAOVBuffers ) {
-#ifdef RISE_ENABLE_OIDN
-			const unsigned int fallbackSPP = GetDenoiseAOVSamplesPerPixel();
-#else
-			const unsigned int fallbackSPP = 1;
-#endif
-			if( pAOVBuffers->NeedsFallback() ) {
+			if( !do_fields && pAOVBuffers->NeedsFallback() ) {
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter );
 			}

@@ -209,6 +209,20 @@ namespace RISE
 			unsigned int samplesPerPixel = 1,
 			OidnPrefilter prefilterMode = OidnPrefilter::Fast
 			);
+
+		/// Row-subset form used by interlaced animation fallback. `selected`
+		/// is captured before either field is completed and deliberately does
+		/// not re-query global plane readiness between parities.
+		void CollectFirstHitAOVRows(
+			const IScene& scene,
+			IRayCaster& caster,
+			AOVBuffers& aovBuffers,
+			const AOVBuffers::Plan& selected,
+			unsigned int firstRow,
+			unsigned int rowStride,
+			unsigned int samplesPerPixel = 1,
+			OidnPrefilter prefilterMode = OidnPrefilter::Fast
+			);
 	}
 }
 

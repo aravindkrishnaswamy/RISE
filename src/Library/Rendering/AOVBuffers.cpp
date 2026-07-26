@@ -182,6 +182,21 @@ void RISE::Implementation::CollectFirstHitAOVs(
 	OidnPrefilter prefilterMode
 	)
 {
+	CollectFirstHitAOVRows( scene, caster, aovBuffers, aovBuffers.MissingPlan(),
+		0, 1, samplesPerPixel, prefilterMode );
+}
+
+void RISE::Implementation::CollectFirstHitAOVRows(
+	const IScene& scene,
+	IRayCaster& caster,
+	AOVBuffers& aovBuffers,
+	const AOVBuffers::Plan& selected,
+	unsigned int firstRow,
+	unsigned int rowStride,
+	unsigned int samplesPerPixel,
+	OidnPrefilter prefilterMode
+	)
+{
 	const ICamera* pCamera = scene.GetCamera();
 	const IObjectManager* pObjects = scene.GetObjects();
 	const IFilm* pFilm = scene.GetFilm();
@@ -190,12 +205,14 @@ void RISE::Implementation::CollectFirstHitAOVs(
 	const unsigned int width = pFilm->GetWidth();
 	const unsigned int height = pFilm->GetHeight();
 	if( width != aovBuffers.GetWidth() || height != aovBuffers.GetHeight() ) return;
+	if( !selected.Any() || firstRow >= height || rowStride == 0 ) return;
 	if( samplesPerPixel == 0 ) samplesPerPixel = 1;
-	const AOVBuffers::Plan missing = aovBuffers.MissingPlan();
-	if( !missing.Any() ) return;
+	const AOVBuffers::Plan missing = selected;
 	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
+	const unsigned int rowCount = 1u + ( height - 1u - firstRow ) / rowStride;
 
-	GlobalThreadPool().ParallelFor( height, [&]( unsigned int y ) {
+	GlobalThreadPool().ParallelFor( rowCount, [&]( unsigned int row ) {
+		const unsigned int y = firstRow + row * rowStride;
 		static thread_local RandomNumberGenerator tl_rng;
 		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
 		rc.aovPrefilterMode = prefilterMode;

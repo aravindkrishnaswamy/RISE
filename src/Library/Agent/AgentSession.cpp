@@ -89,6 +89,7 @@
 #include <stdexcept>  // Fix-round (offscreen isolation): ForTest_ThrowBeforeRasterize's std::runtime_error
 #include <fstream>  // Facet 5 slice S1: read-only skill-file reads
 #include <iterator> // Facet 5 slice S1: istreambuf_iterator for whole-file reads
+#include <limits>
 #include <mutex>    // F5 S3: std::once_flag for AllChunkKeywords' one-time cache (also already relied on by AgentSession.h's mAsyncCacheMutex)
 #include <unordered_set>  // Toolkit slice 3a fix-round P2-1: objectmap palette byte-uniqueness set
 
@@ -546,6 +547,36 @@ namespace RISE
 		AgentSession::AgentSession( IJobPriv* job, bool owns, AgentAuthority authority )
 			: mJob( job ), mOwnsJob( owns ), mAuthority( authority )
 		{
+		}
+
+		std::uint64_t AgentSession::RetainedPerceptionBytesLocked_() const
+		{
+			std::uint64_t total = 0;
+			auto add = [&]( InMemoryRasterizerOutput* sink ) {
+				if( !sink ) return;
+				const std::uint64_t bytes = sink->GetPerceptionInfo().persistentBytes;
+				const std::uint64_t room = std::numeric_limits<std::uint64_t>::max() - total;
+				total += bytes <= room ? bytes : room;
+			};
+			add( mLastSink );
+			for( const auto& lease : mActiveSinkReadLeases ) {
+				if( lease.first != mLastSink ) add( lease.first );
+			}
+			return total;
+		}
+
+		void AgentSession::ReleaseSinkReadLease_( InMemoryRasterizerOutput* sink ) const
+		{
+			if( !sink ) return;
+			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+			auto it = mActiveSinkReadLeases.find( sink );
+			if( it != mActiveSinkReadLeases.end() ) {
+				if( it->second > 1 ) --it->second;
+				else mActiveSinkReadLeases.erase( it );
+			}
+			// Keep release inside the same lock as erasure. A replacement render
+			// can never snapshot "not leased" while this sidecar is still alive.
+			safe_release( sink );
 		}
 
 		AgentSession::~AgentSession()
@@ -3805,17 +3836,14 @@ namespace RISE
 			}
 
 			// Preserve the last successful frame until this render and its PNG
-			// encode succeed, but make that retained compact perception sidecar
-			// visible to the replacement sink's peak accounting. The cache lock
-			// is intentionally narrow; the old sink remains owned by mLastSink
-			// until the success tail swaps it out.
+			// encode succeed, but make its compact perception sidecar plus every
+			// superseded read-leased sidecar visible to the replacement sink's peak
+			// accounting. The cache lock is intentionally narrow; references keep
+			// the snapshotted sinks alive across the render.
 			std::uint64_t cachedPerceptionBytesAtStart = 0;
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-				if( mLastSink ) {
-					cachedPerceptionBytesAtStart =
-						mLastSink->GetPerceptionInfo().persistentBytes;
-				}
+				cachedPerceptionBytesAtStart = RetainedPerceptionBytesLocked_();
 			}
 
 			// A render MUST NOT mutate the retained Document.  The earlier
@@ -7038,13 +7066,17 @@ namespace RISE
 					return mLastPng;
 				}
 				sink = mLastSink;
-				if( sink ) sink->addref();
+				if( sink ) {
+					sink->addref();
+					++mActiveSinkReadLeases[sink];
+				}
 			}
 			if( !sink ) return std::vector<unsigned char>();
 			struct SinkLease {
+				const AgentSession* session;
 				InMemoryRasterizerOutput* sink;
-				~SinkLease() { safe_release( sink ); }
-			} lease{ sink };
+				~SinkLease() { session->ReleaseSinkReadLease_( sink ); }
+			} lease{ this, sink };
 			return sink->ToPngDownscaled( maxEdge, outWidth, outHeight );
 		}
 
@@ -7060,13 +7092,18 @@ namespace RISE
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 				sink = mLastSink;
-				if( sink ) sink->addref();
+				if( sink ) {
+					sink->addref();
+					++mActiveSinkReadLeases[sink];
+				}
 			}
 			if( !sink ) return std::vector<unsigned char>();
 			struct SinkLease {
+				const AgentSession* session;
 				InMemoryRasterizerOutput* sink;
-				~SinkLease() { safe_release( sink ); }
-			} lease{ sink };
+				~SinkLease() { session->ReleaseSinkReadLease_( sink ); }
+			} lease{ this, sink };
+			if( mReadPerceptionAfterLeaseHookForTest ) mReadPerceptionAfterLeaseHookForTest();
 			InMemoryRasterizerOutput::PerceptionInfo pi;
 			std::vector<unsigned char> png =
 				sink->ToPerceptionPng( maxEdge, outWidth, outHeight, pi );

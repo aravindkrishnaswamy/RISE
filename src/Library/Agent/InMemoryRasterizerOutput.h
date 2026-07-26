@@ -187,10 +187,11 @@ namespace RISE
 				mPerceptionPrefilter = prefilter;
 			}
 
-			//! Account for a prior successful perception sidecar that remains
-			//! live while this replacement render executes. AgentSession calls
-			//! this before rendering so auxiliaryPeakBytes describes the actual
-			//! session feature peak, not only the new frame in isolation.
+			//! Account for all successful perception sidecars that remain live
+			//! while this replacement render executes (the current cache plus
+			//! superseded sinks leased by readers). AgentSession calls this before
+			//! rendering so auxiliaryPeakBytes describes the actual session feature
+			//! peak, not only the new frame in isolation.
 			void SetConcurrentCachedPerceptionBytes( std::uint64_t bytes )
 			{
 				mConcurrentCachedPerceptionBytes = bytes;
@@ -226,9 +227,10 @@ namespace RISE
 			//! Encode a conventional 2x2 diagnostic atlas from the compact
 			//! sidecar captured with the last frame: beauty | albedo on the
 			//! first row, world normal | log depth on the second.  maxEdge
-			//! bounds the whole atlas and never upscales. Beauty honors
-			//! SetOutputColorSpace; guide panels remain stable
-			//! sRGB display fields independent of the beauty output setting.
+			//! bounds the whole atlas and never upscales. The complete atlas is
+			//! a declared sRGB display image: beauty still receives the same
+			//! exposure/tone curve as ordinary read_image, but intentionally
+			//! ignores SetOutputColorSpace so one PNG-wide profile is truthful.
 			//! Encoding holds one RGBA scanline at a time;
 			//! PerceptionInfo::encoderRowBytes reports
 			//! that bounded uncompressed working set (the returned compressed

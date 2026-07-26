@@ -201,7 +201,7 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	return JsonSerialize( r );
 }
 
-static void TestPerceptionBeautyColorSpaceParity()
+static void TestPerceptionAtlasColorSpace()
 {
 	using namespace RISE::FrameStoreOutput;
 	using RISE::Implementation::FrameStore;
@@ -221,24 +221,22 @@ static void TestPerceptionBeautyColorSpaceParity()
 	RISERasterImage* image = new RISERasterImage( 1, 1, RISEColor( 0.25, 0.5, 0.75, 1.0 ) );
 	sink->OutputImage( *image, 0, 0 );
 
-	const std::vector<unsigned char> beautyPng = sink->ToPng();
 	unsigned int atlasW = 0, atlasH = 0;
 	InMemoryRasterizerOutput::PerceptionInfo info;
 	const std::vector<unsigned char> atlasPng = sink->ToPerceptionPng( 2, atlasW, atlasH, info );
 	Check( std::string( info.guidePrefilter ) == "fast",
 	       "perception metadata defaults to fast guide semantics" );
-	Check( !HasPngChunk( atlasPng, "gAMA" ),
-	       "mixed-space perception atlas does not declare one global PNG gamma" );
-	DecodedPng beauty;
+	Check( HasPngChunk( atlasPng, "sRGB" ),
+	       "perception atlas declares its single conventional sRGB color space" );
 	DecodedPng atlas;
-	const bool decodedBeauty = DecodePng( beautyPng, beauty );
 	const bool decodedAtlas = DecodePng( atlasPng, atlas );
-	Check( decodedBeauty && decodedAtlas && beauty.width == 1 && beauty.height == 1 &&
-	       atlas.width == 2 && atlas.height == 2,
-	       "non-sRGB beauty and perception atlas decode at expected dimensions" );
-	if( decodedBeauty && decodedAtlas && !beauty.pixels.empty() && !atlas.pixels.empty() ) {
-		Check( beauty.At( 0, 0 ) == atlas.At( 0, 0 ),
-		       "perception beauty panel honors the configured output color space byte-for-byte" );
+	Check( decodedAtlas && atlas.width == 2 && atlas.height == 2,
+	       "perception atlas decodes at expected dimensions" );
+	if( decodedAtlas && !atlas.pixels.empty() ) {
+		const RGBA8 expected =
+			RISEColor( 0.25, 0.5, 0.75, 1.0 ).Integerize<sRGBPel, unsigned char>( 255.0 );
+		Check( atlas.At( 0, 0 ) == DecodedPixel{ expected.r, expected.g, expected.b, expected.a },
+		       "perception beauty is sRGB even when ordinary beauty requests a linear output" );
 	}
 
 	// A sink reused for animation retains the preceding frame's compact
@@ -378,7 +376,7 @@ static void TestAccurateMLTFallbackGuideThroughTransparency()
 int main()
 {
 	std::printf( "=== AgentFirstSliceTest (Facet 5 slice 0c: JSON-RPC end-to-end loop) ===\n" );
-	TestPerceptionBeautyColorSpaceParity();
+	TestPerceptionAtlasColorSpace();
 	TestAccurateHWSSGuideAfterPrimaryMediumScatter();
 	TestAccurateMLTFallbackGuideThroughTransparency();
 

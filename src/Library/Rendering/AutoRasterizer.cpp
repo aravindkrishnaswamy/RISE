@@ -320,6 +320,10 @@ AutoRasterizer::AutoRasterizer(
 	if( mCaster )  mCaster->addref();
 	if( mSamples ) mSamples->addref();
 	if( mFilter )  mFilter->addref();
+	// Rasterizer owns the public prefilter introspection surface used by
+	// AgentSession. Keep the wrapper's base state identical to the setting
+	// forwarded to every lazily-created delegate.
+	SetDenoisingPrefilter( mOidnPrefilter );
 }
 
 AutoRasterizer::~AutoRasterizer()

@@ -33,6 +33,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -1144,12 +1145,13 @@ namespace RISE
 		//! surface, and the actual contract is:
 		//!
 		//!   * mAsyncCacheMutex-guarded state (mLastPng, mLastSink,
-		//!     mAsyncOutstandingJobId) is the ONLY state touched from more
+		//!     mActiveSinkReadLeases, mAsyncOutstandingJobId) is the ONLY
+		//!     state touched from more
 		//!     than one thread -- written by the async worker thread
 		//!     (RenderCore_'s cache-population tail; RenderAsync's
 		//!     OutstandingGuard) and read/written by whatever thread calls
-		//!     ReadImage() / ReadImage(maxEdge) / RenderAsync /
-		//!     DrainAsyncRender_.  Every access to these three fields goes
+		//!     ReadImage() / ReadImage(maxEdge) / ReadPerception / RenderAsync /
+		//!     DrainAsyncRender_.  Every access to these fields goes
 		//!     through mAsyncCacheMutex; there is no unguarded access
 		//!     anywhere in this class.
 		//!   * EVERYTHING ELSE (mJob, mController, mNextSessionLocalRenderJobId,
@@ -2098,6 +2100,15 @@ namespace RISE
 				mReadViewportAfterParkHookForTest = std::move( hook );
 			}
 
+			//! Invoked after ReadPerception has acquired and registered its
+			//! sink lease, but before PNG encoding. Test-only: lets a regression
+			//! overlap that retained observation with replacement renders and
+			//! verify auxiliaryPeakBytes counts every distinct live sidecar.
+			void ForTest_SetReadPerceptionAfterLeaseHook( std::function<void()> hook )
+			{
+				mReadPerceptionAfterLeaseHookForTest = std::move( hook );
+			}
+
 			//! Round-2 P1-2 test hook: read mAsyncOutstandingJobId directly
 			//! (under mAsyncCacheMutex, like every other access to this
 			//! field).  Exists so a test can red-prove the publish-before-
@@ -2233,6 +2244,13 @@ namespace RISE
 			                                     int& outDisplayTransform,
 			                                     int& outColorSpace ) const;
 
+			//! mAsyncCacheMutex must be held. Counts each distinct current or
+			//! read-leased sink once, regardless of how many readers share it.
+			std::uint64_t RetainedPerceptionBytesLocked_() const;
+			//! Drops one registered read lease and its reference atomically with
+			//! respect to RetainedPerceptionBytesLocked_'s snapshot.
+			void ReleaseSinkReadLease_( InMemoryRasterizerOutput* sink ) const;
+
 			//! Fix-round-1 P1-A / round-2 P1-1: cancel + wait, UNBOUNDED, for
 			//! any OUTSTANDING async render submitted against the
 			//! controller CURRENTLY attached (mController, read/captured
@@ -2341,6 +2359,15 @@ namespace RISE
 			//! Owned (released in the destructor and whenever replaced).
 			InMemoryRasterizerOutput* mLastSink = nullptr;
 
+			//! Distinct cached sinks retained by lock-dropped ReadImage/
+			//! ReadPerception encodes. Counts, references, and iteration are all
+			//! guarded by mAsyncCacheMutex so replacement-render peak reporting
+			//! includes superseded observations still leased by readers. `mutable`
+			//! is legitimate reference-lifetime bookkeeping: a const observation
+			//! does not change the cached frame or scene, and the mutex makes
+			//! simultaneous const observations safe.
+			mutable std::map<InMemoryRasterizerOutput*, unsigned int> mActiveSinkReadLeases;
+
 			//! Model-B F2 slice S2b: the full AgentRenderResult of the LAST
 			//! async render to complete, plus the renderJobId it belongs to
 			//! -- see LastAsyncRenderResult()'s doc.  {0, default-constructed
@@ -2418,6 +2445,9 @@ namespace RISE
 			//! See ForTest_SetReadViewportAfterParkHook.  Mutable because
 			//! ReadViewport is a logically-const observe operation.
 			mutable std::function<void()> mReadViewportAfterParkHookForTest;
+			//! Test-only instrumentation for the same logically-const observation
+			//! seam; it is set before and cleared after the joined reader thread.
+			mutable std::function<void()> mReadPerceptionAfterLeaseHookForTest;
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled
