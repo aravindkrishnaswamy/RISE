@@ -1035,6 +1035,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 		if( aovBuffers ) {
 			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
 			PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+			aovBuffers->ReleaseDepthStorage();
 		}
 #ifdef RISE_ENABLE_OIDN
 		if( bDenoisingEnabled ) {
@@ -1169,6 +1170,7 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 			if( aovBuffers ) {
 				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
 				PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+				aovBuffers->ReleaseDepthStorage();
 			}
 #ifdef RISE_ENABLE_OIDN
 			if( bDenoisingEnabled ) {

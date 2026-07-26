@@ -56,7 +56,11 @@ void AOVBuffers::Reset( unsigned int w, unsigned int h, const Plan& requested )
 			std::vector<float>().swap( v );
 			return;
 		}
-		if( v.size() != count ) v.assign( count, 0.0f );
+		// A resolution change must also discard capacity from the previous
+		// film. vector::assign() is permitted to retain that allocation, which
+		// would let one historical high-resolution render pin guide memory
+		// indefinitely after a downsize.
+		if( v.size() != count ) std::vector<float>( count, 0.0f ).swap( v );
 		else std::fill( v.begin(), v.end(), 0.0f );
 	};
 	reset( albedo, requested.albedo ? pixels * 3 : 0 );

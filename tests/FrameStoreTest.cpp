@@ -226,6 +226,11 @@ namespace
 		Check( oidnCache.ReservedBytes() == 0,
 			"disabling an AOV plane releases capacity instead of pinning prior render memory" );
 
+		AOVBuffers resized( 64, 64, AOVBuffers::Plan( true, true, true ) );
+		resized.Reset( 2, 1, AOVBuffers::Plan( true, true, true ) );
+		Check( resized.ReservedBytes() == pixels * 7u * sizeof(float),
+			"downsizing releases obsolete high-resolution AOV capacity" );
+
 		store->release();
 	}
 

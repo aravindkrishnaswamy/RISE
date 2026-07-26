@@ -442,7 +442,15 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	outWidth = outHeight = 0;
 	outInfo = mPerceptionInfo;
 	std::vector<unsigned char> out;
-	if( !mPerceptionInfo.available || !mHasImage || mWidth == 0 || mHeight == 0 ) return out;
+	auto markUnavailable = [&]() {
+		outInfo.available = false;
+		outInfo.encoderRowBytes = 0;
+		outWidth = outHeight = 0;
+	};
+	if( !mPerceptionInfo.available || !mHasImage || mWidth == 0 || mHeight == 0 ) {
+		markUnavailable();
+		return out;
+	}
 
 	// Atlas dimensions are two panels on each axis.  Work in uint64_t so
 	// authored films near UINT_MAX cannot wrap before the writer sees them.
@@ -451,7 +459,10 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	const std::uint64_t sourceLong = mWidth >= mHeight ? mWidth : mHeight;
 	std::uint64_t panelLong = sourceLong;
 	if( maxEdge > 0 ) {
-		if( maxEdge < 2 ) return out; // no 2x2 atlas can satisfy the bound
+		if( maxEdge < 2 ) {
+			markUnavailable();
+			return out; // no 2x2 atlas can satisfy the bound
+		}
 		const std::uint64_t bounded = static_cast<std::uint64_t>( maxEdge ) / 2u;
 		if( bounded < panelLong ) panelLong = bounded;
 	}
@@ -464,19 +475,21 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 		if( panelH64 == 0 ) panelH64 = 1;
 	}
 	const std::uint64_t uintMax = std::numeric_limits<unsigned int>::max();
-	if( panelW64 > uintMax / 2u || panelH64 > uintMax / 2u ) return out;
+	if( panelW64 > uintMax / 2u || panelH64 > uintMax / 2u ) {
+		markUnavailable();
+		return out;
+	}
 	const unsigned int panelW = static_cast<unsigned int>( panelW64 );
 	const unsigned int panelH = static_cast<unsigned int>( panelH64 );
 	outWidth = panelW * 2u;
 	outHeight = panelH * 2u;
 	if( static_cast<std::size_t>( outWidth ) > std::numeric_limits<std::size_t>::max() / 4u ) {
-		outWidth = outHeight = 0;
+		markUnavailable();
 		return out;
 	}
 
 #ifdef NO_PNG_SUPPORT
-	outInfo.available = false;
-	outWidth = outHeight = 0;
+	markUnavailable();
 	return out;
 #else
 	const std::size_t rowBytes = static_cast<std::size_t>( outWidth ) * 4u;
@@ -487,25 +500,23 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 		encoded = new std::vector<unsigned char>();
 	}
 	catch( ... ) {
-		outWidth = outHeight = 0;
-		outInfo.encoderRowBytes = 0;
+		markUnavailable();
 		return out;
 	}
 
 	png_structp png = png_create_write_struct( PNG_LIBPNG_VER_STRING, 0, 0, 0 );
-	if( !png ) { delete encoded; outWidth = outHeight = 0; return out; }
+	if( !png ) { delete encoded; markUnavailable(); return out; }
 	png_infop info = png_create_info_struct( png );
 	if( !info ) {
 		png_destroy_write_struct( &png, 0 );
 		delete encoded;
-		outWidth = outHeight = 0;
+		markUnavailable();
 		return out;
 	}
 	if( setjmp( png_jmpbuf( png ) ) ) {
 		png_destroy_write_struct( &png, &info );
 		delete encoded;
-		outWidth = outHeight = 0;
-		outInfo.encoderRowBytes = 0;
+		markUnavailable();
 		return out;
 	}
 	PerceptionPngWriteContext writeContext{ encoded };

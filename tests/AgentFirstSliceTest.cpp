@@ -124,7 +124,10 @@ static bool DecodePng( const std::vector<unsigned char>& png, DecodedPng& out )
 static const char* const kScene =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	// Accurate guide capture must happen at the diffuse surface even though
+	// max_diffuse_bounce=0 terminates continuation there. The decoded red
+	// albedo-panel assertion below is the regression lock.
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n\tmax_diffuse_bounce 0\n}\n\n"
 	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"

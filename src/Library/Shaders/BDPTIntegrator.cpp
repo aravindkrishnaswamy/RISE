@@ -122,6 +122,26 @@ namespace
 		pAOV->valid = true;
 	}
 
+	inline void CaptureBDPTAccurateAOV(
+		const RuntimeContext& rc,
+		const RayIntersection& ri,
+		PixelAOV* pAOV )
+	{
+		if( !pAOV || pAOV->valid || !ri.geometric.bHit ||
+		    rc.aovPrefilterMode != OidnPrefilter::Accurate ) return;
+
+		// This runs while the real trace-time intersection and incoming ray
+		// are still available. Reconstructing them later from camera->vertex
+		// is wrong after a reflection, refraction, medium event, or BSSRDF.
+		pAOV->normal = ri.geometric.vNormal;
+		pAOV->albedo = ( rc.hasPathTracingVariantConfig && rc.pathTracingClayOverride )
+			? RISEPel( 0.5, 0.5, 0.5 )
+			: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+				? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+				: RISEPel( 1, 1, 1 ) );
+		pAOV->valid = true;
+	}
+
 	inline Vector3 GuidingCosineNormal(
 		const Vector3& normal,
 		const Vector3& incomingDir
@@ -2140,10 +2160,11 @@ namespace {
 				break;
 			}
 
-			const ISPF* pSPF = ri.pMaterial->GetSPF();
-			if( !pSPF ) {
-				vertices.push_back( v );
-				break;
+				const ISPF* pSPF = ri.pMaterial->GetSPF();
+				if( !pSPF ) {
+					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+					vertices.push_back( v );
+					break;
 			}
 
 			vertices.push_back( v );
@@ -2154,8 +2175,9 @@ namespace {
 			ScatteredRayContainer scattered;
 			ScatterSPF<Tag>( *pSPF, ri.geometric, sampler, scattered, iorStack, tag );
 
-			if( scattered.Count() == 0 ) {
-				break;
+				if( scattered.Count() == 0 ) {
+					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+					break;
 			}
 
 			// Stochastic single-lobe selection (no path-tree branching).
@@ -2193,8 +2215,11 @@ namespace {
 				vertices.back().isConnectible = hasNonDelta;
 			}
 
-			// Mark the current vertex as delta
-			vertices.back().isDelta = pScat->isDelta;
+				// Mark the current vertex as delta
+				vertices.back().isDelta = pScat->isDelta;
+				if( !pScat->isDelta ) {
+					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+				}
 
 
 
@@ -2222,9 +2247,10 @@ namespace {
 						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
 							ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
 
-						if( bssrdf.valid )
-						{
-							vertices.back().isDelta = true;
+							if( bssrdf.valid )
+							{
+								CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+								vertices.back().isDelta = true;
 							V betaSpatial;
 							if constexpr( Traits::is_pel ) {
 								betaSpatial = beta * bssrdf.weightSpatial * (1.0 / Ft);
@@ -2326,9 +2352,10 @@ namespace {
 							pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
 							pRW->g, pRW->ior, pRW->maxBounces, rwSampler, NmOrZero<Tag>( tag ), pRW->maxDepth );
 
-						if( bssrdf.valid )
-						{
-							vertices.back().isDelta = true;
+							if( bssrdf.valid )
+							{
+								CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+								vertices.back().isDelta = true;
 
 							// SampleExit does NOT include Ft(entry).
 							// Coin flip: weight * Ft / Ft = weight.

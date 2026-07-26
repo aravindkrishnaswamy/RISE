@@ -32,7 +32,6 @@
 #include "VCMSpectralRasterizer.h"
 #include "ProgressiveFilm.h"
 #include "AOVBuffers.h"
-#include "../Utilities/PathVertexEval.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
@@ -362,47 +361,17 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
 
-				// AOV capture (hero wavelength, first bundle). The generator
-				// records raw camera depth and Fast guides before medium transport;
-				// Accurate walks to the first non-delta SURFACE vertex. This
-				// matches BDPT{Pel,Spectral}Rasterizer's pattern. See
-				// docs/SPECTRAL_PARITY_AUDIT.md §2.17 for
-				// the 2026-05-07 fix that replaced the
-				// `value(N,rig) * PI` Lambertian-normal-incidence proxy
-				// with a direct `albedo(rig)` call against a
-				// camera-ray-synthesized RayIntersectionGeometric.  rig
-				// is populated through the canonical PathVertexEval
-				// helper so we don't silently drop ptCoord / vColor.
-				if( ss == 0 && pAOVBuffers ) {
-					if( primaryAOV.depth > 0 ) {
-						pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
-					}
-					if( rc.aovPrefilterMode == OidnPrefilter::Fast && primaryAOV.valid ) {
-						pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
-						pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
-					}
-					const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
-					for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-						const BDPTVertex& v = eyeVerts[iv];
-						if( accurate && v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-							PixelAOV aov;
-							aov.normal = v.normal;
-							if( v.pMaterial->GetBSDF() ) {
-								const Vector3 rayDir = Vector3Ops::Normalize(
-									Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
-								RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
-								PathVertexEval::PopulateRIGFromVertex( v, rig );
-								aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
-							} else {
-								aov.albedo = RISEPel( 1, 1, 1 );
-							}
-							aov.valid = true;
-							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-							break;
+					// AOV capture (hero wavelength, first bundle). The generator
+					// records both modes against the actual trace-time intersection.
+					if( ss == 0 && pAOVBuffers ) {
+						if( primaryAOV.depth > 0 ) {
+							pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
+						}
+						if( primaryAOV.valid ) {
+							pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
+							pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
 						}
 					}
-				}
 
 				Scalar heroValue = 0;
 

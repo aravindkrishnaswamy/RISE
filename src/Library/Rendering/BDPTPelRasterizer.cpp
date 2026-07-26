@@ -15,14 +15,11 @@
 #include "pch.h"
 #include "BDPTPelRasterizer.h"
 #include "AOVBuffers.h"
-#include "../Utilities/PathVertexEval.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "ProgressiveFilm.h"
-#include "../Interfaces/IBSDF.h"
-#include "../Interfaces/IMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -127,48 +124,9 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 		sampler, eyeVerts, eyeSubpathStarts, pAOV );
 
-	// GenerateEyeSubpath captured raw camera depth and Fast guides before
-	// medium transport. Accurate walks to the first
-	// non-delta SURFACE vertex (skipping glass / mirror, whose sampled
-	// delta state is stored on each vertex). See docs/OIDN.md.
-	//
-	// Rough dielectrics handled correctly: each sample's Fresnel
-	// decision sets `isDelta` on the chosen scatter, so per-sample
-	// the AOV is recorded at the rough surface or behind it
-	// depending on each sample's outcome.  Averaged across samples
-	// (via AccumulateAlbedo / AccumulateNormal at the per-sample
-	// caller above), this gives a Fresnel-weighted mix that matches
-	// the beauty signal.
-	//
-	// When no non-delta surface is found (whole subpath is glass /
-	// mirror), pAOV stays !valid and the caller skips accumulation,
-	// which OIDN handles via its empty-aux path.
-	if( pAOV && rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
-		for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-			const BDPTVertex& v = eyeVerts[iv];
-			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-				pAOV->normal = v.normal;
-				if( v.pMaterial->GetBSDF() ) {
-					// Rebuild the RayIntersectionGeometric from the vertex
-					// via the canonical PathVertexEval helper so we don't
-					// silently miss texture coords / vertex color / future
-					// fields — see PathVertexEval.h CONTRACT block.  Then
-					// install a real camera-ray view direction so the
-					// BSDF's albedo() reads the right outgoing dir via
-					// rig.ray.Dir() (BDPTVertex doesn't carry a ray).
-					const Vector3 rayDir = Vector3Ops::Normalize(
-						Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
-					RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
-					PathVertexEval::PopulateRIGFromVertex( v, rig );
-					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
-				} else {
-					pAOV->albedo = RISEPel( 1, 1, 1 );
-				}
-				pAOV->valid = true;
-				break;
-			}
-		}
-	}
+	// GenerateEyeSubpath captures Fast guides at the raw primary hit and
+	// Accurate guides at the first selected non-delta surface while the real
+	// trace-time intersection and incoming ray are still available.
 
 	RISEPel sampleColor( 0, 0, 0 );
 

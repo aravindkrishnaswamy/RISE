@@ -23,7 +23,6 @@
 #include "VCMPelRasterizer.h"
 #include "ProgressiveFilm.h"
 #include "AOVBuffers.h"
-#include "../Utilities/PathVertexEval.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
@@ -337,46 +336,17 @@ void VCMPelRasterizer::IntegratePixel(
 				continue;
 			}
 
-			// Raw camera depth and Fast guides were captured before medium
-			// transport by GenerateEyeSubpath. Accurate walks to the first
-			// non-delta SURFACE vertex.
-			// Mirrors BDPTPelRasterizer::IntegratePixelRGB. Rough
-			// dielectrics are handled probabilistically per sample
-			// because each vertex's `isDelta` was set from the
-			// chosen scatter's `pScat->isDelta` in GenerateEyeSubpath.
-			if( pAOVBuffers ) {
-				if( primaryAOV.depth > 0 ) {
-					pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
-				}
-				if( rc.aovPrefilterMode == OidnPrefilter::Fast && primaryAOV.valid ) {
-					pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
-					pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
-				}
-				const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
-				for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-					const BDPTVertex& v = eyeVerts[iv];
-					if( accurate && v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-						PixelAOV aov;
-						aov.normal = v.normal;
-						if( v.pMaterial->GetBSDF() ) {
-							// Real camera-ray dir + canonical PathVertexEval
-							// helper so the BSDF sees ptCoord / vColor /
-							// future fields — see PathVertexEval.h CONTRACT.
-							const Vector3 rayDir = Vector3Ops::Normalize(
-								Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
-							RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
-							PathVertexEval::PopulateRIGFromVertex( v, rig );
-							aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
-						} else {
-							aov.albedo = RISEPel( 1, 1, 1 );
-						}
-						aov.valid = true;
-						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-						break;
+				// GenerateEyeSubpath captures raw primary depth plus either Fast
+				// primary guides or Accurate first-non-delta guides at trace time.
+				if( pAOVBuffers ) {
+					if( primaryAOV.depth > 0 ) {
+						pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
+					}
+					if( primaryAOV.valid ) {
+						pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
 					}
 				}
-			}
 
 			RISEPel sampleColor( 0, 0, 0 );
 

@@ -280,6 +280,13 @@ static void RunDepthContractProbe( const char* label, const char* rasterizerChun
 		std::string( label ) + ": perception render and atlas succeed" );
 	Check( info.validDepthPixels == 12u * 12u && info.depthMin > 1.75 && info.depthMax < 2.25,
 		std::string( label ) + ": depth stays on the ~1.9-unit primary glass hit" );
+	unsigned int invalidW = 99, invalidH = 99;
+	AgentPerceptionInfo invalidInfo;
+	const std::vector<unsigned char> invalidAtlas = session
+		? session->ReadPerception( 1, invalidW, invalidH, invalidInfo )
+		: std::vector<unsigned char>();
+	Check( invalidAtlas.empty() && !invalidInfo.available && invalidW == 0 && invalidH == 0,
+		std::string( label ) + ": unencodable atlas reports unavailable to direct callers" );
 	pJob->release();
 	std::remove( scenePath.c_str() );
 }

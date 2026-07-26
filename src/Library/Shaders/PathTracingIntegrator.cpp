@@ -2674,8 +2674,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				rs2.depth = depth + 1;
 				rs2.importance = importance * PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-				rs2.type = PathTracingRayType( *pS );
-				// SPF/no-BSDF specular continuation.  Keep emission enabled at the
+					rs2.type = PathTracingRayType( *pS );
+					// Accurate guides describe the first non-delta interaction the
+					// sampled path reached, whether or not transport is allowed to
+					// continue beyond it. Capture before bounce-limit termination so
+					// maxDiffuseBounce=0 and similar direct-only configurations do not
+					// erase a perfectly valid guide surface.
+					if constexpr ( Traits::supports_aov ) {
+						if( pAOV && !pAOV->valid && !pS->isDelta &&
+						    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+						{
+							pAOV->normal = ri.geometric.vNormal;
+							pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+								: RISEPel( 1, 1, 1 );
+							pAOV->valid = true;
+						}
+					}
+					// SPF/no-BSDF specular continuation.  Keep emission enabled at the
 				// next vertex for BOTH color modes and let the PART1
 				// `smsSuppressEmission` predicate (gated by bHadNonSpecularShading)
 				// do the suppression.  A camera->glass->light path has no diffuse
@@ -2712,26 +2728,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// Track specular transitions for SMS double-counting prevention
 				if( pS->isDelta ) {
 					bPassedThroughSpecular = true;
-				} else {
-					bPassedThroughSpecular = false;
-					bHadNonSpecularShading = true;
-					// Accurate prefilter mode: record AOV at the first non-delta
-					// scatter on this path.  See docs/OIDN.md (OIDN-P1-1).  Fast
-					// mode records at first hit in IntegrateRay and skips this
-					// branch.  Gated on the AOV-capable tag (supports_aov): NM
-					// gains the inline hook once its supports_aov flag is set.
-					if constexpr ( Traits::supports_aov ) {
-						if( pAOV && !pAOV->valid &&
-						    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-						{
-							pAOV->normal = ri.geometric.vNormal;
-							pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-								: RISEPel( 1, 1, 1 );
-							pAOV->valid = true;
-						}
+					} else {
+						bPassedThroughSpecular = false;
+						bHadNonSpecularShading = true;
 					}
-				}
 
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -3159,7 +3159,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			(void)useGuidingPathSegments;  // Used in full guiding implementation
 #endif // RISE_ENABLE_OPENPGL
 
-			bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
+				// Guide capture is a property of the selected interaction, not of
+				// Russian-roulette or bounce-limit survival. Keeping it before both
+				// termination decisions prevents direct-only and RR-terminated paths
+				// from producing transport-correlated holes in Accurate AOVs.
+				if constexpr ( Traits::supports_aov ) {
+					if( pAOV && !pAOV->valid && !pS->isDelta &&
+					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+					{
+						pAOV->normal = ri.geometric.vNormal;
+						pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
+						                     : RISEPel( 1, 1, 1 );
+						pAOV->valid = true;
+					}
+				}
+
+				bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
 
 			// Optimal MIS training
 			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
@@ -3278,27 +3293,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
 			if( pS->isDelta ) {
 				bPassedThroughSpecular = true;
-			} else {
-				bPassedThroughSpecular = false;
-				bHadNonSpecularShading = true;
-				// Accurate-mode inline AOV: first non-delta BSDF scatter.  Sibling
-				// of the SPF-only hook above (the !pBRDF block) and the HWSS hook in
-				// IntegrateFromHitHWSS.  Without this, a camera looking through glass
-				// at a DIFFUSE (BSDF) surface recorded NO inline AOV and fell back to
-				// the first-hit retrace (glass-coloured aux) — the exact case
-				// docs/SPECTRAL_PARITY_AUDIT.md §2.6 describes.  Render-neutral
-				// (writes only pAOV side-data); gated on the AOV-capable tag.
-				if constexpr ( Traits::supports_aov ) {
-					if( pAOV && !pAOV->valid &&
-					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-					{
-						pAOV->normal = ri.geometric.vNormal;
-						pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
-						                     : RISEPel( 1, 1, 1 );
-						pAOV->valid = true;
-					}
+				} else {
+					bPassedThroughSpecular = false;
+					bHadNonSpecularShading = true;
 				}
-			}
 
 			currentRay = traceRay;
 			currentRay.Advance( 1e-8 );
