@@ -89,11 +89,12 @@ RISE_NOTARY_PROFILE=rise-notary \
 scripts/create_macos_release.sh --version 1.2.0 --build 42
 ```
 
-Run `scripts/create_macos_release.sh --help` for output, overwrite, and
-working-tree options. Version and build default to `src/Library/Version.h`;
-overrides update both the compiled library and app bundle metadata. Artifacts
-include both version and build number and are written to `dist/macos/` by
-default.
+Run `scripts/create_macos_release.sh --help` for output and overwrite options.
+The source tree must be clean; the script builds a detached snapshot of the
+captured commit. Version and build default to `src/Library/Version.h`;
+overrides update both the compiled library and app bundle metadata, and version
+overrides use canonical `X.Y.Z` form. Artifacts include both version and build
+number and are written to `dist/macos/` by default.
 
 ### Windows
 

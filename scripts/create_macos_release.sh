@@ -8,7 +8,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PROJECT="${REPO_ROOT}/build/XCode/rise/rise.xcodeproj"
 SCHEME="RISE-GUI-Opto"
 CONFIGURATION="Opto"
 
@@ -17,7 +16,6 @@ BUILD_NUMBER=""
 OUTPUT_DIR="${REPO_ROOT}/dist/macos"
 SIGN_IDENTITY="${RISE_CODESIGN_IDENTITY:--}"
 NOTARY_PROFILE="${RISE_NOTARY_PROFILE:-}"
-ALLOW_DIRTY=0
 KEEP_WORK_DIR=0
 OVERWRITE=0
 
@@ -36,7 +34,6 @@ Options:
                           RISE_CODESIGN_IDENTITY provides the same setting.
   --notary-profile NAME   notarytool keychain profile. Requires Developer ID
                           signing. RISE_NOTARY_PROFILE provides the same setting.
-  --allow-dirty           Permit a release from a dirty Git working tree.
   --keep-work-dir         Preserve the temporary build/staging directory.
   --overwrite             Replace an existing artifact with the same version
                           and build number after the new release is complete.
@@ -54,6 +51,10 @@ Developer ID Application identity and a notarytool keychain profile.
 
 Version and build defaults come from src/Library/Version.h. Overrides are
 applied consistently to the compiled library and the app bundle.
+
+The source working tree must be clean. The build runs from a detached worktree
+at the captured commit so every translation unit comes from one immutable
+source revision.
 
 The current Xcode dependency stack produces Apple Silicon (arm64) releases and
 inherits the project's macOS deployment target. Intel/universal packaging will
@@ -97,10 +98,6 @@ while [ "$#" -gt 0 ]; do
 			NOTARY_PROFILE="$2"
 			shift 2
 			;;
-		--allow-dirty)
-			ALLOW_DIRTY=1
-			shift
-			;;
 		--keep-work-dir)
 			KEEP_WORK_DIR=1
 			shift
@@ -121,7 +118,6 @@ done
 
 [ "$(uname -s)" = "Darwin" ] || die "macOS is required"
 [ "$(uname -m)" = "arm64" ] || die "the current release pipeline requires an Apple Silicon build host"
-[ -d "${PROJECT}" ] || die "Xcode project not found: ${PROJECT}"
 
 for tool in awk codesign ditto file find git hdiutil install_name_tool lipo \
 	otool plutil sed shasum xcodebuild xcrun; do
@@ -142,13 +138,30 @@ fi
 
 SOURCE_HEAD="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 SOURCE_STATUS="$(git -C "${REPO_ROOT}" status --porcelain=v1 --untracked-files=all)"
-SOURCE_DIRTY=0
-if [ -n "${SOURCE_STATUS}" ]; then
-	SOURCE_DIRTY=1
-fi
-if [ "${ALLOW_DIRTY}" -eq 0 ] && [ "${SOURCE_DIRTY}" -eq 1 ]; then
-	die "Git working tree is dirty; commit/stash changes or pass --allow-dirty"
-fi
+[ -z "${SOURCE_STATUS}" ] || die "Git working tree is dirty; commit or stash changes before releasing"
+
+mkdir -p "${OUTPUT_DIR}"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rise-macos-release.XXXXXX")"
+SOURCE_ROOT="${WORK_DIR}/source"
+PUBLISH_DIR=""
+cleanup() {
+	[ -z "${PUBLISH_DIR}" ] || rm -rf "${PUBLISH_DIR}"
+	if [ "${KEEP_WORK_DIR}" -eq 1 ]; then
+		echo "Preserved work directory: ${WORK_DIR}"
+	else
+		if [ -d "${SOURCE_ROOT}" ]; then
+			git -C "${REPO_ROOT}" worktree remove --force "${SOURCE_ROOT}" >/dev/null 2>&1 || true
+		fi
+		rm -rf "${WORK_DIR}"
+	fi
+}
+trap cleanup EXIT
+
+echo "==> Creating immutable source snapshot at ${SOURCE_HEAD}"
+git -C "${REPO_ROOT}" worktree add --detach --quiet "${SOURCE_ROOT}" "${SOURCE_HEAD}"
+PROJECT="${SOURCE_ROOT}/build/XCode/rise/rise.xcodeproj"
+[ -d "${PROJECT}" ] || die "Xcode project not found in source snapshot: ${PROJECT}"
 
 read_project_setting() {
 	local setting="$1"
@@ -160,7 +173,7 @@ read_project_setting() {
 read_version_define() {
 	local define="$1"
 	awk -v key="${define}" '$1 == "#define" && $2 == key { print $3; exit }' \
-		"${REPO_ROOT}/src/Library/Version.h"
+		"${SOURCE_ROOT}/src/Library/Version.h"
 }
 
 if [ -z "${VERSION}" ]; then
@@ -174,27 +187,13 @@ if [ -z "${BUILD_NUMBER}" ]; then
 fi
 [ -n "${VERSION}" ] || die "unable to determine the RISE library version"
 [ -n "${BUILD_NUMBER}" ] || die "unable to determine the RISE library build number"
-[[ "${VERSION}" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || \
-	die "version must contain one to three dot-separated integers: ${VERSION}"
-[[ "${BUILD_NUMBER}" =~ ^[0-9]+$ ]] || \
-	die "build number must be a nonnegative integer: ${BUILD_NUMBER}"
+[[ "${VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || \
+	die "version must be canonical X.Y.Z integers without leading zeros: ${VERSION}"
+[[ "${BUILD_NUMBER}" =~ ^(0|[1-9][0-9]*)$ ]] || \
+	die "build number must be a nonnegative integer without leading zeros: ${BUILD_NUMBER}"
 IFS=. read -r VERSION_MAJOR VERSION_MINOR VERSION_REVISION <<< "${VERSION}"
-VERSION_MINOR="${VERSION_MINOR:-0}"
-VERSION_REVISION="${VERSION_REVISION:-0}"
 DEPLOYMENT_TARGET="$(read_project_setting MACOSX_DEPLOYMENT_TARGET)"
 [ -n "${DEPLOYMENT_TARGET}" ] || die "unable to determine MACOSX_DEPLOYMENT_TARGET"
-
-mkdir -p "${OUTPUT_DIR}"
-OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rise-macos-release.XXXXXX")"
-cleanup() {
-	if [ "${KEEP_WORK_DIR}" -eq 1 ]; then
-		echo "Preserved work directory: ${WORK_DIR}"
-	else
-		rm -rf "${WORK_DIR}"
-	fi
-}
-trap cleanup EXIT
 
 DERIVED_DATA="${WORK_DIR}/DerivedData"
 ARTIFACT_BASENAME="RISE-${VERSION}-build${BUILD_NUMBER}-macOS-${ARTIFACT_ARCH}"
@@ -213,7 +212,7 @@ STAGED_CHECKSUMS="${WORK_DIR}/$(basename "${CHECKSUMS}")"
 STAGED_BUILD_LOG="${WORK_DIR}/$(basename "${BUILD_LOG}")"
 
 if [ "${OVERWRITE}" -eq 0 ]; then
-	for artifact in "${DMG}" "${DSYM_ZIP}" "${CHECKSUMS}"; do
+	for artifact in "${DMG}" "${DSYM_ZIP}" "${CHECKSUMS}" "${BUILD_LOG}"; do
 		[ ! -e "${artifact}" ] || die "release artifact already exists: ${artifact} (use --overwrite to replace it)"
 	done
 fi
@@ -260,7 +259,7 @@ SCAN_BINARIES=("${APP_EXECUTABLE}")
 SCAN_INDEX=0
 SEARCH_DIRS=("${FRAMEWORKS_DIR}" "/opt/homebrew/lib" "/usr/local/lib")
 [ -n "${HOMEBREW_PREFIX}" ] && SEARCH_DIRS+=("${HOMEBREW_PREFIX}/lib")
-[ -d "${REPO_ROOT}/extlib/oidn/install/lib" ] && SEARCH_DIRS+=("${REPO_ROOT}/extlib/oidn/install/lib")
+[ -d "${SOURCE_ROOT}/extlib/oidn/install/lib" ] && SEARCH_DIRS+=("${SOURCE_ROOT}/extlib/oidn/install/lib")
 
 is_system_dependency() {
 	case "$1" in
@@ -335,9 +334,9 @@ copy_dependency_license() {
 		esac
 	fi
 	case "${source}" in
-		"${REPO_ROOT}"/extlib/oidn/install/lib/*)
+		"${SOURCE_ROOT}"/extlib/oidn/install/lib/*)
 			package_name="open-image-denoise"
-			package_root="${REPO_ROOT}/extlib/oidn/source"
+			package_root="${SOURCE_ROOT}/extlib/oidn/source"
 			;;
 	esac
 	[ -n "${package_root}" ] || return 0
@@ -410,9 +409,31 @@ while [ "${SCAN_INDEX}" -lt "${#SCAN_BINARIES[@]}" ]; do
 	esac
 done
 
-cp -p "${REPO_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
+normalize_rpaths() {
+	local binary="$1" desired rpaths rpath
+	case "${binary}" in
+		"${FRAMEWORKS_DIR}"/*) desired="@loader_path" ;;
+		*) desired="@executable_path/../Frameworks" ;;
+	esac
+	rpaths="$(otool -l "${binary}" | awk '/cmd LC_RPATH/{want=1; next} want && /path /{if (!seen[$2]++) print $2; want=0}')"
+	while IFS= read -r rpath; do
+		[ -n "${rpath}" ] || continue
+		install_name_tool -delete_rpath "${rpath}" "${binary}"
+	done <<< "${rpaths}"
+	install_name_tool -add_rpath "${desired}" "${binary}"
+}
+
+# Never let @rpath resolve back to Homebrew or another build machine path.
+# Each image gets exactly one bundle-local runpath before the final signature.
+normalize_rpaths "${APP_EXECUTABLE}"
+for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
+	[ -f "${binary}" ] || continue
+	normalize_rpaths "${binary}"
+done
+
+cp -p "${SOURCE_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
 mkdir -p "${APP}/Contents/Resources/Third-Party Licenses/cgltf"
-cp -p "${REPO_ROOT}/extlib/cgltf/LICENSE.txt" \
+cp -p "${SOURCE_ROOT}/extlib/cgltf/LICENSE.txt" \
 	"${APP}/Contents/Resources/Third-Party Licenses/cgltf/LICENSE.txt"
 
 expected_arches="${XCODE_ARCHS}"
@@ -438,12 +459,29 @@ verify_dependencies() {
 	done < <(otool -L "${binary}" | sed -n '2,$s/^[[:space:]]*\([^[:space:]]*\).*/\1/p')
 }
 
+verify_rpaths() {
+	local binary="$1" expected rpath count=0
+	case "${binary}" in
+		"${FRAMEWORKS_DIR}"/*) expected="@loader_path" ;;
+		*) expected="@executable_path/../Frameworks" ;;
+	esac
+	while IFS= read -r rpath; do
+		[ -n "${rpath}" ] || continue
+		[ "${rpath}" = "${expected}" ] || \
+			die "external or bundle-escaping LC_RPATH '${rpath}' remains in ${binary}"
+		count=$((count + 1))
+	done < <(otool -l "${binary}" | awk '/cmd LC_RPATH/{want=1; next} want && /path /{print $2; want=0}')
+	[ "${count}" -eq 1 ] || die "${binary} must contain exactly one bundle-local LC_RPATH"
+}
+
 verify_architectures "${APP_EXECUTABLE}"
 verify_dependencies "${APP_EXECUTABLE}"
+verify_rpaths "${APP_EXECUTABLE}"
 for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
 	[ -f "${binary}" ] || continue
 	verify_architectures "${binary}"
 	verify_dependencies "${binary}"
+	verify_rpaths "${binary}"
 done
 
 echo "==> Signing app (${SIGN_IDENTITY})"
@@ -463,15 +501,13 @@ fi
 codesign --verify --deep --strict --verbose=2 "${APP}"
 
 INFO_FILE="${WORK_DIR}/Release-Info.txt"
-dirty="no"
-[ "${SOURCE_DIRTY}" -eq 1 ] && dirty="yes"
 cat > "${INFO_FILE}" <<EOF
 RISE ${VERSION} (build ${BUILD_NUMBER})
 Architecture: ${ARTIFACT_ARCH}
 Configuration: ${CONFIGURATION}
 Minimum macOS: ${DEPLOYMENT_TARGET}
 Git commit: ${SOURCE_HEAD}
-Dirty working tree: ${dirty}
+Dirty working tree: no
 Built: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 Built with: $(xcodebuild -version | paste -sd ' ' -)
 EOF
@@ -480,7 +516,7 @@ VOLUME_DIR="${WORK_DIR}/dmg-root"
 mkdir -p "${VOLUME_DIR}"
 ditto "${APP}" "${VOLUME_DIR}/RISE-GUI.app"
 cp -p "${INFO_FILE}" "${VOLUME_DIR}/Release-Info.txt"
-cp -p "${REPO_ROOT}/LICENSE.TXT" "${VOLUME_DIR}/LICENSE.txt"
+cp -p "${SOURCE_ROOT}/LICENSE.TXT" "${VOLUME_DIR}/LICENSE.txt"
 ln -s /Applications "${VOLUME_DIR}/Applications"
 
 echo "==> Creating DMG"
@@ -510,20 +546,33 @@ ditto -c -k --sequesterRsrc --keepParent "${DSYM}" "${STAGED_DSYM_ZIP}"
 	shasum -a 256 "$(basename "${STAGED_DSYM_ZIP}")" >> "$(basename "${STAGED_CHECKSUMS}")"
 )
 
-current_head="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
-current_status="$(git -C "${REPO_ROOT}" status --porcelain=v1 --untracked-files=all)"
-[ "${current_head}" = "${SOURCE_HEAD}" ] || \
-	die "Git HEAD changed during the release build; refusing to publish mixed provenance"
-[ "${current_status}" = "${SOURCE_STATUS}" ] || \
-	die "Git working tree changed during the release build; refusing to publish mixed provenance"
+current_source_head="$(git -C "${SOURCE_ROOT}" rev-parse HEAD)"
+current_source_status="$(git -C "${SOURCE_ROOT}" status --porcelain=v1 --untracked-files=all)"
+[ "${current_source_head}" = "${SOURCE_HEAD}" ] || \
+	die "immutable source snapshot changed commits during the release build"
+[ -z "${current_source_status}" ] || \
+	die "immutable source snapshot was modified during the release build"
+
+# Copy into a hidden directory on the destination filesystem. The final moves
+# are then atomic renames even when --output-dir is on a different volume.
+PUBLISH_DIR="$(mktemp -d "${OUTPUT_DIR}/.rise-release-publish.XXXXXX")"
+cp -p "${STAGED_DMG}" "${PUBLISH_DIR}/$(basename "${DMG}")"
+cp -p "${STAGED_DSYM_ZIP}" "${PUBLISH_DIR}/$(basename "${DSYM_ZIP}")"
+cp -p "${STAGED_BUILD_LOG}" "${PUBLISH_DIR}/$(basename "${BUILD_LOG}")"
+cp -p "${STAGED_CHECKSUMS}" "${PUBLISH_DIR}/$(basename "${CHECKSUMS}")"
+(
+	cd "${PUBLISH_DIR}"
+	shasum -a 256 -c "$(basename "${CHECKSUMS}")" >/dev/null
+)
 
 # The checksum file is the publication marker: move it last so an interrupted
 # publish cannot leave new artifacts paired with a stale checksum manifest.
-[ "${OVERWRITE}" -eq 1 ] && rm -f "${CHECKSUMS}"
-mv -f "${STAGED_DMG}" "${DMG}"
-mv -f "${STAGED_DSYM_ZIP}" "${DSYM_ZIP}"
-mv -f "${STAGED_BUILD_LOG}" "${BUILD_LOG}"
-mv -f "${STAGED_CHECKSUMS}" "${CHECKSUMS}"
+mv -f "${PUBLISH_DIR}/$(basename "${DMG}")" "${DMG}"
+mv -f "${PUBLISH_DIR}/$(basename "${DSYM_ZIP}")" "${DSYM_ZIP}"
+mv -f "${PUBLISH_DIR}/$(basename "${BUILD_LOG}")" "${BUILD_LOG}"
+mv -f "${PUBLISH_DIR}/$(basename "${CHECKSUMS}")" "${CHECKSUMS}"
+rmdir "${PUBLISH_DIR}"
+PUBLISH_DIR=""
 
 echo
 echo "Release complete:"
