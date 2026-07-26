@@ -61,6 +61,41 @@
 
 using namespace RISE;
 
+namespace {
+
+struct DirtyCallbackFrame
+{
+	const void* state;
+	DirtyCallbackFrame* previous;
+};
+
+thread_local DirtyCallbackFrame* gDirtyCallbackFrame = nullptr;
+
+class DirtyCallbackScope
+{
+public:
+	explicit DirtyCallbackScope( const void* state )
+		: mFrame{ state, gDirtyCallbackFrame }
+	{
+		gDirtyCallbackFrame = &mFrame;
+	}
+	~DirtyCallbackScope() { gDirtyCallbackFrame = mFrame.previous; }
+private:
+	DirtyCallbackFrame mFrame;
+};
+
+bool IsInDirtyCallback( const void* state )
+{
+	for( DirtyCallbackFrame* frame = gDirtyCallbackFrame;
+	     frame; frame = frame->previous )
+	{
+		if( frame->state == state ) return true;
+	}
+	return false;
+}
+
+}  // namespace
+
 void SceneEditor::BumpSceneLightGeneration()
 {
 	// IScenePriv carries no light-generation surface (keeping that off the
@@ -1085,6 +1120,21 @@ bool SceneEditor::DrainDirtyNotification()
 	return DrainDirtyNotificationState_( state );
 }
 
+bool SceneEditor::IsInDirtyChangedCallbackOnThisThread() const
+{
+	return IsInDirtyCallback( mDirtyNotificationState.get() );
+}
+
+void SceneEditor::SetDirtyChangedListener( DirtyChangedFn fn )
+{
+	DirtyChangedPtr retired = ExchangeDirtyChangedListener( std::move( fn ) );
+	// The last shared owner may live on this setter thread after it waited for
+	// an in-flight callback's snapshot to retire.  Keep lifecycle rejection TLS
+	// active through that arbitrary capture destructor as well.
+	DirtyCallbackScope retirementScope( mDirtyNotificationState.get() );
+	retired.reset();
+}
+
 bool SceneEditor::DrainDirtyNotificationState_(
 	const std::shared_ptr<DirtyNotificationState>& state )
 {
@@ -1092,13 +1142,36 @@ bool SceneEditor::DrainDirtyNotificationState_(
 	// single-deliverer loop. The complete dirty value was published by the
 	// mutator while its controller lock held, so this state-only routine
 	// neither races DirtyTracker containers nor borrows the SceneEditor.
-	// That also makes callback-driven controller destruction safe.
+	// Lifecycle destruction is rejected until the callback and its copied
+	// std::function target have both retired.
 	if( state->deferDepth.load( std::memory_order_acquire ) != 0 )
 		return state->ownerAlive.load( std::memory_order_acquire );
 	if( !state->pending.load( std::memory_order_acquire ) )
 		return state->ownerAlive.load( std::memory_order_acquire );
 	if( state->delivering.exchange( true, std::memory_order_acq_rel ) )
 		return state->ownerAlive.load( std::memory_order_acquire );   // active deliverer will pick it up
+	struct DeliveringGuard
+	{
+		explicit DeliveringGuard(
+			const std::shared_ptr<DirtyNotificationState>& stateIn )
+			: state( stateIn ), active( true )
+		{
+		}
+		~DeliveringGuard()
+		{
+			Release();
+		}
+		void Release()
+		{
+			if( active ) {
+				state->delivering.store( false, std::memory_order_release );
+				active = false;
+			}
+		}
+		std::shared_ptr<DirtyNotificationState> state;
+		bool active;
+	};
+	DeliveringGuard deliveringGuard( state );
 	struct CallbackFlightGuard
 	{
 		explicit CallbackFlightGuard(
@@ -1117,12 +1190,22 @@ bool SceneEditor::DrainDirtyNotificationState_(
 		}
 		std::shared_ptr<DirtyNotificationState> state;
 	};
+	struct CopiedListenerRetireGuard
+	{
+		explicit CopiedListenerRetireGuard( DirtyChangedPtr& listenerIn )
+			: listener( listenerIn ) {}
+		~CopiedListenerRetireGuard()
+		{
+			listener.reset();
+		}
+		DirtyChangedPtr& listener;
+	};
 	for( ;; )
 	{
 		if( !state->pending.exchange( false, std::memory_order_acq_rel ) ) break;
 		bool fire = false;
 		const bool now = state->currentHasUnsavedChanges.load( std::memory_order_acquire );
-		DirtyChangedFn listenerCopy;
+		DirtyChangedPtr listenerCopy;
 		{
 			std::lock_guard<std::mutex> lk( state->mutex );
 			if( now != state->prevHasUnsavedChanges )
@@ -1138,25 +1221,36 @@ bool SceneEditor::DrainDirtyNotificationState_(
 		}
 		if( fire && listenerCopy ) {
 			CallbackFlightGuard flight( state );
-			listenerCopy( now );   // NO lock held
+			DirtyCallbackScope callbackScope( state.get() );
+			CopiedListenerRetireGuard retireCopy( listenerCopy );
+			try {
+				(*listenerCopy)( now );   // NO lock held
+			} catch( const std::exception& e ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: dirty-changed listener threw; notification contained: %s",
+					e.what() );
+			} catch( ... ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: dirty-changed listener threw a non-standard exception; notification contained." );
+			}
 			if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
-				state->delivering.store( false, std::memory_order_release );
 				return false;
 			}
 		}
 	}
-	state->delivering.store( false, std::memory_order_release );
+	deliveringGuard.Release();
 	// Close the race where another thread flagged pending after our last
 	// exchange but saw us still delivering: one bounded retry.  A residual
 	// miss self-heals at the next drain (per-frame catch-all).
 	if( state->pending.load( std::memory_order_acquire )
 	 && !state->delivering.exchange( true, std::memory_order_acq_rel ) )
 	{
+		DeliveringGuard retryDeliveringGuard( state );
 		if( state->pending.exchange( false, std::memory_order_acq_rel ) )
 		{
 			bool fire = false;
 			const bool now = state->currentHasUnsavedChanges.load( std::memory_order_acquire );
-			DirtyChangedFn listenerCopy;
+			DirtyChangedPtr listenerCopy;
 			{
 				std::lock_guard<std::mutex> lk( state->mutex );
 				if( now != state->prevHasUnsavedChanges )
@@ -1172,14 +1266,23 @@ bool SceneEditor::DrainDirtyNotificationState_(
 			}
 			if( fire && listenerCopy ) {
 				CallbackFlightGuard flight( state );
-				listenerCopy( now );
+				DirtyCallbackScope callbackScope( state.get() );
+				CopiedListenerRetireGuard retireCopy( listenerCopy );
+				try {
+					(*listenerCopy)( now );
+				} catch( const std::exception& e ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditor: dirty-changed listener threw; notification contained: %s",
+						e.what() );
+				} catch( ... ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditor: dirty-changed listener threw a non-standard exception; notification contained." );
+				}
 				if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
-					state->delivering.store( false, std::memory_order_release );
 					return false;
 				}
 			}
 		}
-		state->delivering.store( false, std::memory_order_release );
 	}
 	return state->ownerAlive.load( std::memory_order_acquire );
 }

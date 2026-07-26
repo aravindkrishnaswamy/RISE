@@ -4629,7 +4629,7 @@ static void RunDestroyFromOrdinarySinkDetachIsRejectedTest()
 
 static void RunDestroyFromQueuedSinkCleanupIsRejectedTest()
 {
-	std::printf( "=== scheduler (w12d): queued-sink teardown destructor Destroy is safely rejected ===\n" );
+	std::printf( "=== scheduler (w12d): prepared sink teardown destructor Destroy is safely rejected ===\n" );
 	Fixture f( "pane_sched_w12d_queued_sink_destroy.RISEscene" );
 	Check( f.ctrl != nullptr, "fixture constructs" );
 	if( !f.ctrl ) return;
@@ -4641,17 +4641,17 @@ static void RunDestroyFromQueuedSinkCleanupIsRejectedTest()
 		"destructor-destroy sink installed for queued teardown" );
 	sink->release();
 
-	// Close drain registration first, then queue a Last Render placeholder.
-	// Its tail drain refuses registration, deliberately leaving one retained
-	// queue record for the destructor-cleanup path.
+	// Terminal preparation now closes both drain registration and every
+	// mutation gate.  The post-prepare source change must refuse; the installed
+	// pane sink remains owned until the subsequent destructor cleanup.
 	Check( f.ctrl->PrepareForDestruction(), "terminal preparation closes drain registration" );
-	Check( f.ctrl->SetPaneContentSource(
+	Check( !f.ctrl->SetPaneContentSource(
 			2, SceneEditController::PaneContentSource::LastRender ),
-		"post-prepare source transition leaves a bounded pending record" );
+		"MONEY (w12d): terminal preparation refuses a post-prepare source mutation" );
 	RISE_API_DestroySceneEditController( f.ctrl );
 	f.ctrl = nullptr;
 	Check( state->destructorDestroyReturned.load( std::memory_order_acquire ),
-		"MONEY (w12d): queued-record final release rejects recursive Destroy during controller teardown" );
+		"MONEY (w12d): prepared pane-sink final release rejects recursive Destroy during controller teardown" );
 }
 
 static void RunOrdinarySinkDestructorReentryTest()

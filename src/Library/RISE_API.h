@@ -3464,19 +3464,27 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 	//! Destroy a controller.  The borrowed Job must still be alive (the same
 	//! lifetime contract as Create); pending interactions are finalized first.
+	//! The owner must first stop/join all ordinary external callers, as required
+	//! for any C++ object whose storage is about to be released; this function
+	//! quiesces controller-owned workers/callbacks, not unknown caller threads.
 	//! A call re-entered synchronously from a Last Render sink callback or final
 	//! controller-owned sink release is rejected: the callout may be inside its
 	//! own drain or a controller mutation, and asynchronous delete would violate
 	//! the synchronous lifetime contract for borrowed sinks.  Return from the
-	//! callout and call Destroy from the owner thread.  A concurrent/re-entrant
-	//! call after a raw C++ destructor has begun is likewise rejected.
+	//! callout and call Destroy from the owner thread.  Dirty-changed callback
+	//! invocation and copied-target finalization have the same rule.  A
+	//! concurrent/re-entrant call after a raw C++ destructor has begun is
+	//! likewise rejected.
 	void RISE_API_DestroySceneEditController( SceneEditController* p );
 
 	//! Explicit terminal Job-alive teardown preparation.  Detaches callbacks,
 	//! stops the controller, and is safe to call redundantly.  Returns false if
-	//! pending interaction persistence fails or if called from a Last Render
-	//! callback/final release that cannot synchronously tear down its owner;
-	//! DestroySceneEditController calls it automatically.
+	//! pending interaction persistence fails or if called from a Last Render or
+	//! dirty-changed callback/final release that cannot synchronously tear down
+	//! its owner.  Success permanently closes mutation admission;
+	//! DestroySceneEditController calls it automatically.  The owner must first
+	//! stop/join ordinary external callers; Prepare arbitrates controller-owned
+	//! work and lifecycle calls but does not grant concurrent-use-after-free.
 	bool RISE_API_SceneEditController_PrepareForDestruction(
 		SceneEditController* p );
 

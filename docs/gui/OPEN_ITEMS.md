@@ -193,6 +193,13 @@ in the same round).
    permanent mutation gates, outside the listener mutex.  C-API Destroy and
    explicit Prepare use the same single-owner lifecycle state machine, so a
    dirty callback cannot recursively prepare/delete while its owner waits.
+   Listener callables are shared-owned so arbitrary callable copy/destructor
+   code never runs under the notification mutex; dirty callback TLS remains
+   active through copied-target retirement, and listener exceptions are
+   contained even from RAII-deferral drains.  Successful Prepare permanently
+   closes mutation admission, so no post-Prepare gesture can be silently lost
+   by the Prepared-to-Destroying fast path.  As at every object-lifetime
+   boundary, the owner first stops/joins arbitrary external callers.
 4. **`OnTimeScrub{Begin,,End}` refusal returns** — documented in
    `RISE_API.h` (verified claim-by-claim against the implementations).
 5. **Test holes** — T20 (positive cross-category narrowing) + T22

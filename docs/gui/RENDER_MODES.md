@@ -856,7 +856,13 @@ Job-live Prepare/C-API Destroy and raw destruction share a single-owner state
 machine, so concurrent or callback-reentrant preparation/deletion is rejected.
 Dirty-listener registration closes atomically with detach; its retired callback
 target is released outside the listener mutex only after Stop and the permanent
-agent/render mutation gates.  Ordinary callback/sink-destructor setter re-entry
+agent/render mutation gates.  The installed callable is shared-owned, so the
+notification mutex copies only a `shared_ptr`, never arbitrary callable state.
+Dirty callback invocation and copied-target retirement also carry lifecycle TLS;
+listener exceptions are logged and contained, including RAII-deferral drains.
+Successful Prepare keeps mutation admission permanently closed until Destroy.
+The owner must stop/join arbitrary external API callers before Prepare/Destroy,
+as required at any object-lifetime boundary.  Ordinary callback/sink-destructor setter re-entry
 then fails closed instead of touching partially dismantled state or adding
 references the destructor has already swept.  Desktop sinks tag these records with
 `kLastRenderSinkFrame`: unlike live rasterizer buffers, the retained images

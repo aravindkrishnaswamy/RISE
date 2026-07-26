@@ -491,31 +491,44 @@ namespace RISE
 		//! re-setting clears the previous listener.  Pass `nullptr`
 		//! to detach.
 		using DirtyChangedFn = std::function<void(bool hasUnsavedChanges)>;
-		//! Atomically replace the listener and wait for any copied previous
-		//! callback to quiesce, but RETURN the retired target instead of releasing
-		//! it.  Controller teardown uses this to postpone arbitrary capture
-		//! destructors until its terminal mutation gates are established.
-		DirtyChangedFn ExchangeDirtyChangedListener( DirtyChangedFn fn )
+		using DirtyChangedPtr = std::shared_ptr<DirtyChangedFn>;
+		//! Atomically replace the listener and wait for any shared previous
+		//! callback to quiesce, but RETURN its owning pointer instead of releasing
+		//! it.  The callable itself is allocated before locking, and the mutex only
+		//! copies/swaps shared_ptrs: arbitrary callable copy/destructor code never
+		//! runs under the notification mutex.  Controller teardown uses the returned
+		//! owner to postpone capture destructors until terminal gates are established.
+	private:
+		friend class SceneEditController;
+		DirtyChangedPtr ExchangeDirtyChangedListener( DirtyChangedFn fn )
 		{
 			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
-			DirtyChangedFn retired;
+			DirtyChangedPtr incoming;
+			if( fn ) incoming = std::make_shared<DirtyChangedFn>( std::move( fn ) );
+			DirtyChangedPtr retired;
 			{
 				std::unique_lock<std::mutex> lk( state->mutex );
-				// A std::function target's final destructor is an arbitrary user
-				// callout.  Detach the previous target with swaps so neither its
-				// destruction nor the incoming target's destruction can occur while
-				// the notification mutex is held.
+				// A std::function target's copy/final destructor is an arbitrary user
+				// callout.  Only shared ownership moves while this mutex is held.
 				if( !state->registrationClosed )
 				{
 					retired.swap( state->listener );
-					state->listener.swap( fn );
+					state->listener.swap( incoming );
+				}
+				else
+				{
+					// A registration racing terminal close is rejected, but its
+					// arbitrary capture destructor needs the same scoped retirement
+					// as an installed listener rather than running at function exit.
+					retired.swap( incoming );
 				}
 				// Replacing/detaching is a quiescence barrier for the PREVIOUS
 				// callback.  Platform listeners capture raw bridge userData, so
 				// returning while another thread still invokes its copied
 				// std::function would let bridge teardown free that pointer first.
-				// A callback may itself destroy the controller/editor; that same
-				// callback thread must not wait for its own return.
+				// A callback may detach/re-enter this listener surface; that same
+				// callback thread must not wait for its own return.  Controller
+				// lifecycle destruction is rejected until callback-copy retirement.
 				if( state->callbacksInFlight != 0
 				 && state->callbackThread != std::this_thread::get_id() ) {
 					state->callbackCV.wait( lk, [&] {
@@ -533,10 +546,10 @@ namespace RISE
 		//! mutex, so an in-flight callback cannot install a replacement while
 		//! this call releases the mutex inside its quiescence wait.  The retired
 		//! target is returned for release at the caller's safe lifecycle point.
-		DirtyChangedFn CloseDirtyChangedListener()
+		DirtyChangedPtr CloseDirtyChangedListener()
 		{
 			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
-			DirtyChangedFn retired;
+			DirtyChangedPtr retired;
 			{
 				std::unique_lock<std::mutex> lk( state->mutex );
 				state->registrationClosed = true;
@@ -551,12 +564,11 @@ namespace RISE
 			return retired;
 		}
 
-		void SetDirtyChangedListener( DirtyChangedFn fn )
-		{
-			// The returned previous target releases after Exchange has dropped
-			// the notification mutex and completed its callback barrier.
-			ExchangeDirtyChangedListener( std::move( fn ) );
-		}
+	public:
+		//! Replace/detach through the scoped retirement implementation.  The final
+		//! target release remains under dirty-callback lifecycle TLS even when a
+		//! different thread owned the in-flight snapshot or registration was closed.
+		void SetDirtyChangedListener( DirtyChangedFn fn );
 
 	private:
 		//! Advance the live Scene's light/structure generation so a render
@@ -693,14 +705,12 @@ namespace RISE
 		bool mCstLiveSceneChanged = false;
 
 		//! Deferred-notification state lives independently of SceneEditor's
-		//! storage so a C callback may destroy its controller safely. Drain
-		//! keeps a shared reference, and SceneEditor::~SceneEditor marks the
-		//! owner dead before the callback returns to the drain; the drain then
-		//! touches only this surviving state and exits without dereferencing
-		//! the destroyed editor.
+		//! storage so concurrent owner teardown can quiesce safely. Drain keeps
+		//! a shared reference, and SceneEditor::~SceneEditor marks the owner dead;
+		//! the drain then touches only this surviving state.
 		struct DirtyNotificationState
 		{
-			DirtyChangedFn   listener;
+			DirtyChangedPtr  listener;
 			bool             registrationClosed = false;
 			bool             prevHasUnsavedChanges = false;
 			std::atomic<bool> currentHasUnsavedChanges{ false };
@@ -715,10 +725,10 @@ namespace RISE
 		};
 		std::shared_ptr<DirtyNotificationState> mDirtyNotificationState;
 
-		//! State-only drain used by the public drain and the deferral
-		//! token. It never dereferences SceneEditor, so a listener may
-		//! destroy the controller/editor and the active drain still returns
-		//! safely.
+		//! State-only drain used by the public drain and the deferral token. It
+		//! never dereferences SceneEditor.  Lifecycle deletion from the listener
+		//! itself is rejected until both invocation and copied-target retirement
+		//! finish; concurrent owner teardown waits on callbacksInFlight.
 		static bool DrainDirtyNotificationState_(
 			const std::shared_ptr<DirtyNotificationState>& state );
 
@@ -800,11 +810,18 @@ namespace RISE
 		//! value and fire the listener iff it transitioned since the last
 		//! fire. MUST be called with no controller locks held. Thread-safe
 		//! (leaf mutex serializes concurrent drains); synchronous re-entry is
-		//! coalesced into the active deliverer's loop.
-		//! Returns false when the listener destroyed this editor/controller.
-		//! Callers that have more member work after a drain must return
-		//! immediately on false.
+		//! coalesced into the active deliverer's loop. Listener exceptions are
+		//! logged and contained at this notification boundary, including drains
+		//! triggered from noexcept RAII deferral destructors.
+		//! Returns false when concurrent owner teardown marked the editor dead.
+		//! Callers that have more member work after a drain must return immediately.
 		bool DrainDirtyNotification();
+
+		//! True while this thread is invoking this editor's dirty listener OR
+		//! retiring the copied listener target immediately after invocation.
+		//! Controller lifecycle teardown must be retried by the owner after this
+		//! callback boundary returns.
+		bool IsInDirtyChangedCallbackOnThisThread() const;
 
 		//! Round-5 review P1: recompute the cached derived-dirty floor.  Call
 		//! ONLY while the Document is stable (the controller calls it inside

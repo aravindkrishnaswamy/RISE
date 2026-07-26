@@ -55,8 +55,9 @@
 //      T16 Per-category callback coherence -- a dirty callback sees the
 //          primary Object selection during a secondary Material edit, and
 //          a re-entrant Light selection remains authoritative.
-//      T17 Callback destruction -- the public C dirty callback may destroy
-//          its controller without the drain touching freed editor storage.
+//      T17 Callback destruction refusal -- the public C dirty callback may
+//          request Destroy, but deletion is deferred to an owner call after
+//          copied callback-target retirement.
 //      T20 POSITIVE cross-category narrowing (round-7) -- with a geometry
 //          and a material BOTH named `x`, kind=material edits the material
 //          and kind=geometry edits the geometry (the success side of T14).
@@ -87,6 +88,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -158,6 +160,7 @@ namespace
 	{
 		SceneEditController* controller = nullptr;
 		int fires = 0;
+		bool destroyReturned = false;
 	};
 
 	struct DirtyListenerReleaseState
@@ -207,12 +210,34 @@ namespace
 		}
 	};
 
+	struct CopyCountingDirtyListener
+	{
+		std::shared_ptr<std::atomic<int>> copies;
+		std::shared_ptr<std::atomic<int>> calls;
+
+		CopyCountingDirtyListener(
+			const std::shared_ptr<std::atomic<int>>& copiesIn,
+			const std::shared_ptr<std::atomic<int>>& callsIn )
+			: copies( copiesIn ), calls( callsIn )
+		{
+		}
+		CopyCountingDirtyListener( const CopyCountingDirtyListener& other )
+			: copies( other.copies ), calls( other.calls )
+		{
+			copies->fetch_add( 1, std::memory_order_acq_rel );
+		}
+		void operator()( bool ) const
+		{
+			calls->fetch_add( 1, std::memory_order_acq_rel );
+		}
+	};
+
 	void DestroyControllerOnDirty( void* userData, int )
 	{
 		DestroyOnDirtyContext* context = static_cast<DestroyOnDirtyContext*>( userData );
 		++context->fires;
 		RISE_API_DestroySceneEditController( context->controller );
-		context->controller = nullptr;
+		context->destroyReturned = true;
 	}
 
 	bool NameInCategory( SceneEditController& ctrl, Category cat, const std::string& name )
@@ -644,8 +669,8 @@ int main()
 		std::remove( tmp2.c_str() );
 	}
 
-	// ---------- T17: C callback may destroy its controller ----------
-	std::printf( "T17: dirty callback destroys its controller without a post-callback UAF...\n" );
+	// ---------- T17: C callback-local destruction is rejected ----------
+	std::printf( "T17: dirty callback-local Destroy is rejected until callback retirement...\n" );
 	const std::string tmp3 = TempPath( "geometry_panel_jump_destroy_callback.RISEscene" );
 	Job* pJob3 = LoadScene( kSceneNoRaster, tmp3 );
 	Check( pJob3 != nullptr, "T17: destruction fixture scene loads" );
@@ -662,15 +687,18 @@ int main()
 			"T17: selects geometry before the dirtying edit" );
 		const bool editReturned = RISE_API_SceneEditController_SetProperty(
 			context.controller, "radius", "0.9" );
-		Check( editReturned, "T17: the dirtying C API call returned after callback destruction" );
-		Check( context.fires == 1 && context.controller == nullptr,
-			"MONEY (T17): callback destroyed the controller exactly once and the drain returned safely" );
+		Check( editReturned, "T17: the dirtying C API call returned after callback Destroy refusal" );
+		Check( context.fires == 1 && context.destroyReturned
+		    && context.controller != nullptr,
+			"MONEY (T17): callback-local Destroy is rejected and the drain returns with its controller alive" );
+		RISE_API_DestroySceneEditController( context.controller );
+		context.controller = nullptr;
 		pJob3->release();
 		std::remove( tmp3.c_str() );
 	}
 
-	// ---------- T18: catch-all drain must stop after callback destruction ----------
-	std::printf( "T18: RefreshProperties catch-all survives callback destruction...\n" );
+	// ---------- T18: catch-all drain survives callback Destroy refusal ----------
+	std::printf( "T18: RefreshProperties catch-all survives callback-local Destroy refusal...\n" );
 	const std::string tmp4 = TempPath( "geometry_panel_jump_refresh_destroy.RISEscene" );
 	Job* pJob4 = LoadScene( kScene, tmp4 );
 	Check( pJob4 != nullptr, "T18: catch-all destruction fixture loads" );
@@ -681,8 +709,7 @@ int main()
 		int fires = 0;
 		controller->SetDirtyChangedListener( [&]( bool ) {
 			++fires;
-			delete controller;
-			controller = nullptr;
+			RISE_API_DestroySceneEditController( controller );
 		} );
 		controller->SetTool( SceneEditController::Tool::OrbitCamera );
 		controller->OnPointerDown( Point2( 8, 8 ) );
@@ -690,10 +717,12 @@ int main()
 		controller->OnPointerUp( Point2( 12, 9 ) );
 		// Pointer gestures intentionally leave delivery to the per-frame
 		// catch-all. RefreshProperties must return immediately when that
-		// callback destroys the controller.
+		// callback requests destruction (which is rejected until return).
 		controller->RefreshProperties();
-		Check( fires == 1 && controller == nullptr,
-			"MONEY (T18): catch-all drain returned without touching the destroyed controller" );
+		Check( fires == 1 && controller != nullptr,
+			"MONEY (T18): catch-all drain rejects callback-local destruction and returns safely" );
+		RISE_API_DestroySceneEditController( controller );
+		controller = nullptr;
 		pJob4->release();
 		std::remove( tmp4.c_str() );
 	}
@@ -991,10 +1020,213 @@ int main()
 		    && prepareResult.load( std::memory_order_acquire )
 		    && controller->PrepareForDestruction(),
 			"MONEY (T30): callback Destroy is rejected, owner Prepare succeeds, and completed Prepare is idempotent" );
+		Check( !controller->SetSelection( Category::Object, String( "obj_a" ) ),
+			"MONEY (T30): completed terminal Prepare keeps ordinary mutation admission closed" );
+		controller->SetTool( SceneEditController::Tool::OrbitCamera );
+		controller->OnPointerDown( Point2( 8, 8 ) );
+		Check( !controller->ForTest_PointerDown(),
+			"MONEY (T30): completed terminal Prepare refuses a new pointer interaction before Destroy" );
 		RISE_API_DestroySceneEditController( controller );
 		controller = nullptr;
 		pJob13->release();
 		std::remove( tmp13.c_str() );
+	}
+
+	// ---------- T31: copied dirty-listener target retires under callback guard ----------
+	std::printf( "T31: self-detached dirty callback target finalizer cannot destroy its controller...\n" );
+	const std::string tmp14 = TempPath( "geometry_panel_jump_dirty_copy_finalizer.RISEscene" );
+	Job* pJob14 = LoadScene( kSceneNoRaster, tmp14 );
+	Check( pJob14 != nullptr, "T31: copied-listener finalizer fixture loads" );
+	if( pJob14 )
+	{
+		SceneEditController* controller = nullptr;
+		Check( RISE_API_CreateSceneEditController( pJob14, nullptr, &controller )
+		    && controller->SetSelection( Category::Geometry, String( "g1" ) ),
+			"T31: controller and dirtying selection are ready" );
+		auto state = std::make_shared<DirtyListenerReleaseState>();
+		auto target = std::make_shared<DestroyingDirtyListenerTarget>();
+		target->controller = controller;
+		target->state = state;
+		std::atomic<bool> callbackDestroyReturned{ false };
+		controller->SetDirtyChangedListener(
+			[controller, target, &callbackDestroyReturned]( bool ) {
+				controller->SetDirtyChangedListener(
+					SceneEditController::DirtyChangedFn() );
+				RISE_API_DestroySceneEditController( controller );
+				callbackDestroyReturned.store( true, std::memory_order_release );
+			} );
+		target.reset();
+		Check( controller->SetProperty( String( "radius" ), String( "0.96" ) ),
+			"T31: dirtying edit and self-detaching callback return" );
+		Check( callbackDestroyReturned.load( std::memory_order_acquire )
+		    && state->destructorRan.load( std::memory_order_acquire )
+		    && state->reentryReturned.load( std::memory_order_acquire )
+		    && controller->CategoryEntityCount( Category::Geometry ) == 1,
+			"MONEY (T31): callback and copied-target finalizer Destroy attempts are rejected until copied target retirement completes" );
+		RISE_API_DestroySceneEditController( controller );
+		controller = nullptr;
+		pJob14->release();
+		std::remove( tmp14.c_str() );
+	}
+
+	// ---------- T32: throwing dirty callback retires its copy under TLS ----------
+	std::printf( "T32: throwing self-detached dirty callback retires its target before callback TLS...\n" );
+	const std::string tmp15 = TempPath( "geometry_panel_jump_dirty_copy_throw.RISEscene" );
+	Job* pJob15 = LoadScene( kSceneNoRaster, tmp15 );
+	Check( pJob15 != nullptr, "T32: throwing copied-listener fixture loads" );
+	if( pJob15 )
+	{
+		SceneEditController* controller = nullptr;
+		Check( RISE_API_CreateSceneEditController( pJob15, nullptr, &controller )
+		    && controller->SetSelection( Category::Geometry, String( "g1" ) ),
+			"T32: controller and dirtying selection are ready" );
+		auto state = std::make_shared<DirtyListenerReleaseState>();
+		auto target = std::make_shared<DestroyingDirtyListenerTarget>();
+		target->controller = controller;
+		target->state = state;
+		controller->SetDirtyChangedListener(
+			[controller, target]( bool ) {
+				controller->SetDirtyChangedListener(
+					SceneEditController::DirtyChangedFn() );
+				throw std::runtime_error( "intentional dirty-listener failure" );
+			} );
+		target.reset();
+		bool returnedWithoutThrow = true;
+		try
+		{
+			(void)controller->SetProperty( String( "radius" ), String( "0.97" ) );
+		}
+		catch( ... )
+		{
+			returnedWithoutThrow = false;
+		}
+		Check( returnedWithoutThrow
+		    && state->destructorRan.load( std::memory_order_acquire )
+		    && state->reentryReturned.load( std::memory_order_acquire )
+		    && controller->CategoryEntityCount( Category::Geometry ) == 1,
+			"MONEY (T32): listener exception is contained and its copied target retires while lifecycle rejection TLS is still active" );
+		std::atomic<int> laterCalls{ 0 };
+		controller->SetDirtyChangedListener( [&]( bool ) {
+			laterCalls.fetch_add( 1, std::memory_order_acq_rel );
+		} );
+		controller->Editor().ClearDirtyState();
+		controller->Editor().DrainDirtyNotification();
+		Check( laterCalls.load( std::memory_order_acquire ) == 1,
+			"MONEY (T32): throwing listener releases single-deliverer ownership for subsequent transitions" );
+
+		// A deferral token drains from its noexcept destructor. Listener failures
+		// must therefore be contained centrally rather than escape inconsistently
+		// depending on which mutation path happened to deliver the transition.
+		std::atomic<int> deferredThrowCalls{ 0 };
+		controller->SetDirtyChangedListener( [&]( bool ) {
+			deferredThrowCalls.fetch_add( 1, std::memory_order_acq_rel );
+			throw std::runtime_error( "intentional deferred dirty-listener failure" );
+		} );
+		{
+			auto deferral = controller->Editor().DeferDirtyNotifications();
+			Check( controller->SetProperty( String( "radius" ), String( "0.98" ) ),
+				"T32: deferral-backed dirtying edit succeeds" );
+		}
+		Check( deferredThrowCalls.load( std::memory_order_acquire ) == 1,
+			"MONEY (T32): listener exception from noexcept deferral destruction is contained" );
+
+		controller->Editor().ClearDirtyState();
+		controller->Editor().DrainDirtyNotification();
+		auto copies = std::make_shared<std::atomic<int>>( 0 );
+		auto calls = std::make_shared<std::atomic<int>>( 0 );
+		CopyCountingDirtyListener copyCounting( copies, calls );
+		controller->SetDirtyChangedListener( copyCounting );
+		const int copiesAfterInstall = copies->load( std::memory_order_acquire );
+		Check( controller->SetProperty( String( "radius" ), String( "0.99" ) ),
+			"T32: copy-counting dirtying edit succeeds" );
+		Check( calls->load( std::memory_order_acquire ) == 1
+		    && copies->load( std::memory_order_acquire ) == copiesAfterInstall,
+			"MONEY (T32): delivery snapshots shared ownership without copying arbitrary callable state under the notification mutex" );
+		RISE_API_DestroySceneEditController( controller );
+		controller = nullptr;
+		pJob15->release();
+		std::remove( tmp15.c_str() );
+	}
+
+	// ---------- T33: explicit Prepare closes inert proposal admission ----------
+	std::printf( "T33: listener finalizer cannot stage after lifecycle preparation claims the controller...\n" );
+	const std::string tmp16 = TempPath( "geometry_panel_jump_prepare_stage_gate.RISEscene" );
+	Job* pJob16 = LoadScene( kSceneNoRaster, tmp16 );
+	Check( pJob16 != nullptr, "T33: Prepare proposal-gate fixture loads" );
+	if( pJob16 )
+	{
+		SceneEditController* controller = nullptr;
+		Check( RISE_API_CreateSceneEditController( pJob16, nullptr, &controller ),
+			"T33: C API creates proposal-gate controller" );
+		auto state = std::make_shared<DirtyListenerReleaseState>();
+		auto target = std::make_shared<StagingDirtyListenerTarget>();
+		target->controller = controller;
+		target->state = state;
+		controller->SetDirtyChangedListener( [target]( bool ) {} );
+		target.reset();
+		Check( controller->PrepareForDestruction(),
+			"T33: explicit terminal preparation succeeds" );
+		controller->Stop();
+		Check( state->destructorRan.load( std::memory_order_acquire )
+		    && state->reentryReturned.load( std::memory_order_acquire ),
+			"MONEY (T33): retired listener finalizer cannot StageProposal after Prepare claims lifecycle, and post-Prepare Stop preserves closure" );
+		RISE_API_DestroySceneEditController( controller );
+		controller = nullptr;
+		pJob16->release();
+		std::remove( tmp16.c_str() );
+	}
+
+	// ---------- T34: cross-thread detach retires final target under TLS ----------
+	std::printf( "T34: cross-thread detach keeps final listener-target retirement under lifecycle TLS...\n" );
+	const std::string tmp17 = TempPath( "geometry_panel_jump_cross_thread_detach.RISEscene" );
+	Job* pJob17 = LoadScene( kSceneNoRaster, tmp17 );
+	Check( pJob17 != nullptr, "T34: cross-thread detach fixture loads" );
+	if( pJob17 )
+	{
+		SceneEditController* controller = nullptr;
+		Check( RISE_API_CreateSceneEditController( pJob17, nullptr, &controller )
+		    && controller->SetSelection( Category::Geometry, String( "g1" ) ),
+			"T34: controller and dirtying selection are ready" );
+		auto state = std::make_shared<DirtyListenerReleaseState>();
+		auto target = std::make_shared<DestroyingDirtyListenerTarget>();
+		target->controller = controller;
+		target->state = state;
+		std::atomic<bool> callbackEntered{ false };
+		std::atomic<bool> releaseCallback{ false };
+		std::atomic<bool> detachReturned{ false };
+		controller->SetDirtyChangedListener( [target, &callbackEntered, &releaseCallback]( bool ) {
+			callbackEntered.store( true, std::memory_order_release );
+			while( !releaseCallback.load( std::memory_order_acquire ) )
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		} );
+		target.reset();
+		std::thread editThread( [&] {
+			(void)controller->SetProperty( String( "radius" ), String( "1.01" ) );
+		} );
+		for( unsigned int i = 0;
+		     i < 5000 && !callbackEntered.load( std::memory_order_acquire ); ++i )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		Check( callbackEntered.load( std::memory_order_acquire ),
+			"T34: copied callback is in flight" );
+		std::thread detachThread( [&] {
+			controller->SetDirtyChangedListener( SceneEditController::DirtyChangedFn() );
+			detachReturned.store( true, std::memory_order_release );
+		} );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 30 ) );
+		Check( !detachReturned.load( std::memory_order_acquire ),
+			"T34: detaching thread waits for the copied callback" );
+		releaseCallback.store( true, std::memory_order_release );
+		editThread.join();
+		detachThread.join();
+		Check( detachReturned.load( std::memory_order_acquire )
+		    && state->destructorRan.load( std::memory_order_acquire )
+		    && state->reentryReturned.load( std::memory_order_acquire )
+		    && controller->CategoryEntityCount( Category::Geometry ) == 1,
+			"MONEY (T34): detaching thread's final capture release rejects recursive Destroy and leaves owner deletion valid" );
+		RISE_API_DestroySceneEditController( controller );
+		controller = nullptr;
+		pJob17->release();
+		std::remove( tmp17.c_str() );
 	}
 
 	// =====================================================================

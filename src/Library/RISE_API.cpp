@@ -7367,6 +7367,12 @@ namespace RISE
 				"RISE_API_DestroySceneEditController: destruction from a Last Render sink callback/final release is rejected; return from the callout and destroy from the owner thread." );
 			return;
 		}
+		if( p->IsInDirtyChangedCallbackOnThisThread() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: destruction from a dirty-changed callback/copy finalizer is rejected; return from the callback and destroy from the owner thread." );
+			return;
+		}
 		// Reserve BOTH preparation and the eventual delete before entering any
 		// drain/listener wait.  A dirty callback may call Destroy while an owner
 		// is waiting for it; only the lifecycle claimant may proceed to delete.

@@ -900,7 +900,7 @@ SceneEditController::~SceneEditController()
 	// workers and the terminal mutation gates below are closed.  Its final
 	// destructor is arbitrary owner code and the borrowed Job may already have
 	// been released in the supported raw-C++ destruction pattern.
-	SceneEditor::DirtyChangedFn retiredDirtyListener =
+	SceneEditor::DirtyChangedPtr retiredDirtyListener =
 		mEditor.CloseDirtyChangedListener();
 	// Round-8 review P2 fix: teardown was marked BEFORE Stop() so
 	// StopInteractive's orphaned-gesture cleanup skips the mJob-routed
@@ -914,8 +914,15 @@ SceneEditController::~SceneEditController()
 	// fail closed on one of these two established gates before taking locks or
 	// touching the partially-retired live scene/register state; lock-free getters
 	// continue to return their last coherent snapshot.
-	mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
-	mRenderOwnsScene.store( true, std::memory_order_release );
+	{
+		// Publish terminal closure under the ordinary mutation-admission mutex.
+		// The owner is still responsible for quiescing external callers before
+		// beginning C++ object destruction; this barrier serializes admission but
+		// does not replace the language-level lifetime rule.
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+		mRenderOwnsScene.store( true, std::memory_order_release );
+	}
 	// From here onward member/rasterizer releases may execute a retained sink's
 	// final destructor.  Reject recursive lifecycle teardown for this entire
 	// unlocked resource-retirement tail.
@@ -923,7 +930,7 @@ SceneEditController::~SceneEditController()
 	// Release the detached listener only inside the lifecycle scope and after
 	// both terminal mutation gates are visible.  A capture destructor may call
 	// arbitrary controller APIs or attempt recursive destruction.
-	SceneEditor::DirtyChangedFn().swap( retiredDirtyListener );
+	retiredDirtyListener.reset();
 	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
 	// mJob.ClearProgressIfCurrent( &mCancelProgress )) -- this dtor CANNOT touch mJob: several
 	// owners (the test suites' `controller.Stop(); pJob->release();` pattern, with the stack
@@ -1244,10 +1251,16 @@ bool SceneEditController::IsInLastRenderSinkCallbackOnThisThread() const
 	return IsInLastRenderSinkCallback( this );
 }
 
+bool SceneEditController::IsInDirtyChangedCallbackOnThisThread() const
+{
+	return mEditor.IsInDirtyChangedCallbackOnThisThread();
+}
+
 bool SceneEditController::PrepareForDestruction()
 {
 	if( mInDestructorTeardown.load( std::memory_order_acquire )
-	 || IsInLastRenderSinkCallbackOnThisThread() ) return false;
+	 || IsInLastRenderSinkCallbackOnThisThread()
+	 || IsInDirtyChangedCallbackOnThisThread() ) return false;
 	int expected = DestructionOpen;
 	if( !mDestructionState.compare_exchange_strong(
 			expected, DestructionPreparing,
@@ -1266,7 +1279,8 @@ bool SceneEditController::PrepareForDestruction()
 bool SceneEditController::PrepareForDestructionForDelete()
 {
 	if( mInDestructorTeardown.load( std::memory_order_acquire )
-	 || IsInLastRenderSinkCallbackOnThisThread() ) return false;
+	 || IsInLastRenderSinkCallbackOnThisThread()
+	 || IsInDirtyChangedCallbackOnThisThread() ) return false;
 	int expected = DestructionOpen;
 	if( mDestructionState.compare_exchange_strong(
 			expected, DestructionDeletePreparing,
@@ -1290,7 +1304,8 @@ bool SceneEditController::PrepareForDestructionClaimed_()
 	// may also try to join the agent worker currently executing this callback.
 	// The C-ABI destroy shim detects and rejects this state; an explicit Prepare
 	// caller receives an honest failure and may retry after its callback returns.
-	if( IsInLastRenderSinkCallbackOnThisThread() ) return false;
+	if( IsInLastRenderSinkCallbackOnThisThread()
+	 || IsInDirtyChangedCallbackOnThisThread() ) return false;
 	QuiesceLastRenderDrains_();
 	// Preserve the destructor's quiescence-barrier ordering: this public
 	// boundary can itself be entered from a dirty callback, and Stop()'s
@@ -1298,18 +1313,32 @@ bool SceneEditController::PrepareForDestructionClaimed_()
 	// the controller.  SetDirtyChangedListener is self-callback-aware and waits
 	// for every other callback in flight; the destructor repeats this
 	// idempotently as protection for raw C++ deletion.
-	SceneEditor::DirtyChangedFn retiredDirtyListener =
+	SceneEditor::DirtyChangedPtr retiredDirtyListener =
 		mEditor.CloseDirtyChangedListener();
 	// Stop() is idempotent.  Crucially this call happens BEFORE the destructor
 	// raises mInDestructorTeardown, so StopInteractive's orphan cleanup may
 	// still route the final live delta through mJob into the Document.
 	Stop();
+	// Preparation is terminal, not merely a one-time flush.  Close both
+	// established mutation/admission gates BEFORE releasing the retired dirty
+	// listener target, whose final destructor is arbitrary owner code.  Keep
+	// them closed after publishing Prepared so no edit can arise that the later
+	// Prepared->Destroying fast path would skip.
 	{
-		// Prepare requires a live Job and leaves a fully stopped controller, so
-		// ordinary re-entry is safe.  Lifecycle re-entry is not: reject recursive
-		// Stop/Prepare/Destroy while the detached target's destructor executes.
+		// Serialize gate publication with the admission phase of ordinary
+		// mutators.  As with every C++ object lifetime boundary, the owner must
+		// already have stopped/joined external callers; some mutation wrappers
+		// intentionally perform a state-only dirty-notification drain after
+		// releasing admission, so this is not a substitute for owner quiescence.
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+		mRenderOwnsScene.store( true, std::memory_order_release );
+	}
+	{
+		// Reject recursive Stop/Prepare/Destroy while the detached target's
+		// destructor executes; ordinary mutations also fail on the terminal gates.
 		LastRenderSinkCallbackScope dirtyListenerReleaseScope( this );
-		SceneEditor::DirtyChangedFn().swap( retiredDirtyListener );
+		retiredDirtyListener.reset();
 	}
 	return !mInteractionPersistenceFailed.load( std::memory_order_acquire );
 }
@@ -1486,6 +1515,14 @@ void SceneEditController::Stop()
 	{
 		GlobalLog()->PrintEx( eLog_Error,
 			"SceneEditController::Stop: lifecycle teardown from a Last Render sink callback/final release is rejected; retry after the callout returns." );
+		return;
+	}
+	if( !mInDestructorTeardown.load( std::memory_order_acquire )
+	 && mDestructionState.load( std::memory_order_acquire )
+		== DestructionPrepared )
+	{
+		// A completed terminal Prepare must keep mutation admission closed until
+		// Destroy consumes it; public Stop is already complete and stays a no-op.
 		return;
 	}
 	// Close direct caller registration before any terminal teardown. A
@@ -5117,6 +5154,13 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
 {
 	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return 0;
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	// Staging is inert with respect to the live Scene, so it deliberately works
+	// while an ordinary render owns mMutex.  Lifecycle preparation is different:
+	// after its single-owner claim no new controller state may be admitted, and
+	// a retired listener target can execute arbitrary code while that claim is
+	// Preparing.  Refuse before borrowing mJob or touching the proposal queue.
+	if( mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+		return 0;
 	RISE::Cst::CstHeadVersion stagedHead;
 	if( !proposal.hasExplicitBaseVersion )
 	{

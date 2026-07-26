@@ -627,6 +627,8 @@ namespace RISE
 		//! back the exact baseVersion that was stamped/kept -- this is the
 		//! value the caller should surface as the "staged" response's
 		//! headVersion, again with no separate unlocked read.
+		//! Returns 0 without borrowing the Job or touching the queue after
+		//! lifecycle preparation has claimed the controller.
 		std::uint64_t StageProposal( const AgentProposal& proposal,
 		                             RISE::Cst::CstHeadVersion* outStagedVersion = nullptr );
 
@@ -1268,8 +1270,14 @@ namespace RISE
 		//! destroy shim calls this before delete so callbacks are detached and an
 		//! open gesture is persisted.  This is a terminal preparation call.
 		//! Returns false if persistence failed, or if invoked synchronously from
-		//! a Last Render sink callback/controller-owned final release (that
-		//! callout may be inside its own drain or a controller mutation).
+		//! a Last Render sink callback/controller-owned final release or dirty-
+		//! changed callback/copied-target finalizer (those callouts may be inside
+		//! their own drain or a controller mutation).  Success permanently closes
+		//! mutation admission; only idempotent Prepare and Destroy remain valid.
+		//! The owner must stop/join ordinary external callers before entering this
+		//! lifetime boundary; lifecycle arbitration covers internal workers,
+		//! callbacks, and competing lifecycle calls, not arbitrary concurrent use
+		//! of an object whose storage the owner is about to release.
 		bool PrepareForDestruction();
 
 		//! C destroy shim's single-owner terminal claim.  Unlike the public
@@ -1292,6 +1300,7 @@ namespace RISE
 		//! Destroy is rejected in that state; the owner must retry after the
 		//! callout returns.
 		bool IsInLastRenderSinkCallbackOnThisThread() const;
+		bool IsInDirtyChangedCallbackOnThisThread() const;
 
 		// Refinement pause + status (UI redesign, design brief A2) ------
 		// "The viewport is the renderer": explicit user-facing Pause /
@@ -2050,10 +2059,13 @@ namespace RISE
 		//! to detach.
 		//! THREADING CONTRACT (document-first phase 1): the listener fires on
 		//! whichever thread drains the mutation, with NO controller or
-		//! notification lock held. Synchronous re-entry is supported (including
-		//! controller destruction); platform bridges should still marshal UI
-		//! work to their event queue for thread affinity. Transitions are
-		//! coalesced: consume the reported value rather than counting calls.
+		//! notification lock held. Synchronous non-lifecycle re-entry is
+		//! supported.  Raw `delete` and C-API Destroy/Prepare from the callback
+		//! (or a copied callback-target destructor) are NOT supported: C lifecycle
+		//! calls fail closed, and the owner must delete after the callback returns.
+		//! Platform bridges should still marshal UI work to their event queue for
+		//! thread affinity. Transitions are coalesced: consume the reported value
+		//! rather than counting calls.
 		using DirtyChangedFn = SceneEditor::DirtyChangedFn;
 		void SetDirtyChangedListener( DirtyChangedFn fn )
 		{
