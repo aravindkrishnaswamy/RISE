@@ -145,10 +145,11 @@ already-enabled OIDN render.
 
 If rendering, denoising, or an output callback throws, an unwind guard releases
 all AOV scratch rather than retaining an unreported 24- or 28-byte/pixel failed
-attempt. The failed in-memory output is also detached immediately, releasing
-any partial image or sidecar instead of leaving it registered until a later
-render. The last successful compact observation remains available at its
-already-reported persistent cost.
+attempt. The exact in-memory output is detached from its exact rasterizer on
+every exit. On failure this releases any partial image or sidecar immediately;
+on success the session cache is the sole owner, so switching integrators cannot
+strand one full observation on each inactive rasterizer. The last successful
+compact observation remains available at its already-reported persistent cost.
 
 `auxiliaryPeakBytes` is session-aware. RISE preserves the last successful
 observation until its replacement render and PNG encode succeed, so the prior

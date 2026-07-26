@@ -4080,12 +4080,15 @@ namespace RISE
 				~SinkUnwindGuard() { safe_release( p ); }
 			} sinkUnwindGuard{ sink };
 
-			// AddRasterizerOutput owns a second reference.  Retain the exact
-			// rasterizer/output pair before attaching so a failed render can undo
-			// only that attachment even if a controller edit replaces the Job's
+			// AddRasterizerOutput owns a second reference. Retain the exact
+			// rasterizer/output pair before attaching so every exit can undo only
+			// that attachment even if a controller edit replaces the Job's
 			// active rasterizer after the render park ends.  Looking the rasterizer
 			// up through Job during unwind is a race; freeing every output can also
-			// erase a viewport sink installed by another owner in that window.
+			// erase a viewport sink installed by another owner in that window. On
+			// success mLastSink owns the observation, so keeping it attached would
+			// strand a full image/sidecar on every inactive rasterizer after an
+			// integrator switch and invalidate the bounded-memory contract.
 			struct JobSinkAttachmentUnwindGuard {
 				IRasterizer* rasterizer = nullptr;
 				Implementation::Rasterizer* concreteRasterizer = nullptr;
@@ -4113,19 +4116,13 @@ namespace RISE
 						}
 						catch( ... ) {
 							GlobalLog()->PrintEx( eLog_Error,
-								"AgentSession::Render: exception while detaching failed in-memory output" );
+								"AgentSession::Render: exception while detaching in-memory output" );
 						}
 					}
 					safe_release( rasterizer );
 					concreteRasterizer = nullptr;
 					output = nullptr;
 					armed = false;
-				}
-				void Dismiss() noexcept {
-					armed = false;
-					safe_release( rasterizer );
-					concreteRasterizer = nullptr;
-					output = nullptr;
 				}
 			} sinkAttachmentUnwindGuard;
 
@@ -5173,10 +5170,11 @@ namespace RISE
 				// a production output that happened to still be attached.
 				mJob->RemoveRasterizerOutputs();
 				// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
-				// addrefs it. A successful render keeps that historical rasterizer
-				// ownership until the next RemoveRasterizerOutputs / teardown; the
-				// attachment unwind guard removes this exact output immediately on
-				// every failed or throwing exit. We drop OUR ref via safe_release(sink) after this
+				// addrefs it. The attachment unwind guard removes this exact output
+				// on every exit, including success: mLastSink becomes the sole owner
+				// of a published observation, so inactive rasterizers cannot retain
+				// one full image/sidecar each after integrator switches. We drop OUR
+				// ref via safe_release(sink) after this
 				// lambda returns -- no extra addref here.
 				sink = new InMemoryRasterizerOutput();
 				sink->SetConcurrentCachedPerceptionBytes( cachedPerceptionBytesAtStart );
@@ -5932,7 +5930,6 @@ namespace RISE
 				safe_release( mLastSink );
 				mLastSink = sink;
 				sink = nullptr;   // ownership transferred -- the unwind guard must not release it
-				sinkAttachmentUnwindGuard.Dismiss();
 				return res;
 			}
 

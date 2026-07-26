@@ -83,12 +83,18 @@ void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 			return;  // already registered, no-op
 		}
 	}
-	// Publish first, then take the list's reference. vector::push_back is the
-	// only throwing operation here; this ordering gives the registration a
-	// strong exception guarantee instead of leaking an addref on bad_alloc.
-	// The mutex prevents any observer from seeing the entry before addref().
-	outs.push_back( ro );
+	// Take the list's reference first, but roll it back if vector growth
+	// throws.  IReference::addref is a virtual legacy API without a noexcept
+	// declaration, so neither ordering is independently safe; this explicit
+	// transaction leaves no published entry and no extra ref on either throw.
 	ro->addref();
+	try {
+		outs.push_back( ro );
+	}
+	catch( ... ) {
+		ro->release();
+		throw;
+	}
 }
 
 void Rasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )

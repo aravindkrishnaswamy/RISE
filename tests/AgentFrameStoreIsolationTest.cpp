@@ -721,6 +721,54 @@ struct CountingOutputsEnumCallback : public IEnumCallback<IRasterizerOutput>
 	bool operator()( const IRasterizerOutput& ) override { ++count; return true; }
 };
 
+static void RunProductionSinkDetachmentTest()
+{
+	std::printf( "=== AgentFrameStoreIsolationTest: transactional production-sink detachment ===\n" );
+
+	const std::string scenePath = WriteTemp(
+		"agent_framestore_sink_detachment.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "sink-detachment: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "sink-detachment: scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "sink-detachment: AgentSession wraps the locally-owned Job" );
+	IRasterizer* rast = pJob->GetRasterizer();
+	Check( rast != nullptr, "sink-detachment: Job has an active rasterizer" );
+
+	if( session && rast ) {
+		AgentRenderParams params;
+		params.perception = true;
+		const AgentRenderResult good = session->Render( params );
+		Check( good.ok && good.perceptionAvailable,
+			"sink-detachment: successful production render publishes a perception observation" );
+
+		CountingOutputsEnumCallback afterSuccess;
+		rast->EnumerateRasterizerOutputs( afterSuccess );
+		Check( afterSuccess.count == 0,
+			"sink-detachment: successful render leaves no full observation attached to the rasterizer" );
+
+		session->ForTest_SetThrowBeforeRasterize( true );
+		const AgentRenderResult failed = session->Render( params );
+		Check( !failed.ok, "sink-detachment: forced production failure reaches the rollback path" );
+		CountingOutputsEnumCallback afterFailure;
+		rast->EnumerateRasterizerOutputs( afterFailure );
+		Check( afterFailure.count == 0,
+			"sink-detachment: failed render leaves no partial observation attached to the rasterizer" );
+		session->ForTest_SetThrowBeforeRasterize( false );
+
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> prior = session->ReadPerception( 16, atlasW, atlasH, info );
+		Check( info.available && !prior.empty(),
+			"sink-detachment: rollback preserves the session-owned last successful observation" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+	std::printf( "=== production-sink detachment: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 static void RunDraftIsolationTest()
 {
 	std::printf( "=== AgentFrameStoreIsolationTest: Toolkit slice 2 draft-quality isolation ===\n" );
@@ -940,6 +988,7 @@ int main()
 
 	RunThrowDuringOverrideTest();
 	RunThrowNoOverrideTest();
+	RunProductionSinkDetachmentTest();
 	RunDraftIsolationTest();
 	RunDraftThrowTest();
 
