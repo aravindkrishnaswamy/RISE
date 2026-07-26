@@ -145,6 +145,38 @@ int main()
 		       "starter-template copies are byte-identical (edit the canonical, re-copy to Resources)" );
 	}
 
+	// ---- N-up shell preset parity (docs/gui/RENDER_MODES.md §7.2) ----
+	// The preset is intentionally shell-owned, but it must not drift between
+	// macOS and Windows: a typo is accepted only as a failed setter and then
+	// retried forever, while a one-sided valid edit silently gives the two
+	// desktop apps different first-reveal behavior.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& f ) -> std::string {
+			std::ifstream in( f, std::ios::binary );
+			return std::string( std::istreambuf_iterator<char>( in ),
+			                    std::istreambuf_iterator<char>() );
+		};
+		const std::string mac = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "MultiPaneViewport.swift" );
+		const std::string win = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ViewportWidget.cpp" );
+		const std::string design = slurp( repoRoot / "docs" / "gui" / "RENDER_MODES.md" );
+		const std::string ledger = slurp( repoRoot / "docs" / "gui" / "OPEN_ITEMS.md" );
+		Check( mac.find( "[\"preview\", \"wireframe\", \"normals\", \"depth\"]" )
+		       != std::string::npos,
+		       "macOS N-up preset is exactly Preview/Wireframe/Normals/Depth" );
+		Check( win.find( "{ \"preview\", \"wireframe\", \"normals\", \"depth\" }" )
+		       != std::string::npos,
+		       "Windows N-up preset is exactly Preview/Wireframe/Normals/Depth" );
+		Check( design.find( "pane 1 = `wireframe`, pane 2 = `normals`, pane 3 =\n`depth`" )
+		       != std::string::npos,
+		       "RENDER_MODES documents the desktop preset exactly" );
+		Check( ledger.find( "pane 1 = `wireframe`, pane 2 = `normals`, and (in Quad) pane 3\n  as `depth`" )
+		       != std::string::npos,
+		       "OPEN_ITEMS records the shipped desktop preset exactly" );
+	}
+
 	// ---- IJob vtable append-only manifest (round-4 review, 2026-07-22) ----
 	// IJob is a public abstract interface: its virtual DECLARATION ORDER is
 	// the vtable ABI.  The append-only convention lived only in tail comments

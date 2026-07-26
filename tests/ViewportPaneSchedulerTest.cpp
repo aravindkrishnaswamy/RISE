@@ -1113,6 +1113,56 @@ static void RunPaneLocalInvalidationTest()
 	       "MONEY ASSERTION (b): the changed pane (3) is the one that re-renders" );
 	Check( f.ctrl->SettlesAt( seq.size(), kSettleMs ),
 	       "MONEY ASSERTION (b): NO other pane re-renders (their content is still valid)" );
+
+	// Same-mode selection is also the retry affordance after a lazy caster or
+	// BeautyVariant realization failure.  It must not be optimized into a
+	// no-op merely because desired state already names this mode.
+	f.ctrl->ClearSequence();
+	Check( f.ctrl->SetPaneRenderMode( 3, "normals" ),
+		"re-selecting the desired mode is accepted as a realization retry" );
+	Check( f.ctrl->WaitForPassCount( 1, kWaitMs )
+	    && f.ctrl->SettlesAt( 1, kSettleMs ),
+		"MONEY ASSERTION (b): same-mode retry re-renders exactly that pane" );
+}
+
+//----------------------------------------------------------------------
+// (b2) Changing a pane's mode while its old-mode quantum is in flight
+// must cancel that obsolete work.  This is load-bearing for shell-applied
+// N-up presets: SetViewportLayout wakes newly visible panes before the
+// shell can assign Wireframe/Normals/Depth, so a Preview quantum may win
+// the mint race.
+//----------------------------------------------------------------------
+static void RunInFlightPaneModeChangeCancelsObsoletePassTest()
+{
+	std::printf( "=== scheduler (b2): in-flight pane mode change cancels the obsolete pass ===\n" );
+	Fixture f( "pane_sched_b2.RISEscene" );
+	Check( f.ctrl != nullptr, "fixture constructs" );
+	if( !f.ctrl ) return;
+
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+		"layout TwoH" );
+	Check( f.ctrl->SetPrimaryPane( 1 ), "primary = pane 1" );
+	f.ctrl->Start( true );
+	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
+	    && f.ctrl->SettlesAt( 2, kSettleMs ),
+		"layout-grow rotation settles" );
+	f.ctrl->ClearSequence();
+
+	f.ctrl->ArmReleaseInterleaving();
+	const unsigned int cancelsBefore = f.ctrl->ForTest_GetCancelCount();
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForMintedPass( kWaitMs )
+	    && f.ctrl->ForTest_CurrentPane() == 1,
+		"old Preview pass is deterministically held after mint on pane 1" );
+	Check( f.ctrl->SetPaneRenderMode( 1, "wireframe" ),
+		"switch pane 1 to its N-up preset mode" );
+	Check( f.ctrl->ForTest_GetCancelCount() == cancelsBefore + 1,
+		"MONEY ASSERTION (b2): mode setter cancels exactly one obsolete in-flight pass" );
+	f.ctrl->ReleaseMintedPass();
+	Check( f.ctrl->WaitForPassCount( 3, kWaitMs ),
+		"cancelled Preview, still-dirty sibling, and replacement Wireframe passes retire" );
+	Check( f.ctrl->SettlesAt( 3, kSettleMs ),
+		"replacement completes once; no self-armed pass remains after the three owed quanta" );
 }
 
 //----------------------------------------------------------------------
@@ -3394,6 +3444,8 @@ static void RunNamedSceneCameraSetterParksRenderTest()
 		"restore active cam" );
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
 		"layout TwoH" );
+	Check( f.ctrl->SetPaneRenderMode( 1, "direct" ),
+		"install an explicit non-Preview mode before the contention window" );
 	f.ctrl->Start( true );
 	f.ctrl->ForTest_KickRender();
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
@@ -3418,10 +3470,47 @@ static void RunNamedSceneCameraSetterParksRenderTest()
 		"MONEY ASSERTION (q): setter remains parked while the minted pass owns camera state" );
 	Check( f.ctrl->ForTest_GetCancelCount() == cancelsBefore + 1,
 		"MONEY ASSERTION (q): setter requests exactly one cancellation before parking" );
+
+	// The setter now holds mMutex while waiting for the pass.  The shell's
+	// first-reveal preset guard reads the mode in precisely this window.
+	// Returning the fail-closed string "preview" on contention would make it
+	// overwrite this explicit Direct choice with the slot preset.
+	std::mutex getterMutex;
+	std::condition_variable getterCV;
+	bool getterStarted = false;
+	bool getterReturned = false;
+	std::string observedMode;
+	std::thread getter( [&] {
+		{
+			std::lock_guard<std::mutex> lk( getterMutex );
+			getterStarted = true;
+		}
+		getterCV.notify_one();
+		const std::string mode = f.ctrl->GetPaneRenderMode( 1 );
+		{
+			std::lock_guard<std::mutex> lk( getterMutex );
+			observedMode = mode;
+			getterReturned = true;
+		}
+		getterCV.notify_one();
+	} );
+	bool getterFinishedDuringContention = false;
+	{
+		std::unique_lock<std::mutex> lk( getterMutex );
+		const bool started = getterCV.wait_for(
+			lk, std::chrono::milliseconds( kWaitMs ), [&]{ return getterStarted; } );
+		getterFinishedDuringContention = started && getterCV.wait_for(
+			lk, std::chrono::milliseconds( 250 ), [&]{ return getterReturned; } );
+	}
+	Check( getterFinishedDuringContention && observedMode == "direct",
+		"MONEY ASSERTION (q): contended mode read is nonblocking and returns the real Direct mode" );
 	f.ctrl->ReleaseMintedPass();
 	setter.join();
+	getter.join();
 	Check( setterResult && setterReturned.load( std::memory_order_acquire ),
 		"setter completes after the render releases camera state" );
+	Check( getterReturned && observedMode == "direct",
+		"MONEY ASSERTION (q): preset guard observes the preserved explicit Direct mode" );
 }
 
 //----------------------------------------------------------------------
@@ -4958,6 +5047,7 @@ int main()
 {
 	RunRotationOrderTest();
 	RunPaneLocalInvalidationTest();
+	RunInFlightPaneModeChangeCancelsObsoletePassTest();
 	RunGesturePinningTest();
 	RunVariantGizmoGestureDoesNotSpinTest();
 	RunVariantPropertyScrubRecoveryTest();

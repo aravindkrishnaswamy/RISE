@@ -3937,6 +3937,11 @@ namespace RISE
 			unsigned int                       surfaceH = 0;
 		};
 		PaneConfig                  mPaneConfigs[kViewportPaneCount];  // [0] contentSource only; mode/vantage alias
+		//! Lock-free copy of each secondary pane's desired mode for UI
+		//! polling.  A coordinated render can hold mMutex for its duration,
+		//! so GetPaneRenderMode must not wait for that lock.  Value-init 0 is
+		//! Preview, matching PaneConfig::mode; writers publish under mMutex.
+		std::atomic<int>            mPaneModeSnapshots[kViewportPaneCount] {};
 		ViewportLayout              mViewportLayout = ViewportLayout::Single;
 		unsigned int                mPrimaryPane    = 0;   // always visible in layout
 		//! Lock-free UI-read snapshots.  Agent/production renders deliberately

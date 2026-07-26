@@ -8,7 +8,7 @@ open.  History and rationale live in
 [PROPERTIES_AND_REFERENCES.md](PROPERTIES_AND_REFERENCES.md) §6–8 and
 [ADR_DOCUMENT_FIRST_EDITOR.md](ADR_DOCUMENT_FIRST_EDITOR.md).
 
-_Last updated: 2026-07-25, after the round-8 independent review of the viewport work._
+_Last updated: 2026-07-26, after the viewport performance recovery and round-8 independent review._
 
 ---
 
@@ -28,7 +28,9 @@ _Last updated: 2026-07-25, after the round-8 independent review of the viewport 
   indirect pipeline and are mutation-verified; a Mac GUI
   `Quad → indirect → Move` reproduction established the original failure.
 - **T1 — DONE:** the applied-once Mac and Windows layout preset now reveals
-  pane 1 as `indirect`, pane 2 as `facets`, and (in Quad) pane 3 as `direct`.
+  pane 1 = `wireframe`, pane 2 = `normals`, and (in Quad) pane 3
+  as `depth`.  Direct and Indirect remain explicit choices; they are no longer
+  silently scheduled as two denoised path-tracing passes on first reveal.
   The existing success-only guard remains load-bearing: refused setters retry,
   while every explicit user choice—including Preview—survives later layout
   toggles.
@@ -157,10 +159,10 @@ new lifecycle scenarios are mutation-proven rather than timing-only witnesses.
 
 Round-8 P3s NOT acted on: `RENDER_MODES.md` claimed "12 focused failures" on
 removing the T0 guard (measured 14); the T0 scrub watchdog now also snaps the
-preview scale mid-scrub; a Last Render pane keeps showing the previous
-scene's frame across a scene-variant switch with no staleness cue; T1's
-layout-default preset has NO automated coverage (it is pure GUI-shell code,
-and the Windows side is review-verified only).
+preview scale mid-scrub; and a Last Render pane keeps showing the previous
+scene's frame across a scene-variant switch with no staleness cue.  T1's exact
+desktop mapping and documentation now have a cross-shell source oracle in
+`SourceHygieneTest`; deeper shell UI-state coverage remains future work.
 
 ## 1. P2 sweep (from the round-6 three-reviewer pass) — DONE (round 7, 2026-07-24)
 

@@ -658,9 +658,11 @@ only needs per-pane pixel dims (`SetPaneSurfaceDims`).  **Primary** must be
 visible; when a layout shrink hides the primary, primary falls back to pane 0.
 The core initializes every pane to `{mode: preview, vantage: SceneCamera}`.
 On a pane's first successful reveal, both shells apply the session-local
-applied-once spread: pane 1 = `indirect`, pane 2 = `facets`, pane 3 =
-`direct`.  `OnePlusTwo` therefore reveals the first two roles and `Quad`
-adds the third.  A pane with persisted non-Preview state is already
+applied-once spread: pane 1 = `wireframe`, pane 2 = `normals`, pane 3 =
+`depth`.  `OnePlusTwo` therefore reveals the first two roles and `Quad`
+adds the third.  These traversal-only diagnostic modes keep initial N-up
+work responsive; denoised path-traced Direct/Indirect remain explicit pane
+choices.  A pane with persisted non-Preview state is already
 user-owned, and after the first successful preset application every explicit
 choice—including an explicit return to `preview`—survives layout toggles.
 
@@ -1007,9 +1009,12 @@ statements in §7.1's audit table and §7.5).
 - **P2#2 — preset applied once per pane.**  Both shells track which panes the
   preset touched instead of inferring "untouched" from a pane still reading
   `preview`, so an EXPLICIT Preview choice survives layout changes.
-- **T1 — first-reveal layout spread (2026-07-24).**  The existing applied-once
-  shell preset now assigns pane 1 = `indirect`, pane 2 = `facets`, and pane 3
-  = `direct`.  `OnePlusTwo` reveals the first two roles; `Quad` adds the third.
+- **T1 — first-reveal layout spread (2026-07-24; performance revision
+  2026-07-26).**  The applied-once shell preset assigns pane 1 = `wireframe`,
+  pane 2 = `normals`, and pane 3 = `depth`.  `OnePlusTwo` reveals the first
+  two roles; `Quad` adds the third.  This keeps first reveal traversal-only;
+  Direct/Indirect remain explicit choices instead of silently starting two
+  denoised path-tracing pipelines.
   Mac and Windows use the same wire names and retain P2#2's success-only
   bookkeeping, so a refused setter retries and an explicit user choice is
   never clobbered by a later layout toggle.

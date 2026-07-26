@@ -325,15 +325,18 @@ struct MultiPaneViewportView: View {
     /// not four copies of the beauty preview.  Per-slot roles are stable
     /// across layouts (a pane index means the same thing in TwoH and Quad):
     ///   slot 0 = beauty preview (the editing surface -- left untouched)
-    ///   slot 1 = indirect  (bounce-light isolation)
-    ///   slot 2 = facets    (tessellation)
-    ///   slot 3 = direct    (direct-light isolation)
-    /// -- a lighting/debug spread.  Applied ONLY to a visible
+    ///   slot 1 = wireframe (topology)
+    ///   slot 2 = normals   (surface orientation)
+    ///   slot 3 = depth     (camera-space distance)
+    /// -- a cheap geometry/debug spread.  Direct and Indirect remain
+    /// available as explicit pane choices, but making two path-traced
+    /// BeautyVariant pipelines the default doubled measured orbit latency
+    /// in Quad even on a tiny scene.  Applied ONLY to a visible
     /// secondary pane STILL showing "preview", so a pane the user has
     /// already switched keeps its choice across layout toggles.  (A future
     /// "reset" affordance or alternate presets can layer on this; decision 2
     /// keeps the built-in set fixed for now.)
-    private static let presetModeBySlot = ["preview", "indirect", "facets", "direct"]
+    private static let presetModeBySlot = ["preview", "wireframe", "normals", "depth"]
 
     private func applyMultiViewModePreset() {
         var changed = false

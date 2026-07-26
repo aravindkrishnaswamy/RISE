@@ -10131,7 +10131,20 @@ bool SceneEditController::SetPaneRenderMode( unsigned int pane, const char* name
 	if( !info || !info->viewportSelectable ) return false;
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden panes refuse (§7.4)
+	const bool modeChanged = mPaneConfigs[pane].mode != info->mode;
+	// A layout grow wakes the newly visible panes before the platform shell
+	// can install its first-reveal preset.  If this pane won that mint race,
+	// retire its obsolete Preview quantum now; otherwise it can finish and be
+	// published before the requested Wireframe/Normals/Depth replacement.
+	if( modeChanged && pane == mCurrentPane
+	 && mRendering.load( std::memory_order_acquire ) )
+	{
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
 	mPaneConfigs[pane].mode = info->mode;
+	mPaneModeSnapshots[pane].store(
+		static_cast<int>( info->mode ), std::memory_order_release );
 	if( mPaneConfigs[pane].contentSource != PaneContentSource::Interactive )
 	{
 		mPaneContentGeneration[pane].fetch_add( 1, std::memory_order_acq_rel );
@@ -10152,22 +10165,16 @@ const char* SceneEditController::GetPaneRenderMode( unsigned int pane ) const
 {
 	if( pane == 0 ) return GetViewportRenderMode();   // already render-owns-scene safe
 	if( pane >= kViewportPaneCount ) return "preview";   // fail-closed default
-	// user-review P1#4: a production/agent render holds mMutex for its ENTIRE
-	// duration; the macOS refinement pill polls the mode for EVERY pane every
-	// 0.5s.  Taking mMutex here would block that poll -- and the whole UI --
-	// until the render returns.  Answer without mMutex under that window:
-	// pane setters are no-op'd while render-owns-scene, so mPaneConfigs[pane]
-	// .mode has NO concurrent writer (same guarantee GetPaneRefinementStatus
-	// relies on).
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
-		const Implementation::ViewportRenderModeInfo* info =
-			Implementation::FindViewportRenderModeInfo( mPaneConfigs[pane].mode );
-		return info ? info->name : "preview";
-	}
-	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-	if( !lk.owns_lock() ) return "preview";
+	// The UI polls every pane while coordinated renders may hold mMutex for
+	// their entire duration.  Read the writer-published snapshot: a try_lock
+	// fallback of "preview" is not truthful (and authorizes first-reveal preset
+	// overwrite), while a blocking read can freeze the main thread before
+	// mRenderOwnsScene is published.
+	const Implementation::ViewportRenderMode mode =
+		static_cast<Implementation::ViewportRenderMode>(
+			mPaneModeSnapshots[pane].load( std::memory_order_acquire ) );
 	const Implementation::ViewportRenderModeInfo* info =
-		Implementation::FindViewportRenderModeInfo( mPaneConfigs[pane].mode );
+		Implementation::FindViewportRenderModeInfo( mode );
 	return info ? info->name : "preview";
 }
 

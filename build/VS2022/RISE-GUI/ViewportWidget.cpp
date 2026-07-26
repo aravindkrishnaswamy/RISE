@@ -91,16 +91,18 @@ void ViewportWidget::onViewportLayoutChanged()
 // MultiPaneViewport.swift applyMultiViewModePreset).  Entering a
 // multi-pane layout should reveal a SPREAD of complementary outputs, not
 // four copies of the beauty preview.  Per-slot roles are stable across
-// layouts: 0 beauty preview (editing surface, untouched), 1 indirect
-// (bounce-light isolation), 2 facets (tessellation), 3 direct
-// (direct-light isolation) -- the lighting/debug spread.  Applied ONLY to
+// layouts: 0 beauty preview (editing surface, untouched), 1 wireframe
+// (topology), 2 normals (surface orientation), 3 depth (camera-space
+// distance) -- a cheap geometry/debug spread. Direct and Indirect remain
+// explicit pane choices; making two path-traced BeautyVariant pipelines the
+// default doubled measured Quad orbit latency even on a tiny scene. Applied ONLY to
 // a visible secondary pane STILL showing
 // "preview", so a pane the user already switched keeps its choice across
 // layout toggles.
 void ViewportWidget::applyMultiViewModePreset()
 {
     if (!m_bridge) return;
-    static const char* const kPresetBySlot[4] = { "preview", "indirect", "facets", "direct" };
+    static const char* const kPresetBySlot[4] = { "preview", "wireframe", "normals", "depth" };
     for (unsigned int pane = 1; pane < m_visiblePaneCount && pane < 4; ++pane) {
         // user-review P2#2: apply the slot preset EXACTLY ONCE per pane (the
         // first time it becomes visible).  The old current=="preview" gate
