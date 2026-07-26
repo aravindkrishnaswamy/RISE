@@ -33,8 +33,35 @@ table, and "Transport modes" for all four additions.
 | "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false` (`no_controller`: headless session, no viewport at all; `no_frame_yet`: viewport exists but hasn't produced a frame) -- fall back to a `render` call instead of retrying |
 | "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside) | Materials, lighting, exposure, or colour -- the preview shader IGNORES the scene's authored materials and lights entirely |
 | "Which object is where? / Find object X on screen." | `render {mode:"objectmap"}` (survey, whole-frame legend) or `query_object_at {x,y}` (one answer) | About one identity render -- fixed 1 spp, no MC noise, ignores `quality`/`samples` entirely | Exact identity: byte-exact `colorHex` <-> `name` legend match, including CSG composites (legend carries the ROOT only, never the hidden operands) and instance arrays (`grid[i,j]`) | The colours as APPEARANCE -- they are arbitrary per-render identity ids, not materials. Read the objectmap PNG at NATIVE size only (omit `maxEdge` -- a box-downscale blends flat ids and breaks the match) |
-| "Does it actually look right -- materials, lighting, exposure?" | `render` (no `quality`, i.e. production) + `read_image`, or `read_viewport` if a GUI is attached AND its integrator is what you care about | The real cost -- the scene's actual configured integrator at its actual sample count | The ONLY mode where colour/shading/exposure judgments are honest | Nothing withheld -- it's simply the expensive one; don't make it your only feedback loop mid-edit |
+| "Does it actually look right -- and what geometry/material cues explain it?" | `render` (no `quality`, i.e. production) + `read_image {representation:"perception"}`, or ordinary `read_image` when appearance alone is enough | The real render cost; perception reuses that same render | Beauty is the honest appearance; the atlas adds diffuse albedo, world orientation, and raw primary-hit depth in one bounded image | Do not treat albedo as lit colour, normal RGB as colour, or auto-windowed depth brightness as an absolute cross-frame scale |
 | "Verify after an edit." | The cheap loop first (draft and/or objectmap/query at small dims), production LAST once confident | Escalating -- cheap checks first, one production pass at the end | Catching gross breakage (wrong object, black frame, object moved to the wrong side) cheaply, repeatedly | Calling it "done" off a cheap check alone -- ship the final judgment on one production render |
+
+### Production perception: use the richer final observation
+
+Agent transports capture perception by default on a production beauty render.
+After that render, prefer:
+
+```json
+{"method":"read_image","params":{"representation":"perception","maxEdge":768}}
+```
+
+when the task involves occlusion, relative placement, surface orientation,
+material-vs-light diagnosis, or edit localization. The stable 2x2 order is
+`[beauty, albedo; world_normal, log_depth]`; one image lets a vision model
+compare all four panels spatially. Omitting `maxEdge` is safe—the whole atlas
+defaults to a 1024-pixel bound—but a smaller explicit value saves image tokens.
+Read `guidePrefilter`: `fast` means albedo/normal use the camera first hit;
+`accurate` may pass through delta/specular surfaces to the first non-delta
+surface. Depth always remains the raw camera ray's first geometric hit, before
+alpha/transparency continuation, medium scattering, x-ray traversal, or
+refraction. At silhouettes it averages hit samples only; misses stay black.
+
+Use ordinary `read_image` when only appearance matters or the extra panels
+would consume context without answering the prompt. Use `render {mode:"depth"}`
+instead when you specifically need the diagnostic mode's default x-ray-through-
+glass semantics; perception depth intentionally describes the front geometry.
+Set `perception:false` on production render only when saving its 7-byte/pixel
+persistent sidecar and transient AOV memory matters more than the added context.
 
 ## View modes: which `render{mode:}` value answers which question
 

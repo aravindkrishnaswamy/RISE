@@ -2160,11 +2160,11 @@ namespace {
 				break;
 			}
 
-				const ISPF* pSPF = ri.pMaterial->GetSPF();
-				if( !pSPF ) {
-					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
-					vertices.push_back( v );
-					break;
+			const ISPF* pSPF = ri.pMaterial->GetSPF();
+			if( !pSPF ) {
+				CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+				vertices.push_back( v );
+				break;
 			}
 
 			vertices.push_back( v );
@@ -2175,9 +2175,9 @@ namespace {
 			ScatteredRayContainer scattered;
 			ScatterSPF<Tag>( *pSPF, ri.geometric, sampler, scattered, iorStack, tag );
 
-				if( scattered.Count() == 0 ) {
-					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
-					break;
+			if( scattered.Count() == 0 ) {
+				CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+				break;
 			}
 
 			// Stochastic single-lobe selection (no path-tree branching).
@@ -2215,13 +2215,11 @@ namespace {
 				vertices.back().isConnectible = hasNonDelta;
 			}
 
-				// Mark the current vertex as delta
-				vertices.back().isDelta = pScat->isDelta;
-				if( !pScat->isDelta ) {
-					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
-				}
-
-
+			// Mark the current vertex as delta
+			vertices.back().isDelta = pScat->isDelta;
+			if( !pScat->isDelta ) {
+				CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+			}
 
 			// --- BSSRDF sampling for materials with diffusion profiles ---
 			Scalar bssrdfReflectCompensation = 1.0;

@@ -220,7 +220,9 @@ AOV (Arbitrary Output Variable) scratch is managed by `AOVBuffers`
 channel-planned: `MakeAOVPlan` unions OIDN's albedo/normal requirement with the
 bound FrameStore's requested albedo, normal, and depth channels. If neither
 consumer requests a channel, no AOV scratch is allocated. The full agent plan
-is seven floats, or 28 bytes/pixel.
+is eight floats, or 32 bytes/pixel: six guide channels plus depth and a
+hit-only depth weight. The separate weight prevents background samples from
+diluting depth at partially covered silhouettes.
 
 Two AOV collection strategies exist:
 1. **Per-sample accumulation** (preferred): PT, spectral PT, BDPT, VCM, and

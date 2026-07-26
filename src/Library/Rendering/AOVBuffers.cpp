@@ -24,6 +24,7 @@
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/ThreadPool.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/FiniteMath.h"
 #include <algorithm>
 
 using namespace RISE;
@@ -38,7 +39,8 @@ AOVBuffers::AOVBuffers( unsigned int w, unsigned int h, const Plan& requested ) 
   plan( requested ),
   albedo( requested.albedo ? static_cast<size_t>( w ) * h * 3 : 0, 0.0f ),
   normals( requested.normal ? static_cast<size_t>( w ) * h * 3 : 0, 0.0f ),
-  depths( requested.depth ? static_cast<size_t>( w ) * h : 0, 0.0f )
+  depths( requested.depth ? static_cast<size_t>( w ) * h : 0, 0.0f ),
+  depthWeights( requested.depth ? static_cast<size_t>( w ) * h : 0, 0.0f )
 {
 }
 
@@ -66,6 +68,7 @@ void AOVBuffers::Reset( unsigned int w, unsigned int h, const Plan& requested )
 	reset( albedo, requested.albedo ? pixels * 3 : 0 );
 	reset( normals, requested.normal ? pixels * 3 : 0 );
 	reset( depths, requested.depth ? pixels : 0 );
+	reset( depthWeights, requested.depth ? pixels : 0 );
 }
 
 void AOVBuffers::AccumulateAlbedo(
@@ -114,8 +117,17 @@ void AOVBuffers::AccumulateDepth(
 {
 	if( depths.empty() ) return;
 	bHasDepthData.store( true, std::memory_order_relaxed );
+	if( !RISE::IsFiniteDouble( static_cast<double>( depth ) ) || depth <= 0 ||
+		!RISE::IsFiniteDouble( static_cast<double>( weight ) ) || weight <= 0 ) return;
 	const size_t idx = static_cast<size_t>( y ) * width + x;
 	depths[idx] += static_cast<float>( depth * weight );
+	depthWeights[idx] += static_cast<float>( weight );
+}
+
+void AOVBuffers::MarkGuidesExamined()
+{
+	if( !albedo.empty() ) bHasAlbedoData.store( true, std::memory_order_relaxed );
+	if( !normals.empty() ) bHasNormalData.store( true, std::memory_order_relaxed );
 }
 
 void AOVBuffers::Normalize(
@@ -148,12 +160,16 @@ void AOVBuffers::NormalizeSelected(
 		normals[idx + 1] *= fw;
 		normals[idx + 2] *= fw;
 	}
-	if( selected.depth && !depths.empty() ) depths[pixel] *= fw;
+	if( selected.depth && !depths.empty() ) {
+		const float hitWeight = depthWeights[pixel];
+		depths[pixel] = hitWeight > 0.0f ? depths[pixel] / hitWeight : 0.0f;
+	}
 }
 
 void AOVBuffers::ReleaseDepthStorage()
 {
 	std::vector<float>().swap( depths );
+	std::vector<float>().swap( depthWeights );
 	plan.depth = false;
 	bHasDepthData.store( false, std::memory_order_relaxed );
 }

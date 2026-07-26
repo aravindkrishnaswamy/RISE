@@ -85,7 +85,9 @@ Fast mode records the camera first hit and Accurate mode records the first
 non-delta surface and runs OIDN's auxiliary prefilters, preserving the
 established clean/noisy-aux contract. Depth is not an OIDN input: when
 requested it always records the primary camera ray's first geometric hit,
-independent of that surface-selection mode.
+independent of that surface-selection mode. Depth carries its own per-pixel
+hit weight, so miss samples remain a zero-valued mask but do not enter the
+average distance at silhouettes.
 
 `CollectFirstHitAOVs` remains the fallback for an estimator without a usable
 inline hook, notably MLT. It lives in `AOVBuffers.cpp`; the legacy

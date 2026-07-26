@@ -679,6 +679,7 @@ namespace RISE
 			unsigned int validDepthPixels = 0;
 			double depthMin = 0.0;
 			double depthMax = 0.0;
+			std::string guidePrefilter = "fast";
 			std::uint64_t persistentBytes = 0;
 			std::uint64_t auxiliaryPeakBytes = 0;
 			std::uint64_t encoderRowBytes = 0;

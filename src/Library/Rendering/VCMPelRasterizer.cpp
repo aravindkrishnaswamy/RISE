@@ -332,21 +332,23 @@ void VCMPelRasterizer::IntegratePixel(
 			PixelAOV primaryAOV;
 			pGen->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 				sampler, eyeVerts, eyeSubpathStarts_vcm, pAOVBuffers ? &primaryAOV : 0 );
+			// GenerateEyeSubpath captures raw primary depth plus either Fast
+			// primary guides or Accurate first-non-delta guides at trace time.
+			// Record an examined miss before the empty-path early return so an
+			// all-background image does not trigger a redundant fallback trace.
+			if( pAOVBuffers ) {
+				if( primaryAOV.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
+				if( primaryAOV.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
+				}
+			}
 			if( eyeVerts.empty() ) {
 				continue;
 			}
-
-				// GenerateEyeSubpath captures raw primary depth plus either Fast
-				// primary guides or Accurate first-non-delta guides at trace time.
-				if( pAOVBuffers ) {
-					if( primaryAOV.depth > 0 ) {
-						pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
-					}
-					if( primaryAOV.valid ) {
-						pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
-						pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
-					}
-				}
 
 			RISEPel sampleColor( 0, 0, 0 );
 

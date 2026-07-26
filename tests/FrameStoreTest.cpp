@@ -169,12 +169,12 @@ namespace
 		Check( depthOnly.GetAlbedoPtr() == nullptr && depthOnly.GetNormalPtr() == nullptr,
 			"depth-only AOV plan does not allocate RGB planes" );
 		Check( depthOnly.GetDepthPtr() != nullptr, "depth-only AOV plan allocates depth" );
-		Check( depthOnly.StorageBytes() == pixels * sizeof(float),
-			"depth-only AOV plan costs exactly 4 bytes/pixel" );
+		Check( depthOnly.StorageBytes() == pixels * 2u * sizeof(float),
+			"depth-only AOV plan costs exactly 8 bytes/pixel including hit weights" );
 
 		AOVBuffers full( w, h, AOVBuffers::Plan( true, true, true ) );
-		Check( full.StorageBytes() == pixels * 7u * sizeof(float),
-			"agent AOV tap costs exactly 28 bytes/pixel" );
+		Check( full.StorageBytes() == pixels * 8u * sizeof(float),
+			"agent AOV tap costs exactly 32 bytes/pixel" );
 		full.AccumulateAlbedo( 0, 0, RISEPel( 0.2, 0.4, 0.6 ), 2.0 );
 		full.AccumulateNormal( 0, 0, Vector3( -1.0, 0.5, 1.0 ), 2.0 );
 		full.AccumulateDepth( 0, 0, 7.5, 2.0 );
@@ -206,6 +206,13 @@ namespace
 		Check( ApproxEq( depth->At( 0, 0 ), 7.5, 1e-6 ),
 			"AOV bridge propagates camera-ray depth" );
 
+		AOVBuffers silhouette( 1, 1, AOVBuffers::Plan( false, false, true ) );
+		silhouette.AccumulateDepth( 0, 0, 5.0, 1.0 );
+		silhouette.AccumulateDepth( 0, 0, 0.0, 1.0 );
+		silhouette.Normalize( 0, 0, 0.5 );
+		Check( ApproxEq( silhouette.GetDepthPtr()[0], 5.0, 1e-6 ),
+			"depth normalization excludes miss samples at silhouettes" );
+
 		const AOVBuffers::Plan requested = MakeAOVPlan( store, false );
 		Check( requested.albedo && requested.normal && requested.depth,
 			"FrameStore requests become an exact full AOV plan" );
@@ -228,7 +235,7 @@ namespace
 
 		AOVBuffers resized( 64, 64, AOVBuffers::Plan( true, true, true ) );
 		resized.Reset( 2, 1, AOVBuffers::Plan( true, true, true ) );
-		Check( resized.ReservedBytes() == pixels * 7u * sizeof(float),
+		Check( resized.ReservedBytes() == pixels * 8u * sizeof(float),
 			"downsizing releases obsolete high-resolution AOV capacity" );
 
 		store->release();

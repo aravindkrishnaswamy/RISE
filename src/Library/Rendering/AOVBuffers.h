@@ -72,6 +72,7 @@ namespace RISE
 			std::vector<float> albedo;		///< width*height*3, RGB interleaved
 			std::vector<float> normals;		///< width*height*3, XYZ interleaved
 			std::vector<float> depths;		///< width*height, camera-ray hit distance
+			std::vector<float> depthWeights;	///< width*height, weight of hit samples only
 
 		public:
 			AOVBuffers( unsigned int w, unsigned int h, const Plan& requested = Plan() );
@@ -99,7 +100,11 @@ namespace RISE
 				Scalar weight
 				);
 
-			/// Accumulates a weighted camera-ray hit distance at (x,y).
+			/// Records that the primary camera intersection was examined and,
+			/// for a valid hit, accumulates its weighted distance at (x,y).
+			/// Misses (depth <= 0) deliberately contribute no depth weight: a
+			/// silhouette pixel is the mean distance of its hit samples, not a
+			/// hit distance diluted toward zero by background samples.
 			void AccumulateDepth(
 				unsigned int x,
 				unsigned int y,
@@ -107,8 +112,16 @@ namespace RISE
 				Scalar weight
 				);
 
-			/// Divides every allocated AOV at (x,y) by the
-			/// total weight to produce the final per-pixel average.
+			/// Marks allocated albedo/normal planes as handled by an inline
+			/// producer even when a camera sample misses or an Accurate trace
+			/// finds no non-delta surface. This prevents a redundant whole-frame
+			/// fallback on empty/all-delta scenes without inventing zero samples.
+			void MarkGuidesExamined();
+
+			/// Finalizes every allocated AOV at (x,y). Albedo and normal use
+			/// the supplied inverse total sample weight; depth uses its own
+			/// accumulated hit-only weight so background misses do not dilute
+			/// silhouette distances.
 			void Normalize(
 				unsigned int x,
 				unsigned int y,
@@ -148,10 +161,12 @@ namespace RISE
 			const float* GetNormalPtr() const { return normals.empty() ? 0 : normals.data(); }
 			const float* GetDepthPtr() const { return depths.empty() ? 0 : depths.data(); }
 			size_t StorageBytes() const {
-				return ( albedo.size() + normals.size() + depths.size() ) * sizeof( float );
+				return ( albedo.size() + normals.size() + depths.size()
+					+ depthWeights.size() ) * sizeof( float );
 			}
 			size_t ReservedBytes() const {
-				return ( albedo.capacity() + normals.capacity() + depths.capacity() ) * sizeof( float );
+				return ( albedo.capacity() + normals.capacity() + depths.capacity()
+					+ depthWeights.capacity() ) * sizeof( float );
 			}
 			unsigned int GetWidth() const { return width; }
 			unsigned int GetHeight() const { return height; }

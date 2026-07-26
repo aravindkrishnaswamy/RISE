@@ -397,12 +397,13 @@ namespace RISE
 					"colours and corrupts the exact-byte legend match; the ~192 economy "
 					"pattern applies to beauty/draft renders only. Set representation:\"perception\" "
 					"after a production beauty render to receive one 2x2 atlas ordered "
-					"[beauty, albedo; world normal, log depth] plus depth and exact managed-memory metadata.",
+					"[beauty, albedo; world normal, log depth] plus guide-prefilter, depth, and exact managed-memory metadata. "
+					"If maxEdge is omitted, beauty remains native but perception is bounded to 1024.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"maxEdge\":{\"type\":\"number\",\"description\":"
-						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks.\"},"
+						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks. Omission keeps beauty native and bounds perception to 1024.\"},"
 						"\"representation\":{\"type\":\"string\",\"enum\":[\"beauty\",\"perception\"],\"description\":"
-						"\"Optional, default beauty. perception returns a conventional 2x2 beauty/albedo/world-normal/log-depth atlas from the same render, with no re-render.\"}"
+						"\"Optional, default beauty. perception returns a conventional 2x2 beauty/albedo/world-normal/log-depth atlas from the same render, with guidePrefilter and no re-render.\"}"
 					"}}"
 				},
 				{

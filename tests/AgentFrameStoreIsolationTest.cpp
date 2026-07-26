@@ -176,6 +176,23 @@ static std::string BuildMediumDepthContractScene( const std::string& rasterizerC
 		"global_medium\n{\n\tmedium dense_fog\n}\n";
 }
 
+// A sphere against empty background forces partially covered silhouette
+// pixels. Depth must average only hit samples: misses are a coverage mask,
+// not zero-distance measurements that pull depthMin toward the camera.
+static std::string BuildSilhouetteDepthScene( const std::string& rasterizerChunk )
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		+ rasterizerChunk + "\n\n"
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30\n}\n\n"
+		"uniformcolor_painter\n{\n\tname gray\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname matte\n\treflectance gray\n}\n\n"
+		"sphere_geometry\n{\n\tname sphere\n\tradius 1\n}\n\n"
+		"standard_object\n{\n\tname sphere_object\n\tgeometry sphere\n\tmaterial matte\n}\n";
+}
+
 // Fully transparent shader-dispatch front slab. The transparency shader casts
 // a continuation ray through the same RuntimeContext; recursive path-tracing
 // shader invocations must not replace the root slab's camera depth.
@@ -250,6 +267,15 @@ static const char* const kDepthVcmSpectralHWSS =
 static const char* const kDepthVcmSpectralNM =
 	"vcm_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 
+static const char* const kSilhouetteShaderPel =
+	"pixelpel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kSilhouettePtPel =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kSilhouetteBdptPel =
+	"bdpt_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kSilhouetteVcmPel =
+	"vcm_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+
 enum DepthSceneKind { kGlassDepth, kMediumDepth, kTransparencyDepth };
 
 static void RunDepthContractProbe( const char* label, const char* rasterizerChunk,
@@ -287,6 +313,33 @@ static void RunDepthContractProbe( const char* label, const char* rasterizerChun
 		: std::vector<unsigned char>();
 	Check( invalidAtlas.empty() && !invalidInfo.available && invalidW == 0 && invalidH == 0,
 		std::string( label ) + ": unencodable atlas reports unavailable to direct callers" );
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+static void RunSilhouetteDepthProbe( const char* label, const char* rasterizerChunk )
+{
+	const std::string scenePath = WriteTemp(
+		( std::string( "agent_perception_silhouette_" ) + label + ".RISEscene" ).c_str(),
+		BuildSilhouetteDepthScene( rasterizerChunk ) );
+	Check( !scenePath.empty(), std::string( label ) + ": silhouette scene written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		std::string( label ) + ": silhouette scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	AgentRenderParams params;
+	params.perception = true;
+	const AgentRenderResult render = session ? session->Render( params ) : AgentRenderResult();
+	unsigned int atlasW = 0, atlasH = 0;
+	AgentPerceptionInfo info;
+	const std::vector<unsigned char> atlas = session
+		? session->ReadPerception( 48, atlasW, atlasH, info )
+		: std::vector<unsigned char>();
+	Check( render.ok && !atlas.empty() && info.available,
+		std::string( label ) + ": silhouette perception render succeeds" );
+	Check( info.validDepthPixels > 0 && info.validDepthPixels < 24u * 24u &&
+	       info.depthMin > 4.9 && info.depthMax < 6.1,
+		std::string( label ) + ": silhouette misses do not dilute ~5-6-unit hit depth" );
 	pJob->release();
 	std::remove( scenePath.c_str() );
 }
@@ -367,7 +420,7 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 		Check( res.perceptionAvailable,
 			label + " (no-override): explicit perception is available for this rasterizer family" );
 		Check( res.perceptionPersistentBytes == 24u * 24u * 7u &&
-		       res.perceptionAuxiliaryPeakBytes == 24u * 24u * 83u,
+		       res.perceptionAuxiliaryPeakBytes == 24u * 24u * 84u,
 			label + " (no-override): perception reports exact compact/peak payload bytes" );
 		unsigned int atlasW = 0, atlasH = 0;
 		AgentPerceptionInfo perceptionInfo;
@@ -987,6 +1040,13 @@ int main()
 	RunDepthContractProbe( "medium_bdpt_pel", kDepthBdptPel, kMediumDepth );
 	RunDepthContractProbe( "medium_bdpt_spectral_hwss", kDepthBdptSpectralHWSS, kMediumDepth );
 	RunDepthContractProbe( "medium_vcm_pel", kDepthVcmPel, kMediumDepth );
+
+	// Regression for hit-conditioned normalization at anti-aliased silhouettes.
+	// Shader dispatch is a control; PT/BDPT/VCM exposed the original defect.
+	RunSilhouetteDepthProbe( "silhouette_shader_pel", kSilhouetteShaderPel );
+	RunSilhouetteDepthProbe( "silhouette_pt_pel", kSilhouettePtPel );
+	RunSilhouetteDepthProbe( "silhouette_bdpt_pel", kSilhouetteBdptPel );
+	RunSilhouetteDepthProbe( "silhouette_vcm_pel", kSilhouetteVcmPel );
 
 	RunThrowDuringOverrideTest();
 	RunThrowNoOverrideTest();

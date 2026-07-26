@@ -2674,24 +2674,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				rs2.depth = depth + 1;
 				rs2.importance = importance * PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-					rs2.type = PathTracingRayType( *pS );
-					// Accurate guides describe the first non-delta interaction the
-					// sampled path reached, whether or not transport is allowed to
-					// continue beyond it. Capture before bounce-limit termination so
-					// maxDiffuseBounce=0 and similar direct-only configurations do not
-					// erase a perfectly valid guide surface.
-					if constexpr ( Traits::supports_aov ) {
-						if( pAOV && !pAOV->valid && !pS->isDelta &&
-						    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-						{
-							pAOV->normal = ri.geometric.vNormal;
-							pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-								: RISEPel( 1, 1, 1 );
-							pAOV->valid = true;
-						}
+				rs2.type = PathTracingRayType( *pS );
+				// Accurate guides describe the first non-delta interaction the
+				// sampled path reached, whether or not transport is allowed to
+				// continue beyond it. Capture before bounce-limit termination so
+				// maxDiffuseBounce=0 and similar direct-only configurations do not
+				// erase a perfectly valid guide surface.
+				if constexpr ( Traits::supports_aov ) {
+					if( pAOV && !pAOV->valid && !pS->isDelta &&
+					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+					{
+						pAOV->normal = ri.geometric.vNormal;
+						pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+							: RISEPel( 1, 1, 1 );
+						pAOV->valid = true;
 					}
-					// SPF/no-BSDF specular continuation.  Keep emission enabled at the
+				}
+				// SPF/no-BSDF specular continuation.  Keep emission enabled at the
 				// next vertex for BOTH color modes and let the PART1
 				// `smsSuppressEmission` predicate (gated by bHadNonSpecularShading)
 				// do the suppression.  A camera->glass->light path has no diffuse
@@ -3159,22 +3159,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			(void)useGuidingPathSegments;  // Used in full guiding implementation
 #endif // RISE_ENABLE_OPENPGL
 
-				// Guide capture is a property of the selected interaction, not of
-				// Russian-roulette or bounce-limit survival. Keeping it before both
-				// termination decisions prevents direct-only and RR-terminated paths
-				// from producing transport-correlated holes in Accurate AOVs.
-				if constexpr ( Traits::supports_aov ) {
-					if( pAOV && !pAOV->valid && !pS->isDelta &&
-					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-					{
-						pAOV->normal = ri.geometric.vNormal;
-						pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
-						                     : RISEPel( 1, 1, 1 );
-						pAOV->valid = true;
-					}
+			// Guide capture is a property of the selected interaction, not of
+			// Russian-roulette or bounce-limit survival. Keeping it before both
+			// termination decisions prevents direct-only and RR-terminated paths
+			// from producing transport-correlated holes in Accurate AOVs.
+			if constexpr ( Traits::supports_aov ) {
+				if( pAOV && !pAOV->valid && !pS->isDelta &&
+				    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+				{
+					pAOV->normal = ri.geometric.vNormal;
+					pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
+					                     : RISEPel( 1, 1, 1 );
+					pAOV->valid = true;
 				}
+			}
 
-				bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
+			bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
 
 			// Optimal MIS training
 			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
@@ -3293,10 +3293,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
 			if( pS->isDelta ) {
 				bPassedThroughSpecular = true;
-				} else {
-					bPassedThroughSpecular = false;
-					bHadNonSpecularShading = true;
-				}
+			} else {
+				bPassedThroughSpecular = false;
+				bHadNonSpecularShading = true;
+			}
 
 			currentRay = traceRay;
 			currentRay.Advance( 1e-8 );

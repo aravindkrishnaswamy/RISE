@@ -355,23 +355,24 @@ void VCMSpectralRasterizer::IntegratePixel(
 					rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts,
 					eyeSubpathStartsNM, heroNM, pSwlHWSSPass,
 					( ss == 0 && pAOVBuffers ) ? &primaryAOV : 0 );
+				// AOV capture (hero wavelength, first bundle). The generator
+				// records both modes against the actual trace-time intersection.
+				// Record an examined miss before the empty-path early return.
+				if( ss == 0 && pAOVBuffers ) {
+					if( primaryAOV.primaryDepthCaptured ) {
+						pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
+						pAOVBuffers->MarkGuidesExamined();
+					}
+					if( primaryAOV.valid ) {
+						pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
+					}
+				}
 				if( eyeVerts.empty() ) {
 					continue;
 				}
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
-
-					// AOV capture (hero wavelength, first bundle). The generator
-					// records both modes against the actual trace-time intersection.
-					if( ss == 0 && pAOVBuffers ) {
-						if( primaryAOV.depth > 0 ) {
-							pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
-						}
-						if( primaryAOV.valid ) {
-							pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
-							pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
-						}
-					}
 
 				Scalar heroValue = 0;
 

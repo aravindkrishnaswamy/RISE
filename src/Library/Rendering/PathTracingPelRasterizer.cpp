@@ -354,7 +354,10 @@ void PathTracingPelRasterizer::IntegratePixel(
 					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
 				}
-				if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
 			}
 
 			RISE_PROFILE_INC(nSamplesAccumulated);

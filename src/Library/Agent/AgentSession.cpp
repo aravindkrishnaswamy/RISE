@@ -5179,6 +5179,8 @@ namespace RISE
 				// lambda returns -- no extra addref here.
 				sink = new InMemoryRasterizerOutput();
 				sink->SetConcurrentCachedPerceptionBytes( cachedPerceptionBytesAtStart );
+				sink->SetPerceptionPrefilter( concreteRast
+					? concreteRast->GetDenoisingPrefilter() : OidnPrefilter::Fast );
 				// Beauty render: encode through the scene's effective display
 				// transform (exposure + tone curve) so decode(rr.png) matches
 				// the CLI file-output / viewport pipeline for the SAME head --
@@ -7023,18 +7025,27 @@ namespace RISE
 		{
 			outWidth = 0;
 			outHeight = 0;
-			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );   // Model-B F2 slice S2a
-			if( maxEdge == 0 ) {
-				// No bound requested -- byte-compatible with ReadImage(): same
-				// cached bytes, dims read off the cached sink when available.
-				if( mLastSink ) {
-					outWidth  = mLastSink->Width();
-					outHeight = mLastSink->Height();
+			InMemoryRasterizerOutput* sink = 0;
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				if( maxEdge == 0 ) {
+					// No bound requested -- byte-compatible with ReadImage(): same
+					// cached bytes, dims read off the cached sink when available.
+					if( mLastSink ) {
+						outWidth  = mLastSink->Width();
+						outHeight = mLastSink->Height();
+					}
+					return mLastPng;
 				}
-				return mLastPng;
+				sink = mLastSink;
+				if( sink ) sink->addref();
 			}
-			if( !mLastSink ) return std::vector<unsigned char>();   // nothing rendered yet
-			return mLastSink->ToPngDownscaled( maxEdge, outWidth, outHeight );
+			if( !sink ) return std::vector<unsigned char>();
+			struct SinkLease {
+				InMemoryRasterizerOutput* sink;
+				~SinkLease() { safe_release( sink ); }
+			} lease{ sink };
+			return sink->ToPngDownscaled( maxEdge, outWidth, outHeight );
 		}
 
 		std::vector<unsigned char> AgentSession::ReadPerception(
@@ -7045,17 +7056,27 @@ namespace RISE
 		{
 			outWidth = outHeight = 0;
 			outInfo = AgentPerceptionInfo();
-			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-			if( !mLastSink ) return std::vector<unsigned char>();
+			InMemoryRasterizerOutput* sink = 0;
+			{
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				sink = mLastSink;
+				if( sink ) sink->addref();
+			}
+			if( !sink ) return std::vector<unsigned char>();
+			struct SinkLease {
+				InMemoryRasterizerOutput* sink;
+				~SinkLease() { safe_release( sink ); }
+			} lease{ sink };
 			InMemoryRasterizerOutput::PerceptionInfo pi;
 			std::vector<unsigned char> png =
-				mLastSink->ToPerceptionPng( maxEdge, outWidth, outHeight, pi );
+				sink->ToPerceptionPng( maxEdge, outWidth, outHeight, pi );
 			outInfo.available = pi.available;
 			outInfo.sourceWidth = pi.sourceWidth;
 			outInfo.sourceHeight = pi.sourceHeight;
 			outInfo.validDepthPixels = pi.validDepthPixels;
 			outInfo.depthMin = pi.depthMin;
 			outInfo.depthMax = pi.depthMax;
+			outInfo.guidePrefilter = pi.guidePrefilter;
 			outInfo.persistentBytes = pi.persistentBytes;
 			outInfo.auxiliaryPeakBytes = pi.auxiliaryPeakBytes;
 			outInfo.encoderRowBytes = pi.encoderRowBytes;

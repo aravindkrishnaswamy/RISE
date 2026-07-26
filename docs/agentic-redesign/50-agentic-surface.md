@@ -186,7 +186,7 @@
 >   the complete atlas and structured depth/memory metadata. The production/display FrameStore
 >   is never enlarged: the agent's private store owns requested AOVs only until the output sink
 >   compacts them. Releasing float depth after propagation bounds exact managed payload accounting
->   to 83 bytes/pixel peak, with 7 bytes/pixel retained; no
+>   to 84 bytes/pixel peak, with 7 bytes/pixel retained; no
 >   four-image/uncompressed-atlas duplicate. Direct/indirect are deliberately left to the
 >   existing on-demand diagnostic modes because their transport split needs an explicit semantic
 >   convention. Full rationale and limits: [`AGENT_PERCEPTION.md`](../AGENT_PERCEPTION.md).

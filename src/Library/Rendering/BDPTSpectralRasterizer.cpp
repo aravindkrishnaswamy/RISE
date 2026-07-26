@@ -633,7 +633,10 @@ void BDPTSpectralRasterizer::IntegratePixel(
 					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
 				}
-				if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
 			}
 			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 			// now accumulates XYZ; no per-sample chromaticity clip.

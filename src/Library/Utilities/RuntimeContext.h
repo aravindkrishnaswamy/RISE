@@ -146,8 +146,9 @@ namespace RISE
 		///       OIDN runs a prefilter pass on each aux channel
 		///       before the beauty filter.
 		///
-		/// MLT integrators ignore this — see docs/OIDN.md (OIDN-P1-1)
-		/// for the splat-film exclusion rationale.
+		/// MLT cannot attach this to splat-chain samples, so requested guides
+		/// are collected by its bounded post-render fallback using the same
+		/// Fast/Accurate rule.
 		OidnPrefilter											aovPrefilterMode;
 
 		/// Per-pixel-sample inline AOV sink for the SHADER-DISPATCH spectral

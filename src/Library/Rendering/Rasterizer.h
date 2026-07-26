@@ -244,6 +244,7 @@ namespace RISE
 			//! Retained without OIDN because agent albedo/normal capture uses
 			//! the same fast-versus-accurate surface semantics.
 			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }
+			OidnPrefilter GetDenoisingPrefilter() const { return mDenoisingPrefilter; }
 		};
 	}
 }

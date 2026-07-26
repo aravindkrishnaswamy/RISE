@@ -28,6 +28,14 @@
 using namespace RISE;
 using namespace RISE::Agent;
 
+namespace
+{
+	constexpr std::uint64_t kGuideScratchBytesPerPixel = 6u * sizeof( float );
+	constexpr std::uint64_t kDepthScratchBytesPerPixel = 2u * sizeof( float );
+	constexpr std::uint64_t kPerceptionFrameStoreBytesPerPixel =
+		sizeof( RISEPel ) + sizeof( Vector3 ) + sizeof( float );
+}
+
 InMemoryRasterizerOutput::InMemoryRasterizerOutput()
 	: mWidth( 0 )
 	, mHeight( 0 )
@@ -35,6 +43,7 @@ InMemoryRasterizerOutput::InMemoryRasterizerOutput()
 	, mExposureEV( 0.0 )
 	, mDisplayTransform( eDisplayTransform_None )   // identity until SetDisplayTransform is called
 	, mColorSpace( eColorSpace_sRGB )               // matches this sink's pre-fix hardcoded default until SetOutputColorSpace is called
+	, mPerceptionPrefilter( OidnPrefilter::Fast )
 	, mFrameStore( 0 )
 	, mConcurrentCachedPerceptionBytes( 0 )
 	, mObservedAuxiliaryPeakBytes( 0 )
@@ -81,13 +90,7 @@ void InMemoryRasterizerOutput::CapturePerception_()
 	const std::uint64_t previousPersistentBytes = mPerceptionInfo.persistentBytes;
 	// A new completed image replaces the entire observation.  Release the
 	// prior compact planes when this render did not request compatible AOVs.
-	auto clearSidecar = [this]() {
-		std::vector<unsigned char>().swap( mPerceptionAlbedo );
-		std::vector<unsigned char>().swap( mPerceptionNormal );
-		std::vector<unsigned char>().swap( mPerceptionDepth );
-		mPerceptionInfo = PerceptionInfo();
-	};
-	clearSidecar();
+	ClearPerception_();
 	if( !mFrameStore || !mHasImage || mFrameStore->Width() != mWidth || mFrameStore->Height() != mHeight ) return;
 
 	using namespace RISE::FrameStoreOutput;
@@ -159,24 +162,38 @@ void InMemoryRasterizerOutput::CapturePerception_()
 	mPerceptionInfo.validDepthPixels = validDepth;
 	mPerceptionInfo.depthMin = depthMin;
 	mPerceptionInfo.depthMax = depthMax;
+	mPerceptionInfo.guidePrefilter = mPerceptionPrefilter == OidnPrefilter::Accurate
+		? "accurate" : "fast";
 	mPerceptionInfo.persistentBytes =
 		static_cast<std::uint64_t>( mPerceptionAlbedo.size()
 			+ mPerceptionNormal.size() + mPerceptionDepth.size() );
 	// Two moments can dominate the live session feature payload:
-	//   * render: 80 B/pixel scratch + private FrameStore, while this sink's
+	//   * render: guide/depth scratch + private FrameStore, while this sink's
 	//     preceding animation-frame sidecar is still cached;
-	//   * compaction: 76 B/pixel guide scratch + FrameStore after depth
+	//   * compaction: guide scratch + FrameStore after depth
 	//     scratch release, plus the newly compacted 7-B/pixel sidecar.
 	// A prior successful session sink also remains live until this replacement
 	// render and its PNG encode succeed. Track it explicitly so the reported
 	// peak stays exact across repeated still renders and animations.
+	const std::uint64_t renderBytesPerPixel = kGuideScratchBytesPerPixel
+		+ kDepthScratchBytesPerPixel + kPerceptionFrameStoreBytesPerPixel;
+	const std::uint64_t compactionBytesPerPixel = kGuideScratchBytesPerPixel
+		+ kPerceptionFrameStoreBytesPerPixel;
 	const std::uint64_t renderPeak = mConcurrentCachedPerceptionBytes
-		+ previousPersistentBytes + static_cast<std::uint64_t>( pixels ) * 80u;
+		+ previousPersistentBytes + static_cast<std::uint64_t>( pixels ) * renderBytesPerPixel;
 	const std::uint64_t compactionPeak = mConcurrentCachedPerceptionBytes
-		+ mPerceptionInfo.persistentBytes + static_cast<std::uint64_t>( pixels ) * 76u;
+		+ mPerceptionInfo.persistentBytes + static_cast<std::uint64_t>( pixels ) * compactionBytesPerPixel;
 	if( renderPeak > mObservedAuxiliaryPeakBytes ) mObservedAuxiliaryPeakBytes = renderPeak;
 	if( compactionPeak > mObservedAuxiliaryPeakBytes ) mObservedAuxiliaryPeakBytes = compactionPeak;
 	mPerceptionInfo.auxiliaryPeakBytes = mObservedAuxiliaryPeakBytes;
+}
+
+void InMemoryRasterizerOutput::ClearPerception_()
+{
+	std::vector<unsigned char>().swap( mPerceptionAlbedo );
+	std::vector<unsigned char>().swap( mPerceptionNormal );
+	std::vector<unsigned char>().swap( mPerceptionDepth );
+	mPerceptionInfo = PerceptionInfo();
 }
 
 void InMemoryRasterizerOutput::AdoptCoherentSnapshot(
@@ -194,6 +211,9 @@ void InMemoryRasterizerOutput::AdoptCoherentSnapshot(
 	// letting ToPng index past the end.
 	mPixels.resize( static_cast<std::size_t>( mWidth ) * mHeight );
 	mHasImage = true;
+	// A viewport snapshot has beauty pixels only. Never let a sidecar from an
+	// earlier production render survive beside unrelated adopted pixels.
+	ClearPerception_();
 }
 
 void InMemoryRasterizerOutput::MeanChannels( double& r, double& g, double& b ) const
@@ -477,7 +497,18 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 		outInfo.encoderRowBytes = 0;
 		outWidth = outHeight = 0;
 	};
-	if( !mPerceptionInfo.available || !mHasImage || mWidth == 0 || mHeight == 0 ) {
+	if( !mPerceptionInfo.available || !mHasImage || mWidth == 0 || mHeight == 0 ||
+		static_cast<std::size_t>( mHeight ) >
+			std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>( mWidth ) ) {
+		markUnavailable();
+		return out;
+	}
+	const std::size_t sourcePixels = static_cast<std::size_t>( mWidth ) * mHeight;
+	if( sourcePixels > std::numeric_limits<std::size_t>::max() / 3u ||
+		mPerceptionInfo.sourceWidth != mWidth || mPerceptionInfo.sourceHeight != mHeight ||
+		mPixels.size() != sourcePixels || mPerceptionAlbedo.size() != sourcePixels * 3u ||
+		mPerceptionNormal.size() != sourcePixels * 3u ||
+		mPerceptionDepth.size() != sourcePixels ) {
 		markUnavailable();
 		return out;
 	}
@@ -554,7 +585,9 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	png_set_write_fn( png, &writeContext, PerceptionPngWrite, PerceptionPngFlush );
 	png_set_filter( png, 0, PNG_NO_FILTERS );
 	png_set_compression_level( png, Z_BEST_COMPRESSION );
-	png_set_gAMA( png, info, 1.0 / 2.2 );
+	// Deliberately omit a global gamma tag: the beauty panel honors the
+	// configured output color space while the guide panels are sRGB display
+	// encodings, so no single PNG-wide transfer function describes the atlas.
 	png_set_IHDR( png, info, outWidth, outHeight, 8, PNG_COLOR_TYPE_RGB_ALPHA,
 		PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT );
 	png_write_info( png, info );

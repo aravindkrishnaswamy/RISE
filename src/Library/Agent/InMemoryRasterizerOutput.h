@@ -44,6 +44,7 @@
 #include "../Interfaces/IRasterizerOutput.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Color/Color_Template.h"   // RISEColor
+#include "../Utilities/OidnConfig.h"
 
 namespace RISE
 {
@@ -67,6 +68,7 @@ namespace RISE
 				unsigned int validDepthPixels = 0;
 				double depthMin = 0.0;
 				double depthMax = 0.0;
+				const char* guidePrefilter = "fast";
 				std::uint64_t persistentBytes = 0;
 				std::uint64_t auxiliaryPeakBytes = 0;
 				std::uint64_t encoderRowBytes = 0;
@@ -178,6 +180,13 @@ namespace RISE
 			//! indexing PNGWriter with a caller typo.
 			void SetOutputColorSpace( int colorSpace );
 
+			//! Record which first-useful-surface rule produced the compact
+			//! albedo/normal panels. Depth is always the raw primary hit.
+			void SetPerceptionPrefilter( OidnPrefilter prefilter )
+			{
+				mPerceptionPrefilter = prefilter;
+			}
+
 			//! Account for a prior successful perception sidecar that remains
 			//! live while this replacement render executes. AgentSession calls
 			//! this before rendering so auxiliaryPeakBytes describes the actual
@@ -255,6 +264,7 @@ namespace RISE
 			//! eColorSpace_sRGB (0), matching this sink's pre-fix hardcoded
 			//! behaviour.
 			int                    mColorSpace;
+			OidnPrefilter          mPerceptionPrefilter;
 
 			Implementation::FrameStore* mFrameStore;
 			std::vector<unsigned char> mPerceptionAlbedo; //!< RGB8 sRGB display bytes
@@ -265,6 +275,7 @@ namespace RISE
 			std::uint64_t mObservedAuxiliaryPeakBytes;
 
 			void CapturePerception_();
+			void ClearPerception_();
 		};
 	}
 }

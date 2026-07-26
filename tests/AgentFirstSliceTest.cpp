@@ -122,6 +122,26 @@ static bool DecodePng( const std::vector<unsigned char>& png, DecodedPng& out )
 	return true;
 }
 
+static bool HasPngChunk( const std::vector<unsigned char>& png, const char type[4] )
+{
+	if( png.size() < 8 ) return false;
+	std::size_t offset = 8;
+	while( png.size() - offset >= 8 ) {
+		const std::size_t length =
+			( static_cast<std::size_t>( png[offset] ) << 24 ) |
+			( static_cast<std::size_t>( png[offset + 1] ) << 16 ) |
+			( static_cast<std::size_t>( png[offset + 2] ) << 8 ) |
+			static_cast<std::size_t>( png[offset + 3] );
+		if( png.size() - offset < 12 || length > png.size() - offset - 12 ) return false;
+		if( png[offset + 4] == static_cast<unsigned char>( type[0] ) &&
+		    png[offset + 5] == static_cast<unsigned char>( type[1] ) &&
+		    png[offset + 6] == static_cast<unsigned char>( type[2] ) &&
+		    png[offset + 7] == static_cast<unsigned char>( type[3] ) ) return true;
+		offset += length + 12;
+	}
+	return false;
+}
+
 // The same inline native-v7 scene the slice-0b test uses: a lit diffuse
 // sphere + an area emitter, PT at low spp with OIDN off, renders non-black.
 static const char* const kScene =
@@ -205,6 +225,10 @@ static void TestPerceptionBeautyColorSpaceParity()
 	unsigned int atlasW = 0, atlasH = 0;
 	InMemoryRasterizerOutput::PerceptionInfo info;
 	const std::vector<unsigned char> atlasPng = sink->ToPerceptionPng( 2, atlasW, atlasH, info );
+	Check( std::string( info.guidePrefilter ) == "fast",
+	       "perception metadata defaults to fast guide semantics" );
+	Check( !HasPngChunk( atlasPng, "gAMA" ),
+	       "mixed-space perception atlas does not declare one global PNG gamma" );
 	DecodedPng beauty;
 	DecodedPng atlas;
 	const bool decodedBeauty = DecodePng( beautyPng, beauty );
@@ -219,11 +243,21 @@ static void TestPerceptionBeautyColorSpaceParity()
 
 	// A sink reused for animation retains the preceding frame's compact
 	// 7-B/pixel sidecar while the next frame renders. The reported peak must
-	// include that live cache (80 + 7 = 87 B/pixel), not repeat the cold-frame
-	// 83-B/pixel compaction peak.
+	// include that live cache (84 + 7 = 91 B/pixel), not repeat the cold-frame
+	// 84-B/pixel render peak.
 	sink->OutputImage( *image, 0, 1 );
-	Check( sink->GetPerceptionInfo().auxiliaryPeakBytes == 87u,
+	Check( sink->GetPerceptionInfo().auxiliaryPeakBytes == 91u,
 	       "multi-frame sink peak includes the preceding compact sidecar" );
+
+	std::vector<RISEColor> viewportPixels( 1, RISEColor( 0.1, 0.2, 0.3, 1.0 ) );
+	sink->AdoptCoherentSnapshot( std::move( viewportPixels ), 1, 1 );
+	Check( !sink->HasPerception(),
+	       "adopting a beauty-only viewport snapshot clears a prior perception sidecar" );
+	unsigned int staleW = 99, staleH = 99;
+	InMemoryRasterizerOutput::PerceptionInfo staleInfo;
+	Check( sink->ToPerceptionPng( 2, staleW, staleH, staleInfo ).empty() &&
+	       !staleInfo.available && staleW == 0 && staleH == 0,
+	       "cleared sidecar cannot be encoded beside unrelated adopted pixels" );
 
 	safe_release( image );
 	safe_release( sink );
@@ -479,8 +513,8 @@ int main()
 		       "agent transport enables same-render perception by default" );
 		Check( r.get( "perceptionPersistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0,
 		       "render reports exact compact sidecar cost (7 bytes/pixel)" );
-		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 83.0,
-		       "render reports exact managed auxiliary peak (83 bytes/pixel)" );
+		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 84.0,
+		       "render reports exact managed auxiliary peak (84 bytes/pixel)" );
 		// render stays lean: no image bytes in the render result.
 		Check( !r.has( "png_base64" ), "render result does NOT carry the image bytes (read_image does)" );
 	}
@@ -519,7 +553,7 @@ int main()
 		const std::string resp = rpc.HandleLine( Req( 9, "render", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 9 );
 		const JsonValue& r = env.get( "result" );
-		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 90.0,
+		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 91.0,
 		       "replacement render peak includes the prior successful 7-byte/pixel sidecar" );
 		noiseFloor =
 			std::fabs( r.get( "meanR" ).asNumber() - firstMeanR ) +
@@ -955,8 +989,10 @@ int main()
 		Check( r.get( "depthMin" ).asNumber() > 0.0 &&
 		       r.get( "depthMax" ).asNumber() >= r.get( "depthMin" ).asNumber(),
 		       "depth range is finite, positive, and ordered" );
+		Check( r.get( "guidePrefilter" ).asString() == "accurate",
+		       "perception reports the albedo/normal prefilter semantics" );
 		Check( r.get( "persistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0 &&
-		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 90.0,
+		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 91.0,
 		       "read_image exposes exact replacement-render perception memory" );
 		Check( r.get( "encoderRowBytes" ).asNumber() == 32.0 * 4.0,
 		       "perception encoder uses one RGBA scanline rather than a full atlas staging image" );

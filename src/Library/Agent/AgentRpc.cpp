@@ -1755,7 +1755,8 @@ namespace RISE
 				//   maxEdge (OPTIONAL, clamped [16,1024]) downscales the
 				//   returned image to that long-edge bound (box filter,
 				//   aspect-preserving, never upscales) -- re-encoded from the
-				//   cached full-resolution pixels, no re-render.
+				//   cached full-resolution pixels, no re-render. Omission keeps
+				//   beauty native but bounds the larger perception atlas to 1024.
 				//--------------------------------------------------------------
 				if( m == "read_image" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -1775,8 +1776,10 @@ namespace RISE
 					}
 					unsigned int imgW = 0, imgH = 0;
 					AgentPerceptionInfo perceptionInfo;
+					const unsigned int effectiveMaxEdge = mePresent == 1
+						? maxEdge : ( representation == "perception" ? 1024u : 0u );
 					const std::vector<unsigned char> png = representation == "perception"
-						? s->ReadPerception( mePresent == 1 ? maxEdge : 0, imgW, imgH, perceptionInfo )
+						? s->ReadPerception( effectiveMaxEdge, imgW, imgH, perceptionInfo )
 						: ( ( mePresent == 1 ) ? s->ReadImage( maxEdge, imgW, imgH )
 						                           : s->ReadImage( 0, imgW, imgH ) );
 					JsonValue result = JsonValue::MakeObject();
@@ -1798,6 +1801,7 @@ namespace RISE
 						result.set( "validDepthPixels", JsonValue::MakeNumber( perceptionInfo.validDepthPixels ) );
 						result.set( "depthMin", JsonValue::MakeNumber( perceptionInfo.depthMin ) );
 						result.set( "depthMax", JsonValue::MakeNumber( perceptionInfo.depthMax ) );
+						result.set( "guidePrefilter", JsonValue::MakeString( perceptionInfo.guidePrefilter ) );
 						result.set( "persistentBytes", JsonValue::MakeNumber(
 							static_cast<double>( perceptionInfo.persistentBytes ) ) );
 						result.set( "auxiliaryPeakBytes", JsonValue::MakeNumber(
