@@ -98,15 +98,15 @@ own albedo/normal scratch.
 PT, spectral PT, BDPT, VCM, and the shader-dispatch path attach `PixelAOV` to
 the beauty estimator and collect the requested data during the render.
 Progressive and adaptive paths use the same sample weights and normalize once.
-MLT and any legacy estimator that cannot attach a `PixelAOV` use one bounded,
+MLT and legacy estimators that cannot attach a `PixelAOV` use one bounded,
 parallel primary-ray fallback after beauty. In `fast` mode that retrace stops
 at the geometric first hit; in `accurate` mode it runs through the prepared
-shader caster so delta surfaces and primary-medium continuations reach the
-first non-delta surface. Thus the common paths are a true single estimator
-pass; the API remains correct on every rasterizer without pretending MLT's
-Markov-chain samples have a per-pixel first-hit identity. Accurate MLT pays
-for the explicitly requested bounded shader retrace rather than silently
-degrading to Fast.
+shader caster so the built-in path-tracing shader can carry delta-surface and
+primary-medium continuations to the first non-delta surface. Thus the common
+paths are a true single estimator pass, while MLT remains correct without
+pretending its Markov-chain samples have a per-pixel first-hit identity.
+Accurate MLT pays for the explicitly requested bounded shader retrace rather
+than silently degrading to Fast.
 
 The private FrameStore is restored before the render call returns, so an agent
 render cannot mutate or enlarge the GUI/display store. The cached agent sink
@@ -171,6 +171,12 @@ in the auxiliary-memory figures.
   volumes, and denoising), and a misleading decomposition is worse than no
   channel. RISE's existing `mode:"direct"` and `mode:"indirect"` diagnostic
   renders remain available on demand at extra render cost.
+- Accurate fallback guide discovery requires a path-tracing-capable shader
+  chain. A custom or legacy terminal shader that never invokes the path
+  tracer cannot identify a non-delta continuation for the collector, so its
+  albedo/normal guide pixels remain black. Fast mode still records that
+  shader's geometric first hit. The built-in production beauty and MLT paths
+  use the supported path-tracing chain.
 - The compact atlas is an observation product, not an archival AOV format.
   Raw float/EXR transport can be added behind an explicit request when a model
   endpoint can consume it without base64/token inflation.

@@ -42,31 +42,6 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-namespace
-{
-	// pAOVBuffers is a reusable member because successful OIDN renders keep
-	// their albedo/normal pair warm. A failed render, however, has no valid
-	// cache contract: release every perception/OIDN plane while unwinding so
-	// an output, observer, or denoiser exception cannot strand 24/28 B/pixel.
-	class AOVBufferUnwindGuard
-	{
-		AOVBuffers*& target;
-		bool armed;
-
-	public:
-		explicit AOVBufferUnwindGuard( AOVBuffers*& target_ ) :
-			target( target_ ), armed( true ) {}
-		~AOVBufferUnwindGuard()
-		{
-			if( armed ) {
-				delete target;
-				target = 0;
-			}
-		}
-		void Dismiss() { armed = false; }
-	};
-}
-
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 	IRayCaster* pCaster_,
 	RISE::Implementation::FrameStore* frameStore

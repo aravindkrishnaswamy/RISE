@@ -232,8 +232,9 @@ Two AOV collection strategies exist:
    inline data (notably MLT), the OIDN-independent `CollectFirstHitAOVs` helper
    traces a bounded set of camera rays in parallel over rows. Fast uses direct
    first intersections; Accurate routes the bounded retrace through the
-   prepared shader caster to walk delta and medium continuations. OIDN's
-   historical method delegates to this helper.
+   prepared shader caster so path-tracing-capable shader chains can walk
+   delta and medium continuations. OIDN's historical method delegates to
+   this helper.
 
 `PropagateAOVsToFrameStore` copies only matching allocated planes into the
 canonical typed channels. Agent renders use a private FrameStore, compact those

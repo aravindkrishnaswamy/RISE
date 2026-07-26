@@ -94,10 +94,10 @@ inline hook, notably MLT. It lives in `AOVBuffers.cpp`; the legacy
 - fires the requested number of primary rays per pixel through
   `ICamera::GenerateRay`, collecting albedo, world normal, and requested depth;
 - uses a direct first intersection in Fast mode and the prepared shader caster
-  in Accurate mode, so MLT/legacy fallbacks walk delta surfaces and primary
-  medium scattering instead of silently degrading to Fast;
+  in Accurate mode, so the built-in MLT path can walk delta surfaces and
+  primary-medium scattering instead of silently degrading to Fast;
 - uses subpixel jitter and aperture re-sampling so DOF/AA boundaries blend;
-- maps a miss to albedo `(1,1,1)`, normal `(0,0,0)`, depth `0`;
+- maps a miss to albedo `(0,0,0)`, normal `(0,0,0)`, depth `0`;
 - parallelizes over rows with a thread-local RNG.
 
 The storage plan is the union of OIDN's albedo/normal requirement and typed

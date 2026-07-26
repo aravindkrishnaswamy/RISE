@@ -298,6 +298,11 @@ void BDPTRasterizerBase::RasterizeScene(
 		GlobalLog()->PrintSourceError( "BDPTRasterizerBase::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
+	// This specialized BDPT override bypasses PixelBasedRasterizerHelper's
+	// render entry. Apply the same failure rule here: exceptions release all
+	// member AOV planes, while the successful tail may retain only the
+	// documented OIDN cache.
+	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 
 #ifdef RISE_ENABLE_OIDN
 	// Stamp render-start wall clock so the OIDN auto-quality heuristic
@@ -1274,6 +1279,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	pFilteredScratch = 0;
 	delete pAOVBuffers;
 	pAOVBuffers = 0;
+	aovUnwindGuard.Dismiss();
 #ifdef RISE_ENABLE_OPENPGL
 	pIntegrator->SetGuidingField( 0, 0, 0, 0, 0, eGuidingOneSampleMIS, 2 );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );

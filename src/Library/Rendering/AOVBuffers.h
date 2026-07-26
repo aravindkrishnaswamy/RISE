@@ -157,9 +157,36 @@ namespace RISE
 			unsigned int GetHeight() const { return height; }
 		};
 
+		// Successful OIDN renders may deliberately keep their albedo/normal
+		// buffers warm on the owning rasterizer. A failed render has no such
+		// cache contract: arm this guard at render entry and dismiss it only
+		// after the normal tail has retained or released the buffers.
+		class AOVBufferUnwindGuard
+		{
+			AOVBuffers*& target;
+			bool armed;
+
+			AOVBufferUnwindGuard( const AOVBufferUnwindGuard& ) = delete;
+			AOVBufferUnwindGuard& operator=( const AOVBufferUnwindGuard& ) = delete;
+
+		public:
+			explicit AOVBufferUnwindGuard( AOVBuffers*& target_ ) noexcept :
+				target( target_ ), armed( true ) {}
+			~AOVBufferUnwindGuard()
+			{
+				if( armed ) {
+					delete target;
+					target = 0;
+				}
+			}
+			void Dismiss() noexcept { armed = false; }
+		};
+
 		/// Generic first-hit fallback for rasterizers that cannot attach an
 		/// inline PixelAOV to their estimator (notably MLT and legacy shader
-		/// pipelines).  This is deliberately independent of OIDN.
+		/// pipelines). Accurate guide discovery relies on a path-tracing-capable
+		/// shader chain; custom terminal chains may leave those guides invalid.
+		/// This is deliberately independent of OIDN.
 		void CollectFirstHitAOVs(
 			const IScene& scene,
 			IRayCaster& caster,
