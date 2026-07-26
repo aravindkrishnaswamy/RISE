@@ -3480,7 +3480,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// Primary depth is independent of Accurate-mode albedo/normal
 		// traversal.  Never replace this camera-ray range with a later
 		// bounce segment.
-		if( pAOV && ri.geometric.bHit ) pAOV->depth = ri.geometric.range;
+		if( pAOV ) {
+			pAOV->primaryDepthCaptured = true;
+			pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		}
 	}
 
 	// Extract first-hit AOV data for the denoiser (Fast prefilter mode).
@@ -3505,7 +3508,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 #endif
 		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 		{
-			pAOV->normal = ri.geometric.vNormal;
+			RayIntersectionGeometric aovGeom( ri.geometric );
+			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+			pAOV->normal = aovGeom.vNormal;
 			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
 			// under mClayOverride every surface's REFLECTANCE is the
 			// substituted clay BRDF (see SetClayOverride's doc) -- the
@@ -3519,9 +3524,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// pBRDF) -- the ACCURATE-prefilter hook inside the loop
 			// already reads the loop-local `pBRDF`, which IS already
 			// clay-substituted there, so only this site needed the fix.
-			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( ri.geometric ) :
+			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( aovGeom ) :
 				( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-					? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
 					: RISEPel( 1, 1, 1 ) );
 			pAOV->valid = true;
 		}
@@ -4802,14 +4807,19 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
+	if( pAOV ) {
+		pAOV->primaryDepthCaptured = true;
+		pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+	}
 	if( pAOV && ri.geometric.bHit ) {
-		pAOV->depth = ri.geometric.range;
 		if( !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Fast ) {
-			pAOV->normal = ri.geometric.vNormal;
+			RayIntersectionGeometric aovGeom( ri.geometric );
+			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+			pAOV->normal = aovGeom.vNormal;
 			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
-				? pClayBRDF->albedo( ri.geometric )
+				? pClayBRDF->albedo( aovGeom )
 				: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-					? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
 					: RISEPel( 1, 1, 1 ) );
 			pAOV->valid = true;
 		}

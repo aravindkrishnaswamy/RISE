@@ -32,7 +32,9 @@ using namespace RISE::Implementation;
 AOVBuffers::AOVBuffers( unsigned int w, unsigned int h, const Plan& requested ) :
   width( w ),
   height( h ),
-  bHasData( false ),
+  bHasAlbedoData( false ),
+  bHasNormalData( false ),
+  bHasDepthData( false ),
   plan( requested ),
   albedo( requested.albedo ? static_cast<size_t>( w ) * h * 3 : 0, 0.0f ),
   normals( requested.normal ? static_cast<size_t>( w ) * h * 3 : 0, 0.0f ),
@@ -44,7 +46,9 @@ void AOVBuffers::Reset( unsigned int w, unsigned int h, const Plan& requested )
 {
 	width = w;
 	height = h;
-	bHasData.store( false, std::memory_order_relaxed );
+	bHasAlbedoData.store( false, std::memory_order_relaxed );
+	bHasNormalData.store( false, std::memory_order_relaxed );
+	bHasDepthData.store( false, std::memory_order_relaxed );
 	plan = requested;
 	const size_t pixels = static_cast<size_t>( w ) * h;
 	auto reset = []( std::vector<float>& v, size_t count ) {
@@ -68,7 +72,7 @@ void AOVBuffers::AccumulateAlbedo(
 	)
 {
 	if( albedo.empty() ) return;
-	bHasData.store( true, std::memory_order_relaxed );
+	bHasAlbedoData.store( true, std::memory_order_relaxed );
 	const size_t idx = ( static_cast<size_t>( y ) * width + x ) * 3;
 	// Saturate each channel to [0, 1]: OIDN expects albedo in that
 	// range.  IBSDF::albedo() should normally already be in range, but
@@ -90,7 +94,7 @@ void AOVBuffers::AccumulateNormal(
 	)
 {
 	if( normals.empty() ) return;
-	bHasData.store( true, std::memory_order_relaxed );
+	bHasNormalData.store( true, std::memory_order_relaxed );
 	const size_t idx = ( static_cast<size_t>( y ) * width + x ) * 3;
 	normals[idx + 0] += static_cast<float>( n.x * weight );
 	normals[idx + 1] += static_cast<float>( n.y * weight );
@@ -105,7 +109,7 @@ void AOVBuffers::AccumulateDepth(
 	)
 {
 	if( depths.empty() ) return;
-	bHasData.store( true, std::memory_order_relaxed );
+	bHasDepthData.store( true, std::memory_order_relaxed );
 	const size_t idx = static_cast<size_t>( y ) * width + x;
 	depths[idx] += static_cast<float>( depth * weight );
 }
@@ -116,27 +120,38 @@ void AOVBuffers::Normalize(
 	Scalar invWeight
 	)
 {
+	NormalizeSelected( x, y, invWeight, plan );
+}
+
+void AOVBuffers::NormalizeSelected(
+	unsigned int x,
+	unsigned int y,
+	Scalar invWeight,
+	const Plan& selected
+	)
+{
 	const float fw = static_cast<float>( invWeight );
 	const size_t pixel = static_cast<size_t>( y ) * width + x;
-	if( !albedo.empty() ) {
+	if( selected.albedo && !albedo.empty() ) {
 		const size_t idx = pixel * 3;
 		albedo[idx + 0] *= fw;
 		albedo[idx + 1] *= fw;
 		albedo[idx + 2] *= fw;
 	}
-	if( !normals.empty() ) {
+	if( selected.normal && !normals.empty() ) {
 		const size_t idx = pixel * 3;
 		normals[idx + 0] *= fw;
 		normals[idx + 1] *= fw;
 		normals[idx + 2] *= fw;
 	}
-	if( !depths.empty() ) depths[pixel] *= fw;
+	if( selected.depth && !depths.empty() ) depths[pixel] *= fw;
 }
 
 void AOVBuffers::ReleaseDepthStorage()
 {
 	std::vector<float>().swap( depths );
 	plan.depth = false;
+	bHasDepthData.store( false, std::memory_order_relaxed );
 }
 
 void RISE::Implementation::CollectFirstHitAOVs(
@@ -155,6 +170,8 @@ void RISE::Implementation::CollectFirstHitAOVs(
 	const unsigned int height = pFilm->GetHeight();
 	if( width != aovBuffers.GetWidth() || height != aovBuffers.GetHeight() ) return;
 	if( samplesPerPixel == 0 ) samplesPerPixel = 1;
+	const AOVBuffers::Plan missing = aovBuffers.MissingPlan();
+	if( !missing.Any() ) return;
 	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
 
 	GlobalThreadPool().ParallelFor( height, [&]( unsigned int y ) {
@@ -167,7 +184,7 @@ void RISE::Implementation::CollectFirstHitAOVs(
 					static_cast<Scalar>( x ) + tl_rng.CanonicalRandom(),
 					static_cast<Scalar>( height - y ) - tl_rng.CanonicalRandom() );
 				Vector3 sampleNormal( 0, 0, 0 );
-				RISEPel sampleAlbedo( 1, 1, 1 );
+				RISEPel sampleAlbedo( 0, 0, 0 );
 				Scalar sampleDepth = 0;
 				Ray ray;
 				if( pCamera->GenerateRay( rc, ray, ptOnScreen ) ) {
@@ -175,6 +192,7 @@ void RISE::Implementation::CollectFirstHitAOVs(
 					RayIntersection ri( ray, rast );
 					pObjects->IntersectRay( ri, true, true, false );
 					if( ri.geometric.bHit ) {
+						if( ri.pModifier ) ri.pModifier->Modify( ri.geometric );
 						sampleNormal = ri.geometric.vNormal;
 						sampleDepth = ri.geometric.range;
 						sampleAlbedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
@@ -182,11 +200,11 @@ void RISE::Implementation::CollectFirstHitAOVs(
 							: RISEPel( 1, 1, 1 );
 					}
 				}
-				aovBuffers.AccumulateAlbedo( x, y, sampleAlbedo, 1.0 );
-				aovBuffers.AccumulateNormal( x, y, sampleNormal, 1.0 );
-				aovBuffers.AccumulateDepth( x, y, sampleDepth, 1.0 );
+				if( missing.albedo ) aovBuffers.AccumulateAlbedo( x, y, sampleAlbedo, 1.0 );
+				if( missing.normal ) aovBuffers.AccumulateNormal( x, y, sampleNormal, 1.0 );
+				if( missing.depth ) aovBuffers.AccumulateDepth( x, y, sampleDepth, 1.0 );
 			}
-			aovBuffers.Normalize( x, y, invSamples );
+			aovBuffers.NormalizeSelected( x, y, invSamples, missing );
 		}
 	} );
 	(void)caster; // retained in the API for parity with the historical collector

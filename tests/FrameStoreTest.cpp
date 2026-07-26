@@ -180,6 +180,16 @@ namespace
 		full.AccumulateDepth( 0, 0, 7.5, 2.0 );
 		full.Normalize( 0, 0, 0.5 );
 		Check( full.HasData(), "planned AOV tap reports accumulated data" );
+		Check( full.HasAlbedoData() && full.HasNormalData() && full.HasDepthData() &&
+		       !full.NeedsFallback(),
+			"planned AOV readiness is tracked independently per plane" );
+
+		AOVBuffers depthFirst( w, h, AOVBuffers::Plan( true, true, true ) );
+		depthFirst.AccumulateDepth( 0, 0, 3.0, 1.0 );
+		const AOVBuffers::Plan missingGuides = depthFirst.MissingPlan();
+		Check( missingGuides.albedo && missingGuides.normal && !missingGuides.depth &&
+		       depthFirst.NeedsFallback(),
+			"depth activity cannot suppress missing albedo/normal completion" );
 
 		FrameStore* store = MakeStore( w, h, 1,
 			{ ChannelId::Albedo, ChannelId::Normal, ChannelId::Depth } );

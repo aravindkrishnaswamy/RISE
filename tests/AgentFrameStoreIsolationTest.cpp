@@ -165,6 +165,43 @@ static std::string BuildDepthContractScene( const std::string& rasterizerChunk )
 		"standard_object\n{\n\tname back_obj\n\tgeometry back_geo\n\tmaterial back_mat\n}\n";
 }
 
+// The same camera geometry inside dense global fog. Nearly every beauty path
+// scatters before reaching the slab, but depth must still describe the raw
+// camera intersection rather than the redirected post-medium path.
+static std::string BuildMediumDepthContractScene( const std::string& rasterizerChunk )
+{
+	return BuildDepthContractScene( rasterizerChunk ) +
+		"\nhomogeneous_medium\n{\n\tname dense_fog\n\tabsorption 0.01 0.01 0.01\n"
+		"\tscattering 5 5 5\n\tphase isotropic\n}\n\n"
+		"global_medium\n{\n\tmedium dense_fog\n}\n";
+}
+
+// Fully transparent shader-dispatch front slab. The transparency shader casts
+// a continuation ray through the same RuntimeContext; recursive path-tracing
+// shader invocations must not replace the root slab's camera depth.
+static std::string BuildTransparencyDepthContractScene( const std::string& rasterizerChunk )
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
+		"transparency_shaderop\n{\n\tname transmit\n\ttransparency white\n\tone_sided false\n}\n\n"
+		"advanced_shader\n{\n\tname transparent_path\n"
+		"\tshaderop DefaultPathTracing 0 100 +\n\tshaderop transmit 0 100 =\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		+ rasterizerChunk + "\n\n"
+		"film\n{\n\twidth 12\n\theight 12\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname front_albedo\n\tcolor 0.7 0.2 0.2\n}\n\n"
+		"lambertian_material\n{\n\tname front_mat\n\treflectance front_albedo\n}\n\n"
+		"box_geometry\n{\n\tname front_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname front_obj\n\tgeometry front_geo\n\tmaterial front_mat\n"
+		"\tshader transparent_path\n\tposition 0 0 1.5\n}\n\n"
+		"uniformcolor_painter\n{\n\tname back_albedo\n\tcolor 0.3 0.6 0.2\n}\n\n"
+		"lambertian_material\n{\n\tname back_mat\n\treflectance back_albedo\n}\n\n"
+		"box_geometry\n{\n\tname back_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname back_obj\n\tgeometry back_geo\n\tmaterial back_mat\n}\n";
+}
+
 static const char* const kPtRasterizer =
 	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}";
 static const char* const kBdptRasterizer =
@@ -190,6 +227,10 @@ static const char* const kAutoRasterizer =
 // RGB, scalar-wavelength, and HWSS spectral execution paths.
 static const char* const kDepthShaderPel =
 	"pixelpel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthShaderSpectralNM =
+	"pixelintegratingspectral_rasterizer\n{\n\tsamples 2\n\tlum_samples 1\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\tmax_recursion 8\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthShaderSpectralHWSS =
+	"pixelintegratingspectral_rasterizer\n{\n\tsamples 2\n\tlum_samples 1\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\tmax_recursion 8\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 static const char* const kDepthPtPel =
 	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 static const char* const kDepthPtSpectralNM =
@@ -200,16 +241,28 @@ static const char* const kDepthBdptPel =
 	"bdpt_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 static const char* const kDepthBdptSpectralHWSS =
 	"bdpt_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthBdptSpectralNM =
+	"bdpt_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 static const char* const kDepthVcmPel =
 	"vcm_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 static const char* const kDepthVcmSpectralHWSS =
 	"vcm_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthVcmSpectralNM =
+	"vcm_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
 
-static void RunDepthContractProbe( const char* label, const char* rasterizerChunk )
+enum DepthSceneKind { kGlassDepth, kMediumDepth, kTransparencyDepth };
+
+static void RunDepthContractProbe( const char* label, const char* rasterizerChunk,
+	DepthSceneKind sceneKind = kGlassDepth )
 {
+	const std::string sceneText = sceneKind == kMediumDepth
+		? BuildMediumDepthContractScene( rasterizerChunk )
+		: ( sceneKind == kTransparencyDepth
+			? BuildTransparencyDepthContractScene( rasterizerChunk )
+			: BuildDepthContractScene( rasterizerChunk ) );
 	const std::string scenePath = WriteTemp(
 		( std::string( "agent_perception_depth_" ) + label + ".RISEscene" ).c_str(),
-		BuildDepthContractScene( rasterizerChunk ) );
+		sceneText );
 	Check( !scenePath.empty(), std::string( label ) + ": depth-contract scene written" );
 	Job* pJob = new Job();
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
@@ -307,7 +360,7 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 		Check( res.perceptionAvailable,
 			label + " (no-override): explicit perception is available for this rasterizer family" );
 		Check( res.perceptionPersistentBytes == 24u * 24u * 7u &&
-		       res.perceptionAuxiliaryPeakBytes == 24u * 24u * 87u,
+		       res.perceptionAuxiliaryPeakBytes == 24u * 24u * 83u,
 			label + " (no-override): perception reports exact compact/peak payload bytes" );
 		unsigned int atlasW = 0, atlasH = 0;
 		AgentPerceptionInfo perceptionInfo;
@@ -856,13 +909,27 @@ int main()
 	RunIsolationProbe( "auto", kAutoRasterizer );
 
 	RunDepthContractProbe( "shader_pel", kDepthShaderPel );
+	RunDepthContractProbe( "shader_spectral_nm", kDepthShaderSpectralNM );
+	RunDepthContractProbe( "shader_spectral_hwss", kDepthShaderSpectralHWSS );
 	RunDepthContractProbe( "pt_pel", kDepthPtPel );
 	RunDepthContractProbe( "pt_spectral_nm", kDepthPtSpectralNM );
 	RunDepthContractProbe( "pt_spectral_hwss", kDepthPtSpectralHWSS );
 	RunDepthContractProbe( "bdpt_pel", kDepthBdptPel );
+	RunDepthContractProbe( "bdpt_spectral_nm", kDepthBdptSpectralNM );
 	RunDepthContractProbe( "bdpt_spectral_hwss", kDepthBdptSpectralHWSS );
 	RunDepthContractProbe( "vcm_pel", kDepthVcmPel );
+	RunDepthContractProbe( "vcm_spectral_nm", kDepthVcmSpectralNM );
 	RunDepthContractProbe( "vcm_spectral_hwss", kDepthVcmSpectralHWSS );
+
+	// Adversarial root-definition coverage: shader recursion and participating
+	// media must not redirect the primary-depth observation.
+	RunDepthContractProbe( "transparent_shader_pel", kDepthShaderPel, kTransparencyDepth );
+	RunDepthContractProbe( "transparent_shader_spectral_nm", kDepthShaderSpectralNM, kTransparencyDepth );
+	RunDepthContractProbe( "transparent_shader_spectral_hwss", kDepthShaderSpectralHWSS, kTransparencyDepth );
+	RunDepthContractProbe( "medium_shader_pel", kDepthShaderPel, kMediumDepth );
+	RunDepthContractProbe( "medium_bdpt_pel", kDepthBdptPel, kMediumDepth );
+	RunDepthContractProbe( "medium_bdpt_spectral_hwss", kDepthBdptSpectralHWSS, kMediumDepth );
+	RunDepthContractProbe( "medium_vcm_pel", kDepthVcmPel, kMediumDepth );
 
 	RunThrowDuringOverrideTest();
 	RunThrowNoOverrideTest();

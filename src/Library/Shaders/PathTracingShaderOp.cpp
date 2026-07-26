@@ -97,16 +97,6 @@ void PathTracingShaderOp::PerformOperation(
 
 	IndependentSampler sampler( rc.random );
 	IORStack localIorStack( ior_stack );
-	if( rc.pAOV && ri.geometric.bHit ) rc.pAOV->depth = ri.geometric.range;
-	if( rc.pAOV && !rc.pAOV->valid && ri.geometric.bHit &&
-	    rc.aovPrefilterMode == OidnPrefilter::Fast )
-	{
-		rc.pAOV->normal = ri.geometric.vNormal;
-		rc.pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-			? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-			: RISEPel( 1, 1, 1 );
-		rc.pAOV->valid = true;
-	}
 
 	c = pIntegrator->IntegrateFromHit(
 		rc, ri.geometric.rast, ri, *pScene, caster, sampler,
@@ -146,16 +136,6 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 	IndependentSampler sampler( rc.random );
 	IORStack localIorStack( ior_stack );
-	if( rc.pAOV && ri.geometric.bHit ) rc.pAOV->depth = ri.geometric.range;
-	if( rc.pAOV && !rc.pAOV->valid && ri.geometric.bHit &&
-	    rc.aovPrefilterMode == OidnPrefilter::Fast )
-	{
-		rc.pAOV->normal = ri.geometric.vNormal;
-		rc.pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-			? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-			: RISEPel( 1, 1, 1 );
-		rc.pAOV->valid = true;
-	}
 
 	// bsdfTimesCos is stored as RISEPel; extract the scalar NM value
 	const Scalar bsdfTimesCosNM = rs.bsdfTimesCos.r;
@@ -212,16 +192,6 @@ void PathTracingShaderOp::PerformOperationHWSS(
 
 	IndependentSampler sampler( rc.random );
 	IORStack localIorStack( ior_stack );
-	if( rc.pAOV && ri.geometric.bHit ) rc.pAOV->depth = ri.geometric.range;
-	if( rc.pAOV && !rc.pAOV->valid && ri.geometric.bHit &&
-	    rc.aovPrefilterMode == OidnPrefilter::Fast )
-	{
-		rc.pAOV->normal = ri.geometric.vNormal;
-		rc.pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-			? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-			: RISEPel( 1, 1, 1 );
-		rc.pAOV->valid = true;
-	}
 
 	pIntegrator->IntegrateFromHitHWSS(
 		rc, ri.geometric.rast, ri, swl, *pScene, caster, sampler,

@@ -79,6 +79,7 @@
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/RayCaster.h"
+#include "../Rendering/AOVBuffers.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/IORStackSeeding.h"
 #include "../Interfaces/IMedium.h"
@@ -100,6 +101,27 @@ static const Scalar BDPT_RAY_EPSILON = 1e-6;
 
 namespace
 {
+	inline void CaptureBDPTPrimaryAOV(
+		const RuntimeContext& rc,
+		const RayIntersection& ri,
+		PixelAOV* pAOV )
+	{
+		if( !pAOV || pAOV->primaryDepthCaptured ) return;
+		pAOV->primaryDepthCaptured = true;
+		pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		if( !ri.geometric.bHit || rc.aovPrefilterMode != OidnPrefilter::Fast ) return;
+
+		RayIntersectionGeometric aovGeom( ri.geometric );
+		if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+		pAOV->normal = aovGeom.vNormal;
+		pAOV->albedo = ( rc.hasPathTracingVariantConfig && rc.pathTracingClayOverride )
+			? RISEPel( 0.5, 0.5, 0.5 )
+			: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+				? ri.pMaterial->GetBSDF()->albedo( aovGeom )
+				: RISEPel( 1, 1, 1 ) );
+		pAOV->valid = true;
+	}
+
 	inline Vector3 GuidingCosineNormal(
 		const Vector3& normal,
 		const Vector3& incomingDir
@@ -1518,11 +1540,11 @@ namespace {
 		std::vector<BDPTVertex>& vertices,
 		std::vector<uint32_t>& subpathStarts,
 		const Tag& tag,
-		const SampledWavelengths* pSwlHWSS )
+		const SampledWavelengths* pSwlHWSS,
+		PixelAOV* pPrimaryAOV )
 	{
 		typedef SpectralValueTraits<Tag> Traits;
 		typedef typename Traits::value_type V;
-		(void)rc;
 
 		vertices.clear();
 		vertices.reserve( maxEyeDepth + 1 );
@@ -1658,6 +1680,7 @@ namespace {
 			// Intersect the scene
 			RayIntersection ri( currentRay, nullRasterizerState );
 			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			if( depth == 0 ) CaptureBDPTPrimaryAOV( rc, ri, pPrimaryAOV );
 
 			// ----------------------------------------------------------------
 			// Participating media: free-flight distance sampling.
@@ -2747,7 +2770,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	std::vector<BDPTVertex>& vertices,
-	std::vector<uint32_t>& subpathStarts
+	std::vector<uint32_t>& subpathStarts,
+	PixelAOV* pPrimaryAOV
 	) const
 {
 	return GenerateEyeSubpathImpl<PelTag>(
@@ -2756,7 +2780,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		pGuidingField, maxGuidingDepth, guidingAlpha, guidingSamplingType,
 #endif
 		rc, cameraRay, screenPos, scene, caster, sampler,
-		vertices, subpathStarts, PelTag{}, 0 );
+		vertices, subpathStarts, PelTag{}, 0, pPrimaryAOV );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -6116,7 +6140,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	std::vector<BDPTVertex>& vertices,
 	std::vector<uint32_t>& subpathStarts,
 	const Scalar nm,
-	const SampledWavelengths* pSwlHWSS
+	const SampledWavelengths* pSwlHWSS,
+	PixelAOV* pPrimaryAOV
 	) const
 {
 	return GenerateEyeSubpathImpl<NMTag>(
@@ -6125,7 +6150,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		pGuidingField, maxGuidingDepth, guidingAlpha, guidingSamplingType,
 #endif
 		rc, cameraRay, screenPos, scene, caster, sampler,
-		vertices, subpathStarts, NMTag( nm ), pSwlHWSS );
+		vertices, subpathStarts, NMTag( nm ), pSwlHWSS, pPrimaryAOV );
 }
 
 //////////////////////////////////////////////////////////////////////

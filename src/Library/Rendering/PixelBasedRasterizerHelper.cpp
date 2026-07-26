@@ -1290,10 +1290,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #else
 		const unsigned int fallbackSPP = 1;
 #endif
-		if( !pAOVBuffers->HasData() ) {
+		if( pAOVBuffers->NeedsFallback() ) {
 			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP );
 		}
 		PropagateAOVsToFrameStore_( *pAOVBuffers );
+		// FrameStore now owns the copied depth plane. Drop the float scratch
+		// before denoising/output (both can throw) and before the observer
+		// compacts its 7-B/pixel sidecar. OIDN needs only albedo+normal.
+		pAOVBuffers->ReleaseDepthStorage();
 	}
 
 	if( bWillDenoise ) {
@@ -1337,11 +1341,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
 	safe_release( pImage );
-	// Depth belongs only to perception and must never remain pinned by
-	// OIDN's intentional albedo/normal scratch cache.  OutputImage has now
-	// compacted it into the 7-B/pixel agent sidecar, so release its capacity
-	// on every path.  A perception-only render then drops the entire tap;
-	// OIDN keeps only its historical 24-B/pixel pair for reuse.
+	// Defensive no-op on the normal path (depth was released immediately
+	// after propagation); still protects early-return configurations.
 	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();
 #ifdef RISE_ENABLE_OIDN
 	if( !bDenoisingEnabled ) {
@@ -1989,10 +1990,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #else
 			const unsigned int fallbackSPP = 1;
 #endif
-			if( !pAOVBuffers->HasData() ) {
+			if( pAOVBuffers->NeedsFallback() ) {
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP );
 			}
 			PropagateAOVsToFrameStore_( *pAOVBuffers );
+			pAOVBuffers->ReleaseDepthStorage();
 		}
 #ifdef RISE_ENABLE_OIDN
 		// Skip denoise pass entirely when show_adaptive_map is on —

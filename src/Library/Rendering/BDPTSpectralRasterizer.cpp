@@ -143,10 +143,11 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	// Non-HWSS single-wavelength NM — pSwlHWSS=nullptr disables the
 	// max-over-wavelengths RR gate (only hero wavelength exists here).
 	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+		sampler, eyeVerts, eyeSubpathStarts, nm, nullptr, pAOV );
 
-	// Extract AOV data (only on the first wavelength). Depth uses the first
-	// surface. Fast albedo/normal use that surface; Accurate selects the first
+	// GenerateEyeSubpathNM captured raw camera depth and Fast guides before
+	// medium transport. Accurate selects the first
 	// non-delta surface. Mirrors the Pel-side walk in BDPTPelRasterizer.cpp:
 	// synthesize a real
 	// camera-ray view direction (BDPTVertex doesn't carry a ray) and use
@@ -154,19 +155,10 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	// silently dropped texture coords / vertex color and gave OIDN a
 	// uniform UV(0,0) albedo on textured surfaces.  See PathVertexEval.h
 	// CONTRACT block and docs/SPECTRAL_PARITY_AUDIT.md §2.11.
-	if( pAOV ) {
+	if( pAOV && rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
 		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
 			const BDPTVertex& v = eyeVerts[i];
-			if( v.type == BDPTVertex::SURFACE ) {
-				pAOV->depth = Vector3Ops::Magnitude(
-					Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
-				break;
-			}
-		}
-		const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
-		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
-			const BDPTVertex& v = eyeVerts[i];
-			if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
+			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 				pAOV->normal = v.normal;
 				if( v.pMaterial->GetBSDF() ) {
 					const Vector3 rayDir = Vector3Ops::Normalize(
@@ -323,24 +315,16 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			// HWSS: pass &swl so the NM generator uses max-over-
 			// wavelengths RR to avoid hero-driven firefly amplification.
 			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, &swl );
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+				sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl, ss == 0 ? pAOV : 0 );
 
 			// Extract AOV from hero evaluation of first bundle.  Same
 			// pattern as the non-HWSS path above (and BDPTPelRasterizer):
 			// real camera-ray view direction + PathVertexEval helper.
-			if( ss == 0 && pAOV ) {
+			if( ss == 0 && pAOV && rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
 				for( unsigned int iv = 1; iv < eyeVerts.size(); iv++ ) {
 					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE ) {
-						pAOV->depth = Vector3Ops::Magnitude(
-							Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
-						break;
-					}
-				}
-				const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
-				for( unsigned int iv = 1; iv < eyeVerts.size(); iv++ ) {
-					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
+					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 						pAOV->normal = v.normal;
 						if( v.pMaterial->GetBSDF() ) {
 							const Vector3 rayDir = Vector3Ops::Normalize(

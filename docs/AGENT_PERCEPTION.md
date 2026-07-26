@@ -59,6 +59,9 @@ remains the default and is backward-compatible. An unknown representation is
 an invalid-params error. If perception was disabled or the last render was
 ineligible, the perception result is explicitly unavailable and contains no
 stale image.
+Builds compiled with `NO_PNG_SUPPORT` may still capture the compact sidecar,
+but report the `read_image` perception representation as unavailable because
+they have no PNG transport encoder.
 
 The planes use these meanings:
 
@@ -85,9 +88,10 @@ semantics.
 private store with only `Albedo`, `Normal`, and `Depth`. `MakeAOVPlan` unions
 those requests with OIDN's albedo/normal requirement. `AOVBuffers` then
 allocates only the requested float planes. A normal non-denoised display render
-allocates none of them. `perception:false` avoids perception-specific depth,
-private-FrameStore, and compact-sidecar allocation; an OIDN-enabled render may
-still allocate its own albedo/normal scratch.
+allocates none of them. `perception:false` avoids perception AOV-channel and
+compact-sidecar allocation; the agent's private beauty FrameStore is still
+installed for output isolation. An OIDN-enabled render may still allocate its
+own albedo/normal scratch.
 
 PT, spectral PT, BDPT, VCM, and the shader-dispatch path attach `PixelAOV` to
 the beauty estimator and collect the requested data during the render.
@@ -110,23 +114,24 @@ For `P = width * height`, the perception-only payload is:
 | Render scratch | 3 float albedo + 3 float normal + 1 float depth | 28 |
 | Private FrameStore | `RISEPel` albedo + `Vector3` normal + float depth | 52 |
 | Cached sidecar | RGB8 albedo + RGB8 normal + 8-bit log depth | 7 |
-| **Peak while compacting** | all three rows above | **87** |
+| **Peak while rendering** | scratch + FrameStore | **80** |
+| **Peak while compacting** | 24-byte guide scratch + FrameStore + sidecar | **83** |
 | **Persistent after render** | compact sidecar only | **7** |
 
 Accordingly:
 
 ```text
-auxiliaryPeakBytes = 87 * P
+auxiliaryPeakBytes = 83 * P
 persistentBytes    =  7 * P
 ```
 
 These are exact logical payload bytes managed by this feature; allocator and
 container bookkeeping, the pre-existing beauty cache, and OIDN's own filter
-internals are excluded. At 1920x1080 this is about 172.0 MiB peak and 13.8 MiB
-retained. The private FrameStore and perception depth scratch are released
-after capture. If OIDN is enabled, its independently-required albedo/normal
+internals are excluded. At 1920x1080 this is about 164.1 MiB peak and 13.8 MiB
+retained. Perception depth scratch is released immediately after propagation;
+the private FrameStore is restored after capture. If OIDN is enabled, its independently-required albedo/normal
 cache retains 24 bytes/pixel for reuse; perception does not retain an
-additional float depth plane. Consequently 87 bytes/pixel is the complete
+additional float depth plane. Consequently 83 bytes/pixel is the complete
 feature payload at peak, not the incremental cost over an already-enabled OIDN
 render.
 
@@ -149,6 +154,9 @@ in the auxiliary-memory figures.
   endpoint can consume it without base64/token inflation.
 - Object and primitive IDs remain separate typed FrameStore channels and the
   existing object-map/query tools remain the more precise semantic interface.
+- The canonical C API and JSON-RPC/MCP wire contracts are additive and remain
+  compatible. Internal C++ clients must rebuild because the rasterizer AOV
+  plumbing extends internal `PixelAOV`/BDPT method signatures.
 - AOV samples are resolved per pixel with the estimator's sample weights, but
   are not reconstruction-filtered through the beauty pixel filter. With a
   non-box filter, silhouettes in albedo/normal/depth can therefore differ
@@ -163,8 +171,9 @@ in the auxiliary-memory figures.
 albedo/normal/depth propagation, and the zero-consumer plan. The end-to-end
 `AgentFirstSliceTest` locks transport defaults, the stable atlas layout, PNG
 validity and dimensions, bounded encoder-row metadata, depth metadata,
-87/7-byte accounting, whole-atlas `maxEdge`, invalid representation handling,
+83/7-byte accounting, whole-atlas `maxEdge`, invalid representation handling,
 and the allocation/stale-cache behavior of `perception:false`.
 `AgentFrameStoreIsolationTest` additionally crosses shader dispatch, PT, BDPT,
-and VCM in RGB, scalar-wavelength, and HWSS modes to lock primary-hit depth
-semantics through glass.
+and VCM across their supported RGB/spectral modes to lock primary-hit depth
+semantics through glass. Shader dispatch covers RGB, scalar wavelength, and
+HWSS; pure-integrator families cover their implemented Pel/NM/HWSS paths.

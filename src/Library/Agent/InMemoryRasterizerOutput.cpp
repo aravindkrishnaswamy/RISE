@@ -125,9 +125,8 @@ void InMemoryRasterizerOutput::CapturePerception_()
 		const double d = static_cast<double>( depth->Data()[i] );
 		const bool hit = RISE::IsFiniteDouble( d ) && d > 0.0;
 		if( hit ) {
-			// Agent-atlas misses are consistently black.  OIDN's fallback can
-			// keep its white-miss convention in the float buffer; the depth mask
-			// makes the observation independent of renderer/fallback family.
+			// Agent-atlas misses are consistently black. The depth mask keeps
+			// the observation independent of renderer/fallback family.
 			const RISEPel& a = albedo->Data()[i];
 			mPerceptionAlbedo[i * 3 + 0] = displayByte( a.r );
 			mPerceptionAlbedo[i * 3 + 1] = displayByte( a.g );
@@ -160,10 +159,11 @@ void InMemoryRasterizerOutput::CapturePerception_()
 	mPerceptionInfo.persistentBytes =
 		static_cast<std::uint64_t>( mPerceptionAlbedo.size()
 			+ mPerceptionNormal.size() + mPerceptionDepth.size() );
-	// Planned capture owns 28 B/pixel in the float tap, 52 B/pixel in
-	// FrameStore's typed AOV channels, and the compact retained planes above.
+	// At compaction, depth float scratch has already been released: the live
+	// feature payload is 24 B/pixel guide scratch + 52 B/pixel FrameStore AOVs
+	// plus the compact retained planes above.
 	mPerceptionInfo.auxiliaryPeakBytes = mPerceptionInfo.persistentBytes
-		+ static_cast<std::uint64_t>( pixels ) * 80u;
+		+ static_cast<std::uint64_t>( pixels ) * 76u;
 }
 
 void InMemoryRasterizerOutput::AdoptCoherentSnapshot(
@@ -416,12 +416,17 @@ namespace
 			png_error( png, "perception PNG output overflow" );
 			return;
 		}
+		bool allocationFailed = false;
 		try {
 			ctx->bytes->insert( ctx->bytes->end(), data, data + length );
 		}
 		catch( ... ) {
-			png_error( png, "perception PNG output allocation failed" );
+			allocationFailed = true;
 		}
+		// Invoke libpng's longjmp only after the C++ handler has exited. The
+		// mutated vector itself lives on the heap, so no modified automatic
+		// C++ object is crossed by the jump.
+		if( allocationFailed ) png_error( png, "perception PNG output allocation failed" );
 	}
 
 	void PerceptionPngFlush( png_structp ) {}
@@ -470,29 +475,40 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	}
 
 #ifdef NO_PNG_SUPPORT
+	outInfo.available = false;
 	outWidth = outHeight = 0;
 	return out;
 #else
 	const std::size_t rowBytes = static_cast<std::size_t>( outWidth ) * 4u;
 	std::vector<unsigned char> row( rowBytes );
 	outInfo.encoderRowBytes = rowBytes;
+	std::vector<unsigned char>* encoded = 0;
+	try {
+		encoded = new std::vector<unsigned char>();
+	}
+	catch( ... ) {
+		outWidth = outHeight = 0;
+		outInfo.encoderRowBytes = 0;
+		return out;
+	}
 
 	png_structp png = png_create_write_struct( PNG_LIBPNG_VER_STRING, 0, 0, 0 );
-	if( !png ) { outWidth = outHeight = 0; return out; }
+	if( !png ) { delete encoded; outWidth = outHeight = 0; return out; }
 	png_infop info = png_create_info_struct( png );
 	if( !info ) {
 		png_destroy_write_struct( &png, 0 );
+		delete encoded;
 		outWidth = outHeight = 0;
 		return out;
 	}
 	if( setjmp( png_jmpbuf( png ) ) ) {
 		png_destroy_write_struct( &png, &info );
-		out.clear();
+		delete encoded;
 		outWidth = outHeight = 0;
 		outInfo.encoderRowBytes = 0;
 		return out;
 	}
-	PerceptionPngWriteContext writeContext{ &out };
+	PerceptionPngWriteContext writeContext{ encoded };
 	png_set_write_fn( png, &writeContext, PerceptionPngWrite, PerceptionPngFlush );
 	png_set_filter( png, 0, PNG_NO_FILTERS );
 	png_set_compression_level( png, Z_BEST_COMPRESSION );
@@ -569,6 +585,8 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	}
 	png_write_end( png, info );
 	png_destroy_write_struct( &png, &info );
+	out.swap( *encoded );
+	delete encoded;
 	return out;
 #endif
 }

@@ -310,8 +310,8 @@ int main()
 		       "agent transport enables same-render perception by default" );
 		Check( r.get( "perceptionPersistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0,
 		       "render reports exact compact sidecar cost (7 bytes/pixel)" );
-		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 87.0,
-		       "render reports exact managed auxiliary peak (87 bytes/pixel)" );
+		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 83.0,
+		       "render reports exact managed auxiliary peak (83 bytes/pixel)" );
 		// render stays lean: no image bytes in the render result.
 		Check( !r.has( "png_base64" ), "render result does NOT carry the image bytes (read_image does)" );
 	}
@@ -785,7 +785,7 @@ int main()
 		       r.get( "depthMax" ).asNumber() >= r.get( "depthMin" ).asNumber(),
 		       "depth range is finite, positive, and ordered" );
 		Check( r.get( "persistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0 &&
-		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 87.0,
+		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 83.0,
 		       "read_image exposes exact managed perception memory" );
 		Check( r.get( "encoderRowBytes" ).asNumber() == 32.0 * 4.0,
 		       "perception encoder uses one RGBA scanline rather than a full atlas staging image" );

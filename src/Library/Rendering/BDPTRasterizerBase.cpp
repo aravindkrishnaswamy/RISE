@@ -1125,10 +1125,13 @@ void BDPTRasterizerBase::RasterizeScene(
 #else
 		const unsigned int fallbackSPP = 1;
 #endif
-		if( !pAOVBuffers->HasData() ) {
+		if( pAOVBuffers->NeedsFallback() ) {
 			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP );
 		}
 		PropagateAOVsToFrameStore_( *pAOVBuffers );
+		// Depth has been copied into FrameStore; OIDN consumes only the two
+		// guide planes. Release before denoise/output and sidecar compaction.
+		pAOVBuffers->ReleaseDepthStorage();
 	}
 
 	// Approach C final resolve: overlay the eye-subpath filter-

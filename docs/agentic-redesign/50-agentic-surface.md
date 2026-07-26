@@ -179,14 +179,14 @@
 >   which to reach for.
 > - **S5 production perception AOVs — SHIPPED (2026-07-26).** Agent transports now request a
 >   demand-planned albedo/world-normal/camera-depth sidecar by default on production beauty
->   renders; direct C++ callers remain opt-in and `perception:false` allocates nothing. PT,
+>   renders; direct C++ callers remain opt-in and `perception:false` allocates no perception AOVs. PT,
 >   spectral PT, BDPT, VCM, and shader dispatch collect inline with beauty; MLT uses one bounded
 >   primary-ray fallback. `read_image {representation:"perception"}` returns a single 2×2
 >   conventional PNG atlas `[beauty, albedo; world_normal, log_depth]`, with `maxEdge` bounding
 >   the complete atlas and structured depth/memory metadata. The production/display FrameStore
 >   is never enlarged: the agent's private store owns requested AOVs only until the output sink
->   compacts them. Exact managed payload accounting is 87 bytes/pixel peak (28-byte float tap +
->   52-byte typed FrameStore channels + 7-byte compact planes), 7 bytes/pixel retained; no
+>   compacts them. Releasing float depth after propagation bounds exact managed payload accounting
+>   to 83 bytes/pixel peak, with 7 bytes/pixel retained; no
 >   four-image/uncompressed-atlas duplicate. Direct/indirect are deliberately left to the
 >   existing on-demand diagnostic modes because their transport split needs an explicit semantic
 >   convention. Full rationale and limits: [`AGENT_PERCEPTION.md`](../AGENT_PERCEPTION.md).
@@ -731,7 +731,7 @@ default) extends the third channel without another beauty render.
 `read_image {representation:"perception"}` returns one bounded atlas containing
 beauty, albedo, world normal, and log depth plus numeric depth/memory metadata.
 Set `perception:false` when the prompt needs only appearance; this is a proven
-zero-auxiliary-allocation path. See [AGENT_PERCEPTION.md](../AGENT_PERCEPTION.md).
+zero-perception-AOV-allocation path. See [AGENT_PERCEPTION.md](../AGENT_PERCEPTION.md).
 
 **Reference-image compare (a Model-B affordance).** Because a scene is a versioned document, the
 loop can be closed against a *target*: the agent renders version N, the user (or a `prompts/`

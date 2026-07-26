@@ -330,34 +330,32 @@ void VCMPelRasterizer::IntegratePixel(
 
 			eyeVerts.clear();
 			static thread_local std::vector<uint32_t> eyeSubpathStarts_vcm;
-			pGen->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts_vcm );
+			PixelAOV primaryAOV;
+			pGen->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+				sampler, eyeVerts, eyeSubpathStarts_vcm, pAOVBuffers ? &primaryAOV : 0 );
 			if( eyeVerts.empty() ) {
 				continue;
 			}
 
-			// Extract AOV data from the eye subpath. Depth uses the first
-			// SURFACE vertex. Fast albedo/normal use that same surface;
-			// Accurate walks to the first non-delta SURFACE vertex.
+			// Raw camera depth and Fast guides were captured before medium
+			// transport by GenerateEyeSubpath. Accurate walks to the first
+			// non-delta SURFACE vertex.
 			// Mirrors BDPTPelRasterizer::IntegratePixelRGB. Rough
 			// dielectrics are handled probabilistically per sample
 			// because each vertex's `isDelta` was set from the
 			// chosen scatter's `pScat->isDelta` in GenerateEyeSubpath.
 			if( pAOVBuffers ) {
-				for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE ) {
-						const Scalar primaryDepth = Vector3Ops::Magnitude(
-							Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
-						if( primaryDepth > 0 ) {
-							pAOVBuffers->AccumulateDepth( x, y, primaryDepth, weight );
-						}
-						break;
-					}
+				if( primaryAOV.depth > 0 ) {
+					pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
+				}
+				if( rc.aovPrefilterMode == OidnPrefilter::Fast && primaryAOV.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
 				}
 				const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
 				for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
 					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
+					if( accurate && v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 						PixelAOV aov;
 						aov.normal = v.normal;
 						if( v.pMaterial->GetBSDF() ) {

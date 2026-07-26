@@ -35,8 +35,9 @@ namespace RISE
 		Vector3		normal;
 		Scalar		depth;
 		bool		valid;		///< Albedo/normal surface is valid; depth is independent
+		bool		primaryDepthCaptured;	///< Raw camera intersection (including a miss) was examined
 
-		PixelAOV() : depth( 0 ), valid( false ) {}
+		PixelAOV() : depth( 0 ), valid( false ), primaryDepthCaptured( false ) {}
 	};
 
 	namespace Implementation
@@ -63,7 +64,9 @@ namespace RISE
 		private:
 			unsigned int width;
 			unsigned int height;
-			std::atomic<bool> bHasData;		///< True once any sample has been accumulated
+			std::atomic<bool> bHasAlbedoData;
+			std::atomic<bool> bHasNormalData;
+			std::atomic<bool> bHasDepthData;
 			Plan plan;
 			std::vector<float> albedo;		///< width*height*3, RGB interleaved
 			std::vector<float> normals;		///< width*height*3, XYZ interleaved
@@ -111,13 +114,33 @@ namespace RISE
 				Scalar invWeight
 				);
 
-			/// Drops the perception-only depth plane immediately after its
-			/// consumer has compacted it.  OIDN may deliberately retain the
-			/// albedo/normal planes for reuse, but must not pin depth capacity.
+			/// Normalizes only the selected planes. Used by the bounded
+			/// first-hit completion pass so already-normalized inline planes
+			/// are never scaled a second time.
+			void NormalizeSelected(
+				unsigned int x,
+				unsigned int y,
+				Scalar invWeight,
+				const Plan& selected
+				);
+
+			/// Drops the perception-only depth scratch after it has been copied
+			/// into FrameStore. OIDN may deliberately retain albedo/normal for
+			/// reuse, but must not pin depth capacity through later output work.
 			void ReleaseDepthStorage();
 
-			/// Returns true if any AOV data has been accumulated.
-			bool HasData() const { return bHasData.load( std::memory_order_relaxed ); }
+			/// Per-plane readiness is deliberately independent: primary depth
+			/// must not make absent OIDN albedo/normal guides look complete.
+			bool HasAlbedoData() const { return bHasAlbedoData.load( std::memory_order_relaxed ); }
+			bool HasNormalData() const { return bHasNormalData.load( std::memory_order_relaxed ); }
+			bool HasDepthData() const { return bHasDepthData.load( std::memory_order_relaxed ); }
+			bool HasData() const { return HasAlbedoData() || HasNormalData() || HasDepthData(); }
+			Plan MissingPlan() const {
+				return Plan( plan.albedo && !HasAlbedoData(),
+					plan.normal && !HasNormalData(),
+					plan.depth && !HasDepthData() );
+			}
+			bool NeedsFallback() const { return MissingPlan().Any(); }
 			const Plan& GetPlan() const { return plan; }
 
 			const float* GetAlbedoPtr() const { return albedo.empty() ? 0 : albedo.data(); }

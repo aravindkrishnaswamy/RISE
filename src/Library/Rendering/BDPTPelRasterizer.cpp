@@ -124,10 +124,11 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// `subpathStarts` outparam is retained for Phase-2 integrator
 	// cleanup but always contains exactly one [0, size) range.
 	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
-	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts );
+	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+		sampler, eyeVerts, eyeSubpathStarts, pAOV );
 
-	// Extract AOV data. Depth always uses the first SURFACE vertex. Fast
-	// albedo/normal also use that surface; Accurate walks to the first
+	// GenerateEyeSubpath captured raw camera depth and Fast guides before
+	// medium transport. Accurate walks to the first
 	// non-delta SURFACE vertex (skipping glass / mirror, whose sampled
 	// delta state is stored on each vertex). See docs/OIDN.md.
 	//
@@ -142,21 +143,10 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// When no non-delta surface is found (whole subpath is glass /
 	// mirror), pAOV stays !valid and the caller skips accumulation,
 	// which OIDN handles via its empty-aux path.
-	if( pAOV ) {
-		// Depth always describes the primary camera-visible surface and is
-		// independent of the OIDN prefilter's albedo/normal surface choice.
+	if( pAOV && rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
 		for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
 			const BDPTVertex& v = eyeVerts[iv];
-			if( v.type == BDPTVertex::SURFACE ) {
-				pAOV->depth = Vector3Ops::Magnitude(
-					Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
-				break;
-			}
-		}
-		const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
-		for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-			const BDPTVertex& v = eyeVerts[iv];
-			if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
+			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 				pAOV->normal = v.normal;
 				if( v.pMaterial->GetBSDF() ) {
 					// Rebuild the RayIntersectionGeometric from the vertex
