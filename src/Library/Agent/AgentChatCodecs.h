@@ -171,15 +171,85 @@ namespace RISE
 			//! (Eval-harness E1 -- fed into the trajectory `llm` record's
 			//! OTel `gen_ai.usage.*` fields).  Each field is -1 when the
 			//! provider omitted it (absent-tolerant, null-safe): Anthropic
-			//! `usage.{input_tokens,output_tokens,cache_read_input_tokens}`,
+			//! `usage.{input_tokens,output_tokens,cache_read_input_tokens}`
+			//! + `usage.output_tokens_details.thinking_tokens`,
 			//! Gemini `usageMetadata.{promptTokenCount,candidatesTokenCount,
-			//! cachedContentTokenCount}`, OpenAI `usage.{prompt_tokens,
-			//! completion_tokens,prompt_tokens_details.cached_tokens}`.
+			//! cachedContentTokenCount,thoughtsTokenCount}`, OpenAI
+			//! `usage.{prompt_tokens,completion_tokens,
+			//! prompt_tokens_details.cached_tokens,
+			//! completion_tokens_details.reasoning_tokens}` (Chat Completions)
+			//! or `usage.{input_tokens,output_tokens,
+			//! input_tokens_details.cached_tokens,
+			//! output_tokens_details.reasoning_tokens}` (Responses).
+			//!
+			//! NORMALIZED SEMANTICS (the codecs convert INTO these; providers
+			//! disagree on the wire -- see each ParseUsage for the per-provider
+			//! evidence):
+			//!   * `outputTokens` is the TOTAL BILLED GENERATION for the turn
+			//!     -- visible output PLUS any hidden reasoning/thinking the
+			//!     provider charged at the output rate.
+			//!   * `reasoningOutputTokens` is the reasoning/thinking SUBSET of
+			//!     that total.
+			//!   * INVARIANT, whenever `outputTokens >= 0`:
+			//!         0 <= reasoningOutputTokens <= outputTokens
+			//!     so `outputTokens - reasoningOutputTokens` is the visible
+			//!     output and a downstream cost model can price the total with
+			//!     ONE output rate without double counting.  This is ENFORCED,
+			//!     not merely documented: every ParseUsage ends in the shared
+			//!     EnforceUsageInvariant (AgentChatCodecs.cpp), which clamps a
+			//!     self-contradictory body (`reasoning > output` -- reachable
+			//!     from any provider, since the `local` provider's base URL is
+			//!     arbitrary) down to the billed total and raises
+			//!     `reasoningClamped`.  No input, however hostile, can produce
+			//!     a ChatUsage that breaks the invariant.
+			//!   * Every count is either -1 (absent) or >= 0.  A provider-sent
+			//!     NEGATIVE is garbage, not a count: it normalizes to 0, never
+			//!     to the -1 sentinel and never into arithmetic.
+			//!   * A body that reports reasoning but NO output counter yields
+			//!     `outputTokens == reasoningOutputTokens` (the subset is a
+			//!     lower bound on the billed generation), identically on every
+			//!     provider -- so `reasoningOutputTokens >= 0` implies
+			//!     `outputTokens >= 0`, and those tokens are never dropped.
+			//!     This holds for a REPORTED ZERO too (>= 0 is the whole
+			//!     non-sentinel range, not just the positives): a body whose
+			//!     only generation evidence is `reasoning_tokens: 0` publishes
+			//!     `outputTokens == 0`, never -1 beside a known subset.
+			//!   * The CLAMP DOES NOT DESTROY EVIDENCE.
+			//!     `reasoningOutputTokensReported` carries the provider's own
+			//!     count, captured before the clamp; it equals
+			//!     `reasoningOutputTokens` on every healthy body and is the
+			//!     only surviving copy of the claim on a clamped one.
+			//! WHOSE reasoning counter is a separate summand is a PER-PROVIDER
+			//! fact, decided from that provider's recorded evidence and NOT
+			//! re-derived per response from body arithmetic (see the "PROVIDER
+			//! DISPOSITION" table in OpenAIChatCodec::ParseUsage for why).
+			//! Gemini (`thoughtsTokenCount`) and xAI
+			//! (`completion_tokens_details.reasoning_tokens`) report it
+			//! SEPARATELY, so it is FOLDED IN here; Anthropic and OpenAI (both
+			//! wire shapes) already include it in their output counter, so they
+			//! pass through untouched.
 			struct ChatUsage
 			{
 				long long inputTokens          = -1;   //!< prompt / input tokens (-1 = absent)
-				long long outputTokens         = -1;   //!< completion / output tokens (-1 = absent)
+				long long outputTokens         = -1;   //!< TOTAL billed generation: visible + reasoning (-1 = absent)
 				long long cacheReadInputTokens = -1;   //!< cache-read input tokens (-1 = absent)
+				long long reasoningOutputTokens = -1;  //!< the reasoning/thinking SUBSET of outputTokens (-1 = provider reported none)
+				//! The provider's OWN reasoning count, captured before the
+				//! invariant could clamp it (-1 = provider reported none).
+				//! Identical to `reasoningOutputTokens` unless
+				//! `reasoningClamped` is set, in which case this is the ONLY
+				//! surviving copy of what the body claimed -- the clamped
+				//! record alone cannot tell a 51-token turn that reported 51
+				//! from one that reported 362.  The clamped value is what
+				//! costs and rollups use; this one is evidence.
+				long long reasoningOutputTokensReported = -1;
+				//! DIAGNOSTIC: the body claimed more reasoning than it billed
+				//! as output, so `reasoningOutputTokens` was clamped to
+				//! `outputTokens` to keep the invariant.  The codec layer logs
+				//! NOTHING (bodies carry scene content and api keys), so the
+				//! anomaly rides out in-band -- the trajectory `llm` record
+				//! serializes it as `gen_ai.usage.reasoning_clamped` when set.
+				bool      reasoningClamped = false;
 			};
 
 		//! One tool call the model requested.  `id` is the provider's

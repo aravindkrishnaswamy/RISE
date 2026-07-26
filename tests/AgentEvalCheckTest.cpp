@@ -25,6 +25,17 @@
 //    T4  "render" -- passes on a generous band; fails on an impossible one
 //        (meanLumaMax:0.0 -- the scene is never pure black); fails on a
 //        width-without-height shape error.
+//    T4d "render" -- the `samples` PIN is not silently defeatable: on a
+//        scene whose rasterizer does not implement
+//        IRasterizer::SetSampleCountOverride (auto_rasterizer), an
+//        UNPINNED band passes but the SAME band PINNED fails loudly;
+//        the pinned band still passes on pathtracing_pel_rasterizer.
+//    T4e "render" -- the width/height PIN is not silently defeatable: a
+//        compareToImage reference wider than Job's kMaxFilmWidth makes
+//        IJob::SetFilm honestly refuse, so the render falls back to the
+//        scene-authored film size; the checkpoint must FAIL naming the
+//        dropped pin and both dimension pairs.  Honoured dims (adopted
+//        and explicit) and an unpinned checkpoint all still pass.
 //    T5  "objectmap" -- legendContains pass/fail; queryAt pass/fail
 //        (expectName mismatch); a checkpoint naming none of the three
 //        assertions is a shape-error fail.
@@ -689,6 +700,107 @@ static void TestRenderCheckpoint()
 	checkOneDetailContains( "[{\"kind\":\"render\",\"camera\":\"oops\"}]",
 		"\"camera\" must be an object",
 		"a wrong-typed (non-object) camera field is refused, not silently skipped" );
+}
+
+//----------------------------------------------------------------------
+// T4d: the `samples` PIN is not silently defeatable.
+//
+// `samples` on a render checkpoint exists so the GRADING render is
+// converged and OUT of the model's control -- the scene's own sample
+// count is a chunk the model may freely edit.  But
+// IRasterizer::SetSampleCountOverride is OPT-IN: only the pixel-based
+// family (PT / spectral PT / BDPT / VCM) implements it; MLT, the
+// photon-map-only integrators, and AutoRasterizer's outer dispatcher
+// wrapper honestly return false.  `auto_rasterizer` and
+// `mlt_spectral_rasterizer` are first-class selectable rasterizers in
+// the scene language, so on an open-ended "build a scene" task a model
+// that swaps the rasterizer chunk reverts the grading render to its own
+// authored sample count.
+//
+// This drives a scene that is BYTE-IDENTICAL to kScene except that its
+// rasterizer chunk is `auto_rasterizer` -- a real, honestly
+// non-supporting rasterizer, not a synthesized result -- and proves:
+//   (a) the scene renders fine and an UNPINNED band passes (so the
+//       failure below is the pin, not a broken scene);
+//   (b) a PINNED band FAILS, with a diagnostic naming the situation;
+//   (c) the SAME pinned band on kScene (pathtracing_pel_rasterizer,
+//       which does support the override) still PASSES -- the new check
+//       does not spuriously fire on a supporting rasterizer.  This is
+//       the case that guards the pre-existing image_reconstruct_*
+//       scenarios, which pin samples:64 against a PT scene.
+//
+// RED-PROVE: pre-fix, CheckRenderKind never inspected
+// rr.samplesOverridden at all, so (b) rendered at the scene-authored 8
+// spp, satisfied the generous band, and reported passed==true with a
+// "render bands satisfied" detail -- assertion (b) fails without the
+// fix (verified by reverting the samples-pin block).
+//----------------------------------------------------------------------
+static void TestRenderSamplesPinNotDefeatable()
+{
+	std::printf( "T4d: \"render\" checkpoint -- the `samples` pin is not silently defeatable...\n" );
+	const std::string dir = ScratchRunDir( "t4b_samples_pin" );
+
+	// kScene with ONE substitution: pathtracing_pel_rasterizer ->
+	// auto_rasterizer (AutoRasterizer : public Rasterizer, which inherits
+	// IRasterizer's `return false` default for SetSampleCountOverride).
+	std::string autoScene = kScene;
+	{
+		const std::string from = "pathtracing_pel_rasterizer";
+		const std::string to   = "auto_rasterizer";
+		const std::size_t at = autoScene.find( from );
+		Check( at != std::string::npos, "T4d fixture: kScene carries a pathtracing_pel_rasterizer chunk to substitute" );
+		if( at != std::string::npos ) autoScene.replace( at, from.size(), to );
+	}
+
+	AgentEvalScenario sAuto = MakeScenario( "samples_pin_auto", autoScene, "Render it", "commit", kNoLoopFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle hAuto = RunScenario( sAuto, opts );
+	Check( hAuto.result.terminalStatus == "final_text",
+		"samples_pin_auto run reached final_text (the auto_rasterizer scene loads and renders)" );
+
+	auto checkAgainst = [&]( AgentEvalRunHandle& h, const AgentEvalScenario& base,
+	                         const std::string& cpJson, bool expectPass,
+	                         const std::string& mustContain, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = base; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() != 1 ) { Check( false, label + ": expected exactly one checkpoint result" ); return; }
+		Check( r.checkpoints[0].passed == expectPass,
+			label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+			" (detail: " + r.checkpoints[0].detail + ")" );
+		if( !mustContain.empty() ) {
+			Check( r.checkpoints[0].detail.find( mustContain ) != std::string::npos,
+				label + ": detail names the situation (detail: " + r.checkpoints[0].detail + ")" );
+		}
+	};
+
+	// (a) CONTROL: no pin -> the auto_rasterizer scene renders and the
+	// generous band passes.  Without this, a failure in (b) could just
+	// mean "this scene doesn't render".
+	checkAgainst( hAuto, sAuto,
+		"[{\"kind\":\"render\",\"width\":16,\"height\":16,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		true, "", "T4d(a) an UNPINNED band passes on the auto_rasterizer scene" );
+
+	// (b) RED-PROVE: the SAME generous band, now PINNED, must FAIL --
+	// the pin could not be applied, so the band was measured at the
+	// scene-authored (model-controlled) count and is not trustworthy.
+	checkAgainst( hAuto, sAuto,
+		"[{\"kind\":\"render\",\"width\":16,\"height\":16,\"samples\":4,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		false, "\"samples\" pin was NOT APPLIED",
+		"T4d(b) a PINNED band FAILS LOUDLY when the rasterizer cannot honour the pin" );
+
+	// (c) GREEN CONTROL: the identical pinned checkpoint against the
+	// stock kScene (pathtracing_pel_rasterizer -- the pixel-based family,
+	// which DOES implement SetSampleCountOverride) still passes.  This is
+	// the regression guard for image_reconstruct_single /
+	// image_reconstruct_multi, which have always pinned samples:64.
+	AgentEvalScenario sPt = MakeScenario( "samples_pin_pt", kScene, "Render it", "commit", kNoLoopFixture, dir, "[]" );
+	AgentEvalRunHandle hPt = RunScenario( sPt, opts );
+	Check( hPt.result.terminalStatus == "final_text", "samples_pin_pt run reached final_text" );
+	checkAgainst( hPt, sPt,
+		"[{\"kind\":\"render\",\"width\":16,\"height\":16,\"samples\":4,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		true, "", "T4d(c) the SAME pinned band still passes on a rasterizer that honours the pin" );
 }
 
 //----------------------------------------------------------------------
@@ -2913,6 +3025,154 @@ static void TestCompareToImageOversizedReferenceIsRefusedCheaply()
 		" ms ceiling) -- consistent with a 24-byte header probe, NOT a full BeginRead decode of a ~192 MiB image" );
 }
 
+//----------------------------------------------------------------------
+// T4e: the width/height PIN is not silently defeatable (the twin of T4d).
+//
+// `width`/`height` on a render checkpoint are a HARD PIN for the same
+// reason `samples` is: the scene's `film` chunk is under the model's
+// control, and the mean-channel bands are resolution-sensitive.  But
+// AgentSession's `applyFilmOverride` DISCARDS `IJob::SetFilm`'s bool
+// return, and SetFilm honestly REFUSES dims beyond Job's own
+// kMaxFilm{Width,Height} sanity bound (32768) -- the render then
+// silently proceeds at the scene-authored film size (kScene: 24x24).
+//
+// REACHING A REAL DROP.  The checkpoint's own explicit-dims validator
+// caps width/height at 32768, which is exactly kMaxFilmWidth, so the
+// explicit-dims path cannot itself drive SetFilm past the bound.  The
+// compareToImage path can and does: it ADOPTS the reference PNG's dims,
+// and a reference wider than 32768 (here a genuinely valid 40000x1 solid
+// PNG -- only 40,000 px, comfortably inside both the 64,000,000-px eval
+// render budget and DecodePngToRgb8's own header-probe guard, so it is
+// accepted and adopted) makes SetFilm(40000, 1, ...) return false for
+// real.  This is a REAL render coming back at dims other than the ones
+// requested, through the ordinary path -- not a synthesized result.
+//
+// RED-PROVE: pre-fix, CheckRenderKind contained ZERO references to
+// rr.width/rr.height.  The drop was noticed only INDIRECTLY, and only on
+// this one path, by the compare block's own decoded-candidate-vs-
+// reference size check ("compareToImage dimension mismatch"), which
+// reports the symptom at the comparison layer and says nothing about the
+// pin having been dropped -- and on an explicit-dims checkpoint with no
+// compareToImage there was no notice at all.  Assertion (b)'s
+// detail-contains therefore FAILS without the fix (verified by deleting
+// the guard: the detail reads "render band(s) violated: compareToImage
+// dimension mismatch: render is 24x24 but reference ... is 40000x1").
+//
+// Assertions (a), (c) and (d) are the anti-spurious-fire controls, and
+// (a) is specifically the regression guard for image_reconstruct_single /
+// image_reconstruct_multi, whose grading render runs on exactly this
+// reference-ADOPTED-dims path.
+//----------------------------------------------------------------------
+static void TestRenderDimsPinNotDefeatable()
+{
+	std::printf( "T4e: \"render\" checkpoint -- the width/height pin is not silently defeatable...\n" );
+	const std::string dir = ScratchRunDir( "t4e_dims_pin" );
+
+	AgentEvalScenario s = MakeScenario( "dims_pin_probe", kScene, "Render it", "commit", kNoLoopFixture, dir, "[]" );
+	AgentEvalRunOptions opts; opts.runDir = dir;
+	AgentEvalRunHandle h = RunScenario( s, opts );
+	Check( h.result.terminalStatus == "final_text", "dims_pin_probe run reached final_text" );
+
+	auto checkOne = [&]( const std::string& cpJson, bool expectPass,
+	                     const std::string& mustContain, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() != 1 ) { Check( false, label + ": expected exactly one checkpoint result" ); return; }
+		Check( r.checkpoints[0].passed == expectPass,
+			label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+			" (detail: " + r.checkpoints[0].detail + ")" );
+		if( !mustContain.empty() ) {
+			Check( r.checkpoints[0].detail.find( mustContain ) != std::string::npos,
+				label + ": detail names the situation (detail: " + r.checkpoints[0].detail + ")" );
+		}
+	};
+
+	// (a) CONTROL -- the reference-ADOPTED-dims path, HONOURED.  A small
+	// (17x13, deliberately neither square nor equal to kScene's authored
+	// 24x24) reference is adopted, SetFilm accepts it, and the render
+	// really does come back at 17x13 -> the guard stays silent and the
+	// checkpoint passes.  rmseMax 1.0 is the permissive ceiling: this
+	// assertion is about DIMS, not about image content (the synthetic
+	// solid-orange reference looks nothing like the scene).  This is the
+	// image_reconstruct_* regression guard -- those scenarios grade on
+	// exactly this path.
+	const std::string okRefPath = dir + "/adopted_dims_ref.png";
+	Check( WriteSyntheticSolidPng( okRefPath, 17, 13 ),
+		"T4e fixture: a valid 17x13 reference PNG is written" );
+	checkOne( "[{\"kind\":\"render\",\"compareToImage\":\"" + okRefPath + "\",\"rmseMax\":1.0}]",
+		true, "", "T4e(a) an ADOPTED-dims render that IS honoured passes (the guard does not spuriously fire)" );
+
+	// (b) RED-PROVE -- the reference-ADOPTED-dims path, DROPPED.  40000 >
+	// kMaxFilmWidth (32768), so SetFilm genuinely refuses and the render
+	// falls back to kScene's authored 24x24.  The failure must name the
+	// DROPPED PIN and both dimension pairs, not merely the downstream
+	// comparison symptom.
+	//
+	// Run in THREE variants so each disjunct of the guard's
+	// `rr.width != rp.width || rr.height != rp.height` is proven
+	// INDEPENDENTLY (kScene's authored film is 24x24, so a reference that
+	// shares one axis with it isolates the other):
+	//   40000x1     -- BOTH axes differ (the headline case)
+	//   40000x24    -- only the WIDTH differs  -> isolates the width disjunct
+	//   24x40000    -- only the HEIGHT differs -> isolates the height disjunct
+	// Without the two axis-isolating variants, either disjunct could be
+	// deleted with the suite still green -- the other would satisfy the
+	// test first.
+	auto redProve = [&]( unsigned int refW, unsigned int refH, const std::string& tag ) {
+		char dimsBuf[64];
+		std::snprintf( dimsBuf, sizeof( dimsBuf ), "%ux%u", refW, refH );
+		const std::string wideRefPath = dir + "/too_wide_ref_" + tag + ".png";
+		Check( WriteSyntheticSolidPng( wideRefPath, refW, refH ),
+			"T4e fixture: a valid " + std::string( dimsBuf ) + " reference PNG is written "
+			"(inside the 64,000,000-px budget, past Job's 32768-px film bound on one axis)" );
+		JsonValue cps; std::string err;
+		const std::string cpJson =
+			"[{\"kind\":\"render\",\"compareToImage\":\"" + wideRefPath + "\",\"rmseMax\":1.0}]";
+		Check( JsonParse( cpJson, cps, err ), "T4e(b/" + tag + "): checkpoint JSON parses" );
+		AgentEvalScenario s2 = s; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1, "T4e(b/" + tag + "): exactly one checkpoint result" );
+		if( r.checkpoints.size() != 1 ) return;
+		const std::string& d = r.checkpoints[0].detail;
+		Check( !r.checkpoints[0].passed,
+			"T4e(b/" + tag + ") a render whose dims pin was DROPPED must FAIL (detail: " + d + ")" );
+		Check( d.find( "width/height pin was NOT APPLIED" ) != std::string::npos,
+			"T4e(b/" + tag + ") the detail names the DROPPED PIN, not just the downstream comparison symptom "
+			"(detail: " + d + ")" );
+		// "requested "/"actually produced " prefixes deliberately: the
+		// PRE-FIX comparison-layer message also contains the bare dimension
+		// tokens ("render is 24x24 but reference ... is 40000x1"), so an
+		// unprefixed find() here would pass for the wrong reason.
+		Check( d.find( "requested " + std::string( dimsBuf ) ) != std::string::npos,
+			"T4e(b/" + tag + ") the detail names the REQUESTED dims (detail: " + d + ")" );
+		Check( d.find( "actually produced 24x24" ) != std::string::npos,
+			"T4e(b/" + tag + ") the detail names the dims the render ACTUALLY produced (detail: " + d + ")" );
+	};
+	redProve( 40000, 1,  "both" );    // both axes differ from the 24x24 fallback
+	redProve( 40000, 24, "width" );   // height matches the fallback -> only the width disjunct can fire
+	redProve( 24, 40000, "height" );  // width matches the fallback  -> only the height disjunct can fire
+
+	// (c) CONTROL -- NO dims requested at all.  rp.width/rp.height stay 0,
+	// the render legitimately uses the scene's own film size, and the guard
+	// must stay silent.  Without the `!= 0` predicate this passes-by-design
+	// case would fail on every unpinned render checkpoint in the suite.
+	checkOne( "[{\"kind\":\"render\",\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		true, "", "T4e(c) an UNPINNED render checkpoint does not trip the dims guard" );
+
+	// (d) CONTROL -- the EXPLICIT-dims path, honoured.  16x16 is inside
+	// SetFilm's bound, so the override really applies and the guard stays
+	// silent.  (The explicit path cannot itself drive SetFilm past the
+	// bound -- the checkpoint validator's own [1,32768] cap is exactly
+	// kMaxFilmWidth -- so this is the explicit path's positive control;
+	// (b) is what proves the guard's comparison is against the dims
+	// ACTUALLY REQUESTED (`rp`) rather than the checkpoint's literal
+	// fields, which (b) does not even supply.)
+	checkOne( "[{\"kind\":\"render\",\"width\":16,\"height\":16,\"meanLumaMin\":0.0,\"meanLumaMax\":5.0}]",
+		true, "", "T4e(d) an EXPLICIT dims pin that IS honoured passes" );
+}
+
 static void TestRenderCameraCompareToImage()
 {
 	std::printf( "T4c: render camera override + compareToImage/rmseMax...\n" );
@@ -4719,6 +4979,8 @@ int main()
 	TestDocumentCheckpoint();
 	TestUntouchedCheckpoint();
 	TestRenderCheckpoint();
+	TestRenderSamplesPinNotDefeatable();
+	TestRenderDimsPinNotDefeatable();
 	TestObjectmapCheckpoint();
 	TestDiagnosticsCheckpointClean();
 	TestDiagnosticsLiveDocInvariant();
