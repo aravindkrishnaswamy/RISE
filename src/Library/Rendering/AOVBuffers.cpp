@@ -162,7 +162,8 @@ void RISE::Implementation::CollectFirstHitAOVs(
 	const IScene& scene,
 	IRayCaster& caster,
 	AOVBuffers& aovBuffers,
-	unsigned int samplesPerPixel
+	unsigned int samplesPerPixel,
+	OidnPrefilter prefilterMode
 	)
 {
 	const ICamera* pCamera = scene.GetCamera();
@@ -181,6 +182,7 @@ void RISE::Implementation::CollectFirstHitAOVs(
 	GlobalThreadPool().ParallelFor( height, [&]( unsigned int y ) {
 		static thread_local RandomNumberGenerator tl_rng;
 		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
+		rc.aovPrefilterMode = prefilterMode;
 
 		for( unsigned int x = 0; x < width; ++x ) {
 			for( unsigned int s = 0; s < samplesPerPixel; ++s ) {
@@ -193,15 +195,38 @@ void RISE::Implementation::CollectFirstHitAOVs(
 				Ray ray;
 				if( pCamera->GenerateRay( rc, ray, ptOnScreen ) ) {
 					RasterizerState rast = { x, y };
-					RayIntersection ri( ray, rast );
-					pObjects->IntersectRay( ri, true, true, false );
-					if( ri.geometric.bHit ) {
-						if( ri.pModifier ) ri.pModifier->Modify( ri.geometric );
-						sampleNormal = ri.geometric.vNormal;
-						sampleDepth = ri.geometric.range;
-						sampleAlbedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-							: RISEPel( 1, 1, 1 );
+					const bool traceAccurateGuide =
+						prefilterMode == OidnPrefilter::Accurate &&
+						( missing.albedo || missing.normal );
+					if( traceAccurateGuide ) {
+						// Estimators such as MLT cannot attach PixelAOV to their
+						// splat-chain samples. Their bounded fallback retrace still
+						// honors Accurate semantics by asking the prepared shader
+						// caster to walk delta/medium continuations and populate one
+						// coherent guide. Depth remains the raw camera intersection,
+						// captured by RayCaster before any continuation.
+						PixelAOV aov;
+						rc.pAOV = &aov;
+						RISEPel ignoredRadiance( 0, 0, 0 );
+						caster.CastRay( rc, rast, ray, ignoredRadiance,
+							IRayCaster::RAY_STATE(), 0, 0 );
+						rc.pAOV = 0;
+						if( aov.valid ) {
+							sampleNormal = aov.normal;
+							sampleAlbedo = aov.albedo;
+						}
+						if( aov.primaryDepthCaptured ) sampleDepth = aov.depth;
+					} else {
+						RayIntersection ri( ray, rast );
+						pObjects->IntersectRay( ri, true, true, false );
+						if( ri.geometric.bHit ) {
+							if( ri.pModifier ) ri.pModifier->Modify( ri.geometric );
+							sampleNormal = ri.geometric.vNormal;
+							sampleDepth = ri.geometric.range;
+							sampleAlbedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+								: RISEPel( 1, 1, 1 );
+						}
 					}
 				}
 				if( missing.albedo ) aovBuffers.AccumulateAlbedo( x, y, sampleAlbedo, 1.0 );
@@ -211,5 +236,4 @@ void RISE::Implementation::CollectFirstHitAOVs(
 			aovBuffers.NormalizeSelected( x, y, invSamples, missing );
 		}
 	} );
-	(void)caster; // retained in the API for parity with the historical collector
 }

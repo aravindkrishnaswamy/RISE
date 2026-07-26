@@ -99,9 +99,14 @@ PT, spectral PT, BDPT, VCM, and the shader-dispatch path attach `PixelAOV` to
 the beauty estimator and collect the requested data during the render.
 Progressive and adaptive paths use the same sample weights and normalize once.
 MLT and any legacy estimator that cannot attach a `PixelAOV` use one bounded,
-parallel primary-ray fallback after beauty. Thus the common paths are a true
-single estimator pass; the API remains correct on every rasterizer without
-pretending MLT's Markov-chain samples have a per-pixel first-hit identity.
+parallel primary-ray fallback after beauty. In `fast` mode that retrace stops
+at the geometric first hit; in `accurate` mode it runs through the prepared
+shader caster so delta surfaces and primary-medium continuations reach the
+first non-delta surface. Thus the common paths are a true single estimator
+pass; the API remains correct on every rasterizer without pretending MLT's
+Markov-chain samples have a per-pixel first-hit identity. Accurate MLT pays
+for the explicitly requested bounded shader retrace rather than silently
+degrading to Fast.
 
 The private FrameStore is restored before the render call returns, so an agent
 render cannot mutate or enlarge the GUI/display store. The cached agent sink
@@ -137,6 +142,11 @@ cache retains 24 bytes/pixel for reuse; perception does not retain an
 additional float depth plane. Consequently 83 bytes/pixel is the complete
 current-frame payload at its cold peak, not the incremental cost over an
 already-enabled OIDN render.
+
+If rendering, denoising, or an output callback throws, an unwind guard releases
+all AOV scratch rather than retaining an unreported 24- or 28-byte/pixel failed
+attempt. The last successful compact observation remains available at its
+already-reported persistent cost.
 
 `auxiliaryPeakBytes` is session-aware. RISE preserves the last successful
 observation until its replacement render and PNG encode succeed, so the prior
@@ -186,7 +196,9 @@ validity and dimensions, bounded encoder-row metadata, depth metadata,
 83/7-byte cold accounting, 90-byte replacement and 87-byte animation peaks,
 whole-atlas `maxEdge`, invalid representation handling,
 the allocation/stale-cache behavior of `perception:false`, and byte parity
-between conventional and atlas beauty under a non-sRGB output color space.
+between conventional and atlas beauty under a non-sRGB output color space. It
+also locks Accurate guide continuation after an HWSS primary-medium scatter
+and MLT's bounded Accurate retrace through transparent geometry.
 `AgentFrameStoreIsolationTest` additionally crosses shader dispatch, PT, BDPT,
 and VCM across their supported RGB/spectral modes to lock primary-hit depth
 semantics through glass. Shader dispatch covers RGB, scalar wavelength, and

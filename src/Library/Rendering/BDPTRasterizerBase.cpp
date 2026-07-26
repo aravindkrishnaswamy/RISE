@@ -1126,7 +1126,8 @@ void BDPTRasterizerBase::RasterizeScene(
 		const unsigned int fallbackSPP = 1;
 #endif
 		if( pAOVBuffers->NeedsFallback() ) {
-			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP );
+			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
+				mDenoisingPrefilter );
 		}
 		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		// Depth has been copied into FrameStore; OIDN consumes only the two

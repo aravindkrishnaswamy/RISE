@@ -42,6 +42,31 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// pAOVBuffers is a reusable member because successful OIDN renders keep
+	// their albedo/normal pair warm. A failed render, however, has no valid
+	// cache contract: release every perception/OIDN plane while unwinding so
+	// an output, observer, or denoiser exception cannot strand 24/28 B/pixel.
+	class AOVBufferUnwindGuard
+	{
+		AOVBuffers*& target;
+		bool armed;
+
+	public:
+		explicit AOVBufferUnwindGuard( AOVBuffers*& target_ ) :
+			target( target_ ), armed( true ) {}
+		~AOVBufferUnwindGuard()
+		{
+			if( armed ) {
+				delete target;
+				target = 0;
+			}
+		}
+		void Dismiss() { armed = false; }
+	};
+}
+
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 	IRayCaster* pCaster_,
 	RISE::Implementation::FrameStore* frameStore
@@ -969,6 +994,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
+	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 
 	// Landing 5: propagate the camera's photographic exposure
 	// compensation to every output once at render entry.  Default
@@ -1289,7 +1315,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		const unsigned int fallbackSPP = 1;
 #endif
 		if( pAOVBuffers->NeedsFallback() ) {
-			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP );
+			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
+				mDenoisingPrefilter );
 		}
 		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		// FrameStore now owns the copied depth plane. Drop the float scratch
@@ -1350,6 +1377,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #ifdef RISE_ENABLE_OIDN
 	}
 #endif
+	aovUnwindGuard.Dismiss();
 }
 
 void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
@@ -1778,6 +1806,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
+	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 
 	// Acquire scene dimensions from the active Film.
 	const IFilm* pFilm = pScene.GetFilm();
@@ -1989,7 +2018,8 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			const unsigned int fallbackSPP = 1;
 #endif
 			if( pAOVBuffers->NeedsFallback() ) {
-				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP );
+				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
+					mDenoisingPrefilter );
 			}
 			PropagateAOVsToFrameStore_( *pAOVBuffers );
 			pAOVBuffers->ReleaseDepthStorage();
@@ -2061,6 +2091,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #ifdef RISE_ENABLE_OIDN
 	}
 #endif
+	aovUnwindGuard.Dismiss();
 }
 
 // Default IRasterImage acquisition: persistent buffer reused across

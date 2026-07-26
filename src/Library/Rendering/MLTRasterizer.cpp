@@ -1293,7 +1293,8 @@ void MLTRasterizer::RasterizeScene(
 		std::unique_ptr<AOVBuffers> aovBuffers(
 			aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
 		if( aovBuffers ) {
-			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+				willDenoise ? 4u : 1u, mDenoisingPrefilter );
 			PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
 			aovBuffers->ReleaseDepthStorage();
 		}
@@ -1303,13 +1304,11 @@ void MLTRasterizer::RasterizeScene(
 			// outputs under the normal filename first.
 			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
 
-			// MLT always uses Fast prefilter regardless of the
-			// `mDenoisingPrefilter` setting — its splat film is
-			// incompatible with the inline accumulation that
-			// Accurate mode relies on.  See docs/OIDN.md
-			// (OIDN-P1-1) for the project invariant.
+			// MLT cannot attach guides to splat-chain samples, but the
+			// bounded post-render retrace above now honors both Fast and
+			// Accurate semantics. Feed the same authored mode to OIDN.
 			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
-				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
 				GetRenderElapsedSeconds() );
 
 			FlushDenoisedToOutputs( *pImage, 0, 0 );
@@ -1466,7 +1465,8 @@ void MLTRasterizer::RasterizeSceneAnimation(
 			std::unique_ptr<AOVBuffers> aovBuffers(
 				aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
 			if( aovBuffers ) {
-				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+					willDenoise ? 4u : 1u, mDenoisingPrefilter );
 				PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
 				aovBuffers->ReleaseDepthStorage();
 			}
@@ -1474,12 +1474,11 @@ void MLTRasterizer::RasterizeSceneAnimation(
 			if( bDenoisingEnabled ) {
 				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
 
-				// MLT always uses Fast prefilter (see RasterizeScene
-				// for the rationale).  Cache hits across frames thanks
-				// to OIDN-P0-2 device/filter caching — only frame 1
-				// pays the cold-rebuild cost.
+				// The bounded guide retrace honors the authored prefilter
+				// mode. Cache hits across frames mean only frame 1 pays
+				// the cold filter/device rebuild cost.
 				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
 					GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, frameIdx );

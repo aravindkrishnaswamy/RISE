@@ -1056,7 +1056,8 @@ void MLTSpectralRasterizer::RasterizeScene(
 		std::unique_ptr<AOVBuffers> aovBuffers(
 			aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
 		if( aovBuffers ) {
-			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+				willDenoise ? 4u : 1u, mDenoisingPrefilter );
 			PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
 			aovBuffers->ReleaseDepthStorage();
 		}
@@ -1065,7 +1066,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
 
 			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
-				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
 				GetRenderElapsedSeconds() );
 
 			FlushDenoisedToOutputs( *pImage, 0, 0 );
@@ -1187,7 +1188,8 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 			std::unique_ptr<AOVBuffers> aovBuffers(
 				aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
 			if( aovBuffers ) {
-				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers, willDenoise ? 4u : 1u );
+				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+					willDenoise ? 4u : 1u, mDenoisingPrefilter );
 				PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
 				aovBuffers->ReleaseDepthStorage();
 			}
@@ -1196,7 +1198,7 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
 
 				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
 					GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, frameIdx );

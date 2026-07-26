@@ -230,12 +230,16 @@ Two AOV collection strategies exist:
    `HasData` flag is atomic because many owning pixel threads publish to it.
 2. **Post-render primary retrace** (fallback): If an estimator cannot attach
    inline data (notably MLT), the OIDN-independent `CollectFirstHitAOVs` helper
-   traces a bounded set of camera rays in parallel over rows. OIDN's historical
-   method delegates to this helper.
+   traces a bounded set of camera rays in parallel over rows. Fast uses direct
+   first intersections; Accurate routes the bounded retrace through the
+   prepared shader caster to walk delta and medium continuations. OIDN's
+   historical method delegates to this helper.
 
 `PropagateAOVsToFrameStore` copies only matching allocated planes into the
 canonical typed channels. Agent renders use a private FrameStore, compact those
 channels to a 7-byte/pixel cached observation, and restore the production store.
+Failed renders release all AOV member storage during unwind; only a successful
+OIDN render may retain its documented 24-byte/pixel albedo/normal cache.
 See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the API, semantics, and exact
 session-aware peak accounting (83 B/pixel cold, 87 B/pixel animation, and
 90 B/pixel for an equal-sized replacement render).

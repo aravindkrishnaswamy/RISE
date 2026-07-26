@@ -230,10 +230,123 @@ static void TestPerceptionBeautyColorSpaceParity()
 	safe_release( store );
 }
 
+// Accurate HWSS guides must survive the primary-medium fallback to the
+// per-wavelength NM integrator.  The camera sits inside both very dense fog
+// and a red diffuse sphere: the camera segment scatters before the sphere
+// with overwhelming probability, and every phase direction then intersects
+// the enclosing sphere.  Without forwarding the shared PixelAOV on the hero
+// continuation, the top-right albedo panel is black.
+static void TestAccurateHWSSGuideAfterPrimaryMediumScatter()
+{
+	static const char* const scene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_spectral_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n"
+		"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
+		"\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n"
+		"\tmax_diffuse_bounce 0\n}\n\n"
+		"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12\n}\n\n"
+		"uniformcolor_painter\n{\n\tname red\n\tcolor 0.9 0.05 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname red_mat\n\treflectance red\n}\n\n"
+		"box_geometry\n{\n\tname enclosure\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname red_enclosure\n\tgeometry enclosure\n\tmaterial red_mat\n}\n\n"
+		"homogeneous_medium\n{\n\tname dense_fog\n\tabsorption 0.01 0.01 0.01\n"
+		"\tscattering 5 5 5\n\tphase hg 0.999\n}\n\n"
+		"global_medium\n{\n\tmedium dense_fog\n}\n";
+
+	const std::string scenePath = WriteTemp(
+		"rise_agent_hwss_medium_accurate_aov.RISEscene", scene );
+	Check( !scenePath.empty(), "HWSS medium-guide scene written" );
+	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+	Check( session != nullptr, "HWSS medium-guide scene loads" );
+	if( session ) {
+		AgentRenderParams params;
+		params.perception = true;
+		const AgentRenderResult render = session->Render( params );
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> atlas =
+			session->ReadPerception( 16, atlasW, atlasH, info );
+		DecodedPng decoded;
+		const bool decodedOk = DecodePng( atlas, decoded );
+		Check( render.ok && info.available && decodedOk &&
+		       atlasW == 16 && atlasH == 16,
+		       "HWSS primary-medium render produces a perception atlas" );
+		if( decodedOk && decoded.width == 16 && decoded.height == 16 ) {
+			const DecodedPixel& albedo = decoded.At( 12, 4 );
+			if( !( albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80 ) ) {
+				std::printf( "  HWSS medium albedo probe=(%u,%u,%u,%u)\n",
+					unsigned( albedo[0] ), unsigned( albedo[1] ),
+					unsigned( albedo[2] ), unsigned( albedo[3] ) );
+			}
+			Check( albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80,
+			       "Accurate HWSS hero continuation records the red post-medium surface guide" );
+		}
+	}
+	std::remove( scenePath.c_str() );
+}
+
+// MLT has no per-pixel identity in its splat chain, so perception uses a
+// bounded camera-ray retrace after beauty. Accurate must still walk the
+// transparent front object and report the red diffuse backstop; the former
+// unconditional geometric fallback reported the green front surface.
+static void TestAccurateMLTFallbackGuideThroughTransparency()
+{
+	static const char* const scene =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
+		"transparency_shaderop\n{\n\tname transmit\n\ttransparency white\n\tone_sided false\n}\n\n"
+		"advanced_shader\n{\n\tname transparent_only\n\tshaderop transmit 0 100 =\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"mlt_rasterizer\n{\n\tbootstrap_samples 100\n\tchains 4\n"
+		"\tmutations_per_pixel 2\n\tpixel_filter box\n\toidn_denoise false\n"
+		"\toidn_prefilter accurate\n}\n\n"
+		"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12\n}\n\n"
+		"uniformcolor_painter\n{\n\tname green\n\tcolor 0.05 0.9 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname green_mat\n\treflectance green\n}\n\n"
+		"box_geometry\n{\n\tname front_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname front\n\tgeometry front_geo\n\tmaterial green_mat\n"
+		"\tshader transparent_only\n\tposition 0 0 1.5\n}\n\n"
+		"uniformcolor_painter\n{\n\tname red\n\tcolor 0.9 0.05 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname red_mat\n\treflectance red\n}\n\n"
+		"box_geometry\n{\n\tname back_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname back\n\tgeometry back_geo\n\tmaterial red_mat\n}\n\n"
+		"omni_light\n{\n\tname lamp\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 0 3\n}\n";
+
+	const std::string scenePath = WriteTemp(
+		"rise_agent_mlt_accurate_aov.RISEscene", scene );
+	Check( !scenePath.empty(), "MLT Accurate fallback scene written" );
+	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+	Check( session != nullptr, "MLT Accurate fallback scene loads" );
+	if( session ) {
+		AgentRenderParams params;
+		params.perception = true;
+		const AgentRenderResult render = session->Render( params );
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> atlas =
+			session->ReadPerception( 16, atlasW, atlasH, info );
+		DecodedPng decoded;
+		const bool decodedOk = DecodePng( atlas, decoded );
+		Check( render.ok && info.available && decodedOk,
+		       "MLT Accurate fallback produces a perception atlas" );
+		if( decodedOk && decoded.width == 16 && decoded.height == 16 ) {
+			const DecodedPixel& albedo = decoded.At( 12, 4 );
+			Check( albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80,
+			       "MLT Accurate fallback walks transparent front geometry to the red backstop" );
+		}
+	}
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFirstSliceTest (Facet 5 slice 0c: JSON-RPC end-to-end loop) ===\n" );
 	TestPerceptionBeautyColorSpaceParity();
+	TestAccurateHWSSGuideAfterPrimaryMediumScatter();
+	TestAccurateMLTFallbackGuideThroughTransparency();
 
 	const std::string scenePath = WriteTemp( "rise_agent_slice0c.RISEscene", kScene );
 	Check( !scenePath.empty(), "wrote the scene to a temp file" );

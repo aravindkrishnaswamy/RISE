@@ -21,6 +21,7 @@
 #include <vector>
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/OidnConfig.h"
 
 namespace RISE
 {
@@ -163,7 +164,8 @@ namespace RISE
 			const IScene& scene,
 			IRayCaster& caster,
 			AOVBuffers& aovBuffers,
-			unsigned int samplesPerPixel = 1
+			unsigned int samplesPerPixel = 1,
+			OidnPrefilter prefilterMode = OidnPrefilter::Fast
 			);
 	}
 }

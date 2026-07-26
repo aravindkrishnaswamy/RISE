@@ -3499,11 +3499,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// Callers that did not request auxiliaries pass a null PixelAOV.
 	if constexpr ( Traits::supports_aov )
 	{
-#ifdef RISE_ENABLE_OIDN
 		const bool aovUseFirstHit = ( rc.aovPrefilterMode == OidnPrefilter::Fast );
-#else
-		const bool aovUseFirstHit = true;
-#endif
 		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 		{
 			RayIntersectionGeometric aovGeom( ri.geometric );
@@ -4936,7 +4932,11 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 								rc, rast, ri2, swl.lambda[w], scene, caster,
 								sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
 								true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
-								0, 0, 0, 0, 1, 0 );
+								0, 0, 0, 0, 1, 0, false, false,
+								// HWSS geometry is hero-driven. Let only the hero
+								// continuation populate the shared, wavelength-independent
+								// Accurate guide so companion paths cannot race to define it.
+								w == 0 ? pAOV : 0 );
 						}
 					}
 				}
