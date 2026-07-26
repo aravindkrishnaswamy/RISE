@@ -143,6 +143,7 @@ namespace RISE
 			void SetProgressCallback( IProgressCallback* pFunc ) override;
 			void SetFrameStore( FrameStore* frameStore ) override;
 			void AddRasterizerOutput( IRasterizerOutput* ro ) override;
+			void RemoveRasterizerOutput( IRasterizerOutput* ro ) override;
 			void FreeRasterizerOutputs() override;
 
 			//! The integrator the dispatcher resolved to.  `Auto` until

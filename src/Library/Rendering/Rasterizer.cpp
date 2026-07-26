@@ -83,8 +83,27 @@ void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 			return;  // already registered, no-op
 		}
 	}
-	ro->addref();
+	// Publish first, then take the list's reference. vector::push_back is the
+	// only throwing operation here; this ordering gives the registration a
+	// strong exception guarantee instead of leaking an addref on bad_alloc.
+	// The mutex prevents any observer from seeing the entry before addref().
 	outs.push_back( ro );
+	ro->addref();
+}
+
+void Rasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
+{
+	if( !ro ) return;
+
+	std::lock_guard<std::mutex> lock( outsMutex );
+	for( RasterizerOutputListType::iterator i=outs.begin(), e=outs.end(); i!=e; ++i ) {
+		if( *i == ro ) {
+			IRasterizerOutput* removed = *i;
+			outs.erase( i );
+			safe_release( removed );
+			return;
+		}
+	}
 }
 
 void Rasterizer::FreeRasterizerOutputs( )

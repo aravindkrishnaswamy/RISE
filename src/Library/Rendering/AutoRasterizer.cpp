@@ -941,6 +941,14 @@ void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 	}
 }
 
+void AutoRasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
+{
+	Rasterizer::RemoveRasterizerOutput( ro );
+	if( Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate ) ) {
+		delegate->RemoveRasterizerOutput( ro );
+	}
+}
+
 void AutoRasterizer::FreeRasterizerOutputs()
 {
 	Rasterizer::FreeRasterizerOutputs();

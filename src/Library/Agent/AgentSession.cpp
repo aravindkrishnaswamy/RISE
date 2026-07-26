@@ -4067,7 +4067,6 @@ namespace RISE
 			// reliable signal that the render was actually cut short.
 			bool wasCancelled = false;
 			InMemoryRasterizerOutput* sink = nullptr;
-			bool sinkAttachedToJobRasterizer = false;
 
 			// Unwind guard for OUR owning ref on `sink` (refcount 1 from
 			// `new` below): if mJob->Rasterize() throws (OIDN is a real
@@ -4081,30 +4080,54 @@ namespace RISE
 				~SinkUnwindGuard() { safe_release( p ); }
 			} sinkUnwindGuard{ sink };
 
-			// AddRasterizerOutput owns a second reference. Releasing only our
-			// local reference on a failed production render would leave the new
-			// sink registered until some later render happened to replace the
-			// output list, retaining any partial image/sidecar in the meantime.
-			// Remove that rasterizer-owned reference on every failed/throwing
-			// exit. Successful cache publication deliberately preserves the
-			// historical attached-output behavior and dismisses this guard.
+			// AddRasterizerOutput owns a second reference.  Retain the exact
+			// rasterizer/output pair before attaching so a failed render can undo
+			// only that attachment even if a controller edit replaces the Job's
+			// active rasterizer after the render park ends.  Looking the rasterizer
+			// up through Job during unwind is a race; freeing every output can also
+			// erase a viewport sink installed by another owner in that window.
 			struct JobSinkAttachmentUnwindGuard {
-				IJobPriv* job;
-				bool& attached;
+				IRasterizer* rasterizer = nullptr;
+				Implementation::Rasterizer* concreteRasterizer = nullptr;
+				IRasterizerOutput* output = nullptr;
+				bool armed = false;
+
+				void Arm( IRasterizer* r, IRasterizerOutput* o ) {
+					rasterizer = r;
+					concreteRasterizer = dynamic_cast<Implementation::Rasterizer*>( r );
+					output = o;
+					if( rasterizer ) rasterizer->addref();
+					armed = rasterizer && output;
+				}
 				~JobSinkAttachmentUnwindGuard() noexcept {
-					if( attached && job ) {
+					if( armed && rasterizer ) {
 						try {
-							job->RemoveRasterizerOutputs();
+							if( concreteRasterizer ) {
+								concreteRasterizer->RemoveRasterizerOutput( output );
+							} else {
+								// No out-of-tree implementation currently reaches this
+								// path.  Retaining the exact rasterizer still avoids the
+								// mutable-Job lookup race for a future implementation.
+								rasterizer->FreeRasterizerOutputs();
+							}
 						}
 						catch( ... ) {
 							GlobalLog()->PrintEx( eLog_Error,
 								"AgentSession::Render: exception while detaching failed in-memory output" );
 						}
-						attached = false;
 					}
+					safe_release( rasterizer );
+					concreteRasterizer = nullptr;
+					output = nullptr;
+					armed = false;
 				}
-				void Dismiss() noexcept { attached = false; }
-			} sinkAttachmentUnwindGuard{ mJob, sinkAttachedToJobRasterizer };
+				void Dismiss() noexcept {
+					armed = false;
+					safe_release( rasterizer );
+					concreteRasterizer = nullptr;
+					output = nullptr;
+				}
+			} sinkAttachmentUnwindGuard;
 
 			// P1-B (belt-and-braces): if ANY requested camera field fails to
 			// apply, fail loud -- restore what was already applied THIS call
@@ -5152,8 +5175,8 @@ namespace RISE
 				// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
 				// addrefs it. A successful render keeps that historical rasterizer
 				// ownership until the next RemoveRasterizerOutputs / teardown; the
-				// attachment unwind guard removes it immediately on every failed or
-				// throwing exit. We drop OUR ref via safe_release(sink) after this
+				// attachment unwind guard removes this exact output immediately on
+				// every failed or throwing exit. We drop OUR ref via safe_release(sink) after this
 				// lambda returns -- no extra addref here.
 				sink = new InMemoryRasterizerOutput();
 				sink->SetConcurrentCachedPerceptionBytes( cachedPerceptionBytesAtStart );
@@ -5164,8 +5187,8 @@ namespace RISE
 				// depends on being closed (see ResolveBeautyDisplayTransform_).
 				sink->SetDisplayTransform( beautyExposureEV, beautyDisplayTransform );
 				sink->SetOutputColorSpace( beautyColorSpace );   // External review P2 fix: honour the scene's declared output colour space instead of a hardcoded sRGB
+				sinkAttachmentUnwindGuard.Arm( rast, sink );
 				rast->AddRasterizerOutput( sink );
-				sinkAttachedToJobRasterizer = true;
 
 				// ---- Film-dims override: capture -> set -> (render happens
 				// after this lambda's camera section) -- restore happens at

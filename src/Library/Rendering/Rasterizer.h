@@ -142,6 +142,12 @@ namespace RISE
 
 		public:
 			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
+			//! Removes exactly one matching output, if present.  This is an
+			//! implementation-level companion to the legacy all-or-nothing
+			//! FreeRasterizerOutputs API, used by transactional callers that must
+			//! roll back one attachment without disturbing outputs added later by
+			//! another owner.
+			virtual void RemoveRasterizerOutput( IRasterizerOutput* ro );
 			virtual void FreeRasterizerOutputs( );
 			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
 			virtual void SetProgressCallback( IProgressCallback* pFunc );
