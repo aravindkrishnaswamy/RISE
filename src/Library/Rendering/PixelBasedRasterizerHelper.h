@@ -80,7 +80,8 @@ namespace RISE
 				const FIELD field,
 				IRasterImage& image,
 				const Scalar time,
-				IRasterizeSequence& seq
+				IRasterizeSequence& seq,
+				const bool resetAOVs
 				) const;
 
 			//! Original "red corner-marker" tile decoration.  Kept as a

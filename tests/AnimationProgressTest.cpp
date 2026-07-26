@@ -60,6 +60,8 @@
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
+#include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Log/Log.h"
 
@@ -312,6 +314,77 @@ static void RunSingleFrameCase( const char* label, const char* rasterizerChunk,
 }
 
 //////////////////////////////////////////////////////////////////////
+// Interlaced fields share one output frame. The second field must append
+// its AOV samples without clearing the first field's rows.
+//////////////////////////////////////////////////////////////////////
+static void RunInterlacedAOVCase( const char* rasterizerChunk )
+{
+	const char* label = "PT-fields-AOV";
+	std::cout << "Interlaced AOV: " << label << std::endl;
+
+	const std::string path = WriteSceneToTempFile( BuildScene( rasterizerChunk ), label );
+	Check( !path.empty(), std::string(label) + ": temp scene written" );
+	if( path.empty() ) return;
+
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
+		Check( false, std::string(label) + ": job created" );
+		return;
+	}
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+		Check( false, std::string(label) + ": scene loaded" );
+		safe_release( pJob );
+		return;
+	}
+
+	Implementation::Rasterizer* rast =
+		dynamic_cast<Implementation::Rasterizer*>( pJob->GetRasterizer() );
+	Check( rast != nullptr, std::string(label) + ": concrete rasterizer available" );
+	if( !rast ) {
+		safe_release( pJob );
+		return;
+	}
+
+	Implementation::FrameStore::Spec spec;
+	spec.width = 128;
+	spec.height = 128;
+	spec.aovChannels = {
+		FrameStoreOutput::ChannelId::Albedo,
+		FrameStoreOutput::ChannelId::Normal,
+		FrameStoreOutput::ChannelId::Depth
+	};
+	Implementation::FrameStore* store = new Implementation::FrameStore( spec );
+	rast->SetFrameStore( store );
+
+	RecordingProgress rec;
+	pJob->SetProgress( &rec );
+	const bool ok = pJob->RasterizeAnimation( 0.0, 0.0, 1, true, false );
+	pJob->SetProgress( 0 );
+	Check( ok, std::string(label) + ": interlaced animation returned true" );
+
+	const auto* depth = store->GetChannel<FrameStoreOutput::ChannelId::Depth>();
+	Check( depth != nullptr, std::string(label) + ": depth channel exists" );
+	if( depth ) {
+		size_t evenHits = 0;
+		size_t oddHits = 0;
+		for( size_t y=0; y<depth->Height(); ++y ) {
+			for( size_t x=0; x<depth->Width(); ++x ) {
+				if( depth->At( x, y ) > 0.0f ) {
+					if( y & 1u ) ++oddHits;
+					else ++evenHits;
+				}
+			}
+		}
+		Check( evenHits > 0, std::string(label) + ": upper-field rows retain depth" );
+		Check( oddHits > 0, std::string(label) + ": lower-field rows retain depth" );
+	}
+
+	rast->SetFrameStore( nullptr );
+	safe_release( store );
+	safe_release( pJob );
+}
+
+//////////////////////////////////////////////////////////////////////
 
 int main()
 {
@@ -341,6 +414,7 @@ int main()
 	// Single-frame still renders must remain a clean 0..1.
 	RunSingleFrameCase( "PT-still",  kPT,  /*strictMonotonic*/ true );
 	RunSingleFrameCase( "MLT-still", kMLT, /*strictMonotonic*/ false );
+	RunInterlacedAOVCase( kPT );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

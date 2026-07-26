@@ -213,3 +213,8 @@ and MLT's bounded Accurate retrace through transparent geometry.
 and VCM across their supported RGB/spectral modes to lock primary-hit depth
 semantics through glass. Shader dispatch covers RGB, scalar wavelength, and
 HWSS; pure-integrator families cover their implemented Pel/NM/HWSS paths.
+It also verifies that both plain PT and AutoRasterizer detach successful and
+failed production sinks while retaining the last successful session cache.
+`AnimationProgressTest` locks interlaced AOV composition: the first field starts
+the auxiliary frame and the second appends its rows without erasing the first,
+keeping beauty and perception spatially aligned.

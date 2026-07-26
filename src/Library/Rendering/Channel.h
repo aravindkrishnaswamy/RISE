@@ -51,7 +51,7 @@ namespace RISE
 			Beauty       = 0,  ///< RISEPel (Rec.709 Linear D65 post Stage B colour-space migration), full HDR radiance
 			Alpha        = 1,  ///< float, [0, 1]
 			Albedo       = 2,  ///< RISEPel, Rec.709 Linear (denoiser AOV / export)
-			Normal       = 3,  ///< Vector3 world-space, unit length
+			Normal       = 3,  ///< Vector3 weighted-average world-space shading normal; antialiased values need not be unit length
 			Depth        = 4,  ///< float, camera-space distance
 			ObjectId     = 5,  ///< uint32_t, object index from the scene's ObjectManager
 			PrimitiveId  = 6,  ///< uint32_t, primitive index within object

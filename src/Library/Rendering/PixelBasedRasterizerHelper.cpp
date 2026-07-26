@@ -1453,7 +1453,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const FIELD field,
 	IRasterImage& image,
 	const Scalar time,
-	IRasterizeSequence& seq
+	IRasterizeSequence& seq,
+	const bool resetAOVs
 	) const
 {
 #ifdef RISE_ENABLE_OIDN
@@ -1464,8 +1465,12 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	BeginRenderTimer();
 #endif
 	// Each frame starts a fresh planned AOV accumulation, whether or not
-	// OIDN is compiled/enabled.
-	PrepareAOVBuffers_( image.GetWidth(), image.GetHeight() );
+	// OIDN is compiled/enabled. Interlaced animation renders the two fields
+	// through separate calls into the same image/AOV set; only the first field
+	// may reset, or the second would erase half of the auxiliary observation.
+	if( resetAOVs ) {
+		PrepareAOVBuffers_( image.GetWidth(), image.GetHeight() );
+	}
 
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.
 	const ICamera* pCam = pScene.GetCamera();
@@ -1922,7 +1927,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence );
+			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
 
 			// If the user cancelled during the upper field, don't
@@ -1943,7 +1948,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime_lower );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence );
+			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence, false );
 			accumulatedProgress += unitsPerCall;
 		} else {
 			// Render to frames
@@ -1959,7 +1964,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence );
+			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
 		}
 
