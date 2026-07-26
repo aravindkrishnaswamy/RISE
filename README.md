@@ -77,6 +77,12 @@ and creates a drag-to-Applications DMG plus a dSYM archive and SHA-256 file:
 scripts/create_macos_release.sh
 ```
 
+The release requires a GPU-capable OIDN at `extlib/oidn/install/` — run
+`extlib/oidn/fetch_prebuilt.sh` (or `extlib/oidn/build.sh`) once first. The
+script stages that install into its source snapshot and refuses to build
+without a Metal device module, because the Homebrew fallback is built
+CPU-device-only and would silently ship a DMG that cannot denoise on the GPU.
+
 The current dependency stack produces an Apple Silicon (`arm64`) app and uses
 the Xcode project's deployment target (currently macOS 26.2). The default uses
 an ad-hoc signature. For public distribution, provide a Developer ID

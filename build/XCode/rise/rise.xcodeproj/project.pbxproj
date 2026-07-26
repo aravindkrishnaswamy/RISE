@@ -6297,13 +6297,20 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = /opt/homebrew/include;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6350,13 +6357,20 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = /opt/homebrew/include;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6402,13 +6416,20 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = /opt/homebrew/include;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6577,13 +6598,20 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = /opt/homebrew/include;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				LLVM_LTO = YES;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-ffast-math",
@@ -6713,6 +6741,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
@@ -6721,10 +6750,14 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.0;
@@ -6827,6 +6860,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
@@ -6835,10 +6869,14 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -6941,6 +6979,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
@@ -6949,10 +6988,14 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				LLVM_LTO = YES_THIN;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -7055,6 +7098,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					"$(SRCROOT)/../../../src/Library/**",
 					/opt/homebrew/include/OpenEXR,
@@ -7063,10 +7107,14 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
 					"@executable_path/../Frameworks",
 					/opt/homebrew/lib,
 				);
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+				);
 				LLVM_LTO = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;

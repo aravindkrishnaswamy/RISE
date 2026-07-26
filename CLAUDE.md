@@ -34,20 +34,38 @@ git submodule update --init extlib/oidn/source
 extlib/oidn/build.sh
 ```
 
+On macOS, `build.sh` needs Xcode's Metal Toolchain, which Xcode 26 and
+newer ship as a separate download (`xcodebuild -downloadComponent
+MetalToolchain`, several GB). Without it the Metal kernels fail to
+compile and you end up with a CPU-only install. If you would rather not
+download it, use the official binary release instead — same version, same
+layout, and it already contains the Metal device module:
+
+```sh
+extlib/oidn/fetch_prebuilt.sh
+```
+
 ```powershell
 # Windows (PowerShell, in repo root)
 git submodule update --init extlib/oidn/source
 pwsh -File extlib\oidn\build.ps1     # add -EnableCuda / -EnableHip / -EnableSycl as needed
 ```
 
-Both scripts populate `extlib/oidn/install/`; RISE's Makefile and
-VS2022 project files prefer that path over any system OIDN. Verify
-the selected device on your first render — look for:
-`OIDN: creating Metal device (one-time per rasterizer)` in the log.
+All three scripts populate `extlib/oidn/install/`; RISE's Makefile,
+Xcode project, and VS2022 project files prefer that path over any
+system OIDN. Verify the selected device on your first render — look
+for: `OIDN: creating Metal device (one-time per rasterizer)` in the
+log.
 
-Skipping this step is fine — RISE falls back to the system OIDN
-(typically Homebrew's CPU-only build) and denoise still works,
-just without GPU acceleration.
+Skipping this step is fine for **development** — RISE falls back to
+the system OIDN (typically Homebrew's CPU-only build) and denoise
+still works, just without GPU acceleration.
+
+It is **not** optional for a macOS **release**:
+`scripts/create_macos_release.sh` stages this install into its source
+snapshot and refuses to build without a Metal-capable one, because the
+Homebrew fallback would silently ship a DMG that can only denoise on
+the CPU.
 
 ## Source-file add/remove — touch ALL five build projects
 

@@ -188,6 +188,27 @@ git -C "${REPO_ROOT}" worktree add --detach --quiet "${SOURCE_ROOT}" "${SOURCE_H
 PROJECT="${SOURCE_ROOT}/build/XCode/rise/rise.xcodeproj"
 [ -d "${PROJECT}" ] || die "Xcode project not found in source snapshot: ${PROJECT}"
 
+# extlib/oidn/install is gitignored build output, so the worktree above
+# never carries it. The Xcode project resolves OIDN through $(SRCROOT) and
+# falls back to the Homebrew bottle when that path is absent -- and the
+# Homebrew bottle is built CPU-device-only, so the fallback silently ships
+# an app that cannot denoise on the GPU. Stage the install into the
+# snapshot, and refuse to build without a GPU-capable one.
+OIDN_INSTALL="${REPO_ROOT}/extlib/oidn/install"
+OIDN_SNAPSHOT_INSTALL="${SOURCE_ROOT}/extlib/oidn/install"
+[ -d "${OIDN_INSTALL}/lib" ] || \
+	die "no in-tree OIDN install at ${OIDN_INSTALL}; run extlib/oidn/fetch_prebuilt.sh (or extlib/oidn/build.sh) first"
+OIDN_METAL_MODULE="$(find "${OIDN_INSTALL}/lib" -maxdepth 1 -name 'libOpenImageDenoise_device_metal*.dylib' -print -quit)"
+[ -n "${OIDN_METAL_MODULE}" ] || \
+	die "the OIDN install at ${OIDN_INSTALL} has no Metal device module; re-run extlib/oidn/fetch_prebuilt.sh"
+echo "==> Staging GPU-capable OIDN ($(basename "${OIDN_METAL_MODULE}")) into the snapshot"
+mkdir -p "$(dirname "${OIDN_SNAPSHOT_INSTALL}")"
+ditto "${OIDN_INSTALL}" "${OIDN_SNAPSHOT_INSTALL}"
+# Xcode records this dependency through the unnormalised
+# $(SRCROOT)/../../.. form, so every match against it has to be made on
+# the resolved path rather than the literal one.
+OIDN_SNAPSHOT_LIB="$(cd "${OIDN_SNAPSHOT_INSTALL}/lib" && pwd -P)"
+
 read_project_setting() {
 	local setting="$1"
 	xcodebuild -project "${PROJECT}" -scheme "${SCHEME}" \
@@ -301,11 +322,9 @@ BUNDLED_NAMES=()
 BUNDLED_SOURCES=()
 SCAN_BINARIES=("${APP_EXECUTABLE}")
 SCAN_INDEX=0
-# The Xcode project links its entire third-party stack out of the Homebrew
-# prefix. extlib/oidn/install is build output consumed only by the make and
-# VS2022 builds, so it is never present in the detached source snapshot and
-# is deliberately not searched here.
-SEARCH_DIRS=("${FRAMEWORKS_DIR}" "/opt/homebrew/lib" "/usr/local/lib")
+# OIDN comes from the staged in-tree install; the rest of the third-party
+# stack still comes out of the Homebrew prefix.
+SEARCH_DIRS=("${OIDN_SNAPSHOT_INSTALL}/lib" "${FRAMEWORKS_DIR}" "/opt/homebrew/lib" "/usr/local/lib")
 if [ -n "${HOMEBREW_PREFIX}" ]; then
 	SEARCH_DIRS+=("${HOMEBREW_PREFIX}/lib")
 fi
@@ -362,6 +381,12 @@ resolve_dependency() {
 	return 1
 }
 
+# The "(compatibility version X, current version Y)" pair from an image's
+# own LC_ID_DYLIB -- the ABI contract a consumer was linked against.
+dylib_abi_version() {
+	otool -L "$1" | sed -n '2s/.*(\(compatibility version .*\))$/\1/p'
+}
+
 physical_path() {
 	local path="$1" link guard=0
 	while [ -L "${path}" ]; do
@@ -397,6 +422,16 @@ copy_dependency_license() {
 			package_root="${HOMEBREW_PREFIX}/share/doc/openpgl"
 			;;
 		esac
+	fi
+	case "${physical}" in
+	"${OIDN_SNAPSHOT_LIB}"/*)
+		# Covers the OIDN dylibs and the TBB shipped alongside them; the
+		# distribution's doc/ directory carries both notices.
+		package_name="open-image-denoise"
+		package_root="${OIDN_SNAPSHOT_INSTALL}"
+		;;
+	esac
+	if [ -n "${HOMEBREW_PREFIX}" ]; then
 		# A bare prefix/lib entry is normally a symlink into the Cellar; follow
 		# it so ordinary brew installs resolve without a per-formula case arm.
 		if [ -z "${package_root}" ]; then
@@ -429,7 +464,7 @@ copy_dependency_license() {
 }
 
 add_library() {
-	local source="$1" name destination index existing_source
+	local source="$1" name destination index existing_source existing_abi new_abi
 	name="$(basename "${source}")"
 	destination="${FRAMEWORKS_DIR}/${name}"
 	index=0
@@ -437,8 +472,19 @@ add_library() {
 		if [ "${BUNDLED_NAMES[$index]}" = "${name}" ]; then
 			existing_source="${BUNDLED_SOURCES[$index]}"
 			[ "${source}" = "${destination}" ] && return 0
-			[ "$(physical_path "${existing_source}")" = "$(physical_path "${source}")" ] || \
-				die "two external libraries share basename ${name}: ${existing_source} and ${source}"
+			if [ "$(physical_path "${existing_source}")" != "$(physical_path "${source}")" ]; then
+				# Two distributions can legitimately ship the same shared
+				# runtime -- OIDN vendors its own oneTBB while openpgl links
+				# the Homebrew one. A single copy serves both consumers
+				# exactly when the ABI version pair matches, and shipping two
+				# copies of a threading runtime in one process is worse than
+				# unifying. Anything else is a genuine conflict.
+				existing_abi="$(dylib_abi_version "${existing_source}")"
+				new_abi="$(dylib_abi_version "${source}")"
+				[ -n "${existing_abi}" ] && [ "${existing_abi}" = "${new_abi}" ] || \
+					die "two external libraries share basename ${name} with different ABI versions: ${existing_source} (${existing_abi}) and ${source} (${new_abi})"
+				echo "    unified ${name} (${existing_abi}): ${source} -> already bundled from ${existing_source}"
+			fi
 			return 0
 		fi
 		index=$((index + 1))
@@ -587,6 +633,15 @@ for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
 	verify_rpaths "${binary}"
 done
 
+# Fail closed if the denoiser we shipped cannot reach the GPU. OIDN loads
+# device modules by filename from the directory holding the core library,
+# so the module has to sit in Frameworks next to it.
+BUNDLED_OIDN_METAL="$(find "${FRAMEWORKS_DIR}" -maxdepth 1 -name 'libOpenImageDenoise_device_metal*.dylib' -print -quit)"
+[ -n "${BUNDLED_OIDN_METAL}" ] || \
+	die "no OIDN Metal device module was bundled; the app would denoise on the CPU"
+[ -f "${FRAMEWORKS_DIR}/$(basename "${OIDN_METAL_MODULE}")" ] || \
+	die "bundled OIDN Metal module is not the one from ${OIDN_INSTALL}"
+
 echo "==> Signing app (${SIGN_IDENTITY})"
 if [ "${SIGN_IDENTITY}" = "-" ]; then
 	for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
@@ -613,6 +668,8 @@ Git commit: ${SOURCE_HEAD}
 Dirty working tree: no
 Built: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 Built with: $(xcodebuild -version | paste -sd ' ' -)
+OIDN devices: $(find "${FRAMEWORKS_DIR}" -maxdepth 1 -name 'libOpenImageDenoise_device_*.dylib' -exec basename {} \; |
+	sed -e 's/^libOpenImageDenoise_device_//' -e 's/\..*$//' | sort | paste -sd ', ' -)
 EOF
 
 VOLUME_DIR="${WORK_DIR}/dmg-root"
