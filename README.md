@@ -77,10 +77,11 @@ and creates a drag-to-Applications DMG plus a dSYM archive and SHA-256 file:
 scripts/create_macos_release.sh
 ```
 
-The default build targets the host architecture and uses an ad-hoc signature.
-For public distribution, provide a Developer ID Application identity and a
-`notarytool` keychain profile; the script then signs, notarizes, and staples
-the DMG:
+The current dependency stack produces an Apple Silicon (`arm64`) app and uses
+the Xcode project's deployment target (currently macOS 26.2). The default uses
+an ad-hoc signature. For public distribution, provide a Developer ID
+Application identity and a `notarytool` keychain profile; the script then
+signs, notarizes, and staples the DMG:
 
 ```sh
 RISE_CODESIGN_IDENTITY='Developer ID Application: Example (TEAMID)' \
@@ -88,8 +89,9 @@ RISE_NOTARY_PROFILE=rise-notary \
 scripts/create_macos_release.sh --version 1.2.0 --build 42
 ```
 
-Run `scripts/create_macos_release.sh --help` for architecture, output, and
-working-tree options. Artifacts are written to `dist/macos/` by default.
+Run `scripts/create_macos_release.sh --help` for output, overwrite, and
+working-tree options. Artifacts include both version and build number and are
+written to `dist/macos/` by default.
 
 ### Windows
 

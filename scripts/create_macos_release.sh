@@ -14,12 +14,12 @@ CONFIGURATION="Opto"
 
 VERSION=""
 BUILD_NUMBER=""
-ARCH="native"
 OUTPUT_DIR="${REPO_ROOT}/dist/macos"
 SIGN_IDENTITY="${RISE_CODESIGN_IDENTITY:--}"
 NOTARY_PROFILE="${RISE_NOTARY_PROFILE:-}"
 ALLOW_DIRTY=0
 KEEP_WORK_DIR=0
+OVERWRITE=0
 
 usage() {
 	cat <<'EOF'
@@ -31,7 +31,6 @@ create a compressed DMG containing RISE-GUI.app and an Applications shortcut.
 Options:
   --version VERSION       Override MARKETING_VERSION from the Xcode project.
   --build NUMBER          Override CURRENT_PROJECT_VERSION.
-  --arch ARCH             native (default), arm64, x86_64, or universal.
   --output-dir PATH       Artifact directory (default: dist/macos).
   --sign-identity NAME    Developer ID Application identity; default is ad hoc.
                           RISE_CODESIGN_IDENTITY provides the same setting.
@@ -39,6 +38,8 @@ Options:
                           signing. RISE_NOTARY_PROFILE provides the same setting.
   --allow-dirty           Permit a release from a dirty Git working tree.
   --keep-work-dir         Preserve the temporary build/staging directory.
+  --overwrite             Replace an existing artifact with the same version
+                          and build number after the new release is complete.
   -h, --help              Show this help.
 
 Examples:
@@ -50,6 +51,10 @@ Examples:
 The default ad-hoc signature is suitable for local/internal distribution but
 does not satisfy Gatekeeper on another Mac. For public distribution, supply a
 Developer ID Application identity and a notarytool keychain profile.
+
+The current Xcode dependency stack produces Apple Silicon (arm64) releases and
+inherits the project's macOS deployment target. Intel/universal packaging will
+require universal third-party dependencies and is intentionally not advertised.
 EOF
 }
 
@@ -72,11 +77,6 @@ while [ "$#" -gt 0 ]; do
 		--build)
 			[ "$#" -ge 2 ] || die "--build requires a value"
 			BUILD_NUMBER="$2"
-			shift 2
-			;;
-		--arch)
-			[ "$#" -ge 2 ] || die "--arch requires a value"
-			ARCH="$2"
 			shift 2
 			;;
 		--output-dir)
@@ -102,6 +102,10 @@ while [ "$#" -gt 0 ]; do
 			KEEP_WORK_DIR=1
 			shift
 			;;
+		--overwrite)
+			OVERWRITE=1
+			shift
+			;;
 		-h|--help)
 			usage
 			exit 0
@@ -113,6 +117,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$(uname -s)" = "Darwin" ] || die "macOS is required"
+[ "$(uname -m)" = "arm64" ] || die "the current release pipeline requires an Apple Silicon build host"
 [ -d "${PROJECT}" ] || die "Xcode project not found: ${PROJECT}"
 
 for tool in awk codesign ditto file find git hdiutil install_name_tool lipo \
@@ -124,34 +129,19 @@ if command -v brew >/dev/null 2>&1; then
 	HOMEBREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
 fi
 
-case "${ARCH}" in
-	native)
-		ARCH="$(uname -m)"
-		;;
-	arm64|x86_64)
-		;;
-	universal)
-		;;
-	*)
-		die "unsupported architecture '${ARCH}'; use native, arm64, x86_64, or universal"
-		;;
-esac
-
-if [ "${ARCH}" = "universal" ]; then
-	XCODE_ARCHS="arm64 x86_64"
-	ARTIFACT_ARCH="universal"
-	DESTINATION="generic/platform=macOS"
-else
-	XCODE_ARCHS="${ARCH}"
-	ARTIFACT_ARCH="${ARCH}"
-	DESTINATION="platform=macOS,arch=${ARCH}"
-fi
+XCODE_ARCHS="arm64"
+ARTIFACT_ARCH="arm64"
+DESTINATION="platform=macOS,arch=arm64"
 
 if [ -n "${NOTARY_PROFILE}" ] && [ "${SIGN_IDENTITY}" = "-" ]; then
 	die "notarization requires --sign-identity or RISE_CODESIGN_IDENTITY"
 fi
 
-if [ "${ALLOW_DIRTY}" -eq 0 ] && [ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]; then
+SOURCE_DIRTY=0
+if [ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]; then
+	SOURCE_DIRTY=1
+fi
+if [ "${ALLOW_DIRTY}" -eq 0 ] && [ "${SOURCE_DIRTY}" -eq 1 ]; then
 	die "Git working tree is dirty; commit/stash changes or pass --allow-dirty"
 fi
 
@@ -170,8 +160,12 @@ if [ -z "${BUILD_NUMBER}" ]; then
 fi
 [ -n "${VERSION}" ] || die "unable to determine MARKETING_VERSION"
 [ -n "${BUILD_NUMBER}" ] || die "unable to determine CURRENT_PROJECT_VERSION"
-case "${VERSION}" in *[!A-Za-z0-9._-]*) die "version contains unsafe filename characters: ${VERSION}";; esac
-case "${BUILD_NUMBER}" in *[!A-Za-z0-9._-]*) die "build number contains unsafe characters: ${BUILD_NUMBER}";; esac
+[[ "${VERSION}" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || \
+	die "version must contain one to three dot-separated integers: ${VERSION}"
+[[ "${BUILD_NUMBER}" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || \
+	die "build number must contain one to three dot-separated integers: ${BUILD_NUMBER}"
+DEPLOYMENT_TARGET="$(read_project_setting MACOSX_DEPLOYMENT_TARGET)"
+[ -n "${DEPLOYMENT_TARGET}" ] || die "unable to determine MACOSX_DEPLOYMENT_TARGET"
 
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
@@ -186,14 +180,24 @@ cleanup() {
 trap cleanup EXIT
 
 DERIVED_DATA="${WORK_DIR}/DerivedData"
-BUILD_LOG="${OUTPUT_DIR}/RISE-${VERSION}-macOS-${ARTIFACT_ARCH}-build.log"
+ARTIFACT_BASENAME="RISE-${VERSION}-build${BUILD_NUMBER}-macOS-${ARTIFACT_ARCH}"
+BUILD_LOG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}-build.log"
 APP="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app"
 DSYM="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app.dSYM"
 APP_EXECUTABLE="${APP}/Contents/MacOS/RISE-GUI"
 FRAMEWORKS_DIR="${APP}/Contents/Frameworks"
-DMG="${OUTPUT_DIR}/RISE-${VERSION}-macOS-${ARTIFACT_ARCH}.dmg"
-DSYM_ZIP="${OUTPUT_DIR}/RISE-${VERSION}-macOS-${ARTIFACT_ARCH}.dSYM.zip"
-CHECKSUMS="${OUTPUT_DIR}/RISE-${VERSION}-macOS-${ARTIFACT_ARCH}-SHA256SUMS.txt"
+DMG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}.dmg"
+DSYM_ZIP="${OUTPUT_DIR}/${ARTIFACT_BASENAME}.dSYM.zip"
+CHECKSUMS="${OUTPUT_DIR}/${ARTIFACT_BASENAME}-SHA256SUMS.txt"
+STAGED_DMG="${WORK_DIR}/$(basename "${DMG}")"
+STAGED_DSYM_ZIP="${WORK_DIR}/$(basename "${DSYM_ZIP}")"
+STAGED_CHECKSUMS="${WORK_DIR}/$(basename "${CHECKSUMS}")"
+
+if [ "${OVERWRITE}" -eq 0 ]; then
+	for artifact in "${DMG}" "${DSYM_ZIP}" "${CHECKSUMS}"; do
+		[ ! -e "${artifact}" ] || die "release artifact already exists: ${artifact} (use --overwrite to replace it)"
+	done
+fi
 
 echo "==> Building RISE-GUI (${CONFIGURATION}, ${XCODE_ARCHS}) from a fresh DerivedData directory"
 set +e
@@ -308,9 +312,10 @@ copy_dependency_license() {
 		[ -f "${license_file}" ] || continue
 		mkdir -p "${destination}"
 		cp -pL "${license_file}" "${destination}/$(basename "${license_file}")"
-	done < <(find -L "${package_root}" -maxdepth 3 -type f \( \
+	done < <(find -L "${package_root}" -maxdepth 5 -type f \( \
 		-iname 'LICENSE' -o -iname 'LICENSE.*' -o -iname 'COPYING' -o \
-		-iname 'COPYING.*' -o -iname 'NOTICE' -o -iname 'NOTICE.*' \) -print)
+		-iname 'COPYING.*' -o -iname 'NOTICE' -o -iname 'NOTICE.*' -o \
+		-iname 'third-party-programs*.txt' \) -print)
 }
 
 add_library() {
@@ -422,11 +427,12 @@ codesign --verify --deep --strict --verbose=2 "${APP}"
 INFO_FILE="${WORK_DIR}/Release-Info.txt"
 commit="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 dirty="no"
-[ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ] && dirty="yes"
+[ "${SOURCE_DIRTY}" -eq 1 ] && dirty="yes"
 cat > "${INFO_FILE}" <<EOF
 RISE ${VERSION} (build ${BUILD_NUMBER})
 Architecture: ${ARTIFACT_ARCH}
 Configuration: ${CONFIGURATION}
+Minimum macOS: ${DEPLOYMENT_TARGET}
 Git commit: ${commit}
 Dirty working tree: ${dirty}
 Built: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -442,36 +448,46 @@ ln -s /Applications "${VOLUME_DIR}/Applications"
 
 echo "==> Creating DMG"
 hdiutil create -volname "RISE ${VERSION}" -srcfolder "${VOLUME_DIR}" \
-	-ov -format UDZO "${DMG}" >/dev/null
+	-ov -format UDZO "${STAGED_DMG}" >/dev/null
 
 if [ "${SIGN_IDENTITY}" != "-" ]; then
-	codesign --force --sign "${SIGN_IDENTITY}" --timestamp "${DMG}"
-	codesign --verify --verbose=2 "${DMG}"
+	codesign --force --sign "${SIGN_IDENTITY}" --timestamp "${STAGED_DMG}"
+	codesign --verify --verbose=2 "${STAGED_DMG}"
 fi
 
 if [ -n "${NOTARY_PROFILE}" ]; then
 	echo "==> Notarizing DMG with keychain profile '${NOTARY_PROFILE}'"
-	xcrun notarytool submit "${DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait
-	xcrun stapler staple "${DMG}"
-	xcrun stapler validate "${DMG}"
-	spctl --assess --type open --context context:primary-signature --verbose=2 "${DMG}"
+	xcrun notarytool submit "${STAGED_DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait
+	xcrun stapler staple "${STAGED_DMG}"
+	xcrun stapler validate "${STAGED_DMG}"
+	spctl --assess --type open --context context:primary-signature --verbose=2 "${STAGED_DMG}"
 fi
 
 if [ -d "${DSYM}" ]; then
-	ditto -c -k --sequesterRsrc --keepParent "${DSYM}" "${DSYM_ZIP}"
+	ditto -c -k --sequesterRsrc --keepParent "${DSYM}" "${STAGED_DSYM_ZIP}"
 else
 	echo "WARNING: dSYM bundle was not produced" >&2
-	rm -f "${DSYM_ZIP}"
 fi
 
 (
-	cd "${OUTPUT_DIR}"
-	: > "$(basename "${CHECKSUMS}")"
-	shasum -a 256 "$(basename "${DMG}")" >> "$(basename "${CHECKSUMS}")"
-	if [ -f "$(basename "${DSYM_ZIP}")" ]; then
-		shasum -a 256 "$(basename "${DSYM_ZIP}")" >> "$(basename "${CHECKSUMS}")"
+	cd "${WORK_DIR}"
+	: > "$(basename "${STAGED_CHECKSUMS}")"
+	shasum -a 256 "$(basename "${STAGED_DMG}")" >> "$(basename "${STAGED_CHECKSUMS}")"
+	if [ -f "$(basename "${STAGED_DSYM_ZIP}")" ]; then
+		shasum -a 256 "$(basename "${STAGED_DSYM_ZIP}")" >> "$(basename "${STAGED_CHECKSUMS}")"
 	fi
 )
+
+# The checksum file is the publication marker: move it last so an interrupted
+# publish cannot leave new artifacts paired with a stale checksum manifest.
+[ "${OVERWRITE}" -eq 1 ] && rm -f "${CHECKSUMS}"
+mv -f "${STAGED_DMG}" "${DMG}"
+if [ -f "${STAGED_DSYM_ZIP}" ]; then
+	mv -f "${STAGED_DSYM_ZIP}" "${DSYM_ZIP}"
+elif [ "${OVERWRITE}" -eq 1 ]; then
+	rm -f "${DSYM_ZIP}"
+fi
+mv -f "${STAGED_CHECKSUMS}" "${CHECKSUMS}"
 
 echo
 echo "Release complete:"
