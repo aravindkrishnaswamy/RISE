@@ -158,6 +158,35 @@ namespace RISE
 					"},\"required\":[\"target\",\"param\",\"value\"]}"
 				},
 				{
+					"propose_patches",
+					"BATCH form of propose_patch: set MULTIPLE parameters across one or "
+					"several named scene entities in ONE call instead of one call per parameter. "
+					"USE THIS whenever you are modifying multiple parameters or entities -- "
+					"e.g. position, orientation, power, or materials across objects -- "
+					"it is one round-trip instead of N. Elements are applied IN ARRAY ORDER. "
+					"SEQUENTIAL and BEST-EFFORT: a rejected patch element does NOT stop "
+					"the batch -- every remaining element is still attempted in order. Always "
+					"pass the headVersion you last read as baseHeadVersion -- it is checked "
+					"against the FIRST element only, and if it is STALE the whole batch stops "
+					"with every element status=\"conflict\" (nothing was applied): re-read the "
+					"document and resubmit. Returns {applied,total,results:[...]}: "
+					"total is patches.length, applied is how many results have applied=true, and "
+					"each results[i] is the EXACT same shape propose_patch returns.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"patches\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+							"\"target\":{\"type\":\"string\",\"description\":\"The entity NAME to edit.\"},"
+							"\"kind\":{\"type\":\"string\",\"description\":\"Optional entity KIND keyword to disambiguate a name clash.\"},"
+							"\"param\":{\"type\":\"string\",\"description\":\"The parameter to set.\"},"
+							"\"value\":{\"type\":\"string\",\"description\":\"The new value as scene-language text.\"}"
+						"},\"required\":[\"target\",\"param\",\"value\"]},\"description\":"
+						"\"An array of patch objects ({target,param,value,kind?}), applied in order.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- checked against the FIRST element only.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"patches\"]}"
+				},
+				{
 					"insert_chunk",
 					"ADD one new entity to the live scene by inserting a complete chunk. "
 					"chunkText must be EXACTLY ONE `keyword { ... }` block with the braces "

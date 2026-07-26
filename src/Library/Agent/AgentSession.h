@@ -1368,6 +1368,35 @@ namespace RISE
 			//!            headless back door.
 			AgentPatchResult ProposePatch( const AgentSetPatch& patch );
 
+			//! BATCH form of ProposePatch (propose_patches): apply MULTIPLE
+			//! parameter edits across one or several named entities in ONE call
+			//! instead of one round-trip per patch.
+			//!
+			//! Semantics are SEQUENTIAL and BEST-EFFORT, delegating to ProposePatch
+			//! for each element in `patches`.  `baseOrNull` is checked against the
+			//! FIRST element only; subsequent elements pass nullptr to apply
+			//! against the evolving head.  A REJECTED element does NOT stop the
+			//! batch -- later elements are still attempted so their own results
+			//! are informative even when they depended on the rejected one.
+			//!
+			//! ONE EXCEPTION -- a STALE-BASE CONFLICT is batch-fatal.  When the
+			//! caller supplied `baseOrNull` and the first element comes back
+			//! status=="conflict", the document has moved since the caller last
+			//! read it, so the WHOLE batch's precondition has failed and no
+			//! further element is attempted.  This differs DELIBERATELY from
+			//! InsertChunks, which continues: an insert is ADDITIVE (racing a
+			//! concurrent editor merely interleaves new entities), whereas a
+			//! patch OVERWRITES an existing value -- continuing past a stale
+			//! base would blind-clobber a co-editor's concurrent edits for
+			//! elements 1..N-1, the classic lost update.  The returned vector
+			//! still has ONE entry per input element (so results[i] always
+			//! corresponds to patches[i]); the unattempted tail carries
+			//! applied=false, status="conflict" and a message saying so.
+			//! Re-read the head and resubmit the batch.
+			std::vector<AgentPatchResult> ProposePatches( const std::vector<AgentSetPatch>& patches,
+			                                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+
 			//! Model-B F5 slice S2 (insert_chunk): ADD one complete chunk (a
 			//! `keyword { ... }` block, braces on their own lines) to the head
 			//! and REALIZE it in the live scene via a dry-run-guarded FULL

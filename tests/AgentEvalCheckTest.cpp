@@ -3175,6 +3175,17 @@ static JsonValue InsertChunkInput( const std::string& chunkText )
 	return in;
 }
 
+//! A single-element `propose_patches` input -- enough to prove the BATCH
+//! verb is classified as document-mutating by the trajectory checker.
+static JsonValue ProposePatchesInput( const std::string& target, const std::string& param, const std::string& value )
+{
+	JsonValue arr = JsonValue::MakeArray();
+	arr.push_back( ProposePatchInput( target, param, value, false ) );
+	JsonValue in = JsonValue::MakeObject();
+	in.set( "patches", arr );
+	return in;
+}
+
 // {reference,samples,visual:false} -- the image_reconstruct_* control
 // fixtures' "measure before finishing" round (mirrors the committed
 // evals/fixtures/image_reconstruct_*.fixture.jsonl compare_to_reference
@@ -4442,6 +4453,43 @@ static void TestTrajectoryAskUserAssertions()
 			"askUserBeforeMutation:true FAILS -- the insert_chunk preceded the ask_user call" );
 		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMin\":1}]", true,
 			"askUserMin:1 still PASSES (the ordering failure is isolated to askUserBeforeMutation)" );
+	}
+
+	// Run B2: the SAME build-before-asking violation, but the mutation is a
+	// BATCH verb.  RED-PROVE target: a mutating verb missing from
+	// kMutatingToolNames is read as NON-mutating, so this run looks like
+	// "ask_user with zero mutations" and VACUOUSLY PASSES the very ordering
+	// assertion the checkpoint exists to enforce -- a silent hole that makes
+	// the grader more permissive without any scenario file changing.  Both
+	// batch verbs are driven so adding one and forgetting the other is caught.
+	{
+		struct BatchMutation { const char* verb; JsonValue input; };
+		const BatchMutation kBatchMutations[] = {
+			{ "propose_patches", ProposePatchesInput( "pnt_albedo", "color", "0.2 0.3 0.4" ) },
+			{ "insert_chunks",   [] { JsonValue arr = JsonValue::MakeArray();
+			                          arr.push_back( JsonValue::MakeString(
+			                              "uniformcolor_painter\n{\n\tname pnt_b2\n\tcolor 0.2 0.3 0.4\n}" ) );
+			                          JsonValue in = JsonValue::MakeObject();
+			                          in.set( "chunks", arr ); return in; }() },
+		};
+		for( const BatchMutation& bm : kBatchMutations ) {
+			const std::string r1 = AnthropicBody( "msg_1", "Building first.",
+				{ { bm.verb, bm.input } }, "tool_use" );
+			const std::string r2 = AnthropicBody( "msg_2", "Asking afterward (too late).",
+				{ { "ask_user", AskUserInput( "Did I get the colour right?" ) } }, "tool_use" );
+			const std::string r3 = AnthropicBody( "msg_3", "Done.", {}, "end_turn" );
+			AgentEvalScenario s2 = MakeScenario(
+				std::string( "traj_ask_after_batch_" ) + bm.verb, kScene, "Build it", "commit",
+				JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ) + JsonlLine( "anthropic", r3 ), dir, "[]" );
+			AgentEvalRunOptions opts2; opts2.runDir = dir;
+			AgentEvalRunHandle h2 = RunScenario( s2, opts2 );
+			Check( h2.result.terminalStatus == "final_text",
+			       std::string( "traj_ask_after_batch_" ) + bm.verb + ": run reached final_text" );
+
+			checkOne( h2, s2, "[{\"kind\":\"trajectory\",\"askUserBeforeMutation\":true}]", false,
+				std::string( "askUserBeforeMutation:true FAILS -- a " ) + bm.verb +
+				" before ask_user COUNTS as a mutation (a batch verb must not vacuously pass)" );
+		}
 	}
 
 	// Run C: NO ask_user call at all -- the second RED case for

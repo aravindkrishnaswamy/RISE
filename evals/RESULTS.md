@@ -332,6 +332,72 @@ still holds, but the gap narrowed once reasoning was restored.
 
 ---
 
+### 2d. Batch parameter edits — `propose_patches` (2026-07-25, epoch 12)
+
+**Historical — superseded by epoch 13.** These cells were driven and graded
+before the four follow-up fixes described at the end of this section, three of
+which change how a run is driven or graded. They are kept as the record of what
+the batch verb did and did not buy; do not compare them against anything run at
+epoch 13 or later.
+
+The affordance gap 2b closed for INSERTS was still open for EDITS:
+`insert_chunks` batched adds, but every parameter change was a single
+`propose_patch(target, param, value)`. gemini-3.6-flash's chattiness regression
+(noted in 2c) was mostly this — it patched one parameter per round. `epoch 12`
+added `propose_patches`, the batch sibling.
+
+Two run dirs measure the same cell at N=5, differing only in which other models
+shared the board: `gemini_only_e12` and `ask_user_board_e12`. Both carry the
+same scenario content hash, so they are **10 independent repeats of one
+configuration** and are pooled here.
+
+| model | epoch 11 (N=3) | e12 run A (N=5) | e12 run B (N=5) | **pooled e12 (N=10)** |
+|---|---|---|---|---|
+| gemini-3.6-flash | 66.7% | **80%** | **40%** | **60%** [31.3%, 83.2%] |
+| gemini-3.5-flash | 66.7% | 40% | 60% | 50% [23.7%, 76.3%] |
+| claude-opus-4-8 | 100% (N=3) | — | 100% | 100% (N=5) |
+
+**pass@1 did not move.** 60% pooled vs a 66.7% baseline whose own Wilson
+interval is [20.8%, 93.9%] — the two are indistinguishable, and 3.5-flash if
+anything drifted down. **The 80% cell is the better half of a 40/80 split on
+identical inputs**, which is what N=5 run-to-run variance looks like on this
+scenario; quoting it alone would have been cherry-picking. Opus stayed at 100%
+and roughly halved its cost per success ($13.75 → $6.19), tracking the general
+efficiency win rather than anything specific to the batch verb.
+
+**Efficiency is the real result, and it is large.** For gemini-3.6-flash:
+
+| | epoch 11 (N=3) | pooled e12 (N=10) |
+|---|---|---|
+| total tool calls / run | 160.0 | **57.7** |
+| single `propose_patch` calls | 78–150 | ~1 |
+| `propose_patches` calls | — | 9.2 |
+| parameter edits landed / run | 78–150 | **112.5** |
+| $/success | $5.25 | ~$2.00 |
+
+**2.8× fewer calls while landing MORE edits**, and the budget exhaustion seen at
+epoch 11 did not recur in any of the 10 runs. The verb does exactly what it was
+built to do; what it does not do is make the model build a better scene.
+
+**Takeaways.** (1) **An affordance fix buys headroom, not quality** — the same
+lesson 2b taught for inserts. Freeing ~100 calls per run did not convert into
+passed checkpoints, so the residual failures on this scenario are judgment, not
+budget. Stop optimising call counts here. (2) **Two N=5 runs of one cell
+disagreed 40% vs 80%** — a single N=5 board is not enough to claim a pass@1
+delta on this scenario; pool repeats or raise N before reporting one.
+(3) **Adding a verb is not adding it to one list.** The follow-up audit found
+`propose_patches` registered in the tool surface but missing from four sibling
+registries: the MCP transport's mutating-verb **rate limiter** (an uncapped
+mutation path), this harness's `kMutatingToolNames` (so
+`askUserBeforeMutation` read a batch patch as non-mutating and could vacuously
+pass), the **blind-edit nudge** (a batching model never accrued the streak, so
+it was never nudged to render), and `ToolOutcomeLine` (the model was told
+`"ok"` whether 12/12 or 0/12 elements applied). Epoch 13 fixes all four, makes
+a stale-base conflict batch-fatal, and teaches the verb in the modeling skill.
+When you add a verb, grep for a sibling's name and check every hit.
+
+---
+
 ## 3. Image→scene reconstruction (vision) — `image_reconstruct` (2026-07-18)
 
 Model sees RISE-rendered image(s) of a known SDF object and must rebuild
@@ -365,8 +431,24 @@ object+lighting+stage+env; graded by RMSE vs committed references.
 - **Held-out discipline:** `build_study_scene` is never iterated against, so
   a guidance change that only helps the tuned members reveals itself as
   overfit.
+- **One N=5 board cannot carry a pass@1 claim.** Two runs of the SAME cell
+  (same model, same scenario hash, N=5 each) came back 40% and 80% — the
+  whole apparent effect of a change, twice over, from variance alone. Pool
+  repeats across run dirs before reporting a delta, and quote the Wilson
+  interval: at N=5 it is roughly [38%, 96%] and rules out almost nothing.
+  A result cited from the better of two available runs is not a result.
+- **Report the metric that actually moved.** The batch-edit verb (2d) was a
+  real 2.8× call-count win and a null pass@1 win. Both are worth knowing;
+  conflating them turns a solid efficiency result into an unsupported
+  capability claim.
+- **A grader hole is a silent scoring change.** `askUserBeforeMutation` kept
+  passing after a new mutating verb shipped, because the checker's verb list
+  never learned about it — the scenario JSON was untouched, so nothing in the
+  diff looked like a grading change. When a tool-surface change lands, audit
+  every harness-side list that enumerates verbs, and treat those lists as
+  checkpoint definitions.
 
 ---
 
-_Last updated: 2026-07-25 (ask_user board complete + OpenAI Responses migration). Raw runs under `evals/runs/`; runconfigs under
+_Last updated: 2026-07-25 (ask_user board + OpenAI Responses migration; `propose_patches` batch-edit verb and its epoch-13 follow-up audit). Raw runs under `evals/runs/`; runconfigs under
 `evals/runconfigs/`._

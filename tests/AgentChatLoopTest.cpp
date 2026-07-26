@@ -433,7 +433,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 13, "body carries exactly thirteen OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 14, "body carries fourteen OpenAI tools" );
 	bool sawReadDocument = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i );
@@ -481,8 +481,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 13,
-		       "xAI body carries the same thirteen tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 14,
+		       "xAI body carries the same fourteen tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -744,11 +744,11 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 13, "body carries exactly thirteen tools" );
+	Check( tools.isArray() && tools.size() == 14, "body carries fourteen tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
-	                           "propose_patch", "insert_chunk", "remove_chunk",
+	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           "render", "read_image", "query_object_at", "compare_to_reference" };
-	for( int t = 0; t < 11; ++t ) {
+	for( int t = 0; t < 13; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -1161,7 +1161,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 13, "thirteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 14, "fourteen functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -1607,6 +1607,32 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		}
 		Check( off.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
 		       "nudge: threshold 0 disables it -- 8 blind edits, still no reminder" );
+
+		// EVERY mutating verb must grow the streak -- including the BATCH
+		// forms.  RED-PROVE target: a batch verb missing from the isMutation
+		// set makes the nudge silently STOP FIRING for exactly the models
+		// making the largest unobserved edits (a model that batches all its
+		// work never accrues a streak at all), which is the opposite of the
+		// intent.  Each batch verb is driven on its own fresh loop so one
+		// covering for the other cannot hide a miss.
+		const char* const kBatchVerbs[] = { "insert_chunks", "propose_patches" };
+		for( const char* verb : kBatchVerbs ) {
+			AgentChatLoop batch;
+			batch.SetProvider( ChatProvider::Anthropic );
+			batch.SetBlindEditNudgeThreshold( 3 );
+			batch.AddUserMessage( "build a scene" );
+			const std::string batchFx = AnthropicFixture(
+				std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"" ) + verb +
+				"\",\"input\":{}}]", "tool_use" );
+			for( int i = 0; i < 3; ++i ) {
+				ChatStepResult st = batch.HandleResponse( 200, batchFx );
+				if( st.toolCalls.size() == 1 )
+					batch.AddToolResult( st.toolCalls[0],
+						"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":2,\"total\":2,\"results\":[]}}" );
+			}
+			Check( batch.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) != std::string::npos,
+			       std::string( "nudge: " ) + verb + " COUNTS as a mutation -- 3 batch calls with no render arm the reminder" );
+		}
 	}
 
 	// Iteration cap, RAISED: SetMaxToolRoundsPerTurn(25) lets a host with
@@ -4884,6 +4910,25 @@ static void TestToolOutcomeDisplay()
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":3,\"total\":4,\"results\":[]}}" );
 		Check( e.toolSummaries[0].outcomeLine == "3/4 applied",
 		       "T38d: insert_chunks -> \"<applied>/<total> applied\"" );
+	}
+
+	// (d2) propose_patches: the OTHER batch verb returns the identical
+	// {applied,total,results} envelope and must get the identical summary.
+	// RED-PROVE target: with no case for it, it falls through to the generic
+	// "ok" of rule 8 and reports the SAME string whether every element
+	// applied or none did -- exactly the outcome a BEST-EFFORT batch verb
+	// most needs to surface, since a partial failure is its main hazard.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "propose_patches",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":8,\"total\":12,\"results\":[]}}" );
+		Check( e.toolSummaries[0].outcomeLine == "8/12 applied",
+		       "T38d2: propose_patches -> \"<applied>/<total> applied\" (NOT the generic \"ok\")" );
+	}
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "propose_patches",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":0,\"total\":12,\"results\":[]}}" );
+		Check( e.toolSummaries[0].outcomeLine == "0/12 applied",
+		       "T38d2: a propose_patches batch where NOTHING applied is visibly distinct from one where all did" );
 	}
 
 	// (e) insert_chunk applied cleanly -> "applied: <kind> `<name>`".

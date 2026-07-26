@@ -372,7 +372,16 @@ def build_digest(cell_dir, warnings):
 
             if name == "propose_patch":
                 param = args.get("param")
-                patches_by_param[param] += 1
+                if param:
+                    patches_by_param[param] += 1
+            elif name == "propose_patches":
+                patches_list = args.get("patches")
+                if isinstance(patches_list, list):
+                    for p_item in patches_list:
+                        if isinstance(p_item, dict):
+                            param = p_item.get("param")
+                            if param:
+                                patches_by_param[param] += 1
             elif name == "insert_chunk":
                 kw = first_token(args.get("chunkText"))
                 inserts_by_kind[kw] += 1

@@ -382,6 +382,38 @@ namespace RISE
 					tools.push_back( MakeTool( "propose_patch", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// propose_patches -- BATCH form of propose_patch
+				{
+					JsonValue itemProps = JsonValue::MakeObject();
+					itemProps.set( "target", StringProp( "The entity NAME to edit." ) );
+					itemProps.set( "kind",   StringProp( "OPTIONAL entity KIND keyword to disambiguate a name clash." ) );
+					itemProps.set( "param",  StringProp( "The parameter role to set." ) );
+					itemProps.set( "value",  StringProp( "The new value string." ) );
+					std::vector<std::string> itemRequired;
+					itemRequired.push_back( "target" ); itemRequired.push_back( "param" ); itemRequired.push_back( "value" );
+
+					JsonValue props = JsonValue::MakeObject();
+					JsonValue itemSchema = ObjectProp( "A single patch edit ({target,param,value,kind?}).", itemProps, itemRequired );
+					JsonValue patchesArrSchema = JsonValue::MakeObject();
+					patchesArrSchema.set( "type", JsonValue::MakeString( "array" ) );
+					patchesArrSchema.set( "items", itemSchema );
+					patchesArrSchema.set( "description", JsonValue::MakeString( "Array of patch objects ({target,param,value,kind?}), applied in order." ) );
+					props.set( "patches", patchesArrSchema );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+
+					std::vector<std::string> required;
+					required.push_back( "patches" );
+					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
+						"Set MULTIPLE parameters across one or several named entities in the scene document IN ONE CALL, applied in "
+						"array order. USE THIS instead of many separate propose_patch calls when adjusting multiple parameters or "
+						"entities together -- it is ONE round-trip instead of N. SEQUENTIAL and BEST-EFFORT: a rejected patch element "
+						"does NOT stop the batch -- every remaining element is still attempted in order. `baseHeadVersion`, when given, "
+						"is checked against the FIRST element only; if it is STALE the whole batch stops with every element "
+						"status=\"conflict\" and nothing applied (re-read the document and resubmit). Returns {applied,total,results:[...]}: `total` is patches.size(), "
+						"`applied` is how many results have applied=true, and each `results[i]` is the EXACT same shape propose_patch returns." );
+					tools.push_back( MakeTool( "propose_patches", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// insert_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -782,13 +814,13 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 18 tool names this adapter recognizes --
+			//! The list of the 19 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
-					"propose_patch", "insert_chunk", "insert_chunks", "remove_chunk",
+					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"compare_to_reference",
@@ -937,7 +969,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 17 verbs as MCP tools.
+				// tools/list -> the 19 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

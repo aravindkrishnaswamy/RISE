@@ -913,7 +913,10 @@ namespace RISE
 			//!  "ask_user" tool records in the trajectory (stage 2 of the
 			//!  clarifying-questions feature); askUserBeforeMutation asserts the
 			//!  FIRST ask_user record precedes the FIRST document-mutating tool
-			//!  record (insert_chunk/insert_chunks/propose_patch/remove_chunk);
+			//!  record (insert_chunk/insert_chunks/propose_patch/
+			//!  propose_patches/remove_chunk -- see kMutatingToolNames in
+			//!  CheckTrajectoryKind; a mutating verb missing from that table
+			//!  reads as non-mutating and VACUOUSLY PASSES this assertion);
 			//!  askUserQuestionContainsAny requires at least one ask_user
 			//!  question string to contain one of its case-insensitive terms.
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
@@ -1749,7 +1752,30 @@ namespace RISE
 			//!        exist before this epoch).  Prior cells were driven and
 			//!        graded without a scripted responder or the new trajectory
 			//!        fields and are not comparable.
-			static const int kEvalMethodologyEpoch = 11;
+			//!   12 -> (2026-07-25) the batch `propose_patches` verb shipped (a
+			//!        tool-DEFINITION change -- models now see a FOURTEENTH tool
+			//!        and can set N parameters across one or several entities in
+			//!        ONE call instead of N, the propose_patch sibling of
+			//!        epoch-7's insert_chunks).  Prior cells were driven against
+			//!        a thirteen-tool table and are not comparable.
+			//!   13 -> (2026-07-25) the epoch-12 follow-up audit: `propose_patches`
+			//!        had been added to the tool surface but MISSED in four
+			//!        sibling registries, three of which change how a run is
+			//!        driven or graded.  (a) CHECKER SEMANTICS: this file's
+			//!        kMutatingToolNames omitted it, so `askUserBeforeMutation`
+			//!        read a batch patch as non-mutating and could vacuously
+			//!        pass a run that built before asking.  (b) DRIVE: the
+			//!        blind-edit nudge (AgentChatLoop) omitted it, so a model
+			//!        that batched its edits never accrued the streak and was
+			//!        never nudged to render.  (c) DRIVE: ToolOutcomeLine had
+			//!        no case for it, so the model was told "ok" whether 17/17
+			//!        or 0/17 elements applied.  Also a SEMANTIC change: a
+			//!        stale-base conflict is now batch-fatal, and the modeling
+			//!        skill now teaches the batch verb.  The epoch-12 cells
+			//!        (evals/runs/gemini_only_e12, evals/runs/ask_user_board_e12)
+			//!        were driven and graded before all five and are not
+			//!        comparable to anything run after.
+			static const int kEvalMethodologyEpoch = 13;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
@@ -5450,11 +5476,17 @@ namespace RISE
 								// record ("asked before building") -- mirrors the
 								// blind-edit-nudge mutation set AgentChatLoop::
 								// AddToolResult already tracks (insert_chunk/
-								// insert_chunks/propose_patch/remove_chunk).
+								// insert_chunks/propose_patch/propose_patches/
+								// remove_chunk).  EVERY mutating verb must be
+								// listed: a verb missing here is silently treated
+								// as non-mutating, so a run that built via that
+								// verb before asking would VACUOUSLY PASS the
+								// ordering assertion this field exists to enforce.
 								if( cp.has( "askUserBeforeMutation" ) && cp.get( "askUserBeforeMutation" ).isBool() &&
 								    cp.get( "askUserBeforeMutation" ).asBool() ) {
 									static const char* const kMutatingToolNames[] = {
-										"insert_chunk", "insert_chunks", "propose_patch", "remove_chunk"
+										"insert_chunk", "insert_chunks",
+										"propose_patch", "propose_patches", "remove_chunk"
 									};
 									auto isMutatingTool = [&]( const std::string& name ) -> bool {
 										for( const char* m : kMutatingToolNames ) if( name == m ) return true;

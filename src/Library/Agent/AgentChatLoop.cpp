@@ -895,11 +895,16 @@ namespace RISE
 			// system prompt by BuildRequest).  Threshold <= 0 disables it.
 			{
 				const std::string& v = call.name;
-				// insert_chunks (the batch form of insert_chunk) counts as a
-				// mutation here too -- it still edits the document with no
-				// visual observation in between, same blind-edit risk.
+				// The BATCH forms (insert_chunks / propose_patches) count as a
+				// mutation here too -- they still edit the document with no
+				// visual observation in between, same blind-edit risk, and if
+				// anything a LARGER one (N edits land per call, so a model that
+				// batches would otherwise never accrue the streak at all and
+				// the nudge would silently stop firing for exactly the models
+				// making the biggest unobserved edits).
 				const bool isMutation = ( v == "insert_chunk" || v == "insert_chunks" ||
-				                          v == "propose_patch" || v == "remove_chunk" );
+				                          v == "propose_patch" || v == "propose_patches" ||
+				                          v == "remove_chunk" );
 				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
 				                               v == "read_viewport" || v == "query_object_at" );
 				// ask_user is EXPLICITLY neither: it neither mutates the
@@ -1022,7 +1027,7 @@ namespace RISE
 			//!   1. A JSON-RPC `error` envelope           -> "error: <msg, <=80 chars>"
 			//!   2. result.status == "rejected"            -> "rejected: <issues[0].reason `param`, or <=80 chars of message>"
 			//!   3. result.status == "conflict"             -> "conflict (stale base)"
-			//!   4. name == "insert_chunks"                 -> "<applied>/<total> applied"
+			//!   4. name in {insert_chunks,propose_patches}  -> "<applied>/<total> applied"
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1068,10 +1073,16 @@ namespace RISE
 				// insert_chunks/propose_patch/remove_chunk all gate this way).
 				if( status == "conflict" ) return "conflict (stale base)";
 
-				// 4. insert_chunks: the batch summary (result.applied is a
-				// COUNT here, not a bool -- distinct from insert_chunk's
-				// per-call boolean of the same name; see AgentRpc.cpp).
-				if( call.name == "insert_chunks" ) {
+				// 4. The BATCH verbs: the batch summary (result.applied is a
+				// COUNT here, not a bool -- distinct from insert_chunk's /
+				// propose_patch's per-call boolean of the same name; see
+				// AgentRpc.cpp).  Both batch verbs return the IDENTICAL
+				// {applied,total,results} envelope, so they share this rule --
+				// without it propose_patches would fall through to the generic
+				// "ok" of rule 8 and report the SAME string whether 17/17 or
+				// 0/17 elements applied, which is precisely the outcome a
+				// best-effort batch verb most needs to surface.
+				if( call.name == "insert_chunks" || call.name == "propose_patches" ) {
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";

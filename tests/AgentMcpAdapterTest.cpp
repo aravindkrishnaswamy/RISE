@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  AgentMcpAdapterTest.cpp - Secure-MCP slice 1: in-process test of the
-//    MCP envelope adapter (AgentMcpAdapter) over the SAME 14 agent verbs
+//    MCP envelope adapter (AgentMcpAdapter) over the SAME agent verbs
 //    AgentFirstSliceTest drives via the raw JSON-RPC dispatcher.
 //
 //  Drives AgentMcpAdapter::HandleLine directly (no subprocess, no LLM):
@@ -194,7 +194,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 18, "id:null tools/list result carries all 18 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 19, "id:null tools/list result carries all 19 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -258,9 +258,9 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
-	// tools/list -- all 17 verbs present; spot-check schemas + descriptions.
+	// tools/list -- all verbs present; spot-check schemas + descriptions.
 	//----------------------------------------------------------------------
-	std::printf( "[tools/list] all 17 verbs; schema + description spot-checks\n" );
+	std::printf( "[tools/list] all verbs; schema + description spot-checks\n" );
 	JsonValue toolsList;
 	{
 		const std::string resp = mcp.HandleLine( Req( 10, "tools/list", JsonValue::MakeObject() ) );
@@ -268,11 +268,11 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 18, "tools/list returns EXACTLY the 18 agent verbs" );
+		Check( toolsList.size() == 19, "tools/list returns EXACTLY the 19 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			"read_document", "read_schema", "read_skill", "validate",
-			"propose_patch", "insert_chunk", "remove_chunk",
+			"propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 			"render", "render_status", "render_wait", "render_cancel",
 			"read_image", "read_viewport", "query_object_at",
 			"compare_to_reference",
@@ -591,7 +591,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 18, "no-head tools/list still lists all 18 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 19, "no-head tools/list still lists all 19 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

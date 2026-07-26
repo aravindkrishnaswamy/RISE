@@ -36,6 +36,21 @@
 //                                            LIVE mode; resubmit the same patch later.
 //                                            Permanent rejects are false; a "conflict"
 //                                            is retriable-by-protocol via re-read.)
+//      propose_patches{patches:[{target,kind?,param,value},...],baseHeadVersion?}
+//                                        -> {applied:number,total:number,results:[<propose_patch result>,...]}
+//                                           (BATCH form of propose_patch: N parameter
+//                                            edits in ONE call.  SEQUENTIAL, applied in
+//                                            array order; a rejected element does NOT
+//                                            stop the batch.  baseHeadVersion is the
+//                                            precondition for the batch AS A WHOLE,
+//                                            checked against the FIRST element -- and a
+//                                            STALE base is BATCH-FATAL: nothing is
+//                                            applied and every element comes back
+//                                            "conflict" (unlike insert_chunks, which
+//                                            continues -- a patch OVERWRITES, so
+//                                            continuing past a stale base would clobber
+//                                            a co-editor).  `results` always has exactly
+//                                            `total` entries: results[i] <-> patches[i].)
 //      insert_chunk {chunkText,baseHeadVersion?:{uuid,revision}}
 //                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
 //                                           (Model-B F5 slice S2: ADD one complete chunk
@@ -47,6 +62,15 @@
 //                                            ONE chunk per call; headers/directives/
 //                                            multi-chunk text and duplicate (kind,name)
 //                                            are rejected with a specific message.)
+//      insert_chunks{chunks:[chunkText,...],baseHeadVersion?}
+//                                        -> {applied:number,total:number,results:[<insert_chunk result>,...]}
+//                                           (BATCH form of insert_chunk: N chunks in ONE
+//                                            call, applied in array order.  SEQUENTIAL and
+//                                            BEST-EFFORT throughout -- a rejected element,
+//                                            INCLUDING a stale-base conflict, does not stop
+//                                            the batch, because an insert is ADDITIVE and
+//                                            racing a co-editor merely interleaves new
+//                                            entities.  Contrast propose_patches above.)
 //      remove_chunk {target,kind?,baseHeadVersion?}
 //                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
 //                                           (Model-B F5 slice S2: REMOVE the chunk
@@ -519,12 +543,13 @@
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
-//    including the 3 known-
-//    mutating verbs (propose_patch, insert_chunk, remove_chunk), any
+//    including the 5 known-
+//    mutating verbs (propose_patch, propose_patches, insert_chunk,
+//    insert_chunks, remove_chunk), any
 //    unrecognized/typo'd method name, and any FUTURE verb added to the
 //    dispatch below without also being added to the read-safe list.  This
 //    is a deliberate polarity flip from the pre-hardening design (an
-//    allow-list of the 3 mutating verb NAMES, checked first) which was
+//    allow-list of the mutating verb NAMES, checked first) which was
 //    FAIL-OPEN: a new mutating verb #13 would have been silently permitted
 //    under Read until someone remembered to blacklist it.  One
 //    consequence worth calling out: an unrecognized method under Read now
@@ -548,7 +573,8 @@
 //    the same -320xx family as kAutonomyRefused, each a distinct
 //    RESOURCE/BACKPRESSURE refusal rather than a policy or scene-state
 //    outcome: kProposalQueueFull (-32012, AgentRpc.cpp) when
-//    propose_patch/insert_chunk/remove_chunk would stage past
+//    any mutating verb (propose_patch/propose_patches/insert_chunk/
+//    insert_chunks/remove_chunk) would stage past
 //    SceneEditController::kMaxPendingProposals; kMutatingRateLimitExceeded
 //    (-32013, AgentLoopbackHttpServer.cpp -- enforced at the HTTP
 //    TRANSPORT layer, before a request reaches this dispatcher, so it is
@@ -559,7 +585,8 @@
 //    Read and Commit.  Under `Propose`, the read-safe allowlist
 //    (IsReadSafeVerb -- includes list_proposals, read-safe under every
 //    posture, see below) still passes (same as Read) PLUS the 3 mutating
-//    verbs (propose_patch, insert_chunk, remove_chunk) are let THROUGH
+//    verbs (propose_patch, propose_patches, insert_chunk, insert_chunks,
+//    remove_chunk) are let THROUGH
 //    to the wrapped
 //    AgentSession rather than refused at this dispatcher's choke point --
 //    see IsProposeSafeVerb in AgentRpc.cpp.  Crucially, this dispatcher-
@@ -635,9 +662,10 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference) dispatches; every other method, including the 3 known-mutating verbs (propose_patch/insert_chunk/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
-			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 3 mutating
-			//! verbs (propose_patch/insert_chunk/remove_chunk) dispatch -- but
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference) dispatches; every other method, including the 5 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
+			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 5 mutating
+			//! verbs (propose_patch/propose_patches/insert_chunk/
+			//! insert_chunks/remove_chunk) dispatch -- but
 			//! dispatching only reaches AgentSession, whose OWN Owner/External
 			//! authority decides staging-vs-commit (see the file header's
 			//! Propose-autonomy doc).  resolve_proposal is deliberately NOT
