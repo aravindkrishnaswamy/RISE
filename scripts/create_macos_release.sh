@@ -145,8 +145,13 @@ OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rise-macos-release.XXXXXX")"
 SOURCE_ROOT="${WORK_DIR}/source"
 PUBLISH_DIR=""
+LOCK_DIR=""
+LOCK_HELD=0
 cleanup() {
 	[ -z "${PUBLISH_DIR}" ] || rm -rf "${PUBLISH_DIR}"
+	if [ "${LOCK_HELD}" -eq 1 ]; then
+		rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true
+	fi
 	if [ "${KEEP_WORK_DIR}" -eq 1 ]; then
 		echo "Preserved work directory: ${WORK_DIR}"
 	else
@@ -210,6 +215,12 @@ STAGED_DMG="${WORK_DIR}/$(basename "${DMG}")"
 STAGED_DSYM_ZIP="${WORK_DIR}/$(basename "${DSYM_ZIP}")"
 STAGED_CHECKSUMS="${WORK_DIR}/$(basename "${CHECKSUMS}")"
 STAGED_BUILD_LOG="${WORK_DIR}/$(basename "${BUILD_LOG}")"
+LOCK_DIR="${OUTPUT_DIR}/.${ARTIFACT_BASENAME}.lock"
+
+if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
+	die "another ${ARTIFACT_BASENAME} release is running, or a stale lock remains: ${LOCK_DIR}"
+fi
+LOCK_HELD=1
 
 if [ "${OVERWRITE}" -eq 0 ]; then
 	for artifact in "${DMG}" "${DSYM_ZIP}" "${CHECKSUMS}" "${BUILD_LOG}"; do
@@ -435,6 +446,9 @@ cp -p "${SOURCE_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
 mkdir -p "${APP}/Contents/Resources/Third-Party Licenses/cgltf"
 cp -p "${SOURCE_ROOT}/extlib/cgltf/LICENSE.txt" \
 	"${APP}/Contents/Resources/Third-Party Licenses/cgltf/LICENSE.txt"
+mkdir -p "${APP}/Contents/Resources/Third-Party Licenses/mt19937"
+cp -p "${SOURCE_ROOT}/extlib/mt19937/LICENSE.txt" \
+	"${APP}/Contents/Resources/Third-Party Licenses/mt19937/LICENSE.txt"
 
 expected_arches="${XCODE_ARCHS}"
 verify_architectures() {
@@ -567,12 +581,19 @@ cp -p "${STAGED_CHECKSUMS}" "${PUBLISH_DIR}/$(basename "${CHECKSUMS}")"
 
 # The checksum file is the publication marker: move it last so an interrupted
 # publish cannot leave new artifacts paired with a stale checksum manifest.
+[ "${OVERWRITE}" -eq 1 ] && rm -f "${CHECKSUMS}"
 mv -f "${PUBLISH_DIR}/$(basename "${DMG}")" "${DMG}"
 mv -f "${PUBLISH_DIR}/$(basename "${DSYM_ZIP}")" "${DSYM_ZIP}"
 mv -f "${PUBLISH_DIR}/$(basename "${BUILD_LOG}")" "${BUILD_LOG}"
+(
+	cd "${OUTPUT_DIR}"
+	shasum -a 256 -c "${PUBLISH_DIR}/$(basename "${CHECKSUMS}")" >/dev/null
+)
 mv -f "${PUBLISH_DIR}/$(basename "${CHECKSUMS}")" "${CHECKSUMS}"
 rmdir "${PUBLISH_DIR}"
 PUBLISH_DIR=""
+rmdir "${LOCK_DIR}"
+LOCK_HELD=0
 
 echo
 echo "Release complete:"
