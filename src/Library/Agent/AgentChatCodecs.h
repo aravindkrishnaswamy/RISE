@@ -23,9 +23,10 @@
 //        functionResponse {id,name,response,parts[]} where parts is an
 //        array of FunctionResponsePart {inlineData:{mimeType,data}}
 //        ("Ordered Parts that constitute a function response").
-//      * OpenAIChatCodec -- OpenAI Chat Completions
-//        (POST https://api.openai.com/v1/chat/completions, auth via
-//        `Authorization: Bearer ...`), surfaced in the GUI as ChatGPT.
+//      * OpenAIChatCodec -- OpenAI Responses API by default; parameterized
+//        OpenAI-compatible providers continue to use Chat Completions.
+//        Both use `Authorization: Bearer ...`; OpenAI is surfaced in the
+//        GUI as ChatGPT.
 //
 //    KEY DESIGN RULES (see AgentChatLoop.h for the loop contract):
 //      * The API key appears ONLY in the auth header the codec emits --
@@ -170,15 +171,85 @@ namespace RISE
 			//! (Eval-harness E1 -- fed into the trajectory `llm` record's
 			//! OTel `gen_ai.usage.*` fields).  Each field is -1 when the
 			//! provider omitted it (absent-tolerant, null-safe): Anthropic
-			//! `usage.{input_tokens,output_tokens,cache_read_input_tokens}`,
+			//! `usage.{input_tokens,output_tokens,cache_read_input_tokens}`
+			//! + `usage.output_tokens_details.thinking_tokens`,
 			//! Gemini `usageMetadata.{promptTokenCount,candidatesTokenCount,
-			//! cachedContentTokenCount}`, OpenAI `usage.{prompt_tokens,
-			//! completion_tokens,prompt_tokens_details.cached_tokens}`.
+			//! cachedContentTokenCount,thoughtsTokenCount}`, OpenAI
+			//! `usage.{prompt_tokens,completion_tokens,
+			//! prompt_tokens_details.cached_tokens,
+			//! completion_tokens_details.reasoning_tokens}` (Chat Completions)
+			//! or `usage.{input_tokens,output_tokens,
+			//! input_tokens_details.cached_tokens,
+			//! output_tokens_details.reasoning_tokens}` (Responses).
+			//!
+			//! NORMALIZED SEMANTICS (the codecs convert INTO these; providers
+			//! disagree on the wire -- see each ParseUsage for the per-provider
+			//! evidence):
+			//!   * `outputTokens` is the TOTAL BILLED GENERATION for the turn
+			//!     -- visible output PLUS any hidden reasoning/thinking the
+			//!     provider charged at the output rate.
+			//!   * `reasoningOutputTokens` is the reasoning/thinking SUBSET of
+			//!     that total.
+			//!   * INVARIANT, whenever `outputTokens >= 0`:
+			//!         0 <= reasoningOutputTokens <= outputTokens
+			//!     so `outputTokens - reasoningOutputTokens` is the visible
+			//!     output and a downstream cost model can price the total with
+			//!     ONE output rate without double counting.  This is ENFORCED,
+			//!     not merely documented: every ParseUsage ends in the shared
+			//!     EnforceUsageInvariant (AgentChatCodecs.cpp), which clamps a
+			//!     self-contradictory body (`reasoning > output` -- reachable
+			//!     from any provider, since the `local` provider's base URL is
+			//!     arbitrary) down to the billed total and raises
+			//!     `reasoningClamped`.  No input, however hostile, can produce
+			//!     a ChatUsage that breaks the invariant.
+			//!   * Every count is either -1 (absent) or >= 0.  A provider-sent
+			//!     NEGATIVE is garbage, not a count: it normalizes to 0, never
+			//!     to the -1 sentinel and never into arithmetic.
+			//!   * A body that reports reasoning but NO output counter yields
+			//!     `outputTokens == reasoningOutputTokens` (the subset is a
+			//!     lower bound on the billed generation), identically on every
+			//!     provider -- so `reasoningOutputTokens >= 0` implies
+			//!     `outputTokens >= 0`, and those tokens are never dropped.
+			//!     This holds for a REPORTED ZERO too (>= 0 is the whole
+			//!     non-sentinel range, not just the positives): a body whose
+			//!     only generation evidence is `reasoning_tokens: 0` publishes
+			//!     `outputTokens == 0`, never -1 beside a known subset.
+			//!   * The CLAMP DOES NOT DESTROY EVIDENCE.
+			//!     `reasoningOutputTokensReported` carries the provider's own
+			//!     count, captured before the clamp; it equals
+			//!     `reasoningOutputTokens` on every healthy body and is the
+			//!     only surviving copy of the claim on a clamped one.
+			//! WHOSE reasoning counter is a separate summand is a PER-PROVIDER
+			//! fact, decided from that provider's recorded evidence and NOT
+			//! re-derived per response from body arithmetic (see the "PROVIDER
+			//! DISPOSITION" table in OpenAIChatCodec::ParseUsage for why).
+			//! Gemini (`thoughtsTokenCount`) and xAI
+			//! (`completion_tokens_details.reasoning_tokens`) report it
+			//! SEPARATELY, so it is FOLDED IN here; Anthropic and OpenAI (both
+			//! wire shapes) already include it in their output counter, so they
+			//! pass through untouched.
 			struct ChatUsage
 			{
 				long long inputTokens          = -1;   //!< prompt / input tokens (-1 = absent)
-				long long outputTokens         = -1;   //!< completion / output tokens (-1 = absent)
+				long long outputTokens         = -1;   //!< TOTAL billed generation: visible + reasoning (-1 = absent)
 				long long cacheReadInputTokens = -1;   //!< cache-read input tokens (-1 = absent)
+				long long reasoningOutputTokens = -1;  //!< the reasoning/thinking SUBSET of outputTokens (-1 = provider reported none)
+				//! The provider's OWN reasoning count, captured before the
+				//! invariant could clamp it (-1 = provider reported none).
+				//! Identical to `reasoningOutputTokens` unless
+				//! `reasoningClamped` is set, in which case this is the ONLY
+				//! surviving copy of what the body claimed -- the clamped
+				//! record alone cannot tell a 51-token turn that reported 51
+				//! from one that reported 362.  The clamped value is what
+				//! costs and rollups use; this one is evidence.
+				long long reasoningOutputTokensReported = -1;
+				//! DIAGNOSTIC: the body claimed more reasoning than it billed
+				//! as output, so `reasoningOutputTokens` was clamped to
+				//! `outputTokens` to keep the invariant.  The codec layer logs
+				//! NOTHING (bodies carry scene content and api keys), so the
+				//! anomaly rides out in-band -- the trajectory `llm` record
+				//! serializes it as `gen_ai.usage.reasoning_clamped` when set.
+				bool      reasoningClamped = false;
 			};
 
 		//! One tool call the model requested.  `id` is the provider's
@@ -282,9 +353,11 @@ namespace RISE
 			//! its sticky state so every later BuildRequest (including the
 			//! retry) explicitly sends `"reasoning_effort":"none"`.  This is
 			//! NOT an omission -- this codebase never sends a
-			//! reasoning_effort field on its own, so the 400 comes from the
-			//! model's server-side default; the codec must actively ADD the
-			//! override.  The DRIVER should re-issue the SAME round once
+			//! reasoning_effort field on Chat-Completions requests unless
+			//! this recovery fires, so the 400 comes from the model's
+			//! server-side default; the codec must actively ADD the override.
+			//! OpenAI's native Responses mode does not need this recovery.
+			//! The DRIVER should re-issue the SAME round once
 			//! (rebuild via BuildRequest, fetch, and RecordHttpRound with
 			//! attempt=2/retryOf=1 so the retry is an honest sibling llm
 			//! record) instead of terminating.  Enforced once-per-round by
@@ -403,11 +476,9 @@ namespace RISE
 			//! provider-native message JSON produced by this codec).
 			//! `forceReasoningEffortNone` (REASONING-MODEL TOOLS-VS-EFFORT
 			//! 400 RECOVERY, see ChatStepResult::retryReasoningEffortNone):
-			//! when true, EXPLICITLY add `"reasoning_effort":"none"` to the
-			//! request body.  Only OpenAIChatCodec acts on it -- Anthropic
-			//! and Gemini accept and ignore the parameter, since neither
-			//! provider has this field.  Defaults false so every pre-
-			//! existing call site is unaffected.
+			//! when true, EXPLICITLY add `"reasoning_effort":"none"` to a
+			//! Chat-Completions request body.  OpenAIChatCodec ignores it in
+			//! Responses mode; Anthropic and Gemini ignore it always.
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -492,21 +563,11 @@ namespace RISE
 			virtual std::size_t ToolsWireBytes() const;
 		};
 
-		//! OpenAI Chat Completions codec (see file header).  The GUI
-		//! labels this provider "ChatGPT"; the wire endpoint is OpenAI's
-		//! chat/completions API because its messages/tool_calls transcript
-		//! shape matches this loop's provider-native raw-entry model.
-		//!
-		//! PARAMETERIZED (2026-07): the SAME wire codec drives every
-		//! OpenAI-Chat-Completions-compatible provider -- OpenAI itself,
-		//! xAI (Grok), and a local/Ollama-style server -- because the
-		//! request/response shape (messages, tools, tool_calls,
-		//! finish_reason, usage) is identical across them; only the
-		//! endpoint URL, provider label, default model id, and whether an
-		//! Authorization header is emitted differ.  Those four knobs are
-		//! captured in `Config`; the default constructor reproduces the
-		//! OpenAI wire behaviour byte-for-byte.  Do NOT copy-paste this
-		//! codec for a new compatible provider -- add a Config instead.
+		//! OpenAI uses the Responses API so reasoning and function tools work
+		//! together.  The parameterized form remains the shared Chat
+		//! Completions codec for compatible providers (xAI and local/Ollama).
+		//! Do NOT opt another provider into Responses merely because its Chat
+		//! Completions schema resembles OpenAI's.
 		class OpenAIChatCodec : public IChatProviderCodec
 		{
 		public:
@@ -520,7 +581,7 @@ namespace RISE
 			struct Config
 			{
 				std::string providerName;    //!< "openai" / "xai" / "local" -- the ProviderName() label
-				std::string baseUrl;         //!< full chat/completions endpoint URL
+				std::string baseUrl;         //!< full endpoint URL for the selected wire mode
 				std::string defaultModelId;  //!< model id when the caller leaves it empty
 				bool        requiresAuth = true;  //!< see the struct doc above; defaults fail-closed (require auth) so a default-constructed Config never reads indeterminate
 
@@ -533,10 +594,10 @@ namespace RISE
 				//! generation legitimately exceeds the hosted-provider
 				//! budget and was observed timing out at 300s.
 				long        requestTimeoutSeconds = 300;
+				bool        useResponsesApi = false; //!< OpenAI-native Responses wire; false for compatible providers
 			};
 
-			//! Default: the OpenAI provider (byte-identical wire behaviour
-			//! to the pre-parameterization codec).
+			//! Default: OpenAI's native Responses API.
 			OpenAIChatCodec();
 
 			//! Parameterized: any OpenAI-compatible provider.  The caller

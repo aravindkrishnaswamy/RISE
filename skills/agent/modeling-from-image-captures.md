@@ -519,8 +519,10 @@ refinement 3-4, materials/lighting 2-3, final verification 1-2.
 
 **When you are working under a hard external budget** (a stated round
 or tool-call cap), treat it as load-bearing: (a) COUNT rounds as you
-spend them; (b) BATCH aggressively -- several `insert_chunk`/
-`propose_patch` calls can go in ONE assistant round, and one round can
+spend them; (b) BATCH aggressively -- use `insert_chunks` and
+`propose_patches` to put many adds/edits in a SINGLE call (never one
+`propose_patch` per parameter), several such calls can go in ONE
+assistant round, and one round can
 render multiple verification poses back-to-back, so a blockout that
 would naively take six rounds fits in two; (c) reserve the LAST few
 rounds, no matter what state the reconstruction is in, for one final

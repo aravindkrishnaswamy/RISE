@@ -54,8 +54,14 @@ Subcommands
                                  availability summary.
 
         <cell>/reasoning.jsonl  ONLY IF the provider's raw LLM responses
-                                 carried a reasoning/thinking field -- one
-                                 line per turn that had one: {i, reasoning}.
+                                 carried recoverable reasoning/thinking TEXT --
+                                 one line per turn with captured text:
+                                 {i, reasoning}. Turns where reasoning
+                                 occurred but no text was recoverable (an
+                                 OpenAI Responses reasoning item with an empty
+                                 summary, a Gemini thoughtsTokenCount with no
+                                 thought text) are NOT written here -- see
+                                 digest.json's `reasoning.turnsTokenOnly`.
 
         <cell>/final.beauty.png ONLY IF --render was passed AND the cell has
                                  a <scenarioId>.final.RISEscene. Renders via
@@ -81,7 +87,9 @@ Subcommands
 """
 
 import argparse
+import contextlib
 import glob
+import io
 import json
 import os
 import re
@@ -158,36 +166,168 @@ def find_cells(path, warnings):
 
 
 # ---------------------------------------------------------------------------
-# Reasoning extraction (ollama/qwen "reasoning", xAI/grok "reasoning_content";
-# gpt/gemini carry neither -- see AgentChatCodecs.{h,cpp} for the per-provider
-# response shapes this mirrors).
+# Reasoning extraction -- recognizes every reasoning/thinking shape RISE's
+# own provider codecs (src/Library/Agent/AgentChatCodecs.cpp) parse, plus the
+# legacy OpenAI-compatible chat-completions shape used by ollama/qwen and
+# xAI/grok archives:
+#
+#   * legacy chat-completions: choices[0].message.reasoning /
+#     .reasoning_content -- a string, usually non-empty when present.
+#   * Anthropic Messages API: top-level content[] blocks with
+#     type == "thinking", text in the block's "thinking" field (see
+#     AnthropicChatCodec::ParseResponse). Extended thinking must be enabled
+#     on the request for these to appear at all.
+#   * OpenAI Responses API (OpenAIChatCodec::ParseResponse, mConfig.useResponsesApi):
+#     top-level output[] items with type == "reasoning". The item's mere
+#     presence is evidence reasoning occurred even when its "summary" array
+#     is empty (RISE's request never asks for a summary today) -- text, when
+#     present, lives at summary[].text.
+#   * Gemini: usageMetadata.thoughtsTokenCount > 0 -- Gemini spends thinking
+#     tokens on essentially every call but RISE never sets includeThoughts,
+#     so there is no thought TEXT on the wire, only a token count.
+#
+# A response can carry positive evidence that reasoning occurred (a thinking
+# block, a reasoning item, a nonzero thoughts-token count) WITHOUT carrying
+# any recoverable text (empty summary, token-only Gemini accounting). Collapsing
+# that "occurred but textless" state into either "didn't happen" or "text
+# captured" is the bug this function exists to avoid -- see
+# extract_reasoning_signals()'s return shape.
 # ---------------------------------------------------------------------------
 
-def extract_reasoning(response_body):
-    """Return (field_name, text) if `response_body` (string or already-parsed
-    object) carries a non-empty choices[0].message.reasoning or
-    .reasoning_content, else (None, None). Never raises -- any shape mismatch
-    is treated as "no reasoning this turn"."""
+def extract_reasoning_signals(response_body):
+    """Inspect one provider's raw LLM response (string or already-parsed
+    object) for any recognized reasoning/thinking shape. Returns a dict:
+
+        {
+          "occurred": bool,            # positive evidence reasoning happened
+                                        # this turn (text, a reasoning
+                                        # block/item, or spent thinking
+                                        # tokens) -- False means "no signal
+                                        # found", NOT "definitely didn't
+                                        # happen" (a provider could still be
+                                        # unrecognized or silent on the wire).
+          "text": str or None,         # captured reasoning/thinking text
+                                        # (multiple blocks/items joined with
+                                        # "\\n\\n"), or None if none available.
+          "field": str or None,        # which shape matched, for provenance.
+          "reasoningTokens": int or None,  # thinking-token count when the
+                                        # provider reports one directly
+                                        # (currently Gemini only).
+        }
+
+    Never raises -- any shape mismatch across every recognized shape yields
+    {"occurred": False, "text": None, "field": None, "reasoningTokens": None}.
+    """
+    empty = {"occurred": False, "text": None, "field": None, "reasoningTokens": None}
     try:
         if isinstance(response_body, str):
             obj = json.loads(response_body)
         elif isinstance(response_body, dict):
             obj = response_body
         else:
-            return (None, None)
-        choices = obj.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return (None, None)
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            return (None, None)
-        for field in ("reasoning", "reasoning_content"):
-            val = message.get(field)
-            if isinstance(val, str) and val.strip():
-                return (field, val)
+            return empty
+        if not isinstance(obj, dict):
+            return empty
     except Exception:
-        return (None, None)
-    return (None, None)
+        return empty
+
+    occurred = False
+    field = None
+    reasoning_tokens = None
+    texts = []
+
+    # Legacy OpenAI-compatible chat-completions (ollama/qwen, xAI/grok).
+    # Mirrors AgentChatCodecs.cpp's OpenAI-family codec (~line 2864-2876):
+    # prefer `reasoning` when it is a non-empty string, else fall back to
+    # `reasoning_content` -- the two are MUTUALLY EXCLUSIVE, not both
+    # collected. A proxy that mirrors the same text into both keys must not
+    # produce a doubled "text\n\ntext" result.
+    try:
+        choices = obj.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            if isinstance(message, dict):
+                reasoning_val = None
+                reasoning_field = None
+                for f in ("reasoning", "reasoning_content"):
+                    val = message.get(f)
+                    if isinstance(val, str) and val.strip():
+                        reasoning_val = val.strip()
+                        reasoning_field = f
+                        break
+                if reasoning_val is not None:
+                    occurred = True
+                    field = field or reasoning_field
+                    texts.append(reasoning_val)
+    except Exception:
+        # A malformed value in THIS shape must not discard signal already
+        # (or still to be) extracted from the other shapes below.
+        pass
+
+    # Anthropic Messages API: content[] blocks with type == "thinking".
+    try:
+        content = obj.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "thinking":
+                    occurred = True
+                    field = field or "thinking"
+                    t = block.get("thinking")
+                    if isinstance(t, str) and t.strip():
+                        texts.append(t.strip())
+    except Exception:
+        pass
+
+    # OpenAI Responses API: output[] items with type == "reasoning". The
+    # item's presence alone is evidence reasoning occurred; text (when
+    # present) lives at summary[].text -- and summary is routinely [].
+    try:
+        output = obj.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if isinstance(item, dict) and item.get("type") == "reasoning":
+                    occurred = True
+                    field = field or "reasoning_item"
+                    summary = item.get("summary")
+                    if isinstance(summary, list):
+                        for s in summary:
+                            if isinstance(s, dict):
+                                st = s.get("text")
+                                if isinstance(st, str) and st.strip():
+                                    texts.append(st.strip())
+    except Exception:
+        pass
+
+    # Gemini: usageMetadata.thoughtsTokenCount > 0 -- tokens only, no text.
+    try:
+        usage_metadata = obj.get("usageMetadata")
+        if isinstance(usage_metadata, dict):
+            ttc = usage_metadata.get("thoughtsTokenCount")
+            if isinstance(ttc, (int, float)) and not isinstance(ttc, bool) and ttc > 0:
+                occurred = True
+                field = field or "thoughtsTokenCount"
+                # ttc is a real (non-Inf/NaN, positive) number here, but it
+                # can still be pathological: +Infinity overflows int() (a
+                # provider bug or malformed proxy value) and a fraction in
+                # (0, 1) truncates to 0 via int() despite being positive
+                # evidence reasoning occurred. Guard the former (this shape
+                # alone degrades to "no token count", other shapes are
+                # unaffected) and clamp the latter to 1 so a nonzero ttc
+                # never reports a zero reasoningTokens (kept internally
+                # consistent with occurred=True / turnsTokenOnly).
+                try:
+                    reasoning_tokens = int(ttc) if ttc >= 1 else 1
+                except (OverflowError, ValueError):
+                    reasoning_tokens = None
+    except Exception:
+        pass
+
+    return {
+        "occurred": occurred,
+        "text": "\n\n".join(texts) if texts else None,
+        "field": field,
+        "reasoningTokens": reasoning_tokens,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +491,10 @@ def build_digest(cell_dir, warnings):
     sum_latency_ms = 0.0
     reasoning_lines = []
     reasoning_field_seen = None
+    turns_with_reasoning = 0
+    turns_with_text = 0
+    turns_token_only = 0
+    reasoning_tokens_total = None
 
     tool_ordinal = -1
     llm_ordinal = -1
@@ -372,7 +516,16 @@ def build_digest(cell_dir, warnings):
 
             if name == "propose_patch":
                 param = args.get("param")
-                patches_by_param[param] += 1
+                if param:
+                    patches_by_param[param] += 1
+            elif name == "propose_patches":
+                patches_list = args.get("patches")
+                if isinstance(patches_list, list):
+                    for p_item in patches_list:
+                        if isinstance(p_item, dict):
+                            param = p_item.get("param")
+                            if param:
+                                patches_by_param[param] += 1
             elif name == "insert_chunk":
                 kw = first_token(args.get("chunkText"))
                 inserts_by_kind[kw] += 1
@@ -411,11 +564,18 @@ def build_digest(cell_dir, warnings):
             if isinstance(ct, (int, float)) and ct > 0:
                 cache_read_total += ct
 
-            field, text = extract_reasoning(rec.get("response_body"))
-            if field is not None:
+            signals = extract_reasoning_signals(rec.get("response_body"))
+            if signals["occurred"]:
+                turns_with_reasoning += 1
                 if reasoning_field_seen is None:
-                    reasoning_field_seen = field
-                reasoning_lines.append({"i": llm_ordinal, "reasoning": text})
+                    reasoning_field_seen = signals["field"]
+                if signals["reasoningTokens"]:
+                    reasoning_tokens_total = (reasoning_tokens_total or 0) + signals["reasoningTokens"]
+                if signals["text"]:
+                    turns_with_text += 1
+                    reasoning_lines.append({"i": llm_ordinal, "reasoning": signals["text"]})
+                else:
+                    turns_token_only += 1
 
     digest = {
         "scenarioId": scenario_id,
@@ -452,9 +612,27 @@ def build_digest(cell_dir, warnings):
             "sumLatencyMs": sum_latency_ms,
         },
         "reasoning": {
-            "available": bool(reasoning_lines),
+            # Three-state readout -- do not collapse "occurred" without
+            # "textCaptured" into either neighbor:
+            #   occurred=False                       -> no reasoning signal seen
+            #   occurred=True,  textCaptured=True     -> reasoning happened, text captured
+            #   occurred=True,  textCaptured=False    -> reasoning happened, no text
+            #                                            available (tokens only, or an
+            #                                            empty summary/thinking block)
+            "occurred": turns_with_reasoning > 0,
+            "textCaptured": turns_with_text > 0,
+            # BACKWARD-COMPAT: `available` kept as an alias of `textCaptured`
+            # (its pre-fix meaning was "we have reasoning text to show" --
+            # true only when reasoning.jsonl has content). No known consumer
+            # reads this key today (tools/eval_report.py and the rest of
+            # tools/ were grepped and found not to reference it), but it
+            # costs nothing to preserve.
+            "available": turns_with_text > 0,
             "provider_field": reasoning_field_seen,
-            "turnsWithReasoning": len(reasoning_lines),
+            "turnsWithReasoning": turns_with_reasoning,
+            "turnsWithText": turns_with_text,
+            "turnsTokenOnly": turns_token_only,
+            "reasoningTokensTotal": reasoning_tokens_total,
         },
     }
 
@@ -614,8 +792,19 @@ def enrich_cell(cell_dir, do_render, samples, force, warnings):
             render_note = "render skipped (no .final.RISEscene in this cell)"
 
     cell_name = os.path.basename(cell_dir.rstrip(os.sep))
+    # Three-state readout, matching digest["reasoning"] (see build_digest):
+    # counting only len(reasoning_lines) here re-introduces the exact
+    # text-vs-occurred conflation the digest rework fixed -- a cell where
+    # every turn's reasoning was token-only (OpenAI Responses empty summary,
+    # Gemini thoughtsTokenCount) would print "0 reasoning turn(s)" while
+    # digest.json correctly records turnsWithReasoning > 0.
+    reasoning_summary = digest.get("reasoning", {})
+    turns_with_reasoning = reasoning_summary.get("turnsWithReasoning", 0)
+    turns_with_text = reasoning_summary.get("turnsWithText", 0)
+    turns_token_only = reasoning_summary.get("turnsTokenOnly", 0)
     print(f"{cell_name}: digest.json written, "
-          f"{len(reasoning_lines)} reasoning turn(s), {render_note}")
+          f"{turns_with_reasoning} reasoning turn(s) "
+          f"({turns_with_text} text, {turns_token_only} token-only), {render_note}")
     return digest
 
 
@@ -666,6 +855,78 @@ def build_synthetic_cell(tmp_root):
             "latency_ms": 500,
             "response_body": json.dumps({
                 "choices": [{"message": {"reasoning": "thinking about it", "content": "ok"}}]
+            }),
+        },
+        {
+            # Anthropic Messages API shape: content[] carries a "thinking"
+            # block alongside the usual "text" block. Mirrors what
+            # AnthropicChatCodec::ParseResponse extracts (thinking-block
+            # text, joined -- see extract_reasoning_signals()). Text captured.
+            "trace_id": "t1", "dotted_order": "3b", "run_type": "llm",
+            "gen_ai.request.model": "claude-opus-4-8",
+            "gen_ai.usage.input_tokens": 200,
+            "gen_ai.usage.output_tokens": 80,
+            "latency_ms": 600,
+            "response_body": json.dumps({
+                "model": "claude-opus-4-8",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "considering scene layout options"},
+                    {"type": "text", "text": "Let's start with a simple layout."},
+                ],
+                "stop_reason": "end_turn",
+            }),
+        },
+        {
+            # OpenAI Responses API shape: output[] carries a type=="reasoning"
+            # item. Matches recorded evals/runs/ask_user_openai_responses
+            # data exactly -- "summary" is present but EMPTY (the harness
+            # never requests a summary), so the item is positive evidence
+            # reasoning occurred with NO text available. Must not be
+            # collapsed into "no reasoning" or "text captured".
+            "trace_id": "t1", "dotted_order": "3c", "run_type": "llm",
+            "gen_ai.request.model": "gpt-5.6-terra",
+            "gen_ai.usage.input_tokens": 300,
+            "gen_ai.usage.output_tokens": 20,
+            "latency_ms": 700,
+            "response_body": json.dumps({
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "rs_0abc", "type": "reasoning",
+                        "content": [], "encrypted_content": "gAAAAABtestonly", "summary": [],
+                    },
+                    {
+                        "id": "fc_0abc", "type": "function_call",
+                        "call_id": "call_1", "name": "read_document", "arguments": "{}",
+                    },
+                ],
+            }),
+        },
+        {
+            # Gemini shape: usageMetadata.thoughtsTokenCount > 0 -- thinking
+            # tokens were spent (matches 953/954 real Gemini calls surveyed)
+            # but there is no thought TEXT on the wire since RISE never sets
+            # includeThoughts. Tokens-only evidence, no text.
+            "trace_id": "t1", "dotted_order": "3d", "run_type": "llm",
+            "gen_ai.request.model": "gemini-3.5-flash",
+            "gen_ai.usage.input_tokens": 150,
+            "gen_ai.usage.output_tokens": 10,
+            "latency_ms": 400,
+            "response_body": json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [{"functionCall": {"name": "read_document", "args": {}, "id": "x1"}}],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP", "index": 0,
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 150, "candidatesTokenCount": 10, "totalTokenCount": 202,
+                    "thoughtsTokenCount": 42, "serviceTier": "standard",
+                },
+                "modelVersion": "gemini-3.5-flash",
             }),
         },
         {
@@ -737,13 +998,211 @@ def build_synthetic_cell(tmp_root):
     return cell_dir
 
 
+def test_extract_reasoning_signals(failures):
+    """Direct unit checks on extract_reasoning_signals() for shapes/edge
+    cases not exercised end-to-end by the synthetic-cell integration test
+    below: the legacy `reasoning_content` field name, an OpenAI Responses
+    reasoning item with a NON-empty summary (the codec-supported path that
+    the currently recorded eval data never happens to exercise -- every
+    recorded summary array is empty), a Gemini response with
+    thoughtsTokenCount == 0 (must NOT be reported as reasoning occurring),
+    and inputs that match none of the recognized shapes."""
+
+    # Legacy xAI/grok-style reasoning_content field name.
+    sig = extract_reasoning_signals(json.dumps({
+        "choices": [{"message": {"reasoning_content": "grok-style reasoning", "content": "ok"}}]
+    }))
+    _check(sig["occurred"] is True and sig["text"] == "grok-style reasoning" and sig["field"] == "reasoning_content",
+           f"reasoning_content legacy shape captured (got {sig})", failures)
+
+    # OpenAI Responses reasoning item WITH a non-empty summary -- supported
+    # by the same code path AnthropicChatCodec's sibling
+    # OpenAIChatCodec::ParseResponse uses (summary[].text), but NOT observed
+    # in the currently recorded eval data (every recorded summary is []).
+    sig = extract_reasoning_signals(json.dumps({
+        "status": "completed",
+        "output": [
+            {"id": "rs_1", "type": "reasoning", "content": [],
+             "summary": [{"type": "summary_text", "text": "weighing two layout options"}]},
+        ],
+    }))
+    _check(sig["occurred"] is True and sig["text"] == "weighing two layout options"
+           and sig["field"] == "reasoning_item",
+           f"OpenAI Responses reasoning item with non-empty summary captured (got {sig})", failures)
+
+    # Gemini with thoughtsTokenCount == 0 -- must NOT be reported as having
+    # occurred (this is the genuine "reasoning definitely did not happen"
+    # state, distinct from the tokens-only state).
+    sig = extract_reasoning_signals({
+        "candidates": [{"content": {"parts": [{"text": "hi"}], "role": "model"}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 1, "thoughtsTokenCount": 0},
+    })
+    _check(sig["occurred"] is False and sig["text"] is None and sig["reasoningTokens"] is None,
+           f"Gemini thoughtsTokenCount == 0 reports no reasoning (got {sig})", failures)
+
+    # No recognized shape at all.
+    sig = extract_reasoning_signals(json.dumps({"choices": [{"message": {"content": "just an answer"}}]}))
+    _check(sig["occurred"] is False and sig["text"] is None and sig["field"] is None,
+           f"plain chat-completions response with no reasoning field reports nothing (got {sig})", failures)
+
+    # Malformed JSON string, non-dict body, and None must never raise.
+    for bad in ("{not json", 12345, None, [], {"content": "not a list"}):
+        sig = extract_reasoning_signals(bad)
+        _check(sig["occurred"] is False and sig["text"] is None,
+               f"malformed/unexpected input {bad!r} never raises and reports no reasoning (got {sig})", failures)
+
+    # P2-a regression: AgentChatCodecs.cpp's OpenAI-family codec
+    # (~AgentChatCodecs.cpp:2864-2876) prefers `reasoning` over
+    # `reasoning_content` and the two are MUTUALLY EXCLUSIVE -- never both
+    # collected. A proxy that mirrors the same text into both keys (some
+    # OpenRouter-style proxies do this) must not double the captured text.
+    sig = extract_reasoning_signals(json.dumps({
+        "choices": [{"message": {"reasoning": "X", "reasoning_content": "X"}}]
+    }))
+    _check(sig["occurred"] is True and sig["text"] == "X" and sig["field"] == "reasoning",
+           f"reasoning + reasoning_content both present (same text) must NOT be concatenated "
+           f"(got {sig})", failures)
+
+    # Same, but with DIFFERENT text in the two fields -- `reasoning` still
+    # wins outright; `reasoning_content` must not contribute at all.
+    sig = extract_reasoning_signals(json.dumps({
+        "choices": [{"message": {"reasoning": "primary", "reasoning_content": "secondary"}}]
+    }))
+    _check(sig["occurred"] is True and sig["text"] == "primary" and sig["field"] == "reasoning",
+           f"reasoning must win outright over reasoning_content, not blend (got {sig})", failures)
+
+    # `reasoning` present but empty -- must fall back to `reasoning_content`,
+    # matching the codec's "prefer reasoning when non-empty, else fall back"
+    # rule (an empty string is treated the same as absent).
+    sig = extract_reasoning_signals(json.dumps({
+        "choices": [{"message": {"reasoning": "", "reasoning_content": "fallback text"}}]
+    }))
+    _check(sig["occurred"] is True and sig["text"] == "fallback text" and sig["field"] == "reasoning_content",
+           f"empty reasoning must fall back to reasoning_content (got {sig})", failures)
+
+    # P2-c regression: a malformed value in ONE shape (Gemini's
+    # thoughtsTokenCount == +Infinity, which int() cannot convert --
+    # OverflowError) must not discard signal already extracted from another
+    # shape (here, the legacy choices[0].message.reasoning text). Python's
+    # json.loads accepts bare Infinity, so this is a real round-trip, not a
+    # synthetic dict.
+    sig = extract_reasoning_signals(
+        '{"choices":[{"message":{"reasoning":"real text"}}],'
+        '"usageMetadata":{"thoughtsTokenCount":Infinity}}'
+    )
+    _check(sig["occurred"] is True and sig["text"] == "real text" and sig["field"] == "reasoning",
+           f"a malformed Infinity thoughtsTokenCount must not discard valid legacy-shape text "
+           f"(got {sig})", failures)
+
+    # P3-d regression: a fractional thoughtsTokenCount in (0, 1) is positive
+    # evidence reasoning occurred (ttc > 0) but int(ttc) truncates to 0,
+    # which build_digest's `if signals["reasoningTokens"]:` guard treats as
+    # falsy -- silently dropping it from reasoningTokensTotal accumulation
+    # while turnsWithReasoning/turnsTokenOnly still count the turn. Clamp to
+    # 1 so a positive ttc never reports a zero token count.
+    sig = extract_reasoning_signals({
+        "candidates": [{"content": {"parts": [{"text": "hi"}], "role": "model"}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 1, "thoughtsTokenCount": 0.5},
+    })
+    _check(sig["occurred"] is True and sig["reasoningTokens"] == 1,
+           f"fractional thoughtsTokenCount in (0,1) must clamp reasoningTokens to 1, not "
+           f"truncate to 0 (got {sig})", failures)
+
+
+def build_multi_gemini_cell(tmp_root):
+    """Synthetic cell with THREE Gemini-shape llm turns, each carrying a
+    distinct thoughtsTokenCount, to exercise reasoningTokensTotal's
+    accumulate-across-multiple-turns branch (P3-g). The main synthetic cell
+    used elsewhere in this selftest has only ONE Gemini-shape turn (42 ->
+    42), which cannot distinguish "sum across turns" from "overwrite with
+    the last/first turn's value" -- both produce 42 on a single-turn input."""
+    scenario_id = "selftest_multi_gemini"
+    cell_dir = os.path.join(tmp_root, f"{scenario_id}__gemini__gemini-3.5-flash__r1")
+    os.makedirs(cell_dir, exist_ok=True)
+
+    def gemini_turn(dotted_order, ttc):
+        return {
+            "trace_id": "t1", "dotted_order": dotted_order, "run_type": "llm",
+            "gen_ai.request.model": "gemini-3.5-flash",
+            "gen_ai.usage.input_tokens": 100,
+            "gen_ai.usage.output_tokens": 10,
+            "latency_ms": 100,
+            "response_body": json.dumps({
+                "candidates": [{
+                    "content": {"parts": [{"text": "ok"}], "role": "model"},
+                    "finishReason": "STOP", "index": 0,
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 100, "candidatesTokenCount": 10,
+                    "thoughtsTokenCount": ttc,
+                },
+            }),
+        }
+
+    traj_records = [
+        {"trace_id": "t1", "dotted_order": "1", "run_type": "session",
+         "provider": "gemini", "gen_ai.request.model": "gemini-3.5-flash"},
+        gemini_turn("2", 42),
+        gemini_turn("3", 15),
+        gemini_turn("4", 3),
+        {"trace_id": "t1", "dotted_order": "5", "run_type": "summary", "wall_ms": 100,
+         "n_tool_calls": 0, "status": "final_text"},
+    ]
+    with open(os.path.join(cell_dir, f"{scenario_id}.trajectory.jsonl"), "w", encoding="utf-8") as f:
+        for rec in traj_records:
+            f.write(json.dumps(rec) + "\n")
+
+    result = {
+        "scenarioId": scenario_id, "terminalStatus": "final_text",
+        "llmCalls": 3, "toolCalls": 0, "wallMs": 100,
+        "provider": "gemini", "model": "gemini-3.5-flash", "finalText": "done",
+    }
+    with open(os.path.join(cell_dir, f"{scenario_id}.result.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps(result) + "\n")
+
+    return cell_dir
+
+
+def test_reasoning_tokens_accumulate(failures):
+    """P3-g regression: reasoningTokensTotal must SUM thoughtsTokenCount
+    across every Gemini-shape turn in the cell, not just reflect a single
+    turn's value."""
+    tmp_root = tempfile.mkdtemp(prefix="eval_enrich_selftest_accum_")
+    try:
+        cell_dir = build_multi_gemini_cell(tmp_root)
+        warnings = []
+        built = build_digest(cell_dir, warnings)
+        _check(built is not None, "build_digest succeeds on the multi-Gemini-turn cell", failures)
+        if built is None:
+            return
+        digest, _reasoning_lines, _scenario_id, _final_scene_path = built
+        reasoning = digest.get("reasoning", {})
+        _check(reasoning.get("turnsWithReasoning") == 3,
+               f"multi-turn: turnsWithReasoning == 3 (got {reasoning.get('turnsWithReasoning')})", failures)
+        _check(reasoning.get("turnsTokenOnly") == 3,
+               f"multi-turn: turnsTokenOnly == 3 (got {reasoning.get('turnsTokenOnly')})", failures)
+        _check(reasoning.get("turnsWithText") == 0,
+               f"multi-turn: turnsWithText == 0 (got {reasoning.get('turnsWithText')})", failures)
+        _check(reasoning.get("reasoningTokensTotal") == 42 + 15 + 3,
+               f"multi-turn: reasoningTokensTotal == 60 (42+15+3 summed across turns, "
+               f"got {reasoning.get('reasoningTokensTotal')})", failures)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 def selftest():
     failures = []
+    test_extract_reasoning_signals(failures)
+    test_reasoning_tokens_accumulate(failures)
     tmp_root = tempfile.mkdtemp(prefix="eval_enrich_selftest_")
     try:
         cell_dir = build_synthetic_cell(tmp_root)
         warnings = []
-        digest = enrich_cell(cell_dir, do_render=False, samples=None, force=False, warnings=warnings)
+        stdout_buf = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buf):
+            digest = enrich_cell(cell_dir, do_render=False, samples=None, force=False, warnings=warnings)
+        console_line = stdout_buf.getvalue()
+        sys.stdout.write(console_line)
         for w in warnings:
             print(w, file=sys.stderr)
 
@@ -783,16 +1242,57 @@ def selftest():
             _check(lights[0].get("color") == [1.0, 0.9, 0.8],
                    f"scene.lights[0].color == [1.0, 0.9, 0.8] (got {lights[0].get('color')})", failures)
 
+        # Four llm turns in the synthetic cell exercise all four recognized
+        # shapes: legacy choices[0].message.reasoning (text captured),
+        # Anthropic content[] "thinking" block (text captured), OpenAI
+        # Responses output[] "reasoning" item with an EMPTY summary (occurred,
+        # no text), and Gemini usageMetadata.thoughtsTokenCount (occurred, no
+        # text, tokens recorded). This is the regression test for the bug:
+        # occurred must be True and textCaptured must NOT be conflated with
+        # "every turn's text was captured" -- 2 of 4 turns have no text.
         reasoning = digest.get("reasoning", {})
-        _check(reasoning.get("available") is True, f"reasoning.available == True (got {reasoning.get('available')})", failures)
+        _check(reasoning.get("occurred") is True,
+               f"reasoning.occurred == True (got {reasoning.get('occurred')})", failures)
+        _check(reasoning.get("textCaptured") is True,
+               f"reasoning.textCaptured == True (got {reasoning.get('textCaptured')})", failures)
+        _check(reasoning.get("available") is True,
+               f"reasoning.available (backward-compat alias) == True (got {reasoning.get('available')})", failures)
+        _check(reasoning.get("turnsWithReasoning") == 4,
+               f"reasoning.turnsWithReasoning == 4 (got {reasoning.get('turnsWithReasoning')})", failures)
+        _check(reasoning.get("turnsWithText") == 2,
+               f"reasoning.turnsWithText == 2 (got {reasoning.get('turnsWithText')})", failures)
+        _check(reasoning.get("turnsTokenOnly") == 2,
+               f"reasoning.turnsTokenOnly == 2 (got {reasoning.get('turnsTokenOnly')})", failures)
+        _check(reasoning.get("reasoningTokensTotal") == 42,
+               f"reasoning.reasoningTokensTotal == 42 (got {reasoning.get('reasoningTokensTotal')})", failures)
+        _check(reasoning.get("provider_field") == "reasoning",
+               f"reasoning.provider_field == 'reasoning' (first turn's field; got {reasoning.get('provider_field')})",
+               failures)
+
+        # P2-b regression: the per-cell console line must reflect the
+        # three-state model (occurred / text-captured / token-only), not
+        # just len(reasoning_lines) -- which only counts TEXT-BEARING turns.
+        # Before the fix this line printed "2 reasoning turn(s)" for this
+        # cell even though reasoning.turnsWithReasoning is 4 (2 of the 4
+        # occurred turns are token-only) -- exactly the conflation the
+        # digest rework fixed, reintroduced at the console layer.
+        _check("4 reasoning turn(s)" in console_line,
+               f"console line reports turnsWithReasoning (4), not just the count of "
+               f"text-bearing turns (got {console_line!r})", failures)
+        _check("2 text" in console_line and "2 token-only" in console_line,
+               f"console line breaks down text-captured vs token-only turns (got {console_line!r})",
+               failures)
 
         reasoning_path = os.path.join(cell_dir, "reasoning.jsonl")
         _check(os.path.isfile(reasoning_path), "reasoning.jsonl exists", failures)
         if os.path.isfile(reasoning_path):
             with open(reasoning_path, "r", encoding="utf-8") as f:
                 lines = [json.loads(l) for l in f if l.strip()]
-            _check(len(lines) == 1 and lines[0].get("reasoning") == "thinking about it",
-                   f"reasoning.jsonl has 1 line with the reasoning text (got {lines})", failures)
+            _check(
+                len(lines) == 2
+                and lines[0].get("reasoning") == "thinking about it"
+                and lines[1].get("reasoning") == "considering scene layout options",
+                f"reasoning.jsonl has the 2 text-bearing turns, in order (got {lines})", failures)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 

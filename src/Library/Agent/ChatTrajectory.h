@@ -97,6 +97,30 @@ namespace RISE
 			long long   inputTokens = -1;          //!< gen_ai.usage.input_tokens
 			long long   outputTokens = -1;         //!< gen_ai.usage.output_tokens
 			long long   cacheReadInputTokens = -1; //!< gen_ai.usage.cache_read_input_tokens
+			//! gen_ai.usage.reasoning_output_tokens -- the reasoning/thinking
+			//! SUBSET of outputTokens (-1 = the provider reported none).
+			//! outputTokens is the TOTAL billed generation on EVERY provider
+			//! (ChatUsage normalizes the wire-level disagreement), so
+			//! `outputTokens - reasoningOutputTokens` is the visible output
+			//! and the two never double count.  Recording the split is the
+			//! whole point of parsing it: for the providers whose output
+			//! counter already includes reasoning (Anthropic, OpenAI), this
+			//! field is the ONLY place the reasoning volume survives.
+			long long   reasoningOutputTokens = -1;
+			//! gen_ai.usage.reasoning_clamped -- emitted ONLY when true: the
+			//! body claimed more reasoning than it billed as output, so the
+			//! subset was clamped to the billed total.  A self-contradictory
+			//! usage block (a mis-shaped gateway in front of a local model,
+			//! say) is invisible otherwise -- the codec layer logs nothing.
+			bool        reasoningClamped = false;
+			//! gen_ai.usage.reasoning_output_tokens_reported -- emitted ONLY
+			//! alongside the clamp flag, where it is the ONLY surviving copy of
+			//! the provider's own count.  Equal to reasoningOutputTokens on
+			//! every unclamped record, so emitting it there would be pure
+			//! duplication; on a clamped one, without it the record cannot say
+			//! whether a turn clamped to 51 had reported 52 or 362, and the
+			//! size of that gap is the whole diagnostic.
+			long long   reasoningOutputTokensReported = -1;
 			std::string errorType;                 //!< error.type ("" when ok)
 			int         attempt = 1;               //!< 1-based attempt counter
 			int         retryOf = -1;              //!< index of the attempt this retries (-1 = none)
@@ -133,6 +157,16 @@ namespace RISE
 			int         nToolCalls = 0;
 			long long   totalInputTokens = 0;
 			long long   totalOutputTokens = 0;
+			long long   totalReasoningOutputTokens = 0;   //!< the reasoning subset of totalOutputTokens (the CLAMPED values, matching totalOutputTokens)
+			//! gen_ai.usage.reasoning_clamped_turns -- how many of this run's
+			//! llm records had their reasoning subset clamped.  Without it the
+			//! rollup cannot distinguish a healthy run from one where EVERY
+			//! turn contradicted itself: totalReasoningOutputTokens sums the
+			//! CLAMPED values (it has to -- it must stay a subset of
+			//! totalOutputTokens), so a fully-clamped run looks like a
+			//! perfectly ordinary one at this level.  Always emitted, 0 on a
+			//! healthy run, so a reader never has to branch on key absence.
+			int         nReasoningClampedTurns = 0;
 			long long   totalCacheReadInputTokens = 0;
 			int64_t     totalLatencyMs = 0;
 			int64_t     wallMs = 0;
@@ -238,6 +272,8 @@ namespace RISE
 			int       mNToolCalls;
 			long long mTotalInputTokens;
 			long long mTotalOutputTokens;
+			long long mTotalReasoningOutputTokens;
+			int       mNReasoningClampedTurns;
 			long long mTotalCacheReadInputTokens;
 			int64_t   mTotalLatencyMs;
 		};

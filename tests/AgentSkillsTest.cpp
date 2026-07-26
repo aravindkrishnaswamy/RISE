@@ -649,7 +649,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 13, "anthropic body carries thirteen tools" );
+		Check( tools.isArray() && tools.size() == 14, "anthropic body carries fourteen tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -662,35 +662,35 @@ static void TestChatLoopWiring()
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
 
-	// Gemini: thirteen functionDeclarations, read_skill present.
+	// Gemini: fourteen functionDeclarations, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 13, "gemini body carries thirteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 14, "gemini body carries fourteen functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
-	// OpenAI/ChatGPT: thirteen function tools, read_skill present.
+	// OpenAI Responses: fourteen flat function tools, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::OpenAI );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 13, "openai body carries thirteen tools" );
+		Check( tools.isArray() && tools.size() == 14, "openai body carries fourteen tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
-			const JsonValue& fn = tools.at( i ).get( "function" );
 			if( tools.at( i ).get( "type" ).asString() == "function" &&
-			    fn.get( "name" ).asString() == "read_skill" ) {
+			    tools.at( i ).get( "name" ).asString() == "read_skill" ) {
 				saw = true;
-				Check( fn.get( "parameters" ).isObject(), "openai read_skill has parameters" );
+				Check( tools.at( i ).get( "parameters" ).isObject(),
+				       "openai read_skill has parameters" );
 			}
 		}
 		Check( saw, "openai tools include read_skill" );

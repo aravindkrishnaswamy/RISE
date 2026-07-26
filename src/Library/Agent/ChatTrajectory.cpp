@@ -148,6 +148,19 @@ namespace RISE
 			o.set( "gen_ai.usage.output_tokens", Num( static_cast<double>( r.outputTokens ) ) );
 			o.set( "gen_ai.usage.cache_read_input_tokens",
 			       Num( static_cast<double>( r.cacheReadInputTokens ) ) );
+			o.set( "gen_ai.usage.reasoning_output_tokens",
+			       Num( static_cast<double>( r.reasoningOutputTokens ) ) );
+			// Present ONLY on the anomaly, so a normal record gains no noise
+			// and a reader can grep the flag directly.  The provider's own
+			// pre-clamp count rides ALONGSIDE the flag: the clamp normalizes
+			// the number a cost model uses, and this is the evidence of what
+			// was normalized away (equal to the clamped value on every healthy
+			// record, hence not emitted there).
+			if( r.reasoningClamped ) {
+				o.set( "gen_ai.usage.reasoning_clamped", JsonValue::MakeBool( true ) );
+				o.set( "gen_ai.usage.reasoning_output_tokens_reported",
+				       Num( static_cast<double>( r.reasoningOutputTokensReported ) ) );
+			}
 			if( !r.errorType.empty() )
 				o.set( "error.type", JsonValue::MakeString( r.errorType ) );
 			o.set( "attempt", Num( static_cast<double>( r.attempt ) ) );
@@ -193,6 +206,14 @@ namespace RISE
 			o.set( "n_tool_calls", Num( static_cast<double>( r.nToolCalls ) ) );
 			o.set( "gen_ai.usage.input_tokens", Num( static_cast<double>( r.totalInputTokens ) ) );
 			o.set( "gen_ai.usage.output_tokens", Num( static_cast<double>( r.totalOutputTokens ) ) );
+			o.set( "gen_ai.usage.reasoning_output_tokens",
+			       Num( static_cast<double>( r.totalReasoningOutputTokens ) ) );
+			// The rollup sums the CLAMPED subsets (it must, to stay a subset of
+			// the output total), so a run in which every turn contradicted
+			// itself is arithmetically indistinguishable from a healthy one.
+			// This count is the distinguisher -- always present, 0 when clean.
+			o.set( "gen_ai.usage.reasoning_clamped_turns",
+			       Num( static_cast<double>( r.nReasoningClampedTurns ) ) );
 			o.set( "gen_ai.usage.cache_read_input_tokens",
 			       Num( static_cast<double>( r.totalCacheReadInputTokens ) ) );
 			o.set( "total_latency_ms", Num( static_cast<double>( r.totalLatencyMs ) ) );
@@ -235,6 +256,8 @@ namespace RISE
 			mNToolCalls( 0 ),
 			mTotalInputTokens( 0 ),
 			mTotalOutputTokens( 0 ),
+			mTotalReasoningOutputTokens( 0 ),
+			mNReasoningClampedTurns( 0 ),
 			mTotalCacheReadInputTokens( 0 ),
 			mTotalLatencyMs( 0 )
 		{
@@ -289,6 +312,22 @@ namespace RISE
 		{
 			if( r.inputTokens > 0 ) mTotalInputTokens += r.inputTokens;
 			if( r.outputTokens > 0 ) mTotalOutputTokens += r.outputTokens;
+			// The reasoning total tracks the SAME turns as the output total:
+			// each record's reasoning is a subset of that record's output, so
+			// the two roll up consistently (the run-level reasoning share is
+			// totalReasoning / totalOutput).  The per-record invariant
+			// (ChatUsage, enforced in the codecs) bounds each ADDEND; it says
+			// nothing about these CROSS-TURN accumulators, which are plain
+			// `long long +=`.  Reaching overflow needs ~9.2e6 turns each
+			// saturated at the 1e12 per-count ceiling -- unreachable for a
+			// chat session, and deliberately left unguarded rather than
+			// carrying saturation machinery no run can exercise.
+			if( r.reasoningOutputTokens > 0 ) mTotalReasoningOutputTokens += r.reasoningOutputTokens;
+			// Counts TURNS, not tokens: the clamped magnitude is already lost
+			// from the totals by construction, so the rollup reports how often
+			// the anomaly fired and the per-record
+			// gen_ai.usage.reasoning_output_tokens_reported carries the detail.
+			if( r.reasoningClamped ) ++mNReasoningClampedTurns;
 			if( r.cacheReadInputTokens > 0 ) mTotalCacheReadInputTokens += r.cacheReadInputTokens;
 			if( r.latencyMs > 0 ) mTotalLatencyMs += r.latencyMs;
 			return Emit( SerializeTrajectoryRecord( r, mTraceId, NextDottedOrder() ) );
@@ -312,6 +351,8 @@ namespace RISE
 			r.nToolCalls = mNToolCalls;
 			r.totalInputTokens = mTotalInputTokens;
 			r.totalOutputTokens = mTotalOutputTokens;
+			r.totalReasoningOutputTokens = mTotalReasoningOutputTokens;
+			r.nReasoningClampedTurns = mNReasoningClampedTurns;
 			r.totalCacheReadInputTokens = mTotalCacheReadInputTokens;
 			r.totalLatencyMs = mTotalLatencyMs;
 			r.wallMs = Now() - mStartedAtMs;

@@ -137,6 +137,7 @@ PROVIDER_PRICING = {
         # (tiny prompts). cached_input is the cache-READ rate (cache writes bill
         # at 1.25x input, not modelled here -- same as every other openai entry).
         "gpt-5.6-terra": {"input": 2.50, "output": 15.00, "cached_input": 0.25},
+        "gpt-5.6-sol": {"input": 5.00, "output": 30.00, "cached_input": 0.50},
     },
     "gemini": {
         "cached_in_input": True,
@@ -842,7 +843,38 @@ def compute_group_stats(key, recs):
             checkpoint_fracs.append(0.0)
 
         if r.result is not None and isinstance(r.result.get("terminalStatus"), str):
-            status_counter[r.result["terminalStatus"]] += 1
+            status = r.result["terminalStatus"]
+            # DEGENERATE NO-OP RUN: a run that answered on its very first LLM
+            # turn without ever calling a tool did not attempt the task -- it
+            # emitted prose and stopped. This reports as a perfectly ordinary
+            # "final_text" and is otherwise indistinguishable in the breakdown
+            # from a model that built the scene and then summarised it.
+            #
+            # It is a real, recurring failure mode, not a hypothetical: local
+            # models on the Hermes/Qwen tool-calling template leak the call
+            # into the message body as markup (e.g. qwen3-coder:30b emitting
+            # "<function=read_document></function></tool_call>" as CONTENT with
+            # tool_calls null and finish_reason "stop"), which the chat loop
+            # classifies as a final answer. It hit 5 cells in
+            # evals/runs/full_baseline/ (~11% of that model's cells there)
+            # while the SAME model drove 4-7 tool calls per scenario in
+            # evals/runs/local_shootout/ -- so it varies run to run rather
+            # than being a stable per-model property.
+            #
+            # Split it out so triage sees it. Deliberately NOT a new
+            # terminalStatus: scenarios assert on terminalStatus == "final_text"
+            # and inventing a value here would silently change their grading.
+            # This is a REPORTING distinction only.
+            if (
+                status == "final_text"
+                and isinstance(r.result.get("llmCalls"), int)
+                and isinstance(r.result.get("toolCalls"), int)
+                and r.result["llmCalls"] <= 1
+                and r.result["toolCalls"] == 0
+            ):
+                status_counter["final_text(no-op: 0 tool calls)"] += 1
+            else:
+                status_counter[status] += 1
         else:
             status_counter["<missing result>"] += 1
 
@@ -1318,6 +1350,10 @@ def selftest():
     if not terra_priced:
         raise AssertionError("gpt-5.6-terra has a specific pricing entry -> must be priced")
     _assert_close(terra_cost, 2.50, 1e-9, "gpt-5.6-terra input rate")
+    sol_cost, sol_priced = estimate_cost("openai", "gpt-5.6-sol", 1_000_000, 0, 0)
+    if not sol_priced:
+        raise AssertionError("gpt-5.6-sol has a specific pricing entry -> must be priced")
+    _assert_close(sol_cost, 5.00, 1e-9, "gpt-5.6-sol input rate")
     grok45_cost, grok45_priced = estimate_cost("xai", "grok-4.5", 1_000_000, 0, 0)
     if not grok45_priced:
         raise AssertionError("grok-4.5 has a specific pricing entry -> must be priced")
@@ -1478,6 +1514,40 @@ def selftest():
     stats_mixed = compute_group_stats(("scenC", "anthropic", ""), [_mk_rec(True), r_untimed, r_nowall])
     _assert_close(stats_mixed["mean_wall_ms"], 1200.0, 1e-9,
                   "mean_wall_ms excludes -1 and missing (only the one timed 1200ms run counts)")
+
+    # --- DEGENERATE NO-OP RUN classification (a run that answered on its
+    # first LLM turn without ever calling a tool did not attempt the task).
+    # RED-PROVE: without the split in compute_group_stats these three runs
+    # all report as an indistinguishable "final_text:3". ---
+    def _mk_final_text(llm_calls, tool_calls):
+        r = RunRecord()
+        r.check = {"allPassed": False, "checkpointFraction": 0.0}
+        r.result = {"terminalStatus": "final_text", "wallMs": 100,
+                    "llmCalls": llm_calls, "toolCalls": tool_calls}
+        r.input_tokens = r.output_tokens = r.cached_tokens = 0
+        return r
+
+    noop_key = "final_text(no-op: 0 tool calls)"
+    stats_noop = compute_group_stats(("scenD", "local", ""), [
+        _mk_final_text(1, 0),    # degenerate: answered immediately, no tools
+        _mk_final_text(12, 9),   # genuine: built, then summarised
+        _mk_final_text(7, 0),    # NOT degenerate: many LLM turns, still 0 tools
+    ])
+    counts = stats_noop["terminal_status_counts"]
+    if counts.get(noop_key) != 1:
+        raise AssertionError(f"expected exactly 1 degenerate no-op run, got {counts}")
+    if counts.get("final_text") != 2:
+        raise AssertionError(f"expected 2 ordinary final_text runs, got {counts}")
+    print(f"PASS: degenerate no-op run split out of final_text (got {dict(counts)})")
+
+    # A run missing llmCalls/toolCalls (a result.jsonl written before those
+    # fields existed) must NOT be guessed at -- it stays plain final_text.
+    r_legacy = _mk_final_text(1, 0)
+    del r_legacy.result["toolCalls"]
+    counts_legacy = compute_group_stats(("scenE", "local", ""), [r_legacy])["terminal_status_counts"]
+    if counts_legacy.get("final_text") != 1 or noop_key in counts_legacy:
+        raise AssertionError(f"legacy result without toolCalls must stay final_text, got {counts_legacy}")
+    print("PASS: a result.jsonl lacking llmCalls/toolCalls is not classified as no-op")
 
     # Group B: 2 repeats, 0 successes -> pass@1 = 0.0
     group_b = [_mk_rec(False)] * 2
@@ -1831,6 +1901,33 @@ def selftest():
             raise AssertionError(f"scan_run_dir rep wrong; got {_r.rep!r}")
     finally:
         shutil.rmtree(_tmp_disc, ignore_errors=True)
+
+    # (9) P3-f regression: the DEGENERATE NO-OP RUN comment above claims a
+    # qwen3-coder:30b tool-call range for evals/runs/local_shootout/. That
+    # range was independently verified by execution against every
+    # *.result.jsonl toolCalls field for the 12 qwen3-coder cells actually
+    # present there. The comment isn't executable, so pin the ONE source
+    # line that states the range -- located by an anchor phrase elsewhere on
+    # the same line so this check doesn't match its own diagnostic text
+    # below. Scoping to a single line (rather than the whole file) is
+    # deliberate: this assertion's own failure messages necessarily discuss
+    # both the old and new numbers, and a whole-file substring scan would
+    # trip on itself.
+    with open(__file__, "r", encoding="utf-8") as _f:
+        _lines = _f.readlines()
+    _drove_line = next((_l for _l in _lines if "SAME model drove" in _l), None)
+    if _drove_line is None:
+        raise AssertionError("could not locate the DEGENERATE NO-OP RUN 'SAME model drove' comment line")
+    _correct_range = str(4) + "-" + str(7)
+    _stale_range = str(6) + "-" + str(16)
+    if _correct_range not in _drove_line:
+        raise AssertionError(
+            f"expected the corrected tool-call range in the DEGENERATE NO-OP RUN comment; "
+            f"got line: {_drove_line!r}")
+    if _stale_range in _drove_line:
+        raise AssertionError(
+            f"the stale tool-call range is still present in the DEGENERATE NO-OP RUN comment; "
+            f"got line: {_drove_line!r}")
 
     print("eval_report selftest: ALL PASS")
     return 0

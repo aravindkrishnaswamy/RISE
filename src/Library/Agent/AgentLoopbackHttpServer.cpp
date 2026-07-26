@@ -278,8 +278,8 @@ namespace
 
 	//! True iff `body` is an MCP `tools/call` request naming one of the
 	//! mutating verbs this rate limiter counts against
-	//! (propose_patch/insert_chunk/insert_chunks/remove_chunk/
-	//! resolve_proposal). This
+	//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
+	//! remove_chunk/resolve_proposal). This
 	//! server only ever fronts AgentMcpAdapter (see the class doc), so
 	//! every request body it ever dispatches is MCP-shaped: the actual
 	//! verb name for a tool invocation always lives at params.name (see
@@ -310,11 +310,17 @@ namespace
 
 		const std::string name = nameVal->asString();
 		if( name == "propose_patch" || name == "insert_chunk"   ||
-		    // insert_chunks is the BATCH form of insert_chunk (see
-		    // AgentSession::InsertChunks's doc) -- it mutates the document
-		    // exactly like insert_chunk (just N chunks per call instead of
-		    // one), so it counts against the SAME mutating-call rate limit.
-		    name == "insert_chunks"  ||
+		    // The BATCH forms (see AgentSession::InsertChunks's and
+		    // AgentSession::ProposePatches's docs) mutate the document
+		    // exactly like their single-item siblings, just N edits per
+		    // call instead of one, so they count against the SAME
+		    // mutating-call rate limit.  Omitting either would let a
+		    // client mutate WITHOUT LIMIT through the batch verb while
+		    // the single-item verb stayed capped -- and the batch verbs
+		    // carry MORE leverage per call, not less, so they are the
+		    // last thing that should escape the cap.
+		    name == "insert_chunks"   ||
+		    name == "propose_patches" ||
 		    name == "remove_chunk"   || name == "resolve_proposal" ) {
 			outToolName = name;
 			return true;

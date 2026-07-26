@@ -742,7 +742,16 @@ namespace RISE
 				// static_cast<int> by CheckRenderKind -- must be a finite
 				// whole count, bounded the same as the [1,65536]
 				// samples-override clamp documented in AgentRpc.cpp/
-				// AgentMcpAdapter.cpp.
+				// AgentMcpAdapter.cpp.  NOTE (2026-07-25): `samples` is a
+				// HARD PIN, not a hint -- CheckRenderKind FAILS the
+				// checkpoint when the scene's active rasterizer does not
+				// honour IRasterizer::SetSampleCountOverride, rather than
+				// grading at the model-controlled scene-authored count (see
+				// the samples-pin block there).  A scenario pinning
+				// `samples` therefore also constrains which rasterizers a
+				// run may end on: the pixel-based family (PT / spectral PT /
+				// BDPT / VCM), never MLT, a photon-map-only integrator, or
+				// `auto_rasterizer`.
 				if( !RequireWholeNumberInRange( cp, "samples", 1.0, 65536.0, scenarioId, idx, "samples", err ) ) return false;
 
 				// Image-reconstruction Wave 2: the `camera` pose override.
@@ -913,7 +922,10 @@ namespace RISE
 			//!  "ask_user" tool records in the trajectory (stage 2 of the
 			//!  clarifying-questions feature); askUserBeforeMutation asserts the
 			//!  FIRST ask_user record precedes the FIRST document-mutating tool
-			//!  record (insert_chunk/insert_chunks/propose_patch/remove_chunk);
+			//!  record (insert_chunk/insert_chunks/propose_patch/
+			//!  propose_patches/remove_chunk -- see kMutatingToolNames in
+			//!  CheckTrajectoryKind; a mutating verb missing from that table
+			//!  reads as non-mutating and VACUOUSLY PASSES this assertion);
 			//!  askUserQuestionContainsAny requires at least one ask_user
 			//!  question string to contain one of its case-insensitive terms.
 			bool ValidateTrajectoryCheckpointTypes( const JsonValue& cp, std::size_t idx, const std::string& scenarioId, std::string& err )
@@ -1749,7 +1761,63 @@ namespace RISE
 			//!        exist before this epoch).  Prior cells were driven and
 			//!        graded without a scripted responder or the new trajectory
 			//!        fields and are not comparable.
-			static const int kEvalMethodologyEpoch = 11;
+			//!   12 -> (2026-07-25) the batch `propose_patches` verb shipped (a
+			//!        tool-DEFINITION change -- models now see a FOURTEENTH tool
+			//!        and can set N parameters across one or several entities in
+			//!        ONE call instead of N, the propose_patch sibling of
+			//!        epoch-7's insert_chunks).  Prior cells were driven against
+			//!        a thirteen-tool table and are not comparable.
+			//!   13 -> (2026-07-25) the epoch-12 follow-up audit: `propose_patches`
+			//!        had been added to the tool surface but MISSED in four
+			//!        sibling registries, three of which change how a run is
+			//!        driven or graded.  (a) CHECKER SEMANTICS: this file's
+			//!        kMutatingToolNames omitted it, so `askUserBeforeMutation`
+			//!        read a batch patch as non-mutating and could vacuously
+			//!        pass a run that built before asking.  (b) DRIVE: the
+			//!        blind-edit nudge (AgentChatLoop) omitted it, so a model
+			//!        that batched its edits never accrued the streak and was
+			//!        never nudged to render.  (c) DRIVE: ToolOutcomeLine had
+			//!        no case for it, so the model was told "ok" whether 17/17
+			//!        or 0/17 elements applied.  Also a SEMANTIC change: a
+			//!        stale-base conflict is now batch-fatal, and the modeling
+			//!        skill now teaches the batch verb.  The epoch-12 cells
+			//!        (evals/runs/gemini_only_e12, evals/runs/ask_user_board_e12)
+			//!        were driven and graded before all five and are not
+			//!        comparable to anything run after.
+			//!        EXTENDED (2026-07-25, before any epoch-13 cell was
+			//!        recorded, so no run's comparability is retroactively
+			//!        changed): the 7 build/observe scenarios' `render`
+			//!        checkpoints now PIN `samples` (512).  Previously they
+			//!        pinned nothing, so the grading render used the SCENE's
+			//!        own sample count -- which the model can edit, putting the
+			//!        measurement instrument under the subject's control -- and
+			//!        at the scenes' authored 8 spp the mean-luma estimate is
+			//!        not converged: re-rendering the 20 recorded epoch-12
+			//!        Gemini scenes at 8 vs 512 spp moved mean luma by a median
+			//!        of 9% (max 71%) and flipped one cell's pass/fail verdict
+			//!        outright.  512 spp holds the worst observed cell within
+			//!        ~5% of its 1024-spp value and costs ~1 s per checkpoint.
+			//!        Matches the precedent already set by the
+			//!        image_reconstruct_* scenarios, which have always pinned
+			//!        `samples`.  A GRADING change: the same scene can now be
+			//!        scored differently than it was at epoch 12.
+			//!        EXTENDED AGAIN (2026-07-25, still before any epoch-13
+			//!        cell was recorded): the pin above was DEFEATABLE.
+			//!        IRasterizer::SetSampleCountOverride is opt-in -- only
+			//!        the pixel-based family implements it -- so a model that
+			//!        swapped the rasterizer chunk to `auto_rasterizer` or
+			//!        `mlt_spectral_rasterizer` (both first-class selectable
+			//!        rasterizers) silently reverted the grading render to
+			//!        its own authored sample count, and the checkpoint
+			//!        graded an unconverged estimate while believing it had
+			//!        graded at 512.  CheckRenderKind now inspects
+			//!        AgentRenderResult::samplesOverridden and FAILS the
+			//!        checkpoint when a requested pin was not applied.  A
+			//!        GRADING change in principle (such a run would now fail
+			//!        rather than silently pass); no committed scenario
+			//!        authors a non-supporting rasterizer, so nothing already
+			//!        recorded changes verdict.
+			static const int kEvalMethodologyEpoch = 13;
 
 			//! A deterministic content hash of the parts of a scenario that
 			//! determine how a run is DRIVEN and GRADED: autonomy, prompts,
@@ -4944,6 +5012,114 @@ namespace RISE
 					const AgentRenderResult rr = session->Render( rp );
 					if( !rr.ok ) return { false, "render checkpoint: render failed: " + rr.message };
 
+					// P1 fix (2026-07-25 re-review): THE DIMS PIN MUST NOT BE
+					// SILENTLY DEFEATABLE EITHER -- the exact defect the `samples`
+					// guard below closes, in its twin.  `width`/`height` on a render
+					// checkpoint are a HARD PIN for the same reason `samples` is: the
+					// scene's `film` chunk is under the model's control, so a band
+					// graded at whatever dims the scene happens to carry is not the
+					// measurement the checkpoint claims to have made (mean channel
+					// values are resolution-sensitive -- a 32x24 frame and a 1280x720
+					// frame of the same scene do NOT agree to within the MC noise the
+					// bands are sized for).  But the override is applied by
+					// AgentSession's `applyFilmOverride` via `IJob::SetFilm`, whose
+					// bool return that helper DISCARDS -- SetFilm honestly refuses
+					// dims beyond Job's own kMaxFilm{Width,Height} sanity bound (and
+					// on a failed Film allocation), and the render then silently
+					// proceeds at the SCENE-AUTHORED film size.  There is no
+					// `filmOverridden` wire field to consult, so the honoured-signal
+					// is read where it is unambiguous: AgentRenderResult::width/height
+					// are the dims of the image the render ACTUALLY produced
+					// (InMemoryRasterizerOutput::Width/Height, taken straight off the
+					// captured frame), so comparing them to what was requested detects
+					// the drop with no new plumbing.
+					//
+					// COMPARED AGAINST `rp`, NOT THE RAW CHECKPOINT FIELDS.  `rp.width`/
+					// `rp.height` are the dims ACTUALLY REQUESTED of this render, which
+					// is not always what the checkpoint literally wrote: the
+					// compareToImage block above ADOPTS the reference PNG's dims when
+					// the checkpoint supplied none (the candidate must be produced at
+					// exactly the reference's size).  Grading against `cp` would leave
+					// that adopted-dims case -- the image_reconstruct_* family's whole
+					// render path -- unguarded.  When NO dims were requested at all
+					// (neither pinned nor adopted) both stay 0, the render legitimately
+					// uses the scene's own film size, and the `!= 0` predicate below
+					// keeps this guard silent rather than firing on every unpinned
+					// render checkpoint.
+					//
+					// FAIL rather than grade-anyway, exactly as the samples pin does: a
+					// checkpoint that believes it graded a 32x24 frame but graded
+					// something else publishes a confident number that is not the
+					// number it claims.
+					//
+					// The two `!= 0` conjuncts move TOGETHER by construction (the
+					// explicit path assigns both or neither -- haveW != haveH is a
+					// shape error refused above -- and the adopt path assigns both
+					// from one decoded PNG, whose dims are >= 1), so they are one
+					// predicate, "dims were requested", not two independent
+					// branches.
+					const bool dimsWereRequested = ( rp.width != 0 && rp.height != 0 );
+					if( dimsWereRequested &&
+					    ( rr.width != rp.width || rr.height != rp.height ) )
+					{
+						char db[512];
+						std::snprintf( db, sizeof( db ),
+							"render checkpoint: the width/height pin was NOT APPLIED -- requested %ux%u, but the render "
+							"actually produced %ux%u.  IJob::SetFilm refuses dims beyond its own sanity bound (and on a "
+							"failed Film allocation) and the render then falls back to the SCENE-AUTHORED film size, which "
+							"is under the model's control -- failing loudly rather than reporting a band measured at "
+							"dimensions other than the ones this checkpoint pinned.",
+							rp.width, rp.height, rr.width, rr.height );
+						std::string detail( db );
+						if( !rr.message.empty() ) detail += "  [render note: " + rr.message + "]";
+						return { false, detail };
+					}
+
+					// P1 fix (2026-07-25 re-review): THE SAMPLES PIN MUST NOT BE
+					// SILENTLY DEFEATABLE.  `samples` exists so the GRADING render
+					// is converged and OUT of the subject's control -- the scene's
+					// own sample count is a chunk the model may freely edit, so
+					// grading at it puts the measurement instrument under the
+					// subject it measures.  But IRasterizer::SetSampleCountOverride
+					// is opt-in: only the pixel-based family (PT, spectral PT,
+					// BDPT, VCM) implements it; MLT, the photon-map-only
+					// integrators, and AutoRasterizer's outer dispatcher wrapper
+					// all honestly return false, and `auto_rasterizer` /
+					// `mlt_spectral_rasterizer` are FIRST-CLASS selectable
+					// rasterizers in the scene language.  So on an open-ended
+					// "build a scene" task a model that swaps the rasterizer chunk
+					// reverts the grading render to its OWN authored sample count.
+					// AgentSession already reports that honestly to the MODEL
+					// (AgentRenderResult::samplesOverridden, surfaced as the
+					// `samplesOverridden` wire field and documented as "never
+					// silently ignored"); the CHECKER must not be the one surface
+					// that ignores it.
+					//
+					// FAIL rather than grade-anyway: a checkpoint that BELIEVES it
+					// graded at 512 spp but actually graded at 8 reports a
+					// confident number that is not the number it claims -- worse
+					// than a loud, diagnosable failure.  Surfacing-only (pass with
+					// a note) was considered and rejected for the same reason: the
+					// band verdict would still be published as if converged.
+					// Verified safe for the pre-existing `samples`-pinning
+					// scenarios (image_reconstruct_single / image_reconstruct_multi,
+					// which pin 64): both author `pathtracing_pel_rasterizer`, so
+					// the override is applied and this branch never fires there.
+					if( cp.has( "samples" ) && !rr.samplesOverridden ) {
+						std::string detail = "render checkpoint: the \"samples\" pin was NOT APPLIED -- requested " +
+							std::to_string( rp.samples ) + " sample(s)/pixel, but the scene's active rasterizer does not "
+							"support IRasterizer::SetSampleCountOverride (MLT, the photon-map-only integrators, and "
+							"auto_rasterizer's outer wrapper all honestly report it unsupported), so this render ran at "
+							"the SCENE-AUTHORED sample count";
+						if( rr.effectiveSamples >= 1 )
+							detail += " (" + std::to_string( rr.effectiveSamples ) + ")";
+						detail += " instead.  The scene's sample count is under the model's control, so a band graded "
+							"against it is not trustworthy -- failing loudly rather than reporting a converged-looking "
+							"verdict measured at an unpinned fidelity.";
+						if( !rr.message.empty() ) detail += "  [render note: " + rr.message + "]";
+						return { false, detail };
+					}
+
 					// Rec.709 linear luma weights (RISEPel is Rec709RGBPel post
 					// the 2026-05-24 colour-space migration) -- a single scalar
 					// band that absorbs per-channel MC noise better than
@@ -5450,11 +5626,49 @@ namespace RISE
 								// record ("asked before building") -- mirrors the
 								// blind-edit-nudge mutation set AgentChatLoop::
 								// AddToolResult already tracks (insert_chunk/
-								// insert_chunks/propose_patch/remove_chunk).
+								// insert_chunks/propose_patch/propose_patches/
+								// remove_chunk).  EVERY mutating verb must be
+								// listed: a verb missing here is silently treated
+								// as non-mutating, so a run that built via that
+								// verb before asking would VACUOUSLY PASS the
+								// ordering assertion this field exists to enforce.
 								if( cp.has( "askUserBeforeMutation" ) && cp.get( "askUserBeforeMutation" ).isBool() &&
 								    cp.get( "askUserBeforeMutation" ).asBool() ) {
+									// DELIBERATE ASYMMETRY vs IsMutatingMcpToolCall
+									// (AgentLoopbackHttpServer.cpp), which lists these
+									// five PLUS `resolve_proposal` -- audited 2026-07-25,
+									// the two lists legitimately differ because they
+									// answer DIFFERENT questions:
+									//   * IsMutatingMcpToolCall answers "does this
+									//     inbound MCP request COMMIT a document change,
+									//     and must it therefore count against the
+									//     mutating-verb RATE LIMIT?".  In propose
+									//     autonomy resolve_proposal is exactly what
+									//     commits a staged mutation, so it belongs there.
+									//   * THIS list answers "did the MODEL mutate the
+									//     document, and when?".  resolve_proposal is an
+									//     OWNER-authority verb: it is not in the model's
+									//     14-tool chat table at all (AgentChatCodecs.cpp
+									//     -- the eval runner's only source of
+									//     `toolRecords`), and even on the MCP surface it
+									//     is refused at the dispatcher under BOTH Read
+									//     and Propose autonomy with kAutonomyRefused
+									//     (AgentRpc.cpp's MakeProposeAutonomyRefusedError;
+									//     red-proven in AgentAutonomyPolicyTest).  An
+									//     agent session can therefore never emit a
+									//     resolve_proposal record, and a HOST/human
+									//     approval is not the model "building before
+									//     asking" -- listing it here would grade a human
+									//     action as a model mutation.
+									// The rule that DOES bind both lists: every verb the
+									// MODEL can call that mutates the document must appear
+									// here, or askUserBeforeMutation reads it as
+									// non-mutating and VACUOUSLY PASSES (the epoch-13
+									// propose_patches defect).  When a new model-callable
+									// mutating verb ships, add it to BOTH.
 									static const char* const kMutatingToolNames[] = {
-										"insert_chunk", "insert_chunks", "propose_patch", "remove_chunk"
+										"insert_chunk", "insert_chunks",
+										"propose_patch", "propose_patches", "remove_chunk"
 									};
 									auto isMutatingTool = [&]( const std::string& name ) -> bool {
 										for( const char* m : kMutatingToolNames ) if( name == m ) return true;

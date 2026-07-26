@@ -158,6 +158,35 @@ namespace RISE
 					"},\"required\":[\"target\",\"param\",\"value\"]}"
 				},
 				{
+					"propose_patches",
+					"BATCH form of propose_patch: set MULTIPLE parameters across one or "
+					"several named scene entities in ONE call instead of one call per parameter. "
+					"USE THIS whenever you are modifying multiple parameters or entities -- "
+					"e.g. position, orientation, power, or materials across objects -- "
+					"it is one round-trip instead of N. Elements are applied IN ARRAY ORDER. "
+					"SEQUENTIAL and BEST-EFFORT: a rejected patch element does NOT stop "
+					"the batch -- every remaining element is still attempted in order. Always "
+					"pass the headVersion you last read as baseHeadVersion -- it is checked "
+					"against the FIRST element only, and if it is STALE the whole batch stops "
+					"with every element status=\"conflict\" (nothing was applied): re-read the "
+					"document and resubmit. Returns {applied,total,results:[...]}: "
+					"total is patches.length, applied is how many results have applied=true, and "
+					"each results[i] is the EXACT same shape propose_patch returns.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"patches\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+							"\"target\":{\"type\":\"string\",\"description\":\"The entity NAME to edit.\"},"
+							"\"kind\":{\"type\":\"string\",\"description\":\"Optional entity KIND keyword to disambiguate a name clash.\"},"
+							"\"param\":{\"type\":\"string\",\"description\":\"The parameter to set.\"},"
+							"\"value\":{\"type\":\"string\",\"description\":\"The new value as scene-language text.\"}"
+						"},\"required\":[\"target\",\"param\",\"value\"]},\"description\":"
+						"\"An array of patch objects ({target,param,value,kind?}), applied in order.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- checked against the FIRST element only.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"patches\"]}"
+				},
+				{
 					"insert_chunk",
 					"ADD one new entity to the live scene by inserting a complete chunk. "
 					"chunkText must be EXACTLY ONE `keyword { ... }` block with the braces "
@@ -579,6 +608,30 @@ namespace RISE
 				return json;
 			}
 
+			//! Responses-native tools put name/description/parameters directly
+			//! on the tool object (there is no Chat-Completions `function`
+			//! wrapper).
+			const std::string& OpenAIResponsesToolsJson()
+			{
+				static const std::string json = []() {
+					std::string out = "[";
+					for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+						if( i ) out += ",";
+						out += "{\"type\":\"function\",\"name\":";
+						JsonAppendEscapedString( out, kToolDefs[i].name );
+						out += ",\"description\":";
+						JsonAppendEscapedString( out, kToolDefs[i].description );
+						out += ",\"parameters\":";
+						out += kToolDefs[i].schemaJson ? kToolDefs[i].schemaJson
+						                               : "{\"type\":\"object\",\"properties\":{}}";
+						out += "}";
+					}
+					out += "]";
+					return out;
+				}();
+				return json;
+			}
+
 			//------------------------------------------------------------------
 			// (2) Raw-span JSON scanner.
 			//
@@ -910,6 +963,24 @@ namespace RISE
 				return block;
 			}
 
+			JsonValue MakeOpenAIResponsesImageBlock( const std::string& mimeType,
+			                                         const std::string& b64 )
+			{
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "input_image" ) );
+				block.set( "image_url", JsonValue::MakeString(
+					"data:" + mimeType + ";base64," + b64 ) );
+				return block;
+			}
+
+			JsonValue MakeOpenAIResponsesTextBlock( const std::string& text )
+			{
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "input_text" ) );
+				block.set( "text", JsonValue::MakeString( text ) );
+				return block;
+			}
+
 			//! True when `text` is empty or contains only ASCII whitespace --
 			//! nothing a user could read.  Mirrors AgentChatLoop's user-side
 			//! IsBlank (kept local: the codec is a separate TU).
@@ -970,12 +1041,128 @@ namespace RISE
 				for( std::size_t i = 0; i < parts.size(); ++i )
 					if( parts.at( i ).get( "inlineData" ).isObject() ) ++count;
 			}
-			// OpenAI shape: {"role":"user","content":[{"type":"image_url",...},...]}
+			// OpenAI Chat/Responses shapes use image_url/input_image respectively.
 			if( root.get( "role" ).asString() == "user" && content.isArray() ) {
-				for( std::size_t i = 0; i < content.size(); ++i )
-					if( content.at( i ).get( "type" ).asString() == "image_url" ) ++count;
+				for( std::size_t i = 0; i < content.size(); ++i ) {
+					const std::string type = content.at( i ).get( "type" ).asString();
+					if( type == "image_url" || type == "input_image" ) ++count;
+				}
 			}
 			return count;
+		}
+
+		//======================================================================
+		// Shared token-usage normalization.
+		//
+		// ChatUsage's contract (AgentChatCodecs.h) is ESTABLISHED here and
+		// nowhere else: every provider's ParseUsage reads its counts through
+		// ReadTokenCount, folds (if that provider's counter is a separate
+		// summand) through FoldReasoningIntoOutput, and ends in
+		// EnforceUsageInvariant.  Keeping the three steps in one place is what
+		// makes "0 <= reasoningOutputTokens <= outputTokens" a property of the
+		// TYPE rather than a claim each branch has to re-honour by hand.
+		//======================================================================
+		namespace
+		{
+			//! Ceiling on any single parsed token count.  1e12 is ~5 orders of
+			//! magnitude above the largest count any real model can emit, is
+			//! exactly representable as a double, and leaves >7 orders of
+			//! headroom under LLONG_MAX so a fold can never overflow.
+			//!
+			//! The cap is not cosmetic.  `static_cast<long long>(d)` for a `d`
+			//! outside long long's range is UNDEFINED BEHAVIOUR (and a UBSan
+			//! trap), and a JSON number is an arbitrary-magnitude double: a
+			//! body carrying `"reasoning_tokens":1e19` reaches this code from
+			//! any provider.  So the RANGE CHECK happens in double arithmetic,
+			//! BEFORE the cast.
+			const long long kMaxTokenCount = 1000000000000LL;   // 1e12
+
+			//! Reads `container[key]` as a token count, normalizing every
+			//! shape a provider (or a gateway in front of one) can emit:
+			//!   absent / null / non-number  -> -1  (the ABSENT sentinel)
+			//!   negative                    ->  0  (garbage, never a count,
+			//!                                       and must never SUBTRACT)
+			//!   NaN                         ->  0  (fails every comparison)
+			//!   >= kMaxTokenCount           ->  kMaxTokenCount (saturate)
+			//!   otherwise                   ->  the truncated integer
+			//! `container` need not be an object: JsonValue::get on a non-object
+			//! yields null, which reads as absent.
+			long long ReadTokenCount( const JsonValue& container, const char* key )
+			{
+				const JsonValue& v = container.get( key );
+				if( !v.isNumber() ) return -1;
+				const double d = v.asNumber();
+				if( d >= static_cast<double>( kMaxTokenCount ) ) return kMaxTokenCount;
+				if( d > 0.0 ) return static_cast<long long>( d );
+				return 0;   // <= 0 and NaN both land here
+			}
+
+			//! Folds a SEPARATE-SUMMAND reasoning count into the billed total.
+			//! Both operands are <= kMaxTokenCount by construction, so the sum
+			//! cannot overflow.  A ZERO visible-output count still folds (a
+			//! turn can bill thinking and emit nothing visible).
+			//!
+			//! The ABSENT case (outputTokens < 0) is deliberately NOT handled
+			//! here: it is not fold-specific -- an INCLUSIVE provider reporting
+			//! reasoning with no output counter needs the identical answer --
+			//! so it lives once, in EnforceUsageInvariant, which every
+			//! ParseUsage runs.  Handling it in both places would leave one of
+			//! the two unreachable by any observable behaviour.
+			void FoldReasoningIntoOutput( ChatUsage& u )
+			{
+				if( u.reasoningOutputTokens <= 0 || u.outputTokens < 0 ) return;
+				u.outputTokens += u.reasoningOutputTokens;
+			}
+
+			//! The LAST statement of every ParseUsage, and the only place the
+			//! invariant is established.  It also PRESERVES the provider's own
+			//! reasoning number in `reasoningOutputTokensReported` before any
+			//! clamp can overwrite it -- the clamp is a normalization, not a
+			//! correction, and the evidence that it fired (what the body
+			//! actually claimed) is exactly what a later audit needs.
+			//!
+			//! Two cases:
+			//!   * output ABSENT (-1) while a reasoning count was REPORTED (>=
+			//!     0 -- i.e. anything but the -1 sentinel).  Reasoning is a
+			//!     SUBSET of the billed generation, so the reported count is
+			//!     itself a lower bound on that generation -- publish it
+			//!     rather than leaving an "absent" total next to a known
+			//!     subset.  The bound is taken at >= 0 rather than > 0 so the
+			//!     header's contract ("reasoningOutputTokens >= 0 implies
+			//!     outputTokens >= 0") holds LITERALLY, with no zero-shaped
+			//!     hole: `{"output_tokens_details":{"thinking_tokens":0}}` with
+			//!     no output counter used to publish output -1 beside
+			//!     reasoning 0, so `output - reasoning` read -1 -- a negative
+			//!     "visible output" from a body that contained no
+			//!     contradiction at all.  A published 0 is the same claim the
+			//!     positive case makes (the subset is a lower bound), and the
+			//!     recorder's cross-turn sums are untouched either way (they
+			//!     add only counts > 0).  This makes every provider behave
+			//!     identically in this shape (a separate-summand provider's
+			//!     fold already lands exactly here) and keeps the invariant
+			//!     unconditional: a run's reasoning total can never exceed its
+			//!     output total.
+			//!   * reasoning > output.  The body contradicts itself.  The
+			//!     BILLED TOTAL is the number a cost model must not lose, so
+			//!     the subset is clamped down to it (never the total raised to
+			//!     meet a suspect subset) and the anomaly is flagged for the
+			//!     trajectory record.
+			void EnforceUsageInvariant( ChatUsage& u )
+			{
+				// Captured BEFORE either branch can move a number: post-fold,
+				// post-normalization, pre-clamp.  On a healthy body this equals
+				// reasoningOutputTokens; on a clamped one it is the only
+				// surviving copy of what the provider actually said.
+				u.reasoningOutputTokensReported = u.reasoningOutputTokens;
+				if( u.outputTokens < 0 ) {
+					if( u.reasoningOutputTokens >= 0 ) u.outputTokens = u.reasoningOutputTokens;
+					return;
+				}
+				if( u.reasoningOutputTokens > u.outputTokens ) {
+					u.reasoningOutputTokens = u.outputTokens;
+					u.reasoningClamped = true;
+				}
+			}
 		}
 
 		//======================================================================
@@ -1363,12 +1550,37 @@ namespace RISE
 				// the raw echo below preserves them for the provider.
 			}
 
+			// EVERY exit from here on goes through AttachReasoning: the
+			// disposition below REPLACES out.step wholesale on a refusal
+			// (MakeProviderError builds a fresh ChatStepResult), so thinking
+			// blocks collected above have to be attached AFTER that assignment
+			// or they are dropped.  SIBLING of the Gemini and Responses sites
+			// (same bug pattern, same fix).  The stop_reason=="max_tokens" exit
+			// is the sharp case: extended thinking that runs into the output
+			// cap produces thinking blocks and NOTHING else, so dropping the
+			// reasoning discards the entire turn's output.
+			//
+			// The STRUCTURAL refusals ABOVE (an id-less / duplicate-id /
+			// non-object-input tool_use) deliberately stay OUTSIDE this, and
+			// that exclusion is a decision rather than an oversight: they
+			// reject a MALFORMED body mid-scan, with the content array not read
+			// to the end, so the reasoning collected so far is a partial read
+			// of a body being declined as untrustworthy.  A disposition refusal
+			// below is the opposite -- a WELL-FORMED turn the provider itself
+			// ended early -- and there the reasoning is complete and is often
+			// all the turn produced.
+			const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+				out.reasoningText = reasoningText;
+				out.step.reasoningText = reasoningText;
+				return out;
+			};
+
 			const std::string stopReason = root.get( "stop_reason" ).asString();
 			if( stopReason == "tool_use" ) {
 				if( calls.empty() ) {
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"anthropic stopped with stop_reason \"tool_use\" but no tool_use blocks were present" );
-					return out;
+					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::ToolCalls;
 				out.step.toolCalls = calls;
@@ -1379,12 +1591,12 @@ namespace RISE
 				out.step = MakeProviderError( ChatErrorKind::MaxTokens,
 					"anthropic: the response hit the output-token cap (stop_reason max_tokens) -- "
 					"the truncated reply was discarded; try a narrower request" );
-				return out;
+				return AttachReasoning();
 			}
 			else if( stopReason == "refusal" ) {
 				out.step = MakeProviderError( ChatErrorKind::Refusal,
 					"anthropic: the provider declined this request (stop_reason refusal)" );
-				return out;
+				return AttachReasoning();
 			}
 			else if( !calls.empty() ) {
 				// WIRE-INVARIANT GATE: tool_use blocks under a non-tool_use
@@ -1396,7 +1608,7 @@ namespace RISE
 				out.step = MakeProviderError( ChatErrorKind::Provider,
 					"anthropic response carries tool_use blocks under stop_reason \"" + stopReason +
 					"\" -- refusing the turn (its calls would be recorded but never answerable)" );
-				return out;
+				return AttachReasoning();
 			}
 			else if( stopReason == "end_turn" ) {
 				if( ChatContentIsBlank( text ) ) {
@@ -1409,7 +1621,7 @@ namespace RISE
 					// testing the extracted `text` for blankness catches both.
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"anthropic ended the turn with no readable text -- refusing the degenerate turn" );
-					return out;
+					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
 				out.step.finalText = text;
@@ -1419,12 +1631,11 @@ namespace RISE
 				// stop_reason in the message.
 				out.step = MakeProviderError( ChatErrorKind::Provider,
 					"anthropic stopped with stop_reason \"" + stopReason + "\"" );
-				return out;
+				return AttachReasoning();
 			}
 			out.assistantDisplayText = text;
 			out.step.assistantDisplayText = text;
-			out.reasoningText = reasoningText;
-			out.step.reasoningText = reasoningText;
+			AttachReasoning();
 
 			// The assistant transcript entry: the content array as a RAW
 			// byte span of the body (verbatim echo -- signatures intact).
@@ -1450,12 +1661,27 @@ namespace RISE
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
 			const JsonValue& usage = root.get( "usage" );
 			if( !usage.isObject() ) return u;
-			if( usage.get( "input_tokens" ).isNumber() )
-				u.inputTokens = static_cast<long long>( usage.get( "input_tokens" ).asNumber() );
-			if( usage.get( "output_tokens" ).isNumber() )
-				u.outputTokens = static_cast<long long>( usage.get( "output_tokens" ).asNumber() );
-			if( usage.get( "cache_read_input_tokens" ).isNumber() )
-				u.cacheReadInputTokens = static_cast<long long>( usage.get( "cache_read_input_tokens" ).asNumber() );
+			u.inputTokens          = ReadTokenCount( usage, "input_tokens" );
+			u.outputTokens         = ReadTokenCount( usage, "output_tokens" );
+			u.cacheReadInputTokens = ReadTokenCount( usage, "cache_read_input_tokens" );
+
+			// THINKING TOKENS.  PROVIDER DISPOSITION: INCLUSIVE -- Anthropic
+			// reports them as a BREAKDOWN of output_tokens
+			// (`usage.output_tokens_details.thinking_tokens`), not as a
+			// separate summand, so this is published as the reasoning subset
+			// and NOT folded in (folding would double count).
+			// Evidence from the recorded runs (819 Anthropic usage blocks under
+			// evals/runs/**): output_tokens_details is present on all 819, and
+			// thinking_tokens is 0 on all 819 because the harness never enables
+			// extended thinking.  The field is parsed anyway so that enabling
+			// thinking later reports the split without another codec change --
+			// this is the provider's own number, never a synthesized one.
+			u.reasoningOutputTokens =
+				ReadTokenCount( usage.get( "output_tokens_details" ), "thinking_tokens" );
+			// A body claiming thinking > output contradicts itself; the shared
+			// enforcement clamps it rather than publishing a negative
+			// "visible output" downstream.
+			EnforceUsageInvariant( u );
 			return u;
 		}
 
@@ -1937,6 +2163,27 @@ namespace RISE
 			const JsonValue& parts = content.get( "parts" );
 
 			std::string text;
+			// DISPLAY-LAYER ENRICHMENT: Gemini marks a thought-summary part by
+			// setting `thought: true` ALONGSIDE its "text" key --
+			//     {"text":"...","thought":true}
+			// -- rather than by a distinct part type.  Such a part is the
+			// model's REASONING, not its answer, and must not be concatenated
+			// into `text`: `text` is what becomes finalText / the assistant's
+			// visible answer, AND what the blank-turn gate below tests, so a
+			// thought-only turn would otherwise be mistaken for a real answer.
+			// This mirrors the Anthropic codec's `type=="thinking"` branch and
+			// the Responses codec's `type=="reasoning"` branch -- reasoning
+			// goes to `reasoningText`, never to `text`.
+			//
+			// The harness does not currently request thought summaries (no
+			// generationConfig.thinkingConfig.includeThoughts on the wire --
+			// see BuildRequest), so no `thought`-marked part appears in any
+			// recorded run today; this branch exists so that enabling them --
+			// or Gemini returning one unbidden -- cannot silently corrupt the
+			// answer text.  Note that NOT requesting summaries does not mean no
+			// thinking happens: ParseUsage below shows 6,086 of the 6,087
+			// recorded Gemini responses billed a non-zero thoughtsTokenCount.
+			std::string reasoningText;
 			std::vector<ChatToolCall> calls;
 			std::vector<std::string> usedIds;   // every id captured this turn (provider + synthesized)
 			int synthCounter = 0;
@@ -1947,8 +2194,25 @@ namespace RISE
 			};
 			for( std::size_t i = 0; i < parts.size(); ++i ) {
 				const JsonValue& part = parts.at( i );
+				// Only the literal boolean true marks a thought part; any other
+				// shape (absent, false, "true", 1) leaves the part visible, so
+				// a malformed marker can never silently swallow real answer
+				// text.
+				const JsonValue* thoughtFlag = part.find( "thought" );
+				const bool isThought = thoughtFlag && thoughtFlag->isBool() && thoughtFlag->asBool();
 				if( const JsonValue* t = part.find( "text" ) ) {
-					if( t->isString() ) text += t->asString();
+					if( t->isString() ) {
+						if( isThought ) {
+							const std::string& s = t->asString();
+							if( !s.empty() ) {
+								if( !reasoningText.empty() ) reasoningText += "\n\n";
+								reasoningText += s;
+							}
+						}
+						else {
+							text += t->asString();
+						}
+					}
 				}
 				if( const JsonValue* fc = part.find( "functionCall" ) ) {
 					if( !fc->isObject() ) {
@@ -2017,6 +2281,53 @@ namespace RISE
 				}
 			}
 
+			// DISPLAY-LAYER ENRICHMENT (corrected 2026-07-25; the previous
+			// claim here -- "Gemini exposes no reasoning/thinking field on the
+			// wire" -- was wrong).  Gemini DOES have a reasoning surface, in
+			// two independent forms:
+			//   * thought SUMMARIES, returned as parts marked
+			//     `{"text":"...","thought":true}`.  They only appear when the
+			//     request asks for them via
+			//     generationConfig.thinkingConfig.includeThoughts, which this
+			//     harness deliberately does NOT send (instrumentation only --
+			//     changing how runs are DRIVEN would break comparability with
+			//     the recorded baselines).  So reasoningText is "" on every
+			//     Gemini turn RECORDED SO FAR -- because of our request shape,
+			//     not because the field does not exist.  The parts loop above
+			//     routes such parts to reasoningText the moment one arrives.
+			//   * thought TOKEN COUNTS (usageMetadata.thoughtsTokenCount),
+			//     which arrive unconditionally and were non-zero on 461 of the
+			//     462 recorded responses in gemini_only_e12/build_ambiguous
+			//     (6,086 of 6,087 across every recorded Gemini run) -- see
+			//     ParseUsage.  Thinking happens on essentially every turn; only
+			//     its TEXT is withheld.
+			// Thought SIGNATURES (`thoughtSignature`, an opaque per-part blob
+			// riding on functionCall and text parts alike) are neither
+			// summaries nor counts: they are provider-opaque state that must
+			// round-trip untouched, which the verbatim raw-span echo below
+			// already guarantees.  They are PER PART, not per response: 6,086
+			// of the 6,398 recorded content parts carry one (in the 462-block
+			// slice, 461 of 493 parts).
+			//
+			// EVERY exit from here on goes through AttachReasoning.  The
+			// disposition below REPLACES out.step wholesale on a refusal
+			// (MakeProviderError builds a fresh ChatStepResult), so reasoning
+			// collected above has to be attached AFTER that assignment or it is
+			// dropped -- and a refused turn is exactly when it matters most:
+			// for a thought-ONLY turn the reasoning is the only text the model
+			// produced, and returning a ProviderError with an empty
+			// reasoningText discards it.  The STRUCTURAL refusals above (a
+			// malformed / id-colliding functionCall) deliberately stay OUTSIDE
+			// this -- see the Anthropic site for the full rationale: they
+			// abandon a mid-scan read of a body being declined as malformed,
+			// where a disposition refusal declines a well-formed turn whose
+			// reasoning is complete.
+			const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+				out.reasoningText = reasoningText;
+				out.step.reasoningText = reasoningText;
+				return out;
+			};
+
 			const std::string finishReason = cand.get( "finishReason" ).asString();
 			// Classify a non-STOP finish for the error kind: token cap and
 			// the safety-ish family get their own kinds so a driver can
@@ -2044,7 +2355,7 @@ namespace RISE
 							               "refusing (an explicit STOP is required before a call turn executes)" )
 							: "gemini returned function calls but stopped with finishReason \"" +
 							  finishReason + "\" -- a truncated call turn is not executed" );
-					return out;
+					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::ToolCalls;
 				out.step.toolCalls = calls;
@@ -2058,10 +2369,15 @@ namespace RISE
 					// whitespace-only text part, or nothing but non-text parts
 					// such as inlineData) is equally a silent blank bubble --
 					// testing the extracted `text` for blankness catches both
-					// (text is "" when parts is not an array).
+					// (text is "" when parts is not an array).  A turn
+					// whose ONLY text lives in `thought:true` parts lands
+					// here too, and correctly so: a thought summary is the
+					// model's reasoning, not its answer -- but the reasoning
+					// itself still rides out on the error (AttachReasoning),
+					// since it is then the only text the model produced.
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"gemini candidate carries no readable text -- refusing the degenerate turn" );
-					return out;
+					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
 				out.step.finalText = text;
@@ -2071,14 +2387,11 @@ namespace RISE
 				// finishReason in the message.
 				out.step = MakeProviderError( finishKind,
 					"gemini stopped with finishReason \"" + finishReason + "\"" );
-				return out;
+				return AttachReasoning();
 			}
 			out.assistantDisplayText = text;
 			out.step.assistantDisplayText = text;
-			// DISPLAY-LAYER ENRICHMENT: Gemini exposes no reasoning/thinking
-			// field on the wire (unlike Anthropic's thinking blocks or the
-			// OpenAI-family reasoning/reasoning_content fields) -- reasoningText
-			// stays "" (its default) for every Gemini turn.
+			AttachReasoning();
 
 			// Raw-span echo of candidates[0].content (verbatim -- preserves
 			// provider-opaque fields such as thought signatures).
@@ -2117,12 +2430,47 @@ namespace RISE
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
 			const JsonValue& m = root.get( "usageMetadata" );
 			if( !m.isObject() ) return u;
-			if( m.get( "promptTokenCount" ).isNumber() )
-				u.inputTokens = static_cast<long long>( m.get( "promptTokenCount" ).asNumber() );
-			if( m.get( "candidatesTokenCount" ).isNumber() )
-				u.outputTokens = static_cast<long long>( m.get( "candidatesTokenCount" ).asNumber() );
-			if( m.get( "cachedContentTokenCount" ).isNumber() )
-				u.cacheReadInputTokens = static_cast<long long>( m.get( "cachedContentTokenCount" ).asNumber() );
+			u.inputTokens          = ReadTokenCount( m, "promptTokenCount" );
+			u.outputTokens         = ReadTokenCount( m, "candidatesTokenCount" );
+			u.cacheReadInputTokens = ReadTokenCount( m, "cachedContentTokenCount" );
+
+			// THINKING TOKENS (2026-07-25).  PROVIDER DISPOSITION: SEPARATE
+			// SUMMAND -- Gemini bills hidden reasoning as output but reports it
+			// in its OWN counter, `thoughtsTokenCount`, which
+			// `candidatesTokenCount` does NOT include.  Dropping it made every
+			// Gemini cost figure downstream wrong: across the 20 recorded
+			// Gemini eval cells (954 LLM calls -- evals/runs/gemini_only_e12
+			// and evals/runs/ask_user_board_e12, 10 cells each) the harness
+			// recorded 168,582 output tokens against 425,194 thinking tokens
+			// actually generated.  Real generation was 593,776, so the recorded
+			// figure was 28 % of it -- a ~72 % undercount.
+			//
+			// EMPIRICAL BASIS for folding it into outputTokens rather than
+			// leaving it purely informational (measured, not assumed; the
+			// identity is tested only on blocks carrying all four numbers):
+			//                                       build_ambiguous  ALL gemini
+			//                                       (gemini_only_e12) runs
+			//     total == prompt+candidates+thoughts   461/461      6086/6086
+			//     total == prompt+candidates              0/461         0/6086
+			// i.e. candidates and thoughts are DISJOINT summands of the total,
+			// so candidatesTokenCount alone is the VISIBLE output only.  Per
+			// ChatUsage's contract, outputTokens must be the total billed
+			// generation, so thoughts are added in and also published verbatim
+			// as the reasoning subset.  thoughtsTokenCount was present AND
+			// non-zero on 461 of those 462 blocks (6,086 of 6,087 across all
+			// recorded Gemini runs) even though the harness never requests
+			// thought SUMMARIES -- the tokens are generated (and charged)
+			// regardless of whether their text is returned.  The one odd block
+			// out carries NEITHER candidatesTokenCount NOR thoughtsTokenCount
+			// (an empty generation), which is why the identity above is 461 of
+			// 461 testable blocks rather than 462 of 462.
+			//
+			// The fold is a PER-PROVIDER decision from that evidence, never
+			// re-derived per response from the body's own arithmetic -- see the
+			// PROVIDER DISPOSITION note in OpenAIChatCodec::ParseUsage.
+			u.reasoningOutputTokens = ReadTokenCount( m, "thoughtsTokenCount" );
+			FoldReasoningIntoOutput( u );
+			EnforceUsageInvariant( u );
 			return u;
 		}
 
@@ -2137,13 +2485,11 @@ namespace RISE
 
 		OpenAIChatCodec::OpenAIChatCodec()
 		{
-			// The default OpenAI provider -- byte-identical wire behaviour to
-			// the pre-parameterization codec (the AgentChatLoopTest URL/header
-			// assertions pin this).
 			mConfig.providerName   = "openai";
-			mConfig.baseUrl        = "https://api.openai.com/v1/chat/completions";
+			mConfig.baseUrl        = "https://api.openai.com/v1/responses";
 			mConfig.defaultModelId = "gpt-5.6-terra";
 			mConfig.requiresAuth   = true;
+			mConfig.useResponsesApi = true;
 		}
 
 		OpenAIChatCodec::OpenAIChatCodec( const Config& config ) : mConfig( config )
@@ -2159,6 +2505,19 @@ namespace RISE
 		{
 			JsonValue msg = JsonValue::MakeObject();
 			msg.set( "role", JsonValue::MakeString( "user" ) );
+			if( mConfig.useResponsesApi ) {
+				if( attachments.empty() ) {
+					msg.set( "content", JsonValue::MakeString( text ) );
+					return JsonSerialize( msg );
+				}
+				JsonValue content = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < attachments.size(); ++i )
+					content.push_back( MakeOpenAIResponsesImageBlock(
+						attachments[i].mimeType, attachments[i].base64Data ) );
+				if( !text.empty() ) content.push_back( MakeOpenAIResponsesTextBlock( text ) );
+				msg.set( "content", content );
+				return JsonSerialize( msg );
+			}
 			if( attachments.empty() ) {
 				msg.set( "content", JsonValue::MakeString( text ) );
 				return JsonSerialize( msg );
@@ -2190,8 +2549,11 @@ namespace RISE
 			JsonValue newContent = JsonValue::MakeArray();
 			for( std::size_t i = 0; i < content.size(); ++i ) {
 				const JsonValue& b = content.at( i );
-				if( b.get( "type" ).asString() == "image_url" && remaining > 0 ) {
-					newContent.push_back( MakeOpenAITextContentBlock( kUserImageElidedNote ) );
+				const std::string blockType = b.get( "type" ).asString();
+				if( ( blockType == "image_url" || blockType == "input_image" ) && remaining > 0 ) {
+					newContent.push_back( mConfig.useResponsesApi
+						? MakeOpenAIResponsesTextBlock( kUserImageElidedNote )
+						: MakeOpenAITextContentBlock( kUserImageElidedNote ) );
 					--remaining;
 					changed = true;
 				}
@@ -2261,17 +2623,27 @@ namespace RISE
 				}
 
 				JsonValue msg = JsonValue::MakeObject();
-				msg.set( "role", JsonValue::MakeString( "tool" ) );
-				msg.set( "tool_call_id", JsonValue::MakeString( call.id ) );
-				msg.set( "content", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				if( mConfig.useResponsesApi ) {
+					msg.set( "type", JsonValue::MakeString( "function_call_output" ) );
+					msg.set( "call_id", JsonValue::MakeString( call.id ) );
+					msg.set( "output", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				}
+				else {
+					msg.set( "role", JsonValue::MakeString( "tool" ) );
+					msg.set( "tool_call_id", JsonValue::MakeString( call.id ) );
+					msg.set( "content", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				}
 				messages.push_back( msg );
 			}
 
 			if( !liveB64.empty() ) {
 				JsonValue content = JsonValue::MakeArray();
-				content.push_back( MakeOpenAITextContentBlock(
-					"The PNG returned by read_image is attached below." ) );
-				content.push_back( MakeOpenAIImageUrlBlock( "image/png", liveB64 ) );
+				content.push_back( mConfig.useResponsesApi
+					? MakeOpenAIResponsesTextBlock( "The PNG returned by read_image is attached below." )
+					: MakeOpenAITextContentBlock( "The PNG returned by read_image is attached below." ) );
+				content.push_back( mConfig.useResponsesApi
+					? MakeOpenAIResponsesImageBlock( "image/png", liveB64 )
+					: MakeOpenAIImageUrlBlock( "image/png", liveB64 ) );
 				JsonValue imageMsg = JsonValue::MakeObject();
 				imageMsg.set( "role", JsonValue::MakeString( "user" ) );
 				imageMsg.set( "content", content );
@@ -2293,15 +2665,19 @@ namespace RISE
 			JsonValue out = JsonValue::MakeArray();
 			for( std::size_t i = 0; i < root.size(); ++i ) {
 				const JsonValue& msg = root.at( i );
-				if( msg.get( "role" ).asString() == "tool" && msg.get( "content" ).isString() ) {
+				const bool chatTool = msg.get( "role" ).asString() == "tool" &&
+				                      msg.get( "content" ).isString();
+				const bool responsesTool = msg.get( "type" ).asString() == "function_call_output" &&
+				                           msg.get( "output" ).isString();
+				if( chatTool || responsesTool ) {
 					const std::string rewritten =
-						RewriteElidedSummaryText( msg.get( "content" ).asString() );
-					if( rewritten != msg.get( "content" ).asString() ) changed = true;
+						RewriteElidedSummaryText( msg.get( chatTool ? "content" : "output" ).asString() );
+					if( rewritten != msg.get( chatTool ? "content" : "output" ).asString() ) changed = true;
 					JsonValue newMsg = JsonValue::MakeObject();
 					const std::vector<std::pair<std::string, JsonValue>>& mem = msg.members();
 					for( std::size_t j = 0; j < mem.size(); ++j )
-						newMsg.set( mem[j].first,
-							mem[j].first == "content" ? JsonValue::MakeString( rewritten ) : mem[j].second );
+						newMsg.set( mem[j].first, mem[j].first == ( chatTool ? "content" : "output" )
+							? JsonValue::MakeString( rewritten ) : mem[j].second );
 					out.push_back( newMsg );
 					continue;
 				}
@@ -2312,17 +2688,21 @@ namespace RISE
 					bool msgChanged = false;
 					for( std::size_t j = 0; j < content.size(); ++j ) {
 						const JsonValue& b = content.at( j );
-						if( b.get( "type" ).asString() == "image_url" ) {
-							newContent.push_back( MakeOpenAITextContentBlock( kImageElidedNote ) );
+						const std::string blockType = b.get( "type" ).asString();
+						if( blockType == "image_url" || blockType == "input_image" ) {
+							newContent.push_back( mConfig.useResponsesApi
+								? MakeOpenAIResponsesTextBlock( kImageElidedNote )
+								: MakeOpenAITextContentBlock( kImageElidedNote ) );
 							msgChanged = true;
 						}
-						else if( b.get( "type" ).asString() == "text" ) {
+						else if( blockType == "text" || blockType == "input_text" ) {
 							std::string t = b.get( "text" ).asString();
 							if( t.find( "attached" ) != std::string::npos ) {
 								t = kImageElidedNote;
 								msgChanged = true;
 							}
-							newContent.push_back( MakeOpenAITextContentBlock( t ) );
+							newContent.push_back( mConfig.useResponsesApi
+								? MakeOpenAIResponsesTextBlock( t ) : MakeOpenAITextContentBlock( t ) );
 						}
 						else {
 							newContent.push_back( b );
@@ -2369,7 +2749,39 @@ namespace RISE
 
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );
-			body += ",\"max_completion_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens );
+			body += mConfig.useResponsesApi
+				? ",\"max_output_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens )
+				: ",\"max_completion_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens );
+			if( mConfig.useResponsesApi ) {
+				// OpenAI recommends medium as the balanced default for agentic,
+				// multi-step tool workflows.  Naming it explicitly makes the
+				// eval configuration reproducible across server-default changes.
+				body += ",\"reasoning\":{\"effort\":\"medium\"},\"instructions\":";
+				JsonAppendEscapedString( body, systemPrompt );
+				body += ",\"input\":[";
+				bool firstInput = true;
+				for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+					JsonValue e;
+					std::string perr;
+					if( JsonParse( rawEntries[i], e, perr ) && e.isArray() ) {
+						for( std::size_t j = 0; j < e.size(); ++j ) {
+							if( !firstInput ) body += ",";
+							body += JsonSerialize( e.at( j ) );
+							firstInput = false;
+						}
+					}
+					else {
+						if( !firstInput ) body += ",";
+						body += rawEntries[i];
+						firstInput = false;
+					}
+				}
+				body += "],\"tools\":";
+				body += OpenAIResponsesToolsJson();
+				body += ",\"store\":false}";
+				r.body = body;
+				return r;
+			}
 			// REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY (see
 			// ChatStepResult::retryReasoningEffortNone): a reasoning-family
 			// model's server-side default reasoning_effort is incompatible
@@ -2418,6 +2830,220 @@ namespace RISE
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) {
 				out.step = MakeProviderError( ChatErrorKind::Parse,
 					"openai response did not parse as JSON: " + perr );
+				return out;
+			}
+			// Parse by response shape rather than configured request mode.  This
+			// keeps the codec useful for archived Chat-Completions trajectories
+			// and OpenAI-compatible fixture tests during the migration.
+			if( mConfig.useResponsesApi && ( root.find( "output" ) || root.find( "status" ) ) ) {
+				// Reasoning-item summaries, harvested from `output` WITHOUT the
+				// strict per-item validation the completed path applies (a
+				// non-completed turn is under no obligation to carry a
+				// well-formed message item, and refusing to read its reasoning
+				// because some OTHER item is malformed would defeat the point).
+				// This exists because the status dispositions below return
+				// BEFORE the completed path's output loop ever runs, so the
+				// AttachReasoning lambda further down cannot reach them.
+				const auto ResponsesReasoningText = []( const JsonValue& output ) -> std::string {
+					std::string s;
+					if( !output.isArray() ) return s;
+					for( std::size_t i = 0; i < output.size(); ++i ) {
+						const JsonValue& item = output.at( i );
+						if( item.get( "type" ).asString() != "reasoning" ) continue;
+						const JsonValue& summary = item.get( "summary" );
+						if( !summary.isArray() ) continue;
+						for( std::size_t j = 0; j < summary.size(); ++j ) {
+							const std::string t = summary.at( j ).get( "text" ).asString();
+							if( t.empty() ) continue;
+							if( !s.empty() ) s += "\n\n";
+							s += t;
+						}
+					}
+					return s;
+				};
+
+				const std::string status = root.get( "status" ).asString();
+				if( status != "completed" ) {
+					// SIBLING of Anthropic's stop_reason=="max_tokens" exit, and
+					// the same sharp case: `incomplete` with
+					// incomplete_details.reason "max_output_tokens" is the
+					// NORMAL output-cap outcome on the Responses wire (not a
+					// protocol violation), and OpenAI populates `output` with
+					// the reasoning item on exactly that turn -- a reasoning-
+					// only response whose summary is then the ONLY text the
+					// model produced.  Returning before reading it discarded the
+					// entire turn's output.
+					if( status == "incomplete" ) {
+						const std::string reason =
+							root.get( "incomplete_details" ).get( "reason" ).asString();
+						out.step = MakeProviderError(
+							reason == "max_output_tokens" ? ChatErrorKind::MaxTokens : ChatErrorKind::Provider,
+							"openai response incomplete" + ( reason.empty() ? std::string() : ": " + reason ) );
+					}
+					else {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai response status is \"" + status + "\" instead of \"completed\"" );
+					}
+					// AFTER the MakeProviderError assignment (it builds a FRESH
+					// ChatStepResult, so an earlier write would be overwritten).
+					out.reasoningText = ResponsesReasoningText( root.get( "output" ) );
+					out.step.reasoningText = out.reasoningText;
+					return out;
+				}
+				const JsonValue& output = root.get( "output" );
+				if( !output.isArray() ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai response carries no output array" );
+					return out;
+				}
+
+				std::vector<ChatToolCall> calls;
+				std::string text;
+				std::string refusal;
+				std::string reasoningText;
+				for( std::size_t i = 0; i < output.size(); ++i ) {
+					const JsonValue& item = output.at( i );
+					if( !item.isObject() || !item.get( "type" ).isString() ) {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai Responses output item lacks an object type" );
+						return out;
+					}
+					const std::string type = item.get( "type" ).asString();
+					if( type == "function_call" ) {
+						ChatToolCall c;
+						c.id = item.get( "call_id" ).asString();
+						c.name = item.get( "name" ).asString();
+						if( c.id.empty() || c.name.empty() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses function_call lacks call_id or name" );
+							return out;
+						}
+						for( std::size_t k = 0; k < calls.size(); ++k ) {
+							if( calls[k].id == c.id ) {
+								out.step = MakeProviderError( ChatErrorKind::Provider,
+									"openai response repeats function call_id \"" + c.id + "\"" );
+								return out;
+							}
+						}
+						JsonValue args;
+						std::string aerr;
+						if( !JsonParse( item.get( "arguments" ).asString(), args, aerr ) ||
+						    !args.isObject() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai function_call \"" + c.name +
+								"\" carries malformed arguments JSON" );
+							return out;
+						}
+						c.argsJson = JsonSerialize( args );
+						calls.push_back( c );
+					}
+					else if( type == "message" ) {
+						if( item.get( "role" ).asString() != "assistant" ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses message role is not assistant" );
+							return out;
+						}
+						const JsonValue& content = item.get( "content" );
+						if( !content.isArray() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses message content is not an array" );
+							return out;
+						}
+						for( std::size_t j = 0; j < content.size(); ++j ) {
+							const JsonValue& part = content.at( j );
+							const std::string partType = part.get( "type" ).asString();
+							if( partType == "output_text" ) {
+								if( !part.get( "text" ).isString() ) {
+									out.step = MakeProviderError( ChatErrorKind::Provider,
+										"openai Responses output_text has no text string" );
+									return out;
+								}
+								if( !text.empty() ) text += "\n";
+								text += part.get( "text" ).asString();
+							}
+							else if( partType == "refusal" ) {
+								if( !part.get( "refusal" ).isString() ) {
+									out.step = MakeProviderError( ChatErrorKind::Provider,
+										"openai Responses refusal has no refusal string" );
+									return out;
+								}
+								if( !refusal.empty() ) refusal += "\n";
+								refusal += part.get( "refusal" ).asString();
+							}
+							else {
+								out.step = MakeProviderError( ChatErrorKind::Provider,
+									"openai Responses message has unsupported content type \"" +
+									partType + "\"" );
+								return out;
+							}
+						}
+					}
+					else if( type == "reasoning" ) {
+						const JsonValue& summary = item.get( "summary" );
+						if( !summary.isArray() ) continue;
+						for( std::size_t j = 0; j < summary.size(); ++j ) {
+							const std::string s = summary.at( j ).get( "text" ).asString();
+							if( s.empty() ) continue;
+							if( !reasoningText.empty() ) reasoningText += "\n\n";
+							reasoningText += s;
+						}
+					}
+					else {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai Responses output has unsupported item type \"" +
+							type + "\"" );
+						return out;
+					}
+				}
+
+				// EVERY exit from here on goes through AttachReasoning: the
+				// disposition below REPLACES out.step wholesale on a refusal
+				// (MakeProviderError builds a fresh ChatStepResult), so the
+				// reasoning-item summaries collected above have to be attached
+				// AFTER that assignment or they are dropped.  SIBLING of the
+				// Gemini and Anthropic sites (same bug pattern, same fix): a
+				// Responses turn that emits a reasoning item and no message is
+				// exactly the "blank" case below, and its summary text is then
+				// the only text the model produced.  The STRUCTURAL refusals
+				// above (a typeless / unsupported output item, a malformed
+				// function_call) deliberately stay OUTSIDE this -- see the
+				// Anthropic site for the full rationale.  The non-"completed"
+				// STATUS exits earlier are a third case again: they never reach
+				// the output loop at all, so they harvest their reasoning
+				// through ResponsesReasoningText instead.
+				const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+					out.reasoningText = reasoningText;
+					out.step.reasoningText = reasoningText;
+					return out;
+				};
+
+				if( !calls.empty() ) {
+					out.step.kind = ChatStepResult::Kind::ToolCalls;
+					out.step.toolCalls = calls;
+				}
+				else if( !refusal.empty() ) {
+					out.step = MakeProviderError( ChatErrorKind::Refusal,
+						"openai declined this request: " + refusal );
+					return AttachReasoning();
+				}
+				else if( ChatContentIsBlank( text ) ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai ended the response with no text or function calls" );
+					return AttachReasoning();
+				}
+				else {
+					out.step.kind = ChatStepResult::Kind::FinalText;
+					out.step.finalText = text;
+				}
+				out.assistantDisplayText = text;
+				out.step.assistantDisplayText = text;
+				AttachReasoning();
+
+				std::size_t ob = 0, oe = 0;
+				if( RawObjectMember( rawBody, 0, "output", ob, oe ) )
+					out.assistantEntryJson = rawBody.substr( ob, oe - ob );
+				if( out.assistantEntryJson.empty() )
+					out.assistantEntryJson = JsonSerialize( output );
 				return out;
 			}
 			const JsonValue& choices = root.get( "choices" );
@@ -2514,12 +3140,31 @@ namespace RISE
 				}
 			}
 
+			// EVERY exit from here on goes through AttachReasoning: the
+			// disposition below REPLACES out.step wholesale on a refusal
+			// (MakeProviderError builds a fresh ChatStepResult), so the
+			// `reasoning` / `reasoning_content` text captured above has to be
+			// attached AFTER that assignment or it is dropped.  SIBLING of the
+			// Gemini, Anthropic and Responses sites (same bug pattern, same
+			// fix), and the likeliest of the four to fire in practice: a local
+			// reasoning model that emits `reasoning` with EMPTY content lands
+			// in the blank-turn refusal below, where its reasoning is the only
+			// text the turn produced.  The STRUCTURAL refusals above (a
+			// non-function / id-less / duplicate-id / malformed-arguments
+			// tool_call, a spoofed role) deliberately stay OUTSIDE this -- see
+			// the Anthropic site for the full rationale.
+			const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+				out.reasoningText = reasoningText;
+				out.step.reasoningText = reasoningText;
+				return out;
+			};
+
 			const std::string finishReason = choice.get( "finish_reason" ).asString();
 			if( finishReason == "tool_calls" ) {
 				if( calls.empty() ) {
 					out.step = MakeProviderError( ChatErrorKind::Provider,
 						"openai stopped with finish_reason \"tool_calls\" but no tool_calls were present" );
-					return out;
+					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::ToolCalls;
 				out.step.toolCalls = calls;
@@ -2528,7 +3173,7 @@ namespace RISE
 				out.step = MakeProviderError( ChatErrorKind::Provider,
 					"openai response carries tool_calls under finish_reason \"" + finishReason +
 					"\" -- refusing the turn (its calls would be recorded but never answerable)" );
-				return out;
+				return AttachReasoning();
 			}
 			else if( finishReason == "stop" ) {
 				// A "stop" turn with no tool_calls is degenerate when it
@@ -2557,7 +3202,7 @@ namespace RISE
 						out.step = MakeProviderError( ChatErrorKind::Provider,
 							"openai ended the turn with no content -- refusing the degenerate turn" );
 					}
-					return out;
+					return AttachReasoning();
 				}
 				out.step.kind = ChatStepResult::Kind::FinalText;
 				out.step.finalText = text;
@@ -2566,22 +3211,21 @@ namespace RISE
 				out.step = MakeProviderError( ChatErrorKind::MaxTokens,
 					"openai: the response hit the output-token cap (finish_reason length) -- "
 					"the truncated reply was discarded; try a narrower request" );
-				return out;
+				return AttachReasoning();
 			}
 			else if( finishReason == "content_filter" ) {
 				out.step = MakeProviderError( ChatErrorKind::Refusal,
 					"openai: the provider declined this request (finish_reason content_filter)" );
-				return out;
+				return AttachReasoning();
 			}
 			else {
 				out.step = MakeProviderError( ChatErrorKind::Provider,
 					"openai stopped with finish_reason \"" + finishReason + "\"" );
-				return out;
+				return AttachReasoning();
 			}
 			out.assistantDisplayText = text;
 			out.step.assistantDisplayText = text;
-			out.reasoningText = reasoningText;
-			out.step.reasoningText = reasoningText;
+			AttachReasoning();
 
 			std::size_t cb = 0, ce = 0, eb = 0, ee = 0, mb = 0, me = 0;
 			if( RawObjectMember( rawBody, 0, "choices", cb, ce ) &&
@@ -2607,19 +3251,92 @@ namespace RISE
 			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
 			const JsonValue& usage = root.get( "usage" );
 			if( !usage.isObject() ) return u;
-			if( usage.get( "prompt_tokens" ).isNumber() )
-				u.inputTokens = static_cast<long long>( usage.get( "prompt_tokens" ).asNumber() );
-			if( usage.get( "completion_tokens" ).isNumber() )
-				u.outputTokens = static_cast<long long>( usage.get( "completion_tokens" ).asNumber() );
-			const JsonValue& details = usage.get( "prompt_tokens_details" );
-			if( details.isObject() && details.get( "cached_tokens" ).isNumber() )
-				u.cacheReadInputTokens = static_cast<long long>( details.get( "cached_tokens" ).asNumber() );
+
+			// PROVIDER DISPOSITION (the ONE decision this function makes about
+			// reasoning tokens).  Several providers share this codec and they
+			// DISAGREE about whether reasoning_tokens is inside their output
+			// counter, so the question is answered PER PROVIDER -- from that
+			// provider's recorded evidence -- and not per response from the
+			// body's arithmetic:
+			//   * "openai"  INCLUSIVE.  Documented as a SUBSET of
+			//     completion_tokens / output_tokens, and confirmed on 273
+			//     recorded Responses blocks (204 with non-zero reasoning):
+			//         total_tokens == input_tokens + output_tokens   273/273
+			//         output_tokens >  reasoning_tokens              204/204
+			//     A separate summand would have broken the first identity on
+			//     every one of the 204 reasoning turns.
+			//   * "xai"     SEPARATE SUMMAND.  Measured over the 733 recorded
+			//     grok-4.5 blocks with non-zero reasoning (evals/runs/**):
+			//         total == prompt + completion + reasoning       733/733
+			//         total == prompt + completion                     0/733
+			//         completion_tokens < reasoning_tokens           356/733
+			//     the last line is decisive on its own: a subset can never
+			//     exceed the set that contains it, so grok's completion_tokens
+			//     is the VISIBLE output only (e.g. completion 51 vs reasoning
+			//     362 -- the same ~72 %-class undercount as Gemini's).
+			//   * "local"   INCLUSIVE by default.  No recorded local block
+			//     reports the field at all (0 of 3,524 carry
+			//     completion_tokens_details), so there is no evidence to decide
+			//     on; the OpenAI-compatible contract such a server claims to
+			//     implement documents inclusion, and assuming inclusion FAILS
+			//     SAFE -- it under-reports rather than double counting, and a
+			//     self-contradictory body is caught by EnforceUsageInvariant.
+			//
+			// WHY NOT decide per response from the body's arithmetic (the shape
+			// this replaced): the evidence above is per-provider, and the codec
+			// already knows the provider, so deriving the same answer from
+			// arithmetic buys nothing the data supports while introducing three
+			// failure modes of its own.  (1) It FLIPS between turns of ONE
+			// conversation: with identical (prompt, completion, reasoning) =
+			// (7183, 43, 32) the old code folded when total_tokens was present
+			// and did not when it was absent, stringified by a gateway, or
+			// unaccompanied by prompt_tokens -- and the trajectory recorder
+			// SUMS outputTokens across turns, so a single run silently mixed
+			// folded and unfolded turns.  Streaming without
+			// stream_options.include_usage produces exactly that.  (2) The
+			// three-way identity is NOT a proof of exclusion: it only says the
+			// total exceeds prompt+completion by exactly `reasoning`, which any
+			// other summand of equal size also satisfies -- e.g.
+			// {prompt 100, completion 50, total 180, reasoning 30, audio 30}
+			// double counted to 80 where the billed generation was 50.  (3) The
+			// `completion < reasoning` size test was unreachable in practice
+			// and its "proof" was untested.  A per-provider switch dissolves
+			// all three.
+			const bool reasoningIsSeparateSummand = ( mConfig.providerName == "xai" );
+
+			if( usage.find( "input_tokens" ) || usage.find( "output_tokens" ) ) {
+				// ---- Responses-API shape -------------------------------------
+				u.inputTokens  = ReadTokenCount( usage, "input_tokens" );
+				u.outputTokens = ReadTokenCount( usage, "output_tokens" );
+				u.cacheReadInputTokens =
+					ReadTokenCount( usage.get( "input_tokens_details" ), "cached_tokens" );
+				u.reasoningOutputTokens =
+					ReadTokenCount( usage.get( "output_tokens_details" ), "reasoning_tokens" );
+				// The disposition is the PROVIDER's, not the shape's: a
+				// provider whose counter is a separate summand stays that way
+				// whichever wire shape it answers in, and -- more to the point
+				// -- a "local" gateway that happens to answer in Responses
+				// shape must NOT inherit OpenAI's disposition by accident.
+				if( reasoningIsSeparateSummand ) FoldReasoningIntoOutput( u );
+				EnforceUsageInvariant( u );
+				return u;
+			}
+
+			// ---- Chat-Completions shape (OpenAI, xAI, Ollama) ----------------
+			u.inputTokens  = ReadTokenCount( usage, "prompt_tokens" );
+			u.outputTokens = ReadTokenCount( usage, "completion_tokens" );
+			u.cacheReadInputTokens =
+				ReadTokenCount( usage.get( "prompt_tokens_details" ), "cached_tokens" );
+			u.reasoningOutputTokens =
+				ReadTokenCount( usage.get( "completion_tokens_details" ), "reasoning_tokens" );
+			if( reasoningIsSeparateSummand ) FoldReasoningIntoOutput( u );
+			EnforceUsageInvariant( u );
 			return u;
 		}
 
 		std::size_t OpenAIChatCodec::ToolsWireBytes() const
 		{
-			return OpenAIToolsJson().size();
+			return ( mConfig.useResponsesApi ? OpenAIResponsesToolsJson() : OpenAIToolsJson() ).size();
 		}
 
 		//======================================================================

@@ -753,6 +753,46 @@ static void TestMutatingRateLimitAndTotalDeadline()
 		       "slice6(b): list_proposals is NOT rate-limited (no top-level error at all) even though the "
 		       "mutating window is exhausted -- the limiter only ever counts mutating verb names" );
 
+		// (b2) RED-PROVE the converse, and the one that actually bit: the
+		// BATCH verbs must be counted as mutating too.  A batch verb missing
+		// from IsMutatingMcpToolCall's list would sail through this exhausted
+		// window unthrottled -- and it is the WORST one to leak, since a
+		// single call carries N edits rather than one.  Both batch forms are
+		// checked so adding one and forgetting the other still fails here.
+		{
+			JsonValue patchItem = JsonValue::MakeObject();
+			patchItem.set( "target", JsonValue::MakeString( "sph" ) );
+			patchItem.set( "param",  JsonValue::MakeString( "radius" ) );
+			patchItem.set( "value",  JsonValue::MakeString( "0.9" ) );
+			JsonValue patchArr = JsonValue::MakeArray();
+			patchArr.push_back( patchItem );
+			JsonValue batchArgs = JsonValue::MakeObject();
+			batchArgs.set( "patches", patchArr );
+
+			JsonValue chunkArr = JsonValue::MakeArray();
+			chunkArr.push_back( JsonValue::MakeString( "omni_light\n{\n\tname k\n\tpower 1.0\n}" ) );
+			JsonValue chunksArgs = JsonValue::MakeObject();
+			chunksArgs.set( "chunks", chunkArr );
+
+			struct BatchCase { double id; const char* verb; const JsonValue* args; };
+			const BatchCase kBatch[] = {
+				{ 9003.0, "propose_patches", &batchArgs  },
+				{ 9004.0, "insert_chunks",   &chunksArgs },
+			};
+			for( const BatchCase& bc : kBatch ) {
+				HttpResponse br = DoRequestEx( port, "POST", "/mcp",
+					ReqToolCall( bc.id, bc.verb, *bc.args ), extra );
+				const std::string what = std::string( "slice6(b2): " ) + bc.verb;
+				Check( br.ok && br.status == 200, what + " response is HTTP 200" );
+				JsonValue bEnv; std::string bErr;
+				Check( JsonParse( br.body, bEnv, bErr ), what + " response body parses as JSON" );
+				const JsonValue* bCode = bEnv.has( "error" ) ? bEnv.get( "error" ).find( "code" ) : nullptr;
+				Check( bCode && bCode->isNumber() && bCode->asNumber() == -32013.0,
+				       "RED-PROVE: " + std::string( bc.verb ) + " IS rate-limited in the exhausted window "
+				       "(a BATCH verb must never escape the mutating-call cap)" );
+			}
+		}
+
 		server.Stop();
 		if( serverThread.joinable() ) serverThread.join();
 	}

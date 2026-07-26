@@ -17,7 +17,7 @@
     "fixture": "evals/fixtures/two_tool_observe.fixture.jsonl"
   },
   "checkpoints": [
-    { "kind": "render", "meanLumaMin": 0.001, "meanLumaMax": 5.0 },
+    { "kind": "render", "samples": 512, "width": 24, "height": 24, "meanLumaMin": 0.001, "meanLumaMax": 5.0 },
     { "kind": "trajectory", "terminalStatus": "final_text", "noMechanicalLoop": true,
       "requiredToolInOrder": ["render", "read_image"] },
     { "kind": "finalText", "containsAny": ["sphere", "lit", "bright", "image shows"] }

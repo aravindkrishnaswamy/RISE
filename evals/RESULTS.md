@@ -269,7 +269,7 @@ Three findings:
    lighting is the one unsolved gap and would need a non-prose lever (a nudge or a
    hard requirement), not more skill text.
 
-### 2c. Clarifying questions — `ask_user` board (2026-07-23, epoch 11)
+### 2c. Clarifying questions — `ask_user` board (2026-07-25, epoch 11)
 
 Research finding: **0 of 132** build runs ever asked a clarifying question
 spontaneously. The `ask_user` tool + a materially-ambiguous scenario
@@ -279,28 +279,134 @@ models ask when piece identity matters, ask BEFORE building, and reflect that
 identity in their final response. Setting and mood are deliberately left to the
 agent's ordinary judgment and are not an adoption metric.
 
-| model | asked ≥1 | asked-before-building | piece identity reflected | meanCkpt | full pass |
-|---|---|---|---|---|---|
-| gemini-3.5-flash | 3/3 | 3/3 | 3/3 | **0.94** | 2/3 |
-| gemini-3.6-flash | 3/3 | 3/3 | 3/3 | 0.89 | 1/3 |
-| **qwen3.6:27b (local)** | **3/3** | 1/3* | **3/3** | 0.83 | 1/3 |
-| gpt-5.6-terra | 2/3 | 2/3 | 2/3 | 0.78 | 0/3 |
+Two run dirs feed this table: `ask_user_board` (N=3) for every model, and
+`ask_user_openai_responses` (N=5) for the two GPT-5.6 tiers after the OpenAI
+Responses-API migration (`607d7302`). The pre-migration GPT row is kept as the
+BEFORE half of that comparison — it is not a current result.
 
-*qwen's trajectory failures are mechanical-loop (repeated identical
-propose_patch), not ask-ordering.
+| model | N | pass@1 | meanCkpt | asked | $/success | wall(s) |
+|---|---|---|---|---|---|---|
+| claude-opus-4-8 | 3 | **100%** | **1.000** | 3/3 | $13.75 | 387 |
+| **gpt-5.6-sol** (Responses) | 5 | **80%** | 0.967 | **5/5** | **$1.83** | 171 |
+| gemini-3.5-flash | 3 | 66.7% | 0.889 | 2/3 | $1.03 | 221 |
+| gemini-3.6-flash | 3 | 66.7% | 0.833 | 2/3 | $5.25 | 394 |
+| gpt-5.6-terra (Responses) | 5 | 40% | 0.867 | 4/5 | $0.84 | **73** |
+| qwen3.6:27b (local) | 3 | 0% | 0.611 | 1/3 | $0 | 1552 |
+| ~~gpt-5.6-terra (pre-fix, Chat Completions)~~ | 3 | 0% | 0.611 | 1/3 | n/a | 35 |
 
-> **Historical/stale after the scope correction above.** The 11/12 board was
-> graded against the earlier compound-question scenario; re-run
-> `ask_user_board` before treating any row as a current result.
+**The OpenAI Responses migration (`607d7302`) — a harness bug, not a model
+limit.** gpt-5.6-terra scored 0/3 with two near-black renders and asked only
+1/3. Root cause: OpenAI 400-rejects function tools + `reasoning_effort` on
+`/v1/chat/completions`, and the harness's documented recovery was to force
+`reasoning_effort:"none"` — which ran gpt with **reasoning disabled for the
+whole task**. Migrating the OpenAI codec to `/v1/responses` (where tools and
+reasoning coexist) restored it: **pass@1 0% → 40%, meanCkpt 0.611 → 0.867,
+asking 1/3 → 4/5, and both dark-render failures vanished.** The migration is
+scoped to OpenAI only — xAI, local Ollama, and other OpenAI-*compatible*
+providers keep Chat Completions and keep the 400-recovery.
 
-**Historical takeaways.** (1) **Tool adoption was near-universal — 11/12 runs asked** —
-against 0/132 spontaneous asks without the tool: the tools-over-prose lesson
-confirmed a fourth time, now including the LOCAL model. (2) **Piece-identity
-answers were consumed**: 11/12 built the pocket watch they were told about
-rather than a guess. (3) gpt, the best *reactive* clarifier (3/3 on
-reserved_name_clarify), is the *weakest proactive* asker here (one run built
-without asking) — reactive and proactive clarification are different
-dispositions. N=3 caveats apply throughout.
+**Where the models stand.** Opus is the only perfect score but costs **7.5×**
+sol per success and runs 2.3× slower; sol's 80% at N=5 and Opus's 100% at N=3
+have heavily overlapping Wilson intervals ([37.6%, 96.4%] vs [43.8%, 100%]), so
+**sol is the value pick and Opus the reliability pick** — the two are not
+statistically separated. gemini-3.5 remains the cheap middle. gemini-3.6 is
+strictly worse than 3.5 here (same pass@1, 5× the cost, one budget exhaustion) —
+its chattiness regression persists. qwen3.6 fresh-graded at 0/3 (a stale earlier
+reading showed 1/3): it asks, but loops mechanically and mis-builds.
+
+**`channelBalance` is now the dominant residual failure** (sol 1, terra 2,
+gemini-3.6 1, qwen 1) — near-black renders are gone; what fails now is
+over-warm colour. A brass pocket watch under warm key light legitimately pushes
+R/B past the 4.0 ratio cap. **Open question: is `channelBalanceMax 4.0` fair to
+a warm-lit brass subject, or is it grading the scenario's own scripted answer as
+a failure?** Resolve with reference renders before tuning it — and never tune it
+per-model.
+
+**Takeaways.** (1) **Tool adoption holds under stricter grading** — 12/14 runs
+asked on the corrected scenario, against 0/132 spontaneous asks without the
+tool: the tools-over-prose lesson, fifth confirmation. (2) **A provider
+integration detail can look exactly like a capability wall** — gpt's 0/3 read as
+"gpt can't build," and was a forced-off reasoning flag. Check the wire before
+concluding anything about a model. (3) **Reactive ≠ proactive clarification**
+still holds, but the gap narrowed once reasoning was restored.
+
+---
+
+### 2d. Batch parameter edits — `propose_patches` (2026-07-25, epoch 12)
+
+**Historical — superseded by epoch 13.** These cells were driven and graded
+before the four follow-up fixes described at the end of this section, three of
+which change how a run is driven or graded. They are kept as the record of what
+the batch verb did and did not buy; do not compare them against anything run at
+epoch 13 or later. Epoch 13 also pinned the grading render's `samples`/frame
+size, so `tools/eval_report.py` now flags every cell below as stale on a
+scenario-file hash mismatch — expected, and not a sign the numbers are wrong.
+
+**Internal validity of the numbers below, checked rather than assumed.** These
+cells were graded by the *unconverged* 8-spp instrument that epoch 13 replaced,
+so the pass rates deserved an audit. All 20 final scenes were re-rendered at
+512 spp and re-graded against the same band: **the converged verdict reproduces
+the recorded render-checkpoint verdict on 20 of 20 cells.** The pass@1 figures
+below therefore stand as measured. (The single verdict flip reported in
+[RENDER_GRADING_CONVERGENCE.md](RENDER_GRADING_CONVERGENCE.md) is a flip between
+two *re-renders* at 8 vs 512 spp — a demonstration that the old instrument was
+unstable near the band edge, not a disagreement with the recorded grade.)
+
+The affordance gap 2b closed for INSERTS was still open for EDITS:
+`insert_chunks` batched adds, but every parameter change was a single
+`propose_patch(target, param, value)`. gemini-3.6-flash's chattiness regression
+(noted in 2c) was mostly this — it patched one parameter per round. `epoch 12`
+added `propose_patches`, the batch sibling.
+
+Two run dirs measure the same cell at N=5, differing only in which other models
+shared the board: `gemini_only_e12` and `ask_user_board_e12`. Both carry the
+same scenario content hash, so they are **10 independent repeats of one
+configuration** and are pooled here.
+
+| model | epoch 11 (N=3) | e12 run A (N=5) | e12 run B (N=5) | **pooled e12 (N=10)** |
+|---|---|---|---|---|
+| gemini-3.6-flash | 66.7% | **80%** | **40%** | **60%** [31.3%, 83.2%] |
+| gemini-3.5-flash | 66.7% | 40% | 60% | 50% [23.7%, 76.3%] |
+| claude-opus-4-8 | 100% (N=3) | — | 100% | 100% (N=5) |
+
+**pass@1 did not move.** 60% pooled vs a 66.7% baseline whose own Wilson
+interval is [20.8%, 93.9%] — the two are indistinguishable, and 3.5-flash if
+anything drifted down. **The 80% cell is the better half of a 40/80 split on
+identical inputs**, which is what N=5 run-to-run variance looks like on this
+scenario; quoting it alone would have been cherry-picking. Opus stayed at 100%
+and roughly halved its cost per success ($13.75 → $6.19), tracking the general
+efficiency win rather than anything specific to the batch verb.
+
+**Efficiency is the real result, and it is large.** For gemini-3.6-flash:
+
+| | epoch 11 (N=3) | pooled e12 (N=10) |
+|---|---|---|
+| total tool calls / run | 160.0 | **57.7** |
+| single `propose_patch` calls | 78–150 | ~1 |
+| `propose_patches` calls | — | 9.2 |
+| parameter edits landed / run | 78–150 | **113.7** |
+| $/success | $5.25 | ~$2.00 |
+
+**2.8× fewer calls while landing MORE edits**, and the budget exhaustion seen at
+epoch 11 did not recur in any of the 10 runs. The verb does exactly what it was
+built to do; what it does not do is make the model build a better scene.
+
+**Takeaways.** (1) **An affordance fix buys headroom, not quality** — the same
+lesson 2b taught for inserts. Freeing ~100 calls per run did not convert into
+passed checkpoints, so the residual failures on this scenario are judgment, not
+budget. Stop optimising call counts here. (2) **Two N=5 runs of one cell
+disagreed 40% vs 80%** — a single N=5 board is not enough to claim a pass@1
+delta on this scenario; pool repeats or raise N before reporting one.
+(3) **Adding a verb is not adding it to one list.** The follow-up audit found
+`propose_patches` registered in the tool surface but missing from four sibling
+registries: the MCP transport's mutating-verb **rate limiter** (an uncapped
+mutation path), this harness's `kMutatingToolNames` (so
+`askUserBeforeMutation` read a batch patch as non-mutating and could vacuously
+pass), the **blind-edit nudge** (a batching model never accrued the streak, so
+it was never nudged to render), and `ToolOutcomeLine` (the model was told
+`"ok"` whether 12/12 or 0/12 elements applied). Epoch 13 fixes all four, makes
+a stale-base conflict batch-fatal, and teaches the verb in the modeling skill.
+When you add a verb, grep for a sibling's name and check every hit.
 
 ---
 
@@ -337,8 +443,54 @@ object+lighting+stage+env; graded by RMSE vs committed references.
 - **Held-out discipline:** `build_study_scene` is never iterated against, so
   a guidance change that only helps the tuned members reveals itself as
   overfit.
+- **One N=5 board cannot carry a pass@1 claim.** Two runs of the SAME cell
+  (same model, same scenario hash, N=5 each) came back 40% and 80% — the
+  whole apparent effect of a change, twice over, from variance alone. Pool
+  repeats across run dirs before reporting a delta, and quote the Wilson
+  interval: at N=5 it is roughly [38%, 96%] and rules out almost nothing.
+  A result cited from the better of two available runs is not a result.
+- **Report the metric that actually moved.** The batch-edit verb (2d) was a
+  real 2.8× call-count win and a null pass@1 win. Both are worth knowing;
+  conflating them turns a solid efficiency result into an unsupported
+  capability claim.
+- **Don't let the subject hold the measuring stick.** The `render` checkpoint
+  in the 7 build/observe scenarios pinned no `samples`/`width`/`height`, so the
+  grading render used whatever the *scene* specified — and the model can patch
+  `samples`, `width`, and `height` (the epoch-12 digests show it doing exactly
+  that). At the scenes' authored 8 spp the mean-luma estimate is also not
+  converged: re-rendering the 20 recorded epoch-12 Gemini scenes at 8 vs 512 spp
+  moved mean luma by a median of 9% (max 71%) and flipped one cell's verdict.
+  Renders are stochastic run-to-run (no fixed seed), and on a firefly-heavy
+  scene five repeats at 8 spp spanned 0.34–0.83 — a **142% spread straddling the
+  0.35 boundary**, i.e. a coin flip. Well-behaved scenes hold ~8–11% and never
+  flip, so the bulk of the record is sound; the instability is concentrated in
+  exactly the near-boundary cases where the grade is actually decided. Fixed at
+  epoch 13 by pinning `samples: 512` **and the frame size** (spread drops to
+  2–7%, cost ~1 s per checkpoint) — frame size matters too, since the model can
+  patch `film.width`/`height` and the frame's smallness is *why* the metric is
+  outlier-dominated. Backing measurements:
+  [RENDER_GRADING_CONVERGENCE.md](RENDER_GRADING_CONVERGENCE.md). Re-grading the
+  20 affected cells at 512 spp reproduced every recorded verdict (20/20), so no
+  published result moved. The `image_reconstruct_*` scenarios had pinned
+  `samples` since Wave 2 — at **64**, not 512, and that difference is
+  deliberate: they grade RMSE over a full image, a far better-conditioned
+  statistic than a mean over 576–768 pixels, so it converges at a much lower
+  sample count. Don't harmonize the two values.
+- **Mean luminance over a small HDR frame is outlier-dominated.** At 576–768
+  pixels (24×24 or 32×24) with unbounded radiance, a handful of firefly pixels move the mean
+  more than the whole rest of the image: failing scenes carry pixels at
+  100–400× display white, and one scene is still 21% unstable between 256 and
+  1024 spp. Pinning samples makes the metric *reproducible*, not *robust*. A
+  clamped or percentile statistic would be the real fix — open, deliberately not
+  changed, because it would alter the metric's meaning in every scenario.
+- **A grader hole is a silent scoring change.** `askUserBeforeMutation` kept
+  passing after a new mutating verb shipped, because the checker's verb list
+  never learned about it — the scenario JSON was untouched, so nothing in the
+  diff looked like a grading change. When a tool-surface change lands, audit
+  every harness-side list that enumerates verbs, and treat those lists as
+  checkpoint definitions.
 
 ---
 
-_Last updated: 2026-07-23 (ask_user clarification arc). Raw runs under `evals/runs/`; runconfigs under
+_Last updated: 2026-07-25 (ask_user board + OpenAI Responses migration; `propose_patches` batch-edit verb and its epoch-13 follow-up audit). Raw runs under `evals/runs/`; runconfigs under
 `evals/runconfigs/`._

@@ -206,15 +206,63 @@ namespace RISE
 					// spells out "chunkText must be EXACTLY ONE `keyword {
 					// ... }` block" in the tool description AND declares it
 					// `required` in the JSON schema -- the model ignored both).
-					// Neither is a codec/protocol bug: no OTHER provider in the
-					// shootout (gemini-3.5-flash, qwen3:32b, qwen3.6:27b,
-					// qwen3-coder:30b) exhibits either pattern.  This is a
+					//
+					// CORRECTION (2026-07-25): this comment used to add "no
+					// OTHER provider in the shootout (gemini-3.5-flash,
+					// qwen3:32b, qwen3.6:27b, qwen3-coder:30b) exhibits either
+					// pattern".  That was true of the 12-run-per-model
+					// local_shootout it was written from, and is FALSIFIED by
+					// the larger full_baseline sweep (15 scenarios x 3 repeats
+					// = 45 runs per model, evals/runs/full_baseline/).  There,
+					// qwen3-coder:30b leaks tool-call intent into `content`
+					// too -- in a DIFFERENT, Hermes-style syntax rather than
+					// llama3.3's pseudo-JSON:
+					//     <function=read_document>
+					//     </function>
+					//     </tool_call>
+					// again with tool_calls:null and finish_reason "stop".
+					// Measured incidence of a prose tool call in a
+					// tool_calls-free message, per model, over full_baseline's
+					// 45 runs each (the same detector reproduces the 10-of-12
+					// llama3.3 figure above on local_shootout, so the two run
+					// sets are directly comparable):
+					//     llama3.3:70b-instruct-q4_K_M  14/45  (pseudo-JSON)
+					//     qwen3-coder:30b                6/45  (<function=...>)
+					//     qwen3-coder-next               0/45
+					//     qwen3:32b                      0/45
+					//     qwen3.6:27b                    0/45
+					//     glm-4.7-flash                  0/45
+					// and 0/45 for every hosted model in that sweep
+					// (claude-opus-4-8, gpt-5.6-terra, gemini-3.5-flash,
+					// grok-4.5).
+					// Five of qwen3-coder:30b's six are FATAL -- the prose call
+					// is the model's FIRST reply, so the run ends at
+					// llmCalls=1, toolCalls=0, terminalStatus="final_text"
+					// (conflict_retry r2 + r3, param_edit r2,
+					// reserved_name_clarify r3, lighting_luma_band r1).  The
+					// sixth (multi_turn_edit r1) leaked one prose call and then
+					// carried on to make 11 real tool calls in the same run.
+					//
+					// So the behaviour is INTERMITTENT, not a stable per-model
+					// property: the same model, same scenario, same harness
+					// build produces a real tool_calls array on one repeat and
+					// prose on the next (conflict_retry r1 succeeded where r2
+					// and r3 died).  Treat any "model X does/does not do this"
+					// claim as a sample-size statement with a run count
+					// attached, never as a capability verdict -- llama3.3 shows
+					// the same instability from the other side, leaking in 10
+					// of 12 local_shootout runs (83 %) but only 14 of 45
+					// full_baseline runs (31 %).
+					//
+					// Neither pattern is a codec/protocol bug.  This is a
 					// MODEL-capability signal the eval is measuring -- do NOT
 					// add tolerant handling here (sniffing `content` for an
-					// inline pseudo-tool-call, or aliasing 'chunk' ->
-					// 'chunkText' in AgentRpc.cpp's insert_chunk handler) to
-					// paper over it; that would silently raise llama3.3's
-					// score by doing the self-correction FOR it.  The one
+					// inline pseudo-tool-call in EITHER syntax, or aliasing
+					// 'chunk' -> 'chunkText' in AgentRpc.cpp's insert_chunk
+					// handler) to paper over it; that would silently raise the
+					// affected models' scores by doing the self-correction FOR
+					// them.  Detection/reporting of these turns belongs in the
+					// eval-analysis layer, not in the codec.  The one
 					// legitimate hardening move already landed instead:
 					// AgentRpc.cpp's insert_chunk missing-'chunkText' error
 					// now also NAMES whatever key WAS present (e.g. "got
@@ -895,11 +943,16 @@ namespace RISE
 			// system prompt by BuildRequest).  Threshold <= 0 disables it.
 			{
 				const std::string& v = call.name;
-				// insert_chunks (the batch form of insert_chunk) counts as a
-				// mutation here too -- it still edits the document with no
-				// visual observation in between, same blind-edit risk.
+				// The BATCH forms (insert_chunks / propose_patches) count as a
+				// mutation here too -- they still edit the document with no
+				// visual observation in between, same blind-edit risk, and if
+				// anything a LARGER one (N edits land per call, so a model that
+				// batches would otherwise never accrue the streak at all and
+				// the nudge would silently stop firing for exactly the models
+				// making the biggest unobserved edits).
 				const bool isMutation = ( v == "insert_chunk" || v == "insert_chunks" ||
-				                          v == "propose_patch" || v == "remove_chunk" );
+				                          v == "propose_patch" || v == "propose_patches" ||
+				                          v == "remove_chunk" );
 				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
 				                               v == "read_viewport" || v == "query_object_at" );
 				// ask_user is EXPLICITLY neither: it neither mutates the
@@ -1022,7 +1075,7 @@ namespace RISE
 			//!   1. A JSON-RPC `error` envelope           -> "error: <msg, <=80 chars>"
 			//!   2. result.status == "rejected"            -> "rejected: <issues[0].reason `param`, or <=80 chars of message>"
 			//!   3. result.status == "conflict"             -> "conflict (stale base)"
-			//!   4. name == "insert_chunks"                 -> "<applied>/<total> applied"
+			//!   4. name in {insert_chunks,propose_patches}  -> "<applied>/<total> applied"
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1068,10 +1121,16 @@ namespace RISE
 				// insert_chunks/propose_patch/remove_chunk all gate this way).
 				if( status == "conflict" ) return "conflict (stale base)";
 
-				// 4. insert_chunks: the batch summary (result.applied is a
-				// COUNT here, not a bool -- distinct from insert_chunk's
-				// per-call boolean of the same name; see AgentRpc.cpp).
-				if( call.name == "insert_chunks" ) {
+				// 4. The BATCH verbs: the batch summary (result.applied is a
+				// COUNT here, not a bool -- distinct from insert_chunk's /
+				// propose_patch's per-call boolean of the same name; see
+				// AgentRpc.cpp).  Both batch verbs return the IDENTICAL
+				// {applied,total,results} envelope, so they share this rule --
+				// without it propose_patches would fall through to the generic
+				// "ok" of rule 8 and report the SAME string whether 17/17 or
+				// 0/17 elements applied, which is precisely the outcome a
+				// best-effort batch verb most needs to surface.
+				if( call.name == "insert_chunks" || call.name == "propose_patches" ) {
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";
@@ -1531,8 +1590,9 @@ namespace RISE
 				const std::vector<std::pair<std::string, JsonValue> >& members = root.members();
 				for( std::size_t i = 0; i < members.size(); ++i ) {
 					const std::string& key = members[i].first;
-					if( key == "messages" || key == "contents" || key == "tools" ||
-					    key == "system" || key == "systemInstruction" || key == "toolConfig" )
+					if( key == "messages" || key == "input" || key == "contents" ||
+					    key == "tools" || key == "instructions" || key == "system" ||
+					    key == "systemInstruction" || key == "toolConfig" )
 						continue;
 					params.set( key, members[i].second );
 				}
@@ -1647,6 +1707,18 @@ namespace RISE
 			rec.inputTokens = usage.inputTokens;
 			rec.outputTokens = usage.outputTokens;
 			rec.cacheReadInputTokens = usage.cacheReadInputTokens;
+			// The reasoning/visible SPLIT, not just the total: outputTokens is
+			// the total billed generation on every provider, so without this
+			// field the split is unrecoverable downstream -- and on the
+			// providers whose output counter already includes reasoning
+			// (Anthropic, OpenAI) parsing it would otherwise be write-only.
+			rec.reasoningOutputTokens = usage.reasoningOutputTokens;
+			rec.reasoningClamped = usage.reasoningClamped;
+			// The provider's PRE-CLAMP count, so a clamped record keeps the
+			// evidence of what it clamped away (the clamp is a normalization;
+			// the discarded claim is the diagnostic).  Serialized only when the
+			// clamp flag is set -- it is identical to the field above otherwise.
+			rec.reasoningOutputTokensReported = usage.reasoningOutputTokensReported;
 			if( pr.step.kind == ChatStepResult::Kind::ProviderError )
 				rec.errorType = ErrorKindToString( pr.step.errorKind );
 			rec.attempt = attempt;

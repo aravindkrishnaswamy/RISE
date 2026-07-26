@@ -19,6 +19,26 @@ it means you render once you have a whole THING to look at rather than
 after each fragment.  Batching is where you SAVE calls; the renders
 between groups are cheap and you should keep them.
 
+**Batch related edits with `propose_patches`.**  The same rule applies
+to CHANGING things, and this is where the calls really add up: a
+correction pass after a render is usually "nudge these six objects and
+retune two lights", which is a dozen or more parameter edits.  Send
+them as ONE `propose_patches` call, not a dozen `propose_patch` calls
+turn by turn -- an agent that patches one parameter per round will burn
+its entire call budget on a single correction pass and never reach a
+finished scene.  Reach for single `propose_patch` only when you are
+genuinely changing ONE thing.
+
+Two things to know about the batch form.  Elements are applied in array
+order and it is BEST-EFFORT -- one rejected element does not stop the
+rest -- so **read the `applied`/`total` it returns**: `8/12 applied`
+means four edits did not land, and `results[i]` tells you which and
+why.  Do not assume a batch succeeded because the call returned.  The
+one exception to best-effort: if the `baseHeadVersion` you passed is
+stale, the WHOLE batch stops with nothing applied (so it cannot
+half-clobber an edit someone else made) -- re-read the document and
+resubmit.
+
 **Render after each coherent group, and always after lighting.**  Once
 a group has landed -- the surface, a cluster of furniture, the light
 rig -- render a small preview and check it before you build the next

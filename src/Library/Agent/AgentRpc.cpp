@@ -137,8 +137,11 @@ namespace RISE
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
-			//! through beyond the read-safe allowlist above -- the 3 known-
-			//! mutating verbs.  Dispatching them under Propose does NOT itself
+			//! through beyond the read-safe allowlist above -- the 5 known-
+			//! mutating verbs (the 3 single-item verbs plus the 2 BATCH forms,
+			//! insert_chunks and propose_patches, which mutate through the very
+			//! same per-element delegates and so carry the identical posture).
+			//! Dispatching them under Propose does NOT itself
 			//! commit anything: it only lets the call REACH AgentSession, whose
 			//! own Owner/External authority decides staging-vs-commit (see
 			//! AgentRpc.h's file header, "Secure-MCP slice 5b (`Propose`
@@ -147,6 +150,7 @@ namespace RISE
 			bool IsProposeSafeVerb( const std::string& method )
 			{
 				return method == "propose_patch" ||
+				       method == "propose_patches" ||
 				       method == "insert_chunk"  ||
 				       // insert_chunks is the BATCH form of insert_chunk (see
 				       // AgentSession::InsertChunks's doc) -- it mutates via the
@@ -1039,6 +1043,107 @@ namespace RISE
 					// back-compat posture as ChunkResultJson's `issues`.
 					if( !pr.issues.empty() ) result.set( "issues", IssuesJson( pr.issues ) );
 					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// propose_patches {patches:[{target,param,value,kind?},...], baseHeadVersion?}
+				//   -> {applied:number, total:number, results:[PatchResultJson,...]}
+				//   BATCH form of propose_patch (see AgentSession::ProposePatches's
+				//   doc): apply MULTIPLE parameter patches in ONE call instead of
+				//   one round-trip per patch, collapsing what would otherwise be
+				//   N propose_patch calls.  SEQUENTIAL, BEST-EFFORT -- every element
+				//   of `patches` is attempted IN ORDER, and a REJECTED element does
+				//   not stop the batch.  `baseHeadVersion`, when given, is the
+				//   optimistic-concurrency precondition for the BATCH AS A WHOLE
+				//   (checked against the FIRST element only).  ONE EXCEPTION to
+				//   best-effort: a STALE-BASE CONFLICT on element 0 is BATCH-FATAL
+				//   -- no further element is attempted and the tail comes back
+				//   status="conflict"/applied=false, so a batch racing a concurrent
+				//   editor cannot blind-clobber it (see AgentSession::ProposePatches's
+				//   doc for why this differs from insert_chunks).  `applied` is the
+				//   count of `results` entries with applied==true; `total` is
+				//   `patches.size()`, and `results` always has exactly `total`
+				//   entries so results[i] corresponds to patches[i].
+				//--------------------------------------------------------------
+				if( m == "propose_patches" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* patchesVal = params.find( "patches" );
+					if( !patchesVal || !patchesVal->isArray() ) {
+						std::string msg = "Invalid params: 'patches' (array of objects) is required";
+						const std::string other = DescribeOtherParamKeys(
+							params, { "patches", "baseHeadVersion" } );
+						if( !other.empty() )
+							msg += " (got " + other + " instead -- rename to 'patches')";
+						return MakeError( idValue, kInvalidParams, msg );
+					}
+					if( patchesVal->size() == 0 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'patches' must be a non-empty array of objects" );
+					}
+					std::vector<AgentSetPatch> patches;
+					patches.reserve( patchesVal->size() );
+					for( std::size_t i = 0; i < patchesVal->size(); ++i ) {
+						const JsonValue& item = patchesVal->at( i );
+						if( !item.isObject() ) {
+							char buf[128];
+							std::snprintf( buf, sizeof( buf ),
+								"Invalid params: 'patches[%zu]' must be an object", i );
+							return MakeError( idValue, kInvalidParams, buf );
+						}
+						const JsonValue* target = item.find( "target" );
+						const JsonValue* param  = item.find( "param" );
+						const JsonValue* value  = item.find( "value" );
+						if( !target || !target->isString() ||
+						    !param  || !param->isString()  ||
+						    !value  || !value->isString() ) {
+							char buf[256];
+							std::snprintf( buf, sizeof( buf ),
+								"Invalid params: 'patches[%zu]' requires string 'target', 'param', and 'value'", i );
+							return MakeError( idValue, kInvalidParams, buf );
+						}
+						AgentSetPatch sp;
+						sp.target = target->asString();
+						sp.param  = param->asString();
+						sp.value  = value->asString();
+						if( const JsonValue* kind = item.find( "kind" ) ) {
+							if( kind->isString() ) sp.kind = kind->asString();
+							else if( !kind->isNull() ) {
+								char buf[128];
+								std::snprintf( buf, sizeof( buf ),
+									"Invalid params: 'patches[%zu].kind' must be a string", i );
+								return MakeError( idValue, kInvalidParams, buf );
+							}
+						}
+						patches.push_back( sp );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+					const std::vector<AgentPatchResult> results =
+						s->ProposePatches( patches, ( b == 1 ) ? &base : nullptr );
+					for( const AgentPatchResult& pr : results ) {
+						if( pr.queueFull ) return MakeProposalQueueFullError( idValue, "propose_patches" );
+					}
+					std::size_t appliedCount = 0;
+					JsonValue resultsArr = JsonValue::MakeArray();
+					for( const AgentPatchResult& pr : results ) {
+						if( pr.applied ) ++appliedCount;
+						JsonValue itemRes = JsonValue::MakeObject();
+						itemRes.set( "applied", JsonValue::MakeBool( pr.applied ) );
+						itemRes.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
+						itemRes.set( "status",  JsonValue::MakeString( pr.status ) );
+						itemRes.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
+						itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
+						itemRes.set( "message", JsonValue::MakeString( pr.message ) );
+						if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
+						resultsArr.push_back( itemRes );
+					}
+					JsonValue outRes = JsonValue::MakeObject();
+					outRes.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
+					outRes.set( "total",   JsonValue::MakeNumber( static_cast<double>( results.size() ) ) );
+					outRes.set( "results", resultsArr );
+					return MakeSuccess( idValue, outRes );
 				}
 
 				//--------------------------------------------------------------

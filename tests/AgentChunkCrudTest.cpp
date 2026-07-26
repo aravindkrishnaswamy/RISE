@@ -2944,6 +2944,224 @@ static void TestInsertChunksWireShape()
 	}
 }
 
+// A small helper for the propose_patches battery: build one patch element.
+static Agent::AgentSetPatch Patch( const char* target, const char* param, const char* value )
+{
+	Agent::AgentSetPatch p;
+	p.target = target;
+	p.param  = param;
+	p.value  = value;
+	return p;
+}
+
+//----------------------------------------------------------------------
+// PP1: propose_patches -- the BATCH form of propose_patch, over the wire.
+//   Every target below EXISTS in kScene: an element naming an absent
+//   entity is a REJECT, not an apply, so a happy-path assertion must not
+//   smuggle one in (PP2 covers the reject path deliberately).
+//----------------------------------------------------------------------
+static void TestProposePatchesBatch()
+{
+	std::printf( "PP1: propose_patches batch -- multi-patch applied via RPC...\n" );
+
+	const std::string tmp = TempPath( "agentcrud_pp1.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "PP1 fixture scene loads" );
+	if( pJob )
+	{
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+		const std::string req =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"propose_patches\",\"params\":{"
+			"\"patches\":["
+			"{\"target\":\"sph\",\"param\":\"radius\",\"value\":\"0.5\"},"
+			"{\"target\":\"mat_emit\",\"param\":\"scale\",\"value\":\"12.0\"}"
+			"]}}";
+
+		const std::string resp = rpc.HandleLine( req );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "PP1 propose_patches returns a JSON-RPC result object" );
+		const Agent::JsonValue* applied = result.find( "applied" );
+		const Agent::JsonValue* total   = result.find( "total" );
+		const Agent::JsonValue* results = result.find( "results" );
+		Check( applied && applied->isNumber() && applied->asNumber() == 2.0, "PP1 applied == 2" );
+		Check( total && total->isNumber() && total->asNumber() == 2.0, "PP1 total == 2" );
+		Check( results && results->isArray() && results->size() == 2, "PP1 results has 2 elements" );
+		// results[i] must be the SAME shape propose_patch returns -- the
+		// documented wire contract the model's tool schema promises.
+		if( results && results->isArray() && results->size() == 2 ) {
+			const Agent::JsonValue& r0 = results->at( 0 );
+			Check( r0.find( "applied" ) && r0.find( "applied" )->isBool(),
+			       "PP1 results[0].applied is a BOOL (per-element), not the batch COUNT" );
+			Check( r0.find( "status" ) && r0.find( "status" )->asString() == "applied",
+			       "PP1 results[0].status == \"applied\"" );
+			Check( r0.find( "rawCode" ) && r0.find( "headVersion" ) && r0.find( "message" ),
+			       "PP1 results[0] carries the full propose_patch result shape" );
+		}
+
+		pJob->release();
+	}
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// PP2: BEST-EFFORT -- a REJECTED element does not stop the batch.
+//----------------------------------------------------------------------
+static void TestProposePatchesBestEffort()
+{
+	std::printf( "PP2: propose_patches -- BEST-EFFORT per-patch results (headless)...\n" );
+	const std::string tmp = TempPath( "agentcrud_pp2.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "PP2 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	std::vector<Agent::AgentSetPatch> patches;
+	patches.push_back( Patch( "sph", "radius", "0.5" ) );
+	// Names an entity that does not exist anywhere in the document -- a
+	// hard REJECT that must NOT abort the elements after it.
+	patches.push_back( Patch( "no_such_entity_xyz", "radius", "1.0" ) );
+	patches.push_back( Patch( "mat_emit", "scale", "12.0" ) );
+
+	const std::vector<Agent::AgentPatchResult> results = sess->ProposePatches( patches );
+	Check( results.size() == 3, "PP2 returns one result per input patch" );
+	if( results.size() == 3 ) {
+		Check( results[0].applied && results[0].status == "applied", "PP2 element 0 applied" );
+		Check( !results[1].applied && results[1].status == "rejected",
+		       "PP2 element 1 (unknown target) is REJECTED" );
+		Check( results[2].applied && results[2].status == "applied",
+		       "PP2 BEST-EFFORT: element 2 still applied after the rejected element 1" );
+		// The rejection must be ACTIONABLE, exactly as the single-item verb is.
+		Check( !results[1].issues.empty(), "PP2 the rejected element carries an actionable issue" );
+		if( !results[1].issues.empty() ) {
+			Check( results[1].issues[0].reason == "unknown_target",
+			       "PP2 issue reason is \"unknown_target\"" );
+		}
+	}
+
+	int appliedCount = 0;
+	for( const Agent::AgentPatchResult& r : results ) if( r.applied ) ++appliedCount;
+	Check( appliedCount == 2, "PP2 applied == total - 1 (exactly one rejection)" );
+
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// PP3: wire validation -- malformed `patches` is -32602 and applies NOTHING.
+//----------------------------------------------------------------------
+static void TestProposePatchesValidation()
+{
+	std::printf( "PP3: propose_patches wire validation (missing/non-array/empty/bad item -> -32602)...\n" );
+	const std::string tmp = TempPath( "agentcrud_pp3.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "PP3 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string headBefore = sess->ReadDocument();
+	Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+	struct Case { const char* body; const char* what; };
+	static const Case kCases[] = {
+		{ "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"propose_patches\",\"params\":{}}",
+		  "PP3(1) without 'patches' -> -32602" },
+		{ "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"propose_patches\",\"params\":"
+		  "{\"patches\":\"sph\"}}",
+		  "PP3(2) non-array 'patches' -> -32602" },
+		{ "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"propose_patches\",\"params\":"
+		  "{\"patches\":[]}}",
+		  "PP3(3) empty 'patches' array -> -32602" },
+		{ "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"propose_patches\",\"params\":"
+		  "{\"patches\":[\"sph\"]}}",
+		  "PP3(4) a non-object element -> -32602" },
+		{ "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"propose_patches\",\"params\":"
+		  "{\"patches\":[{\"target\":\"sph\",\"param\":\"radius\"}]}}",
+		  "PP3(5) an element missing 'value' -> -32602" },
+		{ "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"propose_patches\",\"params\":"
+		  "{\"patches\":[{\"target\":\"sph\",\"param\":\"radius\",\"value\":\"0.5\",\"kind\":7}]}}",
+		  "PP3(6) an element with a non-string 'kind' -> -32602" },
+	};
+	for( const Case& c : kCases ) {
+		const std::string resp = disp.HandleLine( c.body );
+		Check( resp.find( "-32602" ) != std::string::npos, c.what );
+	}
+
+	// A WRONG KEY names itself in the same round-trip (the insert_chunks
+	// guidance posture), so a model can fix it without a schema re-read.
+	{
+		const std::string resp = disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"propose_patches\",\"params\":"
+			"{\"edits\":[{\"target\":\"sph\",\"param\":\"radius\",\"value\":\"0.5\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos, "PP3(7) a wrong key -> -32602" );
+		Check( resp.find( "edits" ) != std::string::npos,
+		       "PP3(7) the error NAMES the key that was sent instead" );
+	}
+
+	// VALIDATE-BEFORE-APPLY: every rejection above left the head untouched,
+	// including case (5)/(6) whose FIRST element was perfectly well-formed.
+	Check( disp.Session() && disp.Session()->ReadDocument() == headBefore,
+	       "PP3 a -32602 batch applied NOTHING (head byte-identical)" );
+
+	std::remove( tmp.c_str() );
+}
+
+//----------------------------------------------------------------------
+// PP4: a STALE-BASE CONFLICT is BATCH-FATAL -- the lost-update guard.
+//   This is the ONE place propose_patches deliberately diverges from
+//   insert_chunks: an insert is additive, a patch OVERWRITES, so
+//   continuing past a stale base would blind-clobber a co-editor.
+//----------------------------------------------------------------------
+static void TestProposePatchesConflictIsBatchFatal()
+{
+	std::printf( "PP4: propose_patches -- a stale base is BATCH-FATAL (no partial clobber)...\n" );
+	const std::string tmp = TempPath( "agentcrud_pp4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "PP4 fixture loads" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+	std::vector<Agent::AgentSetPatch> patches;
+	patches.push_back( Patch( "sph", "radius", "0.5" ) );
+	patches.push_back( Patch( "mat_emit", "scale", "12.0" ) );
+	patches.push_back( Patch( "pnt_albedo", "color", "0.2 0.3 0.4" ) );
+
+	RISE::Cst::CstHeadVersion stale = sess->HeadVersion();
+	stale.revision += 100;
+
+	const std::string headBefore = sess->ReadDocument();
+	const RISE::Cst::CstHeadVersion vBefore = sess->HeadVersion();
+
+	const std::vector<Agent::AgentPatchResult> results = sess->ProposePatches( patches, &stale );
+	Check( results.size() == 3,
+	       "PP4 results still has ONE entry per input patch (results[i] <-> patches[i])" );
+	int appliedCount = 0;
+	for( const Agent::AgentPatchResult& r : results ) if( r.applied ) ++appliedCount;
+	Check( appliedCount == 0, "PP4 NOTHING applied -- the batch precondition failed" );
+	if( results.size() == 3 ) {
+		Check( results[0].status == "conflict", "PP4 element 0 reports the conflict" );
+		Check( results[1].status == "conflict" && results[2].status == "conflict",
+		       "PP4 the unattempted tail is reported as \"conflict\", not silently applied" );
+		Check( results[2].message.find( "not attempted" ) != std::string::npos,
+		       "PP4 the tail's message says it was NOT ATTEMPTED (and why)" );
+	}
+	Check( sess->ReadDocument() == headBefore, "PP4 the head is byte-identical" );
+	Check( sess->HeadVersion() == vBefore, "PP4 the revision did not move" );
+
+	// RED-PROVE the gate: the IDENTICAL batch WITHOUT a base applies all
+	// three -- so the abort above really was the precondition's doing and
+	// not some unrelated rejection of these patches.
+	const std::vector<Agent::AgentPatchResult> ok = sess->ProposePatches( patches );
+	int okCount = 0;
+	for( const Agent::AgentPatchResult& r : ok ) if( r.applied ) ++okCount;
+	Check( okCount == 3, "PP4 RED-PROVE: the same batch with NO base applies all 3" );
+	Check( sess->ReadDocument() != headBefore, "PP4 RED-PROVE: that batch really did mutate the head" );
+
+	std::remove( tmp.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentChunkCrudTest (Model-B F5 slice S2: insert_chunk / remove_chunk) ===\n" );
@@ -2975,6 +3193,10 @@ int main()
 	TestInsertChunksBestEffort();
 	TestInsertChunksValidation();
 	TestInsertChunksWireShape();
+	TestProposePatchesBatch();
+	TestProposePatchesBestEffort();
+	TestProposePatchesValidation();
+	TestProposePatchesConflictIsBatchFatal();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

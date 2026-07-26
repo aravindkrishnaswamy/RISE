@@ -2093,6 +2093,61 @@ namespace RISE
 
 		}
 
+		std::vector<AgentPatchResult> AgentSession::ProposePatches( const std::vector<AgentSetPatch>& patches,
+		                                                            const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			std::vector<AgentPatchResult> out;
+
+			if( patches.empty() )
+				return out;
+
+			out.reserve( patches.size() );
+
+			for( std::size_t i = 0; i < patches.size(); ++i )
+			{
+				AgentSetPatch item = patches[i];
+				if( i == 0 && baseOrNull )
+				{
+					item.hasBaseVersion = true;
+					item.baseVersion    = *baseOrNull;
+				}
+				else
+				{
+					item.hasBaseVersion = false;
+				}
+				out.push_back( ProposePatch( item ) );
+
+				// STALE-BASE CONFLICT IS BATCH-FATAL (see the header doc).
+				// Only the FIRST element carries the caller's precondition, so
+				// only it can report a stale base -- and when it does, every
+				// remaining element would apply UNCONDITIONALLY against a head
+				// the caller has never read.  Since a patch OVERWRITES rather
+				// than adds, that would silently clobber whatever a concurrent
+				// co-editor changed.  Stop, and fill the unattempted tail with
+				// an explicit conflict so results[i] still lines up with
+				// patches[i] and the caller can see nothing else was tried.
+				if( i == 0 && baseOrNull && out.back().status == "conflict" )
+				{
+					const AgentPatchResult& head = out.back();
+					for( std::size_t j = 1; j < patches.size(); ++j )
+					{
+						AgentPatchResult skipped;
+						skipped.applied     = false;
+						skipped.retriable   = head.retriable;
+						skipped.rawCode     = head.rawCode;
+						skipped.status      = "conflict";
+						skipped.headVersion = head.headVersion;
+						skipped.message     = "not attempted: the batch's baseHeadVersion is stale "
+						                      "(element 0 conflicted) -- re-read the head and resubmit";
+						out.push_back( skipped );
+					}
+					break;
+				}
+			}
+
+			return out;
+		}
+
 		AgentChunkResult AgentSession::InsertChunk( const std::string& chunkText,
 		                                            const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
