@@ -33,6 +33,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 #include <cstring>
@@ -182,9 +183,10 @@ public:
     {}
 
     virtual ~ViewportPreviewSink() {
-        InvalidatePresentation();
-        // _block is __strong; nilling on dealloc lets ARC release it.
-        mBlock = nil;
+        // SetBlock publishes invalidation and callback removal atomically with
+        // respect to OutputImage's snapshot.  It also retires the old block
+        // after dropping the presentation mutex.
+        SetBlock( nil );
         // L5a round-4 — release our addref on the fan-out VFS.
         if( mFanoutVFS ) {
             mFanoutVFS->release();
@@ -193,22 +195,23 @@ public:
     }
 
     void SetBlock( RISEViewportImageBlock block ) {
-        InvalidatePresentation();
-        mBlock = [block copy];
+        RISEViewportImageBlock incoming = [block copy];
+        RISEViewportImageBlock retired = nil;
+        {
+            std::lock_guard<std::mutex> lk( mPresentationMutex );
+            // Keep a strong owner so assigning mBlock cannot run the previous
+            // block target's final destructor while the mutex is held.
+            retired = mBlock;
+            mBlock = incoming;
+            mPresentGeneration->fetch_add( 1, std::memory_order_acq_rel );
+            mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+        }
+        retired = nil;
     }
 
     // Borrowed; the bridge keeps the controller alive for the sink's
     // lifetime.  Used to query IsCancelRequested at end-of-pass.
     void SetController( SceneEditController* c ) { mController = c; }
-
-    // Cancel every queued/background presentation when the block/sink
-    // lifetime changes.  Source setters use RunPresentationTransition below,
-    // which cancels only Last Render work and only after a successful core
-    // transition, preserving every ordinary interactive frame.
-    void InvalidatePresentation() {
-        mPresentGeneration->fetch_add( 1, std::memory_order_acq_rel );
-        mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
-    }
 
     template<typename Fn>
     bool RunPresentationTransition( Fn&& fn, bool invalidateLastOnSuccess ) {
@@ -303,12 +306,20 @@ public:
         if( mFanoutVFS && frame != SceneEditController::kLastRenderSinkFrame ) {
             mFanoutVFS->OutputImage( pImage, pRegion, frame );
         }
-        RISEViewportImageBlock block = mBlock;
-        if( !block ) return;
+        RISEViewportImageBlock block = nil;
         const std::shared_ptr<std::atomic<unsigned long long>> generationState =
             mPresentGeneration;
-        const unsigned long long generation =
-            generationState->load( std::memory_order_acquire );
+        unsigned long long generation = 0;
+        {
+            // Callback replacement and its invalidation ticket are one
+            // publication.  A pass snapshots either the complete old pair or
+            // the complete new pair, never a callback from one generation and
+            // a ticket from the other.
+            std::lock_guard<std::mutex> lk( mPresentationMutex );
+            block = mBlock;
+            if( !block ) return;
+            generation = generationState->load( std::memory_order_acquire );
+        }
         if( frame == SceneEditController::kLastRenderSinkFrame ) {
             // The controller's retained Last Render image is immutable and
             // addref-owned for this delivery.  Keep one reference for the
@@ -340,6 +351,7 @@ public:
 
 private:
     __strong RISEViewportImageBlock                mBlock;
+    std::mutex                                      mPresentationMutex;
     SceneEditController*                            mController;   // borrowed
     Implementation::ViewportFrameStore*             mFanoutVFS;    // strong (addref'd in SetFanoutVFS)
     std::shared_ptr<std::atomic<unsigned long long>> mPresentGeneration;
@@ -351,12 +363,15 @@ private:
         return static_cast<unsigned char>( v * 255.0 + 0.5 );
     }
 
+    // The generation owners are intentionally passed by value.  The final
+    // presentation block runs after this helper returns, so capturing reference
+    // parameters here would leave it dereferencing caller stack storage.
     static void BlitWholeAndDispatch(
         const IRasterImage& img,
         RISEViewportImageBlock block,
-        const std::shared_ptr<std::atomic<unsigned long long>>& generationState,
+        std::shared_ptr<std::atomic<unsigned long long>> generationState,
         unsigned long long generation,
-        const std::shared_ptr<std::atomic<unsigned long long>>& lastRenderState,
+        std::shared_ptr<std::atomic<unsigned long long>> lastRenderState,
         unsigned long long lastRenderGeneration ) {
         if( !block
          || generationState->load( std::memory_order_acquire ) != generation
@@ -748,30 +763,29 @@ private:
 }
 
 - (void)releaseLivePreview {
-    if (_previewSink) {
-        _previewSink->release();
-        _previewSink = nullptr;
-    }
+    // Detach every bridge-visible slot before the corresponding final release.
+    // A sink's callback target can run arbitrary capture destructors as the
+    // block is cleared; if one reenters setImageBlock:/setPaneImageBlock:, it
+    // must observe no live sink rather than mutate an object mid-destruction.
+    ViewportPreviewSink* retiredPreviewSink = _previewSink;
+    _previewSink = nullptr;
+    if (retiredPreviewSink) retiredPreviewSink->release();
     // N-up: release panes 1-3's sinks alongside pane 0's.  index 0 is
     // always null (see the ivar's doc) so the loop starts at 1.
     for (unsigned int i = 1; i < 4; ++i) {
-        if (_paneSinks[i]) {
-            _paneSinks[i]->release();
-            _paneSinks[i] = nullptr;
-        }
+        ViewportPreviewSink* retiredPaneSink = _paneSinks[i];
+        _paneSinks[i] = nullptr;
+        if (retiredPaneSink) retiredPaneSink->release();
     }
-    if (_interactiveRasterizer) {
-        _interactiveRasterizer->release();
-        _interactiveRasterizer = nullptr;
-    }
-    if (_polishCaster) {
-        _polishCaster->release();
-        _polishCaster = nullptr;
-    }
-    if (_caster) {
-        _caster->release();
-        _caster = nullptr;
-    }
+    IRasterizer* retiredRasterizer = _interactiveRasterizer;
+    _interactiveRasterizer = nullptr;
+    if (retiredRasterizer) retiredRasterizer->release();
+    IRayCaster* retiredPolishCaster = _polishCaster;
+    _polishCaster = nullptr;
+    if (retiredPolishCaster) retiredPolishCaster->release();
+    IRayCaster* retiredCaster = _caster;
+    _caster = nullptr;
+    if (retiredCaster) retiredCaster->release();
 }
 
 - (void)dealloc {
