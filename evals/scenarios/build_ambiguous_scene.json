@@ -55,6 +55,9 @@
     },
     {
       "kind": "render",
+      "samples": 512,
+      "width": 32,
+      "height": 24,
       "meanLumaMin": 0.015,
       "meanLumaMax": 0.35,
       "channelBalanceMax": 4.0

@@ -338,7 +338,19 @@ still holds, but the gap narrowed once reasoning was restored.
 before the four follow-up fixes described at the end of this section, three of
 which change how a run is driven or graded. They are kept as the record of what
 the batch verb did and did not buy; do not compare them against anything run at
-epoch 13 or later.
+epoch 13 or later. Epoch 13 also pinned the grading render's `samples`/frame
+size, so `tools/eval_report.py` now flags every cell below as stale on a
+scenario-file hash mismatch — expected, and not a sign the numbers are wrong.
+
+**Internal validity of the numbers below, checked rather than assumed.** These
+cells were graded by the *unconverged* 8-spp instrument that epoch 13 replaced,
+so the pass rates deserved an audit. All 20 final scenes were re-rendered at
+512 spp and re-graded against the same band: **the converged verdict reproduces
+the recorded render-checkpoint verdict on 20 of 20 cells.** The pass@1 figures
+below therefore stand as measured. (The single verdict flip reported in
+[RENDER_GRADING_CONVERGENCE.md](RENDER_GRADING_CONVERGENCE.md) is a flip between
+two *re-renders* at 8 vs 512 spp — a demonstration that the old instrument was
+unstable near the band edge, not a disagreement with the recorded grade.)
 
 The affordance gap 2b closed for INSERTS was still open for EDITS:
 `insert_chunks` batched adds, but every parameter change was a single
@@ -372,7 +384,7 @@ efficiency win rather than anything specific to the batch verb.
 | total tool calls / run | 160.0 | **57.7** |
 | single `propose_patch` calls | 78–150 | ~1 |
 | `propose_patches` calls | — | 9.2 |
-| parameter edits landed / run | 78–150 | **112.5** |
+| parameter edits landed / run | 78–150 | **113.7** |
 | $/success | $5.25 | ~$2.00 |
 
 **2.8× fewer calls while landing MORE edits**, and the budget exhaustion seen at
@@ -441,6 +453,36 @@ object+lighting+stage+env; graded by RMSE vs committed references.
   real 2.8× call-count win and a null pass@1 win. Both are worth knowing;
   conflating them turns a solid efficiency result into an unsupported
   capability claim.
+- **Don't let the subject hold the measuring stick.** The `render` checkpoint
+  in the 7 build/observe scenarios pinned no `samples`/`width`/`height`, so the
+  grading render used whatever the *scene* specified — and the model can patch
+  `samples`, `width`, and `height` (the epoch-12 digests show it doing exactly
+  that). At the scenes' authored 8 spp the mean-luma estimate is also not
+  converged: re-rendering the 20 recorded epoch-12 Gemini scenes at 8 vs 512 spp
+  moved mean luma by a median of 9% (max 71%) and flipped one cell's verdict.
+  Renders are stochastic run-to-run (no fixed seed), and on a firefly-heavy
+  scene five repeats at 8 spp spanned 0.34–0.83 — a **142% spread straddling the
+  0.35 boundary**, i.e. a coin flip. Well-behaved scenes hold ~8–11% and never
+  flip, so the bulk of the record is sound; the instability is concentrated in
+  exactly the near-boundary cases where the grade is actually decided. Fixed at
+  epoch 13 by pinning `samples: 512` **and the frame size** (spread drops to
+  2–7%, cost ~1 s per checkpoint) — frame size matters too, since the model can
+  patch `film.width`/`height` and the frame's smallness is *why* the metric is
+  outlier-dominated. Backing measurements:
+  [RENDER_GRADING_CONVERGENCE.md](RENDER_GRADING_CONVERGENCE.md). Re-grading the
+  20 affected cells at 512 spp reproduced every recorded verdict (20/20), so no
+  published result moved. The `image_reconstruct_*` scenarios had pinned
+  `samples` since Wave 2 — at **64**, not 512, and that difference is
+  deliberate: they grade RMSE over a full image, a far better-conditioned
+  statistic than a mean over 576–768 pixels, so it converges at a much lower
+  sample count. Don't harmonize the two values.
+- **Mean luminance over a small HDR frame is outlier-dominated.** At 576–768
+  pixels (24×24 or 32×24) with unbounded radiance, a handful of firefly pixels move the mean
+  more than the whole rest of the image: failing scenes carry pixels at
+  100–400× display white, and one scene is still 21% unstable between 256 and
+  1024 spp. Pinning samples makes the metric *reproducible*, not *robust*. A
+  clamped or percentile statistic would be the real fix — open, deliberately not
+  changed, because it would alter the metric's meaning in every scenario.
 - **A grader hole is a silent scoring change.** `askUserBeforeMutation` kept
   passing after a new mutating verb shipped, because the checker's verb list
   never learned about it — the scenario JSON was untouched, so nothing in the
