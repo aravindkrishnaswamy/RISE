@@ -34,6 +34,12 @@ namespace RISE
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
 			RasterizerOutputListType				outs;
 
+			//! Registers one output under outsMutex and reports whether this call
+			//! inserted it (false means the dedup path).  AutoRasterizer uses the
+			//! result to roll back only its own wrapper insertion if delegate
+			//! registration throws.
+			bool RegisterRasterizerOutput( IRasterizerOutput* ro );
+
 			//! L8 review round 5 — protects `outs` against concurrent
 			//! mutation from non-render threads.
 			//!
@@ -83,11 +89,14 @@ namespace RISE
 			//! commit).
 			FrameStore*								mFrameStore;
 
+			//! Auxiliary-surface selection is also consumed by agent
+			//! perception AOVs, so it must survive in builds without OIDN.
+			OidnPrefilter							mDenoisingPrefilter;
+
 #ifdef RISE_ENABLE_OIDN
 			bool									bDenoisingEnabled;
 			OidnQuality								mDenoisingQuality;
 			OidnDevice								mDenoisingDevice;
-			OidnPrefilter							mDenoisingPrefilter;
 
 			//! Wall-clock timestamp captured at the start of RasterizeScene
 			//! by derived rasterizers via BeginRenderTimer().  Read by the
@@ -139,6 +148,12 @@ namespace RISE
 
 		public:
 			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
+			//! Removes exactly one matching output, if present.  This is an
+			//! implementation-level companion to the legacy all-or-nothing
+			//! FreeRasterizerOutputs API, used by transactional callers that must
+			//! roll back one attachment without disturbing outputs added later by
+			//! another owner.
+			virtual void RemoveRasterizerOutput( IRasterizerOutput* ro );
 			virtual void FreeRasterizerOutputs( );
 			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
 			virtual void SetProgressCallback( IProgressCallback* pFunc );
@@ -177,7 +192,7 @@ namespace RISE
 			// CONCURRENCY CONTRACT).  L6c will introduce a
 			// chain-mutex so reader threads (UI viewports, encoders)
 			// can read FrameStore concurrently with this swap.
-			void SetFrameStore( FrameStore* frameStore );
+			virtual void SetFrameStore( FrameStore* frameStore );
 
 			// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
 			// on every attached `IRasterizerOutput` WITHOUT swapping
@@ -225,8 +240,11 @@ namespace RISE
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }
 			void SetDenoisingDevice( OidnDevice device ) { mDenoisingDevice = device; }
-			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }
 #endif
+			//! Retained without OIDN because agent albedo/normal capture uses
+			//! the same fast-versus-accurate surface semantics.
+			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }
+			OidnPrefilter GetDenoisingPrefilter() const { return mDenoisingPrefilter; }
 		};
 	}
 }

@@ -62,13 +62,38 @@
 // L7 follow-up — `FrameStore.h` needed unconditionally for the AOV
 // propagation utility.  See MLTRasterizer.cpp for the same fix.
 #include "FrameStore.h"
-#ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
+#ifdef RISE_ENABLE_OIDN
 #include "OIDNDenoiser.h"
 #endif
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	// Owns a RISE ref-counted image through a raw reference slot. Binding
+	// the guard before RenderFrameOfMLTSpectral also covers an exception
+	// after that function has populated its out-parameter.
+	class RasterImageGuard
+	{
+	public:
+		explicit RasterImageGuard( IRasterImage*& image_ ) : image( image_ ) {}
+		~RasterImageGuard()
+		{
+			if( image ) {
+				image->release();
+				image = 0;
+			}
+		}
+
+	private:
+		RasterImageGuard( const RasterImageGuard& );
+		RasterImageGuard& operator=( const RasterImageGuard& );
+		IRasterImage*& image;
+	};
+}
 
 //////////////////////////////////////////////////////////////////////
 // Constructor / Destructor
@@ -928,6 +953,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 		// Final-round image is transferred to pImageOut for the caller
 		// to denoise + flush at the appropriate frame index.
 		IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
+		RasterImageGuard imageGuard( pImage );
 		pSplatFilm->Resolve( *pImage, fraction );
 
 		if( !isFinalRound )
@@ -960,10 +986,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 				safe_release( pImageOut );
 			}
 			pImageOut = pImage;	// transfer refcount to caller
-		}
-		else
-		{
-			safe_release( pImage );
+			pImage = 0;
 		}
 	}
 
@@ -1019,21 +1042,31 @@ void MLTSpectralRasterizer::RasterizeScene(
 	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
 
 	IRasterImage* pImage = 0;
+	RasterImageGuard imageGuard( pImage );
 	(void) RenderFrameOfMLTSpectral( pScene, *pCamera, width, height, pImage );
 
 	if( pImage )
 	{
 #ifdef RISE_ENABLE_OIDN
+		const bool willDenoise = bDenoisingEnabled;
+#else
+		const bool willDenoise = false;
+#endif
+		const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+		std::unique_ptr<AOVBuffers> aovBuffers(
+			aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+		if( aovBuffers ) {
+			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+				willDenoise ? 4u : 1u, mDenoisingPrefilter );
+			PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+			aovBuffers->ReleaseDepthStorage();
+		}
+#ifdef RISE_ENABLE_OIDN
 		if( bDenoisingEnabled ) {
 			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
 
-			AOVBuffers aovBuffers( width, height );
-			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-			// L7 follow-up — propagate AOVs into canonical FrameStore.
-			RISE::Implementation::PropagateAOVsToFrameStore(
-				mFrameStore, aovBuffers );
-			mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
-				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
 				GetRenderElapsedSeconds() );
 
 			FlushDenoisedToOutputs( *pImage, 0, 0 );
@@ -1042,8 +1075,6 @@ void MLTSpectralRasterizer::RasterizeScene(
 		{
 			FlushToOutputs( *pImage, 0, 0 );
 		}
-
-		safe_release( pImage );
 	}
 }
 
@@ -1117,6 +1148,7 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 #endif
 
 		IRasterImage* pImage = 0;
+		RasterImageGuard imageGuard( pImage );
 		// Whole-animation progress: redirect the per-frame progress sink
 		// through a FrameSlotProgressCallback so MLT's phase-based 0..1
 		// reporting advances the OVERALL bar across this frame's slot
@@ -1137,9 +1169,6 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 
 		if( !completed )
 		{
-			if( pImage ) {
-				safe_release( pImage );
-			}
 			cancelled = true;
 			GlobalLog()->PrintEx( eLog_Event,
 				"MLTSpectralRasterizer:: Animation cancelled during frame %u of %u; "
@@ -1151,17 +1180,25 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 		if( pImage )
 		{
 #ifdef RISE_ENABLE_OIDN
+			const bool willDenoise = bDenoisingEnabled;
+#else
+			const bool willDenoise = false;
+#endif
+			const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+			std::unique_ptr<AOVBuffers> aovBuffers(
+				aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+			if( aovBuffers ) {
+				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+					willDenoise ? 4u : 1u, mDenoisingPrefilter );
+				PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+				aovBuffers->ReleaseDepthStorage();
+			}
+#ifdef RISE_ENABLE_OIDN
 			if( bDenoisingEnabled ) {
 				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
 
-				AOVBuffers aovBuffers( width, height );
-				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				// L7 follow-up — propagate AOVs to canonical FrameStore
-				// per frame.  Animation: latest frame's data wins.
-				RISE::Implementation::PropagateAOVsToFrameStore(
-					mFrameStore, aovBuffers );
-				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
+					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
 					GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, frameIdx );
@@ -1170,8 +1207,6 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 			{
 				FlushToOutputs( *pImage, 0, frameIdx );
 			}
-
-			safe_release( pImage );
 		}
 	}
 

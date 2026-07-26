@@ -298,6 +298,11 @@ void BDPTRasterizerBase::RasterizeScene(
 		GlobalLog()->PrintSourceError( "BDPTRasterizerBase::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
+	// This specialized BDPT override bypasses PixelBasedRasterizerHelper's
+	// render entry. Apply the same failure rule here: exceptions release all
+	// member AOV planes, while the successful tail may retain only the
+	// documented OIDN cache.
+	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 
 #ifdef RISE_ENABLE_OIDN
 	// Stamp render-start wall clock so the OIDN auto-quality heuristic
@@ -334,14 +339,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	// Reset adaptive sample counter for this render
 	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 
-#ifdef RISE_ENABLE_OIDN
-	// Allocate AOV buffers for denoiser auxiliary input
-	delete pAOVBuffers;
-	pAOVBuffers = 0;
-	if( bDenoisingEnabled ) {
-		pAOVBuffers = new AOVBuffers( width, height );
-	}
-#endif
+	PrepareAOVBuffers_( width, height );
 
 	// Compute total sample count for splat film resolve/unresolve.
 	// Must be set before any blocks render so the progressive hooks work.
@@ -1011,7 +1009,6 @@ void BDPTRasterizerBase::RasterizeScene(
 			}
 		}
 
-#ifdef RISE_ENABLE_OIDN
 		if( pAOVBuffers ) {
 			for( unsigned int y=0; y<height; y++ ) {
 				for( unsigned int x=0; x<width; x++ ) {
@@ -1022,7 +1019,6 @@ void BDPTRasterizerBase::RasterizeScene(
 				}
 			}
 		}
-#endif
 
 		mProgressiveFilm = 0;
 		mTotalProgressiveSPP = 0;
@@ -1128,6 +1124,22 @@ void BDPTRasterizerBase::RasterizeScene(
 	const bool bWillDenoise = false;
 #endif
 
+	if( pAOVBuffers ) {
+#ifdef RISE_ENABLE_OIDN
+		const unsigned int fallbackSPP = GetDenoiseAOVSamplesPerPixel();
+#else
+		const unsigned int fallbackSPP = 1;
+#endif
+		if( pAOVBuffers->NeedsFallback() ) {
+			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
+				mDenoisingPrefilter );
+		}
+		PropagateAOVsToFrameStore_( *pAOVBuffers );
+		// Depth has been copied into FrameStore; OIDN consumes only the two
+		// guide planes. Release before denoise/output and sidecar compaction.
+		pAOVBuffers->ReleaseDepthStorage();
+	}
+
 	// Approach C final resolve: overlay the eye-subpath filter-
 	// reconstructed image on top of the per-pixel accumulated
 	// pImage.  FilteredFilm::Resolve overwrites pixels with
@@ -1195,14 +1207,6 @@ void BDPTRasterizerBase::RasterizeScene(
 	// After denoising we add the splatted contributions raw — they
 	// may carry residual noise but their energy is unbiased.
 	if( bWillDenoise ) {
-		// L7 — propagate AOVs into the canonical FrameStore before
-		// the denoise pass mutates the beauty channel.  BDPT
-		// accumulated AOVs during the per-block render via
-		// `pAOVBuffers->Accumulate*` (no separate
-		// CollectFirstHitAOVs call needed since accumulation is
-		// in-line).  See `PropagateAOVsToFrameStore_` doc for the
-		// contract.
-		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 		// OIDN realistically can throw (CUDA / Metal device errors,
 		// OOM in scratch buffers); RAII unwinds correctly in that
@@ -1273,10 +1277,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	pFilteredFilm = 0;
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
-#ifdef RISE_ENABLE_OIDN
 	delete pAOVBuffers;
 	pAOVBuffers = 0;
-#endif
+	aovUnwindGuard.Dismiss();
 #ifdef RISE_ENABLE_OPENPGL
 	pIntegrator->SetGuidingField( 0, 0, 0, 0, 0, eGuidingOneSampleMIS, 2 );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );

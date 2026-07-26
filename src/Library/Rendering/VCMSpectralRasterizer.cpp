@@ -32,7 +32,6 @@
 #include "VCMSpectralRasterizer.h"
 #include "ProgressiveFilm.h"
 #include "AOVBuffers.h"
-#include "../Utilities/PathVertexEval.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
@@ -351,49 +350,29 @@ void VCMSpectralRasterizer::IntegratePixel(
 
 				eyeVerts.clear();
 				static thread_local std::vector<uint32_t> eyeSubpathStartsNM;
+				PixelAOV primaryAOV;
 				pGen->GenerateEyeSubpathNM(
-					rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStartsNM, heroNM, pSwlHWSSPass );
+					rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts,
+					eyeSubpathStartsNM, heroNM, pSwlHWSSPass,
+					( ss == 0 && pAOVBuffers ) ? &primaryAOV : 0 );
+				// AOV capture (hero wavelength, first bundle). The generator
+				// records both modes against the actual trace-time intersection.
+				// Record an examined miss before the empty-path early return.
+				if( ss == 0 && pAOVBuffers ) {
+					if( primaryAOV.primaryDepthCaptured ) {
+						pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
+						pAOVBuffers->MarkGuidesExamined();
+					}
+					if( primaryAOV.valid ) {
+						pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
+					}
+				}
 				if( eyeVerts.empty() ) {
 					continue;
 				}
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
-
-#ifdef RISE_ENABLE_OIDN
-				// AOV capture (hero wavelength, first bundle).  Walks the
-				// eye subpath until the first non-delta SURFACE vertex,
-				// matching BDPT{Pel,Spectral}Rasterizer's pattern — see
-				// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
-				// rationale and docs/SPECTRAL_PARITY_AUDIT.md §2.17 for
-				// the 2026-05-07 fix that replaced the
-				// `value(N,rig) * PI` Lambertian-normal-incidence proxy
-				// with a direct `albedo(rig)` call against a
-				// camera-ray-synthesized RayIntersectionGeometric.  rig
-				// is populated through the canonical PathVertexEval
-				// helper so we don't silently drop ptCoord / vColor.
-				if( ss == 0 && pAOVBuffers ) {
-					for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-						const BDPTVertex& v = eyeVerts[iv];
-						if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-							PixelAOV aov;
-							aov.normal = v.normal;
-							if( v.pMaterial->GetBSDF() ) {
-								const Vector3 rayDir = Vector3Ops::Normalize(
-									Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-								RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
-								PathVertexEval::PopulateRIGFromVertex( v, rig );
-								aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
-							} else {
-								aov.albedo = RISEPel( 1, 1, 1 );
-							}
-							aov.valid = true;
-							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-							break;
-						}
-					}
-				}
-#endif
 
 				Scalar heroValue = 0;
 
@@ -655,11 +634,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 		AddAdaptiveSamples( batchSize );
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphasAccrued > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphasAccrued );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		// Heatmap mode: write a grayscale ramp proportional to the

@@ -80,7 +80,8 @@ namespace RISE
 				const FIELD field,
 				IRasterImage& image,
 				const Scalar time,
-				IRasterizeSequence& seq
+				IRasterizeSequence& seq,
+				const bool resetAOVs
 				) const;
 
 			//! Original "red corner-marker" tile decoration.  Kept as a
@@ -216,9 +217,16 @@ namespace RISE
 			mutable double				mProgressWeight;	///< Work units per tile in this pass (= passSPP)
 			mutable double				mProgressTotal;		///< Total work units across all passes
 
-#ifdef RISE_ENABLE_OIDN
-			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
+			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
 
+			//! Allocate/reset only the float planes required by the current
+			//! FrameStore, unioned with OIDN's albedo+normal pair when denoising.
+			void PrepareAOVBuffers_( unsigned int width, unsigned int height ) const;
+
+			//! Persist every allocated plane into the canonical FrameStore.
+			void PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const;
+
+#ifdef RISE_ENABLE_OIDN
 			//! Whether OIDN should be invoked at the end of a render
 			//! (or render attempt — see below).  Default just gates
 			//! on `bDenoisingEnabled`; the cancel state is INTENTIONALLY
@@ -240,22 +248,6 @@ namespace RISE
 			//! preview overrides to 1 for latency.
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const;
 
-			//! L7 — Propagate per-pixel albedo + normal data from the
-			//! `AOVBuffers` (built by `CollectFirstHitAOVs` or
-			//! per-block `Accumulate*`) into the canonical
-			//! `mFrameStore`'s Albedo + Normal channels.  No-op when
-			//! `mFrameStore` is null or doesn't have those channels
-			//! requested in its Spec, or when dims mismatch the
-			//! AOVBuffers.  Bracketed via `FrameStoreBulkBracket` so
-			//! direct AOV-channel readers don't see torn writes.
-			//!
-			//! Called from `RasterizeScene` post-CollectFirstHitAOVs,
-			//! before `ApplyDenoise` mutates the beauty channel.
-			//! Pre-L7: AOV data was used by OIDN once and discarded;
-			//! post-L7 it persists in the canonical FrameStore for
-			//! downstream consumers (multichannel EXR, AOV-aware
-			//! viewports, future compositing pipelines).
-			void PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const;
 #endif
 
 			//! L8 round 6 / 9 / 13 — Whether `SPRasterizeSingleBlock`

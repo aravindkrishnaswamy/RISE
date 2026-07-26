@@ -23,7 +23,6 @@
 #include "VCMPelRasterizer.h"
 #include "ProgressiveFilm.h"
 #include "AOVBuffers.h"
-#include "../Utilities/PathVertexEval.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
@@ -330,46 +329,26 @@ void VCMPelRasterizer::IntegratePixel(
 
 			eyeVerts.clear();
 			static thread_local std::vector<uint32_t> eyeSubpathStarts_vcm;
-			pGen->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts_vcm );
+			PixelAOV primaryAOV;
+			pGen->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+				sampler, eyeVerts, eyeSubpathStarts_vcm, pAOVBuffers ? &primaryAOV : 0 );
+			// GenerateEyeSubpath captures raw primary depth plus either Fast
+			// primary guides or Accurate first-non-delta guides at trace time.
+			// Record an examined miss before the empty-path early return so an
+			// all-background image does not trigger a redundant fallback trace.
+			if( pAOVBuffers ) {
+				if( primaryAOV.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, primaryAOV.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
+				if( primaryAOV.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, primaryAOV.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, primaryAOV.normal, weight );
+				}
+			}
 			if( eyeVerts.empty() ) {
 				continue;
 			}
-
-#ifdef RISE_ENABLE_OIDN
-			// Extract AOV data for the denoiser by walking the eye
-			// subpath until the first non-delta SURFACE vertex.
-			// Mirrors BDPTPelRasterizer::IntegratePixelRGB — see
-			// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
-			// rationale.  The walk skips glass / mirror; rough
-			// dielectrics are handled probabilistically per sample
-			// because each vertex's `isDelta` was set from the
-			// chosen scatter's `pScat->isDelta` in GenerateEyeSubpath.
-			if( pAOVBuffers ) {
-				for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-						PixelAOV aov;
-						aov.normal = v.normal;
-						if( v.pMaterial->GetBSDF() ) {
-							// Real camera-ray dir + canonical PathVertexEval
-							// helper so the BSDF sees ptCoord / vColor /
-							// future fields — see PathVertexEval.h CONTRACT.
-							const Vector3 rayDir = Vector3Ops::Normalize(
-								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-							RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
-							PathVertexEval::PopulateRIGFromVertex( v, rig );
-							aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
-						} else {
-							aov.albedo = RISEPel( 1, 1, 1 );
-						}
-						aov.valid = true;
-						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-						break;
-					}
-				}
-			}
-#endif
 
 			RISEPel sampleColor( 0, 0, 0 );
 
@@ -516,11 +495,9 @@ void VCMPelRasterizer::IntegratePixel(
 		AddAdaptiveSamples( batchSize );
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphasAccrued > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphasAccrued );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar( globalSampleIndex ) / Scalar( targetSamples );

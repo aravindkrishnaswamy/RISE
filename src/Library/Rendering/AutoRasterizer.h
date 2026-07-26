@@ -97,26 +97,26 @@ namespace RISE
 				);
 
 		protected:
-			virtual ~AutoRasterizer();
+			~AutoRasterizer() override;
 
 		public:
 			//
 			// IRasterizer surface the `Rasterizer` base does NOT provide.
 			// Each resolves the delegate (once) then forwards.
 			//
-			virtual void AttachToScene( const IScene* pScene );
-			virtual void DetachFromScene( const IScene* pScene );
-			virtual unsigned int PredictTimeToRasterizeScene(
+			void AttachToScene( const IScene* pScene ) override;
+			void DetachFromScene( const IScene* pScene ) override;
+			unsigned int PredictTimeToRasterizeScene(
 				const IScene& pScene,
 				const ISampling2D& pSampling,
 				unsigned int* pActualTime
-				) const;
-			virtual void RasterizeScene(
+				) const override;
+			void RasterizeScene(
 				const IScene& pScene,
 				const Rect* pRect,
 				IRasterizeSequence* pRasterSequence
-				) const;
-			virtual void RasterizeSceneAnimation(
+				) const override;
+			void RasterizeSceneAnimation(
 				const IScene& pScene,
 				const Scalar time_start,
 				const Scalar time_end,
@@ -126,7 +126,7 @@ namespace RISE
 				const Rect* pRect,
 				const unsigned int* specificFrame,
 				IRasterizeSequence* pRasterSequence
-				) const;
+				) const override;
 
 			//
 			// State-mutators the base `Rasterizer` DOES provide, re-declared
@@ -140,9 +140,11 @@ namespace RISE
 			// through a zeroed vtable slot (PC=0).  Forwarding keeps the
 			// delegate in lock-step with the wrapper every render.
 			//
-			virtual void SetProgressCallback( IProgressCallback* pFunc );
-			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
-			virtual void FreeRasterizerOutputs();
+			void SetProgressCallback( IProgressCallback* pFunc ) override;
+			void SetFrameStore( FrameStore* frameStore ) override;
+			void AddRasterizerOutput( IRasterizerOutput* ro ) override;
+			void RemoveRasterizerOutput( IRasterizerOutput* ro ) override;
+			void FreeRasterizerOutputs() override;
 
 			//! The integrator the dispatcher resolved to.  `Auto` until
 			//! the first render-time entry runs selection; the concrete
@@ -154,15 +156,15 @@ namespace RISE
 			//! surface): IsAutoDispatcher()==true; the resolved concrete integrator
 			//! name ("pt"/"bdpt"/"vcm", or "auto" before the first render) and the
 			//! one-line reason, both valid after the first render-time resolution.
-			virtual bool IsAutoDispatcher() const { return true; }
-			virtual const char* ResolvedIntegratorName() const;
-			virtual const char* ResolveReason() const { return mResolveReason.c_str(); }
+			bool IsAutoDispatcher() const override { return true; }
+			const char* ResolvedIntegratorName() const override;
+			const char* ResolveReason() const override { return mResolveReason.c_str(); }
 
 			//! Region honesty follows the RESOLVED integrator (today's
 			//! candidate set PT/BDPT/VCM all honor regions, so this is
 			//! future-proofing: if a non-region-honoring integrator ever
 			//! joins the candidate set, the query stays truthful).
-			virtual bool HonorsRegion() const { return mDelegate ? mDelegate->HonorsRegion() : true; }
+			bool HonorsRegion() const override { return mDelegate ? mDelegate->HonorsRegion() : true; }
 
 			//! Total wall-clock seconds the Tier-2 probe spent rendering
 			//! candidate integrators (0 if the probe didn't run).  Exposed
@@ -172,6 +174,10 @@ namespace RISE
 			double LastProbeSeconds() const { return mLastProbeSeconds; }
 			//! Number of candidate renders the probe issued (0 if it didn't run).
 			unsigned int LastProbeRenders() const { return mLastProbeRenders; }
+
+			//! Test-only visibility for the delegated FrameStore identity.  Agent
+			//! isolation must restore both wrapper and delegate immediately.
+			FrameStore* ForTest_GetDelegateFrameStore() const;
 
 		private:
 			//! Render-time probe tunables.  Read from `GlobalOptions` at

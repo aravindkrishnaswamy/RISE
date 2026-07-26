@@ -34,8 +34,8 @@
 #include "../Utilities/RenderParallelScope.h"
 
 #include "FrameStore.h"  // L6c — needed unconditionally by AcquireRenderImage
-#ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
+#ifdef RISE_ENABLE_OIDN
 #include "OIDNDenoiser.h"
 #endif
 
@@ -60,10 +60,8 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   mTotalProgressiveSPP( 0 ),
   mProgressBase( 0 ),
   mProgressWeight( 0 ),
-  mProgressTotal( 0 )
-#ifdef RISE_ENABLE_OIDN
-  ,pAOVBuffers( 0 )
-#endif
+  mProgressTotal( 0 ),
+  pAOVBuffers( 0 )
 {
 	if( pCaster ) {
 		pCaster->addref();
@@ -87,22 +85,37 @@ PixelBasedRasterizerHelper::~PixelBasedRasterizerHelper( )
 	safe_release( pFilteredFilm );
 	safe_release( pFilteredScratch );
 	safe_release( mPersistentImage );
-#ifdef RISE_ENABLE_OIDN
 	delete pAOVBuffers;
-#endif
 }
 
 void PixelBasedRasterizerHelper::PrepareRuntimeContext( RuntimeContext& rc ) const
 {
 	rc.pProgressiveFilm = mProgressiveFilm;
 	rc.totalProgressiveSPP = mTotalProgressiveSPP;
-#ifdef RISE_ENABLE_OIDN
 	// Forward the rasterizer's prefilter mode into the per-thread
 	// RuntimeContext so integrators that inline-accumulate AOVs know
 	// whether to record at first hit (Fast) or first non-delta scatter
-	// (Accurate).  Field is harmless on integrators that don't read it.
+	// (Accurate).  Perception AOV capture is available independently of
+	// OIDN, so preserve the requested semantic mode in no-OIDN builds too.
+	// The field is harmless on integrators that don't read it.
 	rc.aovPrefilterMode = mDenoisingPrefilter;
+}
+
+void PixelBasedRasterizerHelper::PrepareAOVBuffers_( unsigned int width, unsigned int height ) const
+{
+#ifdef RISE_ENABLE_OIDN
+	const bool denoiserAux = bDenoisingEnabled;
+#else
+	const bool denoiserAux = false;
 #endif
+	const AOVBuffers::Plan plan = MakeAOVPlan( mFrameStore, denoiserAux );
+	if( !plan.Any() ) {
+		delete pAOVBuffers;
+		pAOVBuffers = 0;
+		return;
+	}
+	if( !pAOVBuffers ) pAOVBuffers = new AOVBuffers( width, height, plan );
+	else pAOVBuffers->Reset( width, height, plan );
 }
 
 unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
@@ -956,6 +969,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
+	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 
 	// Landing 5: propagate the camera's photographic exposure
 	// compensation to every output once at render entry.  Default
@@ -1070,15 +1084,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		}
 	}
 
-#ifdef RISE_ENABLE_OIDN
-	if( bDenoisingEnabled ) {
-		if( !pAOVBuffers ) {
-			pAOVBuffers = new AOVBuffers( width, height );
-		} else {
-			pAOVBuffers->Reset( width, height );
-		}
-	}
-#endif
+	PrepareAOVBuffers_( width, height );
 
 	bool mainPassCompleted = true;
 
@@ -1200,7 +1206,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			}
 		}
 
-#ifdef RISE_ENABLE_OIDN
 		if( pAOVBuffers ) {
 			for( unsigned int y=0; y<height; y++ ) {
 				for( unsigned int x=0; x<width; x++ ) {
@@ -1211,7 +1216,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				}
 			}
 		}
-#endif
 
 		mProgressiveFilm = 0;
 		mTotalProgressiveSPP = 0;
@@ -1262,12 +1266,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		blocks = 0;
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	// `mainPassCompleted` is intentionally NOT passed: cancelled
 	// renders still get OIDN'd on whatever was accumulated up to the
 	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
 	// log (2026-04-29).
 	(void)mainPassCompleted;
+#ifdef RISE_ENABLE_OIDN
 	// Skip OIDN entirely when show_adaptive_map is on — the
 	// authoritative output is the heatmap from the progressive
 	// resolve, denoising it would mangle the grayscale ramp.
@@ -1276,6 +1280,26 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	const bool bWillDenoise = false;
 #endif
 
+	// Complete and publish requested AOVs independently of OIDN.  Pure
+	// path-tracing families fill these inline during the beauty pass; a
+	// legacy estimator with no PixelAOV hook pays one primary-ray fallback.
+	if( pAOVBuffers ) {
+#ifdef RISE_ENABLE_OIDN
+		const unsigned int fallbackSPP = GetDenoiseAOVSamplesPerPixel();
+#else
+		const unsigned int fallbackSPP = 1;
+#endif
+		if( pAOVBuffers->NeedsFallback() ) {
+			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
+				mDenoisingPrefilter );
+		}
+		PropagateAOVsToFrameStore_( *pAOVBuffers );
+		// FrameStore now owns the copied depth plane. Drop the float scratch
+		// before denoising/output (both can throw) and before the observer
+		// compacts its 7-B/pixel sidecar. OIDN needs only albedo+normal.
+		pAOVBuffers->ReleaseDepthStorage();
+	}
+
 	if( bWillDenoise ) {
 		// Write the pre-denoised (but fully splatted) image to file-based
 		// outputs under the normal filename.  Non-file outputs no-op and
@@ -1283,22 +1307,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
 
 #ifdef RISE_ENABLE_OIDN
-		if( !pAOVBuffers->HasData() ) {
-			OIDNDenoiser::CollectFirstHitAOVs(
-				pScene,
-				*pCaster,
-				*pAOVBuffers,
-				GetDenoiseAOVSamplesPerPixel() );
-		}
-		// L7 — Persist AOV data into the canonical FrameStore so
-		// downstream consumers (multichannel EXR, AOV-aware
-		// viewports) can read it.  Pre-L7 the AOV data was
-		// consumed by `ApplyDenoise` below and discarded; post-L7
-		// it lives in the FrameStore Albedo+Normal channels for
-		// the FrameStore's lifetime.  Cheap (one full-image copy
-		// at end of render); bracketed for concurrent-reader
-		// correctness.
-		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		{
 			// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 			// ApplyDenoise reads `*pImage` row-by-row and overwrites
@@ -1333,6 +1341,18 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
 	safe_release( pImage );
+	// Defensive no-op on the normal path (depth was released immediately
+	// after propagation); still protects early-return configurations.
+	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();
+#ifdef RISE_ENABLE_OIDN
+	if( !bDenoisingEnabled ) {
+#endif
+		delete pAOVBuffers;
+		pAOVBuffers = 0;
+#ifdef RISE_ENABLE_OIDN
+	}
+#endif
+	aovUnwindGuard.Dismiss();
 }
 
 void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
@@ -1433,7 +1453,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const FIELD field,
 	IRasterImage& image,
 	const Scalar time,
-	IRasterizeSequence& seq
+	IRasterizeSequence& seq,
+	const bool resetAOVs
 	) const
 {
 #ifdef RISE_ENABLE_OIDN
@@ -1442,21 +1463,14 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// inflating with cumulative animation time.  See docs/OIDN.md
 	// (OIDN-P0-1) for the heuristic.
 	BeginRenderTimer();
-
-	// Allocate / reset AOV buffers per frame.  Mirrors RasterizeScene:
-	// each frame is its own render, so the AOV state must be fresh.
-	// Without the reset, multi-frame animation accumulates AOVs across
-	// frames and the denoiser sees a smeared aux signal.
-	if( bDenoisingEnabled ) {
-		const unsigned int width = image.GetWidth();
-		const unsigned int height = image.GetHeight();
-		if( !pAOVBuffers ) {
-			pAOVBuffers = new AOVBuffers( width, height );
-		} else {
-			pAOVBuffers->Reset( width, height );
-		}
-	}
 #endif
+	// Each frame starts a fresh planned AOV accumulation, whether or not
+	// OIDN is compiled/enabled. Interlaced animation renders the two fields
+	// through separate calls into the same image/AOV set; only the first field
+	// may reset, or the second would erase half of the auxiliary observation.
+	if( resetAOVs ) {
+		PrepareAOVBuffers_( image.GetWidth(), image.GetHeight() );
+	}
 
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.
 	const ICamera* pCam = pScene.GetCamera();
@@ -1692,9 +1706,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
 		}
 
-#ifdef RISE_ENABLE_OIDN
 		// Normalize per-pixel AOV by progressive-film alpha sum so the
-		// denoiser sees averaged aux samples regardless of how many
+		// consumers see averaged aux samples regardless of how many
 		// passes accumulated into each pixel.  Mirrors RasterizeScene's
 		// progressive branch.  Pixels with zero alphaSum (no samples
 		// yet — pre-cancel) are left at zero; the denoiser handles
@@ -1709,7 +1722,6 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				}
 			}
 		}
-#endif
 
 		mProgressiveFilm = 0;
 		mTotalProgressiveSPP = 0;
@@ -1774,6 +1786,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
+	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 
 	// Acquire scene dimensions from the active Film.
 	const IFilm* pFilm = pScene.GetFilm();
@@ -1914,7 +1927,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence );
+			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
 
 			// If the user cancelled during the upper field, don't
@@ -1935,7 +1948,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime_lower );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence );
+			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence, false );
 			accumulatedProgress += unitsPerCall;
 		} else {
 			// Render to frames
@@ -1951,7 +1964,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence );
+			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
 		}
 
@@ -1978,25 +1991,24 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		// match the still-image behaviour.  See docs/OIDN.md decision
 		// log (2026-04-29 animation denoise).
 		const unsigned int frameIdx = specificFrame?*specificFrame:i;
+		if( pAOVBuffers ) {
+#ifdef RISE_ENABLE_OIDN
+			const unsigned int fallbackSPP = GetDenoiseAOVSamplesPerPixel();
+#else
+			const unsigned int fallbackSPP = 1;
+#endif
+			if( pAOVBuffers->NeedsFallback() ) {
+				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
+					mDenoisingPrefilter );
+			}
+			PropagateAOVsToFrameStore_( *pAOVBuffers );
+			pAOVBuffers->ReleaseDepthStorage();
+		}
 #ifdef RISE_ENABLE_OIDN
 		// Skip denoise pass entirely when show_adaptive_map is on —
 		// see RasterizeScene's matching gate for the rationale.
 		if( bDenoisingEnabled && pAOVBuffers && ShouldDenoise() && !GetAdaptiveShowMap() ) {
 			FlushPreDenoisedToOutputs( *pImage, pRect, frameIdx );
-			if( !pAOVBuffers->HasData() ) {
-				OIDNDenoiser::CollectFirstHitAOVs(
-					pScene,
-					*pCaster,
-					*pAOVBuffers,
-					GetDenoiseAOVSamplesPerPixel() );
-			}
-			// L7 — propagate AOVs into the canonical FrameStore for
-			// this frame.  See PropagateAOVsToFrameStore_ for the
-			// contract.  Animation per-frame: the FrameStore's AOV
-			// channels get the LATEST frame's data on each call;
-			// observers reading after frameIdx's MarkFrameComplete
-			// see frameIdx's AOVs.
-			PropagateAOVsToFrameStore_( *pAOVBuffers );
 			{
 				// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 				FrameStoreBulkBracket bracket( mFrameStore, *pImage );
@@ -2048,6 +2060,18 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
 	ReleaseRenderImage( pImage );
+	// Match the still-image lifetime: depth is perception-only and released
+	// even when OIDN retains its own albedo/normal scratch pair.
+	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();
+#ifdef RISE_ENABLE_OIDN
+	if( !bDenoisingEnabled ) {
+#endif
+		delete pAOVBuffers;
+		pAOVBuffers = 0;
+#ifdef RISE_ENABLE_OIDN
+	}
+#endif
+	aovUnwindGuard.Dismiss();
 }
 
 // Default IRasterImage acquisition: persistent buffer reused across
@@ -2150,7 +2174,6 @@ IRasterImage* PixelBasedRasterizerHelper::AcquireRenderImage( unsigned int width
 	return mPersistentImage;
 }
 
-#ifdef RISE_ENABLE_OIDN
 // L7 — Thin wrapper delegating to the free utility in
 // FrameStore.cpp.  Kept as a member for source compatibility with
 // the existing call sites in this file (RasterizeScene + animation
@@ -2163,7 +2186,6 @@ void PixelBasedRasterizerHelper::PropagateAOVsToFrameStore_( const AOVBuffers& a
 {
 	RISE::Implementation::PropagateAOVsToFrameStore( mFrameStore, aov );
 }
-#endif  // RISE_ENABLE_OIDN
 
 void PixelBasedRasterizerHelper::ReleaseRenderImage( IRasterImage* pImage ) const
 {

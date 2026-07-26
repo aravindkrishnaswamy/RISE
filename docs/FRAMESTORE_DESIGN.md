@@ -3,7 +3,8 @@
 **Status**: **SUBSTANTIALLY IMPLEMENTED.** L0–L5 shipped across the CLI,
 macOS EDR, Windows scRGB, Android, and HDR10 encoding. The L6 direct-FrameStore
 transition is broadly deployed behind `AcceptsFrameStorePush`, while legacy
-output shims remain; L7 retains albedo/normal AOVs in the FrameStore, but the
+output shims remain; L7 retains albedo/normal/depth AOVs in the FrameStore and
+ships demand-planned agent perception, but the
 planned general multichannel-EXR surface remains incomplete. The body is the
 chronological design/landing record; later status rows supersede early
 "pending" prose.
@@ -30,7 +31,7 @@ chronological design/landing record; later status rows supersede early
 | L4 — GUI viewport integration | ✅ shipped | — | Shared facade used by all three platform shells |
 | L5a/b/c — Mac EDR + Windows HDR + PQ encoder | ✅ shipped | — | Mac Metal EDR, Windows DXGI/scRGB, HDR10 PNG/video paths |
 | L6 — Phase 2 rasterizer rewrite | ◐ substantially shipped | — | Canonical FrameStore push across production rasterizers; compatibility sinks remain |
-| L7 — AOV plumbing through rasterizers | ◐ partial | — | Albedo/normal propagation shipped; general multichannel EXR remains |
+| L7 — AOV plumbing through rasterizers | ◐ substantial | 11 new assertions + agent E2E | Planned albedo/normal/depth propagation and compact agent perception shipped; general multichannel EXR remains |
 | L8 — Remove `IRasterizerOutput` + `AOVBuffers` | ⏳ pending | — | — |
 
 ### L4 platform integration pattern
@@ -857,7 +858,7 @@ Status legend: ✅ shipped, ◐ partially/substantially shipped, ⏳ pending.
 | **L5b** | ✅ shipped | GUI: Windows HDR display path (scRGB via DXGI swap chain) | `HDRRenderWidget` + shared HDR FrameStore transform |
 | **L5c** | ✅ shipped | PQ encoding path for HDR-aware file export | HDR10 PNG and desktop video encoders carry PQ/BT.2020 metadata |
 | **L6** | ◐ substantially shipped | Direct/canonical FrameStore ownership and push across rasterizers | `AcceptsFrameStorePush` gates supported rasterizers; compatibility output paths remain |
-| **L7** | ◐ partial | AOV channels populated by rasterizers | Albedo/normal persistence is shipped; general multichannel EXR/depth surface remains |
+| **L7** | ◐ substantial | AOV channels populated by rasterizers | Demand-planned albedo/normal/depth persistence and compact agent perception are shipped; general multichannel EXR remains |
 | **L8** | ⏳ | `IRasterizerOutput` removed; `AOVBuffers` removed | Build + tests pass with old paths gone |
 
 L0-L4 are Phase 1 (B); L6+ is Phase 2 (C). L5a / L5b (HDR display on Mac and Windows) are Phase 1 + small platform-specific additions; they can ship in parallel with each other and do not depend on L6. L5c (PQ encoding) is a follow-up encoder, not a display path.

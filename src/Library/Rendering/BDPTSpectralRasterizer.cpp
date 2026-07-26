@@ -24,15 +24,12 @@
 #include "pch.h"
 #include "BDPTSpectralRasterizer.h"
 #include "AOVBuffers.h"
-#include "../Utilities/PathVertexEval.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "../Utilities/Color/ColorUtils.h"
-#include "../Interfaces/IBSDF.h"
-#include "../Interfaces/IMaterial.h"
 #include "ProgressiveFilm.h"
 
 using namespace RISE;
@@ -143,34 +140,11 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	// Non-HWSS single-wavelength NM — pSwlHWSS=nullptr disables the
 	// max-over-wavelengths RR gate (only hero wavelength exists here).
 	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+		sampler, eyeVerts, eyeSubpathStarts, nm, nullptr, pAOV );
 
-	// Extract first-hit AOV data for the denoiser (only on first wavelength).
-	// Mirrors the Pel-side walk in BDPTPelRasterizer.cpp: synthesize a real
-	// camera-ray view direction (BDPTVertex doesn't carry a ray) and use
-	// the canonical PathVertexEval helper to rebuild rig — hand-rolling
-	// silently dropped texture coords / vertex color and gave OIDN a
-	// uniform UV(0,0) albedo on textured surfaces.  See PathVertexEval.h
-	// CONTRACT block and docs/SPECTRAL_PARITY_AUDIT.md §2.11.
-	if( pAOV ) {
-		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
-			const BDPTVertex& v = eyeVerts[i];
-			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-				pAOV->normal = v.normal;
-				if( v.pMaterial->GetBSDF() ) {
-					const Vector3 rayDir = Vector3Ops::Normalize(
-						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-					RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
-					PathVertexEval::PopulateRIGFromVertex( v, rig );
-					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
-				} else {
-					pAOV->albedo = RISEPel( 1, 1, 1 );
-				}
-				pAOV->valid = true;
-				break;
-			}
-		}
-	}
+	// The generator captures both Fast and Accurate guides against the real
+	// trace-time intersection; no camera-to-vertex reconstruction is needed.
 
 	Scalar sampleValue = 0;
 
@@ -312,30 +286,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			// HWSS: pass &swl so the NM generator uses max-over-
 			// wavelengths RR to avoid hero-driven firefly amplification.
 			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, &swl );
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+				sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl, ss == 0 ? pAOV : 0 );
 
-			// Extract AOV from hero evaluation of first bundle.  Same
-			// pattern as the non-HWSS path above (and BDPTPelRasterizer):
-			// real camera-ray view direction + PathVertexEval helper.
-			if( ss == 0 && pAOV ) {
-				for( unsigned int iv = 1; iv < eyeVerts.size(); iv++ ) {
-					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-						pAOV->normal = v.normal;
-						if( v.pMaterial->GetBSDF() ) {
-							const Vector3 rayDir = Vector3Ops::Normalize(
-								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-							RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
-							PathVertexEval::PopulateRIGFromVertex( v, rig );
-							pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
-						} else {
-							pAOV->albedo = RISEPel( 1, 1, 1 );
-						}
-						pAOV->valid = true;
-						break;
-					}
-				}
-			}
+				// The first hero bundle receives the same trace-time AOV capture
+				// inside GenerateEyeSubpathNM.
 
 			// Evaluate all strategies at hero wavelength.  Single
 			// subpath each (no branching) — one EvaluateAllStrategiesNM
@@ -670,18 +625,19 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			// The Morton remapping is done inside IntegratePixelSpectral per
 			// spectral sample, so pass the raw pixelSampleIndex here.
 
-#ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
 			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
 				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0 );
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
 			}
-#else
-			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
-				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, 0 );
-#endif
 			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 			// now accumulates XYZ; no per-sample chromaticity clip.
 
@@ -741,11 +697,9 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		}
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && weights > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / weights );
 	}
-#endif
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );

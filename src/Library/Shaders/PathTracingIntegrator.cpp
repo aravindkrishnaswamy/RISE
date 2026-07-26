@@ -2675,6 +2675,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				rs2.importance = importance * PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
+				// Accurate guides describe the first non-delta interaction the
+				// sampled path reached, whether or not transport is allowed to
+				// continue beyond it. Capture before bounce-limit termination so
+				// maxDiffuseBounce=0 and similar direct-only configurations do not
+				// erase a perfectly valid guide surface.
+				if constexpr ( Traits::supports_aov ) {
+					if( pAOV && !pAOV->valid && !pS->isDelta &&
+					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+					{
+						pAOV->normal = ri.geometric.vNormal;
+						pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+							: RISEPel( 1, 1, 1 );
+						pAOV->valid = true;
+					}
+				}
 				// SPF/no-BSDF specular continuation.  Keep emission enabled at the
 				// next vertex for BOTH color modes and let the PART1
 				// `smsSuppressEmission` predicate (gated by bHadNonSpecularShading)
@@ -2712,28 +2728,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// Track specular transitions for SMS double-counting prevention
 				if( pS->isDelta ) {
 					bPassedThroughSpecular = true;
-				} else {
-					bPassedThroughSpecular = false;
-					bHadNonSpecularShading = true;
-					// Accurate prefilter mode: record AOV at the first non-delta
-					// scatter on this path.  See docs/OIDN.md (OIDN-P1-1).  Fast
-					// mode records at first hit in IntegrateRay and skips this
-					// branch.  Gated on the AOV-capable tag (supports_aov): NM
-					// gains the inline hook once its supports_aov flag is set.
-					if constexpr ( Traits::supports_aov ) {
-#ifdef RISE_ENABLE_OIDN
-						if( pAOV && !pAOV->valid &&
-						    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-						{
-							pAOV->normal = ri.geometric.vNormal;
-							pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-								: RISEPel( 1, 1, 1 );
-							pAOV->valid = true;
-						}
-#endif
+					} else {
+						bPassedThroughSpecular = false;
+						bHadNonSpecularShading = true;
 					}
-				}
 
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -3161,6 +3159,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			(void)useGuidingPathSegments;  // Used in full guiding implementation
 #endif // RISE_ENABLE_OPENPGL
 
+			// Guide capture is a property of the selected interaction, not of
+			// Russian-roulette or bounce-limit survival. Keeping it before both
+			// termination decisions prevents direct-only and RR-terminated paths
+			// from producing transport-correlated holes in Accurate AOVs.
+			if constexpr ( Traits::supports_aov ) {
+				if( pAOV && !pAOV->valid && !pS->isDelta &&
+				    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+				{
+					pAOV->normal = ri.geometric.vNormal;
+					pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
+					                     : RISEPel( 1, 1, 1 );
+					pAOV->valid = true;
+				}
+			}
+
 			bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
 
 			// Optimal MIS training
@@ -3283,25 +3296,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			} else {
 				bPassedThroughSpecular = false;
 				bHadNonSpecularShading = true;
-#ifdef RISE_ENABLE_OIDN
-				// Accurate-mode inline AOV: first non-delta BSDF scatter.  Sibling
-				// of the SPF-only hook above (the !pBRDF block) and the HWSS hook in
-				// IntegrateFromHitHWSS.  Without this, a camera looking through glass
-				// at a DIFFUSE (BSDF) surface recorded NO inline AOV and fell back to
-				// the first-hit retrace (glass-coloured aux) — the exact case
-				// docs/SPECTRAL_PARITY_AUDIT.md §2.6 describes.  Render-neutral
-				// (writes only pAOV side-data); gated on the AOV-capable tag.
-				if constexpr ( Traits::supports_aov ) {
-					if( pAOV && !pAOV->valid &&
-					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-					{
-						pAOV->normal = ri.geometric.vNormal;
-						pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
-						                     : RISEPel( 1, 1, 1 );
-						pAOV->valid = true;
-					}
-				}
-#endif
 			}
 
 			currentRay = traceRay;
@@ -3480,6 +3474,15 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	if constexpr ( Traits::supports_aov ) {
+		// Primary depth is independent of Accurate-mode albedo/normal
+		// traversal.  Never replace this camera-ray range with a later
+		// bounce segment.
+		if( pAOV ) {
+			pAOV->primaryDepthCaptured = true;
+			pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		}
+	}
 
 	// Extract first-hit AOV data for the denoiser (Fast prefilter mode).
 	// For delta / transparent surfaces (GetBSDF()==NULL) use white albedo
@@ -3492,19 +3495,16 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// mirror are walked through naturally; rough dielectrics record at
 	// the rough surface or behind it depending on each sample's Fresnel
 	// decision.  See docs/OIDN.md (OIDN-P1-1) for the design.
-	// AOV recording is compiled in only for the AOV-capable tag (Pel).
-	// NMTag has supports_aov == false, so this whole block vanishes for
-	// the spectral path — preserving its original no-AOV behaviour.
+	// AOV recording is compiled in for both AOV-capable tags: Pel and NM.
+	// Callers that did not request auxiliaries pass a null PixelAOV.
 	if constexpr ( Traits::supports_aov )
 	{
-#ifdef RISE_ENABLE_OIDN
 		const bool aovUseFirstHit = ( rc.aovPrefilterMode == OidnPrefilter::Fast );
-#else
-		const bool aovUseFirstHit = true;
-#endif
 		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 		{
-			pAOV->normal = ri.geometric.vNormal;
+			RayIntersectionGeometric aovGeom( ri.geometric );
+			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+			pAOV->normal = aovGeom.vNormal;
 			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
 			// under mClayOverride every surface's REFLECTANCE is the
 			// substituted clay BRDF (see SetClayOverride's doc) -- the
@@ -3518,9 +3518,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// pBRDF) -- the ACCURATE-prefilter hook inside the loop
 			// already reads the loop-local `pBRDF`, which IS already
 			// clay-substituted there, so only this site needed the fix.
-			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( ri.geometric ) :
+			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( aovGeom ) :
 				( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-					? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
 					: RISEPel( 1, 1, 1 ) );
 			pAOV->valid = true;
 		}
@@ -3893,12 +3893,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		hwssResult[i] = 0;
 	}
 
-#ifdef RISE_ENABLE_OIDN
-	// Fast-mode inline AOV (OIDN aux): record the camera ray's first hit.
-	// Matches the post-render first-hit retrace fallback's semantics but
-	// inline, so no extra retrace pass is needed.  Accurate mode skips this
-	// and records at the first non-delta scatter below (through glass / mirror).
-	// albedo/normal are wavelength-independent, so the hero-bundle records once.
+	// Fast-mode albedo/normal fallback for callers that begin from a
+	// pre-computed hit. Root camera-ray entry points normally record this
+	// before medium sampling; they also own primary-depth capture. Accurate
+	// mode skips this and records at the first non-delta scatter below.
+	// Albedo/normal are wavelength-independent, so the hero bundle records once.
 	if( pAOV && !pAOV->valid && firstHit.geometric.bHit &&
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
@@ -3912,7 +3911,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				: RISEPel( 1, 1, 1 ) );
 		pAOV->valid = true;
 	}
-#endif
 
 	// Check material at first hit to determine path strategy
 	const IBSDF* pBRDF = firstHit.pMaterial ? firstHit.pMaterial->GetBSDF() : 0;
@@ -4566,7 +4564,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			break;
 		}
 
-#ifdef RISE_ENABLE_OIDN
 		// Accurate-mode inline AOV (OIDN aux): record at the first non-delta
 		// scatter on the HWSS path — glass / mirror delta vertices are walked
 		// through, so a camera looking through the glass records the surface
@@ -4581,7 +4578,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			                        : RISEPel( 1, 1, 1 );
 			pAOV->valid = true;
 		}
-#endif
 
 		// Dispersive specular termination
 		if( pS->isDelta && !swl.SecondaryTerminated() )
@@ -4803,6 +4799,25 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	// Capture before primary-medium sampling: HWSS can return from a volume
+	// scatter without ever entering IntegrateFromHitHWSS.
+	if( pAOV ) {
+		pAOV->primaryDepthCaptured = true;
+		pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+	}
+	if( pAOV && ri.geometric.bHit ) {
+		if( !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Fast ) {
+			RayIntersectionGeometric aovGeom( ri.geometric );
+			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+			pAOV->normal = aovGeom.vNormal;
+			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
+				? pClayBRDF->albedo( aovGeom )
+				: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
+					: RISEPel( 1, 1, 1 ) );
+			pAOV->valid = true;
+		}
+	}
 
 	// Medium transport for first bounce — use hero wavelength for
 	// distance sampling; per-wavelength transmittance applied inside
@@ -4917,7 +4932,11 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 								rc, rast, ri2, swl.lambda[w], scene, caster,
 								sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
 								true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
-								0, 0, 0, 0, 1, 0 );
+								0, 0, 0, 0, 1, 0, false, false,
+								// HWSS geometry is hero-driven. Let only the hero
+								// continuation populate the shared, wavelength-independent
+								// Accurate guide so companion paths cannot race to define it.
+								w == 0 ? pAOV : 0 );
 						}
 					}
 				}

@@ -257,15 +257,23 @@
 //                                            the same film-dims/camera-pose
 //                                            override and cancel/single-slot
 //                                            machinery).)
-//      read_image   {maxEdge?}           -> {png_base64:string, byteLength:number,
-//                                            width:number, height:number}
+//      read_image   {maxEdge?,representation?}
+//                                         -> {png_base64:string, byteLength:number,
+//                                            width:number, height:number,
+//                                            representation:string, ...}
 //                                           (Facet 5 preview-render: `maxEdge`
 //                                            (clamped [16,1024]) downscales the
 //                                            cached image -- box filter, aspect-
 //                                            preserving, never upscales -- before
 //                                            base64-encoding; no re-render.
 //                                            `width`/`height` report the dims of
-//                                            the returned image.  Toolkit slice 3a:
+//                                            the returned image. Beauty stays
+//                                            native when maxEdge is omitted;
+//                                            perception defaults to a safe 1024
+//                                            whole-atlas bound and returns
+//                                            beauty/albedo/world-normal/log-depth
+//                                            plus guide/depth/memory metadata.
+//                                            Toolkit slice 3a:
 //                                            after an objectmap render, read at
 //                                            NATIVE size -- OMIT maxEdge, since a
 //                                            box-downscale blends the flat identity

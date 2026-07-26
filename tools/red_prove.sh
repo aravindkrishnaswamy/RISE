@@ -35,7 +35,15 @@ build() {
 	make -C build/make/rise -j8 all      >/tmp/red_prove_build.log 2>&1 \
 	&& make -C build/make/rise build-test/"$TEST" >>/tmp/red_prove_build.log 2>&1
 }
-marker_fails() { ./bin/tests/"$TEST" 2>&1 | grep -q "FAIL:.*${MARKER}"; }
+marker_fails() {
+	# A regression binary normally exits non-zero when the marker fails. With
+	# global `pipefail`, piping it directly into grep makes the whole pipeline
+	# fail even when grep found the requested FAIL line. Capture first so this
+	# predicate is governed by the marker match, not the expected test exit.
+	local output
+	output="$(./bin/tests/"$TEST" 2>&1)" || true
+	printf '%s\n' "$output" | grep -q "FAIL:.*${MARKER}"
+}
 
 rc=0
 

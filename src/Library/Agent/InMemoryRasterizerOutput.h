@@ -39,10 +39,12 @@
 #define RISE_AGENT_INMEMORYRASTERIZEROUTPUT_
 
 #include <vector>
+#include <cstdint>
 
 #include "../Interfaces/IRasterizerOutput.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Color/Color_Template.h"   // RISEColor
+#include "../Utilities/OidnConfig.h"
 
 namespace RISE
 {
@@ -58,6 +60,20 @@ namespace RISE
 			, public virtual Implementation::Reference
 		{
 		public:
+			struct PerceptionInfo
+			{
+				bool available = false;
+				unsigned int sourceWidth = 0;
+				unsigned int sourceHeight = 0;
+				unsigned int validDepthPixels = 0;
+				double depthMin = 0.0;
+				double depthMax = 0.0;
+				const char* guidePrefilter = "fast";
+				std::uint64_t persistentBytes = 0;
+				std::uint64_t auxiliaryPeakBytes = 0;
+				std::uint64_t encoderRowBytes = 0;
+			};
+
 			InMemoryRasterizerOutput();
 
 			//! Captures the full final image (region ignored -- file-style
@@ -68,6 +84,11 @@ namespace RISE
 			//! Intermediate scanlines are not retained (headless final-image
 			//! sink; matches FileRasterizerOutput ignoring intermediates).
 			void OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
+
+			//! Bind the canonical store whose optional AOVs accompany the
+			//! next OutputImage callback.  Capture is compacted during that
+			//! callback, before an agent render restores the display store.
+			void OnRasterizerFrameStoreChanged( Implementation::FrameStore* framestore ) override;
 
 			//! Toolkit slice 1 (read_viewport): adopt an ALREADY-COHERENT
 			//! pixel buffer produced OUT-OF-BAND (the caller performed a
@@ -159,6 +180,22 @@ namespace RISE
 			//! indexing PNGWriter with a caller typo.
 			void SetOutputColorSpace( int colorSpace );
 
+			//! Record which first-useful-surface rule produced the compact
+			//! albedo/normal panels. Depth is always the raw primary hit.
+			void SetPerceptionPrefilter( OidnPrefilter prefilter )
+			{
+				mPerceptionPrefilter = prefilter;
+			}
+
+			//! Account for a prior successful perception sidecar that remains
+			//! live while this replacement render executes. AgentSession calls
+			//! this before rendering so auxiliaryPeakBytes describes the actual
+			//! session feature peak, not only the new frame in isolation.
+			void SetConcurrentCachedPerceptionBytes( std::uint64_t bytes )
+			{
+				mConcurrentCachedPerceptionBytes = bytes;
+			}
+
 			//! Serialize the captured frame to 8-bit sRGB PNG bytes, reusing
 			//! the tree's `PNGWriter` (sRGB Integerize + libpng) targeting a
 			//! `MemoryBuffer` rather than a file.  When a non-identity display
@@ -186,6 +223,24 @@ namespace RISE
 			                                            unsigned int& outWidth,
 			                                            unsigned int& outHeight ) const;
 
+			//! Encode a conventional 2x2 diagnostic atlas from the compact
+			//! sidecar captured with the last frame: beauty | albedo on the
+			//! first row, world normal | log depth on the second.  maxEdge
+			//! bounds the whole atlas and never upscales. Beauty honors
+			//! SetOutputColorSpace; guide panels remain stable
+			//! sRGB display fields independent of the beauty output setting.
+			//! Encoding holds one RGBA scanline at a time;
+			//! PerceptionInfo::encoderRowBytes reports
+			//! that bounded uncompressed working set (the returned compressed
+			//! PNG vector is the response payload and is necessarily retained).
+			std::vector<unsigned char> ToPerceptionPng(
+				unsigned int maxEdge,
+				unsigned int& outWidth,
+				unsigned int& outHeight,
+				PerceptionInfo& outInfo ) const;
+			bool HasPerception() const { return mPerceptionInfo.available; }
+			PerceptionInfo GetPerceptionInfo() const { return mPerceptionInfo; }
+
 		protected:
 			~InMemoryRasterizerOutput() override;
 
@@ -209,6 +264,18 @@ namespace RISE
 			//! eColorSpace_sRGB (0), matching this sink's pre-fix hardcoded
 			//! behaviour.
 			int                    mColorSpace;
+			OidnPrefilter          mPerceptionPrefilter;
+
+			Implementation::FrameStore* mFrameStore;
+			std::vector<unsigned char> mPerceptionAlbedo; //!< RGB8 sRGB display bytes
+			std::vector<unsigned char> mPerceptionNormal; //!< RGB8 sRGB display bytes
+			std::vector<unsigned char> mPerceptionDepth;  //!< 8-bit log-depth display bytes
+			PerceptionInfo mPerceptionInfo;
+			std::uint64_t mConcurrentCachedPerceptionBytes;
+			std::uint64_t mObservedAuxiliaryPeakBytes;
+
+			void CapturePerception_();
+			void ClearPerception_();
 		};
 	}
 }

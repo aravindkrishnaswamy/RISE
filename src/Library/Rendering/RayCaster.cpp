@@ -17,6 +17,7 @@
 #include "RayCaster.h"
 #include "LuminaryManager.h"
 #include "EnvironmentSampler.h"
+#include "AOVBuffers.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/MediumTracking.h"
@@ -56,6 +57,36 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	// Shader-dispatch renderers enter path tracing through RayCaster rather
+	// than PathTracingIntegrator::IntegrateRay. Capture the raw camera
+	// intersection here, before medium sampling, transparency recursion,
+	// alpha continuation, x-ray resolution, or shader dispatch can replace it.
+	// PixelAOV is per camera sample; the first cast wins and all recursive casts
+	// observe primaryDepthCaptured=true.
+	inline void CapturePrimaryAOV(
+		const RuntimeContext& rc,
+		const RayIntersection& ri )
+	{
+		if( !rc.pAOV || rc.pAOV->primaryDepthCaptured ) return;
+		rc.pAOV->primaryDepthCaptured = true;
+		rc.pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		if( !ri.geometric.bHit || rc.aovPrefilterMode != OidnPrefilter::Fast ) return;
+
+		// Fast guides describe the same raw surface even if a participating
+		// medium scatters before it. Apply the modifier to a copy so the guide
+		// normal/albedo match eventual surface shading without perturbing the
+		// transport intersection before its normal modifier site.
+		RayIntersectionGeometric aovGeom( ri.geometric );
+		if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+		rc.pAOV->normal = aovGeom.vNormal;
+		rc.pAOV->albedo = rc.pathTracingClayOverride
+			? RISEPel( 0.5, 0.5, 0.5 )
+			: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+				? ri.pMaterial->GetBSDF()->albedo( aovGeom )
+				: RISEPel( 1, 1, 1 ) );
+		rc.pAOV->valid = true;
+	}
+
 	// Analog no-scatter survival weight (mirrors PathTracingIntegrator's
 	// PTSurvivalWeight).  SampleDistance{,NM} is an ANALOG estimator: reaching
 	// the surface / escaping WITHOUT a scatter event is a stochastic SURVIVAL
@@ -680,6 +711,7 @@ bool RayCaster::CastRay(
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
@@ -1395,6 +1427,7 @@ bool RayCaster::CastRayNM(
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
@@ -2488,6 +2521,7 @@ bool RayCaster::CastRayHWSS(
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 

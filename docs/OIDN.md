@@ -77,20 +77,41 @@ device.getError( errorMessage );
 
 ### Properties of RISE's AOV collection
 
-[OIDNDenoiser.cpp:155](../src/Library/Rendering/OIDNDenoiser.cpp#L155)
-`CollectFirstHitAOVs` is a separate retrace pass after rendering completes:
+`AOVBuffers` is now a channel-planned shared facility for OIDN and agent
+perception, rather than an OIDN-only allocation. PT, spectral PT, BDPT, VCM,
+and path-tracing shader dispatch accumulate albedo/normal (and depth when a
+FrameStore requests it) inline with the beauty samples. For albedo/normal,
+Fast mode records the camera first hit and Accurate mode records the first
+non-delta surface and runs OIDN's auxiliary prefilters, preserving the
+established clean/noisy-aux contract. Depth is not an OIDN input: when
+requested it always records the primary camera ray's first geometric hit,
+independent of that surface-selection mode. Depth carries its own per-pixel
+hit weight, so miss samples remain a zero-valued mask but do not enter the
+average distance at silhouettes.
 
-- 4 primary rays per pixel through `ICamera::GenerateRay`, accumulating albedo
-  via `IBSDF::albedo()` and geometric normal at first hit.
-- Subpixel jitter + aperture re-sampling per ray → AOVs naturally inherit the
-  beauty's DOF / AA blend.
-- Sky/miss → albedo (1,1,1), normal (0,0,0) per OIDN docs.
-- Transparent / NULL-BSDF surfaces → albedo (1,1,1) — partially correct (see
-  `OIDN-P1-4`).
-- Parallelized over rows via `GlobalThreadPool`, thread-local RNG.
-- Because AOVs are a deterministic 4-sample retrace (not noisy MC accumulation),
-  setting `cleanAux=true` is **legitimate** — most renderers cannot honestly
-  do this without prefiltering.
+`CollectFirstHitAOVs` remains the fallback for an estimator without a usable
+inline hook, notably MLT. It lives in `AOVBuffers.cpp`; the legacy
+`OIDNDenoiser::CollectFirstHitAOVs` entry point delegates to it. The fallback:
+
+- fires the requested number of primary rays per pixel through
+  `ICamera::GenerateRay`, collecting albedo, world normal, and requested depth;
+- uses a direct first intersection in Fast mode and the prepared shader caster
+  in Accurate mode, so the built-in MLT path can walk delta surfaces and
+  primary-medium scattering instead of silently degrading to Fast;
+- uses subpixel jitter and aperture re-sampling so DOF/AA boundaries blend;
+- maps a miss to albedo `(0,0,0)`, normal `(0,0,0)`, depth `0`;
+- parallelizes over rows with a thread-local RNG.
+
+The storage plan is the union of OIDN's albedo/normal requirement and typed
+FrameStore channel demand, so a normal non-denoised render still allocates no
+AOV scratch. OIDN retains its 24-byte/pixel albedo/normal cache for reuse;
+perception-only depth storage is released immediately after output. See
+[AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the agent consumer and memory
+accounting.
+
+An exception from rendering, OIDN, an observer, or an output callback releases
+the full AOV member allocation during stack unwind. Cache retention therefore
+describes successful OIDN renders only, never failed attempts.
 
 ### OIDN 2.4 feature surface vs. RISE usage
 
@@ -422,9 +443,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   retrace.  v1 shipped the full plumbing + the 3-filter prefilter
   pipeline + first-non-delta AOV recording in `PathTracingIntegrator`
   (used by `pathtracing_pel_rasterizer`).  v2 extends the
-  first-non-delta AOV walk to BDPT (Pel + Spectral) and VCM
+  mode-aware AOV walk to BDPT (Pel + Spectral) and VCM
   (Pel + Spectral) by walking the post-trace `eyeVerts[]` vector
-  for the first non-delta SURFACE vertex — exploiting BDPT/VCM's
+  to the first surface in Fast mode or first non-delta surface in Accurate
+  mode — exploiting BDPT/VCM's
   reified-path representation so no integrator-signature changes
   are needed.  PathTracingIntegrator's Fast-mode IntegrateRay
   hook intentionally does NOT walk past delta — PT can't reify
@@ -821,10 +843,10 @@ from a reviewer, or has its priority moved. Most recent first.
   `OIDNDenoiser::CollectFirstHitAOVs` (fresh AOV buffer per frame
   on the stack, since MLT doesn't keep a persistent `pAOVBuffers`
   member) → `mDenoiser->ApplyDenoise(...)` →
-  `FlushDenoisedToOutputs(frameIdx)`.  MLT pins the prefilter
-  to `Fast` regardless of the user's `mDenoisingPrefilter`
-  setting because its splat film is incompatible with Accurate
-  mode's inline-accumulation requirement (OIDN-P1-1 invariant).
+  `FlushDenoisedToOutputs(frameIdx)`.  This historical entry originally
+  pinned MLT to `Fast`; the 2026-07 agent-perception rollout superseded that
+  limitation with a bounded Accurate shader retrace and now forwards the
+  authored `mDenoisingPrefilter` mode to OIDN.
   Cache hits across frames thanks to OIDN-P0-2 device/filter
   caching — only frame 1 pays the cold-rebuild cost on the same
   rasterizer instance.
@@ -1028,11 +1050,12 @@ from a reviewer, or has its priority moved. Most recent first.
 
 ### 2026-04-29 — OIDN-P1-1 v2 shipped (BDPT + VCM walk-past-delta AOV)
 - BDPT Pel, VCM Pel, and VCM Spectral rasterizers now walk
-  `eyeVerts[]` for the first non-delta SURFACE vertex when
-  extracting OIDN AOVs, mirroring the pattern BDPTSpectralRasterizer
-  already used.  Glass / mirror first-hits are skipped so the AOV
-  represents the surface visible *through* the delta material —
-  matching what the beauty pass shows.
+  `eyeVerts[]` when extracting OIDN AOVs, mirroring the pattern
+  BDPTSpectralRasterizer already used. Fast selects the first surface;
+  Accurate skips glass / mirror first-hits and selects the first non-delta
+  surface so the auxiliary represents the surface visible through the delta
+  material. Primary-hit depth, added later for agent perception, is independent
+  of this selection.
 - **Key insight:** BDPT/VCM reify the path into `eyeVerts[]` so the
   per-sample `isDelta` walk happens after the subpath is generated,
   at zero ray-casting cost.  No integrator-signature changes were
@@ -1063,8 +1086,8 @@ from a reviewer, or has its priority moved. Most recent first.
   `accurate`, default `fast`).  Plumbed through the full surface:
   `OidnPrefilter` enum in OidnConfig.h, threaded through every
   IJob virtual + RISE_API factory + Job override + parser Finalize
-  call.  MLT integrators always force `Fast` regardless of the knob
-  — the splat-film invariant from OIDN-P1-1 remains intact.
+  call.  (Historical note: MLT originally forced `Fast`; the 2026-07 bounded
+  Accurate fallback retrace later removed that limitation.)
 - `RuntimeContext` gains `aovPrefilterMode` so integrators that
   inline-accumulate AOVs can branch on it.  Set by the rasterizer's
   `PrepareRuntimeContext` from `mDenoisingPrefilter`.

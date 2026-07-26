@@ -24,8 +24,11 @@
 //                         yields zero error diagnostics.
 //    * propose_patch   -> set a real param; then read_document shows the new
 //                         value (the loop mutated the head).
-//    * render          -> ok==true, dims match the film; capture meanR/G/B.
+//    * render          -> ok==true, dims match the film; capture meanR/G/B;
+//                         default agent perception reports exact memory.
 //    * read_image      -> png_base64 non-empty + decodes to a PNG signature.
+//    * perception      -> same-render beauty/albedo/normal/depth atlas,
+//                         metadata, max-edge bound, and zero-allocation opt-out.
 //    * loop coherence  -> propose a VISIBLE change, render again, assert the
 //                         channel means shifted FAR beyond the noise floor.
 //    * error paths     -> unknown method -32601, malformed line -32700,
@@ -40,8 +43,16 @@
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Agent/Base64.h"
+#include "../src/Library/Agent/InMemoryRasterizerOutput.h"
 #include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Reference.h"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -60,12 +71,86 @@ static void Check( bool c, const std::string& w )
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
 }
 
+typedef std::array<unsigned char, 4> DecodedPixel;
+struct DecodedPng
+{
+	unsigned int width = 0, height = 0;
+	std::vector<DecodedPixel> pixels;
+	const DecodedPixel& At( unsigned int x, unsigned int y ) const
+	{
+		return pixels[static_cast<std::size_t>( y ) * width + x];
+	}
+};
+
+// Decode through RISE's production PNG reader. Linear mode recovers the
+// stored byte values, which lets this test verify the streamed writer's
+// channel order and actual quadrant content rather than only its IHDR.
+static bool DecodePng( const std::vector<unsigned char>& png, DecodedPng& out )
+{
+	if( png.empty() ) return false;
+	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(
+		const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+		static_cast<unsigned int>( png.size() ), false );
+	IRasterImageReader* reader = 0;
+	if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+		safe_release( buffer );
+		return false;
+	}
+	if( !reader->BeginRead( out.width, out.height ) ) {
+		safe_release( reader );
+		safe_release( buffer );
+		return false;
+	}
+	out.pixels.resize( static_cast<std::size_t>( out.width ) * out.height );
+	auto byte = []( double v ) -> unsigned char {
+		int i = static_cast<int>( v * 255.0 + 0.5 );
+		if( i < 0 ) i = 0;
+		if( i > 255 ) i = 255;
+		return static_cast<unsigned char>( i );
+	};
+	for( unsigned int y = 0; y < out.height; ++y ) {
+		for( unsigned int x = 0; x < out.width; ++x ) {
+			RISEColor c;
+			reader->ReadColor( c, x, y );
+			out.pixels[static_cast<std::size_t>( y ) * out.width + x] = {
+				byte( c.base.r ), byte( c.base.g ), byte( c.base.b ), byte( c.a ) };
+		}
+	}
+	reader->EndRead();
+	safe_release( reader );
+	safe_release( buffer );
+	return true;
+}
+
+static bool HasPngChunk( const std::vector<unsigned char>& png, const char type[4] )
+{
+	if( png.size() < 8 ) return false;
+	std::size_t offset = 8;
+	while( png.size() - offset >= 8 ) {
+		const std::size_t length =
+			( static_cast<std::size_t>( png[offset] ) << 24 ) |
+			( static_cast<std::size_t>( png[offset + 1] ) << 16 ) |
+			( static_cast<std::size_t>( png[offset + 2] ) << 8 ) |
+			static_cast<std::size_t>( png[offset + 3] );
+		if( png.size() - offset < 12 || length > png.size() - offset - 12 ) return false;
+		if( png[offset + 4] == static_cast<unsigned char>( type[0] ) &&
+		    png[offset + 5] == static_cast<unsigned char>( type[1] ) &&
+		    png[offset + 6] == static_cast<unsigned char>( type[2] ) &&
+		    png[offset + 7] == static_cast<unsigned char>( type[3] ) ) return true;
+		offset += length + 12;
+	}
+	return false;
+}
+
 // The same inline native-v7 scene the slice-0b test uses: a lit diffuse
 // sphere + an area emitter, PT at low spp with OIDN off, renders non-black.
 static const char* const kScene =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	// Accurate guide capture must happen at the diffuse surface even though
+	// max_diffuse_bounce=0 terminates continuation there. The decoded red
+	// albedo-panel assertion below is the regression lock.
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n\tmax_diffuse_bounce 0\n}\n\n"
 	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
@@ -116,9 +201,186 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	return JsonSerialize( r );
 }
 
+static void TestPerceptionBeautyColorSpaceParity()
+{
+	using namespace RISE::FrameStoreOutput;
+	using RISE::Implementation::FrameStore;
+
+	FrameStore::Spec spec;
+	spec.width = spec.height = 1;
+	spec.tileEdge = 1;
+	spec.aovChannels = { ChannelId::Albedo, ChannelId::Normal, ChannelId::Depth };
+	FrameStore* store = new FrameStore( spec );
+	store->GetChannel<ChannelId::Albedo>()->At( 0, 0 ) = RISEPel( 0.2, 0.4, 0.6 );
+	store->GetChannel<ChannelId::Normal>()->At( 0, 0 ) = Vector3( 0.0, 0.0, 1.0 );
+	store->GetChannel<ChannelId::Depth>()->At( 0, 0 ) = 2.0f;
+
+	InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
+	sink->OnRasterizerFrameStoreChanged( store );
+	sink->SetOutputColorSpace( eColorSpace_Rec709RGB_Linear );
+	RISERasterImage* image = new RISERasterImage( 1, 1, RISEColor( 0.25, 0.5, 0.75, 1.0 ) );
+	sink->OutputImage( *image, 0, 0 );
+
+	const std::vector<unsigned char> beautyPng = sink->ToPng();
+	unsigned int atlasW = 0, atlasH = 0;
+	InMemoryRasterizerOutput::PerceptionInfo info;
+	const std::vector<unsigned char> atlasPng = sink->ToPerceptionPng( 2, atlasW, atlasH, info );
+	Check( std::string( info.guidePrefilter ) == "fast",
+	       "perception metadata defaults to fast guide semantics" );
+	Check( !HasPngChunk( atlasPng, "gAMA" ),
+	       "mixed-space perception atlas does not declare one global PNG gamma" );
+	DecodedPng beauty;
+	DecodedPng atlas;
+	const bool decodedBeauty = DecodePng( beautyPng, beauty );
+	const bool decodedAtlas = DecodePng( atlasPng, atlas );
+	Check( decodedBeauty && decodedAtlas && beauty.width == 1 && beauty.height == 1 &&
+	       atlas.width == 2 && atlas.height == 2,
+	       "non-sRGB beauty and perception atlas decode at expected dimensions" );
+	if( decodedBeauty && decodedAtlas && !beauty.pixels.empty() && !atlas.pixels.empty() ) {
+		Check( beauty.At( 0, 0 ) == atlas.At( 0, 0 ),
+		       "perception beauty panel honors the configured output color space byte-for-byte" );
+	}
+
+	// A sink reused for animation retains the preceding frame's compact
+	// 7-B/pixel sidecar while the next frame renders. The reported peak must
+	// include that live cache (84 + 7 = 91 B/pixel), not repeat the cold-frame
+	// 84-B/pixel render peak.
+	sink->OutputImage( *image, 0, 1 );
+	Check( sink->GetPerceptionInfo().auxiliaryPeakBytes == 91u,
+	       "multi-frame sink peak includes the preceding compact sidecar" );
+
+	std::vector<RISEColor> viewportPixels( 1, RISEColor( 0.1, 0.2, 0.3, 1.0 ) );
+	sink->AdoptCoherentSnapshot( std::move( viewportPixels ), 1, 1 );
+	Check( !sink->HasPerception(),
+	       "adopting a beauty-only viewport snapshot clears a prior perception sidecar" );
+	unsigned int staleW = 99, staleH = 99;
+	InMemoryRasterizerOutput::PerceptionInfo staleInfo;
+	Check( sink->ToPerceptionPng( 2, staleW, staleH, staleInfo ).empty() &&
+	       !staleInfo.available && staleW == 0 && staleH == 0,
+	       "cleared sidecar cannot be encoded beside unrelated adopted pixels" );
+
+	safe_release( image );
+	safe_release( sink );
+	safe_release( store );
+}
+
+// Accurate HWSS guides must survive the primary-medium fallback to the
+// per-wavelength NM integrator.  The camera sits inside both very dense fog
+// and a red diffuse sphere: the camera segment scatters before the sphere
+// with overwhelming probability, and every phase direction then intersects
+// the enclosing sphere.  Without forwarding the shared PixelAOV on the hero
+// continuation, the top-right albedo panel is black.
+static void TestAccurateHWSSGuideAfterPrimaryMediumScatter()
+{
+	static const char* const scene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_spectral_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n"
+		"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
+		"\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n"
+		"\tmax_diffuse_bounce 0\n}\n\n"
+		"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12\n}\n\n"
+		"uniformcolor_painter\n{\n\tname red\n\tcolor 0.9 0.05 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname red_mat\n\treflectance red\n}\n\n"
+		"box_geometry\n{\n\tname enclosure\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname red_enclosure\n\tgeometry enclosure\n\tmaterial red_mat\n}\n\n"
+		"homogeneous_medium\n{\n\tname dense_fog\n\tabsorption 0.01 0.01 0.01\n"
+		"\tscattering 5 5 5\n\tphase hg 0.999\n}\n\n"
+		"global_medium\n{\n\tmedium dense_fog\n}\n";
+
+	const std::string scenePath = WriteTemp(
+		"rise_agent_hwss_medium_accurate_aov.RISEscene", scene );
+	Check( !scenePath.empty(), "HWSS medium-guide scene written" );
+	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+	Check( session != nullptr, "HWSS medium-guide scene loads" );
+	if( session ) {
+		AgentRenderParams params;
+		params.perception = true;
+		const AgentRenderResult render = session->Render( params );
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> atlas =
+			session->ReadPerception( 16, atlasW, atlasH, info );
+		DecodedPng decoded;
+		const bool decodedOk = DecodePng( atlas, decoded );
+		Check( render.ok && info.available && decodedOk &&
+		       atlasW == 16 && atlasH == 16,
+		       "HWSS primary-medium render produces a perception atlas" );
+		if( decodedOk && decoded.width == 16 && decoded.height == 16 ) {
+			const DecodedPixel& albedo = decoded.At( 12, 4 );
+			if( !( albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80 ) ) {
+				std::printf( "  HWSS medium albedo probe=(%u,%u,%u,%u)\n",
+					unsigned( albedo[0] ), unsigned( albedo[1] ),
+					unsigned( albedo[2] ), unsigned( albedo[3] ) );
+			}
+			Check( albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80,
+			       "Accurate HWSS hero continuation records the red post-medium surface guide" );
+		}
+	}
+	std::remove( scenePath.c_str() );
+}
+
+// MLT has no per-pixel identity in its splat chain, so perception uses a
+// bounded camera-ray retrace after beauty. Accurate must still walk the
+// transparent front object and report the red diffuse backstop; the former
+// unconditional geometric fallback reported the green front surface.
+static void TestAccurateMLTFallbackGuideThroughTransparency()
+{
+	static const char* const scene =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
+		"transparency_shaderop\n{\n\tname transmit\n\ttransparency white\n\tone_sided false\n}\n\n"
+		"advanced_shader\n{\n\tname transparent_only\n\tshaderop transmit 0 100 =\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"mlt_rasterizer\n{\n\tbootstrap_samples 100\n\tchains 4\n"
+		"\tmutations_per_pixel 2\n\tpixel_filter box\n\toidn_denoise false\n"
+		"\toidn_prefilter accurate\n}\n\n"
+		"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12\n}\n\n"
+		"uniformcolor_painter\n{\n\tname green\n\tcolor 0.05 0.9 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname green_mat\n\treflectance green\n}\n\n"
+		"box_geometry\n{\n\tname front_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname front\n\tgeometry front_geo\n\tmaterial green_mat\n"
+		"\tshader transparent_only\n\tposition 0 0 1.5\n}\n\n"
+		"uniformcolor_painter\n{\n\tname red\n\tcolor 0.9 0.05 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname red_mat\n\treflectance red\n}\n\n"
+		"box_geometry\n{\n\tname back_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname back\n\tgeometry back_geo\n\tmaterial red_mat\n}\n\n"
+		"omni_light\n{\n\tname lamp\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 0 3\n}\n";
+
+	const std::string scenePath = WriteTemp(
+		"rise_agent_mlt_accurate_aov.RISEscene", scene );
+	Check( !scenePath.empty(), "MLT Accurate fallback scene written" );
+	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+	Check( session != nullptr, "MLT Accurate fallback scene loads" );
+	if( session ) {
+		AgentRenderParams params;
+		params.perception = true;
+		const AgentRenderResult render = session->Render( params );
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> atlas =
+			session->ReadPerception( 16, atlasW, atlasH, info );
+		DecodedPng decoded;
+		const bool decodedOk = DecodePng( atlas, decoded );
+		Check( render.ok && info.available && decodedOk,
+		       "MLT Accurate fallback produces a perception atlas" );
+		if( decodedOk && decoded.width == 16 && decoded.height == 16 ) {
+			const DecodedPixel& albedo = decoded.At( 12, 4 );
+			Check( albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80,
+			       "MLT Accurate fallback walks transparent front geometry to the red backstop" );
+		}
+	}
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFirstSliceTest (Facet 5 slice 0c: JSON-RPC end-to-end loop) ===\n" );
+	TestPerceptionBeautyColorSpaceParity();
+	TestAccurateHWSSGuideAfterPrimaryMediumScatter();
+	TestAccurateMLTFallbackGuideThroughTransparency();
 
 	const std::string scenePath = WriteTemp( "rise_agent_slice0c.RISEscene", kScene );
 	Check( !scenePath.empty(), "wrote the scene to a temp file" );
@@ -236,7 +498,7 @@ int main()
 	// render — ok, dims match the film; capture the channel-mean signature.
 	//----------------------------------------------------------------------
 	std::printf( "[render]\n" );
-	double firstMeanR = 0.0, firstMeanG = 0.0, firstMeanB = 0.0;
+		double firstMeanR = 0.0, firstMeanG = 0.0, firstMeanB = 0.0;
 	{
 		const std::string resp = rpc.HandleLine( Req( 7, "render", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 7 );
@@ -247,6 +509,12 @@ int main()
 		firstMeanR = r.get( "meanR" ).asNumber();
 		firstMeanG = r.get( "meanG" ).asNumber();
 		firstMeanB = r.get( "meanB" ).asNumber();
+		Check( r.get( "perceptionAvailable" ).asBool(),
+		       "agent transport enables same-render perception by default" );
+		Check( r.get( "perceptionPersistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0,
+		       "render reports exact compact sidecar cost (7 bytes/pixel)" );
+		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 84.0,
+		       "render reports exact managed auxiliary peak (84 bytes/pixel)" );
 		// render stays lean: no image bytes in the render result.
 		Check( !r.has( "png_base64" ), "render result does NOT carry the image bytes (read_image does)" );
 	}
@@ -285,6 +553,8 @@ int main()
 		const std::string resp = rpc.HandleLine( Req( 9, "render", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 9 );
 		const JsonValue& r = env.get( "result" );
+		Check( r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 91.0,
+		       "replacement render peak includes the prior successful 7-byte/pixel sidecar" );
 		noiseFloor =
 			std::fabs( r.get( "meanR" ).asNumber() - firstMeanR ) +
 			std::fabs( r.get( "meanG" ).asNumber() - firstMeanG ) +
@@ -685,6 +955,122 @@ int main()
 		JsonValue env = ParseResponse( resp, 39 );
 		Check( env.get( "result" ).get( "width" ).asNumber() == 24.0,
 		       "read_image() with no maxEdge reports the native 24x24 (back-compat + additive width/height)" );
+	}
+
+	//----------------------------------------------------------------------
+	// Perception representation: a single conventional 2x2 image assembled
+	// from the SAME render.  `maxEdge` bounds the complete atlas, not each
+	// panel, so model image-token and transfer cost stay predictable.
+	//----------------------------------------------------------------------
+	std::printf( "[perception] same-render atlas + structured depth/memory metadata\n" );
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "representation", JsonValue::MakeString( "perception" ) );
+		params.set( "maxEdge", JsonValue::MakeNumber( 32.0 ) );
+		const std::string resp = rpc.HandleLine( Req( 70, "read_image", params ) );
+		JsonValue env = ParseResponse( resp, 70 );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "available" ).asBool(), "perception atlas is available after production beauty" );
+		Check( r.get( "representation" ).asString() == "perception", "read_image echoes perception representation" );
+		Check( r.get( "width" ).asNumber() == 32.0 && r.get( "height" ).asNumber() == 32.0,
+		       "maxEdge bounds the whole 2x2 atlas" );
+		Check( r.get( "sourceWidth" ).asNumber() == 24.0 && r.get( "sourceHeight" ).asNumber() == 24.0,
+		       "perception metadata preserves source dimensions" );
+		const JsonValue& panels = r.get( "panels" );
+		Check( panels.isArray() && panels.size() == 4,
+		       "perception atlas declares four typed panels" );
+		Check( panels.at( 0 ).asString() == "beauty" &&
+		       panels.at( 1 ).asString() == "albedo" &&
+		       panels.at( 2 ).asString() == "world_normal" &&
+		       panels.at( 3 ).asString() == "log_depth",
+		       "perception panel order is stable" );
+		Check( r.get( "validDepthPixels" ).asNumber() > 0.0,
+		       "same-render depth contains visible surface hits" );
+		Check( r.get( "depthMin" ).asNumber() > 0.0 &&
+		       r.get( "depthMax" ).asNumber() >= r.get( "depthMin" ).asNumber(),
+		       "depth range is finite, positive, and ordered" );
+		Check( r.get( "guidePrefilter" ).asString() == "accurate",
+		       "perception reports the albedo/normal prefilter semantics" );
+		Check( r.get( "persistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0 &&
+		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 91.0,
+		       "read_image exposes exact replacement-render perception memory" );
+		Check( r.get( "encoderRowBytes" ).asNumber() == 32.0 * 4.0,
+		       "perception encoder uses one RGBA scanline rather than a full atlas staging image" );
+		std::vector<unsigned char> png;
+		Check( Base64Decode( r.get( "png_base64" ).asString(), png ),
+		       "perception png_base64 decodes cleanly" );
+		Check( png.size() >= 8 && png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+		       "perception payload is a PNG" );
+		if( png.size() >= 24 ) {
+			const unsigned int ihdrW = ( unsigned( png[16] ) << 24 ) | ( unsigned( png[17] ) << 16 ) |
+				( unsigned( png[18] ) << 8 ) | unsigned( png[19] );
+			const unsigned int ihdrH = ( unsigned( png[20] ) << 24 ) | ( unsigned( png[21] ) << 16 ) |
+				( unsigned( png[22] ) << 8 ) | unsigned( png[23] );
+			Check( ihdrW == 32 && ihdrH == 32,
+			       "perception PNG IHDR matches the declared whole-atlas dimensions" );
+		}
+		DecodedPng decoded;
+		Check( DecodePng( png, decoded ) && decoded.width == 32 && decoded.height == 32,
+		       "streamed perception PNG fully decodes at the declared dimensions" );
+		if( decoded.width == 32 && decoded.height == 32 ) {
+			const DecodedPixel& albedo = decoded.At( 24, 8 );
+			const DecodedPixel& normal = decoded.At( 8, 24 );
+			const DecodedPixel& depth = decoded.At( 24, 24 );
+			const bool redAlbedo = albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80;
+			if( !redAlbedo ) {
+				std::printf( "  decoded atlas probes: albedo=(%u,%u,%u,%u) normal=(%u,%u,%u,%u) depth=(%u,%u,%u,%u)\n",
+					unsigned( albedo[0] ), unsigned( albedo[1] ), unsigned( albedo[2] ), unsigned( albedo[3] ),
+					unsigned( normal[0] ), unsigned( normal[1] ), unsigned( normal[2] ), unsigned( normal[3] ),
+					unsigned( depth[0] ), unsigned( depth[1] ), unsigned( depth[2] ), unsigned( depth[3] ) );
+			}
+			Check( redAlbedo,
+			       "top-right panel decodes as the sphere's edited red diffuse albedo" );
+			Check( normal[2] > normal[0] + 30 && normal[2] > normal[1] + 30,
+			       "bottom-left panel preserves RGB channel order for the camera-facing normal" );
+			Check( depth[0] > 0 && depth[0] == depth[1] && depth[1] == depth[2],
+			       "bottom-right panel decodes as nonzero grayscale log depth" );
+			Check( albedo[3] == 255 && normal[3] == 255 && depth[3] == 255,
+			       "all streamed perception panels are opaque RGBA" );
+		}
+	}
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "representation", JsonValue::MakeString( "perception" ) );
+		params.set( "maxEdge", JsonValue::MakeNumber( 17.0 ) );
+		JsonValue env = ParseResponse( rpc.HandleLine( Req( 74, "read_image", params ) ), 74 );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "width" ).asNumber() == 16.0 && r.get( "height" ).asNumber() == 16.0,
+		       "odd maxEdge remains a strict whole-atlas bound" );
+		Check( r.get( "encoderRowBytes" ).asNumber() == 16.0 * 4.0,
+		       "downscaled atlas still stages exactly one RGBA row" );
+	}
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "representation", JsonValue::MakeString( "tensor" ) );
+		JsonValue env = ParseResponse( rpc.HandleLine( Req( 71, "read_image", params ) ), 71 );
+		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
+		       "unknown read_image representation is rejected" );
+	}
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "perception", JsonValue::MakeBool( false ) );
+		JsonValue env = ParseResponse( rpc.HandleLine( Req( 72, "render", params ) ), 72 );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "perception:false render succeeds" );
+		Check( !r.get( "perceptionAvailable" ).asBool() &&
+		       r.get( "perceptionPersistentBytes" ).asNumber() == 0.0 &&
+		       r.get( "perceptionAuxiliaryPeakBytes" ).asNumber() == 0.0,
+		       "perception:false removes all auxiliary perception allocation" );
+
+		JsonValue read = JsonValue::MakeObject();
+		read.set( "representation", JsonValue::MakeString( "perception" ) );
+		JsonValue readEnv = ParseResponse( rpc.HandleLine( Req( 73, "read_image", read ) ), 73 );
+		const JsonValue& readResult = readEnv.get( "result" );
+		Check( !readResult.get( "available" ).asBool() &&
+		       readResult.get( "png_base64" ).asString().empty() &&
+		       readResult.get( "width" ).asNumber() == 0.0 &&
+		       readResult.get( "height" ).asNumber() == 0.0,
+		       "perception:false leaves no stale atlas from the prior render" );
 	}
 
 	//----------------------------------------------------------------------

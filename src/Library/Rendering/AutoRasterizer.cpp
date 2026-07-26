@@ -820,14 +820,23 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 {
 	std::call_once( mResolveOnce, [this, scene]() {
 		const AutoIntegratorChoice choice = SelectIntegrator( scene );
-		mResolved = choice;
-		mDelegate = BuildDelegate( choice );
+		IRasterizer* candidate = BuildDelegate( choice );
 
-		if( !mDelegate ) {
+		if( !candidate ) {
+			mResolved = choice;
 			GlobalLog()->PrintEasyError(
 				"AutoRasterizer:: failed to build the chosen delegate rasterizer" );
 			return;
 		}
+
+		// call_once retries the body after an exception. Keep the candidate
+		// private and owned until every replay/configuration step succeeds so a
+		// throwing output registration cannot publish or leak a half-resolved
+		// delegate before that retry.
+		struct CandidateUnwindGuard {
+			IRasterizer*& p;
+			~CandidateUnwindGuard() { safe_release( p ); }
+		} candidateGuard{ candidate };
 
 		// Replay the buffered render state onto the freshly-built
 		// delegate.  The base Rasterizer stored these (the file output /
@@ -837,21 +846,27 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 		{
 			std::lock_guard<std::mutex> lock( outsMutex );
 			for( IRasterizerOutput* ro : outs ) {
-				mDelegate->AddRasterizerOutput( ro );
+				candidate->AddRasterizerOutput( ro );
 			}
 		}
-		mDelegate->SetProgressCallback( pProgressFunc );
+		candidate->SetProgressCallback( pProgressFunc );
 
 		// Progressive config can't ride RISE_API_SetRasterizerProgressiveRendering
 		// on the wrapper (that down-casts to PixelBasedRasterizerHelper, which the
 		// wrapper is not) — apply it to the delegate, which IS one.
 		RISE_API_SetRasterizerProgressiveRendering(
-			mDelegate, mProgressive.enabled, mProgressive.samplesPerPass );
+			candidate, mProgressive.enabled, mProgressive.samplesPerPass );
 
 		GlobalLog()->PrintEx( eLog_Event,
 			"AutoRasterizer:: [%s] integrator '%s' -> delegating to '%s' (%s)",
 			mSpectral ? "spectral" : "pel", IntegratorName( mPinned ), IntegratorName( choice ),
 			mResolveReason.empty() ? "default" : mResolveReason.c_str() );
+
+		// Publish last. Nothing below these assignments can throw, so a
+		// call_once retry can never observe or overwrite a partial delegate.
+		mDelegate = candidate;
+		candidate = nullptr;
+		mResolved = choice;
 	} );
 }
 
@@ -873,6 +888,20 @@ void AutoRasterizer::SyncDelegateFrameStore() const
 	if( r ) {
 		r->SetFrameStore( mine );
 	}
+}
+
+void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
+{
+	Rasterizer::SetFrameStore( frameStore );
+	if( !mDelegate ) return;
+	Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate );
+	if( delegate ) delegate->SetFrameStore( frameStore );
+}
+
+FrameStore* AutoRasterizer::ForTest_GetDelegateFrameStore() const
+{
+	Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate );
+	return delegate ? delegate->GetFrameStore() : 0;
 }
 
 void AutoRasterizer::AttachToScene( const IScene* pScene )
@@ -921,9 +950,28 @@ void AutoRasterizer::SetProgressCallback( IProgressCallback* pFunc )
 
 void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
-	Rasterizer::AddRasterizerOutput( ro );
-	if( mDelegate ) {
-		mDelegate->AddRasterizerOutput( ro );
+	const bool wrapperAdded = RegisterRasterizerOutput( ro );
+	try {
+		if( mDelegate ) {
+			mDelegate->AddRasterizerOutput( ro );
+		}
+	}
+	catch( ... ) {
+		// Preserve the wrapper's pre-call state. The delegate's base
+		// registration is itself strongly exception-safe; remove only an entry
+		// inserted by this call, never a pre-existing deduplicated entry.
+		if( wrapperAdded ) {
+			Rasterizer::RemoveRasterizerOutput( ro );
+		}
+		throw;
+	}
+}
+
+void AutoRasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
+{
+	Rasterizer::RemoveRasterizerOutput( ro );
+	if( Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate ) ) {
+		delegate->RemoveRasterizerOutput( ro );
 	}
 }
 

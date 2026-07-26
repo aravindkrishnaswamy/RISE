@@ -246,6 +246,9 @@ static void RunCoreTests()
 		Check( rr.width == 24 && rr.height == 24, "render dims match the film (24x24)" );
 		Check( !rr.png.empty(), "render produced non-empty PNG bytes" );
 		Check( HasPngSignature( rr.png ), "PNG bytes carry the \\x89PNG signature" );
+		Check( !rr.perceptionAvailable && rr.perceptionPersistentBytes == 0 &&
+		       rr.perceptionAuxiliaryPeakBytes == 0,
+		       "direct C++ Render() keeps perception opt-in and zero-allocation" );
 
 		unsigned int w = 0, h = 0;
 		Check( ReadPngDims( rr.png, w, h ), "PNG IHDR is present" );

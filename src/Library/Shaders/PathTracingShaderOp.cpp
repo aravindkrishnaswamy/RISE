@@ -23,6 +23,7 @@
 #include "pch.h"
 #include "PathTracingShaderOp.h"
 #include "PathTracingIntegrator.h"
+#include "../Rendering/AOVBuffers.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/Color/Color.h"
 
@@ -106,7 +107,8 @@ void PathTracingShaderOp::PerformOperation(
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
 		0, rs.glossyFilterWidth,
-		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading );
+		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
+		rc.pAOV );
 }
 
 

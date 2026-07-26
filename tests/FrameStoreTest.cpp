@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  FrameStoreTest.cpp - L1 regression gate for FrameStore +
-//  Channel<T> + tile seqlock + Render readback.
+//  Channel<T> + tile locking + Render readback.
 //
 //  Coverage:
 //    1. Construction: width/height/tileEdge geometry; channel
@@ -9,7 +9,7 @@
 //       present.
 //    2. Channel<T>: bounds, fill, row/column access; type-safety
 //       via ChannelTraits.
-//    3. Tile seqlock: BeginTile/EndTile bracket pixel writes,
+//    3. Tile locking: BeginTile/EndTile bracket pixel writes,
 //       generation counter advances, observer fires once per
 //       commit.
 //    4. Concurrent reader / writer: multi-threaded stress test
@@ -44,7 +44,10 @@
 
 using namespace RISE;
 using namespace RISE::FrameStoreOutput;
+using RISE::Implementation::AOVBuffers;
 using RISE::Implementation::FrameStore;
+using RISE::Implementation::MakeAOVPlan;
+using RISE::Implementation::PropagateAOVsToFrameStore;
 
 namespace
 {
@@ -152,6 +155,88 @@ namespace
 		dp->Fill( 42.0f );
 		Check( dp->At( 0, 0 ) == 42.0f && dp->At( 15, 15 ) == 42.0f,
 			"Channel<float>::Fill" );
+
+		store->release();
+	}
+
+	// ─── Section 2b: planned AOV bridge + exact storage ───────
+	void TestPlannedAOVBridge()
+	{
+		const unsigned int w = 2, h = 1;
+		const size_t pixels = static_cast<size_t>( w ) * h;
+
+		AOVBuffers depthOnly( w, h, AOVBuffers::Plan( false, false, true ) );
+		Check( depthOnly.GetAlbedoPtr() == nullptr && depthOnly.GetNormalPtr() == nullptr,
+			"depth-only AOV plan does not allocate RGB planes" );
+		Check( depthOnly.GetDepthPtr() != nullptr, "depth-only AOV plan allocates depth" );
+		Check( depthOnly.StorageBytes() == pixels * 2u * sizeof(float),
+			"depth-only AOV plan costs exactly 8 bytes/pixel including hit weights" );
+
+		AOVBuffers full( w, h, AOVBuffers::Plan( true, true, true ) );
+		Check( full.StorageBytes() == pixels * 8u * sizeof(float),
+			"agent AOV tap costs exactly 32 bytes/pixel" );
+		full.AccumulateAlbedo( 0, 0, RISEPel( 0.2, 0.4, 0.6 ), 2.0 );
+		full.AccumulateNormal( 0, 0, Vector3( -1.0, 0.5, 1.0 ), 2.0 );
+		full.AccumulateDepth( 0, 0, 7.5, 2.0 );
+		full.Normalize( 0, 0, 0.5 );
+		Check( full.HasData(), "planned AOV tap reports accumulated data" );
+		Check( full.HasAlbedoData() && full.HasNormalData() && full.HasDepthData() &&
+		       !full.NeedsFallback(),
+			"planned AOV readiness is tracked independently per plane" );
+
+		AOVBuffers depthFirst( w, h, AOVBuffers::Plan( true, true, true ) );
+		depthFirst.AccumulateDepth( 0, 0, 3.0, 1.0 );
+		const AOVBuffers::Plan missingGuides = depthFirst.MissingPlan();
+		Check( missingGuides.albedo && missingGuides.normal && !missingGuides.depth &&
+		       depthFirst.NeedsFallback(),
+			"depth activity cannot suppress missing albedo/normal completion" );
+
+		FrameStore* store = MakeStore( w, h, 1,
+			{ ChannelId::Albedo, ChannelId::Normal, ChannelId::Depth } );
+		PropagateAOVsToFrameStore( store, full );
+		const auto* albedo = store->GetChannel<ChannelId::Albedo>();
+		const auto* normal = store->GetChannel<ChannelId::Normal>();
+		const auto* depth = store->GetChannel<ChannelId::Depth>();
+		Check( ApproxEq( albedo->At( 0, 0 ).r, 0.2, 1e-6 ) &&
+		       ApproxEq( albedo->At( 0, 0 ).b, 0.6, 1e-6 ),
+			"AOV bridge propagates albedo" );
+		Check( ApproxEq( normal->At( 0, 0 ).x, -1.0, 1e-6 ) &&
+		       ApproxEq( normal->At( 0, 0 ).y, 0.5, 1e-6 ),
+			"AOV bridge propagates world normal" );
+		Check( ApproxEq( depth->At( 0, 0 ), 7.5, 1e-6 ),
+			"AOV bridge propagates camera-ray depth" );
+
+		AOVBuffers silhouette( 1, 1, AOVBuffers::Plan( false, false, true ) );
+		silhouette.AccumulateDepth( 0, 0, 5.0, 1.0 );
+		silhouette.AccumulateDepth( 0, 0, 0.0, 1.0 );
+		silhouette.Normalize( 0, 0, 0.5 );
+		Check( ApproxEq( silhouette.GetDepthPtr()[0], 5.0, 1e-6 ),
+			"depth normalization excludes miss samples at silhouettes" );
+
+		const AOVBuffers::Plan requested = MakeAOVPlan( store, false );
+		Check( requested.albedo && requested.normal && requested.depth,
+			"FrameStore requests become an exact full AOV plan" );
+		const AOVBuffers::Plan denoiser = MakeAOVPlan( nullptr, true );
+		Check( denoiser.albedo && denoiser.normal && !denoiser.depth,
+			"denoiser-only plan preserves legacy albedo+normal allocation" );
+		const AOVBuffers::Plan empty = MakeAOVPlan( nullptr, false );
+		Check( !empty.Any(), "no consumer produces a zero-allocation AOV plan" );
+
+		AOVBuffers oidnCache( w, h, AOVBuffers::Plan( true, true, true ) );
+		oidnCache.ReleaseDepthStorage();
+		Check( oidnCache.GetDepthPtr() == nullptr && !oidnCache.GetPlan().depth,
+			"post-capture release removes the perception-only depth plane" );
+		Check( oidnCache.StorageBytes() == pixels * 6u * sizeof(float) &&
+		       oidnCache.ReservedBytes() == pixels * 6u * sizeof(float),
+			"OIDN cache retains only its 24-byte/pixel albedo+normal pair" );
+		oidnCache.Reset( w, h, AOVBuffers::Plan( false, false, false ) );
+		Check( oidnCache.ReservedBytes() == 0,
+			"disabling an AOV plane releases capacity instead of pinning prior render memory" );
+
+		AOVBuffers resized( 64, 64, AOVBuffers::Plan( true, true, true ) );
+		resized.Reset( 2, 1, AOVBuffers::Plan( true, true, true ) );
+		Check( resized.ReservedBytes() == pixels * 8u * sizeof(float),
+			"downsizing releases obsolete high-resolution AOV capacity" );
 
 		store->release();
 	}
@@ -909,11 +994,12 @@ namespace
 
 int main()
 {
-	std::cout << "FrameStoreTest L1 — buffer + tile seqlock + Render readback\n";
+	std::cout << "FrameStoreTest L1 — buffer + tile locking + Render readback\n";
 	std::cout << "------------------------------------------------------------\n";
 
 	TestConstructionAndGeometry();
 	TestAOVChannels();
+	TestPlannedAOVBridge();
 	TestSeqlockAndObserver();
 	TestObserverSelfDetach();
 	TestObserverCascadeRemovalNoUAF();

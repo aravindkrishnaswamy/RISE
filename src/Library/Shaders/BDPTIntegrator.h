@@ -90,6 +90,8 @@
 
 namespace RISE
 {
+	struct PixelAOV;
+
 	namespace Implementation
 	{
 		/// Encapsulates the full BDPT algorithm: subpath generation,
@@ -249,7 +251,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
-				std::vector<uint32_t>& subpathStarts
+				std::vector<uint32_t>& subpathStarts,
+				PixelAOV* pPrimaryAOV = 0
 				) const;
 
 			/// Connects and evaluates a single (s,t) strategy.
@@ -353,7 +356,8 @@ namespace RISE
 				std::vector<BDPTVertex>& vertices,
 				std::vector<uint32_t>& subpathStarts,
 				const Scalar nm,
-				const SampledWavelengths* pSwlHWSS
+				const SampledWavelengths* pSwlHWSS,
+				PixelAOV* pPrimaryAOV = 0
 				) const;
 
 			ConnectionResultNM ConnectAndEvaluateNM(

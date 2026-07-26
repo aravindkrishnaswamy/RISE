@@ -25,11 +25,11 @@ using namespace RISE::Implementation;
 Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
   ,mFrameStore( frameStore )
+  ,mDenoisingPrefilter( OidnPrefilter::Fast )
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
   ,mDenoisingDevice( OidnDevice::Auto )
-  ,mDenoisingPrefilter( OidnPrefilter::Fast )
   ,mRenderStartTime( std::chrono::steady_clock::now() )
   ,mDenoiser( new OIDNDenoiser() )
 #endif
@@ -69,7 +69,12 @@ int Rasterizer::HowManyThreadsToSpawn() const
 
 void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
-	if( !ro ) return;
+	RegisterRasterizerOutput( ro );
+}
+
+bool Rasterizer::RegisterRasterizerOutput( IRasterizerOutput* ro )
+{
+	if( !ro ) return false;
 
 	// L8 review round 5 — mutex + dedup.  See `outsMutex` comment in
 	// Rasterizer.h.  Dedup eliminates the unbounded-vector-growth
@@ -80,11 +85,37 @@ void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 	std::lock_guard<std::mutex> lock( outsMutex );
 	for( IRasterizerOutput* existing : outs ) {
 		if( existing == ro ) {
-			return;  // already registered, no-op
+			return false;  // already registered, no-op
 		}
 	}
+	// Take the list's reference first, but roll it back if vector growth
+	// throws.  IReference::addref is a virtual legacy API without a noexcept
+	// declaration, so neither ordering is independently safe; this explicit
+	// transaction leaves no published entry and no extra ref on either throw.
 	ro->addref();
-	outs.push_back( ro );
+	try {
+		outs.push_back( ro );
+	}
+	catch( ... ) {
+		ro->release();
+		throw;
+	}
+	return true;
+}
+
+void Rasterizer::RemoveRasterizerOutput( IRasterizerOutput* ro )
+{
+	if( !ro ) return;
+
+	std::lock_guard<std::mutex> lock( outsMutex );
+	for( RasterizerOutputListType::iterator i=outs.begin(), e=outs.end(); i!=e; ++i ) {
+		if( *i == ro ) {
+			IRasterizerOutput* removed = *i;
+			outs.erase( i );
+			safe_release( removed );
+			return;
+		}
+	}
 }
 
 void Rasterizer::FreeRasterizerOutputs( )
@@ -182,4 +213,3 @@ void Rasterizer::ReannounceFrameStore()
 		(*it)->OnRasterizerFrameStoreChanged( mFrameStore );
 	}
 }
-

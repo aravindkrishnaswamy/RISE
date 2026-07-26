@@ -377,7 +377,9 @@ namespace RISE
 						"\"view\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with every mode above. If both view and camera are supplied, view wins. PINHOLE-ONLY: the override carries pose+FOV and cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (ok:false) naming the unsupported type rather than silently using the active camera's optics. An unresolvable name likewise FAILS with the available-name list in message.\"},"
 						"\"light\":{\"type\":\"string\",\"description\":"
-						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"}"
+						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
+						"\"perception\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"}"
 					"}}"
 				},
 				{
@@ -393,10 +395,15 @@ namespace RISE
 					"EXCEPTION -- objectmap: if the last render was mode:\"objectmap\", read at "
 					"NATIVE size (omit maxEdge). Downscaling box-blends the flat identity "
 					"colours and corrupts the exact-byte legend match; the ~192 economy "
-					"pattern applies to beauty/draft renders only.",
+					"pattern applies to beauty/draft renders only. Set representation:\"perception\" "
+					"after a production beauty render to receive one 2x2 atlas ordered "
+					"[beauty, albedo; world normal, log depth] plus guide-prefilter, depth, and exact managed-memory metadata. "
+					"If maxEdge is omitted, beauty remains native but perception is bounded to 1024.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"maxEdge\":{\"type\":\"number\",\"description\":"
-						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks.\"}"
+						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks. Omission keeps beauty native and bounds perception to 1024.\"},"
+						"\"representation\":{\"type\":\"string\",\"enum\":[\"beauty\",\"perception\"],\"description\":"
+						"\"Optional, default beauty. perception returns a conventional 2x2 beauty/albedo/world-normal/log-depth atlas from the same render, with guidePrefilter and no re-render.\"}"
 					"}}"
 				},
 				{

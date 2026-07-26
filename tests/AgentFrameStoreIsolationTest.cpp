@@ -88,6 +88,7 @@
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/Rendering/AutoRasterizer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -96,6 +97,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -142,6 +144,81 @@ static std::string BuildScene( const std::string& rasterizerChunk )
 		"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
 }
 
+// Full-frame glass slab at z=[1.4,1.6], opaque backstop at z=[-0.1,0.1],
+// camera at z=3.5.  The first camera hit is therefore about 1.9 units away;
+// Accurate albedo/normal may legitimately select the backstop, but depth must
+// remain the primary glass hit for every integrator and wavelength strategy.
+static std::string BuildDepthContractScene( const std::string& rasterizerChunk )
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		+ rasterizerChunk + "\n\n"
+		"film\n{\n\twidth 12\n\theight 12\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12.0\n}\n\n"
+		"dielectric_material\n{\n\tname glass_mat\n\ttau 1 1 1\n\tior 1.5\n}\n\n"
+		"box_geometry\n{\n\tname glass_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition 0 0 1.5\n}\n\n"
+		"uniformcolor_painter\n{\n\tname back_albedo\n\tcolor 0.3 0.6 0.2\n}\n\n"
+		"lambertian_material\n{\n\tname back_mat\n\treflectance back_albedo\n}\n\n"
+		"box_geometry\n{\n\tname back_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname back_obj\n\tgeometry back_geo\n\tmaterial back_mat\n}\n";
+}
+
+// The same camera geometry inside dense global fog. Nearly every beauty path
+// scatters before reaching the slab, but depth must still describe the raw
+// camera intersection rather than the redirected post-medium path.
+static std::string BuildMediumDepthContractScene( const std::string& rasterizerChunk )
+{
+	return BuildDepthContractScene( rasterizerChunk ) +
+		"\nhomogeneous_medium\n{\n\tname dense_fog\n\tabsorption 0.01 0.01 0.01\n"
+		"\tscattering 5 5 5\n\tphase isotropic\n}\n\n"
+		"global_medium\n{\n\tmedium dense_fog\n}\n";
+}
+
+// A sphere against empty background forces partially covered silhouette
+// pixels. Depth must average only hit samples: misses are a coverage mask,
+// not zero-distance measurements that pull depthMin toward the camera.
+static std::string BuildSilhouetteDepthScene( const std::string& rasterizerChunk )
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		+ rasterizerChunk + "\n\n"
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30\n}\n\n"
+		"uniformcolor_painter\n{\n\tname gray\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname matte\n\treflectance gray\n}\n\n"
+		"sphere_geometry\n{\n\tname sphere\n\tradius 1\n}\n\n"
+		"standard_object\n{\n\tname sphere_object\n\tgeometry sphere\n\tmaterial matte\n}\n";
+}
+
+// Fully transparent shader-dispatch front slab. The transparency shader casts
+// a continuation ray through the same RuntimeContext; recursive path-tracing
+// shader invocations must not replace the root slab's camera depth.
+static std::string BuildTransparencyDepthContractScene( const std::string& rasterizerChunk )
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
+		"transparency_shaderop\n{\n\tname transmit\n\ttransparency white\n\tone_sided false\n}\n\n"
+		"advanced_shader\n{\n\tname transparent_path\n"
+		"\tshaderop DefaultPathTracing 0 100 +\n\tshaderop transmit 0 100 =\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		+ rasterizerChunk + "\n\n"
+		"film\n{\n\twidth 12\n\theight 12\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname front_albedo\n\tcolor 0.7 0.2 0.2\n}\n\n"
+		"lambertian_material\n{\n\tname front_mat\n\treflectance front_albedo\n}\n\n"
+		"box_geometry\n{\n\tname front_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname front_obj\n\tgeometry front_geo\n\tmaterial front_mat\n"
+		"\tshader transparent_path\n\tposition 0 0 1.5\n}\n\n"
+		"uniformcolor_painter\n{\n\tname back_albedo\n\tcolor 0.3 0.6 0.2\n}\n\n"
+		"lambertian_material\n{\n\tname back_mat\n\treflectance back_albedo\n}\n\n"
+		"box_geometry\n{\n\tname back_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname back_obj\n\tgeometry back_geo\n\tmaterial back_mat\n}\n";
+}
+
 static const char* const kPtRasterizer =
 	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}";
 static const char* const kBdptRasterizer =
@@ -158,6 +235,114 @@ static const char* const kVcmRasterizer =
 // parametrizations with no changes.
 static const char* const kMltRasterizer =
 	"mlt_rasterizer\n{\n\tbootstrap_samples 200\n\tchains 4\n\tmutations_per_pixel 4\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kAutoRasterizer =
+	"auto_rasterizer\n{\n\tintegrator pt\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
+
+// Depth is a geometry/camera fact, independent of the beauty integrator and
+// of the surface selected for the albedo/normal prefilter.  Keep this matrix
+// deliberately tiny: it crosses shader-dispatch, pure PT, BDPT, and VCM with
+// RGB, scalar-wavelength, and HWSS spectral execution paths.
+static const char* const kDepthShaderPel =
+	"pixelpel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthShaderSpectralNM =
+	"pixelintegratingspectral_rasterizer\n{\n\tsamples 2\n\tlum_samples 1\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\tmax_recursion 8\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthShaderSpectralHWSS =
+	"pixelintegratingspectral_rasterizer\n{\n\tsamples 2\n\tlum_samples 1\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\tmax_recursion 8\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthPtPel =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthPtSpectralNM =
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthPtSpectralHWSS =
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthBdptPel =
+	"bdpt_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthBdptSpectralHWSS =
+	"bdpt_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthBdptSpectralNM =
+	"bdpt_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthVcmPel =
+	"vcm_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthVcmSpectralHWSS =
+	"vcm_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthVcmSpectralNM =
+	"vcm_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+
+static const char* const kSilhouetteShaderPel =
+	"pixelpel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kSilhouettePtPel =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kSilhouetteBdptPel =
+	"bdpt_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kSilhouetteVcmPel =
+	"vcm_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+
+enum DepthSceneKind { kGlassDepth, kMediumDepth, kTransparencyDepth };
+
+static void RunDepthContractProbe( const char* label, const char* rasterizerChunk,
+	DepthSceneKind sceneKind = kGlassDepth )
+{
+	const std::string sceneText = sceneKind == kMediumDepth
+		? BuildMediumDepthContractScene( rasterizerChunk )
+		: ( sceneKind == kTransparencyDepth
+			? BuildTransparencyDepthContractScene( rasterizerChunk )
+			: BuildDepthContractScene( rasterizerChunk ) );
+	const std::string scenePath = WriteTemp(
+		( std::string( "agent_perception_depth_" ) + label + ".RISEscene" ).c_str(),
+		sceneText );
+	Check( !scenePath.empty(), std::string( label ) + ": depth-contract scene written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		std::string( label ) + ": depth-contract scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	AgentRenderParams params;
+	params.perception = true;
+	const AgentRenderResult render = session ? session->Render( params ) : AgentRenderResult();
+	unsigned int atlasW = 0, atlasH = 0;
+	AgentPerceptionInfo info;
+	const std::vector<unsigned char> atlas = session
+		? session->ReadPerception( 24, atlasW, atlasH, info )
+		: std::vector<unsigned char>();
+	Check( render.ok && !atlas.empty() && info.available,
+		std::string( label ) + ": perception render and atlas succeed" );
+	Check( info.validDepthPixels == 12u * 12u && info.depthMin > 1.75 && info.depthMax < 2.25,
+		std::string( label ) + ": depth stays on the ~1.9-unit primary glass hit" );
+	unsigned int invalidW = 99, invalidH = 99;
+	AgentPerceptionInfo invalidInfo;
+	const std::vector<unsigned char> invalidAtlas = session
+		? session->ReadPerception( 1, invalidW, invalidH, invalidInfo )
+		: std::vector<unsigned char>();
+	Check( invalidAtlas.empty() && !invalidInfo.available && invalidW == 0 && invalidH == 0,
+		std::string( label ) + ": unencodable atlas reports unavailable to direct callers" );
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+static void RunSilhouetteDepthProbe( const char* label, const char* rasterizerChunk )
+{
+	const std::string scenePath = WriteTemp(
+		( std::string( "agent_perception_silhouette_" ) + label + ".RISEscene" ).c_str(),
+		BuildSilhouetteDepthScene( rasterizerChunk ) );
+	Check( !scenePath.empty(), std::string( label ) + ": silhouette scene written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		std::string( label ) + ": silhouette scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	AgentRenderParams params;
+	params.perception = true;
+	const AgentRenderResult render = session ? session->Render( params ) : AgentRenderResult();
+	unsigned int atlasW = 0, atlasH = 0;
+	AgentPerceptionInfo info;
+	const std::vector<unsigned char> atlas = session
+		? session->ReadPerception( 48, atlasW, atlasH, info )
+		: std::vector<unsigned char>();
+	Check( render.ok && !atlas.empty() && info.available,
+		std::string( label ) + ": silhouette perception render succeeds" );
+	Check( info.validDepthPixels > 0 && info.validDepthPixels < 24u * 24u &&
+	       info.depthMin > 4.9 && info.depthMax < 6.1,
+		std::string( label ) + ": silhouette misses do not dilute ~5-6-unit hit depth" );
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
 
 // Probe IRenderObserver: counts OnTileComplete / OnFrameComplete calls.
 // Attached to the CANONICAL (display) FrameStore before an agent render;
@@ -224,12 +409,28 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 		ProbeObserver probe;
 		displayStore->AddObserver( &probe );
 
-		AgentRenderResult res = session->Render( -1 );
+		AgentRenderParams params;
+		params.perception = true;
+		AgentRenderResult res = session->Render( params );
 
 		displayStore->RemoveObserver( &probe );
 
 		Check( res.ok, label + " (no-override): render succeeds" );
 		Check( !res.png.empty(), label + " (no-override): PNG bytes are non-empty" );
+		Check( res.perceptionAvailable,
+			label + " (no-override): explicit perception is available for this rasterizer family" );
+		Check( res.perceptionPersistentBytes == 24u * 24u * 7u &&
+		       res.perceptionAuxiliaryPeakBytes == 24u * 24u * 84u,
+			label + " (no-override): perception reports exact compact/peak payload bytes" );
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo perceptionInfo;
+		const std::vector<unsigned char> atlas = session->ReadPerception(
+			0, atlasW, atlasH, perceptionInfo );
+		Check( !atlas.empty() && perceptionInfo.available && atlasW == 48 && atlasH == 48,
+			label + " (no-override): perception atlas is cached at native 2x2 dimensions" );
+		Check( perceptionInfo.validDepthPixels > 0 && perceptionInfo.depthMin > 0.0 &&
+		       perceptionInfo.depthMax >= perceptionInfo.depthMin,
+			label + " (no-override): perception depth is populated and ordered" );
 		Check( displayStore->Generation() == genBefore,
 			label + " (no-override): canonical FrameStore Generation() did NOT advance across the agent render" );
 		Check( probe.tileCompleteCount == 0,
@@ -238,6 +439,11 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 			label + " (no-override): probe observer saw ZERO OnFrameComplete callbacks on the canonical store" );
 		Check( concreteRast->GetFrameStore() == displayStore,
 			label + " (no-override): rasterizer's FrameStore identity is restored to the captured display store" );
+		if( Implementation::AutoRasterizer* autoRast =
+				dynamic_cast<Implementation::AutoRasterizer*>( concreteRast ) ) {
+			Check( autoRast->ForTest_GetDelegateFrameStore() == displayStore,
+				label + " (no-override): auto delegate's FrameStore identity is restored immediately" );
+		}
 	}
 
 	// ---- Case 2: FILM-DIMS-OVERRIDE render -----------------------------
@@ -568,6 +774,56 @@ struct CountingOutputsEnumCallback : public IEnumCallback<IRasterizerOutput>
 	bool operator()( const IRasterizerOutput& ) override { ++count; return true; }
 };
 
+static void RunProductionSinkDetachmentProbe( const char* label, const char* rasterizerChunk )
+{
+	std::printf( "=== AgentFrameStoreIsolationTest: transactional production-sink detachment (%s) ===\n", label );
+
+	const std::string tempName = std::string( "agent_framestore_sink_detachment_" ) + label + ".RISEscene";
+	const std::string scenePath = WriteTemp(
+		tempName.c_str(), BuildScene( rasterizerChunk ) );
+	Check( !scenePath.empty(), "sink-detachment: scratch scene file written" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "sink-detachment: scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "sink-detachment: AgentSession wraps the locally-owned Job" );
+	IRasterizer* rast = pJob->GetRasterizer();
+	Check( rast != nullptr, "sink-detachment: Job has an active rasterizer" );
+
+	if( session && rast ) {
+		AgentRenderParams params;
+		params.perception = true;
+		const AgentRenderResult good = session->Render( params );
+		Check( good.ok && good.perceptionAvailable,
+			"sink-detachment: successful production render publishes a perception observation" );
+
+		CountingOutputsEnumCallback afterSuccess;
+		rast->EnumerateRasterizerOutputs( afterSuccess );
+		Check( afterSuccess.count == 0,
+			"sink-detachment: successful render leaves no full observation attached to the rasterizer" );
+
+		session->ForTest_SetThrowBeforeRasterize( true );
+		const AgentRenderResult failed = session->Render( params );
+		Check( !failed.ok, "sink-detachment: forced production failure reaches the rollback path" );
+		CountingOutputsEnumCallback afterFailure;
+		rast->EnumerateRasterizerOutputs( afterFailure );
+		Check( afterFailure.count == 0,
+			"sink-detachment: failed render leaves no partial observation attached to the rasterizer" );
+		session->ForTest_SetThrowBeforeRasterize( false );
+
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> prior = session->ReadPerception( 16, atlasW, atlasH, info );
+		Check( info.available && !prior.empty(),
+			"sink-detachment: rollback preserves the session-owned last successful observation" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+	std::printf( "=== production-sink detachment (%s): %d passed, %d failed (cumulative) ===\n",
+		label, g_pass, g_fail );
+}
+
 static void RunDraftIsolationTest()
 {
 	std::printf( "=== AgentFrameStoreIsolationTest: Toolkit slice 2 draft-quality isolation ===\n" );
@@ -760,9 +1016,42 @@ int main()
 	// today (AcceptsFrameStorePush() == true), so it must be covered
 	// here, not just PT/BDPT/VCM.
 	RunIsolationProbe( "mlt", kMltRasterizer );
+	RunIsolationProbe( "auto", kAutoRasterizer );
+
+	RunDepthContractProbe( "shader_pel", kDepthShaderPel );
+	RunDepthContractProbe( "shader_spectral_nm", kDepthShaderSpectralNM );
+	RunDepthContractProbe( "shader_spectral_hwss", kDepthShaderSpectralHWSS );
+	RunDepthContractProbe( "pt_pel", kDepthPtPel );
+	RunDepthContractProbe( "pt_spectral_nm", kDepthPtSpectralNM );
+	RunDepthContractProbe( "pt_spectral_hwss", kDepthPtSpectralHWSS );
+	RunDepthContractProbe( "bdpt_pel", kDepthBdptPel );
+	RunDepthContractProbe( "bdpt_spectral_nm", kDepthBdptSpectralNM );
+	RunDepthContractProbe( "bdpt_spectral_hwss", kDepthBdptSpectralHWSS );
+	RunDepthContractProbe( "vcm_pel", kDepthVcmPel );
+	RunDepthContractProbe( "vcm_spectral_nm", kDepthVcmSpectralNM );
+	RunDepthContractProbe( "vcm_spectral_hwss", kDepthVcmSpectralHWSS );
+
+	// Adversarial root-definition coverage: shader recursion and participating
+	// media must not redirect the primary-depth observation.
+	RunDepthContractProbe( "transparent_shader_pel", kDepthShaderPel, kTransparencyDepth );
+	RunDepthContractProbe( "transparent_shader_spectral_nm", kDepthShaderSpectralNM, kTransparencyDepth );
+	RunDepthContractProbe( "transparent_shader_spectral_hwss", kDepthShaderSpectralHWSS, kTransparencyDepth );
+	RunDepthContractProbe( "medium_shader_pel", kDepthShaderPel, kMediumDepth );
+	RunDepthContractProbe( "medium_bdpt_pel", kDepthBdptPel, kMediumDepth );
+	RunDepthContractProbe( "medium_bdpt_spectral_hwss", kDepthBdptSpectralHWSS, kMediumDepth );
+	RunDepthContractProbe( "medium_vcm_pel", kDepthVcmPel, kMediumDepth );
+
+	// Regression for hit-conditioned normalization at anti-aliased silhouettes.
+	// Shader dispatch is a control; PT/BDPT/VCM exposed the original defect.
+	RunSilhouetteDepthProbe( "silhouette_shader_pel", kSilhouetteShaderPel );
+	RunSilhouetteDepthProbe( "silhouette_pt_pel", kSilhouettePtPel );
+	RunSilhouetteDepthProbe( "silhouette_bdpt_pel", kSilhouetteBdptPel );
+	RunSilhouetteDepthProbe( "silhouette_vcm_pel", kSilhouetteVcmPel );
 
 	RunThrowDuringOverrideTest();
 	RunThrowNoOverrideTest();
+	RunProductionSinkDetachmentProbe( "pt", kPtRasterizer );
+	RunProductionSinkDetachmentProbe( "auto", kAutoRasterizer );
 	RunDraftIsolationTest();
 	RunDraftThrowTest();
 

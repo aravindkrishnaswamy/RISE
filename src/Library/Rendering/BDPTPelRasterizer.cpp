@@ -15,14 +15,11 @@
 #include "pch.h"
 #include "BDPTPelRasterizer.h"
 #include "AOVBuffers.h"
-#include "../Utilities/PathVertexEval.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "ProgressiveFilm.h"
-#include "../Interfaces/IBSDF.h"
-#include "../Interfaces/IMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -124,52 +121,12 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// `subpathStarts` outparam is retained for Phase-2 integrator
 	// cleanup but always contains exactly one [0, size) range.
 	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
-	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts );
+	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+		sampler, eyeVerts, eyeSubpathStarts, pAOV );
 
-	// Extract AOV data for the denoiser.  Walks the eye subpath from
-	// the camera until it finds the first non-delta SURFACE vertex
-	// (skipping glass / mirror, whose `pScat->isDelta` was recorded
-	// per-sample on each vertex's `isDelta` field by GenerateEyeSubpath).
-	// This is the BDPT analogue of PathTracingIntegrator's
-	// first-non-delta hook — for OIDN-P1-1 v2, see docs/OIDN.md.
-	//
-	// Rough dielectrics handled correctly: each sample's Fresnel
-	// decision sets `isDelta` on the chosen scatter, so per-sample
-	// the AOV is recorded at the rough surface or behind it
-	// depending on each sample's outcome.  Averaged across samples
-	// (via AccumulateAlbedo / AccumulateNormal at the per-sample
-	// caller above), this gives a Fresnel-weighted mix that matches
-	// the beauty signal.
-	//
-	// When no non-delta surface is found (whole subpath is glass /
-	// mirror), pAOV stays !valid and the caller skips accumulation,
-	// which OIDN handles via its empty-aux path.
-	if( pAOV ) {
-		for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
-			const BDPTVertex& v = eyeVerts[iv];
-			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-				pAOV->normal = v.normal;
-				if( v.pMaterial->GetBSDF() ) {
-					// Rebuild the RayIntersectionGeometric from the vertex
-					// via the canonical PathVertexEval helper so we don't
-					// silently miss texture coords / vertex color / future
-					// fields — see PathVertexEval.h CONTRACT block.  Then
-					// install a real camera-ray view direction so the
-					// BSDF's albedo() reads the right outgoing dir via
-					// rig.ray.Dir() (BDPTVertex doesn't carry a ray).
-					const Vector3 rayDir = Vector3Ops::Normalize(
-						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-					RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
-					PathVertexEval::PopulateRIGFromVertex( v, rig );
-					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
-				} else {
-					pAOV->albedo = RISEPel( 1, 1, 1 );
-				}
-				pAOV->valid = true;
-				break;
-			}
-		}
-	}
+	// GenerateEyeSubpath captures Fast guides at the raw primary hit and
+	// Accurate guides at the first selected non-delta surface while the real
+	// trace-time intersection and incoming ray are still available.
 
 	RISEPel sampleColor( 0, 0, 0 );
 
@@ -384,18 +341,19 @@ void BDPTPelRasterizer::IntegratePixel(
 				? ((mortonIndex << log2SPP) | globalSampleIndex)
 				: globalSampleIndex;
 
-#ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
 			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
 				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
 			}
-#else
-			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-				effectiveIndex, pixelSeed, 0 );
-#endif
 
 			// Approach C: cross-pixel filter-weighted splat.  With a
 			// wide-support filter, this spreads every eye-subpath
@@ -484,11 +442,9 @@ void BDPTPelRasterizer::IntegratePixel(
 		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
