@@ -67,6 +67,30 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ./run_scenes.sh
 ```
 
+### macOS release DMG
+
+The release script performs a clean `RISE-GUI-Opto` Xcode build in fresh
+DerivedData, bundles and relinks non-system runtime libraries, signs the app,
+and creates a drag-to-Applications DMG plus a dSYM archive and SHA-256 file:
+
+```sh
+scripts/create_macos_release.sh
+```
+
+The default build targets the host architecture and uses an ad-hoc signature.
+For public distribution, provide a Developer ID Application identity and a
+`notarytool` keychain profile; the script then signs, notarizes, and staples
+the DMG:
+
+```sh
+RISE_CODESIGN_IDENTITY='Developer ID Application: Example (TEAMID)' \
+RISE_NOTARY_PROFILE=rise-notary \
+scripts/create_macos_release.sh --version 1.2.0 --build 42
+```
+
+Run `scripts/create_macos_release.sh --help` for architecture, output, and
+working-tree options. Artifacts are written to `dist/macos/` by default.
+
 ### Windows
 
 ```powershell

@@ -1,6 +1,7 @@
 /rendered
 /bin
 /dbin
+/dist
 .DS_Store
 *.o
 *.obj
