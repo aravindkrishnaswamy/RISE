@@ -29,8 +29,8 @@ Build a fresh RISE-GUI Opto app, bundle all non-system dylibs, sign it, and
 create a compressed DMG containing RISE-GUI.app and an Applications shortcut.
 
 Options:
-  --version VERSION       Override MARKETING_VERSION from the Xcode project.
-  --build NUMBER          Override CURRENT_PROJECT_VERSION.
+  --version VERSION       Override the RISE library and bundle version.
+  --build NUMBER          Override the RISE library and bundle build number.
   --output-dir PATH       Artifact directory (default: dist/macos).
   --sign-identity NAME    Developer ID Application identity; default is ad hoc.
                           RISE_CODESIGN_IDENTITY provides the same setting.
@@ -51,6 +51,9 @@ Examples:
 The default ad-hoc signature is suitable for local/internal distribution but
 does not satisfy Gatekeeper on another Mac. For public distribution, supply a
 Developer ID Application identity and a notarytool keychain profile.
+
+Version and build defaults come from src/Library/Version.h. Overrides are
+applied consistently to the compiled library and the app bundle.
 
 The current Xcode dependency stack produces Apple Silicon (arm64) releases and
 inherits the project's macOS deployment target. Intel/universal packaging will
@@ -137,8 +140,10 @@ if [ -n "${NOTARY_PROFILE}" ] && [ "${SIGN_IDENTITY}" = "-" ]; then
 	die "notarization requires --sign-identity or RISE_CODESIGN_IDENTITY"
 fi
 
+SOURCE_HEAD="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+SOURCE_STATUS="$(git -C "${REPO_ROOT}" status --porcelain=v1 --untracked-files=all)"
 SOURCE_DIRTY=0
-if [ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]; then
+if [ -n "${SOURCE_STATUS}" ]; then
 	SOURCE_DIRTY=1
 fi
 if [ "${ALLOW_DIRTY}" -eq 0 ] && [ "${SOURCE_DIRTY}" -eq 1 ]; then
@@ -152,18 +157,30 @@ read_project_setting() {
 		awk -F ' = ' -v key="${setting}" '$1 ~ "^[[:space:]]*" key "$" { print $2; exit }'
 }
 
+read_version_define() {
+	local define="$1"
+	awk -v key="${define}" '$1 == "#define" && $2 == key { print $3; exit }' \
+		"${REPO_ROOT}/src/Library/Version.h"
+}
+
 if [ -z "${VERSION}" ]; then
-	VERSION="$(read_project_setting MARKETING_VERSION)"
+	VERSION_MAJOR="$(read_version_define RISE_VER_MAJOR_VERSION)"
+	VERSION_MINOR="$(read_version_define RISE_VER_MINOR_VERSION)"
+	VERSION_REVISION="$(read_version_define RISE_VER_REVISION_VERSION)"
+	VERSION="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_REVISION}"
 fi
 if [ -z "${BUILD_NUMBER}" ]; then
-	BUILD_NUMBER="$(read_project_setting CURRENT_PROJECT_VERSION)"
+	BUILD_NUMBER="$(read_version_define RISE_VER_BUILD_VERSION)"
 fi
-[ -n "${VERSION}" ] || die "unable to determine MARKETING_VERSION"
-[ -n "${BUILD_NUMBER}" ] || die "unable to determine CURRENT_PROJECT_VERSION"
+[ -n "${VERSION}" ] || die "unable to determine the RISE library version"
+[ -n "${BUILD_NUMBER}" ] || die "unable to determine the RISE library build number"
 [[ "${VERSION}" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || \
 	die "version must contain one to three dot-separated integers: ${VERSION}"
-[[ "${BUILD_NUMBER}" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || \
-	die "build number must contain one to three dot-separated integers: ${BUILD_NUMBER}"
+[[ "${BUILD_NUMBER}" =~ ^[0-9]+$ ]] || \
+	die "build number must be a nonnegative integer: ${BUILD_NUMBER}"
+IFS=. read -r VERSION_MAJOR VERSION_MINOR VERSION_REVISION <<< "${VERSION}"
+VERSION_MINOR="${VERSION_MINOR:-0}"
+VERSION_REVISION="${VERSION_REVISION:-0}"
 DEPLOYMENT_TARGET="$(read_project_setting MACOSX_DEPLOYMENT_TARGET)"
 [ -n "${DEPLOYMENT_TARGET}" ] || die "unable to determine MACOSX_DEPLOYMENT_TARGET"
 
@@ -182,6 +199,7 @@ trap cleanup EXIT
 DERIVED_DATA="${WORK_DIR}/DerivedData"
 ARTIFACT_BASENAME="RISE-${VERSION}-build${BUILD_NUMBER}-macOS-${ARTIFACT_ARCH}"
 BUILD_LOG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}-build.log"
+FAILED_BUILD_LOG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}-failed-build.log"
 APP="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app"
 DSYM="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app.dSYM"
 APP_EXECUTABLE="${APP}/Contents/MacOS/RISE-GUI"
@@ -192,6 +210,7 @@ CHECKSUMS="${OUTPUT_DIR}/${ARTIFACT_BASENAME}-SHA256SUMS.txt"
 STAGED_DMG="${WORK_DIR}/$(basename "${DMG}")"
 STAGED_DSYM_ZIP="${WORK_DIR}/$(basename "${DSYM_ZIP}")"
 STAGED_CHECKSUMS="${WORK_DIR}/$(basename "${CHECKSUMS}")"
+STAGED_BUILD_LOG="${WORK_DIR}/$(basename "${BUILD_LOG}")"
 
 if [ "${OVERWRITE}" -eq 0 ]; then
 	for artifact in "${DMG}" "${DSYM_ZIP}" "${CHECKSUMS}"; do
@@ -206,14 +225,30 @@ xcodebuild -project "${PROJECT}" -scheme "${SCHEME}" \
 	-derivedDataPath "${DERIVED_DATA}" build \
 	ARCHS="${XCODE_ARCHS}" ONLY_ACTIVE_ARCH=NO \
 	MARKETING_VERSION="${VERSION}" CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
+	GCC_PREPROCESSOR_DEFINITIONS="RISE_VER_MAJOR_VERSION=${VERSION_MAJOR} RISE_VER_MINOR_VERSION=${VERSION_MINOR} RISE_VER_REVISION_VERSION=${VERSION_REVISION} RISE_VER_BUILD_VERSION=${BUILD_NUMBER}" \
 	CODE_SIGNING_ALLOWED=NO GCC_TREAT_WARNINGS_AS_ERRORS=YES \
-	SWIFT_TREAT_WARNINGS_AS_ERRORS=YES 2>&1 | tee "${BUILD_LOG}"
+	SWIFT_TREAT_WARNINGS_AS_ERRORS=YES 2>&1 | tee "${STAGED_BUILD_LOG}"
 build_status=${PIPESTATUS[0]}
 set -e
-[ "${build_status}" -eq 0 ] || die "Opto build failed (see ${BUILD_LOG})"
+if [ "${build_status}" -ne 0 ]; then
+	cp -p "${STAGED_BUILD_LOG}" "${FAILED_BUILD_LOG}"
+	die "Opto build failed (see ${FAILED_BUILD_LOG})"
+fi
 [ -d "${APP}" ] || die "build succeeded but app bundle is missing: ${APP}"
 [ -x "${APP_EXECUTABLE}" ] || die "app executable is missing: ${APP_EXECUTABLE}"
 plutil -lint "${APP}/Contents/Info.plist" >/dev/null
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")" = "${VERSION}" ] || \
+	die "built app marketing version does not match ${VERSION}"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP}/Contents/Info.plist")" = "${BUILD_NUMBER}" ] || \
+	die "built app build number does not match ${BUILD_NUMBER}"
+for definition in \
+	"RISE_VER_MAJOR_VERSION=${VERSION_MAJOR}" \
+	"RISE_VER_MINOR_VERSION=${VERSION_MINOR}" \
+	"RISE_VER_REVISION_VERSION=${VERSION_REVISION}" \
+	"RISE_VER_BUILD_VERSION=${BUILD_NUMBER}"; do
+	grep -Fq -- "-D${definition}" "${STAGED_BUILD_LOG}" || \
+		die "Opto compiler commands did not receive ${definition}"
+done
 
 mkdir -p "${FRAMEWORKS_DIR}"
 
@@ -376,6 +411,9 @@ while [ "${SCAN_INDEX}" -lt "${#SCAN_BINARIES[@]}" ]; do
 done
 
 cp -p "${REPO_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
+mkdir -p "${APP}/Contents/Resources/Third-Party Licenses/cgltf"
+cp -p "${REPO_ROOT}/extlib/cgltf/LICENSE.txt" \
+	"${APP}/Contents/Resources/Third-Party Licenses/cgltf/LICENSE.txt"
 
 expected_arches="${XCODE_ARCHS}"
 verify_architectures() {
@@ -425,7 +463,6 @@ fi
 codesign --verify --deep --strict --verbose=2 "${APP}"
 
 INFO_FILE="${WORK_DIR}/Release-Info.txt"
-commit="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 dirty="no"
 [ "${SOURCE_DIRTY}" -eq 1 ] && dirty="yes"
 cat > "${INFO_FILE}" <<EOF
@@ -433,7 +470,7 @@ RISE ${VERSION} (build ${BUILD_NUMBER})
 Architecture: ${ARTIFACT_ARCH}
 Configuration: ${CONFIGURATION}
 Minimum macOS: ${DEPLOYMENT_TARGET}
-Git commit: ${commit}
+Git commit: ${SOURCE_HEAD}
 Dirty working tree: ${dirty}
 Built: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 Built with: $(xcodebuild -version | paste -sd ' ' -)
@@ -463,30 +500,29 @@ if [ -n "${NOTARY_PROFILE}" ]; then
 	spctl --assess --type open --context context:primary-signature --verbose=2 "${STAGED_DMG}"
 fi
 
-if [ -d "${DSYM}" ]; then
-	ditto -c -k --sequesterRsrc --keepParent "${DSYM}" "${STAGED_DSYM_ZIP}"
-else
-	echo "WARNING: dSYM bundle was not produced" >&2
-fi
+[ -d "${DSYM}" ] || die "Opto build did not produce the required dSYM bundle"
+ditto -c -k --sequesterRsrc --keepParent "${DSYM}" "${STAGED_DSYM_ZIP}"
 
 (
 	cd "${WORK_DIR}"
 	: > "$(basename "${STAGED_CHECKSUMS}")"
 	shasum -a 256 "$(basename "${STAGED_DMG}")" >> "$(basename "${STAGED_CHECKSUMS}")"
-	if [ -f "$(basename "${STAGED_DSYM_ZIP}")" ]; then
-		shasum -a 256 "$(basename "${STAGED_DSYM_ZIP}")" >> "$(basename "${STAGED_CHECKSUMS}")"
-	fi
+	shasum -a 256 "$(basename "${STAGED_DSYM_ZIP}")" >> "$(basename "${STAGED_CHECKSUMS}")"
 )
+
+current_head="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+current_status="$(git -C "${REPO_ROOT}" status --porcelain=v1 --untracked-files=all)"
+[ "${current_head}" = "${SOURCE_HEAD}" ] || \
+	die "Git HEAD changed during the release build; refusing to publish mixed provenance"
+[ "${current_status}" = "${SOURCE_STATUS}" ] || \
+	die "Git working tree changed during the release build; refusing to publish mixed provenance"
 
 # The checksum file is the publication marker: move it last so an interrupted
 # publish cannot leave new artifacts paired with a stale checksum manifest.
 [ "${OVERWRITE}" -eq 1 ] && rm -f "${CHECKSUMS}"
 mv -f "${STAGED_DMG}" "${DMG}"
-if [ -f "${STAGED_DSYM_ZIP}" ]; then
-	mv -f "${STAGED_DSYM_ZIP}" "${DSYM_ZIP}"
-elif [ "${OVERWRITE}" -eq 1 ]; then
-	rm -f "${DSYM_ZIP}"
-fi
+mv -f "${STAGED_DSYM_ZIP}" "${DSYM_ZIP}"
+mv -f "${STAGED_BUILD_LOG}" "${BUILD_LOG}"
 mv -f "${STAGED_CHECKSUMS}" "${CHECKSUMS}"
 
 echo

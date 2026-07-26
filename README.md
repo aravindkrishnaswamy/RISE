@@ -90,8 +90,10 @@ scripts/create_macos_release.sh --version 1.2.0 --build 42
 ```
 
 Run `scripts/create_macos_release.sh --help` for output, overwrite, and
-working-tree options. Artifacts include both version and build number and are
-written to `dist/macos/` by default.
+working-tree options. Version and build default to `src/Library/Version.h`;
+overrides update both the compiled library and app bundle metadata. Artifacts
+include both version and build number and are written to `dist/macos/` by
+default.
 
 ### Windows
 
