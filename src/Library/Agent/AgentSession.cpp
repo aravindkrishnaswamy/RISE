@@ -6985,6 +6985,7 @@ namespace RISE
 			outInfo.depthMax = pi.depthMax;
 			outInfo.persistentBytes = pi.persistentBytes;
 			outInfo.auxiliaryPeakBytes = pi.auxiliaryPeakBytes;
+			outInfo.encoderRowBytes = pi.encoderRowBytes;
 			return png;
 		}
 

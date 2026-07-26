@@ -177,7 +177,7 @@ namespace RISE
 			// CONCURRENCY CONTRACT).  L6c will introduce a
 			// chain-mutex so reader threads (UI viewports, encoders)
 			// can read FrameStore concurrently with this swap.
-			void SetFrameStore( FrameStore* frameStore );
+			virtual void SetFrameStore( FrameStore* frameStore );
 
 			// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
 			// on every attached `IRasterizerOutput` WITHOUT swapping

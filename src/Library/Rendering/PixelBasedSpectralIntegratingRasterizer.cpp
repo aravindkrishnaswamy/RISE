@@ -376,10 +376,12 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 					rc.pAOV = pAOVBuffers ? &aov : 0;
 					TakeSingleSample( rc, rast, ray, c );
 					rc.pAOV = 0;
-					if( pAOVBuffers && aov.valid ) {
-						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-						pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					if( pAOVBuffers ) {
+						if( aov.valid ) {
+							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+						}
+						if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 					}
 					// XYZ-only path: accumulate XYZ in both FilteredFilm
 					// and the local colAccruedXYZ.  No per-sample XYZ->
@@ -480,10 +482,12 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			rc.pAOV = pAOVBuffers ? &aov : 0;
 			TakeSingleSample( rc, rast, ray, c );
 			rc.pAOV = 0;
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
-				pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+				}
+				if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
 				pAOVBuffers->Normalize( x, y, 1.0 );
 			}
 			cret = RISEColor( c.base, c.a );

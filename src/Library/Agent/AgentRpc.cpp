@@ -1802,6 +1802,8 @@ namespace RISE
 							static_cast<double>( perceptionInfo.persistentBytes ) ) );
 						result.set( "auxiliaryPeakBytes", JsonValue::MakeNumber(
 							static_cast<double>( perceptionInfo.auxiliaryPeakBytes ) ) );
+						result.set( "encoderRowBytes", JsonValue::MakeNumber(
+							static_cast<double>( perceptionInfo.encoderRowBytes ) ) );
 					}
 					return MakeSuccess( idValue, result );
 				}

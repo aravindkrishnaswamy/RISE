@@ -44,7 +44,12 @@
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Agent/Base64.h"
 #include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Reference.h"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -61,6 +66,57 @@ static void Check( bool c, const std::string& w )
 {
 	if( c ) ++g_pass;
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
+}
+
+typedef std::array<unsigned char, 4> DecodedPixel;
+struct DecodedPng
+{
+	unsigned int width = 0, height = 0;
+	std::vector<DecodedPixel> pixels;
+	const DecodedPixel& At( unsigned int x, unsigned int y ) const
+	{
+		return pixels[static_cast<std::size_t>( y ) * width + x];
+	}
+};
+
+// Decode through RISE's production PNG reader. Linear mode recovers the
+// stored byte values, which lets this test verify the streamed writer's
+// channel order and actual quadrant content rather than only its IHDR.
+static bool DecodePng( const std::vector<unsigned char>& png, DecodedPng& out )
+{
+	if( png.empty() ) return false;
+	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(
+		const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+		static_cast<unsigned int>( png.size() ), false );
+	IRasterImageReader* reader = 0;
+	if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+		safe_release( buffer );
+		return false;
+	}
+	if( !reader->BeginRead( out.width, out.height ) ) {
+		safe_release( reader );
+		safe_release( buffer );
+		return false;
+	}
+	out.pixels.resize( static_cast<std::size_t>( out.width ) * out.height );
+	auto byte = []( double v ) -> unsigned char {
+		int i = static_cast<int>( v * 255.0 + 0.5 );
+		if( i < 0 ) i = 0;
+		if( i > 255 ) i = 255;
+		return static_cast<unsigned char>( i );
+	};
+	for( unsigned int y = 0; y < out.height; ++y ) {
+		for( unsigned int x = 0; x < out.width; ++x ) {
+			RISEColor c;
+			reader->ReadColor( c, x, y );
+			out.pixels[static_cast<std::size_t>( y ) * out.width + x] = {
+				byte( c.base.r ), byte( c.base.g ), byte( c.base.b ), byte( c.a ) };
+		}
+	}
+	reader->EndRead();
+	safe_release( reader );
+	safe_release( buffer );
+	return true;
 }
 
 // The same inline native-v7 scene the slice-0b test uses: a lit diffuse
@@ -731,11 +787,55 @@ int main()
 		Check( r.get( "persistentBytes" ).asNumber() == 24.0 * 24.0 * 7.0 &&
 		       r.get( "auxiliaryPeakBytes" ).asNumber() == 24.0 * 24.0 * 87.0,
 		       "read_image exposes exact managed perception memory" );
+		Check( r.get( "encoderRowBytes" ).asNumber() == 32.0 * 4.0,
+		       "perception encoder uses one RGBA scanline rather than a full atlas staging image" );
 		std::vector<unsigned char> png;
 		Check( Base64Decode( r.get( "png_base64" ).asString(), png ),
 		       "perception png_base64 decodes cleanly" );
 		Check( png.size() >= 8 && png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
 		       "perception payload is a PNG" );
+		if( png.size() >= 24 ) {
+			const unsigned int ihdrW = ( unsigned( png[16] ) << 24 ) | ( unsigned( png[17] ) << 16 ) |
+				( unsigned( png[18] ) << 8 ) | unsigned( png[19] );
+			const unsigned int ihdrH = ( unsigned( png[20] ) << 24 ) | ( unsigned( png[21] ) << 16 ) |
+				( unsigned( png[22] ) << 8 ) | unsigned( png[23] );
+			Check( ihdrW == 32 && ihdrH == 32,
+			       "perception PNG IHDR matches the declared whole-atlas dimensions" );
+		}
+		DecodedPng decoded;
+		Check( DecodePng( png, decoded ) && decoded.width == 32 && decoded.height == 32,
+		       "streamed perception PNG fully decodes at the declared dimensions" );
+		if( decoded.width == 32 && decoded.height == 32 ) {
+			const DecodedPixel& albedo = decoded.At( 24, 8 );
+			const DecodedPixel& normal = decoded.At( 8, 24 );
+			const DecodedPixel& depth = decoded.At( 24, 24 );
+			const bool redAlbedo = albedo[0] > albedo[1] + 80 && albedo[0] > albedo[2] + 80;
+			if( !redAlbedo ) {
+				std::printf( "  decoded atlas probes: albedo=(%u,%u,%u,%u) normal=(%u,%u,%u,%u) depth=(%u,%u,%u,%u)\n",
+					unsigned( albedo[0] ), unsigned( albedo[1] ), unsigned( albedo[2] ), unsigned( albedo[3] ),
+					unsigned( normal[0] ), unsigned( normal[1] ), unsigned( normal[2] ), unsigned( normal[3] ),
+					unsigned( depth[0] ), unsigned( depth[1] ), unsigned( depth[2] ), unsigned( depth[3] ) );
+			}
+			Check( redAlbedo,
+			       "top-right panel decodes as the sphere's edited red diffuse albedo" );
+			Check( normal[2] > normal[0] + 30 && normal[2] > normal[1] + 30,
+			       "bottom-left panel preserves RGB channel order for the camera-facing normal" );
+			Check( depth[0] > 0 && depth[0] == depth[1] && depth[1] == depth[2],
+			       "bottom-right panel decodes as nonzero grayscale log depth" );
+			Check( albedo[3] == 255 && normal[3] == 255 && depth[3] == 255,
+			       "all streamed perception panels are opaque RGBA" );
+		}
+	}
+	{
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "representation", JsonValue::MakeString( "perception" ) );
+		params.set( "maxEdge", JsonValue::MakeNumber( 17.0 ) );
+		JsonValue env = ParseResponse( rpc.HandleLine( Req( 74, "read_image", params ) ), 74 );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "width" ).asNumber() == 16.0 && r.get( "height" ).asNumber() == 16.0,
+		       "odd maxEdge remains a strict whole-atlas bound" );
+		Check( r.get( "encoderRowBytes" ).asNumber() == 16.0 * 4.0,
+		       "downscaled atlas still stages exactly one RGBA row" );
 	}
 	{
 		JsonValue params = JsonValue::MakeObject();

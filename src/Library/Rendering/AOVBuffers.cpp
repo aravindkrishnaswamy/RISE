@@ -48,6 +48,10 @@ void AOVBuffers::Reset( unsigned int w, unsigned int h, const Plan& requested )
 	plan = requested;
 	const size_t pixels = static_cast<size_t>( w ) * h;
 	auto reset = []( std::vector<float>& v, size_t count ) {
+		if( count == 0 ) {
+			std::vector<float>().swap( v );
+			return;
+		}
 		if( v.size() != count ) v.assign( count, 0.0f );
 		else std::fill( v.begin(), v.end(), 0.0f );
 	};
@@ -127,6 +131,12 @@ void AOVBuffers::Normalize(
 		normals[idx + 2] *= fw;
 	}
 	if( !depths.empty() ) depths[pixel] *= fw;
+}
+
+void AOVBuffers::ReleaseDepthStorage()
+{
+	std::vector<float>().swap( depths );
+	plan.depth = false;
 }
 
 void RISE::Implementation::CollectFirstHitAOVs(

@@ -359,11 +359,11 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
 
-				// AOV capture (hero wavelength, first bundle).  Walks the
-				// eye subpath until the first non-delta SURFACE vertex,
-				// matching BDPT{Pel,Spectral}Rasterizer's pattern — see
-				// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
-				// rationale and docs/SPECTRAL_PARITY_AUDIT.md §2.17 for
+				// AOV capture (hero wavelength, first bundle). Depth uses the
+				// first SURFACE vertex; Fast albedo/normal use that surface and
+				// Accurate walks to the first non-delta SURFACE vertex. This
+				// matches BDPT{Pel,Spectral}Rasterizer's pattern. See
+				// docs/SPECTRAL_PARITY_AUDIT.md §2.17 for
 				// the 2026-05-07 fix that replaced the
 				// `value(N,rig) * PI` Lambertian-normal-incidence proxy
 				// with a direct `albedo(rig)` call against a
@@ -373,15 +373,25 @@ void VCMSpectralRasterizer::IntegratePixel(
 				if( ss == 0 && pAOVBuffers ) {
 					for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
 						const BDPTVertex& v = eyeVerts[iv];
-						if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+						if( v.type == BDPTVertex::SURFACE ) {
+							const Scalar primaryDepth = Vector3Ops::Magnitude(
+								Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+							if( primaryDepth > 0 ) {
+								pAOVBuffers->AccumulateDepth( x, y, primaryDepth, weight );
+							}
+							break;
+						}
+					}
+					const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
+					for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
+						const BDPTVertex& v = eyeVerts[iv];
+						if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
 							PixelAOV aov;
 							aov.normal = v.normal;
-							aov.depth = Vector3Ops::Magnitude(
-								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
 							if( v.pMaterial->GetBSDF() ) {
 								const Vector3 rayDir = Vector3Ops::Normalize(
-									Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-								RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+									Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+								RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
 								PathVertexEval::PopulateRIGFromVertex( v, rig );
 								aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
 							} else {
@@ -390,7 +400,6 @@ void VCMSpectralRasterizer::IntegratePixel(
 							aov.valid = true;
 							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-							pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 							break;
 						}
 					}

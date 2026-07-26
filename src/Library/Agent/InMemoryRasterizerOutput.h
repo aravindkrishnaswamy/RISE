@@ -69,6 +69,7 @@ namespace RISE
 				double depthMax = 0.0;
 				std::uint64_t persistentBytes = 0;
 				std::uint64_t auxiliaryPeakBytes = 0;
+				std::uint64_t encoderRowBytes = 0;
 			};
 
 			InMemoryRasterizerOutput();
@@ -207,7 +208,10 @@ namespace RISE
 			//! Encode a conventional 2x2 diagnostic atlas from the compact
 			//! sidecar captured with the last frame: beauty | albedo on the
 			//! first row, world normal | log depth on the second.  maxEdge
-			//! bounds the whole atlas and never upscales.
+			//! bounds the whole atlas and never upscales.  Encoding holds one
+			//! RGBA scanline at a time; PerceptionInfo::encoderRowBytes reports
+			//! that bounded uncompressed working set (the returned compressed
+			//! PNG vector is the response payload and is necessarily retained).
 			std::vector<unsigned char> ToPerceptionPng(
 				unsigned int maxEdge,
 				unsigned int& outWidth,

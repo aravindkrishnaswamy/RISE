@@ -655,10 +655,12 @@ void PixelBasedPelRasterizer::IntegratePixel(
 					rc.pAOV = pAOVBuffers ? &aov : 0;
 					bool bHit = pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 );
 					rc.pAOV = 0;
-					if( pAOVBuffers && aov.valid ) {
-						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-						pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					if( pAOVBuffers ) {
+						if( aov.valid ) {
+							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+						}
+						if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 					}
 
 					if( filmMode ) {
@@ -771,10 +773,12 @@ void PixelBasedPelRasterizer::IntegratePixel(
 				cret = RISEColor( c, 1.0 );
 			}
 			rc.pAOV = 0;
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
-				pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+				}
+				if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
 				pAOVBuffers->Normalize( x, y, 1.0 );
 			}
 		}

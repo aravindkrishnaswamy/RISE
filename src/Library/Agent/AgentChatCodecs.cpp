@@ -379,7 +379,7 @@ namespace RISE
 						"\"light\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
 						"\"perception\":{\"type\":\"boolean\",\"description\":"
-						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and camera-distance depth alongside beauty without changing beauty pixels. Set false to save the auxiliary memory when you only need beauty. Ignored for draft/objectmap/view modes, which are already diagnostics.\"}"
+						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"}"
 					"}}"
 				},
 				{

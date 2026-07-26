@@ -53,7 +53,8 @@ returns one PNG atlas in stable row-major panel order:
 
 `maxEdge` bounds the complete atlas, not each panel. The result also reports
 `sourceWidth`, `sourceHeight`, `validDepthPixels`, `depthMin`, `depthMax`,
-`persistentBytes`, and `auxiliaryPeakBytes`. `representation:"beauty"`
+`persistentBytes`, `auxiliaryPeakBytes`, and `encoderRowBytes`.
+`representation:"beauty"`
 remains the default and is backward-compatible. An unknown representation is
 an invalid-params error. If perception was disabled or the last render was
 ineligible, the perception result is explicitly unavailable and contains no
@@ -66,22 +67,27 @@ The planes use these meanings:
 - **Albedo:** first useful surface's diffuse reflectance, clamped to `[0,1]`.
 - **Normal:** world-space shading normal, mapped from `[-1,1]` to display RGB;
   misses are black.
-- **Depth:** positive camera-ray surface distance. It is normalized over valid
-  pixels in log space, near-to-far as white-to-black; misses are black. The
-  numeric min/max and valid count make the visualization interpretable.
+- **Depth:** positive distance to the primary camera ray's first geometric
+  surface hit. It is independent of the albedo/normal prefilter selection,
+  normalized over valid pixels in log space, near-to-far as white-to-black;
+  misses are black. The numeric min/max and valid count make the visualization
+  interpretable.
 
-The normal/albedo surface follows the existing OIDN prefilter rule when OIDN
-is active: `fast` means camera first hit, while `accurate` may walk through
-delta/specular vertices to the first non-delta surface. This is intentional
-sharing with the renderer's established auxiliary-signal semantics.
+The normal/albedo surface follows the existing OIDN prefilter rule: `fast`
+means camera first hit, while `accurate` may walk through delta/specular
+vertices to the first non-delta surface. Depth never walks with that selection.
+This is intentional sharing with the renderer's established auxiliary-signal
+semantics.
 
 ## One render, planned channels
 
 `FrameStore::Spec` is the demand signal. An eligible agent render installs a
 private store with only `Albedo`, `Normal`, and `Depth`. `MakeAOVPlan` unions
 those requests with OIDN's albedo/normal requirement. `AOVBuffers` then
-allocates only the requested float planes; a normal display FrameStore and a
-render with `perception:false` allocate none of them.
+allocates only the requested float planes. A normal non-denoised display render
+allocates none of them. `perception:false` avoids perception-specific depth,
+private-FrameStore, and compact-sidecar allocation; an OIDN-enabled render may
+still allocate its own albedo/normal scratch.
 
 PT, spectral PT, BDPT, VCM, and the shader-dispatch path attach `PixelAOV` to
 the beauty estimator and collect the requested data during the render.
@@ -117,9 +123,19 @@ persistentBytes    =  7 * P
 These are exact logical payload bytes managed by this feature; allocator and
 container bookkeeping, the pre-existing beauty cache, and OIDN's own filter
 internals are excluded. At 1920x1080 this is about 172.0 MiB peak and 13.8 MiB
-retained. The float scratch and private FrameStore are released after capture.
-The atlas encoder streams pixels directly to the PNG writer and never builds
-four additional full-resolution RGB images or an uncompressed atlas.
+retained. The private FrameStore and perception depth scratch are released
+after capture. If OIDN is enabled, its independently-required albedo/normal
+cache retains 24 bytes/pixel for reuse; perception does not retain an
+additional float depth plane. Consequently 87 bytes/pixel is the complete
+feature payload at peak, not the incremental cost over an already-enabled OIDN
+render.
+
+The atlas encoder sends one RGBA scanline at a time directly to libpng and
+reports that bounded uncompressed working set as `encoderRowBytes = 4 *
+atlasWidth`. It never builds four additional full-resolution RGB images or an
+uncompressed atlas. The returned compressed PNG byte vector is the response
+payload itself and is necessarily retained until transport; it is not included
+in the auxiliary-memory figures.
 
 ## Deliberate limits and extension path
 
@@ -133,6 +149,10 @@ four additional full-resolution RGB images or an uncompressed atlas.
   endpoint can consume it without base64/token inflation.
 - Object and primitive IDs remain separate typed FrameStore channels and the
   existing object-map/query tools remain the more precise semantic interface.
+- AOV samples are resolved per pixel with the estimator's sample weights, but
+  are not reconstruction-filtered through the beauty pixel filter. With a
+  non-box filter, silhouettes in albedo/normal/depth can therefore differ
+  slightly from filtered beauty.
 - Accuracy improvement should be measured on task suites (spatial relations,
   occlusion, material diagnosis, relighting, and edit localization), comparing
   beauty-only against beauty-plus-perception at equal model/token budgets.
@@ -142,6 +162,9 @@ four additional full-resolution RGB images or an uncompressed atlas.
 `FrameStoreTest` locks channel planning, 4/28-byte scratch costs, typed
 albedo/normal/depth propagation, and the zero-consumer plan. The end-to-end
 `AgentFirstSliceTest` locks transport defaults, the stable atlas layout, PNG
-validity, depth metadata, 87/7-byte accounting, whole-atlas `maxEdge`, invalid
-representation handling, and the allocation/stale-cache behavior of
-`perception:false`.
+validity and dimensions, bounded encoder-row metadata, depth metadata,
+87/7-byte accounting, whole-atlas `maxEdge`, invalid representation handling,
+and the allocation/stale-cache behavior of `perception:false`.
+`AgentFrameStoreIsolationTest` additionally crosses shader dispatch, PT, BDPT,
+and VCM in RGB, scalar-wavelength, and HWSS modes to lock primary-hit depth
+semantics through glass.

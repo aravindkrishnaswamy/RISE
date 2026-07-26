@@ -335,29 +335,38 @@ void VCMPelRasterizer::IntegratePixel(
 				continue;
 			}
 
-			// Extract AOV data by walking the eye
-			// subpath until the first non-delta SURFACE vertex.
-			// Mirrors BDPTPelRasterizer::IntegratePixelRGB — see
-			// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
-			// rationale.  The walk skips glass / mirror; rough
+			// Extract AOV data from the eye subpath. Depth uses the first
+			// SURFACE vertex. Fast albedo/normal use that same surface;
+			// Accurate walks to the first non-delta SURFACE vertex.
+			// Mirrors BDPTPelRasterizer::IntegratePixelRGB. Rough
 			// dielectrics are handled probabilistically per sample
 			// because each vertex's `isDelta` was set from the
 			// chosen scatter's `pScat->isDelta` in GenerateEyeSubpath.
 			if( pAOVBuffers ) {
 				for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
 					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+					if( v.type == BDPTVertex::SURFACE ) {
+						const Scalar primaryDepth = Vector3Ops::Magnitude(
+							Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+						if( primaryDepth > 0 ) {
+							pAOVBuffers->AccumulateDepth( x, y, primaryDepth, weight );
+						}
+						break;
+					}
+				}
+				const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
+				for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
+					const BDPTVertex& v = eyeVerts[iv];
+					if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
 						PixelAOV aov;
 						aov.normal = v.normal;
-						aov.depth = Vector3Ops::Magnitude(
-							Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
 						if( v.pMaterial->GetBSDF() ) {
 							// Real camera-ray dir + canonical PathVertexEval
 							// helper so the BSDF sees ptCoord / vColor /
 							// future fields — see PathVertexEval.h CONTRACT.
 							const Vector3 rayDir = Vector3Ops::Normalize(
-								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-							RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+								Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+							RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
 							PathVertexEval::PopulateRIGFromVertex( v, rig );
 							aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
 						} else {
@@ -366,7 +375,6 @@ void VCMPelRasterizer::IntegratePixel(
 						aov.valid = true;
 						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-						pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 						break;
 					}
 				}

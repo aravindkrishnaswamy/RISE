@@ -2725,7 +2725,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 						{
 							pAOV->normal = ri.geometric.vNormal;
-							pAOV->depth = ri.geometric.range;
 							pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
 								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
 								: RISEPel( 1, 1, 1 );
@@ -3294,7 +3293,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 					{
 						pAOV->normal = ri.geometric.vNormal;
-						pAOV->depth = ri.geometric.range;
 						pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
 						                     : RISEPel( 1, 1, 1 );
 						pAOV->valid = true;
@@ -3478,6 +3476,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	if constexpr ( Traits::supports_aov ) {
+		// Primary depth is independent of Accurate-mode albedo/normal
+		// traversal.  Never replace this camera-ray range with a later
+		// bounce segment.
+		if( pAOV && ri.geometric.bHit ) pAOV->depth = ri.geometric.range;
+	}
 
 	// Extract first-hit AOV data for the denoiser (Fast prefilter mode).
 	// For delta / transparent surfaces (GetBSDF()==NULL) use white albedo
@@ -3490,9 +3494,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// mirror are walked through naturally; rough dielectrics record at
 	// the rough surface or behind it depending on each sample's Fresnel
 	// decision.  See docs/OIDN.md (OIDN-P1-1) for the design.
-	// AOV recording is compiled in only for the AOV-capable tag (Pel).
-	// NMTag has supports_aov == false, so this whole block vanishes for
-	// the spectral path — preserving its original no-AOV behaviour.
+	// AOV recording is compiled in for both AOV-capable tags: Pel and NM.
+	// Callers that did not request auxiliaries pass a null PixelAOV.
 	if constexpr ( Traits::supports_aov )
 	{
 #ifdef RISE_ENABLE_OIDN
@@ -3503,7 +3506,6 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 		{
 			pAOV->normal = ri.geometric.vNormal;
-			pAOV->depth = ri.geometric.range;
 			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
 			// under mClayOverride every surface's REFLECTANCE is the
 			// substituted clay BRDF (see SetClayOverride's doc) -- the
@@ -3892,16 +3894,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		hwssResult[i] = 0;
 	}
 
-	// Fast-mode inline AOV (OIDN aux): record the camera ray's first hit.
-	// Matches the post-render first-hit retrace fallback's semantics but
-	// inline, so no extra retrace pass is needed.  Accurate mode skips this
-	// and records at the first non-delta scatter below (through glass / mirror).
-	// albedo/normal are wavelength-independent, so the hero-bundle records once.
+	// Fast-mode albedo/normal fallback for callers that begin from a
+	// pre-computed hit. Root camera-ray entry points normally record this
+	// before medium sampling; they also own primary-depth capture. Accurate
+	// mode skips this and records at the first non-delta scatter below.
+	// Albedo/normal are wavelength-independent, so the hero bundle records once.
 	if( pAOV && !pAOV->valid && firstHit.geometric.bHit &&
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
 		pAOV->normal = firstHit.geometric.vNormal;
-		pAOV->depth = firstHit.geometric.range;
 		// GUI render modes P2b `clay_lights` (review-p2c P2-d fix, HWSS
 		// twin of the RGB/NM IntegrateRay fast-mode hook -- see that
 		// site's fuller comment).
@@ -4574,7 +4575,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 		{
 			pAOV->normal = ri.geometric.vNormal;
-			pAOV->depth = ri.geometric.range;
 			pAOV->albedo = pBRDFCur ? pBRDFCur->albedo( ri.geometric )
 			                        : RISEPel( 1, 1, 1 );
 			pAOV->valid = true;
@@ -4800,6 +4800,20 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	// Capture before primary-medium sampling: HWSS can return from a volume
+	// scatter without ever entering IntegrateFromHitHWSS.
+	if( pAOV && ri.geometric.bHit ) {
+		pAOV->depth = ri.geometric.range;
+		if( !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Fast ) {
+			pAOV->normal = ri.geometric.vNormal;
+			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
+				? pClayBRDF->albedo( ri.geometric )
+				: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+					? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+					: RISEPel( 1, 1, 1 ) );
+			pAOV->valid = true;
+		}
+	}
 
 	// Medium transport for first bounce — use hero wavelength for
 	// distance sampling; per-wavelength transmittance applied inside

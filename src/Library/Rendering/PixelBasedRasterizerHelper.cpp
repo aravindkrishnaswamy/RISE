@@ -1267,12 +1267,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		blocks = 0;
 	}
 
-#ifdef RISE_ENABLE_OIDN
 	// `mainPassCompleted` is intentionally NOT passed: cancelled
 	// renders still get OIDN'd on whatever was accumulated up to the
 	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
 	// log (2026-04-29).
 	(void)mainPassCompleted;
+#ifdef RISE_ENABLE_OIDN
 	// Skip OIDN entirely when show_adaptive_map is on — the
 	// authoritative output is the heatmap from the progressive
 	// resolve, denoising it would mangle the grayscale ramp.
@@ -1337,9 +1337,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
 	safe_release( pImage );
-	// OIDN historically retains its AOV scratch for reuse.  A perception-
-	// only render has no such persistent consumer, so release its 28-B/pixel
-	// float tap now that OutputImage has compacted the FrameStore channels.
+	// Depth belongs only to perception and must never remain pinned by
+	// OIDN's intentional albedo/normal scratch cache.  OutputImage has now
+	// compacted it into the 7-B/pixel agent sidecar, so release its capacity
+	// on every path.  A perception-only render then drops the entire tap;
+	// OIDN keeps only its historical 24-B/pixel pair for reuse.
+	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();
 #ifdef RISE_ENABLE_OIDN
 	if( !bDenoisingEnabled ) {
 #endif
@@ -2047,8 +2050,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
 	ReleaseRenderImage( pImage );
-	// Match the still-image lifetime: keep AOV scratch only for an active
-	// OIDN consumer, never merely because a FrameStore requested perception.
+	// Match the still-image lifetime: depth is perception-only and released
+	// even when OIDN retains its own albedo/normal scratch pair.
+	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();
 #ifdef RISE_ENABLE_OIDN
 	if( !bDenoisingEnabled ) {
 #endif

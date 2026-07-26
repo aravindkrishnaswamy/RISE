@@ -681,6 +681,7 @@ namespace RISE
 			double depthMax = 0.0;
 			std::uint64_t persistentBytes = 0;
 			std::uint64_t auxiliaryPeakBytes = 0;
+			std::uint64_t encoderRowBytes = 0;
 		};
 
 		//! Toolkit slice 3b: the OPTIONAL ephemeral camera/dims overrides

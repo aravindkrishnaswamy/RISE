@@ -352,10 +352,12 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				const XYZPel sampleXYZ = IntegratePixelSpectral(
 					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
 					pAOVBuffers ? &aov : 0 );
-				if( pAOVBuffers && aov.valid ) {
-					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+				if( pAOVBuffers ) {
+					if( aov.valid ) {
+						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+					}
+					if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 				}
 				// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 				// now accumulates XYZ; no per-sample chromaticity clip.
@@ -454,10 +456,12 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 		const XYZPel sampleXYZ = IntegratePixelSpectral(
 			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap,
 			pAOVBuffers ? &aov : 0 );
-		if( pAOVBuffers && aov.valid ) {
-			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
-			pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
-			pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
+		if( pAOVBuffers ) {
+			if( aov.valid ) {
+				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+				pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+			}
+			if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
 			pAOVBuffers->Normalize( x, y, 1.0 );
 		}
 

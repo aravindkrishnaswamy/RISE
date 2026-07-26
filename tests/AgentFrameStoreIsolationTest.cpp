@@ -88,6 +88,7 @@
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/Rendering/AutoRasterizer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -143,6 +144,27 @@ static std::string BuildScene( const std::string& rasterizerChunk )
 		"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
 }
 
+// Full-frame glass slab at z=[1.4,1.6], opaque backstop at z=[-0.1,0.1],
+// camera at z=3.5.  The first camera hit is therefore about 1.9 units away;
+// Accurate albedo/normal may legitimately select the backstop, but depth must
+// remain the primary glass hit for every integrator and wavelength strategy.
+static std::string BuildDepthContractScene( const std::string& rasterizerChunk )
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		+ rasterizerChunk + "\n\n"
+		"film\n{\n\twidth 12\n\theight 12\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12.0\n}\n\n"
+		"dielectric_material\n{\n\tname glass_mat\n\ttau 1 1 1\n\tior 1.5\n}\n\n"
+		"box_geometry\n{\n\tname glass_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname glass_obj\n\tgeometry glass_geo\n\tmaterial glass_mat\n\tposition 0 0 1.5\n}\n\n"
+		"uniformcolor_painter\n{\n\tname back_albedo\n\tcolor 0.3 0.6 0.2\n}\n\n"
+		"lambertian_material\n{\n\tname back_mat\n\treflectance back_albedo\n}\n\n"
+		"box_geometry\n{\n\tname back_geo\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname back_obj\n\tgeometry back_geo\n\tmaterial back_mat\n}\n";
+}
+
 static const char* const kPtRasterizer =
 	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}";
 static const char* const kBdptRasterizer =
@@ -159,6 +181,55 @@ static const char* const kVcmRasterizer =
 // parametrizations with no changes.
 static const char* const kMltRasterizer =
 	"mlt_rasterizer\n{\n\tbootstrap_samples 200\n\tchains 4\n\tmutations_per_pixel 4\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kAutoRasterizer =
+	"auto_rasterizer\n{\n\tintegrator pt\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
+
+// Depth is a geometry/camera fact, independent of the beauty integrator and
+// of the surface selected for the albedo/normal prefilter.  Keep this matrix
+// deliberately tiny: it crosses shader-dispatch, pure PT, BDPT, and VCM with
+// RGB, scalar-wavelength, and HWSS spectral execution paths.
+static const char* const kDepthShaderPel =
+	"pixelpel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthPtPel =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthPtSpectralNM =
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthPtSpectralHWSS =
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthBdptPel =
+	"bdpt_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthBdptSpectralHWSS =
+	"bdpt_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthVcmPel =
+	"vcm_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+static const char* const kDepthVcmSpectralHWSS =
+	"vcm_spectral_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n\thwss true\n\toidn_denoise false\n\toidn_prefilter accurate\n}";
+
+static void RunDepthContractProbe( const char* label, const char* rasterizerChunk )
+{
+	const std::string scenePath = WriteTemp(
+		( std::string( "agent_perception_depth_" ) + label + ".RISEscene" ).c_str(),
+		BuildDepthContractScene( rasterizerChunk ) );
+	Check( !scenePath.empty(), std::string( label ) + ": depth-contract scene written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		std::string( label ) + ": depth-contract scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	AgentRenderParams params;
+	params.perception = true;
+	const AgentRenderResult render = session ? session->Render( params ) : AgentRenderResult();
+	unsigned int atlasW = 0, atlasH = 0;
+	AgentPerceptionInfo info;
+	const std::vector<unsigned char> atlas = session
+		? session->ReadPerception( 24, atlasW, atlasH, info )
+		: std::vector<unsigned char>();
+	Check( render.ok && !atlas.empty() && info.available,
+		std::string( label ) + ": perception render and atlas succeed" );
+	Check( info.validDepthPixels == 12u * 12u && info.depthMin > 1.75 && info.depthMax < 2.25,
+		std::string( label ) + ": depth stays on the ~1.9-unit primary glass hit" );
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
 
 // Probe IRenderObserver: counts OnTileComplete / OnFrameComplete calls.
 // Attached to the CANONICAL (display) FrameStore before an agent render;
@@ -255,6 +326,11 @@ static void RunIsolationProbe( const std::string& label, const std::string& rast
 			label + " (no-override): probe observer saw ZERO OnFrameComplete callbacks on the canonical store" );
 		Check( concreteRast->GetFrameStore() == displayStore,
 			label + " (no-override): rasterizer's FrameStore identity is restored to the captured display store" );
+		if( Implementation::AutoRasterizer* autoRast =
+				dynamic_cast<Implementation::AutoRasterizer*>( concreteRast ) ) {
+			Check( autoRast->ForTest_GetDelegateFrameStore() == displayStore,
+				label + " (no-override): auto delegate's FrameStore identity is restored immediately" );
+		}
 	}
 
 	// ---- Case 2: FILM-DIMS-OVERRIDE render -----------------------------
@@ -777,6 +853,16 @@ int main()
 	// today (AcceptsFrameStorePush() == true), so it must be covered
 	// here, not just PT/BDPT/VCM.
 	RunIsolationProbe( "mlt", kMltRasterizer );
+	RunIsolationProbe( "auto", kAutoRasterizer );
+
+	RunDepthContractProbe( "shader_pel", kDepthShaderPel );
+	RunDepthContractProbe( "pt_pel", kDepthPtPel );
+	RunDepthContractProbe( "pt_spectral_nm", kDepthPtSpectralNM );
+	RunDepthContractProbe( "pt_spectral_hwss", kDepthPtSpectralHWSS );
+	RunDepthContractProbe( "bdpt_pel", kDepthBdptPel );
+	RunDepthContractProbe( "bdpt_spectral_hwss", kDepthBdptSpectralHWSS );
+	RunDepthContractProbe( "vcm_pel", kDepthVcmPel );
+	RunDepthContractProbe( "vcm_spectral_hwss", kDepthVcmSpectralHWSS );
 
 	RunThrowDuringOverrideTest();
 	RunThrowNoOverrideTest();

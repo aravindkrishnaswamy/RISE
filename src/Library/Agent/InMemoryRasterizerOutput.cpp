@@ -20,6 +20,10 @@
 
 #include <cmath>   // P3: std::round for the downscale dims rounding rule
 #include <limits>
+#ifndef NO_PNG_SUPPORT
+#include <png.h>
+#include <zlib.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -118,14 +122,16 @@ void InMemoryRasterizerOutput::CapturePerception_()
 		return static_cast<unsigned char>( encoded * 255.0 + 0.5 );
 	};
 	for( size_t i = 0; i < pixels; ++i ) {
-		const RISEPel& a = albedo->Data()[i];
-		mPerceptionAlbedo[i * 3 + 0] = displayByte( a.r );
-		mPerceptionAlbedo[i * 3 + 1] = displayByte( a.g );
-		mPerceptionAlbedo[i * 3 + 2] = displayByte( a.b );
-
 		const double d = static_cast<double>( depth->Data()[i] );
 		const bool hit = RISE::IsFiniteDouble( d ) && d > 0.0;
 		if( hit ) {
+			// Agent-atlas misses are consistently black.  OIDN's fallback can
+			// keep its white-miss convention in the float buffer; the depth mask
+			// makes the observation independent of renderer/fallback family.
+			const RISEPel& a = albedo->Data()[i];
+			mPerceptionAlbedo[i * 3 + 0] = displayByte( a.r );
+			mPerceptionAlbedo[i * 3 + 1] = displayByte( a.g );
+			mPerceptionAlbedo[i * 3 + 2] = displayByte( a.b );
 			const Vector3& n = normal->Data()[i];
 			mPerceptionNormal[i * 3 + 0] = displayByte( n.x * 0.5 + 0.5 );
 			mPerceptionNormal[i * 3 + 1] = displayByte( n.y * 0.5 + 0.5 );
@@ -135,6 +141,9 @@ void InMemoryRasterizerOutput::CapturePerception_()
 			if( t > 1.0 ) t = 1.0;
 			mPerceptionDepth[i] = static_cast<unsigned char>( ( 1.0 - t ) * 255.0 + 0.5 );
 		} else {
+			mPerceptionAlbedo[i * 3 + 0] = 0;
+			mPerceptionAlbedo[i * 3 + 1] = 0;
+			mPerceptionAlbedo[i * 3 + 2] = 0;
 			mPerceptionNormal[i * 3 + 0] = 0;
 			mPerceptionNormal[i * 3 + 1] = 0;
 			mPerceptionNormal[i * 3 + 2] = 0;
@@ -392,6 +401,33 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPngDownscaled(
 	return EncodePng( down, newW, newH, mExposureEV, mDisplayTransform, mColorSpace );
 }
 
+namespace
+{
+#ifndef NO_PNG_SUPPORT
+	struct PerceptionPngWriteContext
+	{
+		std::vector<unsigned char>* bytes;
+	};
+
+	void PerceptionPngWrite( png_structp png, png_bytep data, png_size_t length )
+	{
+		PerceptionPngWriteContext* ctx = static_cast<PerceptionPngWriteContext*>( png_get_io_ptr( png ) );
+		if( !ctx || !ctx->bytes || length > ctx->bytes->max_size() - ctx->bytes->size() ) {
+			png_error( png, "perception PNG output overflow" );
+			return;
+		}
+		try {
+			ctx->bytes->insert( ctx->bytes->end(), data, data + length );
+		}
+		catch( ... ) {
+			png_error( png, "perception PNG output allocation failed" );
+		}
+	}
+
+	void PerceptionPngFlush( png_structp ) {}
+#endif
+}
+
 std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	unsigned int maxEdge,
 	unsigned int& outWidth,
@@ -403,25 +439,67 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 	std::vector<unsigned char> out;
 	if( !mPerceptionInfo.available || !mHasImage || mWidth == 0 || mHeight == 0 ) return out;
 
-	const unsigned int nativeLong = 2u * ( mWidth >= mHeight ? mWidth : mHeight );
-	double scale = 1.0;
-	if( maxEdge > 0 && maxEdge < nativeLong ) {
-		scale = static_cast<double>( maxEdge ) / static_cast<double>( nativeLong );
+	// Atlas dimensions are two panels on each axis.  Work in uint64_t so
+	// authored films near UINT_MAX cannot wrap before the writer sees them.
+	// maxEdge/2 (floor) makes an odd bound strict: maxEdge=17 yields a
+	// 16-pixel atlas long edge, never 18.
+	const std::uint64_t sourceLong = mWidth >= mHeight ? mWidth : mHeight;
+	std::uint64_t panelLong = sourceLong;
+	if( maxEdge > 0 ) {
+		if( maxEdge < 2 ) return out; // no 2x2 atlas can satisfy the bound
+		const std::uint64_t bounded = static_cast<std::uint64_t>( maxEdge ) / 2u;
+		if( bounded < panelLong ) panelLong = bounded;
 	}
-	unsigned int panelW = static_cast<unsigned int>( std::round( scale * mWidth ) );
-	unsigned int panelH = static_cast<unsigned int>( std::round( scale * mHeight ) );
-	if( panelW < 1 ) panelW = 1;
-	if( panelH < 1 ) panelH = 1;
-	outWidth = panelW * 2;
-	outHeight = panelH * 2;
-
-	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer();
-	IRasterImageWriter* writer = nullptr;
-	if( !RISE_API_CreatePNGWriter( &writer, *buffer, 8, eColorSpace_sRGB ) || !writer ) {
-		safe_release( buffer );
+	std::uint64_t panelW64 = mWidth;
+	std::uint64_t panelH64 = mHeight;
+	if( panelLong < sourceLong ) {
+		panelW64 = ( static_cast<std::uint64_t>( mWidth ) * panelLong ) / sourceLong;
+		panelH64 = ( static_cast<std::uint64_t>( mHeight ) * panelLong ) / sourceLong;
+		if( panelW64 == 0 ) panelW64 = 1;
+		if( panelH64 == 0 ) panelH64 = 1;
+	}
+	const std::uint64_t uintMax = std::numeric_limits<unsigned int>::max();
+	if( panelW64 > uintMax / 2u || panelH64 > uintMax / 2u ) return out;
+	const unsigned int panelW = static_cast<unsigned int>( panelW64 );
+	const unsigned int panelH = static_cast<unsigned int>( panelH64 );
+	outWidth = panelW * 2u;
+	outHeight = panelH * 2u;
+	if( static_cast<std::size_t>( outWidth ) > std::numeric_limits<std::size_t>::max() / 4u ) {
 		outWidth = outHeight = 0;
 		return out;
 	}
+
+#ifdef NO_PNG_SUPPORT
+	outWidth = outHeight = 0;
+	return out;
+#else
+	const std::size_t rowBytes = static_cast<std::size_t>( outWidth ) * 4u;
+	std::vector<unsigned char> row( rowBytes );
+	outInfo.encoderRowBytes = rowBytes;
+
+	png_structp png = png_create_write_struct( PNG_LIBPNG_VER_STRING, 0, 0, 0 );
+	if( !png ) { outWidth = outHeight = 0; return out; }
+	png_infop info = png_create_info_struct( png );
+	if( !info ) {
+		png_destroy_write_struct( &png, 0 );
+		outWidth = outHeight = 0;
+		return out;
+	}
+	if( setjmp( png_jmpbuf( png ) ) ) {
+		png_destroy_write_struct( &png, &info );
+		out.clear();
+		outWidth = outHeight = 0;
+		outInfo.encoderRowBytes = 0;
+		return out;
+	}
+	PerceptionPngWriteContext writeContext{ &out };
+	png_set_write_fn( png, &writeContext, PerceptionPngWrite, PerceptionPngFlush );
+	png_set_filter( png, 0, PNG_NO_FILTERS );
+	png_set_compression_level( png, Z_BEST_COMPRESSION );
+	png_set_gAMA( png, info, 1.0 / 2.2 );
+	png_set_IHDR( png, info, outWidth, outHeight, 8, PNG_COLOR_TYPE_RGB_ALPHA,
+		PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT );
+	png_write_info( png, info );
 
 	const Scalar exposureMul = std::pow( Scalar( 2 ), static_cast<Scalar>( mExposureEV ) );
 	const DISPLAY_TRANSFORM dt = static_cast<DISPLAY_TRANSFORM>( mDisplayTransform );
@@ -429,7 +507,6 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 		return ColorUtils::SRGBTransferFunctionInverse( static_cast<double>( b ) / 255.0 );
 	};
 
-	writer->BeginWrite( outWidth, outHeight );
 	for( unsigned int ay = 0; ay < outHeight; ++ay ) {
 		const unsigned int panelY = ay >= panelH ? 1u : 0u;
 		const unsigned int dy = ay - panelY * panelH;
@@ -481,18 +558,17 @@ std::vector<unsigned char> InMemoryRasterizerOutput::ToPerceptionPng(
 				mapped.b *= exposureMul;
 				mapped = DisplayTransforms::Apply( dt, mapped );
 			}
-			writer->WriteColor( RISEColor( mapped, 1.0 ), ax, ay );
+			const RGBA8 pixel = RISEColor( mapped, 1.0 ).Integerize<sRGBPel, unsigned char>( 255.0 );
+			const std::size_t byte = static_cast<std::size_t>( ax ) * 4u;
+			row[byte + 0] = pixel.r;
+			row[byte + 1] = pixel.g;
+			row[byte + 2] = pixel.b;
+			row[byte + 3] = pixel.a;
 		}
+		png_write_row( png, row.data() );
 	}
-	writer->EndWrite();
-
-	const unsigned int nBytes = buffer->getCurPos();
-	const char* bytes = buffer->Pointer();
-	if( bytes && nBytes > 0 ) {
-		out.assign( reinterpret_cast<const unsigned char*>( bytes ),
-			reinterpret_cast<const unsigned char*>( bytes ) + nBytes );
-	}
-	safe_release( writer );
-	safe_release( buffer );
+	png_write_end( png, info );
+	png_destroy_write_struct( &png, &info );
 	return out;
+#endif
 }

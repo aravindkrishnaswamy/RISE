@@ -875,6 +875,20 @@ void AutoRasterizer::SyncDelegateFrameStore() const
 	}
 }
 
+void AutoRasterizer::SetFrameStore( FrameStore* frameStore )
+{
+	Rasterizer::SetFrameStore( frameStore );
+	if( !mDelegate ) return;
+	Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate );
+	if( delegate ) delegate->SetFrameStore( frameStore );
+}
+
+FrameStore* AutoRasterizer::ForTest_GetDelegateFrameStore() const
+{
+	Rasterizer* delegate = dynamic_cast<Rasterizer*>( mDelegate );
+	return delegate ? delegate->GetFrameStore() : 0;
+}
+
 void AutoRasterizer::AttachToScene( const IScene* pScene )
 {
 	EnsureResolved( pScene );

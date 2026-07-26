@@ -205,6 +205,17 @@ namespace
 		const AOVBuffers::Plan empty = MakeAOVPlan( nullptr, false );
 		Check( !empty.Any(), "no consumer produces a zero-allocation AOV plan" );
 
+		AOVBuffers oidnCache( w, h, AOVBuffers::Plan( true, true, true ) );
+		oidnCache.ReleaseDepthStorage();
+		Check( oidnCache.GetDepthPtr() == nullptr && !oidnCache.GetPlan().depth,
+			"post-capture release removes the perception-only depth plane" );
+		Check( oidnCache.StorageBytes() == pixels * 6u * sizeof(float) &&
+		       oidnCache.ReservedBytes() == pixels * 6u * sizeof(float),
+			"OIDN cache retains only its 24-byte/pixel albedo+normal pair" );
+		oidnCache.Reset( w, h, AOVBuffers::Plan( false, false, false ) );
+		Check( oidnCache.ReservedBytes() == 0,
+			"disabling an AOV plane releases capacity instead of pinning prior render memory" );
+
 		store->release();
 	}
 

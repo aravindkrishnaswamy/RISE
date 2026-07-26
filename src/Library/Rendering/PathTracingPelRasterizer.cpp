@@ -349,10 +349,12 @@ void PathTracingPelRasterizer::IntegratePixel(
 			const RISEPel sampleColor = IntegratePixelRGB(
 				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
 				pAOVBuffers ? &aov : 0 );
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-				pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+				if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 			}
 
 			RISE_PROFILE_INC(nSamplesAccumulated);

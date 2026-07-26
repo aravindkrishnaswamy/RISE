@@ -80,10 +80,12 @@ device.getError( errorMessage );
 `AOVBuffers` is now a channel-planned shared facility for OIDN and agent
 perception, rather than an OIDN-only allocation. PT, spectral PT, BDPT, VCM,
 and path-tracing shader dispatch accumulate albedo/normal (and depth when a
-FrameStore requests it) inline with the beauty samples. Fast mode records the
-camera first hit; Accurate mode records the first non-delta surface and runs
-OIDN's auxiliary prefilters, preserving the established clean/noisy-aux
-contract.
+FrameStore requests it) inline with the beauty samples. For albedo/normal,
+Fast mode records the camera first hit and Accurate mode records the first
+non-delta surface and runs OIDN's auxiliary prefilters, preserving the
+established clean/noisy-aux contract. Depth is not an OIDN input: when
+requested it always records the primary camera ray's first geometric hit,
+independent of that surface-selection mode.
 
 `CollectFirstHitAOVs` remains the fallback for an estimator without a usable
 inline hook, notably MLT. It lives in `AOVBuffers.cpp`; the legacy
@@ -97,8 +99,10 @@ inline hook, notably MLT. It lives in `AOVBuffers.cpp`; the legacy
 
 The storage plan is the union of OIDN's albedo/normal requirement and typed
 FrameStore channel demand, so a normal non-denoised render still allocates no
-AOV scratch. See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the agent
-consumer and memory accounting.
+AOV scratch. OIDN retains its 24-byte/pixel albedo/normal cache for reuse;
+perception-only depth storage is released immediately after output. See
+[AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the agent consumer and memory
+accounting.
 
 ### OIDN 2.4 feature surface vs. RISE usage
 
@@ -430,9 +434,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   retrace.  v1 shipped the full plumbing + the 3-filter prefilter
   pipeline + first-non-delta AOV recording in `PathTracingIntegrator`
   (used by `pathtracing_pel_rasterizer`).  v2 extends the
-  first-non-delta AOV walk to BDPT (Pel + Spectral) and VCM
+  mode-aware AOV walk to BDPT (Pel + Spectral) and VCM
   (Pel + Spectral) by walking the post-trace `eyeVerts[]` vector
-  for the first non-delta SURFACE vertex — exploiting BDPT/VCM's
+  to the first surface in Fast mode or first non-delta surface in Accurate
+  mode — exploiting BDPT/VCM's
   reified-path representation so no integrator-signature changes
   are needed.  PathTracingIntegrator's Fast-mode IntegrateRay
   hook intentionally does NOT walk past delta — PT can't reify
@@ -1036,11 +1041,12 @@ from a reviewer, or has its priority moved. Most recent first.
 
 ### 2026-04-29 — OIDN-P1-1 v2 shipped (BDPT + VCM walk-past-delta AOV)
 - BDPT Pel, VCM Pel, and VCM Spectral rasterizers now walk
-  `eyeVerts[]` for the first non-delta SURFACE vertex when
-  extracting OIDN AOVs, mirroring the pattern BDPTSpectralRasterizer
-  already used.  Glass / mirror first-hits are skipped so the AOV
-  represents the surface visible *through* the delta material —
-  matching what the beauty pass shows.
+  `eyeVerts[]` when extracting OIDN AOVs, mirroring the pattern
+  BDPTSpectralRasterizer already used. Fast selects the first surface;
+  Accurate skips glass / mirror first-hits and selects the first non-delta
+  surface so the auxiliary represents the surface visible through the delta
+  material. Primary-hit depth, added later for agent perception, is independent
+  of this selection.
 - **Key insight:** BDPT/VCM reify the path into `eyeVerts[]` so the
   per-sample `isDelta` walk happens after the subpath is generated,
   at zero ray-casting cost.  No integrator-signature changes were

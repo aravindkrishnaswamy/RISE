@@ -34,7 +34,7 @@ namespace RISE
 		RISEPel		albedo;
 		Vector3		normal;
 		Scalar		depth;
-		bool		valid;
+		bool		valid;		///< Albedo/normal surface is valid; depth is independent
 
 		PixelAOV() : depth( 0 ), valid( false ) {}
 	};
@@ -72,9 +72,9 @@ namespace RISE
 		public:
 			AOVBuffers( unsigned int w, unsigned int h, const Plan& requested = Plan() );
 
-			/// Clears existing contents for reuse.  Reallocates only
-			/// when dimensions change; otherwise preserves vector
-			/// capacity and zeroes the existing storage.
+			/// Clears existing contents for reuse. Requested planes preserve
+			/// capacity when their dimensions are unchanged; disabled planes
+			/// release capacity so a former consumer cannot pin their memory.
 			void Reset( unsigned int w, unsigned int h, const Plan& requested = Plan() );
 
 			/// Accumulates a weighted albedo sample at (x,y).
@@ -111,6 +111,11 @@ namespace RISE
 				Scalar invWeight
 				);
 
+			/// Drops the perception-only depth plane immediately after its
+			/// consumer has compacted it.  OIDN may deliberately retain the
+			/// albedo/normal planes for reuse, but must not pin depth capacity.
+			void ReleaseDepthStorage();
+
 			/// Returns true if any AOV data has been accumulated.
 			bool HasData() const { return bHasData.load( std::memory_order_relaxed ); }
 			const Plan& GetPlan() const { return plan; }
@@ -120,6 +125,9 @@ namespace RISE
 			const float* GetDepthPtr() const { return depths.empty() ? 0 : depths.data(); }
 			size_t StorageBytes() const {
 				return ( albedo.size() + normals.size() + depths.size() ) * sizeof( float );
+			}
+			size_t ReservedBytes() const {
+				return ( albedo.capacity() + normals.capacity() + depths.capacity() ) * sizeof( float );
 			}
 			unsigned int GetWidth() const { return width; }
 			unsigned int GetHeight() const { return height; }

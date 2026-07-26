@@ -126,12 +126,10 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts );
 
-	// Extract AOV data for the denoiser.  Walks the eye subpath from
-	// the camera until it finds the first non-delta SURFACE vertex
-	// (skipping glass / mirror, whose `pScat->isDelta` was recorded
-	// per-sample on each vertex's `isDelta` field by GenerateEyeSubpath).
-	// This is the BDPT analogue of PathTracingIntegrator's
-	// first-non-delta hook — for OIDN-P1-1 v2, see docs/OIDN.md.
+	// Extract AOV data. Depth always uses the first SURFACE vertex. Fast
+	// albedo/normal also use that surface; Accurate walks to the first
+	// non-delta SURFACE vertex (skipping glass / mirror, whose sampled
+	// delta state is stored on each vertex). See docs/OIDN.md.
 	//
 	// Rough dielectrics handled correctly: each sample's Fresnel
 	// decision sets `isDelta` on the chosen scatter, so per-sample
@@ -145,12 +143,21 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// mirror), pAOV stays !valid and the caller skips accumulation,
 	// which OIDN handles via its empty-aux path.
 	if( pAOV ) {
+		// Depth always describes the primary camera-visible surface and is
+		// independent of the OIDN prefilter's albedo/normal surface choice.
 		for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
 			const BDPTVertex& v = eyeVerts[iv];
-			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-				pAOV->normal = v.normal;
+			if( v.type == BDPTVertex::SURFACE ) {
 				pAOV->depth = Vector3Ops::Magnitude(
-					Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+					Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+				break;
+			}
+		}
+		const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
+		for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
+			const BDPTVertex& v = eyeVerts[iv];
+			if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
+				pAOV->normal = v.normal;
 				if( v.pMaterial->GetBSDF() ) {
 					// Rebuild the RayIntersectionGeometric from the vertex
 					// via the canonical PathVertexEval helper so we don't
@@ -160,8 +167,8 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 					// BSDF's albedo() reads the right outgoing dir via
 					// rig.ray.Dir() (BDPTVertex doesn't carry a ray).
 					const Vector3 rayDir = Vector3Ops::Normalize(
-						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-					RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+						Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+					RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
 					PathVertexEval::PopulateRIGFromVertex( v, rig );
 					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
 				} else {
@@ -389,10 +396,12 @@ void BDPTPelRasterizer::IntegratePixel(
 			PixelAOV aov;
 			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
 				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-				pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+				if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 			}
 
 			// Approach C: cross-pixel filter-weighted splat.  With a

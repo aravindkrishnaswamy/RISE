@@ -145,8 +145,10 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
-	// Extract first-hit AOV data for the denoiser (only on first wavelength).
-	// Mirrors the Pel-side walk in BDPTPelRasterizer.cpp: synthesize a real
+	// Extract AOV data (only on the first wavelength). Depth uses the first
+	// surface. Fast albedo/normal use that surface; Accurate selects the first
+	// non-delta surface. Mirrors the Pel-side walk in BDPTPelRasterizer.cpp:
+	// synthesize a real
 	// camera-ray view direction (BDPTVertex doesn't carry a ray) and use
 	// the canonical PathVertexEval helper to rebuild rig — hand-rolling
 	// silently dropped texture coords / vertex color and gave OIDN a
@@ -155,14 +157,21 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	if( pAOV ) {
 		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
 			const BDPTVertex& v = eyeVerts[i];
-			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-				pAOV->normal = v.normal;
+			if( v.type == BDPTVertex::SURFACE ) {
 				pAOV->depth = Vector3Ops::Magnitude(
-					Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+					Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+				break;
+			}
+		}
+		const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
+		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
+			const BDPTVertex& v = eyeVerts[i];
+			if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
+				pAOV->normal = v.normal;
 				if( v.pMaterial->GetBSDF() ) {
 					const Vector3 rayDir = Vector3Ops::Normalize(
-						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-					RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+						Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+					RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
 					PathVertexEval::PopulateRIGFromVertex( v, rig );
 					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
 				} else {
@@ -322,14 +331,21 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			if( ss == 0 && pAOV ) {
 				for( unsigned int iv = 1; iv < eyeVerts.size(); iv++ ) {
 					const BDPTVertex& v = eyeVerts[iv];
-					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-						pAOV->normal = v.normal;
+					if( v.type == BDPTVertex::SURFACE ) {
 						pAOV->depth = Vector3Ops::Magnitude(
-							Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+							Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+						break;
+					}
+				}
+				const bool accurate = rc.aovPrefilterMode == OidnPrefilter::Accurate;
+				for( unsigned int iv = 1; iv < eyeVerts.size(); iv++ ) {
+					const BDPTVertex& v = eyeVerts[iv];
+					if( v.type == BDPTVertex::SURFACE && ( !accurate || !v.isDelta ) && v.pMaterial ) {
+						pAOV->normal = v.normal;
 						if( v.pMaterial->GetBSDF() ) {
 							const Vector3 rayDir = Vector3Ops::Normalize(
-								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-							RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+								Vector3Ops::mkVector3( v.position, cameraRay.origin ) );
+							RayIntersectionGeometric rig( Ray( cameraRay.origin, rayDir ), nullRasterizerState );
 							PathVertexEval::PopulateRIGFromVertex( v, rig );
 							pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
 						} else {
@@ -677,10 +693,12 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			PixelAOV aov;
 			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
 				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0 );
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-				pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+				if( aov.depth > 0 ) pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 			}
 			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 			// now accumulates XYZ; no per-sample chromaticity clip.
