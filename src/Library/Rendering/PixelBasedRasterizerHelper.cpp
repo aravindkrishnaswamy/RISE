@@ -1921,6 +1921,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		const unsigned int fallbackSPP = 1;
 #endif
 		AOVBuffers::Plan interlacedFallbackPlan( false, false, false );
+		Scalar fallbackNominalTime = time_start;
 		if( do_fields ) {
 			// Render to fields
 			Scalar curtime_upper = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
@@ -1955,6 +1956,16 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			if( pAOVBuffers ) {
 				interlacedFallbackPlan = pAOVBuffers->MissingPlan();
 				if( interlacedFallbackPlan.Any() ) {
+					// Motion-blur/scanning samples mutate the animator while rendering.
+					// Restore the deterministic nominal field state before the bounded
+					// fallback. The fallback deliberately does not replay the beauty
+					// pass's temporal sample distribution (AGENT_PERCEPTION.md).
+					pScene.GetAnimator()->EvaluateAtTime( curtime_upper );
+					if( bHasKeyframedObjects ) {
+						pScene.GetObjects()->InvalidateSpatialStructure();
+					}
+					pScene.GetObjects()->PrepareForRendering();
+					pScene.SetSceneTime( curtime_upper );
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 						interlacedFallbackPlan, static_cast<unsigned int>( upperField ), 2,
@@ -1974,6 +1985,14 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence, false );
 			accumulatedProgress += unitsPerCall;
 			if( pAOVBuffers && interlacedFallbackPlan.Any() ) {
+				// RenderFrameOfAnimation may leave the animator at its final
+				// exposure sample. Re-establish the nominal lower-field state.
+				pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
+				if( bHasKeyframedObjects ) {
+					pScene.GetObjects()->InvalidateSpatialStructure();
+				}
+				pScene.GetObjects()->PrepareForRendering();
+				pScene.SetSceneTime( curtime_lower );
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 					interlacedFallbackPlan, static_cast<unsigned int>( lowerField ), 2,
@@ -1982,6 +2001,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		} else {
 			// Render to frames
 			const Scalar curtime = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
+			fallbackNominalTime = curtime;
 			pScene.GetAnimator()->EvaluateAtTime( curtime );
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
@@ -2022,6 +2042,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		const unsigned int frameIdx = specificFrame?*specificFrame:i;
 		if( pAOVBuffers ) {
 			if( !do_fields && pAOVBuffers->NeedsFallback() ) {
+				// As with fields above, motion-blur/scanning samples can leave the
+				// animator at an arbitrary sample time. The bounded fallback is a
+				// deterministic nominal-frame approximation, not temporal replay.
+				pScene.GetAnimator()->EvaluateAtTime( fallbackNominalTime );
+				if( bHasKeyframedObjects ) {
+					pScene.GetObjects()->InvalidateSpatialStructure();
+				}
+				pScene.GetObjects()->PrepareForRendering();
+				pScene.SetSceneTime( fallbackNominalTime );
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter );
 			}

@@ -147,7 +147,7 @@ auxiliaryPeakBytes = 84 * P
 persistentBytes    =  7 * P
 ```
 
-These are exact logical payload bytes managed by this feature; allocator and
+For a cold render these are exact logical payload bytes managed by this feature; allocator and
 container bookkeeping, the pre-existing beauty cache, and OIDN's own filter
 internals are excluded. At 1920x1080 the cold peak is about 166.1 MiB and the
 retained sidecar is about 13.8 MiB. Perception depth scratch is released
@@ -167,19 +167,22 @@ is the sole owner, so switching integrators cannot strand one full observation
 on each inactive rasterizer. The last successful compact observation remains
 available at its already-reported persistent cost.
 
-`auxiliaryPeakBytes` is session-aware. RISE preserves the last successful
+`auxiliaryPeakBytes` is a conservative session-aware high-water bound. RISE preserves the last successful
 observation until its replacement render and PNG encode succeed, so the prior
 7-byte/pixel sidecar is still live during a repeated render. For equal-sized
 frames this reports 91 bytes/pixel (84 current + 7 prior). A multi-frame sink
 also retains the preceding animation frame while the next frame renders, so a
 cold animation peaks at 91 bytes/pixel; replacing an equal-sized cached still
 with a multi-frame render can peak at 98 bytes/pixel. Different-sized renders
-use the exact prior sidecar byte count rather than either approximation.
+use the exact prior sidecar byte count rather than a per-pixel approximation.
 Lock-dropped image reads register their sink leases too: if a slow reader still
 holds an older observation across multiple replacements, every distinct live
 7-byte/pixel sidecar is included in the next render's reported peak. There is
-therefore no fixed concurrency ceiling; the value remains an exact byte count
-for the actual set of feature-managed sidecars live at render start.
+therefore no fixed concurrency ceiling. The render-entry snapshot deliberately
+keeps counting a lease even if that reader finishes before scratch allocation,
+so concurrent release can make the reported peak higher than the actual peak;
+it never makes the bound lower. Persistent bytes and the cold-render formulas
+remain exact.
 
 The atlas encoder sends one RGBA scanline at a time directly to libpng and
 reports that bounded uncompressed working set as `encoderRowBytes = 4 *
@@ -203,6 +206,11 @@ the PNG carries an `sRGB` chunk, so one image-wide declaration is truthful.
   albedo/normal guide pixels remain black. Fast mode still records that
   shader's geometric first hit. The built-in production beauty and MLT paths
   use the supported path-tracing chain.
+- A bounded fallback retrace observes the deterministic nominal frame/field
+  scene time. It does not replay per-sample animation times for camera exposure,
+  scanning, or pixel-rate motion blur. Built-in pixel integrators capture AOVs
+  inline at each beauty sample; this limitation applies only to fallback-only
+  custom/legacy producers (and MLT's bounded post-pass collector).
 - The compact atlas is an observation product, not an archival AOV format.
   Raw float/EXR transport can be added behind an explicit request when a model
   endpoint can consume it without base64/token inflation.

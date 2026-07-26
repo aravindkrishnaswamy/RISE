@@ -1904,7 +1904,9 @@ namespace RISE
 
 			//! Conventional image observation compiled from the last render's
 			//! AOVs: 2x2 beauty/albedo/world-normal/log-depth atlas plus
-			//! structured range and exact managed-memory metadata.
+			//! structured range and managed-memory metadata. Per-frame payload
+			//! bytes are exact; the session-aware peak is a conservative bound
+			//! when read leases can end while a replacement render is running.
 			std::vector<unsigned char> ReadPerception(
 				unsigned int maxEdge,
 				unsigned int& outWidth,

@@ -174,8 +174,9 @@ void InMemoryRasterizerOutput::CapturePerception_()
 	//     scratch release, plus the newly compacted 7-B/pixel sidecar.
 	// Successful session sinks may also remain live until this replacement
 	// render and its PNG encode succeed (including superseded sinks leased by
-	// readers). Track them explicitly so the reported peak stays exact across
-	// repeated still renders, animations, and lock-dropped encodes.
+	// readers). Track the render-entry set explicitly so the reported peak is
+	// never lower than the managed payload. A lease released before scratch
+	// allocation can make this conservative bound higher than the actual peak.
 	const std::uint64_t renderBytesPerPixel = kGuideScratchBytesPerPixel
 		+ kDepthScratchBytesPerPixel + kPerceptionFrameStoreBytesPerPixel;
 	const std::uint64_t compactionBytesPerPixel = kGuideScratchBytesPerPixel

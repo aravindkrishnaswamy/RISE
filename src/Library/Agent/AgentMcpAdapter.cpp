@@ -624,7 +624,7 @@ namespace RISE
 				{
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "maxEdge", NumberProp( "OPTIONAL long-edge bound in pixels, CLAMPED to [16,1024]. Downscales the cached image (box filter, aspect-preserving, NEVER upscales) before encoding -- no re-render. Omit for native beauty; an omitted perception atlas is safely bounded to 1024." ) );
-					props.set( "representation", StringProp( "OPTIONAL, \"beauty\" (default) or \"perception\". perception returns a conventional 2x2 atlas ordered [beauty, albedo; world-space normal, log depth] from the SAME production beauty render, plus source dimensions, guidePrefilter (fast/accurate), depth range, valid-depth count, and exact managed auxiliary-memory bytes. It is unavailable after draft/objectmap/view renders, render{perception:false}, or in builds compiled without PNG support." ) );
+					props.set( "representation", StringProp( "OPTIONAL, \"beauty\" (default) or \"perception\". perception returns a conventional 2x2 atlas ordered [beauty, albedo; world-space normal, log depth] from the SAME production beauty render, plus source dimensions, guidePrefilter (fast/accurate), depth range, valid-depth count, and managed auxiliary-memory accounting (exact persistent payload and a conservative session peak bound). It is unavailable after draft/objectmap/view renders, render{perception:false}, or in builds compiled without PNG support." ) );
 					tools.push_back( MakeTool( "read_image",
 						"Read the last successful render's image. Returns an MCP image content "
 						"block (inline PNG, so an MCP vision-capable client sees the rendered frame "

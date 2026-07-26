@@ -111,6 +111,56 @@ public:
 };
 
 //////////////////////////////////////////////////////////////////////
+// Test-only integrator that intentionally produces no inline AOVs and
+// leaves the animated scene at t=1 while integrating its first pixel.
+// The animation driver must restore the nominal frame time before its
+// bounded first-hit fallback, independently of whatever temporal state
+// a custom/legacy integrator leaves behind.
+//////////////////////////////////////////////////////////////////////
+class FallbackOnlyRasterizer final : public Implementation::PixelBasedRasterizerHelper
+{
+private:
+	mutable bool movedScene_ = false;
+
+protected:
+	bool TakeSingleSample(
+		const RuntimeContext& /*rc*/,
+		const RasterizerState& /*rast*/,
+		const Ray& /*ray*/,
+		RISEPel& c ) const override
+	{
+		c = RISEPel( 0, 0, 0 );
+		return true;
+	}
+
+	void IntegratePixel(
+		const RuntimeContext& /*rc*/,
+		const unsigned int /*x*/,
+		const unsigned int /*y*/,
+		const unsigned int /*height*/,
+		const IScene& scene,
+		RISEColor& c,
+		const bool /*temporalSamples*/,
+		const Scalar /*temporalStart*/,
+		const Scalar /*temporalExposure*/ ) const override
+	{
+		c = RISEColor( 0, 0, 0, 1 );
+		if( movedScene_ ) return;
+		movedScene_ = true;
+		scene.GetAnimator()->EvaluateAtTime( 1.0 );
+		scene.GetObjects()->InvalidateSpatialStructure();
+		scene.GetObjects()->PrepareForRendering();
+		scene.SetSceneTime( 1.0 );
+	}
+
+public:
+	FallbackOnlyRasterizer( IRayCaster* caster, Implementation::FrameStore* store )
+		: Implementation::Rasterizer( store )
+		, Implementation::PixelBasedRasterizerHelper( caster, store )
+	{}
+};
+
+//////////////////////////////////////////////////////////////////////
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
@@ -389,7 +439,7 @@ static void RunInterlacedAOVCase( const char* rasterizerChunk )
 
 //////////////////////////////////////////////////////////////////////
 // The bounded fallback retrace used by an integrator without an inline
-// first-hit producer must preserve each interlaced field's scene time.
+// first-hit producer must preserve each interlaced field's nominal scene time.
 // Exercise the row-subset primitive directly at two animator times: even
 // rows observe a quad translated left, odd rows observe it translated right.
 // A whole-frame retrace at the second time would erase that separation.
@@ -472,6 +522,92 @@ static void RunInterlacedFallbackTimingCase( const char* rasterizerChunk )
 }
 
 //////////////////////////////////////////////////////////////////////
+// Exercise the fallback through the actual animation driver. The
+// fallback-only integrator above leaves the moving quad at t=1; this
+// one-frame render is nominally t=0. Without the driver's explicit
+// restore, the depth centroid lands on the right instead of the left.
+//////////////////////////////////////////////////////////////////////
+static void RunAnimationFallbackNominalTimeCase( const char* rasterizerChunk )
+{
+	const char* label = "fallback-restores-nominal";
+	std::cout << "Animation fallback nominal time: " << label << std::endl;
+
+	std::string scene = BuildScene( rasterizerChunk );
+	const std::string cameraMarker( "\tfov 30.0\n" );
+	const size_t cameraPos = scene.find( cameraMarker );
+	Check( cameraPos != std::string::npos,
+		std::string(label) + ": camera marker found" );
+	if( cameraPos == std::string::npos ) return;
+	// Non-zero exposure selects the single-thread animation path. The
+	// custom integrator intentionally leaves a deterministic non-nominal
+	// state rather than depending on a random exposure sample.
+	scene.insert( cameraPos + cameraMarker.size(), "\texposure 0.1\n" );
+	scene +=
+		"\ntimeline\n{\n\telement obj_quad\n\tparam position\n"
+		"\ttime 0\n\tvalue -0.75 0 0\n"
+		"\ttime 1\n\tvalue 0.75 0 0\n}\n";
+	const std::string path = WriteSceneToTempFile( scene, label );
+	Check( !path.empty(), std::string(label) + ": temp scene written" );
+	if( path.empty() ) return;
+
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
+		Check( false, std::string(label) + ": job created" );
+		return;
+	}
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+		Check( false, std::string(label) + ": scene loaded" );
+		safe_release( pJob );
+		return;
+	}
+
+	Implementation::PixelBasedRasterizerHelper* active =
+		dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( pJob->GetRasterizer() );
+	IScenePriv* scenePriv = pJob->GetScene();
+	Check( active != nullptr && scenePriv != nullptr,
+		std::string(label) + ": animation inputs available" );
+	if( active && scenePriv ) {
+		Implementation::FrameStore::Spec spec;
+		spec.width = 128;
+		spec.height = 128;
+		spec.aovChannels = { FrameStoreOutput::ChannelId::Depth };
+		Implementation::FrameStore* store = new Implementation::FrameStore( spec );
+		FallbackOnlyRasterizer* fallback =
+			new FallbackOnlyRasterizer( active->GetRayCaster(), store );
+
+		IRasterizer* driver = fallback;
+		driver->RasterizeSceneAnimation( *scenePriv, 0.0, 0.0, 1,
+			false, false, nullptr, nullptr, nullptr );
+
+		const auto* depth = store->GetChannel<FrameStoreOutput::ChannelId::Depth>();
+		Check( depth != nullptr, std::string(label) + ": depth channel exists" );
+		if( depth ) {
+			double centroidX = 0.0;
+			size_t hits = 0;
+			for( size_t y=0; y<depth->Height(); ++y ) {
+				for( size_t x=0; x<depth->Width(); ++x ) {
+					if( depth->At( x, y ) <= 0.0f ) continue;
+					centroidX += static_cast<double>( x );
+					++hits;
+				}
+			}
+			Check( hits > 0, std::string(label) + ": fallback produces depth" );
+			if( hits ) {
+				centroidX /= static_cast<double>( hits );
+				Check( centroidX < 55.0,
+					std::string(label) + ": fallback observes nominal t=0 position" );
+			}
+		}
+
+		safe_release( fallback );
+		safe_release( store );
+	}
+
+	std::remove( path.c_str() );
+	safe_release( pJob );
+}
+
+//////////////////////////////////////////////////////////////////////
 
 int main()
 {
@@ -503,6 +639,7 @@ int main()
 	RunSingleFrameCase( "MLT-still", kMLT, /*strictMonotonic*/ false );
 	RunInterlacedAOVCase( kPT );
 	RunInterlacedFallbackTimingCase( kPT );
+	RunAnimationFallbackNominalTimeCase( kPT );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

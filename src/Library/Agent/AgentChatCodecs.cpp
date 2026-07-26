@@ -397,7 +397,7 @@ namespace RISE
 					"colours and corrupts the exact-byte legend match; the ~192 economy "
 					"pattern applies to beauty/draft renders only. Set representation:\"perception\" "
 					"after a production beauty render to receive one 2x2 atlas ordered "
-					"[beauty, albedo; world normal, log depth] plus guide-prefilter, depth, and exact managed-memory metadata. "
+					"[beauty, albedo; world normal, log depth] plus guide-prefilter, depth, exact persistent-memory metadata, and a conservative session peak bound. "
 					"If maxEdge is omitted, beauty remains native but perception is bounded to 1024.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"maxEdge\":{\"type\":\"number\",\"description\":"

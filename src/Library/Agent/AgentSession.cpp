@@ -7067,8 +7067,18 @@ namespace RISE
 				}
 				sink = mLastSink;
 				if( sink ) {
-					sink->addref();
+					// Register first: map insertion may allocate and throw, while
+					// mLastSink still owns the object under this lock. Roll the
+					// registry back if the legacy virtual addref() ever throws.
 					++mActiveSinkReadLeases[sink];
+					try {
+						sink->addref();
+					}
+					catch( ... ) {
+						auto it = mActiveSinkReadLeases.find( sink );
+						if( --it->second == 0 ) mActiveSinkReadLeases.erase( it );
+						throw;
+					}
 				}
 			}
 			if( !sink ) return std::vector<unsigned char>();
@@ -7093,8 +7103,17 @@ namespace RISE
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 				sink = mLastSink;
 				if( sink ) {
-					sink->addref();
+					// See ReadImage(maxEdge): registry insertion must precede the
+					// new reference so std::bad_alloc cannot leak an untracked sink.
 					++mActiveSinkReadLeases[sink];
+					try {
+						sink->addref();
+					}
+					catch( ... ) {
+						auto it = mActiveSinkReadLeases.find( sink );
+						if( --it->second == 0 ) mActiveSinkReadLeases.erase( it );
+						throw;
+					}
 				}
 			}
 			if( !sink ) return std::vector<unsigned char>();
