@@ -493,9 +493,15 @@ final class ChatViewModel: ObservableObject {
     /// being dropped on the next refresh.
     private static let resolvedProposalLingerSeconds: TimeInterval = 4.0
 
-    /// Poll list_proposals through the OWNER dispatcher (agentHandleLine
-    /// — the SAME in-process path the chat driver and the raw JSON-RPC
-    /// debug panel use), NOT the external hosted server. Cheap: a single
+    /// Poll list_proposals through the ADMINISTRATIVE dispatcher
+    /// (`agentHandleLine` → the bridge's `_agentDispatcher` — the same
+    /// in-process path the raw JSON-RPC debug panel drives, and a
+    /// GENUINELY DIFFERENT AgentSession from `agentHandleToolCall`'s
+    /// `_agentToolDispatcherOwner`, which is where every model-requested
+    /// tool call goes). This panel keeps its own path because
+    /// resolve_proposal is refused outside Owner/Commit and
+    /// `agentHandleLine`'s session is permanently Commit-capable. NOT the
+    /// external hosted server. Cheap: a single
     /// synchronous HandleLine call returning the controller's in-memory
     /// queue — safe to call from a timer at a modest interval (see
     /// ChatPanel's ProposalsPanel, which drives this on a few-times-a-

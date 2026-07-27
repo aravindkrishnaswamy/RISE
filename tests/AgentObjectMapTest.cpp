@@ -1267,14 +1267,24 @@ static void RunQueryObjectAtWireTest()
 // take the SAME file-local RAII guard (EphemeralRenderCacheGuard in
 // AgentSession.cpp) so they cannot drift apart again.
 //
-// RED-PROOF SHAPE: the beauty frame is rendered at 48x48 while the internal
+// RED-PROOF SHAPE: the beauty frame is rendered at 48x24 while the internal
 // objectmap runs at the Document's authored 64x64, so the two PNGs cannot
 // coincidentally compare equal -- byte-for-byte equality after the query is
-// only reachable if the cache was genuinely preserved.  The second half
-// exercises ReadImage(maxEdge), which reads mLastSink (a SEPARATE cached
-// pointer from mLastPng): drop only the sink half of the restore and the
-// byte comparison above still passes while the downscaling overload
-// silently degrades to "nothing rendered yet".
+// only reachable if the cache was genuinely preserved.
+//
+// The second half exercises ReadImage(maxEdge), which re-encodes from
+// mLastSink -- a SEPARATE cached pointer from mLastPng, so the byte
+// comparison above cannot speak for it.  Its failure mode is NOT "goes
+// empty": drop only the sink half of the restore and mLastSink is left
+// pointing at the EPHEMERAL OBJECTMAP sink (non-null), so the downscaling
+// overload cheerfully serves a downscaled SEGMENTATION image -- exactly the
+// shipped bug's shape, one pointer over.  A "did it come back non-empty?"
+// assertion therefore proves nothing.  The DIMS are the discriminator: the
+// beauty frame is deliberately NON-SQUARE (48x24, 2:1) while the objectmap
+// is square (64x64), and ToPngDownscaled preserves aspect, so at maxEdge=16
+// the beauty sink answers 16x8 and the objectmap sink answers 16x16.
+// Asserting dw==16 && dh==8 EXACTLY is the only form of this check that can
+// tell the two sinks apart.
 //----------------------------------------------------------------------
 static void RunQueryObjectAtPreservesImageCacheTest()
 {
@@ -1286,12 +1296,14 @@ static void RunQueryObjectAtPreservesImageCacheTest()
 	if( !session ) { pJob->release(); Check( false, "qoa cache session" ); return; }
 
 	// A BEAUTY frame at dims that differ from the authored film dims the
-	// internal objectmap render will use.
+	// internal objectmap render will use -- and deliberately NON-SQUARE, so
+	// the aspect-preserving downscale below identifies WHICH sink answered
+	// (see the header comment's RED-PROOF SHAPE note).
 	AgentRenderParams bp;
 	bp.width  = 48;
-	bp.height = 48;
+	bp.height = 24;
 	const AgentRenderResult beauty = session->Render( bp );
-	Check( beauty.ok, "beauty render (48x48) succeeds" );
+	Check( beauty.ok, "beauty render (48x24) succeeds" );
 	Check( !beauty.png.empty(), "beauty render produces PNG bytes" );
 
 	const std::vector<unsigned char> beforeQuery = session->ReadImage();
@@ -1304,7 +1316,7 @@ static void RunQueryObjectAtPreservesImageCacheTest()
 	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32 );
 	Check( qr.hit, "query_object_at hits an object (a real success path ran the internal render)" );
 	Check( qr.width == 64 && qr.height == 64,
-	       "the internal objectmap ran at the authored 64x64 -- DIFFERENT dims from the 48x48 beauty frame" );
+	       "the internal objectmap ran at the authored 64x64 -- DIFFERENT dims (and a DIFFERENT aspect) from the 48x24 beauty frame" );
 
 	const std::vector<unsigned char> afterQuery = session->ReadImage();
 	Check( !afterQuery.empty(),
@@ -1314,15 +1326,19 @@ static void RunQueryObjectAtPreservesImageCacheTest()
 	       "-- not the flat objectmap the internal render produced" );
 
 	// mLastSink half: ReadImage(maxEdge) re-encodes from the cached SINK, a
-	// separate pointer from mLastPng.  A restore that forgets the sink
-	// leaves this returning nothing while the assertion above still passes.
+	// separate pointer from mLastPng, so nothing above speaks for it.  A
+	// restore that forgets the sink leaves mLastSink pointing at the
+	// EPHEMERAL 64x64 OBJECTMAP sink -- non-null, so the call still returns
+	// bytes; only the DIMS give it away (16x8 from the 48x24 beauty frame
+	// vs 16x16 from the square objectmap).
 	{
 		unsigned int dw = 0, dh = 0;
 		const std::vector<unsigned char> scaled = session->ReadImage( 16, dw, dh );
 		Check( !scaled.empty(),
 		       "MONEY (P1-A): ReadImage(maxEdge) still works after query_object_at -- the cached SINK was restored too" );
-		Check( dw > 0 && dh > 0 && dw <= 16 && dh <= 16,
-		       "the restored sink downscales the 48x48 BEAUTY frame to the requested bound" );
+		Check( dw == 16 && dh == 8,
+		       "MONEY (P1-A): the restored sink downscales the 2:1 48x24 BEAUTY frame to EXACTLY 16x8 "
+		       "-- the square 64x64 objectmap sink would have answered 16x16" );
 	}
 
 	// A SECOND query must be idempotent on the cache, not merely

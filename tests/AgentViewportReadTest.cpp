@@ -1145,21 +1145,44 @@ static void RunCompareToReferenceSplit()
 
 			// The check above only exercises mLastPng.  mLastSink is a
 			// SEPARATE cached pointer, read only by the downscaling
-			// ReadImage(maxEdge) overload and ReadPerception -- drop the
-			// sink half of EphemeralRenderCacheGuard's restore and
-			// everything above still passes while the sink leaks and those
-			// readers silently degrade to "nothing rendered yet".  Lock
-			// that half too.  (query_object_at decodes its OWN render's
-			// returned PNG, never this cache -- it is a WRITER of the pair,
-			// guarded by the same RAII helper; see
-			// AgentObjectMapTest's "preserves the read_image cache" test.)
+			// ReadImage(maxEdge) overload and ReadPerception, so nothing
+			// above speaks for it.  Its failure mode is NOT "goes empty":
+			// drop the sink half of EphemeralRenderCacheGuard's restore and
+			// mLastSink is left pointing at the EPHEMERAL OBJECTMAP sink
+			// (non-null), so both readers happily serve a SEGMENTATION
+			// image -- exactly the shipped bug's shape, one pointer over.
+			// A "did it come back non-empty?" assertion therefore proves
+			// nothing, and DIMS cannot discriminate here either:
+			// CompareToReference forces the objectmap render to the SAME
+			// refW/refH as the graded candidate, so both sinks are 40x30.
+			//
+			// CONTENT is the discriminator.  ToPngDownscaled with maxEdge >=
+			// the long edge never downscales and emits bytes IDENTICAL to
+			// ToPng() (see its "already within bounds" early-out) -- and
+			// ToPng() is exactly what produced mLastPng at the render's
+			// cache tail.  So byte-equality with `after` is reachable ONLY
+			// from the beauty sink; the objectmap sink's own re-encode
+			// differs wholesale.  The 16-bound call after it additionally
+			// locks the aspect-preserving downscale shape.
+			// (query_object_at decodes its OWN render's returned PNG, never
+			// this cache -- it is a WRITER of the pair, guarded by the same
+			// RAII helper; see AgentObjectMapTest's "preserves the
+			// read_image cache" test.)
 			{
+				// 40 == kSplitSceneBase's authored film long edge, which the
+				// compare forces both the candidate and the objectmap render to.
+				unsigned int nw = 0, nh = 0;
+				const std::vector<unsigned char> native = s->ReadImage( 40, nw, nh );
+				Check( nw == 40 && nh == 30,
+					"split: cache-survival: the restored sink reports the graded frame's 40x30 dims" );
+				Check( !native.empty() && native == after,
+					"split: cache-survival: MONEY -- a no-downscale ReadImage(maxEdge) re-encodes the "
+					"BEAUTY sink BYTE-FOR-BYTE, so mLastSink was restored and is NOT the ephemeral objectmap sink" );
+
 				unsigned int dw = 0, dh = 0;
 				const std::vector<unsigned char> scaled = s->ReadImage( 16, dw, dh );
-				Check( !scaled.empty(),
-					"split: cache-survival: ReadImage(maxEdge) still works -- mLastSink was restored, not dropped" );
-				Check( dw > 0 && dh > 0 && dw <= 16 && dh <= 16,
-					"split: cache-survival: the restored sink downscales to the requested bound" );
+				Check( !scaled.empty() && dw == 16 && dh == 12,
+					"split: cache-survival: the restored 40x30 sink downscales to EXACTLY 16x12 (aspect preserved)" );
 			}
 		}
 

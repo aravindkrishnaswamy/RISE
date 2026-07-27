@@ -1827,9 +1827,11 @@ namespace RISE
 			void CancelAsyncRender( std::uint64_t renderJobId = 0 );
 
 			//! Model-B F2 slice S2b: the full stats of the LAST async render
-			//! to complete (whatever RenderAsync's submitted closure got back
-			//! from RenderCore_, which the closure itself discards -- see
-			//! that closure's `(void)r;`).  A caller that drove
+			//! to complete -- whatever RenderAsync's submitted closure got
+			//! back from RenderCore_, which the closure caches HERE (with
+			//! `r.renderJobId` corrected to its own job id first; see the
+			//! closure for why RenderCore_ leaves that field 0 on the async
+			//! path).  A caller that drove
 			//! render{"async":true} -> render_status/render_wait and
 			//! observed completion uses this to retrieve the SAME
 			//! {ok,width,height,meanR,meanG,meanB,integrator,previewWidth,
@@ -1850,9 +1852,20 @@ namespace RISE
 			//!
 			//! Guarded by mAsyncCacheMutex (the SAME lock already used for
 			//! mLastPng/mLastSink/mAsyncOutstandingJobId) -- populated by
-			//! RenderAsync's submitted closure right where it currently
-			//! discards `r`, read here by whatever thread polls after
+			//! RenderAsync's submitted closure once RenderCore_ returns,
+			//! read here by whatever thread polls after
 			//! render_wait/render_status observes completion.
+			//!
+			//! ONE window reports `found == false` for a job that really did
+			//! complete: an EPHEMERAL internal render (QueryObjectAt,
+			//! CompareToReference's split mask) stashes this record along
+			//! with mLastPng/mLastSink for its duration, so an async render
+			//! that finishes inside that window has BOTH its pixels and its
+			//! result record discarded.  That is deliberate -- the pixels
+			//! are unrecoverable either way, and reporting `found` over a
+			//! frame `read_image` can no longer serve would be a lie.  See
+			//! EphemeralRenderCacheGuard's RESIDUAL bullet in
+			//! AgentSession.cpp.
 			struct AgentLastAsyncRenderResult
 			{
 				bool             found = false;   //!< true iff renderJobId matches the cached result's job
@@ -2443,7 +2456,11 @@ namespace RISE
 			//! Model-B F2 slice S2b: the full AgentRenderResult of the LAST
 			//! async render to complete, plus the renderJobId it belongs to
 			//! -- see LastAsyncRenderResult()'s doc.  {0, default-constructed
-			//! AgentRenderResult} before the first async render completes.
+			//! AgentRenderResult} before the first async render completes,
+			//! and reset to exactly that for the width of an ephemeral
+			//! internal render (EphemeralRenderCacheGuard stashes this pair
+			//! alongside mLastPng/mLastSink so the guarded window leaves no
+			//! trace of anything that completed inside it).
 			//! Guarded by mAsyncCacheMutex, same as mLastPng/mLastSink.
 			std::uint64_t     mLastAsyncRenderResultJobId = 0;
 			AgentRenderResult mLastAsyncRenderResult;

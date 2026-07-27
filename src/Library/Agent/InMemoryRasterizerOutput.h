@@ -197,6 +197,22 @@ namespace RISE
 			//! superseded sinks leased by readers). AgentSession calls this before
 			//! rendering so auxiliaryPeakBytes describes the actual session feature
 			//! peak, not only the new frame in isolation.
+			//!
+			//! ONE DOCUMENTED EXCEPTION -- an EPHEMERAL render (the objectmap
+			//! renders QueryObjectAt and CompareToReference's split fire
+			//! internally) runs inside AgentSession.cpp's
+			//! EphemeralRenderCacheGuard, which has moved the cached sink OUT
+			//! of `mLastSink` and onto the guard's stack for the duration.
+			//! That sink is therefore in NEITHER of the two sets
+			//! `RetainedPerceptionBytesLocked_()` sums (the cache pointer and
+			//! the read-lease registry -- unless a concurrent reader happened
+			//! to lease it before the guard ran), so the value passed in for
+			//! those renders normally reads 0 and their auxiliaryPeakBytes
+			//! UNDER-REPORTS by the whole stashed sidecar.  Accepted: this number is
+			//! reporting-only and never gates anything, and the alternative
+			//! (registering the stash in the lease registry) would turn a
+			//! purely informational figure into a behavioural change to sink
+			//! lifetime and teardown draining.  Do NOT "fix" it that way.
 			void SetConcurrentCachedPerceptionBytes( std::uint64_t bytes )
 			{
 				mConcurrentCachedPerceptionBytes = bytes;

@@ -2230,11 +2230,15 @@ void ChatPanel::cancelActiveTurn(const QString& statusLine)
 // ============================================================
 // Secure-MCP slice 5c (Windows parity) -- proposals panel.
 //
-// Polls list_proposals over the SAME in-process agentHandleLine
-// transport the tool-call loop and the raw JSON-RPC debug panel use
-// (not any external hosted server -- Windows has no MCP-hosting UI in
-// this slice).  Mirrors ChatViewModel.refreshProposals /
-// resolveProposal / the ProposalsPanel linger behaviour.
+// Polls list_proposals over the in-process agentHandleLine
+// (ADMINISTRATIVE) transport -- the same one the raw JSON-RPC debug
+// panel drives, and NOT the agentHandleToolCall session the tool-call
+// loop uses (that one is autonomy-routed, and resolve_proposal is
+// refused outside Owner/Commit, which is exactly why this panel keeps
+// its own path).  Not any external hosted server either -- Windows has
+// no MCP-hosting UI in this slice.  Mirrors
+// ChatViewModel.refreshProposals / resolveProposal / the ProposalsPanel
+// linger behaviour.
 // ============================================================
 
 void ChatPanel::refreshProposals()

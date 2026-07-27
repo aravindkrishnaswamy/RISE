@@ -6049,9 +6049,12 @@ namespace RISE
 
 		namespace
 		{
-			//! RAII stash/restore of the LAST-RENDER cache pair (`mLastPng` /
-			//! `mLastSink` -- the two fields `ReadImage()` serves and the
-			//! `read_image` verb returns) across an EPHEMERAL `Render()` whose
+			//! RAII stash/restore of the LAST-RENDER cache state -- the pair
+			//! `mLastPng` / `mLastSink` (the two fields `ReadImage()` serves
+			//! and the `read_image` verb returns) PLUS the async-render
+			//! result record `mLastAsyncRenderResult` /
+			//! `mLastAsyncRenderResultJobId` (what `render_status` /
+			//! `render_wait` report) -- across an EPHEMERAL `Render()` whose
 			//! pixels must NEVER become "the last render the caller can read".
 			//!
 			//! WHY THIS EXISTS.  `Render()` unconditionally caches every
@@ -6083,15 +6086,69 @@ namespace RISE
 			//!    everything today, but it is not declared `noexcept` -- every
 			//!    sibling raw-refcount-across-a-call site in this file uses a
 			//!    guard for exactly this reason.
-			//!  * For the width of the guarded scope ONLY, `mLastPng`/
-			//!    `mLastSink` transiently hold the ephemeral render.  A
-			//!    concurrent `ReadImage()` on another thread WOULD observe it
-			//!    (see mAsyncCacheMutex's doc -- cross-thread ReadImage is a
-			//!    designed call shape).  The window is bounded by the scope and
-			//!    never persists past it; an async render that completes inside
-			//!    it has its cache write discarded (refcount-safe lost update).
+			//!  * THE GUARDED SCOPE IS PRIMARILY A ZERO-BYTE WINDOW, not a
+			//!    "shows-the-ephemeral-render" window.  The ctor moves the
+			//!    cache OUT (swaps `mLastPng` with a default-constructed
+			//!    vector, nulls `mLastSink`, zeroes the async-result id), so
+			//!    from the ctor until SOME render's cache tail repopulates
+			//!    it -- i.e. THE WHOLE RENDER DURATION, seconds wide for
+			//!    CompareToReference's full-res split render, and longer
+			//!    still when the ephemeral render first has to queue behind
+			//!    an in-flight async one (see the RESIDUAL bullet) -- a
+			//!    concurrent `ReadImage()` on another thread returns ZERO
+			//!    BYTES, `ReadImage(maxEdge)` returns empty at its
+			//!    `if( !sink )` early-out (in this file, the line right
+			//!    after the lock scope in `ReadImage(unsigned int,...)`),
+			//!    and `ReadPerception` likewise.  Only AFTER a cache tail
+			//!    lands inside the window do the fields hold pixels again --
+			//!    the ephemeral render's own segmentation image, or, if an
+			//!    async render completed in here first, THAT render's beauty
+			//!    frame.  Triage rule, stated in the direction that holds:
+			//!    a "read_image returned byteLength 0 right after a
+			//!    successful render" report MUST count this window as a live
+			//!    suspect (cross-thread ReadImage is a designed call shape --
+			//!    see mAsyncCacheMutex's doc); the converse does NOT follow,
+			//!    since getting bytes back does not prove the reader was
+			//!    outside the window.  The window is bounded by the scope and
+			//!    never persists past it.
+			//!  * RESIDUAL, accepted: an async render that completes INSIDE
+			//!    the window loses its ENTIRE cache write -- its pixels (the
+			//!    dtor restores png/sink unconditionally) AND its result
+			//!    record.  This is NOT a narrow race: agent renders serialize
+			//!    on the controller's single agent-render slot, and the
+			//!    ephemeral render's own submission WAITS for that slot
+			//!    (SubmitAgentRenderSync's fairness wait, up to 30s -- it
+			//!    does NOT cancel the async job, and the parked-preview route
+			//!    CompareToReference takes likewise serializes on the
+			//!    controller mutex the async worker holds).  So an async
+			//!    render in flight when the ctor runs ordinarily runs to FULL
+			//!    completion inside the window and is then discarded.
+			//!    Stashing the result record alongside the pixels is
+			//!    deliberate: the pixels are lost either way, so KEEPING an
+			//!    `ok:true` record would make `render_wait` answer
+			//!    `completed:true` with a full `{ok,width,height,meanR,...}`
+			//!    payload for a frame `read_image` can no longer serve -- the
+			//!    exact "success reported over stale pixels" lie this guard
+			//!    exists to prevent.  Discarding both makes the loss uniform
+			//!    and surfaces through `render_wait`'s ALREADY-HANDLED
+			//!    completed-but-no-cached-result path (AgentRpc.cpp sets the
+			//!    additive `result` key only `if( ar.found )`, and that
+			//!    verb's doc already lists "absent" as a normal outcome).
+			//!    KNOWN COST of that uniformity, stated plainly: the async
+			//!    closure caches FAILURES too (no `if( r.ok )`, unlike the
+			//!    pixel tail), and an `ok:false` record has no pixels to be
+			//!    inconsistent with -- so discarding it costs the caller a
+			//!    failure MESSAGE ("render cancelled", an encode throw) it
+			//!    could honestly have read back.  Judged the better trade
+			//!    against a conditional restore whose rule ("keep it iff it
+			//!    failed") is harder to hold in the head than "the window
+			//!    leaves no trace".  The principled fix for the WHOLE
+			//!    residual is upstream and out of scope here: give
+			//!    `RenderCore_` a "do not cache this one" flag so an
+			//!    ephemeral render never writes the cache at all and no
+			//!    stash/restore is needed.
 			//!
-			//! Takes the three pieces of state by reference rather than an
+			//! Takes the pieces of state by reference rather than an
 			//! `AgentSession&` so it stays a file-local helper with no access
 			//! to the class's private section (no friendship, no header churn).
 			class EphemeralRenderCacheGuard
@@ -6099,13 +6156,26 @@ namespace RISE
 			public:
 				EphemeralRenderCacheGuard( std::mutex& cacheMutex,
 				                           std::vector<unsigned char>& lastPng,
-				                           InMemoryRasterizerOutput*& lastSink )
-					: mCacheMutex( cacheMutex ), mLastPng( lastPng ), mLastSink( lastSink )
+				                           InMemoryRasterizerOutput*& lastSink,
+				                           AgentRenderResult& lastAsyncResult,
+				                           std::uint64_t& lastAsyncResultJobId )
+					: mCacheMutex( cacheMutex ), mLastPng( lastPng ), mLastSink( lastSink ),
+					  mLastAsyncResult( lastAsyncResult ), mLastAsyncResultJobId( lastAsyncResultJobId )
 				{
 					std::lock_guard<std::mutex> lk( mCacheMutex );
 					mSavedPng.swap( mLastPng );        // cache -> stash (cache now empty)
 					mSavedSink = mLastSink;            // take over the sink's ref
 					mLastSink  = nullptr;
+					// Same move-out for the async-render result record: the
+					// window must leave NO trace of anything that completed
+					// inside it, pixels and result alike (see the RESIDUAL
+					// bullet above).  Zeroing the id is what makes
+					// LastAsyncRenderResult() report "not found" for the
+					// duration -- 0 is never a real job id.
+					mSavedAsyncResult      = std::move( mLastAsyncResult );
+					mLastAsyncResult       = AgentRenderResult();
+					mSavedAsyncResultJobId = mLastAsyncResultJobId;
+					mLastAsyncResultJobId  = 0;
 				}
 
 				~EphemeralRenderCacheGuard()
@@ -6115,6 +6185,8 @@ namespace RISE
 					mLastPng.swap( mSavedPng );        // stashed bytes back in place
 					mLastSink  = mSavedSink;           // ownership handed back
 					mSavedSink = nullptr;
+					mLastAsyncResult      = std::move( mSavedAsyncResult );
+					mLastAsyncResultJobId = mSavedAsyncResultJobId;
 				}
 
 				EphemeralRenderCacheGuard( const EphemeralRenderCacheGuard& ) = delete;
@@ -6124,8 +6196,12 @@ namespace RISE
 				std::mutex&                 mCacheMutex;
 				std::vector<unsigned char>& mLastPng;
 				InMemoryRasterizerOutput*&  mLastSink;
+				AgentRenderResult&          mLastAsyncResult;
+				std::uint64_t&              mLastAsyncResultJobId;
 				std::vector<unsigned char>  mSavedPng;
 				InMemoryRasterizerOutput*   mSavedSink = nullptr;
+				AgentRenderResult           mSavedAsyncResult;
+				std::uint64_t               mSavedAsyncResultJobId = 0;
 			};
 		}
 
@@ -6170,13 +6246,14 @@ namespace RISE
 			// follows would hand the model a flat SEGMENTATION image to judge
 			// a beauty render from.  Same hazard, same guard, as
 			// CompareToReference's split-mask render below -- see
-			// EphemeralRenderCacheGuard's doc for the deadlock/refcount
-			// constraints it encodes.  `rr` is the render's OWN returned
+			// EphemeralRenderCacheGuard's doc for the deadlock/refcount/
+			// zero-byte-window constraints it encodes.  `rr` is the render's OWN returned
 			// result and is unaffected by the restore: everything below
 			// decodes rr.png / rr.legend, never the session cache.
 			AgentRenderResult rr;
 			{
-				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink );
+				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink,
+				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
 				rr = Render( rparams );
 			}
 
@@ -6675,10 +6752,12 @@ namespace RISE
 				// the unguarded one shipped the exact bug described above.
 				// EphemeralRenderCacheGuard's doc carries the deadlock
 				// ("never hold mAsyncCacheMutex across Render()"), refcount,
-				// and transient-window constraints this scope relies on.
+				// zero-byte-window, and discarded-async-result constraints
+				// this scope relies on.
 				AgentRenderResult omr;
 				{
-					EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink );
+					EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink,
+					                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
 					omr = Render( omParams );
 				}
 
@@ -6960,7 +7039,7 @@ namespace RISE
 			// worker discards (`r` below), only OUT via
 			// SubmitAgentRenderAsync's `outJobId` param, which the caller
 			// already has.  The cache-population tail inside RenderCore_
-			// (guarded by mAsyncCacheMutex) stashes mLastPng/mLastSink on a
+			// (guarded by mAsyncCacheMutex) populates mLastPng/mLastSink on a
 			// successful render, which is how ReadImage() picks up the async
 			// result once it completes.  S2a's minimal surface exposes
 			// completion via RenderStatus/RenderWait + ReadImage rather than
