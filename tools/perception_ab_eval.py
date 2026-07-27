@@ -642,7 +642,7 @@ def report_markdown(metadata, summary):
     lines += [
         "", "Repeated calls on byte-identical case images are correlated. Their pooled counts "
         "are a stability diagnostic only; the unique-case majority is the inferential unit.", "",
-        "This diagnostic establishes only whether this model can use the atlas on cue-isolation "
+        "This diagnostic establishes only whether this model can use the atlas on cue-targeted "
         "tasks. It does not establish general agent-task lift; see evals/perception_ab/README.md.", "",
     ]
     return "\n".join(lines)

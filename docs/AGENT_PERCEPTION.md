@@ -24,9 +24,9 @@ can ingest arbitrary float tensors.
 
 Empirical status is intentionally separate. A first controlled local diagnostic
 now gives a positive but preliminary signal: on 12 mirrored cue-targeted cases,
-`qwen3.6:27b` solved 6/12 unique cases by beauty-arm majority and 8/12 with the
+`qwen3.6:27b` solved 5/12 unique cases by beauty-arm majority and 7/12 with the
 atlas at exactly matched 384x384 input and reported prompt-token cost. Across
-three correlated calls per case, the descriptive counts were 15/36 and 25/36;
+three correlated calls per case, the descriptive counts were 17/36 and 23/36;
 those repeats are not independent evidence. See
 [PERCEPTION_ATLAS_AB_RESULTS.md](PERCEPTION_ATLAS_AB_RESULTS.md). This is evidence
 of a directional gain for one model, not a statistically decisive result or a
