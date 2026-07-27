@@ -683,13 +683,26 @@ namespace RISE
 						"\"editor_interaction_finalize_failed\", \"editor_shutting_down\" and "
 						"\"editor_interaction_unrecoverable\", `render` passes through the SAME "
 						"editor/admission gate that just refused read_viewport and is refused too. "
-						"\"render_in_progress\" is the ONE exception, and it depends on the render's own "
-						"shape: a PLAIN `render {}` -- no `width`+`height` pair, no `camera`, no `view` -- "
-						"does NOT take the parked path; it queues on the agent-render slot and normally "
-						"runs once the occupant finishes. A render carrying a film override "
-						"(`width` AND `height`) or a camera/`view` override DOES take that path and is "
-						"refused. (`quality:\"draft\"` and `mode:` alone are NOT overrides for this "
-						"purpose -- only width+height or a camera/view change the routing.)",
+						"\"render_in_progress\" is the ONE exception to the same-gate rule -- but `render` "
+						"is still a POOR fallback there. A PLAIN `render {}` -- no `width`+`height` pair, "
+						"no `camera`, no `view` -- does NOT take the parked path; it queues on the "
+						"agent-render slot and WAITS up to 30 s. It SUCCEEDS if the occupant finishes "
+						"inside that window, and is REFUSED if the occupant outlives it -- and the "
+						"commonest occupant is the USER'S OWN production render, which shares that single "
+						"slot and routinely runs longer than 30 s. It is also refused with NO wait at all "
+						"when a direct parked render holds the gate (that render owns the admission gate "
+						"without occupying the render slot, so the wait is satisfied instantly and the "
+						"admission check refuses on the spot). A render carrying a film override "
+						"(`width` AND `height`) or a camera/`view` override always takes the parked path "
+						"and is refused immediately. (`quality:\"draft\"` and `mode:` alone are NOT "
+						"overrides for this purpose -- only width+height or a camera/view change the "
+						"routing.) WHAT TO DO on \"render_in_progress\": read_viewport is FREE and becomes "
+						"available the instant the gate clears, so ONE short retry of read_viewport is the "
+						"cheap poll, not `render`. If a second read still reports it, a long render (most "
+						"likely the user's own) owns the gate -- tell the user and wait for it rather than "
+						"blocking 30 s on a render that will probably be refused anyway. Call a plain "
+						"`render {}` only when you genuinely need a NEW image rather than the viewport's, "
+						"and budget for that block.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 

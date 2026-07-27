@@ -138,12 +138,24 @@
 >   `"editor_interaction_finalize_failed"` (retriable) and
 >   `"editor_interaction_unrecoverable"` (the controller's sticky interaction-persistence
 >   failure: PERMANENT, never clears, and `render` is refused by the same gate, so neither
->   retrying nor falling back helps). Seven reasons total; see `AgentSession::ReadViewport`'s
+>   retrying nor falling back helps). Seven reasons total — three RETRIABLE
+>   (`"editor_transaction_in_progress"`, `"render_in_progress"`,
+>   `"editor_interaction_finalize_failed"`), one that resolves on its own but not because you
+>   retried (`"no_frame_yet"`), three PERMANENT (`"no_controller"`, `"editor_shutting_down"`,
+>   `"editor_interaction_unrecoverable"`). See `AgentSession::ReadViewport`'s
 >   doc, which is the authority on the list, on which are retriable, and on when a `render`
 >   fallback actually helps — round-12 correction: it is NOT a blanket "`render` is refused
->   too". For `"render_in_progress"` a PLAIN `render {}` queues on the agent-render slot and
->   normally runs; only a render carrying a film (`width`+`height`) or camera/`view` override
->   takes the same parked path and is refused.) On the MCP
+>   too"; round-14 correction: nor is it "a plain `render {}` succeeds". For
+>   `"render_in_progress"` a plain `render {}` queues on the agent-render slot and waits up to
+>   30 s: it succeeds only if the occupant finishes inside that window, and is refused if the
+>   occupant outlives it (`SubmitProductionRenderSync` forwards onto the same single slot, so
+>   the user's own production render is the common occupant and routinely exceeds 30 s) or if a
+>   DIRECT PARKED render holds the admission gate without occupying the slot (no wait at all —
+>   `SubmitAgentRenderAsync_Locked` refuses immediately). A render carrying a film
+>   (`width`+`height`) or camera/`view` override always takes the parked path and is refused.
+>   The guidance the model-facing surfaces carry: retry the FREE `read_viewport` rather than
+>   paying that 30 s block, and when the occupant is the user's production render, wait for it
+>   instead of retrying.) On the MCP
 >   surface as tool #15 (image content block when available); allowed under the Read autonomy
 >   posture; deliberately NOT in the chat panel's curated 9-tool list. Shared C++ — Mac,
 >   Windows, and the loopback server with zero bridge changes.

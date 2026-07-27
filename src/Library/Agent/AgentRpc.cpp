@@ -797,9 +797,10 @@ namespace RISE
 				// ONE choke point for the launch-time autonomy policy --
 				// checked BEFORE any per-verb block, DENY-BY-DEFAULT against
 				// the fixed allowlist of read-safe verb names (IsReadSafeVerb,
-				// now 10 -- the original 9 plus list_proposals).  A verb that
+				// now 13 -- the original 9 plus read_viewport, list_proposals,
+				// query_object_at and compare_to_reference).  A verb that
 				// is not on the read-safe list is refused under Read -- this
-				// covers the 3 known-mutating verbs, resolve_proposal, AND any
+				// covers the 5 known-mutating verbs, resolve_proposal, AND any
 				// future verb that reaches dispatch without being consciously
 				// classified read-safe (the fail-closed property this
 				// hardening exists for).  Under AgentAutonomy::Read this is a
@@ -809,7 +810,7 @@ namespace RISE
 				// "conflict" success result.
 				//
 				// Secure-MCP slice 5b: AgentAutonomy::Propose extends the
-				// read-safe set with the 3 mutating verbs (IsProposeSafeVerb)
+				// read-safe set with the 5 mutating verbs (IsProposeSafeVerb)
 				// -- letting them REACH AgentSession, whose own Owner/External
 				// authority decides staging-vs-commit (see AgentRpc.h's file
 				// header).  resolve_proposal is deliberately excluded from
@@ -1834,9 +1835,17 @@ namespace RISE
 				//   (both PERMANENT -- retrying can never succeed; round-10).
 				//   See AgentSession::ReadViewport's doc for the authoritative
 				//   list, the retriability of each, and when a `render`
-				//   fallback actually helps (round-12: for "render_in_progress"
-				//   a PLAIN render is NOT refused, only an overridden one is);
-				//   in every case png_base64 is "" and
+				//   fallback actually helps.  Round-14: for
+				//   "render_in_progress" an OVERRIDDEN render is refused
+				//   outright, and a PLAIN one is NOT simply "accepted" either
+				//   -- it waits up to 30 s on the render slot, then succeeds
+				//   only if the occupant (often the user's own production
+				//   render, which shares that slot) finished inside the
+				//   window, and it is refused with no wait at all when a
+				//   DIRECT PARKED render holds the gate.  Retrying the free
+				//   read_viewport is the cheap poll; see the authority block
+				//   for the full three-way outcome and the recommendation.
+				//   In every case png_base64 is "" and
 				//   byteLength/width/height are 0.  available:false is a STRUCTURED SUCCESS result, NOT
 				//   a JSON-RPC error (the list_proposals precedent) -- only "no
 				//   session loaded" is the usual MakeError gate.  maxEdge

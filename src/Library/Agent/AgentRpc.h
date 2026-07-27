@@ -308,7 +308,15 @@
 //                                            which are retriable, and on when a
 //                                            `render` fallback actually helps
 //                                            (round-12: it is NOT a blanket
-//                                            "render is refused too");
+//                                            "render is refused too"; round-14:
+//                                            nor is it "a plain render always
+//                                            succeeds" -- for
+//                                            "render_in_progress" a plain render
+//                                            waits up to 30 s and is still
+//                                            refused if the occupant outlives
+//                                            that window, or immediately when
+//                                            a direct parked render owns the
+//                                            admission gate);
 //                                            png_base64 is "" and the numeric
 //                                            fields 0 in that case.  available:false is
 //                                            a STRUCTURED SUCCESS result, NOT an error

@@ -2016,23 +2016,29 @@ namespace RISE
 			//!                    exactly the infinite-retry instruction the
 			//!                    chattiness work exists to remove)
 			//! SEVEN reason values in total.  Every surface that enumerates
-			//! them must list all seven AND state retriability, because that is
-			//! what a model acts on.  Round-12 finding 3: this block is
-			//! designated THE authority by AgentRpc.h and AgentRpc.cpp, so it
-			//! now honours its own rule -- retriability is stated above for all
-			//! seven, no_controller and no_frame_yet included -- and the list
-			//! of surfaces below is the COMPLETE one, not the partial one it
-			//! used to carry:
+			//! them must list all seven; the MODEL-FACING surfaces must ALSO
+			//! state retriability inline, because that is what a model acts
+			//! on and a model does not follow a "see the header" pointer.
+			//! Round-14 finding 3: that rule used to say "every surface ...
+			//! AND state retriability" while listing surfaces that do not and
+			//! need not -- the design doc defers here, and the two tests pin
+			//! WIRE VALUES, not prose.  Scoped to what its own rationale
+			//! actually justifies, the obligations are:
+			//!   MODEL-FACING (list all seven + retriability + what to do):
 			//!   * AgentMcpAdapter's read_viewport tool description (the
 			//!     model-facing MCP schema)
 			//!   * skills/agent/observe-modes.md -- three places: the
 			//!     "Anything when available:false" cell of the observe-verb
 			//!     table, "Hard warnings" item 3's reason/retriable/action
 			//!     table, and the later item-3 prose
+			//!   DEVELOPER-FACING (list all seven; retriability may be a
+			//!   grouped summary that defers here for the detail):
 			//!   * AgentRpc.h's read_viewport tool-table comment
 			//!   * AgentRpc.cpp's read_viewport handler comment
 			//!   * docs/agentic-redesign/50-agentic-surface.md, the S1
 			//!     read_viewport SHIPPED bullet
+			//!   TESTS (pin the wire values / the model-facing wording; they
+			//!   are not themselves an enumeration a reader acts on):
 			//!   * tests/AgentSkillsTest's cross-reference assertion (which
 			//!     checks the skill names every value verbatim)
 			//!   * tests/AgentViewportReadTest, which pins the exact wire
@@ -2052,19 +2058,48 @@ namespace RISE
 			//! mTxnOpen / mSaving / IsCompositeOpen / FinalizeOpenInteractions /
 			//! stop checks RunPreviewRenderParked just failed), so telling a
 			//! model to fall back is telling it to collect a second refusal.
-			//! "render_in_progress" is the ONE exception and it is NOT
-			//! uniform: read_viewport reports it from RunPreviewRenderParked's
-			//! mAgentRenderBlocksInteractive check, but RenderCore_ only routes
-			//! through RunPreviewRenderParked when `wantFilmOverride`
-			//! (width AND height given) or a camera/`view` override is present.
-			//! A PLAIN `render {}` instead goes to SubmitAgentRenderSync, which
-			//! WAITS on the fairness ticket (30 s) rather than refusing; the
-			//! agent-render worker clears the admission gate BEFORE it clears
-			//! mAgentRenderPending, so once the coordinated occupant finishes,
-			//! the queued submission is accepted and the render SUCCEEDS.
+			//! "render_in_progress" is the ONE exception to the SAME-GATE
+			//! rule, but -- round-14 finding 2 -- it is NOT an exception to
+			//! "the fallback is a bad idea", and the earlier flat "the render
+			//! SUCCEEDS" here was false on two paths.  The routing first:
+			//! read_viewport reports this reason from RunPreviewRenderParked's
+			//! mAgentRenderBlocksInteractive check, but RenderCore_ only
+			//! routes through RunPreviewRenderParked when `wantFilmOverride`
+			//! (width AND height given) or a camera/`view` override is
+			//! present.  A PLAIN `render {}` instead goes to
+			//! SubmitAgentRenderSync, which WAITS on the fairness ticket
+			//! (timeoutMs = 30000, passed by RenderCore_) rather than refusing
+			//! outright.  What actually happens then:
+			//!   * OCCUPANT FINISHES INSIDE 30 s -> the render SUCCEEDS.  The
+			//!     agent-render worker clears the admission gate (ActiveFlipGuard)
+			//!     BEFORE it clears mAgentRenderPending, so the queued
+			//!     submission is accepted once the slot frees.
+			//!   * OCCUPANT OUTLIVES 30 s -> the fairness wait TIMES OUT and
+			//!     reports CoordinatedRenderBusy ("render queued or in progress
+			//!     -- retry after it completes").  This is the COMMON case in a
+			//!     live GUI session: SubmitProductionRenderSync forwards
+			//!     straight onto SubmitAgentRenderSync, so the USER'S OWN
+			//!     production render occupies this same single slot, and a
+			//!     production render routinely runs longer than 30 s.
+			//!   * GATE HELD BY A DIRECT PARKED RENDER (RunPreviewRenderParked
+			//!     sets mAgentRenderBlocksInteractive but NOT
+			//!     mAgentRenderPending) -> the fairness predicate is satisfied
+			//!     IMMEDIATELY, there is no wait at all, and
+			//!     SubmitAgentRenderAsync_Locked's own
+			//!     mAgentRenderBlocksInteractive check refuses on the spot
+			//!     (CoordinatedRenderBusy).  AgentRenderAsyncTest's "coordinated
+			//!     submission refuses while a direct parked render owns
+			//!     admission" case witnesses that gate.
 			//! (`quality:"draft"` and `mode:` do NOT set width/height and do
-			//! NOT change that routing.)  Do not restate this as a blanket
-			//! "render is refused too" on any surface.
+			//! NOT change that routing.)  So: do not restate this as a blanket
+			//! "render is refused too" on any surface, and do NOT restate it as
+			//! "the render succeeds" either.  The guidance every model-facing
+			//! surface must carry is that `read_viewport` is FREE and clears
+			//! the instant the gate does, so ONE short retry of read_viewport
+			//! is the cheap poll; a plain `render {}` is worth its up-to-30 s
+			//! block only when a NEW image is actually needed, and when the
+			//! occupant is the user's production render the right move is to
+			//! say so and wait for it, not to retry.
 			//! An unavailable result is a STRUCTURED, NON-error outcome (the
 			//! returned byte vector is empty, outW/outH are 0).
 			//!

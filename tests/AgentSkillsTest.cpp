@@ -516,20 +516,57 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 	// `wantFilmOverride || wantCameraOverrideForRouting`
 	// (AgentSession.cpp), so with no override it goes to
 	// SubmitAgentRenderSync, which WAITS on the fairness ticket instead of
-	// refusing and normally runs once the occupant frees the slot.  Pin
-	// the corrected guidance instead: the warning, the two no-viewport
-	// reasons, and the plain-vs-override split that makes
-	// `render_in_progress` the exception.
+	// refusing outright.
+	//
+	// ROUND-14 finding 2: round 12's replacement was ITSELF false in the
+	// other direction -- it taught the plain-render fallback as one that
+	// "normally runs", and this assertion pinned that.  A plain
+	// `render {}` is refused on TWO further paths, both verified in tree:
+	//   (a) the fairness wait TIMES OUT.  SubmitAgentRenderSync waits
+	//       timeoutMs (30000, passed by RenderCore_) and on expiry reports
+	//       CoordinatedRenderBusy.  SubmitProductionRenderSync forwards
+	//       straight onto SubmitAgentRenderSync, so the USER'S OWN
+	//       production render occupies the same single slot and routinely
+	//       outlives 30 s -- the taught fallback then costs a 30-second
+	//       block AND collects a refusal, which is exactly the chattiness
+	//       this branch exists to remove.
+	//   (b) a DIRECT PARKED render holds the gate.  RunPreviewRenderParked
+	//       sets mAgentRenderBlocksInteractive but NOT mAgentRenderPending,
+	//       so the fairness predicate passes IMMEDIATELY (no wait) and
+	//       SubmitAgentRenderAsync_Locked's own gate check refuses --
+	//       witnessed by AgentRenderAsyncTest's "coordinated submission
+	//       refuses while a direct parked render owns admission".
+	// Pin the corrected guidance: the warning, the two no-viewport
+	// reasons, the plain-vs-override routing split, BOTH refusal paths,
+	// and the action the model should actually take (retry the free
+	// read_viewport, not `render`).
 	Check( md.find( "Do NOT reflexively fall back to `render`" ) != std::string::npos,
 	       "observe-modes explicitly warns against the reflexive render fallback" );
 	Check( md.find( "the two no-viewport reasons (`no_controller`," ) != std::string::npos,
 	       "observe-modes names render as the fallback for the two no-viewport reasons" );
-	Check( md.find( "`render_in_progress` is the ONE reason where that is not true" ) != std::string::npos,
+	Check( md.find( "`render_in_progress` is the ONE reason where a `render` call does" ) != std::string::npos,
 	       "observe-modes flags render_in_progress as the exception to the same-gate rule" );
 	Check( md.find( "does NOT take the parked path read_viewport takes" ) != std::string::npos,
-	       "observe-modes explains that a PLAIN render queues rather than being refused" );
+	       "observe-modes explains that a PLAIN render reaches the slot rather than the parked path" );
 	Check( md.find( "film override (`width` AND `height`)" ) != std::string::npos,
 	       "observe-modes states which render shapes DO take the refused parked path" );
+	// Round-14 finding 2 (a): the timeout branch must be taught, not just
+	// the happy path -- no surface mentioned it before this round.
+	Check( md.find( "WAITS up to 30 s" ) != std::string::npos
+	       && md.find( "REFUSED" ) != std::string::npos,
+	       "MONEY: observe-modes states that a plain render WAITS up to 30 s and can be REFUSED" );
+	Check( md.find( "USER'S OWN production render" ) != std::string::npos,
+	       "MONEY: observe-modes names the user's own production render as the common 30 s-outliving occupant" );
+	// Round-14 finding 2 (b): the direct-parked-render path refuses with
+	// no wait at all.
+	Check( md.find( "**NO wait at all**" ) != std::string::npos
+	       && md.find( "**direct parked render**" ) != std::string::npos,
+	       "MONEY: observe-modes states the direct-parked-render path refuses with no wait" );
+	// Round-14 finding 2: the guidance must end in a concrete action, or
+	// it only tells the model what NOT to do.
+	Check( md.find( "**What to do instead.**" ) != std::string::npos
+	       && md.find( "short retry of `read_viewport` is the cheap poll" ) != std::string::npos,
+	       "MONEY: observe-modes recommends retrying the free read_viewport over the 30 s render block" );
 	Check( md.find( "[16,512]" ) != std::string::npos,
 	       "observe-modes states the width/height clamp range verbatim" );
 
