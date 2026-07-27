@@ -114,24 +114,16 @@ namespace RISE
 			TranslateObject,        ///< v3a = world delta
 			RotateObjectArb,        ///< v3a = unit axis, s = radians
 			SetObjectPosition,      ///< v3a = absolute world pos
-			SetObjectOrientation,   ///< v3a = euler XYZ
-			SetObjectScale,         ///< s   = uniform scale
-			SetObjectStretch,       ///< v3a = per-axis stretch
+			SetObjectOrientation,   ///< v3a = absolute final-world Euler XYZ
+			SetObjectScale,         ///< s   = absolute final uniform scale
+			SetObjectStretch,       ///< v3a = absolute final per-axis scale
 			//! Anchor-based scale used by the gizmo drag.  Carries the
 			//! per-axis FACTOR in `v3a` and the object's final transform
-			//! matrix at drag-start in `prevTransform` — Apply restores
-			//! the drag-start matrix, then pushes a stretch-by-factor on
-			//! top so the result is `prevTransform · Stretch(v3a)`.
-			//! Unlike `SetObjectStretch` (which overwrites just the
-			//! stretch component of the transform stack), this op
-			//! composes the factor with whatever drag-start state the
-			//! object actually had — including any baked-in scale from
-			//! `AddObjectMatrix` (glTF / quaternion / imported objects)
-			//! or earlier `SetObjectScale` calls.  Without it, a tiny
-			//! scale drag on a 10×-imported glTF reads its column
-			//! magnitudes back as a fresh stretch of 10× and then
-			//! ALSO leaves the original 10× matrix on the stack →
-			//! object jumps toward 100×.  Unlike the other transform
+			//! matrix at drag-start in `prevTransform`. Apply replaces the
+			//! authoritative final matrix with
+			//! `prevTransform · Stretch(v3a)`, so imported/baked scale is
+			//! composed exactly once and later absolute setters remain valid.
+			//! Unlike the other transform
 			//! ops, the controller pre-populates `prevTransform` at
 			//! drag-start and Apply does NOT overwrite it (every
 			//! per-frame Apply needs the SAME anchor, not the
@@ -336,19 +328,16 @@ namespace RISE
 		//! (the active camera is implicit).
 		String   propertyName;
 
-		//! State captured BEFORE mutation, used by undo to restore.
-		/// For object/camera transform ops this is the full
-		/// GetFinalTransformMatrix().  Restore path is
-		/// ClearAllTransforms() + PushTopTransStack(prevTransform)
-		/// + FinalizeTransformations(), which yields a matrix
-		/// equal to prevTransform.
+		//! Final matrix captured BEFORE mutation.  This is the fallback undo
+		//! representation for non-Transformable targets; Transformable objects
+		//! use prevTransformState below so their ordered stack is retained.
 		Matrix4  prevTransform;
 
-		//! Pre-existing transform-undo composition fix: the full
-		//! component-decomposed transform state captured before a transform
-		//! op, so Undo restores the position/orientation/scale/stretch
-		//! COMPONENTS (not just the collapsed matrix) and a later absolute
-		//! setter replaces the right component.  `hasTransformState` is false
+		//! Exact transform state captured before a transform op, including the
+		//! component matrices, every ordered stack entry, and authoritative
+		//! matrix-edit metadata.  Undo therefore preserves both the rendered
+		//! matrix and later absolute-setter / Push / Pop behavior.
+		//! `hasTransformState` is false
 		//! for ScaleObjectFromAnchor (prevTransform is managed specially) and
 		//! for non-Transformable targets -- those fall back to prevTransform.
 		bool           hasTransformState;
@@ -401,7 +390,7 @@ namespace RISE
 		//! identity).  Apply/Undo/Redo re-resolve by name and compare; a mismatch means a
 		//! remove+re-add put a DIFFERENT instance under the name -> refuse (don't corrupt it).
 		unsigned long long capturedTargetSerial;
-		TransformState prevTransformState;
+		TransformStateV2 prevTransformState;
 
 		//! Previous scene time (for SetSceneTime undo).
 		Scalar   prevTime;

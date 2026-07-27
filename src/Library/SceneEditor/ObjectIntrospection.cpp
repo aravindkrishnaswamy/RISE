@@ -214,6 +214,94 @@ String FindGeometryName( const IJob* job, const IGeometry* target )
 	return cb.found;
 }
 
+Vector3 LeastAlignedCardinal_( const Vector3& unit )
+{
+	const Scalar ax = std::fabs( unit.x );
+	const Scalar ay = std::fabs( unit.y );
+	const Scalar az = std::fabs( unit.z );
+	return ax <= ay && ax <= az ? Vector3( 1, 0, 0 )
+	     : ay <= az             ? Vector3( 0, 1, 0 )
+	                            : Vector3( 0, 0, 1 );
+}
+
+Vector3 PerpendicularUnit_( const Vector3& unit )
+{
+	return Vector3Ops::Normalize( Vector3Ops::Cross( unit, LeastAlignedCardinal_( unit ) ) );
+}
+
+}  // namespace
+
+void ObjectIntrospection::DecomposeFinalAffine(
+	const Matrix4& transform, Matrix4& rotation, Matrix4& residual )
+{
+	const Vector3 c0( transform._00, transform._01, transform._02 );
+	const Vector3 c1( transform._10, transform._11, transform._12 );
+	const Vector3 c2( transform._20, transform._21, transform._22 );
+	const Scalar l0 = Vector3Ops::Magnitude( c0 );
+	const Scalar l1 = Vector3Ops::Magnitude( c1 );
+	const Scalar l2 = Vector3Ops::Magnitude( c2 );
+
+	Vector3 x;
+	if( l0 > 0 ) {
+		x = Vector3Ops::Normalize( c0 );
+	} else if( l1 > 0 && l2 > 0 && Vector3Ops::Magnitude( Vector3Ops::Cross( c1, c2 ) ) > 0 ) {
+		x = Vector3Ops::Normalize( Vector3Ops::Cross( c1, c2 ) );
+	} else if( l1 > 0 ) {
+		x = PerpendicularUnit_( Vector3Ops::Normalize( c1 ) );
+	} else if( l2 > 0 ) {
+		x = PerpendicularUnit_( Vector3Ops::Normalize( c2 ) );
+	} else {
+		x = Vector3( 1, 0, 0 );
+	}
+
+	Vector3 yRaw = c1 - x * Vector3Ops::Dot( x, c1 );
+	Vector3 y;
+	if( Vector3Ops::Magnitude( yRaw ) > 0 ) {
+		y = Vector3Ops::Normalize( yRaw );
+	} else if( l2 > 0 && Vector3Ops::Magnitude( Vector3Ops::Cross( c2, x ) ) > 0 ) {
+		y = Vector3Ops::Normalize( Vector3Ops::Cross( c2, x ) );
+	} else {
+		y = PerpendicularUnit_( x );
+	}
+	const Vector3 z = Vector3Ops::Normalize( Vector3Ops::Cross( x, y ) );
+	y = Vector3Ops::Normalize( Vector3Ops::Cross( z, x ) );
+
+	rotation = Matrix4Ops::Identity();
+	rotation._00 = x.x; rotation._01 = x.y; rotation._02 = x.z;
+	rotation._10 = y.x; rotation._11 = y.y; rotation._12 = y.z;
+	rotation._20 = z.x; rotation._21 = z.y; rotation._22 = z.z;
+
+	Matrix4 linear = transform;
+	linear._30 = linear._31 = linear._32 = 0;
+	linear._03 = linear._13 = linear._23 = 0;
+	linear._33 = 1;
+	residual = Matrix4Ops::Inverse( rotation ) * linear;
+}
+
+Vector3 ObjectIntrospection::RotationEulerDegrees( const Matrix4& m )
+{
+	const Scalar r00 = m._00;
+	const Scalar r10 = m._10;
+	const Scalar r20 = m._20;
+	const Scalar r21 = m._21;
+	const Scalar r22 = m._22;
+	const Scalar clampedSinY = r20 < -1 ? -1 : r20 > 1 ? 1 : r20;
+	const Scalar y = std::asin( clampedSinY );
+	Scalar x = 0;
+	Scalar z = 0;
+	if( std::fabs( clampedSinY ) < 1 ) {
+		x = std::atan2( -r21, r22 );
+		z = std::atan2( -r10, r00 );
+	} else {
+		x = clampedSinY > 0
+			? std::atan2( m._01, m._11 )
+			: std::atan2( -m._01, m._11 );
+	}
+	return Vector3( x * RAD_TO_DEG, y * RAD_TO_DEG, z * RAD_TO_DEG );
+}
+
+namespace {
+
 // Read a descriptor parameter's current value as a parser-formatted
 // string.  Returns empty for params we don't yet have a runtime
 // reader for (modifier name, quaternion / matrix
@@ -235,10 +323,14 @@ String ReadObjectParam( const String& paramName, const IObject& obj,
 		return String( buf );
 	}
 	if( paramName == String( "orientation" ) ) {
-		// We don't have a stored Euler-decomposition accessor on
-		// IObject so display "0 0 0" — user's edit overrides.
-		// Phase 5 can add proper decomposition for round-trip display.
-		return String( "0 0 0" );
+		Matrix4 rotation, residual;
+		ObjectIntrospection::DecomposeFinalAffine( m, rotation, residual );
+		const Vector3 euler = ObjectIntrospection::RotationEulerDegrees( rotation );
+		std::snprintf( buf, sizeof(buf), "%g %g %g",
+			static_cast<double>( euler.x ),
+			static_cast<double>( euler.y ),
+			static_cast<double>( euler.z ) );
+		return String( buf );
 	}
 	if( paramName == String( "scale" ) ) {
 		const Scalar lx = std::sqrt( m._00 * m._00 + m._01 * m._01 + m._02 * m._02 );

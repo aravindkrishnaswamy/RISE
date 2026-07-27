@@ -49,6 +49,7 @@
 #include "../Utilities/MediaPathLocator.h"
 #include "MathExpressionEvaluator.h"
 #include "../Utilities/RasterizerDefaults.h"
+#include "../Utilities/Transformable.h"
 #include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk
 #include "../RISE_API.h"				// IScalarPainter constructors (Phase 2)
 #include "../Interfaces/IScalarPainter.h"
@@ -576,8 +577,9 @@ namespace RISE
 				return net < 0;
 			}
 
-			inline bool AllTokensAreFiniteNumbers( const char* sz )
+			inline bool AllTokensAreFiniteNumbers( const char* sz, int* outTokenCount = 0 )
 			{
+				if( outTokenCount ) *outTokenCount = 0;
 				if( !sz ) {
 					return false;
 				}
@@ -622,7 +624,17 @@ namespace RISE
 						break;	// number glued to a comment (`36#mm`) -- legacy sscanf accepted it
 					}
 				}
+				if( outTokenCount ) *outTokenCount = tokens;
 				return tokens > 0;
+			}
+
+			inline bool HasExactNumericArity(
+				const ParseStateBag& bag, const char* key, const int expected )
+			{
+				if( !bag.Has( key ) ) return true;
+				int actual = 0;
+				return AllTokensAreFiniteNumbers( bag.GetString( key ).c_str(), &actual )
+					&& actual == expected;
 			}
 
 			inline bool DispatchChunkParameters(
@@ -6538,6 +6550,19 @@ namespace RISE
 							"override_object: missing `name` field." );
 						return false;
 					}
+					struct NumericArity { const char* key; int count; };
+					const NumericArity numericArities[] = {
+						{ "position", 3 }, { "orientation", 3 }, { "quaternion", 4 },
+						{ "matrix", 16 }, { "scale", 3 }
+					};
+					for( const NumericArity& arity : numericArities ) {
+						if( !HasExactNumericArity( bag, arity.key, arity.count ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"override_object `%s`: parameter `%s` requires exactly %d finite numbers.",
+								name.c_str(), arity.key, arity.count );
+							return false;
+						}
+					}
 					IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
 					if( !priv ) {
 						GlobalLog()->PrintEasyError(
@@ -6569,8 +6594,14 @@ namespace RISE
 					if( hasMatrix ) {
 						double m[16];
 						bag.GetMat4( "matrix", m );
-						obj->ClearAllTransforms();
-						obj->PushTopTransStack( BuildMatrix4FromColumnMajor( m ) );
+						const Matrix4 transform = BuildMatrix4FromColumnMajor( m );
+						if( Implementation::Transformable* concrete =
+							dynamic_cast<Implementation::Transformable*>( obj ) ) {
+							concrete->SetFinalTransformMatrix( transform );
+						} else {
+							obj->ClearAllTransforms();
+							obj->PushTopTransStack( transform );
+						}
 						any = true;
 					} else if( hasQuaternion ) {
 						double pos[3]={0,0,0}, q[4]={0,0,0,1}, s[3]={1,1,1};
@@ -6579,8 +6610,14 @@ namespace RISE
 						bag.GetVec3( "scale",      s );
 						double M[16];
 						ComposeTRS_QuaternionGltf( pos, q, s, M );
-						obj->ClearAllTransforms();
-						obj->PushTopTransStack( BuildMatrix4FromColumnMajor( M ) );
+						const Matrix4 transform = BuildMatrix4FromColumnMajor( M );
+						if( Implementation::Transformable* concrete =
+							dynamic_cast<Implementation::Transformable*>( obj ) ) {
+							concrete->SetFinalTransformMatrix( transform );
+						} else {
+							obj->ClearAllTransforms();
+							obj->PushTopTransStack( transform );
+						}
 						any = true;
 					} else {
 						// Per-field path.  Each Set* is independent;
@@ -6590,24 +6627,10 @@ namespace RISE
 						// to update X's translation without disturbing
 						// its orientation/scale).
 						//
-						// COMPOSITIONAL CAVEAT (review-noted, V1 documented
-						// limitation): per-field SetPosition/Orientation/
-						// Stretch update P/O/Stretch components only — they
-						// do NOT clear the underlying transform STACK.  When
-						// the source `standard_object` was matrix-authored
-						// (Job::AddObjectMatrix pushed the matrix onto the
-						// stack), a per-field override of that target
-						// COMPOSES with the existing stack matrix rather
-						// than replacing it.  HISTORICAL: the pre-CST byte-
-						// splice save engine (deleted Slice 6d) never emitted
-						// per-field overrides for matrix-authored objects
-						// (pinned 2.13: matrix author-mode forced matrix-
-						// form override), so its round-trip path was safe;
-						// nothing emits override_object at all today (save
-						// is SaveEngine's whole-Document SerializeCst).
-						// Hand-written overrides targeting matrix-authored
-						// sources should use the matrix or quaternion
-						// branch to replace cleanly.
+						// Matrix-authored objects retain one authoritative
+						// affine matrix in Transformable, so these absolute
+						// setters replace the requested field without
+						// composing hidden component state beneath it.
 						double v[3];
 						if( bag.GetVec3( "position", v ) ) {
 							obj->SetPosition( Point3( v[0], v[1], v[2] ) );

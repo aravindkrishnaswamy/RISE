@@ -381,6 +381,11 @@ struct MultiPaneViewportView: View {
             width: UInt(max(1, size.width)),
             height: UInt(max(1, size.height))) {
             lastSurfacePixelSize[pane] = size
+            // Surface-size changes alter both gizmo geometry and hit tolerance.
+            // Refresh the overlay in the same turn as the core dimensions so
+            // drawing and pointer hit-testing cannot disagree after a resize or
+            // backing-scale transition.
+            gizmoRefreshTrigger &+= 1
         }
     }
 
@@ -818,7 +823,16 @@ final class PaneCanvasNSView: NSView {
     var onPointerMove: ((CGPoint) -> Void)?
     var onPointerUp: ((CGPoint) -> Void)?
     var onSurfacePixelSizeChanged: ((CGSize) -> Void)?
-    var surfaceDimensionsProvider: (() -> NSSize)?
+    var surfaceDimensionsProvider: (() -> NSSize)? {
+        didSet {
+            // configure() assigns this during updateNSView. Reporting
+            // synchronously would call back into @State mutation while
+            // SwiftUI is still updating the representable.
+            DispatchQueue.main.async { [weak self] in
+                self?.reportPixelSizeIfNeeded()
+            }
+        }
+    }
     var toolCursor: NSCursor = .arrow
 
     /// True for the duration of a gesture the core accepted at Down —
@@ -826,6 +840,7 @@ final class PaneCanvasNSView: NSView {
     /// "Down returns false ⇒ drop the gesture" contract.
     private var gestureArmed = false
     private var lastReportedPixelSize: CGSize = .zero
+    private var lastReportedSourceSize: CGSize = .zero
 
     override var isFlipped: Bool { true }
 
@@ -833,11 +848,11 @@ final class PaneCanvasNSView: NSView {
     // see this file's header comment on why this is a lean
     // re-implementation, not a shared subclass).
     private func currentSourceDims() -> NSSize? {
-        if let image, image.size.width > 0, image.size.height > 0 {
-            return image.size
-        }
         if let dims = surfaceDimensionsProvider?(), dims.width > 0, dims.height > 0 {
             return dims
+        }
+        if let image, image.size.width > 0, image.size.height > 0 {
+            return image.size
         }
         return nil
     }
@@ -879,8 +894,10 @@ final class PaneCanvasNSView: NSView {
         let w = max(1, (bounds.width * scale).rounded())
         let h = max(1, (bounds.height * scale).rounded())
         let size = CGSize(width: w, height: h)
-        guard size != lastReportedPixelSize else { return }
+        let sourceSize = surfaceDimensionsProvider?() ?? .zero
+        guard size != lastReportedPixelSize || sourceSize != lastReportedSourceSize else { return }
         lastReportedPixelSize = size
+        lastReportedSourceSize = sourceSize
         onSurfacePixelSizeChanged?(size)
     }
 

@@ -38,6 +38,7 @@
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
 #include <map>                            // source-traceability reverse: cached keyword -> Category map
 #include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
+#include "../Animation/KeyframableHelper.h"
 #include "ObjectIntrospection.h"
 #include "LightIntrospection.h"
 #include "RasterizerIntrospection.h"
@@ -561,18 +562,16 @@ inline bool IsObjectMotionTool( SceneEditController::Tool t )
 // older C++ idiom — explicit return types, no captures, no `auto`.
 inline bool ParsePropertyVec3( const String& valueStr, Vector3& out )
 {
-	double x = 0;
-	double y = 0;
-	double z = 0;
-	if( std::sscanf( valueStr.c_str(), "%lf %lf %lf", &x, &y, &z ) != 3 ) return false;
-	out = Vector3( Scalar( x ), Scalar( y ), Scalar( z ) );
+	double values[3];
+	if( !Implementation::ParseStrictVec3( valueStr, values ) ) return false;
+	out = Vector3( Scalar( values[0] ), Scalar( values[1] ), Scalar( values[2] ) );
 	return true;
 }
 
 inline bool ParsePropertyScalar( const String& valueStr, Scalar& out )
 {
 	double v = 0;
-	if( std::sscanf( valueStr.c_str(), "%lf", &v ) != 1 ) return false;
+	if( !Implementation::ParseStrictScalar( valueStr, v ) ) return false;
 	out = Scalar( v );
 	return true;
 }
@@ -661,15 +660,14 @@ inline bool ProjectWorldToScreen_(
 	return true;
 }
 
-// Constants controlling handle layout.  Screen-space lengths are in
-// the camera's CURRENT image-pixel space — platform overlays scale
-// them to widget space using the same `fullW`/`fullH` normalisation
-// they apply to pointer events.  Chosen by hand to give comfortable
-// click targets on a 1280×720 viewport with a 1.5× HiDPI factor;
-// can be re-tuned without breaking the math or the C-API.
+// Constants controlling handle layout, expressed in viewport SURFACE
+// pixels. BuildGizmoHandles_ converts them to stable full-resolution film
+// pixels with `gizmoPixelScale`. This keeps a 4K-authored scene's rings and
+// hit bands the same displayed size as a 720p scene in the same pane.
 constexpr double kAxisArrowLengthPx = 80.0;   // tip distance from pivot
 constexpr double kAxisPlaneOffsetPx = 40.0;   // plane-handle offset along each axis
 constexpr double kAxisRingRadiusPx  = 80.0;   // rotation ring radius
+constexpr double kAxisRingSpacingPx = 22.0;   // keeps X/Y/Z/view rings independently hittable
 constexpr double kCenterRadiusPx    = 16.0;   // screen-center / uniform-scale glyph
 constexpr double kAxisHitRadiusPx   = 14.0;   // hit-test radius for axis arrows / cubes
 constexpr double kPlaneHitRadiusPx  = 18.0;   // hit-test radius for plane / ring tangent
@@ -754,11 +752,19 @@ inline void BuildGizmoHandles_(
 	double                                          currentHeight,
 	double                                          targetWidth,
 	double                                          targetHeight,
+	double                                          gizmoPixelScale,
 	std::vector<SceneEditController::GizmoHandle>&  outHandles )
 {
 	using Kind = SceneEditController::GizmoHandle::Kind;
 	using T    = SceneEditController::Tool;
 	outHandles.clear();
+	const double arrowLength = kAxisArrowLengthPx * gizmoPixelScale;
+	const double planeOffset = kAxisPlaneOffsetPx * gizmoPixelScale;
+	const double ringRadius  = kAxisRingRadiusPx  * gizmoPixelScale;
+	const double ringSpacing = kAxisRingSpacingPx * gizmoPixelScale;
+	const double centerRadius = kCenterRadiusPx   * gizmoPixelScale;
+	const double axisHitRadius = kAxisHitRadiusPx * gizmoPixelScale;
+	const double planeHitRadius = kPlaneHitRadiusPx * gizmoPixelScale;
 
 	double cx = 0, cy = 0;
 	if( !ProjectWorldToScreen_( mxTrans, origin, pivotWorld,
@@ -806,7 +812,7 @@ inline void BuildGizmoHandles_(
 	switch( tool ) {
 	case T::TranslateObject:
 		// Center first (front-to-back priority).
-		pushHandle( static_cast<int>( Kind::ScreenCenter ), -1, cx, cy, kCenterRadiusPx );
+		pushHandle( static_cast<int>( Kind::ScreenCenter ), -1, cx, cy, centerRadius );
 		// Axis-plane handles at the midpoint of each axis pair.
 		// `axis` field stores the axis NOT in the plane: YZ plane → axis=0,
 		// XZ plane → axis=1, XY plane → axis=2.
@@ -814,45 +820,44 @@ inline void BuildGizmoHandles_(
 			const int b = ( a + 1 ) % 3;
 			const int c = ( a + 2 ) % 3;
 			if( !axisOk[b] || !axisOk[c] ) continue;
-			const double sx = cx + ( axisDirX[b][0] + axisDirX[c][0] ) * kAxisPlaneOffsetPx;
-			const double sy = cy + ( axisDirX[b][1] + axisDirX[c][1] ) * kAxisPlaneOffsetPx;
-			pushHandle( static_cast<int>( Kind::AxisPlane ), a, sx, sy, kPlaneHitRadiusPx );
+			const double sx = cx + ( axisDirX[b][0] + axisDirX[c][0] ) * planeOffset;
+			const double sy = cy + ( axisDirX[b][1] + axisDirX[c][1] ) * planeOffset;
+			pushHandle( static_cast<int>( Kind::AxisPlane ), a, sx, sy, planeHitRadius );
 		}
 		// Axis arrows last so they're hit-tested AFTER planes (planes
 		// sit closer to centre and would otherwise eat clicks meant
 		// for the longer arrow shafts).
 		for( int a = 0; a < 3; ++a ) {
 			if( !axisOk[a] ) continue;
-			const double sx = cx + axisDirX[a][0] * kAxisArrowLengthPx;
-			const double sy = cy + axisDirX[a][1] * kAxisArrowLengthPx;
-			pushHandle( static_cast<int>( Kind::AxisArrow ), a, sx, sy, kAxisHitRadiusPx );
+			const double sx = cx + axisDirX[a][0] * arrowLength;
+			const double sy = cy + axisDirX[a][1] * arrowLength;
+			pushHandle( static_cast<int>( Kind::AxisArrow ), a, sx, sy, axisHitRadius );
 		}
 		break;
 
 	case T::RotateObject:
-		// View-aligned screen ring first — outermost; the user clicks
-		// "outside" the world-axis rings to trigger view-axis spin.
-		pushHandle( static_cast<int>( Kind::ScreenRing ), -1, cx, cy, kAxisRingRadiusPx + 20.0 );
-		// World-axis rings.  Stored centre is the pivot's projection;
-		// `screenRadius` is the ring radius in pixels.  The platform
-		// overlay draws an ellipse from the world-space ring projected
-		// (B5/B6/B7); hit-test (B3) uses distance from the projected
-		// ellipse approximation.
+		// Four independently selectable concentric rings. A previous layout
+		// assigned the same radius to X/Y/Z, so the front-to-back hit test
+		// could only ever return X. Adjacent circumferences are separated by
+		// more than twice the hit tolerance; the view ring is outermost.
+		pushHandle( static_cast<int>( Kind::ScreenRing ), -1, cx, cy,
+			ringRadius + 2.0 * ringSpacing );
 		for( int a = 0; a < 3; ++a ) {
 			if( !axisOk[a] ) continue;
-			pushHandle( static_cast<int>( Kind::AxisRing ), a, cx, cy, kAxisRingRadiusPx );
+			pushHandle( static_cast<int>( Kind::AxisRing ), a, cx, cy,
+				ringRadius + ( static_cast<double>( a ) - 1.0 ) * ringSpacing );
 		}
 		break;
 
 	case T::ScaleObject:
 		// Uniform-scale cube at center first.
-		pushHandle( static_cast<int>( Kind::UniformScaleCube ), -1, cx, cy, kCenterRadiusPx );
+		pushHandle( static_cast<int>( Kind::UniformScaleCube ), -1, cx, cy, centerRadius );
 		// Per-axis scale cubes at the tip of each world axis arrow.
 		for( int a = 0; a < 3; ++a ) {
 			if( !axisOk[a] ) continue;
-			const double sx = cx + axisDirX[a][0] * kAxisArrowLengthPx;
-			const double sy = cy + axisDirX[a][1] * kAxisArrowLengthPx;
-			pushHandle( static_cast<int>( Kind::AxisScaleHandle ), a, sx, sy, kAxisHitRadiusPx );
+			const double sx = cx + axisDirX[a][0] * arrowLength;
+			const double sy = cy + axisDirX[a][1] * arrowLength;
+			pushHandle( static_cast<int>( Kind::AxisScaleHandle ), a, sx, sy, axisHitRadius );
 		}
 		break;
 
@@ -1806,6 +1811,7 @@ const ICamera* SceneEditController::PaneEffectiveCameraLocked_( unsigned int pan
 void SceneEditController::RefreshGizmoHandles()
 {
 	mGizmoHandles.clear();
+	mGizmoPixelScale = 1.0;
 
 	// user-review P1#2 (round 2, concurrency): EffectiveViewportCamera_ /
 	// PaneEffectiveCameraLocked_ read the free-fly override register the render
@@ -1834,9 +1840,15 @@ void SceneEditController::RefreshGizmoHandles()
 void SceneEditController::RefreshGizmoHandlesLocked_()
 {
 	mGizmoHandles.clear();
+	mGizmoPixelScale = 1.0;
 
 	// Only Object-transform tools draw gizmos.
 	if( CategoryForTool( mTool ) != ToolCategory::ObjectTransform ) return;
+	// A per-category object selection is remembered when the inspector moves
+	// to another category. Do not draw that object's gizmo while the primary
+	// selection is a camera/material/light: OnPointerDown correctly refuses an
+	// object drag in that state, so showing it would create an inert overlay.
+	if( mSelectionCategory != Category::Object ) return;
 
 	// Object selection required.
 	const String objName = mSelectionByCategory[ static_cast<int>( Category::Object ) ];
@@ -1881,10 +1893,24 @@ void SceneEditController::RefreshGizmoHandlesLocked_()
 	const unsigned int curH = camC ? camC->GetHeight() : stableH;
 	if( curW == 0 || curH == 0 ) return;
 
+	// Platform pointer events and overlays are normalized through the stable
+	// film dimensions, but comfortable handle sizes belong to the displayed
+	// pane. Convert surface pixels back into film pixels. The pane is rendered
+	// at the film aspect ratio, so the two ratios normally agree; max keeps
+	// targets from shrinking if integer rounding makes one axis a pixel short.
+	const unsigned int surfaceW = mPaneConfigs[mPrimaryPane].surfaceW;
+	const unsigned int surfaceH = mPaneConfigs[mPrimaryPane].surfaceH;
+	if( surfaceW > 0 && surfaceH > 0 ) {
+		mGizmoPixelScale = std::max(
+			static_cast<double>( stableW ) / static_cast<double>( surfaceW ),
+			static_cast<double>( stableH ) / static_cast<double>( surfaceH ) );
+	}
+
 	BuildGizmoHandles_( mTool, cam->GetMatrix(), cam->GetLocation(),
 	                    pivotWorld,
 	                    static_cast<double>( curW ),    static_cast<double>( curH ),
 	                    static_cast<double>( stableW ), static_cast<double>( stableH ),
+	                    mGizmoPixelScale,
 	                    mGizmoHandles );
 }
 
@@ -1987,7 +2013,7 @@ int SceneEditController::GizmoHandleAt( const Point2& px ) const
 		if( isRing ) {
 			const double dist = std::sqrt( dist2 );
 			const double ringErr = std::fabs( dist - h.screenRadius );
-			inside = ringErr < kRingHitRadiusPx;
+			inside = ringErr < kRingHitRadiusPx * mGizmoPixelScale;
 			effDist2 = ringErr * ringErr;
 		} else {
 			inside = dist2 < h.screenRadius * h.screenRadius;
@@ -2328,6 +2354,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::TranslateObject:
 	case Tool::RotateObject:
 	case Tool::ScaleObject:
+	{
 		if( mSelectionCategory == Category::Object && mSelectionName.size() > 1 )
 		{
 			{
@@ -2372,6 +2399,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 				mGizmoDrag.axis = h.axis;
 				mGizmoDrag.anchorPxX = static_cast<double>( px.x );
 				mGizmoDrag.anchorPxY = static_cast<double>( px.y );
+				mGizmoDrag.pixelScale = mGizmoPixelScale;
 
 				// Capture pivot (world) + projection.
 				// Re-park and keep mMutex across every live scene/object/camera
@@ -2385,12 +2413,9 @@ void SceneEditController::OnPointerDown( const Point2& px )
 
 					// Capture the object's drag-start transform matrix
 					// as the anchor for `ScaleObjectFromAnchor` (and
-					// available to any other anchor-based op).  Apply
-					// composes the per-frame factor on TOP of this
-					// matrix via `ClearAllTransforms` +
-					// `PushTopTransStack(anchor)` +
-					// `PushTopTransStack(Stretch(factor))`, so the
-					// final composition is `anchor · Stretch(factor)`.
+					// available to any other anchor-based op). Apply
+					// replaces the authoritative final matrix with
+					// `anchor · Stretch(factor)`.
 					// This is what makes scale drag correct on objects
 					// with non-trivial transform stacks (matrix imports
 					// from glTF, prior SetObjectScale, etc.) —
@@ -2401,13 +2426,11 @@ void SceneEditController::OnPointerDown( const Point2& px )
 					IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
 					if( obj ) {
 						mGizmoDrag.dragStartMatrix = obj->GetFinalTransformMatrix();
-						// F6: also capture the component-decomposed state so undo of
-						// the ScaleObjectFromAnchor restores COMPONENTS (not a stack-
-						// collapsed matrix) and a later absolute setter replaces the
-						// right component instead of composing with the anchor.
+						// Capture exact stack representation and authoritative metadata
+						// so undo restores subsequent Push/Pop and setter semantics.
 						mGizmoDrag.dragStartStateValid = false;
 						if( Implementation::Transformable* tt = dynamic_cast<Implementation::Transformable*>( obj ) ) {
-							mGizmoDrag.dragStartState      = tt->CaptureTransformState();
+							mGizmoDrag.dragStartState      = tt->CaptureTransformStateV2();
 							mGizmoDrag.dragStartStateValid = true;
 						}
 					} else {
@@ -2456,9 +2479,27 @@ void SceneEditController::OnPointerDown( const Point2& px )
 						}
 					}
 				}
+			} else if( mTool == Tool::ScaleObject ) {
+				// Free-scale drags still need a stable drag-start anchor. Without
+				// this, each pointer move overwrote the stretch with a factor near
+				// one, snapping imported/scaled objects and preventing accumulation.
+				mGizmoDrag.anchorPxX = static_cast<double>( px.x );
+				mGizmoDrag.anchorPxY = static_cast<double>( px.y );
+				mGizmoDrag.pixelScale = mGizmoPixelScale;
+				std::lock_guard<std::mutex> captureLk( mMutex );
+				const IScene* sceneForObj = mJob.GetScene();
+				const IObjectManager* objs = sceneForObj ? sceneForObj->GetObjects() : 0;
+				IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
+				mGizmoDrag.dragStartMatrix = obj ? obj->GetFinalTransformMatrix() : Matrix4Ops::Identity();
+				mGizmoDrag.dragStartStateValid = false;
+				if( Implementation::Transformable* tt = dynamic_cast<Implementation::Transformable*>( obj ) ) {
+					mGizmoDrag.dragStartState = tt->CaptureTransformStateV2();
+					mGizmoDrag.dragStartStateValid = true;
+				}
 			}
 		}
 		break;
+	}
 
 	case Tool::OrbitCamera:
 	case Tool::PanCamera:
@@ -2677,12 +2718,9 @@ void SceneEditController::OnPointerMove( const Point2& px )
 			edit.op = SceneEdit::TranslateObject;
 			edit.v3a = worldDelta;
 		} else {
-			// No gizmo handle captured: legacy free-drag math.  Same
-			// placeholder used by pre-gizmo builds — kept for the
-			// "no overlay drawn yet" period BEFORE the platform UIs
-			// land their gizmo renderers (B5/B6/B7).  Once those land,
-			// a drag that doesn't hit a handle is intentionally a
-			// no-op (matches Unity / Maya gizmo conventions).
+			// No gizmo handle captured: preserve the original free-drag
+			// interaction. The toolbar promises that dragging transforms the
+			// selected object; grabbing a handle opts into a constrained move.
 			edit.op = SceneEdit::TranslateObject;
 			edit.v3a = Vector3( delta.x * 0.01, -delta.y * 0.01, 0 );
 		}
@@ -2744,8 +2782,15 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		break;
 
 	case Tool::ScaleObject:
+	{
 		if( !haveObject ) return;
 		edit.objectName = mSelectionName;
+		// Pointer deltas remain relative to the drag-start anchor, so their
+		// displayed-pixel conversion must be frozen at the same instant. A
+		// resize/DPI/surface report may refresh overlay geometry mid-gesture;
+		// using the live mGizmoPixelScale here would make scale jump.
+		const double kScaleRefPx = 80.0 * mGizmoDrag.pixelScale;
+		const double kScaleLog2  = 0.6931471805599453;
 		if( mGizmoDrag.active ) {
 			using K = GizmoHandle::Kind;
 			// Drag math is unchanged: per-frame the controller
@@ -2769,8 +2814,6 @@ void SceneEditController::OnPointerMove( const Point2& px )
 			// no matter how it was authored.
 			const double anchorDx = static_cast<double>( px.x ) - mGizmoDrag.anchorPxX;
 			const double anchorDy = static_cast<double>( px.y ) - mGizmoDrag.anchorPxY;
-			const double kRefPx = 80.0;
-			const double kLog2  = 0.6931471805599453;
 			Vector3 factor( 1, 1, 1 );
 			if( mGizmoDrag.kind == static_cast<int>( K::AxisScaleHandle ) ) {
 				const int a = mGizmoDrag.axis;
@@ -2780,13 +2823,13 @@ void SceneEditController::OnPointerMove( const Point2& px )
 				const double mag = std::sqrt( adx*adx + ady*ady );
 				if( !( mag > 0 ) ) return;
 				const double pxAlong = ( anchorDx * adx + anchorDy * ady ) / mag;
-				const Scalar f = Scalar( std::exp( pxAlong / kRefPx * kLog2 ) );
+				const Scalar f = Scalar( std::exp( pxAlong / kScaleRefPx * kScaleLog2 ) );
 				if( a == 0 ) factor.x = f;
 				else if( a == 1 ) factor.y = f;
 				else factor.z = f;
 			}
 			else if( mGizmoDrag.kind == static_cast<int>( K::UniformScaleCube ) ) {
-				const Scalar f = Scalar( std::exp( anchorDx / kRefPx * kLog2 ) );
+				const Scalar f = Scalar( std::exp( anchorDx / kScaleRefPx * kScaleLog2 ) );
 				factor.x = f;
 				factor.y = f;
 				factor.z = f;
@@ -2808,15 +2851,21 @@ void SceneEditController::OnPointerMove( const Point2& px )
 				edit.hasTransformState  = true;
 			}
 		} else {
-			// Legacy free-drag (no handle hit): per-frame absolute
-			// reset — broken for accumulation but kept for non-gizmo
-			// drag back-compat.  Gizmo overlay landed B5+ surfaces
-			// the handles so users shouldn't normally hit this path.
-			edit.op = SceneEdit::SetObjectStretch;
-			const Scalar f = 1.0 + delta.y * 0.005;
+			// Free-drag uses the same stable anchor composition as the center
+			// scale handle. Cumulative vertical travel maps exponentially so
+			// repeated pointer events cannot reset or double-apply baseline scale.
+			const double travel = static_cast<double>( px.y ) - mGizmoDrag.anchorPxY;
+			const Scalar f = Scalar( std::exp( travel / kScaleRefPx * kScaleLog2 ) );
+			edit.op = SceneEdit::ScaleObjectFromAnchor;
 			edit.v3a = Vector3( f, f, f );
+			edit.prevTransform = mGizmoDrag.dragStartMatrix;
+			if( mGizmoDrag.dragStartStateValid ) {
+				edit.prevTransformState = mGizmoDrag.dragStartState;
+				edit.hasTransformState = true;
+			}
 		}
 		break;
+	}
 
 	case Tool::OrbitCamera:
 	case Tool::PanCamera:
@@ -7885,8 +7934,15 @@ void SceneEditController::RenderLoop()
 			mPaneRender[mCurrentPane].dirty = false;
 			// P3a slice 3: stamp the pane's surface dims for the pass --
 			// registers, read by DoOneRenderPass's film-swap block.
-			mCurrentPaneSurfaceW = mPaneConfigs[mCurrentPane].surfaceW;
-			mCurrentPaneSurfaceH = mPaneConfigs[mCurrentPane].surfaceH;
+			// Single retains the legacy scaleFilmToFit/render-resolution policy.
+			// Its reported surface is display-only metadata for gizmo sizing;
+			// applying a full Retina/window size here would bypass the preview
+			// long-edge cap and multiply interactive render cost. N-up cells still
+			// use explicit render dimensions to avoid tracing full-film rays.
+			const bool singlePaneZero =
+				mViewportLayout == ViewportLayout::Single && mCurrentPane == 0;
+			mCurrentPaneSurfaceW = singlePaneZero ? 0 : mPaneConfigs[mCurrentPane].surfaceW;
+			mCurrentPaneSurfaceH = singlePaneZero ? 0 : mPaneConfigs[mCurrentPane].surfaceH;
 			// External review P1 fix: snapshot mPolishState and apply it
 			// to mInteractiveImpl HERE, inside the SAME mMutex hold
 			// SetViewportRenderMode / SetViewportXray take before calling
@@ -10118,6 +10174,18 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	mViewportLayout = layout;
 	const unsigned int newVisible = PaneCountForLayout( layout );
 	bool restoredPaneZeroInteractive = false;
+	// Pane 0 may carry a small N-up cell size. It is not the Single view's
+	// surface measurement, and retaining it across Quad -> Single makes the
+	// first single-view pass render at the old subview resolution while the
+	// gizmo is sized for that old cell. Reset it synchronously; each desktop
+	// shell reports the aspect-fitted Single surface immediately afterward.
+	if( newVisible == 1 && oldVisible > 1 ) {
+		mPaneConfigs[0].surfaceW = 0;
+		mPaneConfigs[0].surfaceH = 0;
+		MarkPaneDirtyLocked_( 0 );
+		mPanePassPending.store( true, std::memory_order_release );
+		mCV.notify_one();
+	}
 	// T4: Single layout is the byte-compatible legacy viewport, which has
 	// no Last Render chrome.  Returning to Single therefore restores pane 0
 	// to its preserved interactive mode/vantage instead of stranding the
@@ -10933,6 +11001,10 @@ bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w,
 	if( mPaneConfigs[pane].surfaceW == w && mPaneConfigs[pane].surfaceH == h ) return true;
 	mPaneConfigs[pane].surfaceW = w;
 	mPaneConfigs[pane].surfaceH = h;
+	// Single pane 0 consumes this as display-only gizmo metadata. Window/
+	// backing-scale changes do not alter its fit-capped render target, so do
+	// not launch a content-identical render on every live resize tick.
+	if( mViewportLayout == ViewportLayout::Single && pane == 0 ) return true;
 	if( !IsInteractivePaneLocked_( pane ) ) return true;
 	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
@@ -11042,8 +11114,10 @@ bool SceneEditController::PaneBaseDimensionsLocked_(
 	unsigned int pane, unsigned int& width, unsigned int& height ) const
 {
 	if( pane >= kViewportPaneCount ) return false;
-	width = mPaneConfigs[pane].surfaceW;
-	height = mPaneConfigs[pane].surfaceH;
+	const bool singlePaneZero =
+		mViewportLayout == ViewportLayout::Single && pane == 0;
+	width = singlePaneZero ? 0 : mPaneConfigs[pane].surfaceW;
+	height = singlePaneZero ? 0 : mPaneConfigs[pane].surfaceH;
 	if( width && height ) return true;
 	const IScene* scene = mJob.GetScene();
 	const IFilm* film = scene ? scene->GetFilm() : nullptr;
@@ -12792,9 +12866,14 @@ bool SceneEditController::SetPropertyInner_(
 		}
 		else if( name == String( "scale" ) ) {
 			// Descriptor surfaces `scale` as DoubleVec3 (per-axis),
-			// matching the standard_object chunk syntax.  Routes
-			// through SetObjectStretch for per-axis precision.
+			// matching the standard_object chunk syntax. Interactive absolute
+			// scale is a magnitude: zero destroys the affine frame and a
+			// negative sign cannot be reconstructed unambiguously after the CST
+			// stores the net matrix and re-derives. Scene-authored matrices can
+			// still contain either; the property editor deliberately requires
+			// strictly-positive, persistable values.
 			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
+			if( edit.v3a.x <= 0 || edit.v3a.y <= 0 || edit.v3a.z <= 0 ) return false;
 			edit.op = SceneEdit::SetObjectStretch;
 		}
 		else if( name == String( "scale_uniform" ) ) {
@@ -12802,11 +12881,13 @@ bool SceneEditController::SetPropertyInner_(
 			// a single Double.  Not in the descriptor; available for
 			// programmatic use.
 			if( !ParsePropertyScalar( valueStr, edit.s ) ) return false;
+			if( edit.s <= 0 ) return false;
 			edit.op = SceneEdit::SetObjectScale;
 		}
 		else if( name == String( "stretch" ) ) {
 			// Phase 3 alias kept for backward-compat.
 			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
+			if( edit.v3a.x <= 0 || edit.v3a.y <= 0 || edit.v3a.z <= 0 ) return false;
 			edit.op = SceneEdit::SetObjectStretch;
 		}
 		else if( name == String( "material" ) ) {

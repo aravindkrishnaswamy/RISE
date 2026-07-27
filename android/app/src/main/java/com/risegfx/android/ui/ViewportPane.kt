@@ -404,6 +404,7 @@ fun ViewportPane(
                         selectedTool = selectedTool,
                         isProductionRendering = (state is RenderState.Rendering),
                         refreshTrigger = refreshTrigger,
+                        viewportEpoch = viewportEpoch,
                     )
                     if (hasAnimation) {
                         Spacer(Modifier.height(8.dp))
@@ -687,11 +688,21 @@ private fun GizmoOverlay(
         val effW = size.width  - 2 * paddingPx
         val effH = size.height - 2 * paddingPx
         if (effW <= 0f || effH <= 0f) return@Canvas
-        val scale = minOf(effW / surfW, effH / surfH)
-        val drawW = surfW * scale
-        val drawH = surfH * scale
+        // Match Image(ContentScale.Fit) and mapToImagePixel exactly. Preview
+        // divisor rounding can make frame aspect differ slightly from stable
+        // Film aspect, so project stable film-space handles through the actual
+        // transient frame draw rect with independent X/Y scales.
+        val frameW = frame.width.toFloat()
+        val frameH = frame.height.toFloat()
+        if (frameW <= 0f || frameH <= 0f) return@Canvas
+        val drawScale = minOf(effW / frameW, effH / frameH)
+        val drawW = frameW * drawScale
+        val drawH = frameH * drawScale
         val ox = paddingPx + (effW - drawW) / 2f
         val oy = paddingPx + (effH - drawH) / 2f
+        val scaleX = drawW / surfW
+        val scaleY = drawH / surfH
+        val radiusScale = minOf(scaleX, scaleY)
 
         fun axisColor(axis: Int): Color = when (axis) {
             0    -> Color(0xFFDC3C3C)  // X red
@@ -701,9 +712,9 @@ private fun GizmoOverlay(
         }
 
         for (h in handles) {
-            val cx = ox + h.screenX.toFloat() * scale
-            val cy = oy + h.screenY.toFloat() * scale
-            val r  = (h.screenRadius.toFloat() * scale).coerceAtLeast(2f)
+            val cx = ox + h.screenX.toFloat() * scaleX
+            val cy = oy + h.screenY.toFloat() * scaleY
+            val r  = (h.screenRadius.toFloat() * radiusScale).coerceAtLeast(2f)
             val col = axisColor(h.axis)
             val isActive = dragActive && activeKind == h.kind && activeAxis == h.axis
             val strokeC = if (isActive) Color.White else col
@@ -815,8 +826,11 @@ private fun ViewportCanvas(
     selectedTool: ViewportTool = ViewportTool.Select,
     isProductionRendering: Boolean = false,
     refreshTrigger: Int = 0,
+    viewportEpoch: Int = 0,
 ) {
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    var surfaceEpoch by remember { mutableStateOf(0) }
+    var acceptedSurfaceSize by remember(viewportEpoch) { mutableStateOf(IntSize.Zero) }
 
     // dp → px conversion needs LocalDensity, which is only available
     // inside a @Composable scope — capture once here and pass as an
@@ -834,6 +848,39 @@ private fun ViewportCanvas(
     val frameState = rememberUpdatedState(frame)
     val boxSizeState = rememberUpdatedState(boxSize)
     val paddingPxState = rememberUpdatedState(paddingPx)
+
+    // Publish the aspect-fitted DISPLAY surface in physical pixels. The core
+    // keeps Single's fit-capped render resolution, but needs this measurement
+    // so gizmo geometry, hit tolerance, and 80px scale-drag sensitivity match
+    // what Compose actually displays. `enabled` provides a retry edge when a
+    // coordinated render temporarily refuses the setter.
+    LaunchedEffect(boxSize, paddingPx, refreshTrigger, frame?.width, frame?.height,
+                   enabled, viewportEpoch) {
+        val effectiveWidth = boxSize.width - 2 * paddingPx
+        val effectiveHeight = boxSize.height - 2 * paddingPx
+        if (effectiveWidth <= 0 || effectiveHeight <= 0) return@LaunchedEffect
+        val packed = RiseNative.nativeViewportCameraDimensions()
+        val filmWidth = ((packed ushr 32) and 0xffffffffL).toDouble()
+        val filmHeight = (packed and 0xffffffffL).toDouble()
+        if (filmWidth <= 0.0 || filmHeight <= 0.0) return@LaunchedEffect
+        val filmAspect = filmWidth / filmHeight
+        val areaAspect = effectiveWidth.toDouble() / effectiveHeight.toDouble()
+        val displayWidth: Int
+        val displayHeight: Int
+        if (areaAspect > filmAspect) {
+            displayHeight = effectiveHeight
+            displayWidth = (displayHeight * filmAspect).toInt().coerceAtLeast(1)
+        } else {
+            displayWidth = effectiveWidth
+            displayHeight = (displayWidth / filmAspect).toInt().coerceAtLeast(1)
+        }
+        val desired = IntSize(displayWidth, displayHeight)
+        if (desired == acceptedSurfaceSize) return@LaunchedEffect
+        if (RiseNative.nativeViewportSetSurfaceDimensions(displayWidth, displayHeight)) {
+            acceptedSurfaceSize = desired
+            surfaceEpoch++
+        }
+    }
     Box(
         modifier
             .background(Color(0xFF101114), RoundedCornerShape(12.dp))
@@ -930,7 +977,7 @@ private fun ViewportCanvas(
                 GizmoOverlay(
                     modifier = Modifier.fillMaxSize(),
                     frame = frame,
-                    refreshTrigger = refreshTrigger,
+                    refreshTrigger = refreshTrigger + surfaceEpoch + viewportEpoch,
                     paddingPx = paddingPx,
                 )
             }

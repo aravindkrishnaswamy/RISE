@@ -16,6 +16,7 @@
 
 #include "IKeyframable.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include <vector>
 
 namespace RISE
 {
@@ -34,6 +35,21 @@ namespace RISE
 		Matrix4 scale;
 		Matrix4 stretch;
 		Matrix4 stackProduct;
+	};
+
+	//! Additive, versioned transform snapshot used by the in-tree editor.
+	//! TransformState's original layout remains unchanged for binary callers;
+	//! this sibling carries private authoritative-matrix metadata without
+	//! extending the legacy by-value struct.
+	struct TransformStateV2
+	{
+		TransformState transform;
+		bool finalMatrixOnStack = false;
+		Matrix4 finalScaleBase;
+		Vector3 appliedStretch;
+		bool finalScaleBaseValid = false;
+		std::vector<Matrix4> stackEntries;
+		size_t authoritativeStackIndex = 0;
 	};
 
 //! The ability to have a basic transformation abilities

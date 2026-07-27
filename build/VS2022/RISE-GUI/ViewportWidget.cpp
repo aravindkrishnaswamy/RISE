@@ -76,11 +76,15 @@ void ViewportWidget::changeEvent(QEvent* e)
 
 void ViewportWidget::setImage(const QImage& image)
 {
+    const bool dimensionsChanged = m_image.size() != image.size();
     m_image = image;
     // N-up multi-viewport: pane 0 keeps arriving via this same signal (the
     // legacy preview sink is pane 0's sink -- see ViewportBridge's doc), so
     // the pane grid needs a copy too.
     m_paneImages[0] = image;
+    // A changed frame size can signal a newly loaded film aspect. Recompute
+    // the aspect-fitted physical surface; same-size preview frames stay cheap.
+    if (dimensionsChanged) recomputePaneLayout();
     update();
 }
 
@@ -223,13 +227,15 @@ void ViewportWidget::setSceneEditable(bool editable)
         // pane gesture pin rather than risk forwarding a stray Move/Up to
         // a pane once a render owns the scene.
         m_activeGesturePane = -1;
-    } else if (m_layout != ViewportBridge::ViewportLayout::Single) {
+    } else {
         // A geometry notification can race a production/chat render's
         // admission claim. recomputePaneLayout caches only dimensions the
         // controller accepted, so becoming editable is the reliable retry
         // edge for refused preset and SetPaneSurfaceDims calls.
         recomputePaneLayout();
-        applyMultiViewModePreset();
+        if (m_layout != ViewportBridge::ViewportLayout::Single) {
+            applyMultiViewModePreset();
+        }
     }
     update();   // re-evaluate the nav-overlay draw gate at the new state
 }
@@ -968,17 +974,7 @@ void ViewportWidget::keyPressEvent(QKeyEvent* event)
 void ViewportWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-    if (m_layout != ViewportBridge::ViewportLayout::Single) {
-        recomputePaneLayout();
-    } else {
-        // Single doesn't push SetPaneSurfaceDims (see recomputePaneLayout's
-        // doc), but keep pane 0's cached rect current anyway -- cheap, and
-        // keeps paneAt()/paneSurfacePoint() well-defined if a caller ever
-        // reads them mid-Single (they aren't today, but nothing here
-        // depends on that staying true).
-        m_paneRects[0] = rect();
-        m_paneImageAreaRects[0] = rect();
-    }
+    recomputePaneLayout();
 }
 
 // ============================================================
@@ -1074,8 +1070,17 @@ void ViewportWidget::restyleTheme()
 
 void ViewportWidget::recomputePaneLayout()
 {
-    m_layout = m_bridge ? m_bridge->viewportLayout() : ViewportBridge::ViewportLayout::Single;
+    const ViewportBridge::ViewportLayout newLayout =
+        m_bridge ? m_bridge->viewportLayout() : ViewportBridge::ViewportLayout::Single;
+    if (newLayout != m_layout) {
+        // The core clears pane 0's N-up surface when returning to Single.
+        // Invalidate accepted-size caches on either direction so the first
+        // measurement in the new layout is actually re-published.
+        for (QSize& accepted : m_paneLastPushedDims) accepted = QSize();
+    }
+    m_layout = newLayout;
     m_visiblePaneCount = ViewportBridge::paneCountForLayout(m_layout);
+    m_lastSurfaceFilmDims = m_bridge ? m_bridge->cameraSurfaceDimensions() : QSize();
 
     // Hide every chrome widget first; only the loop below re-shows the
     // ones the new layout actually makes visible.  Cheap -- 4 panes.
@@ -1086,12 +1091,29 @@ void ViewportWidget::recomputePaneLayout()
     }
 
     if (m_layout == ViewportBridge::ViewportLayout::Single) {
-        // Pre-N-up path: pane 0 owns the WHOLE widget, no header strip, and
-        // deliberately no SetPaneSurfaceDims push -- pane 0 keeps relying
-        // on ViewportBridge::scaleFilmToFit's screen-fit sizing exactly as
-        // before this feature (see the header block doc for why).
+        // Pane 0 owns the whole widget with no chrome. Publish the physical
+        // pixel size of the aspect-fitted image surface so HiDPI gizmo
+        // geometry and drag sensitivity are expressed in displayed pixels.
         m_paneRects[0] = rect();
         m_paneImageAreaRects[0] = rect();
+        const double dpr = devicePixelRatioF();
+        QSize devDims(
+            std::max(1, static_cast<int>(rect().width() * dpr + 0.5)),
+            std::max(1, static_cast<int>(rect().height() * dpr + 0.5)));
+        if (m_bridge) {
+            const QSize film = m_bridge->cameraSurfaceDimensions();
+            if (film.width() > 0 && film.height() > 0) {
+                const double filmAspect = static_cast<double>(film.width()) / film.height();
+                const double areaAspect = static_cast<double>(devDims.width()) / devDims.height();
+                if (areaAspect > filmAspect) {
+                    devDims.setWidth(std::max(1, static_cast<int>(devDims.height() * filmAspect + 0.5)));
+                } else {
+                    devDims.setHeight(std::max(1, static_cast<int>(devDims.width() / filmAspect + 0.5)));
+                }
+            }
+        }
+        m_paneDesiredDims[0] = devDims;
+        retryPendingPaneSurfaceDims();
         return;
     }
 
@@ -1208,7 +1230,7 @@ void ViewportWidget::recomputePaneLayout()
 
 void ViewportWidget::retryPendingPaneSurfaceDims()
 {
-    if (!m_bridge || m_layout == ViewportBridge::ViewportLayout::Single) return;
+    if (!m_bridge) return;
     for (unsigned int i = 0; i < m_visiblePaneCount; ++i) {
         const QSize desired = m_paneDesiredDims[i];
         if (desired.width() <= 0 || desired.height() <= 0
@@ -1234,7 +1256,7 @@ void ViewportWidget::refreshForDpiChange()
     // devicePixelRatioF() in recomputePaneLayout() -- would stay stale and
     // the panes would render at the wrong resolution for the new screen.
     // MainWindow forwards its ScreenChangeInternal here; re-run the layout so
-    // fresh device dims push (recomputePaneLayout early-outs while Single).
+    // fresh device dims push for both Single and N-up layouts.
     recomputePaneLayout();
     update();
 }
@@ -1452,10 +1474,12 @@ void ViewportWidget::pollPaneChrome()
 {
     if (!m_bridge || !m_sceneEditable) return;
     const ViewportBridge::ViewportLayout current = m_bridge->viewportLayout();
-    if (current != m_layout) {
+    const QSize currentFilmDims = m_bridge->cameraSurfaceDimensions();
+    if (current != m_layout || currentFilmDims != m_lastSurfaceFilmDims) {
         // A layout change from elsewhere (or a click this widget's own
         // onViewportLayoutChanged() already handled, in which case this is
-        // a harmless no-op re-derive) -- resync fully.
+        // a harmless no-op re-derive), or a Film-aspect edit with unchanged
+        // widget geometry -- resync fully.
         recomputePaneLayout();
         // Keep externally-driven layout changes on the same preset path as
         // the toolbar action.  A newly-visible secondary otherwise remains
@@ -1469,9 +1493,9 @@ void ViewportWidget::pollPaneChrome()
         // m_sceneEditable or production state.  Retry only panes that have
         // not yet accepted their first-reveal preset.
         applyMultiViewModePreset();
-        retryPendingPaneSurfaceDims();
         refreshPaneChromeState();
     }
+    retryPendingPaneSurfaceDims();
 }
 
 void ViewportWidget::onPaneModeComboChanged(int index)

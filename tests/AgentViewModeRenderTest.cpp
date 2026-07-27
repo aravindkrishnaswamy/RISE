@@ -2331,6 +2331,9 @@ static void RunScaledGlassStandoffTest()
 	AgentRenderParams depthP;
 	depthP.renderTarget = AgentRenderTarget::ViewMode;
 	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
+	// This regression exercises the explicit see-through walk.  The product
+	// default is intentionally opaque to transparent objects.
+	depthP.xray         = true;
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "scaled-glass depth render succeeds" );
 	Decoded decDepth;

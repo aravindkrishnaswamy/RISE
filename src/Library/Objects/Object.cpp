@@ -149,6 +149,7 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.m_mxOrientation   = m_mxOrientation;
 	dst.m_mxScale         = m_mxScale;
 	dst.m_mxStretch       = m_mxStretch;
+	CopyTransformMetadataTo( dst );
 	dst.m_transformstack  = m_transformstack;   // std::deque<Matrix4> value copy
 
 	// --- Finalized matrices (so the clone is render-ready without a

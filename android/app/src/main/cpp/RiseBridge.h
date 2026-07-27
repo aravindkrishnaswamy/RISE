@@ -227,6 +227,7 @@ public:
     /// producing 4×–32× pan/orbit jumps when the scale state machine
     /// steps.  Returns (0, 0) when no camera is attached.
     void viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH) const;
+    bool viewportSetSurfaceDimensions(unsigned int width, unsigned int height);
 
     /// Scene's animation options for sizing the timeline scrubber.
     /// Returns false on null controller; the Compose UI treats that

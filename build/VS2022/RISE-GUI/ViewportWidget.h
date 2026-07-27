@@ -49,8 +49,7 @@ public slots:
     /// DPI change.  A FIXED-SIZE window dragged to a different-DPI display
     /// fires no resizeEvent (logical size unchanged), so the device-pixel
     /// pane dims would otherwise stay stale.  MainWindow forwards its
-    /// QEvent::ScreenChangeInternal here.  No-op while Single is active
-    /// (recomputePaneLayout early-outs there).
+    /// QEvent::ScreenChangeInternal here for both Single and N-up layouts.
     void refreshForDpiChange();
 
     /// Update the cursor displayed over the viewport to match the
@@ -115,10 +114,8 @@ protected:
     // this mirrors.
     void changeEvent(QEvent* e) override;
     /// N-up multi-viewport: recomputes pane rects + repositions chrome +
-    /// pushes fresh SetPaneSurfaceDims on every geometry change.  A no-op
-    /// (early-out) while Single is the active layout -- see
-    /// recomputePaneLayout()'s doc for why Single stays on the pre-N-up
-    /// path untouched.
+    /// pushes fresh SetPaneSurfaceDims on every geometry change, including
+    /// the aspect-fitted pane-0 surface in Single layout.
     void resizeEvent(QResizeEvent* event) override;
 
 private slots:
@@ -291,6 +288,11 @@ private:
     /// referenced in RENDER_MODES.md §7.3's invalidation matrix).
     QSize   m_paneLastPushedDims[ViewportBridge::kViewportPaneCount];
     QSize   m_paneDesiredDims[ViewportBridge::kViewportPaneCount];
+    /// Stable Film dimensions used for the latest aspect-fit calculation.
+    /// A Film edit can change aspect without resizing the widget or its
+    /// already-explicit pane frame, so the chrome poll compares this value
+    /// and forces a fresh layout when needed.
+    QSize   m_lastSurfaceFilmDims;
     /// user-review P2#2: panes the multi-view preset has already been
     /// applied to.  Applying it exactly once per pane (not "whenever the
     /// pane still reads preview") keeps an EXPLICIT Preview choice from

@@ -395,9 +395,10 @@ int main()
 		std::remove( tx );
 	}
 
-	// ---- OV: an object edit must resolve the BASE standard_object, not a same-named override_object (the
-	//      `> modify` / variant override layer, which also ends in `_object` and carries the same name).  Before
-	//      the exact-keyword fix this resolved to occ=2 -> refused -> the object edit silently failed (data-loss). ----
+	// ---- OV: an object edit first resolves the BASE standard_object as the entity owner, then commits the
+	//      effective matrix to the LAST same-name override_object layer. Writing only the base would let the later
+	//      absolute partial override mask the edit on re-derive; loose `_object` resolution would instead see two
+	//      chunks and refuse as ambiguous. ----
 	{
 		const char* tv = "cst_s3_objoverride.RISEscene";
 		{ std::ofstream o( tv );
@@ -413,8 +414,8 @@ int main()
 		Check( j->LoadAsciiSceneViaCst( tv ), "OV: loads standard_object + same-named override_object via CST" );
 		SceneEditController c( *j, 0 );
 		c.SetSelection( Cat::Object, String( "o" ) );
-		// A transform edit must route (resolve the base standard_object) and SURVIVE a material D2 -- red-provable:
-		// resolve via the loose "object" suffix instead and the commit refuses (occ=2) -> the D2 reverts the move.
+		// A transform edit must route and SURVIVE a material D2 -- red-provable: commit only the base and the later
+		// absolute override restores position 0 1 0; resolve via the loose suffix and the commit refuses (occ=2).
 		double before[16]; ObjMat16( *j, "o", before );
 		Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ), "OV1: object position edit applies" );
 		double moved[16]; ObjMat16( *j, "o", moved );
@@ -422,7 +423,7 @@ int main()
 		c.SetSelection( Cat::Material, String( "m" ) );
 		Check( c.SetPropertyForCategory( Cat::Material, String( "reflectance" ), String( "p2" ) ), "OV1: material edit applies (D2)" );
 		double afterD2[16]; ObjMat16( *j, "o", afterD2 );
-		Check( Mat16Eq( moved, afterD2 ), "OV1: object edit resolved the BASE standard_object + SURVIVED the D2 (override_object collision avoided)" );
+		Check( Mat16Eq( moved, afterD2 ), "OV1: object edit committed at the effective override layer + SURVIVED D2" );
 		j->release();
 		std::remove( tv );
 	}

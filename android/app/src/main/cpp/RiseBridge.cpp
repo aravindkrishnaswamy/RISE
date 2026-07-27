@@ -1120,6 +1120,12 @@ void RiseBridge::viewportGetCameraDimensions(unsigned int& outW, unsigned int& o
     }
 }
 
+bool RiseBridge::viewportSetSurfaceDimensions(unsigned int width, unsigned int height) {
+    if (!m_viewportController) return false;
+    return RISE::RISE_API_SceneEditController_SetPaneSurfaceDims(
+        m_viewportController, 0, width, height);
+}
+
 bool RiseBridge::viewportGetAnimationOptions(double& outTimeStart, double& outTimeEnd,
                                              unsigned int& outNumFrames) const {
     outTimeStart = 0;

@@ -138,6 +138,20 @@ struct ViewportView: View {
                     surfaceDimensionsProvider: { [weak bridge] in
                         bridge?.cameraSurfaceDimensions ?? .zero
                     },
+                    onSurfacePixelSizeChanged: { size in
+                        guard size.width > 0, size.height > 0 else { return false }
+                        let accepted = bridge.setPaneSurfaceDims(
+                            0,
+                            width: UInt(max(1, size.width)),
+                            height: UInt(max(1, size.height)))
+                        if accepted {
+                            // The NSView can report synchronously from
+                            // updateNSView/image.didSet. Defer SwiftUI state
+                            // mutation until that update transaction finishes.
+                            DispatchQueue.main.async { gizmoRefreshTrigger &+= 1 }
+                        }
+                        return accepted
+                    },
                     onPointerDown: { p in
                         guard interactionEnabled else { return }
                         // Every pointer-down starts a NEW physical
@@ -564,6 +578,9 @@ private struct ViewportCanvas: NSViewRepresentable {
     /// on every dim refresh — the bridge updates the underlying
     /// values on its own schedule (scene reload, etc.).
     let surfaceDimensionsProvider: () -> NSSize
+    /// Aspect-fitted image surface in physical pixels. Returning false keeps
+    /// the measurement pending so a render-admission refusal is retried.
+    let onSurfacePixelSizeChanged: (CGSize) -> Bool
     let onPointerDown: (CGPoint) -> Void
     let onPointerMove: (CGPoint) -> Void
     let onPointerUp:   (CGPoint) -> Void
@@ -580,6 +597,7 @@ private struct ViewportCanvas: NSViewRepresentable {
         v.onEscape      = onEscape
         v.toolCursor    = cursor
         v.surfaceDimensionsProvider = surfaceDimensionsProvider
+        v.onSurfacePixelSizeChanged = onSurfacePixelSizeChanged
         // Order matters: setting production first adds its sublayer
         // BENEATH the interactive sublayer (CALayer.addSublayer
         // appends to the end of `sublayers`, painting on top).
@@ -596,6 +614,7 @@ private struct ViewportCanvas: NSViewRepresentable {
         nsView.onEscape      = onEscape
         nsView.toolCursor = cursor
         nsView.surfaceDimensionsProvider = surfaceDimensionsProvider
+        nsView.onSurfacePixelSizeChanged = onSurfacePixelSizeChanged
         nsView.productionEDRRenderer  = productionEDRRenderer
         nsView.interactiveEDRRenderer = interactiveEDRRenderer
         // Force AppKit to recompute the cursor rect so the new tool's
@@ -610,6 +629,7 @@ private struct ViewportCanvas: NSViewRepresentable {
         // nil-resolve before SwiftUI tears down our NSView.
         nsView.productionEDRRenderer  = nil
         nsView.interactiveEDRRenderer = nil
+        nsView.onSurfacePixelSizeChanged = nil
     }
 }
 
@@ -627,11 +647,20 @@ final class ViewportNSView: NSView {
                 needsLayout = true
                 needsDisplay = true
             }
+            reportPixelSizeIfNeeded()
         }
     }
     var onPointerDown: ((CGPoint) -> Void)?
     var onPointerMove: ((CGPoint) -> Void)?
     var onPointerUp:   ((CGPoint) -> Void)?
+    var onSurfacePixelSizeChanged: ((CGSize) -> Bool)? {
+        didSet {
+            if onSurfacePixelSizeChanged == nil { stopSurfaceRetryTimer() }
+            reportPixelSizeIfNeeded()
+        }
+    }
+    private var lastReportedPixelSize: CGSize = .zero
+    private var surfaceRetryTimer: Timer?
     /// UI redesign design brief A4 — Esc key-down while this view is
     /// (or becomes) first responder.  See `keyDown(with:)`.
     var onEscape: (() -> Void)?
@@ -721,6 +750,12 @@ final class ViewportNSView: NSView {
     override func layout() {
         super.layout()
         if let m = edrLayer { layoutEDRLayer(m) }
+        reportPixelSizeIfNeeded()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        reportPixelSizeIfNeeded()
     }
 
     /// Returns the camera's stable full-resolution dimensions so
@@ -729,7 +764,9 @@ final class ViewportNSView: NSView {
     /// returns (0,0) (e.g. before the bridge is wired) we fall back
     /// to `image.size` — same as the old behaviour, harmless because
     /// no rendering / dragging is yet underway.
-    var surfaceDimensionsProvider: (() -> NSSize)?
+    var surfaceDimensionsProvider: (() -> NSSize)? {
+        didSet { reportPixelSizeIfNeeded() }
+    }
 
     /// Cursor displayed when the pointer is over the rendered image
     /// area of this view.  Outside the image (the empty surround
@@ -742,10 +779,12 @@ final class ViewportNSView: NSView {
 
     override var isFlipped: Bool { true }   // top-left origin like UIKit / Metal
 
-    /// L5a round-7 — pick the "source dims" we use for aspect-fit
-    /// math.  Prefer the NSImage's size (set by the legacy LDR
-    /// path); fall back to the camera's full-resolution dims from
-    /// `surfaceDimensionsProvider` when the image is nil.
+    /// Pick the stable source dims used for aspect-fit math. Prefer the
+    /// camera/Film dimensions: adaptive preview divisors round W/H
+    /// independently, so transient NSImage sizes can have a slightly
+    /// different aspect and must never ratchet the reported surface away
+    /// from the stable Film. Fall back to NSImage only before the bridge is
+    /// ready.
     ///
     /// Why the fallback matters with EDR on: the production HDR
     /// block fires when EDR Preview is enabled, and the production
@@ -761,15 +800,15 @@ final class ViewportNSView: NSView {
     /// stretched preview.  The camera's dims survive the EDR
     /// toggle; using them as a fallback keeps both flows working.
     private func currentSourceDims() -> NSSize? {
-        if let image = image,
-           image.size.width > 0,
-           image.size.height > 0 {
-            return image.size
-        }
         if let dims = surfaceDimensionsProvider?(),
            dims.width > 0,
            dims.height > 0 {
             return dims
+        }
+        if let image = image,
+           image.size.width > 0,
+           image.size.height > 0 {
+            return image.size
         }
         return nil
     }
@@ -788,6 +827,39 @@ final class ViewportNSView: NSView {
                       width: drawW, height: drawH)
     }
 
+    private func reportPixelSizeIfNeeded() {
+        guard let drawRect = currentImageDrawRect(), drawRect.width > 0, drawRect.height > 0 else { return }
+        let backingScale = window?.backingScaleFactor ?? 2.0
+        let size = CGSize(
+            width: max(1, (drawRect.width * backingScale).rounded()),
+            height: max(1, (drawRect.height * backingScale).rounded()))
+        guard size != lastReportedPixelSize else { return }
+        if onSurfacePixelSizeChanged?(size) == true {
+            lastReportedPixelSize = size
+            stopSurfaceRetryTimer()
+        } else if onSurfacePixelSizeChanged != nil {
+            startSurfaceRetryTimer()
+        }
+    }
+
+    private func startSurfaceRetryTimer() {
+        guard surfaceRetryTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.reportPixelSizeIfNeeded()
+        }
+        surfaceRetryTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopSurfaceRetryTimer() {
+        surfaceRetryTimer?.invalidate()
+        surfaceRetryTimer = nil
+    }
+
+    deinit {
+        stopSurfaceRetryTimer()
+    }
+
     override func resetCursorRects() {
         // Cursor rect tracks the aspect-fit draw area only.  The
         // empty letterbox / pillarbox surround inherits the parent's
@@ -803,6 +875,7 @@ final class ViewportNSView: NSView {
         // The aspect-fit rect depends on view bounds; invalidate so
         // resetCursorRects re-runs with the new geometry.
         window?.invalidateCursorRects(for: self)
+        reportPixelSizeIfNeeded()
     }
 
     override func draw(_ dirtyRect: NSRect) {

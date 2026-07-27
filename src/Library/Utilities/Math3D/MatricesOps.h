@@ -342,8 +342,8 @@ namespace RISE
 			const Scalar			omcostTn1 = N.y * omcosT;
 			const Scalar			omcostTn2 = N.z * omcosT;
 			const Scalar			n01 = N.x * omcostTn1;
-			const Scalar			n02 = N.y * omcostTn2;
-			const Scalar			n12 = N.z * omcostTn2;
+			const Scalar			n02 = N.x * omcostTn2;
+			const Scalar			n12 = N.y * omcostTn2;
 			const Scalar			sinTn0 = sinT * N.x;
 			const Scalar			sinTn1 = sinT * N.y;
 			const Scalar			sinTn2 = sinT * N.z;

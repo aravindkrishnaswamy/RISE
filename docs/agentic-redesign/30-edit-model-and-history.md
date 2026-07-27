@@ -162,7 +162,7 @@ A trivially-copyable tagged union. One `enum Op` with **24 op kinds**
 `CompositeEnd` markers). Payload is a fixed bag of fields shared across all ops:
 `v3a/v3b/s`, `objectName`, `propertyName/propertyValue`, and — critically — a
 **large block of `prev*` capture fields** so undo can restore prior state:
-`prevTransform` (Matrix4), `prevTransformState` (`TransformState`),
+`prevTransform` (Matrix4), `prevTransformState` (`TransformStateV2`),
 `hasTransformState`, `prevBindingWasNull`, `prevPropertyValue`,
 `prevShadowFlags`, `prevTime`, `prevCameraPos/LookAt/Up/TargetOrient/Orient`,
 `cameraSnapshot` (a 30-field `CameraSnapshot` so `AddCamera` can be re-played),

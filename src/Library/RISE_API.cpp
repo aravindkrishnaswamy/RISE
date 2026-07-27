@@ -7339,9 +7339,31 @@ namespace RISE
 #include "RISE_API.h"
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
+#include "Utilities/Transformable.h"
 
 namespace RISE
 {
+	bool RISE_API_CaptureTransformStateV2(
+		const ITransformable* transformable, TransformStateV2* outState )
+	{
+		if( !transformable || !outState ) return false;
+		const Implementation::Transformable* concrete =
+			dynamic_cast<const Implementation::Transformable*>( transformable );
+		if( !concrete ) return false;
+		*outState = concrete->CaptureTransformStateV2();
+		return true;
+	}
+
+	bool RISE_API_RestoreTransformStateV2(
+		ITransformable* transformable, const TransformStateV2* state )
+	{
+		if( !transformable || !state ) return false;
+		Implementation::Transformable* concrete =
+			dynamic_cast<Implementation::Transformable*>( transformable );
+		if( !concrete ) return false;
+		return concrete->RestoreTransformStateV2( *state );
+	}
+
 	bool RISE_API_CreateSceneEditController(
 		IJobPriv* pJob,
 		IRasterizer* pInteractiveRasterizer,

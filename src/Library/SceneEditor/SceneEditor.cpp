@@ -31,6 +31,7 @@
 #include "SceneEditor.h"
 #include <vector>   // P1: atomic composite undo/redo rollback buffer
 #include "CameraIntrospection.h"
+#include "ObjectIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
 #include "../Utilities/Transformable.h"
 #include "../Interfaces/IObjectManager.h"
@@ -823,6 +824,54 @@ bool ApplyMediumPropertyValue( IMedium& medium, const String& propertyName, cons
 	return MediaIntrospection::SetSlotValue( medium, propertyName, v );
 }
 
+Scalar FinalColumnLength_( const Matrix4& m, int column )
+{
+	const Scalar* v = &m._00 + column * 4;
+	return std::sqrt( v[0] * v[0] + v[1] * v[1] + v[2] * v[2] );
+}
+
+void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
+{
+	if( Implementation::Transformable* transformable =
+		dynamic_cast<Implementation::Transformable*>( &obj ) ) {
+		transformable->SetFinalTransformMatrix( m );
+	} else {
+		obj.ClearAllTransforms();
+		obj.PushTopTransStack( m );
+	}
+}
+
+Matrix4 ScaleFreeAffineBase_( const Matrix4& current )
+{
+	Matrix4 result = current;
+	Matrix4 rotation, residual;
+	ObjectIntrospection::DecomposeFinalAffine( current, rotation, residual );
+	Scalar* columns[3] = { &result._00, &result._10, &result._20 };
+	const Scalar* frameColumns[3] = { &rotation._00, &rotation._10, &rotation._20 };
+	for( int column = 0; column < 3; ++column ) {
+		const Scalar length = FinalColumnLength_( current, column );
+		if( length > 0 ) {
+			columns[column][0] /= length;
+			columns[column][1] /= length;
+			columns[column][2] /= length;
+		} else {
+			// Recover the missing direction from the proper frame inferred
+			// from the surviving columns. A matching world axis can be parallel
+			// to another rotated column and leave the matrix singular.
+			columns[column][0] = frameColumns[column][0];
+			columns[column][1] = frameColumns[column][1];
+			columns[column][2] = frameColumns[column][2];
+		}
+	}
+	return result;
+}
+
+void SetAbsoluteStretch_( IObjectPriv& obj, const Vector3& target )
+{
+	const Matrix4 base = ScaleFreeAffineBase_( obj.GetFinalTransformMatrix() );
+	ReplaceFinalTransform_( obj, base * Matrix4Ops::Stretch( target ) );
+}
+
 }  // namespace
 
 bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
@@ -834,35 +883,74 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		obj.TranslateObject( edit.v3a );
 		break;
 	case SceneEdit::RotateObjectArb:
-		obj.RotateObjectArbAxis( edit.v3a, edit.s );
+		{
+			// The editor's rotation gizmo is centred on the selected object's
+			// world-space pivot and advertises WORLD-axis rings. The legacy
+			// Transformable::RotateObjectArbAxis appends a bare rotation to the
+			// transform stack; FinalizeTransformations left-multiplies that
+			// rotation, which rotates the translation column too and makes an
+			// off-origin object orbit (0,0,0). Conjugate the world rotation by
+			// the current pivot so only the basis changes:
+			//
+			//     T(pivot) * R(worldAxis) * T(-pivot) * currentTransform
+			//
+			// PushBottomTransStack makes this the last stack entry applied, hence
+			// the leftmost factor in the finalized matrix. This preserves any
+			// existing scale/shear/stack representation and keeps undo capture
+			// lossless while matching the gizmo's visible pivot.
+			const Matrix4 current = obj.GetFinalTransformMatrix();
+			const Vector3 pivot( current._30, current._31, current._32 );
+			const Matrix4 aboutPivot =
+				Matrix4Ops::Translation( pivot )
+			  * Matrix4Ops::Rotation( edit.v3a, edit.s )
+			  * Matrix4Ops::Translation( Vector3( -pivot.x, -pivot.y, -pivot.z ) );
+			obj.PushBottomTransStack( aboutPivot );
+		}
 		break;
 	case SceneEdit::SetObjectPosition:
-		obj.SetPosition( Point3( edit.v3a.x, edit.v3a.y, edit.v3a.z ) );
+		{
+			// SetObjectPosition is an absolute WORLD-space contract. Editor
+			// rotations/translations can live in the outer transform stack, so
+			// replacing only the inner position component would still let those
+			// matrices move the requested point. Apply the world-space correction
+			// to the finalized origin instead, regardless of transform provenance.
+			const Matrix4 current = obj.GetFinalTransformMatrix();
+			obj.TranslateObject( Vector3(
+				edit.v3a.x - current._30,
+				edit.v3a.y - current._31,
+				edit.v3a.z - current._32 ) );
+		}
 		break;
 	case SceneEdit::SetObjectOrientation:
-		obj.SetOrientation( edit.v3a );
+		{
+			const Matrix4 current = obj.GetFinalTransformMatrix();
+			const Vector3 position(
+				current._30,
+				current._31,
+				current._32 );
+			Matrix4 currentRotation, affineResidual;
+			ObjectIntrospection::DecomposeFinalAffine(
+				current, currentRotation, affineResidual );
+			const Matrix4 desired = Matrix4Ops::Translation( position )
+				* ( Matrix4Ops::XRotation( edit.v3a.x )
+				  * Matrix4Ops::YRotation( edit.v3a.y )
+				  * Matrix4Ops::ZRotation( edit.v3a.z ) )
+				* affineResidual;
+			ReplaceFinalTransform_( obj, desired );
+		}
 		break;
 	case SceneEdit::SetObjectScale:
-		obj.SetScale( edit.s );
+		SetAbsoluteStretch_( obj, Vector3( edit.s, edit.s, edit.s ) );
 		break;
 	case SceneEdit::SetObjectStretch:
-		obj.SetStretch( edit.v3a );
+		SetAbsoluteStretch_( obj, edit.v3a );
 		break;
 	case SceneEdit::ScaleObjectFromAnchor:
-		// Anchor-based scale: restore the drag-start matrix, then
-		// push a stretch-by-factor matrix on top so the result is
-		// `prevTransform · Stretch(v3a)`.  See SceneEdit.h's enum
-		// comment for why this op exists vs `SetObjectStretch`.
-		// Order on the stack matters: PushTop pushes to the FRONT
-		// of `m_transformstack`, and `FinalizeTransformations`
-		// left-multiplies entries front-to-back into the final
-		// matrix, so the second push lands OUTSIDE the first in
-		// the final composition (= the factor is applied to the
-		// object's local geometry FIRST, then the drag-start
-		// transform places the scaled geometry in the world).
-		obj.ClearAllTransforms();
-		obj.PushTopTransStack( edit.prevTransform );
-		obj.PushTopTransStack( Matrix4Ops::Stretch( edit.v3a ) );
+		// Keep the scaled result in the authoritative-final representation.
+		// A raw Clear+Push sequence leaves component-mode active, so a later
+		// public/keyframed absolute setter composes underneath this matrix.
+		ReplaceFinalTransform_(
+			obj, edit.prevTransform * Matrix4Ops::Stretch( edit.v3a ) );
 		break;
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
@@ -940,16 +1028,14 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 
 void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit )
 {
-	// Prefer the full component-decomposed state captured at edit time: it
-	// restores position/orientation/scale/stretch as COMPONENTS, so a later
-	// absolute SetPosition/SetOrientation/... replaces the right component
-	// instead of composing with a baseline collapsed onto the stack (the
-	// pre-existing transform-undo bug).  Fall back to the collapsed-matrix
-	// restore for ScaleObjectFromAnchor / non-Transformable targets.
+	// Prefer the exact V2 state captured at edit time.  It preserves component
+	// matrices, ordered stack entries, and authoritative matrix-edit metadata,
+	// so both later setters and stack Push/Pop operations retain their original
+	// semantics. Fall back to a collapsed final matrix only for targets that do
+	// not expose the concrete Transformable implementation.
 	if( edit.hasTransformState ) {
 		if( Implementation::Transformable* t = dynamic_cast<Implementation::Transformable*>( &obj ) ) {
-			t->RestoreTransformState( edit.prevTransformState );
-			return;
+			if( t->RestoreTransformStateV2( edit.prevTransformState ) ) return;
 		}
 	}
 	// Fallback (ITransformable composes final = position * orientation *
@@ -1935,7 +2021,7 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
 			edit.prevTransform = obj->GetFinalTransformMatrix();
 			if( const Implementation::Transformable* t = dynamic_cast<const Implementation::Transformable*>( obj ) ) {
-				edit.prevTransformState = t->CaptureTransformState();
+				edit.prevTransformState = t->CaptureTransformStateV2();
 				edit.hasTransformState  = true;
 			}
 		}
