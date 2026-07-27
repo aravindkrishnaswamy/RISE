@@ -144,6 +144,9 @@ def validate_case_params(family, params, label):
             angular_radius = math.asin(radius / center_distance)
             if center_angle + angular_radius >= half_fov:
                 raise ValueError(f"{label}: {sphere_label} sphere must fit inside the camera view")
+            minimum_diameter = 2.0 * math.radians(28.0) / 64.0
+            if 2.0 * angular_radius < minimum_diameter:
+                raise ValueError(f"{label}: {sphere_label} sphere must span at least two pixels at edge 64")
         return {"RED", "BLUE"}, near_color.upper()
     elif family == "surface_normal":
         angle = _finite_number(params.get("angleDegrees"), f"{label}.params.angleDegrees")
@@ -159,6 +162,15 @@ def validate_case_params(family, params, label):
         high = _finite_number(params.get("highAlbedo"), f"{label}.params.highAlbedo")
         if not (0.05 <= low < high <= 0.95):
             raise ValueError(f"{label}: require 0.05 <= lowAlbedo < highAlbedo <= 0.95")
+        tilt = math.degrees(math.acos(low / high)) * int(params["tiltSign"])
+        half_fov = math.radians(9.0)
+        for side, center_x in (("left", -1.45), ("right", 1.45)):
+            angle = tilt if side == high_side else 0.0
+            for point in card_points(center_x, angle, 1.75, 2.5):
+                axial = 18.0 - point[2]
+                if (axial <= 0.0 or math.atan2(abs(point[0]), axial) >= half_fov or
+                        math.atan2(abs(point[1]), axial) >= half_fov):
+                    raise ValueError(f"{label}: material cards must fit inside the camera view")
         return {"LEFT", "RIGHT"}, high_side.upper()
 
 
@@ -979,6 +991,22 @@ def self_test(repo_root, manifest_arg):
         raise AssertionError("out-of-view depth case accepted")
     except ValueError:
         pass
+    try:
+        validate_case_params("depth_order", {"nearColor": "red", "nearSide": "left",
+                                             "nearZ": -1000.0, "farZ": -1010.0}, "subpixel_depth")
+        raise AssertionError("subpixel depth case accepted")
+    except ValueError:
+        pass
+    for high_side in ("left", "right"):
+        for tilt_sign in (-1, 1):
+            try:
+                validate_case_params("material_lighting",
+                                     {"highSide": high_side, "tiltSign": tilt_sign,
+                                      "lowAlbedo": 0.05, "highAlbedo": 0.95},
+                                     "clipped_material")
+                raise AssertionError("out-of-view material card accepted")
+            except ValueError:
+                pass
     jobs = build_jobs(cases, 3, 7)
     first_counts = defaultdict(lambda: defaultdict(int))
     case_counts = defaultdict(lambda: defaultdict(int))
