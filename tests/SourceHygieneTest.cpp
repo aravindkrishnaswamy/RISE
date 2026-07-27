@@ -197,6 +197,8 @@ int main()
 			/ "RISE-GUI" / "App" / "ContentView.swift" );
 		const std::string macViewport = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "ViewportView.swift" );
+		const std::string macTimeline = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "TimelineSlider.swift" );
 		const std::string macBridge = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "Bridge" / "RISEViewportBridge.mm" );
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
@@ -241,11 +243,17 @@ int main()
 		       != std::string::npos
 		       && macModel.find( "reconcileSceneTime(to: clampedTime, using: vb)" )
 		          != std::string::npos
+		       && macModel.find( "if !optionsChanged || !manualTimelineScrubActive" )
+		          != std::string::npos
 		       && macViewport.find( "consumePreappliedSceneTime(newValue)" )
-		          != std::string::npos,
+		          != std::string::npos
+		       && macViewport.find( "endManualTimelineScrub(using: bridge)" )
+		          != std::string::npos
+		       && macTimeline.find( "onScrubMove(newTime)" ) != std::string::npos
+		       && macTimeline.find( "onJump(t)" ) != std::string::npos,
 		       "macOS live range changes stop stale playback and reconcile scene time" );
 		Check( winSetRange.find( "stopPlayback();" ) != std::string::npos
-		       && winSetRange.find( "const double clampedTime = std::clamp(m_time, m_minT, m_maxT);" )
+		       && winSetRange.find( "const double clampedTime = std::clamp(canonicalTime, m_minT, m_maxT);" )
 		       != std::string::npos
 		       && winSetRange.find( "jumpToTime(clampedTime);" ) != std::string::npos,
 		       "Windows live range changes stop stale playback and reconcile scene time" );

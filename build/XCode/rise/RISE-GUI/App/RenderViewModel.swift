@@ -443,6 +443,10 @@ final class RenderViewModel: ObservableObject {
     /// consumes the marker so its binding observer does not submit the same
     /// time a second time outside that bracket.
     private var preappliedSceneTime: Double? = nil
+    /// True only between a TimelineSlider drag's admitted begin/end calls.
+    /// Live option polling defers range replacement while this is set so it
+    /// never nests a model-driven jump over the user's open composite.
+    private var manualTimelineScrubActive: Bool = false
 
     /// True while the Play button is looping the active animation through
     /// the fast interactive preview renderer (frame-by-frame, looping until
@@ -709,6 +713,10 @@ final class RenderViewModel: ObservableObject {
     /// have silently staled the menu bar.  Publish it directly.
     @Published private(set) var viewportBridge: RISEViewportBridge? = nil {
         didSet {
+            if manualTimelineScrubActive {
+                _ = oldValue?.scrubTimeEnd()
+                manualTimelineScrubActive = false
+            }
             refinementPollTimer?.invalidate()
             refinementPollTimer = nil
             guard let vb = viewportBridge else {
@@ -1923,6 +1931,45 @@ final class RenderViewModel: ObservableObject {
         _ = viewportBridge?.scrubTimeEnd()
     }
 
+    func beginManualTimelineScrub(using vb: RISEViewportBridge) {
+        guard !manualTimelineScrubActive, vb.scrubTimeBegin() else { return }
+        manualTimelineScrubActive = true
+    }
+
+    func endManualTimelineScrub(using vb: RISEViewportBridge) {
+        guard manualTimelineScrubActive else { return }
+        manualTimelineScrubActive = false
+        _ = vb.scrubTimeEnd()
+    }
+
+    /// Apply a manual drag step synchronously inside its known-open native
+    /// composite, then mark the already-updated Binding so the later SwiftUI
+    /// observer does not submit it again after End.
+    func applyManualTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) {
+        guard manualTimelineScrubActive else { return }
+        if vb.scrubTime(time) {
+            preappliedSceneTime = time
+        } else {
+            let canonicalTime = vb.lastSceneTime()
+            preappliedSceneTime = canonicalTime
+            sceneTime = canonicalTime
+        }
+    }
+
+    /// Apply a binding-driven playback step only while its native scrub
+    /// composite is known to be open.
+    func applyTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) -> Bool {
+        guard isPreviewPlaying else { return false }
+        return vb.scrubTime(time)
+    }
+
+    /// Rewind/to-end transport uses this direct path so the native move is
+    /// performed synchronously between Begin and End, before SwiftUI later
+    /// observes the published binding change.
+    func jumpTimelineSceneTime(to time: Double, using vb: RISEViewportBridge) {
+        reconcileSceneTime(to: time, using: vb, force: true)
+    }
+
     /// Consume a scene-time write that `reconcileSceneTime` already applied
     /// natively.  Any different write clears the stale marker and follows the
     /// normal ViewportView binding path.
@@ -1935,13 +1982,17 @@ final class RenderViewModel: ObservableObject {
     /// Park an out-of-range playhead through the same native composite used
     /// by an explicit timeline jump.  Failed admission leaves both the UI
     /// value and marker untouched so the next 2 Hz poll retries safely.
-    private func reconcileSceneTime(to time: Double, using vb: RISEViewportBridge) {
-        guard sceneTime != time, vb.scrubTimeBegin() else { return }
+    private func reconcileSceneTime(to time: Double, using vb: RISEViewportBridge,
+                                    force: Bool = false) {
+        guard !manualTimelineScrubActive, (force || sceneTime != time),
+              vb.scrubTimeBegin() else { return }
         let applied = vb.scrubTime(time)
         _ = vb.scrubTimeEnd()
         guard applied else { return }
-        preappliedSceneTime = time
-        sceneTime = time
+        if sceneTime != time {
+            preappliedSceneTime = time
+            sceneTime = time
+        }
     }
 
 
@@ -2010,14 +2061,22 @@ final class RenderViewModel: ObservableObject {
                     let optionsChanged = animationTimeStart != liveStart
                         || animationTimeEnd != liveEnd
                         || animationNumFrames != liveFrames
-                    if optionsChanged { stopPreviewPlay() }
-                    if animationTimeStart != liveStart { animationTimeStart = liveStart }
-                    if animationTimeEnd != liveEnd { animationTimeEnd = liveEnd }
-                    if animationNumFrames != liveFrames { animationNumFrames = liveFrames }
-                    let clampedTime = min(max(sceneTime, liveStart), liveEnd)
-                    reconcileSceneTime(to: clampedTime, using: vb)
+                    // A live DragGesture owns an open native composite and
+                    // still uses the currently displayed range.  Defer a
+                    // tuple replacement until its End; the next poll applies
+                    // it.  Removal below cannot defer because the control is
+                    // about to disappear, so it explicitly finalizes first.
+                    if !optionsChanged || !manualTimelineScrubActive {
+                        if optionsChanged { stopPreviewPlay() }
+                        if animationTimeStart != liveStart { animationTimeStart = liveStart }
+                        if animationTimeEnd != liveEnd { animationTimeEnd = liveEnd }
+                        if animationNumFrames != liveFrames { animationNumFrames = liveFrames }
+                        let clampedTime = min(max(sceneTime, liveStart), liveEnd)
+                        reconcileSceneTime(to: clampedTime, using: vb)
+                    }
                 }
             } else {
+                endManualTimelineScrub(using: vb)
                 if animationTimeStart != 0 { animationTimeStart = 0 }
                 if animationTimeEnd != 1 { animationTimeEnd = 1 }
                 if animationNumFrames != 30 { animationNumFrames = 30 }

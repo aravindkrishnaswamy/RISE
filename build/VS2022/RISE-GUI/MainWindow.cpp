@@ -1411,7 +1411,7 @@ void MainWindow::onCstSyncTick()
         double t0 = 0, t1 = 0;
         unsigned int nf = 0;
         if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
-            m_viewportTimeline->setRange(t0, t1);
+            m_viewportTimeline->setRange(t0, t1, m_viewportBridge->lastSceneTime());
             m_viewportTimeline->setAnimationFrameCount(nf);
         }
     }
@@ -2599,7 +2599,7 @@ void MainWindow::rebuildViewportForLoadedScene()
         double t0 = 0, t1 = 0;
         unsigned int nf = 0;
         if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
-            m_viewportTimeline->setRange(t0, t1);
+            m_viewportTimeline->setRange(t0, t1, m_viewportBridge->lastSceneTime());
             m_viewportTimeline->setAnimationFrameCount(nf);
         }
     }

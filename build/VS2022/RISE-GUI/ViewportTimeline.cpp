@@ -214,18 +214,21 @@ void ViewportTimeline::restyleTheme()
     }
 }
 
-void ViewportTimeline::setRange(double minT, double maxT)
+void ViewportTimeline::setRange(double minT, double maxT, double canonicalTime)
 {
-    if (m_minT == minT && m_maxT == maxT) return;
+    const bool rangeChanged = m_minT != minT || m_maxT != maxT;
+    const bool timeChanged = m_time != canonicalTime;
+    if (!rangeChanged && !timeChanged) return;
     stopPlayback();
     m_minT = minT;
     m_maxT = maxT;
-    const double clampedTime = std::clamp(m_time, m_minT, m_maxT);
-    if (clampedTime != m_time) {
+    const double clampedTime = std::clamp(canonicalTime, m_minT, m_maxT);
+    if (clampedTime != canonicalTime) {
         jumpToTime(clampedTime);
     } else {
-        // The time is still valid, but its slider fraction changed.
-        setTimeValue(m_time);
+        // Undo/Redo can change canonical time without touching this widget;
+        // also reproject when only the range changed.
+        setTimeValue(canonicalTime);
     }
 }
 

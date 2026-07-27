@@ -22,10 +22,11 @@ class ViewportTimeline : public QWidget
 public:
     explicit ViewportTimeline(QWidget* parent = nullptr);
 
-    /// Replace the live animation range.  A changed range stops playback,
-    /// reprojects an in-range playhead, and moves an out-of-range playhead
-    /// through the normal bracketed scrub signals.
-    void setRange(double minT, double maxT);
+    /// Replace the live animation range using the controller's canonical
+    /// time (the widget can be stale after Undo/Redo).  A change stops
+    /// playback, reprojects an in-range playhead, and moves an out-of-range
+    /// playhead through the normal bracketed scrub signals.
+    void setRange(double minT, double maxT, double canonicalTime);
     double currentTime() const { return m_time; }
 
     // Number of frames in the active animation.  Drives the per-tick

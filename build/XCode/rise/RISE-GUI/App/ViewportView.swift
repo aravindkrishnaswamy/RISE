@@ -369,6 +369,7 @@ struct ViewportView: View {
                 // production so interactive refinement can resume in the
                 // same box afterward.
                 if !newValue {
+                    viewModel.endManualTimelineScrub(using: bridge)
                     _ = bridge.finalizeOpenInteractions()
                     regionDragStart = nil
                     regionDragCurrent = nil
@@ -417,13 +418,21 @@ struct ViewportView: View {
                         guard interactionEnabled else { return }
                         onUserScrubBegan()
                     },
+                    onJump: { time in
+                        guard interactionEnabled else { return }
+                        viewModel.jumpTimelineSceneTime(to: time, using: bridge)
+                    },
                     onScrubBegin: {
                         guard interactionEnabled else { return }
-                        _ = bridge.scrubTimeBegin()
+                        viewModel.beginManualTimelineScrub(using: bridge)
+                    },
+                    onScrubMove: { time in
+                        guard interactionEnabled else { return }
+                        viewModel.applyManualTimelineSceneTime(time, using: bridge)
                     },
                     onScrubEnd: {
                         guard interactionEnabled else { return }
-                        _ = bridge.scrubTimeEnd()
+                        viewModel.endManualTimelineScrub(using: bridge)
                     }
                 )
                 .disabled(!interactionEnabled)
@@ -435,9 +444,12 @@ struct ViewportView: View {
                     // state was sampled. Keep the binding honest when the
                     // controller refuses rather than displaying a time the
                     // scene never reached.
-                    if !bridge.scrubTime(newValue) {
+                    if !viewModel.applyTimelineSceneTime(newValue, using: bridge) {
                         sceneTime = bridge.lastSceneTime()
                     }
+                }
+                .onDisappear {
+                    viewModel.endManualTimelineScrub(using: bridge)
                 }
             }
         }
