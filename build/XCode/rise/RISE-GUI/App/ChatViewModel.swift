@@ -690,6 +690,12 @@ final class ChatViewModel: ObservableObject {
     /// state should abandon rather than proceed.
     var productionRenderActive: () -> Bool = { true }
 
+    /// Invoked synchronously on the MainActor immediately before any chat
+    /// render tool call reaches the controller.  RenderViewModel uses this
+    /// last safe ownership window to stop timeline playback and close open
+    /// viewport interactions before the render worker can acquire the scene.
+    var chatRenderWillSubmit: () -> Void = {}
+
     private let chatBridge = RISEAgentChatBridge()
     /// The per-scene tool executor.  WEAK: RenderViewModel owns the
     /// viewport bridge; on clearScene it calls `sceneClosed()` (which
@@ -2632,6 +2638,8 @@ final class ChatViewModel: ObservableObject {
     private func executeRenderToolCallAsync(
         call: RISEAgentChatToolCall, submitLine: String, vb: RISEViewportBridge
     ) async -> String {
+        chatRenderWillSubmit()
+
         // Inject {"async":true} into the params object.  A parse failure
         // here (should not happen — toolCallToJsonRpcLine always emits
         // well-formed JSON) falls back to the ORIGINAL synchronous call:

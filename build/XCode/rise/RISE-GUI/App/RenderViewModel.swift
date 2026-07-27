@@ -875,6 +875,14 @@ final class RenderViewModel: ObservableObject {
         chat.sceneEditable = { [weak self] in
             self?.isSceneEditableForAgents ?? false
         }
+        chat.chatRenderWillSubmit = { [weak self] in
+            guard let self else { return }
+            self.stopPreviewPlay()
+            if let vb = self.viewportBridge {
+                self.endManualTimelineScrub(using: vb)
+                _ = vb.finalizeOpenInteractions()
+            }
+        }
         // Model-B F2 slice S2b: the NARROWER sibling `productionRenderActive`
         // — see its doc on ChatViewModel for why the render tool call's own
         // poll loop needs this instead of the combined `isSceneEditableForAgents`

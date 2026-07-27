@@ -369,6 +369,7 @@ struct ViewportView: View {
                 // production so interactive refinement can resume in the
                 // same box afterward.
                 if !newValue {
+                    viewModel.stopPreviewPlay()
                     viewModel.endManualTimelineScrub(using: bridge)
                     _ = bridge.finalizeOpenInteractions()
                     regionDragStart = nil

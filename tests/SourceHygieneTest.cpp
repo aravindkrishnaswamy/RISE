@@ -193,6 +193,8 @@ int main()
 		};
 		const std::string macModel = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RenderViewModel.swift" );
+		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "ChatViewModel.swift" );
 		const std::string macContent = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "ContentView.swift" );
 		const std::string macViewport = slurp( repoRoot / "build" / "XCode" / "rise"
@@ -203,6 +205,8 @@ int main()
 			/ "RISE-GUI" / "Bridge" / "RISEViewportBridge.mm" );
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
 			/ "RISE-GUI" / "MainWindow.cpp" );
+		const std::string winHeader = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "MainWindow.h" );
 		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
 			/ "RISE-GUI" / "ChatPanel.cpp" );
 		const std::string winChatHeader = slurp( repoRoot / "build" / "VS2022"
@@ -256,6 +260,21 @@ int main()
 		       && macTimeline.find( "onScrubMove(newTime)" ) != std::string::npos
 		       && macTimeline.find( "onJump(t)" ) != std::string::npos,
 		       "macOS live range changes stop stale playback and reconcile scene time" );
+		const size_t macChatRenderFunction = macChat.find(
+			"private func executeRenderToolCallAsync" );
+		const size_t macChatRenderFinalize = macChat.find(
+			"chatRenderWillSubmit()", macChatRenderFunction );
+		const size_t macChatRenderSubmit = macChat.find(
+			"vb.agentHandleLine(asyncLine)", macChatRenderFinalize );
+		Check( macChatRenderFunction != std::string::npos
+		       && macChatRenderFinalize != std::string::npos
+		       && macChatRenderSubmit != std::string::npos
+		       && macChatRenderFinalize < macChatRenderSubmit
+		       && macModel.find( "chat.chatRenderWillSubmit = { [weak self] in" )
+		          != std::string::npos
+		       && macModel.find( "self.stopPreviewPlay()" ) != std::string::npos
+		       && macViewport.find( "viewModel.stopPreviewPlay()" ) != std::string::npos,
+		       "macOS chat render stops timeline playback before controller submission" );
 		Check( winSetRange.find( "stopPlayback();" ) != std::string::npos
 		       && winSetRange.find( "if (m_scrubbing)" ) != std::string::npos
 		       && winSetRange.find( "m_hasPendingRange = true;" ) != std::string::npos
@@ -291,9 +310,13 @@ int main()
 			: std::string();
 		Check( winDestructor != std::string::npos
 		       && win.find( "MainWindow::~MainWindow()", winDestructor + 1 ) == std::string::npos
+		       && winHeader.find( "~MainWindow() override;" ) != std::string::npos
+		       && winHeader.find( "~MainWindow() override;",
+		                          winHeader.find( "~MainWindow() override;" ) + 1 )
+		          == std::string::npos
 		       && winDestructorBody.find( "m_engine->cancelAndJoinInFlightWork();" )
 		          != std::string::npos
-		       && winDestructorBody.find( "delete m_viewportBridge;" ) != std::string::npos,
+		       && winDestructorBody.find( "teardownViewport();" ) != std::string::npos,
 		       "Windows MainWindow has one ordered shutdown path" );
 	}
 

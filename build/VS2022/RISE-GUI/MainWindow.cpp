@@ -327,17 +327,15 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    // Retire production work before destroying its attached controller.
-    // Then explicitly delete the later-created bridge while m_engine is
-    // still alive: the bridge destructor detaches from that borrowed engine,
-    // whereas QObject's construction-order child teardown would otherwise
-    // delete the engine first.  Full teardownViewport() UI rearrangement is
-    // unnecessary while the window itself is being destroyed.
+    // Retire production work before destroying its attached controller,
+    // then use the normal ordered teardown: it detaches ChatPanel and every
+    // other bridge borrower before deleting the later-created bridge while
+    // m_engine is still alive.  QObject's construction-order child teardown
+    // would otherwise delete the engine first and leave borrowed pointers.
     if (m_engine) {
         m_engine->cancelAndJoinInFlightWork();
     }
-    delete m_viewportBridge;
-    m_viewportBridge = nullptr;
+    teardownViewport();
 }
 
 // ============================================================

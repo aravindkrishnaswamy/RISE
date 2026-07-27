@@ -57,16 +57,14 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-    ~MainWindow() override;
 
     // Shutdown-order fix (2026-07-24): QObject::deleteChildren destroys
     // children in CREATION order, and m_engine (created first, in the
     // constructor) precedes m_viewportBridge (created on scene load) in
     // that list -- so the default teardown freed the RenderEngine before
-    // the bridge's destructor ran its detach sequence against it
-    // (attachSceneEditController(nullptr) wrote into freed memory,
-    // 0xC0000005 on every exit with a scene loaded).  The destructor
-    // deletes the bridge explicitly while the engine is still alive.
+    // the bridge's destructor ran its detach sequence against it.  The
+    // destructor uses the ordered viewport teardown to detach every bridge
+    // borrower before deleting the bridge while the engine is still alive.
     ~MainWindow() override;
 
 private slots:
