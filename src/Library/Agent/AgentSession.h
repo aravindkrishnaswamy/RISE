@@ -31,6 +31,7 @@
 #define RISE_AGENT_AGENTSESSION_
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -1146,7 +1147,8 @@ namespace RISE
 		//! surface, and the actual contract is:
 		//!
 		//!   * mAsyncCacheMutex-guarded state (mLastPng, mLastSink,
-		//!     mActiveSinkReadLeases, mSinkReadsClosing,
+		//!     mActiveSinkReadLeases, mSinkReadsClosing, plus decrements of
+		//!     mSinkReadEntrants after its lock-free entry increment,
 		//!     mAsyncOutstandingJobId) is the ONLY
 		//!     state touched from more
 		//!     than one thread -- written by the async worker thread
@@ -1174,11 +1176,11 @@ namespace RISE
 		//!     session (or detach) while an async render could still be in
 		//!     flight relies on this drain for correctness; it is automatic
 		//!     (no caller action required) as of this fix.
-		//!   * Teardown also closes the bounded ReadImage/ReadPerception
-		//!     admission gate and waits for every already-registered sink
-		//!     lease. Callers must not initiate a new member call after
-		//!     destruction begins, but an encode that acquired its lease
-		//!     before teardown is allowed to finish safely.
+		//!   * Teardown also closes the ReadImage/ReadPerception
+		//!     admission gate and waits for every call that entered before
+		//!     teardown, including calls still queued for mAsyncCacheMutex,
+		//!     plus every registered sink lease. Callers must not initiate a
+		//!     new member call after destruction begins.
 		class AgentSession
 		{
 		public:
@@ -2118,9 +2120,20 @@ namespace RISE
 				mReadPerceptionAfterLeaseHookForTest = std::move( hook );
 			}
 
-			//! Invoked by ~AgentSession after it closes new bounded image reads
-			//! and observes at least one outstanding sink lease, immediately
-			//! before waiting for those readers. Test-only teardown seam.
+			//! Invoked after ReadPerception has counted the complete public call
+			//! as an entrant, but before it attempts mAsyncCacheMutex admission.
+			//! Test-only: makes the queued-before-lease teardown schedule
+			//! deterministic.
+			void ForTest_SetReadPerceptionBeforeCacheHook( std::function<void()> hook )
+			{
+				mReadPerceptionBeforeCacheHookForTest = std::move( hook );
+			}
+
+			//! Invoked by ~AgentSession after it closes new image/perception reads
+			//! and observes an outstanding entrant or sink lease, immediately
+			//! before waiting for those readers. Invoked without
+			//! mAsyncCacheMutex held so coordination hooks may release/re-enter a
+			//! reader without deadlocking. Test-only teardown seam.
 			void ForTest_SetSinkReadShutdownWaitHook( std::function<void()> hook )
 			{
 				mSinkReadShutdownWaitHookForTest = std::move( hook );
@@ -2267,6 +2280,27 @@ namespace RISE
 			//! Drops one registered read lease and its reference atomically with
 			//! respect to RetainedPerceptionBytesLocked_'s snapshot.
 			void ReleaseSinkReadLease_( InMemoryRasterizerOutput* sink ) const;
+			//! Drops the whole-call entrant registered at the first instruction of
+			//! ReadImage/ReadPerception and wakes teardown when it drains.
+			void ReleaseSinkReadEntrant_() const;
+			class SinkReadEntrantGuard
+			{
+			public:
+				explicit SinkReadEntrantGuard( const AgentSession& session ) :
+					mSession( session )
+				{
+					mSession.mSinkReadEntrants.fetch_add(
+						1, std::memory_order_acq_rel );
+				}
+				~SinkReadEntrantGuard()
+				{
+					mSession.ReleaseSinkReadEntrant_();
+				}
+				SinkReadEntrantGuard( const SinkReadEntrantGuard& ) = delete;
+				SinkReadEntrantGuard& operator=( const SinkReadEntrantGuard& ) = delete;
+			private:
+				const AgentSession& mSession;
+			};
 
 			//! Fix-round-1 P1-A / round-2 P1-1: cancel + wait, UNBOUNDED, for
 			//! any OUTSTANDING async render submitted against the
@@ -2384,8 +2418,13 @@ namespace RISE
 			//! does not change the cached frame or scene, and the mutex makes
 			//! simultaneous const observations safe.
 			mutable std::map<InMemoryRasterizerOutput*, unsigned int> mActiveSinkReadLeases;
-			//! Guarded by mAsyncCacheMutex. Once set by ~AgentSession, bounded
-			//! image reads return empty instead of acquiring another sink lease.
+			//! Incremented lock-free at the first instruction of each image or
+			//! perception read, before it can queue on mAsyncCacheMutex. Decrements are
+			//! serialized by mAsyncCacheMutex so the teardown CV cannot miss the
+			//! transition to zero.
+			mutable std::atomic<unsigned int> mSinkReadEntrants{ 0 };
+			//! Guarded by mAsyncCacheMutex. Once set by ~AgentSession, image and
+			//! perception reads return empty instead of touching the closing cache.
 			bool mSinkReadsClosing = false;
 
 			//! Model-B F2 slice S2b: the full AgentRenderResult of the LAST
@@ -2441,7 +2480,7 @@ namespace RISE
 			//! worker populates the cache.  A plain std::mutex, not
 			//! reentrant -- mirrors the controller's own mMutex discipline.
 			mutable std::mutex mAsyncCacheMutex;
-			//! Teardown waits here until mActiveSinkReadLeases becomes empty.
+			//! Teardown waits here until the entrant count and lease map drain.
 			//! Mutable because logically-const readers notify on lease release.
 			mutable std::condition_variable mSinkReadLeaseCv;
 
@@ -2471,6 +2510,8 @@ namespace RISE
 			//! Test-only instrumentation for the same logically-const observation
 			//! seam; it is set before and cleared after the joined reader thread.
 			mutable std::function<void()> mReadPerceptionAfterLeaseHookForTest;
+			//! See ForTest_SetReadPerceptionBeforeCacheHook.
+			mutable std::function<void()> mReadPerceptionBeforeCacheHookForTest;
 			//! See ForTest_SetSinkReadShutdownWaitHook.
 			std::function<void()> mSinkReadShutdownWaitHookForTest;
 

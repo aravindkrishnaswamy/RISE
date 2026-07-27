@@ -1171,6 +1171,122 @@ static void RunConcurrentReadLeaseTeardownProbe()
 	std::remove( scenePath.c_str() );
 }
 
+static void RunQueuedReadAdmissionTeardownProbe()
+{
+	const std::string scenePath = WriteTemp(
+		"agent_perception_queued_read_teardown.RISEscene", BuildScene( kPtRasterizer ) );
+	Check( !scenePath.empty(), "queued-read teardown: scratch scene file written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		"queued-read teardown: scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "queued-read teardown: session wraps job" );
+	if( !session ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	AgentRenderParams params;
+	params.perception = true;
+	Check( session->Render( params ).ok,
+		"queued-read teardown: perception source render succeeds" );
+
+	std::mutex hookMutex;
+	std::condition_variable hookCv;
+	unsigned int beforeCacheCalls = 0;
+	bool firstReaderEntered = false;
+	bool releaseFirstReader = false;
+	bool teardownWaiting = false;
+	bool teardownReturned = false;
+	bool shutdownHookReentryReturned = false;
+	AgentSession* rawSession = session.get();
+	session->ForTest_SetReadPerceptionBeforeCacheHook( [&]() {
+		std::unique_lock<std::mutex> lk( hookMutex );
+		++beforeCacheCalls;
+		if( beforeCacheCalls == 1 ) {
+			firstReaderEntered = true;
+			hookCv.notify_all();
+			hookCv.wait( lk, [&]() { return releaseFirstReader; } );
+		}
+	} );
+	session->ForTest_SetSinkReadShutdownWaitHook( [&]() {
+		// The hook must run without mAsyncCacheMutex. Re-entering a bounded
+		// read after the closing flag is set returns empty instead of
+		// deadlocking; its whole-call entrant also drains before this returns.
+		unsigned int w = 0, h = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> rejected =
+			rawSession->ReadPerception( 48, w, h, info );
+		{
+			std::lock_guard<std::mutex> lk( hookMutex );
+			shutdownHookReentryReturned = rejected.empty() && !info.available;
+			teardownWaiting = true;
+		}
+		hookCv.notify_all();
+	} );
+
+	std::vector<unsigned char> readerPng;
+	AgentPerceptionInfo readerInfo;
+	std::thread reader( [&]() {
+		unsigned int atlasW = 0, atlasH = 0;
+		readerPng = rawSession->ReadPerception( 48, atlasW, atlasH, readerInfo );
+	} );
+	bool readerIsQueued = false;
+	{
+		std::unique_lock<std::mutex> lk( hookMutex );
+		readerIsQueued = hookCv.wait_for( lk, std::chrono::seconds( 5 ),
+			[&]() { return firstReaderEntered; } );
+	}
+	Check( readerIsQueued,
+		"queued-read teardown: reader is counted before cache-lock admission" );
+	if( !readerIsQueued ) {
+		{
+			std::lock_guard<std::mutex> lk( hookMutex );
+			releaseFirstReader = true;
+		}
+		hookCv.notify_all();
+		reader.join();
+		session.reset();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+		return;
+	}
+
+	std::thread teardown( [owned = std::move( session ), &hookMutex,
+		&hookCv, &teardownReturned]() mutable {
+		owned.reset();
+		{
+			std::lock_guard<std::mutex> lk( hookMutex );
+			teardownReturned = true;
+		}
+		hookCv.notify_all();
+	} );
+	bool destructorReachedWait = false;
+	{
+		std::unique_lock<std::mutex> lk( hookMutex );
+		destructorReachedWait = hookCv.wait_for( lk, std::chrono::seconds( 5 ),
+			[&]() { return teardownWaiting; } );
+		Check( !teardownReturned,
+			"queued-read teardown: destructor retains a pre-admission reader" );
+		releaseFirstReader = true;
+	}
+	Check( destructorReachedWait,
+		"queued-read teardown: destructor drains whole-call entrants" );
+	hookCv.notify_all();
+	reader.join();
+	teardown.join();
+
+	Check( shutdownHookReentryReturned,
+		"queued-read teardown: unlocked shutdown hook can re-enter without deadlock" );
+	Check( readerPng.empty() && !readerInfo.available,
+		"queued-read teardown: queued reader observes the closed admission gate" );
+	{
+		std::lock_guard<std::mutex> lk( hookMutex );
+		Check( teardownReturned,
+			"queued-read teardown: destructor returns after queued entrant drains" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFrameStoreIsolationTest ===\n" );
@@ -1233,6 +1349,7 @@ int main()
 	RunProductionSinkDetachmentProbe( "auto", kAutoRasterizer );
 	RunConcurrentReadLeasePeakProbe();
 	RunConcurrentReadLeaseTeardownProbe();
+	RunQueuedReadAdmissionTeardownProbe();
 	RunDraftIsolationTest();
 	RunDraftThrowTest();
 

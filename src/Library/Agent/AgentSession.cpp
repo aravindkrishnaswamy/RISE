@@ -584,6 +584,21 @@ namespace RISE
 			if( drained ) mSinkReadLeaseCv.notify_all();
 		}
 
+		void AgentSession::ReleaseSinkReadEntrant_() const
+		{
+			bool drained = false;
+			{
+				// Serialize the zero transition with the destructor's CV predicate.
+				// The entry increment must remain lock-free so a caller already at
+				// the public method boundary cannot disappear behind this mutex.
+				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+				const unsigned int prior = mSinkReadEntrants.fetch_sub(
+					1, std::memory_order_acq_rel );
+				drained = prior == 1;
+			}
+			if( drained ) mSinkReadLeaseCv.notify_all();
+		}
+
 		AgentSession::~AgentSession()
 		{
 			// Fix-round-1 P1-A: drain BEFORE touching any member -- the
@@ -608,18 +623,30 @@ namespace RISE
 			// and removes any doubt for a future maintainer who changes the
 			// drain's bound (e.g. a shorter timeout) without re-deriving
 			// this invariant from scratch.
+			std::function<void()> shutdownWaitHook;
 			{
 				std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
-				// Bounded ReadImage/ReadPerception calls drop this mutex while
-				// encoding and retain their sink through mActiveSinkReadLeases. Close
-				// admission before waiting, then keep the session (and this mutex/map)
-				// alive until every already-admitted reader has released its lease.
+				// Counted image readers may still be queued on this mutex, or may
+				// have dropped it while encoding under a registered sink lease. Close
+				// admission, then keep the complete session state alive until BOTH
+				// populations drain.
 				mSinkReadsClosing = true;
-				if( !mActiveSinkReadLeases.empty() && mSinkReadShutdownWaitHookForTest ) {
-					mSinkReadShutdownWaitHookForTest();
+				if( ( mSinkReadEntrants.load( std::memory_order_acquire ) != 0 ||
+				      !mActiveSinkReadLeases.empty() ) &&
+				    mSinkReadShutdownWaitHookForTest ) {
+					shutdownWaitHook = mSinkReadShutdownWaitHookForTest;
 				}
+			}
+			// Test coordination must not run under the cache mutex: it may need
+			// to release or re-enter the reader whose lifetime is being tested.
+			if( shutdownWaitHook ) shutdownWaitHook();
+			{
+				std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
 				mSinkReadLeaseCv.wait( cacheLk,
-					[this]() { return mActiveSinkReadLeases.empty(); } );
+					[this]() {
+						return mSinkReadEntrants.load( std::memory_order_acquire ) == 0 &&
+						       mActiveSinkReadLeases.empty();
+					} );
 				safe_release( mLastSink );
 				mLastSink = nullptr;
 			}
@@ -7059,7 +7086,9 @@ namespace RISE
 
 		std::vector<unsigned char> AgentSession::ReadImage() const
 		{
+			SinkReadEntrantGuard entrant( *this );
 			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
+			if( mSinkReadsClosing ) return std::vector<unsigned char>();
 			return mLastPng;
 		}
 
@@ -7067,6 +7096,7 @@ namespace RISE
 		                                                    unsigned int& outWidth,
 		                                                    unsigned int& outHeight ) const
 		{
+			SinkReadEntrantGuard entrant( *this );
 			outWidth = 0;
 			outHeight = 0;
 			InMemoryRasterizerOutput* sink = 0;
@@ -7113,6 +7143,10 @@ namespace RISE
 			unsigned int& outHeight,
 			AgentPerceptionInfo& outInfo ) const
 		{
+			SinkReadEntrantGuard entrant( *this );
+			if( mReadPerceptionBeforeCacheHookForTest ) {
+				mReadPerceptionBeforeCacheHookForTest();
+			}
 			outWidth = outHeight = 0;
 			outInfo = AgentPerceptionInfo();
 			InMemoryRasterizerOutput* sink = 0;

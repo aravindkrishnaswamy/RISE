@@ -373,12 +373,70 @@ static void TestAccurateMLTFallbackGuideThroughTransparency()
 	std::remove( scenePath.c_str() );
 }
 
+// BDPT's OpenPGL training passes use the production rasterizer entry points.
+// Their temporary beauty images are discarded when combine_training=false,
+// so they must not survive in the perception AOV accumulator either. Before
+// the fix, one 1-SPP training pass left a normalized 0.25 albedo in the plane;
+// the 1-SPP final pass added another 0.25 and normalized only by its own weight,
+// exposing ~0.5 in the atlas.
+static void TestBDPTPathGuidingTrainingDoesNotContaminatePerception()
+{
+	static const char* const scene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"bdpt_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n"
+		"\toidn_denoise false\n\tpathguiding true\n"
+		"\tpathguiding_iterations 1\n\tpathguiding_spp 1\n"
+		"\tpathguiding_combine_training false\n\tpathguiding_online false\n}\n\n"
+		"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3\n\tlookat 0 0 0\n"
+		"\tup 0 1 0\n\tfov 20\n}\n\n"
+		"uniformcolor_painter\n{\n\tname quarter\n\tcolor 0.25 0.25 0.25\n}\n\n"
+		"lambertian_material\n{\n\tname matte\n\treflectance quarter\n}\n\n"
+		"box_geometry\n{\n\tname backdrop\n\twidth 10\n\theight 10\n\tdepth 0.2\n}\n\n"
+		"standard_object\n{\n\tname backdrop_obj\n\tgeometry backdrop\n\tmaterial matte\n}\n\n"
+		"omni_light\n{\n\tname key\n\tposition 0 2 2\n\tcolor 1 1 1\n\tpower 100\n}\n";
+
+	const std::string scenePath = WriteTemp(
+		"agent_bdpt_guiding_aov_reset.RISEscene", scene );
+	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+	Check( session != nullptr, "guided BDPT AOV-reset scene loads" );
+	if( session ) {
+		AgentRenderParams params;
+		params.perception = true;
+		const AgentRenderResult render = session->Render( params );
+		unsigned int atlasW = 0, atlasH = 0;
+		AgentPerceptionInfo info;
+		const std::vector<unsigned char> atlas =
+			session->ReadPerception( 16, atlasW, atlasH, info );
+		DecodedPng decoded;
+		const bool decodedOk = DecodePng( atlas, decoded );
+		Check( render.ok && info.available && decodedOk &&
+		       decoded.width == 16 && decoded.height == 16,
+		       "guided BDPT produces a complete perception atlas" );
+		if( decodedOk && decoded.width == 16 && decoded.height == 16 ) {
+			const DecodedPixel& albedo = decoded.At( 12, 4 );
+			const RGBA8 expected = RISEColor( RISEPel( 0.25, 0.25, 0.25 ), 1.0 )
+				.Integerize<sRGBPel, unsigned char>( 255.0 );
+			auto close = []( unsigned char a, unsigned char b ) {
+				return std::abs( static_cast<int>( a ) - static_cast<int>( b ) ) <= 3;
+			};
+			Check( close( albedo[0], expected.r ) &&
+			       close( albedo[1], expected.g ) &&
+			       close( albedo[2], expected.b ),
+			       "guided BDPT albedo excludes discarded training-pass samples" );
+		}
+	}
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	std::printf( "=== AgentFirstSliceTest (Facet 5 slice 0c: JSON-RPC end-to-end loop) ===\n" );
 	TestPerceptionAtlasColorSpace();
 	TestAccurateHWSSGuideAfterPrimaryMediumScatter();
 	TestAccurateMLTFallbackGuideThroughTransparency();
+	TestBDPTPathGuidingTrainingDoesNotContaminatePerception();
 
 	const std::string scenePath = WriteTemp( "rise_agent_slice0c.RISEscene", kScene );
 	Check( !scenePath.empty(), "wrote the scene to a temp file" );

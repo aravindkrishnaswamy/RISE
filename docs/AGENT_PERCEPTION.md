@@ -98,6 +98,10 @@ atlas rather than requiring a caller to infer it from the scene.
 This semantic selection is honored whether or not the build includes OIDN;
 it is intentional sharing with the renderer's established auxiliary-signal
 semantics, not a dependency on the denoiser.
+BDPT path-guiding training passes do not contribute to these planes: a normal
+final pass supplies them, while online-only guiding uses the bounded first-hit
+fallback. This prevents temporary training images and their independent sample
+weights from contaminating the observation.
 
 ## One render, planned channels
 

@@ -800,6 +800,17 @@ void BDPTRasterizerBase::RasterizeScene(
 
 		GlobalLog()->PrintEx( eLog_Event,
 			"PathGuidingField:: Training phase complete" );
+
+		// Training dispatches use the same rasterizer entry points as the
+		// production pass and therefore write the shared AOV accumulator. They
+		// are either discarded, combined with beauty under different explicit
+		// SPP weights, or (online mode) replace the final pass entirely; the
+		// per-pass AOV normalization cannot represent any of those mixtures.
+		// Reset in place so production samples are authoritative. Online mode
+		// has no production pass, so the ordinary NeedsFallback() tail performs
+		// one bounded first-hit guide capture instead. This reuses capacity and
+		// adds no second full-resolution AOV allocation.
+		PrepareAOVBuffers_( width, height );
 	}
 #endif
 
