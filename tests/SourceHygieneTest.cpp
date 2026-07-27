@@ -301,6 +301,10 @@ int main()
 		       && win.find( "m_viewportTimeline->finalizeOpenTimelineInteraction();" )
 		          != std::string::npos,
 		       "Windows chat render finalizes timeline before controller submission" );
+		Check( winChat.find(
+			"if (m_stopRequested || !m_bridge || !m_sceneEditableExternal)" )
+		       != std::string::npos,
+		       "Windows chat render polls through its own occupancy gate" );
 		const size_t winDestructor = win.find( "MainWindow::~MainWindow()" );
 		const size_t winDestructorEnd = win.find(
 			"// ============================================================", winDestructor );

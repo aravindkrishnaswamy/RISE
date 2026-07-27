@@ -2019,7 +2019,11 @@ void ChatPanel::pollOutstandingRender()
         if (m_renderPollTimer) m_renderPollTimer->stop();
         return;
     }
-    if (m_stopRequested || !m_bridge || !m_sceneEditable) {
+    // This poll owns the outstanding chat render, so it must not consult
+    // m_sceneEditable: that combined gate is deliberately false because
+    // this same job is outstanding.  Only an EXTERNAL production-render
+    // transition (plus explicit stop/bridge loss) invalidates the poll.
+    if (m_stopRequested || !m_bridge || !m_sceneEditableExternal) {
         // requestStop()/setSceneEditable(false)/productionRenderStarting()
         // already cancel+drain synchronously when they fire; this guard
         // only covers a tick that raced one of them.  Don't act on a job
