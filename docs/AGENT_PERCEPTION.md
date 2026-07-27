@@ -23,13 +23,14 @@ conventional image plus structured metadata instead of assuming a model API
 can ingest arbitrary float tensors.
 
 Empirical status is intentionally separate. A first controlled local diagnostic
-now gives positive but narrow evidence: on 12 mirrored cue-isolation cases with
-three repeats, `qwen3.6:27b` improved from 15/36 beauty-only answers to 25/36
-with the atlas at exactly matched 384x384 input and reported prompt-token cost.
-The gain was concentrated in material-versus-lighting diagnosis (5/12 to
-12/12); depth and world-normal gains were small. See
+now gives a positive but preliminary signal: on 12 mirrored cue-targeted cases,
+`qwen3.6:27b` solved 6/12 unique cases by beauty-arm majority and 8/12 with the
+atlas at exactly matched 384x384 input and reported prompt-token cost. Across
+three correlated calls per case, the descriptive counts were 15/36 and 25/36;
+those repeats are not independent evidence. See
 [PERCEPTION_ATLAS_AB_RESULTS.md](PERCEPTION_ATLAS_AB_RESULTS.md). This is evidence
-that one model can use the atlas, not a universal agent-quality claim.
+of a directional gain for one model, not a statistically decisive result or a
+universal agent-quality claim.
 
 ## Shipped contract
 

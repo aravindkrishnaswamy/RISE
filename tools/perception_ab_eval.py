@@ -14,16 +14,15 @@ import base64
 import hashlib
 import json
 import math
-import os
 import random
 import re
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,11 +79,13 @@ def load_cases(path):
                 any(not isinstance(x, str) or not re.fullmatch(r"[A-Z0-9_]+", x)
                     for x in choices) or choices[0] == choices[1]):
             raise ValueError(f"{label}.choices must contain two distinct uppercase labels")
-        if answer not in choices:
-            raise ValueError(f"{label}.answer must be one of its choices")
         if not isinstance(params, dict):
             raise ValueError(f"{label}.params must be an object")
-        validate_case_params(family, params, label)
+        expected_choices, expected_answer = validate_case_params(family, params, label)
+        if set(choices) != expected_choices:
+            raise ValueError(f"{label}.choices must be exactly {sorted(expected_choices)}")
+        if answer != expected_answer:
+            raise ValueError(f"{label}.answer must be {expected_answer}, derived from params")
         out.append({"id": case_id, "family": family, "question": question.strip(),
                     "choices": choices, "answer": answer, "params": params})
     if not out:
@@ -94,24 +95,29 @@ def load_cases(path):
 
 def validate_case_params(family, params, label):
     if family == "depth_order":
-        _choice(params.get("nearColor"), {"red", "blue"}, f"{label}.params.nearColor")
+        near_color = _choice(params.get("nearColor"), {"red", "blue"},
+                             f"{label}.params.nearColor")
         _choice(params.get("nearSide"), {"left", "right"}, f"{label}.params.nearSide")
         near_z = _finite_number(params.get("nearZ"), f"{label}.params.nearZ")
         far_z = _finite_number(params.get("farZ"), f"{label}.params.farZ")
         if near_z <= far_z:
             raise ValueError(f"{label}: nearZ must exceed farZ for the +Z camera")
+        return {"RED", "BLUE"}, near_color.upper()
     elif family == "surface_normal":
         angle = _finite_number(params.get("angleDegrees"), f"{label}.params.angleDegrees")
         if abs(angle) < 10.0 or abs(angle) > 70.0:
             raise ValueError(f"{label}: abs(angleDegrees) must be in [10,70]")
+        return {"POSITIVE_X", "NEGATIVE_X"}, "POSITIVE_X" if angle > 0 else "NEGATIVE_X"
     else:
-        _choice(params.get("highSide"), {"left", "right"}, f"{label}.params.highSide")
+        high_side = _choice(params.get("highSide"), {"left", "right"},
+                            f"{label}.params.highSide")
         if params.get("tiltSign") not in (-1, 1):
             raise ValueError(f"{label}.params.tiltSign must be -1 or 1")
         low = _finite_number(params.get("lowAlbedo"), f"{label}.params.lowAlbedo")
         high = _finite_number(params.get("highAlbedo"), f"{label}.params.highAlbedo")
         if not (0.05 <= low < high <= 0.95):
             raise ValueError(f"{label}: require 0.05 <= lowAlbedo < highAlbedo <= 0.95")
+        return {"LEFT", "RIGHT"}, high_side.upper()
 
 
 def common_scene(edge, camera_z=10.0, fov=30.0, ambient=False):
@@ -235,7 +241,7 @@ def clipped_plane(name, points, material):
     return f"""clippedplane_geometry
 {{
 \tname geom_{name}
-{os.linesep.join(lines)}
+{chr(10).join(lines)}
 }}
 
 standard_object
@@ -285,21 +291,51 @@ def make_scene(case, edge):
 
 
 def png_dimensions(data):
-    if len(data) < 24 or data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR":
-        raise ValueError("read_image payload is not a PNG with an IHDR header")
-    width, height = struct.unpack(">II", data[16:24])
-    if width <= 0 or height <= 0:
-        raise ValueError("PNG dimensions must be positive")
-    return width, height
+    if len(data) < 8 or data[:8] != PNG_SIGNATURE:
+        raise ValueError("read_image payload has no PNG signature")
+    offset = 8
+    dimensions = None
+    saw_idat = False
+    saw_iend = False
+    while offset < len(data):
+        if len(data) - offset < 12:
+            raise ValueError("read_image PNG has a truncated chunk header")
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(data):
+            raise ValueError("read_image PNG has a truncated chunk payload")
+        kind = data[offset + 4:offset + 8]
+        payload = data[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack(">I", data[offset + 8 + length:chunk_end])[0]
+        if zlib.crc32(kind + payload) & 0xffffffff != expected_crc:
+            raise ValueError(f"read_image PNG has a bad {kind!r} CRC")
+        if dimensions is None:
+            if kind != b"IHDR" or length != 13:
+                raise ValueError("read_image PNG must begin with a 13-byte IHDR")
+            dimensions = struct.unpack(">II", payload[:8])
+            if dimensions[0] <= 0 or dimensions[1] <= 0:
+                raise ValueError("PNG dimensions must be positive")
+        elif kind == b"IHDR":
+            raise ValueError("read_image PNG has multiple IHDR chunks")
+        if kind == b"IDAT":
+            saw_idat = True
+        if kind == b"IEND":
+            if length != 0 or chunk_end != len(data):
+                raise ValueError("read_image PNG has an invalid IEND")
+            saw_iend = True
+            break
+        offset = chunk_end
+    if not saw_idat or not saw_iend or dimensions is None:
+        raise ValueError("read_image PNG is missing IDAT or IEND")
+    return dimensions
 
 
-def render_case(rise_bin, repo_root, case, edge, image_dir, timeout):
+def render_case(rise_bin, repo_root, case, edge, image_dir, scene_dir, timeout):
     scene = make_scene(case, edge)
     image_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", suffix=".RISEscene", prefix=case["id"] + "_",
-                                     dir=image_dir, delete=False, encoding="utf-8") as stream:
-        stream.write(scene)
-        scene_path = Path(stream.name)
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    scene_path = scene_dir / f"{case['id']}.RISEscene"
+    scene_path.write_text(scene, encoding="utf-8")
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "render",
          "params": {"width": edge, "height": edge, "samples": 4, "perception": True}},
@@ -310,13 +346,10 @@ def render_case(rise_bin, repo_root, case, edge, image_dir, timeout):
     ]
     stdin = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in requests)
     started = time.monotonic()
-    try:
-        proc = subprocess.run([str(rise_bin), "--agent-stdio", str(scene_path)],
-                              input=stdin, text=True, cwd=repo_root,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              timeout=timeout, check=False)
-    finally:
-        scene_path.unlink(missing_ok=True)
+    proc = subprocess.run([str(rise_bin), "--agent-stdio", str(scene_path)],
+                          input=stdin, text=True, cwd=repo_root,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=timeout, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"RISE exited {proc.returncode} for {case['id']}: {proc.stderr[-2000:]}")
     envelopes = {}
@@ -327,7 +360,18 @@ def render_case(rise_bin, repo_root, case, edge, image_dir, timeout):
             env = json.loads(line)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"non-JSON stdout from RISE for {case['id']}: {line[:200]}") from exc
-        envelopes[env.get("id")] = env
+        rpc_id = env.get("id")
+        if rpc_id in envelopes:
+            raise RuntimeError(f"duplicate RISE RPC id {rpc_id!r} for {case['id']}")
+        envelopes[rpc_id] = env
+    render_env = envelopes.get(1, {})
+    if "error" in render_env:
+        raise RuntimeError(f"render failed for {case['id']}: {render_env['error']}")
+    render_result = render_env.get("result")
+    if (not isinstance(render_result, dict) or render_result.get("ok") is not True or
+            render_result.get("perceptionAvailable") is not True or
+            render_result.get("width") != edge or render_result.get("height") != edge):
+        raise RuntimeError(f"render contract failed for {case['id']}: {render_result}")
     images = {}
     metadata = {}
     for rpc_id, arm in ((2, "beauty"), (3, "atlas")):
@@ -337,6 +381,14 @@ def render_case(rise_bin, repo_root, case, edge, image_dir, timeout):
         result = env.get("result")
         if not isinstance(result, dict) or not result.get("png_base64"):
             raise RuntimeError(f"read_image {arm} returned no PNG for {case['id']}: {result}")
+        representation = "perception" if arm == "atlas" else "beauty"
+        if (result.get("representation") != representation or result.get("width") != edge or
+                result.get("height") != edge):
+            raise RuntimeError(f"read_image {arm} contract failed for {case['id']}: {result}")
+        if arm == "atlas" and (result.get("available") is not True or
+                result.get("sourceWidth") != edge or result.get("sourceHeight") != edge or
+                result.get("panels") != ["beauty", "albedo", "world_normal", "log_depth"]):
+            raise RuntimeError(f"perception atlas metadata failed for {case['id']}: {result}")
         data = base64.b64decode(result["png_base64"], validate=True)
         dims = png_dimensions(data)
         if dims != (edge, edge):
@@ -349,7 +401,8 @@ def render_case(rise_bin, repo_root, case, edge, image_dir, timeout):
             "bytes": len(data), "width": dims[0], "height": dims[1],
             "rpc": {key: value for key, value in result.items() if key != "png_base64"},
         }
-    return images, metadata, round((time.monotonic() - started) * 1000)
+    scene_meta = {"path": str(scene_path), "sha256": hashlib.sha256(scene.encode("utf-8")).hexdigest()}
+    return images, metadata, scene_meta, round((time.monotonic() - started) * 1000)
 
 
 def make_prompt(case):
@@ -434,16 +487,6 @@ def ask_model(endpoint, model, prompt, png, temperature, timeout):
     }
 
 
-def wilson(successes, total, z=1.96):
-    if total <= 0:
-        return None, None
-    proportion = successes / total
-    denom = 1.0 + z * z / total
-    center = (proportion + z * z / (2.0 * total)) / denom
-    radius = z * math.sqrt((proportion * (1.0 - proportion) + z * z / (4.0 * total)) / total) / denom
-    return max(0.0, center - radius), min(1.0, center + radius)
-
-
 def exact_mcnemar(atlas_only, beauty_only):
     discordant = atlas_only + beauty_only
     if discordant == 0:
@@ -455,13 +498,11 @@ def exact_mcnemar(atlas_only, beauty_only):
 def arm_stats(rows, arm):
     selected = [row for row in rows if row["arm"] == arm]
     successes = sum(bool(row["correct"]) for row in selected)
-    low, high = wilson(successes, len(selected))
     return {"correct": successes, "total": len(selected),
-            "accuracy": successes / len(selected) if selected else None,
-            "wilson95": [low, high]}
+            "accuracy": successes / len(selected) if selected else None}
 
 
-def paired_stats(rows):
+def paired_stats(rows, include_exact=False):
     by_pair = defaultdict(dict)
     for row in rows:
         by_pair[(row["caseId"], row["repeat"])][row["arm"]] = row
@@ -482,9 +523,11 @@ def paired_stats(rows):
         else:
             counts["both_wrong"] += 1
         complete_pairs += 1
-    return {**counts, "completePairs": complete_pairs,
-            "exactTwoSidedP": exact_mcnemar(counts["atlas_only_wins"],
-                                             counts["beauty_only_wins"])}
+    result = {**counts, "completePairs": complete_pairs}
+    if include_exact:
+        result["exactTwoSidedP"] = exact_mcnemar(counts["atlas_only_wins"],
+                                                 counts["beauty_only_wins"])
+    return result
 
 
 def summarize(rows):
@@ -492,12 +535,18 @@ def summarize(rows):
     for row in rows:
         by_pair[(row["caseId"], row["repeat"])][row["arm"]] = row
     parity_deltas = []
+    complete_pairs = 0
     for pair in by_pair.values():
         if set(pair) != {"beauty", "atlas"}:
             continue
+        complete_pairs += 1
         b_tokens = pair["beauty"].get("usage", {}).get("prompt_tokens")
         a_tokens = pair["atlas"].get("usage", {}).get("prompt_tokens")
-        if isinstance(b_tokens, (int, float)) and isinstance(a_tokens, (int, float)):
+        valid_b = (not isinstance(b_tokens, bool) and isinstance(b_tokens, (int, float)) and
+                   math.isfinite(b_tokens) and b_tokens >= 0)
+        valid_a = (not isinstance(a_tokens, bool) and isinstance(a_tokens, (int, float)) and
+                   math.isfinite(a_tokens) and a_tokens >= 0)
+        if valid_b and valid_a:
             parity_deltas.append(abs(a_tokens - b_tokens) / max(a_tokens, b_tokens, 1))
 
     case_votes = defaultdict(lambda: {"beauty": [], "atlas": [], "family": None})
@@ -513,7 +562,15 @@ def summarize(rows):
                 case_majority[arm] += 1
             majority_rows.append({"caseId": case_id, "family": votes["family"],
                                   "repeat": 1, "arm": arm, "correct": correct})
-    case_majority["paired"] = paired_stats(majority_rows)
+    case_majority["paired"] = paired_stats(majority_rows, include_exact=True)
+    case_majority["families"] = {}
+    for family in sorted({row["family"] for row in majority_rows}):
+        subset = [row for row in majority_rows if row["family"] == family]
+        case_majority["families"][family] = {
+            "beauty": arm_stats(subset, "beauty"),
+            "atlas": arm_stats(subset, "atlas"),
+            "paired": paired_stats(subset, include_exact=True),
+        }
 
     families = {}
     for family in sorted({row["family"] for row in rows}):
@@ -534,9 +591,12 @@ def summarize(rows):
         "caseMajority": case_majority,
         "families": families,
         "tokenParity": {
+            "completePairs": complete_pairs,
             "pairsWithUsage": len(parity_deltas),
+            "missingPairs": complete_pairs - len(parity_deltas),
             "maxRelativePromptTokenDifference": max(parity_deltas) if parity_deltas else None,
-            "withinFivePercent": bool(parity_deltas) and max(parity_deltas) <= 0.05,
+            "withinFivePercent": (complete_pairs > 0 and len(parity_deltas) == complete_pairs and
+                                  max(parity_deltas) <= 0.05),
         },
     }
 
@@ -549,37 +609,39 @@ def report_markdown(metadata, summary):
     b = summary["beauty"]
     a = summary["atlas"]
     paired = summary["paired"]
+    majority = summary["caseMajority"]
+    majority_paired = majority["paired"]
     lines = [
         "# RISE perception-atlas local A/B result", "",
         f"- Model: `{metadata['model']}` (`{metadata.get('digest', '')[:12]}`)",
         f"- Generated: {metadata['generatedAt']}",
         f"- Cases/repeats: {metadata['caseCount']} / {metadata['repeats']}",
         f"- Input: one {metadata['edge']}x{metadata['edge']} PNG per call; identical prompt and output budget",
-        f"- Beauty accuracy: {b['correct']}/{b['total']} ({percent(b['accuracy'])})",
-        f"- Atlas accuracy: {a['correct']}/{a['total']} ({percent(a['accuracy'])})",
-        f"- Delta: {percent(summary['accuracyDelta'])}",
-        f"- Paired discordance: atlas-only {paired['atlas_only_wins']}, beauty-only {paired['beauty_only_wins']}",
-        f"- Exact two-sided McNemar/sign-test p: {paired['exactTwoSidedP']:.6g}",
-        f"- Prompt-token parity within 5%: {summary['tokenParity']['withinFivePercent']}",
+        f"- Primary unique-case majority: beauty {majority['beauty']}/{majority['total']}; "
+        f"atlas {majority['atlas']}/{majority['total']}",
+        f"- Unique-case discordance: atlas-only {majority_paired['atlas_only_wins']}, "
+        f"beauty-only {majority_paired['beauty_only_wins']}; exact p="
+        f"{majority_paired['exactTwoSidedP']:.6g}",
+        f"- Repeat-pooled descriptive accuracy: beauty {b['correct']}/{b['total']} "
+        f"({percent(b['accuracy'])}); atlas {a['correct']}/{a['total']} ({percent(a['accuracy'])})",
+        f"- Repeat-pooled descriptive discordance: atlas-only {paired['atlas_only_wins']}, "
+        f"beauty-only {paired['beauty_only_wins']}",
+        f"- Prompt-token parity within 5%: {summary['tokenParity']['withinFivePercent']} "
+        f"({summary['tokenParity']['pairsWithUsage']}/{summary['tokenParity']['completePairs']} pairs)",
         "", "## By family", "",
-        "| Family | Beauty | Atlas | Delta | Atlas-only / beauty-only | Exact p |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Family | Repeat-pooled beauty | Repeat-pooled atlas | Case-majority beauty | Case-majority atlas |",
+        "|---|---:|---:|---:|---:|",
     ]
     for family, item in summary["families"].items():
-        delta = item["atlas"]["accuracy"] - item["beauty"]["accuracy"]
-        lines.append(f"| {family} | {percent(item['beauty']['accuracy'])} | "
-                     f"{percent(item['atlas']['accuracy'])} | {percent(delta)} | "
-                     f"{item['paired']['atlas_only_wins']} / {item['paired']['beauty_only_wins']} | "
-                     f"{item['paired']['exactTwoSidedP']:.6g} |")
-    majority = summary["caseMajority"]
+        unique = majority["families"][family]
+        lines.append(f"| {family} | {item['beauty']['correct']}/{item['beauty']['total']} "
+                     f"({percent(item['beauty']['accuracy'])}) | {item['atlas']['correct']}/"
+                     f"{item['atlas']['total']} ({percent(item['atlas']['accuracy'])}) | "
+                     f"{unique['beauty']['correct']}/{unique['beauty']['total']} | "
+                     f"{unique['atlas']['correct']}/{unique['atlas']['total']} |")
     lines += [
-        "", "## Case-majority view", "",
-        f"Beauty solves {majority['beauty']}/{majority['total']} unique cases; "
-        f"atlas solves {majority['atlas']}/{majority['total']}. Paired case majorities are "
-        f"atlas-only {majority['paired']['atlas_only_wins']} versus beauty-only "
-        f"{majority['paired']['beauty_only_wins']} (exact p="
-        f"{majority['paired']['exactTwoSidedP']:.6g}). Repeats are useful for "
-        "stability but are not independent scene evidence.", "",
+        "", "Repeated calls on byte-identical case images are correlated. Their pooled counts "
+        "are a stability diagnostic only; the unique-case majority is the inferential unit.", "",
         "This diagnostic establishes only whether this model can use the atlas on cue-isolation "
         "tasks. It does not establish general agent-task lift; see evals/perception_ab/README.md.", "",
     ]
@@ -590,6 +652,20 @@ def git_head(repo_root):
     proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root,
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
     return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def git_dirty(repo_root):
+    proc = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo_root,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+    return None if proc.returncode != 0 else bool(proc.stdout.strip())
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def run(args):
@@ -608,28 +684,30 @@ def run(args):
         run_dir = repo_root / run_dir
     run_dir.mkdir(parents=True, exist_ok=False)
     image_dir = run_dir / "images"
+    scene_dir = run_dir / "scenes"
     print(f"model={model} cases={len(cases)} repeats={args.repeats} output={run_dir}", flush=True)
 
     rendered = {}
     for index, case in enumerate(cases, 1):
-        images, image_meta, render_ms = render_case(rise_bin, repo_root, case, args.edge,
-                                                    image_dir, args.render_timeout)
-        rendered[case["id"]] = (images, image_meta, render_ms)
+        images, image_meta, scene_meta, render_ms = render_case(
+            rise_bin, repo_root, case, args.edge, image_dir, scene_dir, args.render_timeout)
+        rendered[case["id"]] = (images, image_meta, scene_meta, render_ms)
         print(f"render {index:02d}/{len(cases)} {case['id']} {render_ms}ms", flush=True)
 
-    jobs = []
+    pairs = [(case, repeat) for repeat in range(1, args.repeats + 1) for case in cases]
     rng = random.Random(args.order_seed)
-    for repeat in range(1, args.repeats + 1):
-        for case in cases:
-            arms = ["beauty", "atlas"]
-            rng.shuffle(arms)
-            jobs.extend((case, repeat, arm) for arm in arms)
+    first_arms = (["beauty", "atlas"] * ((len(pairs) + 1) // 2))[:len(pairs)]
+    rng.shuffle(first_arms)
+    jobs = []
+    for (case, repeat), first_arm in zip(pairs, first_arms):
+        second_arm = "atlas" if first_arm == "beauty" else "beauty"
+        jobs.extend(((case, repeat, first_arm), (case, repeat, second_arm)))
 
     rows = []
     results_path = run_dir / "results.jsonl"
     with results_path.open("w", encoding="utf-8") as stream:
         for index, (case, repeat, arm) in enumerate(jobs, 1):
-            images, image_meta, render_ms = rendered[case["id"]]
+            images, image_meta, scene_meta, render_ms = rendered[case["id"]]
             response = ask_model(endpoint, model, make_prompt(case), images[arm],
                                  args.temperature, args.model_timeout)
             parsed = normalize_answer(response["content"], case["choices"])
@@ -640,7 +718,7 @@ def run(args):
                 "rawContent": response["content"], "reasoning": response["reasoning"],
                 "finishReason": response["finishReason"], "usage": response["usage"],
                 "latencyMs": response["latencyMs"], "responseId": response["responseId"],
-                "image": image_meta[arm], "renderLatencyMs": render_ms,
+                "image": image_meta[arm], "scene": scene_meta, "renderLatencyMs": render_ms,
             }
             rows.append(row)
             stream.write(json.dumps(row, sort_keys=True) + "\n")
@@ -654,12 +732,18 @@ def run(args):
         "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "gitHead": git_head(repo_root),
+        "gitDirty": git_dirty(repo_root),
+        "harness": str(Path(__file__).resolve()),
+        "harnessSha256": file_sha256(Path(__file__).resolve()),
         "manifest": str(manifest),
-        "manifestSha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "manifestSha256": file_sha256(manifest),
+        "riseBinary": str(rise_bin),
+        "riseBinarySha256": file_sha256(rise_bin),
         "model": model,
         "digest": model_info.get("digest", ""),
         "modelSizeBytes": model_info.get("size"),
         "modelCapabilities": model_info.get("capabilities", []),
+        "ollamaVersion": http_json(endpoint + "/api/version", timeout=10).get("version"),
         "endpoint": endpoint,
         "edge": args.edge,
         "temperature": args.temperature,
@@ -678,15 +762,28 @@ def run(args):
     return 0
 
 
-def self_test():
-    fake_png = PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 384, 384)
-    assert png_dimensions(fake_png) == (384, 384)
+def self_test(repo_root, manifest_arg):
+    def png_chunk(kind, payload):
+        return (struct.pack(">I", len(payload)) + kind + payload +
+                struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff))
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    valid_png = (PNG_SIGNATURE + png_chunk(b"IHDR", ihdr) +
+                 png_chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00")) + png_chunk(b"IEND", b""))
+    assert png_dimensions(valid_png) == (1, 1)
+    try:
+        png_dimensions(valid_png[:-1])
+        raise AssertionError("truncated PNG accepted")
+    except ValueError:
+        pass
     assert normalize_answer(" red.\n", ["RED", "BLUE"]) == "RED"
     assert normalize_answer("RED because it is closer", ["RED", "BLUE"]) is None
     assert exact_mcnemar(0, 0) == 1.0
     assert exact_mcnemar(6, 0) == 0.03125
-    assert wilson(0, 0) == (None, None)
-    cases = load_cases(DEFAULT_MANIFEST)
+    manifest = Path(manifest_arg)
+    if not manifest.is_absolute():
+        manifest = Path(repo_root).resolve() / manifest
+    cases = load_cases(manifest)
     assert len(cases) == 12
     for case in cases:
         scene = make_scene(case, 64)
@@ -704,6 +801,10 @@ def self_test():
     assert summary["paired"]["atlas_only_wins"] == 2
     assert summary["accuracyDelta"] == 1.0
     assert summary["tokenParity"]["withinFivePercent"] is True
+    synthetic[-1]["usage"] = {}
+    summary = summarize(synthetic)
+    assert summary["tokenParity"]["pairsWithUsage"] == 1
+    assert summary["tokenParity"]["withinFivePercent"] is False
     print("perception_ab_eval self-test: PASS")
     return 0
 
@@ -724,10 +825,10 @@ def parse_args(argv):
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
-    if args.repeats < 1:
-        parser.error("--repeats must be >= 1")
-    if args.edge < 64 or args.edge > 1024:
-        parser.error("--edge must be in [64,1024]")
+    if args.repeats < 1 or args.repeats % 2 == 0:
+        parser.error("--repeats must be a positive odd number for unambiguous case majorities")
+    if args.edge < 64 or args.edge > 512:
+        parser.error("--edge must be in [64,512]")
     if not math.isfinite(args.temperature) or args.temperature < 0.0 or args.temperature > 2.0:
         parser.error("--temperature must be finite and in [0,2]")
     return args
@@ -736,7 +837,8 @@ def parse_args(argv):
 if __name__ == "__main__":
     parsed_args = parse_args(sys.argv[1:])
     try:
-        raise SystemExit(self_test() if parsed_args.self_test else run(parsed_args))
+        raise SystemExit(self_test(parsed_args.repo_root, parsed_args.manifest)
+                         if parsed_args.self_test else run(parsed_args))
     except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         print(f"perception_ab_eval: ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2)
