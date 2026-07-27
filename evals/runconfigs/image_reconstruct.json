@@ -1,5 +1,5 @@
 {
-  "//": "The image-reconstruction pair (image_reconstruct_single, image_reconstruct_multi) needs a real vision-capable model to read the attached reference photos -- local Ollama models in this repo's shootout are text-only, so these two scenarios are deliberately NOT in full_baseline / local_shootout (which would silently starve every local column of usable input). This is their own dedicated runconfig against the 4 hosted vision providers instead.",
+  "//": "The image-reconstruction pair needs a vision-capable model. Four of the five local_shootout Ollama models are text-only, so the scenarios stay out of that mixed matrix; qwen3.6:27b has its own image_reconstruct_local.json config. This config is the dedicated 4-provider hosted board.",
   "scenarios": [
     "evals/scenarios/image_reconstruct_single.json",
     "evals/scenarios/image_reconstruct_multi.json"

@@ -22,11 +22,14 @@ more useful context. The implementation therefore exposes a bounded,
 conventional image plus structured metadata instead of assuming a model API
 can ingest arbitrary float tensors.
 
-Empirical status is intentionally separate: the implementation and its agent
-instructions are shipped, but no controlled beauty-only versus perception
-A/B task suite has yet demonstrated a model-quality lift. Do not describe the
-theoretical information gain as measured agent improvement; the evaluation
-protocol under Deliberate limits is the remaining evidence gate.
+Empirical status is intentionally separate. A first controlled local diagnostic
+now gives positive but narrow evidence: on 12 mirrored cue-isolation cases with
+three repeats, `qwen3.6:27b` improved from 15/36 beauty-only answers to 25/36
+with the atlas at exactly matched 384x384 input and reported prompt-token cost.
+The gain was concentrated in material-versus-lighting diagnosis (5/12 to
+12/12); depth and world-normal gains were small. See
+[PERCEPTION_ATLAS_AB_RESULTS.md](PERCEPTION_ATLAS_AB_RESULTS.md). This is evidence
+that one model can use the atlas, not a universal agent-quality claim.
 
 ## Shipped contract
 

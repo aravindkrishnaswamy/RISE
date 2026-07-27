@@ -1,0 +1,742 @@
+#!/usr/bin/env python3
+"""Run a paired beauty-only versus perception-atlas local vision evaluation.
+
+The tool intentionally has no third-party Python dependencies. It drives the
+real RISE JSON-RPC render/read_image surface, sends the resulting PNG through an
+OpenAI-compatible Ollama endpoint, and writes every observation and response for
+audit. See evals/perception_ab/README.md for methodology and interpretation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import math
+import os
+import random
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+DEFAULT_MANIFEST = Path("evals/perception_ab/cases.json")
+DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
+DEFAULT_EDGE = 384
+
+
+def _finite_number(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number")
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite")
+    return value
+
+
+def _choice(value, allowed, label):
+    if value not in allowed:
+        raise ValueError(f"{label} must be one of {sorted(allowed)}")
+    return value
+
+
+def load_cases(path):
+    with path.open("r", encoding="utf-8") as stream:
+        root = json.load(stream)
+    if root.get("schemaVersion") != 1 or not isinstance(root.get("cases"), list):
+        raise ValueError("manifest requires schemaVersion 1 and a cases array")
+    seen = set()
+    out = []
+    for index, case in enumerate(root["cases"]):
+        label = f"cases[{index}]"
+        if not isinstance(case, dict):
+            raise ValueError(f"{label} must be an object")
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not re.fullmatch(r"[a-z0-9_]+", case_id):
+            raise ValueError(f"{label}.id must match [a-z0-9_]+")
+        if case_id in seen:
+            raise ValueError(f"duplicate case id {case_id}")
+        seen.add(case_id)
+        family = _choice(case.get("family"),
+                         {"depth_order", "surface_normal", "material_lighting"},
+                         f"{label}.family")
+        question = case.get("question")
+        choices = case.get("choices")
+        answer = case.get("answer")
+        params = case.get("params")
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError(f"{label}.question must be a non-empty string")
+        if (not isinstance(choices, list) or len(choices) != 2 or
+                any(not isinstance(x, str) or not re.fullmatch(r"[A-Z0-9_]+", x)
+                    for x in choices) or choices[0] == choices[1]):
+            raise ValueError(f"{label}.choices must contain two distinct uppercase labels")
+        if answer not in choices:
+            raise ValueError(f"{label}.answer must be one of its choices")
+        if not isinstance(params, dict):
+            raise ValueError(f"{label}.params must be an object")
+        validate_case_params(family, params, label)
+        out.append({"id": case_id, "family": family, "question": question.strip(),
+                    "choices": choices, "answer": answer, "params": params})
+    if not out:
+        raise ValueError("manifest cases array cannot be empty")
+    return out
+
+
+def validate_case_params(family, params, label):
+    if family == "depth_order":
+        _choice(params.get("nearColor"), {"red", "blue"}, f"{label}.params.nearColor")
+        _choice(params.get("nearSide"), {"left", "right"}, f"{label}.params.nearSide")
+        near_z = _finite_number(params.get("nearZ"), f"{label}.params.nearZ")
+        far_z = _finite_number(params.get("farZ"), f"{label}.params.farZ")
+        if near_z <= far_z:
+            raise ValueError(f"{label}: nearZ must exceed farZ for the +Z camera")
+    elif family == "surface_normal":
+        angle = _finite_number(params.get("angleDegrees"), f"{label}.params.angleDegrees")
+        if abs(angle) < 10.0 or abs(angle) > 70.0:
+            raise ValueError(f"{label}: abs(angleDegrees) must be in [10,70]")
+    else:
+        _choice(params.get("highSide"), {"left", "right"}, f"{label}.params.highSide")
+        if params.get("tiltSign") not in (-1, 1):
+            raise ValueError(f"{label}.params.tiltSign must be -1 or 1")
+        low = _finite_number(params.get("lowAlbedo"), f"{label}.params.lowAlbedo")
+        high = _finite_number(params.get("highAlbedo"), f"{label}.params.highAlbedo")
+        if not (0.05 <= low < high <= 0.95):
+            raise ValueError(f"{label}: require 0.05 <= lowAlbedo < highAlbedo <= 0.95")
+
+
+def common_scene(edge, camera_z=10.0, fov=30.0, ambient=False):
+    light = ("ambient_light\n{\n\tname ambient\n\tpower 1.0\n\tcolor 1 1 1\n}\n"
+             if ambient else
+             "directional_light\n{\n\tname key\n\tpower 3.141592653589793\n"
+             "\tcolor 1 1 1\n\tdirection 0 0 1\n}\n")
+    return f"""RISE ASCII SCENE 7
+# Generated by tools/perception_ab_eval.py; controlled diagnostic scene.
+standard_shader
+{{
+\tname global
+\tshaderop DefaultDirectLighting
+}}
+
+pixelpel_rasterizer
+{{
+\tmax_recursion 4
+\tsamples 4
+\tlum_samples 1
+\tpixel_filter box
+\toidn_denoise false
+}}
+
+film
+{{
+\twidth {edge}
+\theight {edge}
+}}
+
+pinhole_camera
+{{
+\tlocation 0 0 {camera_z:.9g}
+\tlookat 0 0 0
+\tup 0 1 0
+\tfov {fov:.9g}
+}}
+
+{light}
+"""
+
+
+def painter_material(name, rgb):
+    r, g, b = rgb
+    return f"""uniformcolor_painter
+{{
+\tname pnt_{name}
+\tcolor {r:.9g} {g:.9g} {b:.9g}
+\tcolorspace Rec709RGB_Linear
+}}
+
+lambertian_material
+{{
+\tname mat_{name}
+\treflectance pnt_{name}
+}}
+
+"""
+
+
+def depth_scene(case, edge):
+    p = case["params"]
+    camera_z = 10.0
+    near_z = float(p["nearZ"])
+    far_z = float(p["farZ"])
+    near_radius = 0.72
+    # Match projected angular radius closely enough that beauty does not leak
+    # which sphere is physically larger/farther.
+    far_radius = near_radius * (camera_z - far_z) / (camera_z - near_z)
+    near_x = -1.35 if p["nearSide"] == "left" else 1.35
+    far_x = -near_x
+    near_color = p["nearColor"]
+    far_color = "blue" if near_color == "red" else "red"
+    by_color = {
+        near_color: (near_x, near_z, near_radius),
+        far_color: (far_x, far_z, far_radius),
+    }
+    text = common_scene(edge, camera_z=camera_z, fov=28.0, ambient=True)
+    text += painter_material("red", (0.85, 0.055, 0.04))
+    text += painter_material("blue", (0.035, 0.11, 0.90))
+    for color in ("red", "blue"):
+        x, z, radius = by_color[color]
+        text += f"""sphere_geometry
+{{
+\tname geom_{color}
+\tradius {radius:.9g}
+}}
+
+standard_object
+{{
+\tname obj_{color}
+\tgeometry geom_{color}
+\tmaterial mat_{color}
+\tposition {x:.9g} 0 {z:.9g}
+\treceives_shadows false
+}}
+
+"""
+    return text
+
+
+def card_points(center_x, angle_degrees, projected_width=2.0, height=2.7):
+    angle = math.radians(angle_degrees)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    world_width = projected_width / cosine
+    ux, uz = cosine, -sine
+    half_w, half_h = world_width * 0.5, height * 0.5
+    return [
+        (center_x - ux * half_w, -half_h, -uz * half_w),
+        (center_x + ux * half_w, -half_h, +uz * half_w),
+        (center_x + ux * half_w, +half_h, +uz * half_w),
+        (center_x - ux * half_w, +half_h, -uz * half_w),
+    ]
+
+
+def clipped_plane(name, points, material):
+    lines = []
+    for key, point in zip(("pta", "ptb", "ptc", "ptd"), points):
+        lines.append(f"\t{key} {point[0]:.9g} {point[1]:.9g} {point[2]:.9g}")
+    return f"""clippedplane_geometry
+{{
+\tname geom_{name}
+{os.linesep.join(lines)}
+}}
+
+standard_object
+{{
+\tname obj_{name}
+\tgeometry geom_{name}
+\tmaterial {material}
+\treceives_shadows false
+}}
+
+"""
+
+
+def normal_scene(case, edge):
+    angle = float(case["params"]["angleDegrees"])
+    text = common_scene(edge, camera_z=30.0, fov=9.0, ambient=True)
+    text += painter_material("card", (0.72, 0.64, 0.12))
+    text += clipped_plane("card", card_points(0.0, angle, 2.4, 3.1), "mat_card")
+    return text
+
+
+def albedo_scene(case, edge):
+    p = case["params"]
+    low = float(p["lowAlbedo"])
+    high = float(p["highAlbedo"])
+    # Under a head-on directional light, Lambertian radiance is albedo*cos.
+    # Tilt the high-albedo card so its beauty intensity matches the low card.
+    tilt = math.degrees(math.acos(low / high)) * int(p["tiltSign"])
+    high_side = p["highSide"]
+    text = common_scene(edge, camera_z=18.0, fov=18.0, ambient=False)
+    text += painter_material("low", (low, low, low))
+    text += painter_material("high", (high, high, high))
+    for side, center_x in (("left", -1.45), ("right", 1.45)):
+        is_high = side == high_side
+        name = f"{side}_{'high' if is_high else 'low'}"
+        points = card_points(center_x, tilt if is_high else 0.0, 1.75, 2.5)
+        text += clipped_plane(name, points, "mat_high" if is_high else "mat_low")
+    return text
+
+
+def make_scene(case, edge):
+    if case["family"] == "depth_order":
+        return depth_scene(case, edge)
+    if case["family"] == "surface_normal":
+        return normal_scene(case, edge)
+    return albedo_scene(case, edge)
+
+
+def png_dimensions(data):
+    if len(data) < 24 or data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR":
+        raise ValueError("read_image payload is not a PNG with an IHDR header")
+    width, height = struct.unpack(">II", data[16:24])
+    if width <= 0 or height <= 0:
+        raise ValueError("PNG dimensions must be positive")
+    return width, height
+
+
+def render_case(rise_bin, repo_root, case, edge, image_dir, timeout):
+    scene = make_scene(case, edge)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", suffix=".RISEscene", prefix=case["id"] + "_",
+                                     dir=image_dir, delete=False, encoding="utf-8") as stream:
+        stream.write(scene)
+        scene_path = Path(stream.name)
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "render",
+         "params": {"width": edge, "height": edge, "samples": 4, "perception": True}},
+        {"jsonrpc": "2.0", "id": 2, "method": "read_image",
+         "params": {"representation": "beauty", "maxEdge": edge}},
+        {"jsonrpc": "2.0", "id": 3, "method": "read_image",
+         "params": {"representation": "perception", "maxEdge": edge}},
+    ]
+    stdin = "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in requests)
+    started = time.monotonic()
+    try:
+        proc = subprocess.run([str(rise_bin), "--agent-stdio", str(scene_path)],
+                              input=stdin, text=True, cwd=repo_root,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=timeout, check=False)
+    finally:
+        scene_path.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"RISE exited {proc.returncode} for {case['id']}: {proc.stderr[-2000:]}")
+    envelopes = {}
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            env = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"non-JSON stdout from RISE for {case['id']}: {line[:200]}") from exc
+        envelopes[env.get("id")] = env
+    images = {}
+    metadata = {}
+    for rpc_id, arm in ((2, "beauty"), (3, "atlas")):
+        env = envelopes.get(rpc_id, {})
+        if "error" in env:
+            raise RuntimeError(f"read_image {arm} failed for {case['id']}: {env['error']}")
+        result = env.get("result")
+        if not isinstance(result, dict) or not result.get("png_base64"):
+            raise RuntimeError(f"read_image {arm} returned no PNG for {case['id']}: {result}")
+        data = base64.b64decode(result["png_base64"], validate=True)
+        dims = png_dimensions(data)
+        if dims != (edge, edge):
+            raise RuntimeError(f"{case['id']} {arm} is {dims}, expected {(edge, edge)}")
+        path = image_dir / f"{case['id']}.{arm}.png"
+        path.write_bytes(data)
+        images[arm] = data
+        metadata[arm] = {
+            "path": str(path), "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data), "width": dims[0], "height": dims[1],
+            "rpc": {key: value for key, value in result.items() if key != "png_base64"},
+        }
+    return images, metadata, round((time.monotonic() - started) * 1000)
+
+
+def make_prompt(case):
+    choices = " or ".join(case["choices"])
+    return (
+        "You are taking a controlled vision test. The attached RISE observation is either "
+        "a normal beauty render or a 2x2 perception atlas. When it is an atlas, the aligned "
+        "panels are: top-left beauty; top-right intrinsic diffuse albedo; bottom-left "
+        "world-space shading normal encoded as RGB=(normal+1)/2; bottom-right logarithmic "
+        "camera depth, with nearer valid surfaces brighter and misses black. Use every cue "
+        "that is present, but do not assume a panel exists when the image is an ordinary "
+        f"beauty render. Question: {case['question']} Reply with exactly one label: {choices}. "
+        "Do not add punctuation or an explanation."
+    )
+
+
+def normalize_answer(content, choices):
+    if not isinstance(content, str):
+        return None
+    candidate = content.strip().strip(".,:;!?`'\"").strip().upper()
+    return candidate if candidate in choices else None
+
+
+def http_json(url, payload=None, timeout=900):
+    data = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(url, data=data,
+                                 headers={"Content-Type": "application/json"} if data else {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {body[:2000]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"could not reach {url}: {exc}") from exc
+
+
+def choose_model(endpoint, requested):
+    tags = http_json(endpoint.rstrip("/") + "/api/tags", timeout=10)
+    models = tags.get("models", []) if isinstance(tags, dict) else []
+    by_name = {item.get("name"): item for item in models if isinstance(item, dict)}
+    if requested:
+        candidates = [item for item in models
+                      if item.get("name") == requested or item.get("model") == requested]
+        if not candidates:
+            raise ValueError(f"requested model {requested!r} is not installed")
+        chosen = candidates[0]
+        if "vision" not in chosen.get("capabilities", []):
+            raise ValueError(f"requested model {requested!r} does not advertise vision capability")
+        return chosen
+    candidates = [item for item in models if "vision" in item.get("capabilities", [])]
+    if not candidates:
+        raise ValueError("no installed Ollama model advertises vision capability")
+    return min(candidates, key=lambda item: (int(item.get("size", 1 << 63)), item.get("name", "")))
+
+
+def ask_model(endpoint, model, prompt, png, temperature, timeout):
+    encoded = base64.b64encode(png).decode("ascii")
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}},
+        ]}],
+        "temperature": temperature,
+        "max_completion_tokens": 32,
+        "reasoning_effort": "none",
+        "stream": False,
+    }
+    started = time.monotonic()
+    root = http_json(endpoint.rstrip("/") + "/v1/chat/completions", payload, timeout)
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    choices = root.get("choices", []) if isinstance(root, dict) else []
+    message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+    return {
+        "content": message.get("content", ""),
+        "reasoning": message.get("reasoning", message.get("reasoning_content", "")),
+        "finishReason": choices[0].get("finish_reason") if choices else None,
+        "usage": root.get("usage", {}),
+        "latencyMs": elapsed_ms,
+        "responseId": root.get("id"),
+    }
+
+
+def wilson(successes, total, z=1.96):
+    if total <= 0:
+        return None, None
+    proportion = successes / total
+    denom = 1.0 + z * z / total
+    center = (proportion + z * z / (2.0 * total)) / denom
+    radius = z * math.sqrt((proportion * (1.0 - proportion) + z * z / (4.0 * total)) / total) / denom
+    return max(0.0, center - radius), min(1.0, center + radius)
+
+
+def exact_mcnemar(atlas_only, beauty_only):
+    discordant = atlas_only + beauty_only
+    if discordant == 0:
+        return 1.0
+    tail = sum(math.comb(discordant, k) for k in range(min(atlas_only, beauty_only) + 1))
+    return min(1.0, 2.0 * tail / (2 ** discordant))
+
+
+def arm_stats(rows, arm):
+    selected = [row for row in rows if row["arm"] == arm]
+    successes = sum(bool(row["correct"]) for row in selected)
+    low, high = wilson(successes, len(selected))
+    return {"correct": successes, "total": len(selected),
+            "accuracy": successes / len(selected) if selected else None,
+            "wilson95": [low, high]}
+
+
+def paired_stats(rows):
+    by_pair = defaultdict(dict)
+    for row in rows:
+        by_pair[(row["caseId"], row["repeat"])][row["arm"]] = row
+    counts = {"both_correct": 0, "both_wrong": 0,
+              "atlas_only_wins": 0, "beauty_only_wins": 0}
+    complete_pairs = 0
+    for key, pair in sorted(by_pair.items()):
+        if set(pair) != {"beauty", "atlas"}:
+            continue
+        beauty = bool(pair["beauty"]["correct"])
+        atlas = bool(pair["atlas"]["correct"])
+        if beauty and atlas:
+            counts["both_correct"] += 1
+        elif atlas:
+            counts["atlas_only_wins"] += 1
+        elif beauty:
+            counts["beauty_only_wins"] += 1
+        else:
+            counts["both_wrong"] += 1
+        complete_pairs += 1
+    return {**counts, "completePairs": complete_pairs,
+            "exactTwoSidedP": exact_mcnemar(counts["atlas_only_wins"],
+                                             counts["beauty_only_wins"])}
+
+
+def summarize(rows):
+    by_pair = defaultdict(dict)
+    for row in rows:
+        by_pair[(row["caseId"], row["repeat"])][row["arm"]] = row
+    parity_deltas = []
+    for pair in by_pair.values():
+        if set(pair) != {"beauty", "atlas"}:
+            continue
+        b_tokens = pair["beauty"].get("usage", {}).get("prompt_tokens")
+        a_tokens = pair["atlas"].get("usage", {}).get("prompt_tokens")
+        if isinstance(b_tokens, (int, float)) and isinstance(a_tokens, (int, float)):
+            parity_deltas.append(abs(a_tokens - b_tokens) / max(a_tokens, b_tokens, 1))
+
+    case_votes = defaultdict(lambda: {"beauty": [], "atlas": [], "family": None})
+    for row in rows:
+        case_votes[row["caseId"]][row["arm"]].append(bool(row["correct"]))
+        case_votes[row["caseId"]]["family"] = row["family"]
+    majority_rows = []
+    case_majority = {"beauty": 0, "atlas": 0, "total": len(case_votes)}
+    for case_id, votes in case_votes.items():
+        for arm in ("beauty", "atlas"):
+            correct = bool(votes[arm] and sum(votes[arm]) * 2 > len(votes[arm]))
+            if correct:
+                case_majority[arm] += 1
+            majority_rows.append({"caseId": case_id, "family": votes["family"],
+                                  "repeat": 1, "arm": arm, "correct": correct})
+    case_majority["paired"] = paired_stats(majority_rows)
+
+    families = {}
+    for family in sorted({row["family"] for row in rows}):
+        subset = [row for row in rows if row["family"] == family]
+        families[family] = {"beauty": arm_stats(subset, "beauty"),
+                            "atlas": arm_stats(subset, "atlas"),
+                            "paired": paired_stats(subset)}
+
+    beauty_stats = arm_stats(rows, "beauty")
+    atlas_stats = arm_stats(rows, "atlas")
+    delta = ((atlas_stats["accuracy"] - beauty_stats["accuracy"])
+             if atlas_stats["accuracy"] is not None and beauty_stats["accuracy"] is not None else None)
+    return {
+        "beauty": beauty_stats,
+        "atlas": atlas_stats,
+        "accuracyDelta": delta,
+        "paired": paired_stats(rows),
+        "caseMajority": case_majority,
+        "families": families,
+        "tokenParity": {
+            "pairsWithUsage": len(parity_deltas),
+            "maxRelativePromptTokenDifference": max(parity_deltas) if parity_deltas else None,
+            "withinFivePercent": bool(parity_deltas) and max(parity_deltas) <= 0.05,
+        },
+    }
+
+
+def percent(value):
+    return "n/a" if value is None else f"{100.0 * value:.1f}%"
+
+
+def report_markdown(metadata, summary):
+    b = summary["beauty"]
+    a = summary["atlas"]
+    paired = summary["paired"]
+    lines = [
+        "# RISE perception-atlas local A/B result", "",
+        f"- Model: `{metadata['model']}` (`{metadata.get('digest', '')[:12]}`)",
+        f"- Generated: {metadata['generatedAt']}",
+        f"- Cases/repeats: {metadata['caseCount']} / {metadata['repeats']}",
+        f"- Input: one {metadata['edge']}x{metadata['edge']} PNG per call; identical prompt and output budget",
+        f"- Beauty accuracy: {b['correct']}/{b['total']} ({percent(b['accuracy'])})",
+        f"- Atlas accuracy: {a['correct']}/{a['total']} ({percent(a['accuracy'])})",
+        f"- Delta: {percent(summary['accuracyDelta'])}",
+        f"- Paired discordance: atlas-only {paired['atlas_only_wins']}, beauty-only {paired['beauty_only_wins']}",
+        f"- Exact two-sided McNemar/sign-test p: {paired['exactTwoSidedP']:.6g}",
+        f"- Prompt-token parity within 5%: {summary['tokenParity']['withinFivePercent']}",
+        "", "## By family", "",
+        "| Family | Beauty | Atlas | Delta | Atlas-only / beauty-only | Exact p |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for family, item in summary["families"].items():
+        delta = item["atlas"]["accuracy"] - item["beauty"]["accuracy"]
+        lines.append(f"| {family} | {percent(item['beauty']['accuracy'])} | "
+                     f"{percent(item['atlas']['accuracy'])} | {percent(delta)} | "
+                     f"{item['paired']['atlas_only_wins']} / {item['paired']['beauty_only_wins']} | "
+                     f"{item['paired']['exactTwoSidedP']:.6g} |")
+    majority = summary["caseMajority"]
+    lines += [
+        "", "## Case-majority view", "",
+        f"Beauty solves {majority['beauty']}/{majority['total']} unique cases; "
+        f"atlas solves {majority['atlas']}/{majority['total']}. Paired case majorities are "
+        f"atlas-only {majority['paired']['atlas_only_wins']} versus beauty-only "
+        f"{majority['paired']['beauty_only_wins']} (exact p="
+        f"{majority['paired']['exactTwoSidedP']:.6g}). Repeats are useful for "
+        "stability but are not independent scene evidence.", "",
+        "This diagnostic establishes only whether this model can use the atlas on cue-isolation "
+        "tasks. It does not establish general agent-task lift; see evals/perception_ab/README.md.", "",
+    ]
+    return "\n".join(lines)
+
+
+def git_head(repo_root):
+    proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def run(args):
+    repo_root = Path(args.repo_root).resolve()
+    manifest = (repo_root / args.manifest).resolve() if not Path(args.manifest).is_absolute() else Path(args.manifest)
+    rise_bin = (repo_root / args.rise_bin).resolve() if not Path(args.rise_bin).is_absolute() else Path(args.rise_bin)
+    cases = load_cases(manifest)
+    if not rise_bin.is_file():
+        raise ValueError(f"RISE binary not found: {rise_bin}")
+    endpoint = args.endpoint.rstrip("/")
+    model_info = choose_model(endpoint, args.model)
+    model = model_info.get("name") or model_info.get("model")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = Path(args.output_dir) if args.output_dir else repo_root / "evals/runs" / f"perception_ab_{stamp}"
+    if not run_dir.is_absolute():
+        run_dir = repo_root / run_dir
+    run_dir.mkdir(parents=True, exist_ok=False)
+    image_dir = run_dir / "images"
+    print(f"model={model} cases={len(cases)} repeats={args.repeats} output={run_dir}", flush=True)
+
+    rendered = {}
+    for index, case in enumerate(cases, 1):
+        images, image_meta, render_ms = render_case(rise_bin, repo_root, case, args.edge,
+                                                    image_dir, args.render_timeout)
+        rendered[case["id"]] = (images, image_meta, render_ms)
+        print(f"render {index:02d}/{len(cases)} {case['id']} {render_ms}ms", flush=True)
+
+    jobs = []
+    rng = random.Random(args.order_seed)
+    for repeat in range(1, args.repeats + 1):
+        for case in cases:
+            arms = ["beauty", "atlas"]
+            rng.shuffle(arms)
+            jobs.extend((case, repeat, arm) for arm in arms)
+
+    rows = []
+    results_path = run_dir / "results.jsonl"
+    with results_path.open("w", encoding="utf-8") as stream:
+        for index, (case, repeat, arm) in enumerate(jobs, 1):
+            images, image_meta, render_ms = rendered[case["id"]]
+            response = ask_model(endpoint, model, make_prompt(case), images[arm],
+                                 args.temperature, args.model_timeout)
+            parsed = normalize_answer(response["content"], case["choices"])
+            row = {
+                "caseId": case["id"], "family": case["family"], "repeat": repeat,
+                "arm": arm, "answer": case["answer"], "choices": case["choices"],
+                "parsedAnswer": parsed, "correct": parsed == case["answer"],
+                "rawContent": response["content"], "reasoning": response["reasoning"],
+                "finishReason": response["finishReason"], "usage": response["usage"],
+                "latencyMs": response["latencyMs"], "responseId": response["responseId"],
+                "image": image_meta[arm], "renderLatencyMs": render_ms,
+            }
+            rows.append(row)
+            stream.write(json.dumps(row, sort_keys=True) + "\n")
+            stream.flush()
+            mark = "PASS" if row["correct"] else "FAIL"
+            print(f"model {index:03d}/{len(jobs)} {case['id']} r{repeat} {arm}: "
+                  f"{parsed or '<invalid>'} {mark} {response['latencyMs']}ms", flush=True)
+
+    summary = summarize(rows)
+    metadata = {
+        "schemaVersion": 1,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "gitHead": git_head(repo_root),
+        "manifest": str(manifest),
+        "manifestSha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "model": model,
+        "digest": model_info.get("digest", ""),
+        "modelSizeBytes": model_info.get("size"),
+        "modelCapabilities": model_info.get("capabilities", []),
+        "endpoint": endpoint,
+        "edge": args.edge,
+        "temperature": args.temperature,
+        "reasoningEffort": "none",
+        "maxCompletionTokens": 32,
+        "repeats": args.repeats,
+        "caseCount": len(cases),
+        "orderSeed": args.order_seed,
+    }
+    (run_dir / "summary.json").write_text(
+        json.dumps({"metadata": metadata, "summary": summary}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+    report = report_markdown(metadata, summary)
+    (run_dir / "REPORT.md").write_text(report, encoding="utf-8")
+    print("\n" + report, flush=True)
+    return 0
+
+
+def self_test():
+    fake_png = PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 384, 384)
+    assert png_dimensions(fake_png) == (384, 384)
+    assert normalize_answer(" red.\n", ["RED", "BLUE"]) == "RED"
+    assert normalize_answer("RED because it is closer", ["RED", "BLUE"]) is None
+    assert exact_mcnemar(0, 0) == 1.0
+    assert exact_mcnemar(6, 0) == 0.03125
+    assert wilson(0, 0) == (None, None)
+    cases = load_cases(DEFAULT_MANIFEST)
+    assert len(cases) == 12
+    for case in cases:
+        scene = make_scene(case, 64)
+        assert scene.startswith("RISE ASCII SCENE 7\n")
+        assert "\nfilm\n" in scene and "\twidth 64\n" in scene
+        prompt = make_prompt(case)
+        assert case["question"] in prompt and all(choice in prompt for choice in case["choices"])
+    synthetic = []
+    for repeat in (1, 2):
+        synthetic.append({"caseId": "a", "family": "depth_order", "repeat": repeat,
+                          "arm": "beauty", "correct": False, "usage": {"prompt_tokens": 100}})
+        synthetic.append({"caseId": "a", "family": "depth_order", "repeat": repeat,
+                          "arm": "atlas", "correct": True, "usage": {"prompt_tokens": 100}})
+    summary = summarize(synthetic)
+    assert summary["paired"]["atlas_only_wins"] == 2
+    assert summary["accuracyDelta"] == 1.0
+    assert summary["tokenParity"]["withinFivePercent"] is True
+    print("perception_ab_eval self-test: PASS")
+    return 0
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    parser.add_argument("--rise-bin", default="bin/rise")
+    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    parser.add_argument("--model", default="", help="installed vision model; default picks smallest")
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--edge", type=int, default=DEFAULT_EDGE)
+    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--order-seed", type=int, default=20260726)
+    parser.add_argument("--render-timeout", type=int, default=300)
+    parser.add_argument("--model-timeout", type=int, default=900)
+    parser.add_argument("--output-dir", default="")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args(argv)
+    if args.repeats < 1:
+        parser.error("--repeats must be >= 1")
+    if args.edge < 64 or args.edge > 1024:
+        parser.error("--edge must be in [64,1024]")
+    if not math.isfinite(args.temperature) or args.temperature < 0.0 or args.temperature > 2.0:
+        parser.error("--temperature must be finite and in [0,2]")
+    return args
+
+
+if __name__ == "__main__":
+    parsed_args = parse_args(sys.argv[1:])
+    try:
+        raise SystemExit(self_test() if parsed_args.self_test else run(parsed_args))
+    except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+        print(f"perception_ab_eval: ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2)
