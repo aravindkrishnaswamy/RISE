@@ -1904,8 +1904,8 @@ final class RenderViewModel: ObservableObject {
 
     // MARK: - UI redesign: refinement status poll
 
-    /// Refresh `refinementPhase` / `refinementScaleDivisor` /
-    /// `isRefinementPaused` / `undoLabel` / `redoLabel` from `vb`.
+    /// Refresh refinement, undo/redo, viewport-mode, and live animation
+    /// availability state from `vb`.
     /// Called once immediately on bridge attach, then every 0.5 s by
     /// `refinementPollTimer` — see `viewportBridge`'s didSet.
     private func pollRefinementState(_ vb: RISEViewportBridge) {
@@ -1943,6 +1943,21 @@ final class RenderViewModel: ObservableObject {
         // scene rebind resets it without replacing the bridge object).
         let engineXray = vb.viewportXray()
         if viewportXray != engineXray { viewportXray = engineXray }
+
+        // Timeline presence is live scene state, not load metadata.  An agent
+        // can insert the first timeline after this RenderViewModel was built;
+        // conversely undo/remove can take the last one away.  The bridge
+        // snapshot is controller-mutex-safe and tri-state, so a contended
+        // external commit leaves the last published value intact until the
+        // next poll instead of briefly hiding the timeline.
+        let liveAnimationPresence = vb.animationPresence
+        if liveAnimationPresence >= 0 {
+            let liveHasAnimation = liveAnimationPresence != 0
+            if hasAnimation != liveHasAnimation {
+                if !liveHasAnimation { stopPreviewPlay() }
+                hasAnimation = liveHasAnimation
+            }
+        }
 
         // Design brief A4 — mirror the active region (full-res
         // film-pixel space). The core preserves it across production

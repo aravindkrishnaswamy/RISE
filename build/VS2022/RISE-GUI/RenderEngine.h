@@ -61,6 +61,10 @@ public:
     /// a target distinct from the current loaded path.
     void setLoadedFilePath(const QString& path) { m_loadedFilePath = path; }
     bool hasAnimation() const { return m_hasAnimation; }
+    /// Update the UI-facing animation-presence cache from a safe live-scene
+    /// snapshot.  Returns true and emits hasAnimationChanged only when the
+    /// value changed, so the 2 Hz scene poll does not churn menus.
+    bool updateHasAnimation(bool hasAnimation);
     QString versionString() const;
 
     /// The active rasterizer's resolved concrete integrator ("pt"/"bdpt"/"vcm")

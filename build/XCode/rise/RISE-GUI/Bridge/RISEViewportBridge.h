@@ -486,14 +486,20 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
 //! Returns (0,0) when no camera is attached.
 @property (nonatomic, readonly) NSSize cameraSurfaceDimensions;
 
-//! Scene's animation duration in scene-time units, derived from the
-//! `animation_options` chunk's `time_end - time_start`.  Used by the
-//! timeline scrubber to size its slider range.  Returns 0 when the
-//! scene declared no animation options or no controller is attached;
-//! the UI layer treats 0 as "no timeline" (slider hidden).
+//! Active animation's scene-time range and frame count, derived from its
+//! `animation_options` chunk (or the core's defaults when none is declared).
+//! Used only to configure the timeline scrubber; animationPresence below
+//! independently controls whether that scrubber is visible.  A temporarily
+//! unavailable controller yields the bridge's existing sentinel values.
 @property (nonatomic, readonly) double animationTimeStart;
 @property (nonatomic, readonly) double animationTimeEnd;
 @property (nonatomic, readonly) NSUInteger animationNumFrames;
+
+//! Tri-state live animation-presence snapshot: 1 when the scene currently
+//! has keyframed elements, 0 when it does not, and -1 when the controller is
+//! temporarily unavailable/contended.  Callers retain their last successful
+//! value on -1 so an external agent commit never makes the timeline flicker.
+@property (nonatomic, readonly) NSInteger animationPresence;
 
 // Named animations are surfaced as a first-class accordion Category
 // (RISEViewportCategoryAnimation) — the generic categoryEntities: /

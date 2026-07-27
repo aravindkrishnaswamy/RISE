@@ -62,6 +62,28 @@ static Job* MakeCstJob( std::string& outPath )
 	return job;
 }
 
+static Job* MakeNoAnimationCstJob( std::string& outPath )
+{
+	const std::filesystem::path target =
+		std::filesystem::temp_directory_path() /
+		"rise_scene_editor_dynamic_timeline.RISEscene";
+	std::ofstream out( target, std::ios::binary | std::ios::trunc );
+	out <<
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
+		"pixelpel_rasterizer\n{\n\tsamples 1\n}\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n"
+		"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n"
+		"\tup 0 1 0\n\tfov 45\n}\n";
+	out.close();
+	outPath = target.string();
+
+	Job* job = new Job();
+	Check( job->LoadAsciiSceneViaCst( outPath.c_str() ),
+		"loaded no-animation fixture through retained CST path" );
+	return job;
+}
+
 static int FindFramesRow( SceneEditController& c )
 {
 	using Cat = SceneEditController::Category;
@@ -195,6 +217,49 @@ int main()
 
 	pJob->release();
 	std::remove( scenePath.c_str() );
+
+	// --- Live timeline presence follows an agent insert after load ---
+	// Both platform shells poll this controller snapshot.  This is the
+	// regression topology for a scene whose timeline UI was absent at load,
+	// then whose first timeline was inserted by the live agent.
+	std::string dynamicScenePath;
+	Job* dynamicJob = MakeNoAnimationCstJob( dynamicScenePath );
+	{
+		SceneEditController c( *dynamicJob, /*interactiveRasterizer*/ 0 );
+		bool hasAnimation = true;
+		Check( c.GetHasAnimation( hasAnimation ) && !hasAnimation,
+		       "live animation snapshot starts false before any timeline" );
+
+		bool apiHasAnimation = true;
+		Check( RISE_API_SceneEditController_GetHasAnimation( &c, &apiHasAnimation )
+		       && !apiHasAnimation,
+		       "C API live animation snapshot starts false" );
+
+		const char* timeline =
+			"timeline\n"
+			"{\n"
+			"\telement_type camera\n"
+			"\telement cam\n"
+			"\tparam orientation\n"
+			"\ttime 0\n"
+			"\tvalue 0 0 0\n"
+			"\ttime 1\n"
+			"\tvalue 0 90 0\n"
+			"}\n";
+		const SceneEditController::AgentCommitResult inserted =
+			c.ApplyAgentInsertChunk( String( timeline ), nullptr );
+		Check( inserted.applied, "agent inserts the first live timeline" );
+
+		hasAnimation = false;
+		Check( c.GetHasAnimation( hasAnimation ) && hasAnimation,
+		       "live animation snapshot turns true after agent timeline insert" );
+		apiHasAnimation = false;
+		Check( RISE_API_SceneEditController_GetHasAnimation( &c, &apiHasAnimation )
+		       && apiHasAnimation,
+		       "C API live animation snapshot turns true after agent timeline insert" );
+	}
+	dynamicJob->release();
+	std::remove( dynamicScenePath.c_str() );
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

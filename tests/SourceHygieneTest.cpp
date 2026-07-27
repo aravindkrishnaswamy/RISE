@@ -177,6 +177,35 @@ int main()
 		       "OPEN_ITEMS records the shipped desktop preset exactly" );
 	}
 
+	// ---- Post-load timeline reveal parity ----
+	// The timeline used to be constructed/hidden from a load-time-only flag.
+	// Keep both desktop shells wired to their existing live-scene polls so an
+	// agent insertion of the first keyframe reveals it without a scene reload.
+	// This is deliberately a source-wiring guard: the portable runtime test in
+	// SceneEditorAnimationFramesTest covers the mutex-safe live snapshot, while
+	// the platform GUI builds type-check the code reached by these markers.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& f ) -> std::string {
+			std::ifstream in( f, std::ios::binary );
+			return std::string( std::istreambuf_iterator<char>( in ),
+			                    std::istreambuf_iterator<char>() );
+		};
+		const std::string mac = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "RenderViewModel.swift" );
+		const std::string win = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "MainWindow.cpp" );
+		Check( mac.find( "let liveAnimationPresence = vb.animationPresence" )
+		       != std::string::npos
+		       && mac.find( "hasAnimation = liveHasAnimation" ) != std::string::npos,
+		       "post-load timeline reveal remains wired into the macOS live-scene poll" );
+		Check( win.find( "const int animationPresence = m_viewportBridge->animationPresence();" )
+		       != std::string::npos
+		       && win.find( "m_viewportTimeline->setVisible(liveHasAnimation);" )
+		          != std::string::npos,
+		       "post-load timeline reveal remains wired into the Windows live-scene poll" );
+	}
+
 	// ---- IJob vtable append-only manifest (round-4 review, 2026-07-22) ----
 	// IJob is a public abstract interface: its virtual DECLARATION ORDER is
 	// the vtable ABI.  The append-only convention lived only in tail comments

@@ -272,10 +272,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_chatPanel, &ChatPanel::agentConfiguredChanged, this, pushAgentReadiness);
     pushAgentReadiness();
 
-    // CST <-> scene-file live sync (item 1).  ~2 Hz, same cadence as
-    // TopBar's own refinement-status poll.  Started/stopped alongside
-    // the viewport bridge -- see rebuildViewportForLoadedScene /
-    // teardownViewport.
+    // Live-scene UI sync.  ~2 Hz, same cadence as TopBar's own
+    // refinement-status poll.  Started/stopped alongside the viewport
+    // bridge -- see rebuildViewportForLoadedScene / teardownViewport.
     m_cstSyncTimer = new QTimer(this);
     m_cstSyncTimer->setInterval(500);
     connect(m_cstSyncTimer, &QTimer::timeout, this, &MainWindow::onCstSyncTick);
@@ -1373,13 +1372,11 @@ bool MainWindow::performSceneSaveAs()
     return false;
 }
 
-// CST <-> scene-file live sync (item 1).  Driven at ~2 Hz by
-// m_cstSyncTimer while a viewport bridge is attached (started in
-// rebuildViewportForLoadedScene, stopped in teardownViewport).  Mirrors
-// macOS RenderViewModel.pollRefinementState's item 1.  Explicit-save-
-// only (user decision 2026-07-12): this mirrors the live CST into the
-// SceneEditor buffer ONLY -- UI edits never write the .RISEscene to
-// disk automatically; a write happens only from performSceneSave().
+// Live-scene UI sync.  Driven at ~2 Hz by m_cstSyncTimer while a viewport
+// bridge is attached.  Mirrors macOS RenderViewModel.pollRefinementState:
+// the CST-to-editor mirror is still explicit-save-only, and the same safe
+// polling window also refreshes animation presence/options so a timeline
+// inserted after load becomes visible without rebuilding the viewport.
 void MainWindow::onCstSyncTick()
 {
     // Same gate as ChatPanel's chat-render poll (see its
@@ -1390,6 +1387,34 @@ void MainWindow::onCstSyncTick()
     // the GUI thread) against the render.  canUseSceneTransport()
     // already folds in the bridge-presence check.
     if (!canUseSceneTransport()) return;
+
+    // Animation presence is live scene state, not load metadata.  The
+    // controller returns a tri-state snapshot so a contended external agent
+    // commit leaves the previous UI value intact until the next poll.
+    const int animationPresence = m_viewportBridge->animationPresence();
+    if (animationPresence >= 0) {
+        const bool liveHasAnimation = animationPresence != 0;
+        if (m_engine->updateHasAnimation(liveHasAnimation)) {
+            if (m_viewportTimeline) {
+                if (!liveHasAnimation) m_viewportTimeline->stopPlayback();
+                m_viewportTimeline->setVisible(liveHasAnimation);
+            }
+            updateMenuActionStates();
+        }
+    }
+
+    // Keep the range/frame step synchronized too.  This covers the first
+    // post-load timeline as well as later animation-options edits and active
+    // named-animation switches.  A contended getter returns false and leaves
+    // the existing widget values untouched.
+    if (m_viewportTimeline && m_engine->hasAnimation()) {
+        double t0 = 0, t1 = 0;
+        unsigned int nf = 0;
+        if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
+            m_viewportTimeline->setRange(t0, t1);
+            m_viewportTimeline->setAnimationFrameCount(nf);
+        }
+    }
 
     quint64 uuid = 0, revision = 0;
     if (!m_viewportBridge->getSceneTextVersion(&uuid, &revision)) return;

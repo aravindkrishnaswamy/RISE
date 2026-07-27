@@ -1115,6 +1115,14 @@ bool ViewportBridge::animationOptions(double& timeStart, double& timeEnd, unsign
     return RISE_API_SceneEditController_GetAnimationOptions(m_controller, &timeStart, &timeEnd, &numFrames);
 }
 
+int ViewportBridge::animationPresence() const
+{
+    if (!m_controller) return -1;
+    bool hasAnimation = false;
+    if (!RISE_API_SceneEditController_GetHasAnimation(m_controller, &hasAnimation)) return -1;
+    return hasAnimation ? 1 : 0;
+}
+
 // Named animations are now a first-class accordion Category
 // (Category::Animation) — surfaced via the generic categoryEntities() /
 // activeNameForCategory() / setSelection() methods, which pass the raw

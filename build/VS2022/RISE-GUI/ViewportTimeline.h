@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ViewportTimeline.h - Time-scrubber widget.  Shown only when the
-//    loaded scene has any keyframed elements.
+//  ViewportTimeline.h - Time-scrubber widget.  Shown whenever the live
+//    scene has keyframed elements, including timelines added after load.
 //
 //////////////////////////////////////////////////////////////////////
 

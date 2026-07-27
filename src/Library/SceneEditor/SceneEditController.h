@@ -1743,6 +1743,15 @@ namespace RISE
 		bool GetAnimationOptions( double& timeStart, double& timeEnd,
 		                          unsigned int& numFrames ) const;
 
+		//! Read whether the live scene currently contains any keyframed
+		//! elements.  Agent edits can add or remove timelines after the GUI
+		//! has loaded, so platform shells poll this alongside the animation
+		//! options instead of treating the load-time answer as permanent.
+		//! Returns false without touching `hasAnimation` while a render owns
+		//! the scene or another editor operation holds the commit mutex; the
+		//! caller should retain its last successful snapshot and try again.
+		bool GetHasAnimation( bool& hasAnimation ) const;
+
 		// (Named animations are a first-class accordion Category —
 		// Category::Animation; the generic CategoryEntityCount/Name,
 		// CategoryActiveName and SetSelection surface lists + activates

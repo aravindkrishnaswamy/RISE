@@ -4519,6 +4519,18 @@ bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEn
 	return mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields );
 }
 
+bool SceneEditController::GetHasAnimation( bool& hasAnimation ) const
+{
+	// Same any-thread D2 replacement hazard and non-blocking UI contract as
+	// GetAnimationOptions above.  In particular, do not read Animator's
+	// element map directly while an external agent may be re-deriving the Job.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	hasAnimation = mJob.AreThereAnyKeyframedObjects();
+	return true;
+}
+
 
 bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h ) const
 {

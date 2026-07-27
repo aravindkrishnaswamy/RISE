@@ -322,12 +322,11 @@ struct ContentView: View {
                         image: $viewModel.renderedImage,
                         timelineVisible: viewModel.hasAnimation,
                         sceneTime: $viewModel.sceneTime,
-                        // Pull the timeline range from the scene's
-                        // animation_options chunk via the bridge.  Falls
-                        // back to 5.0 only if the scene declares no
-                        // animation options at all (animationTimeEnd == 0),
-                        // so we avoid a 0-length slider that would clamp
-                        // every scrub to t=0.
+                        // Pull the active animation's range from the bridge.
+                        // Visibility is controlled independently by the live
+                        // keyframe snapshot above; 5.0 is only a defensive
+                        // fallback when the range snapshot is temporarily
+                        // unavailable or otherwise has no positive end.
                         timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
                         interactionEnabled: interacting,
                         isProductionRendering: (viewModel.renderState == .rendering),

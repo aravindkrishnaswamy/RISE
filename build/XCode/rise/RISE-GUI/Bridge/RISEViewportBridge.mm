@@ -1476,6 +1476,13 @@ private:
     return static_cast<NSUInteger>(nf);
 }
 
+- (NSInteger)animationPresence {
+    if (!_controller) return -1;
+    bool hasAnimation = false;
+    if (!RISE_API_SceneEditController_GetHasAnimation(_controller, &hasAnimation)) return -1;
+    return hasAnimation ? 1 : 0;
+}
+
 #pragma mark - Time scrubber
 
 - (BOOL)scrubTimeBegin {

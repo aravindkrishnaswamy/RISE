@@ -506,6 +506,12 @@ public:
     /// false on null controller / no job attached.
     bool animationOptions(double& timeStart, double& timeEnd, unsigned int& numFrames) const;
 
+    /// Tri-state live animation-presence snapshot: 1 when the scene
+    /// currently has keyframed elements, 0 when it does not, and -1 when
+    /// the controller is temporarily unavailable/contended.  Polling UI
+    /// retains its last successful value on -1.
+    int animationPresence() const;
+
     // Named animations are surfaced as a first-class accordion Category
     // (Category::Animation) — the generic categoryEntities() /
     // activeNameForCategory() / setSelection() surface lists + activate
