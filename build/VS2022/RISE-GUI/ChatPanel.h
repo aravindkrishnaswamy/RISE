@@ -301,6 +301,8 @@ private:
     void processNextToolCall();
     void startAsyncRenderToolCall(const RISE::Agent::ChatToolCall& call,
                                    const std::string& submitLine);
+    // Fire cancellation but retain the published outstanding job until the
+    // non-blocking poll observes actual worker completion.
     void cancelOutstandingRender();
     void drainPendingToolCallsAsCancelled();
     void cancelActiveTurn(const QString& statusLine);
@@ -526,6 +528,10 @@ private:
     // consumers (recomputeSceneEditable, MainWindow, TopBar) stay
     // synchronized with every transition.
     quint64 m_outstandingRenderJobId = 0;
+    // True after render_cancel has been sent but before render_wait observes
+    // actual worker completion.  The outstanding id deliberately remains
+    // published during this drain so scene controls stay disabled.
+    bool m_renderCancellationDraining = false;
     // Lazily created on the first async render tool call; reused
     // (started/stopped) for every subsequent one.
     QTimer* m_renderPollTimer = nullptr;

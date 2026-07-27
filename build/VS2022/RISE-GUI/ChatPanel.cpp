@@ -835,6 +835,14 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
     }
     m_bridge = bridge;
     m_sceneEditableExternal = (bridge != nullptr);
+    if (!m_bridge && m_outstandingRenderJobId != 0) {
+        // The caller now owns synchronous bridge/controller teardown, which
+        // joins the worker before a later scene can attach.  No live scene
+        // controls remain to protect, so retire this scene's occupancy.
+        if (m_renderPollTimer) m_renderPollTimer->stop();
+        m_renderCancellationDraining = false;
+        setOutstandingRenderJobId(0);
+    }
     recomputeSceneEditable();
     if (m_bridge) {
         // Agent autonomy selector: a fresh bridge's dispatchers default
@@ -2003,6 +2011,7 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         return;
     }
 
+    m_renderCancellationDraining = false;
     setOutstandingRenderJobId(static_cast<quint64>(result.value("renderJobId").toDouble()));
 
     if (!m_renderPollTimer) {
@@ -2019,15 +2028,24 @@ void ChatPanel::pollOutstandingRender()
         if (m_renderPollTimer) m_renderPollTimer->stop();
         return;
     }
+    if (!m_bridge) {
+        if (m_renderPollTimer) m_renderPollTimer->stop();
+        m_renderCancellationDraining = false;
+        setOutstandingRenderJobId(0);
+        return;
+    }
     // This poll owns the outstanding chat render, so it must not consult
     // m_sceneEditable: that combined gate is deliberately false because
     // this same job is outstanding.  Only an EXTERNAL production-render
-    // transition (plus explicit stop/bridge loss) invalidates the poll.
-    if (m_stopRequested || !m_bridge || !m_sceneEditableExternal) {
-        // requestStop()/setSceneEditable(false)/productionRenderStarting()
-        // already cancel+drain synchronously when they fire; this guard
-        // only covers a tick that raced one of them.  Don't act on a job
-        // we've already cancelled.
+    // transition or explicit Stop invalidates a normal result poll.  Once
+    // cancellation is draining, keep polling despite those flags until the
+    // worker itself reports completion.
+    if (!m_renderCancellationDraining
+        && (m_stopRequested || !m_sceneEditableExternal)) {
+        // Those transitions normally route through cancelActiveTurn first,
+        // which flips m_renderCancellationDraining.  This is only a stale
+        // normal-result tick that raced the transition; do not deliver a
+        // result into a turn that is being cancelled.
         if (m_renderPollTimer) m_renderPollTimer->stop();
         return;
     }
@@ -2051,7 +2069,10 @@ void ChatPanel::pollOutstandingRender()
         // poll forever and sit busy until a manual Stop.  Surface it
         // verbatim, matching the submit path's error branch.
         if (m_renderPollTimer) m_renderPollTimer->stop();
+        const bool wasDraining = m_renderCancellationDraining;
+        m_renderCancellationDraining = false;
         setOutstandingRenderJobId(0);
+        if (wasDraining) return;
         m_activeRenderPending = false;
         updatePendingToolRow(m_activeRenderCall, toStdString(waitResponse));
         m_loop->AddToolResult(m_activeRenderCall, toStdString(waitResponse));
@@ -2064,7 +2085,10 @@ void ChatPanel::pollOutstandingRender()
     }
 
     if (m_renderPollTimer) m_renderPollTimer->stop();
+    const bool wasDraining = m_renderCancellationDraining;
+    m_renderCancellationDraining = false;
     setOutstandingRenderJobId(0);
+    if (wasDraining) return;
     m_activeRenderPending = false;
 
     // waitResult's `result` sub-object (present iff this session cached
@@ -2083,13 +2107,15 @@ void ChatPanel::pollOutstandingRender()
 
 void ChatPanel::cancelOutstandingRender()
 {
-    if (m_renderPollTimer) {
-        m_renderPollTimer->stop();
-    }
     if (m_outstandingRenderJobId == 0) return;
+    if (m_renderCancellationDraining) return;
     const quint64 jobId = m_outstandingRenderJobId;
-    setOutstandingRenderJobId(0);
-    if (!m_bridge) return;
+    m_renderCancellationDraining = true;
+    if (!m_bridge) {
+        m_renderCancellationDraining = false;
+        setOutstandingRenderJobId(0);
+        return;
+    }
     // Fire-and-forget: render_cancel only trips the cancel flag and
     // returns immediately (it does not block for the render's duration --
     // see AgentRpc.h). The response is intentionally discarded.
@@ -2097,6 +2123,10 @@ void ChatPanel::cancelOutstandingRender()
         { "renderJobId", static_cast<double>(jobId) }
     });
     m_bridge->agentHandleLine(line);
+    // Keep m_outstandingRenderJobId published and continue the existing
+    // non-blocking render_wait poll until the worker has actually drained.
+    // Only that completion path re-enables timeline/viewport transport.
+    if (m_renderPollTimer) m_renderPollTimer->start();
 }
 
 void ChatPanel::drainPendingToolCallsAsCancelled()

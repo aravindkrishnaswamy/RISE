@@ -303,8 +303,31 @@ int main()
 		       "Windows chat render finalizes timeline before controller submission" );
 		Check( winChat.find(
 			"if (m_stopRequested || !m_bridge || !m_sceneEditableExternal)" )
-		       != std::string::npos,
+		       == std::string::npos
+		       && winChat.find( "if (!m_renderCancellationDraining" )
+		          != std::string::npos
+		       && winChat.find( "&& (m_stopRequested || !m_sceneEditableExternal)" )
+		          != std::string::npos,
 		       "Windows chat render polls through its own occupancy gate" );
+		const size_t winCancelRenderBegin = winChat.find(
+			"void ChatPanel::cancelOutstandingRender()" );
+		const size_t winCancelRenderEnd = winChat.find(
+			"void ChatPanel::drainPendingToolCallsAsCancelled", winCancelRenderBegin );
+		const std::string winCancelRender =
+			( winCancelRenderBegin != std::string::npos
+			  && winCancelRenderEnd != std::string::npos )
+			? winChat.substr( winCancelRenderBegin,
+			                  winCancelRenderEnd - winCancelRenderBegin )
+			: std::string();
+		Check( winCancelRender.find( "m_renderCancellationDraining = true;" )
+		       != std::string::npos
+		       && winCancelRender.find( "m_renderPollTimer->start();" )
+		          != std::string::npos
+		       && winCancelRender.find( "setOutstandingRenderJobId(0);" )
+		          != std::string::npos
+		       && winCancelRender.find( "if (!m_bridge)" )
+		          < winCancelRender.find( "setOutstandingRenderJobId(0);" ),
+		       "Windows chat render retains occupancy through cancellation drain" );
 		const size_t winDestructor = win.find( "MainWindow::~MainWindow()" );
 		const size_t winDestructorEnd = win.find(
 			"// ============================================================", winDestructor );
