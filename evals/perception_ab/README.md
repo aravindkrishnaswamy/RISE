@@ -12,8 +12,8 @@ The comparison is paired and budget-matched:
 - Both inputs are therefore one 384x384 PNG, use the same prompt, model,
   temperature, output cap, and number of calls. The atlas pays for its extra
   channels by reducing each panel to 192x192.
-- Arm order is deterministically balanced across pairs and shuffled within every
-  case/repeat pair.
+- First-arm order is block-randomized: it is balanced within every task family,
+  and every case sees both orders across its odd number of repeats.
 - Questions have two exact labels. Cases mirror label, side, and sign so a fixed
   response policy scores 50% rather than masquerading as cue use.
 
@@ -35,8 +35,10 @@ python3 tools/perception_ab_eval.py
 The tool selects the smallest installed model advertising Ollama's `vision`
 capability (override with `--model`), disables hidden reasoning for speed, and
 writes auditable PNGs, raw responses, a JSON summary, and a Markdown report
-under the ignored `evals/runs/perception_ab_*` directory. Generated scene text
-and hashes of the harness, manifest, and RISE binary pin the run provenance. Use
+under the ignored `evals/runs/perception_ab_*` directory. Generated scene text,
+exact prompts, snapshots and hashes of the harness and manifest, and the RISE
+binary hash pin the run provenance. The tool captures these inputs before
+inference and aborts if their hashes or Git state change during the run. Use
 `--self-test` for the dependency-free scoring/parser checks and `--help` for
 overrides.
 

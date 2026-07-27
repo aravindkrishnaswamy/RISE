@@ -52,7 +52,12 @@ def _choice(value, allowed, label):
 def load_cases(path):
     with path.open("r", encoding="utf-8") as stream:
         root = json.load(stream)
-    if root.get("schemaVersion") != 1 or not isinstance(root.get("cases"), list):
+    return validate_cases(root)
+
+
+def validate_cases(root):
+    if (not isinstance(root, dict) or root.get("schemaVersion") != 1 or
+            not isinstance(root.get("cases"), list)):
         raise ValueError("manifest requires schemaVersion 1 and a cases array")
     seen = set()
     out = []
@@ -102,6 +107,19 @@ def validate_case_params(family, params, label):
         far_z = _finite_number(params.get("farZ"), f"{label}.params.farZ")
         if near_z <= far_z:
             raise ValueError(f"{label}: nearZ must exceed farZ for the +Z camera")
+        camera_z = 10.0
+        near_radius = 0.72
+        near_distance = camera_z - near_z
+        far_distance = camera_z - far_z
+        if near_distance <= near_radius:
+            raise ValueError(f"{label}: near sphere must be fully in front of the camera")
+        far_radius = near_radius * far_distance / near_distance
+        near_front = near_distance - near_radius
+        far_front = far_distance - far_radius
+        if far_radius <= 0.0 or far_distance <= far_radius:
+            raise ValueError(f"{label}: far sphere must be fully in front of the camera")
+        if not near_front < far_front:
+            raise ValueError(f"{label}: near sphere must have the closer front surface")
         return {"RED", "BLUE"}, near_color.upper()
     elif family == "surface_normal":
         angle = _finite_number(params.get("angleDegrees"), f"{label}.params.angleDegrees")
@@ -475,8 +493,15 @@ def ask_model(endpoint, model, prompt, png, temperature, timeout):
     started = time.monotonic()
     root = http_json(endpoint.rstrip("/") + "/v1/chat/completions", payload, timeout)
     elapsed_ms = round((time.monotonic() - started) * 1000)
-    choices = root.get("choices", []) if isinstance(root, dict) else []
-    message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+    if not isinstance(root, dict) or root.get("error"):
+        raise RuntimeError(f"invalid model response envelope: {root}")
+    choices = root.get("choices")
+    if (not isinstance(choices, list) or not choices or not isinstance(choices[0], dict) or
+            not isinstance(choices[0].get("message"), dict) or
+            not isinstance(choices[0]["message"].get("content"), str) or
+            not choices[0]["message"]["content"].strip()):
+        raise RuntimeError(f"model response contains no answer content: {root}")
+    message = choices[0]["message"]
     return {
         "content": message.get("content", ""),
         "reasoning": message.get("reasoning", message.get("reasoning_content", "")),
@@ -654,10 +679,10 @@ def git_head(repo_root):
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def git_dirty(repo_root):
-    proc = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo_root,
+def git_status(repo_root):
+    proc = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo_root,
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
-    return None if proc.returncode != 0 else bool(proc.stdout.strip())
+    return None if proc.returncode != 0 else proc.stdout.strip()
 
 
 def file_sha256(path):
@@ -668,16 +693,57 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def input_provenance(repo_root, harness, manifest, rise_bin):
+    return {
+        "gitHead": git_head(repo_root),
+        "gitStatus": git_status(repo_root),
+        "harnessSha256": file_sha256(harness),
+        "manifestSha256": file_sha256(manifest),
+        "riseBinarySha256": file_sha256(rise_bin),
+    }
+
+
+def build_jobs(cases, repeats, order_seed):
+    """Block-randomize first arm within every family and across each case."""
+    rng = random.Random(order_seed)
+    first_by_pair = {}
+    by_family = defaultdict(list)
+    for case in cases:
+        by_family[case["family"]].append(case)
+    for family in sorted(by_family):
+        family_cases = list(by_family[family])
+        extra_arms = (["beauty", "atlas"] * ((len(family_cases) + 1) // 2))[:len(family_cases)]
+        rng.shuffle(extra_arms)
+        for case, extra_arm in zip(family_cases, extra_arms):
+            first_arms = ["beauty", "atlas"] * (repeats // 2) + [extra_arm]
+            rng.shuffle(first_arms)
+            for repeat, first_arm in enumerate(first_arms, 1):
+                first_by_pair[(case["id"], repeat)] = first_arm
+    jobs = []
+    for repeat in range(1, repeats + 1):
+        for case in cases:
+            first_arm = first_by_pair[(case["id"], repeat)]
+            second_arm = "atlas" if first_arm == "beauty" else "beauty"
+            jobs.extend(((case, repeat, first_arm), (case, repeat, second_arm)))
+    return jobs
+
+
 def run(args):
     repo_root = Path(args.repo_root).resolve()
     manifest = (repo_root / args.manifest).resolve() if not Path(args.manifest).is_absolute() else Path(args.manifest)
     rise_bin = (repo_root / args.rise_bin).resolve() if not Path(args.rise_bin).is_absolute() else Path(args.rise_bin)
-    cases = load_cases(manifest)
     if not rise_bin.is_file():
         raise ValueError(f"RISE binary not found: {rise_bin}")
+    harness = Path(__file__).resolve()
+    start_provenance = input_provenance(repo_root, harness, manifest, rise_bin)
+    manifest_bytes = manifest.read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != start_provenance["manifestSha256"]:
+        raise RuntimeError("manifest changed while initial provenance was captured")
+    cases = validate_cases(json.loads(manifest_bytes))
     endpoint = args.endpoint.rstrip("/")
     model_info = choose_model(endpoint, args.model)
     model = model_info.get("name") or model_info.get("model")
+    ollama_version = http_json(endpoint + "/api/version", timeout=10).get("version")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = Path(args.output_dir) if args.output_dir else repo_root / "evals/runs" / f"perception_ab_{stamp}"
     if not run_dir.is_absolute():
@@ -685,6 +751,15 @@ def run(args):
     run_dir.mkdir(parents=True, exist_ok=False)
     image_dir = run_dir / "images"
     scene_dir = run_dir / "scenes"
+    provenance_dir = run_dir / "provenance"
+    provenance_dir.mkdir(parents=True)
+    (provenance_dir / "perception_ab_eval.py").write_bytes(harness.read_bytes())
+    (provenance_dir / "cases.json").write_bytes(manifest_bytes)
+    prompts = {case["id"]: make_prompt(case) for case in cases}
+    (provenance_dir / "prompts.json").write_text(
+        json.dumps(prompts, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (provenance_dir / "start.json").write_text(
+        json.dumps(start_provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"model={model} cases={len(cases)} repeats={args.repeats} output={run_dir}", flush=True)
 
     rendered = {}
@@ -694,21 +769,15 @@ def run(args):
         rendered[case["id"]] = (images, image_meta, scene_meta, render_ms)
         print(f"render {index:02d}/{len(cases)} {case['id']} {render_ms}ms", flush=True)
 
-    pairs = [(case, repeat) for repeat in range(1, args.repeats + 1) for case in cases]
-    rng = random.Random(args.order_seed)
-    first_arms = (["beauty", "atlas"] * ((len(pairs) + 1) // 2))[:len(pairs)]
-    rng.shuffle(first_arms)
-    jobs = []
-    for (case, repeat), first_arm in zip(pairs, first_arms):
-        second_arm = "atlas" if first_arm == "beauty" else "beauty"
-        jobs.extend(((case, repeat, first_arm), (case, repeat, second_arm)))
+    jobs = build_jobs(cases, args.repeats, args.order_seed)
 
     rows = []
     results_path = run_dir / "results.jsonl"
     with results_path.open("w", encoding="utf-8") as stream:
         for index, (case, repeat, arm) in enumerate(jobs, 1):
             images, image_meta, scene_meta, render_ms = rendered[case["id"]]
-            response = ask_model(endpoint, model, make_prompt(case), images[arm],
+            prompt = prompts[case["id"]]
+            response = ask_model(endpoint, model, prompt, images[arm],
                                  args.temperature, args.model_timeout)
             parsed = normalize_answer(response["content"], case["choices"])
             row = {
@@ -718,6 +787,7 @@ def run(args):
                 "rawContent": response["content"], "reasoning": response["reasoning"],
                 "finishReason": response["finishReason"], "usage": response["usage"],
                 "latencyMs": response["latencyMs"], "responseId": response["responseId"],
+                "promptSha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "image": image_meta[arm], "scene": scene_meta, "renderLatencyMs": render_ms,
             }
             rows.append(row)
@@ -727,23 +797,30 @@ def run(args):
             print(f"model {index:03d}/{len(jobs)} {case['id']} r{repeat} {arm}: "
                   f"{parsed or '<invalid>'} {mark} {response['latencyMs']}ms", flush=True)
 
+    end_provenance = input_provenance(repo_root, harness, manifest, rise_bin)
+    (provenance_dir / "end.json").write_text(
+        json.dumps(end_provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if end_provenance != start_provenance:
+        raise RuntimeError("harness, manifest, RISE binary, or Git state changed during the run")
     summary = summarize(rows)
     metadata = {
         "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "gitHead": git_head(repo_root),
-        "gitDirty": git_dirty(repo_root),
-        "harness": str(Path(__file__).resolve()),
-        "harnessSha256": file_sha256(Path(__file__).resolve()),
+        "gitHead": start_provenance["gitHead"],
+        "gitDirty": bool(start_provenance["gitStatus"]),
+        "gitStatus": start_provenance["gitStatus"],
+        "provenanceVerified": True,
+        "harness": str(harness),
+        "harnessSha256": start_provenance["harnessSha256"],
         "manifest": str(manifest),
-        "manifestSha256": file_sha256(manifest),
+        "manifestSha256": start_provenance["manifestSha256"],
         "riseBinary": str(rise_bin),
-        "riseBinarySha256": file_sha256(rise_bin),
+        "riseBinarySha256": start_provenance["riseBinarySha256"],
         "model": model,
         "digest": model_info.get("digest", ""),
         "modelSizeBytes": model_info.get("size"),
         "modelCapabilities": model_info.get("capabilities", []),
-        "ollamaVersion": http_json(endpoint + "/api/version", timeout=10).get("version"),
+        "ollamaVersion": ollama_version,
         "endpoint": endpoint,
         "edge": args.edge,
         "temperature": args.temperature,
@@ -791,6 +868,23 @@ def self_test(repo_root, manifest_arg):
         assert "\nfilm\n" in scene and "\twidth 64\n" in scene
         prompt = make_prompt(case)
         assert case["question"] in prompt and all(choice in prompt for choice in case["choices"])
+    try:
+        validate_case_params("depth_order", {"nearColor": "red", "nearSide": "left",
+                                             "nearZ": 9.5, "farZ": 0.0}, "bad_depth")
+        raise AssertionError("camera-enclosing depth case accepted")
+    except ValueError:
+        pass
+    jobs = build_jobs(cases, 3, 7)
+    first_counts = defaultdict(lambda: defaultdict(int))
+    case_counts = defaultdict(lambda: defaultdict(int))
+    for index in range(0, len(jobs), 2):
+        case, repeat, arm = jobs[index]
+        assert jobs[index + 1][0] is case and jobs[index + 1][1] == repeat
+        assert {arm, jobs[index + 1][2]} == {"beauty", "atlas"}
+        first_counts[case["family"]][arm] += 1
+        case_counts[case["id"]][arm] += 1
+    assert all(counts["beauty"] == counts["atlas"] for counts in first_counts.values())
+    assert all(abs(counts["beauty"] - counts["atlas"]) == 1 for counts in case_counts.values())
     synthetic = []
     for repeat in (1, 2):
         synthetic.append({"caseId": "a", "family": "depth_order", "repeat": repeat,
@@ -831,6 +925,8 @@ def parse_args(argv):
         parser.error("--edge must be in [64,512]")
     if not math.isfinite(args.temperature) or args.temperature < 0.0 or args.temperature > 2.0:
         parser.error("--temperature must be finite and in [0,2]")
+    if args.render_timeout <= 0 or args.model_timeout <= 0:
+        parser.error("--render-timeout and --model-timeout must be positive")
     return args
 
 
