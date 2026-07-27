@@ -429,6 +429,7 @@ struct ViewportView: View {
                 .disabled(!interactionEnabled)
                 .opacity(interactionEnabled ? 1.0 : 0.5)
                 .onChange(of: sceneTime) { _, newValue in
+                    if viewModel.consumePreappliedSceneTime(newValue) { return }
                     guard interactionEnabled else { return }
                     // The render gate can win after the slider's enabled
                     // state was sampled. Keep the binding honest when the

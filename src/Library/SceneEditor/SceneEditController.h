@@ -1738,8 +1738,10 @@ namespace RISE
 		//! Reads the scene's animation options — start time, end time,
 		//! number of frames — for sizing the timeline scrubber's
 		//! range.  Defaults are (0, 1, 30) when no `animation_options`
-		//! chunk was declared in the .RISEscene file.  Returns false
-		//! if the underlying job is unavailable.
+		//! chunk was declared in the .RISEscene file.  Returns false without
+		//! touching the outputs while a render owns the scene or another editor
+		//! operation holds the commit mutex; polling callers retain their last
+		//! successful tuple and retry.
 		bool GetAnimationOptions( double& timeStart, double& timeEnd,
 		                          unsigned int& numFrames ) const;
 

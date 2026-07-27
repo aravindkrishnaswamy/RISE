@@ -4176,8 +4176,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Read the scene's animation options (start time, end time,
 	//! number of frames) for sizing the interactive timeline
 	//! scrubber.  Defaults are (0, 1, 30) when the .RISEscene file
-	//! declared no `animation_options` chunk.  Returns false on null
-	//! controller / no job attached.
+	//! declared no `animation_options` chunk.  Returns false without
+	//! touching the outputs on null input, while a render owns the scene,
+	//! or while the editor commit mutex is contended; polling callers
+	//! retain their last successful tuple and retry.
 	bool RISE_API_SceneEditController_GetAnimationOptions(
 		SceneEditController* p,
 		double* outTimeStart, double* outTimeEnd,

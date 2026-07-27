@@ -2532,21 +2532,6 @@ void MainWindow::rebuildViewportForLoadedScene()
                 m_viewportProps, &ViewportProperties::refresh);
     }
 
-    // Pull the timeline range from the scene's animation_options
-    // chunk via the bridge.  Defaults are (0, 1) when the scene
-    // declares no animation_options; we keep the slider's max above
-    // 0 so a 0-length scene still produces a visible (if useless)
-    // slider — the user sees that no animation is wired up rather
-    // than a clamped slider that always reads t=0.
-    {
-        double t0 = 0, t1 = 0;
-        unsigned int nf = 0;
-        if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
-            m_viewportTimeline->setRange(t0, t1);
-            m_viewportTimeline->setAnimationFrameCount(nf);
-        }
-    }
-
     // The scene's named animations are surfaced by the ViewportProperties
     // panel's "Animation" accordion category (constructed just above) —
     // it pulls the list from the bridge's generic categoryEntities() and
@@ -2604,6 +2589,20 @@ void MainWindow::rebuildViewportForLoadedScene()
             m_viewportBridge,   &ViewportBridge::scrubTimeEnd);
     connect(m_viewportTimeline, &ViewportTimeline::timeChanged,
             m_viewportBridge,   &ViewportBridge::scrubTime);
+
+    // Pull the initial active range only AFTER the scrub signals are wired.
+    // setRange may need to park the default t=0 playhead at a non-zero
+    // time_start through that normal begin/move/end contract.  Later option
+    // edits and active-animation switches follow the same path from the
+    // live-scene poll in onCstSyncTick.
+    {
+        double t0 = 0, t1 = 0;
+        unsigned int nf = 0;
+        if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
+            m_viewportTimeline->setRange(t0, t1);
+            m_viewportTimeline->setAnimationFrameCount(nf);
+        }
+    }
     // "Render movie…" chip -- same slot the Render > Render Animation
     // menu item drives; setRenderMovieEnabled above keeps it gated
     // identically to that menu item.

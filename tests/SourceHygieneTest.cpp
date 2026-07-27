@@ -197,8 +197,21 @@ int main()
 			/ "RISE-GUI" / "App" / "ContentView.swift" );
 		const std::string macViewport = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "ViewportView.swift" );
+		const std::string macBridge = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "Bridge" / "RISEViewportBridge.mm" );
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
 			/ "RISE-GUI" / "MainWindow.cpp" );
+		const std::string winBridge = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ViewportBridge.cpp" );
+		const std::string winTimeline = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ViewportTimeline.cpp" );
+		const size_t winRangeBegin = winTimeline.find( "void ViewportTimeline::setRange" );
+		const size_t winRangeEnd = winTimeline.find(
+			"void ViewportTimeline::setAnimationFrameCount", winRangeBegin );
+		const std::string winSetRange =
+			( winRangeBegin != std::string::npos && winRangeEnd != std::string::npos )
+			? winTimeline.substr( winRangeBegin, winRangeEnd - winRangeBegin )
+			: std::string();
 		Check( macModel.find( "RunLoop.main.add(timer, forMode: .common)" )
 		       != std::string::npos
 		       && macModel.find( "self.pollRefinementState(vb)" ) != std::string::npos
@@ -209,15 +222,33 @@ int main()
 		          != std::string::npos
 		       && macContent.find( "timelineRange: viewModel.animationTimeStart...viewModel.animationTimeEnd" )
 		          != std::string::npos
-		       && macViewport.find( "range: timelineRange" ) != std::string::npos,
+		       && macViewport.find( "range: timelineRange" ) != std::string::npos
+		       && macBridge.find( "RISE_API_SceneEditController_GetHasAnimation(_controller, &hasAnimation)" )
+		          != std::string::npos,
 		       "post-load timeline reveal remains wired into the macOS live-scene poll" );
 		Check( win.find( "connect(m_cstSyncTimer, &QTimer::timeout, this, &MainWindow::onCstSyncTick);" )
 		       != std::string::npos
+		       && win.find( "if (m_cstSyncTimer) m_cstSyncTimer->start();" )
+		          != std::string::npos
 		       && win.find( "const int animationPresence = m_viewportBridge->animationPresence();" )
 		       != std::string::npos
 		       && win.find( "m_viewportTimeline->setVisible(liveHasAnimation);" )
+		          != std::string::npos
+		       && winBridge.find( "RISE_API_SceneEditController_GetHasAnimation(m_controller, &hasAnimation)" )
 		          != std::string::npos,
 		       "post-load timeline reveal remains wired into the Windows live-scene poll" );
+		Check( macModel.find( "if optionsChanged { stopPreviewPlay() }" )
+		       != std::string::npos
+		       && macModel.find( "reconcileSceneTime(to: clampedTime, using: vb)" )
+		          != std::string::npos
+		       && macViewport.find( "consumePreappliedSceneTime(newValue)" )
+		          != std::string::npos,
+		       "macOS live range changes stop stale playback and reconcile scene time" );
+		Check( winSetRange.find( "stopPlayback();" ) != std::string::npos
+		       && winSetRange.find( "const double clampedTime = std::clamp(m_time, m_minT, m_maxT);" )
+		       != std::string::npos
+		       && winSetRange.find( "jumpToTime(clampedTime);" ) != std::string::npos,
+		       "Windows live range changes stop stale playback and reconcile scene time" );
 	}
 
 	// ---- IJob vtable append-only manifest (round-4 review, 2026-07-22) ----

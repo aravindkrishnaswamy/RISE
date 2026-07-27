@@ -216,13 +216,23 @@ void ViewportTimeline::restyleTheme()
 
 void ViewportTimeline::setRange(double minT, double maxT)
 {
+    if (m_minT == minT && m_maxT == maxT) return;
+    stopPlayback();
     m_minT = minT;
     m_maxT = maxT;
-    updateLabels();
+    const double clampedTime = std::clamp(m_time, m_minT, m_maxT);
+    if (clampedTime != m_time) {
+        jumpToTime(clampedTime);
+    } else {
+        // The time is still valid, but its slider fraction changed.
+        setTimeValue(m_time);
+    }
 }
 
 void ViewportTimeline::setAnimationFrameCount(unsigned int numFrames)
 {
+    if (m_numFrames == numFrames) return;
+    stopPlayback();
     m_numFrames = numFrames;
 }
 

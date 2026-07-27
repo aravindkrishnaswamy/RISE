@@ -438,6 +438,11 @@ final class RenderViewModel: ObservableObject {
 
     /// Live time-scrubber state, displayed on the viewport's bottom slider.
     @Published var sceneTime: Double = 0
+    /// A model-driven range reconciliation has already applied this exact
+    /// time through the native begin/move/end scrub contract.  ViewportView
+    /// consumes the marker so its binding observer does not submit the same
+    /// time a second time outside that bracket.
+    private var preappliedSceneTime: Double? = nil
 
     /// True while the Play button is looping the active animation through
     /// the fast interactive preview renderer (frame-by-frame, looping until
@@ -720,6 +725,7 @@ final class RenderViewModel: ObservableObject {
                 animationTimeStart = 0
                 animationTimeEnd = 1
                 animationNumFrames = 30
+                preappliedSceneTime = nil
                 return
             }
             // CST <-> scene-file live sync (item 1): a freshly-attached
@@ -1218,9 +1224,13 @@ final class RenderViewModel: ObservableObject {
                     self.stopPreviewPlay()   // halt any looping preview-play before swapping the bridge
                     self.chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
                     self.viewportBridge?.shutdown()
+                    self.viewportBridge = nil
+                    // Seed the new job at its conventional default before
+                    // the bridge didSet poll clamps it into a non-zero live
+                    // animation range, if necessary.
+                    self.sceneTime = 0
                     let vb = RISEViewportBridge(hostBridge: bridgeRef)
                     self.viewportBridge = vb
-                    self.sceneTime = 0
                     // Wire the live-preview image callback.  The block
                     // is invoked on the main thread by the bridge.
                     vb?.setImageBlock { [weak self, weak vb] (image: NSImage) in
@@ -1913,6 +1923,27 @@ final class RenderViewModel: ObservableObject {
         _ = viewportBridge?.scrubTimeEnd()
     }
 
+    /// Consume a scene-time write that `reconcileSceneTime` already applied
+    /// natively.  Any different write clears the stale marker and follows the
+    /// normal ViewportView binding path.
+    func consumePreappliedSceneTime(_ time: Double) -> Bool {
+        guard let applied = preappliedSceneTime else { return false }
+        preappliedSceneTime = nil
+        return applied == time
+    }
+
+    /// Park an out-of-range playhead through the same native composite used
+    /// by an explicit timeline jump.  Failed admission leaves both the UI
+    /// value and marker untouched so the next 2 Hz poll retries safely.
+    private func reconcileSceneTime(to time: Double, using vb: RISEViewportBridge) {
+        guard sceneTime != time, vb.scrubTimeBegin() else { return }
+        let applied = vb.scrubTime(time)
+        _ = vb.scrubTimeEnd()
+        guard applied else { return }
+        preappliedSceneTime = time
+        sceneTime = time
+    }
+
 
     // MARK: - UI redesign: refinement status poll
 
@@ -1976,9 +2007,15 @@ final class RenderViewModel: ObservableObject {
                                           timeEnd: &liveEnd,
                                           numFrames: &liveFrames),
                    liveEnd > liveStart {
+                    let optionsChanged = animationTimeStart != liveStart
+                        || animationTimeEnd != liveEnd
+                        || animationNumFrames != liveFrames
+                    if optionsChanged { stopPreviewPlay() }
                     if animationTimeStart != liveStart { animationTimeStart = liveStart }
                     if animationTimeEnd != liveEnd { animationTimeEnd = liveEnd }
                     if animationNumFrames != liveFrames { animationNumFrames = liveFrames }
+                    let clampedTime = min(max(sceneTime, liveStart), liveEnd)
+                    reconcileSceneTime(to: clampedTime, using: vb)
                 }
             } else {
                 if animationTimeStart != 0 { animationTimeStart = 0 }

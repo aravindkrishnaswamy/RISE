@@ -502,8 +502,9 @@ public:
 
     /// Scene's animation options for sizing the timeline scrubber.
     /// Returns the values from the scene's `animation_options` chunk
-    /// (defaults to time=[0,1], 30 frames if not declared).  Returns
-    /// false on null controller / no job attached.
+    /// (defaults to time=[0,1], 30 frames if not declared).  Returns false
+    /// without touching the outputs for a null controller, render ownership,
+    /// or editor-mutex contention; polling UI retains its last tuple.
     bool animationOptions(double& timeStart, double& timeEnd, unsigned int& numFrames) const;
 
     /// Tri-state live animation-presence snapshot: 1 when the scene

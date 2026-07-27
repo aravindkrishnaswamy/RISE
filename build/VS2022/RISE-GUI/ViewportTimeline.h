@@ -22,12 +22,16 @@ class ViewportTimeline : public QWidget
 public:
     explicit ViewportTimeline(QWidget* parent = nullptr);
 
+    /// Replace the live animation range.  A changed range stops playback,
+    /// reprojects an in-range playhead, and moves an out-of-range playhead
+    /// through the normal bracketed scrub signals.
     void setRange(double minT, double maxT);
     double currentTime() const { return m_time; }
 
     // Number of frames in the active animation.  Drives the per-tick
     // step of the Play preview: dt = (maxT - minT) / max(frames-1, 1).
-    // Defaults to 30 until set.
+    // Defaults to 30 until set.  A live count change stops playback so one
+    // run never spans two different active-animation option tuples.
     void setAnimationFrameCount(unsigned int numFrames);
 
     // Halt the Play preview if it is running.  Public so MainWindow can
