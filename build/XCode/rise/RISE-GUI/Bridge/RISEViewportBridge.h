@@ -321,9 +321,9 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 /// THROUGH transmissive surfaces to the first opaque hit.  Applies to
 /// EVERY viewport render mode, INCLUDING the shaded "preview" pipeline
 /// (not just the four data modes) -- resolution lives in the caster
-/// layer, so it is orthogonal to which mode is active.  DEFAULT ON: the
-/// viewport starts see-through, and the controller resets the flag back
-/// to ON on every scene rebind (RebindEditorToJob).  NO on a null
+/// layer, so it is orthogonal to which mode is active. DEFAULT OFF: the
+/// viewport shows the first transmissive surface, and the controller resets
+/// the flag back to OFF on every scene rebind (RebindEditorToJob). NO on a null
 /// controller (matching the C-ABI's own null-controller default), and
 /// also NO while a production/agent render owns the scene
 /// (RISE_API_SceneEditController_GetViewportXray's documented

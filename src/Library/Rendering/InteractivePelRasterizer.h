@@ -506,8 +506,7 @@ namespace RISE
 			void SetXrayView( bool on );
 
 			//! Current viewport-wide x-ray toggle (default false at
-			//! construction; SceneEditController defaults it to true and
-			//! applies it on first attach -- see its own doc).
+			//! construction and when SceneEditController first attaches).
 			bool GetXrayView() const { return mXrayView; }
 
 			//! Part B (docs/gui/RENDER_MODES.md "Depth axis" self-

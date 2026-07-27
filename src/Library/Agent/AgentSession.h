@@ -584,17 +584,17 @@ namespace RISE
 			//! unless a caller also sets renderTarget = ViewMode.
 			RISE::Implementation::ViewportRenderMode viewMode = RISE::Implementation::ViewportRenderMode::Normals;
 			//! X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): DEFAULT
-			//! TRUE (2026-07-17 user decision) -- an agent view-mode render
-			//! is see-through by default, matching the viewport's own
-			//! default.  Meaningful ONLY when renderTarget == ViewMode --
-			//! stamps RayCaster::SetXrayViewResolve(true) on the ephemeral
+			//! FALSE -- an agent view-mode render shows the first transmissive
+			//! surface normally, matching the viewport's own default. Meaningful
+			//! ONLY when renderTarget == ViewMode -- when true, stamps
+			//! RayCaster::SetXrayViewResolve(true) on the ephemeral
 			//! view-mode caster (resolve through transmissive surfaces to
 			//! the first opaque hit, straight-line, no refraction bending)
-			//! before shading.  Pass xray:false to inspect the transmissive
-			//! surface itself instead of what's inside/behind it.  Silently
+			//! before shading. Pass xray:true to inspect opaque geometry
+			//! inside/behind a transmissive surface. Silently
 			//! IGNORED under Beauty/ObjectMap (honestly noted in the result
 			//! message), matching the quality/samples-ignored precedent.
-			bool                 xray = true;
+			bool                 xray = false;
 			//! GUI render modes P2a (docs/gui/RENDER_MODES.md §8, deferred
 			//! from P1): OPTIONAL named-view vantage override for THIS
 			//! render only -- "" (default) = no override, use the active

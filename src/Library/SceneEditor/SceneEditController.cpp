@@ -305,7 +305,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mInteractiveImpl( dynamic_cast<Implementation::InteractivePelRasterizer*>( interactiveRasterizer ) )
 , mVariantRasterizer( 0 )
 , mViewportRenderMode( Implementation::ViewportRenderMode::Preview )
-, mViewportXray( true )   // DEFAULT ON (2026-07-17 user decision) -- see the header doc
+, mViewportXray( false )  // Default opaque-surface view; X-ray remains an explicit opt-in.
 , mEditor( *job.GetScene() )
 , mTool( Tool::Select )
 // Photoshop-style per-category memory.  Initialize each slot to
@@ -513,16 +513,16 @@ void SceneEditController::RebindEditorToJob()
 	// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): reset alongside
 	// the mode reset above, UNCONDITIONALLY -- runs every whole-scene
 	// (re)bind, not just the mode-was-non-Preview branch above.  DEFAULT
-	// ON (2026-07-17 user decision): reset to true, and stamp it onto the
+	// OFF: reset to false, and stamp it onto the
 	// interactive rasterizer directly (same "inline the equivalent raw
 	// state mutation" rationale as the SetViewModeCaster call above -- the
 	// public SetXrayView setter itself just does the propagation, no
 	// locking, so calling it here is safe under the same parked-render
 	// contract).  This is also the "first attach" stamp: RebindEditorToJob
 	// runs once in the constructor, immediately after mInteractiveImpl is
-	// set, so the interactive rasterizer starts see-through before any
-	// render ever happens.
-	mViewportXray = true;
+	// set, so the interactive rasterizer starts with normal first-surface
+	// occlusion before any render ever happens.
+	mViewportXray = false;
 	if( mInteractiveImpl ) {
 		mInteractiveImpl->SetXrayView( mViewportXray );
 	}
@@ -9687,12 +9687,12 @@ bool SceneEditController::SetViewportXray( bool xray )
 
 bool SceneEditController::GetViewportXray() const
 {
-	// render-owns-scene guard -- report the DEFAULT (x-ray is default-ON;
-	// see the header doc), not a stale false, while a production/agent
+	// render-owns-scene guard -- report the DEFAULT (x-ray is default-OFF;
+	// see the header doc), not a stale true, while a production/agent
 	// render transiently owns the scene.
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return true;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-	if( !lk.owns_lock() ) return true;
+	if( !lk.owns_lock() ) return false;
 	return mViewportXray;
 }
 

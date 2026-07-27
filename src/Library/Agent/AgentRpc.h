@@ -117,7 +117,7 @@
 //                                            the exact mode name); `quality`/`samples`
 //                                            are ignored under these too, same as
 //                                            objectmap.  `xray` (OPTIONAL bool,
-//                                            default TRUE) resolves the ray THROUGH
+//                                            default FALSE) resolves the ray THROUGH
 //                                            transmissive surfaces for these four
 //                                            modes; ignored (honestly noted) under
 //                                            beauty/objectmap/BeautyVariant modes.

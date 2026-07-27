@@ -5972,8 +5972,8 @@ namespace RISE
 			// the view-mode pipeline (Normals/Depth/Facets/Wireframe) --
 			// Beauty/Draft/ObjectMap all silently ignore it, matching the
 			// quality/samples-ignored precedent used throughout this
-			// function.  Default is now TRUE (see AgentRenderParams::xray),
-			// so the common case notes "active"; an explicit xray:false is
+			// function. Default is FALSE (see AgentRenderParams::xray), so the
+			// common case notes that transmissive surfaces are shown; xray:true is
 			// noted too, so a caller can tell "inactive by request" apart
 			// from "not a view-mode render at all" (no note either way).
 			if( res.ok && isBeautyVariant ) {

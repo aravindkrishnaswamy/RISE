@@ -364,14 +364,14 @@ public:
     // render mode, INCLUDING "preview" (not just the four data modes:
     // normals/depth/facets/wireframe) -- resolution lives in the caster
     // layer, so it composes with whichever mode is active rather than
-    // being scoped to the data modes.  DEFAULT ON: the viewport starts
-    // see-through, and SceneEditController resets the flag back to ON
+    // being scoped to the data modes. DEFAULT OFF: the viewport shows the
+    // first transmissive surface, and SceneEditController resets the flag to OFF
     // on every whole-scene rebind (RebindEditorToJob).
 
     /// The CURRENT x-ray flag ("false" when no controller is attached --
     /// same null-controller fallback convention as `viewportRenderMode()`
     /// -- or while a render owns the scene, per the C-ABI's documented
-    /// never-blocks contract).  Otherwise true by default and after every
+    /// never-blocks contract). Otherwise false by default and after every
     /// scene rebind.
     bool viewportXray() const;
 

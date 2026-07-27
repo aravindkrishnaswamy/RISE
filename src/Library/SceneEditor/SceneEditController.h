@@ -2492,9 +2492,9 @@ namespace RISE
 		//! stamps InteractivePelRasterizer::SetXrayView on the flag change,
 		//! which propagates to every caster the rasterizer currently holds
 		//! (active, polish, and both saved-caster slots) -- see that method's
-		//! doc.  DEFAULT ON (2026-07-17 user decision): the viewport and
-		//! agent view-mode renders start see-through; a user/agent that wants
-		//! to inspect the transmissive surface itself passes xray:false.
+		//! doc.  DEFAULT OFF: the viewport shows the first transmissive
+		//! surface normally. X-ray is an explicit opt-in for seeing opaque
+		//! geometry behind it.
 
 		//! Set the x-ray flag.  Applies immediately regardless of which mode
 		//! is active (including Preview).  Same lock/park discipline as
@@ -2504,7 +2504,7 @@ namespace RISE
 		//! the scene, or in skeleton mode (no interactive rasterizer).
 		bool SetViewportXray( bool xray );
 
-		//! The CURRENT x-ray flag (true by default and after every
+		//! The CURRENT x-ray flag (false by default and after every
 		//! RebindEditorToJob reset -- see the axis doc above).
 		bool GetViewportXray() const;
 
@@ -3096,9 +3096,9 @@ namespace RISE
 		Implementation::ViewportRenderMode mViewportRenderMode;
 		// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): the currently
 		// active x-ray flag.  Mutated ONLY under mMutex (by SetViewportXray
-		// and by RebindEditorToJob's every-scene-load reset-to-true).
-		// DEFAULT ON (2026-07-17 user decision): true at construction and
-		// after every reset -- the viewport starts see-through.  Mirrored
+		// and by RebindEditorToJob's every-scene-load reset-to-false).
+		// DEFAULT OFF: false at construction and after every reset -- the
+		// viewport shows transmissive surfaces normally. Mirrored
 		// onto the interactive rasterizer via
 		// InteractivePelRasterizer::SetXrayView at both of those sites.
 		bool                                mViewportXray;

@@ -1483,8 +1483,8 @@ static void RunMcpAdapterModeParityTest()
 
 //----------------------------------------------------------------------
 // (5) X-ray axis coverage (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT
-// ON (2026-07-17): facets and depth with the DEFAULT (see-through) vs an
-// EXPLICIT xray:false over a transmissive glass sphere placed IN FRONT of
+// OFF: facets and depth with the DEFAULT (first surface) vs an EXPLICIT
+// xray:true over a transmissive glass sphere placed IN FRONT of
 // the mesh, plus the honest-ignored-under-beauty note.
 //----------------------------------------------------------------------
 static void RunXrayCoverageTest()
@@ -1518,83 +1518,81 @@ static void RunXrayCoverageTest()
 		Check( glassBBox.found > 0, "glass_obj occupies a nonzero pixel region (occludes the mesh from the camera)" );
 	}
 
-	// (a) facets at the DEFAULT (xray defaults TRUE -- 2026-07-17) --
-	// should show the mesh through the glass with NO extra param.
+	// (a) facets at the DEFAULT (xray defaults FALSE) -- should show the
+	// glass surface itself with NO extra param.
 	AgentRenderParams facetsDefault;
 	facetsDefault.renderTarget = AgentRenderTarget::ViewMode;
 	facetsDefault.viewMode     = Implementation::ViewportRenderMode::Facets;
 	AgentRenderResult rFacetsDefault = session->Render( facetsDefault );
-	Check( rFacetsDefault.ok, "facets at the default (xray implicitly true) succeeds" );
+	Check( rFacetsDefault.ok, "facets at the default (xray implicitly false) succeeds" );
 	Check( rFacetsDefault.message.find( "xray" ) != std::string::npos,
-	       "facets-at-default message notes xray is active" );
+	       "facets-at-default message notes xray is inactive" );
 	Decoded decFacetsDefault;
 	Check( DecodePng( rFacetsDefault.png, decFacetsDefault ), "facets-at-default PNG decodes" );
 
-	// (b) facets with an EXPLICIT xray:false -- shows the glass sphere's
-	// own surface instead of the mesh underneath it.
-	AgentRenderParams facetsNoXray = facetsDefault;
-	facetsNoXray.xray = false;
-	AgentRenderResult rFacetsNo = session->Render( facetsNoXray );
-	Check( rFacetsNo.ok, "facets with explicit xray:false succeeds" );
-	Decoded decFacetsNo;
-	Check( DecodePng( rFacetsNo.png, decFacetsNo ), "facets-xray-false PNG decodes" );
+	// (b) facets with an EXPLICIT xray:true -- shows the mesh underneath.
+	AgentRenderParams facetsXray = facetsDefault;
+	facetsXray.xray = true;
+	AgentRenderResult rFacetsXray = session->Render( facetsXray );
+	Check( rFacetsXray.ok, "facets with explicit xray:true succeeds" );
+	Decoded decFacetsXray;
+	Check( DecodePng( rFacetsXray.png, decFacetsXray ), "facets-xray-true PNG decodes" );
 
 	if( glassBBox.found > 0 &&
-	    decFacetsNo.w == decFacetsDefault.w && decFacetsNo.h == decFacetsDefault.h ) {
+	    decFacetsXray.w == decFacetsDefault.w && decFacetsXray.h == decFacetsDefault.h ) {
 		unsigned int differing = 0;
 		for( unsigned int y = glassBBox.minY; y <= glassBBox.maxY; ++y ) {
 			for( unsigned int x = glassBBox.minX; x <= glassBBox.maxX; ++x ) {
-				const Px& a = decFacetsNo.at( x, y );
+				const Px& a = decFacetsXray.at( x, y );
 				const Px& b = decFacetsDefault.at( x, y );
 				if( a[0] != b[0] || a[1] != b[1] || a[2] != b[2] ) ++differing;
 			}
 		}
 		Check( differing > 0,
 		       "MONEY ASSERTION (a/b): facets at the DEFAULT shows DIFFERENT pixels than an explicit "
-		       "xray:false, over the glass sphere's own screen region -- the mesh shows through the glass "
-		       "by default, and xray:false switches back to the glass surface itself" );
+		       "xray:true over the glass sphere's own screen region -- the default shows the glass "
+		       "surface, and xray:true reveals the mesh underneath" );
 	}
 
-	// (c) depth at the DEFAULT vs an EXPLICIT xray:false -- should differ
-	// (the default sees through to the mesh, which is farther away than
-	// the glass sphere's own surface).
+	// (c) depth at the DEFAULT vs an EXPLICIT xray:true -- should differ
+	// (x-ray sees through to the mesh, which is farther away than the
+	// default glass-sphere surface).
 	AgentRenderParams depthDefault;
 	depthDefault.renderTarget = AgentRenderTarget::ViewMode;
 	depthDefault.viewMode     = Implementation::ViewportRenderMode::Depth;
 	AgentRenderResult rDepthDefault = session->Render( depthDefault );
-	Check( rDepthDefault.ok, "depth at the default (xray implicitly true) succeeds" );
+	Check( rDepthDefault.ok, "depth at the default (xray implicitly false) succeeds" );
 	Decoded decDepthDefault;
 	Check( DecodePng( rDepthDefault.png, decDepthDefault ), "depth-at-default PNG decodes" );
 
-	AgentRenderParams depthNoXray = depthDefault;
-	depthNoXray.xray = false;
-	AgentRenderResult rDepthNo = session->Render( depthNoXray );
-	Check( rDepthNo.ok, "depth with explicit xray:false succeeds" );
-	Decoded decDepthNo;
-	Check( DecodePng( rDepthNo.png, decDepthNo ), "depth-xray-false PNG decodes" );
+	AgentRenderParams depthXray = depthDefault;
+	depthXray.xray = true;
+	AgentRenderResult rDepthXray = session->Render( depthXray );
+	Check( rDepthXray.ok, "depth with explicit xray:true succeeds" );
+	Decoded decDepthXray;
+	Check( DecodePng( rDepthXray.png, decDepthXray ), "depth-xray-true PNG decodes" );
 
-	if( decDepthNo.w == decDepthDefault.w && decDepthNo.h == decDepthDefault.h ) {
+	if( decDepthXray.w == decDepthDefault.w && decDepthXray.h == decDepthDefault.h ) {
 		unsigned int differing = 0;
-		for( std::size_t px = 0; px < decDepthNo.px.size(); ++px ) {
-			if( decDepthNo.px[px][0] != decDepthDefault.px[px][0] ) ++differing;
+		for( std::size_t px = 0; px < decDepthXray.px.size(); ++px ) {
+			if( decDepthXray.px[px][0] != decDepthDefault.px[px][0] ) ++differing;
 		}
 		Check( differing > 0,
-		       "MONEY ASSERTION (c): depth at the DEFAULT differs from depth with explicit xray:false "
+		       "MONEY ASSERTION (c): depth at the DEFAULT differs from depth with explicit xray:true "
 		       "somewhere in the frame" );
 	}
 
-	// (d) xray at the default (true) with mode:"beauty" (the default
+	// (d) explicit xray:true with mode:"beauty" (the default
 	// renderTarget) is ACCEPTED, not rejected, and carries the honest
 	// ignored note.
 	AgentRenderParams beautyXray;
-	// renderTarget stays Beauty (the default); xray stays at its own
-	// default (true) -- deliberately NOT set here, to prove the default
-	// itself (not just an explicit xray:true) is honestly ignored under
-	// mode:beauty.
+	// renderTarget stays Beauty (the default); xray is explicitly enabled to
+	// prove it is honestly ignored under mode:beauty.
+	beautyXray.xray = true;
 	AgentRenderResult rBeautyXray = session->Render( beautyXray );
-	Check( rBeautyXray.ok, "xray (default true) with mode:beauty is accepted (not rejected)" );
+	Check( rBeautyXray.ok, "explicit xray:true with mode:beauty is accepted (not rejected)" );
 	Check( rBeautyXray.message.find( "ignored" ) != std::string::npos,
-	       "MONEY ASSERTION (d): xray (default true) under mode:beauty carries an honest 'ignored' note in the message" );
+	       "MONEY ASSERTION (d): explicit xray:true under mode:beauty carries an honest 'ignored' note in the message" );
 
 	pJob->release();
 }
@@ -2236,9 +2234,8 @@ static void RunLargeTransverseCoordinateXrayTest()
 	AgentRenderParams depthP;
 	depthP.renderTarget = AgentRenderTarget::ViewMode;
 	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
-	// xray stays at its own default (true) -- deliberately not set, same
-	// as RunXrayCoverageTest's (d) case, proving the DEFAULT (not just an
-	// explicit override) is what resolves through the glass.
+	depthP.xray         = true;
+	// This regression specifically exercises the explicit see-through path.
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "large-X depth render succeeds" );
 	Decoded decDepth;
@@ -2458,7 +2455,7 @@ static void RunThinGlassNearOpaqueDiscriminationTest()
 	AgentRenderParams depthP;
 	depthP.renderTarget = AgentRenderTarget::ViewMode;
 	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
-	// xray stays at its own default (true) -- not set explicitly.
+	depthP.xray         = true;
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "thin-glass depth render succeeds" );
 	Decoded decDepth;
@@ -2514,8 +2511,8 @@ static void RunThinGlassNearOpaqueDiscriminationTest()
 // analytic/single-sided box's exit face is.
 //
 // Discriminator: identical silhouette-boundary technique to the round 6
-// test -- the through-mesh silhouette centre pixel (depth view, xray at
-// its default true) must resolve the NEAR backstop (far brighter / less
+// test -- the through-mesh silhouette centre pixel (depth view, explicit
+// xray:true) must resolve the NEAR backstop (far brighter / less
 // distant than a pixel 2px outside the silhouette, which hits the far
 // background plane directly).  If the round 7 fix's flag-based facing
 // recovery is removed (facing test falls back to the raw, flipped dot
@@ -2578,7 +2575,7 @@ static void RunDoubleSidedThinMeshNearOpaqueDiscriminationTest()
 	AgentRenderParams depthP;
 	depthP.renderTarget = AgentRenderTarget::ViewMode;
 	depthP.viewMode     = Implementation::ViewportRenderMode::Depth;
-	// xray stays at its own default (true) -- not set explicitly.
+	depthP.xray         = true;
 	AgentRenderResult rDepth = session->Render( depthP );
 	Check( rDepth.ok, "thin-double-sided-mesh depth render succeeds" );
 	Decoded decDepth;

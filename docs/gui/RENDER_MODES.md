@@ -265,20 +265,22 @@ layer instead, so every shader benefits automatically:
 - Controller: `SceneEditController::{Set,Get}ViewportXray(bool)` — same
   lock/park discipline as `{Set,Get}ViewportRenderMode`, but NO caster
   rebuild — it just calls `InteractivePelRasterizer::SetXrayView`, which
-  applies uniformly across every mode INCLUDING `preview`. **Default ON**
-  (2026-07-17 user decision): `true` at construction and after every
+  applies uniformly across every mode INCLUDING `preview`. **Default OFF**:
+  `false` at construction and after every
   `RebindEditorToJob` reset (scene load/reload/variant switch), which also
-  stamps the interactive rasterizer directly so it starts see-through before
+  stamps the interactive rasterizer directly so it starts with normal
+  first-surface occlusion before
   any render happens.
 - C-ABI: `RISE_API_SceneEditController_{Set,Get}ViewportXray` (signature
   unchanged).
 - Agent: `render` gains an optional boolean `xray` param (`AgentRenderParams::
-  xray`, **default TRUE**) — meaningful ONLY under a view-mode `mode`
+  xray`, **default FALSE**) — meaningful ONLY under a view-mode `mode`
   (silently ignored, honestly noted in the result message, under
   `beauty`/`objectmap` — same precedent as `quality`/`samples` under those
-  targets); pass `xray:false` to inspect the transmissive surface itself.
+  targets); pass `xray:true` to inspect opaque geometry behind or inside a
+  transmissive surface.
   Toggle lives in the viewport chrome next to the mode dropdown on both
-  GUIs, defaulting to ON.
+  GUIs, defaulting to OFF.
 - **P2a review fix (2026-07-18)**: while the ACTIVE mode is a §6
   BeautyVariant row (`deep_reflect`/`direct`), the x-ray toggle is DISABLED
   on both GUIs — those modes drive `mVariantRasterizer`, a wholly separate
