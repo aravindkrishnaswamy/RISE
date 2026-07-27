@@ -1244,6 +1244,99 @@ static void RunQueryObjectAtWireTest()
 // Assertions are derived from the render itself (bbox scan), so no
 // hand-tuned pixel coordinates can rot.
 //----------------------------------------------------------------------
+// Fix-round-2 P1-A: query_object_at MUST NOT clobber the read_image cache.
+//
+// query_object_at fires a full ephemeral mode:"objectmap" Render()
+// internally, and Render() unconditionally caches every success into the
+// session's last-render pair (mLastPng / mLastSink) -- the pair ReadImage()
+// serves and the `read_image` verb returns.  Unguarded, that leaves a flat
+// SEGMENTATION image sitting where the caller's beauty frame was, so the
+// natural agent sequence
+//
+//     render -> query_object_at -> read_image
+//
+// hands the model the segmentation image and it "judges" the beauty render
+// from it.  That is the same symptom class as the per-session-cache bug this
+// branch fixes; before that fix the GUI's session split masked it, because
+// render and query_object_at landed on DIFFERENT sessions.  Now they share
+// one, so the clobber is live.
+//
+// CompareToReference's split-mask render has had a stash/restore guard for
+// exactly this reason since it shipped (locked by AgentViewportReadTest's
+// "split: cache-survival" block); query_object_at never got one.  Both now
+// take the SAME file-local RAII guard (EphemeralRenderCacheGuard in
+// AgentSession.cpp) so they cannot drift apart again.
+//
+// RED-PROOF SHAPE: the beauty frame is rendered at 48x48 while the internal
+// objectmap runs at the Document's authored 64x64, so the two PNGs cannot
+// coincidentally compare equal -- byte-for-byte equality after the query is
+// only reachable if the cache was genuinely preserved.  The second half
+// exercises ReadImage(maxEdge), which reads mLastSink (a SEPARATE cached
+// pointer from mLastPng): drop only the sink half of the restore and the
+// byte comparison above still passes while the downscaling overload
+// silently degrades to "nothing rendered yet".
+//----------------------------------------------------------------------
+static void RunQueryObjectAtPreservesImageCacheTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at preserves the read_image cache (P1-A) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_cache.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa cache scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa cache session" ); return; }
+
+	// A BEAUTY frame at dims that differ from the authored film dims the
+	// internal objectmap render will use.
+	AgentRenderParams bp;
+	bp.width  = 48;
+	bp.height = 48;
+	const AgentRenderResult beauty = session->Render( bp );
+	Check( beauty.ok, "beauty render (48x48) succeeds" );
+	Check( !beauty.png.empty(), "beauty render produces PNG bytes" );
+
+	const std::vector<unsigned char> beforeQuery = session->ReadImage();
+	Check( !beforeQuery.empty() && beforeQuery == beauty.png,
+	       "read_image returns the beauty frame BEFORE query_object_at (baseline)" );
+
+	// The pixel choice is irrelevant to this invariant -- any query runs the
+	// same internal objectmap render -- but use a real object centre so the
+	// query is a genuine success path, not an early-out.
+	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32 );
+	Check( qr.hit, "query_object_at hits an object (a real success path ran the internal render)" );
+	Check( qr.width == 64 && qr.height == 64,
+	       "the internal objectmap ran at the authored 64x64 -- DIFFERENT dims from the 48x48 beauty frame" );
+
+	const std::vector<unsigned char> afterQuery = session->ReadImage();
+	Check( !afterQuery.empty(),
+	       "MONEY (P1-A): read_image is NOT emptied by query_object_at" );
+	Check( afterQuery == beauty.png,
+	       "MONEY (P1-A): read_image STILL returns the BEAUTY frame byte-for-byte after query_object_at "
+	       "-- not the flat objectmap the internal render produced" );
+
+	// mLastSink half: ReadImage(maxEdge) re-encodes from the cached SINK, a
+	// separate pointer from mLastPng.  A restore that forgets the sink
+	// leaves this returning nothing while the assertion above still passes.
+	{
+		unsigned int dw = 0, dh = 0;
+		const std::vector<unsigned char> scaled = session->ReadImage( 16, dw, dh );
+		Check( !scaled.empty(),
+		       "MONEY (P1-A): ReadImage(maxEdge) still works after query_object_at -- the cached SINK was restored too" );
+		Check( dw > 0 && dh > 0 && dw <= 16 && dh <= 16,
+		       "the restored sink downscales the 48x48 BEAUTY frame to the requested bound" );
+	}
+
+	// A SECOND query must be idempotent on the cache, not merely
+	// "restores once" -- a guard that restored a stale stash would drift
+	// here.
+	(void)session->QueryObjectAt( 32, 32 );
+	Check( session->ReadImage() == beauty.png,
+	       "MONEY (P1-A): a SECOND query_object_at leaves the beauty frame intact as well" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
 static const char* const kSceneVerticalAsym =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -1337,6 +1430,7 @@ int main()
 	RunQueryObjectAtCameraOverrideTest();
 	RunQueryObjectAtNoRasterizerTest();
 	RunQueryObjectAtWireTest();
+	RunQueryObjectAtPreservesImageCacheTest();
 	RunVerticalAsymmetryTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );

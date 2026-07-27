@@ -1145,10 +1145,14 @@ static void RunCompareToReferenceSplit()
 
 			// The check above only exercises mLastPng.  mLastSink is a
 			// SEPARATE cached pointer, read only by the downscaling
-			// ReadImage(maxEdge) overload and query_object_at -- drop the
-			// `mLastSink = savedSink` restore and everything above still
-			// passes while the sink leaks and those two verbs silently
-			// degrade to "nothing rendered yet".  Lock that half too.
+			// ReadImage(maxEdge) overload and ReadPerception -- drop the
+			// sink half of EphemeralRenderCacheGuard's restore and
+			// everything above still passes while the sink leaks and those
+			// readers silently degrade to "nothing rendered yet".  Lock
+			// that half too.  (query_object_at decodes its OWN render's
+			// returned PNG, never this cache -- it is a WRITER of the pair,
+			// guarded by the same RAII helper; see
+			// AgentObjectMapTest's "preserves the read_image cache" test.)
 			{
 				unsigned int dw = 0, dh = 0;
 				const std::vector<unsigned char> scaled = s->ReadImage( 16, dw, dh );

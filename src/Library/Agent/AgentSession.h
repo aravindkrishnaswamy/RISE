@@ -2056,9 +2056,11 @@ namespace RISE
 			//! it runs one full mode:"objectmap" Render() at the effective
 			//! dims (composing width/height/camera EXACTLY as render's own
 			//! overrides do, via the SAME AgentRenderParams path) and then
-			//! reads ONE pixel back from the cached sink, matched against
-			//! that render's legend by EXACT colorHex byte (the same byte-
-			//! unique-by-construction contract the palette guarantees).  This
+			//! reads ONE pixel back out of THAT RENDER'S OWN returned PNG
+			//! (never the session's ReadImage cache -- see the cache
+			//! contract below), matched against that render's legend by
+			//! EXACT colorHex byte (the same byte-unique-by-construction
+			//! contract the palette guarantees).  This
 			//! costs one identity render (measured ~20ms at 256x256) rather
 			//! than a second, bespoke GetCamera()->GenerateRay + caster code
 			//! path -- shared machinery, shared invariants (exactness,
@@ -2081,6 +2083,16 @@ namespace RISE
 			//! mutates the retained CST Document (ReadDocument() is byte-
 			//! identical before and after, camera/film overrides are
 			//! captured-applied-restored exactly as render's own do).
+			//!
+			//! ReadImage-cache identity: the internal objectmap render is
+			//! EPHEMERAL and does NOT become "the last render" -- ReadImage()
+			//! (and the `read_image` verb) still serves the frame the caller
+			//! last rendered itself, byte-for-byte, both before and after this
+			//! call.  Without that guarantee a render -> query_object_at ->
+			//! read_image sequence would hand the caller a flat segmentation
+			//! image to judge a beauty render from.  Same contract, same
+			//! mechanism (EphemeralRenderCacheGuard in AgentSession.cpp) as
+			//! CompareToReference's split-mask render.
 			//!
 			//! Works on a head with NO active production rasterizer (mirrors
 			//! the quality:"draft" / mode:"objectmap" gate -- the underlying

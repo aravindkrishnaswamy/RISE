@@ -650,6 +650,17 @@ public:
     /// to do with what the CHAT AGENT is permitted to do.  The chat
     /// driver's own model-requested tool calls go through
     /// `agentHandleToolCall()` instead — see that method's doc.
+    ///
+    /// CONSEQUENCE FOR `read_image` TYPED BY HAND HERE (2026-07): the chat
+    /// panel's `render` used to run on THIS session, so a hand-typed
+    /// `read_image` in the raw JSON-RPC debug surface would return the chat
+    /// agent's last frame.  It no longer does -- chat renders now run on
+    /// the autonomy-selected tool-call session (see
+    /// `agentHandleToolCall()`), and AgentSession's last-render PNG cache
+    /// is PER-SESSION.  So after a chat render, a `read_image` sent through
+    /// THIS method reports `byteLength` 0 until something is rendered
+    /// through this session too.  Expected, not a bug: send a `render` here
+    /// first if you want pixels back here.
     QString agentHandleLine(const QString& jsonRpcRequest);
 
     // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
@@ -725,12 +736,19 @@ public:
     /// the two verbs on different sessions the agent's read_image read a
     /// cache its own render never wrote -- returning zero bytes, or the
     /// stale objectmap PNG left behind by query_object_at's internal
-    /// render.  Both verbs now run on the SAME session.
+    /// render.  Both verbs now run on the SAME session.  (The stale-
+    /// objectmap half has since been fixed at its own source as well --
+    /// query_object_at's internal render is stash/restore-guarded and no
+    /// longer clobbers the cache; see AgentSession.cpp's
+    /// EphemeralRenderCacheGuard.)
     ///
     /// The mid-render level flip is handled by PINNING instead: ChatPanel
     /// captures the level ONCE at submit time and passes it to the
     /// two-argument overload below for every subsequent poll / cancel /
-    /// final-result call for that job.  Routing "render" here does not
+    /// final-result call for that job, so a whole render job's calls stay
+    /// on ONE session.  What the pin actually fixes -- and what it
+    /// deliberately does NOT freeze -- is spelled out on that overload;
+    /// read it before building on this.  Routing "render" here does not
     /// change what is PERMITTED: render / render_status / render_wait /
     /// render_cancel / read_image are all on IsReadSafeVerb's allowlist
     /// (AgentRpc.cpp), so each dispatches under Read, Propose, and Apply
@@ -746,29 +764,68 @@ public:
     ///
     /// This exists for ONE reason: a chat-driven async render is a
     /// MULTI-CALL job (submit -> render_wait poll xN -> possibly
-    /// render_cancel), and the renderJobIds it hands around are
-    /// SESSION-SCOPED -- the coordinator ids minted for one AgentSession
-    /// are not addressable from another.  If the user clicks a different
-    /// autonomy chip mid-render, a poll or cancel issued through the
-    /// newly-selected session would simply not find the job.  So
-    /// ChatPanel captures the level once at submit time and pins it here
-    /// for that job's whole lifecycle.
+    /// render_cancel), and PARTS OF THAT JOB'S STATE LIVE ON THE SESSION
+    /// THAT RAN IT.  So ChatPanel captures the level once at submit time
+    /// and pins it here for that job's whole lifecycle.
     ///
-    /// The pin is deliberately SCOPED TO ONE RENDER JOB, not to a chat
+    /// WHICH PARTS -- be precise here, because an earlier version of this
+    /// doc was NOT.  The renderJobId itself is *not* session-scoped: ids
+    /// are minted by the CONTROLLER
+    /// (SceneEditController::SubmitAgentRenderAsync), and
+    /// AgentSession::RenderStatus / RenderWait / CancelAsyncRender each
+    /// delegate straight through to that controller -- so ANY session
+    /// attached to the same controller resolves ANY of its job ids.  Do
+    /// not build on "another session cannot see this job"; it can.  What
+    /// IS session-scoped, and is the real reason for the pin:
+    ///
+    ///   1. render_wait's OPTIONAL `result` payload.  AgentRpc.cpp's
+    ///      render_wait handler attaches `result` only when
+    ///      AgentSession::LastAsyncRenderResult finds a cache entry whose
+    ///      mLastAsyncRenderResultJobId matches -- and only the session
+    ///      that RAN the render ever writes that cell.  Poll a sibling
+    ///      session mid-render and the reply is completed:true with NO
+    ///      `result`, at which point the driver can only degrade to
+    ///      "render completed but no cached result was found" (see
+    ///      ChatPanel::pollOutstandingRender).  The render really did
+    ///      succeed; the agent just never sees its stats.
+    ///   2. The last-render PNG cache (mLastPng / mLastSink) that
+    ///      ReadImage() and the `read_image` verb serve -- the whole
+    ///      reason "render" was moved onto this selector in the first
+    ///      place.
+    ///
+    /// WHAT IS PINNED IS THE **SESSION SELECTION**, NOT THE AUTONOMY
+    /// POSTURE.  `level` chooses WHICH dispatcher/session handles the
+    /// call; it does not freeze what that session is allowed to do.
+    /// setAgentAutonomyLevel() mutates the OWNER dispatcher's autonomy IN
+    /// PLACE, so a poll issued with a pinned level of Apply *after* the
+    /// user has dropped the chip to Read genuinely executes under Read.
+    /// That is the CORRECT safety behaviour and is deliberately kept --
+    /// the pin does not defeat a mid-render drop to Read.  (Nothing in a
+    /// render job's poll/cancel sequence is an edit verb, so the live
+    /// posture never changes the outcome here anyway; the property
+    /// matters because it is what makes the pin safe to have at all.)
+    ///
+    /// The pin is likewise SCOPED TO ONE RENDER JOB, never to a chat
     /// turn.  Autonomy is a SAFETY control: a user who drops to Read
     /// mid-turn to stop the agent editing must have that take effect on
     /// the agent's very NEXT tool call.  Pinning a whole turn would defer
     /// a safety decision to the turn boundary; pinning a render job only
-    /// works around a mechanical id-scoping constraint.
+    /// works around the two mechanical session-scoping constraints listed
+    /// above.
     ///
-    /// KNOWN RESIDUAL (documented, not silently accepted): if the user
-    /// flips autonomy BETWEEN a completed "render" and the "read_image"
-    /// that follows it, that read_image runs on the newly-selected
-    /// session and reads ITS (empty or stale) PNG cache rather than the
-    /// render's.  This is inherent to the deliberate one-session-per-
-    /// posture design -- the caches are per-session state, and pinning
-    /// further would trade a safety property for it.  In practice the
-    /// model self-corrects by re-rendering.
+    /// KNOWN RESIDUAL (documented, not silently accepted) -- and NARROWER
+    /// than an earlier version of this doc claimed.  Only a flip that
+    /// crosses **Propose** changes session: Read and Apply both select
+    /// the SAME m_agentToolDispatcherOwner (they differ only in the
+    /// autonomy set on it), so a Read<->Apply flip between a completed
+    /// "render" and the "read_image" that follows it changes nothing
+    /// about which cache is read.  A flip TO or FROM Propose does change
+    /// it: the following read_image runs on the other session and reads
+    /// ITS (empty or stale) PNG cache rather than the render's.  That is
+    /// inherent to the deliberate Propose-gets-its-own-session design --
+    /// the caches are per-session state, and pinning further would trade
+    /// a safety property for it.  In practice the model self-corrects by
+    /// re-rendering.
     QString agentHandleToolCall(const QString& jsonRpcRequest, AgentAutonomyLevel level);
 
     // Properties panel ------------------------------------------------

@@ -265,7 +265,8 @@ int main()
 		const size_t macChatRenderFinalize = macChat.find(
 			"chatRenderWillSubmit()", macChatRenderFunction );
 		const size_t macChatRenderSubmit = macChat.find(
-			"vb.agentHandleLine(asyncLine)", macChatRenderFinalize );
+			"vb.agentHandleToolCall(asyncLine, autonomy: pinnedAutonomy)",
+			macChatRenderFinalize );
 		Check( macChatRenderFunction != std::string::npos
 		       && macChatRenderFinalize != std::string::npos
 		       && macChatRenderSubmit != std::string::npos
@@ -292,7 +293,8 @@ int main()
 		       "Windows timeline removal finalizes an open manual scrub" );
 		const size_t chatRenderFinalize = winChat.find( "emit chatRenderWillSubmit();" );
 		const size_t chatRenderSubmit = winChat.find(
-			"m_bridge->agentHandleLine(asyncLine)", chatRenderFinalize );
+			"m_bridge->agentHandleToolCall(asyncLine, pinnedAutonomy)",
+			chatRenderFinalize );
 		Check( chatRenderFinalize != std::string::npos
 		       && chatRenderSubmit != std::string::npos
 		       && chatRenderFinalize < chatRenderSubmit
@@ -328,6 +330,96 @@ int main()
 		       && winCancelRender.find( "if (!m_bridge)" )
 		          < winCancelRender.find( "setOutstandingRenderJobId(0);" ),
 		       "Windows chat render retains occupancy through cancellation drain" );
+
+		// ---- Chat render session routing (fix round 2, P1-B) ----
+		// WHY THIS IS GUARDED IN SOURCE.  `AgentSession`'s last-render PNG
+		// cache -- the pair `ReadImage()` serves and the `read_image` verb
+		// returns (mLastPng / mLastSink, written at RenderCore_'s tail) --
+		// is PER-SESSION.  `agentHandleLine` is the ADMINISTRATIVE session;
+		// `agentHandleToolCall` is the autonomy-selected session every OTHER
+		// chat tool call uses.  Both GUI drivers used to submit and poll the
+		// chat `render` through `agentHandleLine`, so the agent's render
+		// populated one session's cache and its follow-up `read_image` read
+		// another's -- byteLength 0, or the stale objectmap left by
+		// query_object_at.  A model then re-rendered for 3-9 turns trying to
+		// get pixels back, and in one observed run judged a beauty render
+		// from a flat segmentation image.
+		//
+		// The library-level AgentRenderAsyncTest "(img-cache)" case
+		// characterizes WHY the caches are independent; it would still pass
+		// if someone reverted this GUI routing entirely.  These markers are
+		// what actually pin the routing.  Bodies are extracted by
+		// find(begin_symbol)/find(next_symbol) so a marker cannot be
+		// satisfied by an unrelated call elsewhere in the file.
+		auto bodyBetween = []( const std::string& src, const char* begin,
+		                       const char* next ) -> std::string {
+			const size_t b = src.find( begin );
+			if( b == std::string::npos ) return std::string();
+			const size_t e = src.find( next, b );
+			if( e == std::string::npos ) return std::string();
+			return src.substr( b, e - b );
+		};
+		// Every render-lifecycle body must use the PINNED overload and must
+		// contain NO `agentHandleLine` call at all.
+		const std::string macRenderSubmitBody = bodyBetween( macChat,
+			"private func executeRenderToolCallAsync", "private static func injectAsyncTrue" );
+		Check( !macRenderSubmitBody.empty()
+		       && macRenderSubmitBody.find( "vb.agentHandleToolCall(asyncLine, autonomy:" )
+		          != std::string::npos
+		       && macRenderSubmitBody.find( "vb.agentHandleToolCall(waitLine, autonomy:" )
+		          != std::string::npos
+		       && macRenderSubmitBody.find( "agentHandleLine" ) == std::string::npos,
+		       "macOS chat render submit+poll run on the AUTONOMY-SELECTED session (agentHandleToolCall, pinned), "
+		       "never the administrative agentHandleLine -- read_image's PNG cache is PER-SESSION, so splitting "
+		       "them again makes read_image return 0 bytes or a stale objectmap" );
+		const std::string macRenderDrainBody = bodyBetween( macChat,
+			"private func waitForChatRenderDrain(", "private func finishChatRenderOccupancy" );
+		Check( !macRenderDrainBody.empty()
+		       && macRenderDrainBody.find( "vb.agentHandleToolCall(waitLine, autonomy:" )
+		          != std::string::npos
+		       && macRenderDrainBody.find( "agentHandleLine" ) == std::string::npos,
+		       "macOS chat render DRAIN poll stays on the pinned tool-call session (same per-session cache reason)" );
+		const std::string macRenderCancelBody = bodyBetween( macChat,
+			"private func cancelAnyOutstandingChatRender()", "private func beginChatRenderDrain" );
+		Check( !macRenderCancelBody.empty()
+		       && macRenderCancelBody.find( "vb.agentHandleToolCall(line, autonomy:" )
+		          != std::string::npos
+		       && macRenderCancelBody.find( "agentHandleLine" ) == std::string::npos,
+		       "macOS chat render CANCEL stays on the pinned tool-call session (same per-session cache reason)" );
+		const std::string winRenderSubmitBody = bodyBetween( winChat,
+			"void ChatPanel::startAsyncRenderToolCall", "void ChatPanel::pollOutstandingRender()" );
+		Check( !winRenderSubmitBody.empty()
+		       && winRenderSubmitBody.find( "m_bridge->agentHandleToolCall(asyncLine, pinnedAutonomy)" )
+		          != std::string::npos
+		       && winRenderSubmitBody.find( "agentHandleLine" ) == std::string::npos,
+		       "Windows chat render SUBMIT runs on the autonomy-selected session (agentHandleToolCall, pinned), "
+		       "never the administrative agentHandleLine -- read_image's PNG cache is PER-SESSION" );
+		const std::string winRenderPollBody = bodyBetween( winChat,
+			"void ChatPanel::pollOutstandingRender()", "void ChatPanel::cancelOutstandingRender()" );
+		Check( !winRenderPollBody.empty()
+		       && winRenderPollBody.find( "m_bridge->agentHandleToolCall(" ) != std::string::npos
+		       && winRenderPollBody.find( "agentHandleLine" ) == std::string::npos,
+		       "Windows chat render POLL stays on the pinned tool-call session (same per-session cache reason)" );
+		Check( !winCancelRender.empty()
+		       && winCancelRender.find( "m_bridge->agentHandleToolCall(" ) != std::string::npos
+		       && winCancelRender.find( "agentHandleLine" ) == std::string::npos,
+		       "Windows chat render CANCEL stays on the pinned tool-call session (same per-session cache reason)" );
+		// INVERSE regression: the ORDINARY (non-render) tool dispatch site
+		// must keep using agentHandleToolCall too -- "fix" the routing by
+		// moving everything to agentHandleLine and the split reappears from
+		// the other direction.  A no-agentHandleLine assertion is NOT made
+		// here: processNextToolCall / driveTurn carry the historical
+		// explanation of the old split in a comment, deliberately.
+		const std::string winOrdinaryToolBody = bodyBetween( winChat,
+			"void ChatPanel::processNextToolCall()", "void ChatPanel::startAsyncRenderToolCall" );
+		Check( !winOrdinaryToolBody.empty()
+		       && winOrdinaryToolBody.find( "m_bridge->agentHandleToolCall(toQString(line))" )
+		          != std::string::npos,
+		       "Windows ORDINARY tool dispatch still uses agentHandleToolCall -- render and read_image must share "
+		       "ONE session, in both directions" );
+		Check( macChat.find( "responseLine = vb.agentHandleToolCall(line)" ) != std::string::npos,
+		       "macOS ORDINARY tool dispatch still uses agentHandleToolCall -- render and read_image must share "
+		       "ONE session, in both directions" );
 		const size_t winDestructor = win.find( "MainWindow::~MainWindow()" );
 		const size_t winDestructorEnd = win.find(
 			"// ============================================================", winDestructor );

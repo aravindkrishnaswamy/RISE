@@ -1912,20 +1912,29 @@ void ChatPanel::processNextToolCall()
             // read_image then read a cache its own render had never written:
             // zero bytes, or the stale objectmap PNG left by
             // query_object_at's internal render.  Keep `render` and
-            // `read_image` on one session.
+            // `read_image` on one session.  (That second symptom has since
+            // been fixed at its own source too -- query_object_at's internal
+            // render is now stash/restore-guarded and no longer clobbers the
+            // cache; see AgentSession.cpp's EphemeralRenderCacheGuard.  It is
+            // named here because it is what the split ACTUALLY surfaced in
+            // production trajectories.)
             //
-            // KNOWN RESIDUAL, deliberately not "fixed": if the user clicks a
-            // different autonomy chip BETWEEN a render and the read_image
-            // that follows it, that read_image lands on the newly-selected
-            // session and again sees an empty/stale cache.  Pinning the whole
-            // TURN would close it, and we do not do that -- autonomy is a
-            // safety control that must bind on the very next tool call, so a
-            // mid-turn drop to Read cannot be deferred to a turn boundary.
-            // Only a render JOB is pinned (see m_outstandingRenderAutonomy),
-            // because session-scoped renderJobIds make that a mechanical
-            // requirement rather than a policy choice.  The model
-            // self-corrects here by re-rendering.  macOS sibling of this
-            // routing site: build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
+            // KNOWN RESIDUAL, deliberately not "fixed", and narrower than it
+            // first looks: only a chip flip that CROSSES Propose changes
+            // session.  Read and Apply both select the SAME Owner dispatcher
+            // (they differ only in the autonomy set on it), so a
+            // Read<->Apply flip between a render and the read_image that
+            // follows changes nothing.  A flip TO or FROM Propose does: that
+            // read_image lands on the other session and sees an empty/stale
+            // cache.  Pinning the whole TURN would close it, and we do not
+            // do that -- autonomy is a safety control that must bind on the
+            // very next tool call, so a mid-turn drop to Read cannot be
+            // deferred to a turn boundary.  Only a render JOB pins its
+            // session (see m_outstandingRenderAutonomy), and even there the
+            // live posture still governs what the pinned session may do.
+            // The model self-corrects here by re-rendering.  macOS sibling
+            // of this routing site:
+            // build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
             // driveTurn / executeRenderToolCallAsync.
             //
             // P1-2: suspends here -- resumes back into processNextToolCall
@@ -1967,21 +1976,32 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     m_activeRenderCall = call;
     m_activeRenderPending = true;
 
-    // PIN the autonomy level for this render job's whole lifecycle,
-    // captured ONCE, here, before the submit.  renderJobIds are
-    // session-scoped, so every later call about this job
-    // (pollOutstandingRender's render_wait, cancelOutstandingRender's
-    // render_cancel) must reach the SAME session -- a mid-render
-    // autonomy-chip click must not send the next poll to a sibling session
-    // that never heard of the job.  Read from the BRIDGE (the same source
-    // the un-pinned agentHandleToolCall consults) rather than this panel's
-    // mirror, so the two can never disagree.  The two enums are numerically
-    // identical by construction -- see ChatPanel.h's AutonomyLevel doc,
-    // which is why setAutonomyLevel() casts the other direction.
-    if (m_bridge) {
-        m_outstandingRenderAutonomy =
-            static_cast<AutonomyLevel>(m_bridge->agentAutonomyLevel());
-    }
+    // PIN the SESSION SELECTION for this render job's whole lifecycle,
+    // captured ONCE, here, before the submit, so every later call about
+    // this job (pollOutstandingRender's render_wait,
+    // cancelOutstandingRender's render_cancel) reaches the session that
+    // actually RAN it.  Not because the job id would otherwise be
+    // unresolvable -- it resolves on any session attached to the same
+    // controller -- but because render_wait's `result` payload and the
+    // read_image PNG cache both live on the running session.  This pins
+    // WHICH SESSION, not what that session may do: the live autonomy
+    // posture still applies to it, so a mid-render drop to Read is not
+    // defeated here.  Full derivation in ViewportBridge.h's
+    // agentHandleToolCall(const QString&, AgentAutonomyLevel) doc.
+    //
+    // Read from the BRIDGE (the same source the un-pinned
+    // agentHandleToolCall consults) rather than this panel's mirror, so the
+    // two can never disagree.  The two enums are numerically identical by
+    // construction -- see ChatPanel.h's AutonomyLevel doc, which is why
+    // setAutonomyLevel() casts the other direction.
+    //
+    // m_bridge is non-null here: the only caller, processNextToolCall(),
+    // drains the pending calls and returns before reaching this method when
+    // `!m_bridge`.  Dereferenced unconditionally, matching the rest of this
+    // method -- a defensive null check on the line above would only be
+    // half-honest, since the submit below cannot proceed without a bridge.
+    m_outstandingRenderAutonomy =
+        static_cast<AutonomyLevel>(m_bridge->agentAutonomyLevel());
     const ViewportBridge::AgentAutonomyLevel pinnedAutonomy =
         static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy);
 
@@ -2101,9 +2121,12 @@ void ChatPanel::pollOutstandingRender()
         { "renderJobId", static_cast<double>(m_outstandingRenderJobId) },
         { "timeoutMs", 0 }
     });
-    // The job's PINNED level -- render_wait must reach the session that
-    // minted m_outstandingRenderJobId (ids are session-scoped), not
-    // whichever session the autonomy chip happens to select right now.
+    // The job's pinned SESSION SELECTION -- render_wait must reach the
+    // session that RAN m_outstandingRenderJobId, not whichever session the
+    // autonomy chip happens to select right now: only the running session
+    // holds this job's cached `result` payload (the id itself resolves on
+    // any session on the controller).  The live autonomy posture still
+    // applies to the pinned session.
     const QString waitResponse = m_bridge->agentHandleToolCall(
         waitLine, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
     const QJsonDocument waitDoc = QJsonDocument::fromJson(waitResponse.toUtf8());
@@ -2170,7 +2193,9 @@ void ChatPanel::cancelOutstandingRender()
     const QString line = buildJsonRpcLine("render_cancel", QJsonObject{
         { "renderJobId", static_cast<double>(jobId) }
     });
-    // Pinned, for the same session-scoped-id reason as the poll above.
+    // Pinned to the same session as the poll above, for the same reason:
+    // the drain poll that follows this cancel needs the running session's
+    // cached job result to observe completion.
     m_bridge->agentHandleToolCall(
         line, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
     // Keep m_outstandingRenderJobId published and continue the existing

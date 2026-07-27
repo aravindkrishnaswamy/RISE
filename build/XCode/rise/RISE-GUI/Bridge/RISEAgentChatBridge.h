@@ -15,8 +15,12 @@
 //            let step = bridge.handleResponse(status:body:)
 //            step.toolCalls are opaque tokens: for each, the driver
 //            asks toolCallToJsonRpcLine, executes it via the viewport
-//            bridge's agentHandleLine (main thread), and hands the
-//            response line back through addToolResult.
+//            bridge's agentHandleToolCall — the autonomy-routed
+//            dispatcher, main thread — and hands the response line back
+//            through addToolResult.  (agentHandleLine is a SEPARATE,
+//            administrative session; a tool call must not go there, or
+//            `render` and `read_image` land on different per-session
+//            image caches.)
 //        } while step.kind == toolCalls
 //
 //    THREADING: single-threaded, like the loop it wraps.  Every method
@@ -29,8 +33,8 @@
 //    provider/model selection outlives any one scene).  The loop holds
 //    NO pointers into the per-scene controller/dispatcher, so there is
 //    no teardown ORDER constraint against the viewport bridge — the
-//    constraint is on the DRIVER: it must stop calling the viewport
-//    bridge's agentHandleLine once the scene closes (ChatViewModel
+//    constraint is on the DRIVER: it must stop calling into the viewport
+//    bridge's agent dispatchers once the scene closes (ChatViewModel
 //    cancels its in-flight turn Task on clearScene) and reset this
 //    bridge so the stale-scene conversation doesn't leak into the next
 //    scene.
@@ -243,8 +247,10 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
     NS_SWIFT_NAME(handleResponse(status:body:));
 
 /// Translate one pending tool call into the JSON-RPC request line the
-/// viewport bridge's agentHandleLine consumes.  `rpcId` is a driver-
-/// chosen monotonic id (echoed in the response envelope).
+/// viewport bridge's agent dispatchers consume.  The chat driver feeds
+/// it to `-agentHandleToolCall:` (the autonomy-routed session), NOT to
+/// `-agentHandleLine:`.  `rpcId` is a driver-chosen monotonic id
+/// (echoed in the response envelope).
 - (NSString *)toolCallToJsonRpcLine:(RISEAgentChatToolCall *)call
                               rpcId:(NSInteger)rpcId
     NS_SWIFT_NAME(toolCallToJsonRpcLine(_:rpcId:));

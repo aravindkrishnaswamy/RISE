@@ -5269,15 +5269,22 @@ static void RunRenderOwnsSceneGuardTest()
 //
 // THIS TEST EXISTS TO DOCUMENT WHY A GUI CHAT DRIVER MUST ROUTE `render`
 // AND `read_image` TO THE SAME SESSION.  Both GUI chat drivers stand up
-// SEVERAL AgentSessions over one Job (an administrative Owner session,
-// plus one tool-call session per autonomy posture), and every one of
-// them is controller-attached, so ANY of them can service a render.
+// THREE AgentSessions over one Job -- an administrative Owner session
+// (agentHandleLine) plus TWO tool-call sessions (agentHandleToolCall):
+// an Owner-authority one shared by the Read and Apply postures, which
+// differ only in the autonomy set on it, and a separate External-
+// authority one for Propose.  Every one of the three is
+// controller-attached, so ANY of them can service a render.
 // Both drivers used to send the `render` tool call to a DIFFERENT
 // session than every other tool call -- so the agent's render populated
 // session A's cache while its follow-up `read_image` read session B's,
 // which was either empty (byteLength 0) or held a stale image left by
 // `query_object_at`'s internal objectmap render.  The assertions below
 // are exactly that failure, reproduced at the library level.
+//
+// The GUI-side routing itself is guarded by source markers in
+// SourceHygieneTest ("chat render session routing") -- this case would
+// still pass if someone reverted that routing entirely.
 //
 // The two GUI routing sites this pins down -- keep them consistent:
 //   * build/XCode/rise/RISE-GUI/App/ChatViewModel.swift

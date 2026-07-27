@@ -6045,6 +6045,90 @@ namespace RISE
 			return res;
 		}
 
+		// Ephemeral-render cache guard -------------------------------------------
+
+		namespace
+		{
+			//! RAII stash/restore of the LAST-RENDER cache pair (`mLastPng` /
+			//! `mLastSink` -- the two fields `ReadImage()` serves and the
+			//! `read_image` verb returns) across an EPHEMERAL `Render()` whose
+			//! pixels must NEVER become "the last render the caller can read".
+			//!
+			//! WHY THIS EXISTS.  `Render()` unconditionally caches every
+			//! success into that pair (RenderCore_'s tail, above).  Two call
+			//! sites in this file fire an internal `mode:"objectmap"` render
+			//! purely as a means to an end -- `QueryObjectAt` (one pixel ->
+			//! one object name) and `CompareToReference`'s object/background
+			//! RMSE split (a per-pixel mask).  Left unguarded, either one
+			//! leaves a flat SEGMENTATION image sitting in the cache, so a
+			//! caller that renders a beauty frame and then calls
+			//! `read_image` -- exactly the sequence the
+			//! modeling-from-image-captures skill teaches -- is handed the
+			//! segmentation image and "judges" the beauty render from it.
+			//! Both sites now take this guard, so the two can never drift
+			//! apart again (they did: only CompareToReference was guarded).
+			//!
+			//! CONSTRAINTS THIS ENCODES -- do not "simplify" any of them away:
+			//!
+			//!  * The cache mutex MUST NOT be held across the guarded
+			//!    `Render()` call.  `Render()` locks that SAME non-recursive
+			//!    mutex at RenderCore_'s cache tail, so widening either the
+			//!    ctor's or the dtor's lock scope to span the call
+			//!    self-deadlocks the agent thread with no diagnostic.  Both
+			//!    bodies therefore take the lock, finish, and release it.
+			//!  * RAII rather than a plain second block: `mSavedSink` is a raw
+			//!    refcounted pointer held across a call, so an unwind between
+			//!    stash and restore would leak a full framebuffer AND silently
+			//!    wipe the stashed cache.  `Render()` happens to catch
+			//!    everything today, but it is not declared `noexcept` -- every
+			//!    sibling raw-refcount-across-a-call site in this file uses a
+			//!    guard for exactly this reason.
+			//!  * For the width of the guarded scope ONLY, `mLastPng`/
+			//!    `mLastSink` transiently hold the ephemeral render.  A
+			//!    concurrent `ReadImage()` on another thread WOULD observe it
+			//!    (see mAsyncCacheMutex's doc -- cross-thread ReadImage is a
+			//!    designed call shape).  The window is bounded by the scope and
+			//!    never persists past it; an async render that completes inside
+			//!    it has its cache write discarded (refcount-safe lost update).
+			//!
+			//! Takes the three pieces of state by reference rather than an
+			//! `AgentSession&` so it stays a file-local helper with no access
+			//! to the class's private section (no friendship, no header churn).
+			class EphemeralRenderCacheGuard
+			{
+			public:
+				EphemeralRenderCacheGuard( std::mutex& cacheMutex,
+				                           std::vector<unsigned char>& lastPng,
+				                           InMemoryRasterizerOutput*& lastSink )
+					: mCacheMutex( cacheMutex ), mLastPng( lastPng ), mLastSink( lastSink )
+				{
+					std::lock_guard<std::mutex> lk( mCacheMutex );
+					mSavedPng.swap( mLastPng );        // cache -> stash (cache now empty)
+					mSavedSink = mLastSink;            // take over the sink's ref
+					mLastSink  = nullptr;
+				}
+
+				~EphemeralRenderCacheGuard()
+				{
+					std::lock_guard<std::mutex> lk( mCacheMutex );
+					safe_release( mLastSink );         // drop the ephemeral render's sink
+					mLastPng.swap( mSavedPng );        // stashed bytes back in place
+					mLastSink  = mSavedSink;           // ownership handed back
+					mSavedSink = nullptr;
+				}
+
+				EphemeralRenderCacheGuard( const EphemeralRenderCacheGuard& ) = delete;
+				EphemeralRenderCacheGuard& operator=( const EphemeralRenderCacheGuard& ) = delete;
+
+			private:
+				std::mutex&                 mCacheMutex;
+				std::vector<unsigned char>& mLastPng;
+				InMemoryRasterizerOutput*&  mLastSink;
+				std::vector<unsigned char>  mSavedPng;
+				InMemoryRasterizerOutput*   mSavedSink = nullptr;
+			};
+		}
+
 		// Toolkit slice 3b: query_object_at -------------------------------------
 
 		AgentSession::AgentQueryObjectResult AgentSession::QueryObjectAt(
@@ -6078,7 +6162,23 @@ namespace RISE
 			rparams.height = params.height;
 			rparams.camera = params.camera;
 
-			const AgentRenderResult rr = Render( rparams );
+			// This objectmap render is EPHEMERAL -- it exists only to resolve
+			// ONE pixel to ONE object name -- but Render() unconditionally
+			// caches every success into mLastPng/mLastSink for ReadImage().
+			// Left unguarded it would clobber whatever beauty frame the
+			// caller last rendered, so the `read_image` that typically
+			// follows would hand the model a flat SEGMENTATION image to judge
+			// a beauty render from.  Same hazard, same guard, as
+			// CompareToReference's split-mask render below -- see
+			// EphemeralRenderCacheGuard's doc for the deadlock/refcount
+			// constraints it encodes.  `rr` is the render's OWN returned
+			// result and is unaffected by the restore: everything below
+			// decodes rr.png / rr.legend, never the session cache.
+			AgentRenderResult rr;
+			{
+				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink );
+				rr = Render( rparams );
+			}
 
 			if( !rr.ok ) {
 				res.message = rr.message.empty()
@@ -6569,50 +6669,16 @@ namespace RISE
 				// skill would get handed a flat segmentation image.  Stash
 				// the beauty cache, let the objectmap render populate a
 				// throwaway, then put the beauty cache back.
-				std::vector<unsigned char>  savedPng;
-				InMemoryRasterizerOutput*   savedSink = nullptr;
-				{
-					// MUST NOT be held across Render() below -- Render locks
-					// this SAME non-recursive mutex at RenderCore_'s cache
-					// tail, so widening either scope to span the call
-					// self-deadlocks the agent thread with no diagnostic.
-					std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-					savedPng.swap( mLastPng );
-					savedSink = mLastSink;
-					mLastSink = nullptr;
-				}
-
-				// RAII rather than a plain second block: `savedSink` is a raw
-				// refcounted pointer held across a call, so an unwind between
-				// the stash and the restore would leak a full framebuffer AND
-				// silently wipe the beauty cache.  Render() happens to catch
-				// everything today, but it is not declared noexcept -- every
-				// sibling raw-refcount-across-a-call site in this file uses a
-				// guard for exactly this reason.
+				//
+				// Shared with QueryObjectAt (the file's other ephemeral-render
+				// site) so the two can never drift apart -- they did once, and
+				// the unguarded one shipped the exact bug described above.
+				// EphemeralRenderCacheGuard's doc carries the deadlock
+				// ("never hold mAsyncCacheMutex across Render()"), refcount,
+				// and transient-window constraints this scope relies on.
 				AgentRenderResult omr;
 				{
-					struct CacheRestoreGuard
-					{
-						AgentSession*               self;
-						std::vector<unsigned char>* png;
-						InMemoryRasterizerOutput**  sink;
-						~CacheRestoreGuard()
-						{
-							std::lock_guard<std::mutex> lk( self->mAsyncCacheMutex );
-							safe_release( self->mLastSink );   // drop the objectmap sink
-							self->mLastPng.swap( *png );       // beauty bytes back in place
-							self->mLastSink = *sink;           // ownership handed back
-							*sink = nullptr;
-						}
-					} restoreGuard{ this, &savedPng, &savedSink };
-
-					// NOTE: for the width of this scope ONLY, mLastPng/mLastSink
-					// transiently hold the objectmap.  A concurrent ReadImage()
-					// on another thread would observe it (see mAsyncCacheMutex's
-					// doc -- cross-thread ReadImage IS a designed call shape).
-					// The window is bounded by this scope and never persists
-					// past the call; an async render that completes inside it
-					// has its cache write discarded (refcount-safe, lost update).
+					EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink );
 					omr = Render( omParams );
 				}
 

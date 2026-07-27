@@ -11,7 +11,12 @@ import UniformTypeIdentifiers
 // (wrapped by RISEAgentChatBridge); this file is the thin I/O driver
 // the sans-IO core was designed for: it performs the HTTP round-trips,
 // executes tool calls against the live scene via the viewport bridge's
-// synchronous `agentHandleLine`, and renders a display transcript.
+// synchronous `agentHandleToolCall` (the AUTONOMY-ROUTED dispatcher —
+// every model-requested verb, `render` included since the 2026-07
+// per-session image-cache fix), and renders a display transcript.  The
+// bridge's `agentHandleLine` is a SEPARATE administrative session; this
+// driver calls it only for its own housekeeping (proposals polling /
+// resolution, the one-time skill-index fetch), never for a tool call.
 //
 // SECRET HYGIENE (hard rule): API keys live in the macOS Keychain (or
 // arrive via environment variables), never in UserDefaults, never
@@ -700,9 +705,11 @@ final class ChatViewModel: ObservableObject {
     /// The per-scene tool executor.  WEAK: RenderViewModel owns the
     /// viewport bridge; on clearScene it calls `sceneClosed()` (which
     /// also nils this) BEFORE shutting the bridge down, so the driver
-    /// never calls `agentHandleLine` on a torn-down scene.  Even if a
-    /// stale call slipped through, `agentHandleLine` is total — it
-    /// answers with a JSON-RPC -32603 error rather than crashing.
+    /// never calls into the bridge's agent dispatchers
+    /// (`agentHandleToolCall` for tool calls, `agentHandleLine` for its
+    /// own housekeeping) on a torn-down scene.  Even if a stale call
+    /// slipped through, both entry points are total — they answer with a
+    /// JSON-RPC -32603 error rather than crashing.
     private weak var viewportBridge: RISEViewportBridge?
     private var driverTask: Task<Void, Never>? = nil
     /// The Stop button's flag.  Checked between HTTP rounds and
@@ -753,20 +760,26 @@ final class ChatViewModel: ObservableObject {
     /// like every other piece of driver state in this class.
     private var outstandingChatRenderJobId: UInt64 = 0
 
-    /// The autonomy level PINNED for the currently-outstanding chat render
-    /// job (captured once at submit time in `executeRenderToolCallAsync`).
+    /// The level pinned for the currently-outstanding chat render job
+    /// (captured once at submit time in `executeRenderToolCallAsync`).
     ///
-    /// renderJobIds are SESSION-SCOPED — the id the submit call minted is
-    /// only addressable from the session that minted it — so every later
-    /// call about that job (render_wait poll, render_cancel, the drain poll)
-    /// must reach the SAME session.  Without this pin, a user clicking a
-    /// different autonomy chip mid-render would send the next poll/cancel to
-    /// a sibling session that has never heard of the job.
+    /// What it pins is the SESSION SELECTION, not the autonomy posture: the
+    /// level chooses which dispatcher/session handles a call, and the live
+    /// posture on the selected session still applies (the bridge's
+    /// `setAgentAutonomyLevel` mutates the Owner dispatcher's autonomy in
+    /// place), so a mid-render drop to Read is NOT defeated by this pin.
+    ///
+    /// Why pin at all: renderJobIds themselves are addressable from any
+    /// session on the same controller (they are minted BY the controller),
+    /// but two things about a render job are session-scoped — `render_wait`'s
+    /// optional `result` payload, and the last-render PNG cache `read_image`
+    /// serves.  Poll from a sibling session and the job completes with no
+    /// result to report.  Full derivation in
+    /// `-agentHandleToolCall:autonomy:`'s doc in RISEViewportBridge.h.
     ///
     /// Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
     /// safety control, and a user who drops to Read mid-turn must have that
-    /// bind on the agent's very next tool call.  See
-    /// `-agentHandleToolCall:autonomy:`'s doc in RISEViewportBridge.h.
+    /// bind on the agent's very next tool call.
     private var outstandingChatRenderAutonomy: RISEAgentAutonomyLevel = .apply
 
     /// The controller worker is still occupied by this chat render, including
@@ -1810,9 +1823,12 @@ final class ChatViewModel: ObservableObject {
     private func cancelAnyOutstandingChatRender() {
         guard outstandingChatRenderJobId != 0 else { return }
         let jobId = outstandingChatRenderJobId
-        // The job's PINNED level — render_cancel must reach the session that
-        // minted `jobId` (ids are session-scoped), not whichever session the
-        // autonomy chip happens to select right now.
+        // The job's pinned SESSION SELECTION — render_cancel and the drain
+        // poll that follows must reach the session that RAN this job, not
+        // whichever session the autonomy chip happens to select right now:
+        // the drain's render_wait only sees this job's cached `result` on
+        // that session (see `outstandingChatRenderAutonomy`).  The live
+        // autonomy posture still applies to the pinned session.
         let autonomy = outstandingChatRenderAutonomy
         outstandingChatRenderJobId = 0
         guard let vb = viewportBridge else {
@@ -1847,9 +1863,12 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// `autonomy` is the job's PINNED level, threaded down from
-    /// `cancelAnyOutstandingChatRender` — this loop addresses `jobId`, which
-    /// only the session that minted it can resolve.
+    /// `autonomy` is the job's pinned SESSION SELECTION, threaded down from
+    /// `cancelAnyOutstandingChatRender` — this loop must poll the session
+    /// that RAN `jobId`, because only that session holds the job's cached
+    /// completion result.  (The id resolves on any session attached to the
+    /// controller; the cached result does not.)  The live autonomy posture
+    /// still applies to the pinned session.
     private func waitForChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge,
                                         autonomy: RISEAgentAutonomyLevel) async {
         let sliceMs: UInt64 = 250
@@ -2139,20 +2158,30 @@ final class ChatViewModel: ObservableObject {
                     // its own `render` had never written: zero bytes, or the
                     // stale objectmap PNG left by `query_object_at`'s internal
                     // render.  Keep `render` and `read_image` on one session.
+                    // (That second symptom has since been fixed at its own
+                    // source too — `query_object_at`'s internal render is now
+                    // stash/restore-guarded and no longer clobbers the cache;
+                    // see AgentSession.cpp's EphemeralRenderCacheGuard.  It is
+                    // named here because it is what the split ACTUALLY
+                    // surfaced in production trajectories.)
                     //
-                    // KNOWN RESIDUAL, deliberately not "fixed": if the user
-                    // clicks a different autonomy chip BETWEEN a render and
-                    // the `read_image` that follows it, that `read_image`
-                    // lands on the newly-selected session and again sees an
+                    // KNOWN RESIDUAL, deliberately not "fixed", and narrower
+                    // than it first looks: only a chip flip that CROSSES
+                    // Propose changes session.  Read and Apply both select
+                    // the SAME Owner dispatcher (they differ only in the
+                    // autonomy set on it), so a Read↔Apply flip between a
+                    // render and the `read_image` that follows changes
+                    // nothing.  A flip TO or FROM Propose does: that
+                    // `read_image` lands on the other session and sees an
                     // empty/stale cache.  Pinning the whole TURN would close
                     // it, and we do not do that — autonomy is a safety
                     // control that must bind on the very next tool call, so a
                     // mid-turn drop to Read cannot be deferred to a turn
-                    // boundary.  Only a render JOB is pinned (see
-                    // `outstandingChatRenderAutonomy`), because session-scoped
-                    // renderJobIds make that a mechanical requirement rather
-                    // than a policy choice.  The model self-corrects here by
-                    // re-rendering.  Windows/Qt sibling of this routing site:
+                    // boundary.  Only a render JOB pins its session (see
+                    // `outstandingChatRenderAutonomy`), and even there the
+                    // live posture still governs what the pinned session may
+                    // do.  The model self-corrects here by re-rendering.
+                    // Windows/Qt sibling of this routing site:
                     // build/VS2022/RISE-GUI/ChatPanel.cpp's
                     // processNextToolCall / startAsyncRenderToolCall.
                     let responseLine: String
@@ -2661,13 +2690,19 @@ final class ChatViewModel: ObservableObject {
     /// below for the full before/after of the per-cycle MainActor cost.
     ///
     /// SESSION ROUTING: every call this method makes goes through
-    /// `agentHandleToolCall(_:autonomy:)` with the level PINNED at submit
+    /// `agentHandleToolCall(_:autonomy:)` with the session PINNED at submit
     /// time — the same autonomy-selected session every OTHER tool call in
     /// the turn uses.  That is what keeps `read_image` reading the PNG
-    /// cache THIS render populated (`AgentSession::mLastPng` is per-session);
-    /// the pin is what keeps the session-scoped `renderJobId` addressable
-    /// across a mid-render autonomy-chip click.  See the routing site in
-    /// `driveTurn` for the full rationale and the documented residual.
+    /// cache THIS render populated (`AgentSession::mLastPng` is per-session).
+    /// The pin keeps every poll on the session that RAN the job, which is
+    /// where `render_wait`'s optional `result` payload lives — not because
+    /// the `renderJobId` would otherwise be unresolvable (it resolves on any
+    /// session attached to the same controller; the ids are minted BY the
+    /// controller).  The pin fixes the SESSION, not the autonomy posture:
+    /// the live posture still applies to the pinned session.  See the
+    /// routing site in `driveTurn` for the residual, and
+    /// `-agentHandleToolCall:autonomy:` in RISEViewportBridge.h for the full
+    /// derivation.
     ///
     /// CONTRACT WITH THE LLM: the taught `render` tool schema
     /// (AgentChatCodecs.cpp) has no `async` parameter — the LLM never
@@ -2701,15 +2736,20 @@ final class ChatViewModel: ObservableObject {
     ) async -> String {
         chatRenderWillSubmit()
 
-        // PIN the autonomy level for this render job's whole lifecycle,
-        // captured ONCE, here, before the submit.  renderJobIds are
-        // session-scoped, so every later call about this job (the
-        // render_wait polls below, and render_cancel / the drain poll in
-        // cancelAnyOutstandingChatRender) must reach the SAME session — a
-        // mid-render autonomy-chip click must not send the next poll to a
-        // sibling session that never heard of the job.  This pin is scoped
-        // to the JOB, never to the turn: see `outstandingChatRenderAutonomy`
-        // and RISEViewportBridge.h's `-agentHandleToolCall:autonomy:` doc.
+        // PIN the SESSION SELECTION for this render job's whole lifecycle,
+        // captured ONCE, here, before the submit, so every later call about
+        // this job (the render_wait polls below, and render_cancel / the
+        // drain poll in cancelAnyOutstandingChatRender) reaches the session
+        // that actually RAN it.  Not because the job id would otherwise be
+        // unresolvable — it resolves on any session attached to the same
+        // controller — but because render_wait's `result` payload and the
+        // read_image PNG cache both live on the running session.
+        //
+        // This pins WHICH SESSION, not what that session may do: the live
+        // autonomy posture still applies to it, so a mid-render drop to
+        // Read is not defeated here.  And it is scoped to the JOB, never to
+        // the turn.  See `outstandingChatRenderAutonomy` and
+        // RISEViewportBridge.h's `-agentHandleToolCall:autonomy:` doc.
         let pinnedAutonomy = vb.agentAutonomyLevel
         outstandingChatRenderAutonomy = pinnedAutonomy
 

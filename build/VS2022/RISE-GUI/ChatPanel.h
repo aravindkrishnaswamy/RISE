@@ -185,12 +185,16 @@ private slots:
     // P1-2: fires on a ~250ms QTimer while a chat-driven `render` tool
     // call has an async job outstanding; each tick is a fast
     // render_wait(timeoutMs:0) poll-once through agentHandleToolCall,
-    // pinned to the level captured when the job was submitted.
+    // pinned to the SESSION the job was submitted on (see
+    // m_outstandingRenderAutonomy).
     void pollOutstandingRender();
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): poll
-    // list_proposals over the same in-process agentHandleLine transport
-    // the tool-call loop uses, and route Apply/Reject/Undo clicks from
+    // list_proposals over the in-process agentHandleLine (administrative)
+    // transport -- NOT the agentHandleToolCall session the tool-call loop
+    // uses; resolve_proposal is refused outside Owner/Commit, which is
+    // exactly why the panel keeps its own path -- and route
+    // Apply/Reject/Undo clicks from
     // the resulting ProposalCard widgets.  Mirrors the macOS
     // ChatViewModel.refreshProposals / resolveProposal.
     void refreshProposals();
@@ -448,8 +452,9 @@ private:
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): the
     // pending/recently-resolved proposals column, shown above the
-    // transcript.  Polled on a 1s QTimer via the same in-process
-    // agentHandleLine transport the tool-call loop uses.
+    // transcript.  Polled on a 1s QTimer via the in-process
+    // agentHandleLine (administrative) transport -- NOT the
+    // agentHandleToolCall session the tool-call loop uses.
     QWidget*     m_proposalsContainer = nullptr;
     QVBoxLayout* m_proposalsLayout = nullptr;
     QTimer*      m_proposalsPollTimer = nullptr;
@@ -530,19 +535,26 @@ private:
     // consumers (recomputeSceneEditable, MainWindow, TopBar) stay
     // synchronized with every transition.
     quint64 m_outstandingRenderJobId = 0;
-    // The autonomy level PINNED for the outstanding render job, captured
-    // ONCE at submit time in startAsyncRenderToolCall().  renderJobIds are
-    // SESSION-SCOPED -- the id the submit call minted is only addressable
-    // from the session that minted it -- so every later call about that job
-    // (pollOutstandingRender's render_wait, cancelOutstandingRender's
-    // render_cancel) must reach the SAME session.  Without this pin, a user
-    // clicking a different autonomy chip mid-render would send the next
-    // poll/cancel to a sibling session that has never heard of the job.
+    // The level pinned for the outstanding render job, captured ONCE at
+    // submit time in startAsyncRenderToolCall().
+    //
+    // What it pins is the SESSION SELECTION, not the autonomy posture: the
+    // level chooses which dispatcher/session handles a call, and the live
+    // posture on the selected session still applies (the bridge's
+    // setAgentAutonomyLevel() mutates the Owner dispatcher's autonomy in
+    // place), so a mid-render drop to Read is NOT defeated by this pin.
+    //
+    // Why pin at all: renderJobIds themselves are addressable from any
+    // session on the same controller (they are minted BY the controller),
+    // but two things about a render job are session-scoped -- render_wait's
+    // optional `result` payload, and the last-render PNG cache read_image
+    // serves.  Poll from a sibling session and the job completes with no
+    // result to report.  Full derivation in
+    // ViewportBridge::agentHandleToolCall(const QString&, AgentAutonomyLevel).
     //
     // Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
     // safety control, and a user who drops to Read mid-turn must have that
-    // bind on the agent's very next tool call.  See
-    // ViewportBridge::agentHandleToolCall(const QString&, AgentAutonomyLevel).
+    // bind on the agent's very next tool call.
     AutonomyLevel m_outstandingRenderAutonomy = AutonomyLevel::Apply;
     // True after render_cancel has been sent but before render_wait observes
     // actual worker completion.  The outstanding id deliberately remains
