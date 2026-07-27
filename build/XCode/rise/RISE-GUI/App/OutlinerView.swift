@@ -54,6 +54,11 @@ private let kOutlinerCategories: [OutlinerCategoryDef] = [
     // first-choice fallback for this slice.
     OutlinerCategoryDef(title: "Painters",        category: .painter,     tag: "PNT", tagColor: Theme.catMaterial),
     OutlinerCategoryDef(title: "Media",           category: .medium,      tag: "MED", tagColor: Theme.catMedia),
+    // Geometry (GUI redesign 2026-07-22): every "*_geometry" chunk, the
+    // shapes objects reference by name.  Listed after Media, before the
+    // singleton rows.  No dedicated Theme token yet -- catObject's hue is
+    // the conceptual neighbour (geometry IS what objects instantiate).
+    OutlinerCategoryDef(title: "Geometry",        category: .geometry,    tag: "GEO", tagColor: Theme.catObject),
     OutlinerCategoryDef(title: "Output Settings", category: .film,        tag: "FLM", tagColor: Theme.catFilm),
     OutlinerCategoryDef(title: "Animation",       category: .animation,   tag: "ANM", tagColor: Theme.catAnimation),
     OutlinerCategoryDef(title: "Variants",        category: .sceneVariant, tag: "VAR", tagColor: Theme.catVariant),

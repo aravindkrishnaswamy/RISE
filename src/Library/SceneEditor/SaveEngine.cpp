@@ -2,10 +2,11 @@
 //
 //  SaveEngine.cpp - the scene-save side of the Model-B CST cutover.
 //
-//  Serializes the Job's retained CST Document (the complete source of
-//  truth since Slice 6c-3a routed every GUI edit into it) and writes it
-//  atomically.  An external-modification guard refuses an IN-PLACE save
-//  when the loaded file changed on disk after load.
+//  Serializes an immutable snapshot of the Job's retained CST Document
+//  (the complete source of truth since Slice 6c-3a routed every GUI edit
+//  into it) and writes it atomically.  An external-modification guard
+//  refuses an IN-PLACE save when the loaded file changed on disk after
+//  load.
 //
 //  See docs/ROUND_TRIP_SAVE_PLAN.md §9 (algorithm history) and §11.6
 //  (the external-modification guard's rationale).
@@ -16,20 +17,20 @@
 #include "SaveEngine.h"
 #include "../Cst/Cst.h"   // P5 Slice 4: SerializeCst the retained CST Document
 
-#include "DirtyTracker.h"
 #include "FileIdentity.h"
-#include "../Interfaces/IJobPriv.h"
-#include "../Utilities/Log/Log.h"
 
+#include <atomic>
 #include <cstring>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <system_error>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <unordered_map>
 
 // POSIX-only headers + helpers used by the optional fsync hardening
 // path in AtomicWrite.  On Windows we fall back to std::ofstream +
@@ -54,6 +55,57 @@ namespace {
 // Helpers
 // ----------------------------------------------------------------------
 
+// One in-process save lease per canonical target path.  The operation mutex
+// covers external-identity validation through the atomic rename, closing the
+// check-then-write race between two independently loaded controllers.  The
+// owning SaveEngine reserves this state before its pre-IO seam; a competing
+// engine's try-lock is therefore an immediate, deterministic refusal.
+struct PathSaveState
+{
+    std::mutex operationMutex;
+};
+
+std::string ResolvedSavePath( const std::string& filePath )
+{
+    std::error_code ec;
+    std::filesystem::path path =
+        std::filesystem::weakly_canonical( std::filesystem::path( filePath ), ec );
+    if( ec ) {
+        ec.clear();
+        path = std::filesystem::absolute( std::filesystem::path( filePath ), ec );
+        if( ec ) path = std::filesystem::path( filePath );
+        path = path.lexically_normal();
+    }
+    return path.string();
+}
+
+std::string CanonicalSavePath( const std::string& filePath )
+{
+    std::string key = ResolvedSavePath( filePath );
+#if defined(_WIN32)
+    // Windows path lookup is case-insensitive; make the in-process lease
+    // key obey the same rule so spelling aliases cannot bypass it.
+    for( char& c : key ) {
+        if( c >= 'A' && c <= 'Z' ) c = static_cast<char>( c - 'A' + 'a' );
+    }
+#endif
+    return key;
+}
+
+std::shared_ptr<PathSaveState> SaveStateForPath( const std::string& canonicalPath )
+{
+    static std::mutex registryMutex;
+    static std::unordered_map<std::string, std::weak_ptr<PathSaveState>> registry;
+
+    std::lock_guard<std::mutex> lk( registryMutex );
+    std::shared_ptr<PathSaveState> state = registry[canonicalPath].lock();
+    if( !state ) {
+        state.reset( new PathSaveState() );
+        registry[canonicalPath] = state;
+    }
+    return state;
+}
+
 // Atomic write: tmp + (POSIX-only fsync) + rename + (POSIX-only
 // dir-fsync) (§9.8).  R-final P1 #1 fix: portable across POSIX and
 // Windows.  Core flow uses std::ofstream + std::filesystem::rename —
@@ -66,17 +118,20 @@ namespace {
 bool AtomicWrite( const std::string& filePath, const std::string& bytes,
                   std::string& outError )
 {
-    // Build a per-process / per-invocation tmp path.  pid + epoch
-    // seconds is unique enough for single-threaded save sequences;
-    // the rename is what enforces atomicity, not the tmp uniqueness.
+    // Build a per-process / per-invocation tmp path. The monotonic
+    // counter prevents two controllers in the same process from sharing
+    // a temp file even when they save the same target concurrently.
+    static std::atomic<unsigned long long> nextTmpId{ 1 };
 #if defined(_WIN32)
     const long long pidValue = static_cast<long long>( ::_getpid() );
 #else
     const long long pidValue = static_cast<long long>( ::getpid() );
 #endif
+    const unsigned long long tmpId =
+        nextTmpId.fetch_add( 1, std::memory_order_relaxed );
     const std::string tmpPath = filePath + ".tmp." +
         std::to_string( pidValue ) + "." +
-        std::to_string( static_cast<long long>( std::time( nullptr ) ) );
+        std::to_string( tmpId );
 
     // Write bytes to tmp via std::ofstream (binary mode, no text
     // translation — line endings are managed explicitly upstream).
@@ -165,53 +220,56 @@ bool ReadFile( const std::string& filePath, std::string& outBytes,
 // SaveEngine
 // ----------------------------------------------------------------------
 
+struct SaveLease
+{
+    explicit SaveLease( const std::string& canonicalPath )
+        : state( SaveStateForPath( canonicalPath ) )
+        , lock( state->operationMutex, std::try_to_lock )
+    {
+    }
+
+    std::shared_ptr<PathSaveState> state;
+    std::unique_lock<std::mutex>   lock;
+};
+
 SaveEngine::SaveEngine(
-    IJobPriv&                              job,
-    DirtyTracker&                          dirty,
-    std::unordered_set<std::string>&       scaleFromAnchorSet )
-    : mJob( job )
-    , mDirty( dirty )
-    , mScaleFromAnchorSet( scaleFromAnchorSet )
+    const Cst::Document& document,
+    const FileIdentity& loadedFileIdentity,
+    const std::string& filePath )
+    : mDocument( document )
+    , mLoadedFileIdentity( loadedFileIdentity )
+    , mFilePath( filePath )
+    , mResolvedFilePath( ResolvedSavePath( filePath ) )
+    , mLease( new SaveLease( CanonicalSavePath( mResolvedFilePath ) ) )
 {
 }
 
-SaveResult SaveEngine::Save( const std::string& filePath )
+SaveEngine::~SaveEngine() = default;
+
+SaveResult SaveEngine::Save()
 {
     SaveResult result;
-    result.filePath = filePath;
+    result.filePath = mFilePath;
+
+    // The lease is reserved in the constructor, before the controller's
+    // pre-IO test hook and before this method starts.  A second controller
+    // therefore cannot slip through the same path while the first is paused
+    // anywhere between snapshot capture and atomic publication.
+    if( !mLease || !mLease->lock.owns_lock() ) {
+        result.status = SaveResult::Status::Refused;
+        result.errorMessage =
+            "save refused: another save to '" + mFilePath +
+            "' is already in progress";
+        return result;
+    }
+    const std::string canonicalTarget = CanonicalSavePath( mResolvedFilePath );
 
     // ---- CST-Document save (the Model-B cutover's save side) -----------
-    // The Job retains a canonical CST Document (LoadAsciiSceneViaCst) that
-    // is the COMPLETE source of truth -- every GUI edit routes into it
-    // (Slice 3) -- so SERIALIZE it directly.  SerializeCst is byte-exact
-    // on an unedited round-trip and minimal-diff on edits
-    // (CstSaveFidelityTest).
-    //
-    // Since Slice 6c-3a every scene loads CST-only, so a Job with NO
-    // retained Document can no longer occur in production.  If one somehow
-    // reaches here (a lightweight / non-CST Job), there is nothing to
-    // serialize -- return a clear failure rather than crashing or writing
-    // garbage.  (The legacy byte-splice fallback that used to run for such
-    // a Job was deleted in Slice 6d.)
-    if( !mJob.HasRetainedCstDocument() ) {
-        result.status = SaveResult::Status::Failed;
-        result.errorMessage =
-            "cannot save '" + filePath + "': the job has no retained CST "
-            "Document to serialize.  Load the scene via the CST path before "
-            "saving.";
-        GlobalLog()->PrintEx( eLog_Error,
-            "SaveEngine::Save: no retained CST Document for '%s' -- nothing to serialize",
-            filePath.c_str() );
-        return result;
-    }
-
-    const RISE::Cst::Document* doc = mJob.GetCstDocument();
-    if( !doc ) {
-        result.status = SaveResult::Status::Failed;
-        result.errorMessage =
-            "Job reports a retained CST Document but GetCstDocument() returned null";
-        return result;
-    }
+    // The controller captured this immutable persistent-Document snapshot
+    // under its mutation mutex.  File IO can therefore run unlocked without
+    // borrowing the Job's replaceable pCstDocument or touching dirty state.
+    // A concurrent edit lands on a newer head; RequestSave's publish step
+    // detects that version change and leaves the editor dirty.
 
     // External-modification guard, IN-PLACE save only: if the loaded file
     // was edited on disk after load, an in-place re-serialize would clobber
@@ -221,12 +279,15 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // the loaded path.  The FileIdentity is captured at CST-load time
     // (Job::RefreshCstLoadFileIdentity) and read via GetCstLoadFileIdentity.
     {
-        const FileIdentity& cstLoadIdent = mJob.GetCstLoadFileIdentity();
-        if( cstLoadIdent.captured && cstLoadIdent.filePath == filePath ) {
+        const FileIdentity& cstLoadIdent = mLoadedFileIdentity;
+        if( cstLoadIdent.captured
+            && CanonicalSavePath( cstLoadIdent.filePath ) == canonicalTarget ) {
             struct ::stat cur = {};
-            if( ::stat( filePath.c_str(), &cur ) == 0 ) {
+            if( ::stat( mResolvedFilePath.c_str(), &cur ) == 0 ) {
                 const long long curSize  = static_cast<long long>( cur.st_size );
                 const long long curMtime = static_cast<long long>( cur.st_mtime );
+                const long long curDevice = static_cast<long long>( cur.st_dev );
+                const long long curFileId = static_cast<long long>( cur.st_ino );
                 long long curMtimeNsec = 0;
 #if defined(__APPLE__)
                 curMtimeNsec = static_cast<long long>( cur.st_mtimespec.tv_nsec );
@@ -234,11 +295,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 curMtimeNsec = static_cast<long long>( cur.st_mtim.tv_nsec );
 #endif
                 if( curSize != cstLoadIdent.sizeBytes || curMtime != cstLoadIdent.mtimeSec
-                    || curMtimeNsec != cstLoadIdent.mtimeNsec ) {
+                    || curMtimeNsec != cstLoadIdent.mtimeNsec
+                    || curDevice != cstLoadIdent.deviceId
+                    || curFileId != cstLoadIdent.fileId ) {
                     result.status = SaveResult::Status::Refused;
                     result.errorMessage =
-                        "scene file '" + filePath + "' was modified externally between load and save "
-                        "(mtime/size mismatch).  Saving would overwrite those external changes with the "
+                        "scene file '" + mFilePath + "' was modified externally between load and save "
+                        "(metadata/file-id mismatch).  Saving would overwrite those external changes with the "
                         "in-memory scene.  Reload the file before saving.";
                     return result;
                 }
@@ -246,35 +309,24 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         }
     }
 
-    const std::string text = RISE::Cst::SerializeCst( *doc );
+    const std::string text = RISE::Cst::SerializeCst( mDocument );
 
     // NoOp when the target already holds exactly these bytes (e.g. a save
     // with no pending edits).
     std::string existing, rerr;
-    if( ReadFile( filePath, existing, rerr ) && existing == text ) {
+    if( ReadFile( mResolvedFilePath, existing, rerr ) && existing == text ) {
         result.status = SaveResult::Status::NoOp;
-        mDirty.Clear();
-        mScaleFromAnchorSet.clear();
-        mJob.RefreshCstLoadFileIdentity( filePath.c_str() );   // re-baseline (re-anchor a Save-As to the new path)
         return result;
     }
 
     std::string werr;
-    if( !AtomicWrite( filePath, text, werr ) ) {
+    if( !AtomicWrite( mResolvedFilePath, text, werr ) ) {
         result.status = SaveResult::Status::Failed;
         result.errorMessage = werr;
         return result;
     }
 
     result.status = SaveResult::Status::Saved;
-    mDirty.Clear();
-    mScaleFromAnchorSet.clear();
-    // Re-baseline the file identity to the just-written file so the NEXT
-    // save isn't falsely refused (the write changed mtime/size) and a
-    // Save-As re-anchors the guard to the new target path.  Updates the
-    // ClearAll-surviving member too, so the baseline survives the next
-    // D2 re-derive.
-    mJob.RefreshCstLoadFileIdentity( filePath.c_str() );
     return result;
 }
 

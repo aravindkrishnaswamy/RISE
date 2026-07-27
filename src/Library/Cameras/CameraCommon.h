@@ -58,7 +58,7 @@ namespace RISE
 			Matrix4				mxTrans;			/// Transformation matrix of this camera
 			Vector3				orientation;		/// Orientation (Pitch,Roll,Yaw)
 			Vector2				target_orientation;	/// Orientation relative to a target
-			const bool			from_onb;			/// Was this camera created with an ONB passed in explicitly?
+			bool				from_onb;			/// Is this camera currently represented by an explicit ONB?
 
 			// Non ONB specifying version
 			CameraCommon(
@@ -125,8 +125,11 @@ namespace RISE
 			inline Scalar  GetPixelRateStored()           const { return pixelRate; }
 			inline Vector3 GetEulerOrientation()          const { return orientation; }
 			inline Vector2 GetTargetOrientation()         const { return target_orientation; }
-			//! True iff this camera was constructed via an ONB
-			//! constructor (`Add*CameraONB`).  ONB-constructed cameras
+			//! True iff this camera is currently represented by the explicit
+			//! basis installed through an ONB constructor (`Add*CameraONB`).
+			//! Interactive pose math may convert it to an equivalent lookAt/up
+			//! pose transiently, then restores the explicit basis before the
+			//! edit returns.  ONB-represented cameras
 			//! bypass the lookAt/up + target_orientation math in
 			//! `Recompute()`, so the editor's snapshot/clone path
 			//! must refuse to re-create them through the non-ONB
@@ -190,6 +193,52 @@ namespace RISE
 				return mxTrans;
 			}
 
+			//! Current realized orientation basis.  This is the faithful
+			//! orientation source for ONB-constructed cameras because their
+			//! stored lookAt/up fields are intentionally unused.
+			inline OrthonormalBasis3D GetCurrentBasis() const
+			{
+				return frame.GetBasis();
+			}
+
+			//! Convert an explicit-ONB camera to the ray-equivalent editable
+			//! lookAt/up representation used by Orbit/Pan/Zoom/Roll.  The
+			//! concrete camera type and all photographic parameters stay
+			//! unchanged.  A later CST pose commit may encode the realized
+			//! basis back into an `onb_pinhole_camera` chunk.
+			inline void BeginInteractivePoseEdit()
+			{
+				if( !from_onb ) return;
+				const Point3 origin = frame.GetOrigin();
+				const OrthonormalBasis3D basis = frame.GetBasis();
+				const Vector3 w = basis.w();
+				vPosition = origin;
+				vLookAt = Point3(
+					origin.x + w.x, origin.y + w.y, origin.z + w.z );
+				vUp = basis.v();
+				orientation = Vector3( 0, 0, 0 );
+				target_orientation = Vector2( 0, 0 );
+				from_onb = false;
+			}
+
+			//! Exact inverse used by camera-op Undo when the pre-edit camera
+			//! was explicit-ONB.  `RegenerateData()` by the caller rebuilds
+			//! the concrete projection matrix from this restored frame.
+			inline void RestoreInteractiveONBPose(
+				const Point3& origin, const Vector3& u,
+				const Vector3& v, const Vector3& w )
+			{
+				vPosition = origin;
+				vLookAt = Point3(
+					origin.x + w.x, origin.y + w.y, origin.z + w.z );
+				vUp = v;
+				orientation = Vector3( 0, 0, 0 );
+				target_orientation = Vector2( 0, 0 );
+				frame.SetOrigin( origin );
+				frame.SetBasis( OrthonormalBasis3D( u, v, w ) );
+				from_onb = true;
+			}
+
 			inline unsigned int GetWidth( ) const
 			{
 				return frame.GetWidth();
@@ -224,4 +273,3 @@ namespace RISE
 }
 
 #endif
-

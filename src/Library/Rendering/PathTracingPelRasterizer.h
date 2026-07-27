@@ -24,7 +24,9 @@
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/SMSPhotonMap.h"
+#include <atomic>
 #include <stdint.h>
+#include <vector>
 
 namespace RISE
 {
@@ -43,6 +45,14 @@ namespace RISE
 			unsigned int			mVariantMaxPathDepth;
 			bool					mVariantIndirectOnly;
 			bool					mVariantClayOverride;
+			std::atomic<bool>		mInteractiveDenoiseSuppressed;
+			bool                    mCaptureDirectCompanion;
+			mutable IRasterImage*   pDirectCompanionImage;
+			mutable IRasterImage*   pDirectCompanionRawImage;
+			mutable bool            mDirectCompanionDenoised;
+			mutable double          mDirectCompanionRenderSeconds;
+			mutable std::vector<RISEPel> mDirectCompanionSums;
+			mutable std::vector<Scalar>  mDirectCompanionWeights;
 
 			/// SMS photon-aided seeding store.  See BDPTRasterizerBase for
 			/// the full rationale.  Null when smsConfig.photonCount was 0.
@@ -52,6 +62,11 @@ namespace RISE
 			/// Progressive rendering should run to adaptive_max_samples
 			/// when adaptive sampling is enabled.
 			unsigned int GetProgressiveTotalSPP() const override;
+
+#ifdef RISE_ENABLE_OIDN
+			bool ShouldDenoise() const override;
+			void OnBeforeDenoise( double renderElapsedSeconds ) const override;
+#endif
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -74,8 +89,11 @@ namespace RISE
 				const IScene& pScene,
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				RISEPel* pDirectCompanion
 				) const;
+
+			void PostRenderCleanup() const override;
 
 		public:
 			// Deferred photon-map gate (IRasterizer): own light transport, never
@@ -116,6 +134,39 @@ namespace RISE
 			/// to the render loop.
 			void SetIndirectOnly( bool b );
 			void SetClayOverride( bool b );
+
+			//! Enables the RGB Direct companion accumulated by an indirect-only
+			//! pass.  Called only while the rasterizer is parked.
+			void SetCaptureDirectCompanion( bool enabled )
+			{
+				mCaptureDirectCompanion = enabled;
+			}
+			const IRasterImage* GetDirectCompanionImage() const
+			{
+				return mCaptureDirectCompanion ? pDirectCompanionImage : nullptr;
+			}
+			const IRasterImage* GetDirectCompanionRawImage() const
+			{
+				return mCaptureDirectCompanion ? pDirectCompanionRawImage : nullptr;
+			}
+			bool DirectCompanionWasDenoised() const
+			{
+				return mCaptureDirectCompanion && mDirectCompanionDenoised;
+			}
+
+			//! Atomically suppresses end-of-pass OIDN for a BeautyVariant pass
+			//! that became obsolete when a new interaction began.  This is safe
+			//! to set while RasterizeScene is winding down after cancellation.
+			void SetInteractiveDenoiseSuppressed( bool suppressed )
+			{
+				mInteractiveDenoiseSuppressed.store(
+					suppressed, std::memory_order_release );
+			}
+			bool ForTest_IsInteractiveDenoiseSuppressed() const
+			{
+				return mInteractiveDenoiseSuppressed.load(
+					std::memory_order_acquire );
+			}
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const override;
 

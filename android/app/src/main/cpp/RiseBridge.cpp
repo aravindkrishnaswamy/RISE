@@ -1129,14 +1129,17 @@ bool RiseBridge::viewportGetAnimationOptions(double& outTimeStart, double& outTi
     return RISE::RISE_API_SceneEditController_GetAnimationOptions(
         m_viewportController, &outTimeStart, &outTimeEnd, &outNumFrames);
 }
-void RiseBridge::viewportScrubBegin() {
-    if (m_viewportController) RISE::RISE_API_SceneEditController_OnTimeScrubBegin(m_viewportController);
+bool RiseBridge::viewportScrubBegin() {
+    return m_viewportController
+        && RISE::RISE_API_SceneEditController_OnTimeScrubBegin(m_viewportController);
 }
-void RiseBridge::viewportScrub(double t) {
-    if (m_viewportController) RISE::RISE_API_SceneEditController_OnTimeScrub(m_viewportController, t);
+bool RiseBridge::viewportScrub(double t) {
+    return m_viewportController
+        && RISE::RISE_API_SceneEditController_OnTimeScrub(m_viewportController, t);
 }
-void RiseBridge::viewportScrubEnd() {
-    if (m_viewportController) RISE::RISE_API_SceneEditController_OnTimeScrubEnd(m_viewportController);
+bool RiseBridge::viewportScrubEnd() {
+    return m_viewportController
+        && RISE::RISE_API_SceneEditController_OnTimeScrubEnd(m_viewportController);
 }
 void RiseBridge::viewportBeginPropertyScrub() {
     if (m_viewportController) RISE::RISE_API_SceneEditController_BeginPropertyScrub(m_viewportController);

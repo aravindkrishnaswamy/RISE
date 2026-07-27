@@ -47,6 +47,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -185,6 +186,42 @@ protected:
 private:
 	ConcurrencyProof& mProof;
 	unsigned int      mSimulatedRenderMs;
+};
+
+// Admission responsiveness seam: hold an interactive pass open even after
+// it observes cancellation. A direct parked render must release the narrow
+// admission mutex BEFORE waiting for this pass to drain, so UI callbacks can
+// see the published render gate and refuse promptly rather than queueing
+// behind the deliberately stalled cancellation.
+class DelayedInteractiveCancelController : public SceneEditController
+{
+public:
+	explicit DelayedInteractiveCancelController( IJobPriv& job )
+	: SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	std::atomic<bool> passEntered{ false };
+	std::atomic<bool> cancelObserved{ false };
+	std::atomic<bool> allowPassExit{ false };
+	std::atomic<unsigned int> passCount{ 0 };
+
+protected:
+	void DoOneRenderPass() override
+	{
+		const unsigned int pass = passCount.fetch_add( 1, std::memory_order_acq_rel );
+		if( pass > 0 )
+		{
+			// Replacement passes complete immediately. Only the first pass
+			// is held open to make the cancellation/reset handoff
+			// deterministic.
+			return;
+		}
+		passEntered.store( true, std::memory_order_release );
+		while( !IsCancelRequested() )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		cancelObserved.store( true, std::memory_order_release );
+		while( !allowPassExit.load( std::memory_order_acquire ) )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
 };
 
 // A Job subclass whose Rasterize() override participates in the SAME
@@ -1051,6 +1088,9 @@ static void RunPostStopRefusalTest()
 	SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
 	controller->Start( /*suppressInitialRender=*/true );
 	controller->Stop();   // interactive loop AND the agent-render worker are both torn down now
+	controller->Start( /*suppressInitialRender=*/true );
+	Check( !controller->IsRunning(),
+	       "full Stop() is terminal: a later Start cannot resurrect only the interactive thread" );
 
 	SceneEditController::RenderJobId dummyId = SceneEditController::kInvalidRenderJobId;
 	const bool asyncAccepted = controller->SubmitAgentRenderAsync(
@@ -1628,6 +1668,18 @@ static void RunTxnOpenRenderRefusalTest()
 		Check( controller.BeginTransaction(), "transaction opens" );
 		Check( controller.IsTransactionOpen(), "transaction reports open" );
 
+		std::atomic<unsigned int> directCalls{ 0 };
+		Check( !controller.SubmitAgentRenderSync(
+			       [&] { directCalls.fetch_add( 1, std::memory_order_acq_rel ); },
+			       String( "txn-open-direct-sync" ), nullptr, 500 ),
+		       "MONEY (k): direct synchronous agent submission is refused inside the transaction" );
+		Check( !controller.SubmitProductionRenderSync(
+			       [&] { directCalls.fetch_add( 1, std::memory_order_acq_rel ); },
+			       String( "txn-open-direct-production" ), nullptr, 500 ),
+		       "MONEY (k): direct production submission is refused inside the transaction" );
+		Check( directCalls.load( std::memory_order_acquire ) == 0,
+		       "MONEY (k): neither refused direct closure was invoked" );
+
 		AgentRenderParams withOverride;
 		withOverride.camera.hasLocation = true;  withOverride.camera.location = "3.5 0 0";
 		withOverride.camera.hasLookAt   = true;  withOverride.camera.lookAt   = "0 0 0";
@@ -1652,6 +1704,9 @@ static void RunTxnOpenRenderRefusalTest()
 		// Control: the SAME override render succeeds once the transaction
 		// is closed -- the refusal is transaction-scoped, not a broken path.
 		const AgentRenderResult r2 = session->Render( withOverride );
+		if( !r2.ok ) {
+			std::printf( "    post-transaction message=\"%s\"\n", r2.message.c_str() );
+		}
 		Check( r2.ok, "the same WITH-override render succeeds once the transaction is closed" );
 		Check( !r2.png.empty(), "post-transaction override render produces PNG bytes" );
 		Check( r2.cameraOverridden, "post-transaction override render actually applied the camera override" );
@@ -2390,6 +2445,30 @@ protected:
 };
 
 //////////////////////////////////////////////////////////////////////
+// Direct-render teardown seam: holds a caller after it has registered its
+// lifetime with Stop(), but before it acquires render admission.
+//////////////////////////////////////////////////////////////////////
+class DirectAdmissionWaiterController : public SceneEditController
+{
+public:
+	explicit DirectAdmissionWaiterController( IJobPriv& job )
+	: SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+
+	std::atomic<bool> callerRegistered{ false };
+	std::atomic<bool> releaseCaller{ false };
+
+protected:
+	void ForTest_OnDirectRenderBeforeAdmission() override
+	{
+		callerRegistered.store( true, std::memory_order_release );
+		while( !releaseCaller.load( std::memory_order_acquire ) )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+};
+
+//////////////////////////////////////////////////////////////////////
 // (q0) Queued cancellation must survive the worker's per-render Reset().
 // A cancel after an async submission but before the worker starts used to be
 // silently erased, turning Stop/render_cancel into a full render.
@@ -2966,6 +3045,82 @@ static void RunSaveVsRenderRedProveTest()
 	std::remove( scenePath.c_str() );
 
 	std::printf( "=== (t) save-vs-render RED-PROVE: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (t2) SAVE-SNAPSHOT RED-PROVE: RequestSave captures the persistent CST
+//      head before unlocked IO. While the save hook holds IO back, an
+//      agent commit is allowed to replace the live Document. The first
+//      save must write the pre-edit snapshot and leave the newer head
+//      dirty; a second save writes that newer head and clears dirty.
+//
+//      Pre-fix, SaveEngine borrowed Job::pCstDocument after the hook.
+//      Depending on timing this either serialized the post-snapshot edit
+//      while claiming the earlier head, or held a raw pointer that a
+//      writer could free. The exact disk/live split below pins the safe
+//      snapshot linearization point without relying on a UAF crash.
+//////////////////////////////////////////////////////////////////////
+static void RunSaveSnapshotConcurrentEditTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (t2) save serializes an immutable CST snapshot while a newer edit remains dirty ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_save_snapshot.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the save-snapshot scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the save-snapshot scene" );
+	SaveGateMintController controller( *pJob );
+
+	SaveResult firstSave;
+	std::thread saveThread( [&]() {
+		firstSave = controller.RequestSave( scenePath );
+	} );
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !controller.saveHookEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.saveHookEntered.load( std::memory_order_acquire ),
+		"RequestSave captured its snapshot and is parked before IO" );
+	const SaveResult overlappingSave = controller.RequestSave( scenePath );
+	Check( overlappingSave.status == SaveResult::Status::Refused,
+		"MONEY (t2-overlap): a second RequestSave is refused while the first owns the save barrier" );
+	Check( controller.IsSaving(),
+		"MONEY (t2-overlap): refused overlap does not clear the first save's in-flight barrier" );
+
+	const SceneEditController::AgentCommitResult edit = controller.ApplyAgentParamEdit(
+		String( "mat_emit" ), String( "material" ), String( "scale" ), String( "45.0" ), nullptr );
+	Check( edit.applied, "a newer agent edit can commit while snapshot IO is pending" );
+	Check( std::string( controller.SerializedSceneText().c_str() ).find( "scale 45.0" ) != std::string::npos,
+		"live retained Document contains the newer scale 45.0 edit" );
+
+	controller.releaseSaveGate.store( true, std::memory_order_release );
+	saveThread.join();
+	Check( Succeeded( firstSave.status ), "first snapshot save completes successfully" );
+	Check( controller.HasUnsavedChanges(),
+		"MONEY (t2-a): newer head remains dirty after the older snapshot is saved" );
+
+	std::ifstream firstDiskIn( scenePath.c_str(), std::ios::binary );
+	std::stringstream firstDiskBytes;
+	firstDiskBytes << firstDiskIn.rdbuf();
+	const std::string firstDisk = firstDiskBytes.str();
+	Check( firstDisk.find( "scale 30.0" ) != std::string::npos
+	    && firstDisk.find( "scale 45.0" ) == std::string::npos,
+		"MONEY (t2-b): first save wrote exactly the pre-edit snapshot, not the concurrently replaced live Document" );
+
+	const SaveResult secondSave = controller.RequestSave( scenePath );
+	Check( Succeeded( secondSave.status ), "second save writes the newer live head" );
+	Check( !controller.HasUnsavedChanges(), "second save baselines the unchanged newer head as clean" );
+	std::ifstream secondDiskIn( scenePath.c_str(), std::ios::binary );
+	std::stringstream secondDiskBytes;
+	secondDiskBytes << secondDiskIn.rdbuf();
+	Check( secondDiskBytes.str().find( "scale 45.0" ) != std::string::npos,
+		"MONEY (t2-c): second save persisted the newer edit" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -4500,6 +4655,520 @@ static void RunAgentRenderRestoresPersistentCallbackRedProveTest()
 	std::printf( "=== (z4) agent render restores persistent callback: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+// (z5) The legacy RequestProductionRender entry point pauses and restarts
+// only the interactive loop.  It must not call full Stop(), which also
+// retires the dedicated agent-render worker permanently.
+static void RunLegacyProductionPreservesAgentWorkerTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (z5) legacy production render preserves the agent worker ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_legacy_production_worker.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the legacy-production scene (z5)" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the legacy-production scene (z5)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+	Check( controller.RequestProductionRender(),
+	       "legacy RequestProductionRender completes successfully (z5)" );
+	Check( controller.SubmitAgentRenderSync(
+		       [] {}, String( "post-legacy-production" ), nullptr, 2000 ),
+	       "MONEY (z5): agent-render worker still accepts work after legacy production" );
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+// (z6) A coordinated render and an editor gesture must never overlap.
+// Gesture-first submissions atomically finalize the interaction before
+// claiming the render gate; render-first admission makes pointer/scrub begin
+// no-op until the queued worker completes.
+static void RunGestureRenderAdmissionTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (z6) gestures and coordinated renders exclude each other ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_gesture_render_admission.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the gesture-admission scene (z6)" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the gesture-admission scene (z6)" );
+
+	// Gesture first: every render boundary must finalize the live interaction,
+	// close its composite, and only then invoke the render closure.
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+	controller.SetTool( SceneEditController::Tool::OrbitCamera );
+	std::atomic<unsigned int> finalizedRenderCalls{ 0 };
+	std::atomic<unsigned int> finalizationOrderFailures{ 0 };
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "z6: AgentSession wraps the gesture-admission Job" );
+	if( session ) session->AttachController( &controller );
+
+	controller.OnPointerDown( Point2( 8.0, 8.0 ) );
+	Check( controller.Editor().IsCompositeOpen(),
+	       "z6: pointer-down opens the camera gesture composite" );
+	Check( controller.SubmitAgentRenderSync(
+		       [&] {
+			       if( controller.ForTest_PointerDown()
+			        || controller.Editor().IsCompositeOpen() )
+				       finalizationOrderFailures.fetch_add( 1, std::memory_order_acq_rel );
+			       finalizedRenderCalls.fetch_add( 1, std::memory_order_acq_rel );
+		       },
+		       String( "pointer-gesture-render" ), nullptr, 500 ),
+	       "MONEY (z6): a coordinated render finalizes an open pointer gesture before running" );
+	Check( !controller.Editor().IsCompositeOpen(),
+	       "MONEY (z6): coordinated render closes the pointer composite before its scene claim" );
+	if( session )
+	{
+		AgentRenderParams withCameraOverride;
+		withCameraOverride.camera.hasLocation = true;
+		withCameraOverride.camera.location = "0 0 4";
+		const AgentRenderResult overrideResult = session->Render( withCameraOverride );
+		Check( overrideResult.ok,
+		       "MONEY (z6): a direct parked camera-override render runs after pointer finalization" );
+	}
+	controller.OnPointerUp( Point2( 8.0, 8.0 ) );
+	Check( !controller.Editor().IsCompositeOpen(),
+	       "z6: a late pointer-up is harmless after render-boundary finalization" );
+
+	controller.OnTimeScrubBegin();
+	Check( controller.Editor().IsCompositeOpen(),
+	       "z6: timeline scrub begin opens its composite" );
+	Check( controller.SubmitProductionRenderSync(
+		       [&] {
+			       if( controller.Editor().IsCompositeOpen() )
+				       finalizationOrderFailures.fetch_add( 1, std::memory_order_acq_rel );
+			       finalizedRenderCalls.fetch_add( 1, std::memory_order_acq_rel );
+		       },
+		       String( "timeline-gesture-render" ), nullptr, 500 ),
+	       "MONEY (z6): a production render finalizes an open timeline scrub before running" );
+	Check( !controller.Editor().IsCompositeOpen(),
+	       "MONEY (z6): production render closes the timeline composite before its scene claim" );
+	controller.OnTimeScrubEnd();
+	Check( !controller.Editor().IsCompositeOpen(),
+	       "z6: a late timeline end is harmless after render-boundary finalization" );
+
+	controller.BeginPropertyScrub();
+	Check( controller.SubmitAgentRenderSync(
+		       [&] {
+			       if( controller.ForTest_ScrubInProgress() )
+				       finalizationOrderFailures.fetch_add( 1, std::memory_order_acq_rel );
+			       finalizedRenderCalls.fetch_add( 1, std::memory_order_acq_rel );
+		       },
+		       String( "property-gesture-render" ), nullptr, 500 ),
+	       "MONEY (z6): a coordinated render finalizes an active property scrub before running" );
+	controller.EndPropertyScrub();
+	Check( finalizedRenderCalls.load( std::memory_order_acquire ) == 3,
+	       "MONEY (z6): every gesture-first render closure ran exactly once" );
+	Check( finalizationOrderFailures.load( std::memory_order_acquire ) == 0,
+	       "MONEY (z6): every render closure observes its interaction already finalized at closure entry" );
+	if( session ) session->AttachController( nullptr );
+	controller.Stop();
+
+	// Render wins: hold its worker after admission but before mMutex. The
+	// begin-side gate checks must refuse promptly in precisely this window.
+	QueuedCancellationSeamController gated( *pJob );
+	Check( gated.SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+	       "z6: two-pane layout is ready for indexed-pointer admission coverage" );
+	gated.OnTimeScrubBegin();
+	gated.OnTimeScrub( Scalar( 0.2 ) );
+	gated.OnTimeScrubEnd();
+	Check( gated.LastSceneTime() == Scalar( 0.2 ),
+	       "z6: undo admission probe has a real timeline edit to protect" );
+	Check( gated.SetSelection( SceneEditController::Category::Camera, String() ),
+	       "z6: property admission probe selects the active camera" );
+	SceneEditController::RenderJobId renderId = SceneEditController::kInvalidRenderJobId;
+	std::atomic<bool> renderClosureRan{ false };
+	Check( gated.SubmitAgentRenderAsync(
+		       [&] { renderClosureRan.store( true, std::memory_order_release ); },
+		       String( "render-first-gesture-gate" ), &renderId ),
+	       "z6: render-first submission is accepted" );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !gated.workerHookEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( gated.workerHookEntered.load( std::memory_order_acquire ),
+	       "z6: admitted render is held before its mMutex acquisition" );
+
+	if( session )
+	{
+		session->AttachController( &gated );
+		AgentRenderParams queuedOverride;
+		queuedOverride.camera.hasLocation = true;
+		queuedOverride.camera.location = "0 0 4.5";
+		const AgentRenderResult queuedOverrideResult = session->Render( queuedOverride );
+		Check( !queuedOverrideResult.ok,
+		       "MONEY (z6): a direct override render cannot bypass an already-admitted coordinated render" );
+	}
+
+	gated.SetTool( SceneEditController::Tool::OrbitCamera );
+	const Scalar timeBeforeQueuedCallbacks = gated.LastSceneTime();
+	const unsigned int paneBeforeQueuedCallbacks = gated.ForTest_CurrentPane();
+	gated.Undo();
+	Check( gated.LastSceneTime() == timeBeforeQueuedCallbacks,
+	       "MONEY (z6): undo cannot mutate history while an admitted render is queued" );
+	Check( !gated.SetProperty( String( "fov" ), String( "41" ) ),
+	       "MONEY (z6): property apply is refused while an admitted render is queued" );
+	Check( !gated.SetSelection(
+		       SceneEditController::Category::Object, String( "obj_sph" ) ),
+	       "MONEY (z6): selection mutation is refused while an admitted render is queued" );
+	const SceneEditController::AgentCommitResult queuedCommit =
+		gated.ApplyAgentParamEdit(
+			String( "mat_emit" ), String( "lambertian_luminaire_material" ),
+			String( "scale" ), String( "31.0" ), nullptr );
+	Check( !queuedCommit.applied && queuedCommit.retriable,
+	       "MONEY (z6): the shared agent write funnel refuses retriably while a render owns admission" );
+	Check( !gated.SetPrimaryPane( 1 ),
+	       "MONEY (z6): primary-pane mutation is refused while an admitted render is queued" );
+	Check( gated.GetPrimaryPane() == 0,
+	       "MONEY (z6): refused primary-pane mutation leaves the primary unchanged" );
+	Check( !gated.SetPaneRenderMode( 1, "normals" ),
+	       "MONEY (z6): pane render-mode mutation is refused while an admitted render is queued" );
+	Check( !gated.SetPaneSurfaceDims( 1, 320, 180 ),
+	       "MONEY (z6): pane surface mutation is refused while an admitted render is queued" );
+	Check( !gated.SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
+	       "MONEY (z6): layout mutation is refused while an admitted render is queued" );
+	Check( gated.GetViewportLayout() == SceneEditController::ViewportLayout::TwoH,
+	       "MONEY (z6): refused layout mutation leaves the visible pane set unchanged" );
+	gated.OnPointerDown( Point2( 9.0, 9.0 ) );
+	Check( !gated.Editor().IsCompositeOpen(),
+	       "MONEY (z6): pointer-down is refused while an admitted render is queued" );
+	gated.OnPointerUp( Point2( 9.0, 9.0 ) );
+	Check( !gated.OnPanePointerDown( 1, Point2( 9.0, 9.0 ) ),
+	       "MONEY (z6): indexed pointer-down is refused before mutating pane state while a render is queued" );
+	Check( gated.ForTest_CurrentPane() == paneBeforeQueuedCallbacks,
+	       "MONEY (z6): a refused indexed pointer-down does not switch the realized pane" );
+	Check( !gated.OnTimeScrubBegin(),
+	       "MONEY (z6): timeline begin reports its queued-render refusal" );
+	Check( !gated.Editor().IsCompositeOpen(),
+	       "MONEY (z6): timeline scrub begin is refused while an admitted render is queued" );
+	Check( !gated.OnTimeScrub( Scalar( 0.75 ) ),
+	       "MONEY (z6): timeline value reports its queued-render refusal" );
+	Check( gated.LastSceneTime() == timeBeforeQueuedCallbacks,
+	       "MONEY (z6): a timeline value callback cannot mutate scene time while an admitted render is queued" );
+	Check( !gated.OnTimeScrubEnd(),
+	       "MONEY (z6): timeline end reports its queued-render refusal" );
+	const SaveResult queuedSave = gated.RequestSave( scenePath );
+	Check( queuedSave.status == SaveResult::Status::Refused,
+	       "MONEY (z6): save refuses promptly while a coordinated render owns admission" );
+
+	gated.releaseWorkerGate.store( true, std::memory_order_release );
+	Check( gated.WaitForRenderJob( renderId, 5000 ),
+	       "z6: the admitted render completes after its worker gate is released" );
+	Check( renderClosureRan.load( std::memory_order_acquire ),
+	       "z6: the admitted render closure actually ran" );
+
+	gated.OnPointerDown( Point2( 10.0, 10.0 ) );
+	Check( gated.Editor().IsCompositeOpen(),
+	       "z6: a new pointer gesture opens normally after the render completes" );
+	gated.OnPointerUp( Point2( 10.0, 10.0 ) );
+	Check( !gated.Editor().IsCompositeOpen(),
+	       "z6: the post-render pointer gesture closes normally" );
+	Check( gated.BeginTransaction(),
+	       "MONEY (z6): no orphan composite remains to block a later transaction" );
+	Check( gated.RollbackTransaction(),
+	       "z6: the post-render transaction closes cleanly" );
+	if( session ) session->AttachController( nullptr );
+	gated.Stop();
+
+	// Direct camera/film-override renders now publish the same admission
+	// gate. Hold one inside its closure (and therefore across its mMutex
+	// ownership) and prove UI begin/save callbacks fail fast instead of
+	// queueing behind the render and applying after it finishes.
+	SceneEditController direct( *pJob, /*interactiveRasterizer*/0 );
+	std::atomic<bool> directEntered{ false };
+	std::atomic<bool> releaseDirect{ false };
+	std::atomic<bool> directReturned{ false };
+	std::thread directThread( [&] {
+		const bool ran = direct.RunPreviewRenderParked( [&] {
+			directEntered.store( true, std::memory_order_release );
+			while( !releaseDirect.load( std::memory_order_acquire ) )
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		} );
+		directReturned.store( ran, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !directEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( directEntered.load( std::memory_order_acquire ),
+	       "z6: direct parked render is held while it owns the scene" );
+	Check( RunWatchdogged( "timeline begin during direct parked render", 200, [&] {
+		       direct.OnTimeScrubBegin();
+	       } ),
+	       "MONEY (z6): timeline begin does not wait behind a direct parked render" );
+	Check( RunWatchdogged( "timeline value during direct parked render", 200, [&] {
+		       direct.OnTimeScrub( Scalar( 0.9 ) );
+	       } ),
+	       "MONEY (z6): timeline value does not wait behind a direct parked render" );
+	Check( RunWatchdogged( "property begin during direct parked render", 200, [&] {
+		       direct.BeginPropertyScrub();
+	       } ),
+	       "MONEY (z6): property begin does not wait behind a direct parked render" );
+	std::atomic<int> directSaveStatus{ -1 };
+	Check( RunWatchdogged( "save during direct parked render", 200, [&] {
+		       const SaveResult r = direct.RequestSave( scenePath );
+		       directSaveStatus.store( static_cast<int>( r.status ), std::memory_order_release );
+	       } ),
+	       "MONEY (z6): save does not wait behind a direct parked render" );
+	Check( directSaveStatus.load( std::memory_order_acquire )
+	           == static_cast<int>( SaveResult::Status::Refused ),
+	       "MONEY (z6): save reports refusal while a direct parked render owns admission" );
+	std::atomic<std::uint64_t> proposalIdDuringDirect{ 0 };
+	Check( RunWatchdogged( "proposal staging during direct parked render", 200, [&] {
+		       SceneEditController::AgentProposal p;
+		       p.target = String( "mat_emit" );
+		       p.entityKind = String( "lambertian_luminaire_material" );
+		       p.param = String( "scale" );
+		       p.value = String( "32.0" );
+		       proposalIdDuringDirect.store(
+			       direct.StageProposal( p ), std::memory_order_release );
+	       } ),
+	       "MONEY (z6): inert proposal staging does not wait behind a direct render's scene lock" );
+	Check( proposalIdDuringDirect.load( std::memory_order_acquire ) != 0,
+	       "MONEY (z6): proposal staged during a render receives a real id" );
+	const std::vector<SceneEditController::AgentProposal> proposalsDuringDirect =
+		direct.ListProposals();
+	Check( proposalsDuringDirect.size() == 1
+	       && proposalsDuringDirect[0].id
+	            == proposalIdDuringDirect.load( std::memory_order_acquire )
+	       && proposalsDuringDirect[0].status == String( "pending" ),
+	       "MONEY (z6): proposal snapshots remain available while a render owns the scene" );
+	std::atomic<bool> coordinatedAcceptedDuringDirect{ true };
+	Check( RunWatchdogged( "coordinated submission during direct parked render", 200, [&] {
+		       const bool accepted = direct.SubmitAgentRenderAsync(
+			       [] {}, String( "must-refuse-behind-direct" ), nullptr );
+		       coordinatedAcceptedDuringDirect.store( accepted, std::memory_order_release );
+	       } ),
+	       "MONEY (z6): coordinated submission does not wait behind a direct parked render" );
+	Check( !coordinatedAcceptedDuringDirect.load( std::memory_order_acquire ),
+	       "MONEY (z6): coordinated submission refuses while a direct parked render owns admission" );
+	releaseDirect.store( true, std::memory_order_release );
+	directThread.join();
+	Check( directReturned.load( std::memory_order_acquire ),
+	       "z6: direct parked render completes after release" );
+	Check( direct.BeginTransaction(),
+	       "MONEY (z6): refused direct-render UI callbacks leave no orphan gesture state" );
+	Check( direct.RollbackTransaction(),
+	       "z6: direct-render post-check transaction closes cleanly" );
+	Check( direct.SubmitAgentRenderSync(
+		       [] {}, String( "post-direct-admission" ), nullptr, 2000 ),
+	       "MONEY (z6): refused property begin leaves no scrub flag after the direct render" );
+
+	// The opposite running order must also fail fast: once a coordinated
+	// worker is inside its render-duration mMutex hold, a direct override
+	// must inspect the shared gate before trying that mutex.
+	std::atomic<bool> coordinatedEntered{ false };
+	std::atomic<bool> releaseCoordinated{ false };
+	SceneEditController::RenderJobId coordinatedId =
+		SceneEditController::kInvalidRenderJobId;
+	Check( direct.SubmitAgentRenderAsync(
+		       [&] {
+			       coordinatedEntered.store( true, std::memory_order_release );
+			       while( !releaseCoordinated.load( std::memory_order_acquire ) )
+				       std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		       },
+		       String( "running-coordinated-gate" ), &coordinatedId ),
+	       "z6: coordinated running-render probe is accepted" );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !coordinatedEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( coordinatedEntered.load( std::memory_order_acquire ),
+	       "z6: coordinated worker is held inside its render-duration lock" );
+	std::atomic<bool> directAcceptedDuringCoordinated{ true };
+	Check( RunWatchdogged( "direct submission during coordinated render", 200, [&] {
+		       const bool accepted = direct.RunPreviewRenderParked( [] {} );
+		       directAcceptedDuringCoordinated.store( accepted, std::memory_order_release );
+	       } ),
+	       "MONEY (z6): direct submission does not wait behind a coordinated render" );
+	Check( !directAcceptedDuringCoordinated.load( std::memory_order_acquire ),
+	       "MONEY (z6): direct submission refuses while a coordinated render owns admission" );
+	releaseCoordinated.store( true, std::memory_order_release );
+	Check( direct.WaitForRenderJob( coordinatedId, 2000 ),
+	       "z6: coordinated running-render probe completes after release" );
+	direct.Stop();
+
+	// A direct parked render also has to cancel any interactive pass already
+	// in flight. Keep that pass deliberately stalled AFTER it observes the
+	// cancel and prove the direct caller does not retain admission while it
+	// waits. Retaining admission here wedges every guarded UI callback for
+	// the full cancellation delay even though the render gate is already
+	// published and the callback should simply refuse.
+	DelayedInteractiveCancelController delayedCancel( *pJob );
+	delayedCancel.Start( /*suppressInitialRender=*/false );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !delayedCancel.passEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( delayedCancel.passEntered.load( std::memory_order_acquire ),
+	       "z6: delayed-cancel interactive pass is running" );
+	std::atomic<bool> parkedDirectReturned{ false };
+	std::atomic<bool> parkedDirectStartedCancelled{ true };
+	std::thread parkedDirectThread( [&] {
+		const bool ok = delayedCancel.RunPreviewRenderParked( [&] {
+			parkedDirectStartedCancelled.store(
+				delayedCancel.IsCancelRequested(), std::memory_order_release );
+		} );
+		parkedDirectReturned.store( ok, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !delayedCancel.cancelObserved.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( delayedCancel.cancelObserved.load( std::memory_order_acquire ),
+	       "z6: direct parked render requested interactive cancellation" );
+	Check( RunWatchdogged( "UI callback while direct admission waits for interactive cancellation", 200, [&] {
+		       delayedCancel.OnTimeScrubBegin();
+	       } ),
+	       "MONEY (z6): direct render releases admission before waiting for an interactive pass to drain" );
+	Check( !delayedCancel.Editor().IsCompositeOpen(),
+	       "MONEY (z6): the prompt callback observes the render gate and leaves no scrub composite" );
+	delayedCancel.allowPassExit.store( true, std::memory_order_release );
+	parkedDirectThread.join();
+	Check( parkedDirectReturned.load( std::memory_order_acquire ),
+	       "z6: direct parked render proceeds after the cancelled interactive pass drains" );
+	Check( !parkedDirectStartedCancelled.load( std::memory_order_acquire ),
+	       "MONEY (z6): direct render resets the interactive pass's cancellation before its own closure" );
+	Check( delayedCancel.ForTest_WaitForRenders( 2, 5000 ),
+	       "MONEY (z6): cancellation by a direct render requeues the interrupted pane without requiring a later edit" );
+	delayedCancel.Stop();
+
+	// An explicit cancellation that arrives while the direct caller is still
+	// draining the old interactive pass must survive the direct path's
+	// mandatory per-render Reset().
+	DelayedInteractiveCancelController latchedDirectCancel( *pJob );
+	latchedDirectCancel.Start( /*suppressInitialRender=*/false );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !latchedDirectCancel.passEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( latchedDirectCancel.passEntered.load( std::memory_order_acquire ),
+	       "z6: cancellation-latch probe starts an interactive pass" );
+	std::atomic<bool> latchedDirectReturned{ false };
+	std::atomic<bool> latchedDirectSawCancel{ false };
+	std::thread latchedDirectThread( [&] {
+		const bool ok = latchedDirectCancel.RunPreviewRenderParked( [&] {
+			latchedDirectSawCancel.store(
+				latchedDirectCancel.IsCancelRequested(), std::memory_order_release );
+		} );
+		latchedDirectReturned.store( ok, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !latchedDirectCancel.cancelObserved.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( latchedDirectCancel.cancelObserved.load( std::memory_order_acquire ),
+	       "z6: cancellation-latch direct render is waiting before Reset()" );
+	latchedDirectCancel.CancelAgentRender_();
+	latchedDirectCancel.allowPassExit.store( true, std::memory_order_release );
+	latchedDirectThread.join();
+	Check( latchedDirectReturned.load( std::memory_order_acquire ),
+	       "z6: explicitly-cancelled direct render still drains normally" );
+	Check( latchedDirectSawCancel.load( std::memory_order_acquire ),
+	       "MONEY (z6): explicit direct-render cancellation survives the post-park Reset()" );
+	latchedDirectCancel.Stop();
+
+	// Full Stop is terminal for direct callers too. A controller that never
+	// started its interactive thread used to return from Stop immediately,
+	// leaving an external RunPreviewRenderParked closure able to touch a
+	// destroyed controller/Job.
+	SceneEditController directStopDrain( *pJob, /*interactiveRasterizer*/0 );
+	std::atomic<bool> directStopEntered{ false };
+	std::atomic<bool> allowDirectStopExit{ false };
+	std::atomic<bool> directStopReturned{ false };
+	std::thread directStopRenderThread( [&] {
+		directStopDrain.RunPreviewRenderParked( [&] {
+			directStopEntered.store( true, std::memory_order_release );
+			while( !allowDirectStopExit.load( std::memory_order_acquire ) )
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		} );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !directStopEntered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( directStopEntered.load( std::memory_order_acquire ),
+	       "z6: direct Stop-drain probe owns the scene" );
+	std::thread directStopThread( [&] {
+		directStopDrain.Stop();
+		directStopReturned.store( true, std::memory_order_release );
+	} );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	Check( !directStopReturned.load( std::memory_order_acquire ),
+	       "MONEY (z6): Stop waits for a caller-thread direct render to leave its closure" );
+	allowDirectStopExit.store( true, std::memory_order_release );
+	directStopRenderThread.join();
+	directStopThread.join();
+	Check( directStopReturned.load( std::memory_order_acquire ),
+	       "z6: Stop completes after the direct render releases the scene" );
+
+	// A caller that entered before Stop but has not yet acquired admission
+	// must be drained too. Counting only the admitted occupant lets Stop
+	// observe zero and return while this caller is still about to touch the
+	// controller.
+	DirectAdmissionWaiterController directAdmissionWaiter( *pJob );
+	std::atomic<bool> waiterAccepted{ true };
+	std::atomic<bool> waiterStopReturned{ false };
+	std::thread directWaiterThread( [&] {
+		const bool accepted =
+			directAdmissionWaiter.RunPreviewRenderParked( [] {} );
+		waiterAccepted.store( accepted, std::memory_order_release );
+	} );
+	{
+		const auto deadline =
+			std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		while( !directAdmissionWaiter.callerRegistered.load( std::memory_order_acquire )
+		    && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	Check( directAdmissionWaiter.callerRegistered.load( std::memory_order_acquire ),
+	       "z6: direct pre-admission waiter registered before teardown" );
+	std::thread waiterStopThread( [&] {
+		directAdmissionWaiter.Stop();
+		waiterStopReturned.store( true, std::memory_order_release );
+	} );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	Check( !waiterStopReturned.load( std::memory_order_acquire ),
+	       "MONEY (z6): Stop drains a pre-existing direct caller that has not acquired admission" );
+	directAdmissionWaiter.releaseCaller.store( true, std::memory_order_release );
+	directWaiterThread.join();
+	waiterStopThread.join();
+	Check( !waiterAccepted.load( std::memory_order_acquire ),
+	       "z6: the drained pre-admission caller refuses after terminal Stop" );
+	Check( waiterStopReturned.load( std::memory_order_acquire ),
+	       "z6: Stop completes after the pre-admission caller retires" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 // (guard) render-owns-scene: a UI-callable mMutex-locking method, called on
 // another thread WHILE a production/agent render owns the scene (holds mMutex
 // across its closure), must NO-OP and return immediately -- never block on
@@ -4596,6 +5265,7 @@ int main()
 	RunMintClobberRedProveTest();
 	RunLostEditWedgeRedProveTest();
 	RunSaveVsRenderRedProveTest();
+	RunSaveSnapshotConcurrentEditTest();
 	RunChurnConcurrentInteractiveTest();
 	RunProductionTripleConcurrencyProofTest();
 	RunDirectRasterizeRedProveTest();
@@ -4609,6 +5279,8 @@ int main()
 	RunProgressSlotAtomicClearTest();
 	RunComposedPriorCapturedInSlotRedProveTest();
 	RunAgentRenderRestoresPersistentCallbackRedProveTest();
+	RunLegacyProductionPreservesAgentWorkerTest();
+	RunGestureRenderAdmissionTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

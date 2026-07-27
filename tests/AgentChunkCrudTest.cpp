@@ -509,16 +509,14 @@ static void TestRemove()
 	Check( sess->ReadDocument().find( "sphere_geometry\n{\n\tname dup" ) != std::string::npos,
 	       "the geometry 'dup' survives" );
 
-	// KIND VERIFICATION (review round 1 P2): a UNIQUELY-named target whose
-	// kind does NOT match the requested one must be REFUSED, not removed --
-	// DocFindByNameAnyRole's single-match path ignores the suffix, so without
-	// the post-resolve role check this would delete the geometry.
+	// KIND VERIFICATION: kind is now a hard lookup constraint even for a
+	// unique bare name, so a mismatched target resolves as not found.
 	const std::string headKind = sess->ReadDocument();
 	Agent::AgentChunkResult rmWrongKind = sess->RemoveChunk( "sph", "material" );
 	Check( !rmWrongKind.applied && rmWrongKind.status == "rejected",
 	       "remove of a uniquely-named target under the WRONG kind is refused" );
-	Check( rmWrongKind.message.find( "sphere_geometry" ) != std::string::npos,
-	       "the wrong-kind refusal names the actual kind" );
+	Check( !rmWrongKind.message.empty(),
+	       "the wrong-kind refusal carries a diagnostic" );
 	Check( sess->ReadDocument() == headKind, "wrong-kind refusal mutated nothing" );
 
 	sess.reset();
@@ -903,13 +901,30 @@ static void TestLiveControllerPath()
 			"omni_light\n{\nname fillkey\nposition -2 3 1\ncolor 1 1 1\npower 1.0\n}" );
 		Check( rRetry.applied, "the identical insert succeeds after the gesture completes" );
 
-		// (3) Conflict through the live path.
+		// (3) A UI scrub is also an open EditHistory composite.  Agent
+		// commits must not land inside it: the UI thread would otherwise
+		// absorb the agent record into "Scrub", breaking both undo grouping
+		// and the transaction boundary.
+		c.OnTimeScrubBegin();
+		const std::string headBeforeScrub = sess->ReadDocument();
+		Agent::AgentChunkResult rScrub = sess->InsertChunk(
+			"omni_light\n{\nname gesturekey\nposition 2 3 1\ncolor 1 1 1\npower 1.0\n}" );
+		Check( !rScrub.applied && rScrub.status == "rejected",
+		       "mid-scrub insert refused" );
+		Check( rScrub.retriable, "the scrub refusal is RETRIABLE (transient)" );
+		Check( sess->ReadDocument() == headBeforeScrub, "the scrub refusal mutated nothing" );
+		c.OnTimeScrubEnd();
+		Agent::AgentChunkResult rScrubRetry = sess->InsertChunk(
+			"omni_light\n{\nname gesturekey\nposition 2 3 1\ncolor 1 1 1\npower 1.0\n}" );
+		Check( rScrubRetry.applied, "the identical insert succeeds after the scrub completes" );
+
+		// (4) Conflict through the live path.
 		RISE::Cst::CstHeadVersion stale = sess->HeadVersion();
 		stale.revision += 50;
 		Agent::AgentChunkResult rC = sess->RemoveChunk( "livekey", "", &stale );
 		Check( !rC.applied && rC.status == "conflict", "stale-base remove conflicts through the controller" );
 
-		// (4) Remove through the live path.
+		// (5) Remove through the live path.
 		Agent::AgentChunkResult rRm = sess->RemoveChunk( "livekey" );
 		Check( rRm.applied, "live remove applied via the controller" );
 		Check( pJob->GetLights()->GetItem( "livekey" ) == nullptr,
@@ -1458,12 +1473,15 @@ static void TestUnnamedRepeatableTimeline()
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "G6 scenario-B fixture loads" );
 		if( !pJob ) return;
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
 		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &controller );
 
 		Check( sess->InsertChunk(
 			"timeline\n{\n\telement_type object\n\telement obj_sph\n\tparam position\n"
 			"\ttime 0\n\tvalue 0 0 0\n\ttime 1\n\tvalue 1 0 0\n}" ).applied,
 			"scenario-B: the sole unnamed timeline inserts" );
+		const std::string documentWithTimeline = sess->ReadDocument();
 
 		Agent::AgentChunkResult rmOne = sess->RemoveChunk( "timeline", "timeline" );
 		Check( rmOne.applied && rmOne.status == "applied",
@@ -1471,7 +1489,14 @@ static void TestUnnamedRepeatableTimeline()
 		Check( rmOne.kind == "timeline", "the sole-timeline remove echoes the keyword" );
 		Check( sess->ReadDocument().find( "timeline" ) == std::string::npos,
 		       "the timeline chunk is gone from the head" );
+		controller.Undo();
+		Check( sess->ReadDocument() == documentWithTimeline,
+		       "Undo restores the sole unnamed timeline byte-for-byte" );
+		controller.Redo();
+		Check( sess->ReadDocument().find( "timeline" ) == std::string::npos,
+		       "Redo removes the sole unnamed timeline again" );
 
+		sess->AttachController( nullptr );
 		sess.reset();
 		pJob->release();
 		std::remove( tmp.c_str() );

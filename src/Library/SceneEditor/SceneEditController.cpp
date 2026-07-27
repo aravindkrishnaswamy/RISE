@@ -44,8 +44,10 @@
 #include "FilmIntrospection.h"
 #include "MaterialIntrospection.h"
 #include "MediaIntrospection.h"
-#include "PainterIntrospection.h"     // Entity-creation slice: Category::Painter property rows
+#include "CstIntrospection.h"         // Generic descriptor+CST property rows (Painter, Geometry, ...) -- GUI redesign 2026-07-22
+#include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
+#include "FileIdentity.h"             // immutable loaded-file identity captured with save snapshots
 #include "../Interfaces/IMaterialManager.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPainterManager.h"
@@ -67,7 +69,9 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/InteractivePelRasterizer.h"
+#include "../Rendering/PathTracingPelRasterizer.h"
 #include "../Rendering/FrameStore.h"  // L6e-3 — per-pass interactive FrameStore
+#include "../Rendering/FrameSink.h"
 #include "../Interfaces/IRasterImageWriter.h"  // Toolkit slice 1 — BufferRasterImageWriter adapter for CopyInteractiveFrame
 #include "../Rendering/Rasterizer.h"  // L6e-3 — Implementation::Rasterizer for SetFrameStore
 #include "../Scene.h"                 // concrete Scene (transitive scene-state includes); transactional rollback no longer uses CreateSnapshot/RestoreFromSnapshot
@@ -79,6 +83,7 @@
 #include <cstdio>
 #include <ctime>          // for time() used by CloneActiveCamera dedup fallback
 #include <exception>      // Model-B F2 slice S2a: std::exception_ptr / current_exception / rethrow_exception
+#include <memory>
 #include <string>
 
 using namespace RISE;
@@ -117,6 +122,59 @@ static std::atomic<unsigned int>& NextEpoch() {
 }
 
 namespace {
+
+struct LastRenderSinkCallbackFrame
+{
+	const SceneEditController* controller;
+	LastRenderSinkCallbackFrame* previous;
+};
+
+thread_local LastRenderSinkCallbackFrame* gLastRenderSinkCallbackFrame = nullptr;
+
+bool IsInLastRenderSinkCallback( const SceneEditController* controller )
+{
+	for( LastRenderSinkCallbackFrame* frame = gLastRenderSinkCallbackFrame;
+	     frame; frame = frame->previous )
+	{
+		if( frame->controller == controller ) return true;
+	}
+	return false;
+}
+
+class LastRenderSinkCallbackScope
+{
+public:
+	explicit LastRenderSinkCallbackScope( const SceneEditController* controller )
+		: mFrame{ controller, gLastRenderSinkCallbackFrame }
+	{
+		gLastRenderSinkCallbackFrame = &mFrame;
+	}
+	~LastRenderSinkCallbackScope()
+	{
+		gLastRenderSinkCallbackFrame = mFrame.previous;
+	}
+	LastRenderSinkCallbackScope( const LastRenderSinkCallbackScope& ) = delete;
+	LastRenderSinkCallbackScope& operator=( const LastRenderSinkCallbackScope& ) = delete;
+
+private:
+	LastRenderSinkCallbackFrame mFrame;
+};
+
+// A controller-owned sink reference may be the final reference.  Its release
+// can therefore execute arbitrary sink-destructor owner cleanup, including a
+// synchronous attempt to destroy this controller.  Treat that destructor as
+// part of the same lifecycle-unsafe callout region as OutputImage: detach the
+// reference before invoking user code and make Stop/Prepare/Destroy reject
+// re-entrant teardown until the release returns.
+void ReleaseControllerOwnedLastRenderSink(
+	const SceneEditController* controller, IRasterizerOutput*& sink )
+{
+	IRasterizerOutput* held = sink;
+	sink = nullptr;
+	if( !held ) return;
+	LastRenderSinkCallbackScope lifecycleScope( controller );
+	held->release();
+}
 
 // ===================== Render-camera override (Tier 2 / Direction B §5.5) ======
 //
@@ -184,6 +242,61 @@ ICamera* RealizeStandaloneCamera( const CameraSnapshot& s, const IScene& scene )
 	return pCam;   // addref'd by the factory (or nullptr on failure)
 }
 
+//! Resolve a manager-registered scene camera and copy its complete
+//! CameraSnapshot.  Callers serialize scene/manager lifetime with mMutex.
+bool CaptureNamedSceneCameraSnapshot(
+	const IScene& scene, const String& name, CameraSnapshot& out )
+{
+	if( name.size() <= 1 ) return false;
+	const ICameraManager* cameras = scene.GetCameras();
+	const ICamera* camera = cameras ? cameras->GetItem( name.c_str() ) : nullptr;
+	if( !camera ) return false;
+	if( CameraIntrospection::CaptureCameraSnapshot( *camera, out ) ) return true;
+
+	// ONB pinholes cannot be persisted through CameraSnapshot because the CST
+	// form carries an explicit basis.  A viewport override only needs
+	// ray-equivalent state, however.  PinholeCamera::Recompute derives W from
+	// (lookAt - location), so location+W and basis V exactly reproduce the
+	// live camera's realized orientation via the ordinary pinhole factory.
+	const Implementation::CameraCommon* common =
+		dynamic_cast<const Implementation::CameraCommon*>( camera );
+	const Implementation::PinholeCamera* pinhole =
+		dynamic_cast<const Implementation::PinholeCamera*>( camera );
+	if( !common || !pinhole || !common->IsFromONB() ) return false;
+
+	const Point3 loc = common->GetRestLocation();
+	const OrthonormalBasis3D basis = common->GetCurrentBasis();
+	const Vector3 v = basis.v();
+	const Vector3 w = basis.w();
+	out = CameraSnapshot();
+	out.type         = CameraSnapshot::Pinhole;
+	out.location[0]  = loc.x;
+	out.location[1]  = loc.y;
+	out.location[2]  = loc.z;
+	out.lookat[0]    = loc.x + w.x;
+	out.lookat[1]    = loc.y + w.y;
+	out.lookat[2]    = loc.z + w.z;
+	out.up[0]        = v.x;
+	out.up[1]        = v.y;
+	out.up[2]        = v.z;
+	out.exposure     = common->GetExposureTimeStored();
+	out.scanningRate = common->GetScanningRateStored();
+	out.pixelRate    = common->GetPixelRateStored();
+	out.pixelAR      = common->GetPixelAR();
+	out.fov          = pinhole->GetFovStored();
+	out.iso          = pinhole->GetIsoStored();
+	out.fstop        = pinhole->GetFstop();
+	return true;
+}
+
+bool IsCameraChunkKind( const String& kind )
+{
+	const std::string value( kind.c_str() );
+	return value == "camera"
+	    || ( value.size() > 7
+	      && value.compare( value.size() - 7, 7, "_camera" ) == 0 );
+}
+
 }  // namespace
 
 SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiveRasterizer )
@@ -223,10 +336,16 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mCV()
 , mRunning( false )
 , mEditPending( false )
+, mProposalMutex()
 , mSuppressInitialRender( false )
 , mRendering( false )
 , mSaving( false )
 , mAgentRenderBlocksInteractive( false )
+, mDirectRenderStateMutex()
+, mDirectRenderDoneCV()
+, mDirectRenderCallCount( 0 )
+, mDirectRenderStopping( false )
+, mDirectRenderCancelRequested( false )
 , mCancelCount( 0 )
 , mRenderCount( 0 )
 // Model-B F2 slice S2a fix: every mint site does `mNextRenderJobId +=
@@ -386,7 +505,7 @@ void SceneEditController::RebindEditorToJob()
 		slot.realizedMode       = Implementation::ViewportRenderMode {};
 		slot.poseActive         = false;
 		slot.configDirty        = true;
-		slot.dirty              = true;
+		MarkPaneDirtyLocked_( paneIdx );
 		slot.previewScaleSaved  = 1;
 		slot.previewPinnedSaved = false;
 	}
@@ -747,7 +866,73 @@ inline void BuildGizmoHandles_(
 
 SceneEditController::~SceneEditController()
 {
+	// Publish the raw/destructor owner before ANY quiescence wait.  A dirty
+	// callback can re-enter the C destroy shim while this thread is blocked on
+	// a registered Last Render drain; it must observe teardown immediately.
+	mInDestructorTeardown.store( true, std::memory_order_release );
+	mDestructionState.store( DestructionDestroying, std::memory_order_release );
+	// The C-ABI preparation path already closed drain registration and waited;
+	// repeat idempotently for raw C++ destruction and cross-thread teardown.
+	// Raw `delete` from inside a sink callback cannot be made safe because the
+	// destructor has already begun; C-ABI Destroy detects that case before
+	// destruction and rejects it before the destructor begins.
+	if( !IsInLastRenderSinkCallbackOnThisThread() )
+	{
+		QuiesceLastRenderDrains_();
+	}
+	else
+	{
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController: raw C++ destruction from a Last Render sink callback/final release is unsupported; use RISE_API_DestroySceneEditController." );
+	}
+	// Round-7 (P2-3, destructor quiescence-barrier ordering): detach the dirty
+	// listener FIRST.  SetDirtyChangedListener is a quiescence barrier (waits
+	// for callbacksInFlight == 0 unless called from the callback thread itself,
+	// so the T17/T18 destroy-from-callback pattern cannot self-deadlock).
+	// Without this, the only barrier ran in ~SceneEditor -- but mEditor is
+	// declared BEFORE this class's mutexes, so member destruction (reverse
+	// declaration order) tears the mutexes down before that barrier runs: a
+	// cross-thread RISE_API_DestroySceneEditController racing a synchronously
+	// re-entrant dirty callback could touch destroyed mutexes.  In-tree shells
+	// are immune (they marshal async), but the C-ABI advertises hardened
+	// re-entry, so the barrier must precede EVERYTHING in teardown.  After it
+	// returns the listener is empty, so no further callback can re-enter this
+	// controller while the rest of the dtor (and member destruction) proceeds.
+	// Detach + quiesce now, but keep the target alive until Stop has retired all
+	// workers and the terminal mutation gates below are closed.  Its final
+	// destructor is arbitrary owner code and the borrowed Job may already have
+	// been released in the supported raw-C++ destruction pattern.
+	SceneEditor::DirtyChangedPtr retiredDirtyListener =
+		mEditor.CloseDirtyChangedListener();
+	// Round-8 review P2 fix: teardown was marked BEFORE Stop() so
+	// StopInteractive's orphaned-gesture cleanup skips the mJob-routed
+	// CommitPendingCst* calls -- see mInDestructorTeardown's doc and the
+	// no-mJob NOTE just below.
 	Stop();
+	// Stop() clears its transient render-ownership gates on the ordinary path.
+	// Re-close them permanently for the destructor body before releasing any
+	// controller/rasterizer-owned sink reference: a final sink destructor may
+	// re-enter arbitrary public controller methods.  Substantial mutation paths
+	// fail closed on one of these two established gates before taking locks or
+	// touching the partially-retired live scene/register state; lock-free getters
+	// continue to return their last coherent snapshot.
+	{
+		// Publish terminal closure under the ordinary mutation-admission mutex.
+		// The owner is still responsible for quiescing external callers before
+		// beginning C++ object destruction; this barrier serializes admission but
+		// does not replace the language-level lifetime rule.
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+		mRenderOwnsScene.store( true, std::memory_order_release );
+	}
+	// From here onward member/rasterizer releases may execute a retained sink's
+	// final destructor.  Reject recursive lifecycle teardown for this entire
+	// unlocked resource-retirement tail.
+	LastRenderSinkCallbackScope destructorReleaseScope( this );
+	// Release the detached listener only inside the lifecycle scope and after
+	// both terminal mutation gates are visible.  A capture destructor may call
+	// arbitrary controller APIs or attempt recursive destruction.
+	retiredDirtyListener.reset();
 	// NOTE (2026-07-12): deliberately NOT scrubbing the Job's progress slot here (e.g. via
 	// mJob.ClearProgressIfCurrent( &mCancelProgress )) -- this dtor CANNOT touch mJob: several
 	// owners (the test suites' `controller.Stop(); pJob->release();` pattern, with the stack
@@ -760,10 +945,11 @@ SceneEditController::~SceneEditController()
 	// survives in the slot is an exception escaping a restore itself (logged loudly in both
 	// restore guards: RunProductionRenderComposed's ProgressRestoreGuard here and
 	// AgentSession::RenderCore_'s in AgentSession.cpp).
-	if( mInteractiveRasterizer )
+	IRasterizer* retiredInteractiveRasterizer = mInteractiveRasterizer;
+	mInteractiveRasterizer = nullptr;
+	if( retiredInteractiveRasterizer )
 	{
-		mInteractiveRasterizer->release();
-		mInteractiveRasterizer = 0;
+		retiredInteractiveRasterizer->release();
 	}
 	// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): release the
 	// ephemeral BeautyVariant pipeline if one is still installed.  Stop()
@@ -805,7 +991,36 @@ SceneEditController::~SceneEditController()
 		if( slot.frameStore )        { slot.frameStore->release();        slot.frameStore = nullptr; }
 		if( slot.variantRasterizer ) { slot.variantRasterizer->release(); slot.variantRasterizer = nullptr; }
 		if( slot.viewModeCaster )    { slot.viewModeCaster->release();    slot.viewModeCaster = nullptr; }
-		if( slot.paneSink )          { slot.paneSink->release();          slot.paneSink = nullptr; }   // P3a slice 3
+		ReleaseControllerOwnedLastRenderSink( this, slot.paneSink );   // P3a slice 3
+	}
+	for( std::size_t i = 0; i < mPendingSharedDirectPublishes.size(); ++i ) {
+		safe_release( mPendingSharedDirectPublishes[i].image );
+		safe_release( mPendingSharedDirectPublishes[i].rawImage );
+	}
+	mPendingSharedDirectPublishes.clear();
+	if( mLastRenderImage )
+	{
+		mLastRenderImage->release();
+		mLastRenderImage = nullptr;
+	}
+	// Round-8 review P2 fix: drop any last-render delivery that was recorded
+	// but never drained.  Each entry holds an addref on a sink AND on a
+	// (full-resolution) image, so leaking them would leak both.  Do NOT
+	// deliver here -- a sink outliving the controller is not this dtor's
+	// contract to exercise; releasing is the whole cleanup.  Pure
+	// refcounting, same as every other release above (no mJob access).
+	std::vector<PendingLastRenderPublish> retiredPublishes;
+	{
+		std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+		retiredPublishes.swap( mPendingLastRenderPublishes );
+		retiredPublishes.insert( retiredPublishes.end(),
+			mRetiredLastRenderPublishes.begin(), mRetiredLastRenderPublishes.end() );
+		mRetiredLastRenderPublishes.clear();
+	}
+	for( size_t i = 0; i < retiredPublishes.size(); ++i )
+	{
+		ReleaseControllerOwnedLastRenderSink( this, retiredPublishes[i].sink );
+		if( retiredPublishes[i].image ) retiredPublishes[i].image->release();
 	}
 	// Inverse-edit rollback holds NO snapshot — a transaction left open
 	// at teardown needs no resource release; the (uncommitted) live edits
@@ -820,6 +1035,12 @@ void SceneEditController::Start( bool suppressInitialRender )
 	// concurrent Resume/Start can never move-assign onto a still-joinable
 	// mRenderThread (std::terminate) -- see mLifecycleMutex's doc.
 	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
+
+	// Full Stop() is terminal for this controller because it also retires
+	// the dedicated agent-render worker.  In particular, a legacy
+	// RequestProductionRender finishing concurrently with Stop must not
+	// resurrect only the interactive half after teardown has completed.
+	if( mAgentRenderStop.load( std::memory_order_acquire ) ) return;
 
 	bool expected = false;
 	if( !mRunning.compare_exchange_strong( expected, true ) )
@@ -857,10 +1078,13 @@ void SceneEditController::Start( bool suppressInitialRender )
 	// DoOneRenderPass refreshes these on every pass before swapping
 	// in the preview-scale dims, so a scene reload picks up new dims
 	// on the next render without further bookkeeping.
-	if( const IScene* scene = mJob.GetScene() ) {
-		if( const IFilm* film = scene->GetFilm() ) {
-			mFullResW.store( film->GetWidth(),  std::memory_order_release );
-			mFullResH.store( film->GetHeight(), std::memory_order_release );
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( const IScene* scene = mJob.GetScene() ) {
+			if( const IFilm* film = scene->GetFilm() ) {
+				mFullResW.store( film->GetWidth(),  std::memory_order_release );
+				mFullResH.store( film->GetHeight(), std::memory_order_release );
+			}
 		}
 	}
 
@@ -872,28 +1096,266 @@ void SceneEditController::StopInteractive()
 	// Review-round-1 P1: see Start() / mLifecycleMutex's doc.
 	std::lock_guard<std::mutex> lifecycleLk( mLifecycleMutex );
 
-	bool expected = true;
-	if( !mRunning.compare_exchange_strong( expected, false ) )
+	const bool wasRunning = mRunning.exchange( false, std::memory_order_acq_rel );
+	if( wasRunning )
 	{
-		return;  // interactive loop was not running
+		// Trip cancel BEFORE notifying.  Hold mMutex around the wakeup to
+		// prevent a lost wakeup: if we notified outside the lock, the
+		// render thread could be between its predicate check and the
+		// kernel park inside cv.wait, and miss the notify forever — which
+		// would deadlock join() below.  C++ guarantees no missed wakeups
+		// only when the notifier has held the mutex used by the waiter.
+		// Serialize against a direct render's admission/reset handshake. If a
+		// direct occupant is already active, preserve this explicit lifecycle
+		// cancellation across the Reset() it performs after parking the current
+		// interactive pass. A direct call admitted later is not a target of this
+		// StopInteractive invocation.
+		{
+			std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+			std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+			if( mDirectRenderCallCount > 0 )
+			{
+				mDirectRenderCancelRequested.store( true, std::memory_order_release );
+			}
+			mCancelProgress.RequestCancel();
+		}
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+		}
+		mCV.notify_one();
+
+		if( mRenderThread.joinable() )
+		{
+			mRenderThread.join();
+		}
 	}
 
-	// Trip cancel BEFORE notifying.  Hold mMutex around the wakeup to
-	// prevent a lost wakeup: if we notified outside the lock, the
-	// render thread could be between its predicate check and the
-	// kernel park inside cv.wait, and miss the notify forever — which
-	// would deadlock join() below.  C++ guarantees no missed wakeups
-	// only when the notifier has held the mutex used by the waiter.
-	mCancelProgress.RequestCancel();
+	// T0 review: lifecycle teardown is a gesture-cancellation boundary.
+	// Window/view teardown can discard PointerUp / EndPropertyScrub, and a
+	// stale gesture flag would permanently pin a later Start() to one pane
+	// (as well as refusing coordinated renders).  The render thread is joined,
+	// so finalize any live edit, close the matching composites, and publish a
+	// deferred edit for the next Start() to repaint every visible pane.
+	// This cleanup is intentionally idempotent even when `wasRunning` is
+	// false: property/pointer edits are supported while refinement is paused,
+	// so Pause -> gesture -> lost release -> repeated Stop must sanitize the
+	// interaction before Resume starts a new render thread.
+	// Round-8 review P2 fix: NOT on the destructor path.  Every leg of the
+	// cleanup below reaches mJob -- the CommitPendingCst* calls directly
+	// (CstObjectTransformKind -> a full D2 re-derive), and even EndComposite
+	// via SceneEditor::Apply's `mJob->HasRetainedCstDocument()` probe.  This
+	// dtor CANNOT touch mJob: owners legitimately release the Job first (the
+	// `controller.Stop(); pJob->release();` pattern with a stack controller
+	// destroyed afterwards), so a stale-but-non-null mJob here is precisely
+	// the use-after-free the dtor's NOTE documents.  The cleanup's flag/
+	// composite legs exist to sanitize interaction state for a LATER Start(),
+	// and after destruction there is none.  This also keeps the dtor from
+	// blocking on the admission mutex.
+	// The C-ABI destroy shim calls PrepareForDestruction() BEFORE the destructor
+	// raises this flag, so normal Job-live shell teardown still performs the
+	// commit below.  Only raw C++ destruction takes this guarded fallback,
+	// because it cannot prove its borrowed Job is still alive.
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return;
+
+	std::unique_lock<std::recursive_mutex> cleanupAdmission(
+		mRenderAdmissionMutex, std::defer_lock );
+	// Admission is held only for the brief claim/refusal transition, never for
+	// a render's duration.  Wait it out even on an idempotent stop: a paused
+	// lost gesture may be the very reason a concurrent render claim refuses,
+	// and returning on try_lock failure would leave neither side clearing it.
+	// The owner-state check below is what avoids the render-duration mMutex
+	// wait after a claim succeeds.
+	cleanupAdmission.lock();
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+	{
+		// Coordinated renders can hold mMutex for their whole duration.  They
+		// cannot coexist with a live gesture (the same admission gate refuses
+		// one side), so a repeated already-stopped call has nothing to clean and
+		// must return promptly instead of waiting minutes.  Saving is
+		// deliberately NOT an owner here: it writes an immutable snapshot with
+		// mMutex released, can coexist with a paused lost gesture, and its final
+		// head-equality check correctly leaves the scene dirty if this cleanup
+		// commits that gesture while IO is in flight.
+		return;
+	}
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
+		const bool hadPending =
+			mEditor.HasPendingCstObjectTransforms()
+			|| mEditor.HasPendingCstCameraPose();
+		const bool hadInteraction =
+			mPointerDown.load( std::memory_order_acquire )
+		 || mScrubInProgress.load( std::memory_order_acquire )
+		 || mGestureOpenedComposite
+		 || mScrubOpenedComposite
+		 || hadPending;
+		if( hadInteraction )
+		{
+			if( hadPending )
+			{
+				bool commitsOk = mEditor.CommitPendingCstObjectTransforms();
+				commitsOk = mEditor.CommitPendingCstCameraPose() && commitsOk;
+				if( !commitsOk )
+					mInteractionPersistenceFailed.store( true, std::memory_order_release );
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			}
+			if( mGestureOpenedComposite )
+			{
+				mEditor.EndComposite();
+				mGestureOpenedComposite = false;
+			}
+			if( mScrubOpenedComposite )
+			{
+				mEditor.EndComposite();
+				mScrubOpenedComposite = false;
+			}
+			mPointerDown.store( false, std::memory_order_release );
+			mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
+			mScrubInProgress.store( false, std::memory_order_release );
+			mGizmoDrag.active = false;
+			SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+			mPolishState.store( static_cast<int>( PolishState::None ),
+			                    std::memory_order_release );
+			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+			mEditPending.store( true, std::memory_order_release );
+		}
+		mTimelineScrubWatchdogRecovered = false;
 	}
-	mCV.notify_one();
+}
 
-	if( mRenderThread.joinable() )
+bool SceneEditController::FinalizeOpenInteractions()
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	// Pointer Move/Up now take this same admission lock for their full
+	// duration.  A background render request therefore waits for an admitted
+	// move to finish, then owns an indivisible finalize-before-claim turn.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+
+	if( mPointerDown.load( std::memory_order_acquire ) )
 	{
-		mRenderThread.join();
+		OnPointerUp( mLastPx );
 	}
+	bool timelineScrubOpen = false;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		timelineScrubOpen = mScrubOpenedComposite;
+		mTimelineScrubWatchdogRecovered = false;
+	}
+	if( timelineScrubOpen && !OnTimeScrubEnd() ) return false;
+	if( mScrubInProgress.load( std::memory_order_acquire ) )
+	{
+		EndPropertyScrub();
+	}
+
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		timelineScrubOpen = mScrubOpenedComposite;
+	}
+	return !mInteractionPersistenceFailed.load( std::memory_order_acquire )
+	    && !mPointerDown.load( std::memory_order_acquire )
+	    && !mScrubInProgress.load( std::memory_order_acquire )
+	    && !mGestureOpenedComposite
+	    && !timelineScrubOpen;
+}
+
+bool SceneEditController::IsInLastRenderSinkCallbackOnThisThread() const
+{
+	return IsInLastRenderSinkCallback( this );
+}
+
+bool SceneEditController::IsInDirtyChangedCallbackOnThisThread() const
+{
+	return mEditor.IsInDirtyChangedCallbackOnThisThread();
+}
+
+bool SceneEditController::PrepareForDestruction()
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || IsInLastRenderSinkCallbackOnThisThread()
+	 || IsInDirtyChangedCallbackOnThisThread() ) return false;
+	int expected = DestructionOpen;
+	if( !mDestructionState.compare_exchange_strong(
+			expected, DestructionPreparing,
+			std::memory_order_acq_rel, std::memory_order_acquire ) )
+	{
+		if( expected == DestructionPrepared )
+			return mPreparationSucceeded.load( std::memory_order_acquire );
+		return false;
+	}
+	const bool succeeded = PrepareForDestructionClaimed_();
+	mPreparationSucceeded.store( succeeded, std::memory_order_release );
+	mDestructionState.store( DestructionPrepared, std::memory_order_release );
+	return succeeded;
+}
+
+bool SceneEditController::PrepareForDestructionForDelete()
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || IsInLastRenderSinkCallbackOnThisThread()
+	 || IsInDirtyChangedCallbackOnThisThread() ) return false;
+	int expected = DestructionOpen;
+	if( mDestructionState.compare_exchange_strong(
+			expected, DestructionDeletePreparing,
+			std::memory_order_acq_rel, std::memory_order_acquire ) )
+	{
+		const bool succeeded = PrepareForDestructionClaimed_();
+		mPreparationSucceeded.store( succeeded, std::memory_order_release );
+		mDestructionState.store( DestructionDestroying, std::memory_order_release );
+		return true;
+	}
+	if( expected != DestructionPrepared ) return false;
+	expected = DestructionPrepared;
+	return mDestructionState.compare_exchange_strong(
+		expected, DestructionDestroying,
+		std::memory_order_acq_rel, std::memory_order_acquire );
+}
+
+bool SceneEditController::PrepareForDestructionClaimed_()
+{
+	// Waiting for our own registered drain would self-deadlock, and Stop()
+	// may also try to join the agent worker currently executing this callback.
+	// The C-ABI destroy shim detects and rejects this state; an explicit Prepare
+	// caller receives an honest failure and may retry after its callback returns.
+	if( IsInLastRenderSinkCallbackOnThisThread()
+	 || IsInDirtyChangedCallbackOnThisThread() ) return false;
+	QuiesceLastRenderDrains_();
+	// Preserve the destructor's quiescence-barrier ordering: this public
+	// boundary can itself be entered from a dirty callback, and Stop()'s
+	// pending-CST commit must not re-enter an owner that is already destroying
+	// the controller.  SetDirtyChangedListener is self-callback-aware and waits
+	// for every other callback in flight; the destructor repeats this
+	// idempotently as protection for raw C++ deletion.
+	SceneEditor::DirtyChangedPtr retiredDirtyListener =
+		mEditor.CloseDirtyChangedListener();
+	// Stop() is idempotent.  Crucially this call happens BEFORE the destructor
+	// raises mInDestructorTeardown, so StopInteractive's orphan cleanup may
+	// still route the final live delta through mJob into the Document.
+	Stop();
+	// Preparation is terminal, not merely a one-time flush.  Close both
+	// established mutation/admission gates BEFORE releasing the retired dirty
+	// listener target, whose final destructor is arbitrary owner code.  Keep
+	// them closed after publishing Prepared so no edit can arise that the later
+	// Prepared->Destroying fast path would skip.
+	{
+		// Serialize gate publication with the admission phase of ordinary
+		// mutators.  As with every C++ object lifetime boundary, the owner must
+		// already have stopped/joined external callers; some mutation wrappers
+		// intentionally perform a state-only dirty-notification drain after
+		// releasing admission, so this is not a substitute for owner quiescence.
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+		mRenderOwnsScene.store( true, std::memory_order_release );
+	}
+	{
+		// Reject recursive Stop/Prepare/Destroy while the detached target's
+		// destructor executes; ordinary mutations also fail on the terminal gates.
+		LastRenderSinkCallbackScope dirtyListenerReleaseScope( this );
+		retiredDirtyListener.reset();
+	}
+	return !mInteractionPersistenceFailed.load( std::memory_order_acquire );
 }
 
 void SceneEditController::PauseRefinement()
@@ -946,7 +1408,7 @@ SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
 	// the mode.  That pin is not the ladder's "still walking down toward 1"
 	// signal the `outScaleDivisor > kPreviewScaleMin` tests below encode
 	// for the non-variant case -- there IS no ladder or polish chain for a
-	// variant pass (fixed spp/OIDN baked into CreateBeautyVariantPipeline),
+	// variant pass (registry SPP/OIDN at rest; 1 SPP/OIDN-off while live),
 	// so without this carve-out a fully-settled variant render (divisor
 	// pinned e.g. to 4, mRendering false) would permanently read
 	// divisor(4) > kPreviewScaleMin(1) and report Refining forever.  Derive
@@ -984,8 +1446,10 @@ SceneEditController::GetRefinementStatus( unsigned int& outScaleDivisor ) const
 }
 
 void SceneEditController::SetInteractiveRegion( unsigned int left, unsigned int top,
-                                                unsigned int right, unsigned int bottom )
+                                                 unsigned int right, unsigned int bottom )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	// Refuse a degenerate box rather than silently swapping — the
 	// bridges send normalized coords.
 	if( right < left || bottom < top )
@@ -1006,6 +1470,8 @@ void SceneEditController::SetInteractiveRegion( unsigned int left, unsigned int 
 
 void SceneEditController::ClearInteractiveRegion()
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	if( !mInteractiveRegionActive.exchange( false, std::memory_order_acq_rel ) )
 	{
 		return;
@@ -1032,21 +1498,57 @@ bool SceneEditController::GetInteractiveRegion( unsigned int& left, unsigned int
 
 bool SceneEditController::InteractiveRasterizerHonorsRegion() const
 {
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return false;
 	return mInteractiveRasterizer ? mInteractiveRasterizer->HonorsRegion() : false;
 }
 
 String SceneEditController::UndoLabel() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return String();
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return String();
 	return String( mEditor.History().LabelForUndo() );
 }
 
 String SceneEditController::RedoLabel() const
 {
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return String();
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return String();
 	return String( mEditor.History().LabelForRedo() );
 }
 
 void SceneEditController::Stop()
 {
+// A Last Render callback or controller-owned sink's final release may be
+	// running inside a registered direct-render tail, on the agent worker, or
+	// inside a controller mutation/teardown.  Synchronous Stop would respectively
+	// wait for its own direct-call guard or join its own worker thread.  Lifecycle
+	// teardown is therefore the one class of controller re-entry rejected from
+	// a sink callout; the owner retries after OutputImage/final release returns.
+	if( IsInLastRenderSinkCallbackOnThisThread() )
+	{
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController::Stop: lifecycle teardown from a Last Render sink callback/final release is rejected; retry after the callout returns." );
+		return;
+	}
+	if( !mInDestructorTeardown.load( std::memory_order_acquire )
+	 && mDestructionState.load( std::memory_order_acquire )
+		== DestructionPrepared )
+	{
+		// A completed terminal Prepare must keep mutation admission closed until
+		// Destroy consumes it; public Stop is already complete and stays a no-op.
+		return;
+	}
+	// Close direct caller registration before any terminal teardown. A
+	// caller that entered earlier is already counted even if it is still
+	// waiting for render admission; a caller arriving later refuses before
+	// touching any other controller state.
+	{
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		mDirectRenderStopping = true;
+	}
+
 	// Model-B F2 slice S4 fix round 5: THE ORDER BELOW IS LOAD-BEARING --
 	// agent-worker retirement MUST run to completion BEFORE
 	// StopInteractive()'s interactive teardown, not after.
@@ -1140,6 +1642,17 @@ void SceneEditController::Stop()
 	// at the top of this function for why the order (not just the union
 	// of the two teardowns) matters.
 	StopInteractive();
+
+	// RunPreviewRenderParked executes on an external caller's thread rather
+	// than mAgentRenderThread. Registration was closed at function entry;
+	// now drain every earlier caller through its final controller touch.
+	// Do NOT hold admission here: one of those counted callers may already be
+	// waiting for that mutex and must be allowed to acquire it, observe the
+	// terminal agent-stop flag, and retire.
+	std::unique_lock<std::mutex> directLk( mDirectRenderStateMutex );
+	mDirectRenderDoneCV.wait( directLk, [&] {
+		return mDirectRenderCallCount == 0;
+	} );
 }
 
 bool SceneEditController::IsRunning() const
@@ -1151,6 +1664,10 @@ bool SceneEditController::IsRunning() const
 
 void SceneEditController::SetPreviewSink( IRasterizerOutput* sink )
 {
+	std::unique_lock<std::recursive_mutex> deliveryLk(
+		mLastRenderDeliveryMutex );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	// Legacy sinks remain caller-owned and are normally installed before
 	// Start().  But SetPaneSink(0,X) can install a CONTROLLER-owned pane-0
 	// override at runtime, and the render thread reads mPaneRender[0].paneSink
@@ -1160,6 +1677,7 @@ void SceneEditController::SetPreviewSink( IRasterizerOutput* sink )
 	// at attach (the shipping path) no render is running, so the park is a
 	// no-op.
 	std::unique_lock<std::mutex> lk( mMutex );
+	if( !mPaneRender[0].paneSink && mPreviewSink == sink ) return;
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
 		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
@@ -1168,11 +1686,24 @@ void SceneEditController::SetPreviewSink( IRasterizerOutput* sink )
 	// A pane-0 SetPaneSink override is controller-owned, so a later legacy
 	// replacement must release it rather than leave pane 0 attached to a stale
 	// retained sink.
-	if( mPaneRender[0].paneSink ) {
-		mPaneRender[0].paneSink->release();
-		mPaneRender[0].paneSink = nullptr;
-	}
+	IRasterizerOutput* retiredSink = mPaneRender[0].paneSink;
+	mPaneRender[0].paneSink = nullptr;
 	mPreviewSink = sink;
+	mPaneLastRenderPublishGeneration[0].fetch_add( 1, std::memory_order_acq_rel );
+	if( IsInteractivePaneLocked_( 0 ) ) {
+		MarkPaneDirtyLocked_( 0 );
+		if( 0 < PaneCountForLayout( mViewportLayout ) ) {
+			mPanePassPending.store( true, std::memory_order_release );
+			mCV.notify_one();
+		}
+	}
+	if( sink && mPaneConfigs[0].contentSource == PaneContentSource::LastRender )
+		QueueLastRenderPublishLocked_( 0 );
+	lk.unlock();
+	admissionLk.unlock();
+	ReleaseControllerOwnedLastRenderSink( this, retiredSink );
+	DrainLastRenderPublishes_();
+	deliveryLk.unlock();
 }
 void SceneEditController::SetProgressSink( IProgressCallback* sink ) { mProgressSink = sink; }
 void SceneEditController::SetLogSink( ILogPrinter* sink )            { mLogSink      = sink; }
@@ -1336,7 +1867,7 @@ void SceneEditController::RefreshGizmoHandlesLocked_()
 	// Stable full-res target dims — what the platform overlay uses
 	// as `surface` size and what pointer events normalize through.
 	unsigned int stableW = 0, stableH = 0;
-	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return;
+	if( !GetCameraDimensionsLocked_( stableW, stableH ) || stableW == 0 || stableH == 0 ) return;
 
 	// CURRENT camera frame dims — what `mxTrans` projects into.
 	// During an in-flight render pass these are subsampled (preview-
@@ -1396,6 +1927,7 @@ bool SceneEditController::ForTest_ProjectWorldToScreen(
 	double wx, double wy, double wz,
 	double& outSx, double& outSy ) const
 {
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return false;
 	const IScene* scene = mJob.GetScene();
 	const ICamera* cam = EffectiveViewportCamera_( scene );   // user-review P1#2
 	if( !cam ) return false;
@@ -1418,6 +1950,7 @@ bool SceneEditController::ForTest_ProjectWorldToScreen(
 bool SceneEditController::ForTest_GetSelectionPivotWorld(
 	double& wx, double& wy, double& wz ) const
 {
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return false;
 	const String objName = mSelectionByCategory[ static_cast<int>( Category::Object ) ];
 	if( objName.empty() ) return false;
 	const IScene* scene = mJob.GetScene();
@@ -1534,7 +2067,7 @@ bool SceneEditController::RefreshNavGizmo( double centerX, double centerY,
 	const Point3 pivot( Scalar( snap.lookat[0] ), Scalar( snap.lookat[1] ), Scalar( snap.lookat[2] ) );
 
 	unsigned int stableW = 0, stableH = 0;
-	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return false;
+	if( !GetCameraDimensionsLocked_( stableW, stableH ) || stableW == 0 || stableH == 0 ) return false;
 	const Implementation::CameraCommon* camC =
 		dynamic_cast<const Implementation::CameraCommon*>( cam );
 	const unsigned int curW = camC ? camC->GetWidth()  : stableW;
@@ -1656,6 +2189,28 @@ int SceneEditController::NavGizmoNubAt( double px, double py ) const
 
 // Pointer events ------------------------------------------------------
 
+void SceneEditController::PreemptVariantForInteractionLocked_(
+	unsigned int pane,
+	std::unique_lock<std::mutex>& lk )
+{
+	const Implementation::ViewportRenderMode targetMode =
+		( pane == 0 ) ? mViewportRenderMode : mPaneConfigs[pane].mode;
+	// These are independent decisions: any currently-running variant has an
+	// obsolete OIDN tail to suppress, even when the destination is Preview;
+	// any variant destination must be pinned live, even when Preview is current.
+	if( mVariantRasterizer ) {
+		Implementation::SuppressBeautyVariantDenoise( *mVariantRasterizer );
+	}
+	if( !Implementation::IsBeautyVariantMode( targetMode ) ) return;
+	mVariantInteractionAdmissionPending = true;
+	mVariantInteractionAdmissionPane = pane;
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+}
+
 void SceneEditController::OnPointerDown( const Point2& px )
 {
 	// P3a slice 2: pointer input is pane-0-scoped until slice 3 adds pane
@@ -1680,7 +2235,19 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	{
 		return;
 	}
+	// Keep admission for the ENTIRE Down transition.  Publishing
+	// mPointerDown and then releasing admission before BeginComposite left a
+	// window where a render-side FinalizeOpenInteractions could observe the
+	// gesture, run OnPointerUp, and return successfully while this callback
+	// continued afterward and opened a now-orphaned composite.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 	{
+		return;
+	}
+	{
+		// Admission is already held before mMutex, preserving the controller's
+		// lock order through the potentially-blocking cancel-and-park wait.
 		std::unique_lock<std::mutex> lk( mMutex );
 		// P3a slice 3: legacy un-indexed input targets pane 0 UNLESS a
 		// pane-indexed Down armed a pane just before forwarding here
@@ -1693,17 +2260,40 @@ void SceneEditController::OnPointerDown( const Point2& px )
 		// targets mGesturePane (0 for all legacy un-indexed input;
 		// OnPanePointerDown stamps it, under this same mutex, before
 		// forwarding here).  The pin then holds the gestured pane.
-		if( mCurrentPane != mGesturePane )
-		{
+		// A new gesture supersedes any full-quality release quantum even when
+		// it targets the already-current pane.  Suppress the obsolete pass's
+		// non-cancel-interruptible OIDN tail before cancelling it, then park so
+		// the first live mint can safely swap to 1 SPP.
+		PreemptVariantForInteractionLocked_( mGesturePane, lk );
+		if( !mVariantInteractionAdmissionPending
+		 && mCurrentPane != mGesturePane ) {
+			// Preserve the pre-existing cross-pane park for ordinary preview/
+			// data modes; same-pane non-variant Down remains non-blocking.
 			if( mRendering.load( std::memory_order_acquire ) ) {
 				mCancelProgress.RequestCancel();
 				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 			}
 			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		}
+		if( mCurrentPane != mGesturePane )
+		{
 			SwitchToPaneLocked_( mGesturePane );
 		}
+		// Round-8: a fresh gesture is never stale (clear before publishing
+		// mPointerDown so the render thread cannot observe down-and-stale).
+		// Review P1: the activity clock MUST be stamped in this same lock
+		// hold.  It is zero-initialized and NowMs() is steady-clock since
+		// BOOT, so a watchdog read of `NowMs() - 0` is ~1e8 ms -- past any
+		// threshold.  Publishing mPointerDown first and stamping after the
+		// unlock left a two-statement window in which the render thread
+		// could mark the very FIRST gesture of a session stale and silently
+		// kill the drag.
+		mPointerGestureStale.store( false, std::memory_order_release );
+		mLastPointerActivityMs.store( NowMs(), std::memory_order_release );
+		mPointerDown.store( true, std::memory_order_release );
+		mVariantInteractionAdmissionPending = false;
 	}
-	mPointerDown.store( true, std::memory_order_release );
+	ForTest_OnPointerDownAdmitted();
 	mLastPx = px;
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 
@@ -1713,6 +2303,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	// on pointer-up, leaving mCompositeDepth >= 1 forever -- IsCompositeOpen() then
 	// permanently blocks transactions and history grows unbounded.
 	if( mGestureOpenedComposite ) {
+		std::lock_guard<std::mutex> lk( mMutex );
 		mEditor.EndComposite();
 		mGestureOpenedComposite = false;
 	}
@@ -1739,7 +2330,10 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::ScaleObject:
 		if( mSelectionCategory == Category::Object && mSelectionName.size() > 1 )
 		{
-			mEditor.BeginComposite( "Drag" );
+			{
+				std::lock_guard<std::mutex> lk( mMutex );
+				mEditor.BeginComposite( "Drag" );
+			}
 			mGestureOpenedComposite = true;   // P1: record what this gesture opened
 			isMotionTool = true;
 
@@ -1780,6 +2374,11 @@ void SceneEditController::OnPointerDown( const Point2& px )
 				mGizmoDrag.anchorPxY = static_cast<double>( px.y );
 
 				// Capture pivot (world) + projection.
+				// Re-park and keep mMutex across every live scene/object/camera
+				// read below. A background agent D2 may replace all of those
+				// managers between the handle refresh and this capture.
+				std::unique_lock<std::mutex> captureLk( mMutex );
+				CancelAndParkRender_( captureLk );
 				double wx = 0, wy = 0, wz = 0;
 				if( ForTest_GetSelectionPivotWorld( wx, wy, wz ) ) {
 					mGizmoDrag.pivotWorld = Point3( wx, wy, wz );
@@ -1819,7 +2418,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 					const IScene* scene = mJob.GetScene();
 					const ICamera* cam = EffectiveViewportCamera_( scene );   // user-review P1#2
 					unsigned int stableW = 0, stableH = 0;
-					const bool stableOk = GetCameraDimensions( stableW, stableH )
+					const bool stableOk = GetCameraDimensionsLocked_( stableW, stableH )
 					                    && stableW > 0 && stableH > 0;
 					if( cam && stableOk && IsGizmoSupportedCamera_( cam ) ) {
 						const Implementation::CameraCommon* camC =
@@ -1865,7 +2464,10 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::PanCamera:
 	case Tool::ZoomCamera:
 	case Tool::RollCamera:
-		mEditor.BeginComposite( "Camera" );
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			mEditor.BeginComposite( "Camera" );
+		}
 		mGestureOpenedComposite = true;   // P1: record what this gesture opened
 		isMotionTool = true;
 		// Auto-promote the Cameras section in the accordion when the
@@ -1898,7 +2500,59 @@ void SceneEditController::OnPointerDown( const Point2& px )
 void SceneEditController::OnPointerMove( const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
-	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
+
+	// Definitive move/watchdog handoff.  The watchdog performs its stale test
+	// while holding mMutex too, so it cannot observe inFlight==0 and stale this
+	// gesture after this move has accepted stale==false but before the move is
+	// counted.  Admission remains held for the whole move so a coordinated
+	// render cannot finalize the gesture underneath it.
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( !mPointerDown.load( std::memory_order_acquire ) ) return;
+		if( mPointerGestureStale.load( std::memory_order_acquire ) )
+		{
+			// A long stationary hold temporarily released the scheduler pin so
+			// siblings could refine.  Continued physical motion reclaims the
+			// original gesture pane and resumes the SAME open composite; do not
+			// force the user to release/re-click or discard the first resumed
+			// delta.  Park any sibling quantum before loading the gesture pane's
+			// registers, exactly as the original Down handoff does.
+			if( mCurrentPane != mGesturePane )
+			{
+				if( mRendering.load( std::memory_order_acquire ) )
+				{
+					mCancelProgress.RequestCancel();
+					mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+				}
+				mCV.wait( lk, [&]{
+					return !mRendering.load( std::memory_order_acquire );
+				} );
+				SwitchToPaneLocked_( mGesturePane );
+			}
+			mPointerGestureStale.store( false, std::memory_order_release );
+		}
+		mPointerMovesInFlight.fetch_add( 1, std::memory_order_acq_rel );
+		mLastPointerActivityMs.store( NowMs(), std::memory_order_release );
+		ForTest_OnPointerMoveAdmitted();
+	}
+
+	struct PointerMoveInFlightGuard
+	{
+		std::atomic<int>& n;
+		std::atomic<long long>& activity;
+		PointerMoveInFlightGuard( std::atomic<int>& c,
+			std::atomic<long long>& a ) : n( c ), activity( a ) {}
+		~PointerMoveInFlightGuard()
+		{
+			// A slow pass may keep this Move admitted longer than the watchdog
+			// threshold.  Refresh immediately before publishing inFlight==0 so
+			// the watchdog cannot treat render-wait time as post-input idleness.
+			activity.store( NowMs(), std::memory_order_release );
+			n.fetch_sub( 1, std::memory_order_acq_rel );
+		}
+	} moveInFlight_( mPointerMovesInFlight, mLastPointerActivityMs );
 
 	// Resume-after-pause snap.  If the pointer has been still long
 	// enough that the idle-refinement loop walked the scale toward
@@ -2064,10 +2718,14 @@ void SceneEditController::OnPointerMove( const Point2& px )
 				// direction in world.  Approximates the optical axis
 				// (exact when the pivot is dead-centre on screen;
 				// usable elsewhere).
-				const IScene* scene = mJob.GetScene();
-				const ICamera* cam = EffectiveViewportCamera_( scene );   // user-review P1#2
-				if( !cam ) return;
-				const Point3 camPos = cam->GetLocation();
+				Point3 camPos;
+				{
+					std::lock_guard<std::mutex> sceneLk( mMutex );
+					const IScene* scene = mJob.GetScene();
+					const ICamera* cam = EffectiveViewportCamera_( scene );
+					if( !cam ) return;
+					camPos = cam->GetLocation();
+				}
 				const Vector3 fwd = Vector3Ops::Normalize(
 					Vector3Ops::mkVector3( mGizmoDrag.pivotWorld, camPos ) );
 				worldAxis = fwd;
@@ -2195,16 +2853,31 @@ void SceneEditController::OnPointerMove( const Point2& px )
 	// Pattern matches Undo / Redo / SetProperty: take the mutex,
 	// request cancel if a pass is running, wait until the render
 	// thread flips `mRendering` to false, then mutate.
-	// P3a slice 3: a camera-motion gesture on a SECONDARY pane flies THAT
-	// pane's realized override camera (per-pane FreeFly) -- the scene
-	// camera is never touched by secondary-pane navigation (§7.2, amended
-	// 2026-07-21).  Pane 0 falls through to the classic scene-camera edit.
+	// P3a slice 3: a camera-motion gesture on an ordinary SECONDARY pane
+	// flies that pane's realized override camera.  Kind 3 is deliberately
+	// different: it stays bound and edits the named manager camera through
+	// SceneEditor's normal capture/history path.  Pane 0 falls through to
+	// the classic active-camera edit.
 	if( IsCameraMotionTool( mTool ) && mGesturePane != 0 ) {
-		ApplyPaneFlyOp_( edit );
-		return;
+		bool editBoundCamera = false;
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mPaneConfigs[mGesturePane].vantageKind
+			 == PaneVantageKind::SceneCameraNamed )
+			{
+				edit.cameraTargetName =
+					mPaneConfigs[mGesturePane].sceneCameraRef;
+				edit.allowONBPoseEdit = true;
+				editBoundCamera = true;
+			}
+		}
+		if( !editBoundCamera ) {
+			ApplyPaneFlyOp_( edit );
+			return;
+		}
 	}
 
-	if( IsObjectMotionTool( mTool ) ) {
+	if( IsObjectMotionTool( mTool ) || IsCameraMotionTool( mTool ) ) {
 		// Inline park-and-apply: cancel any in-flight render and wait
 		// for it to drain before mutating scene geometry — object
 		// transforms invalidate the top-level BVH which a worker
@@ -2228,6 +2901,15 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 		const bool ok = mEditor.Apply( edit );
 		if( ok ) {
+			if( IsCameraMotionTool( mTool ) )
+			{
+				const String targetName =
+					edit.cameraTargetName.size() > 1
+					? edit.cameraTargetName
+					: String( mJob.GetActiveCameraName().c_str() );
+				InvalidatePanesBoundToSceneCameraLocked_(
+					targetName );
+			}
 			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 			mPolishState.store( static_cast<int>( PolishState::None ),
 			                    std::memory_order_release );
@@ -2235,125 +2917,142 @@ void SceneEditController::OnPointerMove( const Point2& px )
 			lk.unlock();
 			mCV.notify_one();
 		}
-	} else if( mEditor.Apply( edit ) ) {
-		KickRender();
 	}
 }
 
 void SceneEditController::OnPointerUp( const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	// Closing mPointerDown is itself an admission transition.  Keep the
+	// admission lock through CST/composite finalization and final-pass arming
+	// so a coordinated render cannot claim the scene in between.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	(void)px;
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
-	mPointerDown.store( false, std::memory_order_release );
 
-	// P1: close the composite the GESTURE opened on pointer-DOWN, regardless of
-	// any tool/selection change mid-gesture.  Deciding from the CURRENT tool (the
-	// old switch here) could STRAND an open composite -- permanently blocking
-	// transactions (IsCompositeOpen) + growing history unbounded -- or double-
-	// close when the tool changed away from a motion tool.
-	if( mGestureOpenedComposite ) {
-		mEditor.EndComposite();
-		mGestureOpenedComposite = false;
-	}
-	// P5 Slice 3 expansion (object transform): a gizmo drag accumulated per-frame transform edits (each a cheap
-	// direct mutate under the per-frame park).  Commit the NET transform to the CST as the authoritative `matrix`
-	// param now -- ONCE -- under a render-thread park, because a commit RE-DERIVES (on a variant scene it ClearAll's
-	// the live scene, which must not race a worker mid-traversal).  No-op when nothing is pending (camera drags,
-	// legacy-loaded scenes).
-	if( mEditor.HasPendingCstObjectTransforms() || mEditor.HasPendingCstCameraPose() ) {
+	const bool wasMotion =
+		IsCameraMotionTool( mTool ) || IsObjectMotionTool( mTool );
+	{
+		// Finalize and arm the whole gesture under one controller critical
+		// section.  In particular, pointerDown=false, the all-pane edit wake,
+		// and FinalRegularRunning MUST be one atomic scheduler transition:
+		// otherwise the render thread can switch to a dirty sibling between a
+		// KickRender and the polish store, landing the marker on the wrong
+		// pane's live register after that sibling already snapshotted None.
+		// Keep its composite OPEN while waiting for the render to park: wait()
+		// releases mMutex, and the open composite makes an agent D2 that enters
+		// during that interval refuse/retry instead of replacing the scene
+		// before the pending live transform/pose is captured into the CST.
 		std::unique_lock<std::mutex> lk( mMutex );
-		if( mRendering.load( std::memory_order_acquire ) ) {
+		const bool hasPending =
+			mEditor.HasPendingCstObjectTransforms()
+			|| mEditor.HasPendingCstCameraPose();
+		if( hasPending ) {
+			if( mRendering.load( std::memory_order_acquire ) ) {
+				mCancelProgress.RequestCancel();
+				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+			}
+			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+			// P5 Slice 3 expansion (object transform): a gizmo drag accumulated
+			// per-frame live edits. Commit the NET transform/pose to the CST once,
+			// while the render is parked and agent D2 is excluded.
+			// INVARIANT: the object and camera pending sets are MUTUALLY EXCLUSIVE here -- a gesture composite is
+			// single-tool ("Drag" object-motion XOR "Camera" camera-motion) and every commit boundary drains BOTH
+			// sets, so they are never simultaneously populated.  That matters because the object commit may take a D2
+			// (ClearAll + re-derive), which would rebuild the live CAMERA from the Document's pre-drag pose -- if a
+			// camera pose were ALSO pending, the camera commit below would then read+record that reset pose.  Should a
+			// future composite ever span both categories, snapshot BOTH (object matrices + camera pose strings) BEFORE
+			// routing EITHER (CommitPendingCstObjectTransforms already snapshots its matrices first; the camera commit
+			// would need the same).
+			//
+			bool commitsOk = mEditor.CommitPendingCstObjectTransforms(); // object gizmo drag -> `matrix` param
+			commitsOk = mEditor.CommitPendingCstCameraPose() && commitsOk; // camera orbit/pan/zoom/roll -> pose params
+			if( !commitsOk )
+				mInteractionPersistenceFailed.store( true, std::memory_order_release );
+			mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+		}
+
+		// Close the composite only AFTER the persistence flush.  This also
+		// handles an armed-but-no-motion gesture (no pending CST channel).
+		if( mGestureOpenedComposite ) {
+			mEditor.EndComposite();
+			mGestureOpenedComposite = false;
+		}
+
+		// Always clear the drag state (including armed-without-motion) and
+		// resume the deferred all-pane rotation.  The scale snap below is gated
+		// for a stale gesture because the live registers may belong to a sibling.
+		mGizmoDrag.active = false;
+		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+		// Review P3: a STALE gesture no longer pins the scheduler, so
+		// mCurrentPane may have rotated away from mGesturePane -- the live
+		// scale/polish registers now belong to a SIBLING.  Writing the
+		// gesture's final-pass polish marker into them would mis-mark that
+		// sibling (exactly the hazard the under-mMutex store above guards
+		// against for the non-stale case).  A stale gesture also already had
+		// its scale restored and its panes re-dirtied by the watchdog, so
+		// there is no owed polish to record: leave the registers alone.
+		const bool staleGesture = mPointerGestureStale.load( std::memory_order_acquire );
+		if( !staleGesture )
+			SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+		const PolishState finalState =
+			( wasMotion && !staleGesture
+			  && !mPreviewScalePinned.load( std::memory_order_acquire ) )
+			? PolishState::FinalRegularRunning : PolishState::None;
+		if( !staleGesture )
+			mPolishState.store( static_cast<int>( finalState ), std::memory_order_release );
+		mPointerDown.store( false, std::memory_order_release );
+		mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
+		mEditPending.store( true, std::memory_order_release );
+		if( mRendering.load( std::memory_order_acquire ) )
+		{
 			mCancelProgress.RequestCancel();
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 		}
-		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-		// INVARIANT: the object and camera pending sets are MUTUALLY EXCLUSIVE here -- a gesture composite is
-		// single-tool ("Drag" object-motion XOR "Camera" camera-motion) and every commit boundary drains BOTH
-		// sets, so they are never simultaneously populated.  That matters because the object commit may take a D2
-		// (ClearAll + re-derive), which would rebuild the live CAMERA from the Document's pre-drag pose -- if a
-		// camera pose were ALSO pending, the camera commit below would then read+record that reset pose.  Should a
-		// future composite ever span both categories, snapshot BOTH (object matrices + camera pose strings) BEFORE
-		// routing EITHER (CommitPendingCstObjectTransforms already snapshots its matrices first; the camera commit
-		// would need the same).
-		//
-		// A2: OnPointerUp is a `void` gesture-end callback with no caller to report a bool to, so the commit
-		// returns are legitimately ignored here (unlike SetProperty, which now propagates them) -- a route failure
-		// is already logged by the commit itself (SceneEditor::CommitPendingCstObjectTransforms /
-		// CommitPendingCstCameraPose), and the render kick below repaints the live scene regardless via
-		// `mEditPending` set unconditionally after this block.
-		mEditor.CommitPendingCstObjectTransforms();   // object gizmo drag -> `matrix` param
-		mEditor.CommitPendingCstCameraPose();          // camera orbit/pan/zoom/roll -> pose params
-		mEditPending.store( true, std::memory_order_release );
-		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
-		lk.unlock();
-		mCV.notify_one();
 	}
-	// Always clear the drag state (incl. the armed-but-no-motion case).
-	mGizmoDrag.active = false;
-
-	// Whether to queue the 4-SPP polish pass after the regular 1-SPP final pass.
-	const bool wasMotion =
-		IsCameraMotionTool( mTool ) || IsObjectMotionTool( mTool );
-
-	// Mouse up — return to full resolution so the user sees a sharp
-	// final image.  Kick the render thread so the scale=1 pass runs
-	// immediately rather than waiting for the next edit.  Then queue
-	// the polish pass: KickRender resets polish state to None, so we
-	// store FinalRegularRunning AFTER kicking — RenderLoop's post-pass
-	// logic will see this state and chain the 4-SPP polish pass.
-	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
-	KickRender();
-	// External review P2 fix: a BeautyVariant mode (mPreviewScalePinned --
-	// see its header doc) renders at a FIXED spp/divisor with its own OIDN
-	// policy baked into CreateBeautyVariantPipeline -- there is no 1-SPP-
-	// then-4-SPP-polish refinement ladder for it to chain, so queuing
-	// FinalRegularRunning here would just make RenderLoop's post-roll
-	// (polishStateBefore == FinalRegularRunning) schedule a second,
-	// identical full pass + polish/denoise pass against mVariantRasterizer
-	// for no visual gain -- pure wasted work, and it misreports the pass
-	// as still-refining (see GetRefinementStatus's variant carve-out).
-	// KickRender() just above already reset mPolishState to None (its own
-	// idiom for "no polish is owed"); leave it there instead of overriding
-	// to FinalRegularRunning when a variant mode is active.
-	// review-r4 (pre-existing, first staked on by the round-3 count-exact
-	// test): this store used to run UNLOCKED, while every other
-	// mPolishState touch is serialized under mMutex.  Two hazards: (a) the
-	// render thread's SwitchToPaneLocked_ could save/load mPolishState
-	// concurrently, so the FinalRegularRunning could land on a DIFFERENT
-	// pane's restored register than the gestured one (a real N-up
-	// mis-mark, not just test flake); (b) the round-3 exactly-3-passes
-	// assertion could false-fail if the switch read None before this store
-	// landed.  Under mMutex both orderings serialize: the gesture pin
-	// keeps the gestured pane current until mPointerDown clears, and this
-	// lock ensures no switch interleaves with the store.
-	if( wasMotion && !mPreviewScalePinned.load( std::memory_order_acquire ) ) {
-		std::lock_guard<std::mutex> lk( mMutex );
-		mPolishState.store( static_cast<int>( PolishState::FinalRegularRunning ),
-		                    std::memory_order_release );
-	}
+	mCV.notify_one();
+	ForTest_OnPointerUpAfterFinalRenderArmed();
 }
 
 // Direct controls -----------------------------------------------------
 
-void SceneEditController::OnTimeScrubBegin()
+bool SceneEditController::OnTimeScrubBegin()
 {
 	// P1: close any composite a PRIOR scrub left open (a missing OnTimeScrubEnd or a
 	// repeated Begin) before opening a new one -- otherwise scrubs NEST and one stays
 	// open forever (permanent IsCompositeOpen block + the open group defeats history
 	// trimming).  Mirrors the pointer-gesture orphan guard in OnPointerDown.
-	if( mScrubOpenedComposite ) {
-		mEditor.EndComposite();
-		mScrubOpenedComposite = false;
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mScrubOpenedComposite ) {
+			mEditor.EndComposite();
+			mScrubOpenedComposite = false;
+		}
+		PreemptVariantForInteractionLocked_( mCurrentPane, lk );
+		mEditor.BeginComposite( "Scrub" );
+		mScrubOpenedComposite = true;
+		mTimelineScrubWatchdogRecovered = false;
+		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+		mVariantInteractionAdmissionPending = false;
 	}
-	mEditor.BeginComposite( "Scrub" );
-	mScrubOpenedComposite = true;
+	ForTest_OnTimeScrubBeginAdmitted();
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
+	return true;
 }
 
-void SceneEditController::OnTimeScrub( Scalar t )
+bool SceneEditController::OnTimeScrub( Scalar t )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	// Check before mMutex so a queued or running coordinated render never
+	// turns a UI scrub callback into a render-duration wait.  Holding the
+	// admission lock through the mutation also closes the wait() release
+	// window in which a render could otherwise claim the gate.
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Time-scrub mutations cascade through the animator's observer
 	// chain — a keyframed DisplacedGeometry, for example, destroys
 	// its TriangleMeshGeometryIndexed (and the BSP tree inside) and
@@ -2389,6 +3088,30 @@ void SceneEditController::OnTimeScrub( Scalar t )
 	// Time-scrub is the only mutation that can destroy live geometry
 	// while the render thread is reading it.
 	std::unique_lock<std::mutex> lk( mMutex );
+	mTimeScrubsInFlight.fetch_add( 1, std::memory_order_acq_rel );
+	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	struct TimeScrubInFlightGuard
+	{
+		std::atomic<int>& count;
+		std::atomic<long long>& activity;
+		~TimeScrubInFlightGuard()
+		{
+			activity.store( NowMs(), std::memory_order_release );
+			count.fetch_sub( 1, std::memory_order_acq_rel );
+		}
+	} timeScrubInFlight_{ mTimeScrubsInFlight, mLastEditTimeMs };
+	// If the lost-End watchdog closed a long-held scrub, the next slider move
+	// is definitive proof that the interaction is still alive.  Re-open its
+	// undo group and live-quality classification before applying the edit.
+	bool reopenedScrub = false;
+	if( !mScrubOpenedComposite && mTimelineScrubWatchdogRecovered ) {
+		PreemptVariantForInteractionLocked_( mCurrentPane, lk );
+		mEditor.BeginComposite( "Scrub" );
+		mScrubOpenedComposite = true;
+		mTimelineScrubWatchdogRecovered = false;
+		mVariantInteractionAdmissionPending = false;
+		reopenedScrub = true;
+	}
 	if( mRendering.load( std::memory_order_acquire ) )
 	{
 		mCancelProgress.RequestCancel();
@@ -2404,6 +3127,10 @@ void SceneEditController::OnTimeScrub( Scalar t )
 	edit.op = SceneEdit::SetSceneTime;
 	edit.s  = t;
 	const bool ok = mEditor.Apply( edit );
+	if( !ok && reopenedScrub ) {
+		mEditor.EndComposite();
+		mScrubOpenedComposite = false;
+	}
 
 	// Inline the KickRender effect under the held lock — store
 	// editPending, then notify after dropping the lock.  Keeping
@@ -2416,6 +3143,10 @@ void SceneEditController::OnTimeScrub( Scalar t )
 	// different time than when the polish was queued.
 	if( ok )
 	{
+		// Timelines may animate any manager camera, including inactive ones
+		// displayed by SceneCameraNamed panes.  Their standalone overrides
+		// must be discarded so reconcile captures the new evaluated pose.
+		InvalidateAllSceneCameraNamedPanesLocked_();
 		mPolishState.store( static_cast<int>( PolishState::None ),
 		                    std::memory_order_release );
 		mEditPending.store( true, std::memory_order_release );
@@ -2427,18 +3158,26 @@ void SceneEditController::OnTimeScrub( Scalar t )
 	{
 		mCV.notify_one();
 	}
+	return ok;
 }
 
-void SceneEditController::OnTimeScrubEnd()
+bool SceneEditController::OnTimeScrubEnd()
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// P1: close only the composite THIS scrub opened -- a stray End with no open scrub
 	// must not under-flow the composite depth.
-	if( mScrubOpenedComposite ) {
-		mEditor.EndComposite();
-		mScrubOpenedComposite = false;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( mScrubOpenedComposite ) {
+			mEditor.EndComposite();
+			mScrubOpenedComposite = false;
+		}
+		mTimelineScrubWatchdogRecovered = false;
 	}
 	SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
 	KickRender();
+	return true;
 }
 
 void SceneEditController::BeginPropertyScrub()
@@ -2453,13 +3192,23 @@ void SceneEditController::BeginPropertyScrub()
 	// drag — the next OnPointerMove would early-return because
 	// mPointerDown is false, even though the user's mouse is still
 	// down on the viewport.
-	mScrubInProgress.store( true, std::memory_order_release );
-	SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
-	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return;
+		std::unique_lock<std::mutex> lk( mMutex );
+		PreemptVariantForInteractionLocked_( mCurrentPane, lk );
+		SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
+		mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+		mScrubInProgress.store( true, std::memory_order_release );
+		mVariantInteractionAdmissionPending = false;
+	}
 }
 
 void SceneEditController::EndPropertyScrub()
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	// Restore full resolution and queue one final render so the
 	// post-scrub frame is sharp.  The render-loop's idle-refinement
 	// pass will further refine on top.  Note: the watchdog in the
@@ -2517,6 +3266,13 @@ bool SelectionStillResolves( const IJobPriv& job,
 		}
 		return false;
 	}
+	case Cat::Geometry: {
+		// GUI redesign 2026-07-22: geometry is name-managed like Material --
+		// a removed/undone geometry must drop the stale selection so the
+		// panel doesn't render a header for an entity that no longer exists.
+		IGeometryManager* m = const_cast<IJobPriv&>( job ).GetGeometries();
+		return m && m->GetItem( name.c_str() ) != 0;
+	}
 	case Cat::Rasterizer:
 	case Cat::Film:
 	case Cat::None:
@@ -2541,14 +3297,14 @@ void SceneEditController::DropStaleSelection_()
 	}
 }
 
-void SceneEditController::Undo()
+void SceneEditController::UndoInner_()
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
 	// undoing PAST the baseline would break RollbackTransaction's revert
 	// guarantee (and ClearRedo would then drop a pre-baseline edit).  The
 	// rollback path uses mEditor.Undo() directly, bypassing this guard.
-	if( mTxnOpen ) {
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction is open; use Rollback/EndTransaction." );
 		return;
 	}
@@ -2561,6 +3317,10 @@ void SceneEditController::Undo()
 	// SetProperty + the CloneActiveCamera path) already park; the
 	// inverse path needs the same protection.
 	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction opened before the undo acquired the mutation lock." );
+		return;
+	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
 		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
@@ -2576,17 +3336,13 @@ void SceneEditController::Undo()
 	// P5 Slice 3 expansion (object transform): an undone transform noted its object -> commit the RESTORED matrix
 	// to the CST under this park so undo stays Document-consistent (else a later D2 would re-apply the dragged pose).
 	//
-	// A2: Undo() reports `didWork` -- whether history moved -- not whether the CST recording of that move
-	// succeeded; those are different questions (a partial CST-commit failure here still means the LIVE undo
-	// happened and the caller should treat it as "did work"). A commit failure is logged by the commit itself.
-	// BE PRECISE about the consequence (the two failure shapes have OPPOSITE Document states): code 0 means the
-	// Document did NOT record the undone transform, and a later full re-derive (D2) rebuilds the live scene FROM
-	// the Document -- i.e. the D2 REVERTS the live undo rather than recording it (the divergence resolves in the
-	// data-losing direction); code 3 means the Document DID record it but the re-derive diagnosed. Ignoring the
-	// return here is the same known, accepted limitation OnPointerUp carries for the gesture-end commit -- an
-	// oversight it is not, but neither is a later D2 a safe recovery path.
-	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
-	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
+	bool commitsOk = true;
+	if( mEditor.HasPendingCstObjectTransforms() )
+		commitsOk = mEditor.CommitPendingCstObjectTransforms() && commitsOk;
+	if( mEditor.HasPendingCstCameraPose() )
+		commitsOk = mEditor.CommitPendingCstCameraPose() && commitsOk;
+	if( !commitsOk )
+		mInteractionPersistenceFailed.store( true, std::memory_order_release );
 	// P1: re-validate the selection UNCONDITIONALLY -- a stale selection (selected
 	// entity gone, e.g. removed externally) must clear on ANY undo attempt, incl. an
 	// atomic no-op composite undo (didWork == false -> the gated refresh is skipped).
@@ -2602,6 +3358,7 @@ void SceneEditController::Undo()
 		// binding's content.  Cheap to re-look-up unconditionally —
 		// it's two reverse-lookups against the registered manager.
 		ResyncObjectBoundSections_();
+		InvalidateAllSceneCameraNamedPanesLocked_();
 		mEditPending.store( true, std::memory_order_release );
 		// Bump epoch — Undo of AddCamera removes an entity, which
 		// changes the Camera category's entity list.  Cheap to bump
@@ -2612,14 +3369,18 @@ void SceneEditController::Undo()
 	}
 }
 
-void SceneEditController::Redo()
+void SceneEditController::RedoInner_()
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
-	if( mTxnOpen ) {
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
 		return;
 	}
 	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction opened before the redo acquired the mutation lock." );
+		return;
+	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
 		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
@@ -2633,18 +3394,20 @@ void SceneEditController::Redo()
 	// P5 Slice 3 expansion (object transform): a redone transform noted its object -> commit the re-applied matrix
 	// to the CST under this park (symmetric with Undo).
 	//
-	// A2: same rationale as Undo above -- `didWork` is about history motion (redo advanced), not about whether
-	// this CST recording succeeded; a commit failure is logged by the commit itself and is a known, accepted
-	// limitation, consistent with OnPointerUp and Undo. See Undo's comment for the precise per-code consequence
-	// (code 0: a later D2 REVERTS the unrecorded live transform; code 3: recorded but diagnosed).
-	if( mEditor.HasPendingCstObjectTransforms() ) mEditor.CommitPendingCstObjectTransforms();
-	if( mEditor.HasPendingCstCameraPose() ) mEditor.CommitPendingCstCameraPose();
+	bool commitsOk = true;
+	if( mEditor.HasPendingCstObjectTransforms() )
+		commitsOk = mEditor.CommitPendingCstObjectTransforms() && commitsOk;
+	if( mEditor.HasPendingCstCameraPose() )
+		commitsOk = mEditor.CommitPendingCstCameraPose() && commitsOk;
+	if( !commitsOk )
+		mInteractionPersistenceFailed.store( true, std::memory_order_release );
 	DropStaleSelection_();   // P1: see Undo -- re-validate selection on any redo attempt
 	if( didWork ) {
 		// Re-derive auto-synced Material / Medium section selections
 		// from the (potentially re-applied) Object binding — same
 		// rationale as Undo's resync.
 		ResyncObjectBoundSections_();
+		InvalidateAllSceneCameraNamedPanesLocked_();
 		mEditPending.store( true, std::memory_order_release );
 		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 		lk.unlock();
@@ -2673,52 +3436,50 @@ bool SceneEditController::RequestProductionRender()
 	const bool wasRunning = IsRunning();
 	if( wasRunning )
 	{
-		Stop();
+		// Pause only the interactive loop.  Stop() also permanently retires
+		// the controller's long-lived agent-render worker, so using it here
+		// made the first legacy production render disable every later agent
+		// render for this controller.
+		StopInteractive();
 	}
 
-	IRasterizer* prod = mJob.GetRasterizer();
-	if( !prod )
-	{
-		// Without a production rasterizer there's nothing to do; the
-		// caller should ensure one is configured by the time they
-		// click "Render".  We restart interactive and report failure.
-		// Round-2 P2: don't silently un-pause — a Pause that raced this
-		// production render would otherwise be clobbered by the restart
-		// (Start() clears mRefinementPaused).  Mirrors ResumeRefinement.
-		if( wasRunning && !IsRefinementPaused() ) Start();
-		return false;
-	}
-
-	const IScene* scene = mJob.GetScene();
-	if( scene )
-	{
-		// Run a FULL SetSceneTime(t) at the most recently scrubbed
-		// time before invoking the production rasterizer.  The
-		// preview path (called from OnTimeScrub) uses
-		// SetSceneTimeForPreview, which deliberately skips photon-map
-		// regeneration to keep scrubbing responsive.  Without this
-		// full pass, hitting Render after scrubbing produces a frame
-		// at the scrubbed time but with caustics from the scene's
-		// initial time — visibly stale for any photon-mapped scene.
-		// SetSceneTime triggers Regenerate on every populated photon
-		// map; for non-photon scenes it's effectively a cheap reset
-		// of the per-object runtime data and is harmless.
-		scene->SetSceneTime( mEditor.LastSceneTime() );
-
-		// PrepareForRendering rebuilds spatial structure if invalidated.
-		scene->GetObjects()->PrepareForRendering();
-	}
-
+	// Route even this legacy synchronous arm through the tracked production
+	// slot. Stop() retires and joins that worker, so it cannot return while
+	// this render still borrows the controller or Job. The older direct
+	// mMutex-held call was mutually exclusive with edits, but invisible to
+	// Stop() once StopInteractive had already made mRunning false.
 	bool ok = false;
-	if( scene )
+	try
 	{
-		// Running this synchronously on the calling (UI) thread is
-		// the contract: production renders are long, the platform UI
-		// shows a modal during the call, and re-enabling the
-		// interactive controls before the production render finishes
-		// would race with the production rasterizer.
-		prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
-		ok = true;
+		ok = RunProductionRenderComposed(
+			mJob, this, String( "legacy_production_render" ),
+			/*guiProgress=*/nullptr,
+			[&]() -> bool {
+				IRasterizer* prod = mJob.GetRasterizer();
+				const IScene* scene = mJob.GetScene();
+				if( !prod || !scene ) return false;
+
+				// Run a FULL SetSceneTime(t) at the most recently scrubbed
+				// time before invoking the production rasterizer. The preview
+				// path deliberately skips photon-map regeneration.
+				scene->SetSceneTime( mEditor.LastSceneTime() );
+				scene->GetObjects()->PrepareForRendering();
+				prod->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
+				return true;
+			} );
+	}
+	catch( const std::exception& e )
+	{
+		// This method is exposed through a bool C ABI and Objective-C
+		// bridge. Never let renderer exceptions cross either boundary.
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController::RequestProductionRender failed with an exception: %s",
+			e.what() );
+	}
+	catch( ... )
+	{
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController::RequestProductionRender failed with an unknown exception." );
 	}
 
 	// Round-2 P2: same paused-guard as the early-exit restart above.
@@ -2736,6 +3497,18 @@ bool SceneEditController::RequestProductionRender()
 
 SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState() const
 {
+	std::unique_lock<std::recursive_mutex> admissionLk(
+		mRenderAdmissionMutex, std::try_to_lock );
+	if( !admissionLk.owns_lock()
+	 || mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return EditorStateSnapshot();
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return EditorStateSnapshot();
+	return CaptureEditorStateLocked_();
+}
+
+SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorStateLocked_() const
+{
 	EditorStateSnapshot st;
 	st.historyMarker     = mEditor.History().NextSeq();
 	st.dirty             = mEditor.CaptureDirtyState();
@@ -2747,6 +3520,21 @@ SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState
 }
 
 void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, bool restoreDirty )
+{
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
+		std::lock_guard<std::mutex> lk( mMutex );
+		RestoreEditorStateLocked_( st, restoreDirty );
+	}
+	// Document-first phase 1: this PUBLIC entry point holds no controller
+	// lock -- drain the dirty->clean notification RestoreDirtyState flagged.
+	// (RollbackTransaction calls the Locked_ body directly under mMutex and
+	// drains at its own post-unlock tail.)
+	if( !mEditor.DrainDirtyNotification() ) return;
+}
+
+void SceneEditController::RestoreEditorStateLocked_( const EditorStateSnapshot& st, bool restoreDirty )
 {
 	// P1-#1: on a FULL rollback restore the dirty channels to the pre-transaction
 	// baseline (fires the dirty-changed listener); on a PARTIAL rollback leave the
@@ -2802,6 +3590,15 @@ bool SceneEditController::BeginTransaction()
 	// Undo() during rollback walks the whole group back PAST the baseline,
 	// consuming the pre-baseline CompositeBegin and corrupting the
 	// surrounding undo history.  A transaction must bracket WHOLE edits.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::BeginTransaction refused: a coordinated "
+			"agent/production render is queued or running." );
+		return false;
+	}
+	std::lock_guard<std::mutex> lk( mMutex );
 	if( mEditor.IsCompositeOpen() )
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
@@ -2809,8 +3606,8 @@ bool SceneEditController::BeginTransaction()
 			"composite is open; close it before opening a transaction." );
 		return false;
 	}
-	mTxnOpen              = true;
-	mTxnBaseline = CaptureEditorState();   // H1: one owned baseline
+	mTxnBaseline = CaptureEditorStateLocked_();   // H1: one owned baseline
+	mTxnOpen.store( true, std::memory_order_release );
 	mEditor.History().SnapshotRedoForRollback();   // P1-#3: so a full rollback restores the pre-transaction redo stack
 	mEditor.History().SnapshotUndoForRollback();   // P1: ...and the pre-transaction undo stack (cap-evicted records)
 	return true;
@@ -2818,12 +3615,13 @@ bool SceneEditController::BeginTransaction()
 
 bool SceneEditController::IsTransactionOpen() const
 {
-	return mTxnOpen;
+	return mTxnOpen.load( std::memory_order_acquire );
 }
 
 bool SceneEditController::RollbackTransaction()
 {
-	if( !mTxnOpen ) return false;
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return false;
+	if( !mTxnOpen.load( std::memory_order_acquire ) ) return false;
 
 	// Cancel-and-park around the inverse-edit applies — SceneEditor::Undo
 	// mutates live scene state the render thread reads per-pixel (object
@@ -2905,16 +3703,20 @@ bool SceneEditController::RollbackTransaction()
 	// interaction state too -- otherwise the next pointer move resumes the
 	// rejected gesture outside the (now-closed) transaction.
 	mPointerDown.store( false, std::memory_order_release );
+	mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
 	mGizmoDrag.active = false;
 	mScrubInProgress.store( false, std::memory_order_release );
 	mGestureOpenedComposite = false;   // P1: a mid-gesture rollback also clears the open-composite flag
 	mScrubOpenedComposite   = false;   // P1: ...and the scrub-composite flag
+	mTimelineScrubWatchdogRecovered = false;
+	mVariantInteractionAdmissionPending = false;
+	mVariantInteractionAdmissionPane = 0;
 
 	// F7: restore the dirty channels + selection to the pre-transaction
 	// baseline so a fully reverted document doesn't keep showing unsaved
 	// changes (Undo RE-MARKS dirty; created entities are never un-marked),
 	// then re-run the selection/panel resync the controller's Undo does.
-	RestoreEditorState( mTxnBaseline, fullyReverted );   // H1 + P1-#1: dirty only on full revert; selection always
+	RestoreEditorStateLocked_( mTxnBaseline, fullyReverted );   // H1 + P1-#1 (phase 1: Locked_ -- we hold mMutex; the tail drain notifies)
 	// P1-#3: a FULL rollback restores the pre-transaction redo stack the first edit
 	// cleared; a PARTIAL leaves it empty (ClearRedo above) since those redo entries
 	// are no longer coherent with the residual state.
@@ -2924,13 +3726,16 @@ bool SceneEditController::RollbackTransaction()
 	}
 
 	// Close the transaction.
-	mTxnOpen              = false;
+	mTxnOpen.store( false, std::memory_order_release );
 	mEditor.History().ClearRollbackSnapshots();   // P1 review: free the rollback snapshots now the txn is closed
 
 	// Re-render the reverted state.  Inline the KickRender effect under
 	// the held lock (store editPending, notify after unlock) so the
 	// render thread sees the reverted scene + the pending flag together,
 	// matching the OnTimeScrub / object-drag park-and-apply idiom.
+	// The reverted history may include camera edits whose forward
+	// configDirty was already consumed by a pane pass.
+	InvalidateAllSceneCameraNamedPanesLocked_();
 	mPolishState.store( static_cast<int>( PolishState::None ),
 									  std::memory_order_release );
 	mEditPending.store( true, std::memory_order_release );
@@ -2942,17 +3747,19 @@ bool SceneEditController::RollbackTransaction()
 	// changes the category entity lists; bump the epoch so platform UIs
 	// re-pull (cheap, and covers the conflict/AI-reject cases).
 	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
 	return fullyReverted;
 }
 
 bool SceneEditController::EndTransaction()
 {
-	if( !mTxnOpen ) return false;
+	std::lock_guard<std::mutex> lk( mMutex );
+	if( !mTxnOpen.load( std::memory_order_acquire ) ) return false;
 	// Commit is record-only: the edits were applied + recorded live
 	// during the transaction (the shipping flow), so committing just
 	// closes the transaction.  No re-apply, no revert; the redo stack is
 	// left intact so normal Undo/Redo of the committed edits still works.
-	mTxnOpen              = false;
+	mTxnOpen.store( false, std::memory_order_release );
 	mEditor.History().ClearRollbackSnapshots();   // P1 review: free the rollback snapshots now the txn is closed
 	return true;
 }
@@ -3023,7 +3830,61 @@ std::vector<String> CollectPainterUnionNames( IJobPriv& job )
 
 }  // namespace
 
+// Round-4 structural fix (external review): the PUBLIC enumeration getters
+// serve a SNAPSHOT with stale-fallback refresh -- see the header doc on
+// RefreshEnumSnapshot_.  This replaces round-3's blocking wrappers, whose
+// blocking lock could DEADLOCK a C-ABI dirty-changed callback that calls
+// back into the controller (the listener fires on the mutating thread with
+// mMutex held, and the C contract cannot forbid re-entry by out-of-tree
+// clients).  A try_lock refresh + stale fallback is deadlock-proof, block-
+// proof, UAF-proof (live reads only under the lock), and flicker-proof
+// (stale beats empty -- including during a production/agent render, where
+// the outliner now keeps its last-known list instead of blanking).
+void SceneEditController::RefreshEnumSnapshot_( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
+	std::vector<String> names;
+	const unsigned int n = CategoryEntityCountLocked_( cat );
+	names.reserve( n );
+	for( unsigned int i = 0; i < n; ++i ) names.push_back( CategoryEntityNameLocked_( cat, i ) );
+	String active = CategoryActiveNameLocked_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );              // leaf lock: never held across mMutex
+	mUi.entityNames[ci].swap( names );
+	mUi.activeNames[ci] = active;
+}
+
 unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	RefreshEnumSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.entityNames[ci].size() );
+}
+
+String SceneEditController::CategoryEntityName( Category cat, unsigned int idx ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return String();
+	RefreshEnumSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.entityNames[ci].size() ? mUi.entityNames[ci][idx] : String();
+}
+
+String SceneEditController::CategoryActiveName( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return String();
+	RefreshEnumSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return mUi.activeNames[ci];
+}
+
+unsigned int SceneEditController::CategoryEntityCountLocked_( Category cat ) const
 {
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return 0;
@@ -3091,13 +3952,27 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 	case Category::Painter: {
 		return static_cast<unsigned int>( CollectPainterUnionNames( mJob ).size() );
 	}
+	case Category::Geometry: {
+		// GUI redesign 2026-07-22: geometry is fully name-managed
+		// (IGeometryManager on the Job) -- enumerate exactly like Medium.
+		struct Count : public IEnumCallback<const char*> {
+			unsigned int n = 0;
+			bool operator()( const char* const& name ) override {
+				if( name ) ++n;
+				return true;
+			}
+		};
+		Count cb;
+		mJob.EnumerateGeometryNames( cb );
+		return cb.n;
+	}
 	case Category::None:
 	default:
 		return 0;
 	}
 }
 
-String SceneEditController::CategoryEntityName( Category cat, unsigned int idx ) const
+String SceneEditController::CategoryEntityNameLocked_( Category cat, unsigned int idx ) const
 {
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return String();
@@ -3170,13 +4045,19 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( idx >= names.size() ) return String();
 		return names[idx];
 	}
+	case Category::Geometry: {
+		CollectNamesCallback cb;
+		mJob.EnumerateGeometryNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
 	case Category::None:
 	default:
 		return String();
 	}
 }
 
-String SceneEditController::CategoryActiveName( Category cat ) const
+String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 {
 	switch( cat ) {
 	case Category::Camera: {
@@ -3222,6 +4103,7 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	case Category::Material:
 	case Category::Medium:
 	case Category::Painter:
+	case Category::Geometry:
 	case Category::None:
 	default:
 		return String();
@@ -3363,9 +4245,20 @@ void SceneEditController::CollapseSection( Category cat )
 	}
 }
 
-bool SceneEditController::SetSelection( Category cat, const String& entityName )
+bool SceneEditController::SetSelectionInner_( Category cat, const String& entityName )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	// External-review P1 (2026-07-22): the C-ABI passes a RAW int category
+	// (RISE_API_..._SetSelection casts an arbitrary int to Category), and every
+	// path below indexes the fixed mSelectionByCategory / mSectionExpanded
+	// arrays by static_cast<int>(cat) with NO bounds check.  An out-of-range
+	// value (-1, or >= kNumCategories) is an out-of-bounds array WRITE that
+	// corrupts controller memory.  Reject before any indexing.  None==0 is a
+	// valid in-range value handled immediately below.
+	{
+		const int ci = static_cast<int>( cat );
+		if( ci < 0 || ci >= kNumCategories ) return false;
+	}
 	// Category::None: clear every per-category selection + the
 	// expanded flags AND the primary tuple.  No side effect on
 	// the scene.  The panel's "collapse this section without
@@ -3395,7 +4288,7 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 
 	if( needsRenderSerialization )
 	{
-		if( mTxnOpen ) {
+		if( mTxnOpen.load( std::memory_order_acquire ) ) {
 			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: active camera/rasterizer/animation/film switch refused inside an open transaction (not undoable -> rollback cannot revert it)." );
 			return false;
 		}
@@ -3494,7 +4387,8 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 						char wStr[64]; char hStr[64];
 						std::snprintf( wStr, sizeof(wStr), "%u", filmAfter->GetWidth() );
 						std::snprintf( hStr, sizeof(hStr), "%u", filmAfter->GetHeight() );
-						mJob.ApplyCstFilmEdit( wStr, hStr, nullptr );
+						if( mJob.ApplyCstFilmEdit( wStr, hStr, nullptr ) != 0 )
+							mEditor.MarkCstHeadDirty( "", nullptr );   // round-3 sibling fix + round-4 gate: see the Film SetProperty arm
 					}
 				}
 			}
@@ -3535,12 +4429,23 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	//     Object, since the user is editing media independently.
 	if( cat == Category::Object ) {
 		if( entityName.size() > 1 ) {
+			// External-review round 3 (2026-07-22): the two Find helpers read the
+			// LIVE object manager, racing an any-thread agent D2 manager swap ->
+			// UAF.  Resolve both names under a brief mMutex hold, then write the
+			// UI-state members with the lock released (main-thread-only members;
+			// the lock protects the manager reads, not them).
+			String matName, medName;
+			{
+				std::lock_guard<std::mutex> slk( mMutex );
+				matName = FindObjectMaterialName( mJob, entityName );
+				medName = FindObjectInteriorMediumName( mJob, entityName );
+			}
 			const int matIdx = static_cast<int>( Category::Material );
-			mSelectionByCategory[ matIdx ] = FindObjectMaterialName( mJob, entityName );
+			mSelectionByCategory[ matIdx ] = matName;
 			mSectionExpanded[ matIdx ]     = true;
 
 			const int medIdx = static_cast<int>( Category::Medium );
-			mSelectionByCategory[ medIdx ] = FindObjectInteriorMediumName( mJob, entityName );
+			mSelectionByCategory[ medIdx ] = medName;
 			mSectionExpanded[ medIdx ]     = true;
 		}
 		// Note: a "section header click" on Object with empty name
@@ -3561,6 +4466,15 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEnd,
                                                unsigned int& numFrames ) const
 {
+	// Agent edits may re-derive the Job from any thread, replacing the
+	// animation and its manager graph.  Query only in the same critical
+	// section as every D2 replacement so the returned values came from one
+	// still-live graph.  This is a frequently-polled UI getter, so follow
+	// the stale/fallback getter convention and never block a repaint behind
+	// production ownership or a contended editor operation.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 	bool doFields = false, invertFields = false;
 	return mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields );
 }
@@ -3577,18 +4491,34 @@ bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h 
 		// non-zero ones, which is better than failing the pointer
 		// event entirely.  This path runs only at startup, before
 		// any render pass refreshes the cache.
-		if( const IScene* scene = mJob.GetScene() ) {
-			if( const IFilm* film = scene->GetFilm() ) {
-				w = film->GetWidth();
-				h = film->GetHeight();
-				return w > 0 && h > 0;
-			}
-		}
-		return false;
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+		std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+		if( !lk.owns_lock() ) return false;
+		return GetCameraDimensionsLocked_( w, h );
 	}
 	w = cachedW;
 	h = cachedH;
 	return true;
+}
+
+bool SceneEditController::GetCameraDimensionsLocked_( unsigned int& w,
+	                                                   unsigned int& h ) const
+{
+	const unsigned int cachedW = mFullResW.load( std::memory_order_acquire );
+	const unsigned int cachedH = mFullResH.load( std::memory_order_acquire );
+	if( cachedW > 0 && cachedH > 0 ) {
+		w = cachedW;
+		h = cachedH;
+		return true;
+	}
+	if( const IScene* scene = mJob.GetScene() ) {
+		if( const IFilm* film = scene->GetFilm() ) {
+			w = film->GetWidth();
+			h = film->GetHeight();
+			return w > 0 && h > 0;
+		}
+	}
+	return false;
 }
 
 void SceneEditController::ForTest_SetSelection( Category cat, const String& name )
@@ -3675,61 +4605,45 @@ void SceneEditController::PickAt( const Point2& px )
 	// (mSectionExpanded + mSelectionByCategory) the panel reads,
 	// leaving the new selection invisible to the GUI.
 
-	const IScene* scene = mJob.GetScene();
-	if( !scene ) { SetSelection( Category::None, String() ); return; }
-
-	const ICamera* cam = EffectiveViewportCamera_( scene );   // user-review P1#2: pick through the interacted pane's camera
-	if( !cam ) { SetSelection( Category::None, String() ); return; }
-
-	IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
-	if( !objs ) { SetSelection( Category::None, String() ); return; }
-
-	// Spatial structure must be current before IntersectRay — defensive
-	// in case nothing has rendered yet (rebuild is a no-op when valid).
-	objs->PrepareForRendering();
-
-	// Generate a primary camera ray for this pixel.  RuntimeContext
-	// here is just enough to satisfy the GenerateRay signature — the
-	// simple pinhole / thinlens path doesn't read it.  Picking is
-	// best-effort; if more exotic cameras need a real rc later, plumb.
-	//
-	// Y-flip: the camera projection inverts Y between the rasterizer's
-	// screen-pixel space (where the IRasterImage is laid out) and the
-	// world-up direction the user perceives.  When the rasterized image
-	// is displayed in the platform viewport, the visual top corresponds
-	// to "image-pixel space large-Y", and the visual bottom to
-	// small-Y — the opposite of the top-left view-coords the bridge
-	// hands us.  Without this flip, clicking visually low picks objects
-	// rendered visually high (camera-projection inversion).
-	const Scalar pickPxY = static_cast<Scalar>( scene->GetFilm()->GetHeight() ) - px.y;
-
-	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, /*threaded*/false );
-	Ray r;
-	if( !cam->GenerateRay( rc, r, Point2( px.x, pickPxY ) ) ) {
-		SetSelection( Category::None, String() );
-		return;
+	String pickedName;
+	{
+		// Picking reads and prepares the live object manager and camera.
+		// Hold the mutation mutex and park rendering so neither a render
+		// nor an any-thread D2 commit can replace/use those structures
+		// concurrently. Copy only the resolved name out of this scope.
+		std::unique_lock<std::mutex> lk( mMutex );
+		CancelAndParkRender_( lk );
+		const IScene* scene = mJob.GetScene();
+		const ICamera* cam = EffectiveViewportCamera_( scene );
+		IObjectManager* objs =
+			scene ? const_cast<IObjectManager*>( scene->GetObjects() ) : nullptr;
+		const IFilm* film = scene ? scene->GetFilm() : nullptr;
+		if( scene && cam && objs && film ) {
+			objs->PrepareForRendering();
+			const Scalar pickPxY =
+				static_cast<Scalar>( film->GetHeight() ) - px.y;
+			RuntimeContext rc(
+				GlobalRNG(), RuntimeContext::PASS_NORMAL, /*threaded*/false );
+			Ray ray;
+			if( cam->GenerateRay( rc, ray, Point2( px.x, pickPxY ) ) ) {
+				RasterizerState rast;
+				RayIntersection ri( ray, rast );
+				objs->IntersectRay(
+					ri, /*frontFace*/true, /*backFace*/false, /*exit*/false );
+				if( ri.geometric.bHit && ri.pObject ) {
+					FindObjectNameCallback cb( ri.pObject, objs );
+					objs->EnumerateItemNames( cb );
+					pickedName = cb.foundName;
+				}
+			}
+		}
 	}
 
-	RasterizerState rast;
-	RayIntersection ri( r, rast );
-	objs->IntersectRay( ri, /*frontFace*/true, /*backFace*/false, /*exit*/false );
-
-	if( ri.geometric.bHit && ri.pObject ) {
-		// IObject has no GetName() — walk the manager to recover the
-		// registered name corresponding to the hit pointer.  O(n);
-		// fine for click cadence and typical scene sizes.
-		FindObjectNameCallback cb( ri.pObject, objs );
-		objs->EnumerateItemNames( cb );
-		if( cb.foundName.size() > 1 ) {
-			// SetSelection(Object, name) is the right path:
-			// (a) updates the primary tuple,
-			// (b) updates mSelectionByCategory[Object] + sets the
-			//     expanded flag,
-			// (c) auto-syncs Materials section to the object's
-			//     bound material (Phase 4b auto-sync rule).
-			SetSelection( Category::Object, cb.foundName );
-			return;
-		}
+	if( pickedName.size() > 1 ) {
+		// SetSelection takes mMutex itself; invoke it only after the pick
+		// scope releases the non-recursive lock.
+		SetSelection( Category::Object, pickedName );
+		return;
 	}
 
 	// No hit (or hit on an unregistered object) — collapse the panel
@@ -3828,9 +4742,17 @@ void SceneEditController::CancelAgentRender_()
 	// the per-occupant bit closes the queued-before-start window where the
 	// worker's mandatory Reset() would otherwise erase this cancellation.
 	std::lock_guard<std::mutex> slotLk( mAgentRenderSlotMutex );
+	std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	if( mAgentRenderPending )
 	{
 		mAgentRenderCancelRequested.store( true, std::memory_order_release );
+	}
+	{
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		if( mDirectRenderCallCount > 0 )
+		{
+			mDirectRenderCancelRequested.store( true, std::memory_order_release );
+		}
 	}
 	mCancelProgress.RequestCancel();
 }
@@ -3897,9 +4819,19 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 {
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
-	const bool uniqueFallback = ( entityKind.size() > 1 && std::string( entityKind.c_str() ) == "camera" );
+	// Phase 3: kind-addressed singletons -- same generalized rule as
+	// Job::ApplyCstParamEditImpl_ (empty name + kind = the sole chunk of that
+	// kind), so the prior-value capture resolves the SAME chunk the edit will.
+	// Round-7: same GATED camera fallback as Job::ApplyCstParamEditImpl_
+	// (DocCameraUniqueFallbackPermitted) -- the capture must stay in lockstep
+	// with the edit's resolution, including the typo-refusal direction.
+	const std::string ekind( entityKind.size() > 1 ? entityKind.c_str() : "" );
+	const char* bareName = entityName.size() > 1 ? entityName.c_str() : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, bareName, mJob.GetActiveCameraName() )
+		: ( entityName.size() <= 1 && !ekind.empty() );
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-		*doc, entityName.c_str(), nullptr, entityKind.size() > 1 ? entityKind.c_str() : "", uniqueFallback );
+		*doc, bareName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) return false;
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return false;
@@ -3926,9 +4858,33 @@ bool SceneEditController::CaptureAgentChunkForRemoveUndo_(
 {
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
-	const bool uniqueFallback = ( kind.size() > 1 && std::string( kind.c_str() ) == "camera" );
+	const std::string kindText = kind.size() > 1 ? kind.c_str() : "";
+	const std::string targetText = target.c_str();
+	// Mirror Job::ApplyCstRemoveChunk's descriptor-aware positional
+	// addressing. APPEND-class chunks such as timeline/keyframe are
+	// unnamed and removable by keyword when exactly one exists. They need
+	// the same pre-remove capture as the unnamed-camera case or the
+	// successful removal would have no undo record.
+	bool targetNamesAChunk = false;
+	if( kindText.empty() ) {
+		int nameOccurrences = 0;
+		RISE::Cst::DocFindByNameAnyRole(
+			*doc, targetText, &nameOccurrences, "", false );
+		targetNamesAChunk = nameOccurrences > 0;
+	}
+	const ChunkDescriptor* removeDescriptor = DescriptorForKeyword(
+		String( kindText.empty() ? targetText.c_str() : kindText.c_str() ) );
+	const bool unnamedRepeatable =
+		removeDescriptor && removeDescriptor->unnamedRepeatable && !targetNamesAChunk;
+	// Round-7: same GATED camera fallback as Job::ApplyCstRemoveChunk (lockstep
+	// with the remove this capture precedes).
+	const bool uniqueFallback =
+		( kindText == "camera"
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, targetText, mJob.GetActiveCameraName() )
+			: false )
+		|| unnamedRepeatable;
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
-		*doc, target.c_str(), nullptr, kind.size() > 1 ? kind.c_str() : "", uniqueFallback );
+		*doc, targetText, nullptr, kindText, uniqueFallback );
 	if( id == 0 ) return false;
 	const int idx = RISE::Cst::DocIndexOfNodeId( *doc, id, nullptr );
 	if( idx < 0 ) return false;
@@ -3951,7 +4907,7 @@ bool SceneEditController::CaptureAgentChunkForRemoveUndo_(
 // under mMutex while the render thread is parked, so no reader can observe
 // the D2 transient {0,0} head-version or a half-rebuilt Scene.  Callable from
 // any thread.
-SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditInner_(
 	const String& entityName,
 	const String& entityKind,
 	const String& param,
@@ -3960,11 +4916,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 {
 	AgentCommitResult r;
 
-	// F5 polish A1 round 2: refuse a MID-TRANSACTION agent commit BEFORE any
-	// mutation or park -- the same rule as the existing mTxnOpen refusals
-	// on the other entry points (SetSelection's active-switch; SetProperty's
-	// animation frame-count / rasterizer / film; Undo/Redo's history
-	// navigation).
+	// F5 polish A1 round 2: refuse a MID-TRANSACTION agent commit before any
+	// mutation or park.
 	// An agent commit's Document mutation has NO EditHistory record, so
 	// RollbackTransaction's inverse-edit Undo loop can never revert it; a
 	// FULL rollback would then RestoreEditorState the pre-transaction dirty
@@ -3976,34 +4929,6 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	// -- lands in mEntityDirty, which restores by plain copy.)  Surfaced
 	// HONESTLY as a plain "rejected" (NOT a conflict -- the head did not
 	// move; the agent should simply retry once the gesture completes).
-	// Thread contract: mTxnOpen is a plain bool that mMutex does NOT cover
-	// (Begin/EndTransaction write it with no lock held; see the member doc
-	// in the header) -- the check is race-free today because the
-	// transaction API and the in-app agent path both run on the main
-	// thread; a future async agent transport must revisit this (marshal
-	// the commit to the main thread or synchronize the flag).
-	if( mTxnOpen )
-	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused inside an open transaction (no EditHistory record -> rollback cannot revert it)." );
-		r.applied = false;
-		r.rawCode = 0;
-		r.status  = String( "rejected" );
-		// The ONE transient reject: the identical commit succeeds once the
-		// gesture completes, so mark it retriable for the wire client (the
-		// permanent rejects below keep the default false).
-		r.retriable = true;
-		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
-		{
-			// Keep this function's "every head read is under mMutex"
-			// invariant (no torn 16-byte read against a concurrent
-			// parked edit on another thread).  No park needed -- we
-			// mutate nothing, so the in-flight pass keeps rendering.
-			std::lock_guard<std::mutex> hlk( mMutex );
-			r.headVersion = mJob.GetCstHeadVersion();
-		}
-		return r;
-	}
-
 	// Cancel-and-park the render thread, THEN hold mMutex across the WHOLE
 	// commit -- the pre-flight refusals, the conflict pre-check,
 	// ApplyCstParamEdit (which on a D2 ClearAll's + rebuilds the Scene and
@@ -4014,6 +4939,21 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	// concurrent parked edit on ANOTHER thread is the real writer of the head
 	// -- there is no torn read of the 16-byte CstHeadVersion either.
 	std::unique_lock<std::mutex> lk( mMutex );
+	// BeginTransaction publishes the flag while holding this same mutex.
+	// The under-lock recheck closes the false->Begin->commit TOCTOU that an
+	// atomic pre-flight check alone would still permit.
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent commit refused while an editor transaction/gesture is open." );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
 	CancelAndParkRender_( lk );
 
 	// Pre-flight refusals (under the lock): a Job with no retained Document,
@@ -4030,7 +4970,12 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
 		return r;
 	}
-	if( entityName.size() <= 1 || param.size() <= 1 || value.size() <= 1 )
+	// Document-first ADR phase 3: an EMPTY target with a non-empty kind is the
+	// KIND-ADDRESSED SINGLETON form (the sole `film` / `<kind>_rasterizer` /
+	// unnamed-camera chunk) -- Job::ApplyCstParamEditImpl_ resolves it via the
+	// generalized unique-in-kind fallback.  Only the both-empty form is invalid.
+	if( ( entityName.size() <= 1 && entityKind.size() <= 1 )
+	 || param.size() <= 1 || value.size() <= 1 )
 	{
 		// RString::size() counts the trailing NUL, so a non-empty string has
 		// size >= 2; size <= 1 is the empty case.
@@ -4038,7 +4983,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		r.rawCode = 0;
 		r.status  = String( "rejected" );
 		r.headVersion = mJob.GetCstHeadVersion();
-		r.message = String( "target, param, and value must all be non-empty" );
+		r.message = String( "param and value must be non-empty, and target may be empty only with a kind (singleton addressing)" );
 		return r;
 	}
 
@@ -4218,6 +5163,19 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 				entityName.c_str(), param.c_str(), code );
 		}
 
+		if( entityKind.size() <= 1 )
+		{
+			// `kind` is optional on propose_patch.  A name-only camera edit
+			// can resolve and apply incrementally, but this layer does not
+			// receive Job's resolved descriptor.  Conservatively reconcile
+			// every named-camera pane; non-camera name-only edits pay only a
+			// small extra pane-camera lookup.
+			InvalidateAllSceneCameraNamedPanesLocked_();
+		}
+		else if( IsCameraChunkKind( entityKind ) )
+		{
+			InvalidatePanesBoundToSceneCameraLocked_( entityName );
+		}
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
@@ -4233,7 +5191,20 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentInsertChun
 	const String& chunkText,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
-	return ApplyAgentChunkCrud_( /*isInsert*/ true, chunkText, String(), baseVersionOrNull );
+	AgentCommitResult r;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			r.status = String( "rejected" );
+			r.retriable = true;
+			r.message = String( "render queued or in progress -- retry after it completes" );
+			return r;
+		}
+		r = ApplyAgentChunkCrud_( /*isInsert*/ true, chunkText, String(), baseVersionOrNull );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
 }
 
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChunk(
@@ -4241,32 +5212,68 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 	const String& kind,
 	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
 {
-	return ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
+	AgentCommitResult r;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			r.status = String( "rejected" );
+			r.retriable = true;
+			r.message = String( "render queued or in progress -- retry after it completes" );
+			return r;
+		}
+		r = ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
 }
 
 //////////////////////////////////////////////////////////////////////
 // Secure-MCP slice 5a: proposal staging + owner-approval state machine.
 //
 // StageProposal is deliberately CHEAP and INERT: it only appends to
-// mProposals under mMutex -- no cancel-and-park (nothing here touches the
-// Document or the live Scene, so there is nothing for the render thread to
-// race), no conflict check (that happens once, at APPROVAL time in
-// ResolveProposal -- staging against a since-moved head is fine; it is
-// APPLYING against a since-moved head that would be unsafe), no EditHistory
-// record (an inert proposal is not yet a commit).
+// mProposals under its leaf mutex -- no cancel-and-park (nothing here mutates
+// the Document or live Scene), no conflict check (that happens at APPROVAL
+// time), no EditHistory record (an inert proposal is not yet a commit).
 //
 // S5a hardening round: baseVersion is stamped from mJob.GetCstHeadVersion()
-// HERE, under the SAME mMutex hold that mints the id and enqueues -- not
-// pre-read unlocked by the caller (AgentSession) beforehand.  mJob is a
-// reference (IJobPriv&), always valid, so reading it here is exactly the
-// same "head read under mMutex" contract ApplyAgentParamEdit's own doc
-// requires (see that method's comment block, ~line 3193): no torn 16-byte
-// read against a concurrent commit / render-thread write on another thread.
+// HERE under render admission, not pre-read unlocked by AgentSession. When
+// the render gate is clear we also take mMutex, exactly like a commit. When
+// the gate is set, every controller write funnel refuses under this same
+// admission lock and the render only reads the retained Document, so the
+// head is immutable and can be captured without waiting behind the render's
+// duration-long mMutex hold.
 //////////////////////////////////////////////////////////////////////
 std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
                                                    RISE::Cst::CstHeadVersion* outStagedVersion )
 {
-	std::lock_guard<std::mutex> lk( mMutex );
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return 0;
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	// Staging is inert with respect to the live Scene, so it deliberately works
+	// while an ordinary render owns mMutex.  Lifecycle preparation is different:
+	// after its single-owner claim no new controller state may be admitted, and
+	// a retired listener target can execute arbitrary code while that claim is
+	// Preparing.  Refuse before borrowing mJob or touching the proposal queue.
+	if( mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+		return 0;
+	RISE::Cst::CstHeadVersion stagedHead;
+	if( !proposal.hasExplicitBaseVersion )
+	{
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			// A direct/coordinated render owns the scene but cannot mutate
+			// its retained Document. Admission excludes every controller
+			// commit until this head capture and enqueue are complete.
+			stagedHead = mJob.GetCstHeadVersion();
+		}
+		else
+		{
+			std::lock_guard<std::mutex> sceneLk( mMutex );
+			stagedHead = mJob.GetCstHeadVersion();
+		}
+	}
+
+	std::lock_guard<std::mutex> proposalLk( mProposalMutex );
 
 	// Secure-MCP slice 6: the PENDING-depth cap, checked FIRST and BEFORE
 	// touching mNextProposalId or mProposals at all -- a full queue is a
@@ -4290,10 +5297,10 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
 	if( !p.hasExplicitBaseVersion )
 	{
 		// The common case: the proposing session did not pin an explicit
-		// baseHeadVersion, so the head-at-stage-time IS the base -- read it
-		// now, under mMutex, instead of trusting whatever (potentially
-		// racy) value the caller put in proposal.baseVersion.
-		p.baseVersion = mJob.GetCstHeadVersion();
+		// baseHeadVersion, so the admission-protected head-at-stage-time IS
+		// the base instead of whatever potentially-racy value the caller
+		// placed in proposal.baseVersion.
+		p.baseVersion = stagedHead;
 	}
 	const std::uint64_t id = p.id;
 	if( outStagedVersion ) *outStagedVersion = p.baseVersion;
@@ -4325,44 +5332,29 @@ std::uint64_t SceneEditController::StageProposal( const AgentProposal& proposal,
 
 std::vector<SceneEditController::AgentProposal> SceneEditController::ListProposals() const
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return {};  // render-owns-scene guard
-	std::lock_guard<std::mutex> lk( mMutex );
-	return mProposals;   // copy out under the lock -- the caller's snapshot is stable
+	std::lock_guard<std::mutex> proposalLk( mProposalMutex );
+	return mProposals;   // copy out under the leaf lock -- stable and render-independent
 }
 
 bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, AgentCommitResult* outResult )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
-	// The whole resolve -- find, re-check, and (on approve) apply -- runs
-	// under ONE mMutex hold, so there is no window between "the base
-	// version matched" and "the apply actually ran" for a concurrent commit
-	// (staged or direct, on any thread) to move the head out from under us.
-	// ApplyAgent{ParamEdit,InsertChunk,RemoveChunk} below take mMutex
-	// THEMSELVES (cancel-and-park + the whole commit), so we must NOT hold
-	// mMutex while calling them -- mMutex is a plain, non-recursive
-	// std::mutex (re-entering it is an immediate self-deadlock, not a
-	// stall-and-retry; see CancelAndParkRender_'s doc).  So this method
-	// takes mMutex ONLY for the find + status-transition step, releases it,
-	// then (on a version match) calls the normal ApplyAgent* entry point --
-	// which takes mMutex again for its OWN cancel-and-park critical section.
-	//
-	// This does NOT reopen the TOCTOU window the single-lock design above
-	// was written to close: the invariant that matters is "the version we
-	// COMPARE is the version we APPLY AGAINST", and ApplyAgent* re-derives
-	// that itself -- baseVersionOrNull is passed straight through to the
-	// SAME optimistic-concurrency gate a direct (non-staged) commit already
-	// uses, checked UNDER ApplyAgent*'s OWN mMutex hold, atomically with
-	// its own apply.  A second mover between our pre-check here and
-	// ApplyAgent*'s internal check is not a bug: it is caught by
-	// ApplyAgent*'s own gate and folded into this method's conflict
-	// handling below, exactly as if OUR pre-check had raced it.  What we do
-	// here first (a cheap pre-check before even attempting the call) is
-	// belt-and-suspenders for a fast, honest status on the COMMON case
-	// (proposal already known-stale) without ever needing to hold mMutex
-	// across a nested ApplyAgent* call.
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
+	// Admission serializes resolvers and controller commits. Proposal
+	// bookkeeping itself uses a leaf mutex, while ApplyAgent* remains the
+	// authoritative optimistic check-and-apply under mMutex. This avoids
+	// coupling inert queue reads/writes to a production render's long scene
+	// lock without weakening the base-version invariant.
 	AgentProposal snapshot;
+	RISE::Cst::CstHeadVersion rejectedHead;
+	if( !approve )
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::lock_guard<std::mutex> sceneLk( mMutex );
+		rejectedHead = mJob.GetCstHeadVersion();
+	}
+	{
+		std::lock_guard<std::mutex> proposalLk( mProposalMutex );
 		bool found = false;
 		for( auto& p : mProposals )
 		{
@@ -4384,15 +5376,13 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 			// report the REAL current head -- leaving it default-constructed
 			// {0,0} is indistinguishable from the "no session / unknown id"
 			// sentinel a caller uses to detect a refusal that never even
-			// found the proposal.  mMutex is still held here (this whole
-			// find+reject block runs under the SAME lock acquired above), so
-			// this is a safe, non-torn read of the 16-byte CstHeadVersion --
-			// no concurrent commit on another thread can be mutating it
-			// mid-read.
+			// found the proposal. rejectedHead was captured under mMutex
+			// while the outer admission lock excluded every concurrent
+			// commit, so it is a safe, non-torn current head.
 			if( outResult )
 			{
 				outResult->status      = String( "rejected" );
-				outResult->headVersion = mJob.GetCstHeadVersion();
+				outResult->headVersion = rejectedHead;
 				outResult->message     = String( "proposal rejected (no mutation)" );
 			}
 			return true;   // apply never ran -- applied/rawCode/retriable stay at their defaults (false/0/false)
@@ -4421,7 +5411,7 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 	}
 
 	{
-		std::lock_guard<std::mutex> lk( mMutex );
+		std::lock_guard<std::mutex> proposalLk( mProposalMutex );
 		for( auto& p : mProposals )
 		{
 			if( p.id == id )
@@ -4521,14 +5511,161 @@ bool SceneEditController::RunPreviewRenderParked(
 	const String&                clientLabel,
 	RenderJobId*                 outJobId )
 {
-	if( mTxnOpen )
+	// Register before touching admission or any other controller state.
+	// Terminal Stop() closes this registration under the same leaf mutex and
+	// then waits for every successfully-registered caller to make its final
+	// controller touch. This includes a caller blocked before admission.
+	{
+		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
+		if( mDirectRenderStopping )
+		{
+			return false;
+		}
+		++mDirectRenderCallCount;
+	}
+	struct DirectRenderCallGuard
+	{
+		SceneEditController& self;
+		~DirectRenderCallGuard()
+		{
+			// LAST access to self on every return/throw path.
+			std::lock_guard<std::mutex> directLk( self.mDirectRenderStateMutex );
+			--self.mDirectRenderCallCount;
+			if( self.mDirectRenderCallCount == 0 )
+			{
+				self.mDirectRenderDoneCV.notify_all();
+			}
+		}
+	} directCallGuard{ *this };
+
+	ForTest_OnDirectRenderBeforeAdmission();
+
+	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
 		return false;
 	}
 
+	// Admission is a short outer lock, not a render-duration lock. Claim the
+	// gate BEFORE waiting for mMutex, then release admission immediately.
+	// This is load-bearing for UI responsiveness: an interactive BeautyVariant
+	// pass can hold mRendering for much longer than the cheap preview path. If
+	// this thread waited for that pass while still holding admission, every UI
+	// callback serialized by admission would queue behind the whole pass.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderStop.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused -- controller stopped." );
+		return false;
+	}
+	// The dedicated agent/production worker claims this gate before it
+	// acquires mMutex. A direct camera/film-override preview must not slip
+	// into that queued window and overwrite the coordinated job record.
+	// Check BEFORE mMutex: a running coordinated render holds mMutex for
+	// its whole duration, so checking afterward would wait for the render
+	// only to refuse.
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused while another coordinated render is queued or running." );
+		return false;
+	}
+	// A platform can disable interaction before delivering the matching Up.
+	// Complete controller-owned gestures while admission is still exclusively
+	// ours, then apply the ordinary transaction/save/direct-composite gates.
+	// This turns the former permanent render-refusal cycle into a normal
+	// commit-before-render boundary.
+	if( !FinalizeOpenInteractions() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused -- open interaction could not be finalized." );
+		return false;
+	}
+	// Every controller path that opens a transaction/gesture/save takes this
+	// same admission lock. Check those published states before claiming the
+	// gate, so a render never strands an already-open gesture while it parks
+	// the interactive pass. IsCompositeOpen additionally catches direct
+	// SceneEditor test/tooling use that did not originate in the controller.
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mSaving.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused while an editor transaction, gesture, or save is open." );
+		return false;
+	}
+	mDirectRenderCancelRequested.store( false, std::memory_order_release );
+	mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+	struct DirectRenderAdmissionGuard
+	{
+		SceneEditController& self;
+		~DirectRenderAdmissionGuard()
+		{
+			// Round-6 review P1 (lost wakeup): clear the gate and notify UNDER
+			// mMutex.  This guard destructs AFTER `lk` below (reverse declaration
+			// order releases mMutex first), so an unlocked store+notify could land
+			// exactly between RenderLoop's predicate check and its kernel park --
+			// the classic missed-wakeup window (see the RenderLoop doc: notifiers
+			// must hold the waiter's mutex).  The agent worker's release already
+			// follows this discipline (AgentRenderWorkerLoop_'s renderLk hold);
+			// this mirrors it.  mMutex is provably NOT held here on every path
+			// (`lk` is destroyed first), so the re-acquire cannot self-deadlock.
+			std::lock_guard<std::mutex> g( self.mMutex );
+			self.mAgentRenderBlocksInteractive.store( false, std::memory_order_release );
+			self.mCV.notify_all();
+		}
+	} directAdmissionGuard{ *this };
+	admissionLk.unlock();
+
+	// Trip cancellation without first taking mMutex. The render loop needs
+	// that mutex only for its completion transition; acquiring it before the
+	// cancel would make this admission handshake wait for the pass naturally.
+	bool interactiveCancelSent = false;
+	if( mRendering.load( std::memory_order_acquire ) )
+	{
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		interactiveCancelSent = true;
+	}
 	std::unique_lock<std::mutex> lk( mMutex );
-	CancelAndParkRender_( lk );
+	if( !interactiveCancelSent && mRendering.load( std::memory_order_acquire ) )
+	{
+		// A pass may have crossed its final gate check just before our gate
+		// claim and published mRendering while we were acquiring mMutex.
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	// The cancellation above belonged to the interactive pass we just
+	// drained, not to this fresh direct render. Scope the shared token per
+	// render exactly as AgentRenderWorkerLoop_ does; otherwise a camera/film
+	// override render installs an already-cancelled callback on the Job and
+	// immediately returns a partial/empty "render cancelled" result. Any
+	// cancellation arriving after this reset remains visible to fn(). An
+	// explicit cancellation that arrived before Reset() is re-applied from
+	// the direct-occupant latch.
+	mCancelProgress.Reset();
+	if( mDirectRenderCancelRequested.load( std::memory_order_acquire ) )
+	{
+		mCancelProgress.RequestCancel();
+	}
+
+	// Defensive post-park validation. Controller-owned state cannot have
+	// opened after the gate claim (all such paths now refuse under
+	// admission), but direct SceneEditor test/tooling access is outside that
+	// contract and must still fail closed rather than render mid-composite.
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mSaving.load( std::memory_order_acquire )
+	 || mPointerDown.load( std::memory_order_acquire )
+	 || mScrubInProgress.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: preview render refused because editor state changed during admission." );
+		return false;
+	}
 
 	RenderJobId jobId;
 	{
@@ -4586,6 +5723,15 @@ bool SceneEditController::RunPreviewRenderParked(
 		RenderOwnershipScope ownScope_( mRenderOwnsScene );
 		if( fn ) fn();
 	}
+
+	// Round-8 review P2 fix: a successful completion inside `fn` records the
+	// frame for every Last Render pane (QueueLastRenderPublishLocked_) but
+	// CANNOT deliver it -- mMutex is held for the render's whole duration
+	// here.  Release, then drain, so the delivery does not wait for a UI
+	// frame tick (RefreshProperties' catch-all) and headless/agent embedders
+	// with no frame loop get it at all.
+	lk.unlock();
+	DrainLastRenderPublishes_();
 
 	// Unlock (end of scope) resumes the render loop's normal wait/cycle --
 	// no kick needed: we made no Document/scene edit, so the interactive
@@ -4748,6 +5894,13 @@ void SceneEditController::AgentRenderWorkerLoop_()
 		}   // renderLk released here -- BEFORE the slot is cleared below,
 		    // so mMutex is never held while touching the slot.
 
+		// Round-8 review P2 fix: deliver any Last Render frame this render
+		// recorded.  renderLk (mMutex) is released just above and no other
+		// controller lock is held here, which is exactly this drain's
+		// contract -- the completion site itself could not deliver, since it
+		// runs with mMutex held for the render's whole duration.
+		DrainLastRenderPublishes_();
+
 		// Wake the interactive loop NOW that mAgentRenderBlocksInteractive
 		// is clear -- it may have a pending edit queued up behind the
 		// gate (see RenderLoop's pred / continue check).
@@ -4856,38 +6009,15 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		return false;
 	}
 
-	// mCurrentRenderJob/mNextRenderJobId are guarded by mJobStatusMutex
-	// (NOT mMutex -- see that member's doc: mMutex is held by the
-	// worker for the render's WHOLE DURATION, so a status reader
-	// using mMutex would block for the entire render instead of
-	// observing it in flight; this was a real bug caught by this
-	// slice's own flaky test).  mAgentRenderBlocksInteractive is a
-	// SEPARATE plain atomic that RenderLoop checks WHILE holding
-	// mMutex -- set it under a brief, nested mMutex acquisition here
-	// so RenderLoop's mint block and this write are strictly
-	// ordered (RenderLoop cannot observe the gate false while this
-	// job is being minted).  Nesting mMutex INSIDE the already-held
-	// slot lock is safe here specifically because the single-slot
-	// policy above guarantees no render is currently in flight (the
-	// worker only holds mMutex WHILE a render runs, and a render can
-	// only start after mAgentRenderPending flips true, which happens
-	// later in this same critical section) -- so this brief, nested
-	// mMutex acquisition can never block behind the worker's
-	// render-duration hold.  No other code path acquires mMutex then
-	// tries to acquire mAgentRenderSlotMutex (the worker and
-	// WaitForRenderJob both release one before acquiring the other),
-	// so this nesting order (slot outer, mMutex inner) is the ONLY
-	// nesting order used anywhere and cannot deadlock.
-	RenderJobId jobId = kInvalidRenderJobId;
-	{
-		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
-		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
-		mCurrentRenderJob.id          = jobId;
-		mCurrentRenderJob.renderClass = renderClass;
-		mCurrentRenderJob.active      = true;
-		mCurrentRenderJob.clientLabel = clientLabel;   // Fix-round-1 P3-c: surface who submitted this job
-		mCurrentRenderJob.pinned      = pinned;        // Model-B F2 slice S3
-	}
+	// Claim the interactive gate and check transaction state under the
+	// same brief mMutex hold. This closes both directions of the race:
+	// an already-open transaction refuses this submission, while a
+	// successfully claimed submission makes a later BeginTransaction
+	// refuse until the worker clears the gate at completion.
+	//
+	// Nesting mMutex INSIDE the already-held slot lock is safe because
+	// the single-slot check above guarantees no coordinated render is in
+	// flight. This remains the sole lock order used by this machinery.
 	{
 		// Model-B F2 slice S2a: claim the interactive-loop gate for
 		// the FULL duration of this render (mint through worker
@@ -4895,8 +6025,58 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		// the exact race this closes (RenderLoop's own mint block
 		// stomping mCurrentRenderJob in the gap between this mint and
 		// the worker actually starting).
+		ForTest_OnCoordinatedRenderAdmissionAttempt();
+		std::lock_guard<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		// Direct renders publish the gate before taking their
+		// render-duration mMutex hold. Inspect it first so a coordinated
+		// submission refuses immediately instead of waiting for that
+		// direct render to finish merely to discover the conflict.
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused -- another direct/coordinated render has admission." );
+			return false;
+		}
+		if( !FinalizeOpenInteractions() )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused -- open interaction could not be finalized." );
+			return false;
+		}
 		std::lock_guard<std::mutex> renderLk( mMutex );
+		if( mTxnOpen.load( std::memory_order_acquire ) )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused inside an open transaction." );
+			return false;
+		}
+		if( mSaving.load( std::memory_order_acquire ) )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused while a save is in progress." );
+			return false;
+		}
+		if( mEditor.IsCompositeOpen() )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: render submission refused while an editor gesture is open." );
+			return false;
+		}
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
+	}
+
+	// Status readers use mJobStatusMutex rather than mMutex so they remain
+	// non-blocking during a render. Mint only after the gate claim succeeds;
+	// a transaction refusal must not publish a phantom active job.
+	RenderJobId jobId = kInvalidRenderJobId;
+	{
+		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
+		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
+		mCurrentRenderJob.id          = jobId;
+		mCurrentRenderJob.renderClass = renderClass;
+		mCurrentRenderJob.active      = true;
+		mCurrentRenderJob.clientLabel = clientLabel;
+		mCurrentRenderJob.pinned      = pinned;
 	}
 
 	mAgentRenderFn          = std::move( fn );
@@ -4921,7 +6101,7 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	bool                  pinned,
 	RenderClass           renderClass )
 {
-	if( mTxnOpen )
+	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused inside an open transaction (would stall the gesture)." );
 		return false;
@@ -5232,6 +6412,24 @@ bool SceneEditController::RunProductionRenderComposed(
 			innerGuard.Arm();
 
 			result = doRasterize();
+			if( result && !coordProgress->WasCancellationObserved() )
+			{
+				// T4 production completion site: the coordinator still owns
+				// mMutex and the render has fully returned, so the active
+				// rasterizer's canonical FrameStore is stable.  Every current
+				// production rasterizer, including MLT, participates in the
+				// canonical store; it also survives the platform shells'
+				// per-render output-list replacement.
+				IRasterizer* completedRasterizer = job.GetRasterizer();
+				Implementation::FrameStore* completedStore =
+					completedRasterizer
+					? completedRasterizer->GetFrameStore() : nullptr;
+				if( completedStore )
+				{
+					controller->CaptureLastRenderImageLocked_(
+						completedStore->AsBeautyRasterImage() );
+				}
+			}
 
 			// Ordinary-path tail: explicit restore + Disarm, mirroring the
 			// house convention elsewhere in this file -- the destructors
@@ -5387,30 +6585,22 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 	AgentCommitResult r;
 	const char* verb = isInsert ? "insert" : "remove";
 
-	// Mid-transaction refusal FIRST, before any mutation or park -- an agent
-	// chunk edit has no EditHistory record, so RollbackTransaction could never
-	// revert it (same rule + rationale as ApplyAgentParamEdit; same
-	// main-thread contract on the unsynchronized mTxnOpen read).
-	if( mTxnOpen )
-	{
-		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk %s refused inside an open transaction (no EditHistory record -> rollback cannot revert it).", verb );
-		r.applied = false;
-		r.rawCode = 0;
-		r.status  = String( "rejected" );
-		r.retriable = true;   // the ONE transient reject: retry after the gesture completes
-		r.message = String( "editor transaction in progress -- retry after the gesture completes" );
-		{
-			// Every head read stays under mMutex (no torn 16-byte read).
-			std::lock_guard<std::mutex> hlk( mMutex );
-			r.headVersion = mJob.GetCstHeadVersion();
-		}
-		return r;
-	}
-
 	// Cancel-and-park, then hold mMutex across the WHOLE commit (pre-flight,
 	// conflict gate, the Job apply -- whose D2 ClearAll transiently zeroes the
 	// head-version -- the rebind, and the post-commit head read).
 	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent chunk %s refused while an editor transaction/gesture is open.", verb );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
 	CancelAndParkRender_( lk );
 
 	if( !mJob.HasRetainedCstDocument() )
@@ -5701,7 +6891,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 
 void SceneEditController::KickRender()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return;
 	// Stamp the edit time first so the render loop sees a fresh
 	// value when it wakes — the refinement-vs-edit branch in
 	// RenderLoop reads mLastEditTimeMs only after seeing
@@ -5737,17 +6928,15 @@ void SceneEditController::KickRender()
 // SaveEngine::Save -- an unconditional whole-Document SerializeCst
 // (NoOps on byte-equality; dirty state selects nothing, it only gates
 // the Save button).  Three-step cancel-and-park dance:
-//   1. Park the render thread (cancel in-flight + wait for
-//      mRendering=false), set mSaving=true.
-//   2. Run SaveEngine outside the lock (file IO is slow).
-//   3. Reacquire lock, clear mSaving, capture any error, notify the
-//      render loop.
+//   1. Park the render thread, snapshot the retained Document + loaded-file
+//      identity + head version under mMutex, set mSaving=true.
+//   2. Serialize/write the immutable snapshots outside the lock.
+//   3. Reacquire the lock, publish file identity and clear dirty ONLY if
+//      the live head still matches the serialized snapshot, then resume.
 //
-// The live SceneEditor exposes `mScaleFromAnchorSet` const-only
-// (ScaleFromAnchorSet()), while the SaveEngine takes a non-const
-// reference it clears post-save.  We copy into a local, pass that to
-// the engine, then mirror its clear back onto the editor's state via
-// ClearDirtyState() on success.
+// The immutable snapshot is the save/read counterpart of the controller's
+// write funnel: a concurrent editor mutation can replace pCstDocument safely
+// while IO runs, and the version comparison keeps that newer head dirty.
 SaveResult SceneEditController::RequestSave( const std::string& filePath )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
@@ -5763,14 +6952,46 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	// Step 3 re-kicks a render when it does, so a save never strands a
 	// half-painted viewport.
 	bool interruptedPass = false;
+	RISE::Cst::CstHeadVersion headAtSerialize;
+	std::unique_ptr<RISE::Cst::Document> documentSnapshot;
+	RISE::FileIdentity loadedFileIdentitySnapshot;
 	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+			SaveResult busy;
+			busy.status = SaveResult::Status::Refused;
+			busy.filePath = filePath;
+			busy.errorMessage = "save refused: a render is queued or in progress";
+			return busy;
+		}
 		std::unique_lock<std::mutex> lk( mMutex );
+		// Exactly one save may own this controller. Besides making the
+		// mSaving boolean an honest render barrier, this gives concurrent
+		// callers a deterministic ordering instead of allowing two stale
+		// snapshots to race their writes and file-identity publication.
+		if( mSaving.load( std::memory_order_acquire ) ) {
+			SaveResult busy;
+			busy.status = SaveResult::Status::Refused;
+			busy.filePath = filePath;
+			busy.errorMessage = "save refused: another save is already in progress";
+			return busy;
+		}
 		if( mRendering.load() ) {
 			mCancelProgress.RequestCancel();
 			interruptedPass = true;
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load(); } );
-		mSaving.store( true );
+		mSaving.store( true, std::memory_order_release );
+		// Round-5 review P0: remember WHICH head the engine is about to
+		// serialize.  Step 3 baselines "clean" ONLY if the head is still this
+		// one -- a mutation that lands while IO runs can then never be silently
+		// baselined as saved.
+		headAtSerialize = mJob.GetCstHeadVersion();
+		const RISE::Cst::Document* document = mJob.GetCstDocument();
+		if( document ) {
+			documentSnapshot.reset( new RISE::Cst::Document( *document ) );
+			loadedFileIdentitySnapshot = mJob.GetCstLoadFileIdentity();
+		}
 	}
 
 	// Fix-round-6 RED-PROVE test seam -- no-op in production (see the
@@ -5779,17 +7000,32 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	// for as long as it needs, giving RenderLoop's mint-site re-check a
 	// deterministic (rather than IO-timing-dependent) window to prove
 	// itself against.
+	std::unique_ptr<SaveEngine> saveEngine;
+	if( documentSnapshot ) {
+		// Reserve the canonical target-path lease BEFORE the test hook (and
+		// therefore before any IO).  A different controller that requests the
+		// same target while this save is paused is refused deterministically.
+		saveEngine.reset( new SaveEngine(
+			*documentSnapshot, loadedFileIdentitySnapshot, filePath ) );
+	}
 	ForTest_OnSaveEngineAboutToRun();
 
 	// ---- Step 2: run SaveEngine WITHOUT the lock --------------------
-	// File IO can take a few ms; holding mMutex across that would
-	// stall any other UI-state transition that needs the lock.
-	std::unordered_set<std::string> sfaCopy = mEditor.ScaleFromAnchorSet();
-	SaveEngine engine(
-		mJob,
-		mEditor.Dirty(),
-		sfaCopy );
-	SaveResult result = engine.Save( filePath );
+	// File IO can take a few ms; holding mMutex across it would stall UI
+	// state. The engine receives no live Job/editor references.
+	SaveResult result;
+	if( saveEngine ) {
+		result = saveEngine->Save();
+	} else {
+		result.status = SaveResult::Status::Failed;
+		result.filePath = filePath;
+		result.errorMessage =
+			"cannot save '" + filePath + "': the job has no retained CST "
+			"Document to serialize. Load the scene via the CST path before saving.";
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditController::RequestSave: no retained CST Document for '%s' -- nothing to serialize",
+			filePath.c_str() );
+	}
 
 	// ---- Step 3: publish results + release render loop --------------
 	// notify_one runs INSIDE the lock_guard scope (P2.3 review fix):
@@ -5802,10 +7038,21 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		std::lock_guard<std::mutex> lk( mMutex );
 		mSaving.store( false );
 		if( Succeeded( result.status ) ) {
-			// Engine cleared mEditor.Dirty() already (it holds a non-
-			// const ref).  Clear the SFA set on the editor side too,
-			// since the engine cleared its local copy.
-			mEditor.ClearDirtyState();
+			// The successful write is now the on-disk identity baseline even
+			// when a concurrent edit moved the live head: the file contains the
+			// old snapshot and the next save of the newer head must not mistake
+			// our own write for an external modification.
+			mJob.RefreshCstLoadFileIdentity( filePath.c_str() );
+			// Baseline-clean ONLY when the live head is still the serialized
+			// one. A moved head means the file is a valid OLD snapshot, so the
+			// newer scene stays dirty and its tracker state remains untouched.
+			if( mJob.GetCstHeadVersion() == headAtSerialize ) {
+				mEditor.ClearDirtyState();
+			} else {
+				GlobalLog()->PrintEx( eLog_Info,
+					"SceneEditController::RequestSave: the Document head moved during the save -- "
+					"the written file snapshots the PRE-edit head, so the scene stays DIRTY." );
+			}
 			mLastSaveError.clear();
 		} else {
 			mLastSaveError = result.errorMessage;
@@ -5817,6 +7064,10 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 		}
 		mCV.notify_one();
 	}
+	// Document-first phase 1: the save-success ClearDirtyState above only
+	// flagged the transition -- drain it here, outside the lock scope, so the
+	// Save button disables promptly on the dirty->clean flip.
+	mEditor.DrainDirtyNotification();
 
 	return result;
 }
@@ -5824,7 +7075,8 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 String SceneEditController::SerializedSceneText() const
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return String();  // render-owns-scene guard
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return String();
 	if( !mJob.HasRetainedCstDocument() ) return String();
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return String();
@@ -5836,7 +7088,8 @@ void SceneEditController::GetSceneTextVersion( std::uint64_t& outUuid,
                                                std::uint64_t& outRevision ) const
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;
 	const RISE::Cst::CstHeadVersion v = mJob.GetCstHeadVersion();
 	outUuid     = v.uuid;
 	outRevision = v.revision;
@@ -5872,7 +7125,7 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 	using Category = SceneEditController::Category;
 	outUniqueFallback = false;
 	switch( cat ) {
-	case Category::Camera:       outSuffix = "camera";         outUniqueFallback = true; return true;   // same unnamed-active-camera fallback as CaptureAgentPriorParamValue_
+	case Category::Camera:       outSuffix = "camera";         outUniqueFallback = true; return true;   // fallback ELIGIBLE -- use sites gate it via DocCameraUniqueFallbackPermitted (round-7), same rule as CaptureAgentPriorParamValue_
 	case Category::Object:       outSuffix = "standard_object"; return true;
 	case Category::Light:        outSuffix = "light";           return true;
 	case Category::Material:     outSuffix = "material";        return true;
@@ -5880,6 +7133,7 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 	case Category::Animation:    outSuffix = "animation";       return true;
 	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
 	case Category::Painter:      outSuffix = "painter";         return true;   // matches every "*_painter" chunk keyword (endsWith), same convention as ClassifyCstEntityKind's "_material"/"_light"/"_medium" suffixes
+	case Category::Geometry:     outSuffix = "geometry";        return true;   // matches every "*_geometry" chunk keyword (endsWith) -- GUI redesign 2026-07-22
 	case Category::Rasterizer:
 	case Category::Film:
 	case Category::None:
@@ -5897,11 +7151,16 @@ namespace {
 // unique-in-kind singletons Film / Rasterizer (which RoleKindSuffixForCategory
 // rejects, since they have no chunk-`name` addressing).  `activeRasterizerKind` is
 // the active rasterizer's keyword (its CST role) for the Rasterizer singleton.
+// `activeCameraName` is the LIVE active camera's registered name, feeding the
+// round-7 gated camera fallback (DocCameraUniqueFallbackPermitted).
 RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
-	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind )
+	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind,
+	const std::string& activeCameraName )
 {
 	std::string suffix; bool uf = false;
 	if( RoleKindSuffixForCategory( cat, suffix, uf ) ) {
+		if( cat == SceneEditController::Category::Camera && uf )
+			uf = RISE::Cst::DocCameraUniqueFallbackPermitted( doc, name, activeCameraName );
 		if( name.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
 		return RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, suffix, uf );
 	}
@@ -5936,6 +7195,7 @@ SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
 		auto toCat = []( ChunkCategory cc ) -> Cat {
 			switch( cc ) {
 			case ChunkCategory::Painter:      return Cat::Painter;
+			case ChunkCategory::Geometry:     return Cat::Geometry;   // GUI redesign 2026-07-22: geometry is now UI-addressable
 			// NOTE: ChunkCategory::Function is NOT mapped to Painter.  The only two
 			// Function chunks (piecewise_linear_function / _function2d) register into
 			// the Function1D/2D managers, NOT the painter managers, so they never
@@ -5985,13 +7245,17 @@ bool SceneEditController::EntitySourceLocation( Category cat, const String& name
                                                  std::uint64_t& outByteOffset, std::uint32_t& outLine ) const
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 	if( !mJob.HasRetainedCstDocument() ) return false;
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
 
 	std::string suffix; bool uniqueFallback = false;
 	if( !RoleKindSuffixForCategory( cat, suffix, uniqueFallback ) ) return false;
+	if( cat == Category::Camera && uniqueFallback )   // round-7 gated camera fallback (typo-refusal)
+		uniqueFallback = RISE::Cst::DocCameraUniqueFallbackPermitted(
+			*doc, name.size() > 1 ? name.c_str() : "", mJob.GetActiveCameraName() );
 	if( name.size() <= 1 && !uniqueFallback ) return false;   // an empty name only resolves via the unique-fallback (unnamed sole entity of its kind)
 
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, name.c_str(), nullptr, suffix, uniqueFallback );
@@ -6024,14 +7288,16 @@ bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, c
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	out = SourceSpan();
 
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 	if( !mJob.HasRetainedCstDocument() ) return false;
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
 
 	const std::string activeRast = mJob.GetActiveRasterizerName();
 	const RISE::Cst::NodeId chunkId =
-		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast );
+		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast,
+		                      mJob.GetActiveCameraName() );
 	if( chunkId == 0 ) return false;   // unresolvable ref (removed entity / ambiguous / no such singleton)
 
 	size_t off = 0, len = 0;
@@ -6073,7 +7339,8 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 	outParam = String();
 	if( outOccurrence ) *outOccurrence = 0;
 
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 	if( !mJob.HasRetainedCstDocument() ) return false;
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
@@ -6134,9 +7401,9 @@ bool SceneEditController::SourceRefAtByteOffset( std::uint64_t offset, Category&
 	// keyword blocklist, no forward-round-trip that role-keyed configs can defeat).
 	auto nameInEnum = [&]( Category c, const std::string& name ) {
 		if( name.empty() ) return false;
-		const unsigned int n = CategoryEntityCount( c );   // lock-free; safe under mMutex
+		const unsigned int n = CategoryEntityCountLocked_( c );   // Locked_ twin: this probe runs under mMutex (round-3 getter split)
 		for( unsigned int i = 0; i < n; ++i )
-			if( std::string( CategoryEntityName( c, i ).c_str() ) == name ) return true;
+			if( std::string( CategoryEntityNameLocked_( c, i ).c_str() ) == name ) return true;
 		return false;
 	};
 
@@ -6197,7 +7464,8 @@ std::string SceneEditController::LastSaveError() const
 	// reference across a subsequent RequestSave would see a torn
 	// std::string mid-mutation.  Returning by value (after a locked
 	// copy) eliminates that.
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return std::string();
 	return mLastSaveError;
 }
 
@@ -6233,10 +7501,21 @@ void SceneEditController::RenderLoop()
 			// drives the same adaptive-scaling logic.
 			const bool gestureActive =
 				mPointerDown.load( std::memory_order_acquire )
-			 || mScrubInProgress.load( std::memory_order_acquire );
+			 || mScrubInProgress.load( std::memory_order_acquire )
+			 || mScrubOpenedComposite;
 			const bool refineMode =
 				gestureActive
-			 && mPreviewScale.load( std::memory_order_acquire ) > kPreviewScaleMin;
+				 && mPreviewScale.load( std::memory_order_acquire ) > kPreviewScaleMin;
+			// Watchdogs must keep a bounded wake even AFTER idle refinement
+			// reaches scale 1.  Keying wait_for only on refineMode made the loop
+			// switch to an indefinite wait hundreds of milliseconds into a held
+			// gesture, long before the 10-second lost-End threshold could fire.
+			const bool watchdogMode =
+				mScrubInProgress.load( std::memory_order_acquire )
+				|| mScrubOpenedComposite
+				|| ( mPointerDown.load( std::memory_order_acquire )
+				  && !mPointerGestureStale.load( std::memory_order_acquire )
+				  && mPointerWatchdogMs.load( std::memory_order_acquire ) > 0 );
 			// Phase 6.5: mSaving gates the render loop closed.  When
 			// a save is in flight, we don't start a new render pass
 			// (file IO + render-thread frame reads would race).  The
@@ -6258,7 +7537,7 @@ void SceneEditController::RenderLoop()
 				      && !mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 				    || !mRunning.load( std::memory_order_acquire );
 			};
-			if( refineMode )
+			if( refineMode || watchdogMode )
 			{
 				mCV.wait_for( lk, std::chrono::milliseconds( kRefineWakeMs ), pred );
 			}
@@ -6319,11 +7598,78 @@ void SceneEditController::RenderLoop()
 		// but only after this flag clears (otherwise gestureActive
 		// stays true and the during-motion adaptation re-bumps the
 		// scale on every refinement pass).
-		if( mScrubInProgress.load( std::memory_order_acquire ) ) {
-			const long long sinceEditMs =
-				NowMs() - mLastEditTimeMs.load( std::memory_order_acquire );
-			if( sinceEditMs > kScrubWatchdogMs ) {
-				mScrubInProgress.store( false, std::memory_order_release );
+		{
+			// Re-check the flag AND age under the same lock BeginPropertyScrub
+			// uses to publish its refreshed timestamp + true flag.  Without
+			// this serialization, a stale watchdog observation could clear a
+			// newly-begun scrub that refreshed the timestamp concurrently.
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mScrubInProgress.load( std::memory_order_acquire ) )
+			{
+				const long long sinceEditMs =
+					NowMs() - mLastEditTimeMs.load( std::memory_order_acquire );
+				if( sinceEditMs > kScrubWatchdogMs )
+				{
+					// A lost EndPropertyScrub must perform the same scheduler
+					// recovery as the real End: restore final quality and mint
+					// an all-visible-pane repaint now.  Merely clearing the pin
+					// strands dirty siblings forever for a pinned BeautyVariant,
+					// because its idle-refinement branch intentionally skips.
+					mScrubInProgress.store( false, std::memory_order_release );
+					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					mPolishState.store( static_cast<int>( PolishState::None ),
+					                    std::memory_order_release );
+					MarkAllVisiblePanesDirtyLocked_();
+					rotationTick = true;
+				}
+			}
+			if( mScrubOpenedComposite
+			 && mTimeScrubsInFlight.load( std::memory_order_acquire ) == 0 )
+			{
+				const long long sinceEditMs =
+					NowMs() - mLastEditTimeMs.load( std::memory_order_acquire );
+				if( sinceEditMs > kScrubWatchdogMs )
+				{
+					mEditor.EndComposite();
+					mScrubOpenedComposite = false;
+					mTimelineScrubWatchdogRecovered = true;
+					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					mPolishState.store( static_cast<int>( PolishState::None ),
+					                    std::memory_order_release );
+					MarkAllVisiblePanesDirtyLocked_();
+					rotationTick = true;
+				}
+			}
+			// Round-8 pointer-gesture watchdog (see kPointerWatchdogMs).  The
+			// same recovery the scrub arm performs, EXCEPT that mPointerDown
+			// is deliberately left set -- only the pin/suppression are lifted
+			// (mPointerGestureStale's doc explains why clearing the flag here
+			// would strand the gesture's open composite).  Re-checked under
+			// the same lock the pointer paths publish their state with.
+			if( mPointerDown.load( std::memory_order_acquire )
+			 && !mPointerGestureStale.load( std::memory_order_acquire )
+			 // Round-8 review P1 fix: a move parked in this loop's own
+			 // completion wait IS live pointer activity -- never declare a
+			 // gesture abandoned while one is in flight.
+			 && mPointerMovesInFlight.load( std::memory_order_acquire ) == 0 )
+			{
+				// Review P1: <= 0 is an EXPLICIT disable, not a zero
+				// threshold.  The scheduler tests need the watchdog off, and
+				// "a very large number" is not a safe way to say that when the
+				// clock is steady-time-since-boot (a big elapsed value can
+				// exceed any finite threshold before the first stamp lands).
+				const int limitMs = mPointerWatchdogMs.load( std::memory_order_acquire );
+				const long long sincePointerMs =
+					NowMs() - mLastPointerActivityMs.load( std::memory_order_acquire );
+				if( limitMs > 0 && sincePointerMs > limitMs )
+				{
+					mPointerGestureStale.store( true, std::memory_order_release );
+					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					mPolishState.store( static_cast<int>( PolishState::None ),
+					                    std::memory_order_release );
+					MarkAllVisiblePanesDirtyLocked_();
+					rotationTick = true;
+				}
 			}
 		}
 
@@ -6486,6 +7832,12 @@ void SceneEditController::RenderLoop()
 		// so the restored edit (or a genuine refinement-tick re-arrival)
 		// re-wakes this loop the moment the save publishes its result.
 		RenderJobId thisPassJobId = kInvalidRenderJobId;
+		unsigned int thisPassPane = 0;
+		IRasterizer* thisPassRasterizer = nullptr;
+		bool thisPassVariantConfigured = false;
+		bool thisPassVariantLiveGesture = false;
+		Implementation::ViewportRenderMode thisPassVariantMode =
+			Implementation::ViewportRenderMode::Preview;
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
 			if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire )
@@ -6511,9 +7863,25 @@ void SceneEditController::RenderLoop()
 			// mRendering is false for this whole block (it only flips true
 			// at the mint), so the parked-registers precondition holds.
 			// Gestures pin the pick to mCurrentPane (see PickNext's doc).
-			SwitchToPaneLocked_( PickNextVisiblePaneLocked_() );
+			const unsigned int nextPane = PickNextVisiblePaneLocked_();
+			if( !IsInteractivePaneLocked_( nextPane ) )
+			{
+				continue;   // every visible pane is LastRender
+			}
+			SwitchToPaneLocked_( nextPane );
+			thisPassPane = mCurrentPane;
+			// Retain the exact rasterizer used by this quantum through the
+			// unlocked post-pass output detach.  Once ActiveFlipGuard publishes
+			// mRendering=false, a setter may replace/release the controller's
+			// owning register before this thread reaches that detach.
+			thisPassRasterizer = mVariantRasterizer
+				? mVariantRasterizer : mInteractiveRasterizer;
+			if( thisPassRasterizer ) thisPassRasterizer->addref();
 			// Clear the pane's dirty AT MINT: if this pass is cancelled by
 			// a new edit, the edit path re-marks every pane dirty anyway.
+			// Cancellation by a direct/agent render has no edit path, so
+			// the post-pass cancellation branch below re-dirties this exact
+			// snapshotted pane before moving on.
 			mPaneRender[mCurrentPane].dirty = false;
 			// P3a slice 3: stamp the pane's surface dims for the pass --
 			// registers, read by DoOneRenderPass's film-swap block.
@@ -6534,16 +7902,83 @@ void SceneEditController::RenderLoop()
 			polishStateBefore =
 				static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
 			isPolishPass = ( polishStateBefore == PolishState::PolishQueued );
-			// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): SKIP this
-			// InteractivePelRasterizer-specific config entirely while a
-			// BeautyVariant mode is active -- mInteractiveImpl is not the
-			// rasterizer DoOneRenderPass will drive this pass (mVariantRasterizer
-			// is), and the variant pipeline's OIDN/sample-count are FIXED at
-			// construction (CreateBeautyVariantPipeline), not per-pass tunable.
-			// A variant pass is a plain full pass at that fixed config; the
-			// polish/denoise state machine (isPolishPass, mPolishState) is left
-			// running as-is (it's a no-op against mVariantRasterizer either way)
-			// so leaving the mode later finds it in a consistent state.
+			// BeautyVariant passes have their own interaction policy.  While a
+			// real pointer/scrub gesture is live, run exactly 1 SPP with OIDN
+			// suppressed: intermediate frames are quickly superseded and must
+			// minimize latency.  Pointer-up/scrub-end mints with the registry's
+			// authored SPP and OIDN restored.  Configure only here, while the
+			// render is parked and mMutex excludes mode/pane replacement.
+			if( mVariantRasterizer ) {
+				const Implementation::ViewportRenderMode mode =
+					( mCurrentPane == 0 ) ? mViewportRenderMode
+					                      : mPaneConfigs[mCurrentPane].mode;
+				mSharedDirectTargets.clear();
+				Implementation::PathTracingPelRasterizer* sharedPT =
+					dynamic_cast<Implementation::PathTracingPelRasterizer*>(
+						mVariantRasterizer );
+				if( sharedPT ) sharedPT->SetCaptureDirectCompanion( false );
+				if( sharedPT
+				 && mode == Implementation::ViewportRenderMode::Indirect )
+				{
+					unsigned int sourceW = 0, sourceH = 0;
+					const Implementation::ViewportRenderModeInfo* sourceInfo =
+						Implementation::FindViewportRenderModeInfo( mode );
+					if( sourceInfo
+					 && PaneBaseDimensionsLocked_( mCurrentPane, sourceW, sourceH ) )
+					{
+						const unsigned int visible = PaneCountForLayout( mViewportLayout );
+						for( unsigned int target = 0; target < visible; ++target ) {
+							IRasterizerOutput* targetSink = ( target == 0 )
+								? ( mPaneRender[0].paneSink
+									? mPaneRender[0].paneSink : mPreviewSink )
+								: mPaneRender[target].paneSink;
+							if( target == mCurrentPane || !IsInteractivePaneLocked_( target )
+							 || !mPaneRender[target].dirty
+							 || !targetSink
+							 || PaneModeLocked_( target ) != Implementation::ViewportRenderMode::Direct
+							 || !PanesShareTransportViewLocked_( mCurrentPane, target ) )
+								continue;
+							unsigned int targetW = 0, targetH = 0;
+							const Implementation::ViewportRenderModeInfo* targetInfo =
+								Implementation::FindViewportRenderModeInfo( PaneModeLocked_( target ) );
+							if( !targetInfo
+								 || !PaneBaseDimensionsLocked_( target, targetW, targetH )
+								 || sourceInfo->variantScaleDivisor != targetInfo->variantScaleDivisor )
+								continue;
+							const unsigned int divisor = sourceInfo->variantScaleDivisor;
+							const unsigned int sourcePassW = std::max( 1u, sourceW / divisor );
+							const unsigned int sourcePassH = std::max( 1u, sourceH / divisor );
+							const unsigned int targetPassW = std::max( 1u, targetW / divisor );
+							const unsigned int targetPassH = std::max( 1u, targetH / divisor );
+							if( uint64_t( sourcePassW ) * targetPassH
+								 != uint64_t( targetPassW ) * sourcePassH
+							 || targetPassW > sourcePassW || targetPassH > sourcePassH )
+								continue;
+							SharedDirectTarget shared;
+							shared.pane = target;
+							shared.width = targetPassW;
+							shared.height = targetPassH;
+							shared.dirtyGeneration = mPaneRender[target].dirtyGeneration;
+							mSharedDirectTargets.push_back( shared );
+						}
+					}
+					sharedPT->SetCaptureDirectCompanion(
+						!mSharedDirectTargets.empty() );
+				}
+				const bool liveGesture =
+					( mPointerDown.load( std::memory_order_acquire )
+					  && !mPointerGestureStale.load( std::memory_order_acquire ) )
+					|| mScrubInProgress.load( std::memory_order_acquire )
+					|| mScrubOpenedComposite
+					|| mVariantInteractionAdmissionPending;
+				thisPassVariantConfigured = Implementation::ConfigureBeautyVariantPass(
+					*mVariantRasterizer, mode, liveGesture );
+				thisPassVariantMode = mode;
+				thisPassVariantLiveGesture = liveGesture;
+			} else {
+				mSharedDirectTargets.clear();
+			}
+			// The ordinary preview rasterizer retains its existing polish policy.
 			if( mInteractiveImpl && !mVariantRasterizer ) {
 				Implementation::InteractivePelRasterizer::PreviewDenoiseMode denoiseMode =
 					Implementation::InteractivePelRasterizer::PreviewDenoise_Off;
@@ -6577,6 +8012,12 @@ void SceneEditController::RenderLoop()
 				thisPassJobId = mCurrentRenderJob.id;
 			}
 		}
+		if( thisPassVariantConfigured ) {
+			ForTest_OnBeautyVariantPassConfigured(
+				*thisPassRasterizer, thisPassVariantMode,
+				thisPassVariantLiveGesture );
+		}
+		ForTest_OnInteractivePassMinted();
 
 		// Fix-round-4 P3-1: RAII active-flip guard around the pass itself,
 		// matching the shape RunPreviewRenderParked's ActiveFlipGuard and
@@ -6612,6 +8053,7 @@ void SceneEditController::RenderLoop()
 		// of whether a future refactor (or a platform where thread-entry
 		// exceptions DO unwind) changes today's terminate-not-unwind
 		// behaviour.
+		bool passWasCancelled = false;
 		{
 			struct ActiveFlipGuard {
 				SceneEditController& self;
@@ -6636,6 +8078,62 @@ void SceneEditController::RenderLoop()
 
 			DoOneRenderPass();
 			mRenderCount.fetch_add( 1, std::memory_order_acq_rel );
+			// Snapshot before ActiveFlipGuard publishes mRendering=false.
+			// A parked render is waiting on that transition and may reset
+			// the shared token immediately afterward.
+			passWasCancelled = mCancelProgress.IsCancelRequested();
+		}
+		// mRendering is now false.  Shared companion callbacks may safely
+		// re-enter setters that use the ordinary cancel-and-park discipline.
+		DrainSharedDirectPublishes_();
+
+		// Rasterizer outputs are owning references.  Drop them only AFTER
+		// mRendering=false and with no controller mutex held: a final sink
+		// destructor is arbitrary owner code and may safely inspect or mutate the
+		// controller here.  The lifecycle scope rejects only recursive teardown,
+		// while ordinary re-entry is allowed to complete.  Per-pass cleanup also
+		// guarantees later variant/rasterizer releases under parked controller
+		// locks cannot unexpectedly become a sink's final release.
+		if( thisPassRasterizer )
+		{
+			ForTest_OnInteractivePassBeforeOutputDetach();
+			{
+				LastRenderSinkCallbackScope outputDetachScope( this );
+				thisPassRasterizer->FreeRasterizerOutputs();
+				thisPassRasterizer->release();
+			}
+			thisPassRasterizer = nullptr;
+			// A sink destructor may re-enter a source/sink setter and queue a
+			// Last Render record.  Its setter-tail drain is deliberately suppressed
+			// while the lifecycle scope above is active, but unlike an ordinary
+			// Last Render callback there is no enclosing drain loop to pick it up.
+			// Drain immediately after leaving the scope so headless/idle owners do
+			// not need an unrelated UI tick to receive the record.
+			DrainLastRenderPublishes_();
+		}
+
+		if( passWasCancelled )
+		{
+			// A canceled quantum did not produce a complete frame for the
+			// pane whose dirty bit was consumed at mint. Requeue that pane
+			// unless StopInteractive is tearing the loop down. Hidden panes
+			// remain dirty for their next reveal but do not arm a pointless
+			// visible-pane rotation.
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mRunning.load( std::memory_order_acquire ) )
+			{
+				MarkPaneDirtyLocked_( thisPassPane );
+				if( thisPassPane < PaneCountForLayout( mViewportLayout ) )
+				{
+					mPanePassPending.store( true, std::memory_order_release );
+				}
+				mCV.notify_one();
+			}
+			// A canceled FinalRegularRunning/PolishQueued pass is not a
+			// completed quality transition. Skip the polish post-roll; the
+			// replacement quantum will perform it after real completion.
+			ForTest_OnInteractivePassRetired();
+			continue;
 		}
 
 		// Polish-pass post-roll.  Three transitions land here:
@@ -6714,16 +8212,34 @@ void SceneEditController::RenderLoop()
 		// to them (PickNextVisiblePaneLocked_'s priority order).  Under
 		// mMutex: AnyVisiblePaneHasWorkLocked_ reads pane slots.  No
 		// notify needed -- this is the loop's own thread; the predicate is
-		// evaluated on wait entry.  Gesture activity does NOT suppress the
-		// arm: the pick pins to the gestured pane while the gesture lasts,
-		// and the armed flag lets the rotation resume the moment it ends.
+		// evaluated on wait entry.
+		//
+		// T0 (2026-07-24): DO suppress the self-arm while a gesture pins the
+		// scheduler.  The old code armed for dirty sibling panes, then
+		// PickNextVisiblePaneLocked_ honored gesture exclusivity and picked
+		// the CURRENT pane again.  Its dirty bit had already been consumed
+		// at mint, but the siblings stayed dirty, so completion armed again:
+		// an infinite render loop on the pinned pane until pointer-up.  A
+		// BeautyVariant made this look like a hard GUI hang because every
+		// useless iteration was a fixed 12-SPP/OIDN pass.  Pointer-up publishes
+		// its final edit wake atomically with gesture closure, and
+		// EndPropertyScrub calls KickRender(); both resume deferred sibling
+		// rotation immediately.  Each in-gesture edit already carries its own
+		// explicit kick, so no useful pass is lost by waiting here.
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
-			if( AnyVisiblePaneHasWorkLocked_() )
+			const bool gestureActive =
+				( mPointerDown.load( std::memory_order_acquire )
+				  && !mPointerGestureStale.load( std::memory_order_acquire ) )
+			 || mScrubInProgress.load( std::memory_order_acquire )
+			 || mScrubOpenedComposite
+			 || mVariantInteractionAdmissionPending;
+			if( !gestureActive && AnyVisiblePaneHasWorkLocked_() )
 			{
 				mPanePassPending.store( true, std::memory_order_release );
 			}
 		}
+		ForTest_OnInteractivePassRetired();
 	}
 }
 
@@ -6773,7 +8289,7 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 	case Category::Painter:
 		// Entity-creation slice: no dedicated PanelMode::Painter this
 		// slice (PropertyCountFor/PropertyNameFor/etc. read
-		// mPropertiesByCategory[Category::Painter] directly, indexed by
+		// mUi.propertiesByCategory[Category::Painter] directly, indexed by
 		// Category rather than by the "current panel" mirror below --
 		// see buildRowsFor's Painter case and this method's own header
 		// doc on Category::Painter).
@@ -6835,17 +8351,67 @@ String SceneEditController::CurrentPanelHeader() const
 
 void SceneEditController::RefreshProperties()
 {
-	mProperties.clear();
-	for( int i = 0; i < kNumCategories; ++i ) mPropertiesByCategory[i].clear();
+	// Document-first ADR phase 1: per-frame catch-all drain (shells call this
+	// every frame) -- a mutation path that missed an explicit drain degrades
+	// to a one-frame notification delay instead of a lost transition.  Runs
+	// BEFORE the try_lock below, i.e. outside any controller lock.
+	if( !mEditor.DrainDirtyNotification() ) return;
+	// Round-8 review P2 fix: the same per-frame catch-all for deferred
+	// last-render deliveries (QueueLastRenderPublishLocked_).  Placed AFTER
+	// the dirty drain's dead-owner check (that call is what detects a
+	// controller destroyed inside a dirty callback) and BEFORE the
+	// render-owns-scene early return, so a frame captured by a production or
+	// agent render -- whose completion path cannot drain, since it holds
+	// mMutex for the render's whole duration -- still reaches the pane's sink
+	// on the next frame tick.  Takes no controller lock.
+	DrainLastRenderPublishes_( /*blocking*/ false );
+	// External-review P1 (2026-07-22): the row build below reads LIVE scene /
+	// CST / manager state (buildRowsFor across every expanded category --
+	// geometry enumeration, material-slot classification, CST introspection,
+	// live candidate-name enumeration).  A concurrent agent commit on another
+	// thread D2-rederives under mMutex, freeing + replacing those managers ->
+	// use-after-free.  Serialize under mMutex.  During a production/agent
+	// render the render OWNS the scene and holds mMutex for its whole duration;
+	// follow the getter convention (see the mRenderOwnsScene member doc) and
+	// keep the prior rows rather than block the UI thread -- the scene is
+	// read-only then, so the panel simply shows the last snapshot until the
+	// render ends.  No internal caller holds mMutex here (only the C-ABI, on
+	// the UI thread), so the lock cannot self-deadlock.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;
+	// Round-3 P1 (deadlock fix): try_lock, NOT a blocking guard.  The dirty-
+	// changed listener fires UNDER the held mMutex (ApplyAgentParamEdit ->
+	// MarkCstHeadDirty); a listener that synchronously refreshed the panel
+	// would self-deadlock on a blocking lock, and even the shells' deferred
+	// listeners can land a refresh while a background agent commit still
+	// holds mMutex -- blocking would freeze the UI thread for the commit's
+	// duration.  On contention keep the PRIOR rows (panel shows the last
+	// snapshot); the shells refresh every frame/epoch, so it self-heals.
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;
+	// Round-5 review P1: per-frame self-heal of the cached derived-dirty
+	// floor -- the Document is stable under this try_lock, so any mutation
+	// path that missed its Fire is corrected within a frame.
+	mEditor.RefreshDerivedDirty();
+
+	// Document-first ADR phase 2: build into LOCALS (under the mMutex
+	// try_lock above), publish under a brief leaf mUiSnapshotMutex hold at
+	// the end -- readers never see a half-built panel and never take mMutex.
+	std::vector<CameraProperty> primaryRows;
+	std::vector<CameraProperty> byCat[kNumCategories];
+	auto publish = [&]() {
+		std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+		mUi.properties.swap( primaryRows );
+		for( int i = 0; i < kNumCategories; ++i ) mUi.propertiesByCategory[i].swap( byCat[i] );
+	};
 
 	const IScene* scene = mJob.GetScene();
-	if( !scene ) return;
+	if( !scene ) { publish(); return; }   // skeleton: publish the EMPTY panel (matches the old clear-then-return)
 
 	// Build per-category property rows for every category that has
 	// a non-empty selection.  Each section in the panel renders its
-	// own rows from `mPropertiesByCategory[cat]`.  For back-compat
+	// own rows from `mUi.propertiesByCategory[cat]`.  For back-compat
 	// with the single-tuple PropertyXxx accessors, also populate
-	// `mProperties` from the PRIMARY category's rows.
+	// `mUi.properties` from the PRIMARY category's rows.
 	auto buildRowsFor = [&]( Category cat, const String& selName ) -> std::vector<CameraProperty> {
 		std::vector<CameraProperty> out;
 		switch( cat ) {
@@ -6870,6 +8436,9 @@ void SceneEditController::RefreshProperties()
 			if( !obj ) break;
 			out = ObjectIntrospection::Inspect( selName, *obj,
 				mJob.GetMaterials(), mJob.GetShaders(), &mJob );
+			// GUI redesign 2026-07-22: jump-to-definition metadata only
+			// (no value/editability change) -- see AnnotateReferenceRows.
+			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "standard_object" );
 			break;
 		}
 		case Category::Light: {
@@ -6878,6 +8447,9 @@ void SceneEditController::RefreshProperties()
 			const ILightPriv* light = lights->GetItem( selName.c_str() );
 			if( !light ) break;
 			out = LightIntrospection::Inspect( selName, *light );
+			// GUI redesign 2026-07-22: jump-to-definition metadata only
+			// (no value/editability change) -- see AnnotateReferenceRows.
+			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "light" );
 			break;
 		}
 		case Category::Film: {
@@ -6894,12 +8466,23 @@ void SceneEditController::RefreshProperties()
 			if( !mat ) break;
 			out = MaterialIntrospection::Inspect( selName, *mat,
 				mJob.GetPainters(), mJob.GetScalarPainters(), &mJob );
+			// GUI redesign 2026-07-22: merge in the generic descriptor+CST
+			// rows -- read-only live rows with a CST-backed param become
+			// editable (the SetMaterialProperty edit route writes the CST
+			// anyway), descriptor params the live module never surfaced
+			// appear, and Reference rows gain jump-to-definition metadata.
+			// No-op on a programmatic/legacy scene (no CST chunk).
+			CstIntrospection::AugmentWithCstRows( out, mJob.GetCstDocument(), mJob,
+				selName, "material" );
 			break;
 		}
 		case Category::Medium: {
 			const IMedium* med = mJob.GetMedium( selName.c_str() );
 			if( !med ) break;
 			out = MediaIntrospection::Inspect( selName, *med );
+			// GUI redesign 2026-07-22: jump-to-definition metadata only
+			// (no value/editability change) -- see AnnotateReferenceRows.
+			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "medium" );
 			break;
 		}
 		case Category::Animation: {
@@ -6924,9 +8507,21 @@ void SceneEditController::RefreshProperties()
 		case Category::Painter: {
 			// Entity-creation slice: rows are CST-chunk-sourced (there is
 			// no live per-parameter getter surface on IPainter/
-			// IScalarPainter) -- see PainterIntrospection.h's header doc.
+			// IScalarPainter) -- see CstIntrospection.h's header doc.
 			if( selName.size() <= 1 ) break;
-			out = PainterIntrospection::Inspect( mJob.GetCstDocument(), selName );
+			out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
+				"painter", "Painter chunk keyword" );
+			break;
+		}
+		case Category::Geometry: {
+			// GUI redesign 2026-07-22: same generic descriptor+CST surface
+			// as Painter -- geometry chunks have no live per-parameter
+			// getter either (a sphere's radius is baked at construction);
+			// the CST is the editable source of truth, and an edit
+			// re-derives the geometry + every object referencing it.
+			if( selName.size() <= 1 ) break;
+			out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
+				"geometry", "Geometry chunk keyword" );
 			break;
 		}
 		case Category::None:
@@ -6944,7 +8539,7 @@ void SceneEditController::RefreshProperties()
 	for( int i = 1; i < kNumCategories; ++i ) {
 		if( !mSectionExpanded[i] ) continue;
 		const Category cat = static_cast<Category>( i );
-		mPropertiesByCategory[i] = buildRowsFor( cat, mSelectionByCategory[i] );
+		byCat[i] = buildRowsFor( cat, mSelectionByCategory[i] );
 	}
 
 	// Back-compat single-tuple snapshot drives the existing
@@ -6952,98 +8547,323 @@ void SceneEditController::RefreshProperties()
 	// the primary category's rows.
 	switch( CurrentPanelMode() ) {
 	case PanelMode::Camera:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Camera ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Camera ) ];
 		break;
 	case PanelMode::Rasterizer:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Rasterizer ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Rasterizer ) ];
 		break;
 	case PanelMode::Object:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Object ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Object ) ];
 		break;
 	case PanelMode::Light:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Light ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Light ) ];
 		break;
 	case PanelMode::Film:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Film ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Film ) ];
 		break;
 	case PanelMode::Material:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Material ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Material ) ];
 		break;
 	case PanelMode::Medium:
-		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Medium ) ];
+		primaryRows = byCat[ static_cast<int>( Category::Medium ) ];
 		break;
 	case PanelMode::None:
 	default:
+		// GUI redesign 2026-07-22: Painter and Geometry have no dedicated
+		// PanelMode value (their rows are the generic descriptor+CST
+		// surface), but the SHELLS' single-panel path reads the PRIMARY
+		// snapshot -- without this routing, selecting a painter in the
+		// outliner showed an EMPTY panel (a real pre-existing gap the
+		// per-category accessors masked in tests), and geometry would
+		// have inherited it.  Deliberately NOT extended to Animation /
+		// SceneVariant: their empty primary snapshot drives the shells'
+		// explanatory "selecting activates..." message.
+		if( mSelectionCategory == Category::Painter
+		 || mSelectionCategory == Category::Geometry )
+		{
+			primaryRows = byCat[ static_cast<int>( mSelectionCategory ) ];
+		}
 		break;
 	}
+
+	publish();
 }
 
 unsigned int SceneEditController::PropertyCount() const
 {
-	return static_cast<unsigned int>( mProperties.size() );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.properties.size() );
 }
 
 String SceneEditController::PropertyName( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].name;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].name;
 }
 
 String SceneEditController::PropertyValue( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].value;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].value;
 }
 
 String SceneEditController::PropertyDescription( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].description;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].description;
 }
 
 int SceneEditController::PropertyKind( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return -1;
-	return static_cast<int>( mProperties[idx].kind );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return -1;
+	return static_cast<int>( mUi.properties[idx].kind );
 }
 
 bool SceneEditController::PropertyEditable( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return false;
-	return mProperties[idx].editable;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return false;
+	return mUi.properties[idx].editable;
 }
 
 unsigned int SceneEditController::PropertyPresetCount( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return 0;
-	return static_cast<unsigned int>( mProperties[idx].presets.size() );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return 0;
+	return static_cast<unsigned int>( mUi.properties[idx].presets.size() );
 }
 
 String SceneEditController::PropertyPresetLabel( unsigned int idx, unsigned int presetIdx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	const auto& presets = mProperties[idx].presets;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	const auto& presets = mUi.properties[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
 	return String( presets[presetIdx].label.c_str() );
 }
 
 String SceneEditController::PropertyPresetValue( unsigned int idx, unsigned int presetIdx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	const auto& presets = mProperties[idx].presets;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	const auto& presets = mUi.properties[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
 	return String( presets[presetIdx].value.c_str() );
 }
 
 String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 {
-	if( idx >= mProperties.size() ) return String();
-	return mProperties[idx].unitLabel;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	if( idx >= mUi.properties.size() ) return String();
+	return mUi.properties[idx].unitLabel;
+}
+
+// -------------------------------------------------------------------
+// Jump-to-definition (GUI redesign, 2026-07-22).  See the header doc.
+// -------------------------------------------------------------------
+
+namespace {
+
+// ChunkCategory (the descriptor's target vocabulary) -> UI Category.
+// Only categories with a UI section map; Function maps to Painter
+// because colour painters dual-register as functions (Cst.cpp PASS A)
+// and function chunks have no UI section of their own -- a function
+// reference that resolves against the painter union IS selectable
+// there.  Unmappable kinds (Shader / ShaderOp / Modifier / ...) return
+// None: the jump is unavailable until those grow UI sections.
+inline RISE::SceneEditController::Category UiCategoryForChunkCategory( RISE::ChunkCategory cc )
+{
+	using Cat = RISE::SceneEditController::Category;
+	switch( cc )
+	{
+	case RISE::ChunkCategory::Painter:   return Cat::Painter;
+	case RISE::ChunkCategory::Function:  return Cat::Painter;
+	case RISE::ChunkCategory::Material:  return Cat::Material;
+	case RISE::ChunkCategory::Geometry:  return Cat::Geometry;
+	case RISE::ChunkCategory::Medium:    return Cat::Medium;
+	case RISE::ChunkCategory::Object:    return Cat::Object;
+	case RISE::ChunkCategory::Camera:    return Cat::Camera;
+	case RISE::ChunkCategory::Light:     return Cat::Light;
+	default:                             return Cat::None;
+	}
+}
+
+}  // namespace
+
+bool SceneEditController::PropertyJumpTarget(
+	unsigned int idx, Category& outCat, String& outName ) const
+{
+	outCat = Category::None;
+	outName = String();
+	// Phase 2: COPY the row out under the leaf lock, resolve after releasing
+	// it -- ResolveRowJumpTarget_ try_locks mMutex, and the leaf must never
+	// be held while acquiring another lock.
+	CameraProperty row;
+	{
+		std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+		if( idx >= mUi.properties.size() ) return false;
+		row = mUi.properties[idx];
+	}
+	return ResolveRowJumpTarget_( row, outCat, outName );
+}
+
+bool SceneEditController::PropertyJumpTargetFor(
+	Category cat, unsigned int idx, Category& outCat, String& outName ) const
+{
+	outCat = Category::None;
+	outName = String();
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return false;
+	CameraProperty row;   // phase 2: copy-then-resolve (see PropertyJumpTarget)
+	{
+		std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+		const std::vector<CameraProperty>& rows = mUi.propertiesByCategory[ci];
+		if( idx >= rows.size() ) return false;
+		row = rows[idx];
+	}
+	return ResolveRowJumpTarget_( row, outCat, outName );
+}
+
+// Shared resolution body.  First-wins across the row's declared
+// referenceCategories, probing the LIVE managers -- the same category
+// order ComputeChunkRefs resolves reference edges in, so the jump lands
+// on the element the renderer actually bound.
+bool SceneEditController::ResolveRowJumpTarget_(
+	const CameraProperty& row, Category& outCat, String& outName ) const
+{
+	if( row.kind != ValueKind::Reference ) return false;
+	if( row.value.size() <= 1 ) return false;
+	if( row.referenceCategories.empty() ) return false;
+	// The `none` sentinel is the registered null painter/geometry, not an
+	// authored binding -- an optional reference left unset resolves to it.
+	// Jumping there would land on a non-CST placeholder entity, so treat it
+	// as "no target" (the shells then hide the menu item).
+	if( std::string( row.value.c_str() ) == "none" ) return false;
+	// jump-UAF fix (external review 2026-07-22): CandidateNamesForChunkCategory
+	// enumerates the LIVE managers, which an agent CST edit on another thread
+	// can swap mid re-derive (ClearAll under mMutex).  try_lock so we either
+	// enumerate under a stable manager set or bail (no jump this click) rather
+	// than racing a manager free -- and NEVER block, since a production/agent
+	// render holds mMutex for its whole duration (a blocking guard would freeze
+	// the UI).  A jump missed during an active render is retried on the next click.
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	for( ChunkCategory rc : row.referenceCategories )
+	{
+		const Category ui = UiCategoryForChunkCategory( rc );
+		if( ui == Category::None ) continue;
+		const std::vector<String> names =
+			CstIntrospection::CandidateNamesForChunkCategory( mJob, rc );
+		for( const String& n : names )
+		{
+			if( n == row.value )
+			{
+				outCat  = ui;
+				outName = row.value;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// External-review P1 (2026-07-22): general dangling-reference guard for GUI
+// property edits.  See the header doc.  Rejects ONLY the precisely-
+// diagnosable runtime-only case; inline literals + CST-backed names + `none`
+// all pass.  Reads the CST doc + live managers under a brief mMutex hold (same
+// race as the jump / material-classification reads: an agent commit can swap
+// them mid re-derive); SetProperty already cleared the mRenderOwnsScene gate
+// before calling this, so the hold contends only with brief interactive
+// per-pass / agent-edit holds -- never a whole production render.
+bool SceneEditController::WouldPersistDanglingReference_(
+	Category cat, const String& entityName, const String& paramName, const String& value )
+{
+	if( value.size() <= 1 ) return false;
+	if( std::string( value.c_str() ) == "none" ) return false;   // null sentinel is always valid
+
+	std::lock_guard<std::mutex> lk( mMutex );
+
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;   // legacy scene (no retained CST) -> nothing to persist into
+
+	// Resolve the entity's chunk + the edited param's descriptor.
+	const RISE::Cst::NodeId id = ResolveSourceChunkId(
+		*doc, cat, std::string( entityName.c_str() ), std::string(),
+		mJob.GetActiveCameraName() );
+	if( id == 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	if( !chunk ) return false;
+	const ChunkDescriptor* cd = DescriptorForKeyword( String( chunk->role.c_str() ) );
+	if( !cd ) return false;
+	const ParameterDescriptor* pd = nullptr;
+	const std::string want( paramName.c_str() );
+	for( const ParameterDescriptor& p : cd->parameters )
+		if( p.name == want ) { pd = &p; break; }
+	if( !pd || pd->kind != ValueKind::Reference ) return false;   // not a reference param
+
+	// CST-resolvable?  Round-3 P1 fix: the earlier any-role name probe let a
+	// same-named chunk of the WRONG category (a geometry named like the runtime
+	// painter) or a LATER-declared chunk vouch for the value -- both save a
+	// non-derivable scene.  Mirror the resolver instead: the target must be a
+	// chunk whose registry category satisfies one of the param's declared
+	// referenceCategories (including BuildReferenceNamespace's two documented
+	// dual-registers: a colour painter doubles as a Function2D, and a
+	// piecewise_linear_function doubles as a colour painter), and it must be
+	// declared BEFORE the referencing chunk (DeriveToJob is sequential -- a
+	// forward reference is not registered yet at bind time).
+	const int refCount = RISE::Cst::DocItemCount( *doc );
+	int refIdx = -1;
+	for( int i = 0; i < refCount; ++i )
+		if( RISE::Cst::DocNodeIdAt( *doc, i ) == id ) { refIdx = i; break; }
+	if( refIdx < 0 ) return false;   // cannot locate the referencer -> defer to the derive path
+	auto categorySatisfies = [&]( ChunkCategory chunkCat, const std::string& role, ChunkCategory rc ) {
+		if( chunkCat == rc ) return true;
+		if( rc == ChunkCategory::Function && chunkCat == ChunkCategory::Painter
+		 && role != "scalar_painter" ) return true;   // colour painter dual-registers as Function2D
+		if( rc == ChunkCategory::Painter && role == "piecewise_linear_function" )
+			return true;                                 // 1D function dual-registers as a colour painter
+		return false;
+	};
+	const std::string wantName( value.c_str() );
+	for( int i = 0; i < refIdx; ++i )
+	{
+		const RISE::Cst::NodeRef ch = RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, i ) );
+		if( !ch || ch->kind != RISE::Cst::NodeKind::Chunk ) continue;
+		const std::string np = RISE::Cst::ChunkNamePath( ch );
+		const size_t slash = np.rfind( '/' );
+		if( slash == std::string::npos ) continue;                      // unnamed: not referenceable
+		if( np.compare( slash + 1, std::string::npos, wantName ) != 0 ) continue;
+		const ChunkDescriptor* tcd = DescriptorForKeyword( String( ch->role.c_str() ) );
+		if( !tcd ) continue;
+		for( ChunkCategory rc : pd->referenceCategories )
+			if( categorySatisfies( tcd->category, ch->role, rc ) )
+				return false;   // category-correct, earlier-declared CST target -> persistable
+	}
+
+	// No category-correct, earlier-declared CST target.  Reject ONLY if `value`
+	// is a RUNTIME-registered entity
+	// of an allowed referenceCategory -- that confirms it is a reference NAME (not
+	// an inline literal like `ior 1.7`) that renders now but would DANGLE on
+	// save/reload.  A value resolving in NEITHER the CST nor a manager is an
+	// inline literal / not-yet-created name; leave it to the existing derive path
+	// (conservative -- never a false rejection of a legitimate edit).
+	for( ChunkCategory rc : pd->referenceCategories )
+	{
+		const std::vector<String> names =
+			CstIntrospection::CandidateNamesForChunkCategory( mJob, rc );
+		for( const String& n : names )
+			if( n == value ) return true;   // registered runtime-only -> dangling reference
+	}
+	return false;
 }
 
 // -------------------------------------------------------------------
 // Phase 4b — per-category property accessors.  Each looks up the
-// correct mPropertiesByCategory[cat] vector and forwards to the
+// correct mUi.propertiesByCategory[cat] vector and forwards to the
 // matching CameraProperty field.  Bounds-check the category enum and
 // the row index; out-of-range returns sensible empty / -1 values
 // (matches the single-tuple accessors above).
@@ -7054,62 +8874,68 @@ inline const std::vector<RISE::CameraProperty>* PropsForCat(
 	const std::vector<RISE::CameraProperty>* arr, RISE::SceneEditController::Category cat )
 {
 	const int i = static_cast<int>( cat );
-	// Pre-existing bug fixed in passing: this bound was hardcoded to 9
-	// (stale even before this change -- SceneVariant=9 was already
-	// silently excluded from PropertyCountFor/PropertyNameFor/etc.).
-	// kNumCategories is private (this is a free function, not a
-	// member), so mirror its value here with an explicit comment
-	// rather than hardcoding a now-also-stale literal.
-	if( i < 0 || i >= 11 ) return 0;   // 11 == SceneEditController::kNumCategories (None..Painter)
+	// GUI redesign 2026-07-22: this bound went stale TWICE as a mirrored
+	// literal (9 pre-SceneVariant, then 11 silently excluding the new
+	// Category::Geometry).  kNumCategories is now PUBLIC -- use it, never
+	// mirror it.
+	if( i < 0 || i >= RISE::SceneEditController::kNumCategories ) return 0;
 	return &arr[i];
 }
 }
 
 unsigned int SceneEditController::PropertyCountFor( Category cat ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return v ? static_cast<unsigned int>( v->size() ) : 0u;
 }
 
 String SceneEditController::PropertyNameFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].name : String();
 }
 
 String SceneEditController::PropertyValueFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].value : String();
 }
 
 String SceneEditController::PropertyDescriptionFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].description : String();
 }
 
 int SceneEditController::PropertyKindFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? static_cast<int>( (*v)[idx].kind ) : -1;
 }
 
 bool SceneEditController::PropertyEditableFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].editable : false;
 }
 
 unsigned int SceneEditController::PropertyPresetCountFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? static_cast<unsigned int>( (*v)[idx].presets.size() ) : 0u;
 }
 
 String SceneEditController::PropertyPresetLabelFor( Category cat, unsigned int idx, unsigned int presetIdx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	if( !v || idx >= v->size() ) return String();
 	const auto& presets = (*v)[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
@@ -7118,7 +8944,8 @@ String SceneEditController::PropertyPresetLabelFor( Category cat, unsigned int i
 
 String SceneEditController::PropertyPresetValueFor( Category cat, unsigned int idx, unsigned int presetIdx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	if( !v || idx >= v->size() ) return String();
 	const auto& presets = (*v)[idx].presets;
 	if( presetIdx >= presets.size() ) return String();
@@ -7127,7 +8954,8 @@ String SceneEditController::PropertyPresetValueFor( Category cat, unsigned int i
 
 String SceneEditController::PropertyUnitLabelFor( Category cat, unsigned int idx ) const
 {
-	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
 	return ( v && idx < v->size() ) ? (*v)[idx].unitLabel : String();
 }
 
@@ -7186,14 +9014,10 @@ String UniqueCameraName( const String& proposed, const ICameraManager& cams )
 bool SceneEditController::CloneActiveCamera(
 	const String& proposedName, char* outName, unsigned int outLen )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
-
-	IScene* scene = mJob.GetScene();
-	if( !scene ) return false;
-	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
-	if( !cams ) return false;
 
 	// Cancel-and-park BEFORE capturing the snapshot.  The render
 	// thread reads + writes the active camera's stored fields
@@ -7211,6 +9035,10 @@ bool SceneEditController::CloneActiveCamera(
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
 	const ICamera* activeCam = scene->GetCamera();
 	if( !activeCam ) return false;
 
@@ -7249,6 +9077,9 @@ bool SceneEditController::CloneActiveCamera(
 
 	const bool ok = mEditor.Apply( edit );
 	if( !ok ) return false;
+	// A bound pane retains its desired name after deletion.  If a clone
+	// recreates that name, wake the pane off its deletion fallback.
+	InvalidatePanesBoundToSceneCameraLocked_( finalName );
 
 	// Write back the chosen name — buffer fits by the precheck above.
 	{
@@ -7269,14 +9100,10 @@ bool SceneEditController::CloneActiveCamera(
 bool SceneEditController::StampViewToNewCamera(
 	const String& proposedName, char* outName, unsigned int outLen, unsigned int pane )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
-
-	IScene* scene = mJob.GetScene();
-	if( !scene ) return false;
-	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
-	if( !cams ) return false;
 
 	// Park before reading mViewportPose + mutating the ICameraManager (same
 	// reason CloneActiveCamera parks: the render thread and other UI-thread
@@ -7296,6 +9123,10 @@ bool SceneEditController::StampViewToNewCamera(
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
 	// Register-or-slot read (see GetViewportPose); safe under mMutex with the
 	// render parked above.
 	const bool poseActive = ( mCurrentPane == t ) ? mViewportPoseActive
@@ -7330,6 +9161,7 @@ bool SceneEditController::StampViewToNewCamera(
 	edit.cameraSnapshot = snapshot;
 
 	if( !mEditor.Apply( edit ) ) return false;
+	InvalidatePanesBoundToSceneCameraLocked_( finalName );
 
 	{
 		const char* s = finalName.c_str();
@@ -7348,7 +9180,8 @@ bool SceneEditController::StampViewToNewCamera(
 
 bool SceneEditController::EnterFreeFlyFromActiveCamera( unsigned int pane )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Capture the active camera's full pose+optics, then set it as the transient
 	// pose (SetViewportPose realizes the override).  The capture is done under the
 	// same cancel-and-park CloneActiveCamera uses (the snapshot fields tear under a
@@ -7384,6 +9217,13 @@ bool SceneEditController::EnterFreeFlyFromActiveCamera( unsigned int pane )
 				else                                             { snap = pc.pose; }   // deletion fallback
 				haveSeed = true;
 			}
+			else if( pc.vantageKind == PaneVantageKind::SceneCameraNamed )
+			{
+				CameraSnapshot live;
+				if( CaptureNamedSceneCameraSnapshot( *scene, pc.sceneCameraRef, live ) ) snap = live;
+				else                                                                     snap = pc.pose;
+				haveSeed = true;
+			}
 			else if( pc.vantageKind == PaneVantageKind::FreeFly )
 			{
 				snap = pc.pose;
@@ -7407,7 +9247,8 @@ bool SceneEditController::EnterFreeFlyFromActiveCamera( unsigned int pane )
 
 bool SceneEditController::SetViewportPose( const CameraSnapshot& pose, unsigned int pane )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	std::unique_lock<std::mutex> lk( mMutex );
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return false;
@@ -7422,6 +9263,12 @@ bool SceneEditController::SetViewportPose( const CameraSnapshot& pose, unsigned 
 	// without needlessly cancelling an in-flight preview pass.
 	const unsigned int targetPane = ( pane == kViewportNavPrimary ) ? mPrimaryPane : pane;
 	if( targetPane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   || mScrubInProgress.load( std::memory_order_acquire ) )
+	 && targetPane != mCurrentPane )
+	{
+		return false;   // gesture exclusivity: never switch live pane registers mid-gesture
+	}
 
 	// Cancel-and-park: the render thread reads mViewportOverrideCamera at the top
 	// of a pass; we must swap it while no pass is in flight.
@@ -7454,6 +9301,7 @@ bool SceneEditController::SetViewportPose( const CameraSnapshot& pose, unsigned 
 		mPaneConfigs[targetPane].vantageKind  = PaneVantageKind::FreeFly;
 		mPaneConfigs[targetPane].pose         = pose;
 		mPaneConfigs[targetPane].namedViewRef = String();
+		mPaneConfigs[targetPane].sceneCameraRef = String();
 	}
 
 	mEditPending.store( true, std::memory_order_release );
@@ -7464,7 +9312,8 @@ bool SceneEditController::SetViewportPose( const CameraSnapshot& pose, unsigned 
 
 bool SceneEditController::ExitFreeFly( unsigned int pane )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	std::unique_lock<std::mutex> lk( mMutex );
 	// user-review P1#6 (round 2): exit free-fly on the caller's pane --
 	// PRIMARY for the nav overlay (default sentinel), explicit for the
@@ -7474,6 +9323,12 @@ bool SceneEditController::ExitFreeFly( unsigned int pane )
 	// wrappers forward `pane` raw, so an out-of-range index would OOB-index
 	// mPaneRender/mPaneConfigs here.  Fail closed, like every other pane setter.
 	if( targetPane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   || mScrubInProgress.load( std::memory_order_acquire ) )
+	 && targetPane != mCurrentPane )
+	{
+		return false;   // gesture exclusivity: never switch live pane registers mid-gesture
+	}
 	{
 		const bool active = ( mCurrentPane == targetPane )
 			? mViewportPoseActive : mPaneRender[targetPane].poseActive;
@@ -7504,6 +9359,7 @@ bool SceneEditController::ExitFreeFly( unsigned int pane )
 		mPaneConfigs[targetPane].vantageKind  = PaneVantageKind::SceneCamera;
 		mPaneConfigs[targetPane].pose         = CameraSnapshot();
 		mPaneConfigs[targetPane].namedViewRef = String();
+		mPaneConfigs[targetPane].sceneCameraRef = String();
 	}
 
 	mEditPending.store( true, std::memory_order_release );
@@ -7532,7 +9388,8 @@ bool SceneEditController::IsFreeFlyActive( unsigned int pane ) const
 bool SceneEditController::GetViewportPose( CameraSnapshot& out, unsigned int pane ) const
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 	// user-review P1#6 (round 2): caller's pane register-or-slot read (see
 	// IsFreeFlyActive), PRIMARY by default, explicit for the pane-N alias.
 	const unsigned int t = ( pane == kViewportNavPrimary ) ? mPrimaryPane : pane;
@@ -7589,7 +9446,10 @@ bool SceneEditController::InstallViewModeCaster_( Implementation::ViewportRender
 
 bool SceneEditController::SetViewportRenderMode( const char* name )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> deliveryLk(
+		mLastRenderDeliveryMutex );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( !mInteractiveImpl ) return false;   // skeleton mode -- no interactive rasterizer wired up
 
 	const Implementation::ViewportRenderModeInfo* info =
@@ -7612,7 +9472,18 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 	// RebindEditorToJob) -- no unsynchronized read of the member, mirroring
 	// SetViewportPose's mViewportOverrideCamera contract above.
 	std::unique_lock<std::mutex> lk( mMutex );
-	if( info->mode == mViewportRenderMode )
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   || mScrubInProgress.load( std::memory_order_acquire ) )
+	 && mCurrentPane != 0 )
+	{
+		// Pane-0 mode changes force pane 0 into the live register set.  Doing
+		// that during a secondary-pane gesture would make the next Move edit
+		// pane 0's camera/scale while recording the result into the gestured
+		// pane's config.  Refuse until release instead of breaking exclusivity.
+		return false;
+	}
+	if( info->mode == mViewportRenderMode
+	 && mPaneConfigs[0].contentSource == PaneContentSource::Interactive )
 	{
 		return true;   // no-op -- already the active mode
 	}
@@ -7733,6 +9604,11 @@ bool SceneEditController::SetViewportRenderMode( const char* name )
 		}
 	}
 	mViewportRenderMode = info->mode;
+	if( mPaneConfigs[0].contentSource != PaneContentSource::Interactive )
+	{
+		mPaneContentGeneration[0].fetch_add( 1, std::memory_order_acq_rel );
+		mPaneConfigs[0].contentSource = PaneContentSource::Interactive;
+	}
 	// review-r1 P2: the variant branch above never touches slot-0's caster
 	// (contract: leaving a variant later finds the data caster as it was)
 	// but realizedMode must reflect what is ACTUALLY realized, or the
@@ -7774,7 +9650,8 @@ const char* SceneEditController::GetViewportRenderMode() const
 
 bool SceneEditController::SetViewportXray( bool xray )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( !mInteractiveImpl ) return false;   // skeleton mode -- no interactive rasterizer wired up
 
 	// Same lock/park discipline as SetViewportRenderMode above.
@@ -7823,6 +9700,8 @@ bool SceneEditController::GetViewportXray() const
 
 bool SceneEditController::SnapViewToAxis( int axis, bool negative, unsigned int pane )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( axis < 0 || axis > 2 ) return false;
 
 	// Source pose: the target pane's current free-fly pose, or (auto-enter) its
@@ -7864,7 +9743,8 @@ bool SceneEditController::SnapViewToAxis( int axis, bool negative, unsigned int 
 
 bool SceneEditController::SetHomeView( unsigned int pane )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	std::unique_lock<std::mutex> lk( mMutex );
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return false;
@@ -7894,6 +9774,12 @@ bool SceneEditController::SetHomeView( unsigned int pane )
 				else                                             cur = pc.pose;
 				havePose = true;
 			}
+			else if( pc.vantageKind == PaneVantageKind::SceneCameraNamed ) {
+				CameraSnapshot live;
+				if( CaptureNamedSceneCameraSnapshot( *scene, pc.sceneCameraRef, live ) ) cur = live;
+				else                                                                     cur = pc.pose;
+				havePose = true;
+			}
 			else if( pc.vantageKind == PaneVantageKind::FreeFly ) {
 				cur = pc.pose;
 				havePose = true;
@@ -7911,7 +9797,8 @@ bool SceneEditController::SetHomeView( unsigned int pane )
 
 bool SceneEditController::GoToHomeView( unsigned int pane )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	CameraSnapshot home;
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
@@ -7924,7 +9811,8 @@ bool SceneEditController::GoToHomeView( unsigned int pane )
 bool SceneEditController::HasHomeView() const
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 	return mHasHomeView;
 }
 
@@ -7943,7 +9831,8 @@ bool SceneEditController::HasHomeView() const
 
 bool SceneEditController::CaptureCurrentView( CameraSnapshot& out )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Free-fly active: the transient pose IS the current view (GetViewportPose
 	// locks internally).  Otherwise capture the active scene camera under the
 	// cancel-and-park (its fields tear under a concurrent orbit-drag write —
@@ -7970,6 +9859,8 @@ bool SceneEditController::CaptureCurrentView( CameraSnapshot& out )
 
 bool SceneEditController::CaptureNamedView( const String& name )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Both platform bridges enumerate names through a 256-byte caller-owned
 	// buffer.  Rejecting an overlong name here keeps count and list positions
 	// identical, rather than creating an invisible slot whose later actions
@@ -8007,6 +9898,8 @@ bool SceneEditController::NamedViewName( unsigned int idx, char* out, unsigned i
 
 bool SceneEditController::RestoreNamedView( unsigned int idx )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	CameraSnapshot pose;
 	{
 		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
@@ -8038,11 +9931,12 @@ void SceneEditController::InvalidatePanesBoundToNamedView_( const String& name )
 	bool any = false;
 	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
 	{
-		if( mPaneConfigs[i].vantageKind == PaneVantageKind::NamedView
+		if( IsInteractivePaneLocked_( i )
+		 && mPaneConfigs[i].vantageKind == PaneVantageKind::NamedView
 		 && mPaneConfigs[i].namedViewRef == name.c_str() )
 		{
 			mPaneRender[i].configDirty = true;
-			mPaneRender[i].dirty       = true;
+			MarkPaneDirtyLocked_( i );
 			any = true;
 		}
 	}
@@ -8053,8 +9947,53 @@ void SceneEditController::InvalidatePanesBoundToNamedView_( const String& name )
 	}
 }
 
+void SceneEditController::InvalidatePanesBoundToSceneCameraLocked_(
+	const String& name )
+{
+	if( name.size() <= 1 ) return;
+	const unsigned int visible = PaneCountForLayout( mViewportLayout );
+	bool visibleMatch = false;
+	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
+	{
+		if( IsInteractivePaneLocked_( i )
+		 && mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed
+		 && mPaneConfigs[i].sceneCameraRef == name.c_str() )
+		{
+			mPaneRender[i].configDirty = true;
+			MarkPaneDirtyLocked_( i );
+			visibleMatch = visibleMatch || i < visible;
+		}
+	}
+	if( visibleMatch )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+	}
+}
+
+void SceneEditController::InvalidateAllSceneCameraNamedPanesLocked_()
+{
+	const unsigned int visible = PaneCountForLayout( mViewportLayout );
+	bool visibleMatch = false;
+	for( unsigned int i = 1; i < kViewportPaneCount; ++i )
+	{
+		if( IsInteractivePaneLocked_( i )
+		 && mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed )
+		{
+			mPaneRender[i].configDirty = true;
+			MarkPaneDirtyLocked_( i );
+			visibleMatch = visibleMatch || i < visible;
+		}
+	}
+	if( visibleMatch )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+	}
+}
+
 bool SceneEditController::UpdateNamedView( unsigned int idx )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	String targetName;
 	{
 		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
@@ -8101,6 +10040,8 @@ bool SceneEditController::UpdateNamedView( unsigned int idx )
 
 bool SceneEditController::DeleteNamedView( unsigned int idx )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	String deletedName;
 	{
 		std::lock_guard<std::mutex> lk( mNamedViewsMutex );
@@ -8159,7 +10100,10 @@ unsigned int SceneEditController::PaneCountForLayout( ViewportLayout layout )
 
 bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> deliveryLk(
+		mLastRenderDeliveryMutex );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	switch( layout )
 	{
 	case ViewportLayout::Single: case ViewportLayout::TwoH:
@@ -8173,6 +10117,19 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	const unsigned int oldVisible = PaneCountForLayout( mViewportLayout );
 	mViewportLayout = layout;
 	const unsigned int newVisible = PaneCountForLayout( layout );
+	bool restoredPaneZeroInteractive = false;
+	// T4: Single layout is the byte-compatible legacy viewport, which has
+	// no Last Render chrome.  Returning to Single therefore restores pane 0
+	// to its preserved interactive mode/vantage instead of stranding the
+	// only visible surface on a frozen source the user cannot switch back.
+	if( newVisible == 1
+	 && mPaneConfigs[0].contentSource == PaneContentSource::LastRender )
+	{
+		mPaneContentGeneration[0].fetch_add( 1, std::memory_order_acq_rel );
+		mPaneConfigs[0].contentSource = PaneContentSource::Interactive;
+		MarkPaneDirtyLocked_( 0 );
+		restoredPaneZeroInteractive = true;
+	}
 	// §7.2: a shrink that hides the primary falls back to pane 0.
 	if( mPrimaryPane >= newVisible ) {
 		mPrimaryPane = 0;
@@ -8192,7 +10149,7 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	if( newVisible > oldVisible )
 	{
 		for( unsigned int i = oldVisible; i < newVisible; ++i ) {
-			mPaneRender[i].dirty = true;
+			if( IsInteractivePaneLocked_( i ) ) MarkPaneDirtyLocked_( i );
 		}
 		mPanePassPending.store( true, std::memory_order_release );
 		mCV.notify_one();
@@ -8205,10 +10162,17 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	// mark that primary dirty so it repaints.
 	else if( newVisible < oldVisible )
 	{
-		const bool gestureActive = mPointerDown.load( std::memory_order_acquire )
-		                        || mScrubInProgress.load( std::memory_order_acquire );
+		const bool pointerGestureActive =
+			mPointerDown.load( std::memory_order_acquire );
+		const bool propertyScrubActive =
+			mScrubInProgress.load( std::memory_order_acquire );
 		const bool currentHidden = ( mCurrentPane >= newVisible );
-		const bool gestureHidden = gestureActive && ( mGesturePane >= newVisible );
+		// mGesturePane belongs only to pointer gestures.  A property scrub
+		// has no pane token and pins the currently scheduled pane; consulting a
+		// stale pointer gesture's pane here spuriously terminated an unrelated
+		// later scrub when a layout shrink hid that old pane.
+		const bool gestureHidden =
+			pointerGestureActive && ( mGesturePane >= newVisible );
 		if( currentHidden || gestureHidden )
 		{
 			// Park FIRST so the gesture finalization + the switch below run
@@ -8234,8 +10198,10 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 					mGestureOpenedComposite = false;
 				}
 					if( mEditor.HasPendingCstObjectTransforms() || mEditor.HasPendingCstCameraPose() ) {
-						mEditor.CommitPendingCstObjectTransforms();
-						mEditor.CommitPendingCstCameraPose();
+						bool commitsOk = mEditor.CommitPendingCstObjectTransforms();
+						commitsOk = mEditor.CommitPendingCstCameraPose() && commitsOk;
+						if( !commitsOk )
+							mInteractionPersistenceFailed.store( true, std::memory_order_release );
 						// Commit can re-derive the live scene.  Route it through the
 						// same all-visible-pane invalidation path as an ordinary
 						// pointer-up, not merely the new primary's one-pane repaint.
@@ -8244,18 +10210,34 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 					}
 					mGizmoDrag.active = false;
 					mPointerDown.store( false, std::memory_order_release );
-					mScrubInProgress.store( false, std::memory_order_release );
-					SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					mPointerGestureStale.store( false, std::memory_order_release );   // round-8: gesture over
+					if( !propertyScrubActive )
+					{
+						SetPreviewScaleIfUnpinned_( kPreviewScaleMin );
+					}
 					mPolishState.store( static_cast<int>( PolishState::None ),
 					                    std::memory_order_release );
 			}
 			if( mCurrentPane >= newVisible ) {
 				SwitchToPaneLocked_( mPrimaryPane );
 			}
-			mPaneRender[mPrimaryPane].dirty = true;
+			if( propertyScrubActive )
+			{
+				// The pointer gesture ended because its pane disappeared, but
+				// an independent property scrub remains live.  Re-establish its
+				// motion divisor on the newly loaded visible-pane registers;
+				// otherwise the next scrub tick runs an accidental full-res pass.
+				SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
+			}
+			MarkPaneDirtyLocked_( mPrimaryPane );
 			mPanePassPending.store( true, std::memory_order_release );
 			mCV.notify_one();
 		}
+	}
+	if( restoredPaneZeroInteractive )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+		mCV.notify_one();
 	}
 	return true;
 }
@@ -8286,6 +10268,7 @@ void SceneEditController::SnapshotPaneSetForParkedRead( PaneSetSnapshot& out ) c
 	for( unsigned int i = 0; i < kViewportPaneCount; ++i )
 	{
 		out.panes[i].visible = ( i < visible );
+		out.panes[i].contentSource = mPaneConfigs[i].contentSource;
 		out.panes[i].mode    = ( i == 0 ) ? mViewportRenderMode : mPaneConfigs[i].mode;
 		if( i == 0 )
 		{
@@ -8300,14 +10283,17 @@ void SceneEditController::SnapshotPaneSetForParkedRead( PaneSetSnapshot& out ) c
 		else
 		{
 			out.panes[i].vantageKind = mPaneConfigs[i].vantageKind;
-			out.panes[i].namedView   = mPaneConfigs[i].namedViewRef;
+			out.panes[i].namedView =
+				( mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed )
+				? mPaneConfigs[i].sceneCameraRef : mPaneConfigs[i].namedViewRef;
 		}
 	}
 }
 
 bool SceneEditController::SetPrimaryPane( unsigned int pane )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // invalid or hidden
 	mPrimaryPane = pane;
@@ -8323,6 +10309,11 @@ unsigned int SceneEditController::GetPrimaryPane() const
 
 bool SceneEditController::SetPaneRenderMode( unsigned int pane, const char* name )
 {
+	if( pane >= kViewportPaneCount ) return false;
+	std::unique_lock<std::recursive_mutex> deliveryLk(
+		mLastRenderDeliveryMutex );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( !name ) return false;
 	if( pane == 0 ) {
 		// Alias contract: pane 0 IS the existing viewport.  Forward so the
@@ -8330,19 +10321,36 @@ bool SceneEditController::SetPaneRenderMode( unsigned int pane, const char* name
 		// run exactly as today (including that method's own guards).
 		return SetViewportRenderMode( name );
 	}
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	const Implementation::ViewportRenderModeInfo* info =
 		Implementation::FindViewportRenderModeByName( name );
 	if( !info || !info->viewportSelectable ) return false;
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden panes refuse (§7.4)
+	const bool modeChanged = mPaneConfigs[pane].mode != info->mode;
+	// A layout grow wakes the newly visible panes before the platform shell
+	// can install its first-reveal preset.  If this pane won that mint race,
+	// retire its obsolete Preview quantum now; otherwise it can finish and be
+	// published before the requested Wireframe/Normals/Depth replacement.
+	if( modeChanged && pane == mCurrentPane
+	 && mRendering.load( std::memory_order_acquire ) )
+	{
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
 	mPaneConfigs[pane].mode = info->mode;
+	mPaneModeSnapshots[pane].store(
+		static_cast<int>( info->mode ), std::memory_order_release );
+	if( mPaneConfigs[pane].contentSource != PaneContentSource::Interactive )
+	{
+		mPaneContentGeneration[pane].fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mPaneConfigs[pane].contentSource = PaneContentSource::Interactive;
 	// P3a slice 2: desired-state edit -- the scheduler reconciles at the
 	// next switch (configDirty), and the pane needs a fresh pass.  Wake the
 	// loop via the rotation flag (NOT mEditPending: this is not a scene
 	// edit; other panes' content is still valid).
 	mPaneRender[pane].configDirty = true;
-	mPaneRender[pane].dirty       = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -8352,27 +10360,142 @@ const char* SceneEditController::GetPaneRenderMode( unsigned int pane ) const
 {
 	if( pane == 0 ) return GetViewportRenderMode();   // already render-owns-scene safe
 	if( pane >= kViewportPaneCount ) return "preview";   // fail-closed default
-	// user-review P1#4: a production/agent render holds mMutex for its ENTIRE
-	// duration; the macOS refinement pill polls the mode for EVERY pane every
-	// 0.5s.  Taking mMutex here would block that poll -- and the whole UI --
-	// until the render returns.  Answer without mMutex under that window:
-	// pane setters are no-op'd while render-owns-scene, so mPaneConfigs[pane]
-	// .mode has NO concurrent writer (same guarantee GetPaneRefinementStatus
-	// relies on).
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
-		const Implementation::ViewportRenderModeInfo* info =
-			Implementation::FindViewportRenderModeInfo( mPaneConfigs[pane].mode );
-		return info ? info->name : "preview";
-	}
-	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-	if( !lk.owns_lock() ) return "preview";
+	// The UI polls every pane while coordinated renders may hold mMutex for
+	// their entire duration.  Read the writer-published snapshot: a try_lock
+	// fallback of "preview" is not truthful (and authorizes first-reveal preset
+	// overwrite), while a blocking read can freeze the main thread before
+	// mRenderOwnsScene is published.
+	const Implementation::ViewportRenderMode mode =
+		static_cast<Implementation::ViewportRenderMode>(
+			mPaneModeSnapshots[pane].load( std::memory_order_acquire ) );
 	const Implementation::ViewportRenderModeInfo* info =
-		Implementation::FindViewportRenderModeInfo( mPaneConfigs[pane].mode );
+		Implementation::FindViewportRenderModeInfo( mode );
 	return info ? info->name : "preview";
+}
+
+bool SceneEditController::SetPaneContentSource(
+	unsigned int pane, PaneContentSource source )
+{
+	if( pane >= kViewportPaneCount ) return false;
+	ForTest_OnLastRenderTransitionAttempt( pane );
+	std::unique_lock<std::recursive_mutex> deliveryLk(
+		mLastRenderDeliveryMutex );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+	if( source != PaneContentSource::Interactive
+	 && source != PaneContentSource::LastRender )
+		return false;
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	if( pane == 0 && mViewportLayout == ViewportLayout::Single
+	 && source == PaneContentSource::LastRender )
+		return false;
+	if( mPaneConfigs[pane].contentSource == source ) return true;
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   && pane == mGesturePane )
+	 || ( mScrubInProgress.load( std::memory_order_acquire )
+	   && pane == mCurrentPane ) )
+	{
+		// Changing the source beneath an active interaction would leave its
+		// later Move/Up mutating and committing invisible state behind the
+		// frozen image.  Preserve gesture exclusivity and let the caller retry
+		// after the matching release/end.
+		return false;
+	}
+
+	// A just-finished interactive quantum must not overwrite the retained
+	// image after this setter returns.  Park before changing source or
+	// publishing the Last Render frame.
+	CancelAndParkRender_( lk );
+	mPaneContentGeneration[pane].fetch_add( 1, std::memory_order_acq_rel );
+	mPaneConfigs[pane].contentSource = source;
+	if( pane == mCurrentPane ) {
+		mPolishState.store(
+			static_cast<int>( PolishState::None ),
+			std::memory_order_release );
+	} else {
+		mPaneRender[pane].polishSaved =
+			static_cast<int>( PolishState::None );
+	}
+
+	if( source == PaneContentSource::LastRender )
+	{
+		mPaneRender[pane].dirty = false;
+		QueueLastRenderPublishLocked_( pane );
+	}
+	else
+	{
+		// Review P3: drop any still-queued Last Render frame for this pane.
+		// Otherwise a drain could deliver the stale frozen frame AFTER the
+		// pane's first interactive pass, leaving it showing the old render
+		// with dirty already consumed and no further repaint scheduled.
+		{
+			std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+			for( size_t i = 0; i < mPendingLastRenderPublishes.size(); ++i )
+			{
+				if( mPendingLastRenderPublishes[i].pane != pane ) continue;
+				mRetiredLastRenderPublishes.push_back(
+					mPendingLastRenderPublishes[i] );
+				mPendingLastRenderPublishes.erase( mPendingLastRenderPublishes.begin() + i );
+				break;   // at most one entry per pane (the queue coalesces)
+			}
+		}
+		mPaneRender[pane].configDirty = true;
+		MarkPaneDirtyLocked_( pane );
+	}
+
+	if( AnyVisiblePaneHasWorkLocked_() )
+	{
+		mPanePassPending.store( true, std::memory_order_release );
+		mCV.notify_one();
+	}
+	// ADR rule 5: deliver with NO controller lock held -- including the
+	// admission lock, which every setter and both render-admission paths take
+	// (holding it across a sink callback is the same hazard as holding mMutex).
+	lk.unlock();
+	admissionLk.unlock();
+	DrainLastRenderPublishes_();
+	deliveryLk.unlock();
+	return true;
+}
+
+SceneEditController::PaneContentSource
+SceneEditController::GetPaneContentSource( unsigned int pane ) const
+{
+	if( pane >= kViewportPaneCount ) return PaneContentSource::Interactive;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return mPaneConfigs[pane].contentSource;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return PaneContentSource::Interactive;
+	return mPaneConfigs[pane].contentSource;
+}
+
+bool SceneEditController::PublishAgentRenderImageParked(
+	const IRasterImage& image )
+{
+	// AgentSession calls only from RenderCore_'s successful completion tail,
+	// while the controller's coordinated worker owns mMutex for the whole
+	// render.  Taking it again here would self-deadlock.
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || !mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	return CaptureLastRenderImageLocked_( image );
+}
+
+bool SceneEditController::AdoptAgentRenderImageParked( IRasterImage*& image )
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || !image
+	 || !mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return false;
+	return AdoptLastRenderImageLocked_( image );
 }
 
 bool SceneEditController::SetPaneVantageSceneCamera( unsigned int pane )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( pane == 0 ) {
 		// Alias contract: "track the scene camera" for pane 0 means leaving
 		// free-fly.  ExitFreeFly returns false when free-fly is not active,
@@ -8382,13 +10505,48 @@ bool SceneEditController::SetPaneVantageSceneCamera( unsigned int pane )
 		if( !IsFreeFlyActive( 0 ) ) return true;   // review round 2: pane-0 alias, explicit 0
 		return ExitFreeFly( 0 );
 	}
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
 	mPaneConfigs[pane].vantageKind  = PaneVantageKind::SceneCamera;
 	mPaneConfigs[pane].namedViewRef = String();
+	mPaneConfigs[pane].sceneCameraRef = String();
 	mPaneRender[pane].configDirty = true;   // P3a slice 2 -- see SetPaneRenderMode
-	mPaneRender[pane].dirty       = true;
+	MarkPaneDirtyLocked_( pane );
+	mPanePassPending.store( true, std::memory_order_release );
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::SetPaneVantageSceneCameraNamed(
+	unsigned int pane, const char* name )
+{
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
+	// Pane 0 is deliberately the active-camera editing surface.  Binding it
+	// to another named camera would create a second, ambiguous camera switch
+	// path beside SetActiveCamera.
+	if( pane == 0 || !name || !*name ) return false;
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
+	// Rendering resizes and regenerates manager cameras while a pass is
+	// active.  Park before reading pose/optics/basis so the snapshot cannot
+	// data-race those writes.
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	CameraSnapshot pose;
+	if( !CaptureNamedSceneCameraSnapshot( *scene, String( name ), pose ) ) return false;
+
+	mPaneConfigs[pane].vantageKind    = PaneVantageKind::SceneCameraNamed;
+	mPaneConfigs[pane].pose           = pose;
+	mPaneConfigs[pane].namedViewRef   = String();
+	mPaneConfigs[pane].sceneCameraRef = String( name );
+	mPaneRender[pane].configDirty = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -8396,6 +10554,8 @@ bool SceneEditController::SetPaneVantageSceneCamera( unsigned int pane )
 
 bool SceneEditController::SetPaneVantageNamedView( unsigned int pane, const char* name )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( !name || !*name ) return false;
 	CameraSnapshot pose;
 	if( !FindNamedViewPose( String( name ), pose ) ) return false;   // must exist NOW (§7.2)
@@ -8404,14 +10564,14 @@ bool SceneEditController::SetPaneVantageNamedView( unsigned int pane, const char
 		// way RestoreNamedView does (SetViewportPose parks + swaps + kicks).
 		return SetViewportPose( pose, 0 );   // review round 2: pane-0 alias, explicit 0
 	}
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	std::lock_guard<std::mutex> lk( mMutex );
 	if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;
 	mPaneConfigs[pane].vantageKind  = PaneVantageKind::NamedView;
 	mPaneConfigs[pane].namedViewRef = String( name );
+	mPaneConfigs[pane].sceneCameraRef = String();
 	mPaneConfigs[pane].pose         = pose;   // deletion fallback snapshot
 	mPaneRender[pane].configDirty = true;   // P3a slice 2 -- see SetPaneRenderMode
-	mPaneRender[pane].dirty       = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -8420,9 +10580,25 @@ bool SceneEditController::SetPaneVantageNamedView( unsigned int pane, const char
 bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // r2/r4 contract
+	// Keep pane routing/promotion and the forwarded legacy Down in one
+	// admission turn.  Since render admission now FINALIZES open interactions
+	// (instead of merely refusing them), releasing here after the provisional
+	// mPointerDown publication would let a render clear that flag before the
+	// forwarded Down opens its composite, while this wrapper still returned
+	// success.  OnPointerDown re-enters this recursive lock.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
 	{
+		// Refuse before mMutex and before primary-pane / FreeFly state is
+		// touched.  The lock remains held across the interactive-render
+		// wait so a coordinated render cannot claim the scene mid-handoff.
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( pane >= PaneCountForLayout( mViewportLayout ) ) return false;   // hidden/invalid
+		// A frozen full-render image has no honest live camera projection.
+		// Refuse before primary promotion or register switching so object
+		// gizmos, picking, and camera tools cannot mutate invisible state.
+		if( !IsInteractivePaneLocked_( pane ) ) return false;
 
 		// §7.8 ratified decision 1, applied PRECISELY (review-s3 P1): "a
 		// non-navigation click in any pane makes it primary -- navigation
@@ -8447,6 +10623,10 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		// mutated them concurrently with an in-flight pass (a genuine data
 		// race; non-crashing today only by the SceneCamera=>null-override
 		// invariant coincidence).  Park always; switch conditionally.
+		// A BeautyVariant destination must be armed BEFORE this first wait.
+		// Otherwise cancellation retirement can select a dirty target variant
+		// and mint it at full quality while pointer-down is still unpublished.
+		PreemptVariantForInteractionLocked_( pane, lk );
 		if( mRendering.load( std::memory_order_acquire ) ) {
 			mCancelProgress.RequestCancel();
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
@@ -8455,6 +10635,23 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		if( mCurrentPane != pane || mPaneRender[pane].configDirty )
 		{
 			SwitchToPaneLocked_( pane );
+		}
+
+		// Kind 3's retained snapshot is display-only after deletion.  Camera
+		// tools must resolve the desired manager identity NOW and fail closed;
+		// otherwise the generic editor fallback could touch the active camera
+		// while the pane still claims to be bound to another name.
+		if( pane != 0 && IsCameraMotionTool( mTool )
+		 && mPaneConfigs[pane].vantageKind == PaneVantageKind::SceneCameraNamed )
+		{
+			const IScene* scene = mJob.GetScene();
+			const ICameraManager* cameras = scene ? scene->GetCameras() : nullptr;
+			if( !cameras
+			 || !cameras->GetItem( mPaneConfigs[pane].sceneCameraRef.c_str() ) )
+			{
+				mVariantInteractionAdmissionPending = false;
+				return false;
+			}
 		}
 
 		// §7.2: a camera-motion gesture on a SECONDARY pane still tracking
@@ -8492,6 +10689,23 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 		// multi-window shell (review-s3 P3, defense-in-depth note).
 		mGesturePane      = pane;
 		mGesturePaneArmed = true;
+		// Publish the gesture exclusion before dropping admission.  The
+		// forwarded legacy OnPointerDown repeats this store, but this first
+		// one prevents a render from slipping into the lock-release handoff:
+		// any submission that wins before the forward sees pointerDown and
+		// refuses, leaving the pane routing intact.
+		// Round-8: a fresh gesture is never stale (clear before publishing
+		// mPointerDown so the render thread cannot observe down-and-stale).
+		// Review P1: the activity clock MUST be stamped in this same lock
+		// hold.  It is zero-initialized and NowMs() is steady-clock since
+		// BOOT, so a watchdog read of `NowMs() - 0` is ~1e8 ms -- past any
+		// threshold.  Publishing mPointerDown first and stamping after the
+		// unlock left a two-statement window in which the render thread
+		// could mark the very FIRST gesture of a session stale and silently
+		// kill the drag.
+		mPointerGestureStale.store( false, std::memory_order_release );
+		mLastPointerActivityMs.store( NowMs(), std::memory_order_release );
+		mPointerDown.store( true, std::memory_order_release );
 	}
 	OnPointerDown( px );
 	return true;
@@ -8500,6 +10714,8 @@ bool SceneEditController::OnPanePointerDown( unsigned int pane, const Point2& px
 bool SceneEditController::OnPanePointerMove( unsigned int pane, const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
 		// Move/Up must keep the same fail-closed visible-pane contract as
@@ -8516,6 +10732,8 @@ bool SceneEditController::OnPanePointerMove( unsigned int pane, const Point2& px
 bool SceneEditController::OnPanePointerUp( unsigned int pane, const Point2& px )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
 		if( !mPointerDown.load( std::memory_order_acquire )
@@ -8528,8 +10746,9 @@ bool SceneEditController::OnPanePointerUp( unsigned int pane, const Point2& px )
 
 bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( pane == 0 ) return EnterFreeFlyFromActiveCamera( 0 );   // alias contract (review round 2: explicit 0)
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
 	CameraSnapshot snap;
 	{
 		std::unique_lock<std::mutex> lk( mMutex );
@@ -8553,6 +10772,12 @@ bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
 			else                                             snap = pc.pose;
 			haveSeed = true;
 		}
+		else if( pc.vantageKind == PaneVantageKind::SceneCameraNamed ) {
+			CameraSnapshot live;
+			if( CaptureNamedSceneCameraSnapshot( *scene, pc.sceneCameraRef, live ) ) snap = live;
+			else                                                                     snap = pc.pose;
+			haveSeed = true;
+		}
 		else if( pc.vantageKind == PaneVantageKind::FreeFly ) {
 			snap = pc.pose;
 			haveSeed = true;
@@ -8564,8 +10789,9 @@ bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
 		mPaneConfigs[pane].vantageKind  = PaneVantageKind::FreeFly;
 		mPaneConfigs[pane].pose         = snap;
 		mPaneConfigs[pane].namedViewRef = String();
+		mPaneConfigs[pane].sceneCameraRef = String();
 		mPaneRender[pane].configDirty = true;   // realize at the next switch
-		mPaneRender[pane].dirty       = true;
+		MarkPaneDirtyLocked_( pane );
 		mPanePassPending.store( true, std::memory_order_release );
 	}
 	mCV.notify_one();
@@ -8574,6 +10800,8 @@ bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
 
 bool SceneEditController::PaneExitFreeFly( unsigned int pane )
 {
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( pane == 0 ) return ExitFreeFly( 0 );   // alias contract (review round 2: explicit 0)
 	// Back to tracking the scene camera -- exactly SetPaneVantageSceneCamera.
 	return SetPaneVantageSceneCamera( pane );
@@ -8591,6 +10819,12 @@ bool SceneEditController::GetPaneRefinementStatus( unsigned int pane, int& outPh
 	// coarse "Rendering" is honest: a render IS in flight.
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
 	{
+		if( mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
+		{
+			outScaleDivisor = 1;
+			outPhase = 0;   // frozen source remains settled until completion
+			return true;
+		}
 		outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
 		outPhase = 1;   // Rendering
 		return true;
@@ -8599,6 +10833,12 @@ bool SceneEditController::GetPaneRefinementStatus( unsigned int pane, int& outPh
 	if( !lk.owns_lock() ) {
 		outScaleDivisor = mPreviewScale.load( std::memory_order_acquire );
 		outPhase = 1;   // Rendering: a render is acquiring/holding the controller.
+		return true;
+	}
+	if( !IsInteractivePaneLocked_( pane ) )
+	{
+		outScaleDivisor = 1;
+		outPhase = 0;
 		return true;
 	}
 	if( pane == mCurrentPane )
@@ -8675,7 +10915,7 @@ bool SceneEditController::ApplyPaneFlyOp_( const SceneEdit& edit )
 	// (same reason the object-motion path stamps it).
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
-	mPaneRender[mGesturePane].dirty = true;
+	MarkPaneDirtyLocked_( mGesturePane );
 	mPanePassPending.store( true, std::memory_order_release );
 	lk.unlock();
 	mCV.notify_one();
@@ -8684,7 +10924,8 @@ bool SceneEditController::ApplyPaneFlyOp_( const SceneEdit& edit )
 
 bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w, unsigned int h )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Either both zero (reset to film dims) or both nonzero.
 	if( ( w == 0 ) != ( h == 0 ) ) return false;
 	std::lock_guard<std::mutex> lk( mMutex );
@@ -8692,7 +10933,8 @@ bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w,
 	if( mPaneConfigs[pane].surfaceW == w && mPaneConfigs[pane].surfaceH == h ) return true;
 	mPaneConfigs[pane].surfaceW = w;
 	mPaneConfigs[pane].surfaceH = h;
-	mPaneRender[pane].dirty = true;
+	if( !IsInteractivePaneLocked_( pane ) ) return true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -8700,9 +10942,14 @@ bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w,
 
 bool SceneEditController::SetPaneSink( unsigned int pane, IRasterizerOutput* pSink )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	if( pane >= kViewportPaneCount ) return false;
+	std::unique_lock<std::recursive_mutex> deliveryLk(
+		mLastRenderDeliveryMutex );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( pane >= kViewportPaneCount ) return false;   // sinks may be pre-wired for hidden panes
+	if( mPaneRender[pane].paneSink == pSink ) return true;
 	// review-s3 P1: PARK before the swap -- the render thread reads
 	// paneSink unlocked in DoOneRenderPass's attach block (and the
 	// rasterizer addrefs it there).  Swapping mid-pass could release the
@@ -8720,8 +10967,30 @@ bool SceneEditController::SetPaneSink( unsigned int pane, IRasterizerOutput* pSi
 	// back to mPreviewSink only when the slot is empty.  SetPreviewSink clears
 	// this slot when a legacy caller later replaces pane 0's sink.
 	if( pSink ) pSink->addref();
-	if( mPaneRender[pane].paneSink ) mPaneRender[pane].paneSink->release();
+	IRasterizerOutput* retiredSink = mPaneRender[pane].paneSink;
 	mPaneRender[pane].paneSink = pSink;
+	mPaneLastRenderPublishGeneration[pane].fetch_add( 1, std::memory_order_acq_rel );
+	if( IsInteractivePaneLocked_( pane ) ) {
+		// A newly-installed sink has not seen the pane's current image.  Make
+		// the replacement itself an invalidation, which also prevents a
+		// shared-output callback from clearing the pane clean after it
+		// synchronously replaces its own sink.
+		MarkPaneDirtyLocked_( pane );
+		if( pane < PaneCountForLayout( mViewportLayout ) ) {
+			mPanePassPending.store( true, std::memory_order_release );
+			mCV.notify_one();
+		}
+	}
+	if( pSink
+	 && mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
+	{
+		QueueLastRenderPublishLocked_( pane );
+	}
+	lk.unlock();            // ADR rule 5: no controller lock across the sink call
+	admissionLk.unlock();
+	ReleaseControllerOwnedLastRenderSink( this, retiredSink );
+	DrainLastRenderPublishes_();
+	deliveryLk.unlock();
 	return true;
 }
 
@@ -8742,7 +11011,8 @@ bool SceneEditController::GetPaneVantage( unsigned int pane, PaneVantageKind& ou
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
 	outKind      = mPaneConfigs[pane].vantageKind;
-	outNamedView = mPaneConfigs[pane].namedViewRef;
+	outNamedView = ( outKind == PaneVantageKind::SceneCameraNamed )
+		? mPaneConfigs[pane].sceneCameraRef : mPaneConfigs[pane].namedViewRef;
 	return true;
 }
 
@@ -8754,6 +11024,167 @@ bool SceneEditController::GetPaneVantage( unsigned int pane, PaneVantageKind& ou
 // PaneConfig::mode.
 static_assert( static_cast<int>( Implementation::ViewportRenderMode::Preview ) == 0,
 	"PaneRenderState::realizedMode's value-init default assumes Preview == 0" );
+
+//! REQUIRES mMutex held.
+bool SceneEditController::IsInteractivePaneLocked_( unsigned int pane ) const
+{
+	return pane < kViewportPaneCount
+	    && mPaneConfigs[pane].contentSource == PaneContentSource::Interactive;
+}
+
+Implementation::ViewportRenderMode SceneEditController::PaneModeLocked_(
+	unsigned int pane ) const
+{
+	return pane == 0 ? mViewportRenderMode : mPaneConfigs[pane].mode;
+}
+
+bool SceneEditController::PaneBaseDimensionsLocked_(
+	unsigned int pane, unsigned int& width, unsigned int& height ) const
+{
+	if( pane >= kViewportPaneCount ) return false;
+	width = mPaneConfigs[pane].surfaceW;
+	height = mPaneConfigs[pane].surfaceH;
+	if( width && height ) return true;
+	const IScene* scene = mJob.GetScene();
+	const IFilm* film = scene ? scene->GetFilm() : nullptr;
+	if( !film ) return false;
+	width = film->GetWidth();
+	height = film->GetHeight();
+	return width > 0 && height > 0;
+}
+
+bool SceneEditController::PanesShareTransportViewLocked_(
+	unsigned int a, unsigned int b ) const
+{
+	if( a >= kViewportPaneCount || b >= kViewportPaneCount ) return false;
+	auto kindFor = [&]( unsigned int pane ) {
+		if( pane == 0 ) {
+			const bool freeFly = ( mCurrentPane == 0 )
+				? mViewportPoseActive : mPaneRender[0].poseActive;
+			return freeFly ? PaneVantageKind::FreeFly : PaneVantageKind::SceneCamera;
+		}
+		return mPaneConfigs[pane].vantageKind;
+	};
+	const PaneVantageKind ka = kindFor( a );
+	const PaneVantageKind kb = kindFor( b );
+	if( ka != kb ) return false;
+	// Only the live scene camera is a single authoritative camera object.
+	// Named and free-fly panes own per-pane fallback/override snapshots;
+	// equal names do not prove equal poses after deletion or replacement.
+	// Keep those cases on independent passes until camera identity can be
+	// represented explicitly in the pane state.
+	return ka == PaneVantageKind::SceneCamera;
+}
+
+void SceneEditController::MarkPaneDirtyLocked_( unsigned int pane )
+{
+	if( pane >= kViewportPaneCount ) return;
+	mPaneRender[pane].dirty = true;
+	++mPaneRender[pane].dirtyGeneration;
+}
+
+void SceneEditController::DrainSharedDirectPublishes_()
+{
+	std::vector<PendingSharedDirectPublish> pending;
+	pending.swap( mPendingSharedDirectPublishes );
+	for( std::size_t i = 0; i < pending.size(); ++i ) {
+		PendingSharedDirectPublish& item = pending[i];
+		IRasterizerOutput* sink = nullptr;
+		Implementation::FrameStore* targetStore = nullptr;
+		Implementation::FrameStore* retiredStore = nullptr;
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			const bool valid = item.pane < PaneCountForLayout( mViewportLayout )
+				&& IsInteractivePaneLocked_( item.pane )
+				&& PaneModeLocked_( item.pane ) == Implementation::ViewportRenderMode::Direct
+				&& mPaneRender[item.pane].dirty
+				&& mPaneRender[item.pane].dirtyGeneration == item.dirtyGeneration;
+			if( valid && item.image ) {
+				sink = ( item.pane == 0 )
+					? ( mPaneRender[0].paneSink
+						? mPaneRender[0].paneSink : mPreviewSink )
+					: mPaneRender[item.pane].paneSink;
+				if( sink ) {
+					sink->addref();
+					PaneRenderState& target = mPaneRender[item.pane];
+					if( !target.frameStore
+					 || target.frameStore->Width() != item.image->GetWidth()
+					 || target.frameStore->Height() != item.image->GetHeight() )
+					{
+						FrameStoreOutput::FrameStoreSpec spec;
+						spec.width = item.image->GetWidth();
+						spec.height = item.image->GetHeight();
+						spec.tileEdge = 8;
+						retiredStore = target.frameStore;
+						target.frameStore = new Implementation::FrameStore( spec );
+					}
+					targetStore = target.frameStore;
+					targetStore->addref();
+				}
+			}
+		}
+		if( retiredStore ) retiredStore->release();
+
+		bool delivered = false;
+		if( sink && item.image && targetStore ) {
+			std::unique_lock<std::recursive_mutex> deliveryLk(
+				mLastRenderDeliveryMutex );
+			LastRenderSinkCallbackScope callbackScope( this );
+			Implementation::FrameSink* frameSink =
+				new Implementation::FrameSink( targetStore );
+			try {
+				// The platform pane sink may be externally bound to the
+				// rasterizer's canonical FrameStore.  Rebind it to this target
+				// pane's saved store before replaying the output protocol, then
+				// populate/complete that store exactly as a rasterizer would.
+				sink->OnRasterizerFrameStoreChanged( targetStore );
+				sink->SetCameraExposureCompensationEV( item.cameraExposureEV );
+				frameSink->SetCameraExposureCompensationEV( item.cameraExposureEV );
+				if( item.rawImage ) {
+					sink->OutputPreDenoisedImage( *item.rawImage, nullptr, 0 );
+					frameSink->OutputPreDenoisedImage( *item.rawImage, nullptr, 0 );
+					sink->OutputDenoisedImage( *item.image, nullptr, 0 );
+					frameSink->OutputDenoisedImage( *item.image, nullptr, 0 );
+				} else {
+					sink->OutputImage( *item.image, nullptr, 0 );
+					frameSink->OutputImage( *item.image, nullptr, 0 );
+				}
+				delivered = true;
+			} catch( const std::exception& e ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditController: shared Direct sink threw: %s", e.what() );
+			} catch( ... ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditController: shared Direct sink threw an unknown exception." );
+			}
+			frameSink->release();
+		}
+
+		if( delivered ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			IRasterizerOutput* currentSink = nullptr;
+			if( item.pane < kViewportPaneCount ) {
+				currentSink = item.pane == 0
+					? ( mPaneRender[0].paneSink
+						? mPaneRender[0].paneSink : mPreviewSink )
+					: mPaneRender[item.pane].paneSink;
+			}
+			if( item.pane < PaneCountForLayout( mViewportLayout )
+			 && IsInteractivePaneLocked_( item.pane )
+			 && PaneModeLocked_( item.pane ) == Implementation::ViewportRenderMode::Direct
+			 && mPaneRender[item.pane].dirty
+			 && mPaneRender[item.pane].dirtyGeneration == item.dirtyGeneration
+			 && currentSink == sink )
+			{
+				mPaneRender[item.pane].dirty = false;
+			}
+		}
+		ReleaseControllerOwnedLastRenderSink( this, sink );
+		if( targetStore ) targetStore->release();
+		safe_release( item.image );
+		safe_release( item.rawImage );
+	}
+}
 
 //! Extracted from SetViewportRenderMode (P3a slice 2) -- see the header doc.
 bool SceneEditController::BuildVariantRasterizer_(
@@ -8876,6 +11307,22 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 			CameraSnapshot live;
 			if( FindNamedViewPose( mPaneConfigs[pane].namedViewRef, live ) ) pose = live;
 		}
+		else if( mPaneConfigs[pane].vantageKind == PaneVantageKind::SceneCameraNamed )
+		{
+			// Same desired-state pattern as NamedView, but resolve from the
+			// live camera manager.  Camera edits mark bound panes configDirty;
+			// camera deletion therefore re-enters here and uses the captured
+			// binding-time snapshot when the manager lookup fails.
+			if( const IScene* scene = mJob.GetScene() )
+			{
+				CameraSnapshot live;
+				if( CaptureNamedSceneCameraSnapshot(
+						*scene, mPaneConfigs[pane].sceneCameraRef, live ) )
+				{
+					pose = live;
+				}
+			}
+		}
 		if( const IScene* scene = mJob.GetScene() )
 		{
 			if( ICamera* cam = RealizeStandaloneCamera( pose, *scene ) )
@@ -8985,21 +11432,81 @@ void SceneEditController::SwitchToPaneLocked_( unsigned int pane )
 //! AnyVisiblePaneHasWorkLocked_ before treating the answer as work).
 unsigned int SceneEditController::PickNextVisiblePaneLocked_() const
 {
-	if( mPointerDown.load( std::memory_order_acquire )
-	 || mScrubInProgress.load( std::memory_order_acquire ) )
+	if( mVariantInteractionAdmissionPending
+	 && IsInteractivePaneLocked_( mVariantInteractionAdmissionPane ) )
 	{
-		return mCurrentPane;
+		return mVariantInteractionAdmissionPane;
+	}
+	// Round-8: a STALE pointer gesture (kPointerWatchdogMs) stops pinning, so
+	// the deferred siblings can rotate again; the flag itself stays set until
+	// a real gesture boundary clears it.
+	if( ( mPointerDown.load( std::memory_order_acquire )
+	   && !mPointerGestureStale.load( std::memory_order_acquire ) )
+	 || mScrubInProgress.load( std::memory_order_acquire )
+	 || mScrubOpenedComposite )
+	{
+		if( IsInteractivePaneLocked_( mCurrentPane ) ) return mCurrentPane;
 	}
 	const unsigned int visible = PaneCountForLayout( mViewportLayout );
 	auto polishQueued = [&]( unsigned int p ) -> bool {
+		if( !IsInteractivePaneLocked_( p ) ) return false;
 		const int st = ( p == mCurrentPane )
 			? mPolishState.load( std::memory_order_acquire )
 			: mPaneRender[p].polishSaved;
 		return st == static_cast<int>( PolishState::PolishQueued );
 	};
-	if( mPrimaryPane < visible && mPaneRender[mPrimaryPane].dirty ) return mPrimaryPane;
+	// Shared-transport priority: when a dirty Indirect pane can also satisfy
+	// a dirty, same-view Direct pane, trace Indirect first regardless of which
+	// pane is primary.  Direct is then retired from the same camera paths.
+	unsigned int sharedSource = kViewportPaneCount;
+	uint64_t sharedSourceArea = 0;
+	for( unsigned int source = 0; source < visible; ++source ) {
+		if( !IsInteractivePaneLocked_( source ) || !mPaneRender[source].dirty
+		 || PaneModeLocked_( source ) != Implementation::ViewportRenderMode::Indirect )
+			continue;
+		unsigned int sourceW = 0, sourceH = 0;
+		if( !PaneBaseDimensionsLocked_( source, sourceW, sourceH ) ) continue;
+		const Implementation::ViewportRenderModeInfo* sourceInfo =
+			Implementation::FindViewportRenderModeInfo( PaneModeLocked_( source ) );
+		for( unsigned int target = 0; target < visible; ++target ) {
+			IRasterizerOutput* targetSink = ( target == 0 )
+				? ( mPaneRender[0].paneSink
+					? mPaneRender[0].paneSink : mPreviewSink )
+				: mPaneRender[target].paneSink;
+			if( target == source || !IsInteractivePaneLocked_( target )
+			 || !mPaneRender[target].dirty
+			 || !targetSink
+			 || PaneModeLocked_( target ) != Implementation::ViewportRenderMode::Direct
+			 || !PanesShareTransportViewLocked_( source, target ) )
+				continue;
+			unsigned int targetW = 0, targetH = 0;
+			if( !PaneBaseDimensionsLocked_( target, targetW, targetH ) ) continue;
+			const Implementation::ViewportRenderModeInfo* targetInfo =
+				Implementation::FindViewportRenderModeInfo( PaneModeLocked_( target ) );
+			if( !sourceInfo || !targetInfo
+				 || sourceInfo->variantScaleDivisor != targetInfo->variantScaleDivisor )
+				continue;
+			const unsigned int divisor = sourceInfo->variantScaleDivisor;
+			const unsigned int sourcePassW = std::max( 1u, sourceW / divisor );
+			const unsigned int sourcePassH = std::max( 1u, sourceH / divisor );
+			const unsigned int targetPassW = std::max( 1u, targetW / divisor );
+			const unsigned int targetPassH = std::max( 1u, targetH / divisor );
+			if( uint64_t( sourcePassW ) * targetPassH
+				 != uint64_t( targetPassW ) * sourcePassH
+			 || targetPassW > sourcePassW || targetPassH > sourcePassH )
+				continue;
+			const uint64_t area = uint64_t( sourceW ) * sourceH;
+			if( sharedSource == kViewportPaneCount || area > sharedSourceArea ) {
+				sharedSource = source;
+				sharedSourceArea = area;
+			}
+		}
+	}
+	if( sharedSource != kViewportPaneCount ) return sharedSource;
+	if( mPrimaryPane < visible && IsInteractivePaneLocked_( mPrimaryPane )
+	 && mPaneRender[mPrimaryPane].dirty ) return mPrimaryPane;
 	for( unsigned int i = 0; i < visible; ++i ) {
-		if( mPaneRender[i].dirty ) return i;
+		if( IsInteractivePaneLocked_( i ) && mPaneRender[i].dirty ) return i;
 	}
 	if( mPrimaryPane < visible && polishQueued( mPrimaryPane ) ) return mPrimaryPane;
 	for( unsigned int i = 0; i < visible; ++i ) {
@@ -9013,6 +11520,7 @@ bool SceneEditController::AnyVisiblePaneHasWorkLocked_() const
 {
 	const unsigned int visible = PaneCountForLayout( mViewportLayout );
 	for( unsigned int i = 0; i < visible; ++i ) {
+		if( !IsInteractivePaneLocked_( i ) ) continue;
 		if( mPaneRender[i].dirty ) return true;
 		const int st = ( i == mCurrentPane )
 			? mPolishState.load( std::memory_order_acquire )
@@ -9027,14 +11535,258 @@ void SceneEditController::MarkAllVisiblePanesDirtyLocked_()
 {
 	const unsigned int visible = PaneCountForLayout( mViewportLayout );
 	for( unsigned int i = 0; i < visible; ++i ) {
-		mPaneRender[i].dirty = true;
+		if( IsInteractivePaneLocked_( i ) ) MarkPaneDirtyLocked_( i );
+	}
+}
+
+//! REQUIRES mMutex held.  Deep-copy first so neither a production
+//! FrameStore nor AgentSession's reusable sink is retained by the viewport.
+bool SceneEditController::CaptureLastRenderImageLocked_(
+	const IRasterImage& image )
+{
+	const unsigned int w = image.GetWidth();
+	const unsigned int h = image.GetHeight();
+	if( w == 0 || h == 0 ) return false;
+
+	IRasterImage* copy = nullptr;
+	if( !RISE_API_CreateRISEColorRasterImage(
+			&copy, w, h, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) )
+	 || !copy )
+		return false;
+	for( unsigned int y = 0; y < h; ++y ) {
+		for( unsigned int x = 0; x < w; ++x ) {
+			copy->SetPEL( x, y, image.GetPEL( x, y ) );
+		}
+	}
+	const bool adopted = AdoptLastRenderImageLocked_( copy );
+	if( copy ) copy->release();
+	return adopted;
+}
+
+//! REQUIRES mMutex held.  Transfers the caller's owning reference.
+bool SceneEditController::AdoptLastRenderImageLocked_( IRasterImage*& image )
+{
+	if( !image || image->GetWidth() == 0 || image->GetHeight() == 0 )
+		return false;
+	if( mLastRenderImage ) mLastRenderImage->release();
+	mLastRenderImage = image;
+	image = nullptr;
+	for( unsigned int pane = 0; pane < kViewportPaneCount; ++pane ) {
+		if( mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
+			QueueLastRenderPublishLocked_( pane );
+	}
+	return true;
+}
+
+//! REQUIRES mMutex held.  Hidden panes are included: their sinks are
+//! pre-wired by both shells, so the retained image is already present when
+//! a later layout reveal makes the pane visible.
+//!
+//! Round-8 review P2 fix: this RECORDS the delivery instead of performing it.
+//! `sink->OutputImage` used to run right here with mMutex held (ADR rule 5
+//! violation + a full per-pixel conversion on the UI thread inside the lock).
+//! Both the sink and the image are addref'd into the queue so neither can be
+//! swapped out from under the drain (SetPaneSink / a newer render completing).
+void SceneEditController::QueueLastRenderPublishLocked_( unsigned int pane )
+{
+	if( pane >= kViewportPaneCount ) return;
+	IRasterizerOutput* sink = ( pane == 0 )
+		? ( mPaneRender[0].paneSink
+			? mPaneRender[0].paneSink : mPreviewSink )
+		: mPaneRender[pane].paneSink;
+	if( !sink ) return;
+
+	IRasterImage* image = mLastRenderImage;
+	if( image )
+	{
+		image->addref();
+	}
+	else
+	{
+		// Honest empty state: overwrite any stale preview pixels with a
+		// transparent 1x1 placeholder until the first full render completes.
+		// Negative alpha is an internal clear sentinel, not coverage:
+		// ViewportShellDisplayAlpha8 maps it to transparent while normal
+		// alpha-0 render pixels retain the viewport's legacy opacity.
+		if( !RISE_API_CreateRISEColorRasterImage(
+				&image, 1, 1, RISEColor( RISEPel( 0, 0, 0 ), -1.0 ) )
+		 || !image )
+			return;   // allocation failed: nothing to deliver
+	}
+
+	PendingLastRenderPublish rec;
+	rec.pane  = pane;
+	rec.sink  = sink;
+	rec.image = image;   // takes the addref above (or the create's initial ref)
+	rec.sourceGeneration =
+		mPaneContentGeneration[pane].load( std::memory_order_acquire );
+	rec.publishGeneration =
+		mPaneLastRenderPublishGeneration[pane].fetch_add(
+			1, std::memory_order_acq_rel ) + 1;
+	sink->addref();
+
+	std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+	// Coalesce per pane: only the newest frame is worth delivering, and this
+	// bounds the queue at kViewportPaneCount regardless of drain cadence.
+	for( size_t i = 0; i < mPendingLastRenderPublishes.size(); ++i )
+	{
+		if( mPendingLastRenderPublishes[i].pane != pane ) continue;
+		mRetiredLastRenderPublishes.push_back(
+			mPendingLastRenderPublishes[i] );
+		mPendingLastRenderPublishes.erase( mPendingLastRenderPublishes.begin() + i );
+		break;   // at most one entry per pane by this same invariant
+	}
+	mPendingLastRenderPublishes.push_back( rec );
+}
+
+bool SceneEditController::BeginLastRenderDrain_()
+{
+	std::lock_guard<std::mutex> lk( mLastRenderDrainStateMutex );
+	if( mLastRenderDrainsStopping ) return false;
+	++mLastRenderDrainCalls;
+	return true;
+}
+
+void SceneEditController::EndLastRenderDrain_()
+{
+	std::lock_guard<std::mutex> lk( mLastRenderDrainStateMutex );
+	if( mLastRenderDrainCalls > 0 ) --mLastRenderDrainCalls;
+	if( mLastRenderDrainCalls == 0 ) mLastRenderDrainDoneCV.notify_all();
+}
+
+void SceneEditController::QuiesceLastRenderDrains_()
+{
+	// Serialize against every source/sink transition as well as callback start.
+	// Setters retain this barrier through their tail drain registration, so a
+	// teardown that owns it cannot delete between setter unlock and Drain entry.
+	{
+		std::unique_lock<std::recursive_mutex> deliveryLk(
+			mLastRenderDeliveryMutex );
+		std::lock_guard<std::mutex> lk( mLastRenderDrainStateMutex );
+		mLastRenderDrainsStopping = true;
+	}
+	ForTest_OnLastRenderQuiesceStarted();
+	// Do not hold the delivery barrier while waiting.  A drain may have
+	// registered immediately before teardown and still need that barrier to
+	// reach its callback/EndLastRenderDrain_ path.
+	std::unique_lock<std::mutex> lk( mLastRenderDrainStateMutex );
+	mLastRenderDrainDoneCV.wait( lk, [&]{ return mLastRenderDrainCalls == 0; } );
+}
+
+//! Round-8 review P2 fix: deliver queued last-render frames with NO controller
+//! lock held -- the ADR rule-5 half of QueueLastRenderPublishLocked_.
+//! One recursive delivery barrier makes source/sink transitions atomic with
+//! callback start and serializes arbitrary cross-pane callback re-entry.
+void SceneEditController::DrainLastRenderPublishes_( bool blocking )
+{
+	// A setter re-entered from a sink may queue a replacement record.  Running
+	// it recursively would recurse forever for an idempotent self-registering
+	// sink; leave it for the outer drain loop after this callback returns.
+	if( IsInLastRenderSinkCallbackOnThisThread() ) return;
+	if( !BeginLastRenderDrain_() ) return;
+	struct DrainCallGuard
+	{
+		SceneEditController& self;
+		~DrainCallGuard() { self.EndLastRenderDrain_(); }
+	} drainCallGuard{ *this };
+	// Keep callback-local teardown detection active through detached-record
+	// releases as well as OutputImage itself: a sink's final release can run
+	// arbitrary destructor/owner cleanup while this drain registration is live.
+	LastRenderSinkCallbackScope drainCallbackScope( this );
+	ForTest_OnLastRenderDrainRegistered();
+
+	for(;;)
+	{
+		std::vector<PendingLastRenderPublish> batch;
+		std::vector<PendingLastRenderPublish> releaseOnly;
+		{
+			std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+			if( mPendingLastRenderPublishes.empty()
+			 && mRetiredLastRenderPublishes.empty() ) return;
+			batch.swap( mPendingLastRenderPublishes );
+			releaseOnly.swap( mRetiredLastRenderPublishes );
+		}
+		// Release EVERY entry even if a sink throws: `batch` holds raw
+		// addref'd pointers, so an escaping exception would otherwise leak
+		// both the sink and a full-resolution image for the rest of the batch.
+		struct BatchReleaseGuard
+		{
+			SceneEditController& self;
+			std::vector<PendingLastRenderPublish>& b;
+			std::vector<PendingLastRenderPublish>& releaseOnly;
+			~BatchReleaseGuard()
+			{
+				auto release = [&]( std::vector<PendingLastRenderPublish>& records )
+				{
+					for( size_t i = 0; i < records.size(); ++i )
+					{
+						ReleaseControllerOwnedLastRenderSink( &self, records[i].sink );
+						if( records[i].image ) records[i].image->release();
+					}
+					records.clear();
+				};
+				release( b );
+				release( releaseOnly );
+			}
+		} releaseGuard_{ *this, batch, releaseOnly };
+		bool deferred = false;
+		for( size_t i = 0; i < batch.size(); ++i )
+		{
+			if( batch[i].pane >= kViewportPaneCount ) continue;
+			std::unique_lock<std::recursive_mutex> deliveryLk(
+				mLastRenderDeliveryMutex, std::defer_lock );
+			if( blocking ) deliveryLk.lock();
+			else if( !deliveryLk.try_lock() )
+			{
+				// Preserve the UI catch-all's nonblocking contract.  Transfer this
+				// record back only if no newer record for the pane is already queued;
+				// nulling its pointers transfers ownership out of the batch guard.
+				std::lock_guard<std::mutex> qlk( mLastRenderPublishMutex );
+				bool newerQueued = false;
+				for( size_t q = 0; q < mPendingLastRenderPublishes.size(); ++q )
+					if( mPendingLastRenderPublishes[q].pane == batch[i].pane )
+						newerQueued = true;
+				if( !newerQueued )
+				{
+					mPendingLastRenderPublishes.push_back( batch[i] );
+					batch[i].sink = nullptr;
+					batch[i].image = nullptr;
+				}
+				deferred = true;
+				continue;
+			}
+			if( mPaneContentGeneration[batch[i].pane].load( std::memory_order_acquire )
+			 != batch[i].sourceGeneration ) continue;
+			if( mPaneLastRenderPublishGeneration[batch[i].pane].load(
+					std::memory_order_acquire ) != batch[i].publishGeneration ) continue;
+			if( batch[i].sink && batch[i].image )
+			{
+				try
+				{
+					batch[i].sink->OutputImage(
+						*batch[i].image, nullptr, kLastRenderSinkFrame );
+				}
+				catch( const std::exception& e )
+				{
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditController: Last Render sink threw: %s", e.what() );
+				}
+				catch( ... )
+				{
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditController: Last Render sink threw an unknown exception." );
+				}
+			}
+		}
+		if( deferred ) return;
 	}
 }
 
 bool SceneEditController::PromoteNamedViewToCamera(
 	unsigned int idx, const String& proposedName, char* outName, unsigned int outLen )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( !outName || outLen == 0 ) return false;
 	outName[0] = '\0';
 	CameraSnapshot snapshot;
@@ -9044,11 +11796,6 @@ bool SceneEditController::PromoteNamedViewToCamera(
 		snapshot = mNamedViews[ idx ].pose;   // copy before park
 	}
 
-	IScene* scene = mJob.GetScene();
-	if( !scene ) return false;
-	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
-	if( !cams ) return false;
-
 	// Park before mutating the ICameraManager (same rationale as stamp/clone).
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mRendering.load( std::memory_order_acquire ) ) {
@@ -9057,6 +11804,10 @@ bool SceneEditController::PromoteNamedViewToCamera(
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
 	const String finalName = UniqueCameraName( proposedName, *cams );
 	if( finalName.size() > outLen ) {
 		outName[0] = '\0';
@@ -9239,7 +11990,9 @@ String SceneEditController::EntityTemplateLabel( Category cat, unsigned int idx 
 SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTemplate(
 	Category cat, unsigned int idx, String* outName )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
 		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
 		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
 		return roR;
@@ -9277,9 +12030,9 @@ SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTem
 		// as UniqueEntityName; the doc-wide probe below covers the
 		// derived sub-chunk names UniqueEntityName can't see.
 		std::vector<std::string> inCat;
-		const unsigned int nc = CategoryEntityCount( cat );
+		const unsigned int nc = CategoryEntityCountLocked_( cat );   // under nlk (round-3 getter split)
 		inCat.reserve( nc );
-		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityName( cat, i ).c_str() );
+		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityNameLocked_( cat, i ).c_str() );
 		auto inCatTaken = [&]( const std::string& nm ) {
 			return std::find( inCat.begin(), inCat.end(), nm ) != inCat.end();
 		};
@@ -9387,7 +12140,9 @@ SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTem
 SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 	Category cat, const String& name, String* outName )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
 		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
 		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
 		return roR;
@@ -9418,6 +12173,9 @@ SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 			r.headVersion = mJob.GetCstHeadVersion();
 			return r;
 		}
+		if( cat == Category::Camera && uniqueFallback )   // round-7 gated camera fallback (typo-refusal)
+			uniqueFallback = RISE::Cst::DocCameraUniqueFallbackPermitted(
+				*doc, name.size() > 1 ? name.c_str() : "", mJob.GetActiveCameraName() );
 		const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
 			*doc, name.c_str(), nullptr, suffix, uniqueFallback );
 		if( id == 0 )
@@ -9455,7 +12213,9 @@ SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 
 SceneEditController::AgentCommitResult SceneEditController::RemoveEntity( Category cat, const String& name )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
 		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
 		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
 		return roR;
@@ -9521,7 +12281,8 @@ bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	out = EnvironmentInfo();
 
-	std::lock_guard<std::mutex> lk( mMutex );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
 
 	const std::string activeName = mJob.GetActiveRasterizerName();
 	if( activeName.empty() ) return false;
@@ -9571,10 +12332,11 @@ bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, const std::string& value,
 	bool* outPersisted )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	if( outPersisted ) *outPersisted = false;
 
-	if( mTxnOpen ) {
+	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: environment edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
 		return false;
 	}
@@ -9592,19 +12354,47 @@ bool SceneEditController::SetEnvironmentRadianceParam_( const char* paramName, c
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
+	// Round-4 review P1 (transactional ordering; matches the Rasterizer arm):
+	// validate recordability BEFORE the live edit -- an environment edit the
+	// Document cannot carry would mark dirty, then Save would clear the flag
+	// while serializing nothing and a reload would revert it.  Refuse instead.
+	// Legacy scenes (no retained Document) keep live-only editing.
+	const bool hasDoc = mJob.HasRetainedCstDocument();
+	if( hasDoc ) {
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		const RISE::Cst::NodeId rid = doc
+			? RISE::Cst::DocFindByNameAnyRole( *doc, "", nullptr, activeName.c_str(), true )
+			: 0;
+		if( rid == 0 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: environment edit `%s` refused -- the scene has no unique `%s` chunk "
+				"in its retained Document, so the edit could not survive a save/reload.",
+				paramName, activeName.c_str() );
+			if( outPersisted ) *outPersisted = false;
+			return false;
+		}
+	}
+
 	const bool ok = mJob.SetRasterizerParameter( activeName.c_str(), paramName, value.c_str() );
 	if( !ok ) return false;
 
-	// Mirror to the CST so the edit survives a save (Document-only, no re-derive;
-	// safe under the lock -- pCstDocument is swapped here too).  A 0 return means
-	// the active rasterizer has no unique chunk in the Document, so the edit will
-	// NOT persist -- reported via outPersisted so callers can be honest.
-	const int cstResult = mJob.ApplyCstEnvironmentEdit( paramName, value.c_str() );
+	// Mirror to the CST (Document-only, no re-derive; safe under the lock --
+	// pCstDocument is swapped here too).  The pre-flight guarantees the chunk
+	// resolves; gate the dirty mark on the actual record anyway (the flag must
+	// never claim a change the Document does not carry).
+	const int cstResult = hasDoc ? mJob.ApplyCstEnvironmentEdit( paramName, value.c_str() ) : 0;
 	if( outPersisted ) *outPersisted = ( cstResult != 0 );
+	if( cstResult != 0 ) mEditor.MarkCstHeadDirty( "", nullptr );
 
 	mEditPending.store( true, std::memory_order_release );
 	lk.unlock();
 	mCV.notify_one();
+	// Round-5 review P1: this is a DIRECT mutation entry point (the public
+	// SetEnvironmentScale/Background/Orient wrappers) -- drain here so a
+	// C-API / headless caller that never polls RefreshProperties still gets
+	// the dirty notification.
+	admissionLk.unlock();
+	mEditor.DrainDirtyNotification();
 	return true;
 }
 
@@ -9629,7 +12419,9 @@ bool SceneEditController::SetEnvironmentOrient( double xDeg, double yDeg, double
 
 bool SceneEditController::SetEnvironmentFile( const String& absPath )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Resolve the currently-bound painter, then edit its `file` via the Painter
 	// CST-param path (a full re-derive that reloads the texture -> live + persists).
 	std::string painterName;
@@ -9648,7 +12440,9 @@ bool SceneEditController::SetEnvironmentFile( const String& absPath )
 
 SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( const String& hdriPath, String* outPainterName )
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
 		AgentCommitResult roR; roR.applied = false; roR.rawCode = 0;
 		roR.status = String( "rejected" ); roR.message = String( "scene is render-locked" );
 		return roR;
@@ -9766,7 +12560,9 @@ SceneEditController::AgentCommitResult SceneEditController::AddEnvironment( cons
 
 bool SceneEditController::RemoveEnvironment()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Precheck: only unbind when a radiance_map is ACTUALLY bound.  This matters
 	// for correctness, not just cosmetics: the live-map clear below must NOT fire
 	// when nothing was bound, because the global map might then belong to a
@@ -9802,31 +12598,122 @@ bool SceneEditController::RemoveEnvironment()
 
 bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )
 {
-	// Hacky-but-pragmatic implementation: SetProperty's existing
-	// switch reads `mSelectionCategory` + `mSelectionName` inline
-	// throughout its ~150-line body.  Rather than parameterize that
-	// body over (cat, selName) — which would force every per-
-	// category branch to take both — temporarily swap the primary
-	// tuple for the call and restore on return.  Both fields are
-	// UI-thread-only writes (no render-thread reads), so the
-	// temporary mutation isn't racy.  Future cleanup: refactor
-	// SetProperty's body into a helper that takes (cat, selName)
-	// explicitly and drop this swap.
-	const Category savedCat  = mSelectionCategory;
-	const String   savedName = mSelectionName;
 	const int idx = static_cast<int>( cat );
-	mSelectionCategory = cat;
-	mSelectionName     = ( idx >= 0 && idx < kNumCategories ) ? mSelectionByCategory[idx] : String();
-	const bool ok = SetProperty( name, valueStr );
-	mSelectionCategory = savedCat;
-	mSelectionName     = savedName;
+	if( idx < 0 || idx >= kNumCategories ) return false;
+	const String targetName = mSelectionByCategory[idx];
+	bool ok = false;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return false;
+		ok = SetPropertyInner_( cat, targetName, name, valueStr );
+	}
+	// The primary selection was never overwritten, so a synchronous dirty
+	// callback sees coherent UI state and any re-entrant SetSelection it makes
+	// remains authoritative.
+	mEditor.DrainDirtyNotification();
 	return ok;
 }
 
+// ---------------------------------------------------------------------
+// Document-first ADR phase 1: public mutation entry points = inner body +
+// post-unlock drain of the deferred dirty notification.  The inner bodies
+// release mMutex before returning, so the drain (which may run the shell's
+// dirty-changed listener) never executes under a controller lock.  Idempotent
+// and cheap when nothing changed (atomic test-and-clear).
+// ---------------------------------------------------------------------
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
+	bool ok = false;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return false;
+		ok = SetPropertyInner_( mSelectionCategory, mSelectionName, name, valueStr );
+	}
+	mEditor.DrainDirtyNotification();
+	return ok;
+}
+
+bool SceneEditController::SetSelection( Category cat, const String& entityName )
+{
+	bool ok = false;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return false;
+		ok = SetSelectionInner_( cat, entityName );
+	}
+	mEditor.DrainDirtyNotification();
+	return ok;
+}
+
+void SceneEditController::Undo()
+{
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return;
+		UndoInner_();
+	}
+	mEditor.DrainDirtyNotification();
+}
+
+void SceneEditController::Redo()
+{
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return;
+		RedoInner_();
+	}
+	mEditor.DrainDirtyNotification();
+}
+
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
+	const String& entityName, const String& entityKind, const String& param,
+	const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			r.status = String( "rejected" );
+			r.retriable = true;
+			r.message = String( "render queued or in progress -- retry after it completes" );
+			return r;
+		}
+		r = ApplyAgentParamEditInner_(
+			entityName, entityKind, param, value, baseVersionOrNull );
+	}
+	mEditor.DrainDirtyNotification();
+	return r;
+}
+
+bool SceneEditController::SetPropertyInner_(
+	Category targetCategory, const String& targetName,
+	const String& name, const String& valueStr )
+{
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
-	switch( mSelectionCategory ) {
+	// External-review P1 (2026-07-22): general dangling-reference guard.  Reject
+	// BEFORE any arm mutates the scene when this edit would persist a reference
+	// to a runtime-only entity (no CST chunk) -- it would render now but fail on
+	// save/reload / a later full re-derive.  Covers every reference-carrying
+	// category uniformly (material slot rebinds, object material/geometry/shader
+	// bindings, painter/geometry child refs); inline literals + CST-backed names
+	// + `none` are untouched.  See WouldPersistDanglingReference_.
+	if( targetName.size() > 1
+	 && WouldPersistDanglingReference_( targetCategory, targetName, name, valueStr ) )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController: edit of `%s.%s` rejected -- `%s` names a runtime-only entity with "
+			"no CST chunk, so persisting it would write a DANGLING reference that fails on save/reload. "
+			"Bind a scene-defined entity instead.",
+			targetName.c_str(), name.c_str(), valueStr.c_str() );
+		return false;
+	}
+	switch( targetCategory ) {
 
 	case Category::Camera: {
 		// Cameras: route through the editor's transactional Apply path
@@ -9856,6 +12743,9 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// viewport must still repaint the replaced scene, else the user sees stale pre-edit pixels.  Kick on
 		// `ok || changed`; `return ok` keeps the edit's failure semantics unchanged for the caller.
 		if( ok || mEditor.CstLiveSceneChangedInLastApply() ) {
+			const String editedCamera = targetName.size() > 1
+				? targetName : String( mJob.GetActiveCameraName().c_str() );
+			InvalidatePanesBoundToSceneCameraLocked_( editedCamera );
 			mEditPending.store( true, std::memory_order_release );
 			lk.unlock();
 			mCV.notify_one();
@@ -9864,36 +12754,31 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 	}
 
 	case Category::Animation: {
-		// The only editable animation property is the active animation's frame
-		// count.  num_frames is pure playback metadata — it doesn't alter the
-		// in-flight render's pixels (only renderanimation's frame count and the
-		// preview-play loop step), so no cancel-and-park is needed.  Apply by
-		// re-declaring the ACTIVE animation with the new count (DeclareAnimation
-		// upserts; make_active=false leaves the active selection unchanged).
+		// The panel labels the descriptor's persisted `num_frames` field as
+		// `frames`. Route it through the same checked CST transaction path as
+		// other descriptor value edits so the live animation, retained
+		// Document, dirty state, undo/redo, and save/reload all agree.
 		if( !( name == String( "frames" ) ) ) return false;
 		unsigned int newFrames = 0;
 		if( sscanf( valueStr.c_str(), "%u", &newFrames ) != 1 || newFrames < 1 ) return false;
-		char nameBuf[256] = { 0 };
-		if( !mJob.GetActiveAnimationName( nameBuf, sizeof(nameBuf) ) ) return false;
-		double ts = 0, te = 1; unsigned int nf = 30; bool df = false, invf = false;
-		if( !mJob.GetAnimationOptions( ts, te, nf, df, invf ) ) return false;
-		if( mTxnOpen ) {
-			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: animation frame-count edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
-			return false;
-		}
-		return mJob.DeclareAnimation( nameBuf, ts, te, newFrames, df, invf, false );
+		if( targetName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			targetName, String( "animation" ), String( "num_frames" ),
+			valueStr, nullptr );
+		return r.applied;
 	}
 
 	case Category::Object: {
 		// Route the panel's editable rows to the matching SceneEdit
 		// op.  Every path goes through SceneEditor::Apply so undo /
 		// redo work end-to-end alongside drag-driven transform edits.
-		const IScene* scene = mJob.GetScene();
-		if( !scene ) return false;
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
 
 		SceneEdit edit;
-		edit.objectName = mSelectionName;
+		edit.objectName = targetName;
+		bool shadowEdit = false;
+		bool editCastsShadows = false;
+		bool shadowValue = false;
 
 		if( name == String( "position" ) ) {
 			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
@@ -9944,17 +12829,9 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 			edit.propertyValue = valueStr;
 		}
 		else if( name == String( "casts_shadows" ) || name == String( "receives_shadows" ) ) {
-			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
-			const IObject* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
-			if( !obj ) return false;
-			bool castsB = obj->DoesCastShadows();
-			bool recvsB = obj->DoesReceiveShadows();
-			bool newVal = false;
-			if( !ParsePropertyBool( valueStr, newVal ) ) return false;
-			if( name == String( "casts_shadows" ) )    castsB = newVal;
-			if( name == String( "receives_shadows" ) ) recvsB = newVal;
-			edit.op = SceneEdit::SetObjectShadowFlags;
-			edit.s  = static_cast<Scalar>( ( castsB ? 1 : 0 ) | ( recvsB ? 2 : 0 ) );
+			if( !ParsePropertyBool( valueStr, shadowValue ) ) return false;
+			shadowEdit = true;
+			editCastsShadows = ( name == String( "casts_shadows" ) );
 		}
 		else {
 			return false;
@@ -9973,6 +12850,22 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		if( shadowEdit ) {
+			const IScene* scene = mJob.GetScene();
+			IObjectManager* objs =
+				scene ? const_cast<IObjectManager*>( scene->GetObjects() ) : nullptr;
+			const IObject* obj =
+				objs ? objs->GetItem( targetName.c_str() ) : nullptr;
+			if( !obj ) return false;
+			bool castsShadows = obj->DoesCastShadows();
+			bool receivesShadows = obj->DoesReceiveShadows();
+			if( editCastsShadows ) castsShadows = shadowValue;
+			else receivesShadows = shadowValue;
+			edit.op = SceneEdit::SetObjectShadowFlags;
+			edit.s = static_cast<Scalar>(
+				( castsShadows ? 1 : 0 ) | ( receivesShadows ? 2 : 0 ) );
+		}
 
 		const bool ok = mEditor.Apply( edit );
 		if( !ok ) {
@@ -10048,13 +12941,11 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// prev value, calls KeyframeFromParameters + SetIntermediateValue
 		// + RegenerateData on the forward path, and replays the prev
 		// value through the same machinery on undo.
-		if( mSelectionName.size() <= 1 ) return false;
-		IScenePriv* scene = mJob.GetScene();
-		if( !scene ) return false;
+		if( targetName.size() <= 1 ) return false;
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetLightProperty;
-		edit.objectName    = mSelectionName;   // light entity name
+		edit.objectName    = targetName;   // light entity name
 		edit.propertyName  = name;             // "position" / "energy" / etc.
 		edit.propertyValue = valueStr;
 
@@ -10081,42 +12972,46 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 	}
 
 	case Category::Rasterizer: {
-		// Phase 3: the introspection layer surfaces editable rows for
-		// type-specific params (samples, max_eye_depth, etc.) and the
-		// Job side keeps a per-rasterizer params snapshot.  Editing
-		// re-instantiates the rasterizer with the modified value while
-		// preserving every other parameter.  No undo support yet —
-		// rebuilding a rasterizer is a heavy operation; Phase 4 may
-		// add it via a dedicated SetRasterizerProperty SceneEdit op.
-		if( mSelectionName.size() <= 1 ) return false;
-
-		if( mTxnOpen ) {
-			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: rasterizer property edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
-			return false;
+		// Document-first ADR phase 3: rasterizer edits ride the TRANSACTION
+		// path. targetName is the rasterizer chunk keyword; the empty
+		// target + kind form addresses the sole chunk of that kind (Job's
+		// generalized unique-in-kind resolve).  ApplyAgentParamEdit does the
+		// whole coherent sequence -- park, dry-run-gated Document edit,
+		// re-derive (which re-realizes the rasterizer from its chunk), undo
+		// capture, gated dirty mark, re-render kick -- so the bespoke
+		// live-rebuild + record + mark sequence this arm used to hand-roll
+		// (and mis-roll: rounds 3-4 found both a lost-on-save and a
+		// saved-but-lost bug in it) is GONE, and rasterizer edits gain
+		// undo/redo.  An unrecordable edit (no unique chunk of this kind)
+		// rejects inside the path -- same outcome as the round-4 pre-flight.
+		// Legacy scenes (no retained Document) keep the LIVE-only rebuild.
+		if( targetName.size() <= 1 ) return false;
+		if( !mJob.HasRetainedCstDocument() ) {
+			if( mTxnOpen.load( std::memory_order_acquire ) ) {
+				GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: rasterizer property edit refused inside an open transaction (live-only on a legacy scene -> not undoable)." );
+				return false;
+			}
+			std::unique_lock<std::mutex> lk( mMutex );
+			if( mRendering.load( std::memory_order_acquire ) ) {
+				mCancelProgress.RequestCancel();
+				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+			}
+			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+			const bool ok = mJob.SetRasterizerParameter(
+				targetName.c_str(), name.c_str(), valueStr.c_str() );
+			if( !ok ) return false;
+			mEditPending.store( true, std::memory_order_release );
+			lk.unlock();
+			mCV.notify_one();
+			return true;
 		}
-		// Cancel-and-park: rasterizer rebuild releases the old instance
-		// and constructs a new one.  The render thread reads
-		// `pRasterizer` per-pixel; we need it parked.  Same pattern as
-		// SetActiveRasterizer's selection path.
-		std::unique_lock<std::mutex> lk( mMutex );
-		if( mRendering.load( std::memory_order_acquire ) ) {
-			mCancelProgress.RequestCancel();
-			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
-		}
-		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-
-		const bool ok = mJob.SetRasterizerParameter(
-			mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
-		if( !ok ) return false;
-
-		mEditPending.store( true, std::memory_order_release );
-		lk.unlock();
-		mCV.notify_one();
-		return true;
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			String( "" ), targetName, name, valueStr, nullptr );
+		return r.applied;
 	}
 
 	case Category::Film: {
-		if( mTxnOpen ) {
+		if( mTxnOpen.load( std::memory_order_acquire ) ) {
 			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: film property edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
 			return false;
 		}
@@ -10170,7 +13065,17 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 				// Cst.cpp derive path, all use %.17g).  %.6g truncated e.g. 1.7777778 -> 1.77778 (Delta~2e-6).
 				std::snprintf( vbuf, sizeof(vbuf), "%.17g", filmRef->GetPixelAR() ); p = vbuf;
 			}
-			if( w || h || p ) mJob.ApplyCstFilmEdit( w, h, p );
+			if( w || h || p ) {
+				// Round-3 sibling fix + round-4 gate: mark dirty ONLY when the
+				// Document actually recorded the change (ApplyCstFilmEdit inserts
+				// a film chunk when absent, so 0 is pathological -- but the flag
+				// must never claim a change the Document does not carry, else
+				// Save clears dirty while serializing nothing).  Empty name ->
+				// the CST-head boolean channel; the listener fires under this
+				// held mMutex (see the SetDirtyChangedListener contract).
+				if( mJob.ApplyCstFilmEdit( w, h, p ) != 0 )
+					mEditor.MarkCstHeadDirty( "", nullptr );
+			}
 		}
 
 		mEditPending.store( true, std::memory_order_release );
@@ -10186,7 +13091,53 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// (potentially destroying it if no one else holds a ref),
 		// which the render thread may be mid-sample on.  Same lock
 		// pattern Light / Object / Film use for the same reason.
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
+
+		// GUI redesign 2026-07-22 (external-review P1): the material panel now
+		// surfaces BOTH painter/scalar-painter SLOTS and the scalar VALUE params
+		// merged in from the descriptor+CST by AugmentWithCstRows (ar_film_ior,
+		// and -- crucially -- physical scalars like a dielectric `ior` whose
+		// slot is an IScalarPainter pipe but whose scene value is an INLINE
+		// NUMBER `ior 1.5`, not a painter name).  SetMaterialProperty only
+		// REBINDS a slot: it looks the value up as a painter NAME and rejects
+		// anything unregistered ("scalar_painter `1.7` is not registered").  So
+		// route to SetMaterialProperty ONLY when the entered value actually
+		// names a registered painter in the slot's pipe (a genuine rebind);
+		// every other edit -- an inline numeric, or a non-slot descriptor param
+		// (GetSlot==None) -- is a VALUE edit that must go through the generic CST
+		// param-edit path (which cancel-and-parks + captures undo/redo itself),
+		// exactly like Painter/Geometry.  Reading the managers here (pre-park)
+		// matches the Object arm's pre-park scene reads; ApplyAgentParamEdit
+		// re-resolves by name under its own lock, so the brief TOCTOU is benign.
+		// Classify UNDER a brief mMutex hold (external-review P1): the manager
+		// reads (GetMaterials/GetSlot/GetPainters) would otherwise race an agent
+		// commit's D2 manager swap -> UAF.  The routing decision is acted on with
+		// the lock RELEASED (ApplyAgentParamEdit re-locks itself; the slot-rebind
+		// path re-parks below) -- both re-resolve by name, so the release window
+		// is a benign routing TOCTOU, not a correctness gap.
+		bool rebindSlot = false;
+		{
+			std::lock_guard<std::mutex> clk( mMutex );
+			const IMaterialManager* mats = mJob.GetMaterials();
+			const IMaterial* mat = mats
+				? const_cast<IMaterialManager*>( mats )->GetItem( targetName.c_str() )
+				: nullptr;
+			const MaterialSlotRef slot = mat
+				? MaterialIntrospection::GetSlot( *mat, name )
+				: MaterialSlotRef();
+			if( slot.kind == MaterialSlotRef::Painter ) {
+				IPainterManager* pm = mJob.GetPainters();
+				rebindSlot = pm && pm->GetItem( valueStr.c_str() ) != nullptr;
+			} else if( slot.kind == MaterialSlotRef::ScalarPainter ) {
+				IScalarPainterManager* spm = mJob.GetScalarPainters();
+				rebindSlot = spm && spm->GetItem( valueStr.c_str() ) != nullptr;
+			}
+		}
+		if( !rebindSlot ) {
+			const AgentCommitResult r = ApplyAgentParamEditInner_(
+				targetName, String( "material" ), name, valueStr, nullptr );
+			return r.applied;
+		}
 
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load( std::memory_order_acquire ) ) {
@@ -10197,7 +13148,7 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetMaterialProperty;
-		edit.objectName    = mSelectionName;
+		edit.objectName    = targetName;
 		edit.propertyName  = name;
 		edit.propertyValue = valueStr;
 
@@ -10218,7 +13169,7 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// and-park as Material — medium setters re-derive sigma_t and
 		// sigma_t_max caches that the render thread reads via
 		// SampleDistance / EvalTransmittance.
-		if( mSelectionName.size() <= 1 ) return false;
+		if( targetName.size() <= 1 ) return false;
 
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load( std::memory_order_acquire ) ) {
@@ -10229,7 +13180,7 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetMediumProperty;
-		edit.objectName    = mSelectionName;
+		edit.objectName    = targetName;
 		edit.propertyName  = name;
 		edit.propertyValue = valueStr;
 
@@ -10247,7 +13198,7 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 	case Category::Painter: {
 		// Entity-creation slice: painters have no per-material-style
-		// live setter surface (see PainterIntrospection.h's header
+		// live setter surface (see CstIntrospection.h's header
 		// doc), so route straight through the generic agent CST
 		// param-edit path -- the "RouteCstParamEdit_-class" path
 		// Material/Light/Medium use on CST scenes, generalized: it
@@ -10255,9 +13206,20 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// undo/redo (PushAgentCstParamEdit), marks dirty, bumps light
 		// generation if needed, and kicks the re-render itself, so no
 		// separate park/SceneEdit/Apply dance is needed here.
-		if( mSelectionName.size() <= 1 ) return false;
-		const AgentCommitResult r = ApplyAgentParamEdit(
-			mSelectionName, String( "painter" ), name, valueStr, nullptr );
+		if( targetName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			targetName, String( "painter" ), name, valueStr, nullptr );
+		return r.applied;
+	}
+
+	case Category::Geometry: {
+		// GUI redesign 2026-07-22: identical route to Painter -- the
+		// generic agent CST param-edit path (cancel-and-parks, captures
+		// the prior value for undo/redo, marks dirty, re-derives the
+		// geometry AND every object referencing it, kicks the re-render).
+		if( targetName.size() <= 1 ) return false;
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			targetName, String( "geometry" ), name, valueStr, nullptr );
 		return r.applied;
 	}
 
@@ -10531,7 +13493,12 @@ void SceneEditController::DoOneRenderPass()
 		// behaviour ONLY: a SECONDARY pane with no sink must render to
 		// nothing, never into pane 0's sink (that was "secondary pixels
 		// published to pane 0").
-		activeRast->FreeRasterizerOutputs();
+		// RenderLoop retires the prior quantum's outputs immediately after that
+		// quantum publishes mRendering=false.  Keeping this list empty between
+		// passes is load-bearing: a final sink destructor must never run here on
+		// the render thread while mRendering is true (a re-entrant setter would
+		// wait for this same thread).  Therefore this attach site only adds the
+		// current quantum's sink; the post-pass retirement is the sole clear.
 		// Pane 0 retains the legacy preview sink as its fallback.  An explicit
 		// SetPaneSink(0, ...) override wins while installed; secondary panes
 		// use only their own sinks and otherwise render to nothing.
@@ -10771,6 +13738,50 @@ void SceneEditController::DoOneRenderPass()
 	const auto t0 = std::chrono::steady_clock::now();
 	activeRast->RasterizeScene( *scene, pRegion, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+	// A completed indirect-only quantum may carry a camera-vertex Direct
+	// companion produced by the same path walk.  Build owning NNB derivatives
+	// here, but DO NOT invoke sinks or retire dirty generations while
+	// mRendering is true.  RenderLoop drains these only after ActiveFlipGuard;
+	// arbitrary sink re-entry can then park safely and a throwing sink leaves
+	// the target dirty for retry.
+	if( !mCancelProgress.IsCancelled() && !mSharedDirectTargets.empty() )
+	{
+		Implementation::PathTracingPelRasterizer* sharedPT =
+			dynamic_cast<Implementation::PathTracingPelRasterizer*>( activeRast );
+		const IRasterImage* direct = sharedPT
+			? sharedPT->GetDirectCompanionImage() : nullptr;
+		const bool denoised = sharedPT && sharedPT->DirectCompanionWasDenoised();
+		const IRasterImage* rawDirect = denoised
+			? sharedPT->GetDirectCompanionRawImage() : nullptr;
+		const ICamera* camera = scene->GetCamera();
+		const Scalar cameraEV = camera
+			? camera->GetExposureCompensationEV() : Scalar( 0 );
+		if( direct ) {
+			for( std::size_t i = 0; i < mSharedDirectTargets.size(); ++i ) {
+				const SharedDirectTarget target = mSharedDirectTargets[i];
+				IRasterImage* subview = nullptr;
+				IRasterImage* rawSubview = nullptr;
+				if( !Implementation::CreateNearestNeighborSubview(
+						*direct, target.width, target.height, &subview ) )
+					continue;
+				if( denoised && ( !rawDirect
+					 || !Implementation::CreateNearestNeighborSubview(
+						*rawDirect, target.width, target.height, &rawSubview ) ) )
+				{
+					subview->release();
+					continue;
+				}
+				PendingSharedDirectPublish pending;
+				pending.pane = target.pane;
+				pending.dirtyGeneration = target.dirtyGeneration;
+				pending.cameraExposureEV = cameraEV;
+				pending.image = subview;
+				pending.rawImage = rawSubview;
+				mPendingSharedDirectPublishes.push_back( pending );
+			}
+		}
+	}
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,
 	// or (hypothetically) via a propagated exception.

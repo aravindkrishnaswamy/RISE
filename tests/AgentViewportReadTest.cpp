@@ -98,7 +98,7 @@ static const char* const kScene =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
 	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
-	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
 	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
@@ -328,6 +328,32 @@ static void RunPositiveAndIsolation()
 						Check( arr.at( 3 ).get( "visible" ).asBool() == false, "P3c: pane 3 hidden in Single" );
 					}
 				}
+			}
+
+			// T2: pane introspection carries additive kind 3 plus the exact
+			// manager-camera reference.  This is desired-state metadata and is
+			// available atomically even before the scheduled pane pass lands.
+			Check( controller.SetViewportLayout(
+					SceneEditController::ViewportLayout::TwoH ),
+				"T2 paneSet: layout TwoH" );
+			Check( controller.SetPaneVantageSceneCameraNamed( 1, "cam" ),
+				"T2 paneSet: pane 1 binds scene camera cam" );
+			Check( controller.SetPaneContentSource(
+					1, SceneEditController::PaneContentSource::LastRender ),
+				"T4 paneSet: pane 1 selects Last Render" );
+			{
+				const std::string resp = rpc.HandleLine(
+					Req( 6, "read_viewport", JsonValue::MakeObject() ) );
+				JsonValue env = ParseResponse( resp, 6 );
+				const JsonValue& paneSet = env.get( "result" ).get( "paneSet" );
+				const JsonValue& panes = paneSet.get( "panes" );
+				Check( panes.size() == 4
+				    && panes.at( 1 ).get( "visible" ).asBool()
+				    && panes.at( 1 ).get( "contentSource" ).asNumber() == 1
+				    && panes.at( 1 ).get( "vantageKind" ).asNumber() == 3
+				    && panes.at( 1 ).get( "namedView" ).asString() == "cam",
+					"MONEY ASSERTION T2/T4: read_viewport serializes LastRender "
+					"orthogonally to kind 3 and the exact named scene-camera reference" );
 			}
 
 			// Downscaled read_viewport (maxEdge = 16 -> dims <= 16).

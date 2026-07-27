@@ -285,6 +285,11 @@ struct ContentView: View {
                     // mirroring the chip's own clear path.
                     .onChange(of: viewportLayout) { _, newLayout in
                         if newLayout != .single {
+                            // ViewportView owns the sole sceneTime ->
+                            // native scrub observer. Leaving Single removes
+                            // that view, so retire its playback task and close
+                            // the native scrub composite before N-up appears.
+                            viewModel.stopPreviewPlay()
                             if viewModel.activeRegion != nil {
                                 vb.clearInteractiveRegion()
                                 viewModel.activeRegion = nil
@@ -352,6 +357,15 @@ struct ContentView: View {
                         onSelectionMayHaveChanged: { propertyRefresh += 1 }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onChange(of: viewModel.reverseSelectEpoch) { _, _ in
+                        // External-review P2 (2026-07-22): jump-to-definition
+                        // (and reverse source-select) bump reverseSelectEpoch
+                        // but render no frame.  The single-viewport branch
+                        // above observes it; the N-up branch must too, else the
+                        // bridge selection changes while the Inspector/Outliner
+                        // stay stale in TwoH / OnePlusTwo / Quad layouts.
+                        propertyRefresh &+= 1
+                    }
                 }
             } else if viewModel.renderState == .loading {
                 // Scene load in flight — RenderImageView carries the

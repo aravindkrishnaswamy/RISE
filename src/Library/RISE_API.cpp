@@ -7354,7 +7354,43 @@ namespace RISE
 
 	void RISE_API_DestroySceneEditController( SceneEditController* p )
 	{
+		if( !p ) return;
+		if( p->IsRawDestructionInProgress() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: a raw destructor already owns this controller; recursive destruction is rejected." );
+			return;
+		}
+		if( p->IsInLastRenderSinkCallbackOnThisThread() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: destruction from a Last Render sink callback/final release is rejected; return from the callout and destroy from the owner thread." );
+			return;
+		}
+		if( p->IsInDirtyChangedCallbackOnThisThread() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: destruction from a dirty-changed callback/copy finalizer is rejected; return from the callback and destroy from the owner thread." );
+			return;
+		}
+		// Reserve BOTH preparation and the eventual delete before entering any
+		// drain/listener wait.  A dirty callback may call Destroy while an owner
+		// is waiting for it; only the lifecycle claimant may proceed to delete.
+		if( !p->PrepareForDestructionForDelete() ) return;
 		delete p;
+	}
+
+	bool RISE_API_SceneEditController_PrepareForDestruction(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->PrepareForDestruction();
+	}
+
+	bool RISE_API_SceneEditController_FinalizeOpenInteractions(
+		SceneEditController* p )
+	{
+		return p && p->FinalizeOpenInteractions();
 	}
 
 	bool RISE_API_SceneEditController_Start( SceneEditController* p )
@@ -7699,6 +7735,24 @@ namespace RISE
 		return p->GetPaneRenderMode( pane );
 	}
 
+	bool RISE_API_SceneEditController_SetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int source )
+	{
+		if( !p || source < 0 || source > 1 ) return false;
+		return p->SetPaneContentSource(
+			pane,
+			static_cast<SceneEditController::PaneContentSource>( source ) );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int* out )
+	{
+		if( !p || !out || pane >= SceneEditController::kViewportPaneCount )
+			return false;
+		*out = static_cast<int>( p->GetPaneContentSource( pane ) );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_OnPanePointerDown(
 		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
 	{
@@ -7761,6 +7815,13 @@ namespace RISE
 	{
 		if( !p ) return false;
 		return p->SetPaneVantageSceneCamera( pane );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneVantageSceneCameraNamed( pane, name );
 	}
 
 	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
@@ -7879,22 +7940,19 @@ namespace RISE
 	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p )
 	{
 		if( !p ) return false;
-		p->OnTimeScrubBegin();
-		return true;
+		return p->OnTimeScrubBegin();
 	}
 
 	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t )
 	{
 		if( !p ) return false;
-		p->OnTimeScrub( t );
-		return true;
+		return p->OnTimeScrub( t );
 	}
 
 	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p )
 	{
 		if( !p ) return false;
-		p->OnTimeScrubEnd();
-		return true;
+		return p->OnTimeScrubEnd();
 	}
 
 	bool RISE_API_SceneEditController_BeginPropertyScrub( SceneEditController* p )
@@ -8270,6 +8328,42 @@ namespace RISE
 	{
 		if( !p || idx >= p->PropertyCount() ) return false;
 		CopyToBuf( p->PropertyUnitLabel( idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyJumpTarget(
+		SceneEditController* p, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen )
+	{
+		if( !p || !outCategory || !nameBuf || nameBufLen == 0 ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name;
+		if( !p->PropertyJumpTarget( idx, cat, name ) ) return false;
+		// External-review P2 (2026-07-22): the name is a LOOKUP KEY the shell
+		// feeds back to setSelection -- a silent truncation (CopyToBuf) would
+		// jump to a non-existent prefix.  Refuse rather than mis-navigate; the
+		// shells then hide the menu item.  (strlen, not String::size(), so the
+		// fit test is byte-exact against CopyToBuf's `i + 1 < bufLen` bound.)
+		if( strlen( name.c_str() ) >= nameBufLen ) return false;
+		*outCategory = static_cast<int>( cat );
+		CopyToBuf( name, nameBuf, nameBufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+		SceneEditController* p, int category, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen )
+	{
+		if( !p || !outCategory || !nameBuf || nameBufLen == 0 ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name;
+		if( !p->PropertyJumpTargetFor(
+				static_cast<SceneEditController::Category>( category ), idx, cat, name ) ) return false;
+		// Same truncation guard as the non-categorized twin above -- the name
+		// is a lookup key; refuse rather than jump to a truncated prefix.
+		if( strlen( name.c_str() ) >= nameBufLen ) return false;
+		*outCategory = static_cast<int>( cat );
+		CopyToBuf( name, nameBuf, nameBufLen );
 		return true;
 	}
 

@@ -33,6 +33,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 #include <cstring>
@@ -177,11 +178,15 @@ public:
     : mBlock( nil )
     , mController( nullptr )
     , mFanoutVFS( nullptr )
+    , mPresentGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
+    , mLastRenderGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
     {}
 
     virtual ~ViewportPreviewSink() {
-        // _block is __strong; nilling on dealloc lets ARC release it.
-        mBlock = nil;
+        // SetBlock publishes invalidation and callback removal atomically with
+        // respect to OutputImage's snapshot.  It also retires the old block
+        // after dropping the presentation mutex.
+        SetBlock( nil );
         // L5a round-4 — release our addref on the fan-out VFS.
         if( mFanoutVFS ) {
             mFanoutVFS->release();
@@ -190,12 +195,31 @@ public:
     }
 
     void SetBlock( RISEViewportImageBlock block ) {
-        mBlock = [block copy];
+        RISEViewportImageBlock incoming = [block copy];
+        RISEViewportImageBlock retired = nil;
+        {
+            std::lock_guard<std::mutex> lk( mPresentationMutex );
+            // Keep a strong owner so assigning mBlock cannot run the previous
+            // block target's final destructor while the mutex is held.
+            retired = mBlock;
+            mBlock = incoming;
+            mPresentGeneration->fetch_add( 1, std::memory_order_acq_rel );
+            mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+        }
+        retired = nil;
     }
 
     // Borrowed; the bridge keeps the controller alive for the sink's
     // lifetime.  Used to query IsCancelRequested at end-of-pass.
     void SetController( SceneEditController* c ) { mController = c; }
+
+    template<typename Fn>
+    bool RunPresentationTransition( Fn&& fn, bool invalidateLastOnSuccess ) {
+        const bool ok = fn();
+        if( ok && invalidateLastOnSuccess )
+            mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+        return ok;
+    }
 
     // L5a round-4 — fan-out target for EDR.  When set, every
     // OutputImage call ALSO drives `vfs->OutputImage(pImage, ...)`,
@@ -273,16 +297,65 @@ public:
         // L5a round-4 — fan into VFS first so EDR mode gets the
         // frame-complete observer fire (which drives the Metal
         // layer present).  Then run the legacy NSImage path.
-        if( mFanoutVFS ) {
+        // Last Render is a retained immutable image, not a live rasterizer
+        // frame-store completion.  Sending its sentinel frame through the
+        // interactive VFS would synchronously convert/present it here and
+        // defeat the background legacy-image path below (and could overwrite
+        // a newer interactive source).  Pane 0 receives the same Last Render
+        // image through its normal block, just like secondary panes.
+        if( mFanoutVFS && frame != SceneEditController::kLastRenderSinkFrame ) {
             mFanoutVFS->OutputImage( pImage, pRegion, frame );
         }
-        BlitWholeAndDispatch( pImage );
+        RISEViewportImageBlock block = nil;
+        const std::shared_ptr<std::atomic<unsigned long long>> generationState =
+            mPresentGeneration;
+        unsigned long long generation = 0;
+        {
+            // Callback replacement and its invalidation ticket are one
+            // publication.  A pass snapshots either the complete old pair or
+            // the complete new pair, never a callback from one generation and
+            // a ticket from the other.
+            std::lock_guard<std::mutex> lk( mPresentationMutex );
+            block = mBlock;
+            if( !block ) return;
+            generation = generationState->load( std::memory_order_acquire );
+        }
+        if( frame == SceneEditController::kLastRenderSinkFrame ) {
+            // The controller's retained Last Render image is immutable and
+            // addref-owned for this delivery.  Keep one reference for the
+            // background conversion so selecting a 4K frame returns to the
+            // UI immediately.  Ordinary interactive buffers remain on the
+            // established synchronous capture path because rasterizers may
+            // reuse them as soon as OutputImage returns.
+            pImage.addref();
+            const IRasterImage* image = &pImage;
+            const std::shared_ptr<std::atomic<unsigned long long>> lastRenderState =
+                mLastRenderGeneration;
+            const unsigned long long lastRenderGeneration =
+                lastRenderState->fetch_add( 1, std::memory_order_acq_rel ) + 1;
+            dispatch_async(
+                dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ), ^{
+                    BlitWholeAndDispatch(
+                        *image, block, generationState, generation,
+                        lastRenderState, lastRenderGeneration );
+                    image->release();
+                } );
+        } else {
+            // Preserve every interactive frame, but supersede any older
+            // background Last Render conversion for this pane.
+            mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+            BlitWholeAndDispatch(
+                pImage, block, generationState, generation, nullptr, 0 );
+        }
     }
 
 private:
     __strong RISEViewportImageBlock                mBlock;
+    std::mutex                                      mPresentationMutex;
     SceneEditController*                            mController;   // borrowed
     Implementation::ViewportFrameStore*             mFanoutVFS;    // strong (addref'd in SetFanoutVFS)
+    std::shared_ptr<std::atomic<unsigned long long>> mPresentGeneration;
+    std::shared_ptr<std::atomic<unsigned long long>> mLastRenderGeneration;
 
     static unsigned char Clamp8( double v ) {
         if( v <= 0.0 ) return 0;
@@ -290,9 +363,21 @@ private:
         return static_cast<unsigned char>( v * 255.0 + 0.5 );
     }
 
-    void BlitWholeAndDispatch( const IRasterImage& img ) {
-        RISEViewportImageBlock block = mBlock;
-        if( !block ) return;
+    // The generation owners are intentionally passed by value.  The final
+    // presentation block runs after this helper returns, so capturing reference
+    // parameters here would leave it dereferencing caller stack storage.
+    static void BlitWholeAndDispatch(
+        const IRasterImage& img,
+        RISEViewportImageBlock block,
+        std::shared_ptr<std::atomic<unsigned long long>> generationState,
+        unsigned long long generation,
+        std::shared_ptr<std::atomic<unsigned long long>> lastRenderState,
+        unsigned long long lastRenderGeneration ) {
+        if( !block
+         || generationState->load( std::memory_order_acquire ) != generation
+         || ( lastRenderState
+           && lastRenderState->load( std::memory_order_acquire )
+              != lastRenderGeneration ) ) return;
 
         const unsigned int W = img.GetWidth();
         const unsigned int H = img.GetHeight();
@@ -340,20 +425,38 @@ private:
             // per tile, which was thousands of times).
             unsigned char* p = rep.bitmapData;
             for( unsigned int y = 0; y < H; ++y ) {
+                // A source switch can invalidate an 8K Last Render while
+                // conversion is running.  Stop at the next scanline instead
+                // of burning the remaining CPU/memory bandwidth on pixels
+                // that are guaranteed never to present.
+                if( generationState->load( std::memory_order_acquire ) != generation
+                 || ( lastRenderState
+                   && lastRenderState->load( std::memory_order_acquire )
+                      != lastRenderGeneration ) ) return;
                 for( unsigned int x = 0; x < W; ++x ) {
                     RISEColor c = img.GetPEL( x, y );
                     *p++ = Clamp8( c.base.r );
                     *p++ = Clamp8( c.base.g );
                     *p++ = Clamp8( c.base.b );
-                    *p++ = 255;
+                    *p++ = ViewportShellDisplayAlpha8( c );
                 }
             }
+
+            if( generationState->load( std::memory_order_acquire ) != generation
+             || ( lastRenderState
+               && lastRenderState->load( std::memory_order_acquire )
+                  != lastRenderGeneration ) )
+                return;
 
             NSImage* nsImg = [[NSImage alloc] initWithSize:NSMakeSize(W, H)];
             [nsImg addRepresentation:rep];
 
             dispatch_async( dispatch_get_main_queue(), ^{
-                block( nsImg );
+                if( generationState->load( std::memory_order_acquire ) == generation
+                 && ( !lastRenderState
+                   || lastRenderState->load( std::memory_order_acquire )
+                      == lastRenderGeneration ) )
+                    block( nsImg );
             });
         }
     }
@@ -660,30 +763,29 @@ private:
 }
 
 - (void)releaseLivePreview {
-    if (_previewSink) {
-        _previewSink->release();
-        _previewSink = nullptr;
-    }
+    // Detach every bridge-visible slot before the corresponding final release.
+    // A sink's callback target can run arbitrary capture destructors as the
+    // block is cleared; if one reenters setImageBlock:/setPaneImageBlock:, it
+    // must observe no live sink rather than mutate an object mid-destruction.
+    ViewportPreviewSink* retiredPreviewSink = _previewSink;
+    _previewSink = nullptr;
+    if (retiredPreviewSink) retiredPreviewSink->release();
     // N-up: release panes 1-3's sinks alongside pane 0's.  index 0 is
     // always null (see the ivar's doc) so the loop starts at 1.
     for (unsigned int i = 1; i < 4; ++i) {
-        if (_paneSinks[i]) {
-            _paneSinks[i]->release();
-            _paneSinks[i] = nullptr;
-        }
+        ViewportPreviewSink* retiredPaneSink = _paneSinks[i];
+        _paneSinks[i] = nullptr;
+        if (retiredPaneSink) retiredPaneSink->release();
     }
-    if (_interactiveRasterizer) {
-        _interactiveRasterizer->release();
-        _interactiveRasterizer = nullptr;
-    }
-    if (_polishCaster) {
-        _polishCaster->release();
-        _polishCaster = nullptr;
-    }
-    if (_caster) {
-        _caster->release();
-        _caster = nullptr;
-    }
+    IRasterizer* retiredRasterizer = _interactiveRasterizer;
+    _interactiveRasterizer = nullptr;
+    if (retiredRasterizer) retiredRasterizer->release();
+    IRayCaster* retiredPolishCaster = _polishCaster;
+    _polishCaster = nullptr;
+    if (retiredPolishCaster) retiredPolishCaster->release();
+    IRayCaster* retiredCaster = _caster;
+    _caster = nullptr;
+    if (retiredCaster) retiredCaster->release();
 }
 
 - (void)dealloc {
@@ -803,6 +905,11 @@ private:
     // real Stop().
     RISE_API_SceneEditController_StopInteractive(_controller);
     _ownsRunning = NO;
+}
+
+- (BOOL)finalizeOpenInteractions {
+    return _controller
+        && RISE_API_SceneEditController_FinalizeOpenInteractions(_controller);
 }
 
 - (void)scaleFilmToFitSurfaceW:(NSUInteger)surfaceW
@@ -1119,8 +1226,13 @@ private:
 
 - (BOOL)setViewportRenderMode:(NSString *)name {
     if (!_controller || !name) return NO;
-    return RISE_API_SceneEditController_SetViewportRenderMode(
-        _controller, [name UTF8String]) ? YES : NO;
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetViewportRenderMode(
+            _controller, [name UTF8String]);
+    };
+    return ( _previewSink
+        ? _previewSink->RunPresentationTransition( apply, true ) : apply() )
+        ? YES : NO;
 }
 
 #pragma mark - Viewport X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis")
@@ -1148,9 +1260,15 @@ private:
     return static_cast<RISEViewportLayout>(out);
 }
 
-- (void)setViewportLayout:(RISEViewportLayout)layout {
-    if (!_controller) return;
-    RISE_API_SceneEditController_SetViewportLayout(_controller, static_cast<int>(layout));
+- (BOOL)applyViewportLayout:(RISEViewportLayout)layout {
+    if (!_controller) return NO;
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetViewportLayout(
+            _controller, static_cast<int>(layout));
+    };
+    return ( layout == RISEViewportLayoutSingle && _previewSink
+        ? _previewSink->RunPresentationTransition( apply, true ) : apply() )
+        ? YES : NO;
 }
 
 - (NSUInteger)primaryPane {
@@ -1174,14 +1292,57 @@ private:
 
 - (BOOL)setPaneRenderMode:(NSUInteger)pane name:(NSString *)name {
     if (!_controller || !name) return NO;
-    return RISE_API_SceneEditController_SetPaneRenderMode(
-        _controller, static_cast<unsigned int>(pane), [name UTF8String]) ? YES : NO;
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetPaneRenderMode(
+            _controller, static_cast<unsigned int>(pane), [name UTF8String]);
+    };
+    ViewportPreviewSink* sink = pane == 0 ? _previewSink
+        : ( pane < 4 ? _paneSinks[pane] : nullptr );
+    return ( sink ? sink->RunPresentationTransition( apply, true ) : apply() )
+        ? YES : NO;
+}
+
+- (RISEViewportPaneContentSource)paneContentSource:(NSUInteger)pane {
+    if (!_controller) return RISEViewportPaneContentInteractive;
+    int source = 0;
+    if (!RISE_API_SceneEditController_GetPaneContentSource(
+            _controller, static_cast<unsigned int>(pane), &source)) {
+        return RISEViewportPaneContentInteractive;
+    }
+    return source == 1 ? RISEViewportPaneContentLastRender
+                       : RISEViewportPaneContentInteractive;
+}
+
+- (BOOL)setPaneContentSource:(NSUInteger)pane source:(RISEViewportPaneContentSource)source {
+    if (!_controller) return NO;
+    // Entering Last Render synchronously calls the sink and advances its own
+    // Last Render ticket.  Leaving it cancels that ticket only if the core
+    // transition succeeds.  The core callback/start barrier orders old frozen
+    // delivery against the source change; the atomic ticket then cancels any
+    // conversion the callback already launched without a cross-layer lock.
+    const auto apply = [&]() -> bool {
+        return RISE_API_SceneEditController_SetPaneContentSource(
+            _controller, static_cast<unsigned int>(pane),
+            static_cast<int>(source));
+    };
+    ViewportPreviewSink* sink = pane == 0 ? _previewSink
+        : ( pane < 4 ? _paneSinks[pane] : nullptr );
+    const bool invalidateLast = source == RISEViewportPaneContentInteractive;
+    return ( sink
+        ? sink->RunPresentationTransition( apply, invalidateLast ) : apply() )
+        ? YES : NO;
 }
 
 - (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane {
     if (!_controller) return NO;
     return RISE_API_SceneEditController_SetPaneVantageSceneCamera(
         _controller, static_cast<unsigned int>(pane)) ? YES : NO;
+}
+
+- (BOOL)setPaneVantageSceneCameraNamed:(NSUInteger)pane name:(NSString *)name {
+    if (!_controller || !name) return NO;
+    return RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+        _controller, static_cast<unsigned int>(pane), [name UTF8String]) ? YES : NO;
 }
 
 - (BOOL)setPaneVantageNamedView:(NSUInteger)pane name:(NSString *)name {
@@ -1205,19 +1366,17 @@ private:
 - (BOOL)getPaneVantage:(NSUInteger)pane
                    kind:(RISEViewportVantageKind *)outKind
               namedView:(NSString * _Nullable * _Nullable)outNamedView {
-    if (outNamedView) *outNamedView = @"";
     if (!_controller || !outKind) return NO;
-    int kind = 0;
-    char nm[256] = {0};
-    if (!RISE_API_SceneEditController_GetPaneVantage(
-            _controller, static_cast<unsigned int>(pane), &kind, nm, sizeof(nm))) {
+    SceneEditController::PaneVantageKind kind;
+    String referencedName;
+    if (!_controller->GetPaneVantage(
+            static_cast<unsigned int>(pane), kind, referencedName)) {
         return NO;
     }
     *outKind = static_cast<RISEViewportVantageKind>(kind);
     if (outNamedView) {
-        if (NSString* decoded = NamedViewDisplayName(nm)) {
-            *outNamedView = decoded;
-        }
+        NSString* decoded = NamedViewDisplayName(referencedName.c_str());
+        *outNamedView = decoded ? decoded : @"";
     }
     return YES;
 }
@@ -1319,19 +1478,19 @@ private:
 
 #pragma mark - Time scrubber
 
-- (void)scrubTimeBegin {
-    if (!_controller) return;
-    RISE_API_SceneEditController_OnTimeScrubBegin(_controller);
+- (BOOL)scrubTimeBegin {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_OnTimeScrubBegin(_controller) ? YES : NO;
 }
 
-- (void)scrubTime:(double)t {
-    if (!_controller) return;
-    RISE_API_SceneEditController_OnTimeScrub(_controller, t);
+- (BOOL)scrubTime:(double)t {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_OnTimeScrub(_controller, t) ? YES : NO;
 }
 
-- (void)scrubTimeEnd {
-    if (!_controller) return;
-    RISE_API_SceneEditController_OnTimeScrubEnd(_controller);
+- (BOOL)scrubTimeEnd {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_OnTimeScrubEnd(_controller) ? YES : NO;
 }
 
 - (void)beginPropertyScrub {
@@ -1565,12 +1724,11 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     const int catInt = static_cast<int>(category);
     const unsigned int n = RISE_API_SceneEditController_CategoryEntityCount(_controller, catInt);
     NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:n];
-    char nameBuf[128];
     for (unsigned int i = 0; i < n; ++i) {
-        if (RISE_API_SceneEditController_CategoryEntityName(_controller, catInt, i, nameBuf, sizeof(nameBuf))) {
-            NSString *s = [NSString stringWithUTF8String:nameBuf];
-            if (s) [out addObject:s];
-        }
+        const String name = _controller->CategoryEntityName(
+            static_cast<SceneEditController::Category>(catInt), i);
+        NSString *s = NamedViewDisplayName(name.c_str());
+        if (s) [out addObject:s];
     }
     return out;
 }
@@ -1600,6 +1758,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         case 8: return RISEViewportCategoryAnimation;
         case 9: return RISEViewportCategorySceneVariant;
         case 10: return RISEViewportCategoryPainter;
+        case 11: return RISEViewportCategoryGeometry;   // GUI redesign 2026-07-22
         default: return RISEViewportCategoryNone;
     }
 }
@@ -1990,6 +2149,35 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (void)collapseSectionFor:(RISEViewportCategory)category {
     if (!_controller) return;
     RISE_API_SceneEditController_CollapseSection(_controller, (int)category);
+}
+
+- (BOOL)propertyJumpTargetAtIndex:(NSUInteger)idx
+                      outCategory:(RISEViewportCategory *)outCategory
+                          outName:(NSString * _Nullable * _Nonnull)outName {
+    if (outName) *outName = nil;
+    if (!_controller || !outCategory || !outName) return NO;
+    int cat = 0;
+    char nameBuf[128] = {0};
+    if (!RISE_API_SceneEditController_PropertyJumpTarget(
+            _controller, (unsigned int)idx, &cat, nameBuf, sizeof(nameBuf))) {
+        return NO;
+    }
+    NSString *n = [NSString stringWithUTF8String:nameBuf];
+    if (!n || n.length == 0) return NO;
+    // Same int->enum translation discipline as -selectionCategory (the
+    // bridge-enum-translation audit): default to None on an unknown int.
+    switch (cat) {
+        case 1:  *outCategory = RISEViewportCategoryCamera;   break;
+        case 3:  *outCategory = RISEViewportCategoryObject;   break;
+        case 4:  *outCategory = RISEViewportCategoryLight;    break;
+        case 6:  *outCategory = RISEViewportCategoryMaterial; break;
+        case 7:  *outCategory = RISEViewportCategoryMedium;   break;
+        case 10: *outCategory = RISEViewportCategoryPainter;  break;
+        case 11: *outCategory = RISEViewportCategoryGeometry; break;
+        default: return NO;
+    }
+    *outName = n;
+    return YES;
 }
 
 - (NSArray<RISEViewportProperty *> *)propertySnapshotFor:(RISEViewportCategory)category {

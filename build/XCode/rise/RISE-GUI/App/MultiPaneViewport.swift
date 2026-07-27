@@ -37,6 +37,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 // MARK: - Layout model
 
@@ -140,8 +141,15 @@ struct ViewportLayoutPicker: View {
         HStack(spacing: 2) {
             ForEach(ViewportLayoutOption.allCases) { option in
                 Button {
-                    layout = option
-                    bridge.viewportLayout = option.bridgeValue
+                    // Layout admission is fallible: a coordinated render
+                    // can start after the toolbar's enabled-state snapshot.
+                    // Publish the SwiftUI mirror only after the controller
+                    // accepts the mutation, otherwise ContentView would
+                    // construct panes the core never made visible and its
+                    // onChange handler would clear region state spuriously.
+                    if bridge.setViewportLayout(option.bridgeValue) {
+                        layout = option
+                    }
                 } label: {
                     LayoutGlyph(option: option, isSelected: layout == option)
                         .frame(width: 24, height: 18)
@@ -226,6 +234,11 @@ struct MultiPaneViewportView: View {
     /// round trip entirely is cheap and keeps this view's intent
     /// obvious).
     @State private var lastSurfacePixelSize: [Int: CGSize] = [:]
+    /// Most recently measured desired size, retained separately from the
+    /// accepted-size cache. PaneCanvasNSView suppresses duplicate geometry
+    /// callbacks, so a controller refusal must be retried explicitly when
+    /// interaction/render admission becomes available again.
+    @State private var desiredSurfacePixelSize: [Int: CGSize] = [:]
     // user-review P2#2: the "already presetted" guard lives on the view MODEL
     // (viewModel.panePresetApplied), NOT here as @State -- @State resets when
     // this view is torn down on a Single detour (Quad→Single→Quad), which
@@ -282,6 +295,29 @@ struct MultiPaneViewportView: View {
             // action needed).
             if !rendering { applyMultiViewModePreset() }
         }
+        .onChange(of: interactionEnabled) { _, enabled in
+            if enabled {
+                applyMultiViewModePreset()
+                retryPendingSurfaceSizes()
+            } else {
+                // The matching pointer-up will be gated below once interaction
+                // is disabled.  Persist/close the core gesture first so an
+                // agent or production render cannot inherit an open composite.
+                _ = bridge.finalizeOpenInteractions()
+            }
+        }
+        // A hosted/direct AgentSession render can own core admission without
+        // changing either of the app-level booleans above. PaneCanvas also
+        // suppresses duplicate geometry callbacks, so keep retrying only
+        // unapplied presets and desired sizes that have not yet been accepted.
+        // Successful panes become no-ops through panePresetApplied and
+        // lastSurfacePixelSize.
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            if interactionEnabled {
+                applyMultiViewModePreset()
+                retryPendingSurfaceSizes()
+            }
+        }
     }
 
     /// Multi-view mode PRESET (user request 2026-07-21).  Entering a
@@ -289,14 +325,16 @@ struct MultiPaneViewportView: View {
     /// not four copies of the beauty preview.  Per-slot roles are stable
     /// across layouts (a pane index means the same thing in TwoH and Quad):
     ///   slot 0 = beauty preview (the editing surface -- left untouched)
-    ///   slot 1 = wireframe  (topology)
-    ///   slot 2 = normals    (shading)
-    ///   slot 3 = depth      (Z range)
-    /// -- the classic modeling multi-view.  Applied ONLY to a visible
+    ///   slot 1 = wireframe (topology)
+    ///   slot 2 = normals   (surface orientation)
+    ///   slot 3 = depth     (camera-space distance)
+    /// -- a cheap geometry/debug spread.  Direct and Indirect remain
+    /// available as explicit pane choices, but making two path-traced
+    /// BeautyVariant pipelines the default doubled measured orbit latency
+    /// in Quad even on a tiny scene.  Applied ONLY to a visible
     /// secondary pane STILL showing "preview", so a pane the user has
     /// already switched keeps its choice across layout toggles.  (A future
-    /// "reset" affordance or alternate presets -- e.g. a lighting spread of
-    /// clay_lights / direct / indirect -- can layer on this; decision 2
+    /// "reset" affordance or alternate presets can layer on this; decision 2
     /// keeps the built-in set fixed for now.)
     private static let presetModeBySlot = ["preview", "wireframe", "normals", "depth"]
 
@@ -309,6 +347,10 @@ struct MultiPaneViewportView: View {
             // which the old current=="preview" gate wrongly re-clobbered on
             // every layout change).
             guard !viewModel.panePresetApplied.contains(pane) else { continue }
+            if bridge.paneContentSource(UInt(pane)).rawValue == 1 {
+                viewModel.panePresetApplied.insert(pane)
+                continue
+            }
             // A pane the core already persisted to a non-Preview mode is the
             // user's -- mark it applied and leave it alone.
             if bridge.paneRenderMode(UInt(pane)) != "preview" {
@@ -328,22 +370,44 @@ struct MultiPaneViewportView: View {
         if changed { chromeRefresh &+= 1 }
     }
 
+    private func applySurfaceSize(pane: Int, size: CGSize) {
+        guard lastSurfacePixelSize[pane] != size else { return }
+        // Cache only an accepted size. A render can acquire admission after
+        // PaneCanvas measured the view; keeping the desired value separate
+        // lets interactionEnabled's false->true transition retry even though
+        // PaneCanvasNSView suppresses duplicate measurements.
+        if bridge.setPaneSurfaceDims(
+            UInt(pane),
+            width: UInt(max(1, size.width)),
+            height: UInt(max(1, size.height))) {
+            lastSurfacePixelSize[pane] = size
+        }
+    }
+
+    private func retryPendingSurfaceSizes() {
+        for pane in layout.paneIndices {
+            guard let size = desiredSurfacePixelSize[pane] else { continue }
+            applySurfaceSize(pane: pane, size: size)
+        }
+    }
+
     // MARK: Pane cell
 
     @ViewBuilder
     private func paneCell(pane: Int, rect: CGRect) -> some View {
         let isPrimary = pane == primaryPane
+        let isLastRender = bridge.paneContentSource(UInt(pane)).rawValue == 1
         let image: NSImage? = pane == 0 ? viewModel.renderedImage : viewModel.panePreviewImages[pane]
 
         ZStack(alignment: .top) {
             PaneCanvas(
                 image: image,
-                cursor: interactionEnabled ? selectedTool.nsCursor : .arrow,
+                cursor: interactionEnabled && !isLastRender ? selectedTool.nsCursor : .arrow,
                 surfaceDimensionsProvider: { [weak bridge] in
                     bridge?.cameraSurfaceDimensions ?? .zero
                 },
                 onPointerDown: { p in
-                    guard interactionEnabled else { return false }
+                    guard interactionEnabled && !isLastRender else { return false }
                     let accepted = bridge.onPanePointerDown(UInt(pane), x: Double(p.x), y: Double(p.y))
                     // §7.8 decision 1 / the core's own promotion rule:
                     // re-read rather than assume — a navigation-tool
@@ -399,16 +463,13 @@ struct MultiPaneViewportView: View {
                     } else {
                         paneSize = pixelSize
                     }
-                    if lastSurfacePixelSize[pane] == paneSize { return }
-                    lastSurfacePixelSize[pane] = paneSize
-                    _ = bridge.setPaneSurfaceDims(
-                        UInt(pane),
-                        width:  UInt(max(1, paneSize.width)),
-                        height: UInt(max(1, paneSize.height)))
+                    desiredSurfacePixelSize[pane] = paneSize
+                    applySurfaceSize(pane: pane, size: paneSize)
                 }
             )
 
-            if isPrimary && selectedTool.category == .objectTransform && !isProductionRendering {
+            if isPrimary && !isLastRender
+                && selectedTool.category == .objectTransform && !isProductionRendering {
                 ViewportGizmoOverlay(
                     bridge: bridge,
                     refreshTrigger: gizmoRefreshTrigger,
@@ -425,12 +486,19 @@ struct MultiPaneViewportView: View {
                 isPrimary: isPrimary,
                 modes: viewModel.viewportRenderModes,
                 refreshToken: chromeRefresh,
+                onModeAccepted: {
+                    // A successful user choice owns this pane even if the
+                    // first-reveal preset was previously refused.  This
+                    // closes the timer-retry window for explicit Preview.
+                    viewModel.panePresetApplied.insert(pane)
+                },
                 onChanged: { chromeRefresh &+= 1 }
             )
             .disabled(!interactionEnabled)
         }
         .overlay(alignment: .topTrailing) {
-            if isPrimary && interactionEnabled && !isProductionRendering {
+            if isPrimary && !isLastRender
+                && interactionEnabled && !isProductionRendering {
                 // user-review P1-1: this overlay is on the PRIMARY pane cell;
                 // target that pane so nav actions move it, not pane 0.
                 ViewportNavOverlay(bridge: bridge, pane: UInt(pane),
@@ -473,9 +541,11 @@ private struct PaneChromeStrip: View {
     /// its pane's mode/vantage — the strip itself has no other signal
     /// that pane state changed (no push notifications from the core).
     let refreshToken: Int
+    let onModeAccepted: () -> Void
     let onChanged: () -> Void
 
     @State private var modeName: String = "preview"
+    @State private var contentSource = RISEViewportPaneContentSource(rawValue: 0)!
     @State private var vantageKind: RISEViewportVantageKind = .sceneCamera
     @State private var vantageNamedView: String = ""
 
@@ -500,6 +570,7 @@ private struct PaneChromeStrip: View {
 
     private func refresh() {
         modeName = bridge.paneRenderMode(UInt(pane))
+        contentSource = bridge.paneContentSource(UInt(pane))
         var kind: RISEViewportVantageKind = .sceneCamera
         var namedView: NSString? = nil
         if bridge.getPaneVantage(UInt(pane), kind: &kind, namedView: &namedView) {
@@ -509,17 +580,35 @@ private struct PaneChromeStrip: View {
     }
 
     private var activeModeTitle: String {
-        modes.first { $0.name == modeName }?.title ?? modeName
+        if contentSource.rawValue == 1 { return "Last Render" }
+        return modes.first { $0.name == modeName }?.title ?? modeName
     }
 
     private var modeMenu: some View {
         Menu {
+            Button {
+                let lastRender = RISEViewportPaneContentSource(rawValue: 1)!
+                if bridge.setPaneContentSource(UInt(pane), source: lastRender) {
+                    onModeAccepted()
+                }
+                onChanged()
+            } label: {
+                if contentSource.rawValue == 1 {
+                    Label("Last Render", systemImage: "checkmark")
+                } else {
+                    Text("Last Render")
+                }
+            }
+            .help("Show the most recent completed production or agent render")
+            Divider()
             ForEach(modes) { mode in
                 Button {
-                    _ = bridge.setPaneRenderMode(UInt(pane), name: mode.name)
+                    if bridge.setPaneRenderMode(UInt(pane), name: mode.name) {
+                        onModeAccepted()
+                    }
                     onChanged()
                 } label: {
-                    if mode.name == modeName {
+                    if contentSource.rawValue == 0 && mode.name == modeName {
                         Label(mode.title, systemImage: "checkmark")
                     } else {
                         Text(mode.title)
@@ -534,7 +623,7 @@ private struct PaneChromeStrip: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Pane render mode")
+        .help("Pane content")
     }
 
     private var vantageLabel: String {
@@ -542,6 +631,8 @@ private struct PaneChromeStrip: View {
         case .sceneCamera: return "Scene Camera"
         case .freeFly:     return "Free-Fly"
         case .namedView:   return vantageNamedView.isEmpty ? "Named View" : vantageNamedView
+        case .sceneCameraNamed:
+            return vantageNamedView.isEmpty ? "Scene Camera" : vantageNamedView
         @unknown default:  return "—"
         }
     }
@@ -556,6 +647,24 @@ private struct PaneChromeStrip: View {
                     Label("Scene Camera", systemImage: "checkmark")
                 } else {
                     Text("Scene Camera")
+                }
+            }
+            let sceneCameras = bridge.categoryEntities(.camera)
+            if pane != 0 && !sceneCameras.isEmpty {
+                Divider()
+                Section("Scene Cameras") {
+                    ForEach(sceneCameras, id: \.self) { name in
+                        Button {
+                            _ = bridge.setPaneVantageSceneCameraNamed(UInt(pane), name: name)
+                            onChanged()
+                        } label: {
+                            if vantageKind == .sceneCameraNamed && vantageNamedView == name {
+                                Label(name, systemImage: "checkmark")
+                            } else {
+                                Text(name)
+                            }
+                        }
+                    }
                 }
             }
             let names = bridge.namedViewNames

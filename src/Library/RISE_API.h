@@ -3441,8 +3441,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		                                   ///< Heterogeneous read-only)
 		SceneEditCategory_Animation  = 8,  ///< Named animations (Category::Animation)
 		SceneEditCategory_SceneVariant = 9,///< scene_variant overlays (Category::SceneVariant)
-		SceneEditCategory_Painter   = 10   ///< Painters (union of the IPainter + IScalarPainter
+		SceneEditCategory_Painter   = 10,  ///< Painters (union of the IPainter + IScalarPainter
 		                                   ///< managers; Category::Painter)
+		SceneEditCategory_Geometry  = 11   ///< Geometry (IGeometryManager; every "*_geometry" chunk;
+		                                   ///< Category::Geometry -- GUI redesign 2026-07-22)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -3460,8 +3462,36 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController** ppOut
 		);
 
-	//! Destroy a controller.  Stops the render thread first.
+	//! Destroy a controller.  The borrowed Job must still be alive (the same
+	//! lifetime contract as Create); pending interactions are finalized first.
+	//! The owner must first stop/join all ordinary external callers, as required
+	//! for any C++ object whose storage is about to be released; this function
+	//! quiesces controller-owned workers/callbacks, not unknown caller threads.
+	//! A call re-entered synchronously from a Last Render sink callback or final
+	//! controller-owned sink release is rejected: the callout may be inside its
+	//! own drain or a controller mutation, and asynchronous delete would violate
+	//! the synchronous lifetime contract for borrowed sinks.  Return from the
+	//! callout and call Destroy from the owner thread.  Dirty-changed callback
+	//! invocation and copied-target finalization have the same rule.  A
+	//! concurrent/re-entrant call after a raw C++ destructor has begun is
+	//! likewise rejected.
 	void RISE_API_DestroySceneEditController( SceneEditController* p );
+
+	//! Explicit terminal Job-alive teardown preparation.  Detaches callbacks,
+	//! stops the controller, and is safe to call redundantly.  Returns false if
+	//! pending interaction persistence fails or if called from a Last Render or
+	//! dirty-changed callback/final release that cannot synchronously tear down
+	//! its owner.  Success permanently closes mutation admission;
+	//! DestroySceneEditController calls it automatically.  The owner must first
+	//! stop/join ordinary external callers; Prepare arbitrates controller-owned
+	//! work and lifecycle calls but does not grant concurrent-use-after-free.
+	bool RISE_API_SceneEditController_PrepareForDestruction(
+		SceneEditController* p );
+
+	//! Finalize controller-owned pointer/time/property interactions whose
+	//! platform End event may have been dropped.
+	bool RISE_API_SceneEditController_FinalizeOpenInteractions(
+		SceneEditController* p );
 
 	//! Start the controller's render thread.
 	bool RISE_API_SceneEditController_Start( SceneEditController* p );
@@ -3734,10 +3764,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! -------- N-up multi-viewport pane model (RENDER_MODES.md §7, P3a) ----
 	//! Layout values: 0 Single, 1 TwoH, 2 OnePlusTwo, 3 Quad (the
 	//! controller's ViewportLayout enum).  Vantage kinds: 0 SceneCamera,
-	//! 1 FreeFly, 2 NamedView.  Every function is fail-closed per the
-	//! controller contract (§7.4): unknown pane / hidden pane / render owns
-	//! scene => false, nothing mutated.  EXISTING single-viewport calls are
-	//! unchanged and alias pane 0.
+	//! 1 FreeFly, 2 NamedView, 3 SceneCameraNamed (secondary panes only;
+	//! pane 0 refuses kind 3).  Mutating vantage/render-mode calls are
+	//! fail-closed per the controller contract (§7.4): unknown or hidden
+	//! pane / render owns scene => false, nothing mutated.  Read-only getters
+	//! can inspect retained hidden-pane state, and SetPaneSink has its
+	//! documented hidden-pane pre-wiring exception below.  EXISTING
+	//! single-viewport calls are unchanged and alias pane 0.
 	//!
 	//! SCOPE NOTE (review-r2, CLOSED by slice 3): every §7.4-specified
 	//! entry now ships -- dims/sinks (display half) and the pane-indexed
@@ -3763,6 +3796,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! _GetViewportRenderMode's fail-closed default).
 	const char* RISE_API_SceneEditController_GetPaneRenderMode(
 		SceneEditController* p, unsigned int pane );
+
+	//! T4 pane content source. Stable wire values: 0 Interactive,
+	//! 1 LastRender.  LastRender is not a render-mode registry row.
+	bool RISE_API_SceneEditController_SetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int source );
+	bool RISE_API_SceneEditController_GetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int* out );
 
 	//! P3a slice 3: pane render-surface dims (the GUI's pane rect); 0/0
 	//! resets to film dims.  Fail-closed per the block contract.
@@ -3812,10 +3852,15 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
 		SceneEditController* p, unsigned int pane );
+	//! Bind a secondary pane to one manager-registered scene camera.
+	//! Pane 0 refuses: it remains the active-camera editing surface.
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+		SceneEditController* p, unsigned int pane, const char* name );
 	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
 		SceneEditController* p, unsigned int pane, const char* name );
-	//! `outKind` receives the vantage kind; `outNamedView`/`cap` receive a
-	//! NUL-terminated named-view name ("" unless kind==NamedView).  Returns
+	//! `outKind` receives the stable wire kind (0 SceneCamera / 1 FreeFly /
+	//! 2 NamedView / 3 SceneCameraNamed); `outNamedView`/`cap` receive the
+	//! NUL-terminated referenced name for kinds 2/3 ("" otherwise).  Returns
 	//! false on null controller / null outs / invalid pane / cap==0.
 	bool RISE_API_SceneEditController_GetPaneVantage(
 		SceneEditController* p, unsigned int pane, int* outKind,
@@ -3830,7 +3875,18 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_OnPointerUp(
 		SceneEditController* p, Scalar x, Scalar y );
 
-	//! Time scrubber.
+	//! Time scrubber.  RETURN SEMANTICS (unified render/editor admission, 2026-07):
+	//! `false` is a REFUSAL, not only a null-controller guard.  All three refuse
+	//! while a coordinated/agent render holds the interactive-admission gate
+	//! (agent-render-blocks-interactive); OnTimeScrub additionally refuses while a
+	//! production render owns the scene (render-owns-scene) and when the
+	//! SetSceneTime edit itself is refused by the editor.  A refused call performs
+	//! NO mutation and opens/closes NO undo composite -- the shell should simply
+	//! drop the gesture event (and may retry on the next event; the gates clear
+	//! when the render completes or is cancelled).  Bracketing is self-healing
+	//! across refusals: a Begin whose End was refused leaves its composite to be
+	//! reconciled by the next successful Begin (orphan-composite guard), so shells
+	//! need no bracketing bookkeeping around refusals.
 	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p );
 	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t );
 	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p );
@@ -3968,6 +4024,17 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Caller is responsible for `userData` lifetime — typical pattern
 	//! is __bridge_retained / CFBridgingRelease around an Obj-C block
 	//! or an objc_storeWeak slot.
+	//!
+	//! THREADING CONTRACT (document-first phase 1 + round-5, 2026-07-22):
+	//! the callback is delivered from a post-mutation DRAIN on whichever
+	//! thread drove the edit, with NO controller lock held, and transitions
+	//! are COALESCED -- it reports the CURRENT hasUnsavedChanges whenever it
+	//! differs from the last report; a clean->dirty->clean burst between
+	//! drains produces no call (key on the VALUE, never count calls).
+	//! Re-entering the controller from the callback is deadlock-hardened
+	//! (single-deliverer drain + snapshot getters) but still discouraged --
+	//! marshal to your own event loop / dispatch queue (both in-tree shells
+	//! do: dispatch_async(main) on macOS, Qt::QueuedConnection on Windows).
 	typedef void (*RISE_API_DirtyChangedFn)( void* userData, int hasUnsavedChanges );
 	bool RISE_API_SceneEditController_SetDirtyChangedCallback(
 		SceneEditController* p,
@@ -4061,6 +4128,23 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_PropertyUnitLabel(
 		SceneEditController* p, unsigned int idx,
 		char* buf, unsigned int bufLen );
+
+	//! Jump-to-definition (GUI redesign, 2026-07-22): for a Reference-kind
+	//! row whose value names another element, resolve which UI category
+	//! that element lives in (probing the descriptor's declared target
+	//! categories against the live managers, first-wins).  On success
+	//! writes the SceneEditCategory to `outCategory` and the element name
+	//! to `nameBuf`, so the shell can _SetSelection(outCategory, name) --
+	//! the "right-click a reference -> jump to its definition" affordance.
+	//! False for non-Reference rows, empty values, or dangling references
+	//! (shells grey the menu item).  The ForCategory twin indexes the
+	//! per-category snapshot, same convention as every accessor pair here.
+	bool RISE_API_SceneEditController_PropertyJumpTarget(
+		SceneEditController* p, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen );
+	bool RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+		SceneEditController* p, int category, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen );
 
 	//! Apply an edited value.  Triggers a re-render via the
 	//! cancel-restart loop.  Returns false on parse failure,

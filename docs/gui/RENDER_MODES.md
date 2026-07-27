@@ -459,12 +459,14 @@ per-pass attachment the preview one gets), `EnsureInteractiveFrameStore_`
 (now takes `activeRast` as an explicit parameter instead of always targeting
 `mInteractiveRasterizer`), the `SetViewportCameraOverride` free-fly wiring
 (`PixelBasedRasterizerHelper` downcast), and the terminal `RasterizeScene`
-call. The pre-pass config block in `RenderLoop` that calls
-`mInteractiveImpl->SetPreviewDenoiseMode`/`SetSampleCount` is **skipped
-entirely** while a variant mode is active — those are InteractivePelRasterizer-
-specific knobs for a rasterizer this pass isn't driving; a variant pass is a
-plain full pass at its fixed config, and the polish/denoise state machine
-(`mPolishState`) is left running as a no-op against `mVariantRasterizer` so
+call. The `InteractivePelRasterizer`-specific preview configuration remains
+skipped while a variant mode is active because that is not the rasterizer being
+driven. Instead, the mint block calls `ConfigureBeautyVariantPass` on the
+active variant: pointer, property, and timeline gestures render at 1 SPP with
+OIDN suppressed; the release/idle mint restores the registry-authored SPP and
+OIDN. Starting a new gesture also suppresses the obsolete release quantum's
+non-cancel-interruptible OIDN tail before cancellation. The polish state
+machine (`mPolishState`) remains a no-op against `mVariantRasterizer`, so
 leaving the mode later finds it consistent.
 
 ### Resolution-divisor pin
@@ -635,13 +637,17 @@ visible subset.  Hidden panes keep their configuration (toggling `2×2 → 1 →
 struct ViewportPane {
     // --- configuration (UI-mutated under mMutex + park, like every
     //     viewport setter today) ---
+    contentSource : Interactive | LastRender
     mode          : registry wire name (default "preview")
-    vantageKind   : SceneCamera | FreeFly | NamedView
-    pose          : CameraSnapshot        // FreeFly, or snapshot fallback
+    vantageKind   : SceneCamera | FreeFly | NamedView | SceneCameraNamed
+    pose          : CameraSnapshot        // FreeFly, or named-target fallback
     namedViewRef  : string                // NamedView: re-resolved via
                                           // FindNamedViewPose each pass;
                                           // falls back to `pose` snapshot
                                           // if the view was deleted
+    sceneCameraRef: string                // SceneCameraNamed: re-resolved from
+                                          // the camera manager on reconcile;
+                                          // falls back to `pose` if deleted
     // --- render plumbing (render-thread-owned; swapped only while parked) ---
     overrideCamera   : ICamera*      // null => scene active camera
     frameStore       : FrameStore*   // per-pane canonical HDR buffer
@@ -657,13 +663,45 @@ Layouts: `Single` (pane 0), `TwoH` (0|1), `OnePlusTwo` (0 big + 1,2 stacked),
 `Quad` (0-3).  Pane rects are fixed fractions computed GUI-side; the C++ core
 only needs per-pane pixel dims (`SetPaneSurfaceDims`).  **Primary** must be
 visible; when a layout shrink hides the primary, primary falls back to pane 0.
-New-in-layout panes default to `{mode: preview, vantage: SceneCamera}`.
+The core initializes every pane to `{mode: preview, vantage: SceneCamera}`.
+On a pane's first successful reveal, both shells apply the session-local
+applied-once spread: pane 1 = `wireframe`, pane 2 = `normals`, pane 3 =
+`depth`.  `OnePlusTwo` therefore reveals the first two roles and `Quad`
+adds the third.  These traversal-only diagnostic modes keep initial N-up
+work responsive; denoised path-traced Direct/Indirect remain explicit pane
+choices.  A pane with persisted non-Preview state is already
+user-owned, and after the first successful preset application every explicit
+choice—including an explicit return to `preview`—survives layout toggles.
+
+#### Shared Direct + Indirect transport (shipped 2026-07-26)
+
+When visible dirty `direct` and `indirect` panes use the same live
+`SceneCamera`, the scheduler traces the higher-resolution Indirect pane once.
+The RGB path integrator returns both its normal indirect-only estimator and the
+camera-vertex emission/NEE terms that estimator suppresses.  The latter form a
+Direct companion image, so the Direct pane needs no second camera/path/shadow
+ray pass.  A smaller Direct pane is extracted from the companion with
+center-sampled nearest-neighbour (NNB) subsampling; an equal-size pane is an
+identity extraction.  Each output is OIDN-denoised separately when the settled
+BeautyVariant policy enables denoising.  During a live gesture both outputs use
+the shared 1-SPP/no-OIDN pass described in §6.
+
+Sharing is deliberately fail-closed.  It requires the same aspect ratio, the
+same mode resolution divisor, and Direct dimensions no larger than Indirect.
+Named-view, named-camera, and FreeFly panes render independently because equal
+names do not prove equal private fallback/override camera snapshots after a
+target is deleted or replaced.  Different aspect ratios and a larger Direct
+target also fall back to independent passes.  The companion seam is RGB/Pel
+only because the desktop BeautyVariant factory is Pel-only; the NM and HWSS
+integrator variants are intentionally unchanged.
 
 Vantage semantics: a `SceneCamera` pane tracks the live active camera (edits
-to it re-render the pane).  Tumbling in a SECONDARY pane converts that pane
-to `FreeFly` seeded from what it was showing — the per-pane generalization
-of the existing enter-free-fly rule, and like it, never mutates the scene
-camera.  **Pane 0 retains the classic direct-camera-edit navigation** (orbit
+to it re-render the pane).  Tumbling a `SceneCamera` SECONDARY pane converts
+that pane to `FreeFly` seeded from what it was showing — the per-pane
+generalization of the existing enter-free-fly rule, and like it, never mutates
+the active scene camera.  `NamedView` and `FreeFly` secondary panes keep that
+same private-pose navigation.  **Pane 0 retains the classic
+direct-camera-edit navigation** (orbit
 / pan / zoom / roll mutate the scene camera through the edit/undo system,
 exactly as the single viewport does today) — pane 0 IS the legacy-alias
 editing surface, and silently converting its navigation to free-fly would
@@ -671,7 +709,53 @@ break the established orbit-edits-camera workflow both GUIs are built on.
 (Implementation-time refinement, 2026-07-21: the original text said "ANY
 pane"; amended when the pointer-routing implementation surfaced the
 back-compat conflict.)  A `NamedView` pane re-resolves by name so updating
-the view updates the pane.
+the view updates the pane.  A `SceneCameraNamed` pane binds a secondary pane
+to one manager-registered camera without changing the active camera: it
+re-resolves that camera by name during reconcile, and retains its binding-time
+snapshot as an honest deletion fallback.  A later same-name creation wakes the
+pane and resumes live tracking.  ONB pinholes are represented by an exactly
+ray-equivalent ordinary-pinhole snapshot (realized basis W/V becomes
+lookAt/up), so the supported `onb_pinhole_camera` is not excluded.  Its camera
+tools use that equivalent pose for the shared edit math, fold the result back
+to an explicit live basis, and persist realized W/V into the ONB chunk; undo
+restores the exact prior frame.  Capturing a manager camera follows the same
+cancel-and-park discipline as cloning because preview film resizing regenerates
+manager cameras during a pass.  Pane 0
+refuses kind 3 because pane 0 is the active-camera editing alias; selecting its
+scene camera remains the existing `SetActiveCamera` flow.  Camera navigation
+in a live `SceneCameraNamed` secondary pane is the deliberate exception to the
+private-pose rule: orbit / pan / zoom / roll remain kind 3 and edit the bound
+manager camera by its recorded name through the normal edit/composite/undo
+path, without calling `SetActiveCamera`.  Every pane bound to that same name is
+invalidated.  Undo/redo continue resolving the recorded name, even if the
+active camera changes later.  If the name no longer resolves, its retained
+snapshot remains visible but camera navigation refuses the edit rather than
+falling through to the active camera; a same-name recreation makes navigation
+live again.
+
+Content-source semantics: `Interactive` is the default and uses the render
+mode / vantage configuration above.  `LastRender` is an orthogonal pane
+content source, deliberately not a render-mode registry row: it displays a
+retained full-resolution copy of the most recent successfully completed
+production or agent render.  Switching a pane to `LastRender` preserves its
+interactive mode/vantage configuration for a later return, removes the pane
+from scheduler rotation, and refuses pointer/gizmo input because the frozen
+image has no honest editable camera projection.  Scene edits, camera edits,
+time changes, layout changes, and pane resize do not change its pixels.  A new
+successful full render replaces the retained copy and pushes it once to every
+Last Render pane sink; failed or cancelled renders preserve the prior copy.
+Before any full render has completed, selecting `LastRender` still succeeds
+and publishes an explicit transparent 1×1 placeholder rather than leaving
+stale preview pixels on screen.  Internally its negative-alpha clear sentinel
+is the only input both desktop converters map to transparency; ordinary
+coverage-alpha-zero render pixels remain opaque, preserving legacy LDR and
+EDR parity.  Switching the actively gestured/scrubbed pane
+to frozen content refuses until the interaction ends, so its later Move/Up
+cannot commit invisible edits behind the retained image.  Pane 0 may also
+select Last Render in an N-up layout; the
+single-layout legacy viewport remains on its existing interactive surface.
+Shrinking an N-up layout whose pane 0 is `LastRender` back to Single restores
+pane 0 to `Interactive`, and Single refuses selecting `LastRender` directly.
 
 ### 7.3 Scheduler (the render loop, generalized)
 
@@ -702,9 +786,10 @@ under `mMutex`.
 
 **Rotation policy** (idle refinement):
 
-1. Rotation set = visible panes with `dirty || previewScale > 1 || polish
-   pending`.  Panes that finish (variant budget spent; data mode polished at
-   scale 1) leave the set; empty set ⇒ thread sleeps on `mCV` as today.
+1. Rotation set = visible `Interactive` panes with `dirty || previewScale > 1
+   || polish pending`.  `LastRender` panes are never scheduled.  Panes that
+   finish (variant budget spent; data mode polished at scale 1) leave the set;
+   empty set ⇒ thread sleeps on `mCV` as today.
 2. Order within a round: **primary first**, then secondaries by index.  Equal
    shares (one quantum each per round) — primary-weighted shares are a
    revisit-if-needed, not v1.
@@ -717,17 +802,113 @@ under `mMutex`.
 the scheduler renders pane *i* EXCLUSIVELY with the existing during-motion
 scale adaptation (kTargetMs=33); other panes freeze at their last frame.  This
 is the generalization of today's behavior (the single pane IS the gestured
-pane) and keeps interaction latency identical to single-viewport.
+pane) and keeps interaction latency identical to single-viewport.  A completed
+gesture quantum does **not** self-arm from those intentionally-frozen panes'
+dirty bits: each in-gesture edit supplies its own kick, and gesture-end supplies
+the kick that resumes ordinary rotation.  This distinction is load-bearing for
+BeautyVariant panes, whose fixed divisor/sample budget would otherwise turn one
+gizmo edit into an infinite stream of expensive pinned-pane passes (T0 fix,
+2026-07-24).
+
+**Gesture exclusivity is watchdog-bounded** (round-8 review fix, 2026-07-25).
+Because the pin both selects the pane AND suppresses the rotation arm, a
+gesture flag that never clears would freeze every sibling permanently.  This
+was reachable when a shell's `interactionEnabled` gate dropped pointer-up as a
+chat/agent render started; explicit shell/core finalization now closes that
+path, while the watchdog remains a platform-loss safety net.  After
+`kPointerWatchdogMs` (10 s) of pointer
+inactivity the render thread marks the gesture STALE: the pin releases and the
+rotation arm re-enables, so siblings recover.  `mPointerDown` deliberately
+stays SET — clearing it would make a late `OnPointerUp` early-return and
+strand the gesture's open composite.  A resumed `OnPointerMove` cancels and
+parks any sibling pass, reloads the original gesture pane, clears stale, and
+continues the SAME composite.  Render requests and shell interaction-disable
+transitions call `FinalizeOpenInteractions()`: Pointer Down/Move/Up and this
+finalizer share one recursive admission lock, so pending CST state is
+persisted and the composite closes before a full render can claim the scene.
+The scrub twin of this recovery is `kScrubWatchdogMs`; Job-live C-ABI teardown
+calls `PrepareForDestruction()`, while the raw C++ destructor keeps its
+no-borrowed-Job-touch fallback.  The render thread keeps a bounded watchdog
+wake armed even after motion refinement reaches divisor 1; otherwise a lost
+Up at full preview resolution could sleep indefinitely with no event left to
+drive the stale transition.
 
 **Invalidation matrix**:
 
 | Event | Effect |
 |---|---|
-| Scene edit (any mutation) | all visible panes dirty, scales reset coarse; primary renders first |
+| Scene edit (any mutation) | all visible Interactive panes dirty, scales reset coarse; primary Interactive pane renders first; Last Render panes unchanged |
 | Pane-local: mode / vantage / named-view update | that pane dirty only |
+| Named scene-camera edit (panel/gizmo/agent), undo/redo/rollback | affected named-camera panes are config-dirty and re-resolve; kind-omitted agent edits conservatively reconcile all kind-3 panes |
+| Time scrub | all named-camera panes config-dirty (an inactive bound camera may be animated) |
+| Named scene-camera deletion | bound panes reconcile to their stored binding-time snapshot |
+| Same-name camera creation after deletion | bound panes config-dirty and resume live re-resolution |
 | Layout switch | newly-visible panes dirty; hidden panes dropped from rotation |
 | Pane resize (layout change / window resize) | affected panes dirty (store realloc via the existing same-dim short-circuit) |
-| Production/agent render starts | `mRenderOwnsScene` no-ops pane setters; loop yields (existing single-slot coordination); on completion ALL panes dirty |
+| Pane source → Last Render | cancel/park that pane, clear its interactive work, publish retained image or transparent placeholder; no scheduler wake unless another Interactive pane already has work |
+| Pane source → Interactive / interactive mode selected | preserve mode/vantage, mark that pane config-dirty + dirty, wake one fresh pane-local pass |
+| N-up → Single while pane 0 is Last Render | restore pane 0 to Interactive and wake an immediate repaint; Single refuses selecting Last Render |
+| Production/agent render starts | `mRenderOwnsScene` no-ops pane setters; loop yields (existing single-slot coordination) |
+| Successful production/agent render completes | replace the retained full-resolution copy and push it once to every Last Render pane sink (RECORDED under `mMutex`, DELIVERED after it is released — see the deferred-publish note below); Interactive panes resume through their existing post-render wake policy |
+| Failed/cancelled production/agent render completes | retained copy and Last Render panes unchanged |
+
+**Last Render delivery is DEFERRED** (round-8 review fix, 2026-07-25), per ADR
+rule 5 ("notifications fire outside locks").  The publish used to call
+`sink->OutputImage` with `mMutex` held — a latent deadlock for any sink that
+re-enters the controller, and a full per-pixel conversion on the UI thread
+inside the lock (a visible hitch at production resolutions, blocking every
+other `mMutex` caller meanwhile).  Now
+`QueueLastRenderPublishLocked_` RECORDS the delivery under the lock
+(addref'ing both sink and image, coalescing per pane so the queue is bounded
+by the pane count and only the newest frame is delivered), and
+`DrainLastRenderPublishes_` performs it with NO controller lock held.  Drain
+also retires displaced/evicted records: their owning references are transferred
+to a release-only list under the queue lock and released only after every
+non-recursive controller/queue lock is dropped, because a final sink destructor
+is arbitrary owner code and may re-enter an ordinary getter or setter.  Drain
+sites are the two pane setters (right after their own unlock),
+`RunPreviewRenderParked` and the agent render worker (which CANNOT drain at
+the completion site — they hold `mMutex` for the render's whole duration), and
+a per-frame catch-all in `RefreshProperties`, so a missed site degrades to a
+one-frame delay rather than a lost image.  Each record captures both the
+pane's content-source generation and its latest publish generation.  A
+global recursive delivery barrier makes the generation check plus callback
+start atomic with successful source/sink setters and permits same-thread sink
+re-entry.  Global serialization is intentional: independent pane callbacks may
+re-enter setters for each other's panes, which makes per-pane callback-held
+locks susceptible to AB/BA deadlock.  Nested drains are deferred until the
+outer callback returns, and sink exceptions are logged and contained at this
+notification boundary.  Destruction waits for registered drains; synchronous
+`Stop` / Destroy from inside a Last Render callback or any controller-owned
+final sink release/destructor cleanup is rejected and must be retried by the
+owner after the callout returns.  Once the controller destructor itself begins
+resource retirement, it claims lifecycle ownership before any drain wait.
+Job-live Prepare/C-API Destroy and raw destruction share a single-owner state
+machine, so concurrent or callback-reentrant preparation/deletion is rejected.
+Dirty-listener registration closes atomically with detach; its retired callback
+target is released outside the listener mutex only after Stop and the permanent
+agent/render mutation gates.  The installed callable is shared-owned, so the
+notification mutex copies only a `shared_ptr`, never arbitrary callable state.
+Dirty callback invocation and copied-target retirement also carry lifecycle TLS;
+listener exceptions are logged and contained, including RAII-deferral drains.
+Successful Prepare keeps mutation admission permanently closed until Destroy.
+The owner must stop/join arbitrary external API callers before Prepare/Destroy,
+as required at any object-lifetime boundary.  Ordinary callback/sink-destructor setter re-entry
+then fails closed instead of touching partially dismantled state or adding
+references the destructor has already swept.  Desktop sinks tag these records with
+`kLastRenderSinkFrame`: unlike live rasterizer buffers, the retained images
+are immutable and addref-owned, so macOS and Windows convert them off the UI
+thread, stop invalidated conversions at scanline boundaries, and use a
+separate Last Render ticket so every ordinary interactive frame still reaches
+the UI in order.
+
+Interactive rasterizers retain their output sink too.  Each render quantum now
+retains the exact rasterizer it used, publishes `mRendering=false`, and only
+then clears that rasterizer's outputs in an unlocked lifecycle-callout scope.
+This makes a rasterizer-owned final sink destructor safe to re-enter a
+park-capable controller mutation.  Any Last Render record queued by that
+destructor is drained immediately after the lifecycle scope ends, so a headless
+or idle owner does not need an unrelated UI refresh to receive it.
 
 ### 7.4 C-ABI (additive; existing calls = pane 0)
 
@@ -739,7 +920,9 @@ platform code keeps working unmodified:
 _SetViewportLayout(layout) / _GetViewportLayout()
 _SetPrimaryPane(pane) / _GetPrimaryPane()
 _SetPaneRenderMode(pane, name) / _GetPaneRenderMode(pane)
+_SetPaneContentSource(pane, source) / _GetPaneContentSource(pane)
 _SetPaneVantageSceneCamera(pane)
+_SetPaneVantageSceneCameraNamed(pane, name)         // kind 3; panes 1-3 only
 _SetPaneVantageNamedView(pane, name)
 _PaneEnterFreeFly(pane) / _PaneExitFreeFly(pane)   // per-pane free-fly twins
 _SetPaneSurfaceDims(pane, w, h)
@@ -748,15 +931,19 @@ _GetPaneRefinementStatus(pane, ...)                // per-pane phase+scale
 _OnPanePointerDown/Move/Up(pane, ...)              // input carries pane id
 ```
 
-Fail-closed like every existing setter: unknown pane / hidden pane / render
-owns scene ⇒ false, nothing mutated.
+Mutating mode/vantage/input setters fail closed: unknown pane / hidden pane /
+render owns scene ⇒ false, nothing mutated.  `_SetPaneSink` is the deliberate
+hidden-pane exception: shells may pre-wire any retained pane slot before a
+layout reveals it.  Read-only getters likewise inspect retained hidden-pane
+configuration.
 
 ### 7.5 GUI shells
 
 Both platforms, same shape (parity convention): a layout picker (4 fixed
 icons) in the viewport toolbar; per-pane chrome = mode dropdown (the existing
-registry-driven control, §4) + vantage menu (Scene camera | named views list |
-Free-fly) + a primary marker.  The platform builds one
+registry-driven rows plus the separate `Last Render` content-source row, never
+inserted into the registry) + vantage menu (active Scene camera | scene-camera
+list on panes 1-3 | named views list | Free-fly) + a primary marker.  The platform builds one
 `ViewportFrameStore`/sink per pane (Mac `ViewportPreviewSink`
 [RISEViewportBridge.mm:171] and the Qt `imageUpdated` path generalize by
 instantiation, not redesign).  Input: the shell hit-tests pane rects and
@@ -810,8 +997,9 @@ statements in §7.1's audit table and §7.5).
   restricted to pane 0.  A secondary pane without its own sink no longer
   publishes into pane 0 (or the previously-attached pane).
 - **P1#2 — pick/gizmo use the pane's camera.**  A new
-  `EffectiveViewportCamera_(scene)` (the override register when free-fly is
-  active, else the scene camera) replaces the raw `scene->GetCamera()` at
+  `EffectiveViewportCamera_(scene)` (the realized pane override for
+  `FreeFly`, `NamedView`, or `SceneCameraNamed`, else the active scene camera)
+  replaces the raw `scene->GetCamera()` at
   `PickAt` + the four gizmo-projection sites.  Correct for every pane during a
   gesture (a gesture makes that pane current).  *(Round-2 concurrency fix: the
   non-gesture readers `RefreshGizmoHandles`/`RefreshNavGizmo` take `mMutex`
@@ -850,6 +1038,31 @@ statements in §7.1's audit table and §7.5).
 - **P2#2 — preset applied once per pane.**  Both shells track which panes the
   preset touched instead of inferring "untouched" from a pane still reading
   `preview`, so an EXPLICIT Preview choice survives layout changes.
+- **T1 — first-reveal layout spread (2026-07-24; performance revision
+  2026-07-26).**  The applied-once shell preset assigns pane 1 = `wireframe`,
+  pane 2 = `normals`, and pane 3 = `depth`.  `OnePlusTwo` reveals the first
+  two roles; `Quad` adds the third.  This keeps first reveal traversal-only;
+  Direct/Indirect remain explicit choices instead of silently starting two
+  denoised path-tracing pipelines.
+  Mac and Windows use the same wire names and retain P2#2's success-only
+  bookkeeping, so a refused setter retries and an explicit user choice is
+  never clobbered by a later layout toggle.
+- **T2 — arbitrary named scene-camera vantages (2026-07-24).**
+  `SceneCameraNamed` is additive wire kind 3 (0/1/2 remain stable).  Secondary
+  pane config stores both the camera name and its binding-time snapshot;
+  reconcile captures the current live camera by name and realizes the
+  standalone override, while deletion falls back to the stored snapshot
+  without changing the desired name; same-name recreation resumes live
+  tracking.  ONB pinholes are captured from their realized basis as
+  ray-equivalent ordinary pinholes, and capture cancel-parks any in-flight
+  preview before reading camera state.  Camera property edits, camera gestures,
+  undo/redo/transaction rollback, time evaluation, kind-omitted agent edits,
+  and full re-derives invalidate affected named-camera panes.
+  Pane 0 and invalid/missing names fail closed.  Both shells enumerate scene
+  cameras in their secondary-pane vantage menus without truncating manager
+  names; Qt action metadata is typed so sentinel-like named views cannot be
+  misrouted. Read-only agent pane introspection returns the referenced name
+  for kinds 2 and 3.
 - **P2#3 — primary-pane gizmo on both shells.**  Windows now paints the object
   gizmo on whichever pane is primary (was pane-0-only), matching macOS.  Both
   are exact during an object-transform gesture; the static idle-projection
@@ -869,6 +1082,60 @@ statements in §7.1's audit table and §7.5).
   `ScreenChangeInternal` to `ViewportWidget::refreshForDpiChange()`, which
   re-pushes the pane device-pixel dims (a fixed-size window firing no
   resizeEvent otherwise left them stale for the new screen).
+- **T0 — gesture-pinned rotation no longer self-arms forever (2026-07-24).**
+  A scene edit during a gesture dirties every visible pane, while gesture
+  exclusivity deliberately freezes the siblings.  The completion path used to
+  observe those dirty siblings, set `mPanePassPending`, and immediately render
+  the current pane again because `PickNextVisiblePaneLocked_` correctly honored
+  the gesture pin.  The current pane's dirty bit was already clear, the siblings
+  stayed dirty, and the cycle repeated until pointer-up.  Under `indirect` this
+  was a continuous fixed 12-SPP/OIDN render and appeared to hang the Mac GUI.
+  End-of-quantum rotation arming is now suppressed while a pointer/property
+  gesture is active; per-edit kicks still repaint the gestured pane.  Pointer-up
+  atomically closes the pin, installs the correct pane's final/polish state, and
+  publishes the all-pane wake; `EndPropertyScrub` supplies the equivalent kick.
+  The lost-property-End watchdog and `StopInteractive` lifecycle boundary now
+  perform the same recovery—even when a gesture begins while refinement is
+  already paused—so dropped platform callbacks cannot strand panes or block
+  coordinated renders.  Repeated `StopInteractive` remains nonblocking while a
+  coordinated render owns the scene, and a plain no-gesture Pause preserves an
+  owed refinement/polish state.  Gesture exclusivity also covers the live
+  pane-register set: pane-0 mode/pose/ExitFreeFly setters refuse a context
+  switch during a secondary-pane gesture instead of redirecting its next camera
+  edit.  Layout shrink treats
+  `mGesturePane` as pointer-only state instead of cancelling an unrelated
+  property scrub from a stale pane number, and a concurrent property scrub
+  keeps its motion-quality divisor when the hidden pointer pane is finalized.
+  Scheduler scenarios (c2–c5/j2b) execute a real interactive pipeline and cover
+  object-gizmo, property-watchdog, lifecycle/pause, setter exclusion, and shrink
+  paths.  Removing the pin guard is RED (12 focused failures and tens of
+  thousands of redundant low-resolution passes); restoring it is GREEN.
+- **T4 — persistent Last Render content source (2026-07-24).**
+  `PaneContentSource::{Interactive,LastRender}` is orthogonal to the
+  render-mode registry and is carried through pane config, C ABI, agent
+  introspection, and both shells.  The controller owns one deep-copied
+  full-resolution image, retained even when no pane subscribes; a later
+  subscriber receives that exact image.  Successful object-map, diagnostic
+  view/BeautyVariant, draft, production-agent, and GUI-production completion
+  branches publish once after the render is fully complete.  Failed renders
+  and both coordinator-side and platform-inner-callback cancellation preserve
+  the prior image.  Last Render panes never join dirty/refinement rotation,
+  ignore resize/edit invalidation, reject navigation/gizmos, and preserve
+  their dormant interactive configuration.
+
+  Round-one adversarial review found and closed four P2 classes: platform
+  Cancel buttons returned `false` through the composed inner progress callback
+  without latching cancellation, allowing a partial canonical FrameStore to
+  replace the retained image; both shells forced alpha to 255 and turned the
+  transparent empty state opaque black; switching source during an active
+  pane gesture could strand invisible edit completion; and macOS could show
+  both a registry-mode and Last Render checkmark.  The completion tests now
+  compare position-sensitive RGBA bytes/per-pixel values against the agent
+  sink / canonical FrameStore, cover every distinct agent completion branch,
+  and exercise
+  render-first/select-later retention.  Mutation cuts that remove retention,
+  object-map/view publication, inner-cancel latching, gesture exclusion, or
+  the Single-layout repaint each turn the focused suites red.
 
 ## 8. Agent surface + skills
 

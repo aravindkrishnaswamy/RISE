@@ -341,9 +341,14 @@ object RiseNative {
      * slider.  Returns 0 when no animation is declared.
      */
     external fun nativeViewportAnimationNumFrames(): Int
-    external fun nativeViewportScrubBegin()
-    external fun nativeViewportScrub(t: Double)
-    external fun nativeViewportScrubEnd()
+    /**
+     * Timeline operations are refused when render admission wins the race
+     * after the UI sampled its enabled state.  Callers must update local
+     * scene time only when the value operation returns true.
+     */
+    external fun nativeViewportScrubBegin(): Boolean
+    external fun nativeViewportScrub(t: Double): Boolean
+    external fun nativeViewportScrubEnd(): Boolean
 
     /**
      * Bracket a property-panel chevron drag — same scale-bump

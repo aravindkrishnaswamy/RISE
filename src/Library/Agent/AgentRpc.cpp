@@ -1886,6 +1886,8 @@ namespace RISE
 						{
 							JsonValue pv = JsonValue::MakeObject();
 							pv.set( "visible",     JsonValue::MakeBool( panesInfo.panes[i].visible ) );
+							pv.set( "contentSource", JsonValue::MakeNumber(
+								panesInfo.panes[i].contentSource ) );
 							pv.set( "mode",        JsonValue::MakeString( panesInfo.panes[i].mode ) );
 							pv.set( "vantageKind", JsonValue::MakeNumber( panesInfo.panes[i].vantageKind ) );
 							pv.set( "namedView",   JsonValue::MakeString( panesInfo.panes[i].namedView ) );

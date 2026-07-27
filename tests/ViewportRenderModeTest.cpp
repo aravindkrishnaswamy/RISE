@@ -102,6 +102,8 @@
 #include <fstream>
 #include <set>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -892,6 +894,75 @@ namespace
 		}
 	}
 
+	void TestBeautyVariantLivePassPolicy()
+	{
+		std::printf( "R19: BeautyVariant live-pass quality policy...\n" );
+		const ViewportRenderMode modes[4] = {
+			ViewportRenderMode::DeepReflect, ViewportRenderMode::Direct,
+			ViewportRenderMode::Indirect, ViewportRenderMode::ClayLights
+		};
+		const int fullSamples[4] = { 16, 8, 12, 12 };
+		for( unsigned int i = 0; i < 4; ++i )
+		{
+			IRasterizer* rast = nullptr;
+			IRayCaster* caster = nullptr;
+			Check( CreateBeautyVariantPipeline( modes[i], &rast, &caster ),
+			       "live-pass fixture builds" );
+			if( rast )
+			{
+				Check( rast->GetSampleCountOverride() == fullSamples[i],
+				       "factory starts at the registry-authored full sample count" );
+				Check( ConfigureBeautyVariantPass( *rast, modes[i], true ),
+				       "active-gesture policy applies" );
+				Check( rast->GetSampleCountOverride() == 1,
+				       "MONEY: active gesture uses exactly one sample per pixel" );
+#ifdef RISE_ENABLE_OIDN
+				Rasterizer* concrete = dynamic_cast<Rasterizer*>( rast );
+				Check( concrete && !concrete->GetDenoisingEnabled(),
+				       "MONEY: active gesture suppresses OIDN" );
+#endif
+				Check( ConfigureBeautyVariantPass( *rast, modes[i], false ),
+				       "release policy applies" );
+				Check( rast->GetSampleCountOverride() == fullSamples[i],
+				       "MONEY: release restores the registry-authored sample count" );
+#ifdef RISE_ENABLE_OIDN
+				Check( concrete && concrete->GetDenoisingEnabled(),
+				       "MONEY: release restores OIDN" );
+#endif
+			}
+			safe_release( rast );
+			safe_release( caster );
+		}
+	}
+
+	void TestConcurrentAOVDataFlag()
+	{
+		std::printf( "R20: concurrent AOV accumulation data flag...\n" );
+		const unsigned int width = 128, height = 64, threadCount = 8;
+		AOVBuffers aov( width, height );
+		std::vector<std::thread> workers;
+		for( unsigned int t = 0; t < threadCount; ++t )
+		{
+			workers.emplace_back( [&, t] {
+				for( unsigned int y = t; y < height; y += threadCount )
+				{
+					for( unsigned int x = 0; x < width; ++x )
+					{
+						aov.AccumulateAlbedo(
+							x, y, RISEPel( 0.25, 0.5, 0.75 ), 1.0 );
+						aov.AccumulateNormal(
+							x, y, Vector3( 0, 1, 0 ), 1.0 );
+					}
+				}
+			} );
+		}
+		for( std::thread& worker : workers ) worker.join();
+		Check( aov.HasData(),
+		       "MONEY: concurrent disjoint-pixel accumulation publishes HasData (TSAN-clean atomic flag)" );
+		aov.Reset( width, height );
+		Check( !aov.HasData(), "parked Reset clears the atomic data flag" );
+	}
+
 	//------------------------------------------------------------------
 	// R13: RISE_API_GetViewportRenderModeWantsDenoise matches the core
 	// registry 1:1, plus out-of-range/null-out refusal.
@@ -1327,6 +1398,48 @@ namespace
 		       "destroyed -- DestructionCount() == ConstructionCount(), i.e. no leaked rasterizer-owned "
 		       "integrator (P1-a fix)" );
 	}
+
+	void TestNearestNeighborSubview()
+	{
+		std::printf( "R21: shared-multiview nearest-neighbor extraction...\n" );
+		IRasterImage* source = nullptr;
+		Check( RISE_API_CreateRISEColorRasterImage(
+			&source, 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) ),
+			"4x4 source image constructs" );
+		if( !source ) return;
+		for( unsigned int y = 0; y < 4; ++y ) {
+			for( unsigned int x = 0; x < 4; ++x ) {
+				source->SetPEL( x, y,
+					RISEColor( RISEPel( Scalar( x ), Scalar( y ), Scalar( 10 * y + x ) ),
+						Scalar( 100 + 10 * y + x ) ) );
+			}
+		}
+		IRasterImage* subview = nullptr;
+		Check( CreateNearestNeighborSubview( *source, 2, 2, &subview ),
+		       "4x4 -> 2x2 NNB extraction succeeds" );
+		if( subview ) {
+			const unsigned int expected[2] = { 1, 3 };
+			bool exact = true;
+			for( unsigned int y = 0; y < 2; ++y ) {
+				for( unsigned int x = 0; x < 2; ++x ) {
+					const RISEColor got = subview->GetPEL( x, y );
+					const RISEColor want = source->GetPEL( expected[x], expected[y] );
+					exact = exact
+						&& got.base[0] == want.base[0]
+						&& got.base[1] == want.base[1]
+						&& got.base[2] == want.base[2]
+						&& got.a == want.a;
+				}
+			}
+			Check( exact,
+			       "MONEY: center-sampled NNB preserves exact source colors and alpha" );
+		}
+		safe_release( subview );
+		Check( !CreateNearestNeighborSubview( *source, 0, 2, &subview )
+		    && subview == nullptr,
+		       "zero-width NNB request fails closed and clears out-param" );
+		safe_release( source );
+	}
 }   // anonymous namespace
 
 int main()
@@ -1344,12 +1457,15 @@ int main()
 	TestPolishStateResetOnSwitch();
 	TestVariantRegistryRows();
 	TestBeautyVariantPipelineFactory();
+	TestBeautyVariantLivePassPolicy();
+	TestConcurrentAOVDataFlag();
 	TestWantsDenoiseCAbi();
 	TestIsVariantCAbi();
 	TestControllerVariantModeLifecycle();
 	TestClayRefcountDiscipline();
 	TestBeautyVariantDefaultShaderPlumbing();
 	TestRasterizerIntegratorLeakFix();
+	TestNearestNeighborSubview();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -298,14 +298,14 @@ JNIF(jint, nativeViewportAnimationNumFrames)(JNIEnv* /*env*/, jobject /*thiz*/) 
     getBridge().viewportGetAnimationOptions(t0, t1, nf);
     return static_cast<jint>(nf);
 }
-JNIF(void, nativeViewportScrubBegin)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportScrubBegin();
+JNIF(jboolean, nativeViewportScrubBegin)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return getBridge().viewportScrubBegin() ? JNI_TRUE : JNI_FALSE;
 }
-JNIF(void, nativeViewportScrub)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t) {
-    getBridge().viewportScrub(t);
+JNIF(jboolean, nativeViewportScrub)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t) {
+    return getBridge().viewportScrub(t) ? JNI_TRUE : JNI_FALSE;
 }
-JNIF(void, nativeViewportScrubEnd)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportScrubEnd();
+JNIF(jboolean, nativeViewportScrubEnd)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return getBridge().viewportScrubEnd() ? JNI_TRUE : JNI_FALSE;
 }
 JNIF(void, nativeViewportBeginPropertyScrub)(JNIEnv* /*env*/, jobject /*thiz*/) {
     getBridge().viewportBeginPropertyScrub();

@@ -420,9 +420,11 @@ fun ViewportPane(
                             time = sceneTime,
                             timelineMax = timelineEnd,
                             onScrubBegin = { RiseNative.nativeViewportScrubBegin() },
-                            onScrub = {
-                                onSceneTimeChange(it)
-                                RiseNative.nativeViewportScrub(it.toDouble())
+                            onScrub = { value ->
+                                val accepted =
+                                    RiseNative.nativeViewportScrub(value.toDouble())
+                                if (accepted) onSceneTimeChange(value)
+                                accepted
                             },
                             onScrubEnd = { RiseNative.nativeViewportScrubEnd() },
                             enabled = interactionEnabled,
@@ -945,9 +947,9 @@ private fun ViewportCanvas(
 private fun ViewportTimelineSlider(
     time: Float,
     timelineMax: Float,
-    onScrubBegin: () -> Unit,
-    onScrub: (Float) -> Unit,
-    onScrubEnd: () -> Unit,
+    onScrubBegin: () -> Boolean,
+    onScrub: (Float) -> Boolean,
+    onScrubEnd: () -> Boolean,
     enabled: Boolean,
 ) {
     var scrubbing by remember { mutableStateOf(false) }
@@ -959,8 +961,13 @@ private fun ViewportTimelineSlider(
             value = time,
             enabled = enabled,
             onValueChange = {
-                if (!scrubbing) { scrubbing = true; onScrubBegin() }
-                onScrub(it)
+                // Admission can change after Slider sampled `enabled`.
+                // Start the local gesture only when the controller opened
+                // its undo bracket; if Begin was refused, retry on the next
+                // tick so a render ending mid-drag cannot produce unbracketed
+                // time edits.
+                if (!scrubbing && onScrubBegin()) scrubbing = true
+                if (scrubbing) onScrub(it)
             },
             onValueChangeFinished = {
                 if (scrubbing) { scrubbing = false; onScrubEnd() }
@@ -1564,4 +1571,3 @@ private fun toneCurveLabel(curve: Int): String = when (curve) {
     4 -> "Hable"
     else -> "?"
 }
-

@@ -253,6 +253,12 @@ private:
     // first move.  The ScrubHandle's begin/end bracket flips this on
     // and off; refresh() short-circuits while it is set.
     bool m_scrubbing = false;
+    // GUI redesign 2026-07-22: true while a per-row context menu is
+    // modally open (exec).  refresh() early-returns on it -- the props
+    // panel refreshes on every imageUpdated frame, and a rebuild would
+    // deleteLater() the row widgets (incl. the line-edit the open menu is
+    // a child of) mid-exec -> UAF.  Same guard shape as m_scrubbing.
+    bool m_contextMenuOpen = false;
 };
 
 #endif // VIEWPORTPROPERTIES_H

@@ -181,6 +181,13 @@ hang off.
 
 ### 3.1 What it shows
 
+> **Status update (2026-07-22): `Category::Geometry` SHIPPED** — outliner
+> row, typed editable panel (generic descriptor+CST introspection), CRUD
+> via the suffix-generic Duplicate/Remove, jump-to-definition.  See
+> [PROPERTIES_AND_REFERENCES.md](PROPERTIES_AND_REFERENCES.md).  `Shader`
+> and `Modifier` remain unshipped (no `IJob` enumeration surface yet);
+> with the generic inspector each is now a one-arm addition.
+
 One top-level group per entity family. The shipped controller has only five list
 categories — `Category::Camera/Light/Object/Material/Medium`
 ([SceneEditController.h:207-223](../../src/Library/SceneEditor/SceneEditController.h)) —

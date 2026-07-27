@@ -411,7 +411,7 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\DirtyTracker.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SaveEngine.cpp" />
-    <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\CstIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\EntityTemplates.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
@@ -913,7 +913,7 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\DirtyTracker.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SaveEngine.h" />
-    <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\CstIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\EntityTemplates.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />

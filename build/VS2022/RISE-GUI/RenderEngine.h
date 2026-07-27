@@ -96,7 +96,10 @@ public:
     /// RISE_API_CreateSceneEditController succeeds in its constructor,
     /// and clears (passes nullptr) at the START of its destructor,
     /// BEFORE destroying the controller — mirrors the macOS
-    /// RISEBridge/-attachSceneEditController: contract exactly.
+    /// RISEBridge/-attachSceneEditController: ownership contract.  A
+    /// clear cancels and joins the current worker before releasing the
+    /// borrowed pointer; each worker uses the UI-thread snapshot taken
+    /// when it was started.
     /// NULL-safe by construction on the read side: with no controller
     /// registered (no viewport bridge yet, or between one's destruction
     /// and the next one's construction), the production entry points
@@ -259,14 +262,15 @@ private:
     // the architecture rationale.
     void renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
                                               bool nonBlocking = false);
+    void ensureProductionVFSInitialized();
     void ensureProductionVFSAttachedToRasterizer();
 
     RISE::IJobPriv* m_job = nullptr;
     // Model-B F2 slice S4: borrowed, nullptr-safe.  Registered by
     // ViewportBridge (via attachSceneEditController) once its
-    // SceneEditController exists; cleared back to nullptr before that
-    // controller is destroyed.  See attachSceneEditController's header
-    // doc for the full lifetime contract.
+    // SceneEditController exists; cleared back to nullptr only after
+    // in-flight work has joined and before that controller is destroyed.
+    // See attachSceneEditController's header doc for the full contract.
     RISE::SceneEditController* m_viewportController = nullptr;
     std::atomic<bool> m_cancelFlag{false};
     State m_state = Idle;

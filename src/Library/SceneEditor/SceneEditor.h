@@ -29,8 +29,15 @@
 #include "EditHistory.h"
 #include "DirtyTracker.h"
 #include "../Interfaces/IScenePriv.h"
+#include "../Cst/Cst.h"   // Document-first ADR phase 1: CstHeadVersion (derived dirty)
 #include <functional>
 #include <unordered_set>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <utility>
 
 namespace RISE
 {
@@ -81,7 +88,22 @@ namespace RISE
 		//! `IJob::EnumerateMediumNames`.  Null Job causes those ops to
 		//! fail at Apply time — the editor stays usable for transform /
 		//! material / shader / shadow / camera / light ops without it.
-		void SetJob( IJob* job ) { mJob = job; }
+		void SetJob( IJob* job )
+		{
+			const bool initialBinding = ( mJob != job );
+			mJob = job;
+			if( initialBinding ) {
+				// Only initial attachment establishes a clean baseline. A D2
+				// re-derive rebinds the SAME Job after committing a new head;
+				// treating that as a fresh bind would baseline an unsaved edit.
+				CaptureSavedHeadVersion_();
+			} else {
+				// Same-Job rebind: retain the saved baseline and refresh the
+				// derived floor against the new live head.
+				RecomputeHeadDiffers_();
+				RecomputeHasUnsavedChangesCached_();
+			}
+		}
 
 		//! Re-point the editor at the Job's CURRENT scene after a whole-scene rebuild (e.g. a scene_variant
 		//! re-derive ClearAll's + recreates the Scene + managers); call ALONGSIDE the SetXManager setters,
@@ -174,7 +196,10 @@ namespace RISE
 		//! production render — the preview path uses
 		//! SetSceneTimeForPreview which deliberately skips photon
 		//! regen and would leave caustics from the pre-scrub time.
-		Scalar LastSceneTime() const { return mLastSetTime; }
+		Scalar LastSceneTime() const
+		{
+			return mLastSetTime.load( std::memory_order_acquire );
+		}
 
 		//! Characteristic length of the scene — the diagonal of the
 		//! axis-aligned union of all object bounding boxes (or a
@@ -233,6 +258,9 @@ namespace RISE
 		{
 			mDirtyTracker.Clear();
 			mScaleFromAnchorSet.clear();
+			// Document-first ADR phase 1: a successful save makes the CURRENT
+			// head the clean baseline for the derived-dirty comparison.
+			CaptureSavedHeadVersion_();
 			FireDirtyChangedIfTransitioned();
 		}
 
@@ -431,37 +459,116 @@ namespace RISE
 		//! byte-equality of the serialized Document).  Drives the
 		//! GUI's "Save" button enable state on both platform shells.
 		//! Cheap O(1).
-		//! Consults every TRANSIENT dirty channel via
+		//! Mutation sites publish every TRANSIENT dirty channel via
 		//! DirtyTracker::HasAnyDirty() — object transforms (Phase 6),
 		//! property-shaped edits on objects / cameras / lights /
 		//! materials / media (Phase B), created-pending entities
 		//! (Phase C), and the CST-head boolean (Model-B F5) — plus the
 		//! scale-from-anchor set.
+		//! Document-first ADR phase 1: the REVISION-DIFF term is the derived
+		//! floor -- a Document commit after the last save ALWAYS reads dirty,
+		//! regardless of tracker bookkeeping (kills the false-clean class
+		//! permanently).  The tracker + scale-anchor terms persist as safe
+		//! (false-dirty-only) supplements for live-only pending state and
+		//! legacy scenes.  Known asymmetry: undo-back-to-saved still reads
+		//! dirty (revision moved) -- a safe false-positive (ADR SS3.3).
 		bool HasUnsavedChanges() const
 		{
-			return mDirtyTracker.HasAnyDirty()
-			    || !mScaleFromAnchorSet.empty();
+			return mHasUnsavedChangesCached.load( std::memory_order_acquire );
 		}
 
 		//! Notification channel for the platform GUI to update its
-		//! Save-button enable state.  Fires only on TRANSITIONS of
-		//! `HasUnsavedChanges()` (clean→dirty or dirty→clean), so
-		//! a stream of N edits that all leave the scene dirty
-		//! produces ONE callback.  Fired from Apply / Undo / Redo /
-		//! ClearDirtyState.  Listener runs on the calling thread
-		//! (typically the UI thread); bridges should marshal to
-		//! their UI dispatch queue if needed.
+		//! Save-button enable state.  COALESCED transition semantics
+		//! (document-first phase 1 + round-5): the listener reports the
+		//! CURRENT `HasUnsavedChanges()` whenever it DIFFERS from the last
+		//! report, delivered from the post-unlock drain with NO lock held.
+		//! A clean->dirty->clean burst between drains nets to NO callback --
+		//! the final state was already correct; consumers must key on the
+		//! reported VALUE, never count calls.  Listener runs on whichever
+		//! thread drained; bridges should marshal to their UI queue.
 		//!
 		//! Set once before the editor starts receiving edits;
 		//! re-setting clears the previous listener.  Pass `nullptr`
 		//! to detach.
 		using DirtyChangedFn = std::function<void(bool hasUnsavedChanges)>;
-		void SetDirtyChangedListener( DirtyChangedFn fn )
+		using DirtyChangedPtr = std::shared_ptr<DirtyChangedFn>;
+		//! Atomically replace the listener and wait for any shared previous
+		//! callback to quiesce, but RETURN its owning pointer instead of releasing
+		//! it.  The callable itself is allocated before locking, and the mutex only
+		//! copies/swaps shared_ptrs: arbitrary callable copy/destructor code never
+		//! runs under the notification mutex.  Controller teardown uses the returned
+		//! owner to postpone capture destructors until terminal gates are established.
+	private:
+		friend class SceneEditController;
+		DirtyChangedPtr ExchangeDirtyChangedListener( DirtyChangedFn fn )
 		{
-			mDirtyChangedListener = std::move( fn );
+			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+			DirtyChangedPtr incoming;
+			if( fn ) incoming = std::make_shared<DirtyChangedFn>( std::move( fn ) );
+			DirtyChangedPtr retired;
+			{
+				std::unique_lock<std::mutex> lk( state->mutex );
+				// A std::function target's copy/final destructor is an arbitrary user
+				// callout.  Only shared ownership moves while this mutex is held.
+				if( !state->registrationClosed )
+				{
+					retired.swap( state->listener );
+					state->listener.swap( incoming );
+				}
+				else
+				{
+					// A registration racing terminal close is rejected, but its
+					// arbitrary capture destructor needs the same scoped retirement
+					// as an installed listener rather than running at function exit.
+					retired.swap( incoming );
+				}
+				// Replacing/detaching is a quiescence barrier for the PREVIOUS
+				// callback.  Platform listeners capture raw bridge userData, so
+				// returning while another thread still invokes its copied
+				// std::function would let bridge teardown free that pointer first.
+				// A callback may detach/re-enter this listener surface; that same
+				// callback thread must not wait for its own return.  Controller
+				// lifecycle destruction is rejected until callback-copy retirement.
+				if( state->callbacksInFlight != 0
+				 && state->callbackThread != std::this_thread::get_id() ) {
+					state->callbackCV.wait( lk, [&] {
+						return state->callbacksInFlight == 0;
+					} );
+				}
+			}
 			// Don't fire on attach — the bridge already knows the
 			// initial state (it can call HasUnsavedChanges()).
+			return retired;
 		}
+
+		//! Terminal detach used by controller/editor teardown.  Closing
+		//! registration and removing the stored listener happen under the same
+		//! mutex, so an in-flight callback cannot install a replacement while
+		//! this call releases the mutex inside its quiescence wait.  The retired
+		//! target is returned for release at the caller's safe lifecycle point.
+		DirtyChangedPtr CloseDirtyChangedListener()
+		{
+			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+			DirtyChangedPtr retired;
+			{
+				std::unique_lock<std::mutex> lk( state->mutex );
+				state->registrationClosed = true;
+				retired.swap( state->listener );
+				if( state->callbacksInFlight != 0
+				 && state->callbackThread != std::this_thread::get_id() ) {
+					state->callbackCV.wait( lk, [&] {
+						return state->callbacksInFlight == 0;
+					} );
+				}
+			}
+			return retired;
+		}
+
+	public:
+		//! Replace/detach through the scoped retirement implementation.  The final
+		//! target release remains under dirty-callback lifecycle TLS even when a
+		//! different thread owned the in-flight snapshot or registration was closed.
+		void SetDirtyChangedListener( DirtyChangedFn fn );
 
 	private:
 		//! Advance the live Scene's light/structure generation so a render
@@ -537,7 +644,10 @@ namespace RISE
 		// IScene exposes SetSceneTime but no GetSceneTime, so we
 		// track the most-recently-applied time locally.  Used to
 		// capture prevTime for undo on SetSceneTime ops.
-		Scalar       mLastSetTime;
+		// Read by platform production-render handoff threads while the UI
+		// may scrub/undo time. A scalar atomic is the authoritative snapshot;
+		// live Scene mutation remains serialized by the controller mutex.
+		std::atomic<Scalar> mLastSetTime;
 		// Cached scene scale (bbox-union diagonal).  0 = uncomputed;
 		// `SceneScale()` lazy-computes on first call.  `mutable`
 		// because `SceneScale` is `const`-qualified so camera-op
@@ -594,25 +704,140 @@ namespace RISE
 		// Undo/Redo -- kick unconditionally and don't consult this; it is meaningful only right after Apply.)
 		bool mCstLiveSceneChanged = false;
 
-		//! Phase 6.5 UI hook: GUI-installed listener fired on
-		//! `HasUnsavedChanges()` TRANSITIONS only.  Empty by default
-		//! (no callbacks fire until SetDirtyChangedListener is called).
-		DirtyChangedFn mDirtyChangedListener;
+		//! Deferred-notification state lives independently of SceneEditor's
+		//! storage so concurrent owner teardown can quiesce safely. Drain keeps
+		//! a shared reference, and SceneEditor::~SceneEditor marks the owner dead;
+		//! the drain then touches only this surviving state.
+		struct DirtyNotificationState
+		{
+			DirtyChangedPtr  listener;
+			bool             registrationClosed = false;
+			bool             prevHasUnsavedChanges = false;
+			std::atomic<bool> currentHasUnsavedChanges{ false };
+			std::atomic<bool> pending{ false };
+			std::atomic<bool> delivering{ false };
+			std::atomic<bool> ownerAlive{ true };
+			std::atomic<unsigned int> deferDepth{ 0 };
+			std::mutex        mutex;
+			std::condition_variable callbackCV;
+			unsigned int      callbacksInFlight = 0;
+			std::thread::id   callbackThread;
+		};
+		std::shared_ptr<DirtyNotificationState> mDirtyNotificationState;
 
-		//! Memoized last-fired value of `HasUnsavedChanges()` so the
-		//! listener only fires on transitions.  Starts at false
-		//! (matches the initial clean state on construction).
-		bool mPrevHasUnsavedChanges = false;
+		//! State-only drain used by the public drain and the deferral token. It
+		//! never dereferences SceneEditor.  Lifecycle deletion from the listener
+		//! itself is rejected until both invocation and copied-target retirement
+		//! finish; concurrent owner teardown waits on callbacksInFlight.
+		static bool DrainDirtyNotificationState_(
+			const std::shared_ptr<DirtyNotificationState>& state );
+
+		//! Round-5 review P1: the derived-dirty floor is served from this CACHED
+		//! atomic, recomputed at every mutation's Fire (under the mutator's own
+		//! lock -> the Job head read is race-free) and by the controller's
+		//! per-frame RefreshDerivedDirty catch-all.  The lock-free C-API dirty
+		//! query then never reads the non-atomic head/saved versions directly
+		//! (the round-4 wiring did, a torn-read UB).
+		std::atomic<bool> mHeadDiffersCached{ false };
+
+		//! Complete lock-free dirty answer. DirtyTracker and
+		//! mScaleFromAnchorSet are mutable containers written under the
+		//! controller mutex, so public/ABI readers must never inspect them
+		//! directly. Mutation sites publish their combined value here.
+		std::atomic<bool> mHasUnsavedChangesCached{ false };
+
+		//! Document-first ADR phase 1: the head version at bind / last
+		//! successful save -- the clean baseline for derived dirty.
+		RISE::Cst::CstHeadVersion mSavedHeadVersion;
+
+		//! Capture the CURRENT head version as the clean baseline (bind +
+		//! save success).
+		void CaptureSavedHeadVersion_();
+
+		//! Derived-dirty floor: serves mHeadDiffersCached (lock-free).
+		bool HeadDiffersFromSaved_() const { return mHeadDiffersCached.load( std::memory_order_acquire ); }
+
+		//! Recompute the cached floor from the live head + saved baseline.
+		//! REQUIRES a stable Document (the caller's mutation lock, or a
+		//! single-threaded context) -- see mHeadDiffersCached's doc.
+		void RecomputeHeadDiffers_();
+
+		//! Publish the complete dirty answer from the stable tracker,
+		//! scale-anchor set, and cached revision floor.
+		void RecomputeHasUnsavedChangesCached_();
 
 	public:
-		//! Re-evaluate `HasUnsavedChanges()` and fire the listener iff
-		//! the value changed since the last fire.  Called from every
-		//! mutation entry point (Apply success, Undo, Redo,
-		//! ClearDirtyState).  No-op when no listener is installed.
-		//! `public` because a file-scope RAII helper in SceneEditor.cpp
-		//! invokes it from Apply / Undo / Redo's scope-exit; no
-		//! preconditions — safe to call from anywhere.
+		//! Defers dirty delivery across a composite public controller call.
+		//! Nested mutation helpers may each attempt to drain; while this
+		//! token lives those drains only leave the notification pending.
+		//! The last token's destructor performs the state-only drain after
+		//! all controller work has completed.
+		class DirtyNotificationDeferral
+		{
+		public:
+			DirtyNotificationDeferral( DirtyNotificationDeferral&& other ) noexcept
+				: mState( std::move( other.mState ) ) {}
+			~DirtyNotificationDeferral();
+
+			DirtyNotificationDeferral( const DirtyNotificationDeferral& ) = delete;
+			DirtyNotificationDeferral& operator=( const DirtyNotificationDeferral& ) = delete;
+			DirtyNotificationDeferral& operator=( DirtyNotificationDeferral&& ) = delete;
+
+		private:
+			friend class SceneEditor;
+			explicit DirtyNotificationDeferral(
+				const std::shared_ptr<DirtyNotificationState>& state )
+				: mState( state ) {}
+			std::shared_ptr<DirtyNotificationState> mState;
+		};
+
+		DirtyNotificationDeferral DeferDirtyNotifications();
+
+		//! Document-first ADR phase 1 (fire -> pending + drain): mutation
+		//! entry points (Apply success, Undo, Redo, ClearDirtyState, the
+		//! marks) call THIS, which only records "dirty may have changed" --
+		//! it never invokes the listener, so it is safe under any lock.  The
+		//! CONTROLLER drains after releasing its mutex
+		//! (DrainDirtyNotification), so the listener always runs OUTSIDE
+		//! controller locks; a missed drain site degrades to a one-frame
+		//! delay (RefreshProperties drains as a per-frame catch-all), never
+		//! a deadlock or a missed transition.  Kept public for the RAII
+		//! helper in SceneEditor.cpp; safe to call from anywhere.
 		void FireDirtyChangedIfTransitioned();
+
+		//! Drain the pending dirty notification: if a mutation flagged a
+		//! possible change, read the atomically-published complete dirty
+		//! value and fire the listener iff it transitioned since the last
+		//! fire. MUST be called with no controller locks held. Thread-safe
+		//! (leaf mutex serializes concurrent drains); synchronous re-entry is
+		//! coalesced into the active deliverer's loop. Listener exceptions are
+		//! logged and contained at this notification boundary, including drains
+		//! triggered from noexcept RAII deferral destructors.
+		//! Returns false when concurrent owner teardown marked the editor dead.
+		//! Callers that have more member work after a drain must return immediately.
+		bool DrainDirtyNotification();
+
+		//! True while this thread is invoking this editor's dirty listener OR
+		//! retiring the copied listener target immediately after invocation.
+		//! Controller lifecycle teardown must be retried by the owner after this
+		//! callback boundary returns.
+		bool IsInDirtyChangedCallbackOnThisThread() const;
+
+		//! Round-5 review P1: recompute the cached derived-dirty floor.  Call
+		//! ONLY while the Document is stable (the controller calls it inside
+		//! its RefreshProperties mMutex try_lock region as a per-frame
+		//! self-heal for any mutation path that missed its Fire).
+		void RefreshDerivedDirty()
+		{
+			RecomputeHeadDiffers_();
+			RecomputeHasUnsavedChangesCached_();
+			const std::shared_ptr<DirtyNotificationState> state =
+				mDirtyNotificationState;
+			state->currentHasUnsavedChanges.store(
+				mHasUnsavedChangesCached.load( std::memory_order_acquire ),
+				std::memory_order_release );
+			state->pending.store( true, std::memory_order_release );
+		}
 
 		//! P5 Slice 3 expansion (object transform): the CONTROLLER calls these at a render-thread-PARKED boundary
 		//! (drag-end / panel transform edit / undo / redo) to commit object transforms accumulated by the

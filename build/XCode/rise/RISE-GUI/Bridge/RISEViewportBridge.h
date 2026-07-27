@@ -115,6 +115,11 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// function's doc and SceneEditController::StopInteractive's header doc.
 - (void)stop;
 
+/// Commit and close any controller-owned gesture whose platform release
+/// event is about to be suppressed (for example when a render disables
+/// interaction mid-drag).  Safe to call when no gesture is active.
+- (BOOL)finalizeOpenInteractions;
+
 @property (nonatomic, readonly) BOOL isRunning;
 
 /// Shrink the scene Film so the interactive preview renders at a
@@ -358,14 +363,27 @@ typedef NS_ENUM(NSInteger, RISEViewportLayout) {
 
 /// Mirrors SceneEditController::PaneVantageKind.
 typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
-    RISEViewportVantageSceneCamera = 0,
-    RISEViewportVantageFreeFly     = 1,
-    RISEViewportVantageNamedView   = 2,
+    RISEViewportVantageSceneCamera      = 0,
+    RISEViewportVantageFreeFly          = 1,
+    RISEViewportVantageNamedView        = 2,
+    RISEViewportVantageSceneCameraNamed = 3,
+};
+
+/// Mirrors SceneEditController::PaneContentSource.
+typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
+    RISEViewportPaneContentInteractive = 0,
+    RISEViewportPaneContentLastRender  = 1,
 };
 
 /// The active N-up layout.  Defaults to Single (matches the
 /// controller's construction default) when no controller is attached.
-@property (nonatomic) RISEViewportLayout viewportLayout;
+/// Mutations are explicitly fallible: a coordinated render may acquire
+/// admission after the toolbar was enabled but before the click reaches
+/// the controller, so callers must update their local UI state only when
+/// this method returns YES.
+@property (nonatomic, readonly) RISEViewportLayout viewportLayout;
+- (BOOL)applyViewportLayout:(RISEViewportLayout)layout
+    NS_SWIFT_NAME(setViewportLayout(_:));
 
 /// The primary pane index (0-3; §7.8 decision 1: a non-navigation
 /// click in any pane promotes it).  0 when no controller is attached.
@@ -381,12 +399,20 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
 - (BOOL)setPaneRenderMode:(NSUInteger)pane name:(NSString *)name
     NS_SWIFT_NAME(setPaneRenderMode(_:name:));
 
+- (RISEViewportPaneContentSource)paneContentSource:(NSUInteger)pane
+    NS_SWIFT_NAME(paneContentSource(_:));
+- (BOOL)setPaneContentSource:(NSUInteger)pane source:(RISEViewportPaneContentSource)source
+    NS_SWIFT_NAME(setPaneContentSource(_:source:));
+
 /// Per-pane vantage.  Pane 0's free-fly twins alias -enterFreeFly /
 /// -exitFreeFly (§7.4); pane 0's Scene-camera / NamedView setters have
 /// no pre-existing un-indexed equivalent, so calling them on pane 0 is
-/// a new, valid operation.
+/// a new, valid operation. Named scene-camera binding is secondary-pane
+/// only and therefore refuses pane 0.
 - (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane
     NS_SWIFT_NAME(setPaneVantageSceneCamera(_:));
+- (BOOL)setPaneVantageSceneCameraNamed:(NSUInteger)pane name:(NSString *)name
+    NS_SWIFT_NAME(setPaneVantageSceneCameraNamed(_:name:));
 - (BOOL)setPaneVantageNamedView:(NSUInteger)pane name:(NSString *)name
     NS_SWIFT_NAME(setPaneVantageNamedView(_:name:));
 - (BOOL)paneEnterFreeFly:(NSUInteger)pane
@@ -395,8 +421,8 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
     NS_SWIFT_NAME(paneExitFreeFly(_:));
 
 /// `outKind` receives the vantage kind; `outNamedView` (optional, may
-/// be NULL) receives the NamedView name when kind == NamedView (""
-/// otherwise).  Returns NO on a null controller / invalid pane
+/// be NULL) receives the referenced name for NamedView or
+/// SceneCameraNamed ("" otherwise).  Returns NO on a null controller / invalid pane
 /// (outputs left untouched in that case).
 - (BOOL)getPaneVantage:(NSUInteger)pane
                    kind:(RISEViewportVantageKind *)outKind
@@ -477,9 +503,12 @@ typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
 
 #pragma mark - Time scrubber
 
-- (void)scrubTimeBegin;
-- (void)scrubTime:(double)t;
-- (void)scrubTimeEnd;
+/// Each operation is fallible because a render may acquire controller
+/// admission after the timeline's enabled-state snapshot.  On a refused
+/// value update, callers must restore their local time from -lastSceneTime.
+- (BOOL)scrubTimeBegin;
+- (BOOL)scrubTime:(double)t;
+- (BOOL)scrubTimeEnd;
 
 #pragma mark - Properties-panel scrub gesture
 //
@@ -667,6 +696,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryAnimation  = 8,   ///< Named animation paths (pick to activate)
     RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
     RISEViewportCategoryPainter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
+    RISEViewportCategoryGeometry   = 11,  ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -685,6 +715,17 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// Snapshot of the current entity's properties.  Updated after
 /// `refreshProperties` and after any successful setProperty: call.
 - (NSArray<RISEViewportProperty *> *)propertySnapshot;
+
+/// Jump-to-definition (GUI redesign, 2026-07-22): for the PRIMARY
+/// snapshot's Reference-kind row at `idx`, resolve which category the
+/// row's value names (probing the descriptor's declared target
+/// categories against the live managers, first-wins).  Returns NO for
+/// non-Reference rows / dangling references -- the context-menu item
+/// stays hidden.  On YES the caller navigates via -setSelection:name:.
+- (BOOL)propertyJumpTargetAtIndex:(NSUInteger)idx
+                      outCategory:(RISEViewportCategory *)outCategory
+                          outName:(NSString * _Nullable * _Nonnull)outName
+    NS_SWIFT_NAME(propertyJumpTarget(atIndex:outCategory:outName:));
 
 /// Apply an edit to a named property.  Returns YES on success.
 - (BOOL)setPropertyName:(NSString *)name value:(NSString *)value;
