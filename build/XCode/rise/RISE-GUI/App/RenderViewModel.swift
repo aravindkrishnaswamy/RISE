@@ -424,6 +424,12 @@ final class RenderViewModel: ObservableObject {
         }
     }
     @Published var hasAnimation: Bool = false
+    /// Equality-guarded live options for the active animation.  Unlike the
+    /// original load-time UI snapshot, these follow agent edits and active
+    /// named-animation switches without rebuilding the viewport.
+    @Published private(set) var animationTimeStart: Double = 0
+    @Published private(set) var animationTimeEnd: Double = 1
+    @Published private(set) var animationNumFrames: UInt = 30
     @Published var recentFiles: [String] = []
     /// Last-opened times for `recentFiles` entries (start-screen "2m ago"
     /// labels).  Persisted under the sibling `recentSceneMeta` key; a path
@@ -711,6 +717,9 @@ final class RenderViewModel: ObservableObject {
                 viewportRenderMode = "preview"
                 viewportRenderModes = []
                 viewportXray = false
+                animationTimeStart = 0
+                animationTimeEnd = 1
+                animationNumFrames = 30
                 return
             }
             // CST <-> scene-file live sync (item 1): a freshly-attached
@@ -1865,9 +1874,12 @@ final class RenderViewModel: ObservableObject {
               // .cancelling means rasterize() has not returned yet, so
               // production workers may still read animator state.
               renderState != .rendering, renderState != .cancelling else { return }
-        let t0 = vb.animationTimeStart
-        let t1 = vb.animationTimeEnd
-        let frames = max(Int(vb.animationNumFrames), 2)
+        var t0: Double = 0
+        var t1: Double = 0
+        var numFrames: UInt = 0
+        guard vb.getAnimationOptions(timeStart: &t0, timeEnd: &t1,
+                                     numFrames: &numFrames) else { return }
+        let frames = max(Int(numFrames), 2)
         let span = t1 - t0
         guard span > 0 else { return }
         let dt = span / Double(frames - 1)
@@ -1905,7 +1917,7 @@ final class RenderViewModel: ObservableObject {
     // MARK: - UI redesign: refinement status poll
 
     /// Refresh refinement, undo/redo, viewport-mode, and live animation
-    /// availability state from `vb`.
+    /// presence/options from `vb`.
     /// Called once immediately on bridge attach, then every 0.5 s by
     /// `refinementPollTimer` — see `viewportBridge`'s didSet.
     private func pollRefinementState(_ vb: RISEViewportBridge) {
@@ -1953,6 +1965,26 @@ final class RenderViewModel: ObservableObject {
         let liveAnimationPresence = vb.animationPresence
         if liveAnimationPresence >= 0 {
             let liveHasAnimation = liveAnimationPresence != 0
+            if liveHasAnimation {
+                // Read the whole option tuple under one controller lock so
+                // start/end/frame count can never come from different agent
+                // commits.  Retain the last good tuple on contention.
+                var liveStart: Double = 0
+                var liveEnd: Double = 0
+                var liveFrames: UInt = 0
+                if vb.getAnimationOptions(timeStart: &liveStart,
+                                          timeEnd: &liveEnd,
+                                          numFrames: &liveFrames),
+                   liveEnd > liveStart {
+                    if animationTimeStart != liveStart { animationTimeStart = liveStart }
+                    if animationTimeEnd != liveEnd { animationTimeEnd = liveEnd }
+                    if animationNumFrames != liveFrames { animationNumFrames = liveFrames }
+                }
+            } else {
+                if animationTimeStart != 0 { animationTimeStart = 0 }
+                if animationTimeEnd != 1 { animationTimeEnd = 1 }
+                if animationNumFrames != 30 { animationNumFrames = 30 }
+            }
             if hasAnimation != liveHasAnimation {
                 if !liveHasAnimation { stopPreviewPlay() }
                 hasAnimation = liveHasAnimation

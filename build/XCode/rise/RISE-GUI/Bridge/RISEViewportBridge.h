@@ -495,6 +495,13 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
 @property (nonatomic, readonly) double animationTimeEnd;
 @property (nonatomic, readonly) NSUInteger animationNumFrames;
 
+//! Coherently snapshot all active animation options under one controller
+//! admission.  Returns NO without touching the outputs while unavailable.
+- (BOOL)getAnimationOptionsTimeStart:(double *)timeStart
+                             timeEnd:(double *)timeEnd
+                           numFrames:(NSUInteger *)numFrames
+    NS_SWIFT_NAME(getAnimationOptions(timeStart:timeEnd:numFrames:));
+
 //! Tri-state live animation-presence snapshot: 1 when the scene currently
 //! has keyframed elements, 0 when it does not, and -1 when the controller is
 //! temporarily unavailable/contended.  Callers retain their last successful

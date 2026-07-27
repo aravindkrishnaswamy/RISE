@@ -1476,6 +1476,19 @@ private:
     return static_cast<NSUInteger>(nf);
 }
 
+- (BOOL)getAnimationOptionsTimeStart:(double *)timeStart
+                             timeEnd:(double *)timeEnd
+                           numFrames:(NSUInteger *)numFrames {
+    if (!_controller || !timeStart || !timeEnd || !numFrames) return NO;
+    double t0 = 0, t1 = 0;
+    unsigned int nf = 0;
+    if (!RISE_API_SceneEditController_GetAnimationOptions(_controller, &t0, &t1, &nf)) return NO;
+    *timeStart = t0;
+    *timeEnd = t1;
+    *numFrames = static_cast<NSUInteger>(nf);
+    return YES;
+}
+
 - (NSInteger)animationPresence {
     if (!_controller) return -1;
     bool hasAnimation = false;

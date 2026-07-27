@@ -1,8 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  TimelineSlider.swift - Bottom-of-window time scrubber for the
-//    interactive viewport.  Visible only when the loaded scene
-//    has any keyframed elements.
+//    interactive viewport.  Visible whenever the live scene has
+//    keyframed elements, including timelines added after load.
 //
 //  UI redesign center-column slice: restyled to the design comp's
 //  transport row (⏮ / play-pause / ⏭ + "MM:SS / MM:SS" readout + a

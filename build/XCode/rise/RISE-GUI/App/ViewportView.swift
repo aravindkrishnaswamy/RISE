@@ -30,7 +30,7 @@ struct ViewportView: View {
     @Binding var image: NSImage?
     let timelineVisible: Bool
     @Binding var sceneTime: Double
-    let timelineMax: Double
+    let timelineRange: ClosedRange<Double>
     /// True while the user can interact (drag, scrub, edit).  False
     /// while a production render is in flight — the toolbar greys
     /// out and the canvas ignores pointer events so the production
@@ -410,7 +410,7 @@ struct ViewportView: View {
             if timelineVisible {
                 TimelineSlider(
                     time: $sceneTime,
-                    range: 0...timelineMax,
+                    range: timelineRange,
                     isPlaying: isPreviewPlaying,
                     onPlayToggle: onPlayToggle,
                     onUserScrubBegan: {

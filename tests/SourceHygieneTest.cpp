@@ -191,15 +191,29 @@ int main()
 			return std::string( std::istreambuf_iterator<char>( in ),
 			                    std::istreambuf_iterator<char>() );
 		};
-		const std::string mac = slurp( repoRoot / "build" / "XCode" / "rise"
+		const std::string macModel = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RenderViewModel.swift" );
+		const std::string macContent = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "ContentView.swift" );
+		const std::string macViewport = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "ViewportView.swift" );
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
 			/ "RISE-GUI" / "MainWindow.cpp" );
-		Check( mac.find( "let liveAnimationPresence = vb.animationPresence" )
+		Check( macModel.find( "RunLoop.main.add(timer, forMode: .common)" )
 		       != std::string::npos
-		       && mac.find( "hasAnimation = liveHasAnimation" ) != std::string::npos,
+		       && macModel.find( "self.pollRefinementState(vb)" ) != std::string::npos
+		       && macModel.find( "let liveAnimationPresence = vb.animationPresence" )
+		       != std::string::npos
+		       && macModel.find( "hasAnimation = liveHasAnimation" ) != std::string::npos
+		       && macContent.find( "timelineVisible: viewModel.hasAnimation" )
+		          != std::string::npos
+		       && macContent.find( "timelineRange: viewModel.animationTimeStart...viewModel.animationTimeEnd" )
+		          != std::string::npos
+		       && macViewport.find( "range: timelineRange" ) != std::string::npos,
 		       "post-load timeline reveal remains wired into the macOS live-scene poll" );
-		Check( win.find( "const int animationPresence = m_viewportBridge->animationPresence();" )
+		Check( win.find( "connect(m_cstSyncTimer, &QTimer::timeout, this, &MainWindow::onCstSyncTick);" )
+		       != std::string::npos
+		       && win.find( "const int animationPresence = m_viewportBridge->animationPresence();" )
 		       != std::string::npos
 		       && win.find( "m_viewportTimeline->setVisible(liveHasAnimation);" )
 		          != std::string::npos,

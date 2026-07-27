@@ -322,12 +322,10 @@ struct ContentView: View {
                         image: $viewModel.renderedImage,
                         timelineVisible: viewModel.hasAnimation,
                         sceneTime: $viewModel.sceneTime,
-                        // Pull the active animation's range from the bridge.
-                        // Visibility is controlled independently by the live
-                        // keyframe snapshot above; 5.0 is only a defensive
-                        // fallback when the range snapshot is temporarily
-                        // unavailable or otherwise has no positive end.
-                        timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
+                        // The equality-guarded model snapshot follows agent
+                        // option edits and active named-animation switches.
+                        // Visibility remains an independent keyframe signal.
+                        timelineRange: viewModel.animationTimeStart...viewModel.animationTimeEnd,
                         interactionEnabled: interacting,
                         isProductionRendering: (viewModel.renderState == .rendering),
                         onSelectionMayHaveChanged: { propertyRefresh += 1 },
