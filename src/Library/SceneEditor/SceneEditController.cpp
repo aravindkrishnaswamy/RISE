@@ -1259,6 +1259,11 @@ bool SceneEditController::FinalizeOpenInteractions()
 		std::lock_guard<std::mutex> lk( mMutex );
 		timelineScrubOpen = mScrubOpenedComposite;
 	}
+	// ROUND-10 finding 3 test seam (always false in production): force a
+	// TRANSIENT failure -- i.e. one that does NOT set the sticky flag --
+	// so the retriable arm of the refusal mapping is testable.  Read
+	// here, after every real finalization step, so it can never mask one.
+	if( mForTestFinalizeFailOnce.exchange( false, std::memory_order_acq_rel ) ) return false;
 	return !mInteractionPersistenceFailed.load( std::memory_order_acquire )
 	    && !mPointerDown.load( std::memory_order_acquire )
 	    && !mScrubInProgress.load( std::memory_order_acquire )
@@ -5565,18 +5570,27 @@ bool SceneEditController::RunPreviewRenderParked(
 	RenderClass                  renderClass,
 	const String&                clientLabel,
 	RenderJobId*                 outJobId,
-	PreviewRenderRefusal*        outRefusal )
+	RenderRefusal*               outRefusal )
 {
-	// Fix-round-8 P1: report WHICH gate refused.  Every `return false`
-	// below sets this first; the success path leaves it None.  A caller
-	// CANNOT derive this from CurrentRenderJob() -- see
-	// PreviewRenderRefusal's doc for why that reconstruction was wrong in
-	// the ordinary steady state.  Nothing writes it on the throw-out-of-fn
-	// path, which is why the contract says "initialize to None".
-	const auto reportRefusal = [outRefusal]( PreviewRenderRefusal r ) {
+	// Fix-round-8 P1: report WHICH gate refused.  The unconditional `None`
+	// write below is the seed; every `return false` further down overwrites
+	// it with its own cause, and the success path leaves the seed in place.
+	// A caller CANNOT derive this from CurrentRenderJob() -- see
+	// RenderRefusal's doc for why that reconstruction was wrong in
+	// the ordinary steady state.
+	//
+	// Round-10 correction: the sentence this replaces claimed "nothing
+	// writes it on the throw-out-of-fn path, which is why the contract says
+	// initialize to None".  The first half was false -- the seed write below
+	// runs FIRST, unconditionally, so a caller's pre-seeded value never
+	// survives, throw path included.  The OBSERVABLE contract is unchanged
+	// and still correct: an exception out of `fn` unwinds past every refusal
+	// site, so the seed is the last write and the caller reads `None`, which
+	// is exactly what "no gate refused; `fn` ran" means.
+	const auto reportRefusal = [outRefusal]( RenderRefusal r ) {
 		if( outRefusal ) *outRefusal = r;
 	};
-	reportRefusal( PreviewRenderRefusal::None );
+	reportRefusal( RenderRefusal::None );
 
 	// Register before touching admission or any other controller state.
 	// Terminal Stop() closes this registration under the same leaf mutex and
@@ -5586,7 +5600,7 @@ bool SceneEditController::RunPreviewRenderParked(
 		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
 		if( mDirectRenderStopping )
 		{
-			reportRefusal( PreviewRenderRefusal::ControllerStopped );
+			reportRefusal( RenderRefusal::ControllerStopped );
 			return false;
 		}
 		++mDirectRenderCallCount;
@@ -5611,7 +5625,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
-		reportRefusal( PreviewRenderRefusal::EditorBusy );
+		reportRefusal( RenderRefusal::EditorBusy );
 		return false;
 	}
 
@@ -5626,7 +5640,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused -- controller stopped." );
-		reportRefusal( PreviewRenderRefusal::ControllerStopped );
+		reportRefusal( RenderRefusal::ControllerStopped );
 		return false;
 	}
 	// The dedicated agent/production worker claims this gate before it
@@ -5639,7 +5653,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused while another coordinated render is queued or running." );
-		reportRefusal( PreviewRenderRefusal::CoordinatedRenderBusy );
+		reportRefusal( RenderRefusal::CoordinatedRenderBusy );
 		return false;
 	}
 	// A platform can disable interaction before delivering the matching Up.
@@ -5651,7 +5665,12 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused -- open interaction could not be finalized." );
-		reportRefusal( PreviewRenderRefusal::InteractionFinalizeFailed );
+		// Round-10 finding 3: distinguish the TRANSIENT finalize failure
+		// from the PERMANENTLY LATCHED one.  Reporting the latched case as
+		// retriable told the model to "retry shortly" against a gate that
+		// can never open again -- see ClassifyFinalizeFailure_ and
+		// RenderRefusal::InteractionFinalizeLatched.
+		reportRefusal( ClassifyFinalizeFailure_() );
 		return false;
 	}
 	// Every controller path that opens a transaction/gesture/save takes this
@@ -5665,7 +5684,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused while an editor transaction, gesture, or save is open." );
-		reportRefusal( PreviewRenderRefusal::EditorBusy );
+		reportRefusal( RenderRefusal::EditorBusy );
 		return false;
 	}
 	mDirectRenderCancelRequested.store( false, std::memory_order_release );
@@ -5737,7 +5756,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused because editor state changed during admission." );
-		reportRefusal( PreviewRenderRefusal::EditorBusy );
+		reportRefusal( RenderRefusal::EditorBusy );
 		return false;
 	}
 
@@ -5751,10 +5770,23 @@ bool SceneEditController::RunPreviewRenderParked(
 		// three field writes.
 		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
 		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
-		mCurrentRenderJob.id          = jobId;
-		mCurrentRenderJob.renderClass = renderClass;
-		mCurrentRenderJob.active      = true;
-		mCurrentRenderJob.clientLabel = clientLabel;   // Fix-round-1 P3-c: now actually surfaced (was previously discarded via `(void)clientLabel`)
+		// Round-10 finding 2a: publish a WHOLE, freshly default-constructed
+		// record rather than overwriting a subset of the previous job's
+		// fields.  The three mint sites had drifted -- only
+		// SubmitAgentRenderAsync_Locked wrote `pinned`, so this site and
+		// RenderLoop's left a completed pinned job's `true` in place for the
+		// rest of the session.  A job record must fully describe ITS job; a
+		// field-at-a-time overwrite makes that an invariant somebody has to
+		// remember at every mint site and at every future field addition,
+		// whereas a fresh struct makes it structural.
+		RenderJobStatus rec;
+		rec.id          = jobId;
+		rec.renderClass = renderClass;
+		rec.active      = true;
+		rec.clientLabel = clientLabel;   // Fix-round-1 P3-c: now actually surfaced (was previously discarded via `(void)clientLabel`)
+		// rec.pinned stays false: this direct parked path has no pinned
+		// concept (only the single-slot submit paths take a `pinned` flag).
+		mCurrentRenderJob = rec;
 	}
 
 	// outJobId is assigned BEFORE fn() runs, not after: the job record
@@ -6008,6 +6040,17 @@ void SceneEditController::AgentRenderWorkerLoop_()
 	}
 }
 
+// Round-10 finding 3: see the declaration doc.  A latched
+// mInteractionPersistenceFailed makes FinalizeOpenInteractions return
+// false forever, so a refusal caused by it must NOT be reported as
+// retriable -- that is the infinite-retry loop this branch removes.
+SceneEditController::RenderRefusal SceneEditController::ClassifyFinalizeFailure_() const
+{
+	return mInteractionPersistenceFailed.load( std::memory_order_acquire )
+		? RenderRefusal::InteractionFinalizeLatched
+		: RenderRefusal::InteractionFinalizeFailed;
+}
+
 // Round-2 P2-C: the mint-and-claim core, factored out of SubmitAgentRenderAsync
 // so SubmitAgentRenderSync can inline it WITHOUT releasing mAgentRenderSlotMutex
 // between releasing its fairness ticket and claiming the slot -- see the header
@@ -6022,9 +6065,19 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	RenderJobId*                  outJobId,
 	bool                          bypassFairQueueCheck,
 	bool                          pinned,
-	RenderClass                   renderClass )
+	RenderClass                   renderClass,
+	RenderRefusal*                outRefusal )
 {
 	(void)slotLk;   // proves the caller holds the lock; not touched here
+
+	// Round-10 finding 2b: report WHICH gate refused, instead of leaving
+	// the caller to infer it from a status snapshot taken after this lock
+	// is released.  Deliberately does NOT seed `None` -- the public entry
+	// point that owns the out-param already did, before its own pre-flight
+	// checks (see this method's declaration doc).
+	const auto reportRefusal = [outRefusal]( RenderRefusal r ) {
+		if( outRefusal ) *outRefusal = r;
+	};
 
 	// Fix-round-1 P1-1: refuse HONESTLY once Stop() has been called
 	// (or is concurrently being called -- the flag is set under this
@@ -6039,6 +6092,7 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	if( mAgentRenderStop.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- controller stopped." );
+		reportRefusal( RenderRefusal::ControllerStopped );
 		return false;
 	}
 
@@ -6055,10 +6109,12 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		if( mAgentRenderPinned )
 		{
 			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- a PINNED render is in flight (never silently superseded; retry after it completes)." );
+			reportRefusal( RenderRefusal::PinnedRenderBusy );
 			return false;
 		}
 		// Single-slot: a submission is already queued or running.
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- another agent render is already queued or running (single-slot policy)." );
+		reportRefusal( RenderRefusal::CoordinatedRenderBusy );
 		return false;
 	}
 
@@ -6080,6 +6136,11 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	if( !bypassFairQueueCheck && mAgentRenderWaitingSyncCount > 0 )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused -- queued waiters exist (fair-slot reservation for synchronous callers)." );
+		// A fair-queue waiter owns the next turn at the single slot: from
+		// the refused caller's point of view that is the same "the
+		// coordinated render slot is not available, retry" fact as an
+		// occupied slot.
+		reportRefusal( RenderRefusal::CoordinatedRenderBusy );
 		return false;
 	}
 
@@ -6109,12 +6170,14 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
 				"SceneEditController: render submission refused -- another direct/coordinated render has admission." );
+			reportRefusal( RenderRefusal::CoordinatedRenderBusy );
 			return false;
 		}
 		if( !FinalizeOpenInteractions() )
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
 				"SceneEditController: render submission refused -- open interaction could not be finalized." );
+			reportRefusal( ClassifyFinalizeFailure_() );
 			return false;
 		}
 		std::lock_guard<std::mutex> renderLk( mMutex );
@@ -6122,18 +6185,21 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
 				"SceneEditController: render submission refused inside an open transaction." );
+			reportRefusal( RenderRefusal::EditorBusy );
 			return false;
 		}
 		if( mSaving.load( std::memory_order_acquire ) )
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
 				"SceneEditController: render submission refused while a save is in progress." );
+			reportRefusal( RenderRefusal::EditorBusy );
 			return false;
 		}
 		if( mEditor.IsCompositeOpen() )
 		{
 			GlobalLog()->PrintEx( eLog_Warning,
 				"SceneEditController: render submission refused while an editor gesture is open." );
+			reportRefusal( RenderRefusal::EditorBusy );
 			return false;
 		}
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
@@ -6146,11 +6212,15 @@ bool SceneEditController::SubmitAgentRenderAsync_Locked(
 	{
 		std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
 		jobId = mNextRenderJobId += kControllerRenderJobIdStride;
-		mCurrentRenderJob.id          = jobId;
-		mCurrentRenderJob.renderClass = renderClass;
-		mCurrentRenderJob.active      = true;
-		mCurrentRenderJob.clientLabel = clientLabel;
-		mCurrentRenderJob.pinned      = pinned;
+		// Round-10 finding 2a: whole-record publish -- see the identical
+		// comment at RunPreviewRenderParked's mint site.
+		RenderJobStatus rec;
+		rec.id          = jobId;
+		rec.renderClass = renderClass;
+		rec.active      = true;
+		rec.clientLabel = clientLabel;
+		rec.pinned      = pinned;
+		mCurrentRenderJob = rec;
 	}
 
 	mAgentRenderFn          = std::move( fn );
@@ -6173,11 +6243,17 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	const String&         clientLabel,
 	RenderJobId*          outJobId,
 	bool                  pinned,
-	RenderClass           renderClass )
+	RenderClass           renderClass,
+	RenderRefusal*        outRefusal )
 {
+	// Round-10 finding 2b: seed the reported cause BEFORE the first gate,
+	// so `None` on return unambiguously means "accepted".
+	if( outRefusal ) *outRefusal = RenderRefusal::None;
+
 	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent render submission refused inside an open transaction (would stall the gesture)." );
+		if( outRefusal ) *outRefusal = RenderRefusal::EditorBusy;
 		return false;
 	}
 
@@ -6185,7 +6261,7 @@ bool SceneEditController::SubmitAgentRenderAsync(
 	{
 		std::unique_lock<std::mutex> slotLk( mAgentRenderSlotMutex );
 		accepted = SubmitAgentRenderAsync_Locked( slotLk, std::move( fn ), clientLabel, outJobId,
-			/*bypassFairQueueCheck=*/false, pinned, renderClass );
+			/*bypassFairQueueCheck=*/false, pinned, renderClass, outRefusal );
 	}
 	if( !accepted ) return false;
 
@@ -6205,8 +6281,12 @@ bool SceneEditController::SubmitAgentRenderSync(
 	RenderJobId*          outJobId,
 	unsigned int          timeoutMs,
 	bool                  pinned,
-	RenderClass           renderClass )
+	RenderClass           renderClass,
+	RenderRefusal*        outRefusal )
 {
+	// Round-10 finding 2b: seed before the first gate -- see the async twin.
+	if( outRefusal ) *outRefusal = RenderRefusal::None;
+
 	// Fix-round-1 P1-2: claim a FIFO ticket before attempting to submit,
 	// so a burst of concurrent async submitters cannot systematically
 	// starve this call (SubmitAgentRenderAsync refuses outright whenever
@@ -6275,9 +6355,23 @@ bool SceneEditController::SubmitAgentRenderSync(
 		if( !onTime )
 		{
 			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: SubmitAgentRenderSync fairness wait timed out after %ums.", timeoutMs );
+			// Round-10 finding 2b: classify the timeout while we STILL hold
+			// mAgentRenderSlotMutex (the wait woke under it).  This is the one
+			// place a pinned occupant is observable to a sync caller -- see
+			// this method's declaration doc for why the pinned branch inside
+			// SubmitAgentRenderAsync_Locked is unreachable from here.  Reading
+			// the slot state under the lock at the moment of refusal is what
+			// makes this honest, unlike the CurrentRenderJob().pinned
+			// after-the-fact inference it replaces.
+			if( outRefusal ) {
+				*outRefusal = ( mAgentRenderPending && mAgentRenderPinned )
+					? RenderRefusal::PinnedRenderBusy
+					: RenderRefusal::CoordinatedRenderBusy;
+			}
 			return false;
 		}
 		const bool stoppedBeforeOurTurn = mAgentRenderStop.load( std::memory_order_acquire );
+		if( stoppedBeforeOurTurn && outRefusal ) *outRefusal = RenderRefusal::ControllerStopped;
 
 		// Release OUR ticket now -- still under the SAME lock hold the
 		// wait just woke up under, so no OTHER thread's
@@ -6291,7 +6385,7 @@ bool SceneEditController::SubmitAgentRenderSync(
 		if( !stoppedBeforeOurTurn )
 		{
 			accepted = SubmitAgentRenderAsync_Locked( slotLk, std::move( fn ), clientLabel, &jobId,
-				/*bypassFairQueueCheck=*/true, pinned, renderClass );
+				/*bypassFairQueueCheck=*/true, pinned, renderClass, outRefusal );
 		}
 	}   // slotLk released here -- AFTER both the ticket release and the slot claim
 	mAgentRenderDoneCV.notify_all();   // release the NEXT queued waiter (mirrors TicketGuard::Release's own notify)
@@ -8079,10 +8173,20 @@ void SceneEditController::RenderLoop()
 			// RenderClass::Interactive always.
 			{
 				std::lock_guard<std::mutex> statusLk( mJobStatusMutex );
-				mCurrentRenderJob.id          = mNextRenderJobId += kControllerRenderJobIdStride;
-				mCurrentRenderJob.renderClass = RenderClass::Interactive;
-				mCurrentRenderJob.active      = true;
-				mCurrentRenderJob.clientLabel = String();   // Fix-round-1 P3-c: an Interactive-class job has no client label -- clear any stale value left by a prior AgentPreview job record
+				// Round-10 finding 2a: whole-record publish.  This site used to
+				// clear `clientLabel` by hand "to clear any stale value left by a
+				// prior AgentPreview job record" while leaving `pinned` -- right
+				// beside it -- stale, which is exactly the bug that hand-listing
+				// fields invites.  A fresh RenderJobStatus zeroes BOTH, and any
+				// field added later, without anyone having to remember.
+				RenderJobStatus rec;
+				rec.id          = mNextRenderJobId += kControllerRenderJobIdStride;
+				rec.renderClass = RenderClass::Interactive;
+				rec.active      = true;
+				// rec.clientLabel stays empty and rec.pinned stays false: an
+				// Interactive-class pass has neither a client label nor a pinned
+				// concept.
+				mCurrentRenderJob = rec;
 				thisPassJobId = mCurrentRenderJob.id;
 			}
 		}

@@ -129,12 +129,21 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	const char* base = std::getenv( "TMPDIR" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	// Round-8 review P2: per-process filename.  run_all_tests.sh runs the
-	// suite in PARALLEL, and a developer may run one binary by hand while
-	// the suite runs, so a FIXED temp name lets two processes clobber each
-	// other's scene file mid-load.  That already cost a reviewer hours and
-	// produced a false "the test is flaky / there is a race" P1.  The pid
-	// prefix makes the path unique per process.
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
+	// sequential `for` loop that waits on each binary before starting the
+	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
+	// likewise sequential for execution.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
 	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );
 	if( !f ) return std::string();
@@ -5402,20 +5411,28 @@ static void RunPerSessionImageCacheTest()
 //
 // WHY THIS CASE EXISTS.  A mutation audit sabotaged the guard's dtor one
 // restore at a time and rebuilt each time.  Numbers RE-MEASURED on this
-// branch's current state, round 8 (the previous set predated this branch's
-// own strengthening of those suites and had drifted -- it claimed 1/1 for
-// the sink row and gave no per-suite split for the PNG row):
+// branch's current state in ROUND 10 (the round-8 set had the right COUNTS
+// but got the async-result row's ATTRIBUTION wrong; the round-7 set before
+// that had drifted on counts too):
 //   * drop the SINK restore  -> AgentObjectMapTest 2, AgentViewportReadTest 3,
 //     AgentRenderAsyncTest 0, AgentProposeRenderTest 0.
 //     (AgentRenderAsyncTest is unaffected because ReadImage() with no maxEdge
 //     serves mLastPng, which IS restored; only the maxEdge>0 read goes
 //     through the sink.)
 //   * drop the PNG restore   -> AgentObjectMapTest 2, AgentViewportReadTest 2,
-//     AgentRenderAsyncTest 1, AgentProposeRenderTest 0.
+//     AgentRenderAsyncTest 1, AgentProposeRenderTest 0.  The one
+//     AgentRenderAsyncTest failure is THIS case's "the beauty frame is still
+//     what ReadImage() serves" assertion.
 //   * drop the ASYNC-RESULT restore (BOTH lines) -> AgentObjectMapTest 0,
-//     AgentViewportReadTest 0, AgentProposeRenderTest 0, AgentRenderAsyncTest 4
-//     -- all four failures are THIS case.  Before it existed the whole row was
-//     green: the async-result half of the restore was pinned by NOTHING.
+//     AgentViewportReadTest 0, AgentProposeRenderTest 0, AgentRenderAsyncTest 4.
+//     Round-10 correction: the round-8 comment claimed "all four failures are
+//     THIS case".  They are not -- THREE are (the two MONEY assertions plus
+//     the byte-identity one) and the FOURTH is the (guard-ctor) case's
+//     "after QueryObjectAt returns, the async result record is found again
+//     (window closed)" assertion.  The point the row was making still holds
+//     and is now sharper: before these two cases existed the whole row was
+//     green, i.e. the async-result half of the restore was pinned by NOTHING,
+//     and it is now pinned from BOTH sides of the window.
 //
 // This case is that missing pin, and it discriminates the two dtor lines
 // SEPARATELY:
@@ -5557,19 +5574,24 @@ static void RunEphemeralGuardRestoresAsyncResultTest()
 // the file's other seams (ForTest_SetReadViewportAfterParkHook,
 // ForTest_SetReadPerceptionBeforeCacheHook).
 //
-// WHAT THE ASSERTIONS PIN.  Measured by sabotage on this branch, round 8:
+// WHAT THE ASSERTIONS PIN.  Sabotage RE-MEASURED in round 10 (counts and
+// per-case attribution both re-derived from the run, not carried forward):
 //   * drop `mLastAsyncResultJobId = 0;` (alone) -> AgentRenderAsyncTest 1
 //     failure, THIS case's in-window `!found` assertion; AgentObjectMapTest
 //     and AgentViewportReadTest stay 0/0.  Dropping BOTH async-result
-//     stash-out lines gives the identical 1 / 0 / 0 -- that is exactly the
-//     mutation the round-7 audit ran when it found the ctor half unpinned,
-//     so this case is the pin that mutation was missing.
+//     stash-out zeroing lines gives the identical 1 / 0 / 0 -- that is
+//     exactly the mutation the round-7 audit ran when it found the ctor half
+//     unpinned, so this case is the pin that mutation was missing.
 //   * drop `mSavedPng.swap( mLastPng );` -> AgentRenderAsyncTest 3,
-//     AgentObjectMapTest 3, AgentViewportReadTest 3.  One of the three here
-//     is this case's in-window `ReadImage().empty()` assertion (the other
-//     two are the (guard-async) case's), so this line was already partly
-//     covered; the in-window assertion is what makes the failure name the
-//     WINDOW rather than the restore.
+//     AgentObjectMapTest 3, AgentViewportReadTest 3.  Round-10 correction:
+//     the round-8 comment split those three as "one here, two in
+//     (guard-async)".  That is INVERTED.  TWO are THIS case's -- the
+//     in-window `ReadImage().empty()` assertion AND the post-return "serves
+//     the beauty frame again" assertion -- and ONE is (guard-async)'s "the
+//     beauty frame is still what ReadImage() serves".  So this line was
+//     already partly covered from the (guard-async) side, and it is the
+//     IN-WINDOW assertion here that makes the failure name the WINDOW rather
+//     than the restore.
 //
 // HONEST LIMITS -- do not read more into this case than it proves:
 //   * `mLastSink = nullptr;` CANNOT be red-proved by any assertion.  It is
@@ -5679,6 +5701,150 @@ static void RunEphemeralGuardCtorWindowTest()
 	std::remove( scenePath.c_str() );
 
 	std::printf( "=== (guard-ctor) ephemeral guard opens the window: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (pinned-stale) ROUND-10 finding 2 RED-PROVE: a COMPLETED pinned render
+// must not make a LATER, unrelated refusal claim a pinned render is in
+// flight.
+//
+// WHAT WENT WRONG.  RenderJobStatus::pinned was written at exactly ONE of
+// the three job-record mint sites (SubmitAgentRenderAsync_Locked).  The
+// other two -- RunPreviewRenderParked's mint and RenderLoop's per-pass
+// Interactive mint -- set id/renderClass/active/clientLabel and left
+// `pinned` untouched.  RenderLoop's site even cleared `clientLabel` by
+// hand "to clear any stale value left by a prior AgentPreview job record"
+// while leaving `pinned` stale right beside it.
+//
+// So once ANY pinned render had completed, mCurrentRenderJob.pinned stayed
+// true for the session's life, and the very next ordinary viewport pass
+// re-minted an ACTIVE record that still carried it.  Both refusal paths
+// that chose their message with `cur.active && cur.pinned` -- RenderCore_'s
+// no-override branch (the path EVERY plain `render` takes) and RenderAsync's
+// -- then told the model "a pinned render is in flight ... retry after it
+// completes" when none existed.  That is the same infer-the-cause defect
+// round 8 removed from the override branch, in a commoner path.
+//
+// THE SHAPE OF THIS CASE.  A pinned render is submitted and allowed to
+// COMPLETE.  An interactive viewport pass is then parked mid-flight
+// (SeamController), so an ACTIVE Interactive record exists -- the bug's
+// precondition.  Two things are asserted:
+//   1. the ACTIVE record's `pinned` is false (the stale-field fix itself);
+//   2. an unrelated refusal driven through that state does NOT mention a
+//      pinned render, and DOES name what actually blocked it.
+// Both are asserted, not just (2): (1) is the defect, (2) is the harm.
+//////////////////////////////////////////////////////////////////////
+static void RunPinnedFieldNotStaleAfterCompletionTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (pinned-stale) round-10 finding 2 RED-PROVE: a completed pinned render does not poison later refusals ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_pinned_stale.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the pinned-stale scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (pinned-stale test)" );
+
+	SeamController controller( *pJob );
+	controller.Start( /*suppressInitialRender=*/true );   // no interactive pass yet
+
+	// --- step 1: a PINNED render that runs to completion ---------------
+	SceneEditController::RenderJobId pinnedJobId = 0;
+	{
+		const bool accepted = controller.SubmitAgentRenderAsync(
+			[](){}, String( "pinned-stale-occupant" ), &pinnedJobId, /*pinned=*/true );
+		Check( accepted && pinnedJobId != 0, "the PINNED render is accepted" );
+		Check( controller.WaitForRenderJob( pinnedJobId, 15000 ), "the PINNED render completes" );
+	}
+	{
+		const SceneEditController::RenderJobStatus done = controller.CurrentRenderJob();
+		Check( !done.active, "PRECONDITION: the pinned job is no longer active" );
+		Check( done.pinned,
+		       "PRECONDITION: its record still reports pinned=true -- that is the documented "
+		       "\"stale but informational once inactive\" state, unchanged by this fix; the bug "
+		       "was the NEXT job's mint inheriting it" );
+	}
+
+	// --- step 2: an ordinary interactive pass, parked mid-flight -------
+	controller.ForTest_KickRender();
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+		while( !controller.passEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.passEntered.load( std::memory_order_acquire ),
+	       "an ordinary interactive viewport pass is genuinely mid-flight" );
+
+	{
+		const SceneEditController::RenderJobStatus cur = controller.CurrentRenderJob();
+		Check( cur.active && cur.renderClass == SceneEditController::RenderClass::Interactive,
+		       "PRECONDITION (the bug's trigger): the ACTIVE record is an ordinary Interactive pass" );
+		Check( !cur.pinned,
+		       "MONEY 1: the Interactive pass's record reports pinned=FALSE.  Before the round-10 "
+		       "whole-record mint fix this read TRUE -- inherited from the pinned job that finished "
+		       "in step 1 -- and stayed true for the rest of the session" );
+	}
+
+	// --- step 3: drive an unrelated refusal through that state ---------
+	// A transaction is what actually blocks.  It is opened here, with the
+	// interactive pass parked, via SeamController's gate: BeginTransaction
+	// takes mMutex, which the parked pass holds -- so release the gate,
+	// open the transaction, and re-park a fresh pass.
+	controller.releaseGate.store( true, std::memory_order_release );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 30 ) );
+	Check( controller.BeginTransaction(), "a transaction opens (the thing that will actually block)" );
+	controller.passEntered.store( false, std::memory_order_release );
+	controller.releaseGate.store( false, std::memory_order_release );
+	controller.ForTest_KickRender();
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+		while( !controller.passEntered.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+	}
+	Check( controller.passEntered.load( std::memory_order_acquire ),
+	       "a fresh interactive pass is mid-flight with the transaction open" );
+	{
+		const SceneEditController::RenderJobStatus cur = controller.CurrentRenderJob();
+		Check( cur.active && !cur.pinned,
+		       "PRECONDITION: the active record is still non-pinned after the re-park" );
+	}
+
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (pinned-stale test)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+
+			// RenderAsync is the async submit path: it refuses IMMEDIATELY on
+			// the pre-flight mTxnOpen check without touching mMutex, so it can
+			// be driven while the interactive pass holds it.
+			AgentRenderParams plain;   // pinned = false
+			const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( plain );
+			std::printf( "    [pinned-stale] async refusal message=\"%s\"\n", ar.message.c_str() );
+			Check( !ar.accepted, "the async submission is refused (a transaction is open)" );
+			Check( ar.message.find( "pinned" ) == std::string::npos,
+			       "MONEY 2 RED-PROVE: the refusal does NOT mention a pinned render.  Before the "
+			       "round-10 fix this said \"a pinned render is in flight -- ... retry after it "
+			       "completes\" against a pinned render that had ALREADY COMPLETED" );
+			Check( ar.message.find( "editor transaction" ) != std::string::npos,
+			       "MONEY 3: it names the TRANSACTION -- the thing that is actually blocking" );
+
+			session->AttachController( nullptr );
+		}
+	}
+
+	controller.releaseGate.store( true, std::memory_order_release );
+	Check( controller.RollbackTransaction(), "transaction rolls back (pinned-stale test)" );
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (pinned-stale) round-10 finding 2: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -5888,6 +6054,7 @@ int main()
 	RunEphemeralGuardRestoresAsyncResultTest();
 	RunEphemeralGuardCtorWindowTest();
 	RunRefusalCauseAttributionTest();
+	RunPinnedFieldNotStaleAfterCompletionTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

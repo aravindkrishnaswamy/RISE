@@ -101,8 +101,12 @@ static std::string WriteTemp( const char* name, const char* content )
 	// scene files mid-load and surfaced as a bogus "fixture constructs"
 	// failure.  Reproduced by running 12 copies concurrently: 3 failed that
 	// way; with the pid suffix, 0 do.
-	// Round-9: honour TMPDIR like the other eight WriteTemp helpers do
-	// (AgentRenderAsyncTest, AgentObjectMapTest, ...).  A hardcoded "/tmp/"
+	// Round-9: honour TMPDIR like the other fourteen WriteTemp helpers do
+	// (AgentRenderAsyncTest, AgentObjectMapTest, ...) -- fifteen test files
+	// carry a copy of this helper; round 10 brought the last five
+	// (AgentFirstSliceTest, AgentHeadVersionTest, AgentMcpAdapterTest,
+	// AgentProposeRenderTest, AgentViewModeRenderTest) up to the same
+	// TMPDIR + pid shape.  A hardcoded "/tmp/"
 	// is not portable -- these tests are glob-enumerated into the Windows
 	// cmake build, where /tmp typically does not exist -- and having one
 	// member of the family differ is how the family drifts apart again.

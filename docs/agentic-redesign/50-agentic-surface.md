@@ -133,7 +133,13 @@
 >   the parked frame-copy can also be REFUSED by the controller, and those refusals used to be
 >   reported as a single hard-coded `"editor_transaction_in_progress"` regardless of cause. They
 >   now report the actual gate — `"editor_transaction_in_progress"` / `"render_in_progress"` /
->   `"editor_shutting_down"` — see `AgentSession::ReadViewport`'s doc.) On the MCP
+>   `"editor_shutting_down"`. Round-10 fix: two more, because folding them into the first was
+>   the same misattribution one level down —
+>   `"editor_interaction_finalize_failed"` (retriable) and
+>   `"editor_interaction_unrecoverable"` (the controller's sticky interaction-persistence
+>   failure: PERMANENT, never clears, and `render` is refused by the same gate, so neither
+>   retrying nor falling back helps). Seven reasons total; see `AgentSession::ReadViewport`'s
+>   doc, which is the authority on the list and on which are retriable.) On the MCP
 >   surface as tool #15 (image content block when available); allowed under the Read autonomy
 >   posture; deliberately NOT in the chat panel's curated 9-tool list. Shared C++ — Mac,
 >   Windows, and the loopback server with zero bridge changes.

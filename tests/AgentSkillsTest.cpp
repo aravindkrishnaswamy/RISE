@@ -483,8 +483,36 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 	Check( !md.empty(), "observe-modes: markdown fetched" );
 	Check( md.find( "capped at 4" ) != std::string::npos,
 	       "observe-modes states the draft samples cap as 4 (matches AgentSession.cpp's kDraftMaxSamples)" );
-	Check( md.find( "no_controller" ) != std::string::npos && md.find( "no_frame_yet" ) != std::string::npos,
-	       "observe-modes names both read_viewport unavailability reasons verbatim" );
+	// Round-10 finding 4: the skill used to name only two of
+	// read_viewport's unavailability reasons and this assertion said
+	// "both".  There are SEVEN (see AgentSession.h's ReadViewport doc
+	// and the switch in AgentSession.cpp that emits them).  Assert ALL
+	// seven verbatim, so the skill cannot silently fall behind the wire
+	// values again -- a model-facing doc that enumerates a closed set
+	// incompletely is worse than one that does not enumerate it.
+	static const char* const kViewportReasons[] = {
+		"no_controller", "no_frame_yet", "editor_transaction_in_progress",
+		"render_in_progress", "editor_shutting_down",
+		"editor_interaction_finalize_failed", "editor_interaction_unrecoverable"
+	};
+	for( size_t ri = 0; ri < sizeof( kViewportReasons ) / sizeof( kViewportReasons[0] ); ++ri ) {
+		Check( md.find( kViewportReasons[ri] ) != std::string::npos,
+		       ( std::string( "observe-modes names read_viewport reason \"" )
+		         + kViewportReasons[ri] + "\" verbatim" ).c_str() );
+	}
+	// Round-10 finding 4: the skill's OLD guidance told the model to
+	// "fall back to a `render` call instead of retrying" on ANY
+	// available:false.  That is actively wrong for the editor/admission
+	// reasons -- a `render` call passes through the SAME gates and is
+	// refused too -- so it guaranteed a second refusal.  Pin the
+	// corrected guidance: the skill must say the fallback applies only
+	// to the no-viewport reasons.
+	Check( md.find( "Do NOT reflexively fall back to `render`" ) != std::string::npos,
+	       "observe-modes explicitly warns against the reflexive render fallback" );
+	Check( md.find( "ONLY a fix for `no_controller`/`no_frame_yet`" ) != std::string::npos,
+	       "observe-modes limits the render fallback to the two no-viewport reasons" );
+	Check( md.find( "guaranteed second refusal" ) != std::string::npos,
+	       "observe-modes states that `render` hits the same gates on the other reasons" );
 	Check( md.find( "[16,512]" ) != std::string::npos,
 	       "observe-modes states the width/height clamp range verbatim" );
 

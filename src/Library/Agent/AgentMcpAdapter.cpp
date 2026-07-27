@@ -663,14 +663,24 @@ namespace RISE
 						"primary or pane 0), so always check it before reasoning about a specific "
 						"pane's content. The pane set is READ-ONLY by design -- there is no agent "
 						"control of layout or panes. When `available` is false there is no image: `reason` is "
+						"one of SEVEN values. RETRIABLE (they clear on their own -- one short retry is "
+						"reasonable): \"editor_transaction_in_progress\" (the user is mid-gesture or "
+						"saving), \"render_in_progress\" (another coordinated render holds the gate), "
+						"\"editor_interaction_finalize_failed\" (an open editor interaction could not be "
+						"finalized this time). NOT RETRIABLE (retrying can never succeed): "
 						"\"no_controller\" (this session has no live GUI viewport -- e.g. a headless "
-						"run), \"no_frame_yet\" (the viewport exists but has not rendered a frame "
-						"yet), \"editor_transaction_in_progress\" (the user is mid-gesture or saving), "
-						"\"render_in_progress\" (another coordinated render holds the gate), or "
-						"\"editor_shutting_down\" (the editor is tearing down). available:false is a "
-						"normal result, not an error -- do not retry blindly: the last three clear on "
-						"their own so a short retry is reasonable, a headless session will never have "
-						"a viewport, and a shutting-down editor never will again.",
+						"run -- and never will), \"no_frame_yet\" (the viewport exists but has not "
+						"rendered a frame yet -- it will once the user's viewport draws, but nothing YOU "
+						"do makes that happen sooner), \"editor_shutting_down\" (the editor is tearing "
+						"down and never comes back), \"editor_interaction_unrecoverable\" (an editor "
+						"interaction failed to persist and the editor LATCHED that failure -- it does NOT "
+						"clear on its own, so read_viewport AND render both stay refused until the scene "
+						"is reopened; tell the user rather than retrying). available:false is a normal, "
+						"structured result, not an error. On the three retriable reasons, note that a "
+						"`render` call is gated by the SAME editor/admission checks, so falling back to "
+						"`render` is NOT a way around them -- it is refused too. Use `render` instead of "
+						"read_viewport only for \"no_controller\" and \"no_frame_yet\", where there is "
+						"no live viewport to read but rendering still works.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 

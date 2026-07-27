@@ -96,6 +96,26 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+### A FRESH CHECKOUT OR GIT WORKTREE CANNOT `make` UNTIL YOU DO THIS
+
+`build/make/rise/Config.specific` is a per-machine symlink and is
+**gitignored**, and the output directories are not tracked either.  A
+brand-new clone — and, the usual way this bites, a `git worktree add`
+used to isolate a reviewer or a parallel agent — therefore fails the
+very first `make` with a missing-include or missing-directory error
+that looks like a code problem and is not.  One-time, per checkout:
+
+```sh
+ln -s Config.OSX build/make/rise/Config.specific   # or Config.Linux
+mkdir -p bin rendered            # `make install` does the same, without -p
+```
+
+(`bin/tests` and `bin/tools` are created by the `tests` / tools targets
+themselves — only `bin/` and `rendered/` need to pre-exist.)
+
+Do this BEFORE the first `make -C build/make/rise -j8 all`.  (This cost
+a worktree-based reviewer real time; it is not obvious from the error.)
+
 ### Render test scenes at lower resolution (CLI override)
 
 Production scenes often author 1920×1080 (or higher) in their `film`

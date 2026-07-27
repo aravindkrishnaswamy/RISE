@@ -1975,13 +1975,36 @@ namespace RISE
 			//!                    render loop has not produced a frame yet)
 			//! plus, when the parked frame-copy is REFUSED by the controller
 			//! (fix-round-8 P1 -- these were previously all reported as the
-			//! first of them, and none of the three were listed here at all):
+			//! first of them, and none of them were listed here at all):
 			//!   "editor_transaction_in_progress" (a transaction, pointer
 			//!                    gesture, time scrub, save, or composite is
-			//!                    open -- retriable once it completes)
+			//!                    open -- RETRIABLE once it completes)
 			//!   "render_in_progress"   (another coordinated agent/production
-			//!                    render owns the admission gate -- retriable)
-			//!   "editor_shutting_down" (controller teardown -- NOT retriable).
+			//!                    render owns the admission gate -- RETRIABLE)
+			//!   "editor_shutting_down" (controller teardown -- NOT retriable,
+			//!                    and it never becomes available again)
+			//!   "editor_interaction_finalize_failed" (round-10: an open
+			//!                    platform interaction could not be finalized
+			//!                    for a TRANSIENT reason -- RETRIABLE.  Used to
+			//!                    be reported as editor_transaction_in_progress,
+			//!                    which names a different cause)
+			//!   "editor_interaction_unrecoverable" (round-10 finding 3: the
+			//!                    controller's mInteractionPersistenceFailed
+			//!                    flag is LATCHED -- a gesture's pending CST
+			//!                    commit failed.  That flag is never cleared, so
+			//!                    read_viewport and every coordinated render
+			//!                    refuse for the LIFE of this controller.
+			//!                    **NOT retriable, and it will NOT clear on its
+			//!                    own.**  It too used to be reported as
+			//!                    editor_transaction_in_progress -- i.e. as
+			//!                    something that clears by itself -- which is
+			//!                    exactly the infinite-retry instruction the
+			//!                    chattiness work exists to remove)
+			//! SEVEN reason values in total.  Every surface that enumerates
+			//! them must list all seven AND state retriability, because that is
+			//! what a model acts on: AgentMcpAdapter's read_viewport tool
+			//! description, skills/agent/observe-modes.md (three places), and
+			//! AgentSkillsTest's cross-reference assertion.
 			//! An unavailable result is a STRUCTURED, NON-error outcome (the
 			//! returned byte vector is empty, outW/outH are 0).
 			//!

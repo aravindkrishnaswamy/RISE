@@ -5613,11 +5613,16 @@ namespace RISE
 				SceneEditController::RenderJobId controllerJobId = 0;
 				bool parked = false;
 				// Fix-round-8 P1: initialized to None, which is ALSO the
-				// value that correctly describes the throw path (the
-				// callee never reaches a refusal site when `fn` throws, so
-				// it does not write this).
-				SceneEditController::PreviewRenderRefusal refusal =
-					SceneEditController::PreviewRenderRefusal::None;
+				// value the callee leaves here on the throw path.  Round-10
+				// correction: NOT because "the callee never reaches a refusal
+				// site so it does not write this" -- it writes None
+				// UNCONDITIONALLY on entry, so this initializer is
+				// belt-and-braces, not the mechanism.  The mechanism is that an
+				// exception out of `fn` unwinds past every refusal site, leaving
+				// that entry write as the last one -- see
+				// RunPreviewRenderParked's header doc.
+				SceneEditController::RenderRefusal refusal =
+					SceneEditController::RenderRefusal::None;
 				std::string thrownMessage;
 				try {
 					parked = mController->RunPreviewRenderParked(
@@ -5647,10 +5652,14 @@ namespace RISE
 					// stable for the duration of one RenderCore_ call), not a
 					// real degrade path.  Mirror the edit verbs' retriable
 					// phrasing (see ApplyAgentParamEdit / ApplyAgentChunkCrud_'s
-					// "editor transaction in progress -- retry after the
-					// gesture completes") so a caller sees the identical
-					// wording whether it hit a param edit, a chunk edit, or a
-					// preview render.
+					// "editor transaction or gesture in progress -- retry after
+					// it completes") so a caller sees the identical wording
+					// whether it hit a param edit, a chunk edit, or a preview
+					// render.  Round-10 P1: this quotation used to read "editor
+					// transaction in progress -- retry after the gesture
+					// completes", which is not what either sibling says; the
+					// message emitted below was changed to the sibling's ACTUAL
+					// string, so the claim of verbatim reuse is now true.
 					// P2 fix (2026-07-19 mutation review): doRenderWork never
 					// entered the park on THIS path (RunPreviewRenderParked
 					// refused before running it) -- there is no live-render
@@ -5698,29 +5707,54 @@ namespace RISE
 					// warnings are bugs in this repo.
 					//
 					// Wording is reused verbatim from the controller's OWN
-					// refusals so the two layers agree: SceneEditController's
-					// chunk-CRUD refusals say exactly "render queued or in
-					// progress -- retry after it completes", and the edit verbs
-					// (ApplyAgentParamEdit / ApplyAgentChunkCrud_) say exactly
-					// "editor transaction in progress -- retry after the
-					// gesture completes".
+					// refusals so the two layers agree.  Both quotations were
+					// re-checked against their sources in round 10:
+					//   * SceneEditController's chunk-CRUD render-busy refusals
+					//     say exactly "render queued or in progress -- retry
+					//     after it completes" -- matches.
+					//   * the edit verbs (ApplyAgentParamEdit /
+					//     ApplyAgentChunkCrud_) say exactly "editor transaction
+					//     or gesture in progress -- retry after it completes".
+					//     The round-8 comment MISQUOTED this one as "editor
+					//     transaction in progress -- retry after the gesture
+					//     completes", and the string emitted below WAS that
+					//     misquote -- so the two layers did not in fact agree.
+					//     Round-10 P1 fix: emit the sibling's real string.
 					res.ok          = false;
 					res.renderJobId = renderJobId;   // 0 here -- no render ran, matching the other pre-flight refusal paths in this function
-					res.message     = "editor transaction in progress -- retry after the gesture completes";
+					res.message     = "editor transaction or gesture in progress -- retry after it completes";
 					switch( refusal ) {
-					case SceneEditController::PreviewRenderRefusal::CoordinatedRenderBusy:
+					case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
 						res.message = "render queued or in progress -- retry after it completes";
 						break;
-					case SceneEditController::PreviewRenderRefusal::ControllerStopped:
+					case SceneEditController::RenderRefusal::ControllerStopped:
 						// NOT retriable -- say so rather than inviting a retry
 						// loop against a controller that is going away.
 						res.message = "render refused: the editor is shutting down";
 						break;
-					case SceneEditController::PreviewRenderRefusal::InteractionFinalizeFailed:
+					case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
 						res.message = "render refused: an open editor interaction could not be finalized -- retry shortly";
 						break;
-					case SceneEditController::PreviewRenderRefusal::EditorBusy:
-					case SceneEditController::PreviewRenderRefusal::None:
+					case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+						// Round-10 finding 3.  The LATCHED case: the controller's
+						// mInteractionPersistenceFailed flag is set and is NEVER
+						// cleared, so this refusal fires for every render and every
+						// viewport read for the rest of the session.  Round 8 could
+						// not tell the two apart and said "retry shortly" here --
+						// precisely the infinite-retry instruction this branch exists
+						// to remove.
+						res.message = "render refused: an editor interaction failed to persist and the editor has LATCHED that failure -- this does NOT clear on its own and retrying will not help; renders and viewport reads stay refused until the scene is reopened";
+						break;
+					case SceneEditController::RenderRefusal::PinnedRenderBusy:
+						// Not producible by RunPreviewRenderParked (no slot concept) --
+						// listed to keep the switch total so -Wswitch keeps guarding
+						// this mapping, and mapped rather than left to the pre-switch
+						// default so a future routing change cannot silently mislabel
+						// it as a transaction refusal.
+						res.message = "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::EditorBusy:
+					case SceneEditController::RenderRefusal::None:
 						// Keep the pre-switch default.  `None` is unreachable on
 						// a refusal (the callee sets a cause at every `return
 						// false`); listed so the switch stays total and -Wswitch
@@ -5749,32 +5783,77 @@ namespace RISE
 				// this thread.  This is the no-override race closure.
 				SceneEditController::RenderJobId controllerJobId = 0;
 				bool submitted = false;
+				// Round-10 finding 2b: collect the REPORTED refusal cause instead
+				// of inferring one afterwards.  Seeded to None for the same
+				// belt-and-braces reason as the override branch above.
+				SceneEditController::RenderRefusal refusal =
+					SceneEditController::RenderRefusal::None;
 				std::string thrownMessage;
 				try {
 					submitted = mController->SubmitAgentRenderSync( doRenderWork, String(), &controllerJobId,
-						/*timeoutMs=*/30000, params.pinned );
+						/*timeoutMs=*/30000, params.pinned,
+						SceneEditController::RenderClass::AgentPreview, &refusal );
 				}
 				catch( const std::exception& e ) { thrownMessage = e.what(); }
 				catch( ... )                     { thrownMessage = "unknown exception"; }
 				if( !submitted && thrownMessage.empty() ) {
-					// Refused: either an editor transaction is open (same
-					// rule as RunPreviewRenderParked), the single-slot
-					// worker already has a render queued/running, or --
-					// Model-B F2 slice S3 -- the occupant is a PINNED
-					// render (never silently superseded; see
-					// SubmitAgentRenderSync's `pinned` doc).  Honest
-					// failure -- no fallback direct call here, since a
-					// direct call is exactly the race this slice closes.
+					// Refused.  Honest failure -- no fallback direct call here,
+					// since a direct call is exactly the race S2a closes.
 					// P2 fix (2026-07-19 mutation review): doRenderWork never
 					// entered the park on THIS path (SubmitAgentRenderSync
 					// refused before running it) -- see the RunPreviewRenderParked
 					// refusal branch above and AgentRenderResult::integrator's
 					// field doc for the same reasoning.
+					//
+					// ROUND-10 finding 2 (P1).  This branch USED to pick its
+					// message by reading `CurrentRenderJob().pinned` after the
+					// refusal.  That was wrong twice over.  (1) The field was
+					// written at ONE of the three job-record mint sites, so once
+					// any pinned render had ever completed it stayed true for the
+					// session's life and this -- the path EVERY plain `render`
+					// call takes -- told the model "a pinned render is in flight"
+					// when none was.  (2) Even with the field fixed, a sync
+					// submission does not refuse on a pinned occupant at all: it
+					// WAITS for the fairness window (see SubmitAgentRenderSync's
+					// S3-P2 doc), so a pinned occupant can only surface here as a
+					// fairness-wait TIMEOUT.  Both are the same defect round 8
+					// removed from the override branch: inferring a cause the
+					// callee already knows.  The callee now reports it.
+					//
+					// As in the override branch, the retriable generic message is
+					// assigned BEFORE the switch narrows it (an enumerator added
+					// without extending this switch still yields an honest
+					// message, never an empty one) and the switch stays TOTAL so
+					// -Wswitch flags the omission at build time first.
 					res.ok = false;
-					const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
-					res.message = ( cur.active && cur.pinned )
-						? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
-						: "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+					res.message = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+					switch( refusal ) {
+					case SceneEditController::RenderRefusal::PinnedRenderBusy:
+						res.message = "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
+						res.message = "render queued or in progress -- retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::ControllerStopped:
+						// NOT retriable.
+						res.message = "render refused: the editor is shutting down";
+						break;
+					case SceneEditController::RenderRefusal::EditorBusy:
+						res.message = "editor transaction or gesture in progress -- retry after it completes";
+						break;
+					case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
+						res.message = "render refused: an open editor interaction could not be finalized -- retry shortly";
+						break;
+					case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+						// Round-10 finding 3 -- NOT retriable, and it never clears.
+						res.message = "render refused: an editor interaction failed to persist and the editor has LATCHED that failure -- this does NOT clear on its own and retrying will not help; renders and viewport reads stay refused until the scene is reopened";
+						break;
+					case SceneEditController::RenderRefusal::None:
+						// Unreachable on a refusal (the callee sets a cause at every
+						// `return false`); listed so the switch stays total, and so a
+						// contract slip still produces the honest generic message.
+						break;
+					}
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
@@ -6436,10 +6515,16 @@ namespace RISE
 				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
 				// Fix-round-8 P2 seam: the guard's ctor has run (cache and
 				// async-result record moved OUT to its stash) and the guarded
-				// render has NOT started.  This is the only place the
-				// documented "ONE window reports found == false" property is
-				// observable, so it is the only place a test can pin the ctor
-				// half -- see ForTest_SetEphemeralCacheGuardOpenHook's doc.
+				// render has NOT started -- the documented "ONE window reports
+				// found == false" property is observable from here, so a test can
+				// pin the ctor half -- see ForTest_SetEphemeralCacheGuardOpenHook's
+				// doc.  Round-10 P2 correction: the previous wording said "the
+				// ONLY place" it is observable.  It is not -- CompareToReference
+				// opens the same window with its own EphemeralRenderCacheGuard
+				// around the split-mask render.  What is true, and what the
+				// header phrases correctly, is that ONE seam is enough to pin the
+				// ctor half: the two sites share the guard type, so a test that
+				// observes the window here covers the property for both.
 				// No AgentSession mutex is held here (the ctor took and
 				// released mAsyncCacheMutex), so the hook may re-enter the
 				// session's read paths.
@@ -7307,6 +7392,10 @@ namespace RISE
 			// reason about here.
 			std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
 
+			// Round-10 finding 2b: collect the REPORTED refusal cause rather
+			// than inferring it from a status read after the fact.
+			SceneEditController::RenderRefusal refusal =
+				SceneEditController::RenderRefusal::None;
 			const bool accepted = mController->SubmitAgentRenderAsync(
 				[this, params, ownJobIdCell]() {
 					struct OutstandingGuard {
@@ -7360,23 +7449,56 @@ namespace RISE
 				},
 				String( "render_async" ),
 				&jobId,
-				params.pinned );
+				params.pinned,
+				SceneEditController::RenderClass::AgentPreview,
+				&refusal );
 
 			if( !accepted ) {
 				out.accepted = false;
-				// Model-B F2 slice S3: distinguish "a PINNED render is
+				// Model-B F2 slice S3 distinguished "a PINNED render is
 				// occupying the slot" from the generic busy/transaction
-				// refusal -- CurrentRenderJob() is a fast mJobStatusMutex
-				// read (never blocks behind an in-flight render; see that
-				// method's doc), so this check is cheap even though the
-				// slot was JUST found busy a moment ago.  A benign race
-				// (the pinned job completes between the refusal above and
-				// this read) just falls back to the generic message,
-				// which is still accurate (the submission WAS refused).
-				const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
-				out.message = ( cur.active && cur.pinned )
-					? "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes"
-					: "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+				// refusal by reading CurrentRenderJob().pinned here.
+				// ROUND-10 finding 2 (P1): that read was STALE, not merely
+				// racy.  `pinned` was written at ONE of the three job-record
+				// mint sites, so once ANY pinned render had completed the
+				// field stayed true for the session's life and this branch
+				// announced a pinned render that did not exist.  Both halves
+				// are fixed: the record is now published whole (so the field
+				// is no longer stale) AND this branch no longer infers --
+				// SubmitAgentRenderAsync reports the cause it decided under
+				// the slot lock, which no after-the-fact status read can
+				// reconstruct anyway.
+				//
+				// Generic retriable message first, switch narrows it, switch
+				// stays TOTAL (no `default:`) so -Wswitch catches an
+				// unmapped enumerator at build time -- same discipline as
+				// RenderCore_'s two switches.
+				out.message = "render refused: the agent-render worker is busy or an editor transaction is open -- retry shortly";
+				switch( refusal ) {
+				case SceneEditController::RenderRefusal::PinnedRenderBusy:
+					out.message = "render refused: a pinned render is in flight -- pinned renders run to completion and are never superseded; retry after it completes";
+					break;
+				case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
+					out.message = "render queued or in progress -- retry after it completes";
+					break;
+				case SceneEditController::RenderRefusal::ControllerStopped:
+					// NOT retriable.
+					out.message = "render refused: the editor is shutting down";
+					break;
+				case SceneEditController::RenderRefusal::EditorBusy:
+					out.message = "editor transaction or gesture in progress -- retry after it completes";
+					break;
+				case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
+					out.message = "render refused: an open editor interaction could not be finalized -- retry shortly";
+					break;
+				case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+					// Round-10 finding 3 -- NOT retriable, and it never clears.
+					out.message = "render refused: an editor interaction failed to persist and the editor has LATCHED that failure -- this does NOT clear on its own and retrying will not help; renders and viewport reads stay refused until the scene is reopened";
+					break;
+				case SceneEditController::RenderRefusal::None:
+					// Unreachable on a refusal; listed to keep the switch total.
+					break;
+				}
 				return out;
 			}
 
@@ -7603,8 +7725,8 @@ namespace RISE
 			// `outRefusal` (the id is discarded, the class/label are exactly
 			// what the one-arg forwarder passes, so this is behaviourally
 			// identical apart from the reason string).
-			SceneEditController::PreviewRenderRefusal refusal =
-				SceneEditController::PreviewRenderRefusal::None;
+			SceneEditController::RenderRefusal refusal =
+				SceneEditController::RenderRefusal::None;
 			const bool parked = mController->RunPreviewRenderParked( [&]() {
 				// Keep the frame copy and its live display-transform lookup in the
 				// same parked interval.  CopyInteractiveFrame itself is tile-safe,
@@ -7634,15 +7756,37 @@ namespace RISE
 				// still has no `default:` arm so -Wswitch catches the omission.
 				outReason = "editor_transaction_in_progress";
 				switch( refusal ) {
-				case SceneEditController::PreviewRenderRefusal::CoordinatedRenderBusy:
+				case SceneEditController::RenderRefusal::CoordinatedRenderBusy:
 					outReason = "render_in_progress";
 					break;
-				case SceneEditController::PreviewRenderRefusal::ControllerStopped:
+				case SceneEditController::RenderRefusal::ControllerStopped:
 					outReason = "editor_shutting_down";
 					break;
-				case SceneEditController::PreviewRenderRefusal::EditorBusy:
-				case SceneEditController::PreviewRenderRefusal::InteractionFinalizeFailed:
-				case SceneEditController::PreviewRenderRefusal::None:
+				case SceneEditController::RenderRefusal::InteractionFinalizeFailed:
+					// Round-10 finding 3: this used to fall through to
+					// "editor_transaction_in_progress", which is a different
+					// cause -- no transaction need be open for a finalize to
+					// fail.  Still retriable, but named for what it is.
+					outReason = "editor_interaction_finalize_failed";
+					break;
+				case SceneEditController::RenderRefusal::InteractionFinalizeLatched:
+					// Round-10 finding 3: the LATCHED variant.  It shared
+					// "editor_transaction_in_progress" with the cases above,
+					// and both AgentSession.h and the model-facing
+					// AgentMcpAdapter tool description say that value clears on
+					// its own -- so the model was told to retry a gate that can
+					// never open again.  Distinct value, documented as
+					// permanent, on every surface.
+					outReason = "editor_interaction_unrecoverable";
+					break;
+				case SceneEditController::RenderRefusal::PinnedRenderBusy:
+					// Not producible here (RunPreviewRenderParked has no slot
+					// concept) -- listed to keep the switch total, and mapped
+					// rather than silently reported as a transaction.
+					outReason = "render_in_progress";
+					break;
+				case SceneEditController::RenderRefusal::EditorBusy:
+				case SceneEditController::RenderRefusal::None:
 					// Keep the pre-existing reason.  `None` is unreachable on a
 					// refusal; listed to keep the switch total.
 					break;

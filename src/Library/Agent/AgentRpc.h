@@ -289,15 +289,21 @@
 //                                            read_image).  NEVER triggers a render --
 //                                            the cheapest observe; it copies whatever
 //                                            the interactive render loop last produced.
-//                                            `available` is false with reason
-//                                            "no_controller" (headless session, no
-//                                            viewport), "no_frame_yet" (controller
+//                                            `available` is false with one of SEVEN
+//                                            reasons: "no_controller" (headless session,
+//                                            no viewport), "no_frame_yet" (controller
 //                                            attached but no interactive frame produced
 //                                            yet), or -- when the parked frame copy is
 //                                            refused -- "editor_transaction_in_progress"
 //                                            / "render_in_progress" /
-//                                            "editor_shutting_down" (see
-//                                            AgentSession::ReadViewport's doc);
+//                                            "editor_interaction_finalize_failed"
+//                                            (all three RETRIABLE) /
+//                                            "editor_shutting_down" /
+//                                            "editor_interaction_unrecoverable" (both
+//                                            PERMANENT -- retrying can never succeed;
+//                                            round-10).  AgentSession::ReadViewport's
+//                                            doc is the authority on all seven and on
+//                                            which are retriable;
 //                                            png_base64 is "" and the numeric
 //                                            fields 0 in that case.  available:false is
 //                                            a STRUCTURED SUCCESS result, NOT an error
