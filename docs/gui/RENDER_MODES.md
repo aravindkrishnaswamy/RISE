@@ -668,6 +668,28 @@ choices.  A pane with persisted non-Preview state is already
 user-owned, and after the first successful preset application every explicit
 choice—including an explicit return to `preview`—survives layout toggles.
 
+#### Shared Direct + Indirect transport (shipped 2026-07-26)
+
+When visible dirty `direct` and `indirect` panes use the same live
+`SceneCamera`, the scheduler traces the higher-resolution Indirect pane once.
+The RGB path integrator returns both its normal indirect-only estimator and the
+camera-vertex emission/NEE terms that estimator suppresses.  The latter form a
+Direct companion image, so the Direct pane needs no second camera/path/shadow
+ray pass.  A smaller Direct pane is extracted from the companion with
+center-sampled nearest-neighbour (NNB) subsampling; an equal-size pane is an
+identity extraction.  Each output is OIDN-denoised separately when the settled
+BeautyVariant policy enables denoising.  During a live gesture both outputs use
+the shared 1-SPP/no-OIDN pass described in §6.
+
+Sharing is deliberately fail-closed.  It requires the same aspect ratio, the
+same mode resolution divisor, and Direct dimensions no larger than Indirect.
+Named-view, named-camera, and FreeFly panes render independently because equal
+names do not prove equal private fallback/override camera snapshots after a
+target is deleted or replaced.  Different aspect ratios and a larger Direct
+target also fall back to independent passes.  The companion seam is RGB/Pel
+only because the desktop BeautyVariant factory is Pel-only; the NM and HWSS
+integrator variants are intentionally unchanged.
+
 Vantage semantics: a `SceneCamera` pane tracks the live active camera (edits
 to it re-render the pane).  Tumbling a `SceneCamera` SECONDARY pane converts
 that pane to `FreeFly` seeded from what it was showing — the per-pane

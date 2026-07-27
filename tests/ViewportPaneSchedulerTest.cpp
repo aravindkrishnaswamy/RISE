@@ -26,11 +26,14 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
+#include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Rendering/PathTracingPelRasterizer.h"
+#include "../src/Library/Rendering/ViewportFrameStore.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/Utilities/Reference.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -68,11 +71,26 @@ static const char* const kScene =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\toidn_denoise false\n}\n\n"
 	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
-	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n\texposure 0.01\n\tiso 100\n\tfstop 2\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
 	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
 	"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
 	"standard_object\n{\n\tname obj\n\tgeometry geo\n\tmaterial mat\n}\n";
+
+// Single convex object + delta light: its camera-facing centre has direct
+// NEE but no diffuse continuation can hit another surface, so Indirect is
+// exactly black there.  Used by the paired-transport pixel oracle below.
+static const char* const kSharedDirectScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 1.5\n}\n\n"
+	"standard_object\n{\n\tname obj\n\tgeometry geo\n\tmaterial mat\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 8.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
 
 static std::string WriteTemp( const char* name, const char* content )
 {
@@ -665,6 +683,61 @@ public:
 		return mFirstPixel;
 	}
 
+	RISEColor CenterPixel() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mCenterPixel;
+	}
+
+	unsigned int ExposureCount() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mExposureCount;
+	}
+
+	Scalar ExposureEV() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mExposureEV;
+	}
+
+	unsigned int PreDenoisedCount() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mPreDenoisedCount;
+	}
+
+	unsigned int DenoisedCount() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mDenoisedCount;
+	}
+
+	void SetCameraExposureCompensationEV( Scalar ev ) override
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mExposureEV = ev;
+		++mExposureCount;
+	}
+
+	void OutputPreDenoisedImage(
+		const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		++mPreDenoisedCount;
+	}
+
+	void OutputDenoisedImage(
+		const IRasterImage& image, const Rect* region,
+		const unsigned int frame ) override
+	{
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			++mDenoisedCount;
+		}
+		OutputImage( image, region, frame );
+	}
+
 	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
 
 	void OutputImage(
@@ -675,6 +748,8 @@ public:
 		mHeight = image.GetHeight();
 		mFirstPixel = ( mWidth && mHeight )
 			? image.GetPEL( 0, 0 ) : RISEColor();
+		mCenterPixel = ( mWidth && mHeight )
+			? image.GetPEL( mWidth / 2, mHeight / 2 ) : RISEColor();
 		++mCount;
 		mCV.notify_all();
 	}
@@ -689,6 +764,63 @@ private:
 	unsigned int       mWidth = 0;
 	unsigned int       mHeight = 0;
 	RISEColor           mFirstPixel;
+	RISEColor           mCenterPixel;
+	Scalar              mExposureEV = 0;
+	unsigned int        mExposureCount = 0;
+	unsigned int        mPreDenoisedCount = 0;
+	unsigned int        mDenoisedCount = 0;
+};
+
+class ReentrantSharedPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	ReentrantSharedPaneSink( SceneEditController& controller, unsigned int pane,
+		IRasterizerOutput* replacement )
+		: mController( controller ), mPane( pane ), mReplacement( replacement ) {}
+
+	bool Reentered() const { return mReentered.load( std::memory_order_acquire ); }
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		if( !mReentered.exchange( true, std::memory_order_acq_rel ) ) {
+			mController.SetPaneSink( mPane, mReplacement );
+		}
+	}
+
+protected:
+	~ReentrantSharedPaneSink() override = default;
+
+private:
+	SceneEditController& mController;
+	unsigned int mPane;
+	IRasterizerOutput* mReplacement;
+	std::atomic<bool> mReentered { false };
+};
+
+class ThrowOnceSharedPaneSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	unsigned int Attempts() const
+	{
+		return mAttempts.load( std::memory_order_acquire );
+	}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		const unsigned int attempt =
+			mAttempts.fetch_add( 1, std::memory_order_acq_rel ) + 1;
+		if( attempt == 1 ) throw std::runtime_error( "intentional shared Direct failure" );
+	}
+
+protected:
+	~ThrowOnceSharedPaneSink() override = default;
+
+private:
+	std::atomic<unsigned int> mAttempts { 0 };
 };
 
 class BlockingPaneSink
@@ -5406,6 +5538,211 @@ static void RunCrossPaneVariantAdmissionPolicyTest()
 	       "inverse cross-pane gesture releases cleanly" );
 }
 
+static void RunSharedDirectIndirectTransportTest()
+{
+	std::printf( "=== scheduler (perf3): one Indirect pass also satisfies Direct ===\n" );
+	// A strong pixel oracle catches a superficially green implementation that
+	// merely publishes the Indirect image twice.
+	Fixture f( "pane_sched_shared_direct_indirect.RISEscene", true,
+		kSharedDirectScene );
+	Check( f.ctrl != nullptr, "shared-transport fixture constructs" );
+	if( !f.ctrl ) return;
+	RecordingPaneSink* directSink = new RecordingPaneSink();
+	RecordingPaneSink* indirectSink = new RecordingPaneSink();
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
+	       "shared layout TwoH" );
+	Check( f.ctrl->SetViewportRenderMode( "direct" ),
+	       "pane 0 is Direct" );
+	Check( f.ctrl->SetPaneRenderMode( 1, "indirect" ),
+	       "pane 1 is Indirect" );
+	Check( f.ctrl->SetPaneSurfaceDims( 0, 8, 6 )
+	    && f.ctrl->SetPaneSurfaceDims( 1, 16, 12 ),
+	       "Direct is a same-aspect lower-resolution subview" );
+	Check( f.ctrl->SetPaneSink( 0, directSink )
+	    && f.ctrl->SetPaneSink( 1, indirectSink ),
+	       "both pane sinks install" );
+	f.ctrl->Start( true );
+	f.ctrl->ForTest_KickRender();
+	Check( f.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
+	       "shared source quantum retires" );
+	Check( directSink->WaitForDimensions( 4, 3, kWaitMs ),
+	       "Direct receives a 4x3 NNB companion" );
+	Check( indirectSink->WaitForDimensions( 8, 6, kWaitMs ),
+	       "Indirect receives its canonical 8x6 render" );
+	const IScene* sharedScene = f.job ? f.job->GetScene() : nullptr;
+	const ICamera* sharedCamera = sharedScene ? sharedScene->GetCamera() : nullptr;
+	const Scalar expectedEV = sharedCamera
+		? sharedCamera->GetExposureCompensationEV() : Scalar( 0 );
+	Check( directSink->ExposureCount() == 1
+	    && std::fabs( directSink->ExposureEV() - expectedEV ) < 1e-12,
+	       "shared Direct receives the camera-exposure protocol callback" );
+#ifdef RISE_ENABLE_OIDN
+	Check( directSink->PreDenoisedCount() == 1
+	    && directSink->DenoisedCount() == 1,
+	       "shared Direct preserves pre-denoised/denoised output protocol" );
+#else
+	Check( directSink->PreDenoisedCount() == 0
+	    && directSink->DenoisedCount() == 0,
+	       "OIDN-disabled shared Direct uses the ordinary output protocol" );
+#endif
+	{
+		const RISEColor directCenter = directSink->CenterPixel();
+		const RISEColor indirectCenter = indirectSink->CenterPixel();
+		const Scalar directPeak = std::max( directCenter.base.r,
+			std::max( directCenter.base.g, directCenter.base.b ) );
+		const Scalar indirectPeak = std::max( indirectCenter.base.r,
+			std::max( indirectCenter.base.g, indirectCenter.base.b ) );
+		Check( directPeak > 0.01,
+		       "MONEY: paired Direct companion contains the primary NEE contribution" );
+		// OIDN can reconstruct a small non-zero value into an estimator pixel
+		// whose raw input is black, so compare the two separately-denoised
+		// outputs by discrimination margin rather than requiring exact zero.
+		Check( indirectPeak * 20 < directPeak,
+		       "MONEY: canonical Indirect remains at least 20x dimmer than the paired primary-NEE Direct result" );
+	}
+	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
+	       "MONEY: one quantum satisfies both dirty panes; no second Direct trace runs" );
+	{
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		Check( seq.size() == 1 && seq.front() == 1,
+		       "MONEY: scheduler chooses Indirect first even though Direct pane 0 is primary" );
+	}
+	directSink->release();
+	indirectSink->release();
+
+	Fixture bound( "pane_sched_shared_bound_framestore.RISEscene", true,
+		kSharedDirectScene );
+	Check( bound.ctrl != nullptr, "shared bound-FrameStore fixture constructs" );
+	if( !bound.ctrl ) return;
+	Implementation::ViewportFrameStore* boundDirectSink =
+		new Implementation::ViewportFrameStore();
+	RecordingPaneSink* boundIndirectSink = new RecordingPaneSink();
+	std::atomic<unsigned int> boundPreCount{ 0 };
+	std::atomic<unsigned int> boundFinalCount{ 0 };
+	boundDirectSink->SetPreDenoiseCompleteCallback(
+		[&]( unsigned int, uint64_t ) {
+			boundPreCount.fetch_add( 1, std::memory_order_acq_rel );
+		} );
+	boundDirectSink->SetDenoiseCompleteCallback(
+		[&]( unsigned int, uint64_t ) {
+			boundFinalCount.fetch_add( 1, std::memory_order_acq_rel );
+		} );
+	boundDirectSink->SetFrameCompleteCallback(
+		[&]( unsigned int, uint64_t ) {
+			boundFinalCount.fetch_add( 1, std::memory_order_acq_rel );
+		} );
+	Check( bound.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH )
+	    && bound.ctrl->SetViewportRenderMode( "direct" )
+	    && bound.ctrl->SetPaneRenderMode( 1, "indirect" )
+	    && bound.ctrl->SetPaneSurfaceDims( 0, 8, 6 )
+	    && bound.ctrl->SetPaneSurfaceDims( 1, 16, 12 )
+	    && bound.ctrl->SetPaneSink( 0, boundDirectSink )
+	    && bound.ctrl->SetPaneSink( 1, boundIndirectSink ),
+	       "shared bound-FrameStore pair configures" );
+	bound.ctrl->Start( true );
+	bound.ctrl->ForTest_KickRender();
+	Check( bound.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
+	       "shared bound-FrameStore source quantum retires" );
+	for( unsigned int i = 0;
+	     i < 2000 && boundFinalCount.load( std::memory_order_acquire ) == 0; ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+	}
+	unsigned int boundW = 0, boundH = 0;
+	boundDirectSink->GetDimensions( boundW, boundH );
+	Check( boundDirectSink->IsExternallyBound() && boundW == 4 && boundH == 3,
+	       "MONEY: shared Direct rebinds the target pane's canonical FrameStore" );
+	Check( boundFinalCount.load( std::memory_order_acquire ) == 1,
+	       "MONEY: shared Direct completes the bound FrameStore observer exactly once" );
+#ifdef RISE_ENABLE_OIDN
+	Check( boundPreCount.load( std::memory_order_acquire ) == 1,
+	       "shared Direct completes the bound pre-denoise observer exactly once" );
+#else
+	Check( boundPreCount.load( std::memory_order_acquire ) == 0,
+	       "OIDN-disabled shared Direct does not signal pre-denoise" );
+#endif
+	const Implementation::FrameStore* boundStore = boundDirectSink->GetFrameStore();
+	const RISEColor boundCenter = boundStore
+		? boundStore->AsBeautyRasterImage().GetPEL( 2, 1 ) : RISEColor();
+	Check( std::max( boundCenter.base.r,
+		std::max( boundCenter.base.g, boundCenter.base.b ) ) > 0.01,
+	       "MONEY: bound target FrameStore contains the Direct companion pixels" );
+	Check( bound.ctrl->SettlesAt( 1, kSettleMs ),
+	       "bound FrameStore delivery does not schedule a redundant Direct trace" );
+	boundDirectSink->release();
+	boundIndirectSink->release();
+
+	Fixture incompatible( "pane_sched_unshared_direct_indirect.RISEscene", true,
+		kSharedDirectScene );
+	Check( incompatible.ctrl != nullptr,
+	       "incompatible shared-transport fixture constructs" );
+	if( !incompatible.ctrl ) return;
+	Check( incompatible.ctrl->SetViewportLayout(
+		SceneEditController::ViewportLayout::TwoH )
+	    && incompatible.ctrl->SetViewportRenderMode( "direct" )
+	    && incompatible.ctrl->SetPaneRenderMode( 1, "indirect" )
+	    && incompatible.ctrl->SetPaneSurfaceDims( 0, 5, 4 )
+	    && incompatible.ctrl->SetPaneSurfaceDims( 1, 10, 8 ),
+	       "base-aspect-matched but rounded-pass-aspect-mismatched pair configures" );
+	incompatible.ctrl->Start( true );
+	incompatible.ctrl->ForTest_KickRender();
+	Check( incompatible.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+	       "incompatible pair renders independently" );
+	Check( incompatible.ctrl->SettlesAt( 2, kSettleMs ),
+	       "MONEY: divisor rounding that changes pass aspect falls back to independent renders" );
+
+	Fixture reentrant( "pane_sched_shared_reentrant_sink.RISEscene", true,
+		kSharedDirectScene );
+	Check( reentrant.ctrl != nullptr, "shared reentrant-sink fixture constructs" );
+	if( !reentrant.ctrl ) return;
+	RecordingPaneSink* replacementSink = new RecordingPaneSink();
+	ReentrantSharedPaneSink* reentrantSink =
+		new ReentrantSharedPaneSink( *reentrant.ctrl, 0, replacementSink );
+	RecordingPaneSink* reentrantIndirectSink = new RecordingPaneSink();
+	Check( reentrant.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH )
+	    && reentrant.ctrl->SetViewportRenderMode( "direct" )
+	    && reentrant.ctrl->SetPaneRenderMode( 1, "indirect" )
+	    && reentrant.ctrl->SetPaneSurfaceDims( 0, 8, 6 )
+	    && reentrant.ctrl->SetPaneSurfaceDims( 1, 16, 12 )
+	    && reentrant.ctrl->SetPaneSink( 0, reentrantSink )
+	    && reentrant.ctrl->SetPaneSink( 1, reentrantIndirectSink ),
+	       "shared reentrant-sink pair configures" );
+	reentrant.ctrl->Start( true );
+	reentrant.ctrl->ForTest_KickRender();
+	Check( reentrant.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+	       "shared pass plus replacement-sink retry retire" );
+	Check( replacementSink->WaitForDimensions( 4, 3, kWaitMs ),
+	       "replacement sink receives a fresh Direct render" );
+	Check( reentrantSink->Reentered() && reentrant.ctrl->SettlesAt( 2, kSettleMs ),
+	       "MONEY: shared sink replacement invalidates and retries without render-thread deadlock" );
+	reentrantSink->release();
+	replacementSink->release();
+	reentrantIndirectSink->release();
+
+	Fixture retry( "pane_sched_shared_throw_retry.RISEscene", true,
+		kSharedDirectScene );
+	Check( retry.ctrl != nullptr, "shared throwing-sink fixture constructs" );
+	if( !retry.ctrl ) return;
+	ThrowOnceSharedPaneSink* retrySink = new ThrowOnceSharedPaneSink();
+	RecordingPaneSink* retryIndirectSink = new RecordingPaneSink();
+	Check( retry.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH )
+	    && retry.ctrl->SetViewportRenderMode( "direct" )
+	    && retry.ctrl->SetPaneRenderMode( 1, "indirect" )
+	    && retry.ctrl->SetPaneSurfaceDims( 0, 8, 6 )
+	    && retry.ctrl->SetPaneSurfaceDims( 1, 16, 12 )
+	    && retry.ctrl->SetPaneSink( 0, retrySink )
+	    && retry.ctrl->SetPaneSink( 1, retryIndirectSink ),
+	       "shared throwing-sink pair configures" );
+	retry.ctrl->Start( true );
+	retry.ctrl->ForTest_KickRender();
+	Check( retry.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
+	       "throwing shared sink leaves Direct dirty and schedules a retry" );
+	Check( retrySink->Attempts() >= 2 && retry.ctrl->SettlesAt( 2, kSettleMs ),
+	       "MONEY: shared delivery failure is retried by an independent Direct quantum" );
+	retrySink->release();
+	retryIndirectSink->release();
+}
+
 int main()
 {
 	RunRotationOrderTest();
@@ -5472,6 +5809,7 @@ int main()
 	RunCallbackPrepareRetryPersistsGestureTest();
 	RunBeautyVariantLiveQualityPolicyTest();
 	RunCrossPaneVariantAdmissionPolicyTest();
+	RunSharedDirectIndirectTransportTest();
 
 	std::printf( "\nViewportPaneSchedulerTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -1813,6 +1813,42 @@ bool RISE::Implementation::ConfigureBeautyVariantPass(
 	return true;
 }
 
+bool RISE::Implementation::CreateNearestNeighborSubview(
+	const IRasterImage& source,
+	unsigned int width,
+	unsigned int height,
+	IRasterImage** out )
+{
+	if( out ) *out = nullptr;
+	if( !out || !width || !height || !source.GetWidth() || !source.GetHeight() ) {
+		return false;
+	}
+	IRasterImage* image = nullptr;
+	if( !RISE_API_CreateRISEColorRasterImage(
+			&image, width, height, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) )
+	 || !image )
+	{
+		return false;
+	}
+	const uint64_t sourceW = source.GetWidth();
+	const uint64_t sourceH = source.GetHeight();
+	for( unsigned int y = 0; y < height; ++y ) {
+		const unsigned int sy = static_cast<unsigned int>(
+			std::min<uint64_t>( sourceH - 1,
+				( ( uint64_t( 2 ) * y + 1 ) * sourceH ) /
+				( uint64_t( 2 ) * height ) ) );
+		for( unsigned int x = 0; x < width; ++x ) {
+			const unsigned int sx = static_cast<unsigned int>(
+				std::min<uint64_t>( sourceW - 1,
+					( ( uint64_t( 2 ) * x + 1 ) * sourceW ) /
+					( uint64_t( 2 ) * width ) ) );
+			image->SetPEL( x, y, source.GetPEL( sx, sy ) );
+		}
+	}
+	*out = image;
+	return true;
+}
+
 bool RISE::Implementation::SuppressBeautyVariantDenoise(
 	IRasterizer& rasterizer )
 {

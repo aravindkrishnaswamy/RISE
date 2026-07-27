@@ -338,6 +338,23 @@ namespace RISE
 				PixelAOV* pAOV
 				) const;
 
+			/// Traces the indirect-only estimator once while also returning the
+			/// camera-vertex direct estimator suppressed by that mode.  This is
+			/// the RGB-only multiview sharing seam: one set of camera/intersection/
+			/// shadow/continuation rays feeds both Direct and Indirect panes.
+			/// The caller must configure this integrator as indirect-only.
+			RISEPel IntegrateRayDirectIndirect(
+				const RuntimeContext& rc,
+				const RasterizerState& rast,
+				const Ray& cameraRay,
+				const IScene& scene,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const IRadianceMap* pRadianceMap,
+				RISEPel& direct,
+				PixelAOV* pAOV
+				) const;
+
 			/// Traces a path starting from a pre-computed surface hit.
 			/// Both IntegrateRay and the ShaderOp wrapper delegate here.
 			/// pAOV (when non-null and rc.aovPrefilterMode is Accurate)
@@ -506,6 +523,7 @@ namespace RISE
 				bool smsPassedThroughSpecular_,
 				bool smsHadNonSpecularShading_,
 				PixelAOV* pAOV,
+				typename SpectralDispatch::SpectralValueTraits<Tag>::value_type* pDirectResult,
 				const Tag& tag
 				) const;
 
@@ -521,6 +539,7 @@ namespace RISE
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
 				PixelAOV* pAOV,
+				typename SpectralDispatch::SpectralValueTraits<Tag>::value_type* pDirectResult,
 				const Tag& tag
 				) const;
 

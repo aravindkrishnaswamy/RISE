@@ -69,7 +69,9 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/InteractivePelRasterizer.h"
+#include "../Rendering/PathTracingPelRasterizer.h"
 #include "../Rendering/FrameStore.h"  // L6e-3 — per-pass interactive FrameStore
+#include "../Rendering/FrameSink.h"
 #include "../Interfaces/IRasterImageWriter.h"  // Toolkit slice 1 — BufferRasterImageWriter adapter for CopyInteractiveFrame
 #include "../Rendering/Rasterizer.h"  // L6e-3 — Implementation::Rasterizer for SetFrameStore
 #include "../Scene.h"                 // concrete Scene (transitive scene-state includes); transactional rollback no longer uses CreateSnapshot/RestoreFromSnapshot
@@ -503,7 +505,7 @@ void SceneEditController::RebindEditorToJob()
 		slot.realizedMode       = Implementation::ViewportRenderMode {};
 		slot.poseActive         = false;
 		slot.configDirty        = true;
-		slot.dirty              = true;
+		MarkPaneDirtyLocked_( paneIdx );
 		slot.previewScaleSaved  = 1;
 		slot.previewPinnedSaved = false;
 	}
@@ -991,6 +993,11 @@ SceneEditController::~SceneEditController()
 		if( slot.viewModeCaster )    { slot.viewModeCaster->release();    slot.viewModeCaster = nullptr; }
 		ReleaseControllerOwnedLastRenderSink( this, slot.paneSink );   // P3a slice 3
 	}
+	for( std::size_t i = 0; i < mPendingSharedDirectPublishes.size(); ++i ) {
+		safe_release( mPendingSharedDirectPublishes[i].image );
+		safe_release( mPendingSharedDirectPublishes[i].rawImage );
+	}
+	mPendingSharedDirectPublishes.clear();
 	if( mLastRenderImage )
 	{
 		mLastRenderImage->release();
@@ -1683,6 +1690,13 @@ void SceneEditController::SetPreviewSink( IRasterizerOutput* sink )
 	mPaneRender[0].paneSink = nullptr;
 	mPreviewSink = sink;
 	mPaneLastRenderPublishGeneration[0].fetch_add( 1, std::memory_order_acq_rel );
+	if( IsInteractivePaneLocked_( 0 ) ) {
+		MarkPaneDirtyLocked_( 0 );
+		if( 0 < PaneCountForLayout( mViewportLayout ) ) {
+			mPanePassPending.store( true, std::memory_order_release );
+			mCV.notify_one();
+		}
+	}
 	if( sink && mPaneConfigs[0].contentSource == PaneContentSource::LastRender )
 		QueueLastRenderPublishLocked_( 0 );
 	lk.unlock();
@@ -7898,6 +7912,59 @@ void SceneEditController::RenderLoop()
 				const Implementation::ViewportRenderMode mode =
 					( mCurrentPane == 0 ) ? mViewportRenderMode
 					                      : mPaneConfigs[mCurrentPane].mode;
+				mSharedDirectTargets.clear();
+				Implementation::PathTracingPelRasterizer* sharedPT =
+					dynamic_cast<Implementation::PathTracingPelRasterizer*>(
+						mVariantRasterizer );
+				if( sharedPT ) sharedPT->SetCaptureDirectCompanion( false );
+				if( sharedPT
+				 && mode == Implementation::ViewportRenderMode::Indirect )
+				{
+					unsigned int sourceW = 0, sourceH = 0;
+					const Implementation::ViewportRenderModeInfo* sourceInfo =
+						Implementation::FindViewportRenderModeInfo( mode );
+					if( sourceInfo
+					 && PaneBaseDimensionsLocked_( mCurrentPane, sourceW, sourceH ) )
+					{
+						const unsigned int visible = PaneCountForLayout( mViewportLayout );
+						for( unsigned int target = 0; target < visible; ++target ) {
+							IRasterizerOutput* targetSink = ( target == 0 )
+								? ( mPaneRender[0].paneSink
+									? mPaneRender[0].paneSink : mPreviewSink )
+								: mPaneRender[target].paneSink;
+							if( target == mCurrentPane || !IsInteractivePaneLocked_( target )
+							 || !mPaneRender[target].dirty
+							 || !targetSink
+							 || PaneModeLocked_( target ) != Implementation::ViewportRenderMode::Direct
+							 || !PanesShareTransportViewLocked_( mCurrentPane, target ) )
+								continue;
+							unsigned int targetW = 0, targetH = 0;
+							const Implementation::ViewportRenderModeInfo* targetInfo =
+								Implementation::FindViewportRenderModeInfo( PaneModeLocked_( target ) );
+							if( !targetInfo
+								 || !PaneBaseDimensionsLocked_( target, targetW, targetH )
+								 || sourceInfo->variantScaleDivisor != targetInfo->variantScaleDivisor )
+								continue;
+							const unsigned int divisor = sourceInfo->variantScaleDivisor;
+							const unsigned int sourcePassW = std::max( 1u, sourceW / divisor );
+							const unsigned int sourcePassH = std::max( 1u, sourceH / divisor );
+							const unsigned int targetPassW = std::max( 1u, targetW / divisor );
+							const unsigned int targetPassH = std::max( 1u, targetH / divisor );
+							if( uint64_t( sourcePassW ) * targetPassH
+								 != uint64_t( targetPassW ) * sourcePassH
+							 || targetPassW > sourcePassW || targetPassH > sourcePassH )
+								continue;
+							SharedDirectTarget shared;
+							shared.pane = target;
+							shared.width = targetPassW;
+							shared.height = targetPassH;
+							shared.dirtyGeneration = mPaneRender[target].dirtyGeneration;
+							mSharedDirectTargets.push_back( shared );
+						}
+					}
+					sharedPT->SetCaptureDirectCompanion(
+						!mSharedDirectTargets.empty() );
+				}
 				const bool liveGesture =
 					( mPointerDown.load( std::memory_order_acquire )
 					  && !mPointerGestureStale.load( std::memory_order_acquire ) )
@@ -7908,6 +7975,8 @@ void SceneEditController::RenderLoop()
 					*mVariantRasterizer, mode, liveGesture );
 				thisPassVariantMode = mode;
 				thisPassVariantLiveGesture = liveGesture;
+			} else {
+				mSharedDirectTargets.clear();
 			}
 			// The ordinary preview rasterizer retains its existing polish policy.
 			if( mInteractiveImpl && !mVariantRasterizer ) {
@@ -8014,6 +8083,9 @@ void SceneEditController::RenderLoop()
 			// the shared token immediately afterward.
 			passWasCancelled = mCancelProgress.IsCancelRequested();
 		}
+		// mRendering is now false.  Shared companion callbacks may safely
+		// re-enter setters that use the ordinary cancel-and-park discipline.
+		DrainSharedDirectPublishes_();
 
 		// Rasterizer outputs are owning references.  Drop them only AFTER
 		// mRendering=false and with no controller mutex held: a final sink
@@ -8050,7 +8122,7 @@ void SceneEditController::RenderLoop()
 			std::lock_guard<std::mutex> lk( mMutex );
 			if( mRunning.load( std::memory_order_acquire ) )
 			{
-				mPaneRender[thisPassPane].dirty = true;
+				MarkPaneDirtyLocked_( thisPassPane );
 				if( thisPassPane < PaneCountForLayout( mViewportLayout ) )
 				{
 					mPanePassPending.store( true, std::memory_order_release );
@@ -9864,7 +9936,7 @@ void SceneEditController::InvalidatePanesBoundToNamedView_( const String& name )
 		 && mPaneConfigs[i].namedViewRef == name.c_str() )
 		{
 			mPaneRender[i].configDirty = true;
-			mPaneRender[i].dirty       = true;
+			MarkPaneDirtyLocked_( i );
 			any = true;
 		}
 	}
@@ -9888,7 +9960,7 @@ void SceneEditController::InvalidatePanesBoundToSceneCameraLocked_(
 		 && mPaneConfigs[i].sceneCameraRef == name.c_str() )
 		{
 			mPaneRender[i].configDirty = true;
-			mPaneRender[i].dirty       = true;
+			MarkPaneDirtyLocked_( i );
 			visibleMatch = visibleMatch || i < visible;
 		}
 	}
@@ -9908,7 +9980,7 @@ void SceneEditController::InvalidateAllSceneCameraNamedPanesLocked_()
 		 && mPaneConfigs[i].vantageKind == PaneVantageKind::SceneCameraNamed )
 		{
 			mPaneRender[i].configDirty = true;
-			mPaneRender[i].dirty       = true;
+			MarkPaneDirtyLocked_( i );
 			visibleMatch = visibleMatch || i < visible;
 		}
 	}
@@ -10055,7 +10127,7 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	{
 		mPaneContentGeneration[0].fetch_add( 1, std::memory_order_acq_rel );
 		mPaneConfigs[0].contentSource = PaneContentSource::Interactive;
-		mPaneRender[0].dirty = true;
+		MarkPaneDirtyLocked_( 0 );
 		restoredPaneZeroInteractive = true;
 	}
 	// §7.2: a shrink that hides the primary falls back to pane 0.
@@ -10077,7 +10149,7 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 	if( newVisible > oldVisible )
 	{
 		for( unsigned int i = oldVisible; i < newVisible; ++i ) {
-			if( IsInteractivePaneLocked_( i ) ) mPaneRender[i].dirty = true;
+			if( IsInteractivePaneLocked_( i ) ) MarkPaneDirtyLocked_( i );
 		}
 		mPanePassPending.store( true, std::memory_order_release );
 		mCV.notify_one();
@@ -10157,7 +10229,7 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 				// otherwise the next scrub tick runs an accidental full-res pass.
 				SetPreviewScaleIfUnpinned_( kPreviewScaleMotionStart );
 			}
-			mPaneRender[mPrimaryPane].dirty = true;
+			MarkPaneDirtyLocked_( mPrimaryPane );
 			mPanePassPending.store( true, std::memory_order_release );
 			mCV.notify_one();
 		}
@@ -10278,7 +10350,7 @@ bool SceneEditController::SetPaneRenderMode( unsigned int pane, const char* name
 	// loop via the rotation flag (NOT mEditPending: this is not a scene
 	// edit; other panes' content is still valid).
 	mPaneRender[pane].configDirty = true;
-	mPaneRender[pane].dirty       = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -10371,7 +10443,7 @@ bool SceneEditController::SetPaneContentSource(
 			}
 		}
 		mPaneRender[pane].configDirty = true;
-		mPaneRender[pane].dirty = true;
+		MarkPaneDirtyLocked_( pane );
 	}
 
 	if( AnyVisiblePaneHasWorkLocked_() )
@@ -10439,7 +10511,7 @@ bool SceneEditController::SetPaneVantageSceneCamera( unsigned int pane )
 	mPaneConfigs[pane].namedViewRef = String();
 	mPaneConfigs[pane].sceneCameraRef = String();
 	mPaneRender[pane].configDirty = true;   // P3a slice 2 -- see SetPaneRenderMode
-	mPaneRender[pane].dirty       = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -10474,7 +10546,7 @@ bool SceneEditController::SetPaneVantageSceneCameraNamed(
 	mPaneConfigs[pane].namedViewRef   = String();
 	mPaneConfigs[pane].sceneCameraRef = String( name );
 	mPaneRender[pane].configDirty = true;
-	mPaneRender[pane].dirty       = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -10499,7 +10571,7 @@ bool SceneEditController::SetPaneVantageNamedView( unsigned int pane, const char
 	mPaneConfigs[pane].sceneCameraRef = String();
 	mPaneConfigs[pane].pose         = pose;   // deletion fallback snapshot
 	mPaneRender[pane].configDirty = true;   // P3a slice 2 -- see SetPaneRenderMode
-	mPaneRender[pane].dirty       = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -10719,7 +10791,7 @@ bool SceneEditController::PaneEnterFreeFly( unsigned int pane )
 		mPaneConfigs[pane].namedViewRef = String();
 		mPaneConfigs[pane].sceneCameraRef = String();
 		mPaneRender[pane].configDirty = true;   // realize at the next switch
-		mPaneRender[pane].dirty       = true;
+		MarkPaneDirtyLocked_( pane );
 		mPanePassPending.store( true, std::memory_order_release );
 	}
 	mCV.notify_one();
@@ -10843,7 +10915,7 @@ bool SceneEditController::ApplyPaneFlyOp_( const SceneEdit& edit )
 	// (same reason the object-motion path stamps it).
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
-	mPaneRender[mGesturePane].dirty = true;
+	MarkPaneDirtyLocked_( mGesturePane );
 	mPanePassPending.store( true, std::memory_order_release );
 	lk.unlock();
 	mCV.notify_one();
@@ -10862,7 +10934,7 @@ bool SceneEditController::SetPaneSurfaceDims( unsigned int pane, unsigned int w,
 	mPaneConfigs[pane].surfaceW = w;
 	mPaneConfigs[pane].surfaceH = h;
 	if( !IsInteractivePaneLocked_( pane ) ) return true;
-	mPaneRender[pane].dirty = true;
+	MarkPaneDirtyLocked_( pane );
 	mPanePassPending.store( true, std::memory_order_release );
 	mCV.notify_one();
 	return true;
@@ -10898,6 +10970,17 @@ bool SceneEditController::SetPaneSink( unsigned int pane, IRasterizerOutput* pSi
 	IRasterizerOutput* retiredSink = mPaneRender[pane].paneSink;
 	mPaneRender[pane].paneSink = pSink;
 	mPaneLastRenderPublishGeneration[pane].fetch_add( 1, std::memory_order_acq_rel );
+	if( IsInteractivePaneLocked_( pane ) ) {
+		// A newly-installed sink has not seen the pane's current image.  Make
+		// the replacement itself an invalidation, which also prevents a
+		// shared-output callback from clearing the pane clean after it
+		// synchronously replaces its own sink.
+		MarkPaneDirtyLocked_( pane );
+		if( pane < PaneCountForLayout( mViewportLayout ) ) {
+			mPanePassPending.store( true, std::memory_order_release );
+			mCV.notify_one();
+		}
+	}
 	if( pSink
 	 && mPaneConfigs[pane].contentSource == PaneContentSource::LastRender )
 	{
@@ -10947,6 +11030,160 @@ bool SceneEditController::IsInteractivePaneLocked_( unsigned int pane ) const
 {
 	return pane < kViewportPaneCount
 	    && mPaneConfigs[pane].contentSource == PaneContentSource::Interactive;
+}
+
+Implementation::ViewportRenderMode SceneEditController::PaneModeLocked_(
+	unsigned int pane ) const
+{
+	return pane == 0 ? mViewportRenderMode : mPaneConfigs[pane].mode;
+}
+
+bool SceneEditController::PaneBaseDimensionsLocked_(
+	unsigned int pane, unsigned int& width, unsigned int& height ) const
+{
+	if( pane >= kViewportPaneCount ) return false;
+	width = mPaneConfigs[pane].surfaceW;
+	height = mPaneConfigs[pane].surfaceH;
+	if( width && height ) return true;
+	const IScene* scene = mJob.GetScene();
+	const IFilm* film = scene ? scene->GetFilm() : nullptr;
+	if( !film ) return false;
+	width = film->GetWidth();
+	height = film->GetHeight();
+	return width > 0 && height > 0;
+}
+
+bool SceneEditController::PanesShareTransportViewLocked_(
+	unsigned int a, unsigned int b ) const
+{
+	if( a >= kViewportPaneCount || b >= kViewportPaneCount ) return false;
+	auto kindFor = [&]( unsigned int pane ) {
+		if( pane == 0 ) {
+			const bool freeFly = ( mCurrentPane == 0 )
+				? mViewportPoseActive : mPaneRender[0].poseActive;
+			return freeFly ? PaneVantageKind::FreeFly : PaneVantageKind::SceneCamera;
+		}
+		return mPaneConfigs[pane].vantageKind;
+	};
+	const PaneVantageKind ka = kindFor( a );
+	const PaneVantageKind kb = kindFor( b );
+	if( ka != kb ) return false;
+	// Only the live scene camera is a single authoritative camera object.
+	// Named and free-fly panes own per-pane fallback/override snapshots;
+	// equal names do not prove equal poses after deletion or replacement.
+	// Keep those cases on independent passes until camera identity can be
+	// represented explicitly in the pane state.
+	return ka == PaneVantageKind::SceneCamera;
+}
+
+void SceneEditController::MarkPaneDirtyLocked_( unsigned int pane )
+{
+	if( pane >= kViewportPaneCount ) return;
+	mPaneRender[pane].dirty = true;
+	++mPaneRender[pane].dirtyGeneration;
+}
+
+void SceneEditController::DrainSharedDirectPublishes_()
+{
+	std::vector<PendingSharedDirectPublish> pending;
+	pending.swap( mPendingSharedDirectPublishes );
+	for( std::size_t i = 0; i < pending.size(); ++i ) {
+		PendingSharedDirectPublish& item = pending[i];
+		IRasterizerOutput* sink = nullptr;
+		Implementation::FrameStore* targetStore = nullptr;
+		Implementation::FrameStore* retiredStore = nullptr;
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			const bool valid = item.pane < PaneCountForLayout( mViewportLayout )
+				&& IsInteractivePaneLocked_( item.pane )
+				&& PaneModeLocked_( item.pane ) == Implementation::ViewportRenderMode::Direct
+				&& mPaneRender[item.pane].dirty
+				&& mPaneRender[item.pane].dirtyGeneration == item.dirtyGeneration;
+			if( valid && item.image ) {
+				sink = ( item.pane == 0 )
+					? ( mPaneRender[0].paneSink
+						? mPaneRender[0].paneSink : mPreviewSink )
+					: mPaneRender[item.pane].paneSink;
+				if( sink ) {
+					sink->addref();
+					PaneRenderState& target = mPaneRender[item.pane];
+					if( !target.frameStore
+					 || target.frameStore->Width() != item.image->GetWidth()
+					 || target.frameStore->Height() != item.image->GetHeight() )
+					{
+						FrameStoreOutput::FrameStoreSpec spec;
+						spec.width = item.image->GetWidth();
+						spec.height = item.image->GetHeight();
+						spec.tileEdge = 8;
+						retiredStore = target.frameStore;
+						target.frameStore = new Implementation::FrameStore( spec );
+					}
+					targetStore = target.frameStore;
+					targetStore->addref();
+				}
+			}
+		}
+		if( retiredStore ) retiredStore->release();
+
+		bool delivered = false;
+		if( sink && item.image && targetStore ) {
+			std::unique_lock<std::recursive_mutex> deliveryLk(
+				mLastRenderDeliveryMutex );
+			LastRenderSinkCallbackScope callbackScope( this );
+			Implementation::FrameSink* frameSink =
+				new Implementation::FrameSink( targetStore );
+			try {
+				// The platform pane sink may be externally bound to the
+				// rasterizer's canonical FrameStore.  Rebind it to this target
+				// pane's saved store before replaying the output protocol, then
+				// populate/complete that store exactly as a rasterizer would.
+				sink->OnRasterizerFrameStoreChanged( targetStore );
+				sink->SetCameraExposureCompensationEV( item.cameraExposureEV );
+				frameSink->SetCameraExposureCompensationEV( item.cameraExposureEV );
+				if( item.rawImage ) {
+					sink->OutputPreDenoisedImage( *item.rawImage, nullptr, 0 );
+					frameSink->OutputPreDenoisedImage( *item.rawImage, nullptr, 0 );
+					sink->OutputDenoisedImage( *item.image, nullptr, 0 );
+					frameSink->OutputDenoisedImage( *item.image, nullptr, 0 );
+				} else {
+					sink->OutputImage( *item.image, nullptr, 0 );
+					frameSink->OutputImage( *item.image, nullptr, 0 );
+				}
+				delivered = true;
+			} catch( const std::exception& e ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditController: shared Direct sink threw: %s", e.what() );
+			} catch( ... ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditController: shared Direct sink threw an unknown exception." );
+			}
+			frameSink->release();
+		}
+
+		if( delivered ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			IRasterizerOutput* currentSink = nullptr;
+			if( item.pane < kViewportPaneCount ) {
+				currentSink = item.pane == 0
+					? ( mPaneRender[0].paneSink
+						? mPaneRender[0].paneSink : mPreviewSink )
+					: mPaneRender[item.pane].paneSink;
+			}
+			if( item.pane < PaneCountForLayout( mViewportLayout )
+			 && IsInteractivePaneLocked_( item.pane )
+			 && PaneModeLocked_( item.pane ) == Implementation::ViewportRenderMode::Direct
+			 && mPaneRender[item.pane].dirty
+			 && mPaneRender[item.pane].dirtyGeneration == item.dirtyGeneration
+			 && currentSink == sink )
+			{
+				mPaneRender[item.pane].dirty = false;
+			}
+		}
+		ReleaseControllerOwnedLastRenderSink( this, sink );
+		if( targetStore ) targetStore->release();
+		safe_release( item.image );
+		safe_release( item.rawImage );
+	}
 }
 
 //! Extracted from SetViewportRenderMode (P3a slice 2) -- see the header doc.
@@ -11218,6 +11455,54 @@ unsigned int SceneEditController::PickNextVisiblePaneLocked_() const
 			: mPaneRender[p].polishSaved;
 		return st == static_cast<int>( PolishState::PolishQueued );
 	};
+	// Shared-transport priority: when a dirty Indirect pane can also satisfy
+	// a dirty, same-view Direct pane, trace Indirect first regardless of which
+	// pane is primary.  Direct is then retired from the same camera paths.
+	unsigned int sharedSource = kViewportPaneCount;
+	uint64_t sharedSourceArea = 0;
+	for( unsigned int source = 0; source < visible; ++source ) {
+		if( !IsInteractivePaneLocked_( source ) || !mPaneRender[source].dirty
+		 || PaneModeLocked_( source ) != Implementation::ViewportRenderMode::Indirect )
+			continue;
+		unsigned int sourceW = 0, sourceH = 0;
+		if( !PaneBaseDimensionsLocked_( source, sourceW, sourceH ) ) continue;
+		const Implementation::ViewportRenderModeInfo* sourceInfo =
+			Implementation::FindViewportRenderModeInfo( PaneModeLocked_( source ) );
+		for( unsigned int target = 0; target < visible; ++target ) {
+			IRasterizerOutput* targetSink = ( target == 0 )
+				? ( mPaneRender[0].paneSink
+					? mPaneRender[0].paneSink : mPreviewSink )
+				: mPaneRender[target].paneSink;
+			if( target == source || !IsInteractivePaneLocked_( target )
+			 || !mPaneRender[target].dirty
+			 || !targetSink
+			 || PaneModeLocked_( target ) != Implementation::ViewportRenderMode::Direct
+			 || !PanesShareTransportViewLocked_( source, target ) )
+				continue;
+			unsigned int targetW = 0, targetH = 0;
+			if( !PaneBaseDimensionsLocked_( target, targetW, targetH ) ) continue;
+			const Implementation::ViewportRenderModeInfo* targetInfo =
+				Implementation::FindViewportRenderModeInfo( PaneModeLocked_( target ) );
+			if( !sourceInfo || !targetInfo
+				 || sourceInfo->variantScaleDivisor != targetInfo->variantScaleDivisor )
+				continue;
+			const unsigned int divisor = sourceInfo->variantScaleDivisor;
+			const unsigned int sourcePassW = std::max( 1u, sourceW / divisor );
+			const unsigned int sourcePassH = std::max( 1u, sourceH / divisor );
+			const unsigned int targetPassW = std::max( 1u, targetW / divisor );
+			const unsigned int targetPassH = std::max( 1u, targetH / divisor );
+			if( uint64_t( sourcePassW ) * targetPassH
+				 != uint64_t( targetPassW ) * sourcePassH
+			 || targetPassW > sourcePassW || targetPassH > sourcePassH )
+				continue;
+			const uint64_t area = uint64_t( sourceW ) * sourceH;
+			if( sharedSource == kViewportPaneCount || area > sharedSourceArea ) {
+				sharedSource = source;
+				sharedSourceArea = area;
+			}
+		}
+	}
+	if( sharedSource != kViewportPaneCount ) return sharedSource;
 	if( mPrimaryPane < visible && IsInteractivePaneLocked_( mPrimaryPane )
 	 && mPaneRender[mPrimaryPane].dirty ) return mPrimaryPane;
 	for( unsigned int i = 0; i < visible; ++i ) {
@@ -11250,7 +11535,7 @@ void SceneEditController::MarkAllVisiblePanesDirtyLocked_()
 {
 	const unsigned int visible = PaneCountForLayout( mViewportLayout );
 	for( unsigned int i = 0; i < visible; ++i ) {
-		if( IsInteractivePaneLocked_( i ) ) mPaneRender[i].dirty = true;
+		if( IsInteractivePaneLocked_( i ) ) MarkPaneDirtyLocked_( i );
 	}
 }
 
@@ -13453,6 +13738,50 @@ void SceneEditController::DoOneRenderPass()
 	const auto t0 = std::chrono::steady_clock::now();
 	activeRast->RasterizeScene( *scene, pRegion, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+	// A completed indirect-only quantum may carry a camera-vertex Direct
+	// companion produced by the same path walk.  Build owning NNB derivatives
+	// here, but DO NOT invoke sinks or retire dirty generations while
+	// mRendering is true.  RenderLoop drains these only after ActiveFlipGuard;
+	// arbitrary sink re-entry can then park safely and a throwing sink leaves
+	// the target dirty for retry.
+	if( !mCancelProgress.IsCancelled() && !mSharedDirectTargets.empty() )
+	{
+		Implementation::PathTracingPelRasterizer* sharedPT =
+			dynamic_cast<Implementation::PathTracingPelRasterizer*>( activeRast );
+		const IRasterImage* direct = sharedPT
+			? sharedPT->GetDirectCompanionImage() : nullptr;
+		const bool denoised = sharedPT && sharedPT->DirectCompanionWasDenoised();
+		const IRasterImage* rawDirect = denoised
+			? sharedPT->GetDirectCompanionRawImage() : nullptr;
+		const ICamera* camera = scene->GetCamera();
+		const Scalar cameraEV = camera
+			? camera->GetExposureCompensationEV() : Scalar( 0 );
+		if( direct ) {
+			for( std::size_t i = 0; i < mSharedDirectTargets.size(); ++i ) {
+				const SharedDirectTarget target = mSharedDirectTargets[i];
+				IRasterImage* subview = nullptr;
+				IRasterImage* rawSubview = nullptr;
+				if( !Implementation::CreateNearestNeighborSubview(
+						*direct, target.width, target.height, &subview ) )
+					continue;
+				if( denoised && ( !rawDirect
+					 || !Implementation::CreateNearestNeighborSubview(
+						*rawDirect, target.width, target.height, &rawSubview ) ) )
+				{
+					subview->release();
+					continue;
+				}
+				PendingSharedDirectPublish pending;
+				pending.pane = target.pane;
+				pending.dirtyGeneration = target.dirtyGeneration;
+				pending.cameraExposureEV = cameraEV;
+				pending.image = subview;
+				pending.rawImage = rawSubview;
+				mPendingSharedDirectPublishes.push_back( pending );
+			}
+		}
+	}
 	// restoreGuard's destructor runs at the end of this scope and
 	// restores rest dims whether we exited normally, via cancellation,
 	// or (hypothetically) via a propagated exception.

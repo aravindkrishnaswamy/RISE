@@ -1315,9 +1315,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			// gesture can suppress this now-obsolete denoise while we wait, so
 			// close that final admission window before entering OIDN.
 			if( ShouldDenoise() ) {
+				const double renderElapsedSeconds = GetRenderElapsedSeconds();
+				OnBeforeDenoise( renderElapsedSeconds );
 				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					GetRenderElapsedSeconds() );
+					renderElapsedSeconds );
 				appliedDenoise = true;
 			}
 		}
@@ -2019,9 +2021,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			{
 				// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 				FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+				const double renderElapsedSeconds = GetRenderElapsedSeconds();
+				OnBeforeDenoise( renderElapsedSeconds );
 				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					GetRenderElapsedSeconds() );
+					renderElapsedSeconds );
 			}
 			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );
 		} else {

@@ -1582,6 +1582,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	bool smsPassedThroughSpecular_initial,
 	bool smsHadNonSpecularShading_initial,
 	PixelAOV* pAOV,
+	typename SpectralValueTraits<Tag>::value_type* pDirectResult,
 	const Tag& tag
 	) const
 {
@@ -2261,8 +2262,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// untouched regardless of specular history.
 				const bool suppressIndirectEmission = EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
 					( depth == 0 || ( depth == 1 && !bPassedThroughSpecular ) );
+				const Value emissionContrib = throughput * emission;
 				if( !suppressIndirectEmission ) {
-					result = result + throughput * emission;
+					result = result + emissionContrib;
+				} else if( pDirectResult && depth == 0 ) {
+					*pDirectResult = *pDirectResult + emissionContrib;
 				}
 
 				if constexpr ( Traits::is_pel ) {
@@ -2376,6 +2380,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
 										result = result + sssDirectContrib;
+									} else if( pDirectResult ) {
+										*pDirectResult = *pDirectResult + sssDirectContrib;
 									}
 								}
 
@@ -2541,6 +2547,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
 										result = result + sssDirectContrib;
+									} else if( pDirectResult ) {
+										*pDirectResult = *pDirectResult + sssDirectContrib;
 									}
 								}
 
@@ -2784,8 +2792,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// consumption / shadow-ray cost as every other mode) so the
 			// sampler stream stays in lockstep; only the contribution is
 			// zeroed.
+			const Value directContrib = throughput * directAll;
 			if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
-				result = result + throughput * directAll;
+				result = result + directContrib;
+			} else if( pDirectResult ) {
+				*pDirectResult = *pDirectResult + directContrib;
 			}
 			if constexpr ( Traits::is_pel ) {
 				if( ff ) {
@@ -3392,7 +3403,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		considerEmission_, importance_, rayType_, diffuseBounces_,
 		glossyBounces_, transmissionBounces_, translucentBounces_,
 		volumeBounces_, glossyFilterWidth_, smsPassedThroughSpecular_,
-		smsHadNonSpecularShading_, pAOV, PelTag{} );
+		smsHadNonSpecularShading_, pAOV, nullptr, PelTag{} );
 }
 
 
@@ -3468,6 +3479,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
 	PixelAOV* pAOV,
+	typename SpectralValueTraits<Tag>::value_type* pDirectResult,
 	const Tag& tag
 	) const
 {
@@ -3616,6 +3628,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 						stabilityConfig.directClamp );
 					if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
 						result = result + directContrib;
+					} else if( pDirectResult ) {
+						*pDirectResult = *pDirectResult + directContrib;
 					}
 				}
 			}
@@ -3656,12 +3670,17 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// continues through the same medium and escapes — attenuate
 				// the env contribution by the transmittance along that
 				// escape segment (PBRT-v4 beta *= T_maj convention).
-				if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
-					!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
+				if( ( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) || pDirectResult )
+				 && !PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
 					const Value TrEsc = PTEvalTransmittance<Tag>(
 						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
-					result = result + volThroughput * TrEsc *
+					const Value volumeEnv = volThroughput * TrEsc *
 						PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
+					if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+						if( pDirectResult ) *pDirectResult = *pDirectResult + volumeEnv;
+					} else {
+						result = result + volumeEnv;
+					}
 				}
 				return result;
 			}
@@ -3694,14 +3713,28 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				return Traits::zero();
 			}
 
-			Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
-				sampler, pRadianceMap, 0, iorStack,
-				0, Traits::zero(), true, 1.0,
-				IRayCaster::RAY_STATE::eRayView,
-				0, 0, 0, 0, 0, 0,
-				pAOV, tag );
-
-			return PTSurvivalWeight<Tag>( Tr, pSurvival ) * hitResult;
+			Value directAtHit = Traits::zero();
+			Value hitResult;
+			if constexpr ( Traits::is_pel ) {
+				hitResult = IntegrateFromHitTemplated<Tag>( rc, rast, ri, scene, caster,
+					sampler, pRadianceMap, 0, iorStack,
+					0, Traits::zero(), true, 1.0,
+					IRayCaster::RAY_STATE::eRayView,
+					0, 0, 0, 0, 0, 0, false, false,
+					pAOV, pDirectResult ? &directAtHit : nullptr, tag );
+			} else {
+				hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
+					sampler, pRadianceMap, 0, iorStack,
+					0, Traits::zero(), true, 1.0,
+					IRayCaster::RAY_STATE::eRayView,
+					0, 0, 0, 0, 0, 0,
+					pAOV, tag );
+			}
+			const Value survivalWeight = PTSurvivalWeight<Tag>( Tr, pSurvival );
+			if( pDirectResult ) {
+				*pDirectResult = *pDirectResult + survivalWeight * directAtHit;
+			}
+			return survivalWeight * hitResult;
 		}
 		else
 		{
@@ -3729,7 +3762,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// inside the IntegrateFromHit loop) are indirect environment
 		// lighting and are kept.  This is the ONLY primary-miss env site;
 		// the in-loop gates were dead (never reached at depth 0).
-		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && !pDirectResult ) {
 			return Traits::zero();
 		}
 
@@ -3761,9 +3794,22 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		{
 			envResult = PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), cameraRay, rast, tag );
 		}
-		return escapeTr * envResult;
+		const Value primaryEnvironment = escapeTr * envResult;
+		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+			if( pDirectResult ) *pDirectResult = *pDirectResult + primaryEnvironment;
+			return Traits::zero();
+		}
+		return primaryEnvironment;
 	}
 
+	if constexpr ( Traits::is_pel ) {
+		return IntegrateFromHitTemplated<Tag>( rc, rast, ri, scene, caster,
+			sampler, pRadianceMap, 0, iorStack,
+			0, Traits::zero(), true, 1.0,
+			IRayCaster::RAY_STATE::eRayView,
+			0, 0, 0, 0, 0, 0, false, false,
+			pAOV, pDirectResult, tag );
+	}
 	return IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
 		sampler, pRadianceMap, 0, iorStack,
 		0, Traits::zero(), true, 1.0,
@@ -3789,7 +3835,24 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	) const
 {
 	return IntegrateRayTemplated<PelTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, PelTag{} );
+		sampler, pRadianceMap, pAOV, nullptr, PelTag{} );
+}
+
+RISEPel PathTracingIntegrator::IntegrateRayDirectIndirect(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& cameraRay,
+	const IScene& scene,
+	const IRayCaster& caster,
+	ISampler& sampler,
+	const IRadianceMap* pRadianceMap,
+	RISEPel& direct,
+	PixelAOV* pAOV
+	) const
+{
+	direct = RISEPel( 0, 0, 0 );
+	return IntegrateRayTemplated<PelTag>( rc, rast, cameraRay, scene, caster,
+		sampler, pRadianceMap, pAOV, &direct, PelTag{} );
 }
 
 
@@ -3849,7 +3912,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		considerEmission, importance, rayType, diffuseBounces,
 		glossyBounces, transmissionBounces, translucentBounces,
 		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
-		smsHadNonSpecularShading_initial, pAOV, NMTag{ nm } );
+		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm } );
 }
 
 
@@ -4769,7 +4832,7 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	) const
 {
 	return IntegrateRayTemplated<NMTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, NMTag( nm ) );
+		sampler, pRadianceMap, pAOV, nullptr, NMTag( nm ) );
 }
 
 

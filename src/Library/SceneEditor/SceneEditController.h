@@ -3993,6 +3993,7 @@ namespace RISE
 		struct PaneRenderState
 		{
 			bool                         dirty = true;    // needs a pass (scene edit / config change)
+			uint64_t                     dirtyGeneration = 1;
 			int                          polishSaved = 0; // PolishState as int (None) -- saved register
 			//! review-r1 P1: the resolution ladder + variant pin are part of
 			//! the register set.  Defaults: full-res (1), unpinned -- what a
@@ -4038,6 +4039,28 @@ namespace RISE
 		//! predicate alongside mEditPending with the same acquire/consume
 		//! shape.
 		std::atomic<bool>           mPanePassPending { false };
+
+		struct SharedDirectTarget
+		{
+			unsigned int pane = kViewportPaneCount;
+			unsigned int width = 0;
+			unsigned int height = 0;
+			uint64_t dirtyGeneration = 0;
+		};
+		//! Render-thread working snapshot, populated under mMutex at mint and
+		//! consumed by DoOneRenderPass before the quantum retires.
+		std::vector<SharedDirectTarget> mSharedDirectTargets;
+		struct PendingSharedDirectPublish
+		{
+			unsigned int pane = kViewportPaneCount;
+			uint64_t dirtyGeneration = 0;
+			Scalar cameraExposureEV = 0;
+			IRasterImage* image = nullptr;       //!< owning reference
+			IRasterImage* rawImage = nullptr;    //!< owning reference; non-null iff denoised
+		};
+		//! Built by DoOneRenderPass, drained only after ActiveFlipGuard has
+		//! published mRendering=false so arbitrary sink re-entry cannot deadlock.
+		std::vector<PendingSharedDirectPublish> mPendingSharedDirectPublishes;
 
 		//! T4: immutable deep copy of the most recent successful full
 		//! production/agent render.  Guarded by mMutex, independent of the
@@ -4158,6 +4181,12 @@ namespace RISE
 		bool         AnyVisiblePaneHasWorkLocked_() const;
 		void         MarkAllVisiblePanesDirtyLocked_();
 		bool         IsInteractivePaneLocked_( unsigned int pane ) const;
+		Implementation::ViewportRenderMode PaneModeLocked_( unsigned int pane ) const;
+		bool         PanesShareTransportViewLocked_( unsigned int a, unsigned int b ) const;
+		bool         PaneBaseDimensionsLocked_( unsigned int pane,
+			unsigned int& width, unsigned int& height ) const;
+		void         MarkPaneDirtyLocked_( unsigned int pane );
+		void         DrainSharedDirectPublishes_();
 		bool         CaptureLastRenderImageLocked_( const IRasterImage& image );
 		bool         AdoptLastRenderImageLocked_( IRasterImage*& image );
 		//! Mark panes bound to one manager-registered camera for desired-state
