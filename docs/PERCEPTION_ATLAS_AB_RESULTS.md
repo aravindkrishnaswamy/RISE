@@ -1,8 +1,10 @@
 # Perception atlas: first local A/B result
 
-**Run date:** 2026-07-26 (America/Los_Angeles)  
-**Model:** Ollama `qwen3.6:27b`, digest `a50eda8ed977…`  
-**RISE base revision:** `be336e23`  
+**Run date:** 2026-07-26 (America/Los_Angeles)
+
+**Model:** Ollama `qwen3.6:27b`, digest `a50eda8ed977…`
+
+**RISE base revision:** `be336e23`
 **Harness:** [tools/perception_ab_eval.py](../tools/perception_ab_eval.py) with
 [evals/perception_ab/cases.json](../evals/perception_ab/cases.json)
 
