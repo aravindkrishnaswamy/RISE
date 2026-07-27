@@ -263,6 +263,7 @@ int main()
 		Check( win.find( "finalizeOpenTimelineInteraction();" ) != std::string::npos
 		       && winTimeline.find( "void ViewportTimeline::finalizeOpenTimelineInteraction()" )
 		          != std::string::npos
+		       && winTimeline.find( "m_slider->setSliderDown(false);" ) != std::string::npos
 		       && winTimeline.find( "emit scrubEnd();" ) != std::string::npos
 		       && winTimeline.find( "m_hasPendingRange = false;" ) != std::string::npos,
 		       "Windows timeline removal finalizes an open manual scrub" );

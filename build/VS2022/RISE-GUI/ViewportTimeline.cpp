@@ -392,6 +392,15 @@ void ViewportTimeline::stopPlayback()
 void ViewportTimeline::finalizeOpenTimelineInteraction()
 {
     stopPlayback();
+    // A hide/disable can prevent the physical mouse-release event.  Reset
+    // QAbstractSlider's own pressed state as well as our wrapper flag, or
+    // the next press after re-show may not emit sliderPressed.  Block the
+    // synthetic sliderReleased because we close the controller bracket once
+    // through m_scrubbing below.
+    if (m_slider && m_slider->isSliderDown()) {
+        QSignalBlocker blocker(m_slider);
+        m_slider->setSliderDown(false);
+    }
     if (m_scrubbing) {
         m_scrubbing = false;
         emit scrubEnd();
