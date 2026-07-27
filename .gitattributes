@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Curated scene evidence preserves the exact generator bytes, including its
+# terminating blank line, because the recorded SHA-256 covers those bytes.
+evals/results/**/*.RISEscene whitespace=-blank-at-eof
