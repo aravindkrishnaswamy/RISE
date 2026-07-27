@@ -38,9 +38,11 @@ writes auditable PNGs, raw responses, a JSON summary, and a Markdown report
 under the ignored `evals/runs/perception_ab_*` directory. Generated scene text,
 exact prompts, snapshots and hashes of the harness and manifest, and the RISE
 binary hash pin the run provenance. The tool captures these inputs before
-inference and aborts if their hashes or Git state change during the run. Use
-`--self-test` for the dependency-free scoring/parser checks and `--help` for
-overrides.
+inference, revalidates the Ollama tag/digest before every call, and aborts if the
+model, hashes, or Git state change during the run. An explicit in-repository
+`--output-dir` must be covered by Git ignore rules so output cannot alter that
+state; external directories are also allowed. Use `--self-test` for the
+dependency-free scoring/parser checks and `--help` for overrides.
 
 Treat each unique authored case as the primary unit. The exact paired sign test
 therefore compares case-majority outcomes. Repeat-pooled accuracy and

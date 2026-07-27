@@ -9,6 +9,9 @@
 **Harness:** [tools/perception_ab_eval.py](../tools/perception_ab_eval.py) with
 [evals/perception_ab/cases.json](../evals/perception_ab/cases.json)
 
+**Tracked evidence:**
+[evals/results/perception_ab_qwen36_20260726](../evals/results/perception_ab_qwen36_20260726/README.md)
+
 ## Result
 
 This local model produced a positive preliminary atlas signal. The primary
@@ -86,7 +89,8 @@ Reproduce with:
 python3 tools/perception_ab_eval.py --model qwen3.6:27b --repeats 3
 ```
 
-Raw responses, generated scenes, and PNGs are written beneath gitignored
-`evals/runs/perception_ab_<timestamp>/`; the committed tool records the hashes,
-RPC metadata, token usage, latency, exact answers, and paired statistics needed
-to audit a run.
+Live raw responses, generated scenes, and PNGs are written beneath gitignored
+`evals/runs/perception_ab_<timestamp>/`. The evidence for this result is also
+preserved in the tracked snapshot linked above, including the hashes, RPC
+metadata, token usage, latency, exact answers, and paired statistics needed to
+audit it from a fresh checkout.

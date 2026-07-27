@@ -1,0 +1,193 @@
+{
+  "metadata": {
+    "caseCount": 12,
+    "digest": "a50eda8ed977ab48a12431878896b27ffd5cef552c17af3317d9623b939a7f1e",
+    "edge": 384,
+    "endpoint": "http://127.0.0.1:11434",
+    "generatedAt": "2026-07-27T02:14:21.966929+00:00",
+    "gitDirty": false,
+    "gitHead": "ef02d4b7d4e219ca0bb31717f94702a07d8e2f26",
+    "harness": "tools/perception_ab_eval.py",
+    "harnessSha256": "d6df7687640b336f0341e7b60f49a2c169901e2fcf4adaded2b949ea09799810",
+    "manifest": "evals/perception_ab/cases.json",
+    "manifestSha256": "8981d29a052d8d799be627746485885487e9a714d4f4a230e795fea5e08a6029",
+    "maxCompletionTokens": 32,
+    "model": "qwen3.6:27b",
+    "modelCapabilities": [
+      "vision",
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "modelSizeBytes": 17420432739,
+    "ollamaVersion": "0.32.3",
+    "orderSeed": 20260726,
+    "reasoningEffort": "none",
+    "repeats": 3,
+    "riseBinary": "bin/rise",
+    "riseBinarySha256": "c1c66d1cff5de118d9b890632f9481a85ed28b60790718c96555550bbbc48aaf",
+    "schemaVersion": 1,
+    "temperature": 0.1
+  },
+  "summary": {
+    "accuracyDelta": 0.16666666666666663,
+    "atlas": {
+      "accuracy": 0.6388888888888888,
+      "correct": 23,
+      "total": 36
+    },
+    "beauty": {
+      "accuracy": 0.4722222222222222,
+      "correct": 17,
+      "total": 36
+    },
+    "caseMajority": {
+      "atlas": 7,
+      "beauty": 5,
+      "families": {
+        "depth_order": {
+          "atlas": {
+            "accuracy": 0.5,
+            "correct": 2,
+            "total": 4
+          },
+          "beauty": {
+            "accuracy": 0.5,
+            "correct": 2,
+            "total": 4
+          },
+          "paired": {
+            "atlas_only_wins": 1,
+            "beauty_only_wins": 1,
+            "both_correct": 1,
+            "both_wrong": 1,
+            "completePairs": 4,
+            "exactTwoSidedP": 1.0
+          }
+        },
+        "material_lighting": {
+          "atlas": {
+            "accuracy": 1.0,
+            "correct": 4,
+            "total": 4
+          },
+          "beauty": {
+            "accuracy": 0.5,
+            "correct": 2,
+            "total": 4
+          },
+          "paired": {
+            "atlas_only_wins": 2,
+            "beauty_only_wins": 0,
+            "both_correct": 2,
+            "both_wrong": 0,
+            "completePairs": 4,
+            "exactTwoSidedP": 0.5
+          }
+        },
+        "surface_normal": {
+          "atlas": {
+            "accuracy": 0.25,
+            "correct": 1,
+            "total": 4
+          },
+          "beauty": {
+            "accuracy": 0.25,
+            "correct": 1,
+            "total": 4
+          },
+          "paired": {
+            "atlas_only_wins": 1,
+            "beauty_only_wins": 1,
+            "both_correct": 0,
+            "both_wrong": 2,
+            "completePairs": 4,
+            "exactTwoSidedP": 1.0
+          }
+        }
+      },
+      "paired": {
+        "atlas_only_wins": 4,
+        "beauty_only_wins": 2,
+        "both_correct": 3,
+        "both_wrong": 3,
+        "completePairs": 12,
+        "exactTwoSidedP": 0.6875
+      },
+      "total": 12
+    },
+    "families": {
+      "depth_order": {
+        "atlas": {
+          "accuracy": 0.5833333333333334,
+          "correct": 7,
+          "total": 12
+        },
+        "beauty": {
+          "accuracy": 0.5,
+          "correct": 6,
+          "total": 12
+        },
+        "paired": {
+          "atlas_only_wins": 4,
+          "beauty_only_wins": 3,
+          "both_correct": 3,
+          "both_wrong": 2,
+          "completePairs": 12
+        }
+      },
+      "material_lighting": {
+        "atlas": {
+          "accuracy": 1.0,
+          "correct": 12,
+          "total": 12
+        },
+        "beauty": {
+          "accuracy": 0.5,
+          "correct": 6,
+          "total": 12
+        },
+        "paired": {
+          "atlas_only_wins": 6,
+          "beauty_only_wins": 0,
+          "both_correct": 6,
+          "both_wrong": 0,
+          "completePairs": 12
+        }
+      },
+      "surface_normal": {
+        "atlas": {
+          "accuracy": 0.3333333333333333,
+          "correct": 4,
+          "total": 12
+        },
+        "beauty": {
+          "accuracy": 0.4166666666666667,
+          "correct": 5,
+          "total": 12
+        },
+        "paired": {
+          "atlas_only_wins": 3,
+          "beauty_only_wins": 4,
+          "both_correct": 1,
+          "both_wrong": 4,
+          "completePairs": 12
+        }
+      }
+    },
+    "paired": {
+      "atlas_only_wins": 13,
+      "beauty_only_wins": 7,
+      "both_correct": 10,
+      "both_wrong": 6,
+      "completePairs": 36
+    },
+    "tokenParity": {
+      "completePairs": 36,
+      "maxRelativePromptTokenDifference": 0.0,
+      "missingPairs": 0,
+      "pairsWithUsage": 36,
+      "withinFivePercent": true
+    }
+  }
+}

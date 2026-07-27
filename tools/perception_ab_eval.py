@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import math
@@ -95,6 +96,17 @@ def validate_cases(root):
                     "choices": choices, "answer": answer, "params": params})
     if not out:
         raise ValueError("manifest cases array cannot be empty")
+    by_family = defaultdict(list)
+    for case in out:
+        by_family[case["family"]].append(case)
+    for family, family_cases in by_family.items():
+        if len(family_cases) % 2:
+            raise ValueError(f"family {family} must have an even number of cases for arm-order balance")
+        answer_counts = defaultdict(int)
+        for case in family_cases:
+            answer_counts[case["answer"]] += 1
+        if len(answer_counts) != 2 or len(set(answer_counts.values())) != 1:
+            raise ValueError(f"family {family} must balance its two answer labels")
     return out
 
 
@@ -109,17 +121,21 @@ def validate_case_params(family, params, label):
             raise ValueError(f"{label}: nearZ must exceed farZ for the +Z camera")
         camera_z = 10.0
         near_radius = 0.72
-        near_distance = camera_z - near_z
-        far_distance = camera_z - far_z
-        if near_distance <= near_radius:
+        center_x = 1.35
+        near_axial = camera_z - near_z
+        far_axial = camera_z - far_z
+        if near_axial <= near_radius:
             raise ValueError(f"{label}: near sphere must be fully in front of the camera")
-        far_radius = near_radius * far_distance / near_distance
-        near_front = near_distance - near_radius
-        far_front = far_distance - far_radius
-        if far_radius <= 0.0 or far_distance <= far_radius:
+        far_radius = near_radius * far_axial / near_axial
+        if far_radius <= 0.0 or far_axial <= far_radius:
             raise ValueError(f"{label}: far sphere must be fully in front of the camera")
+        near_front = math.hypot(center_x, near_axial) - near_radius
+        far_front = math.hypot(center_x, far_axial) - far_radius
         if not near_front < far_front:
             raise ValueError(f"{label}: near sphere must have the closer front surface")
+        center_separation = math.hypot(2.0 * center_x, near_z - far_z)
+        if center_separation <= near_radius + far_radius:
+            raise ValueError(f"{label}: depth spheres must not intersect")
         return {"RED", "BLUE"}, near_color.upper()
     elif family == "surface_normal":
         angle = _finite_number(params.get("angleDegrees"), f"{label}.params.angleDegrees")
@@ -397,7 +413,8 @@ def render_case(rise_bin, repo_root, case, edge, image_dir, scene_dir, timeout):
         if "error" in env:
             raise RuntimeError(f"read_image {arm} failed for {case['id']}: {env['error']}")
         result = env.get("result")
-        if not isinstance(result, dict) or not result.get("png_base64"):
+        if (not isinstance(result, dict) or not isinstance(result.get("png_base64"), str) or
+                not result["png_base64"]):
             raise RuntimeError(f"read_image {arm} returned no PNG for {case['id']}: {result}")
         representation = "perception" if arm == "atlas" else "beauty"
         if (result.get("representation") != representation or result.get("width") != edge or
@@ -407,7 +424,10 @@ def render_case(rise_bin, repo_root, case, edge, image_dir, scene_dir, timeout):
                 result.get("sourceWidth") != edge or result.get("sourceHeight") != edge or
                 result.get("panels") != ["beauty", "albedo", "world_normal", "log_depth"]):
             raise RuntimeError(f"perception atlas metadata failed for {case['id']}: {result}")
-        data = base64.b64decode(result["png_base64"], validate=True)
+        try:
+            data = base64.b64decode(result["png_base64"], validate=True)
+        except binascii.Error as exc:
+            raise RuntimeError(f"read_image {arm} returned invalid base64 for {case['id']}") from exc
         dims = png_dimensions(data)
         if dims != (edge, edge):
             raise RuntimeError(f"{case['id']} {arm} is {dims}, expected {(edge, edge)}")
@@ -477,6 +497,15 @@ def choose_model(endpoint, requested):
     return min(candidates, key=lambda item: (int(item.get("size", 1 << 63)), item.get("name", "")))
 
 
+def model_identity(endpoint, requested):
+    info = choose_model(endpoint, requested)
+    name = info.get("name") or info.get("model")
+    digest = info.get("digest")
+    if not isinstance(name, str) or not name or not isinstance(digest, str) or not digest:
+        raise RuntimeError(f"installed model has no stable name/digest identity: {info}")
+    return {"name": name, "digest": digest, "size": info.get("size")}, info
+
+
 def ask_model(endpoint, model, prompt, png, temperature, timeout):
     encoded = base64.b64encode(png).decode("ascii")
     payload = {
@@ -501,6 +530,9 @@ def ask_model(endpoint, model, prompt, png, temperature, timeout):
             not isinstance(choices[0]["message"].get("content"), str) or
             not choices[0]["message"]["content"].strip()):
         raise RuntimeError(f"model response contains no answer content: {root}")
+    returned_model = root.get("model")
+    if returned_model != model:
+        raise RuntimeError(f"model response identity {returned_model!r} does not match {model!r}")
     message = choices[0]["message"]
     return {
         "content": message.get("content", ""),
@@ -509,6 +541,8 @@ def ask_model(endpoint, model, prompt, png, temperature, timeout):
         "usage": root.get("usage", {}),
         "latencyMs": elapsed_ms,
         "responseId": root.get("id"),
+        "returnedModel": returned_model,
+        "systemFingerprint": root.get("system_fingerprint"),
     }
 
 
@@ -694,13 +728,28 @@ def file_sha256(path):
 
 
 def input_provenance(repo_root, harness, manifest, rise_bin):
+    head = git_head(repo_root)
+    status = git_status(repo_root)
+    if not re.fullmatch(r"[0-9a-f]{40}", head) or status is None:
+        raise RuntimeError(f"Git provenance is unavailable for repository root {repo_root}")
     return {
-        "gitHead": git_head(repo_root),
-        "gitStatus": git_status(repo_root),
+        "gitHead": head,
+        "gitStatus": status,
         "harnessSha256": file_sha256(harness),
         "manifestSha256": file_sha256(manifest),
         "riseBinarySha256": file_sha256(rise_bin),
     }
+
+
+def require_safe_output_dir(repo_root, run_dir):
+    try:
+        relative = run_dir.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return
+    proc = subprocess.run(["git", "check-ignore", "--quiet", "--", str(relative)], cwd=repo_root,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if proc.returncode != 0:
+        raise ValueError("an in-repository --output-dir must be covered by .gitignore")
 
 
 def build_jobs(cases, repeats, order_seed):
@@ -741,13 +790,14 @@ def run(args):
         raise RuntimeError("manifest changed while initial provenance was captured")
     cases = validate_cases(json.loads(manifest_bytes))
     endpoint = args.endpoint.rstrip("/")
-    model_info = choose_model(endpoint, args.model)
-    model = model_info.get("name") or model_info.get("model")
+    start_model_identity, model_info = model_identity(endpoint, args.model)
+    model = start_model_identity["name"]
     ollama_version = http_json(endpoint + "/api/version", timeout=10).get("version")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = Path(args.output_dir) if args.output_dir else repo_root / "evals/runs" / f"perception_ab_{stamp}"
     if not run_dir.is_absolute():
         run_dir = repo_root / run_dir
+    require_safe_output_dir(repo_root, run_dir)
     run_dir.mkdir(parents=True, exist_ok=False)
     image_dir = run_dir / "images"
     scene_dir = run_dir / "scenes"
@@ -758,8 +808,10 @@ def run(args):
     prompts = {case["id"]: make_prompt(case) for case in cases}
     (provenance_dir / "prompts.json").write_text(
         json.dumps(prompts, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    start_record = {**start_provenance, "modelIdentity": start_model_identity,
+                    "ollamaVersion": ollama_version}
     (provenance_dir / "start.json").write_text(
-        json.dumps(start_provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        json.dumps(start_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"model={model} cases={len(cases)} repeats={args.repeats} output={run_dir}", flush=True)
 
     rendered = {}
@@ -777,6 +829,9 @@ def run(args):
         for index, (case, repeat, arm) in enumerate(jobs, 1):
             images, image_meta, scene_meta, render_ms = rendered[case["id"]]
             prompt = prompts[case["id"]]
+            current_model_identity, _ = model_identity(endpoint, model)
+            if current_model_identity != start_model_identity:
+                raise RuntimeError(f"model identity changed during run: {current_model_identity}")
             response = ask_model(endpoint, model, prompt, images[arm],
                                  args.temperature, args.model_timeout)
             parsed = normalize_answer(response["content"], case["choices"])
@@ -787,6 +842,8 @@ def run(args):
                 "rawContent": response["content"], "reasoning": response["reasoning"],
                 "finishReason": response["finishReason"], "usage": response["usage"],
                 "latencyMs": response["latencyMs"], "responseId": response["responseId"],
+                "returnedModel": response["returnedModel"],
+                "systemFingerprint": response["systemFingerprint"],
                 "promptSha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "image": image_meta[arm], "scene": scene_meta, "renderLatencyMs": render_ms,
             }
@@ -798,10 +855,16 @@ def run(args):
                   f"{parsed or '<invalid>'} {mark} {response['latencyMs']}ms", flush=True)
 
     end_provenance = input_provenance(repo_root, harness, manifest, rise_bin)
+    end_model_identity, _ = model_identity(endpoint, model)
+    end_ollama_version = http_json(endpoint + "/api/version", timeout=10).get("version")
+    end_record = {**end_provenance, "modelIdentity": end_model_identity,
+                  "ollamaVersion": end_ollama_version}
     (provenance_dir / "end.json").write_text(
-        json.dumps(end_provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        json.dumps(end_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if end_provenance != start_provenance:
         raise RuntimeError("harness, manifest, RISE binary, or Git state changed during the run")
+    if end_model_identity != start_model_identity or end_ollama_version != ollama_version:
+        raise RuntimeError("model identity or Ollama version changed during the run")
     summary = summarize(rows)
     metadata = {
         "schemaVersion": 1,
@@ -817,10 +880,11 @@ def run(args):
         "riseBinary": str(rise_bin),
         "riseBinarySha256": start_provenance["riseBinarySha256"],
         "model": model,
-        "digest": model_info.get("digest", ""),
+        "digest": start_model_identity["digest"],
         "modelSizeBytes": model_info.get("size"),
         "modelCapabilities": model_info.get("capabilities", []),
         "ollamaVersion": ollama_version,
+        "modelIdentityVerified": True,
         "endpoint": endpoint,
         "edge": args.edge,
         "temperature": args.temperature,
@@ -874,6 +938,12 @@ def self_test(repo_root, manifest_arg):
         raise AssertionError("camera-enclosing depth case accepted")
     except ValueError:
         pass
+    try:
+        validate_case_params("depth_order", {"nearColor": "red", "nearSide": "left",
+                                             "nearZ": 9.27, "farZ": 9.0}, "reversed_depth")
+        raise AssertionError("Euclidean front-surface reversal accepted")
+    except ValueError:
+        pass
     jobs = build_jobs(cases, 3, 7)
     first_counts = defaultdict(lambda: defaultdict(int))
     case_counts = defaultdict(lambda: defaultdict(int))
@@ -919,8 +989,8 @@ def parse_args(argv):
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
-    if args.repeats < 1 or args.repeats % 2 == 0:
-        parser.error("--repeats must be a positive odd number for unambiguous case majorities")
+    if args.repeats < 3 or args.repeats % 2 == 0:
+        parser.error("--repeats must be an odd number >= 3 for majorities and both arm orders")
     if args.edge < 64 or args.edge > 512:
         parser.error("--edge must be in [64,512]")
     if not math.isfinite(args.temperature) or args.temperature < 0.0 or args.temperature > 2.0:
@@ -935,6 +1005,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(self_test(parsed_args.repo_root, parsed_args.manifest)
                          if parsed_args.self_test else run(parsed_args))
-    except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+    except (ValueError, RuntimeError, OSError, json.JSONDecodeError,
+            subprocess.TimeoutExpired) as exc:
         print(f"perception_ab_eval: ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2)

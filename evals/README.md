@@ -37,7 +37,8 @@ evals/
   scenarios/    committed scenario definitions (evals/scenarios/*.json)
   fixtures/     committed canned-response fixtures (evals/fixtures/*.fixture.jsonl)
   runconfigs/   committed run configs for `rise --agent-eval` (evals/runconfigs/*.json)
-  perception_ab/ paired local-vision cue-isolation manifest + methodology
+  perception_ab/ paired local-vision cue-targeted manifest + methodology
+  results/      small curated evidence snapshots for committed result claims
   runs/         LIVE run output (gitignored — see .gitignore; never commit this)
 ```
 
@@ -108,8 +109,9 @@ python3 tools/perception_ab_eval.py
 
 See [perception_ab/README.md](perception_ab/README.md) for the paired design and
 [../docs/PERCEPTION_ATLAS_AB_RESULTS.md](../docs/PERCEPTION_ATLAS_AB_RESULTS.md)
-for the first measured result. Live artifacts remain under gitignored
-`evals/runs/` like the general harness.
+for the first measured result. Its compact audited evidence is tracked under
+`results/perception_ab_qwen36_20260726/`; other live artifacts remain under
+gitignored `evals/runs/` like the general harness.
 
 #### Env-var keys per provider
 
