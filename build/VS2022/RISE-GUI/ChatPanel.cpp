@@ -1952,6 +1952,11 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         return;
     }
 
+    // Direct-connected MainWindow cleanup must run before agentHandleLine
+    // can hand controller ownership to the async render worker.  In
+    // particular, disabling a still-pressed QSlider only after submission
+    // would emit sliderReleased -> scrubEnd against the render-held mutex.
+    emit chatRenderWillSubmit();
     const QString submitResponse = m_bridge->agentHandleLine(asyncLine);
     const QJsonDocument submitDoc = QJsonDocument::fromJson(submitResponse.toUtf8());
     if (!submitDoc.isObject()) {

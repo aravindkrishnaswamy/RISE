@@ -203,6 +203,10 @@ int main()
 			/ "RISE-GUI" / "Bridge" / "RISEViewportBridge.mm" );
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
 			/ "RISE-GUI" / "MainWindow.cpp" );
+		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ChatPanel.cpp" );
+		const std::string winChatHeader = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ChatPanel.h" );
 		const std::string winBridge = slurp( repoRoot / "build" / "VS2022"
 			/ "RISE-GUI" / "ViewportBridge.cpp" );
 		const std::string winTimeline = slurp( repoRoot / "build" / "VS2022"
@@ -267,6 +271,30 @@ int main()
 		       && winTimeline.find( "emit scrubEnd();" ) != std::string::npos
 		       && winTimeline.find( "m_hasPendingRange = false;" ) != std::string::npos,
 		       "Windows timeline removal finalizes an open manual scrub" );
+		const size_t chatRenderFinalize = winChat.find( "emit chatRenderWillSubmit();" );
+		const size_t chatRenderSubmit = winChat.find(
+			"m_bridge->agentHandleLine(asyncLine)", chatRenderFinalize );
+		Check( chatRenderFinalize != std::string::npos
+		       && chatRenderSubmit != std::string::npos
+		       && chatRenderFinalize < chatRenderSubmit
+		       && winChatHeader.find( "void chatRenderWillSubmit();" ) != std::string::npos
+		       && win.find( "&ChatPanel::chatRenderWillSubmit" ) != std::string::npos
+		       && win.find( "m_viewportTimeline->finalizeOpenTimelineInteraction();" )
+		          != std::string::npos,
+		       "Windows chat render finalizes timeline before controller submission" );
+		const size_t winDestructor = win.find( "MainWindow::~MainWindow()" );
+		const size_t winDestructorEnd = win.find(
+			"// ============================================================", winDestructor );
+		const std::string winDestructorBody =
+			( winDestructor != std::string::npos && winDestructorEnd != std::string::npos )
+			? win.substr( winDestructor, winDestructorEnd - winDestructor )
+			: std::string();
+		Check( winDestructor != std::string::npos
+		       && win.find( "MainWindow::~MainWindow()", winDestructor + 1 ) == std::string::npos
+		       && winDestructorBody.find( "m_engine->cancelAndJoinInFlightWork();" )
+		          != std::string::npos
+		       && winDestructorBody.find( "delete m_viewportBridge;" ) != std::string::npos,
+		       "Windows MainWindow has one ordered shutdown path" );
 	}
 
 	// ---- IJob vtable append-only manifest (round-4 review, 2026-07-22) ----

@@ -145,6 +145,12 @@ public slots:
     void productionRenderStarting();
 
 signals:
+    // Emitted synchronously on the GUI thread immediately before an async
+    // chat-render is submitted.  MainWindow uses this last safe ownership
+    // window to close any pressed timeline slider before the render worker
+    // can acquire the controller.
+    void chatRenderWillSubmit();
+
     // P1-2 fix: fired whenever isChatRenderOutstanding() transitions
     // (both directions -- job submitted, and job resolved/cancelled).
     // MainWindow relays this into updateMenuActionStates() (undo/redo,

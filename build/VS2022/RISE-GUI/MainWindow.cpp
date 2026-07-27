@@ -239,6 +239,11 @@ MainWindow::MainWindow(QWidget* parent)
     // internal to ChatPanel's async poll timer.  Refresh both the menu
     // actions and TopBar's own control-enable state at every transition.
     m_topBar->setChatPanel(m_chatPanel);
+    connect(m_chatPanel, &ChatPanel::chatRenderWillSubmit, this, [this]() {
+        if (m_viewportTimeline) {
+            m_viewportTimeline->finalizeOpenTimelineInteraction();
+        }
+    });
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, this, &MainWindow::updateMenuActionStates);
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, m_topBar, &TopBar::onChatRenderOutstandingChanged);
 
@@ -322,32 +327,17 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    // See the header doc: the bridge's destructor detaches itself from
-    // m_engine (attachSceneEditController(nullptr) and the dispatcher
-    // AttachController(nullptr) calls), so it MUST run while the engine
-    // -- created before it, hence destroyed before it by Qt's
-    // creation-order deleteChildren -- is still alive.  delete also
-    // unregisters the bridge from the children list, so the subsequent
-    // QObject teardown won't touch it again.  The rest of
-    // teardownViewport() (pane swapping, updateCenterViewStack) is
-    // pointless at shutdown and is deliberately not run here.
-    delete m_viewportBridge;
-    m_viewportBridge = nullptr;
-}
-
-MainWindow::~MainWindow()
-{
-    // QObject deletes children in construction order. RenderEngine is the
-    // first MainWindow child, while the live ViewportBridge is created later
-    // for each loaded scene and borrows that engine. Tear the bridge down
-    // explicitly while the engine is still alive; otherwise QObject's
-    // default child destruction would free the engine first and the bridge
-    // destructor would call attachSceneEditController(nullptr) through a
-    // dangling m_engine pointer.
+    // Retire production work before destroying its attached controller.
+    // Then explicitly delete the later-created bridge while m_engine is
+    // still alive: the bridge destructor detaches from that borrowed engine,
+    // whereas QObject's construction-order child teardown would otherwise
+    // delete the engine first.  Full teardownViewport() UI rearrangement is
+    // unnecessary while the window itself is being destroyed.
     if (m_engine) {
         m_engine->cancelAndJoinInFlightWork();
     }
-    teardownViewport();
+    delete m_viewportBridge;
+    m_viewportBridge = nullptr;
 }
 
 // ============================================================
