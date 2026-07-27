@@ -129,7 +129,11 @@
 >   race that adding the first cross-thread reader would otherwise have introduced (red-proven:
 >   removing it → reliable UAF crash under a 3-reader × live-refinement hammer). Honest
 >   availability contract: `{available:false, reason:"no_controller"|"no_frame_yet"}` as a
->   structured success — deliberately NOT read_image's silent-empty-image shape. On the MCP
+>   structured success — deliberately NOT read_image's silent-empty-image shape. (Round-8 fix:
+>   the parked frame-copy can also be REFUSED by the controller, and those refusals used to be
+>   reported as a single hard-coded `"editor_transaction_in_progress"` regardless of cause. They
+>   now report the actual gate — `"editor_transaction_in_progress"` / `"render_in_progress"` /
+>   `"editor_shutting_down"` — see `AgentSession::ReadViewport`'s doc.) On the MCP
 >   surface as tool #15 (image content block when available); allowed under the Read autonomy
 >   posture; deliberately NOT in the chat panel's curated 9-tool list. Shared C++ — Mac,
 >   Windows, and the loopback server with zero bridge changes.

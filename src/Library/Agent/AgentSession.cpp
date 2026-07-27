@@ -5612,11 +5612,17 @@ namespace RISE
 			} else if( mController && ( wantFilmOverride || wantCameraOverrideForRouting ) ) {
 				SceneEditController::RenderJobId controllerJobId = 0;
 				bool parked = false;
+				// Fix-round-8 P1: initialized to None, which is ALSO the
+				// value that correctly describes the throw path (the
+				// callee never reaches a refusal site when `fn` throws, so
+				// it does not write this).
+				SceneEditController::PreviewRenderRefusal refusal =
+					SceneEditController::PreviewRenderRefusal::None;
 				std::string thrownMessage;
 				try {
 					parked = mController->RunPreviewRenderParked(
 						doRenderWork, SceneEditController::RenderClass::AgentPreview,
-						String(), &controllerJobId );
+						String(), &controllerJobId, &refusal );
 				}
 				catch( const std::exception& e ) { thrownMessage = e.what(); }
 				catch( ... )                     { thrownMessage = "unknown exception"; }
@@ -5654,38 +5660,74 @@ namespace RISE
 					// default-constructed empty string; see AgentRenderResult::
 					// integrator's field doc for the "never resolved" contract.
 					//
-					// Fix-round-6 P2: RunPreviewRenderParked returns a BARE
-					// BOOL but refuses for several distinct reasons, and the
-					// single message above mis-attributed the most common
-					// one.  Besides the open transaction/gesture/save it
-					// names, it also refuses on
-					// `mAgentRenderBlocksInteractive` -- ANOTHER coordinated
-					// render (typically an AGENT render the model itself
-					// started with `async:true`) is queued or running.  That
-					// is not a user gesture at all, so "retry after the
-					// gesture completes" pointed the model at something that
-					// was never going to happen -- and this string is
-					// surfaced VERBATIM to the model (CompareToReference puts
-					// it in `res.split.note`, QueryObjectAt in its own
-					// `message`), so it steers the next tool call.
-					// Distinguish via CurrentRenderJob(), the same fast
-					// mJobStatusMutex read the no-override refusal below
-					// already uses, and reuse the controller's OWN wording
-					// for that cause (SceneEditController's chunk-CRUD
-					// refusals say exactly "render queued or in progress --
-					// retry after it completes") so the two layers agree.
-					// Residual, disclosed: a benign race (the render finishes
-					// between the refusal and this read) and the rarer
-					// shutdown refusals (mDirectRenderStopping /
-					// mAgentRenderStop) both fall through to the
-					// transaction wording -- still an honest "refused,
-					// retriable" signal, just less specific.
-					const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
+					// RunPreviewRenderParked refuses at SEVEN distinct gates,
+					// and this string is surfaced VERBATIM to the model
+					// (CompareToReference puts it in `res.split.note`,
+					// QueryObjectAt in its own `message`), so it steers the
+					// next tool call.  Getting the cause wrong re-creates the
+					// retry loop this branch exists to reduce.
+					//
+					// Fix-round-6 P2 tried to discriminate by READING
+					// `CurrentRenderJob().active`.  Fix-round-8 P1: that was a
+					// REGRESSION, not a fix.  `active` is not a proxy for the
+					// agent-render gate -- RenderLoop mints an `active == true`
+					// RenderClass::Interactive job for EVERY ordinary viewport
+					// pass (SceneEditController.cpp, RenderLoop's per-pass
+					// mint), so whenever the viewport is drawing (the normal
+					// steady state) an mTxnOpen refusal was reported as "render
+					// queued or in progress -- retry after it completes",
+					// pointing the model at something that completes constantly
+					// while the transaction that actually blocks stays open.
+					// Two further windows were never even disclosed: both
+					// SubmitAgentRenderAsync_Locked and RunPreviewRenderParked
+					// CLAIM the coordinated-render gate BEFORE they mint a job
+					// record, so during those windows the reconstruction gave
+					// the wrong wording in the other direction too.
+					//
+					// PROPER FIX: stop reverse-engineering a cause the callee
+					// already knows.  RunPreviewRenderParked now REPORTS which
+					// gate fired via `outRefusal`, and this maps it.  That
+					// eliminates the whole class -- races, gate-claimed-but-
+					// not-yet-minted windows, and any refusal cause added
+					// later: the retriable transaction wording is assigned
+					// BEFORE the switch narrows it, so an enumerator somebody
+					// adds without extending this switch still yields an
+					// honest, retriable message instead of an EMPTY one --
+					// while the switch stays TOTAL (no `default:` arm) so
+					// -Wswitch flags the omission at build time first, and
+					// warnings are bugs in this repo.
+					//
+					// Wording is reused verbatim from the controller's OWN
+					// refusals so the two layers agree: SceneEditController's
+					// chunk-CRUD refusals say exactly "render queued or in
+					// progress -- retry after it completes", and the edit verbs
+					// (ApplyAgentParamEdit / ApplyAgentChunkCrud_) say exactly
+					// "editor transaction in progress -- retry after the
+					// gesture completes".
 					res.ok          = false;
 					res.renderJobId = renderJobId;   // 0 here -- no render ran, matching the other pre-flight refusal paths in this function
-					res.message     = cur.active
-						? "render queued or in progress -- retry after it completes"
-						: "editor transaction in progress -- retry after the gesture completes";
+					res.message     = "editor transaction in progress -- retry after the gesture completes";
+					switch( refusal ) {
+					case SceneEditController::PreviewRenderRefusal::CoordinatedRenderBusy:
+						res.message = "render queued or in progress -- retry after it completes";
+						break;
+					case SceneEditController::PreviewRenderRefusal::ControllerStopped:
+						// NOT retriable -- say so rather than inviting a retry
+						// loop against a controller that is going away.
+						res.message = "render refused: the editor is shutting down";
+						break;
+					case SceneEditController::PreviewRenderRefusal::InteractionFinalizeFailed:
+						res.message = "render refused: an open editor interaction could not be finalized -- retry shortly";
+						break;
+					case SceneEditController::PreviewRenderRefusal::EditorBusy:
+					case SceneEditController::PreviewRenderRefusal::None:
+						// Keep the pre-switch default.  `None` is unreachable on
+						// a refusal (the callee sets a cause at every `return
+						// false`); listed so the switch stays total and -Wswitch
+						// keeps working, and so a contract slip still produces
+						// the honest, retriable message.
+						break;
+					}
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
@@ -6118,9 +6160,13 @@ namespace RISE
 			//!    everything today, but it is not declared `noexcept`.  Every
 			//!    site in this file that holds a raw refcounted pointer across
 			//!    a RENDER call uses an RAII guard for exactly this reason --
-			//!    `SinkUnwindGuard` around the sink attachment, the three
+			//!    `SinkUnwindGuard` around the sink attachment, the FOUR
 			//!    `EphemeralPipelineGuard`s around the rasterizer/pipeline
-			//!    swaps, and `SinkLease` in `ReadImage(maxEdge,...)`.  (The
+			//!    swaps (verified 2026-07-27: FOUR distinct definitions, one per
+			//!    ephemeral render closure -- doDraftRenderWork,
+			//!    doObjectMapRenderWork, doViewModeRenderWork and
+			//!    doBeautyVariantRenderWork; the count said "three"), and
+			//!    `SinkLease` in `ReadImage(maxEdge,...)`.  (The
 			//!    file's PNG codec helpers -- `DecodePngRgbAt` and
 			//!    `EncodeLinearPassthroughPng_` -- do use plain paired
 			//!    `safe_release` across their reader/writer calls; they are the
@@ -6255,27 +6301,50 @@ namespace RISE
 				{
 					// THE STASH ORDER BELOW IS NOT LOAD-BEARING -- this
 					// static_assert is what makes that true, so nobody has to
-					// hold it in their head.  The ctor takes ownership of the
-					// sink's raw ref (mSavedSink) BEFORE the two
-					// AgentRenderResult move-assignments; if a future member
-					// gave AgentRenderResult a THROWING move-assign, a throw
-					// there would unwind out of the ctor -- and a ctor that
-					// throws never runs its own dtor, so the stashed framebuffer
-					// would leak AND the caller's cache would stay wiped for the
-					// rest of the session.  Assert the property at COMPILE time
-					// rather than depending on statement order, so the breakage
-					// is a build error at the offending member, not a runtime
-					// leak nobody traces back to here.
+					// hold it in their head.  TWO sites bind the property, and
+					// the DESTRUCTOR is the stronger one:
+					//
+					//  * ~EphemeralRenderCacheGuard also move-assigns
+					//    AgentRenderResult, and a destructor is implicitly
+					//    noexcept -- a throwing move there is std::terminate,
+					//    which no restructuring of any constructor can avoid.
+					//  * the ctor takes ownership of the sink's raw ref
+					//    (mSavedSink) BEFORE its two AgentRenderResult
+					//    move-assignments; a throw there unwinds out of the
+					//    ctor, and a ctor that throws never runs its own dtor,
+					//    so the stashed framebuffer would leak AND the caller's
+					//    cache would stay wiped for the rest of the session.
+					//
+					// Fix-round-8 P2: the assert message used to name only the
+					// ctor and suggest "restructure this ctor to stash the
+					// result record first" -- an escape hatch that would
+					// satisfy a future maintainer while leaving the dtor's
+					// terminate hazard fully in place.  Naming the dtor, and
+					// offering no alternative, is the honest framing: the only
+					// fix is to keep the type nothrow-move-assignable.
+					// Asserted at COMPILE time so the breakage is a build error
+					// at the offending member, not a runtime terminate/leak
+					// nobody traces back to here.
 					static_assert( std::is_nothrow_move_assignable<AgentRenderResult>::value,
-						"EphemeralRenderCacheGuard's ctor move-assigns AgentRenderResult AFTER taking "
-						"ownership of mSavedSink's raw ref; a throwing move-assign would leak that "
-						"framebuffer and leave the last-render cache permanently wiped (the ctor throws, "
-						"so ~EphemeralRenderCacheGuard never runs).  Keep AgentRenderResult's members "
-						"nothrow-move-assignable, or restructure this ctor to stash the result record first." );
+						"EphemeralRenderCacheGuard move-assigns AgentRenderResult in BOTH its ctor and "
+						"its dtor.  ~EphemeralRenderCacheGuard is implicitly noexcept, so a throwing "
+						"move-assign there is std::terminate; in the ctor it leaks the stashed "
+						"framebuffer and leaves the last-render cache permanently wiped (a throwing "
+						"ctor never runs its own dtor).  Keep AgentRenderResult's members "
+						"nothrow-move-assignable -- there is no safe restructuring that avoids the "
+						"destructor case." );
 
 					std::lock_guard<std::mutex> lk( mCacheMutex );
 					mSavedPng.swap( mLastPng );        // cache -> stash (cache now empty)
 					mSavedSink = mLastSink;            // take over the sink's ref
+					// Nulling this is MEMORY SAFETY, not just visibility (round-8
+					// sabotage finding, recorded so nobody "simplifies" it as a
+					// mere zero-byte-window nicety): the guarded Render()'s cache
+					// tail safe_release()s whatever mLastSink holds before storing
+					// its own sink.  Leave the stashed pointer aliased here and
+					// that release frees the framebuffer mSavedSink still owns, so
+					// the dtor hands a DANGLING sink back to the session.
+					// Verified: dropping this line segfaults the suite.
 					mLastSink  = nullptr;
 					// Same move-out for the async-render result record: the
 					// window must leave NO trace of anything that completed
@@ -6365,6 +6434,18 @@ namespace RISE
 			{
 				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink,
 				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
+				// Fix-round-8 P2 seam: the guard's ctor has run (cache and
+				// async-result record moved OUT to its stash) and the guarded
+				// render has NOT started.  This is the only place the
+				// documented "ONE window reports found == false" property is
+				// observable, so it is the only place a test can pin the ctor
+				// half -- see ForTest_SetEphemeralCacheGuardOpenHook's doc.
+				// No AgentSession mutex is held here (the ctor took and
+				// released mAsyncCacheMutex), so the hook may re-enter the
+				// session's read paths.
+				if( mEphemeralCacheGuardOpenHookForTest ) {
+					mEphemeralCacheGuardOpenHookForTest();
+				}
 				rr = Render( rparams );
 			}
 
@@ -7513,6 +7594,17 @@ namespace RISE
 			bool copiedFrame = false;
 			SceneEditController::PaneSetSnapshot paneSnap;   // user-review P1-3
 			bool haveSnap = false;
+			// Fix-round-8 P1 (sibling site): this call used to take the
+			// one-arg overload and hard-code `editor_transaction_in_progress`
+			// as the reason for EVERY refusal -- the same
+			// misattribute-the-cause defect fixed in RenderCore_, just
+			// expressed as a constant instead of a bad inference.  Route
+			// through the identity-tracking overload purely to collect
+			// `outRefusal` (the id is discarded, the class/label are exactly
+			// what the one-arg forwarder passes, so this is behaviourally
+			// identical apart from the reason string).
+			SceneEditController::PreviewRenderRefusal refusal =
+				SceneEditController::PreviewRenderRefusal::None;
 			const bool parked = mController->RunPreviewRenderParked( [&]() {
 				// Keep the frame copy and its live display-transform lookup in the
 				// same parked interval.  CopyInteractiveFrame itself is tile-safe,
@@ -7532,9 +7624,29 @@ namespace RISE
 				if( copiedFrame ) {
 					ResolveBeautyDisplayTransform_( vExposureEV, vDisplayTransform, vColorSpace );
 				}
-			} );
+			}, SceneEditController::RenderClass::AgentPreview, String(),
+			   /*outJobId=*/nullptr, &refusal );
 			if( !parked ) {
+				// The pre-existing reason is assigned FIRST and the switch
+				// narrows it, so the gesture/save causes keep their exact
+				// pre-round-8 wire value (this change is additive), a future
+				// enumerator cannot produce an EMPTY reason, and the switch
+				// still has no `default:` arm so -Wswitch catches the omission.
 				outReason = "editor_transaction_in_progress";
+				switch( refusal ) {
+				case SceneEditController::PreviewRenderRefusal::CoordinatedRenderBusy:
+					outReason = "render_in_progress";
+					break;
+				case SceneEditController::PreviewRenderRefusal::ControllerStopped:
+					outReason = "editor_shutting_down";
+					break;
+				case SceneEditController::PreviewRenderRefusal::EditorBusy:
+				case SceneEditController::PreviewRenderRefusal::InteractionFinalizeFailed:
+				case SceneEditController::PreviewRenderRefusal::None:
+					// Keep the pre-existing reason.  `None` is unreachable on a
+					// refusal; listed to keep the switch total.
+					break;
+				}
 				return std::vector<unsigned char>();
 			}
 

@@ -1972,7 +1972,16 @@ namespace RISE
 			//!   "no_controller" (no live SceneEditController attached -- a
 			//!                    headless session has no viewport at all)
 			//!   "no_frame_yet"  (a controller is attached but the interactive
-			//!                    render loop has not produced a frame yet).
+			//!                    render loop has not produced a frame yet)
+			//! plus, when the parked frame-copy is REFUSED by the controller
+			//! (fix-round-8 P1 -- these were previously all reported as the
+			//! first of them, and none of the three were listed here at all):
+			//!   "editor_transaction_in_progress" (a transaction, pointer
+			//!                    gesture, time scrub, save, or composite is
+			//!                    open -- retriable once it completes)
+			//!   "render_in_progress"   (another coordinated agent/production
+			//!                    render owns the admission gate -- retriable)
+			//!   "editor_shutting_down" (controller teardown -- NOT retriable).
 			//! An unavailable result is a STRUCTURED, NON-error outcome (the
 			//! returned byte vector is empty, outW/outH are 0).
 			//!
@@ -2126,6 +2135,39 @@ namespace RISE
 			//! needing to wait out multiple 5000ms production-default
 			//! chunks.  Production code never calls this.
 			void ForTest_SetDrainChunkMs( unsigned int chunkMs ) { mDrainChunkMsForTest = chunkMs; }
+
+			//! Fix-round-8 P2 test hook.  Invoked by QueryObjectAt in the
+			//! window between EphemeralRenderCacheGuard's CONSTRUCTOR and the
+			//! guarded internal `mode:"objectmap"` Render() -- i.e. with the
+			//! last-render cache and the async-result record already moved
+			//! OUT to the guard's stash.
+			//!
+			//! WHY IT EXISTS.  The guard's dtor half (the RESTORE) is pinned
+			//! by AgentRenderAsyncTest's (guard-async) case and by the
+			//! AgentObjectMapTest / AgentViewportReadTest suites.  Its CTOR
+			//! half (the move-OUT) was pinned by NOTHING: a mutation audit
+			//! zeroed both ctor lines and every one of those suites stayed
+			//! green -- yet the ctor comment states outright that zeroing the
+			//! id is what makes LastAsyncRenderResult() report "not found"
+			//! for the duration, and AgentSession.h documents the "ONE window
+			//! reports found == false" property.  A documented property with
+			//! no test is a claim; this seam is what lets a test OBSERVE the
+			//! window from inside it and turn the claim into a fact.
+			//!
+			//! Fires ONCE per QueryObjectAt call, on the calling thread, with
+			//! NO AgentSession mutex held (mAsyncCacheMutex is taken and
+			//! released inside the ctor before this runs), so the hook may
+			//! freely call LastAsyncRenderResult() / ReadImage().  Set it on
+			//! one thread before the QueryObjectAt call.  Production code
+			//! never sets it; when unset the branch is a single null test.
+			//! Deliberately NOT installed at CompareToReference's guard site
+			//! -- one seam is enough to pin the property, and one firing site
+			//! keeps "fires once per call" true without a caller having to
+			//! know which verb it came from.
+			void ForTest_SetEphemeralCacheGuardOpenHook( std::function<void()> hook )
+			{
+				mEphemeralCacheGuardOpenHookForTest = std::move( hook );
+			}
 
 			//! Invoked once after ReadViewport releases its parked controller
 			//! snapshot but before it serializes the response.  Test-only: lets a
@@ -2544,6 +2586,10 @@ namespace RISE
 			mutable std::function<void()> mReadPerceptionBeforeCacheHookForTest;
 			//! See ForTest_SetSinkReadShutdownWaitHook.
 			std::function<void()> mSinkReadShutdownWaitHookForTest;
+			//! See ForTest_SetEphemeralCacheGuardOpenHook.  NOT mutable:
+			//! QueryObjectAt is a non-const method (it renders), so no
+			//! const-escape is needed here.
+			std::function<void()> mEphemeralCacheGuardOpenHookForTest;
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled

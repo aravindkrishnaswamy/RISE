@@ -39,6 +39,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>			// getenv() -- TMPDIR lookup in WriteTemp
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -100,8 +101,15 @@ static std::string WriteTemp( const char* name, const char* content )
 	// scene files mid-load and surfaced as a bogus "fixture constructs"
 	// failure.  Reproduced by running 12 copies concurrently: 3 failed that
 	// way; with the pid suffix, 0 do.
-	std::string path = std::string( "/tmp/" ) + std::to_string( (long)getpid() )
-	                 + "_" + name;
+	// Round-9: honour TMPDIR like the other eight WriteTemp helpers do
+	// (AgentRenderAsyncTest, AgentObjectMapTest, ...).  A hardcoded "/tmp/"
+	// is not portable -- these tests are glob-enumerated into the Windows
+	// cmake build, where /tmp typically does not exist -- and having one
+	// member of the family differ is how the family drifts apart again.
+	const char* base = std::getenv( "TMPDIR" );
+	std::string dir = base ? base : "/tmp";
+	if( !dir.empty() && dir.back() != '/' ) dir += '/';
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::trunc );
 	if( !f ) return std::string();
 	f << content;

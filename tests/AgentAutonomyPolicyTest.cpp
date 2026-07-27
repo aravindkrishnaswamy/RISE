@@ -88,6 +88,13 @@
 #include <memory>
 #include <string>
 #include <vector>
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -117,7 +124,13 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	const char* base = std::getenv( "TMPDIR" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	std::string path = dir + name;
+	// Round-8 review P2: per-process filename.  run_all_tests.sh runs the
+	// suite in PARALLEL, and a developer may run one binary by hand while
+	// the suite runs, so a FIXED temp name lets two processes clobber each
+	// other's scene file mid-load.  That already cost a reviewer hours and
+	// produced a false "the test is flaky / there is a race" P1.  The pid
+	// prefix makes the path unique per process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );

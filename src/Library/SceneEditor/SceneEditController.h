@@ -357,10 +357,62 @@ namespace RISE
 			Production   = 2
 		};
 
-		//! Snapshot of the CURRENT render job, read under mMutex.  `active`
-		//! is false when no render is presently in flight; `id`/`renderClass`
-		//! then reflect the MOST RECENTLY assigned job (stale, informational
-		//! only).
+		//! Fix-round-8 P1: WHY a RunPreviewRenderParked call refused.
+		//! Reported through that method's optional `outRefusal` out-param.
+		//!
+		//! The method refuses at SEVEN distinct gates and used to return a
+		//! bare `false`, so the caller had to reverse-engineer the cause.
+		//! AgentSession did that by reading CurrentRenderJob().active --
+		//! which is NOT a proxy for any gate here: RenderLoop mints an
+		//! `active == true` RenderClass::Interactive job for EVERY ordinary
+		//! viewport pass, so in the normal steady state (viewport drawing)
+		//! an mTxnOpen refusal was reported to the model as "render queued
+		//! or in progress", pointing it at something that completes
+		//! constantly while the transaction that actually blocks stays
+		//! open.  The callee already knows which gate fired; it now says
+		//! so, which closes the whole class (races, gate-claimed-but-not-
+		//! yet-minted windows, future causes) rather than narrowing one
+		//! case.
+		enum class PreviewRenderRefusal
+		{
+			//! No refusal.  The value left in `*outRefusal` whenever the
+			//! call returns true, and also on the throw path (an exception
+			//! out of `fn` propagates past the refusal sites entirely).
+			None = 0,
+
+			//! Terminal Stop()/teardown is in progress -- mDirectRenderStopping
+			//! (registration closed) or mAgentRenderStop (controller stopped).
+			//! NOT retriable: the controller is going away.
+			ControllerStopped,
+
+			//! An editor transaction, pointer gesture, time scrub, save, or a
+			//! direct SceneEditor composite is open (mTxnOpen / mSaving /
+			//! mPointerDown / mScrubInProgress / IsCompositeOpen), at either
+			//! the pre-admission check or the post-park revalidation.
+			//! Retriable once the gesture completes.
+			EditorBusy,
+
+			//! Another coordinated (agent/production) render owns the
+			//! admission gate -- queued or running
+			//! (mAgentRenderBlocksInteractive).  Retriable once it completes.
+			//! NOTE this gate is claimed BEFORE the job record is minted, by
+			//! both SubmitAgentRenderAsync_Locked and this method itself, so
+			//! a CurrentRenderJob()-based reconstruction cannot see it during
+			//! that window -- another reason the cause is reported directly.
+			CoordinatedRenderBusy,
+
+			//! An open platform interaction could not be finalized
+			//! (FinalizeOpenInteractions returned false).  Retriable.
+			InteractionFinalizeFailed
+		};
+
+		//! Snapshot of the CURRENT render job, read under mJobStatusMutex
+		//! (NOT mMutex -- see CurrentRenderJob()'s doc for why that
+		//! distinction is load-bearing).  `active` is false when no render
+		//! is presently in flight; `id`/`renderClass` then reflect the MOST
+		//! RECENTLY assigned job (stale, informational only).  `active ==
+		//! true` covers EVERY render class, interactive passes included --
+		//! it is not an agent-render-gate indicator.
 		//!
 		//! Fix-round-1 P3-c: `clientLabel` echoes the diagnostic tag a
 		//! caller passed to SubmitAgentRenderAsync / SubmitAgentRenderSync
@@ -691,11 +743,15 @@ namespace RISE
 		//! DoOneRenderPass's swap of the SAME shared Film/cameras.  `fn` is
 		//! invoked exactly once, synchronously, on the calling thread, with
 		//! the render thread parked and mMutex HELD; `fn` must not re-enter
-		//! the controller -- in particular it must not call
-		//! CurrentRenderJob() or any other mMutex-taking method on this
+		//! the controller by calling any mMutex-taking method on this
 		//! object.  mMutex is a plain (non-recursive) std::mutex, so
 		//! re-entering it from `fn` is an immediate self-deadlock, not a
-		//! stall-and-retry.  Refused (returns false, `fn` NOT invoked) while
+		//! stall-and-retry.  (Fix-round-8 P1: CurrentRenderJob() used to be
+		//! named here as an example of a forbidden call -- it is NOT one.
+		//! It takes mJobStatusMutex, never mMutex, precisely so a status
+		//! read cannot block behind a render-duration hold; calling it from
+		//! `fn` is safe.  The prohibition applies to the mMutex-taking
+		//! methods, not to this one.)  Refused (returns false, `fn` NOT invoked) while
 		//! an editor transaction/gesture or save is open, or while another
 		//! direct/coordinated render owns the admission gate. Direct renders
 		//! publish that same gate before waiting for mMutex, so UI callbacks
@@ -728,15 +784,41 @@ namespace RISE
 		//! contract to the base overload) -- note a throw out of `fn`
 		//! propagates PAST this call (it returns true only on the ordinary
 		//! path; an exception unwinds through instead of returning at all).
+		//!
+		//! Fix-round-8 P1: `outRefusal` (optional) receives WHY the call
+		//! refused -- see PreviewRenderRefusal.  It is written on EVERY
+		//! ordinary exit: PreviewRenderRefusal::None when `fn` ran, the
+		//! specific cause on each of the seven refusal paths.  It is NOT
+		//! written when an exception unwinds out of `fn` (the value the
+		//! caller initialized it with survives; initialize it to `None`,
+		//! which is what that case means).  This exists because the caller
+		//! CANNOT reconstruct the cause: CurrentRenderJob() reports the
+		//! interactive loop's own per-pass job as active, and two of the
+		//! gates here are claimed BEFORE any job record is minted.
 		bool RunPreviewRenderParked(
 			const std::function<void()>& fn,
 			RenderClass                  renderClass,
 			const String&                clientLabel,
-			RenderJobId*                 outJobId );
+			RenderJobId*                 outJobId,
+			PreviewRenderRefusal*        outRefusal = nullptr );
 
-		//! Model-B F2 slice S1: snapshot of the current render job under
-		//! mMutex.  See RenderJobStatus's doc for the "stale when inactive"
-		//! semantics.
+		//! Model-B F2 slice S1: snapshot of the current render job, taken
+		//! under mJobStatusMutex.  See RenderJobStatus's doc for the "stale
+		//! when inactive" semantics.
+		//!
+		//! Fix-round-8 P1: this doc used to say "under mMutex", contradicting
+		//! the implementation.  mJobStatusMutex is DELIBERATE and load-bearing
+		//! (slice S2a) -- reading via mMutex would block this call for an
+		//! entire in-flight render's duration, which is exactly what a status
+		//! read must never do.  Consequences that follow from the real lock,
+		//! and that the stale doc hid: this method is safe to call from
+		//! inside a RunPreviewRenderParked / SubmitAgentRender* closure (it
+		//! does NOT self-deadlock on the non-recursive mMutex those hold),
+		//! and it is NOT a proxy for any admission gate -- RenderLoop mints
+		//! an `active == true` Interactive job for every ordinary viewport
+		//! pass, so `active` says "some render is in flight", never "the
+		//! agent-render gate is claimed".  Use RunPreviewRenderParked's
+		//! `outRefusal` for the latter.
 		RenderJobStatus CurrentRenderJob() const;
 
 		//! Model-B F2 slice S2a: submit `fn` to run OFF the calling thread on

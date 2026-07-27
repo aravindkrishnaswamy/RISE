@@ -664,9 +664,13 @@ namespace RISE
 						"pane's content. The pane set is READ-ONLY by design -- there is no agent "
 						"control of layout or panes. When `available` is false there is no image: `reason` is "
 						"\"no_controller\" (this session has no live GUI viewport -- e.g. a headless "
-						"run) or \"no_frame_yet\" (the viewport exists but has not rendered a frame "
-						"yet). available:false is a normal result, not an error -- do not retry "
-						"blindly; a headless session will never have a viewport.",
+						"run), \"no_frame_yet\" (the viewport exists but has not rendered a frame "
+						"yet), \"editor_transaction_in_progress\" (the user is mid-gesture or saving), "
+						"\"render_in_progress\" (another coordinated render holds the gate), or "
+						"\"editor_shutting_down\" (the editor is tearing down). available:false is a "
+						"normal result, not an error -- do not retry blindly: the last three clear on "
+						"their own so a short retry is reasonable, a headless session will never have "
+						"a viewport, and a shutting-down editor never will again.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 

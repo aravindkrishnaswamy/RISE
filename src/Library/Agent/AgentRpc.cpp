@@ -1823,10 +1823,13 @@ namespace RISE
 				//   triggers a render -- it copies whatever the interactive
 				//   render loop has most recently produced (the cheapest
 				//   observe).  `available` is false with reason "no_controller"
-				//   (headless session -- no viewport at all) or "no_frame_yet"
-				//   (controller attached but no interactive frame produced yet);
-				//   in both cases png_base64 is "" and byteLength/width/height
-				//   are 0.  available:false is a STRUCTURED SUCCESS result, NOT
+				//   (headless session -- no viewport at all), "no_frame_yet"
+				//   (controller attached but no interactive frame produced yet),
+				//   or, when the parked frame copy is refused,
+				//   "editor_transaction_in_progress" / "render_in_progress" /
+				//   "editor_shutting_down" (see AgentSession::ReadViewport's
+				//   doc); in every case png_base64 is "" and
+				//   byteLength/width/height are 0.  available:false is a STRUCTURED SUCCESS result, NOT
 				//   a JSON-RPC error (the list_proposals precedent) -- only "no
 				//   session loaded" is the usual MakeError gate.  maxEdge
 				//   (OPTIONAL, clamped [16,1024]) downscales exactly as

@@ -5518,10 +5518,13 @@ bool SceneEditController::RunPreviewRenderParked( const std::function<void()>& f
 // overload; this only adds bookkeeping around the existing critical
 // section.
 //
-// `fn` must NOT call CurrentRenderJob() or any other mMutex-taking method
-// on this controller -- mMutex is a plain (non-recursive) std::mutex and
-// is already held across this whole call; re-entering it from `fn` is an
-// immediate deadlock, not a retry.
+// `fn` must NOT call any mMutex-taking method on this controller --
+// mMutex is a plain (non-recursive) std::mutex and is already held across
+// this whole call; re-entering it from `fn` is an immediate deadlock, not
+// a retry.  (Fix-round-8 P1: this note used to name CurrentRenderJob() as
+// the example.  It is NOT one -- it takes mJobStatusMutex, never mMutex,
+// exactly so a status read cannot block behind this render-duration hold.
+// Calling it from `fn` is safe; the prohibition is on the mMutex methods.)
 //
 // Pre-S2 hardening: `fn` is AgentSession's doRenderWork, which calls
 // mJob->Rasterize() -- a DOCUMENTED real throw site (OIDN; see
@@ -5561,8 +5564,20 @@ bool SceneEditController::RunPreviewRenderParked(
 	const std::function<void()>& fn,
 	RenderClass                  renderClass,
 	const String&                clientLabel,
-	RenderJobId*                 outJobId )
+	RenderJobId*                 outJobId,
+	PreviewRenderRefusal*        outRefusal )
 {
+	// Fix-round-8 P1: report WHICH gate refused.  Every `return false`
+	// below sets this first; the success path leaves it None.  A caller
+	// CANNOT derive this from CurrentRenderJob() -- see
+	// PreviewRenderRefusal's doc for why that reconstruction was wrong in
+	// the ordinary steady state.  Nothing writes it on the throw-out-of-fn
+	// path, which is why the contract says "initialize to None".
+	const auto reportRefusal = [outRefusal]( PreviewRenderRefusal r ) {
+		if( outRefusal ) *outRefusal = r;
+	};
+	reportRefusal( PreviewRenderRefusal::None );
+
 	// Register before touching admission or any other controller state.
 	// Terminal Stop() closes this registration under the same leaf mutex and
 	// then waits for every successfully-registered caller to make its final
@@ -5571,6 +5586,7 @@ bool SceneEditController::RunPreviewRenderParked(
 		std::lock_guard<std::mutex> directLk( mDirectRenderStateMutex );
 		if( mDirectRenderStopping )
 		{
+			reportRefusal( PreviewRenderRefusal::ControllerStopped );
 			return false;
 		}
 		++mDirectRenderCallCount;
@@ -5595,6 +5611,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	if( mTxnOpen.load( std::memory_order_acquire ) )
 	{
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: preview render refused inside an open transaction (would stall the gesture)." );
+		reportRefusal( PreviewRenderRefusal::EditorBusy );
 		return false;
 	}
 
@@ -5609,6 +5626,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused -- controller stopped." );
+		reportRefusal( PreviewRenderRefusal::ControllerStopped );
 		return false;
 	}
 	// The dedicated agent/production worker claims this gate before it
@@ -5621,6 +5639,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused while another coordinated render is queued or running." );
+		reportRefusal( PreviewRenderRefusal::CoordinatedRenderBusy );
 		return false;
 	}
 	// A platform can disable interaction before delivering the matching Up.
@@ -5632,6 +5651,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused -- open interaction could not be finalized." );
+		reportRefusal( PreviewRenderRefusal::InteractionFinalizeFailed );
 		return false;
 	}
 	// Every controller path that opens a transaction/gesture/save takes this
@@ -5645,6 +5665,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused while an editor transaction, gesture, or save is open." );
+		reportRefusal( PreviewRenderRefusal::EditorBusy );
 		return false;
 	}
 	mDirectRenderCancelRequested.store( false, std::memory_order_release );
@@ -5716,6 +5737,7 @@ bool SceneEditController::RunPreviewRenderParked(
 	{
 		GlobalLog()->PrintEx( eLog_Warning,
 			"SceneEditController: preview render refused because editor state changed during admission." );
+		reportRefusal( PreviewRenderRefusal::EditorBusy );
 		return false;
 	}
 

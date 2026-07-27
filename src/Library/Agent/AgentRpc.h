@@ -291,9 +291,14 @@
 //                                            the interactive render loop last produced.
 //                                            `available` is false with reason
 //                                            "no_controller" (headless session, no
-//                                            viewport) or "no_frame_yet" (controller
+//                                            viewport), "no_frame_yet" (controller
 //                                            attached but no interactive frame produced
-//                                            yet); png_base64 is "" and the numeric
+//                                            yet), or -- when the parked frame copy is
+//                                            refused -- "editor_transaction_in_progress"
+//                                            / "render_in_progress" /
+//                                            "editor_shutting_down" (see
+//                                            AgentSession::ReadViewport's doc);
+//                                            png_base64 is "" and the numeric
 //                                            fields 0 in that case.  available:false is
 //                                            a STRUCTURED SUCCESS result, NOT an error
 //                                            (the list_proposals precedent) -- only "no
