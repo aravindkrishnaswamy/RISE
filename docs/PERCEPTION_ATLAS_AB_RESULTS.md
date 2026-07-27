@@ -17,8 +17,9 @@
 This local model produced a positive preliminary atlas signal. The primary
 unique-case view uses the majority of three calls per arm: beauty solved 5/12
 cases and the atlas solved 7/12. Paired case majorities were 4 atlas-only versus
-2 beauty-only wins (exact two-sided p=0.6875), so this small run is directional,
-not statistically decisive.
+2 beauty-only wins. The cases share mirrored parameter families, so no
+inferential p-value is assigned; this small run is directional, not
+statistically decisive.
 
 For stability, the correlated repeat-pooled counts were:
 
@@ -49,8 +50,11 @@ encodings.
 
 ## Controls and provenance
 
-- Every call used the same model, prompt, temperature (`0.1`), hidden-reasoning
-  setting (`none`), and 32-token output ceiling.
+- Every call requested the same `qwen3.6:27b` tag and used the same prompt,
+  temperature (`0.1`), hidden-reasoning setting (`none`), and 32-token output
+  ceiling. The historical harness observed the model digest once at metadata
+  capture; it did not continuously revalidate the mutable tag or record the
+  returned model per call. The current harness now does both.
 - Each arm received exactly one 384x384 PNG. Beauty used the full resolution;
   the atlas paid for four cues with 192x192 panels.
 - Ollama reported exactly equal prompt tokens within all 36 pairs (0% maximum

@@ -136,6 +136,14 @@ def validate_case_params(family, params, label):
         center_separation = math.hypot(2.0 * center_x, near_z - far_z)
         if center_separation <= near_radius + far_radius:
             raise ValueError(f"{label}: depth spheres must not intersect")
+        half_fov = math.radians(14.0)
+        for sphere_label, axial, radius in (("near", near_axial, near_radius),
+                                             ("far", far_axial, far_radius)):
+            center_distance = math.hypot(center_x, axial)
+            center_angle = math.atan2(center_x, axial)
+            angular_radius = math.asin(radius / center_distance)
+            if center_angle + angular_radius >= half_fov:
+                raise ValueError(f"{label}: {sphere_label} sphere must fit inside the camera view")
         return {"RED", "BLUE"}, near_color.upper()
     elif family == "surface_normal":
         angle = _finite_number(params.get("angleDegrees"), f"{label}.params.angleDegrees")
@@ -480,21 +488,33 @@ def http_json(url, payload=None, timeout=900):
 
 def choose_model(endpoint, requested):
     tags = http_json(endpoint.rstrip("/") + "/api/tags", timeout=10)
-    models = tags.get("models", []) if isinstance(tags, dict) else []
-    by_name = {item.get("name"): item for item in models if isinstance(item, dict)}
+    models = tags.get("models") if isinstance(tags, dict) else None
+    if not isinstance(models, list):
+        raise RuntimeError(f"Ollama tags response has no models array: {tags}")
+    return select_model(models, requested)
+
+
+def select_model(models, requested):
     if requested:
         candidates = [item for item in models
-                      if item.get("name") == requested or item.get("model") == requested]
+                      if isinstance(item, dict) and
+                      (item.get("name") == requested or item.get("model") == requested)]
         if not candidates:
             raise ValueError(f"requested model {requested!r} is not installed")
         chosen = candidates[0]
-        if "vision" not in chosen.get("capabilities", []):
+        capabilities = chosen.get("capabilities")
+        if not isinstance(capabilities, list) or "vision" not in capabilities:
             raise ValueError(f"requested model {requested!r} does not advertise vision capability")
         return chosen
-    candidates = [item for item in models if "vision" in item.get("capabilities", [])]
+    candidates = [item for item in models if isinstance(item, dict) and
+                  isinstance(item.get("capabilities"), list) and
+                  "vision" in item["capabilities"]]
     if not candidates:
         raise ValueError("no installed Ollama model advertises vision capability")
-    return min(candidates, key=lambda item: (int(item.get("size", 1 << 63)), item.get("name", "")))
+    def model_size(item):
+        size = item.get("size")
+        return size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else 1 << 63
+    return min(candidates, key=lambda item: (model_size(item), item.get("name", "")))
 
 
 def model_identity(endpoint, requested):
@@ -522,6 +542,10 @@ def ask_model(endpoint, model, prompt, png, temperature, timeout):
     started = time.monotonic()
     root = http_json(endpoint.rstrip("/") + "/v1/chat/completions", payload, timeout)
     elapsed_ms = round((time.monotonic() - started) * 1000)
+    return parse_model_response(root, model, elapsed_ms)
+
+
+def parse_model_response(root, model, elapsed_ms):
     if not isinstance(root, dict) or root.get("error"):
         raise RuntimeError(f"invalid model response envelope: {root}")
     choices = root.get("choices")
@@ -534,24 +558,21 @@ def ask_model(endpoint, model, prompt, png, temperature, timeout):
     if returned_model != model:
         raise RuntimeError(f"model response identity {returned_model!r} does not match {model!r}")
     message = choices[0]["message"]
+    usage = root.get("usage", {})
+    if usage is None:
+        usage = {}
+    if not isinstance(usage, dict):
+        raise RuntimeError(f"model response usage must be an object or null: {usage!r}")
     return {
         "content": message.get("content", ""),
         "reasoning": message.get("reasoning", message.get("reasoning_content", "")),
         "finishReason": choices[0].get("finish_reason") if choices else None,
-        "usage": root.get("usage", {}),
+        "usage": usage,
         "latencyMs": elapsed_ms,
         "responseId": root.get("id"),
         "returnedModel": returned_model,
         "systemFingerprint": root.get("system_fingerprint"),
     }
-
-
-def exact_mcnemar(atlas_only, beauty_only):
-    discordant = atlas_only + beauty_only
-    if discordant == 0:
-        return 1.0
-    tail = sum(math.comb(discordant, k) for k in range(min(atlas_only, beauty_only) + 1))
-    return min(1.0, 2.0 * tail / (2 ** discordant))
 
 
 def arm_stats(rows, arm):
@@ -561,7 +582,7 @@ def arm_stats(rows, arm):
             "accuracy": successes / len(selected) if selected else None}
 
 
-def paired_stats(rows, include_exact=False):
+def paired_stats(rows):
     by_pair = defaultdict(dict)
     for row in rows:
         by_pair[(row["caseId"], row["repeat"])][row["arm"]] = row
@@ -582,11 +603,7 @@ def paired_stats(rows, include_exact=False):
         else:
             counts["both_wrong"] += 1
         complete_pairs += 1
-    result = {**counts, "completePairs": complete_pairs}
-    if include_exact:
-        result["exactTwoSidedP"] = exact_mcnemar(counts["atlas_only_wins"],
-                                                 counts["beauty_only_wins"])
-    return result
+    return {**counts, "completePairs": complete_pairs}
 
 
 def summarize(rows):
@@ -621,14 +638,14 @@ def summarize(rows):
                 case_majority[arm] += 1
             majority_rows.append({"caseId": case_id, "family": votes["family"],
                                   "repeat": 1, "arm": arm, "correct": correct})
-    case_majority["paired"] = paired_stats(majority_rows, include_exact=True)
+    case_majority["paired"] = paired_stats(majority_rows)
     case_majority["families"] = {}
     for family in sorted({row["family"] for row in majority_rows}):
         subset = [row for row in majority_rows if row["family"] == family]
         case_majority["families"][family] = {
             "beauty": arm_stats(subset, "beauty"),
             "atlas": arm_stats(subset, "atlas"),
-            "paired": paired_stats(subset, include_exact=True),
+            "paired": paired_stats(subset),
         }
 
     families = {}
@@ -679,8 +696,7 @@ def report_markdown(metadata, summary):
         f"- Primary unique-case majority: beauty {majority['beauty']}/{majority['total']}; "
         f"atlas {majority['atlas']}/{majority['total']}",
         f"- Unique-case discordance: atlas-only {majority_paired['atlas_only_wins']}, "
-        f"beauty-only {majority_paired['beauty_only_wins']}; exact p="
-        f"{majority_paired['exactTwoSidedP']:.6g}",
+        f"beauty-only {majority_paired['beauty_only_wins']}",
         f"- Repeat-pooled descriptive accuracy: beauty {b['correct']}/{b['total']} "
         f"({percent(b['accuracy'])}); atlas {a['correct']}/{a['total']} ({percent(a['accuracy'])})",
         f"- Repeat-pooled descriptive discordance: atlas-only {paired['atlas_only_wins']}, "
@@ -699,8 +715,9 @@ def report_markdown(metadata, summary):
                      f"{unique['beauty']['correct']}/{unique['beauty']['total']} | "
                      f"{unique['atlas']['correct']}/{unique['atlas']['total']} |")
     lines += [
-        "", "Repeated calls on byte-identical case images are correlated. Their pooled counts "
-        "are a stability diagnostic only; the unique-case majority is the inferential unit.", "",
+        "", "Repeated calls on byte-identical case images are correlated, and authored cases "
+        "share mirrored parameter families. Counts are descriptive; no inferential p-value is "
+        "reported.", "",
         "This diagnostic establishes only whether this model can use the atlas on cue-targeted "
         "tasks. It does not establish general agent-task lift; see evals/perception_ab/README.md.", "",
     ]
@@ -919,8 +936,20 @@ def self_test(repo_root, manifest_arg):
         pass
     assert normalize_answer(" red.\n", ["RED", "BLUE"]) == "RED"
     assert normalize_answer("RED because it is closer", ["RED", "BLUE"]) is None
-    assert exact_mcnemar(0, 0) == 1.0
-    assert exact_mcnemar(6, 0) == 0.03125
+    mock_response = {"model": "vision:test", "choices": [{"message": {"content": "RED"}}],
+                     "usage": None}
+    assert parse_model_response(mock_response, "vision:test", 5)["usage"] == {}
+    mock_response["usage"] = []
+    try:
+        parse_model_response(mock_response, "vision:test", 5)
+        raise AssertionError("non-object model usage accepted")
+    except RuntimeError:
+        pass
+    try:
+        select_model([{"name": "broken", "capabilities": None}], "broken")
+        raise AssertionError("null model capabilities accepted")
+    except ValueError:
+        pass
     manifest = Path(manifest_arg)
     if not manifest.is_absolute():
         manifest = Path(repo_root).resolve() / manifest
@@ -944,6 +973,12 @@ def self_test(repo_root, manifest_arg):
         raise AssertionError("Euclidean front-surface reversal accepted")
     except ValueError:
         pass
+    try:
+        validate_case_params("depth_order", {"nearColor": "red", "nearSide": "left",
+                                             "nearZ": 8.5, "farZ": 8.0}, "invisible_depth")
+        raise AssertionError("out-of-view depth case accepted")
+    except ValueError:
+        pass
     jobs = build_jobs(cases, 3, 7)
     first_counts = defaultdict(lambda: defaultdict(int))
     case_counts = defaultdict(lambda: defaultdict(int))
@@ -964,6 +999,7 @@ def self_test(repo_root, manifest_arg):
     summary = summarize(synthetic)
     assert summary["paired"]["atlas_only_wins"] == 2
     assert summary["accuracyDelta"] == 1.0
+    assert "exactTwoSidedP" not in summary["caseMajority"]["paired"]
     assert summary["tokenParity"]["withinFivePercent"] is True
     synthetic[-1]["usage"] = {}
     summary = summarize(synthetic)

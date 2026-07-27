@@ -44,10 +44,10 @@ model, hashes, or Git state change during the run. An explicit in-repository
 state; external directories are also allowed. Use `--self-test` for the
 dependency-free scoring/parser checks and `--help` for overrides.
 
-Treat each unique authored case as the primary unit. The exact paired sign test
-therefore compares case-majority outcomes. Repeat-pooled accuracy and
-`atlas_only_wins` versus `beauty_only_wins` remain useful stability diagnostics,
-but byte-identical repeated inputs are correlated and receive no inferential
+Treat each unique authored case majority as the primary descriptive unit.
+Repeat-pooled accuracy and `atlas_only_wins` versus `beauty_only_wins` remain
+useful stability diagnostics, but byte-identical repeats and mirrored
+parameter-family cases are correlated, so the harness emits no inferential
 p-value. Prompt-token parity is true only when usage is present and matched for
-every complete pair. Repeats must be odd so every arm has an unambiguous case
-majority.
+every complete pair. Repeats must be odd and at least three so every arm has an
+unambiguous case majority and every case sees both call orders.
