@@ -5258,6 +5258,120 @@ static void RunRenderOwnsSceneGuardTest()
 	controller.Stop();
 }
 
+//////////////////////////////////////////////////////////////////////
+// (img-cache) CHARACTERIZATION: AgentSession's last-render PNG cache --
+// the one ReadImage() serves and the one the `read_image` JSON-RPC verb
+// returns -- is PER-SESSION state (`mLastPng` / `mLastSink`, populated
+// only inside AgentSession.cpp's RenderCore_ on the session that ran the
+// render).  It is NOT shared between two AgentSessions built over the
+// same Job, even when both have the SAME live SceneEditController
+// attached.
+//
+// THIS TEST EXISTS TO DOCUMENT WHY A GUI CHAT DRIVER MUST ROUTE `render`
+// AND `read_image` TO THE SAME SESSION.  Both GUI chat drivers stand up
+// SEVERAL AgentSessions over one Job (an administrative Owner session,
+// plus one tool-call session per autonomy posture), and every one of
+// them is controller-attached, so ANY of them can service a render.
+// Both drivers used to send the `render` tool call to a DIFFERENT
+// session than every other tool call -- so the agent's render populated
+// session A's cache while its follow-up `read_image` read session B's,
+// which was either empty (byteLength 0) or held a stale image left by
+// `query_object_at`'s internal objectmap render.  The assertions below
+// are exactly that failure, reproduced at the library level.
+//
+// The two GUI routing sites this pins down -- keep them consistent:
+//   * build/XCode/rise/RISE-GUI/App/ChatViewModel.swift
+//       (driveTurn's `call.name == "render"` branch +
+//        executeRenderToolCallAsync)
+//   * build/VS2022/RISE-GUI/ChatPanel.cpp
+//       (processNextToolCall's `call.name == "render"` branch +
+//        startAsyncRenderToolCall / pollOutstandingRender /
+//        cancelOutstandingRender)
+//
+// This is a CHARACTERIZATION of library behaviour, not a claim that the
+// per-session cache is wrong: per-session is the correct design (an
+// External MCP client must not see an in-app render's pixels).  What is
+// wrong is a CALLER that splits one logical render-then-read across two
+// sessions -- and this test is what makes that consequence visible if
+// anyone re-splits the routing.
+//////////////////////////////////////////////////////////////////////
+static void RunPerSessionImageCacheTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (img-cache) ReadImage()'s cache is PER-SESSION ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_per_session_image_cache.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the per-session-image-cache scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (per-session image-cache test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	// Mirrors the GUI topology: TWO AgentSessions over the SAME Job, both
+	// attached to the SAME live controller -- so either one is capable of
+	// servicing a render, exactly as in the bridges.
+	std::unique_ptr<AgentSession> sessionA = AgentSession::WrapJob( pJob );
+	std::unique_ptr<AgentSession> sessionB = AgentSession::WrapJob( pJob );
+	Check( sessionA != nullptr && sessionB != nullptr,
+	       "two AgentSessions wrap the SAME Job (the GUI's multi-session topology)" );
+	if( sessionA && sessionB )
+	{
+		sessionA->AttachController( &controller );
+		sessionB->AttachController( &controller );
+
+		Check( sessionA->ReadImage().empty(), "A's ReadImage cache starts EMPTY" );
+		Check( sessionB->ReadImage().empty(), "B's ReadImage cache starts EMPTY" );
+
+		// --- render through A -------------------------------------------
+		AgentRenderParams noOverride;
+		const AgentRenderResult ra = sessionA->Render( noOverride );
+		Check( ra.ok, "session A's render succeeds" );
+		Check( !ra.png.empty(), "session A's render produces PNG bytes" );
+
+		const std::vector<unsigned char> aAfterA = sessionA->ReadImage();
+		const std::vector<unsigned char> bAfterA = sessionB->ReadImage();
+		Check( !aAfterA.empty(),
+		       "MONEY: A's ReadImage returns the bytes A's OWN render produced" );
+		Check( aAfterA == ra.png,
+		       "A's cached bytes ARE that render's PNG (not some other frame)" );
+		Check( bAfterA.empty(),
+		       "MONEY (red-proof): B's ReadImage is STILL EMPTY after A rendered -- "
+		       "the cache is PER-SESSION, so a GUI that renders on A and reads on B gets byteLength 0" );
+
+		// --- render through B, at a DIFFERENT resolution ----------------
+		// A different size guarantees the two PNGs cannot coincidentally
+		// compare equal, so the independence assertion below is real.
+		AgentRenderParams bParams;
+		bParams.width  = 32;
+		bParams.height = 32;
+		const AgentRenderResult rb = sessionB->Render( bParams );
+		Check( rb.ok, "session B's render succeeds" );
+		Check( !rb.png.empty(), "session B's render produces PNG bytes" );
+
+		const std::vector<unsigned char> aAfterB = sessionA->ReadImage();
+		const std::vector<unsigned char> bAfterB = sessionB->ReadImage();
+		Check( !bAfterB.empty(),
+		       "MONEY: B's ReadImage is now populated by B's OWN render" );
+		Check( bAfterB == rb.png,
+		       "B's cached bytes ARE B's render's PNG" );
+		Check( aAfterB == aAfterA,
+		       "MONEY: A's cache is UNTOUCHED by B's render -- the two caches are fully independent" );
+		Check( bAfterB != aAfterB,
+		       "A and B hold DIFFERENT images (B rendered 32x32, A rendered the scene's 24x24)" );
+
+		sessionA->AttachController( nullptr );
+		sessionB->AttachController( nullptr );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (img-cache) per-session ReadImage cache: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -5300,6 +5414,7 @@ int main()
 	RunAgentRenderRestoresPersistentCallbackRedProveTest();
 	RunLegacyProductionPreservesAgentWorkerTest();
 	RunGestureRenderAdmissionTest();
+	RunPerSessionImageCacheTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

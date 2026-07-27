@@ -5,8 +5,9 @@
 //  Thin UI/IO driver around RISE::Agent::AgentChatLoop.  The loop owns
 //  transcript/tool-call state; this widget performs HTTPS requests and
 //  executes model-requested tools through ViewportBridge::agentHandleToolCall
-//  (autonomy-routed); agentHandleLine is administrative-only (proposals,
-//  render submit/poll, skill index).
+//  (autonomy-routed, including the async `render` submit/poll/cancel --
+//  see its two-argument pinned overload); agentHandleLine is
+//  administrative-only (proposals, skill index).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -183,7 +184,8 @@ private slots:
 
     // P1-2: fires on a ~250ms QTimer while a chat-driven `render` tool
     // call has an async job outstanding; each tick is a fast
-    // render_wait(timeoutMs:0) poll-once through agentHandleLine.
+    // render_wait(timeoutMs:0) poll-once through agentHandleToolCall,
+    // pinned to the level captured when the job was submitted.
     void pollOutstandingRender();
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): poll
@@ -528,6 +530,20 @@ private:
     // consumers (recomputeSceneEditable, MainWindow, TopBar) stay
     // synchronized with every transition.
     quint64 m_outstandingRenderJobId = 0;
+    // The autonomy level PINNED for the outstanding render job, captured
+    // ONCE at submit time in startAsyncRenderToolCall().  renderJobIds are
+    // SESSION-SCOPED -- the id the submit call minted is only addressable
+    // from the session that minted it -- so every later call about that job
+    // (pollOutstandingRender's render_wait, cancelOutstandingRender's
+    // render_cancel) must reach the SAME session.  Without this pin, a user
+    // clicking a different autonomy chip mid-render would send the next
+    // poll/cancel to a sibling session that has never heard of the job.
+    //
+    // Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
+    // safety control, and a user who drops to Read mid-turn must have that
+    // bind on the agent's very next tool call.  See
+    // ViewportBridge::agentHandleToolCall(const QString&, AgentAutonomyLevel).
+    AutonomyLevel m_outstandingRenderAutonomy = AutonomyLevel::Apply;
     // True after render_cancel has been sent but before render_wait observes
     // actual worker completion.  The outstanding id deliberately remains
     // published during this drain so scene controls stay disabled.

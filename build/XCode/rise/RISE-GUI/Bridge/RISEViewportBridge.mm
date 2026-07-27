@@ -2310,13 +2310,25 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 }
 
 - (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest {
+    // The plain form is the level-explicit form applied to whatever the
+    // composer chip currently says -- so a tool call issued WITHOUT a pin
+    // always reflects the user's newest safety choice (see the .h doc for
+    // why only a render JOB pins, never a whole turn).
+    return [self agentHandleToolCall:jsonRpcRequest autonomy:_agentAutonomyLevel];
+}
+
+- (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest
+                         autonomy:(RISEAgentAutonomyLevel)level {
     static NSString* const kNoDispatcher =
         @"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
         @"{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
 
+    // An out-of-range `level` falls to the Owner dispatcher, matching
+    // -setAgentAutonomyLevel:'s "keep a valid posture" no-op policy rather
+    // than dispatching to nothing.
     RISE::Agent::AgentRpcDispatcher* dispatcher =
-        (_agentAutonomyLevel == RISEAgentAutonomyPropose) ? _agentToolDispatcherPropose
-                                                            : _agentToolDispatcherOwner;
+        (level == RISEAgentAutonomyPropose) ? _agentToolDispatcherPropose
+                                            : _agentToolDispatcherOwner;
     if (!dispatcher) {
         return kNoDispatcher;
     }

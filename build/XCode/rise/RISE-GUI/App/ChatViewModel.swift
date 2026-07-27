@@ -753,6 +753,22 @@ final class ChatViewModel: ObservableObject {
     /// like every other piece of driver state in this class.
     private var outstandingChatRenderJobId: UInt64 = 0
 
+    /// The autonomy level PINNED for the currently-outstanding chat render
+    /// job (captured once at submit time in `executeRenderToolCallAsync`).
+    ///
+    /// renderJobIds are SESSION-SCOPED — the id the submit call minted is
+    /// only addressable from the session that minted it — so every later
+    /// call about that job (render_wait poll, render_cancel, the drain poll)
+    /// must reach the SAME session.  Without this pin, a user clicking a
+    /// different autonomy chip mid-render would send the next poll/cancel to
+    /// a sibling session that has never heard of the job.
+    ///
+    /// Scoped to ONE JOB on purpose, never to a whole turn: autonomy is a
+    /// safety control, and a user who drops to Read mid-turn must have that
+    /// bind on the agent's very next tool call.  See
+    /// `-agentHandleToolCall:autonomy:`'s doc in RISEViewportBridge.h.
+    private var outstandingChatRenderAutonomy: RISEAgentAutonomyLevel = .apply
+
     /// The controller worker is still occupied by this chat render, including
     /// after a fire-and-forget cancellation request. RenderViewModel forwards
     /// this published state to every control that relies on its single scene
@@ -1779,7 +1795,7 @@ final class ChatViewModel: ObservableObject {
     /// SAME single-slot worker (SceneEditController::SubmitAgentRenderAsync's
     /// single-slot policy would otherwise serialize them).
     ///
-    /// Fire-and-forget: `agentHandleLine` is synchronous but render_cancel
+    /// Fire-and-forget: `agentHandleToolCall` is synchronous but render_cancel
     /// itself does not block for the render's duration (it only trips the
     /// shared cancel flag — see AgentSession::CancelAsyncRender's doc), so
     /// this call returns promptly regardless of whether a render is
@@ -1794,6 +1810,10 @@ final class ChatViewModel: ObservableObject {
     private func cancelAnyOutstandingChatRender() {
         guard outstandingChatRenderJobId != 0 else { return }
         let jobId = outstandingChatRenderJobId
+        // The job's PINNED level — render_cancel must reach the session that
+        // minted `jobId` (ids are session-scoped), not whichever session the
+        // autonomy chip happens to select right now.
+        let autonomy = outstandingChatRenderAutonomy
         outstandingChatRenderJobId = 0
         guard let vb = viewportBridge else {
             // No live bridge remains that UI can call. A subsequent
@@ -1809,24 +1829,29 @@ final class ChatViewModel: ObservableObject {
         // this call site already knows a job WAS outstanding (the guard
         // above), and the fire-and-forget contract means we don't wait to
         // find out whether it actually stopped.
-        _ = vb.agentHandleLine(line)
-        beginChatRenderDrain(jobId: jobId, bridge: vb)
+        _ = vb.agentHandleToolCall(line, autonomy: autonomy)
+        beginChatRenderDrain(jobId: jobId, bridge: vb, autonomy: autonomy)
     }
 
     /// Poll the already-cancelled worker without coupling it to the turn task:
     /// cancelling that task is precisely what leaves its normal render_wait
     /// loop early. Every dispatcher call remains on MainActor, preserving the
     /// bridge's single-caller contract.
-    private func beginChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge) {
+    private func beginChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge,
+                                      autonomy: RISEAgentAutonomyLevel) {
         guard chatRenderWorkerOccupied, chatRenderOccupancyJobId == jobId else { return }
         chatRenderDrainTask?.cancel()
         chatRenderDrainTask = Task { @MainActor [weak self, weak vb] in
             guard let self, let vb else { return }
-            await self.waitForChatRenderDrain(jobId: jobId, bridge: vb)
+            await self.waitForChatRenderDrain(jobId: jobId, bridge: vb, autonomy: autonomy)
         }
     }
 
-    private func waitForChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge) async {
+    /// `autonomy` is the job's PINNED level, threaded down from
+    /// `cancelAnyOutstandingChatRender` — this loop addresses `jobId`, which
+    /// only the session that minted it can resolve.
+    private func waitForChatRenderDrain(jobId: UInt64, bridge vb: RISEViewportBridge,
+                                        autonomy: RISEAgentAutonomyLevel) async {
         let sliceMs: UInt64 = 250
         while !Task.isCancelled && chatRenderOccupancyJobId == jobId {
             // sceneClosed() detaches this bridge before shutdown. Its
@@ -1835,7 +1860,7 @@ final class ChatViewModel: ObservableObject {
             guard viewportBridge === vb else { return }
             let waitLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_wait\"," +
                 "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":0}}"
-            let waitResponse = vb.agentHandleLine(waitLine)
+            let waitResponse = vb.agentHandleToolCall(waitLine, autonomy: autonomy)
             if Self.renderWaitCompleted(waitResponse) {
                 finishChatRenderOccupancy(jobId: jobId)
                 return
@@ -1923,13 +1948,13 @@ final class ChatViewModel: ObservableObject {
     /// (since Model-B F2 slice S2b) so does a `render` tool call's
     /// render_wait polling loop — see executeRenderToolCallAsync's doc
     /// for why that is same-actor SLICING (short synchronous
-    /// `agentHandleLine` calls separated by `await Task.sleep`), not a
+    /// `agentHandleToolCall` calls separated by `await Task.sleep`), not a
     /// second thread calling the dispatcher; `AgentRpcDispatcher::
     /// HandleLine` is documented single-caller, and every actual call
     /// into it — submit, each poll slice — still happens on this
     /// MainActor Task, never concurrently with anything else.  EVERY
     /// OTHER tool call still executes SYNCHRONOUSLY on main via
-    /// `agentHandleLine` in one shot (the 1c-1 contract: same thread the
+    /// `agentHandleToolCall` in one shot (the 1c-1 contract: same thread the
     /// GUI's own SetProperty edits drive) — they are fast CST reads/
     /// edits with no render-duration cost to amortize.
     ///
@@ -2102,6 +2127,34 @@ final class ChatViewModel: ObservableObject {
                     // OTHER tool call keeps the 1c-1 synchronous contract
                     // unchanged (they are all fast CST reads/edits with no
                     // render-duration cost to amortize).
+                    //
+                    // SESSION-ROUTING INVARIANT (2026-07 fix): BOTH branches
+                    // below now reach the SAME autonomy-selected session.
+                    // `render` used to go to `agentHandleLine`'s separate
+                    // administrative session while every other verb went
+                    // through `agentHandleToolCall` — and because
+                    // AgentSession's last-render PNG cache (`mLastPng` /
+                    // `mLastSink`, AgentSession.cpp's RenderCore_) is
+                    // PER-SESSION, the agent's `read_image` then read a cache
+                    // its own `render` had never written: zero bytes, or the
+                    // stale objectmap PNG left by `query_object_at`'s internal
+                    // render.  Keep `render` and `read_image` on one session.
+                    //
+                    // KNOWN RESIDUAL, deliberately not "fixed": if the user
+                    // clicks a different autonomy chip BETWEEN a render and
+                    // the `read_image` that follows it, that `read_image`
+                    // lands on the newly-selected session and again sees an
+                    // empty/stale cache.  Pinning the whole TURN would close
+                    // it, and we do not do that — autonomy is a safety
+                    // control that must bind on the very next tool call, so a
+                    // mid-turn drop to Read cannot be deferred to a turn
+                    // boundary.  Only a render JOB is pinned (see
+                    // `outstandingChatRenderAutonomy`), because session-scoped
+                    // renderJobIds make that a mechanical requirement rather
+                    // than a policy choice.  The model self-corrects here by
+                    // re-rendering.  Windows/Qt sibling of this routing site:
+                    // build/VS2022/RISE-GUI/ChatPanel.cpp's
+                    // processNextToolCall / startAsyncRenderToolCall.
                     let responseLine: String
                     if call.name == "render" {
                         responseLine = await executeRenderToolCallAsync(
@@ -2113,9 +2166,7 @@ final class ChatViewModel: ObservableObject {
                         // (see RISEViewportBridge.h's `-agentHandleToolCall:`
                         // doc) — Read refuses edit verbs, Propose stages
                         // them, Apply commits them directly (today's
-                        // behaviour). `render` is excluded from this
-                        // routing on purpose (handled in the `if` branch
-                        // above via the level-independent `agentHandleLine`).
+                        // behaviour).
                         responseLine = vb.agentHandleToolCall(line)
                     }
 
@@ -2584,19 +2635,20 @@ final class ChatViewModel: ObservableObject {
     /// THREAD-CONTRACT FINDING THAT DRIVES THIS SHAPE: `AgentRpcDispatcher`
     /// (src/Library/Agent/AgentRpc.h) is documented "NOT thread-safe (slice
     /// 0c is single-threaded, matching AgentSession)" — HandleLine (which
-    /// `agentHandleLine` calls straight through to on the calling thread)
-    /// is a single-caller API, not a thread-safe one.  So the fix is NOT
-    /// "poll render_status/render_wait from a second thread while the
-    /// MainActor does something else" — that would be a second concurrent
-    /// caller into the SAME dispatcher/session the MainActor might also be
-    /// driving (e.g. the Agent JSON-RPC debug panel, or another tool call
-    /// in a future parallel-calls world). The correct shape, and the one
-    /// used here, is SAME-ACTOR SLICING: every `agentHandleLine` call in
-    /// this method still runs synchronously on the MainActor (preserving
-    /// the single-caller contract exactly), but the render itself runs on
-    /// the controller's dedicated agent-render worker thread (submitted
-    /// via `render{"async":true}`), so each individual `agentHandleLine`
-    /// call this method makes is fast — a submit, or (S2b P2-2) a
+    /// `agentHandleToolCall` calls straight through to on the calling
+    /// thread) is a single-caller API, not a thread-safe one.  So the fix
+    /// is NOT "poll render_status/render_wait from a second thread while
+    /// the MainActor does something else" — that would be a second
+    /// concurrent caller into the SAME dispatcher/session the MainActor
+    /// might also be driving (e.g. the Agent JSON-RPC debug panel, or
+    /// another tool call in a future parallel-calls world). The correct
+    /// shape, and the one used here, is SAME-ACTOR SLICING: every
+    /// `agentHandleToolCall` call in this method still runs synchronously
+    /// on the MainActor (preserving the single-caller contract exactly),
+    /// but the render itself runs on the controller's dedicated
+    /// agent-render worker thread (submitted via `render{"async":true}`),
+    /// so each individual `agentHandleToolCall` call this method makes is
+    /// fast — a submit, or (S2b P2-2) a
     /// render_wait(timeoutMs:0) POLL-ONCE call that hits
     /// `WaitForRenderJob`'s "no wait" early return and so costs a single
     /// mutex-guarded status read, near-instant rather than up to
@@ -2607,6 +2659,15 @@ final class ChatViewModel: ObservableObject {
     /// all run in that gap), not any actual parallelism against the
     /// dispatcher.  See `executeRenderToolCallAsync`'s poll-loop comment
     /// below for the full before/after of the per-cycle MainActor cost.
+    ///
+    /// SESSION ROUTING: every call this method makes goes through
+    /// `agentHandleToolCall(_:autonomy:)` with the level PINNED at submit
+    /// time — the same autonomy-selected session every OTHER tool call in
+    /// the turn uses.  That is what keeps `read_image` reading the PNG
+    /// cache THIS render populated (`AgentSession::mLastPng` is per-session);
+    /// the pin is what keeps the session-scoped `renderJobId` addressable
+    /// across a mid-render autonomy-chip click.  See the routing site in
+    /// `driveTurn` for the full rationale and the documented residual.
     ///
     /// CONTRACT WITH THE LLM: the taught `render` tool schema
     /// (AgentChatCodecs.cpp) has no `async` parameter — the LLM never
@@ -2640,18 +2701,32 @@ final class ChatViewModel: ObservableObject {
     ) async -> String {
         chatRenderWillSubmit()
 
+        // PIN the autonomy level for this render job's whole lifecycle,
+        // captured ONCE, here, before the submit.  renderJobIds are
+        // session-scoped, so every later call about this job (the
+        // render_wait polls below, and render_cancel / the drain poll in
+        // cancelAnyOutstandingChatRender) must reach the SAME session — a
+        // mid-render autonomy-chip click must not send the next poll to a
+        // sibling session that never heard of the job.  This pin is scoped
+        // to the JOB, never to the turn: see `outstandingChatRenderAutonomy`
+        // and RISEViewportBridge.h's `-agentHandleToolCall:autonomy:` doc.
+        let pinnedAutonomy = vb.agentAutonomyLevel
+        outstandingChatRenderAutonomy = pinnedAutonomy
+
         // Inject {"async":true} into the params object.  A parse failure
         // here (should not happen — toolCallToJsonRpcLine always emits
         // well-formed JSON) falls back to the ORIGINAL synchronous call:
         // still correct, just blocking, which is strictly better than
-        // fabricating a bogus response.
+        // fabricating a bogus response.  Still routed to the pinned
+        // session, so the ReadImage cache it populates is the one a
+        // following `read_image` tool call will read.
         guard let asyncLine = Self.injectAsyncTrue(intoJsonRpcLine: submitLine) else {
-            return vb.agentHandleLine(submitLine)
+            return vb.agentHandleToolCall(submitLine, autonomy: pinnedAutonomy)
         }
 
         // Submit.  Synchronous but fast — this is a queue-and-return
         // call, not the render itself (see AgentSession::RenderAsync).
-        let submitResponse = vb.agentHandleLine(asyncLine)
+        let submitResponse = vb.agentHandleToolCall(asyncLine, autonomy: pinnedAutonomy)
         guard
             let submitData = submitResponse.data(using: .utf8),
             let submitObj = (try? JSONSerialization.jsonObject(with: submitData)) as? [String: Any]
@@ -2709,7 +2784,7 @@ final class ChatViewModel: ObservableObject {
         // Poll render_wait(timeoutMs:0) — a POLL-ONCE call, not a bounded
         // wait — separated by an `await Task.sleep`.  S2b P2-2: the prior
         // shape passed `timeoutMs:250` to render_wait, and because
-        // `agentHandleLine` runs synchronously on the MainActor (see the
+        // `agentHandleToolCall` runs synchronously on the MainActor (see the
         // method doc), that made each slice's MainActor-blocking cost up
         // to 250ms — WaitForRenderJob's `wait_until` loop (SceneEditController.cpp)
         // really does block the calling thread for up to `timeoutMs`
@@ -2718,7 +2793,7 @@ final class ChatViewModel: ObservableObject {
         // SwiftUI redraws all stalling on each slice).  `timeoutMs:0` hits
         // WaitForRenderJob's explicit "poll-once contract: no wait" early
         // return (`if( timeoutMs == 0 ) return false;` before any condvar
-        // wait) — so this `agentHandleLine` call is now a single mutex-
+        // wait) — so this `agentHandleToolCall` call is now a single mutex-
         // guarded status read, not a wait, and the MainActor-blocking
         // portion of each cycle is near-instant. The actual pacing between
         // polls moves entirely to the `await Task.sleep` below, which
@@ -2753,7 +2828,7 @@ final class ChatViewModel: ObservableObject {
 
             let waitLine = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"render_wait\"," +
                 "\"params\":{\"renderJobId\":\(jobId),\"timeoutMs\":0}}"
-            let waitResponse = vb.agentHandleLine(waitLine)
+            let waitResponse = vb.agentHandleToolCall(waitLine, autonomy: pinnedAutonomy)
             if let waitData = waitResponse.data(using: .utf8),
                let waitObj = (try? JSONSerialization.jsonObject(with: waitData)) as? [String: Any],
                let waitResult = waitObj["result"] as? [String: Any],

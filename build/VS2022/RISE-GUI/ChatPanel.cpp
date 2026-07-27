@@ -1902,6 +1902,32 @@ void ChatPanel::processNextToolCall()
         }
 
         if (call.name == "render") {
+            // SESSION-ROUTING INVARIANT (2026-07 fix): the async render path
+            // below reaches the SAME autonomy-selected session every OTHER
+            // tool call in this turn uses.  `render` used to go to
+            // agentHandleLine's separate administrative session while every
+            // other verb went through agentHandleToolCall -- and because
+            // AgentSession's last-render PNG cache (mLastPng / mLastSink,
+            // AgentSession.cpp's RenderCore_) is PER-SESSION, the agent's
+            // read_image then read a cache its own render had never written:
+            // zero bytes, or the stale objectmap PNG left by
+            // query_object_at's internal render.  Keep `render` and
+            // `read_image` on one session.
+            //
+            // KNOWN RESIDUAL, deliberately not "fixed": if the user clicks a
+            // different autonomy chip BETWEEN a render and the read_image
+            // that follows it, that read_image lands on the newly-selected
+            // session and again sees an empty/stale cache.  Pinning the whole
+            // TURN would close it, and we do not do that -- autonomy is a
+            // safety control that must bind on the very next tool call, so a
+            // mid-turn drop to Read cannot be deferred to a turn boundary.
+            // Only a render JOB is pinned (see m_outstandingRenderAutonomy),
+            // because session-scoped renderJobIds make that a mechanical
+            // requirement rather than a policy choice.  The model
+            // self-corrects here by re-rendering.  macOS sibling of this
+            // routing site: build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
+            // driveTurn / executeRenderToolCallAsync.
+            //
             // P1-2: suspends here -- resumes back into processNextToolCall
             // from pollOutstandingRender() once the async job completes.
             // GUI stage 3: the row created above stays live across the
@@ -1919,8 +1945,8 @@ void ChatPanel::processNextToolCall()
         // matches the composer's CURRENT level (see ViewportBridge.h's
         // agentHandleToolCall doc) -- Read refuses edit verbs, Propose
         // stages them, Apply commits them directly (today's behaviour).
-        // `render` is excluded from this routing on purpose (handled in
-        // the `if` branch above via the level-independent agentHandleLine).
+        // `render` goes through the SAME selector, just via the pinned
+        // overload -- see the routing comment in the `if` branch above.
         const QString response = m_bridge->agentHandleToolCall(toQString(line));
         updatePendingToolRow(call, toStdString(response));
         m_loop->AddToolResult(call, toStdString(response));
@@ -1941,6 +1967,24 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
     m_activeRenderCall = call;
     m_activeRenderPending = true;
 
+    // PIN the autonomy level for this render job's whole lifecycle,
+    // captured ONCE, here, before the submit.  renderJobIds are
+    // session-scoped, so every later call about this job
+    // (pollOutstandingRender's render_wait, cancelOutstandingRender's
+    // render_cancel) must reach the SAME session -- a mid-render
+    // autonomy-chip click must not send the next poll to a sibling session
+    // that never heard of the job.  Read from the BRIDGE (the same source
+    // the un-pinned agentHandleToolCall consults) rather than this panel's
+    // mirror, so the two can never disagree.  The two enums are numerically
+    // identical by construction -- see ChatPanel.h's AutonomyLevel doc,
+    // which is why setAutonomyLevel() casts the other direction.
+    if (m_bridge) {
+        m_outstandingRenderAutonomy =
+            static_cast<AutonomyLevel>(m_bridge->agentAutonomyLevel());
+    }
+    const ViewportBridge::AgentAutonomyLevel pinnedAutonomy =
+        static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy);
+
     // Upgrade the already-built synchronous-shaped JSON-RPC line to carry
     // {"async":true} -- the LLM-authored params (width/height/camera/
     // samples/...) pass through unchanged.  A parse failure here should
@@ -1960,12 +2004,12 @@ void ChatPanel::startAsyncRenderToolCall(const ChatToolCall& call, const std::st
         return;
     }
 
-    // Direct-connected MainWindow cleanup must run before agentHandleLine
-    // can hand controller ownership to the async render worker.  In
+    // Direct-connected MainWindow cleanup must run before the submit can
+    // hand controller ownership to the async render worker.  In
     // particular, disabling a still-pressed QSlider only after submission
     // would emit sliderReleased -> scrubEnd against the render-held mutex.
     emit chatRenderWillSubmit();
-    const QString submitResponse = m_bridge->agentHandleLine(asyncLine);
+    const QString submitResponse = m_bridge->agentHandleToolCall(asyncLine, pinnedAutonomy);
     const QJsonDocument submitDoc = QJsonDocument::fromJson(submitResponse.toUtf8());
     if (!submitDoc.isObject()) {
         // Malformed response line -- should not happen (HandleLine always
@@ -2057,7 +2101,11 @@ void ChatPanel::pollOutstandingRender()
         { "renderJobId", static_cast<double>(m_outstandingRenderJobId) },
         { "timeoutMs", 0 }
     });
-    const QString waitResponse = m_bridge->agentHandleLine(waitLine);
+    // The job's PINNED level -- render_wait must reach the session that
+    // minted m_outstandingRenderJobId (ids are session-scoped), not
+    // whichever session the autonomy chip happens to select right now.
+    const QString waitResponse = m_bridge->agentHandleToolCall(
+        waitLine, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
     const QJsonDocument waitDoc = QJsonDocument::fromJson(waitResponse.toUtf8());
     if (!waitDoc.isObject()) {
         return; // transient parse hiccup -- keep polling
@@ -2122,7 +2170,9 @@ void ChatPanel::cancelOutstandingRender()
     const QString line = buildJsonRpcLine("render_cancel", QJsonObject{
         { "renderJobId", static_cast<double>(jobId) }
     });
-    m_bridge->agentHandleLine(line);
+    // Pinned, for the same session-scoped-id reason as the poll above.
+    m_bridge->agentHandleToolCall(
+        line, static_cast<ViewportBridge::AgentAutonomyLevel>(m_outstandingRenderAutonomy));
     // Keep m_outstandingRenderJobId published and continue the existing
     // non-blocking render_wait poll until the worker has actually drained.
     // Only that completion path re-enables timeline/viewport transport.

@@ -639,8 +639,9 @@ public:
     /// Mirrors macOS RISEViewportBridge.agentHandleLine.  This ALWAYS
     /// runs at Owner authority + Commit autonomy, regardless of
     /// `agentAutonomyLevel()` below -- it's the "administrative" path
-    /// (list_proposals / resolve_proposal / render submit+poll / the
-    /// one-time read_skill index fetch all go through it) and MUST
+    /// (list_proposals / resolve_proposal / the one-time read_skill
+    /// index fetch all go through it; the chat panel's render
+    /// submit/poll/cancel does NOT -- see `agentHandleToolCall()`) and MUST
     /// stay that way: resolve_proposal is refused outright under
     /// Propose/Read autonomy (see AgentRpc.h), so if this method
     /// tracked the composer's level, setting the composer to
@@ -711,23 +712,64 @@ public:
     ///                identical authority+autonomy, so observably
     ///                indistinguishable).
     ///
-    /// A "render" tool call is deliberately NOT routed through this
-    /// level selector — ChatPanel's async submit/poll/cancel sequence
-    /// spans multiple agentHandleLine-shaped calls against ONE
-    /// session's per-job result cache, and the user can change
-    /// `agentAutonomyLevel()` mid-poll; routing those calls through
-    /// whichever dispatcher happens to be current at each poll tick
-    /// would risk polling a DIFFERENT session than the one that
-    /// submitted the job, missing its cached result.  `render` is
-    /// read-safe at every level anyway (it never mutates the CST
-    /// document), so there is no honesty cost to always running it
-    /// over the stable Owner/Commit session `agentHandleLine()`
-    /// already uses — ChatPanel's startAsyncRenderToolCall /
-    /// pollOutstandingRender keep calling `agentHandleLine()` directly.
+    /// A "render" tool call GOES THROUGH THIS SELECTOR TOO (2026-07
+    /// per-session image-cache fix; mirrors the macOS bridge).  It used
+    /// to be routed to `agentHandleLine()`'s administrative session
+    /// instead, on the reasoning that ChatPanel's async submit/poll/
+    /// cancel sequence spans several calls against ONE session's per-job
+    /// state and the user can change `agentAutonomyLevel()` mid-poll.
+    /// That reasoning was right about the job-id problem and wrong about
+    /// the fix: it split "render" away from "read_image", and
+    /// AgentSession's LAST-RENDER PNG cache (mLastPng / mLastSink,
+    /// populated in AgentSession.cpp's RenderCore_) is PER-SESSION.  With
+    /// the two verbs on different sessions the agent's read_image read a
+    /// cache its own render never wrote -- returning zero bytes, or the
+    /// stale objectmap PNG left behind by query_object_at's internal
+    /// render.  Both verbs now run on the SAME session.
+    ///
+    /// The mid-render level flip is handled by PINNING instead: ChatPanel
+    /// captures the level ONCE at submit time and passes it to the
+    /// two-argument overload below for every subsequent poll / cancel /
+    /// final-result call for that job.  Routing "render" here does not
+    /// change what is PERMITTED: render / render_status / render_wait /
+    /// render_cancel / read_image are all on IsReadSafeVerb's allowlist
+    /// (AgentRpc.cpp), so each dispatches under Read, Propose, and Apply
+    /// alike.
     ///
     /// Same nil-safety contract as `agentHandleLine()`: never returns
     /// an empty string, always well-formed JSON-RPC.
     QString agentHandleToolCall(const QString& jsonRpcRequest);
+
+    /// Level-EXPLICIT overload: dispatch to the session `level` selects,
+    /// IGNORING the live `agentAutonomyLevel()`.  The one-argument form
+    /// above is exactly this called with the current level.
+    ///
+    /// This exists for ONE reason: a chat-driven async render is a
+    /// MULTI-CALL job (submit -> render_wait poll xN -> possibly
+    /// render_cancel), and the renderJobIds it hands around are
+    /// SESSION-SCOPED -- the coordinator ids minted for one AgentSession
+    /// are not addressable from another.  If the user clicks a different
+    /// autonomy chip mid-render, a poll or cancel issued through the
+    /// newly-selected session would simply not find the job.  So
+    /// ChatPanel captures the level once at submit time and pins it here
+    /// for that job's whole lifecycle.
+    ///
+    /// The pin is deliberately SCOPED TO ONE RENDER JOB, not to a chat
+    /// turn.  Autonomy is a SAFETY control: a user who drops to Read
+    /// mid-turn to stop the agent editing must have that take effect on
+    /// the agent's very NEXT tool call.  Pinning a whole turn would defer
+    /// a safety decision to the turn boundary; pinning a render job only
+    /// works around a mechanical id-scoping constraint.
+    ///
+    /// KNOWN RESIDUAL (documented, not silently accepted): if the user
+    /// flips autonomy BETWEEN a completed "render" and the "read_image"
+    /// that follows it, that read_image runs on the newly-selected
+    /// session and reads ITS (empty or stale) PNG cache rather than the
+    /// render's.  This is inherent to the deliberate one-session-per-
+    /// posture design -- the caches are per-session state, and pinning
+    /// further would trade a safety property for it.  In practice the
+    /// model self-corrects by re-rendering.
+    QString agentHandleToolCall(const QString& jsonRpcRequest, AgentAutonomyLevel level);
 
     // Properties panel ------------------------------------------------
 

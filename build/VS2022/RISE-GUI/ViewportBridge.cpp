@@ -1330,12 +1330,25 @@ void ViewportBridge::setAgentAutonomyLevel(AgentAutonomyLevel level)
 
 QString ViewportBridge::agentHandleToolCall(const QString& jsonRpcRequest)
 {
+    // The plain form is the level-explicit form applied to whatever the
+    // composer chip currently says -- so a tool call issued WITHOUT a pin
+    // always reflects the user's newest safety choice (see the .h doc for
+    // why only a render JOB pins, never a whole turn).
+    return agentHandleToolCall(jsonRpcRequest, m_agentAutonomyLevel);
+}
+
+QString ViewportBridge::agentHandleToolCall(const QString& jsonRpcRequest,
+                                            AgentAutonomyLevel level)
+{
     static const char* const kNoDispatcher =
         "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
         "{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
 
+    // An out-of-range `level` falls to the Owner dispatcher, matching
+    // setAgentAutonomyLevel()'s "keep a valid posture" no-op policy rather
+    // than dispatching to nothing.
     Agent::AgentRpcDispatcher* dispatcher =
-        (m_agentAutonomyLevel == AgentAutonomyLevel::Propose)
+        (level == AgentAutonomyLevel::Propose)
             ? m_agentToolDispatcherPropose.get()
             : m_agentToolDispatcherOwner.get();
     if (!dispatcher) {
