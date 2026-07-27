@@ -423,10 +423,15 @@ mention (viewport, objectmap/query).
      thirty-second block followed by a refusal.
    - It is also refused with **NO wait at all** when the gate is held
      by a **direct parked render** -- a film/camera-override agent
-     render, or the GUI's own parked preview. That render owns the
-     admission gate without occupying the render slot, so the fairness
-     wait is satisfied instantly and the admission check refuses on
-     the spot.
+     render, or a `read_viewport` in flight. (Those are the only two
+     producers: the parked path has exactly two callers, both agent
+     ones, and the GUI hosts more than one agent session, so the
+     holder may be a sibling session rather than yours. The GUI's own
+     interactive preview is NOT a producer -- the gate is what blocks
+     it.) That render owns the admission gate without occupying the
+     render slot, so the fairness wait is satisfied instantly and the
+     admission check refuses on the spot. Do NOT tell the user their
+     viewport preview is holding it.
    - A render carrying a **film override (`width` AND `height`)** or a
      **`camera`/`view` override** always takes the parked path and IS
      refused, immediately, for the same reason read_viewport was.

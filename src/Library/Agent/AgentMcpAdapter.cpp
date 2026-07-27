@@ -559,13 +559,18 @@ namespace RISE
 						"scene lighting to evaluate) but its pixels tell you NOTHING about materials, "
 						"lighting, exposure, or colour; reserve quality:\"production\" (the default) "
 						"for any check of those. "
-						"NOTE: this adapter's headless `rise --agent-stdio --mcp` process has no "
-						"live in-app controller, so the async submission mode that the underlying "
-						"RPC surface supports (`{\"async\":true}`) is NOT exposed as an option here "
-						"-- every render through this tool is fully synchronous and blocks until "
-						"complete; there is no async/pinned-supersession semantics reachable from "
-						"this headless transport beyond the advisory `pinned` flag above (which is "
-						"a no-op without a controller).",
+						"NOTE: the async submission mode the underlying RPC surface supports "
+						"(`{\"async\":true}`) is NOT exposed as an option here -- every render "
+						"through this tool is fully synchronous and blocks until complete. "
+						"Round-15 P2: whether `pinned` and the single-slot/30s-fairness semantics "
+						"are LIVE depends on the transport, not on this tool. Over the headless "
+						"`rise --agent-stdio --mcp` process there is no in-app controller, so "
+						"`pinned` is a no-op and there is no slot to queue on; over the "
+						"GUI-HOSTED loopback endpoint the same `tools/list` payload is served by "
+						"an adapter whose session IS controller-attached, so `pinned` is honoured "
+						"and a render really can queue behind (or be refused by) another render "
+						"-- see read_viewport's `render_in_progress` note below for what that "
+						"means in practice.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 

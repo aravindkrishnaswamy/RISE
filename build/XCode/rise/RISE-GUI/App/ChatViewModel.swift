@@ -2206,7 +2206,11 @@ final class ChatViewModel: ObservableObject {
                         // (see RISEViewportBridge.h's `-agentHandleToolCall:`
                         // doc) — Read refuses edit verbs, Propose stages
                         // them, Apply commits them directly (today's
-                        // behaviour).
+                        // behaviour).  `render` goes through the SAME
+                        // selector, just via the pinned overload — see the
+                        // SESSION-ROUTING INVARIANT comment in the `if`
+                        // branch above.  (Round-15 P2: this pointer existed
+                        // only on the Qt side; the two halves now match.)
                         responseLine = vb.agentHandleToolCall(line)
                     }
 

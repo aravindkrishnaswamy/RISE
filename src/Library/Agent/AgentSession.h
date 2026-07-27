@@ -2081,6 +2081,12 @@ namespace RISE
 			//!     straight onto SubmitAgentRenderSync, so the USER'S OWN
 			//!     production render occupies this same single slot, and a
 			//!     production render routinely runs longer than 30 s.
+			//!     (Round-15 P2 precision: that timeout reports
+			//!     PinnedRenderBusy, not CoordinatedRenderBusy, when the
+			//!     occupant is a PINNED agent render -- which read_viewport
+			//!     also reports as render_in_progress.  Refused either way,
+			//!     so the guidance is unaffected; only the enumerator and
+			//!     the message text differ.)
 			//!   * GATE HELD BY A DIRECT PARKED RENDER (RunPreviewRenderParked
 			//!     sets mAgentRenderBlocksInteractive but NOT
 			//!     mAgentRenderPending) -> the fairness predicate is satisfied
