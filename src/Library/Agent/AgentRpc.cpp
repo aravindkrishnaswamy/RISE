@@ -2203,7 +2203,8 @@ namespace RISE
 				//   NOT on Propose's extension (refused under Propose too, with
 				//   a Propose-specific message -- see the autonomy choke point
 				//   above); reachable only under Commit, the posture the
-				//   in-process Owner dispatcher runs at.
+				//   GUI's in-process ADMINISTRATIVE dispatcher (the one
+				//   behind agentHandleLine) permanently runs at.
 				//--------------------------------------------------------------
 				if( m == "resolve_proposal" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );

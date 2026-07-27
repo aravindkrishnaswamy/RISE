@@ -4417,9 +4417,9 @@ static void TestExternalStageBaseVersionCoherentUnderConcurrency()
 //
 //   (a) an EXTERNAL dispatcher's wire propose_patch -> {applied:false,
 //       status:"staged"} -- the document is unchanged.
-//   (b) the OWNER dispatcher's wire list_proposals -> the one pending entry,
+//   (b) `ownerDisp`'s wire list_proposals -> the one pending entry,
 //       with the real field shapes (kind, target, param, value, status).
-//   (c) the OWNER dispatcher's wire resolve_proposal{approve:true} ->
+//   (c) `ownerDisp`'s wire resolve_proposal{approve:true} ->
 //       {resolved:true, status:"applied"} and the live scene actually moved.
 //   (d) the EXTERNAL dispatcher calling wire resolve_proposal on a fresh
 //       stage -> {resolved:false} (Owner-only, refused at the SESSION layer
@@ -4449,8 +4449,9 @@ static void TestProposalWireRoundTrip()
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
-		// Owner dispatcher: Owner-authority session, Commit autonomy (the
-		// in-process GUI shape -- unaffected by this slice).
+		// `ownerDisp`: Owner-authority session, Commit autonomy (the shape
+		// the GUI's in-process ADMINISTRATIVE dispatcher runs at --
+		// unaffected by this slice).
 		std::unique_ptr<Agent::AgentSession> ownerSess =
 			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
 		Check( ownerSess != nullptr, "owner session wraps the live Job" );

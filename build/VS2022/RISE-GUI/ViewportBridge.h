@@ -705,8 +705,9 @@ public:
     ///   * Propose -> the read-safe allowlist dispatches AS BEFORE, but
     ///                this level runs over a SEPARATE, External-
     ///                authority AgentSession sharing the SAME live
-    ///                SceneEditController `agentHandleLine()`'s Owner
-    ///                session is attached to — so propose_patch/
+    ///                SceneEditController `agentHandleLine()`'s
+    ///                administrative session is attached to — so
+    ///                propose_patch/
     ///                insert_chunk/remove_chunk STAGE a real proposal
     ///                onto that controller's ONE queue (the exact queue
     ///                the existing proposals panel already reads via
@@ -796,8 +797,9 @@ public:
     /// WHAT IS PINNED IS THE **SESSION SELECTION**, NOT THE AUTONOMY
     /// POSTURE.  `level` chooses WHICH dispatcher/session handles the
     /// call; it does not freeze what that session is allowed to do.
-    /// setAgentAutonomyLevel() mutates the OWNER dispatcher's autonomy IN
-    /// PLACE, so a poll issued with a pinned level of Apply *after* the
+    /// setAgentAutonomyLevel() mutates the TOOL-CALL OWNER session's
+    /// autonomy IN PLACE (m_agentToolDispatcherOwner),
+    /// so a poll issued with a pinned level of Apply *after* the
     /// user has dropped the chip to Read genuinely executes under Read.
     /// That is the CORRECT safety behaviour and is deliberately kept --
     /// the pin does not defeat a mid-render drop to Read.  (Nothing in a
@@ -1105,17 +1107,23 @@ private:
     // the constructor alongside m_previewSink's _SetPreviewSink call, and
     // released alongside it in releaseLivePreview().
     class ViewportPaneSink*   m_paneSinks[kViewportPaneCount] = {};
+    // The ADMINISTRATIVE dispatcher -- the one behind agentHandleLine()
+    // (Owner authority, permanently Commit autonomy; NOT one of the two
+    // tool-call dispatchers below).
     std::unique_ptr<RISE::Agent::AgentRpcDispatcher> m_agentDispatcher;
     // Agent autonomy selector (2026-07): TWO more in-process
-    // dispatchers, sibling to `m_agentDispatcher` above, that exist for
+    // dispatchers -- the TOOL-CALL sessions, sibling to the
+    // administrative `m_agentDispatcher` above -- that exist for
     // the whole bridge lifetime so `agentHandleToolCall()` never has to
-    // construct one mid-turn.  `m_agentToolDispatcherOwner` borrows an
+    // construct one mid-turn.  The tool-call Owner session
+    // `m_agentToolDispatcherOwner` borrows an
     // Owner-authority AgentSession (its own instance, separate from
     // `m_agentDispatcher`'s — `m_agentDispatcher` must stay permanently
     // Commit-capable for resolve_proposal, so ONLY this separate
     // instance's autonomy is ever toggled between Read/Commit via
     // AgentRpcDispatcher::SetAutonomy as `agentAutonomyLevel()`
-    // changes).  `m_agentToolDispatcherPropose` borrows a SEPARATE
+    // changes).  The tool-call Propose session
+    // `m_agentToolDispatcherPropose` borrows a SEPARATE
     // External-authority AgentSession, fixed at Propose autonomy for
     // its whole life.  Both AttachController'd to the SAME
     // `m_controller` as `m_agentDispatcher`'s session, so a staged

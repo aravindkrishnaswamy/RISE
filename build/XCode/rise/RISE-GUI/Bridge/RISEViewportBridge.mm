@@ -524,7 +524,10 @@ private:
     // in -shutdown so a stale fire after dealloc is impossible.
     RISEViewportDirtyChangedBlock _dirtyChangedBlock;
 
-    // Facet 5 slice 1c-1: the live agent JSON-RPC dispatcher.  Owns a
+    // Facet 5 slice 1c-1: the live ADMINISTRATIVE agent JSON-RPC
+    // dispatcher -- the one behind -agentHandleLine (Owner authority,
+    // permanently Commit autonomy; NOT one of the two tool-call
+    // dispatchers below).  Owns a
     // non-owning AgentSession that WrapJob's the SAME IJobPriv the
     // controller wraps and is AttachController'd to `_controller`, so a
     // dispatched propose_patch routes through the controller's render-
@@ -536,16 +539,19 @@ private:
     RISE::Agent::AgentRpcDispatcher* _agentDispatcher;
 
     // Agent autonomy selector (2026-07 GUI composer chips): TWO more
-    // in-process dispatchers, sibling to `_agentDispatcher` above, that
+    // in-process dispatchers -- the TOOL-CALL sessions, sibling to the
+    // administrative `_agentDispatcher` above -- that
     // exist for the WHOLE bridge lifetime (not opt-in like the hosted
     // server below) so `-agentHandleToolCall:` never has to construct one
-    // mid-turn. `_agentToolDispatcherOwner` borrows an Owner-authority
+    // mid-turn. The tool-call Owner session `_agentToolDispatcherOwner`
+    // borrows an Owner-authority
     // AgentSession (its own instance, separate from `_agentDispatcher`'s —
     // see the .h's routing doc for why they must NOT be the same instance:
     // `_agentDispatcher` must stay permanently Commit-capable for
     // `resolve_proposal`, so ONLY this separate instance's autonomy is
     // ever toggled between Read/Commit via AgentRpcDispatcher::SetAutonomy
-    // as `agentAutonomyLevel` changes). `_agentToolDispatcherPropose`
+    // as `agentAutonomyLevel` changes). The tool-call Propose session
+    // `_agentToolDispatcherPropose`
     // borrows a SEPARATE External-authority AgentSession, fixed at Propose
     // autonomy for its whole life (mirrors -startAgentHostedServerWithLabel:'s
     // External+Propose construction, minus the HTTP server — see that
@@ -564,7 +570,8 @@ private:
     // Secure-MCP slice 5c: the GUI-hosted EXTERNAL loopback MCP server --
     // a SEPARATE AgentSession (External authority) + AgentMcpAdapter +
     // AgentLoopbackHttpServer from `_agentDispatcher` above (which is the
-    // Owner-authority, in-process dispatcher -agentHandleLine drives).
+    // Owner-authority, in-process ADMINISTRATIVE dispatcher
+    // -agentHandleLine drives).
     // Null/empty when not hosting (the default -- opt-in only via
     // -startAgentHostedServerWithLabel:). The External AgentSession
     // (WrapJob, non-owning, AttachController'd to `_controller` -- see
@@ -2298,7 +2305,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         return;  // out-of-range: no-op, keep the previous level (see the .h doc)
     }
     _agentAutonomyLevel = level;
-    // Only the OWNER tool dispatcher's autonomy ever changes at runtime —
+    // Only the tool-call OWNER session's autonomy ever changes at runtime —
     // `_agentToolDispatcherPropose` stays fixed at Propose for its whole
     // life (see the ivar block's doc), and `_agentDispatcher` (the
     // administrative path) is never touched here at all.
@@ -2323,7 +2330,8 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         @"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
         @"{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
 
-    // An out-of-range `level` falls to the Owner dispatcher, matching
+    // An out-of-range `level` falls to the tool-call Owner session
+    // (`_agentToolDispatcherOwner`), matching
     // -setAgentAutonomyLevel:'s "keep a valid posture" no-op policy rather
     // than dispatching to nothing.
     RISE::Agent::AgentRpcDispatcher* dispatcher =
@@ -2344,10 +2352,14 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 // touching anything in this section:
 //
 //   `_agentDispatcher` (constructed in -initWithHostBridge:, Facet 5
-//   slice 1c-1) is the OWNER-authority, Commit-autonomy dispatcher the
+//   slice 1c-1) is the ADMINISTRATIVE dispatcher -- Owner authority,
+//   Commit autonomy -- the
 //   Swift ChatViewModel / the raw JSON-RPC debug panel drive via
 //   -agentHandleLine, always synchronously on the MAIN THREAD (Swift's
-//   @MainActor).
+//   @MainActor).  (The two tool-call dispatchers are main-thread-only
+//   too and play no part in this section's threading argument; "two-
+//   dispatcher" here means administrative vs hosted-EXTERNAL, the only
+//   pair with two different caller THREADS.)
 //
 //   `_agentHttpAdapter` (constructed below by
 //   -startAgentHostedServerWithLabel:) wraps a SEPARATE, SECOND
@@ -2415,8 +2427,8 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     // authority-gate doc). AttachController shares the SAME controller
     // `_agentDispatcher`'s own session is attached to, so a staged
     // proposal lands on that controller's ONE proposal queue -- the
-    // queue the Owner dispatcher's list_proposals/resolve_proposal verbs
-    // read/resolve.
+    // queue the administrative dispatcher's list_proposals/
+    // resolve_proposal verbs read/resolve.
     void* jobOpaque = [_host opaqueJobHandle];
     if (!jobOpaque) {
         return [[RISEAgentHostedServerInfo alloc]

@@ -292,7 +292,8 @@ final class RenderViewModel: ObservableObject {
     // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
     // "agent + user co-edit" affordance — a typed JSON-RPC request is
     // handed to the viewport bridge's `agentHandleLine`, which drives the
-    // SAME live dispatcher/session/controller the GUI edits through, so a
+    // administrative dispatcher over the SAME live controller the GUI
+    // edits through, so a
     // `propose_patch` edits the running scene and the viewport reflects it.
     //
     // Superseded by the Chat panel for everyday use (2026-07); kept ONLY
@@ -2377,7 +2378,7 @@ final class RenderViewModel: ObservableObject {
     // MARK: - Agent surface (Facet 5 slice 1c-1)
 
     /// Facet 5 slice 1c-1: hand one JSON-RPC request line to the live
-    /// agent dispatcher and return its response line.
+    /// ADMINISTRATIVE agent dispatcher and return its response line.
     ///
     /// Runs SYNCHRONOUSLY on the main actor — the bridge's
     /// `agentHandleLine` runs on the calling (main) thread, exactly like

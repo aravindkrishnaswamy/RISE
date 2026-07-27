@@ -541,8 +541,10 @@ private:
     // What it pins is the SESSION SELECTION, not the autonomy posture: the
     // level chooses which dispatcher/session handles a call, and the live
     // posture on the selected session still applies (the bridge's
-    // setAgentAutonomyLevel() mutates the Owner dispatcher's autonomy in
-    // place), so a mid-render drop to Read is NOT defeated by this pin.
+    // setAgentAutonomyLevel() mutates the TOOL-CALL Owner session's
+    // autonomy in place -- m_agentToolDispatcherOwner, never the
+    // administrative dispatcher), so a mid-render drop to Read is NOT
+    // defeated by this pin.
     //
     // Why pin at all: renderJobIds themselves are addressable from any
     // session on the same controller (they are minted BY the controller),

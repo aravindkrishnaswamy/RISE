@@ -5379,6 +5379,141 @@ static void RunPerSessionImageCacheTest()
 	std::printf( "=== (img-cache) per-session ReadImage cache: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// (guard-async) AgentSession.cpp's EphemeralRenderCacheGuard stashes and
+// restores FOUR pieces of state around an internal objectmap render:
+// the last-render PNG pair (mLastPng / mLastSink, what ReadImage() and
+// the `read_image` verb serve) AND the async-render result record
+// (mLastAsyncRenderResult / mLastAsyncRenderResultJobId, what
+// `render_status` / `render_wait` report through LastAsyncRenderResult).
+//
+// WHY THIS CASE EXISTS.  A mutation audit sabotaged the guard's dtor one
+// restore at a time and rebuilt each time:
+//   * drop the SINK restore  -> AgentObjectMapTest and AgentViewportReadTest
+//     each fail 1.
+//   * drop the PNG restore   -> both fail 2.
+//   * drop the ASYNC-RESULT restore (BOTH lines) -> AgentObjectMapTest,
+//     AgentViewportReadTest, AgentRenderAsyncTest and AgentProposeRenderTest
+//     ALL STAYED GREEN.  The async-result half of the restore was pinned by
+//     NOTHING.
+//
+// This case is that missing pin, and it discriminates the two dtor lines
+// SEPARATELY:
+//   * drop `mLastAsyncRenderResultJobId = mSavedAsyncResultJobId;`
+//       -> the id stays at the 0 the ctor wrote, so LastAsyncRenderResult
+//          reports found=false (0 is never a real job id).  Caught by the
+//          `.found` assertion.
+//   * drop `mLastAsyncRenderResult = std::move( mSavedAsyncResult );`
+//       -> found=true, but over a DEFAULT-CONSTRUCTED record: ok=false,
+//          width/height 0, renderJobId 0.  Caught by the field assertions.
+//   * drop both -> found=false.  Caught by the `.found` assertion.
+//
+// ROUTE.  QueryObjectAt is called with NO width/height/camera override on
+// purpose.  That is the shape a model usually emits (`query_object_at
+// {x,y}`), and it is the route that goes through
+// SubmitAgentRenderSync -- the one that WAITS for the single agent-render
+// slot.  (Supplying any override instead routes through
+// SceneEditController::RunPreviewRenderParked, which REFUSES immediately
+// rather than waiting whenever another coordinated render holds the gate;
+// see EphemeralRenderCacheGuard's ROUTES bullet.)  Here the async render
+// has already completed, so the slot is free and the ephemeral render
+// runs straight away -- the deterministic ordering this case needs.
+//
+// NOT covered here, and deliberately: the DISCARD side of the same
+// machinery (an async render that completes INSIDE the window loses its
+// cache write).  That requires an async render still in flight when the
+// guard's ctor runs, which has no deterministic hook today; it is the
+// documented, accepted residual, not a contract a test can pin without
+// a new test seam.
+//////////////////////////////////////////////////////////////////////
+static void RunEphemeralGuardRestoresAsyncResultTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (guard-async) query_object_at RESTORES the async-render result record ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_guard_async_restore.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the guard-async-restore scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (guard-async-restore test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job (guard-async-restore test)" );
+	if( session )
+	{
+		session->AttachController( &controller );
+
+		// --- an async render, driven to completion ----------------------
+		AgentRenderParams p;   // no override
+		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+		Check( ar.accepted && ar.renderJobId != 0, "the async render is accepted with a nonzero id" );
+		Check( session->RenderWait( ar.renderJobId, 15000 ), "the async render completes within the timeout" );
+
+		const AgentSession::AgentLastAsyncRenderResult before =
+			session->LastAsyncRenderResult( ar.renderJobId );
+		Check( before.found, "PRE-CONDITION: the completed async render's result record is cached" );
+		Check( before.result.ok, "PRE-CONDITION: that cached record reports ok=true" );
+		Check( before.result.width > 0 && before.result.height > 0,
+		       "PRE-CONDITION: that cached record carries nonzero dims" );
+		const std::vector<unsigned char> pngBefore = session->ReadImage();
+		Check( !pngBefore.empty(), "PRE-CONDITION: the beauty frame is in the PNG cache" );
+
+		// --- the ephemeral objectmap render, via query_object_at --------
+		// Centre pixel of the authored 24x24 film: the sphere sits at the
+		// origin facing the camera, so this hits obj_sph.  A HIT is what
+		// proves the internal objectmap render actually RAN (and therefore
+		// that the guard was actually engaged) -- without it the whole case
+		// would pass vacuously.
+		const AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 12, 12 );
+		Check( !qr.outOfRange, "query_object_at(12,12) is inside the authored 24x24 film" );
+		Check( qr.hit, "query_object_at RAN its internal objectmap render and hit an object "
+		               "(if this fails the rest of the case proves nothing)" );
+		Check( qr.name == "obj_sph", "query_object_at resolves the centre pixel to obj_sph" );
+
+		// --- MONEY: the guard put the async-render result record back ----
+		const AgentSession::AgentLastAsyncRenderResult after =
+			session->LastAsyncRenderResult( ar.renderJobId );
+		Check( after.found,
+		       "MONEY: LastAsyncRenderResult STILL FINDS the async job after query_object_at's "
+		       "ephemeral render -- EphemeralRenderCacheGuard's dtor restored mLastAsyncRenderResultJobId "
+		       "(drop that line and the id stays at the ctor's 0, so this reports found=false)" );
+		Check( after.result.ok && after.result.width == before.result.width
+		       && after.result.height == before.result.height
+		       && after.result.renderJobId == before.result.renderJobId,
+		       "MONEY: the RECORD ITSELF came back intact, not a default-constructed shell -- "
+		       "EphemeralRenderCacheGuard's dtor restored mLastAsyncRenderResult (drop that line and "
+		       "found stays true but ok/width/height/renderJobId all read 0/false)" );
+		Check( after.result.meanR == before.result.meanR
+		       && after.result.meanG == before.result.meanG
+		       && after.result.meanB == before.result.meanB,
+		       "the restored record's image signature is byte-identical to the pre-query one "
+		       "(no partial/lossy restore)" );
+
+		// The PNG/sink half of the same restore, asserted here too so all
+		// four stashed pieces are pinned in ONE place -- the objectmap
+		// image must NOT be what read_image serves afterwards.
+		Check( session->ReadImage() == pngBefore,
+		       "the beauty frame is still what ReadImage() serves -- the ephemeral objectmap image "
+		       "never became 'the last render the caller can read'" );
+
+		// Strict identity survives the round trip: a DIFFERENT id must
+		// still miss, so the restore did not widen the match.
+		Check( !session->LastAsyncRenderResult( ar.renderJobId + 1000 ).found,
+		       "a non-matching id still reports found=false after the restore (strict identity intact)" );
+
+		session->AttachController( nullptr );
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (guard-async) ephemeral guard restores the async result: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
 int main()
 {
 	RunAsyncReturnsQuicklyTest();
@@ -5422,6 +5557,7 @@ int main()
 	RunLegacyProductionPreservesAgentWorkerTest();
 	RunGestureRenderAdmissionTest();
 	RunPerSessionImageCacheTest();
+	RunEphemeralGuardRestoresAsyncResultTest();
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

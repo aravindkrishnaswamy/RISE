@@ -968,7 +968,8 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 #pragma mark - Agent surface (Facet 5 slice 1c-1: live in-app injection)
 
 /// Facet 5 slice 1c-1: hand one JSON-RPC 2.0 request LINE to the live
-/// agent dispatcher and return the JSON-RPC response line.  This is the
+/// ADMINISTRATIVE agent dispatcher (`_agentDispatcher`) and return the
+/// JSON-RPC response line.  This is the
 /// "agent + user co-edit" entry point: the same
 /// `AgentRpcDispatcher::HandleLine` the CLI's `--agent-stdio` loop drives,
 /// but here it runs IN-PROCESS over the SAME live Job + SceneEditController
@@ -1052,7 +1053,8 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 ///   * Propose -> the read-safe allowlist dispatches AS BEFORE, but this
 ///                level runs over a SEPARATE, External-authority
 ///                AgentSession sharing the SAME live SceneEditController
-///                `-agentHandleLine:`'s Owner session is attached to — so
+///                `-agentHandleLine:`'s administrative session is
+///                attached to — so
 ///                `propose_patch`/`insert_chunk`/`remove_chunk` STAGE a
 ///                real proposal onto that controller's ONE queue (the
 ///                exact queue the existing proposals panel already reads
@@ -1137,7 +1139,8 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// WHAT IS PINNED IS THE **SESSION SELECTION**, NOT THE AUTONOMY POSTURE.
 /// `level` chooses WHICH dispatcher/session handles the call; it does not
 /// freeze what that session is allowed to do.  `-setAgentAutonomyLevel:`
-/// mutates the OWNER dispatcher's autonomy IN PLACE, so a poll issued with
+/// mutates the TOOL-CALL OWNER session's autonomy IN PLACE
+/// (`_agentToolDispatcherOwner`), so a poll issued with
 /// a pinned level of Apply *after* the user has dropped the chip to Read
 /// genuinely executes under Read.  That is the CORRECT safety behaviour and
 /// is deliberately kept — the pin does not defeat a mid-render drop to
@@ -1178,20 +1181,23 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// SceneEditController, so a real external MCP client (Claude Code, or
 /// any other MCP host) can connect and PROPOSE edits into the scene
 /// that's actually open in this window -- the counterpart to the
-/// in-process Owner dispatcher `agentHandleLine` already drives.
+/// in-process administrative dispatcher (`_agentDispatcher`)
+/// `agentHandleLine` already drives.
 ///
 /// AUTHORITY / AUTONOMY: constructs a NEW, SEPARATE AgentSession over
 /// the SAME Job this bridge wraps (WrapJob), AttachController's it to
 /// this bridge's live `_controller` (so a staged proposal lands on the
-/// SAME queue the Owner dispatcher's ListProposals/ResolveProposal
-/// verbs read), sets its authority to External (mutating verbs STAGE,
+/// SAME queue the administrative dispatcher's ListProposals/
+/// ResolveProposal verbs read), sets its authority to External
+/// (mutating verbs STAGE,
 /// never commit), labels it via SetSessionLabel (see `sessionLabel`
 /// below), and wraps it in an AgentMcpAdapter constructed with
 /// AgentAutonomy::Propose (the wire-layer posture that pairs with
 /// External authority -- see AgentRpc.h's file header). This is a
-/// SEPARATE AgentRpcDispatcher instance from the one -agentHandleLine
-/// drives (that one is Owner-authority + Commit-autonomy, constructed
-/// at init time over its OWN AgentSession) -- see the .mm's
+/// SEPARATE AgentRpcDispatcher instance from the administrative one
+/// -agentHandleLine drives (`_agentDispatcher`, which is Owner-authority
+/// + Commit-autonomy, constructed at init time over its OWN
+/// AgentSession) -- see the .mm's
 /// "two-dispatcher-one-controller" doc comment for the full threading
 /// argument for why two independent dispatcher instances sharing one
 /// controller is safe.
@@ -1204,9 +1210,9 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// (for a mutating verb) calls SceneEditController::StageProposal --
 /// guarded by the controller's OWN mMutex, the SAME lock the render
 /// thread and every OTHER controller entry point (SetProperty,
-/// ApplyAgentParamEdit, the Owner dispatcher's own calls) already
-/// serialize on. list_proposals / resolve_proposal called from the
-/// GUI's Owner dispatcher (via -agentHandleLine, always the main
+/// ApplyAgentParamEdit, the administrative dispatcher's own calls)
+/// already serialize on. list_proposals / resolve_proposal called from
+/// the GUI's administrative dispatcher (via -agentHandleLine, always the main
 /// thread) and a concurrent external stage are therefore safe by the
 /// SAME pre-existing mutex discipline 5a/5b already proved -- nothing
 /// new is introduced here beyond a second caller thread.

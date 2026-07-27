@@ -419,8 +419,10 @@ struct ChatPanel: View {
 }
 
 /// Secure-MCP slice 5c: the pending-proposals list — an external MCP
-/// client's staged edits, approved/rejected here through the OWNER
-/// dispatcher (ChatViewModel.resolveProposal, NOT the external server).
+/// client's staged edits, approved/rejected here through the
+/// ADMINISTRATIVE dispatcher (ChatViewModel.resolveProposal →
+/// agentHandleLine, NOT the external server and not the tool-call
+/// sessions).
 /// Restyled per the redesign comp: proposals render inline as full diff
 /// cards (ProposalCard.swift) rather than a collapsible summary list —
 /// the comp shows the proposal as part of the natural conversation

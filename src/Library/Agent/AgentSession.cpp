@@ -5621,9 +5621,11 @@ namespace RISE
 				catch( const std::exception& e ) { thrownMessage = e.what(); }
 				catch( ... )                     { thrownMessage = "unknown exception"; }
 				if( !parked && thrownMessage.empty() ) {
-					// Fix-round-1 P2-B: refused (an editor transaction is
-					// open) -- the override window could not be safely
-					// parked against the interactive render thread.
+					// Fix-round-1 P2-B: refused -- the override window could
+					// not be safely parked against the interactive render
+					// thread.  (Several causes; see the cause-discrimination
+					// note further down before assuming "a transaction is
+					// open".)
 					//
 					// DECIDED SEMANTICS: refuse HONESTLY and RETRIABLY.  The
 					// prior code fell back to an un-overridden render by
@@ -5651,9 +5653,39 @@ namespace RISE
 					// render thread for nothing.  Leave res.integrator at its
 					// default-constructed empty string; see AgentRenderResult::
 					// integrator's field doc for the "never resolved" contract.
+					//
+					// Fix-round-6 P2: RunPreviewRenderParked returns a BARE
+					// BOOL but refuses for several distinct reasons, and the
+					// single message above mis-attributed the most common
+					// one.  Besides the open transaction/gesture/save it
+					// names, it also refuses on
+					// `mAgentRenderBlocksInteractive` -- ANOTHER coordinated
+					// render (typically an AGENT render the model itself
+					// started with `async:true`) is queued or running.  That
+					// is not a user gesture at all, so "retry after the
+					// gesture completes" pointed the model at something that
+					// was never going to happen -- and this string is
+					// surfaced VERBATIM to the model (CompareToReference puts
+					// it in `res.split.note`, QueryObjectAt in its own
+					// `message`), so it steers the next tool call.
+					// Distinguish via CurrentRenderJob(), the same fast
+					// mJobStatusMutex read the no-override refusal below
+					// already uses, and reuse the controller's OWN wording
+					// for that cause (SceneEditController's chunk-CRUD
+					// refusals say exactly "render queued or in progress --
+					// retry after it completes") so the two layers agree.
+					// Residual, disclosed: a benign race (the render finishes
+					// between the refusal and this read) and the rarer
+					// shutdown refusals (mDirectRenderStopping /
+					// mAgentRenderStop) both fall through to the
+					// transaction wording -- still an honest "refused,
+					// retriable" signal, just less specific.
+					const SceneEditController::RenderJobStatus cur = mController->CurrentRenderJob();
 					res.ok          = false;
 					res.renderJobId = renderJobId;   // 0 here -- no render ran, matching the other pre-flight refusal paths in this function
-					res.message     = "editor transaction in progress -- retry after the gesture completes";
+					res.message     = cur.active
+						? "render queued or in progress -- retry after it completes"
+						: "editor transaction in progress -- retry after the gesture completes";
 					return res;
 				}
 				if( !thrownMessage.empty() ) {
@@ -6083,23 +6115,38 @@ namespace RISE
 			//!    refcounted pointer held across a call, so an unwind between
 			//!    stash and restore would leak a full framebuffer AND silently
 			//!    wipe the stashed cache.  `Render()` happens to catch
-			//!    everything today, but it is not declared `noexcept` -- every
-			//!    sibling raw-refcount-across-a-call site in this file uses a
-			//!    guard for exactly this reason.
+			//!    everything today, but it is not declared `noexcept`.  Every
+			//!    site in this file that holds a raw refcounted pointer across
+			//!    a RENDER call uses an RAII guard for exactly this reason --
+			//!    `SinkUnwindGuard` around the sink attachment, the three
+			//!    `EphemeralPipelineGuard`s around the rasterizer/pipeline
+			//!    swaps, and `SinkLease` in `ReadImage(maxEdge,...)`.  (The
+			//!    file's PNG codec helpers -- `DecodePngRgbAt` and
+			//!    `EncodeLinearPassthroughPng_` -- do use plain paired
+			//!    `safe_release` across their reader/writer calls; they are the
+			//!    exception, not a precedent to copy here.)
 			//!  * THE GUARDED SCOPE IS PRIMARILY A ZERO-BYTE WINDOW, not a
 			//!    "shows-the-ephemeral-render" window.  The ctor moves the
 			//!    cache OUT (swaps `mLastPng` with a default-constructed
 			//!    vector, nulls `mLastSink`, zeroes the async-result id), so
 			//!    from the ctor until SOME render's cache tail repopulates
-			//!    it -- i.e. THE WHOLE RENDER DURATION, seconds wide for
-			//!    CompareToReference's full-res split render, and longer
-			//!    still when the ephemeral render first has to queue behind
-			//!    an in-flight async one (see the RESIDUAL bullet) -- a
-			//!    concurrent `ReadImage()` on another thread returns ZERO
-			//!    BYTES, `ReadImage(maxEdge)` returns empty at its
-			//!    `if( !sink )` early-out (in this file, the line right
-			//!    after the lock scope in `ReadImage(unsigned int,...)`),
-			//!    and `ReadPerception` likewise.  Only AFTER a cache tail
+			//!    it -- i.e. THE WHOLE RENDER DURATION -- a concurrent
+			//!    `ReadImage()` on another thread returns ZERO BYTES,
+			//!    `ReadImage(unsigned int,...)` returns empty too (by TWO
+			//!    different lines: for `maxEdge > 0` from the `if( !sink )`
+			//!    early-out right after that function's lock scope; for
+			//!    `maxEdge == 0` from the IN-LOCK `return mLastPng;` inside
+			//!    its `maxEdge == 0` branch, which hands back the emptied
+			//!    cache and leaves outWidth/outHeight at 0 because
+			//!    `mLastSink` is null), and `ReadPerception` likewise.
+			//!    HOW WIDE, stated honestly: the ephemeral render is an
+			//!    OBJECTMAP IDENTITY render, not a beauty pass -- measured
+			//!    ~20ms at 256x256 (see QueryObjectAt's header doc);
+			//!    CompareToReference's split runs it at the REFERENCE dims,
+			//!    so it scales with pixel count but stays in that class.  A
+			//!    multi-SECOND window is therefore QUEUEING, not rendering,
+			//!    and only ONE of the two routes below can queue at all --
+			//!    see the ROUTES bullet.  Only AFTER a cache tail
 			//!    lands inside the window do the fields hold pixels again --
 			//!    the ephemeral render's own segmentation image, or, if an
 			//!    async render completed in here first, THAT render's beauty
@@ -6111,19 +6158,63 @@ namespace RISE
 			//!    since getting bytes back does not prove the reader was
 			//!    outside the window.  The window is bounded by the scope and
 			//!    never persists past it.
+			//!  * ROUTES -- the two ephemeral call sites do NOT reach the
+			//!    controller the same way, and which way decides whether an
+			//!    in-flight async render's cache write is swallowed by this
+			//!    window.  `RenderCore_` picks the route on
+			//!    `wantFilmOverride` (`params.width > 0 && params.height > 0`)
+			//!    or a camera override:
+			//!
+			//!      (A) NO OVERRIDE -- `query_object_at {x,y}` with no
+			//!          width/height/camera, the common shape a model emits.
+			//!          Routes through `SubmitAgentRenderSync`, which takes a
+			//!          FIFO fairness ticket and WAITS (up to the 30000ms
+			//!          `timeoutMs` RenderCore_ passes) for the single
+			//!          agent-render slot; it does NOT cancel the occupant.
+			//!          An async render in flight when the ctor runs
+			//!          therefore runs to FULL completion INSIDE the window
+			//!          -- cache write included, since the async closure
+			//!          stores `mLastAsyncRenderResult` under
+			//!          mAsyncCacheMutex before the worker releases the slot
+			//!          the fairness wait is blocked on -- and the dtor then
+			//!          discards it.  On this route the zero-byte window
+			//!          really is seconds wide, and the RESIDUAL below is
+			//!          the ordinary case, not a race.
+			//!
+			//!      (B) WITH OVERRIDE -- `CompareToReference`'s split (it
+			//!          forces `omParams.width/height = refW/refH`, so
+			//!          `wantFilmOverride` is ALWAYS true there) and
+			//!          `query_object_at` whenever width/height/camera are
+			//!          supplied.  Routes through
+			//!          `SceneEditController::RunPreviewRenderParked`, which
+			//!          tests `mAgentRenderBlocksInteractive` and returns
+			//!          FALSE IMMEDIATELY, BEFORE it ever takes the
+			//!          controller's render mutex (its own comment: checking
+			//!          afterward would "wait for the render only to
+			//!          refuse").  An async submission claims that gate at
+			//!          SUBMIT time and holds it through worker completion,
+			//!          so with one in flight this route does NOT wait -- it
+			//!          is REFUSED in microseconds, `omr.ok` is false, and
+			//!          the guard's window closes long before the async
+			//!          render finishes.  That render's cache write then
+			//!          lands AFTER the window and SURVIVES.  The caller is
+			//!          told: CompareToReference records the refusal message
+			//!          in `res.split.note`, QueryObjectAt in its own
+			//!          `message`.
+			//!
 			//!  * RESIDUAL, accepted: an async render that completes INSIDE
 			//!    the window loses its ENTIRE cache write -- its pixels (the
 			//!    dtor restores png/sink unconditionally) AND its result
-			//!    record.  This is NOT a narrow race: agent renders serialize
-			//!    on the controller's single agent-render slot, and the
-			//!    ephemeral render's own submission WAITS for that slot
-			//!    (SubmitAgentRenderSync's fairness wait, up to 30s -- it
-			//!    does NOT cancel the async job, and the parked-preview route
-			//!    CompareToReference takes likewise serializes on the
-			//!    controller mutex the async worker holds).  So an async
-			//!    render in flight when the ctor runs ordinarily runs to FULL
-			//!    completion inside the window and is then discarded.
-			//!    Stashing the result record alongside the pixels is
+			//!    record.  On route (A) this is the ORDINARY outcome, per
+			//!    the wait described above.  On route (B) it shrinks to a
+			//!    genuinely narrow race: the async render must complete in
+			//!    the microseconds between the ctor and
+			//!    RunPreviewRenderParked's gate test (complete any earlier
+			//!    and the gate is already clear, so the split render simply
+			//!    runs with nothing of the async render's left to lose;
+			//!    complete any later and its write lands outside the
+			//!    window).  Either way the handling is the same, and
+			//!    stashing the result record alongside the pixels is
 			//!    deliberate: the pixels are lost either way, so KEEPING an
 			//!    `ok:true` record would make `render_wait` answer
 			//!    `completed:true` with a full `{ok,width,height,meanR,...}`
@@ -6162,6 +6253,26 @@ namespace RISE
 					: mCacheMutex( cacheMutex ), mLastPng( lastPng ), mLastSink( lastSink ),
 					  mLastAsyncResult( lastAsyncResult ), mLastAsyncResultJobId( lastAsyncResultJobId )
 				{
+					// THE STASH ORDER BELOW IS NOT LOAD-BEARING -- this
+					// static_assert is what makes that true, so nobody has to
+					// hold it in their head.  The ctor takes ownership of the
+					// sink's raw ref (mSavedSink) BEFORE the two
+					// AgentRenderResult move-assignments; if a future member
+					// gave AgentRenderResult a THROWING move-assign, a throw
+					// there would unwind out of the ctor -- and a ctor that
+					// throws never runs its own dtor, so the stashed framebuffer
+					// would leak AND the caller's cache would stay wiped for the
+					// rest of the session.  Assert the property at COMPILE time
+					// rather than depending on statement order, so the breakage
+					// is a build error at the offending member, not a runtime
+					// leak nobody traces back to here.
+					static_assert( std::is_nothrow_move_assignable<AgentRenderResult>::value,
+						"EphemeralRenderCacheGuard's ctor move-assigns AgentRenderResult AFTER taking "
+						"ownership of mSavedSink's raw ref; a throwing move-assign would leak that "
+						"framebuffer and leave the last-render cache permanently wiped (the ctor throws, "
+						"so ~EphemeralRenderCacheGuard never runs).  Keep AgentRenderResult's members "
+						"nothrow-move-assignable, or restructure this ctor to stash the result record first." );
+
 					std::lock_guard<std::mutex> lk( mCacheMutex );
 					mSavedPng.swap( mLastPng );        // cache -> stash (cache now empty)
 					mSavedSink = mLastSink;            // take over the sink's ref

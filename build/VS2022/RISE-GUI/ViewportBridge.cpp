@@ -1317,7 +1317,7 @@ void ViewportBridge::setAgentAutonomyLevel(AgentAutonomyLevel level)
         return;   // out-of-range: no-op, keep the previous level (see the .h doc)
     }
     m_agentAutonomyLevel = level;
-    // Only the OWNER tool dispatcher's autonomy ever changes at runtime
+    // Only the tool-call OWNER session's autonomy ever changes at runtime
     // -- m_agentToolDispatcherPropose stays fixed at Propose for its
     // whole life, and m_agentDispatcher (the administrative path) is
     // never touched here at all.
@@ -1344,7 +1344,8 @@ QString ViewportBridge::agentHandleToolCall(const QString& jsonRpcRequest,
         "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":"
         "{\"code\":-32603,\"message\":\"internal error: agent dispatcher unavailable\"}}";
 
-    // An out-of-range `level` falls to the Owner dispatcher, matching
+    // An out-of-range `level` falls to the tool-call Owner session
+    // (m_agentToolDispatcherOwner), matching
     // setAgentAutonomyLevel()'s "keep a valid posture" no-op policy rather
     // than dispatching to nothing.
     Agent::AgentRpcDispatcher* dispatcher =

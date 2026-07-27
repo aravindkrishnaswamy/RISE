@@ -1921,8 +1921,9 @@ void ChatPanel::processNextToolCall()
             //
             // KNOWN RESIDUAL, deliberately not "fixed", and narrower than it
             // first looks: only a chip flip that CROSSES Propose changes
-            // session.  Read and Apply both select the SAME Owner dispatcher
-            // (they differ only in the autonomy set on it), so a
+            // session.  Read and Apply both select the SAME tool-call
+            // Owner session (m_agentToolDispatcherOwner; they differ only
+            // in the autonomy set on it), so a
             // Read<->Apply flip between a render and the read_image that
             // follows changes nothing.  A flip TO or FROM Propose does: that
             // read_image lands on the other session and sees an empty/stale

@@ -598,10 +598,12 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// Approve or reject proposal `id` through the OWNER dispatcher (the
-    /// Owner-only + Commit-only gates on resolve_proposal — see
-    /// AgentRpc.h — mean this MUST go through `_agentDispatcher`, never
-    /// the external hosted server's own dispatcher, which would be
+    /// Approve or reject proposal `id` through the ADMINISTRATIVE
+    /// dispatcher (the Owner-only + Commit-only gates on resolve_proposal
+    /// — see AgentRpc.h — mean this MUST go through `agentHandleLine`'s
+    /// `_agentDispatcher`, never the tool-call sessions
+    /// `agentHandleToolCall` selects and never the external hosted
+    /// server's own dispatcher, which would be
     /// refused outright). Refreshes the listing immediately afterward so
     /// the panel reflects the new status without waiting for the next
     /// timer tick.
@@ -772,8 +774,10 @@ final class ChatViewModel: ObservableObject {
     /// What it pins is the SESSION SELECTION, not the autonomy posture: the
     /// level chooses which dispatcher/session handles a call, and the live
     /// posture on the selected session still applies (the bridge's
-    /// `setAgentAutonomyLevel` mutates the Owner dispatcher's autonomy in
-    /// place), so a mid-render drop to Read is NOT defeated by this pin.
+    /// `setAgentAutonomyLevel` mutates the TOOL-CALL Owner session's
+    /// autonomy in place — `_agentToolDispatcherOwner`, never the
+    /// administrative dispatcher), so a mid-render drop to Read is NOT
+    /// defeated by this pin.
     ///
     /// Why pin at all: renderJobIds themselves are addressable from any
     /// session on the same controller (they are minted BY the controller),
@@ -2174,7 +2178,8 @@ final class ChatViewModel: ObservableObject {
                     // KNOWN RESIDUAL, deliberately not "fixed", and narrower
                     // than it first looks: only a chip flip that CROSSES
                     // Propose changes session.  Read and Apply both select
-                    // the SAME Owner dispatcher (they differ only in the
+                    // the SAME tool-call Owner session
+                    // (`_agentToolDispatcherOwner`; they differ only in the
                     // autonomy set on it), so a Read↔Apply flip between a
                     // render and the `read_image` that follows changes
                     // nothing.  A flip TO or FROM Propose does: that

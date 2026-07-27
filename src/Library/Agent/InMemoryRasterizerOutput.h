@@ -208,11 +208,26 @@ namespace RISE
 			//! the read-lease registry -- unless a concurrent reader happened
 			//! to lease it before the guard ran), so the value passed in for
 			//! those renders normally reads 0 and their auxiliaryPeakBytes
-			//! UNDER-REPORTS by the whole stashed sidecar.  Accepted: this number is
-			//! reporting-only and never gates anything, and the alternative
-			//! (registering the stash in the lease registry) would turn a
-			//! purely informational figure into a behavioural change to sink
-			//! lifetime and teardown draining.  Do NOT "fix" it that way.
+			//! UNDER-REPORTS by the whole stashed sidecar.
+			//!
+			//! Accepted -- and the figure is ALMOST NEVER OBSERVABLE, which is
+			//! why the acceptance is cheap rather than merely tolerated.  It
+			//! reaches a caller by exactly two routes, and both are closed
+			//! here: (1) `AgentRenderResult::perceptionAuxiliaryPeakBytes` of
+			//! the ephemeral render itself -- BOTH ephemeral callers discard
+			//! that result (QueryObjectAt keeps only the decoded pixel and
+			//! legend; CompareToReference keeps only `ok`/`png`); (2) a
+			//! concurrent `ReadPerception()`, which reads whatever `mLastSink`
+			//! points at -- and for the whole guarded scope that is either
+			//! NULL (so ReadPerception returns empty, reporting nothing) or,
+			//! only after the ephemeral render's own cache tail has landed
+			//! INSIDE the window, this sink, for the sliver until the guard's
+			//! dtor releases it.  A cross-thread ReadPerception landing in
+			//! that sliver is the one way the low figure escapes.  Even then
+			//! it is reporting-only and never gates anything, and the
+			//! alternative (registering the stash in the lease registry) would
+			//! turn a purely informational figure into a behavioural change to
+			//! sink lifetime and teardown draining.  Do NOT "fix" it that way.
 			void SetConcurrentCachedPerceptionBytes( std::uint64_t bytes )
 			{
 				mConcurrentCachedPerceptionBytes = bytes;

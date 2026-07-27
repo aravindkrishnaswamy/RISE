@@ -495,7 +495,8 @@ static void TestGuiHostedServerEndToEnd()
 		       "(would already be ~13.0 if External committed instead of staging)" );
 
 		// ---- (3) the OWNER session (mirrors the GUI's in-process
-		// _agentDispatcher) lists + resolves it IN-PROCESS, no HTTP.
+		// ADMINISTRATIVE dispatcher `_agentDispatcher`, the one behind
+		// agentHandleLine) lists + resolves it IN-PROCESS, no HTTP.
 		std::unique_ptr<AgentSession> ownerSession =
 			AgentSession::WrapJob( pJob, AgentAuthority::Owner );
 		Check( ownerSession != nullptr, "5c: owner AgentSession constructed (WrapJob)" );
