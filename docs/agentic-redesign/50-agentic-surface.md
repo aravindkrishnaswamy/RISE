@@ -139,7 +139,11 @@
 >   `"editor_interaction_unrecoverable"` (the controller's sticky interaction-persistence
 >   failure: PERMANENT, never clears, and `render` is refused by the same gate, so neither
 >   retrying nor falling back helps). Seven reasons total; see `AgentSession::ReadViewport`'s
->   doc, which is the authority on the list and on which are retriable.) On the MCP
+>   doc, which is the authority on the list, on which are retriable, and on when a `render`
+>   fallback actually helps — round-12 correction: it is NOT a blanket "`render` is refused
+>   too". For `"render_in_progress"` a PLAIN `render {}` queues on the agent-render slot and
+>   normally runs; only a render carrying a film (`width`+`height`) or camera/`view` override
+>   takes the same parked path and is refused.) On the MCP
 >   surface as tool #15 (image content block when available); allowed under the Read autonomy
 >   posture; deliberately NOT in the chat panel's curated 9-tool list. Shared C++ — Mac,
 >   Windows, and the loopback server with zero bridge changes.

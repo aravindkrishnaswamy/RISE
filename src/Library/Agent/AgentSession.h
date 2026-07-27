@@ -1970,9 +1970,24 @@ namespace RISE
 			//! `outAvailable` is the structured outcome; `outReason` is one of
 			//!   ""              (available == true)
 			//!   "no_controller" (no live SceneEditController attached -- a
-			//!                    headless session has no viewport at all)
+			//!                    headless session has no viewport at all.
+			//!                    NOT retriable: a session that starts
+			//!                    headless never grows a viewport.  Use
+			//!                    `render` instead)
 			//!   "no_frame_yet"  (a controller is attached but the interactive
-			//!                    render loop has not produced a frame yet)
+			//!                    render loop has not produced a frame yet.
+			//!                    NOT retriable IN THE SENSE THAT MATTERS --
+			//!                    a later read_viewport WILL succeed once the
+			//!                    user's viewport draws, but nothing the
+			//!                    caller does makes that happen sooner, so
+			//!                    spinning on it is pure chatter.  Use
+			//!                    `render` in the meantime.  Round-12
+			//!                    finding 4: model-facing surfaces must say
+			//!                    exactly this -- filing it under a flat
+			//!                    "retrying can never succeed" bucket and
+			//!                    then describing it as self-resolving is a
+			//!                    self-contradiction a reader has to
+			//!                    adjudicate)
 			//! plus, when the parked frame-copy is REFUSED by the controller
 			//! (fix-round-8 P1 -- these were previously all reported as the
 			//! first of them, and none of them were listed here at all):
@@ -2002,9 +2017,54 @@ namespace RISE
 			//!                    chattiness work exists to remove)
 			//! SEVEN reason values in total.  Every surface that enumerates
 			//! them must list all seven AND state retriability, because that is
-			//! what a model acts on: AgentMcpAdapter's read_viewport tool
-			//! description, skills/agent/observe-modes.md (three places), and
-			//! AgentSkillsTest's cross-reference assertion.
+			//! what a model acts on.  Round-12 finding 3: this block is
+			//! designated THE authority by AgentRpc.h and AgentRpc.cpp, so it
+			//! now honours its own rule -- retriability is stated above for all
+			//! seven, no_controller and no_frame_yet included -- and the list
+			//! of surfaces below is the COMPLETE one, not the partial one it
+			//! used to carry:
+			//!   * AgentMcpAdapter's read_viewport tool description (the
+			//!     model-facing MCP schema)
+			//!   * skills/agent/observe-modes.md -- three places: the
+			//!     "Anything when available:false" cell of the observe-verb
+			//!     table, "Hard warnings" item 3's reason/retriable/action
+			//!     table, and the later item-3 prose
+			//!   * AgentRpc.h's read_viewport tool-table comment
+			//!   * AgentRpc.cpp's read_viewport handler comment
+			//!   * docs/agentic-redesign/50-agentic-surface.md, the S1
+			//!     read_viewport SHIPPED bullet
+			//!   * tests/AgentSkillsTest's cross-reference assertion (which
+			//!     checks the skill names every value verbatim)
+			//!   * tests/AgentViewportReadTest, which pins the exact wire
+			//!     value each refusal produces
+			//! EIGHT files, TEN places including this one (observe-modes.md
+			//! carries three).  Adding an eighth reason, or changing the
+			//! retriability of an existing one, means touching every one of
+			//! them.  `git grep -l no_frame_yet` finds them all plus two
+			//! non-enumerating hits (AgentSession.cpp, which SETS the value,
+			//! and AgentChatLoopTest's canned JSON fixture).
+			//!
+			//! Round-12 finding 2 -- the `render` FALLBACK, stated once, here.
+			//! For "editor_transaction_in_progress",
+			//! "editor_interaction_finalize_failed", "editor_shutting_down" and
+			//! "editor_interaction_unrecoverable", a `render` call is refused
+			//! by the same gate (SubmitAgentRenderAsync_Locked re-runs the same
+			//! mTxnOpen / mSaving / IsCompositeOpen / FinalizeOpenInteractions /
+			//! stop checks RunPreviewRenderParked just failed), so telling a
+			//! model to fall back is telling it to collect a second refusal.
+			//! "render_in_progress" is the ONE exception and it is NOT
+			//! uniform: read_viewport reports it from RunPreviewRenderParked's
+			//! mAgentRenderBlocksInteractive check, but RenderCore_ only routes
+			//! through RunPreviewRenderParked when `wantFilmOverride`
+			//! (width AND height given) or a camera/`view` override is present.
+			//! A PLAIN `render {}` instead goes to SubmitAgentRenderSync, which
+			//! WAITS on the fairness ticket (30 s) rather than refusing; the
+			//! agent-render worker clears the admission gate BEFORE it clears
+			//! mAgentRenderPending, so once the coordinated occupant finishes,
+			//! the queued submission is accepted and the render SUCCEEDS.
+			//! (`quality:"draft"` and `mode:` do NOT set width/height and do
+			//! NOT change that routing.)  Do not restate this as a blanket
+			//! "render is refused too" on any surface.
 			//! An unavailable result is a STRUCTURED, NON-error outcome (the
 			//! returned byte vector is empty, outW/outH are 0).
 			//!

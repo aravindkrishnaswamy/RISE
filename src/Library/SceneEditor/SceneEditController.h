@@ -410,9 +410,13 @@ namespace RISE
 			//! sites, not the two the previous wording claimed -- the
 			//! pre-admission mTxnOpen check, the post-admission
 			//! txn/save/composite check, and the post-park revalidation.
-			//! SubmitAgentRenderAsync/Sync report it from four (their own
-			//! pre-flight mTxnOpen check plus the nested mTxnOpen / mSaving /
-			//! IsCompositeOpen checks in SubmitAgentRenderAsync_Locked).
+			//! The submit paths report it from four sites BETWEEN them, but
+			//! NOT symmetrically (round-12 P2 -- the previous wording credited
+			//! both with a pre-flight check): only SubmitAgentRenderAsync has
+			//! its own pre-flight mTxnOpen check; SubmitAgentRenderSync goes
+			//! straight to the fairness ticket and can only reach EditorBusy
+			//! through the three nested mTxnOpen / mSaving / IsCompositeOpen
+			//! checks in the shared SubmitAgentRenderAsync_Locked.
 			EditorBusy,
 
 			//! Another coordinated (agent/production) render owns the
@@ -442,7 +446,9 @@ namespace RISE
 			//! CST object-transform / camera-pose commit failed (a CST route
 			//! failed, or a dragged camera/object vanished from the scene
 			//! mid-gesture).  That flag is a deliberate STICKY truth flag: it
-			//! is set at five sites and NEVER cleared, because once a live
+			//! is set at five production sites (plus the
+			//! ForTest_TripInteractionPersistenceFailure seam) and NEVER
+			//! cleared, because once a live
 			//! gesture's delta failed to reach the Document the controller can
 			//! no longer claim the Document matches what the user did.
 			//!
@@ -2110,8 +2116,6 @@ namespace RISE
 			    != DestructionOpen;
 		}
 
-		//! T0 pause-state oracle setup: arm the current pane's normal
-		//! final-to-polish transition without synthesizing a pointer gesture.
 		//! ROUND-10 finding 3 test seam.  Trip mInteractionPersistenceFailed
 		//! -- the STICKY flag a failed pending-CST commit sets -- so a test
 		//! can exercise the PERMANENT FinalizeOpenInteractions refusal
@@ -2138,6 +2142,8 @@ namespace RISE
 		{
 			mForTestFinalizeFailOnce.store( true, std::memory_order_release );
 		}
+		//! T0 pause-state oracle setup: arm the current pane's normal
+		//! final-to-polish transition without synthesizing a pointer gesture.
 		void ForTest_ArmFinalRegularPolish()
 		{
 			std::lock_guard<std::mutex> lk( mMutex );
@@ -3175,7 +3181,8 @@ namespace RISE
 		//! them can ever succeed on a retry:
 		//!   * mInteractionPersistenceFailed is LATCHED -- a pending CST
 		//!     transform/camera commit failed earlier.  That flag is set at
-		//!     five sites and never cleared (see its member doc), and it
+		//!     five production sites plus the test seam, and never cleared
+		//!     (see its member doc), and it
 		//!     short-circuits FinalizeOpenInteractions unconditionally, so
 		//!     every later render and viewport read refuses FOREVER.
 		//!     -> InteractionFinalizeLatched (NOT retriable).
@@ -4088,7 +4095,9 @@ namespace RISE
 		//! later render as though persistence succeeded would silently lose the
 		//! live edit on re-derive.  Finalize/Prepare report false once tripped.
 		//!
-		//! Set at five sites; NEVER cleared, deliberately -- see
+		//! Set at five PRODUCTION sites, plus the
+		//! ForTest_TripInteractionPersistenceFailure test seam (a sixth
+		//! store(true) in this same header); NEVER cleared, deliberately -- see
 		//! ClassifyFinalizeFailure_ for why that is the right safety
 		//! behaviour and what round 10 changed instead.  The CONSEQUENCE a
 		//! reader must know: once tripped, FinalizeOpenInteractions returns

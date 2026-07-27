@@ -502,17 +502,34 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 	}
 	// Round-10 finding 4: the skill's OLD guidance told the model to
 	// "fall back to a `render` call instead of retrying" on ANY
-	// available:false.  That is actively wrong for the editor/admission
-	// reasons -- a `render` call passes through the SAME gates and is
-	// refused too -- so it guaranteed a second refusal.  Pin the
-	// corrected guidance: the skill must say the fallback applies only
-	// to the no-viewport reasons.
+	// available:false.  That is wrong for the editor/admission reasons --
+	// a `render` call passes through the SAME gates and is refused too.
+	//
+	// ROUND-12 finding 2: round 10 then OVER-corrected, asserting the
+	// fallback was a "guaranteed second refusal" for all five non-
+	// no-viewport reasons, and THIS assertion pinned that literal string
+	// -- making a false claim load-bearing.  It is false for exactly one
+	// reason, `render_in_progress`: read_viewport reports that from
+	// RunPreviewRenderParked's mAgentRenderBlocksInteractive gate, but a
+	// PLAIN `render {}` (no width+height pair, no camera/view) does not
+	// take that path at all -- RenderCore_ routes on
+	// `wantFilmOverride || wantCameraOverrideForRouting`
+	// (AgentSession.cpp), so with no override it goes to
+	// SubmitAgentRenderSync, which WAITS on the fairness ticket instead of
+	// refusing and normally runs once the occupant frees the slot.  Pin
+	// the corrected guidance instead: the warning, the two no-viewport
+	// reasons, and the plain-vs-override split that makes
+	// `render_in_progress` the exception.
 	Check( md.find( "Do NOT reflexively fall back to `render`" ) != std::string::npos,
 	       "observe-modes explicitly warns against the reflexive render fallback" );
-	Check( md.find( "ONLY a fix for `no_controller`/`no_frame_yet`" ) != std::string::npos,
-	       "observe-modes limits the render fallback to the two no-viewport reasons" );
-	Check( md.find( "guaranteed second refusal" ) != std::string::npos,
-	       "observe-modes states that `render` hits the same gates on the other reasons" );
+	Check( md.find( "the two no-viewport reasons (`no_controller`," ) != std::string::npos,
+	       "observe-modes names render as the fallback for the two no-viewport reasons" );
+	Check( md.find( "`render_in_progress` is the ONE reason where that is not true" ) != std::string::npos,
+	       "observe-modes flags render_in_progress as the exception to the same-gate rule" );
+	Check( md.find( "does NOT take the parked path read_viewport takes" ) != std::string::npos,
+	       "observe-modes explains that a PLAIN render queues rather than being refused" );
+	Check( md.find( "film override (`width` AND `height`)" ) != std::string::npos,
+	       "observe-modes states which render shapes DO take the refused parked path" );
 	Check( md.find( "[16,512]" ) != std::string::npos,
 	       "observe-modes states the width/height clamp range verbatim" );
 
