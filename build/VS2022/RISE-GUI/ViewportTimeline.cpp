@@ -216,6 +216,18 @@ void ViewportTimeline::restyleTheme()
 
 void ViewportTimeline::setRange(double minT, double maxT, double canonicalTime)
 {
+    // Keep the user's Begin/Move/End composite intact.  Applying an
+    // out-of-range update now would call jumpToTime(), whose nested Begin
+    // deliberately replaces the open composite; hiding/rebuilding the
+    // pressed slider can likewise prevent sliderReleased from arriving.
+    if (m_scrubbing) {
+        m_pendingMinT = minT;
+        m_pendingMaxT = maxT;
+        m_pendingCanonicalTime = canonicalTime;
+        m_hasPendingRange = true;
+        return;
+    }
+
     const bool rangeChanged = m_minT != minT || m_maxT != maxT;
     const bool timeChanged = m_time != canonicalTime;
     if (!rangeChanged && !timeChanged) return;
@@ -258,12 +270,17 @@ void ViewportTimeline::onSliderReleased()
         m_scrubbing = false;
         emit scrubEnd();
     }
+    applyPendingRange();
 }
 
 void ViewportTimeline::onSliderMoved(int sliderValue)
 {
     const double frac = sliderValue / static_cast<double>(m_slider->maximum());
     m_time = m_minT + frac * (m_maxT - m_minT);
+    // A movement after setRange deferred its snapshot is the newer
+    // canonical user intent; preserve it when that range is applied on
+    // release instead of snapping back to the poll's earlier time.
+    if (m_hasPendingRange) m_pendingCanonicalTime = m_time;
     updateLabels();
     emit timeChanged(m_time);
 }
@@ -370,6 +387,26 @@ void ViewportTimeline::stopPlayback()
     if (m_playing && m_playButton) {
         m_playButton->setChecked(false);
     }
+}
+
+void ViewportTimeline::finalizeOpenTimelineInteraction()
+{
+    stopPlayback();
+    if (m_scrubbing) {
+        m_scrubbing = false;
+        emit scrubEnd();
+    }
+    m_hasPendingRange = false;
+}
+
+void ViewportTimeline::applyPendingRange()
+{
+    if (!m_hasPendingRange) return;
+    const double minT = m_pendingMinT;
+    const double maxT = m_pendingMaxT;
+    const double canonicalTime = m_pendingCanonicalTime;
+    m_hasPendingRange = false;
+    setRange(minT, maxT, canonicalTime);
 }
 
 void ViewportTimeline::jumpToTime(double t)

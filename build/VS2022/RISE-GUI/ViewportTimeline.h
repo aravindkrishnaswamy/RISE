@@ -25,7 +25,8 @@ public:
     /// Replace the live animation range using the controller's canonical
     /// time (the widget can be stale after Undo/Redo).  A change stops
     /// playback, reprojects an in-range playhead, and moves an out-of-range
-    /// playhead through the normal bracketed scrub signals.
+    /// playhead through the normal bracketed scrub signals.  Replacement is
+    /// deferred while a manual drag owns an open scrub composite.
     void setRange(double minT, double maxT, double canonicalTime);
     double currentTime() const { return m_time; }
 
@@ -40,6 +41,11 @@ public:
     // begins (disabling the widget does NOT stop a live QTimer).
     // Idempotent / safe to call when not playing.
     void stopPlayback();
+
+    // Stop playback and close a manual slider scrub before this widget is
+    // hidden, disabled for production rendering, or destroyed.  Also drops
+    // any live-range update deferred behind that interaction.
+    void finalizeOpenTimelineInteraction();
 
 public slots:
     /// Mirrors MainWindow::updateMenuActionStates' gate on
@@ -107,6 +113,9 @@ private:
     // entry) -- shared by the ⏮ rewind and ⏭ to-end transport buttons.
     void jumpToTime(double t);
 
+    // Apply the newest range snapshot deferred while the slider was pressed.
+    void applyPendingRange();
+
     static QString formatTime(double seconds);
 
     QToolButton* m_rewindButton = nullptr;
@@ -120,7 +129,11 @@ private:
     double       m_minT = 0.0;
     double       m_maxT = 5.0;
     double       m_time = 0.0;
+    double       m_pendingMinT = 0.0;
+    double       m_pendingMaxT = 0.0;
+    double       m_pendingCanonicalTime = 0.0;
     unsigned int m_numFrames = 30;
+    bool         m_hasPendingRange = false;
     bool         m_scrubbing = false;
     bool         m_playing = false;
 };

@@ -253,10 +253,19 @@ int main()
 		       && macTimeline.find( "onJump(t)" ) != std::string::npos,
 		       "macOS live range changes stop stale playback and reconcile scene time" );
 		Check( winSetRange.find( "stopPlayback();" ) != std::string::npos
+		       && winSetRange.find( "if (m_scrubbing)" ) != std::string::npos
+		       && winSetRange.find( "m_hasPendingRange = true;" ) != std::string::npos
+		       && winTimeline.find( "applyPendingRange();" ) != std::string::npos
 		       && winSetRange.find( "const double clampedTime = std::clamp(canonicalTime, m_minT, m_maxT);" )
 		       != std::string::npos
 		       && winSetRange.find( "jumpToTime(clampedTime);" ) != std::string::npos,
 		       "Windows live range changes stop stale playback and reconcile scene time" );
+		Check( win.find( "finalizeOpenTimelineInteraction();" ) != std::string::npos
+		       && winTimeline.find( "void ViewportTimeline::finalizeOpenTimelineInteraction()" )
+		          != std::string::npos
+		       && winTimeline.find( "emit scrubEnd();" ) != std::string::npos
+		       && winTimeline.find( "m_hasPendingRange = false;" ) != std::string::npos,
+		       "Windows timeline removal finalizes an open manual scrub" );
 	}
 
 	// ---- IJob vtable append-only manifest (round-4 review, 2026-07-22) ----

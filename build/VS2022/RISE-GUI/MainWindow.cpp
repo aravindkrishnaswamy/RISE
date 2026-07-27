@@ -1396,7 +1396,9 @@ void MainWindow::onCstSyncTick()
         const bool liveHasAnimation = animationPresence != 0;
         if (m_engine->updateHasAnimation(liveHasAnimation)) {
             if (m_viewportTimeline) {
-                if (!liveHasAnimation) m_viewportTimeline->stopPlayback();
+                if (!liveHasAnimation) {
+                    m_viewportTimeline->finalizeOpenTimelineInteraction();
+                }
                 m_viewportTimeline->setVisible(liveHasAnimation);
             }
             updateMenuActionStates();
@@ -2101,7 +2103,7 @@ void MainWindow::onRender()
     // timeline widget (done in onStateChanged once Rendering starts)
     // does NOT stop a live QTimer, so a tick could still fire a scrub
     // into the scene the production rasterizer is about to read.
-    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+    if (m_viewportTimeline) m_viewportTimeline->finalizeOpenTimelineInteraction();
     if (m_viewportBridge) m_viewportBridge->stop();
 
     // UI redesign (A4 region refinement): a draw mode waiting for a
@@ -2170,7 +2172,7 @@ void MainWindow::onRenderAnimation()
     // Halt a running preview-play QTimer before the production
     // animation render begins (see onRender for why widget-disable
     // alone is insufficient).
-    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+    if (m_viewportTimeline) m_viewportTimeline->finalizeOpenTimelineInteraction();
     if (m_viewportBridge) m_viewportBridge->stop();
     if (m_viewportToolbar) m_viewportToolbar->cancelRegionArm();
     m_engine->startAnimationRender(videoPath);
@@ -2703,7 +2705,7 @@ void MainWindow::teardownViewport()
     // Close any looping preview-play (and its open scrub bracket) through the
     // normal path before the bridge it drives goes away — don't rely on
     // controller destruction to swallow an open composite.
-    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+    if (m_viewportTimeline) m_viewportTimeline->finalizeOpenTimelineInteraction();
 
     // Stop the render thread BEFORE the bridge dies.
     m_viewportBridge->stop();
