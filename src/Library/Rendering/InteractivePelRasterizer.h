@@ -335,6 +335,30 @@ namespace RISE
 			IRayCaster** ppCaster,
 			IShader* pDefaultShader = 0 );
 
+		//! Configure one BeautyVariant pass for the current interaction state.
+		//! Active gestures use one sample and suppress OIDN; the release/idle
+		//! pass restores the registry-authored sample count and OIDN policy.
+		//! Returns false without changing the rasterizer when `mode` is not a
+		//! BeautyVariant or the rasterizer cannot honor the sample override.
+		bool ConfigureBeautyVariantPass(
+			IRasterizer& rasterizer,
+			ViewportRenderMode mode,
+			bool liveGesture );
+
+		//! Creates a center-sampled nearest-neighbor derivative of `source`.
+		//! Used by shared multiview transport when a compatible pane requests a
+		//! lower resolution than the canonical traced image.  Caller owns *out.
+		bool CreateNearestNeighborSubview(
+			const IRasterImage& source,
+			unsigned int width,
+			unsigned int height,
+			IRasterImage** out );
+
+		//! Mark an in-flight BeautyVariant quantum obsolete before requesting
+		//! cancellation.  Its path loop still exits at the normal cancel point,
+		//! but its non-cancel-interruptible OIDN tail is skipped atomically.
+		bool SuppressBeautyVariantDenoise( IRasterizer& rasterizer );
+
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{
 		public:
@@ -482,8 +506,7 @@ namespace RISE
 			void SetXrayView( bool on );
 
 			//! Current viewport-wide x-ray toggle (default false at
-			//! construction; SceneEditController defaults it to true and
-			//! applies it on first attach -- see its own doc).
+			//! construction and when SceneEditController first attaches).
 			bool GetXrayView() const { return mXrayView; }
 
 			//! Part B (docs/gui/RENDER_MODES.md "Depth axis" self-

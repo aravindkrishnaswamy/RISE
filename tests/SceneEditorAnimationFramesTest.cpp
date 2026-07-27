@@ -18,6 +18,11 @@
 
 #include <iostream>
 #include <cstring>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <atomic>
+#include <thread>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -37,22 +42,23 @@ static void Check( bool condition, const char* testName )
 	else { failCount++; std::cout << "  FAIL: " << testName << std::endl; }
 }
 
-static Job* MakeMinimalJob()
+static Job* MakeCstJob( std::string& outPath )
 {
+	const std::filesystem::path source =
+		std::filesystem::path( "scenes/Tests/Animation/named_animations.RISEscene" );
+	const std::filesystem::path target =
+		std::filesystem::temp_directory_path() /
+		"rise_scene_editor_animation_frames.RISEscene";
+	std::ifstream in( source, std::ios::binary );
+	std::ofstream out( target, std::ios::binary | std::ios::trunc );
+	out << in.rdbuf();
+	out.close();
+	outPath = target.string();
+
 	Job* job = new Job();
-	ICamera* pCam = nullptr;
-	if( RISE_API_CreatePinholeCamera(
-		&pCam,
-		Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
-		Scalar( 0.785398 ), 64, 64,
-		Scalar( 1 ), Scalar( 0 ), Scalar( 0 ), Scalar( 0 ),
-		Vector3( 0, 0, 0 ), Vector2( 0, 0 ) ) )
-	{
-		job->GetScene()->AddCamera( "default", pCam );
-		pCam->release();
-	}
-	const char* shaderOps[] = { "DefaultDirectLighting" };
-	job->AddStandardShader( "global", 1, shaderOps );
+	Check( in.good() || in.eof(), "opened named-animation fixture" );
+	Check( job->LoadAsciiSceneViaCst( outPath.c_str() ),
+		"loaded named-animation fixture through retained CST path" );
 	return job;
 }
 
@@ -80,11 +86,8 @@ int main()
 	using Cat = SceneEditController::Category;
 	std::cout << "SceneEditorAnimationFramesTest" << std::endl;
 
-	Job* pJob = MakeMinimalJob();
-
-	// Two named animations; "Spin" is active with 24 frames.
-	pJob->DeclareAnimation( "Spin",  0.0, 1.0, 24, false, false, /*make_active*/ true  );
-	pJob->DeclareAnimation( "Drift", 0.0, 2.0, 48, false, false, /*make_active*/ false );
+	std::string scenePath;
+	Job* pJob = MakeCstJob( scenePath );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/ 0 );
@@ -93,7 +96,7 @@ int main()
 	Check( c.CategoryEntityCount( Cat::Animation ) == 2, "Animation category lists 2 animations" );
 
 	// --- Selecting the section surfaces an editable "frames" row ---
-	c.ForTest_SetSelection( Cat::Animation, String( "Spin" ) );
+	c.ForTest_SetSelection( Cat::Animation, String( "Slide" ) );
 	c.RefreshProperties();
 
 	const int row = FindFramesRow( c );
@@ -111,11 +114,29 @@ int main()
 	Check( c.SetPropertyForCategory( Cat::Animation, String( "frames" ), String( "60" ) ),
 	       "SetPropertyForCategory(frames=60) succeeds" );
 	Check( ActiveNumFrames( *pJob ) == 60, "active animation num_frames is now 60" );
+	Check( c.HasUnsavedChanges(), "animation frame edit marks the retained Document dirty" );
+	Check( std::string( c.SerializedSceneText().c_str() ).find( "num_frames\t\t60" ) != std::string::npos,
+		"animation frame edit persists as animation.num_frames in the CST" );
 	{
 		double ts = 0, te = 1; unsigned int nf = 0; bool df = false, invf = false;
 		pJob->GetAnimationOptions( ts, te, nf, df, invf );
 		Check( ts == 0.0 && te == 1.0, "editing frames preserved the time range (0..1)" );
 	}
+
+	c.Undo();
+	Check( ActiveNumFrames( *pJob ) == 24, "Undo restores the live animation frame count" );
+	c.Redo();
+	Check( ActiveNumFrames( *pJob ) == 60, "Redo restores the edited live animation frame count" );
+
+	const SaveResult save = c.RequestSave( scenePath );
+	Check( Succeeded( save.status ), "saving the animation frame edit succeeds" );
+	Check( !c.HasUnsavedChanges(), "successful save clears animation dirty state" );
+	Job* reloaded = new Job();
+	Check( reloaded->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		"saved animation scene reloads through CST" );
+	Check( ActiveNumFrames( *reloaded ) == 60,
+		"saved/reloaded animation preserves the edited frame count" );
+	reloaded->release();
 
 	// The refreshed row reflects the new value.
 	c.RefreshProperties();
@@ -131,9 +152,49 @@ int main()
 	Check( !c.SetPropertyForCategory( Cat::Animation, String( "frames" ), String( "abc" ) ),
 	       "frames=abc is rejected" );
 	Check( ActiveNumFrames( *pJob ) == 60, "num_frames unchanged after rejected edits" );
+
+	// --- Any-thread D2 edits vs UI metadata/history polling ---
+	// The animation getter and Undo/Redo labels are polled by both shells.
+	// Repeated D2 frame edits replace the Job graph and push EditHistory;
+	// concurrent reads must either return one coherent generation or the
+	// documented transient empty/false fallback, never touch freed graph or
+	// deque storage.
+	std::atomic<bool> stopReader{ false };
+	std::atomic<bool> sawBadFrames{ false };
+	std::atomic<unsigned int> successfulReads{ 0 };
+	std::thread reader( [&] {
+		while( !stopReader.load( std::memory_order_acquire ) ) {
+			double ts = 0, te = 1;
+			unsigned int nf = 0;
+			if( c.GetAnimationOptions( ts, te, nf ) ) {
+				if( nf != 60u && nf != 61u ) {
+					sawBadFrames.store( true, std::memory_order_release );
+				}
+				successfulReads.fetch_add( 1, std::memory_order_relaxed );
+			}
+			c.UndoLabel();
+			c.RedoLabel();
+			std::this_thread::yield();
+		}
+	} );
+	for( unsigned int i = 0; i < 20; ++i ) {
+		const String value( ( i & 1u ) ? "60" : "61" );
+		Check( c.SetPropertyForCategory( Cat::Animation, String( "frames" ), value ),
+		       "concurrent D2 animation edit applies" );
+		std::this_thread::yield();
+	}
+	stopReader.store( true, std::memory_order_release );
+	reader.join();
+	Check( successfulReads.load( std::memory_order_acquire ) > 0,
+	       "concurrent UI poll observed animation snapshots" );
+	Check( !sawBadFrames.load( std::memory_order_acquire ),
+	       "concurrent animation getter returned only coherent frame counts" );
+	Check( ActiveNumFrames( *pJob ) == 60,
+	       "concurrency stress leaves the active animation at the final value" );
 	}
 
 	pJob->release();
+	std::remove( scenePath.c_str() );
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

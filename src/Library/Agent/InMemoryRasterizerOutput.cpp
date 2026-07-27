@@ -218,6 +218,27 @@ void InMemoryRasterizerOutput::AdoptCoherentSnapshot(
 	ClearPerception_();
 }
 
+bool InMemoryRasterizerOutput::CopyToRasterImage( IRasterImage** out ) const
+{
+	if( !out ) return false;
+	*out = nullptr;
+	if( !mHasImage || mWidth == 0 || mHeight == 0 ) return false;
+	IRasterImage* image = nullptr;
+	if( !RISE_API_CreateRISEColorRasterImage(
+			&image, mWidth, mHeight,
+			RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) )
+	 || !image )
+		return false;
+	for( unsigned int y = 0; y < mHeight; ++y ) {
+		for( unsigned int x = 0; x < mWidth; ++x ) {
+			image->SetPEL(
+				x, y, mPixels[ static_cast<std::size_t>( y ) * mWidth + x ] );
+		}
+	}
+	*out = image;
+	return true;
+}
+
 void InMemoryRasterizerOutput::MeanChannels( double& r, double& g, double& b ) const
 {
 	r = g = b = 0.0;

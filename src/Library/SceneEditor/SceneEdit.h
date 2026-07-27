@@ -361,6 +361,10 @@ namespace RISE
 		//! so Undo/Redo restore THAT camera -- not whatever camera is active
 		//! later.  Empty for legacy edits (Undo falls back to active).
 		String         cameraTargetName;
+		//! T3: only SceneCameraNamed routing opts an explicit-ONB camera
+		//! into the equivalent lookAt/up edit adapter.  Legacy active
+		//! SceneCamera behavior remains unchanged.
+		bool           allowONBPoseEdit;
 
 		//! Shared-undo U1 (SetAgentCstParam only): the CST chunk kind of the
 		//! edited entity, as resolved by SceneEditController::ApplyAgentParamEdit
@@ -414,6 +418,13 @@ namespace RISE
 		//! uniform; they're cheap.
 		Vector2  prevCameraTargetOrient;
 		Vector3  prevCameraOrient;
+		//! Explicit-ONB representation captured before a camera op.  The live
+		//! edit temporarily converts ONB cameras to an equivalent lookAt/up
+		//! pose; an inverse restores this exact basis.
+		bool     prevCameraWasONB;
+		Vector3  prevCameraONBU;
+		Vector3  prevCameraONBV;
+		Vector3  prevCameraONBW;
 
 		//! Captured for SetObjectShadowFlags: prior cast/receive bits
 		//! packed the same way as `s` (cast in bit0, receive in bit1)
@@ -436,6 +447,7 @@ namespace RISE
 		, hasTransformState( false )
 		, prevBindingWasNull( false )
 		, cameraTargetName()
+		, allowONBPoseEdit( false )
 		, cstEntityKind()
 		, prevValueWasAbsent( false )
 		, agentChunkIndex( 0 )
@@ -449,6 +461,10 @@ namespace RISE
 		, prevCameraUp()
 		, prevCameraTargetOrient()
 		, prevCameraOrient()
+		, prevCameraWasONB( false )
+		, prevCameraONBU()
+		, prevCameraONBV()
+		, prevCameraONBW()
 		, prevShadowFlags( 0 )
 		{}
 

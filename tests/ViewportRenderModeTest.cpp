@@ -36,13 +36,13 @@
 //    R8  A whole-scene re-derive (scene_variant switch, which calls
 //        RebindEditorToJob) resets an active view mode back to "preview" --
 //        the ratified "every scene load/reload opens in preview" rule.
-//    R9  X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT ON
-//        (2026-07-17): SceneEditController::{Set,Get}ViewportXray in
-//        skeleton mode (refuses; getter still reports the TRUE default),
+//    R9  X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT OFF:
+//        SceneEditController::{Set,Get}ViewportXray in
+//        skeleton mode (refuses; getter still reports the FALSE default),
 //        live round-trip (applies immediately with NO caster rebuild --
 //        including while "preview" is active, stamping the studio preview
 //        caster itself -- survives a mode switch), the C-ABI wrappers, and
-//        reset-to-TRUE (the default) alongside the mode reset on a
+//        reset-to-FALSE (the default) alongside the mode reset on a
 //        whole-scene re-derive.
 //    R10 External review P2: SetViewportRenderMode / SetViewportXray
 //        reset a QUEUED polish pass (PolishState::FinalRegularRunning,
@@ -102,6 +102,8 @@
 #include <fstream>
 #include <set>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -530,18 +532,18 @@ namespace
 	}
 
 	//------------------------------------------------------------------
-	// R9: X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT ON
-	// (2026-07-17) -- skeleton refusal (getter still reports the TRUE
+	// R9: X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"), DEFAULT OFF
+	// -- skeleton refusal (getter still reports the FALSE
 	// default), live round-trip with NO caster rebuild (applies to
 	// "preview" too -- verified by reading the actual preview caster's
-	// RayCaster::GetXrayViewResolve()), and reset-to-TRUE on rebind.
+	// RayCaster::GetXrayViewResolve()), and reset-to-FALSE on rebind.
 	//------------------------------------------------------------------
 	void TestXrayAxis()
 	{
 		std::printf( "R9: X-ray axis set/get round-trip + reset-on-rebind...\n" );
 
 		// Skeleton mode: refused, not crashing; getter still reports the
-		// DEFAULT (true -- x-ray is default-ON).
+		// DEFAULT (false -- x-ray is default-OFF).
 		{
 			const std::string tmp = TempPath( "vrm_r9_skeleton.RISEscene" );
 			Job* pJob = LoadScene( kPlainScene, tmp );
@@ -549,9 +551,9 @@ namespace
 			if( pJob )
 			{
 				SceneEditController ctrl( *pJob, nullptr );   // skeleton: no interactive rasterizer
-				Check( ctrl.GetViewportXray(), "GetViewportXray reports TRUE by default (skeleton) -- x-ray is default-ON" );
-				Check( !ctrl.SetViewportXray( false ), "SetViewportXray refused in skeleton mode" );
-				Check( ctrl.GetViewportXray(), "xray flag stays true after a refused skeleton-mode call" );
+				Check( !ctrl.GetViewportXray(), "GetViewportXray reports FALSE by default (skeleton) -- x-ray is default-OFF" );
+				Check( !ctrl.SetViewportXray( true ), "SetViewportXray refused in skeleton mode" );
+				Check( !ctrl.GetViewportXray(), "xray flag stays false after a refused skeleton-mode call" );
 				pJob->release();
 				std::remove( tmp.c_str() );
 			}
@@ -577,57 +579,57 @@ namespace
 				SceneEditController ctrl( *pJob, pRasterizer );
 				using Cat = SceneEditController::Category;
 
-				Check( ctrl.GetViewportXray(), "starts at xray=true (default-ON)" );
+				Check( !ctrl.GetViewportXray(), "starts at xray=false (default-OFF)" );
 				if( pPreviewRC ) {
-					Check( pPreviewRC->GetXrayViewResolve(), "constructing the controller stamps the DEFAULT true onto the preview caster (first-attach stamp)" );
+					Check( !pPreviewRC->GetXrayViewResolve(), "constructing the controller stamps the DEFAULT false onto the preview caster (first-attach stamp)" );
 				}
 
-				// Set OFF while "preview" is active: x-ray now applies to
+				// Set ON while "preview" is active: x-ray applies to
 				// EVERY mode including preview (caster-layer resolution,
 				// no per-mode caster rebuild) -- so this is a plain flag
 				// stamp that still succeeds and is immediately visible on
 				// the actual preview caster.
-				Check( ctrl.SetViewportXray( false ), "SetViewportXray(false) succeeds while \"preview\" is active" );
-				Check( !ctrl.GetViewportXray(), "GetViewportXray reports false after the set" );
+				Check( ctrl.SetViewportXray( true ), "SetViewportXray(true) succeeds while \"preview\" is active" );
+				Check( ctrl.GetViewportXray(), "GetViewportXray reports true after the set" );
 				if( pPreviewRC ) {
-					Check( !pPreviewRC->GetXrayViewResolve(), "the studio preview caster itself reflects the flip -- x-ray composes with \"preview\" now" );
+					Check( pPreviewRC->GetXrayViewResolve(), "the studio preview caster itself reflects the flip -- x-ray composes with \"preview\" now" );
 				}
 
 				// Same-value call is a documented no-op that still succeeds.
-				Check( ctrl.SetViewportXray( false ), "re-setting the SAME xray value succeeds (no-op)" );
-				Check( !ctrl.GetViewportXray(), "still false after the no-op call" );
+				Check( ctrl.SetViewportXray( true ), "re-setting the SAME xray value succeeds (no-op)" );
+				Check( ctrl.GetViewportXray(), "still true after the no-op call" );
 
 				// Switching to a data mode: the newly-built caster is
 				// immediately re-stamped with the CURRENT flag by
 				// InteractivePelRasterizer::SetViewModeCaster -- no
 				// separate re-apply needed on the controller side.
-				Check( ctrl.SetViewportRenderMode( "depth" ), "switch to \"depth\" with xray already false" );
+				Check( ctrl.SetViewportRenderMode( "depth" ), "switch to \"depth\" with xray already true" );
 				Check( std::string( ctrl.GetViewportRenderMode() ) == "depth", "mode is \"depth\"" );
-				Check( !ctrl.GetViewportXray(), "xray flag survives the mode switch" );
+				Check( ctrl.GetViewportXray(), "xray flag survives the mode switch" );
 
-				// Flip xray ON while a data mode is active: no caster
+				// Flip xray OFF while a data mode is active: no caster
 				// rebuild, just InteractivePelRasterizer::SetXrayView
 				// stamping every caster the rasterizer holds.
-				Check( ctrl.SetViewportXray( true ), "SetViewportXray(true) succeeds while \"depth\" is active" );
-				Check( ctrl.GetViewportXray(), "GetViewportXray reports true after the flip" );
+				Check( ctrl.SetViewportXray( false ), "SetViewportXray(false) succeeds while \"depth\" is active" );
+				Check( !ctrl.GetViewportXray(), "GetViewportXray reports false after the flip" );
 				Check( std::string( ctrl.GetViewportRenderMode() ) == "depth", "mode stays \"depth\" across the xray flip" );
 
 				// A whole-scene re-derive resets BOTH the mode AND the xray
-				// flag to their DEFAULTS ("preview" / true).
+				// flag to their DEFAULTS ("preview" / false).
 				Check( ctrl.SetSelection( Cat::SceneVariant, String( "night" ) ), "R9 SetSelection(night) re-derives clean" );
 				Check( std::string( ctrl.GetViewportRenderMode() ) == "preview", "mode reset to \"preview\" by the re-derive" );
-				Check( ctrl.GetViewportXray(),
-					"MONEY ASSERTION: xray flag reset to TRUE (the default) by the SAME whole-scene re-derive" );
+				Check( !ctrl.GetViewportXray(),
+					"MONEY ASSERTION: xray flag reset to FALSE (the default) by the SAME whole-scene re-derive" );
 				if( pPreviewRC ) {
-					Check( pPreviewRC->GetXrayViewResolve(), "the re-derive's reset is stamped onto the preview caster too" );
+					Check( !pPreviewRC->GetXrayViewResolve(), "the re-derive's reset is stamped onto the preview caster too" );
 				}
 
 				// C-ABI round-trip through the live controller.
-				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, false ), "C-ABI SetViewportXray succeeds" );
-				bool abiOut = true;
+				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, true ), "C-ABI SetViewportXray succeeds" );
+				bool abiOut = false;
 				Check( RISE_API_SceneEditController_GetViewportXray( &ctrl, &abiOut ), "C-ABI GetViewportXray succeeds" );
-				Check( abiOut == false, "C-ABI GetViewportXray reflects the C-ABI set" );
-				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, true ), "C-ABI SetViewportXray(true) restores" );
+				Check( abiOut == true, "C-ABI GetViewportXray reflects the C-ABI set" );
+				Check( RISE_API_SceneEditController_SetViewportXray( &ctrl, false ), "C-ABI SetViewportXray(false) restores" );
 
 				Check( ctrl.SetViewportRenderMode( "preview" ), "restore \"preview\" before teardown" );
 			}
@@ -743,7 +745,7 @@ namespace
 						Check( ctrl.GetRefinementStatus( divisor ) == SceneEditController::RefinementPhase::Polishing,
 						       "orbit gesture's OnPointerUp queues a polish pass (Polishing, no thread running)" );
 
-						// Toggle the CURRENT flag off (default is ON) so this is a
+						// Toggle the CURRENT flag on (default is OFF) so this is a
 						// real flip, not the same-value no-op short-circuit.
 						Check( ctrl.SetViewportXray( !ctrl.GetViewportXray() ), "flip x-ray while polish is queued" );
 
@@ -890,6 +892,75 @@ namespace
 			       "non-variant mode refused by CreateBeautyVariantPipeline" );
 			Check( rast == nullptr && caster == nullptr, "out-params zeroed on refusal" );
 		}
+	}
+
+	void TestBeautyVariantLivePassPolicy()
+	{
+		std::printf( "R19: BeautyVariant live-pass quality policy...\n" );
+		const ViewportRenderMode modes[4] = {
+			ViewportRenderMode::DeepReflect, ViewportRenderMode::Direct,
+			ViewportRenderMode::Indirect, ViewportRenderMode::ClayLights
+		};
+		const int fullSamples[4] = { 16, 8, 12, 12 };
+		for( unsigned int i = 0; i < 4; ++i )
+		{
+			IRasterizer* rast = nullptr;
+			IRayCaster* caster = nullptr;
+			Check( CreateBeautyVariantPipeline( modes[i], &rast, &caster ),
+			       "live-pass fixture builds" );
+			if( rast )
+			{
+				Check( rast->GetSampleCountOverride() == fullSamples[i],
+				       "factory starts at the registry-authored full sample count" );
+				Check( ConfigureBeautyVariantPass( *rast, modes[i], true ),
+				       "active-gesture policy applies" );
+				Check( rast->GetSampleCountOverride() == 1,
+				       "MONEY: active gesture uses exactly one sample per pixel" );
+#ifdef RISE_ENABLE_OIDN
+				Rasterizer* concrete = dynamic_cast<Rasterizer*>( rast );
+				Check( concrete && !concrete->GetDenoisingEnabled(),
+				       "MONEY: active gesture suppresses OIDN" );
+#endif
+				Check( ConfigureBeautyVariantPass( *rast, modes[i], false ),
+				       "release policy applies" );
+				Check( rast->GetSampleCountOverride() == fullSamples[i],
+				       "MONEY: release restores the registry-authored sample count" );
+#ifdef RISE_ENABLE_OIDN
+				Check( concrete && concrete->GetDenoisingEnabled(),
+				       "MONEY: release restores OIDN" );
+#endif
+			}
+			safe_release( rast );
+			safe_release( caster );
+		}
+	}
+
+	void TestConcurrentAOVDataFlag()
+	{
+		std::printf( "R20: concurrent AOV accumulation data flag...\n" );
+		const unsigned int width = 128, height = 64, threadCount = 8;
+		AOVBuffers aov( width, height );
+		std::vector<std::thread> workers;
+		for( unsigned int t = 0; t < threadCount; ++t )
+		{
+			workers.emplace_back( [&, t] {
+				for( unsigned int y = t; y < height; y += threadCount )
+				{
+					for( unsigned int x = 0; x < width; ++x )
+					{
+						aov.AccumulateAlbedo(
+							x, y, RISEPel( 0.25, 0.5, 0.75 ), 1.0 );
+						aov.AccumulateNormal(
+							x, y, Vector3( 0, 1, 0 ), 1.0 );
+					}
+				}
+			} );
+		}
+		for( std::thread& worker : workers ) worker.join();
+		Check( aov.HasData(),
+		       "MONEY: concurrent disjoint-pixel accumulation publishes HasData (TSAN-clean atomic flag)" );
+		aov.Reset( width, height );
+		Check( !aov.HasData(), "parked Reset clears the atomic data flag" );
 	}
 
 	//------------------------------------------------------------------
@@ -1327,6 +1398,48 @@ namespace
 		       "destroyed -- DestructionCount() == ConstructionCount(), i.e. no leaked rasterizer-owned "
 		       "integrator (P1-a fix)" );
 	}
+
+	void TestNearestNeighborSubview()
+	{
+		std::printf( "R21: shared-multiview nearest-neighbor extraction...\n" );
+		IRasterImage* source = nullptr;
+		Check( RISE_API_CreateRISEColorRasterImage(
+			&source, 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) ),
+			"4x4 source image constructs" );
+		if( !source ) return;
+		for( unsigned int y = 0; y < 4; ++y ) {
+			for( unsigned int x = 0; x < 4; ++x ) {
+				source->SetPEL( x, y,
+					RISEColor( RISEPel( Scalar( x ), Scalar( y ), Scalar( 10 * y + x ) ),
+						Scalar( 100 + 10 * y + x ) ) );
+			}
+		}
+		IRasterImage* subview = nullptr;
+		Check( CreateNearestNeighborSubview( *source, 2, 2, &subview ),
+		       "4x4 -> 2x2 NNB extraction succeeds" );
+		if( subview ) {
+			const unsigned int expected[2] = { 1, 3 };
+			bool exact = true;
+			for( unsigned int y = 0; y < 2; ++y ) {
+				for( unsigned int x = 0; x < 2; ++x ) {
+					const RISEColor got = subview->GetPEL( x, y );
+					const RISEColor want = source->GetPEL( expected[x], expected[y] );
+					exact = exact
+						&& got.base[0] == want.base[0]
+						&& got.base[1] == want.base[1]
+						&& got.base[2] == want.base[2]
+						&& got.a == want.a;
+				}
+			}
+			Check( exact,
+			       "MONEY: center-sampled NNB preserves exact source colors and alpha" );
+		}
+		safe_release( subview );
+		Check( !CreateNearestNeighborSubview( *source, 0, 2, &subview )
+		    && subview == nullptr,
+		       "zero-width NNB request fails closed and clears out-param" );
+		safe_release( source );
+	}
 }   // anonymous namespace
 
 int main()
@@ -1344,12 +1457,15 @@ int main()
 	TestPolishStateResetOnSwitch();
 	TestVariantRegistryRows();
 	TestBeautyVariantPipelineFactory();
+	TestBeautyVariantLivePassPolicy();
+	TestConcurrentAOVDataFlag();
 	TestWantsDenoiseCAbi();
 	TestIsVariantCAbi();
 	TestControllerVariantModeLifecycle();
 	TestClayRefcountDiscipline();
 	TestBeautyVariantDefaultShaderPlumbing();
 	TestRasterizerIntegratorLeakFix();
+	TestNearestNeighborSubview();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

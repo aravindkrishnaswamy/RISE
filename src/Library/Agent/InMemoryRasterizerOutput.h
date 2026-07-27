@@ -114,6 +114,11 @@ namespace RISE
 			unsigned int Width()  const { return mWidth; }
 			unsigned int Height() const { return mHeight; }
 
+			//! Create an owning deep-copy IRasterImage of the captured full
+			//! frame.  Used by the live controller's Last Render completion
+			//! hook; false (and *out null) before a successful capture.
+			bool CopyToRasterImage( IRasterImage** out ) const;
+
 			//! The LINEAR per-channel means over all captured pixels (0 when
 			//! no frame is captured).  A stable, thread-order-independent
 			//! image signature: unlike the encoded PNG bytes (which diverge

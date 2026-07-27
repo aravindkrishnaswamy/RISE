@@ -335,6 +335,21 @@ MainWindow::~MainWindow()
     m_viewportBridge = nullptr;
 }
 
+MainWindow::~MainWindow()
+{
+    // QObject deletes children in construction order. RenderEngine is the
+    // first MainWindow child, while the live ViewportBridge is created later
+    // for each loaded scene and borrows that engine. Tear the bridge down
+    // explicitly while the engine is still alive; otherwise QObject's
+    // default child destruction would free the engine first and the bridge
+    // destructor would call attachSceneEditController(nullptr) through a
+    // dangling m_engine pointer.
+    if (m_engine) {
+        m_engine->cancelAndJoinInFlightWork();
+    }
+    teardownViewport();
+}
+
 // ============================================================
 // Workspace chrome construction (UI redesign)
 // ============================================================
@@ -1308,13 +1323,12 @@ bool MainWindow::performSceneSaveAs()
     const ViewportBridge::SaveStatus status = m_viewportBridge->saveSceneTo(filePath, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
+    case ViewportBridge::SaveStatus::NoOp:
         onSceneSavedToPath(filePath, /*wasSaveAs=*/true);
         // Media paths follow the scene to its new home -- vital for the
         // untitled create path, whose template load registered no project
         // root (review P2; mirrors the Mac registerMediaPaths-on-Save-As).
         m_engine->setupMediaPaths(filePath);
-        return true;
-    case ViewportBridge::SaveStatus::NoOp:
         return true;
     case ViewportBridge::SaveStatus::Refused: {
         const QString message = errMsg.isEmpty()

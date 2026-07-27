@@ -473,6 +473,13 @@ namespace RISE
 		/// SPP — flushing after every 32×32 block is wasted I/O.
 		virtual bool SkipPerBlockIntermediateOutput() const { return false; }
 
+#ifdef RISE_ENABLE_OIDN
+		/// Called immediately before the canonical beauty denoiser.  Subclasses
+		/// with companion outputs can reuse the same pre-denoise render timing
+		/// so Auto quality is not biased by the first denoiser's own latency.
+		virtual void OnBeforeDenoise( double /*renderElapsedSeconds*/ ) const {}
+#endif
+
 		/// Called at the end of RasterizeScene, after the main render
 		/// pass and output flush.  Subclasses can override to perform
 		/// cleanup.  Default does nothing.
@@ -624,6 +631,19 @@ namespace RISE
 			//!     fires when `pSampling` is non-null at that call) -- back
 			//!     to the true original null/1-spp state.
 			virtual bool SetSampleCountOverride( int samples ) override;
+
+#ifdef RISE_ENABLE_OIDN
+			//! Test-only parked-render oracle for live/full OIDN lifecycle tests.
+			//! Call only when no RasterizeScene invocation is in flight.
+			bool ForTest_GetAOVBufferDimensions(
+				unsigned int& width, unsigned int& height ) const
+			{
+				if( !pAOVBuffers ) return false;
+				width = pAOVBuffers->GetWidth();
+				height = pAOVBuffers->GetHeight();
+				return true;
+			}
+#endif
 
 			//! The samples-per-pixel this rasterizer will actually use on
 			//! its next RasterizeScene call: `pSampling->GetNumSamples()`

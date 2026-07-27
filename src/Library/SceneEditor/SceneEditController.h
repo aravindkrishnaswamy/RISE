@@ -45,8 +45,20 @@
 
 namespace RISE
 {
+	//! Desktop viewport sinks intentionally display ordinary render output as
+	//! opaque, even when a no-hit pixel carries coverage alpha 0.  A negative
+	//! alpha is reserved solely for the Last Render "no completed image yet"
+	//! clear sentinel; shells map that sentinel to transparent and every real
+	//! render pixel to opaque.  Keeping the rule here gives Mac, Windows, and
+	//! the regression test one source of truth.
+	inline unsigned char ViewportShellDisplayAlpha8( const RISEColor& c )
+	{
+		return c.a < 0.0 ? 0 : 255;
+	}
+
 	namespace Implementation { class InteractivePelRasterizer; }
 	namespace Implementation { class FrameStore; }
+	class IRasterImage;
 	//! GUI render modes P1 (docs/gui/RENDER_MODES.md §5).  Opaque-enum
 	//! forward declaration (implicit `int` underlying type, matching the
 	//! full definition in InteractivePelRasterizer.h) -- gives this header
@@ -270,12 +282,22 @@ namespace RISE
 			                  ///< active animation (like picking a camera); no editable
 			                  ///< properties, selection just activates it.
 			SceneVariant = 9, ///< scene_variant overlays; picking one RE-DERIVES the scene with that variant active.
-			Painter    = 10   ///< Painters section (union of the IPainter + IScalarPainter
+			Painter    = 10,  ///< Painters section (union of the IPainter + IScalarPainter
 			                  ///< managers).  CurrentPanelMode returns PanelMode::None for
 			                  ///< this category this slice (no dedicated PanelMode value) —
 			                  ///< property rows are read via PropertyCountFor/PropertyNameFor
 			                  ///< (indexed directly by Category, not by the current panel).
+			Geometry   = 11   ///< Geometry section (IGeometryManager; every "*_geometry"
+			                  ///< chunk).  GUI redesign 2026-07-22: enumerated via
+			                  ///< IJob::EnumerateGeometryNames; property rows are the
+			                  ///< generic descriptor+CST surface (CstIntrospection); edits
+			                  ///< route through ApplyAgentParamEdit (entityKind
+			                  ///< "geometry").  Same PanelMode::None convention as Painter.
 		};
+
+		//! Category array bound (None..Geometry).  PUBLIC so free helpers
+		//! (PropsForCat) and shells never mirror it as a stale literal.
+		static constexpr int kNumCategories = 12;
 
 		//! Model-B F2 slice S1: render IDENTITY.  A monotonic id assigned to
 		//! every render this controller (or a headless AgentSession wrapping
@@ -433,11 +455,9 @@ namespace RISE
 		//! cancel-and-park critical section so it is safe against the live
 		//! render thread, and it calls RebindEditorToJob on a D2 full re-derive
 		//! (codes 2/3) so the editor's cached scene/manager pointers do not
-		//! dangle.  Callable from ANY thread PROVIDED the transaction API is
-		//! unused (transactions are main-thread-only and the mTxnOpen
-		//! pre-flight read below is UNSYNCHRONIZED -- mMutex does not cover
-		//! the flag); within that contract it takes mMutex +
-		//! cancel-and-parks itself, and the whole commit + rebind +
+		//! dangle. Callable from any thread: the transaction-open gate is
+		//! rechecked under mMutex before the path cancel-and-parks, and the
+		//! whole commit + rebind +
 		//! version-bump runs UNDER mMutex so no render-thread reader can
 		//! observe the transient {0,0} head-version (D2 ClearAll) or a
 		//! half-rebuilt Scene.
@@ -456,11 +476,7 @@ namespace RISE
 		//! EditHistory record, so RollbackTransaction could never revert
 		//! it -- the agent should retry after the gesture completes
 		//! (retriable=true marks this as the transient reject a wire
-		//! client may resubmit verbatim).  That mTxnOpen check is the
-		//! unsynchronized read the headline's proviso refers to: it relies
-		//! on the main-thread contract (mMutex does not cover the flag;
-		//! see its member doc), so a future async transport must marshal
-		//! commits to the main thread.
+		//! client may resubmit verbatim).
 		AgentCommitResult ApplyAgentParamEdit(
 			const String& entityName,
 			const String& entityKind,
@@ -543,7 +559,8 @@ namespace RISE
 			//! S5a hardening: when false (the common case -- the proposing
 			//! session did not pin an explicit baseHeadVersion), `baseVersion`
 			//! above is IGNORED by the caller and StageProposal stamps it
-			//! itself, under mMutex, from the controller's OWN current head --
+			//! itself under render admission (and mMutex when no render owns
+			//! the immutable scene) from the controller's OWN current head --
 			//! this is what closes the unlocked-read race (see StageProposal's
 			//! doc).  When true, the caller already supplied a real
 			//! caller-pinned baseVersion (an explicit baseHeadVersion argument
@@ -586,7 +603,8 @@ namespace RISE
 		//! non-atomic 16-byte CstHeadVersion, outside any lock.  Instead:
 		//! when `proposal.hasExplicitBaseVersion` is false, StageProposal
 		//! stamps `baseVersion` from `mJob.GetCstHeadVersion()` ITSELF, under
-		//! the SAME mMutex hold used to mint the id and enqueue -- so the
+		//! render admission (plus mMutex when the render gate is clear) and
+		//! enqueues under the proposal leaf mutex -- so the
 		//! captured baseVersion is atomically "the head at the instant this
 		//! proposal joined the queue", with no window for a torn read or a
 		//! stale value.  When `hasExplicitBaseVersion` is true (the caller
@@ -601,20 +619,24 @@ namespace RISE
 		//! is not consumed, and `outStagedVersion` (if provided) is left
 		//! UNTOUCHED. The caller (AgentSession::ProposePatch/InsertChunk/
 		//! RemoveChunk) maps a 0 return to a distinct queue-full result
-		//! rather than treating it as a normal stage. Thread-safe under
-		//! mMutex (no cancel-and-park needed: staging touches only the
-		//! queue, never the Document or the live Scene, so there is nothing
-		//! for the render thread to race).  Use `outStagedVersion` to read
+		//! rather than treating it as a normal stage. Thread-safe without
+		//! waiting behind a render-duration mMutex hold: staging touches only
+		//! the proposal queue, and render admission makes the retained
+		//! Document head immutable while a direct/coordinated render owns the
+		//! scene. Use `outStagedVersion` to read
 		//! back the exact baseVersion that was stamped/kept -- this is the
 		//! value the caller should surface as the "staged" response's
 		//! headVersion, again with no separate unlocked read.
+		//! Returns 0 without borrowing the Job or touching the queue after
+		//! lifecycle preparation has claimed the controller.
 		std::uint64_t StageProposal( const AgentProposal& proposal,
 		                             RISE::Cst::CstHeadVersion* outStagedVersion = nullptr );
 
 		//! Secure-MCP slice 5a: a snapshot of every proposal currently on
 		//! the queue (pending AND resolved -- resolved proposals stay
 		//! visible for audit rather than being purged; see the class doc).
-		//! Thread-safe under mMutex.
+		//! Thread-safe under the proposal leaf mutex; never waits behind a
+		//! render-duration scene lock.
 		std::vector<AgentProposal> ListProposals() const;
 
 		//! Secure-MCP slice 5a: resolve proposal `id` by APPROVING (`approve
@@ -674,8 +696,10 @@ namespace RISE
 		//! object.  mMutex is a plain (non-recursive) std::mutex, so
 		//! re-entering it from `fn` is an immediate self-deadlock, not a
 		//! stall-and-retry.  Refused (returns false, `fn` NOT invoked) while
-		//! an editor transaction is open -- parking here would stall the
-		//! gesture (same rule as ApplyAgentParamEdit's mTxnOpen refusal).
+		//! an editor transaction/gesture or save is open, or while another
+		//! direct/coordinated render owns the admission gate. Direct renders
+		//! publish that same gate before waiting for mMutex, so UI callbacks
+		//! refuse promptly instead of queuing behind the render-duration hold.
 		//! Returns true iff `fn` ran.
 		bool RunPreviewRenderParked( const std::function<void()>& fn );
 
@@ -683,8 +707,8 @@ namespace RISE
 		//! (including the non-recursive-mMutex / no-reentrancy contract on
 		//! `fn`), plus render-identity bookkeeping -- assigns a fresh
 		//! monotonic RenderJobId, records {id, renderClass, active=true}
-		//! under the SAME mMutex hold this method already takes for the
-		//! cancel-and-park (zero new synchronization), runs `fn`, then
+		//! under mJobStatusMutex after a short admission handshake and the
+		//! cancel-and-park mMutex hold, runs `fn`, then
 		//! marks the job record inactive before returning -- via an RAII
 		//! guard, so `active` is flipped false on EVERY exit, including an
 		//! exception unwinding out of `fn` (a real throw site: `fn` is
@@ -1233,6 +1257,51 @@ namespace RISE
 		//! a full Stop(), since Start() only ever looks at mRunning.
 		void StopInteractive();
 
+		//! Finalize every controller-owned UI interaction that may have lost
+		//! its platform End event.  Pending object/camera deltas are committed
+		//! to the retained Document and only controller-owned composites are
+		//! closed.  Coordinated render admission calls this before claiming the
+		//! scene, so a render requested mid-drag cannot strand the gesture.
+		bool FinalizeOpenInteractions();
+
+		//! Job-alive destruction boundary.  Raw C++ destruction cannot safely
+		//! touch mJob because some direct owners destroy the Job first; C-ABI
+		//! owners promise the borrowed Job outlives this controller.  Their
+		//! destroy shim calls this before delete so callbacks are detached and an
+		//! open gesture is persisted.  This is a terminal preparation call.
+		//! Returns false if persistence failed, or if invoked synchronously from
+		//! a Last Render sink callback/controller-owned final release or dirty-
+		//! changed callback/copied-target finalizer (those callouts may be inside
+		//! their own drain or a controller mutation).  Success permanently closes
+		//! mutation admission; only idempotent Prepare and Destroy remain valid.
+		//! The owner must stop/join ordinary external callers before entering this
+		//! lifetime boundary; lifecycle arbitration covers internal workers,
+		//! callbacks, and competing lifecycle calls, not arbitrary concurrent use
+		//! of an object whose storage the owner is about to release.
+		bool PrepareForDestruction();
+
+		//! C destroy shim's single-owner terminal claim.  Unlike the public
+		//! idempotent Prepare call, this atomically reserves the eventual delete
+		//! before any callback/drain quiescence wait.  Returns false when another
+		//! Prepare/Destroy/raw destructor already owns the lifecycle transition.
+		bool PrepareForDestructionForDelete();
+
+		//! True after a raw C++ destructor has begun.  The C destroy shim uses
+		//! this to reject a concurrent/re-entrant second delete while the raw
+		//! destructor is quiescing an in-flight dirty callback.
+		bool IsRawDestructionInProgress() const
+		{
+			return mInDestructorTeardown.load( std::memory_order_acquire );
+		}
+
+		//! C-ABI teardown helper: true while this thread is executing one of this
+		//! controller's Last Render sink callbacks or releasing a controller-owned
+		//! sink reference that may invoke its final destructor.  Synchronous
+		//! Destroy is rejected in that state; the owner must retry after the
+		//! callout returns.
+		bool IsInLastRenderSinkCallbackOnThisThread() const;
+		bool IsInDirtyChangedCallbackOnThisThread() const;
+
 		// Refinement pause + status (UI redesign, design brief A2) ------
 		// "The viewport is the renderer": explicit user-facing Pause /
 		// Resume of progressive refinement, plus an HONEST status
@@ -1313,6 +1382,10 @@ namespace RISE
 		//! Idempotent.  This is the FULL teardown; it's what the
 		//! destructor calls (via RISE_API_DestroySceneEditController) and
 		//! is correct there because the controller itself is going away.
+		//! Rejected synchronously from a Last Render sink callback or final
+		//! controller-owned sink release; that callout may be inside a counted
+		//! direct call, the agent worker, a setter, or teardown itself, so lifecycle
+		//! teardown must be retried by the owner after the callout returns.
 		//! It is very likely NOT what a platform shell wants to call
 		//! merely to pause the interactive viewport ahead of a production
 		//! render -- see StopInteractive() above for that case.
@@ -1364,9 +1437,12 @@ namespace RISE
 
 		//! Bracket a time-scrub interaction.  All OnTimeScrub calls
 		//! between Begin and End collapse to one undo entry.
-		void OnTimeScrubBegin();
-		void OnTimeScrub( Scalar t );
-		void OnTimeScrubEnd();
+		//! Fallible because a coordinated/direct render can acquire
+		//! admission between a shell's enabled-state snapshot and the
+		//! callback. FALSE means no scrub state/time mutation occurred.
+		bool OnTimeScrubBegin();
+		bool OnTimeScrub( Scalar t );
+		bool OnTimeScrubEnd();
 
 		//! Bracket a property-panel scrub gesture (a click-and-drag
 		//! on a value's chevron handle).  Without this signal, the
@@ -1388,8 +1464,9 @@ namespace RISE
 		//! Human-readable labels for the next Undo()/Redo() step
 		//! ("Translate", "Agent Edit", …) for the platform shells'
 		//! Edit-menu items — thin forwards of EditHistory::LabelForUndo/
-		//! Redo.  Empty when the corresponding stack is empty.  UI-thread
-		//! only (the same thread that performs edits / Undo / Redo).
+		//! Redo.  Empty when the corresponding stack is empty.  Safe to poll
+		//! while an agent thread commits edits; the history peek is serialized
+		//! with the mutation path by mMutex.
 		String UndoLabel() const;
 		String RedoLabel() const;
 
@@ -1750,6 +1827,69 @@ namespace RISE
 			return mCurrentPane;
 		}
 
+		//! T0 polish-order oracle: whether `pane` owns the
+		//! FinalRegularRunning marker in either the live register or its
+		//! saved slot.  Lets the forced release-interleaving test verify
+		//! ownership, not merely a scheduler-dependent eventual pass count.
+		bool ForTest_PaneHasFinalRegularPolish( unsigned int pane ) const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( pane >= kViewportPaneCount ) return false;
+			const int state = ( pane == mCurrentPane )
+				? mPolishState.load( std::memory_order_acquire )
+				: mPaneRender[pane].polishSaved;
+			return state == static_cast<int>( PolishState::FinalRegularRunning );
+		}
+
+		//! Round-8 test seam: shorten the pointer-gesture watchdog so the
+		//! regression test does not have to wait kPointerWatchdogMs.
+		void ForTest_SetPointerWatchdogMs( int ms )
+		{
+			mPointerWatchdogMs.store( ms, std::memory_order_release );
+		}
+		bool ForTest_VariantAdmissionPendingForPane( unsigned int pane ) const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			return mVariantInteractionAdmissionPending
+			    && mVariantInteractionAdmissionPane == pane;
+		}
+
+		//! Round-8 test oracle: has the render thread declared the live
+		//! pointer gesture abandoned (see mPointerGestureStale)?
+		bool ForTest_PointerGestureStale() const
+		{
+			return mPointerGestureStale.load( std::memory_order_acquire );
+		}
+
+		//! Round-8 test oracle: the raw pointer-gesture flag.  The watchdog
+		//! must leave this SET while marking the gesture stale, so a late
+		//! pointer-up still finalizes instead of early-returning.
+		bool ForTest_PointerDown() const
+		{
+			return mPointerDown.load( std::memory_order_acquire );
+		}
+
+		bool ForTest_ScrubInProgress() const
+		{
+			return mScrubInProgress.load( std::memory_order_acquire );
+		}
+
+		bool ForTest_DestructionClaimed() const
+		{
+			return mDestructionState.load( std::memory_order_acquire )
+			    != DestructionOpen;
+		}
+
+		//! T0 pause-state oracle setup: arm the current pane's normal
+		//! final-to-polish transition without synthesizing a pointer gesture.
+		void ForTest_ArmFinalRegularPolish()
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			mPolishState.store(
+				static_cast<int>( PolishState::FinalRegularRunning ),
+				std::memory_order_release );
+		}
+
 		const SceneEditor& Editor() const { return mEditor; }
 		SceneEditor&       Editor()       { return mEditor; }
 
@@ -1759,16 +1899,18 @@ namespace RISE
 		// file: an external-modification guard refuses an in-place
 		// save when the loaded file changed on disk after load, the
 		// write is atomic (temp + rename), and the engine NoOps when
-		// the serialized bytes equal the on-disk file.  Dirty state
-		// does not select WHAT is written (the whole Document always
-		// is) -- it only gates the GUI Save button; a successful
-		// Saved/NoOp Clear()s the DirtyTracker.  Follows
-		// the lock-free disk-IO sequence:
+		// the serialized bytes equal the on-disk file. Dirty state does
+		// not select WHAT is written (the whole Document snapshot always
+		// is); it only gates the GUI Save button. Follows the lock-free
+		// disk-IO sequence:
 		//   1. Acquire mMutex, cancel in-flight render, wait for
-		//      mRendering=false, set mSaving=true, release mMutex.
-		//   2. Run SaveEngine::Save outside the lock (file IO is slow).
+		//      mRendering=false, snapshot Document/file identity/head,
+		//      set mSaving=true, release mMutex.
+		//   2. Run SaveEngine::Save on the immutable snapshots outside
+		//      the lock (file IO is slow).
 		//   3. Reacquire mMutex, clear mSaving, surface any error,
-		//      notify the render loop.
+		//      clear dirty only if the live head still equals the
+		//      serialized snapshot, and notify the render loop.
 		// `filePath` is the target .RISEscene to write — typically
 		// the originally-loaded path, but the caller can redirect for
 		// Save-As.  Returns the SaveResult so the UI can show the
@@ -1777,10 +1919,10 @@ namespace RISE
 
 		//! True iff a save is currently in flight on disk.  The render
 		//! loop's wake condition consults this so a new render pass
-		//! doesn't start mid-save (we don't want concurrent file
-		//! access AND we want the save's frame-store reads to see a
-		//! stable state).  Mirrors mRendering but in the opposite
-		//! direction.
+		//! doesn't start mid-save. The save reads immutable Document
+		//! state, but retaining the gate avoids competing IO/render work
+		//! and preserves viewport scheduling. Mirrors mRendering in the
+		//! opposite direction.
 		bool IsSaving() const { return mSaving.load(); }
 
 		//! Diagnostic message from the most recent save attempt.
@@ -1921,6 +2063,15 @@ namespace RISE
 		//! — a stream of N edits that all leave the scene dirty
 		//! produces one callback, not N.  Pass an empty/null `std::function`
 		//! to detach.
+		//! THREADING CONTRACT (document-first phase 1): the listener fires on
+		//! whichever thread drains the mutation, with NO controller or
+		//! notification lock held. Synchronous non-lifecycle re-entry is
+		//! supported.  Raw `delete` and C-API Destroy/Prepare from the callback
+		//! (or a copied callback-target destructor) are NOT supported: C lifecycle
+		//! calls fail closed, and the owner must delete after the callback returns.
+		//! Platform bridges should still marshal UI work to their event queue for
+		//! thread affinity. Transitions are coalesced: consume the reported value
+		//! rather than counting calls.
 		using DirtyChangedFn = SceneEditor::DirtyChangedFn;
 		void SetDirtyChangedListener( DirtyChangedFn fn )
 		{
@@ -2004,6 +2155,23 @@ namespace RISE
 		//! dimensionless / unlabelled parameters.  Pure presentation
 		//! hint; the parser ignores it.
 		String PropertyUnitLabel( unsigned int idx ) const;
+
+		//! Jump-to-definition (GUI redesign, 2026-07-22): for a
+		//! ValueKind::Reference row whose value names another element,
+		//! resolve WHICH UI category that element lives in so the shell
+		//! can SetSelection(outCat, outName) -- the "right-click a
+		//! reference, jump to its definition" affordance.  Resolution
+		//! probes the row's descriptor-declared referenceCategories
+		//! against the LIVE managers first-wins (the same order Cst.cpp's
+		//! ComputeChunkRefs resolves reference edges).  Returns false for
+		//! a non-Reference row, an empty/unset value, or a value that
+		//! doesn't currently name an element in any declared category
+		//! (dangling reference -- the shell greys the menu item).
+		//! Indexes the PRIMARY snapshot; the For twin indexes the
+		//! per-category snapshot (same convention as every accessor pair
+		//! above).
+		bool PropertyJumpTarget( unsigned int idx, Category& outCat, String& outName ) const;
+		bool PropertyJumpTargetFor( Category cat, unsigned int idx, Category& outCat, String& outName ) const;
 
 		//! Refresh the property snapshot from the live entity.  Called
 		//! by the platform UI before reading PropertyN getters.
@@ -2324,9 +2492,9 @@ namespace RISE
 		//! stamps InteractivePelRasterizer::SetXrayView on the flag change,
 		//! which propagates to every caster the rasterizer currently holds
 		//! (active, polish, and both saved-caster slots) -- see that method's
-		//! doc.  DEFAULT ON (2026-07-17 user decision): the viewport and
-		//! agent view-mode renders start see-through; a user/agent that wants
-		//! to inspect the transmissive surface itself passes xray:false.
+		//! doc.  DEFAULT OFF: the viewport shows the first transmissive
+		//! surface normally. X-ray is an explicit opt-in for seeing opaque
+		//! geometry behind it.
 
 		//! Set the x-ray flag.  Applies immediately regardless of which mode
 		//! is active (including Preview).  Same lock/park discipline as
@@ -2336,7 +2504,7 @@ namespace RISE
 		//! the scene, or in skeleton mode (no interactive rasterizer).
 		bool SetViewportXray( bool xray );
 
-		//! The CURRENT x-ray flag (true by default and after every
+		//! The CURRENT x-ray flag (false by default and after every
 		//! RebindEditorToJob reset -- see the axis doc above).
 		bool GetViewportXray() const;
 
@@ -2370,9 +2538,21 @@ namespace RISE
 			SceneCamera = 0,  //!< track the live active scene camera
 			FreeFly     = 1,  //!< per-pane free-fly pose (never mutates the scene camera)
 			NamedView   = 2,  //!< re-resolved by name each pass; falls back to the snapshot if deleted
+			SceneCameraNamed = 3, //!< track one manager-registered scene camera by name
+		};
+
+		//! T4: top-level pane content source.  Stable C-ABI wire values;
+		//! LastRender is deliberately orthogonal to the render-mode registry.
+		enum class PaneContentSource : int
+		{
+			Interactive = 0,
+			LastRender  = 1,
 		};
 
 		static constexpr unsigned int kViewportPaneCount = 4;
+		//! Frame marker used for persistent Last Render sink delivery.  Shipping
+		//! GUI sinks use it to move full-resolution conversion off the UI caller.
+		static constexpr unsigned int kLastRenderSinkFrame = ~0u;
 
 		//! user-review P1-3: an atomic snapshot of the whole pane set, captured
 		//! WITH the interactive frame (not read back through the individual
@@ -2385,6 +2565,7 @@ namespace RISE
 			struct Pane
 			{
 				bool                               visible = false;
+				PaneContentSource                  contentSource = PaneContentSource::Interactive;
 				Implementation::ViewportRenderMode mode = {};   // value-init == 0 == Preview (enum not fully defined here)
 				PaneVantageKind                    vantageKind = PaneVantageKind::SceneCamera;
 				String                             namedView;
@@ -2423,6 +2604,25 @@ namespace RISE
 		bool SetPaneRenderMode( unsigned int pane, const char* name );
 		const char* GetPaneRenderMode( unsigned int pane ) const;
 
+		//! Select Interactive or LastRender content for a visible pane.
+		//! LastRender parks an in-flight quantum, publishes the retained full
+		//! render (or an explicit empty placeholder), and is never scheduled.
+		//! Pane 0 refuses LastRender in Single layout so the legacy surface
+		//! remains unchanged.
+		bool SetPaneContentSource( unsigned int pane, PaneContentSource source );
+		PaneContentSource GetPaneContentSource( unsigned int pane ) const;
+
+		//! AgentSession completion hook.  The caller MUST already own this
+		//! controller's coordinated render slot (mMutex held, preview parked).
+		//! The image is deep-copied before return and pushed once to each
+		//! LastRender pane sink.
+		bool PublishAgentRenderImageParked( const IRasterImage& image );
+		//! Ownership-transfer sibling used by AgentSession after its
+		//! InMemoryRasterizerOutput has already created the required owning
+		//! full-resolution copy.  On success, `image` is adopted and nulled;
+		//! on refusal ownership remains with the caller.
+		bool AdoptAgentRenderImageParked( IRasterImage*& image );
+
 		//! P3a slice 3: set pane `pane`'s render-surface pixel dims (the
 		//! GUI's pane rect).  The pass renders at surface/previewScale and
 		//! the camera aspect adapts via the existing ResizeFilm swap.  0/0
@@ -2438,12 +2638,12 @@ namespace RISE
 		//! override and restores the legacy sink as pane 0's source.
 		bool SetPaneSink( unsigned int pane, IRasterizerOutput* pSink );
 
-		//! Vantage setters.  Pane 0 forwards to the existing free-fly /
-		//! named-view machinery (ExitFreeFly / SetViewportPose); panes 1-3
-		//! store configuration.  SetPaneVantageNamedView requires the named
-		//! view to exist NOW (it snapshots the pose as the deletion
-		//! fallback); the live re-resolve-by-name happens at render time
-		//! (scheduler slice).
+		//! Vantage setters.  Pane 0 forwards the existing SceneCamera /
+		//! NamedView flows, but REFUSES SceneCameraNamed: pane 0 is the
+		//! active-camera editing surface.  Panes 1-3 store configuration.
+		//! NamedView and SceneCameraNamed require their target to exist NOW
+		//! and snapshot its pose as the deletion fallback; live re-resolve by
+		//! name happens at render-time reconcile.
 		//! -------- P3a slice 3: pane-indexed pointer input ----------------
 		//!
 		//! The P3b shells hit-test their pane rects and forward events with
@@ -2451,11 +2651,14 @@ namespace RISE
 		//! (the r2/r4 contract); (b) CLICK PROMOTES PRIMARY (§7.8 ratified
 		//! decision 1); (c) parks + context-switches to the pane BEFORE the
 		//! gesture pin arms; (d) for a camera-motion tool on a SECONDARY
-		//! pane still tracking the scene camera, converts the pane to
-		//! per-pane FreeFly seeded from the scene camera (§7.2 -- the
-		//! scene camera itself is NEVER mutated by secondary-pane
-		//! navigation; pane 0 keeps the classic direct-camera-edit
-		//! semantics).  Move/Up forward to the un-indexed handlers -- the
+		//! `SceneCamera` pane, converts the pane to per-pane FreeFly seeded
+		//! from the active camera.  `SceneCameraNamed` is the exception:
+		//! it stays kind 3 and routes orbit/pan/zoom/roll through the
+		//! edit/undo path at its bound manager-camera name, never through
+		//! SetActiveCamera; a deleted target refuses rather than falling
+		//! back.  NamedView/FreeFly keep private-pose navigation, while
+		//! pane 0 keeps the classic active-camera-edit semantics (§7.2).
+		//! Move/Up forward to the un-indexed handlers -- the
 		//! pane context was established at Down and the gesture pin holds
 		//! it.  The un-indexed handlers remain byte-identical pane-0
 		//! behaviour.
@@ -2480,8 +2683,10 @@ namespace RISE
 		                              unsigned int& outScaleDivisor ) const;
 
 		bool SetPaneVantageSceneCamera( unsigned int pane );
+		bool SetPaneVantageSceneCameraNamed( unsigned int pane, const char* name );
 		bool SetPaneVantageNamedView( unsigned int pane, const char* name );
-		//! Introspection: current kind (+ named-view name when applicable).
+		//! Introspection: current kind (+ referenced name for NamedView /
+		//! SceneCameraNamed).
 		bool GetPaneVantage( unsigned int pane, PaneVantageKind& outKind,
 		                     String& outNamedView ) const;
 
@@ -2557,6 +2762,62 @@ namespace RISE
 		//! test overrides can block here until released.
 		virtual void ForTest_OnAboutToMintInteractivePass() {}
 
+		//! T0 RED-PROVE seam: called after the scheduler has selected and
+		//! minted an interactive pass, with mMutex released but before the
+		//! pass body runs.  Tests use it to force observation of the first
+		//! post-gesture context switch.
+		virtual void ForTest_OnInteractivePassMinted() {}
+		//! Called after a BeautyVariant pass's live/final quality policy was
+		//! applied and the mint lock was released, while the pass rasterizer
+		//! is retained.  Test subclasses inspect the effective sample/denoise
+		//! state and the interaction classification that production will run.
+		virtual void ForTest_OnBeautyVariantPassConfigured(
+			IRasterizer&, Implementation::ViewportRenderMode, bool ) {}
+		//! Called after mRendering=false is published for a completed/cancelled
+		//! quantum but before the rasterizer drops its retained output refs.
+		//! Tests use it to force controller sink detachment while the rasterizer
+		//! remains the final sink owner.
+		virtual void ForTest_OnInteractivePassBeforeOutputDetach() {}
+		//! Called after a pass body and every base RenderLoop post-pass transition
+		//! (cancellation requeue or polish/rotation arm) have fully retired.
+		virtual void ForTest_OnInteractivePassRetired() {}
+
+		//! T0 RED-PROVE seam: called by OnPointerUp after the gesture pane's
+		//! final-render/polish state and edit wake have been published as one
+		//! mMutex-serialized transition.  A test can wait here until the render
+		//! thread has selected its first post-release pane, proving that the
+		//! polish marker was installed before (and on the correct side of) that
+		//! context switch.  No-op in production.
+		virtual void ForTest_OnPointerUpAfterFinalRenderArmed() {}
+
+		//! Called after PointerDown publishes the live gesture but before it
+		//! opens the tool composite.  The full Down transition must still own
+		//! render admission here; tests hold this point to prove a render cannot
+		//! finalize a half-constructed gesture.
+		virtual void ForTest_OnPointerDownAdmitted() {}
+
+		//! Called after TimeScrubBegin opens its composite but before returning.
+		//! The begin transition must still own admission here so a render cannot
+		//! finalize the scrub halfway through its construction.
+		virtual void ForTest_OnTimeScrubBeginAdmitted() {}
+
+		//! Called while mMutex protects the definitive move/watchdog handoff,
+		//! after the move is counted in-flight.  Test subclasses can hold this
+		//! point to prove the watchdog cannot stale an admitted move.
+		virtual void ForTest_OnPointerMoveAdmitted() {}
+
+		//! Called after a Last Render drain has registered its lifetime use but
+		//! before it acquires the callback/start barrier.  Tests hold this seam
+		//! to prove teardown closes registration without deadlocking a registered
+		//! drain that still needs the barrier.
+		virtual void ForTest_OnLastRenderDrainRegistered() {}
+		//! Called after teardown has closed new Last Render drain registration,
+		//! immediately before it waits for existing registrations to retire.
+		virtual void ForTest_OnLastRenderQuiesceStarted() {}
+		//! Called immediately before a pane source transition attempts the global
+		//! Last Render callback/start barrier.
+		virtual void ForTest_OnLastRenderTransitionAttempt( unsigned int ) {}
+
 		//! Fix-round-4 P2 RED-PROVE test hook, the WORKER-side twin of
 		//! ForTest_OnAboutToMintInteractivePass above.  Called by
 		//! AgentRenderWorkerLoop_ once per occupant, unlocked, immediately
@@ -2570,11 +2831,23 @@ namespace RISE
 		//! deterministic shot at that race instead of relying on raw
 		//! scheduler timing.  No-op in production.
 		virtual void ForTest_OnAgentWorkerAboutToParkRender() {}
+		//! Called by coordinated submission immediately before it attempts the
+		//! render-admission mutex used by interaction begin/finalize transitions.
+		virtual void ForTest_OnCoordinatedRenderAdmissionAttempt() {}
+
+		//! Direct-render teardown RED-PROVE hook. Called after a
+		//! RunPreviewRenderParked caller has registered its lifetime with
+		//! Stop(), but before it tries to acquire render admission. A test
+		//! can hold a pre-existing caller here and prove terminal Stop()
+		//! drains it even though it has not yet become the render occupant.
+		//! No-op in production.
+		virtual void ForTest_OnDirectRenderBeforeAdmission() {}
 
 		//! Fix-round-6 (save-vs-render race) RED-PROVE test hook.  Called
 		//! by RequestSave, unlocked, immediately AFTER its step-1 lock
-		//! scope has set mSaving=true and released mMutex, but BEFORE
-		//! SaveEngine::Save runs.  A test can hold RequestSave open here
+		//! scope has set mSaving=true and released mMutex and AFTER it has
+		//! reserved the per-target save lease, but BEFORE SaveEngine::Save
+		//! runs.  A test can hold RequestSave open here
 		//! to deterministically widen the real (normally sub-millisecond)
 		//! window during which mSaving is true and RenderLoop's mint-site
 		//! re-check must bounce rather than mint -- without this seam,
@@ -2583,6 +2856,7 @@ namespace RISE
 		virtual void ForTest_OnSaveEngineAboutToRun() {}
 
 	private:
+		bool PrepareForDestructionClaimed_();
 		void RenderLoop();
 		void KickRender();
 
@@ -2822,9 +3096,9 @@ namespace RISE
 		Implementation::ViewportRenderMode mViewportRenderMode;
 		// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): the currently
 		// active x-ray flag.  Mutated ONLY under mMutex (by SetViewportXray
-		// and by RebindEditorToJob's every-scene-load reset-to-true).
-		// DEFAULT ON (2026-07-17 user decision): true at construction and
-		// after every reset -- the viewport starts see-through.  Mirrored
+		// and by RebindEditorToJob's every-scene-load reset-to-false).
+		// DEFAULT OFF: false at construction and after every reset -- the
+		// viewport shows transmissive surfaces normally. Mirrored
 		// onto the interactive rasterizer via
 		// InteractivePelRasterizer::SetXrayView at both of those sites.
 		bool                                mViewportXray;
@@ -2894,7 +3168,10 @@ namespace RISE
 		// pick, used for the panel header / single-tuple callers.
 		// All writes happen on the UI thread; render thread doesn't
 		// touch these.
-		static constexpr int        kNumCategories = 11;  // None..Painter
+		// (kNumCategories moved PUBLIC next to the Category enum -- GUI
+		//  redesign 2026-07-22: the free-function PropsForCat mirrored it as
+		//  a literal that went stale TWICE; public visibility removes the
+		//  mirroring hazard for good.)
 		String                      mSelectionByCategory[ kNumCategories ];
 		//! Per-category "is the accordion section expanded?" flag,
 		//! tracked SEPARATELY from `mSelectionByCategory` so a user
@@ -2922,6 +3199,13 @@ namespace RISE
 		// P1: true iff THIS time-scrub opened an editor composite (OnTimeScrubBegin).
 		// A missing End / repeated Begin must not strand it -- mirrors the pointer guard.
 		bool                        mScrubOpenedComposite;
+		bool                        mTimelineScrubWatchdogRecovered = false;
+		//! Guarded by mMutex.  Bridges the interval between a BeautyVariant
+		//! interaction's admission and publication of its normal pointer/scrub
+		//! flag.  If cancellation retirement re-mints in that interval, the
+		//! replacement is still configured at live quality, never full OIDN.
+		bool                        mVariantInteractionAdmissionPending = false;
+		unsigned int                mVariantInteractionAdmissionPane = 0;
 
 		// Property-panel chevron scrub is in progress.  Tracked
 		// SEPARATELY from mPointerDown so a panel scrub doesn't
@@ -3001,12 +3285,15 @@ namespace RISE
 		std::atomic<bool>           mRunning;
 		std::atomic<bool>           mEditPending;
 
-		//! Secure-MCP slice 5a: the proposal queue.  Guarded by mMutex --
-		//! the SAME lock ApplyAgent{ParamEdit,InsertChunk,RemoveChunk} take,
-		//! so ResolveProposal's base-version re-check-then-apply is one
-		//! atomic critical section with no window for a concurrent commit
-		//! (staged OR direct) to move the head between the check and the
-		//! apply.  A resolved (applied/rejected/conflict) proposal is KEPT
+		//! Secure-MCP slice 5a: proposal bookkeeping has its own leaf mutex
+		//! so an External proposal/list request never waits behind the
+		//! render-duration scene lock. ResolveProposal still holds render
+		//! admission across snapshot -> optimistic ApplyAgent* -> status
+		//! publication, so no second resolver/commit can interleave; the
+		//! ApplyAgent* base-version gate remains the authoritative atomic
+		//! check-and-apply.
+		//!
+		//! A resolved (applied/rejected/conflict) proposal is KEPT
 		//! on the queue for audit rather than purged at resolve time -- but
 		//! see Secure-MCP slice 6 below, which bounds how far that audit
 		//! trail can grow: this controller's lifetime is one Job/one
@@ -3042,12 +3329,13 @@ namespace RISE
 		//!     below the history cap by the sibling gate above), so this
 		//!     eviction can never stall or need to fall back to dropping a
 		//!     pending proposal.
+		mutable std::mutex          mProposalMutex;
 		std::vector<AgentProposal> mProposals;
 		//! Monotonic proposal-id counter; starts at 1 (0 is the "not found"
 		//! sentinel returned by StageProposal only if ever called before
 		//! construction — never in practice, since the counter is a plain
-		//! member initialized at construction).  Guarded by mMutex, same as
-		//! mProposals.
+		//! member initialized at construction). Guarded by mProposalMutex,
+		//! same as mProposals.
 		std::uint64_t               mNextProposalId = 1;
 		//! One-shot, set by Start( true ) before the render thread is
 		//! spawned and consumed by RenderLoop on entry.  When set, the
@@ -3111,7 +3399,38 @@ namespace RISE
 		// mint loses the race still gets its own clean completion later;
 		// only an UNGUARDED unconditional mint clobbering an ALREADY-
 		// LANDED record was ever the bug.
+		// Serializes the short admission handshake between a long
+		// coordinated/direct render and UI operations that must acquire
+		// mMutex without ever queuing behind that render. Lock order:
+		// mAgentRenderSlotMutex (when present) -> this mutex -> mMutex.
+		// It is never held for the render itself; only until the gate below
+		// is published or a UI mutation/gesture/save is complete. Recursive
+		// because several public UI operations deliberately compose other
+		// public operations (axis snap -> enter free-fly -> set pose; pane-0
+		// aliases -> legacy setters) on the same UI thread. Cross-thread
+		// exclusion semantics remain identical to a plain mutex.
+		mutable std::recursive_mutex mRenderAdmissionMutex;
 		std::atomic<bool>           mAgentRenderBlocksInteractive;
+		//! Direct RunPreviewRenderParked calls execute on their caller's
+		//! thread, outside the dedicated agent worker's joinable lifetime.
+		//! This leaf state lets terminal Stop() close registration and drain
+		//! every caller that entered before closure, including callers still
+		//! waiting to acquire mRenderAdmissionMutex.
+		mutable std::mutex          mDirectRenderStateMutex;
+		std::condition_variable     mDirectRenderDoneCV;
+		//! Both guarded by mDirectRenderStateMutex. The count is incremented
+		//! at method entry, before admission, and decremented as the caller's
+		//! final controller access. mDirectRenderStopping is terminal:
+		//! Stop() sets it before teardown so no later caller can register
+		//! behind the zero-count predicate.
+		unsigned int                mDirectRenderCallCount;
+		bool                        mDirectRenderStopping;
+		//! Per-direct-occupant cancellation latch. The direct path must reset
+		//! the shared progress token after draining an interactive pass; this
+		//! bit preserves an explicit Stop/render_cancel that arrives before
+		//! that reset, exactly as mAgentRenderCancelRequested does for the
+		//! dedicated worker.
+		std::atomic<bool>           mDirectRenderCancelRequested;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
 		std::atomic<unsigned int>   mRenderCount;
@@ -3155,8 +3474,8 @@ namespace RISE
 		// destroyed; Stop() joins both before ~SceneEditController runs
 		// the rest of its body).
 		//
-		// THREE locks total on this controller now (mMutex + two below),
-		// each deliberately narrow and single-purpose -- the split is the
+		// The controller's render-coordination locks are deliberately narrow
+		// and single-purpose -- the split is the
 		// fix for TWO real bugs this slice's own concurrency test caught:
 		//
 		//   1. mMutex is held by the worker for the render's WHOLE
@@ -3187,9 +3506,10 @@ namespace RISE
 		//      both ActiveFlipGuards) and every reader, NEVER held across a
 		//      render by anyone.
 		//
-		// Nesting order is the ONLY order used anywhere, so none of the
-		// three locks can deadlock against each other: mAgentRenderSlotMutex
-		// may be held OUTSIDE a brief, nested mMutex or mJobStatusMutex
+		// Nesting order is the ONLY order used anywhere, so these locks
+		// cannot deadlock against each other: mAgentRenderSlotMutex may be
+		// held OUTSIDE a brief, nested mRenderAdmissionMutex + mMutex or
+		// mJobStatusMutex
 		// acquisition (SubmitAgentRenderAsync does both, in that order);
 		// mMutex may be held OUTSIDE a brief, nested mJobStatusMutex
 		// acquisition (RenderLoop, the worker, RunPreviewRenderParked); no
@@ -3210,7 +3530,8 @@ namespace RISE
 		//
 		//   AgentSession::mAsyncCacheMutex
 		//     -> SceneEditController::mAgentRenderSlotMutex
-		//          -> SceneEditController::mMutex           (brief, mAgentRenderBlocksInteractive)
+		//          -> SceneEditController::mRenderAdmissionMutex
+		//               -> SceneEditController::mMutex      (brief, mAgentRenderBlocksInteractive)
 		//          -> SceneEditController::mJobStatusMutex
 		//
 		// (mMutex and mJobStatusMutex are siblings under mAgentRenderSlotMutex,
@@ -3425,12 +3746,110 @@ namespace RISE
 		// recovers within a noticeable beat.
 		static constexpr int        kScrubWatchdogMs = 1500;
 
+		// Pointer-gesture watchdog (round-8 review P2 fix).  T0 made a
+		// completed quantum stop self-arming the rotation while a gesture
+		// pins the scheduler, which is what killed the pinned-pane spin --
+		// but it also means a gesture flag that is never cleared freezes
+		// every sibling pane for good.  That is reachable in a live
+		// session: a shell can DROP the pointer-up (both viewports guard
+		// their pointer handlers on an `interactionEnabled` flag that a
+		// chat/agent render request flips, while the core-side render is
+		// separately REFUSED because a gesture is open -- so no teardown
+		// path runs either).  StopInteractive covers teardown and
+		// kScrubWatchdogMs covers a lost property-End; this covers the
+		// remaining live-session pointer case.  MUCH longer than the scrub
+		// window: a held-still drag is legitimate and common (the user is
+		// looking, not dragging), and the recovery ends that gesture, so
+		// the threshold must be well past any plausible deliberate pause.
+		// The stale state releases sibling rotation while the pointer is idle.
+		// A later Move atomically reclaims mGesturePane and resumes the same
+		// composite, so a legitimate long hold is not made inert.  A render
+		// request instead calls FinalizeOpenInteractions before admission,
+		// closing the composite and clearing raw mPointerDown.
+		static constexpr int        kPointerWatchdogMs = 10000;
+
+		//! Live threshold for the arm above.  A member (not the constant
+		//! directly) purely so the regression test can shorten it -- a test
+		//! that really waited 10 s would be a 10 s test.  Production never
+		//! writes it.
+		std::atomic<int>            mPointerWatchdogMs { kPointerWatchdogMs };
+
 		// Time of the most recent KickRender (ms since steady-clock
 		// epoch).  Read by the render thread to decide whether the
 		// pointer has been idle long enough to refine.  Read by
 		// OnPointerMove to decide whether to snap scale back up after
 		// a pause.
 		std::atomic<long long>      mLastEditTimeMs;
+
+		// Round-8: set by the render thread's kPointerWatchdogMs arm when a
+		// pointer gesture looks abandoned (see that constant).  A STALE
+		// gesture stops pinning the scheduler and stops suppressing the
+		// end-of-quantum rotation arm, so frozen siblings recover -- but
+		// mPointerDown itself stays TRUE on purpose, so a late-arriving
+		// OnPointerUp still takes its normal finalization path (composite
+		// close + pending-CST commit).  Clearing mPointerDown here instead
+		// would make that pointer-up early-return and strand the open
+		// composite, which blocks agent D2 renders indefinitely.
+		// OnPointerMove parks any sibling pass, reloads mGesturePane, and then
+		// clears stale before applying the resumed delta.  Cleared by every
+		// gesture-boundary path: pointer down/up on either entry point,
+		// StopInteractive's orphan cleanup, and the layout-shrink clear.
+		std::atomic<bool>           mPointerGestureStale{ false };
+		//! Sticky truth flag for a gesture-finalization route failure.  Commit
+		//! helpers consume their pending sets even on failure, so admitting a
+		//! later render as though persistence succeeded would silently lose the
+		//! live edit on re-derive.  Finalize/Prepare report false once tripped.
+		std::atomic<bool>           mInteractionPersistenceFailed { false };
+
+		//! Round-8 review P1 fix: POINTER-ACTIVITY clock for the watchdog
+		//! above -- deliberately NOT mLastEditTimeMs.  That timestamp is
+		//! stamped only AFTER OnPointerMove's render-completion wait
+		//! (`mCV.wait(!mRendering)`) and a successful Apply, so during a slow
+		//! pass it does not advance even while the user is actively dragging.
+		//! On exactly the panes this feature targets -- BeautyVariant -- an
+		//! older full-quality quantum could outlive the next gesture (the live
+		//! policy now cancels it and atomically suppresses its OIDN tail), so a
+		//! single pass can exceed the watchdog window, and gating on mLastEditTimeMs
+		//! would mark a genuinely-live drag stale and silently freeze it.
+		//! Stamped at gesture start and at the TOP of OnPointerMove, before
+		//! any wait.
+		std::atomic<long long>      mLastPointerActivityMs { 0 };
+
+		//! Count of OnPointerMove calls currently
+		//! executing (including one parked in the render-completion wait).
+		//! The activity stamp alone is not sufficient: while a long pass runs,
+		//! the UI thread is BLOCKED inside OnPointerMove, so no new stamp can
+		//! arrive, and the loop's watchdog check can win the wake race against
+		//! the unblocked move's own stamp.  A move in flight IS pointer
+		//! activity by definition, so the watchdog stands down while this is
+		//! non-zero.
+		std::atomic<int>            mPointerMovesInFlight { 0 };
+		//! Timeline counterpart to mPointerMovesInFlight.  Prevents the lost-End
+		//! watchdog from closing/reclassifying a scrub callback while that callback
+		//! is parked behind an obsolete render quantum.
+		std::atomic<int>            mTimeScrubsInFlight { 0 };
+
+		// Set by ~SceneEditController BEFORE Stop(),
+		// so StopInteractive's orphaned-gesture cleanup skips its
+		// CommitPendingCst* calls on the destructor path.  Those route
+		// through mJob (CstObjectTransformKind -> a full D2 re-derive), and
+		// this dtor CANNOT touch mJob -- several owners legitimately destroy
+		// the Job first (the `controller.Stop(); pJob->release();` pattern
+		// with a stack controller destroyed afterwards), which is exactly the
+		// use-after-free the dtor's own NOTE documents.  C-ABI destruction
+		// first calls PrepareForDestruction while its Job-outlives-controller
+		// contract still holds; only raw fallback destruction skips the flush.
+		std::atomic<bool>           mInDestructorTeardown{ false };
+		enum DestructionState
+		{
+			DestructionOpen = 0,
+			DestructionPreparing,
+			DestructionPrepared,
+			DestructionDeletePreparing,
+			DestructionDestroying
+		};
+		std::atomic<int>            mDestructionState{ DestructionOpen };
+		std::atomic<bool>           mPreparationSucceeded{ true };
 
 		// Set by RenderLoop before DoOneRenderPass when the upcoming
 		// pass was triggered by an idle-refinement timeout (not by a
@@ -3529,16 +3948,23 @@ namespace RISE
 			// enumerator NAME is unavailable; InteractivePelRasterizer.h
 			// defines Preview first and a static_assert in the .cpp pins it).
 			Implementation::ViewportRenderMode mode {};
+			PaneContentSource                  contentSource = PaneContentSource::Interactive;
 			PaneVantageKind                    vantageKind = PaneVantageKind::SceneCamera;
-			CameraSnapshot                     pose {};      // NamedView snapshot fallback / future FreeFly
+			CameraSnapshot                     pose {};      // named-target deletion fallback / FreeFly
 			String                             namedViewRef; // valid when vantageKind==NamedView
+			String                             sceneCameraRef; // valid when vantageKind==SceneCameraNamed
 			//! P3a slice 3: per-pane render surface in pixels (the GUI's
 			//! pane rect).  0/0 = "use the film's rest dims" -- pane 0's
 			//! default, byte-identical single-viewport behaviour.
 			unsigned int                       surfaceW = 0;
 			unsigned int                       surfaceH = 0;
 		};
-		PaneConfig                  mPaneConfigs[kViewportPaneCount];  // [0] unused (alias)
+		PaneConfig                  mPaneConfigs[kViewportPaneCount];  // [0] contentSource only; mode/vantage alias
+		//! Lock-free copy of each secondary pane's desired mode for UI
+		//! polling.  A coordinated render can hold mMutex for its duration,
+		//! so GetPaneRenderMode must not wait for that lock.  Value-init 0 is
+		//! Preview, matching PaneConfig::mode; writers publish under mMutex.
+		std::atomic<int>            mPaneModeSnapshots[kViewportPaneCount] {};
 		ViewportLayout              mViewportLayout = ViewportLayout::Single;
 		unsigned int                mPrimaryPane    = 0;   // always visible in layout
 		//! Lock-free UI-read snapshots.  Agent/production renders deliberately
@@ -3567,6 +3993,7 @@ namespace RISE
 		struct PaneRenderState
 		{
 			bool                         dirty = true;    // needs a pass (scene edit / config change)
+			uint64_t                     dirtyGeneration = 1;
 			int                          polishSaved = 0; // PolishState as int (None) -- saved register
 			//! review-r1 P1: the resolution ladder + variant pin are part of
 			//! the register set.  Defaults: full-res (1), unpinned -- what a
@@ -3613,6 +4040,101 @@ namespace RISE
 		//! shape.
 		std::atomic<bool>           mPanePassPending { false };
 
+		struct SharedDirectTarget
+		{
+			unsigned int pane = kViewportPaneCount;
+			unsigned int width = 0;
+			unsigned int height = 0;
+			uint64_t dirtyGeneration = 0;
+		};
+		//! Render-thread working snapshot, populated under mMutex at mint and
+		//! consumed by DoOneRenderPass before the quantum retires.
+		std::vector<SharedDirectTarget> mSharedDirectTargets;
+		struct PendingSharedDirectPublish
+		{
+			unsigned int pane = kViewportPaneCount;
+			uint64_t dirtyGeneration = 0;
+			Scalar cameraExposureEV = 0;
+			IRasterImage* image = nullptr;       //!< owning reference
+			IRasterImage* rawImage = nullptr;    //!< owning reference; non-null iff denoised
+		};
+		//! Built by DoOneRenderPass, drained only after ActiveFlipGuard has
+		//! published mRendering=false so arbitrary sink re-entry cannot deadlock.
+		std::vector<PendingSharedDirectPublish> mPendingSharedDirectPublishes;
+
+		//! T4: immutable deep copy of the most recent successful full
+		//! production/agent render.  Guarded by mMutex, independent of the
+		//! interactive FrameStores, retained until replacement/teardown.
+		IRasterImage*               mLastRenderImage = nullptr;
+
+		//! Round-8 review P2 fix: deferred last-render sink delivery.  The
+		//! publish used to call `sink->OutputImage` with mMutex HELD, which
+		//! (a) violates ADR rule 5 ("notifications fire outside locks") and
+		//! is a latent deadlock for any future sink that calls back into the
+		//! controller, and (b) ran a full per-pixel conversion on the UI
+		//! thread inside the lock -- a visible hitch at production
+		//! resolutions, blocking every other mMutex caller meanwhile.
+		//! Same shape as the editor's DrainDirtyNotification: RECORD under
+		//! the lock, DRAIN after releasing it, with a per-frame catch-all in
+		//! RefreshProperties so a missed drain site degrades to a one-frame
+		//! delay rather than a lost image.
+		struct PendingLastRenderPublish
+		{
+			IRasterizerOutput* sink  = nullptr;   //!< owning addref
+			IRasterImage*      image = nullptr;   //!< owning addref (the retained frame or a placeholder)
+			unsigned int       pane  = 0;
+			unsigned long long sourceGeneration = 0;
+			unsigned long long publishGeneration = 0;
+		};
+		//! Incremented on every content-source transition.  Deferred records
+		//! whose captured generation no longer matches are discarded before
+		//! they can overwrite a pane that has returned to Interactive output.
+		std::atomic<unsigned long long> mPaneContentGeneration[kViewportPaneCount] {};
+		//! Latest queued image identity per pane.  A newer production frame or
+		//! sink replacement invalidates an older detached batch even when the
+		//! content source itself has not changed.
+		std::atomic<unsigned long long> mPaneLastRenderPublishGeneration[kViewportPaneCount] {};
+		//! LEAF mutex: guards the queue only.  Acquired while holding mMutex
+		//! (record side) and alone (drain side) -- never the reverse, and no
+		//! other lock is ever taken while it is held.
+		mutable std::mutex          mLastRenderPublishMutex;
+		std::vector<PendingLastRenderPublish> mPendingLastRenderPublishes;
+		//! Superseded/evicted records whose owning refs must be released only
+		//! after controller and queue locks are dropped.  Normal setter/render
+		//! tails drain this immediately; teardown drains any residual entries.
+		std::vector<PendingLastRenderPublish> mRetiredLastRenderPublishes;
+		//! One callback/start barrier for every pane.  A global recursive barrier
+		//! deliberately serializes arbitrary sink callbacks: per-pane locks allow
+		//! two callbacks to re-enter setters for each other's panes and AB/BA
+		//! deadlock.  Recursive is required for same-thread controller re-entry;
+		//! nested drains themselves are deferred until the outer callback returns.
+		std::recursive_mutex        mLastRenderDeliveryMutex;
+
+		//! Every DrainLastRenderPublishes_ call registers before touching queue,
+		//! barrier, or callback state.  Job-live teardown closes registration and
+		//! waits for the active count to reach zero, preventing deletion while a
+		//! callback or detached batch still uses controller members.
+		mutable std::mutex          mLastRenderDrainStateMutex;
+		std::condition_variable     mLastRenderDrainDoneCV;
+		unsigned int                mLastRenderDrainCalls = 0;
+		bool                        mLastRenderDrainsStopping = false;
+		bool         BeginLastRenderDrain_();
+		void         EndLastRenderDrain_();
+		void         QuiesceLastRenderDrains_();
+
+		//! Record a pane's last-render delivery.  REQUIRES mMutex held.
+		//! Coalesces per pane (only the newest frame matters), which also
+		//! bounds the queue at kViewportPaneCount entries.
+		void         QueueLastRenderPublishLocked_( unsigned int pane );
+		//! Deliver every queued frame and retire displaced records.  MUST be called with NO controller lock
+		//! held -- including mRenderAdmissionMutex, which the pane setters
+		//! take (holding it across a sink callback is the same ADR rule-5
+		//! hazard as holding mMutex).  Safe to call when the queue is empty
+		//! (the common case).
+		//! `blocking` controls whether the global callback/start barrier may wait;
+		//! stale detached batches are generation-skipped.
+		void         DrainLastRenderPublishes_( bool blocking = true );
+
 		//! P3a slice 3: the CURRENT pane's surface dims, stamped at the
 		//! mint (inside the same lock hold as the context switch) and read
 		//! by DoOneRenderPass -- registers, like every per-quantum input.
@@ -3649,9 +4171,31 @@ namespace RISE
 		//! False (and *out untouched) on factory failure.
 		bool         BuildVariantRasterizer_( Implementation::ViewportRenderMode mode,
 		                                      IRasterizer** out );
+		//! Begins a BeautyVariant interaction while mMutex is held: pins any
+		//! cancellation replacement to `pane`, suppresses obsolete OIDN, and
+		//! parks.  Shared by pointer, property, and timeline admission so their
+		//! preemption semantics cannot drift.
+		void         PreemptVariantForInteractionLocked_(
+			unsigned int pane, std::unique_lock<std::mutex>& lk );
 		unsigned int PickNextVisiblePaneLocked_() const;
 		bool         AnyVisiblePaneHasWorkLocked_() const;
 		void         MarkAllVisiblePanesDirtyLocked_();
+		bool         IsInteractivePaneLocked_( unsigned int pane ) const;
+		Implementation::ViewportRenderMode PaneModeLocked_( unsigned int pane ) const;
+		bool         PanesShareTransportViewLocked_( unsigned int a, unsigned int b ) const;
+		bool         PaneBaseDimensionsLocked_( unsigned int pane,
+			unsigned int& width, unsigned int& height ) const;
+		void         MarkPaneDirtyLocked_( unsigned int pane );
+		void         DrainSharedDirectPublishes_();
+		bool         CaptureLastRenderImageLocked_( const IRasterImage& image );
+		bool         AdoptLastRenderImageLocked_( IRasterImage*& image );
+		//! Mark panes bound to one manager-registered camera for desired-state
+		//! reconcile.  REQUIRES mMutex held; includes hidden panes so a later
+		//! reveal cannot resurrect a stale realized camera.
+		void         InvalidatePanesBoundToSceneCameraLocked_( const String& name );
+		//! Undo/redo may not expose the affected edit kind here; conservatively
+		//! reconcile every SceneCameraNamed pane.  REQUIRES mMutex held.
+		void         InvalidateAllSceneCameraNamedPanesLocked_();
 		//! review-r2 P1: named-view propagation -- marks every pane bound
 		//! to `name` for reconcile.  Takes mMutex; caller must NOT hold
 		//! mNamedViewsMutex (never nested, either order).
@@ -3667,6 +4211,90 @@ namespace RISE
 		//! camera panes).  RefreshNavGizmo already used this exact idiom
 		//! inline; this centralizes it so pick + every gizmo site agree.
 		const ICamera* EffectiveViewportCamera_( const IScene* scene ) const;
+
+		//! Camera-dimension fallback for call sites that already hold mMutex.
+		//! The public getter try-locks around this body when its atomic cache
+		//! is not primed, keeping UI polling non-blocking without making
+		//! locked gizmo paths self-contend.
+		bool GetCameraDimensionsLocked_( unsigned int& w, unsigned int& h ) const;
+
+		//! Jump-to-definition shared body (see PropertyJumpTarget) --
+		//! resolves one row's Reference value against the live managers.
+		bool ResolveRowJumpTarget_( const CameraProperty& row, Category& outCat, String& outName ) const;
+
+		//! Document-first ADR phase 1: the mutation bodies.  The PUBLIC twins
+		//! call these then drain the deferred dirty notification OUTSIDE any
+		//! lock (SceneEditor::DrainDirtyNotification) -- so listener work never
+		//! runs under mMutex and a re-entrant listener cannot deadlock.
+		bool SetPropertyInner_( Category targetCategory, const String& targetName,
+		                       const String& name, const String& valueStr );
+		//! Drain-free body of RestoreEditorState -- for callers that HOLD mMutex
+		//! (RollbackTransaction), whose own post-unlock drain delivers the
+		//! notification.  The public RestoreEditorState wraps this + drains.
+		EditorStateSnapshot CaptureEditorStateLocked_() const;
+		void RestoreEditorStateLocked_( const EditorStateSnapshot& s, bool restoreDirty );
+		bool SetSelectionInner_( Category cat, const String& entityName );
+		void UndoInner_();
+		void RedoInner_();
+		AgentCommitResult ApplyAgentParamEditInner_(
+			const String& entityName, const String& entityKind, const String& param,
+			const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! External-review round 3 (2026-07-22): the UNLOCKED bodies of the
+		//! category-enumeration getters.  REQUIRE a stable manager set: either
+		//! mMutex held (SourceRefAtByteOffset's addressability probe, the
+		//! InstantiateEntityTemplate name-pick scope) or a single-threaded
+		//! context.  The PUBLIC getters wrap these with the mRenderOwnsScene
+		//! guard + a blocking mMutex hold (safe: GUI edits run on the UI thread
+		//! itself, so a UI-thread poll only ever contends brief background
+		//! holds -- see the SetDirtyChangedListener threading contract).
+		unsigned int CategoryEntityCountLocked_( Category cat ) const;
+		String       CategoryEntityNameLocked_( Category cat, unsigned int idx ) const;
+		String       CategoryActiveNameLocked_( Category cat ) const;
+
+		//! Round-4 structural fix (the "UI reads live managers" P1 class): the
+		//! PUBLIC enumeration getters serve a per-category SNAPSHOT with a
+		//! stale-fallback refresh, never a blocking mMutex hold.  Refresh
+		//! policy: try_lock mMutex -- on success rebuild this category's
+		//! snapshot from the *Locked_ bodies; on contention (or render-owns-
+		//! scene) serve the PRIOR snapshot unchanged.  Properties: never
+		//! blocks (no UI freeze), never deadlocks (a dirty-listener that
+		//! re-enters on the mutating thread fails the try_lock and gets the
+		//! stale list), never races a manager swap (live reads only under the
+		//! lock), and never flickers empty (stale beats empty).  mEnumSnapshotMutex
+		//! guards ONLY the snapshot arrays; it is always leaf-level -- nothing
+		//! acquires mMutex (or anything else) while holding it.
+		void RefreshEnumSnapshot_( Category cat ) const;
+
+		//! Document-first ADR phase 2: THE unified UI read surface.  Every
+		//! public read accessor (properties, enumeration, jump rows) serves
+		//! this one struct under the one leaf mUiSnapshotMutex; the writers
+		//! (RefreshProperties, RefreshEnumSnapshot_) build into locals under
+		//! the mMutex try_lock and publish with a brief leaf hold.  A new
+		//! UI-visible datum belongs IN THIS STRUCT, refreshed on one of the
+		//! existing cadences -- never an ad-hoc live read (ADR rule 4).
+		struct EditorUiSnapshot
+		{
+			std::vector<CameraProperty> properties;                          // primary (panel-mode routed)
+			std::vector<CameraProperty> propertiesByCategory[kNumCategories];
+			std::vector<String>         entityNames[kNumCategories];
+			String                      activeNames[kNumCategories];
+		};
+		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
+		mutable EditorUiSnapshot  mUi;
+
+		//! External-review P1 (2026-07-22): general reference-target guard for
+		//! GUI property edits.  Returns true (== "reject this edit") ONLY when
+		//! @a value would persist a DANGLING reference: @a paramName is a
+		//! Reference-kind param on @a entityName's chunk (@a cat's role suffix),
+		//! and @a value names a RUNTIME-only registered entity of an allowed
+		//! referenceCategory that has NO CST chunk -- so it renders now but fails
+		//! on save/reload.  Inline literals (e.g. `ior 1.7`), CST-backed names,
+		//! and the `none` sentinel all return false (allowed).  Conservative by
+		//! construction: only the precisely-diagnosable runtime-only case is
+		//! rejected, so it never blocks a legitimate edit.
+		bool WouldPersistDanglingReference_( Category cat, const String& entityName,
+			const String& paramName, const String& value );
 
 		//! user-review P1-5 / P2-1: the effective camera of a SPECIFIC pane
 		//! (its realized free-fly / named-view override, else the scene camera),
@@ -3695,8 +4323,8 @@ namespace RISE
 		// in `RefreshProperties`.  Phase 4b's multi-section panel
 		// reads the per-category arrays so each expanded section
 		// renders its own rows independently.
-		std::vector<CameraProperty>                          mProperties;
-		std::vector<CameraProperty>                          mPropertiesByCategory[ kNumCategories ];
+		// (mProperties / mPropertiesByCategory moved into EditorUiSnapshot --
+		// Document-first ADR phase 2.)
 
 		// Transactional-rollback state.  Appended at the end of the member
 		// list so the addition is layout-additive (no field before it
@@ -3704,12 +4332,12 @@ namespace RISE
 		// SceneSnapshot is held.  `mTxnOpen` is true exactly when a
 		// transaction is open.  `mTxnBaseline.historyMarker` records EditHistory::NextSeq() at
 		// BeginTransaction so RollbackTransaction undoes while the top edit's
-		// seq >= that marker (trim-immune; survives the 1024 history cap).  Both
-		// are touched only on the UI thread (Begin/Rollback/End are
-		// UI-thread calls), so they need no synchronization beyond the
-		// cancel-and-park RollbackTransaction already takes for the scene
-		// mutation itself.
-		bool                                 mTxnOpen;
+		// seq >= that marker (trim-immune; survives the 1024 history cap).
+		// Begin/Rollback/End are UI entry points, but any-thread agent
+		// commits and render submissions consult the flag. Atomic loads make
+		// status checks race-free; transitions and commit rechecks are
+		// serialized under mMutex.
+		std::atomic<bool>                    mTxnOpen;
 		EditorStateSnapshot                  mTxnBaseline;        // H1: one owned baseline (history marker + dirty + selection)
 
 		// Disable copy / move

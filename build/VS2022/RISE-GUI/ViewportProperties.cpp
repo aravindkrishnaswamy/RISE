@@ -22,6 +22,7 @@
 #include <QPointer>
 #include <QSize>
 #include <QToolButton>
+#include <QComboBox>
 #include <QMenu>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -345,6 +346,7 @@ QString ViewportProperties::categoryTitle(Category cat)
     case Category::Animation:    return tr("Animation");
     case Category::SceneVariant: return tr("Variants");
     case Category::Painter:      return tr("Painters");
+    case Category::Geometry:     return tr("Geometry");
     case Category::None:
     default:                     return tr("Scene");
     }
@@ -362,7 +364,7 @@ QString ViewportProperties::categoryTitle(Category cat)
 QString ViewportProperties::categoryIconName(Category cat)
 {
     switch (cat) {
-    case Category::Camera:       return QStringLiteral("camera");
+	case Category::Camera:       return QStringLiteral("camera");
     case Category::Object:       return QStringLiteral("box");
     case Category::Light:        return QStringLiteral("lightbulb");
     case Category::Material:     return QStringLiteral("circle-dot");
@@ -371,7 +373,8 @@ QString ViewportProperties::categoryIconName(Category cat)
     case Category::Medium:       return QStringLiteral("waves");
     case Category::Animation:    return QStringLiteral("play");
     case Category::SceneVariant: return QStringLiteral("layers");
-    case Category::Painter:      return QStringLiteral("paintbrush");
+	case Category::Painter:      return QStringLiteral("paintbrush");
+	case Category::Geometry:     return QStringLiteral("scale-3d");
     case Category::None:
     default:                     return QString();   // no dedicated icon -- "•" text fallback
     }
@@ -864,9 +867,8 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
         m_bridge->saveSceneTo(target, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
-        emit sceneSavedToPath(target, wasSaveAs);
-        break;
     case ViewportBridge::SaveStatus::NoOp:
+        emit sceneSavedToPath(target, wasSaveAs);
         break;
     case ViewportBridge::SaveStatus::Refused:
         QMessageBox::warning(
@@ -1171,6 +1173,40 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
             });
         }
         cellColLayout->addWidget(vecRow);
+    } else if (p.kind == 8 /* Enum */ && !p.presets.isEmpty() && p.editable) {
+        // GUI redesign 2026-07-22 (typed-editor parity with the Mac
+        // EnumChipCell): an Enum row with a pick list renders a proper
+        // combo box, not a free-text well -- the descriptor's enumValues
+        // arrive as presets (CstIntrospection folds them), so the combo
+        // IS the closed vocabulary.
+        auto* combo = new QComboBox;
+        combo->setFont(Theme::mono(11));
+        int cur = -1;
+        for (const ViewportPropertyPreset& preset : p.presets) {
+            combo->addItem(preset.label, preset.value);
+            if (preset.value == p.value) cur = combo->count() - 1;
+        }
+        if (cur >= 0) {
+            combo->setCurrentIndex(cur);
+        } else if (!p.value.isEmpty()) {
+            // The current value isn't one of the descriptor's enum values
+            // (an older scene / hand-edit).  setEditText is a no-op on a
+            // non-editable combo, so insert the raw value as a leading item
+            // and select it -- the user sees the honest current value and
+            // can still switch to a canonical one.
+            combo->insertItem(0, p.value, p.value);
+            combo->setCurrentIndex(0);
+        }
+        const QString name = p.name;
+        connect(combo, QOverload<int>::of(&QComboBox::activated), this,
+                [this, combo, name](int idx) {
+            commitEdit(name, combo->itemData(idx).toString());
+        });
+        auto* comboRow = new QWidget;
+        auto* comboRowLayout = new QHBoxLayout(comboRow);
+        comboRowLayout->setContentsMargins(0, 0, 0, 0);
+        comboRowLayout->addWidget(combo, 1);
+        cellColLayout->addWidget(comboRow);
     } else {
         auto* wellWidget = new QWidget;
         wellWidget->setStyleSheet(wellStyleSheet());
@@ -1185,6 +1221,44 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
         edit->setStyleSheet(lineEditStyleSheet(Theme::textPrimary));
         connect(edit, &QLineEdit::editingFinished,
                 this, &ViewportProperties::onLineEditFinished);
+
+        if (p.kind == 9 /* Reference */) {
+            // Jump-to-definition (GUI redesign 2026-07-22): right-click a
+            // reference value -> "Jump to Definition".  Resolution happens
+            // at menu-open time against the live managers (bridge->core),
+            // so a dangling reference simply shows no extra item.  The
+            // standard edit menu (cut/copy/paste) is preserved.
+            edit->setContextMenuPolicy(Qt::CustomContextMenu);
+            const int rowIndex = p.index;
+            connect(edit, &QLineEdit::customContextMenuRequested, this,
+                    [this, edit, rowIndex](const QPoint& pos) {
+                QMenu* menu = edit->createStandardContextMenu();
+                // Reparent to the panel: refresh() is suppressed below while
+                // the menu is modal, but reparenting also means the menu
+                // outlives its origin line-edit belt-and-suspenders.
+                menu->setParent(this, Qt::Popup);
+                ViewportBridge::Category jumpCat = ViewportBridge::Category::None;
+                QString jumpName;
+                if (m_bridge && m_bridge->propertyJumpTargetFor(
+                        m_currentSelectionCat, rowIndex, &jumpCat, &jumpName)) {
+                    menu->addSeparator();
+                    QAction* jump = menu->addAction(
+                        tr("Jump to Definition of \"%1\"").arg(jumpName));
+                    connect(jump, &QAction::triggered, this,
+                            [this, jumpCat, jumpName]() {
+                        if (!m_bridge) return;
+                        if (m_bridge->setSelection(jumpCat, jumpName)) {
+                            refresh();   // panel re-snapshots; the outliner poll follows the selection
+                        }
+                    });
+                }
+                const QPoint global = edit->mapToGlobal(pos);
+                m_contextMenuOpen = true;   // suppress the per-frame rebuild that would delete `edit`
+                menu->exec(global);
+                m_contextMenuOpen = false;
+                menu->deleteLater();
+            });
+        }
 
         if (isScrubbableKind(p.kind)) {
             auto* handle = new ScrubHandle(
@@ -1304,7 +1378,7 @@ void ViewportProperties::refresh()
     // setProperty() -> imageUpdated -> here on the stack, killing the
     // mouse grab.  endPropertyScrub calls refresh() once the user lets
     // go to re-sync canonical values.
-    if (m_scrubbing) return;
+    if (m_scrubbing || m_contextMenuOpen) return;   // don't rebuild rows under an open menu / active scrub
 
     m_currentSelectionCat = m_bridge->selectionCategory();
     m_currentSelectionName = m_bridge->selectionName();

@@ -25,6 +25,8 @@
 #include "../Interfaces/IScene.h"
 #include "../Utilities/Profiling.h"
 #include "ProgressiveFilm.h"
+#include "OIDNDenoiser.h"
+#include "../RasterImages/RasterImage.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -46,7 +48,13 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	  mVariantMaxPathDepth( 128 ),
 	  mVariantIndirectOnly( false ),
 	  mVariantClayOverride( false ),
-  pSMSPhotonMap( 0 ),
+	  mInteractiveDenoiseSuppressed( false ),
+	  mCaptureDirectCompanion( false ),
+	  pDirectCompanionImage( 0 ),
+	  pDirectCompanionRawImage( 0 ),
+	  mDirectCompanionDenoised( false ),
+	  mDirectCompanionRenderSeconds( 0.0 ),
+	  pSMSPhotonMap( 0 ),
   mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
 	pIntegrator = new PathTracingIntegrator(
@@ -54,6 +62,20 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 		stabilityConfig
 		);
 }
+
+#ifdef RISE_ENABLE_OIDN
+bool PathTracingPelRasterizer::ShouldDenoise() const
+{
+	return !mInteractiveDenoiseSuppressed.load( std::memory_order_acquire )
+		&& PixelBasedPelRasterizer::ShouldDenoise();
+}
+
+void PathTracingPelRasterizer::OnBeforeDenoise(
+	double renderElapsedSeconds ) const
+{
+	mDirectCompanionRenderSeconds = renderElapsedSeconds;
+}
+#endif
 
 void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
 {
@@ -96,6 +118,8 @@ void PathTracingPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 PathTracingPelRasterizer::~PathTracingPelRasterizer()
 {
 	safe_release( pIntegrator );
+	safe_release( pDirectCompanionImage );
+	safe_release( pDirectCompanionRawImage );
 	if( pSMSPhotonMap ) {
 		delete pSMSPhotonMap;
 		pSMSPhotonMap = 0;
@@ -122,6 +146,36 @@ void PathTracingPelRasterizer::PreRenderSetup(
 	) const
 {
 	PixelBasedPelRasterizer::PreRenderSetup( pScene, pRect );
+	safe_release( pDirectCompanionRawImage );
+	mDirectCompanionDenoised = false;
+	mDirectCompanionRenderSeconds = 0.0;
+
+	if( mCaptureDirectCompanion ) {
+		const IFilm* film = pScene.GetFilm();
+		const unsigned int width = film ? film->GetWidth() : 0;
+		const unsigned int height = film ? film->GetHeight() : 0;
+		if( width && height ) {
+			if( !pDirectCompanionImage
+			 || pDirectCompanionImage->GetWidth() != width
+			 || pDirectCompanionImage->GetHeight() != height )
+			{
+				safe_release( pDirectCompanionImage );
+				pDirectCompanionImage = new RISERasterImage(
+					width, height, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) );
+			} else {
+				pDirectCompanionImage->Clear(
+					RISEColor( RISEPel( 0, 0, 0 ), 0.0 ), nullptr );
+			}
+			mDirectCompanionSums.assign(
+				static_cast<std::size_t>( width ) * height, RISEPel( 0, 0, 0 ) );
+			mDirectCompanionWeights.assign(
+				static_cast<std::size_t>( width ) * height, Scalar( 0 ) );
+		}
+	} else {
+		safe_release( pDirectCompanionImage );
+		mDirectCompanionSums.clear();
+		mDirectCompanionWeights.clear();
+	}
 
 	if( !pIntegrator ) {
 		return;
@@ -172,7 +226,8 @@ RISEPel PathTracingPelRasterizer::IntegratePixelRGB(
 	const IScene& pScene,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	RISEPel* pDirectCompanion
 	) const
 {
 	const ICamera* pCamera = pScene.GetCamera();
@@ -185,6 +240,11 @@ RISEPel PathTracingPelRasterizer::IntegratePixelRGB(
 		return RISEPel( 0, 0, 0 );
 	}
 
+	if( pDirectCompanion ) {
+		return pIntegrator->IntegrateRayDirectIndirect(
+			rc, rast, cameraRay, pScene, *pCaster, sampler,
+			pRadianceMap, *pDirectCompanion, pAOV );
+	}
 	return pIntegrator->IntegrateRay(
 		rc, rast, cameraRay, pScene, *pCaster, sampler, pRadianceMap, pAOV );
 }
@@ -265,6 +325,18 @@ void PathTracingPelRasterizer::IntegratePixel(
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
+	const std::size_t companionIndex = pDirectCompanionImage
+		? static_cast<std::size_t>( y ) * pDirectCompanionImage->GetWidth() + x
+		: 0;
+	RISEPel directAccrued( 0, 0, 0 );
+	Scalar directWeights = 0;
+	const bool captureDirect = mCaptureDirectCompanion
+		&& pDirectCompanionImage
+		&& companionIndex < mDirectCompanionSums.size();
+	if( captureDirect ) {
+		directAccrued = mDirectCompanionSums[companionIndex];
+		directWeights = mDirectCompanionWeights[companionIndex];
+	}
 
 	// Welford online variance state (luminance-based)
 	Scalar wMean = 0;
@@ -346,9 +418,10 @@ void PathTracingPelRasterizer::IntegratePixel(
 			rc.pSampler = &sampler;
 
 			PixelAOV aov;
+			RISEPel directSample( 0, 0, 0 );
 			const RISEPel sampleColor = IntegratePixelRGB(
 				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
-				pAOVBuffers ? &aov : 0 );
+				pAOVBuffers ? &aov : 0, captureDirect ? &directSample : nullptr );
 			if( pAOVBuffers ) {
 				if( aov.valid ) {
 					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
@@ -358,6 +431,10 @@ void PathTracingPelRasterizer::IntegratePixel(
 					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
 					pAOVBuffers->MarkGuidesExamined();
 				}
+			}
+			if( captureDirect ) {
+				directAccrued = directAccrued + directSample * weight;
+				directWeights += weight;
 			}
 
 			RISE_PROFILE_INC(nSamplesAccumulated);
@@ -423,6 +500,14 @@ void PathTracingPelRasterizer::IntegratePixel(
 		px.sampleIndex = globalSampleIndex;
 		px.converged = converged;
 	}
+	if( captureDirect ) {
+		mDirectCompanionSums[companionIndex] = directAccrued;
+		mDirectCompanionWeights[companionIndex] = directWeights;
+		if( directWeights > 0 ) {
+			pDirectCompanionImage->SetPEL(
+				x, y, RISEColor( directAccrued * ( 1.0 / directWeights ), 1.0 ) );
+		}
+	}
 
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
@@ -437,4 +522,33 @@ void PathTracingPelRasterizer::IntegratePixel(
 	}
 
 	RISE_PROFILE_INC(nPixelsResolved);
+}
+
+void PathTracingPelRasterizer::PostRenderCleanup() const
+{
+	// Preserve PixelBasedPelRasterizer's path-guiding and optimal-MIS teardown.
+	// This override only adds companion denoising; it does not replace the
+	// inherited per-render cleanup contract.
+	PixelBasedPelRasterizer::PostRenderCleanup();
+#ifdef RISE_ENABLE_OIDN
+	if( mCaptureDirectCompanion && pDirectCompanionImage && pAOVBuffers
+	 && pAOVBuffers->HasData() && ShouldDenoise() )
+	{
+		pDirectCompanionRawImage = new RISERasterImage(
+			pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
+			RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) );
+		for( unsigned int y = 0; y < pDirectCompanionImage->GetHeight(); ++y ) {
+			for( unsigned int x = 0; x < pDirectCompanionImage->GetWidth(); ++x ) {
+				pDirectCompanionRawImage->SetPEL(
+					x, y, pDirectCompanionImage->GetPEL( x, y ) );
+			}
+		}
+		mDenoiser->ApplyDenoise(
+			*pDirectCompanionImage, *pAOVBuffers,
+			pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
+			mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+			mDirectCompanionRenderSeconds );
+		mDirectCompanionDenoised = true;
+	}
+#endif
 }

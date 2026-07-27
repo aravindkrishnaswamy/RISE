@@ -3257,6 +3257,69 @@ NodeId DocFindByName( const Document& doc, const std::string& namePath, int* vis
 	return ( count == 1 ) ? id : 0;   // unique-or-refuse: an ambiguous duplicate name resolves to 0
 }
 
+bool RoleMatchesKindConstraint( const std::string& role, const std::string& roleKindSuffix )
+{
+	if( roleKindSuffix.empty() ) return true;                      // no constraint
+	const std::string under = "_" + roleKindSuffix;
+	bool kindMatch = ( role == roleKindSuffix ) ||
+		( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );
+	// Round-6 regression fix (SourceTraceTest): the kind constraint must
+	// honour the REGISTRY CLASSIFIER, not just the keyword suffix -- an
+	// expression_function2d is a registry Painter (and function chunks
+	// dual-register into the Painter UI union) despite not ending in
+	// `_painter`.  The suffix-only narrowing introduced by the kind-
+	// constraint fix silently un-addressed those chunks (reveal-in-file /
+	// jump broke).  Suffix stays the fast path; the registry category is
+	// the authority when the suffix disagrees.
+	if( !kindMatch ) {
+		// INVARIANT (round-7 review): this registry arm can over-match helper chunks whose
+		// category equals an entity kind but which are NOT that entity (camera_defaults /
+		// scene_options -> Camera, gltf_import -> Geometry, hosek_wilkie_skylight -> Light).
+		// That is unreachable today because none of those keywords declares a `name` param,
+		// so they never enter bare-name matching.  If any of them ever gains a `name`
+		// parameter, add an exclusion here first.
+		const std::map<std::string, const IAsciiChunkParser*>& reg = DescriptorRegistry();
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = reg.find( role );
+		if( it != reg.end() ) {
+			const ChunkCategory cc = it->second->Describe().category;
+			if(      roleKindSuffix == "painter"  ) kindMatch = ( cc == ChunkCategory::Painter || cc == ChunkCategory::Function );
+			else if( roleKindSuffix == "material" ) kindMatch = ( cc == ChunkCategory::Material );
+			else if( roleKindSuffix == "geometry" ) kindMatch = ( cc == ChunkCategory::Geometry );
+			else if( roleKindSuffix == "light"    ) kindMatch = ( cc == ChunkCategory::Light );
+			else if( roleKindSuffix == "medium"   ) kindMatch = ( cc == ChunkCategory::Medium );
+			else if( roleKindSuffix == "camera"   ) kindMatch = ( cc == ChunkCategory::Camera );
+		}
+	}
+	return kindMatch;
+}
+
+// Camera-kind predicate for the UNNAMED-chunk scans below: keyword suffix ONLY
+// (role == "camera" or ends in "_camera"), deliberately NOT the registry
+// classifier -- ChunkCategory::Camera also covers non-camera helper chunks
+// (camera_defaults), which must never count as an addressable camera.
+static bool RoleIsCameraChunk_( const std::string& role )
+{
+	static const std::string under = "_camera";
+	return ( role == "camera" ) ||
+		( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );
+}
+
+bool DocCameraUniqueFallbackPermitted( const Document& doc, const std::string& bareName, const std::string& activeCameraName )
+{
+	if( bareName.empty() ) return true;   // (Camera, "") active-camera / kind-addressed-singleton convention
+	if( !activeCameraName.empty() && bareName == activeCameraName ) return true;   // live registry name of the active camera
+	// Exactly one camera-kind chunk TOTAL (named or unnamed): with one camera any
+	// camera-kind address can only mean that camera; the fallback branch itself
+	// still requires the one camera to be UNNAMED before resolving by position.
+	std::vector<NodeRef> items; SeqToVec( doc.items, items );
+	int cameraChunks = 0;
+	for( size_t i = 0; i < items.size(); ++i ) {
+		if( !items[i] || items[i]->kind != NodeKind::Chunk ) continue;
+		if( RoleIsCameraChunk_( items[i]->role ) ) ++cameraChunks;
+	}
+	return cameraChunks == 1;
+}
+
 NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences, const std::string& roleKindSuffix, bool uniqueFallback )
 {
 	std::vector<NodeRef> items; SeqToVec( doc.items, items );
@@ -3269,31 +3332,40 @@ NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, i
 	}
 	if( occurrences ) *occurrences = (int)matches.size();
 	std::string matchPath;
-	if( matches.size() == 1 ) {
-		matchPath = matches[0];
-	} else if( matches.size() > 1 && !roleKindSuffix.empty() ) {
-		// Cross-category collision (e.g. a material AND a geometry named "m"): keep only the chunk whose
-		// keyword (the role, before the '/') names this kind -- role == suffix (the bare "material") or role
-		// ends in "_<suffix>" (lambertian_material, ggx_material, ...).  One survivor -> use it; else refuse.
-		const std::string under = "_" + roleKindSuffix;
+	if( !matches.empty() && !roleKindSuffix.empty() ) {
+		// A supplied kind is a constraint, not merely a collision hint. Keep
+		// only chunks whose keyword names that kind even when the bare name has
+		// exactly one match; otherwise ("material", "x") could silently target
+		// a uniquely named `sphere_geometry x`.  RoleMatchesKindConstraint is
+		// the ONE narrowing predicate (suffix fast path + registry-classifier
+		// authority) -- shared with the defensive re-verification sites.
 		int narrowed = 0;
 		for( size_t m = 0; m < matches.size(); ++m ) {
 			const size_t slash = matches[m].rfind( '/' );
 			const std::string role = ( slash == std::string::npos ) ? matches[m] : matches[m].substr( 0, slash );
-			const bool kindMatch = ( role == roleKindSuffix ) ||
-				( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );
-			if( kindMatch ) { ++narrowed; matchPath = matches[m]; }
+			if( RoleMatchesKindConstraint( role, roleKindSuffix ) ) { ++narrowed; matchPath = matches[m]; }
 		}
-		if( narrowed != 1 ) return 0;                              // still ambiguous (or none of the kind) -> refuse
+		// Round-7 (P3): report the POST-narrowing count so a caller's diagnostic
+		// distinguishes "no chunk of that kind" (0 -> not-found) from a genuine
+		// same-kind ambiguity (>1) -- the raw bare-name count made remove_chunk
+		// claim "2 chunks named x match" when neither was the requested kind.
+		if( occurrences ) *occurrences = narrowed;
+		if( narrowed != 1 ) return 0;                              // ambiguous or wrong kind -> refuse
+	} else if( matches.size() == 1 ) {
+		matchPath = matches[0];                                   // no kind constraint: unique name is enough
+	} else if( matches.size() > 1 ) {
+		return 0;                                                  // ambiguous with no kind constraint
 	} else if( uniqueFallback && matches.empty() && !roleKindSuffix.empty() ) {
 		// Unnamed-entity fallback (e.g. the sole, UNNAMED camera the editor addresses as the active camera):
-		// no chunk carries this bare name, but if exactly ONE top-level chunk is of the requested kind, use it,
-		// resolved by POSITION (DocNodeIdAt) since it has no name to NameFind.  SAFE for always-named kinds
-		// (material/light): a name match would have been found first, so this branch never fires for them.
+		// no chunk carries this bare name, but if exactly ONE UNNAMED top-level
+		// chunk is of the requested kind, use it by position. Named chunks are
+		// excluded deliberately: empty-target singleton addressing must never
+		// broaden into "whichever sole material/object happens to exist."
 		const std::string under = "_" + roleKindSuffix;
 		int kindCount = 0, kindIndex = -1;
 		for( size_t i = 0; i < items.size(); ++i ) {
 			if( items[i]->kind != NodeKind::Chunk ) continue;
+			if( !ChunkNamePath( items[i] ).empty() ) continue;       // fallback is for truly unnamed chunks only
 			const std::string& role = items[i]->role;
 			const bool kindMatch = ( role == roleKindSuffix ) ||
 				( role.size() > under.size() && role.compare( role.size() - under.size(), under.size(), under ) == 0 );

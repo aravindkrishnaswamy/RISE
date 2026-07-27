@@ -1803,8 +1803,11 @@ final class RenderViewModel: ObservableObject {
         guard span > 0 else { return }
         let dt = span / Double(frames - 1)
 
+        // Admission can change after the render-state guard above. Do not
+        // start a playback task unless the controller actually opened the
+        // scrub bracket.
+        guard vb.scrubTimeBegin() else { return }
         isPreviewPlaying = true
-        vb.scrubTimeBegin()           // one undo bracket for the whole run
         sceneTime = t0                // onChange(sceneTime) -> bridge.scrubTime
 
         previewPlayTask = Task { [weak self] in
@@ -1826,7 +1829,7 @@ final class RenderViewModel: ObservableObject {
         isPreviewPlaying = false
         previewPlayTask?.cancel()
         previewPlayTask = nil
-        viewportBridge?.scrubTimeEnd()
+        _ = viewportBridge?.scrubTimeEnd()
     }
 
 
@@ -2062,6 +2065,22 @@ final class RenderViewModel: ObservableObject {
             }
             if !isEditorDirty {
                 refreshEditorContents()
+            } else {
+                // Save-As changed the raw editor's eventual write target.
+                // Keep its independent text edits, but make the overwrite
+                // hazard explicit just as the in-place and Properties-panel
+                // save paths do.
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "The scene is now anchored to \(path), but the scene " +
+                    "editor pane still shows its own unsaved text changes.  " +
+                    "Clicking Save in the scene editor will overwrite that " +
+                    "file — use Revert in the scene editor to discard your " +
+                    "text edits and pull the selected file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             }
             return true
         case 2:
@@ -2392,6 +2411,19 @@ final class RenderViewModel: ObservableObject {
         // resolver already validated addressability, so this normally
         // succeeds; gating avoids a stale re-snapshot on the rare miss).
         if vb.setSelection(cat, name: (name as String?) ?? "") {
+            reverseSelectEpoch &+= 1
+        }
+    }
+
+    /// Jump-to-definition (GUI redesign 2026-07-22): navigate the
+    /// inspector + outliner to a referenced element -- the action behind
+    /// the property context menu's "Jump to Definition".  Reuses the
+    /// reverse-select epoch so the outliner highlight and the panel
+    /// re-snapshot through the exact wiring "Select in Inspector"
+    /// already exercises.
+    func jumpToEntity(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, !name.isEmpty else { return }
+        if vb.setSelection(category, name: name) {
             reverseSelectEpoch &+= 1
         }
     }

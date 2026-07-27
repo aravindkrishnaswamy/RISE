@@ -19,6 +19,7 @@
 #include "pch.h"
 #include "InteractivePelRasterizer.h"
 #include "PathTracingPelRasterizer.h"
+#include "Rasterizer.h"
 #include "../Shaders/PathTracingShaderOp.h"
 #include "BlockRasterizeSequence.h"
 #include "RayCaster.h"
@@ -1778,6 +1779,83 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	// rasterizer's internal one are independent and both must be released.
 	*ppRasterizer = pRaster;
 	*ppCaster = pCaster;
+	return true;
+}
+
+bool RISE::Implementation::ConfigureBeautyVariantPass(
+	IRasterizer& rasterizer,
+	ViewportRenderMode mode,
+	bool liveGesture )
+{
+	const ViewportRenderModeInfo* info = FindViewportRenderModeInfo( mode );
+	if( !info || !IsBeautyVariantMode( mode ) ) {
+		return false;
+	}
+#ifdef RISE_ENABLE_OIDN
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>( &rasterizer );
+	if( !concrete ) {
+		return false;
+	}
+#endif
+	const int samples = liveGesture
+		? 1 : static_cast<int>( info->variantSamplesPerPass );
+	if( !rasterizer.SetSampleCountOverride( samples ) ) {
+		return false;
+	}
+	if( PathTracingPelRasterizer* pt =
+			dynamic_cast<PathTracingPelRasterizer*>( &rasterizer ) )
+	{
+		pt->SetInteractiveDenoiseSuppressed( liveGesture );
+	}
+#ifdef RISE_ENABLE_OIDN
+	concrete->SetDenoisingEnabled( !liveGesture && info->wantsDenoise );
+#endif
+	return true;
+}
+
+bool RISE::Implementation::CreateNearestNeighborSubview(
+	const IRasterImage& source,
+	unsigned int width,
+	unsigned int height,
+	IRasterImage** out )
+{
+	if( out ) *out = nullptr;
+	if( !out || !width || !height || !source.GetWidth() || !source.GetHeight() ) {
+		return false;
+	}
+	IRasterImage* image = nullptr;
+	if( !RISE_API_CreateRISEColorRasterImage(
+			&image, width, height, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) )
+	 || !image )
+	{
+		return false;
+	}
+	const uint64_t sourceW = source.GetWidth();
+	const uint64_t sourceH = source.GetHeight();
+	for( unsigned int y = 0; y < height; ++y ) {
+		const unsigned int sy = static_cast<unsigned int>(
+			std::min<uint64_t>( sourceH - 1,
+				( ( uint64_t( 2 ) * y + 1 ) * sourceH ) /
+				( uint64_t( 2 ) * height ) ) );
+		for( unsigned int x = 0; x < width; ++x ) {
+			const unsigned int sx = static_cast<unsigned int>(
+				std::min<uint64_t>( sourceW - 1,
+					( ( uint64_t( 2 ) * x + 1 ) * sourceW ) /
+					( uint64_t( 2 ) * width ) ) );
+			image->SetPEL( x, y, source.GetPEL( sx, sy ) );
+		}
+	}
+	*out = image;
+	return true;
+}
+
+bool RISE::Implementation::SuppressBeautyVariantDenoise(
+	IRasterizer& rasterizer )
+{
+	PathTracingPelRasterizer* pt =
+		dynamic_cast<PathTracingPelRasterizer*>( &rasterizer );
+	if( !pt ) return false;
+	pt->SetInteractiveDenoiseSuppressed( true );
 	return true;
 }
 

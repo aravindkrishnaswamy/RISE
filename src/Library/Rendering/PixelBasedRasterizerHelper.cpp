@@ -1276,8 +1276,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// authoritative output is the heatmap from the progressive
 	// resolve, denoising it would mangle the grayscale ramp.
 	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoise() && !GetAdaptiveShowMap() );
-#else
-	const bool bWillDenoise = false;
 #endif
 
 	// Complete and publish requested AOVs independently of OIDN.  Pure
@@ -1300,13 +1298,13 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		pAOVBuffers->ReleaseDepthStorage();
 	}
 
-	if( bWillDenoise ) {
+#ifdef RISE_ENABLE_OIDN
+	bool appliedDenoise = false;
+	if( bWillDenoise && ShouldDenoise() ) {
 		// Write the pre-denoised (but fully splatted) image to file-based
 		// outputs under the normal filename.  Non-file outputs no-op and
 		// wait for the denoised final via FlushDenoisedToOutputs.
 		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
-
-#ifdef RISE_ENABLE_OIDN
 		{
 			// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 			// ApplyDenoise reads `*pImage` row-by-row and overwrites
@@ -1319,19 +1317,32 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			// where the previous Begin/End-pair pattern would have
 			// leaked all tile locks → process-wide deadlock.
 			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+			// A new interactive gesture may have superseded this release
+			// quantum while the bulk bracket waited for a reader.
+			if( ShouldDenoise() ) {
+				const double renderElapsedSeconds = GetRenderElapsedSeconds();
+				OnBeforeDenoise( renderElapsedSeconds );
+				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+					renderElapsedSeconds );
+				appliedDenoise = true;
+			}
 		}
-#endif
 
 		// File outputs write the denoised image with a "_denoised" suffix;
 		// non-file outputs forward to OutputImage so they still see the
 		// denoised final (matching pre-change behavior).
-		FlushDenoisedToOutputs( *pImage, pRect, 0 );
+		if( appliedDenoise ) {
+			FlushDenoisedToOutputs( *pImage, pRect, 0 );
+		} else {
+			FlushToOutputs( *pImage, pRect, 0 );
+		}
 	} else {
 		FlushToOutputs( *pImage, pRect, 0 );
 	}
+#else
+	FlushToOutputs( *pImage, pRect, 0 );
+#endif
 
 	// Post-render hook (e.g. path guiding cleanup)
 	PostRenderCleanup();
@@ -2065,9 +2076,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			{
 				// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 				FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+				const double renderElapsedSeconds = GetRenderElapsedSeconds();
+				OnBeforeDenoise( renderElapsedSeconds );
 				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					GetRenderElapsedSeconds() );
+					renderElapsedSeconds );
 			}
 			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );
 		} else {

@@ -233,9 +233,12 @@ public:
     /// as "no animation" and hides the slider.
     bool viewportGetAnimationOptions(double& outTimeStart, double& outTimeEnd,
                                      unsigned int& outNumFrames) const;
-    void viewportScrubBegin();
-    void viewportScrub(double t);
-    void viewportScrubEnd();
+    /// Fallible because a coordinated/direct render can acquire admission
+    /// after Compose sampled its enabled state.  FALSE means no scrub
+    /// state/time mutation occurred.
+    bool viewportScrubBegin();
+    bool viewportScrub(double t);
+    bool viewportScrubEnd();
 
     /// Bracket a property-panel chevron scrub.  See
     /// SceneEditController::BeginPropertyScrub for the rationale.

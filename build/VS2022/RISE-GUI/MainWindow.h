@@ -57,6 +57,7 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;
 
     // Shutdown-order fix (2026-07-24): QObject::deleteChildren destroys
     // children in CREATION order, and m_engine (created first, in the

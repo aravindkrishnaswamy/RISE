@@ -4198,6 +4198,25 @@ namespace RISE
 				~JobSinkAttachmentUnwindGuard() noexcept { Detach(); }
 			} sinkAttachmentUnwindGuard;
 
+			// T4 Last Render: this helper is called only from INSIDE
+			// doRenderWork, while every controller-attached path owns the
+			// coordinated render slot.  Capture the final sink image before
+			// that park is released; the result/cache tail below may execute
+			// later on the submitting thread and must not touch live pane
+			// state there.
+			auto publishCompletedToLastRender = [&]()
+			{
+				if( !mController || !renderRan || !rendered || wasCancelled
+				 || !sink || !sink->HasImage() )
+					return;
+				IRasterImage* image = nullptr;
+				if( sink->CopyToRasterImage( &image ) && image )
+				{
+					mController->AdoptAgentRenderImageParked( image );
+					if( image ) image->release();
+				}
+			};
+
 			// P1-B (belt-and-braces): if ANY requested camera field fails to
 			// apply, fail loud -- restore what was already applied THIS call
 			// and skip the render entirely rather than reporting
@@ -5066,6 +5085,7 @@ namespace RISE
 
 				if( isObjectMap ) {
 					runEphemeralIsolated( doObjectMapRenderWork );
+					publishCompletedToLastRender();
 					return;
 				}
 				if( isViewMode ) {
@@ -5074,10 +5094,12 @@ namespace RISE
 					} else {
 						runEphemeralIsolated( doViewModeRenderWork );
 					}
+					publishCompletedToLastRender();
 					return;
 				}
 				if( isDraft ) {
 					runEphemeralIsolated( doDraftRenderWork );
+					publishCompletedToLastRender();
 					return;
 				}
 
@@ -5507,6 +5529,7 @@ namespace RISE
 					rast->SetSampleCountOverride( origSamples );
 				}
 				sampleGuard.Disarm();
+				publishCompletedToLastRender();
 			};
 
 			// Model-B F2 slice S1: render identity.  When this call actually
@@ -5949,8 +5972,8 @@ namespace RISE
 			// the view-mode pipeline (Normals/Depth/Facets/Wireframe) --
 			// Beauty/Draft/ObjectMap all silently ignore it, matching the
 			// quality/samples-ignored precedent used throughout this
-			// function.  Default is now TRUE (see AgentRenderParams::xray),
-			// so the common case notes "active"; an explicit xray:false is
+			// function. Default is FALSE (see AgentRenderParams::xray), so the
+			// common case notes that transmissive surfaces are shown; xray:true is
 			// noted too, so a caller can tell "inactive by request" apart
 			// from "not a view-mode render at all" (no note either way).
 			if( res.ok && isBeautyVariant ) {
@@ -7279,6 +7302,8 @@ namespace RISE
 				outPaneSet.sourcePane = outSourcePane;
 				for( unsigned int i = 0; i < SceneEditController::kViewportPaneCount; ++i ) {
 					outPaneSet.panes[i].visible = paneSnap.panes[i].visible;
+					outPaneSet.panes[i].contentSource =
+						static_cast<int>( paneSnap.panes[i].contentSource );
 					const Implementation::ViewportRenderModeInfo* mi =
 						Implementation::FindViewportRenderModeInfo( paneSnap.panes[i].mode );
 					outPaneSet.panes[i].mode        = mi ? mi->name : "preview";

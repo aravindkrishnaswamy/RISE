@@ -106,8 +106,11 @@ void ViewportWidget::onViewportLayoutChanged()
 // multi-pane layout should reveal a SPREAD of complementary outputs, not
 // four copies of the beauty preview.  Per-slot roles are stable across
 // layouts: 0 beauty preview (editing surface, untouched), 1 wireframe
-// (topology), 2 normals (shading), 3 depth (Z) -- the classic modeling
-// multi-view.  Applied ONLY to a visible secondary pane STILL showing
+// (topology), 2 normals (surface orientation), 3 depth (camera-space
+// distance) -- a cheap geometry/debug spread. Direct and Indirect remain
+// explicit pane choices; making two path-traced BeautyVariant pipelines the
+// default doubled measured Quad orbit latency even on a tiny scene. Applied ONLY to
+// a visible secondary pane STILL showing
 // "preview", so a pane the user already switched keeps its choice across
 // layout toggles.
 void ViewportWidget::applyMultiViewModePreset()
@@ -122,6 +125,11 @@ void ViewportWidget::applyMultiViewModePreset()
         // Preview indistinguishable from any other explicit choice -- both are
         // the user's, both preserved.
         if (m_panePresetApplied[pane]) continue;
+        if (m_bridge->paneContentSource(pane)
+            == ViewportBridge::PaneContentSource::LastRender) {
+            m_panePresetApplied[pane] = true;
+            continue;
+        }
         // A pane the core already persisted to a non-Preview mode is the user's
         // -- mark applied and leave it alone.
         if (m_bridge->paneRenderMode(pane) != QStringLiteral("preview")) {
@@ -200,6 +208,11 @@ void ViewportWidget::setSceneEditable(bool editable)
         if (chrome.vantageBtn) chrome.vantageBtn->setEnabled(editable);
     }
     if (!editable) {
+        // The matching mouse release is deliberately suppressed below while
+        // a render owns interaction. Finalize the core gesture first so its
+        // live delta reaches the Document and render admission is not left
+        // blocked by an orphaned composite.
+        if (m_bridge) m_bridge->finalizeOpenInteractions();
         // A render now owns the scene: cancel any armed / in-progress region
         // interaction so a mid-render release can't commit it
         // (setInteractiveRegion -> KickRender -> mMutex) and it doesn't linger
@@ -210,6 +223,13 @@ void ViewportWidget::setSceneEditable(bool editable)
         // pane gesture pin rather than risk forwarding a stray Move/Up to
         // a pane once a render owns the scene.
         m_activeGesturePane = -1;
+    } else if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        // A geometry notification can race a production/chat render's
+        // admission claim. recomputePaneLayout caches only dimensions the
+        // controller accepted, so becoming editable is the reliable retry
+        // edge for refused preset and SetPaneSurfaceDims calls.
+        recomputePaneLayout();
+        applyMultiViewModePreset();
     }
     update();   // re-evaluate the nav-overlay draw gate at the new state
 }
@@ -737,6 +757,8 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
         if (!m_productionRendering && event->button() == Qt::LeftButton) {
             const unsigned int primary = m_bridge->primaryPane();
             if (primary < m_visiblePaneCount
+                && m_bridge->paneContentSource(primary)
+                    != ViewportBridge::PaneContentSource::LastRender
                 && handleNavClick(event->position(), primary)) {
                 event->accept();
                 return;
@@ -976,9 +998,15 @@ void ViewportWidget::buildPaneChrome()
         chrome.modeCombo = new QComboBox(this);
         chrome.modeCombo->setFont(Theme::mono(9));
         chrome.modeCombo->setProperty("pane", pane);
-        // Styling moved to restyleTheme() (LIVE THEME-SWITCH CONTRACT,
-        // Theme.h) -- this used to bake the QSS here once, going stale
-        // after a live theme switch.
+		// Styling moved to restyleTheme() (LIVE THEME-SWITCH CONTRACT,
+		// Theme.h) -- this used to bake the QSS here once, going stale
+		// after a live theme switch.
+		chrome.modeCombo->addItem(tr("Last Render"));
+		chrome.modeCombo->setItemData(
+			0, QStringLiteral("@last_render"), Qt::UserRole);
+		chrome.modeCombo->setItemData(
+			0, tr("Show the most recent completed production or agent render"),
+			Qt::ToolTipRole);
         for (const ViewportRenderModeInfo& info : ViewportBridge::viewportRenderModes()) {
             const int idx = chrome.modeCombo->count();
             chrome.modeCombo->addItem(info.title);
@@ -1171,14 +1199,31 @@ void ViewportWidget::recomputePaneLayout()
                 }
             }
         }
-        if (m_bridge && devDims != m_paneLastPushedDims[i]) {
-            m_bridge->setPaneSurfaceDims(i, static_cast<unsigned int>(devDims.width()),
-                                         static_cast<unsigned int>(devDims.height()));
-            m_paneLastPushedDims[i] = devDims;
-        }
+        m_paneDesiredDims[i] = devDims;
     }
 
+    retryPendingPaneSurfaceDims();
     refreshPaneChromeState();
+}
+
+void ViewportWidget::retryPendingPaneSurfaceDims()
+{
+    if (!m_bridge || m_layout == ViewportBridge::ViewportLayout::Single) return;
+    for (unsigned int i = 0; i < m_visiblePaneCount; ++i) {
+        const QSize desired = m_paneDesiredDims[i];
+        if (desired.width() <= 0 || desired.height() <= 0
+            || desired == m_paneLastPushedDims[i]) {
+            continue;
+        }
+        // Cache only an accepted size. A hosted direct render may acquire
+        // admission without changing m_sceneEditable or production state;
+        // pollPaneChrome retries this retained desired value after release.
+        if (m_bridge->setPaneSurfaceDims(
+                i, static_cast<unsigned int>(desired.width()),
+                static_cast<unsigned int>(desired.height()))) {
+            m_paneLastPushedDims[i] = desired;
+        }
+    }
 }
 
 void ViewportWidget::refreshForDpiChange()
@@ -1298,7 +1343,12 @@ void ViewportWidget::paintPaneGrid(QPainter& p)
     // the scheduled pane, so the handles are exact; between gestures the
     // static handles may reflect a sibling pane's idle camera (a race-free
     // primary-pane snapshot is a documented follow-up).
-    if (gizmoOverlayActive() && m_bridge && primary < m_visiblePaneCount) {
+    const bool primaryIsLastRender = m_bridge
+        && primary < m_visiblePaneCount
+        && m_bridge->paneContentSource(primary)
+            == ViewportBridge::PaneContentSource::LastRender;
+    if (gizmoOverlayActive() && m_bridge && primary < m_visiblePaneCount
+        && !primaryIsLastRender) {
         const QSize surface = m_bridge->cameraSurfaceDimensions();
         if (surface.width() > 0 && surface.height() > 0) {
             const QRect drawRectP = paneImageDrawRect(m_paneImages[primary], m_paneImageAreaRects[primary]);
@@ -1313,7 +1363,7 @@ void ViewportWidget::paintPaneGrid(QPainter& p)
     // chat/agent render ownership, whose controller mutex must not be read
     // from the paint path.
     if (!m_productionRendering && m_sceneEditable && m_bridge
-        && primary < m_visiblePaneCount) {
+        && primary < m_visiblePaneCount && !primaryIsLastRender) {
         paintNavOverlay(p, primary);
     }
 }
@@ -1323,6 +1373,7 @@ void ViewportWidget::refreshPaneChromeState()
     if (!m_bridge) return;
     const unsigned int primary = m_bridge->primaryPane();
     const QStringList namedViews = m_bridge->namedViewNames();
+    const QStringList sceneCameras = m_bridge->categoryEntities(ViewportBridge::Category::Camera);
 
     for (unsigned int i = 0; i < m_visiblePaneCount && i < ViewportBridge::kViewportPaneCount; ++i) {
         PaneChrome& chrome = m_paneChrome[i];
@@ -1330,7 +1381,12 @@ void ViewportWidget::refreshPaneChromeState()
         // Mode combo -- resync current index (QSignalBlocker-guarded, same
         // pattern as TopBar::refreshRenderModeCombo, so this never re-fires
         // onPaneModeComboChanged).
-        const QString modeName = m_bridge->paneRenderMode(i);
+        const bool lastRender =
+            m_bridge->paneContentSource(i)
+            == ViewportBridge::PaneContentSource::LastRender;
+        const QString modeName = lastRender
+            ? QStringLiteral("@last_render")
+            : m_bridge->paneRenderMode(i);
         const int wantIndex = chrome.modeCombo->findData(modeName, Qt::UserRole);
         if (wantIndex >= 0 && wantIndex != chrome.modeCombo->currentIndex()) {
             const QSignalBlocker blocker(chrome.modeCombo);
@@ -1348,20 +1404,35 @@ void ViewportWidget::refreshPaneChromeState()
             case ViewportBridge::PaneVantageKind::NamedView:
                 label = namedView.isEmpty() ? tr("Named View") : namedView;
                 break;
+            case ViewportBridge::PaneVantageKind::SceneCameraNamed:
+                label = namedView.isEmpty() ? tr("Scene Camera") : namedView;
+                break;
             }
         }
         chrome.vantageBtn->setText(label);
-        chrome.vantageBtn->setToolTip(tr("Vantage \xE2\x80\x94 Scene camera, a named view, or Free-Fly"));
+        chrome.vantageBtn->setToolTip(tr(
+            "Vantage \xE2\x80\x94 active or named scene camera, a named view, or Free-Fly"));
 
         chrome.vantageMenu->clear();
         QAction* sceneAct = chrome.vantageMenu->addAction(tr("Scene Camera"));
-        sceneAct->setData(QStringLiteral("__scene__"));
+        sceneAct->setProperty("vantageKind", QStringLiteral("scene"));
         QAction* freeFlyAct = chrome.vantageMenu->addAction(tr("Free-Fly"));
-        freeFlyAct->setData(QStringLiteral("__freefly__"));
+        freeFlyAct->setProperty("vantageKind", QStringLiteral("freefly"));
+        if (i != 0 && !sceneCameras.isEmpty()) {
+            chrome.vantageMenu->addSeparator();
+            QAction* cameraHeader = chrome.vantageMenu->addAction(tr("Scene Cameras"));
+            cameraHeader->setEnabled(false);
+            for (const QString& name : sceneCameras) {
+                QAction* act = chrome.vantageMenu->addAction(name);
+                act->setProperty("vantageKind", QStringLiteral("sceneCameraNamed"));
+                act->setData(name);
+            }
+        }
         if (!namedViews.isEmpty()) {
             chrome.vantageMenu->addSeparator();
             for (const QString& name : namedViews) {
                 QAction* act = chrome.vantageMenu->addAction(name);
+                act->setProperty("vantageKind", QStringLiteral("namedView"));
                 act->setData(name);
             }
         }
@@ -1394,6 +1465,11 @@ void ViewportWidget::pollPaneChrome()
         return;
     }
     if (m_layout != ViewportBridge::ViewportLayout::Single) {
+        // A hosted/direct agent render may own admission without toggling
+        // m_sceneEditable or production state.  Retry only panes that have
+        // not yet accepted their first-reveal preset.
+        applyMultiViewModePreset();
+        retryPendingPaneSurfaceDims();
         refreshPaneChromeState();
     }
 }
@@ -1409,7 +1485,18 @@ void ViewportWidget::onPaneModeComboChanged(int index)
     // The set CAN fail (render-owns-scene, hidden pane) -- always re-read
     // via refreshPaneChromeState() rather than trusting the click (matches
     // TopBar::onRenderModeComboChanged's discipline).
-    m_bridge->setPaneRenderMode(pane, name);
+    const bool accepted =
+        pane < ViewportBridge::kViewportPaneCount
+        && (name == QStringLiteral("@last_render")
+            ? m_bridge->setPaneContentSource(
+                pane, ViewportBridge::PaneContentSource::LastRender)
+            : m_bridge->setPaneRenderMode(pane, name));
+    if (accepted) {
+        // A successful user choice owns this pane even if its first-reveal
+        // preset was previously refused.  The hosted-render retry must not
+        // overwrite an explicit Preview selected in that short window.
+        m_panePresetApplied[pane] = true;
+    }
     refreshPaneChromeState();
 }
 
@@ -1419,12 +1506,15 @@ void ViewportWidget::onPaneVantageAction(QAction* action)
     auto* menu = qobject_cast<QMenu*>(sender());
     if (!menu) return;
     const unsigned int pane = menu->property("pane").toUInt();
+    const QString actionKind = action->property("vantageKind").toString();
     const QString data = action->data().toString();
-    if (data == QLatin1String("__scene__")) {
+    if (actionKind == QLatin1String("scene")) {
         m_bridge->setPaneVantageSceneCamera(pane);
-    } else if (data == QLatin1String("__freefly__")) {
+    } else if (actionKind == QLatin1String("freefly")) {
         m_bridge->paneEnterFreeFly(pane);
-    } else if (!data.isEmpty()) {
+    } else if (actionKind == QLatin1String("sceneCameraNamed") && !data.isEmpty()) {
+        m_bridge->setPaneVantageSceneCameraNamed(pane, data);
+    } else if (actionKind == QLatin1String("namedView") && !data.isEmpty()) {
         m_bridge->setPaneVantageNamedView(pane, data);
     }
     refreshPaneChromeState();

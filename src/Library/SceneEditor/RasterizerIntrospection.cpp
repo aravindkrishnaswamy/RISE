@@ -91,6 +91,12 @@ std::vector<CameraProperty> RasterizerIntrospection::Inspect( const IJob& job, c
 		cp.description = String( p.description.c_str() );
 		cp.presets     = p.presets;
 		cp.unitLabel   = String( p.unitLabel.c_str() );
+		// GUI redesign 2026-07-22 (external-review P2): carry the descriptor's
+		// jump-to-definition metadata so a Reference row (e.g. a rasterizer's
+		// `radiance_map` -> Painter) offers "Jump to Definition".  Without this
+		// the row is a bare Reference with no target categories and the shells
+		// hide the menu item.
+		cp.referenceCategories = p.referenceCategories;
 
 		// Read the current value.  Job::GetRasterizerParameter returns
 		// "" for params the snapshot doesn't yet cover (config-struct

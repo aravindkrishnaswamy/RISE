@@ -55,6 +55,16 @@ namespace RISE
 		// a glance — the user-visible "35" then reads as "35 mm"
 		// rather than possibly being misread as "35 metres".
 		String                       unitLabel;
+		// Jump-to-definition (GUI redesign, 2026-07-22): for a
+		// ValueKind::Reference row, the descriptor's declared target
+		// categories (ParameterDescriptor::referenceCategories) —
+		// what KIND of element the value names.  Empty for non-Reference
+		// rows.  The shell never interprets this directly; it asks
+		// SceneEditController::PropertyJumpTarget, which resolves the
+		// row's value against the live managers first-wins (the same
+		// order ComputeChunkRefs uses) and hands back a UI Category to
+		// SetSelection on.
+		std::vector<ChunkCategory>   referenceCategories;
 	};
 
 	class CameraIntrospection

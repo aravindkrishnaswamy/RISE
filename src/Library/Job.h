@@ -2895,6 +2895,12 @@ namespace RISE
 		//! target_orientation) to the retained CST as the authored chunk params.  Same 0/1/2/3 contract.
 		int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
 		                            const char* orientation, const char* targetOrientation );
+		int ApplyCstCameraPoseEditWithBasis(
+			const char* camName, const char* location,
+			const char* lookat, const char* up,
+			const char* orientation, const char* targetOrientation,
+			const char* realizedBasisW,
+			const char* realizedBasisV );
 
 		//! Model-B P5 (camera-clone CST insert): INSERT a faithful camera chunk (built by
 		//! CameraIntrospection::BuildCameraChunkText) into the retained Document so a future D2 / save reproduces the
@@ -2920,6 +2926,7 @@ namespace RISE
 		//! preserves it (twin of ApplyCstFilmEdit for the active rasterizer singleton).  radiance_map with an empty
 		//! value ERASES the binding; else set/add the named param.  Document-only -> 1 on success / 0 on no-op.
 		int ApplyCstEnvironmentEdit( const char* paramName, const char* value );
+
 
 		//! Model-B F5 slice S2 (agent chunk CRUD): INSERT one complete chunk into the retained Document and
 		//! REALIZE it via a full re-derive (dry-run-guarded: a failed dry-run leaves Document + live scene

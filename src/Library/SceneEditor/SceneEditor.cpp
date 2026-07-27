@@ -61,6 +61,41 @@
 
 using namespace RISE;
 
+namespace {
+
+struct DirtyCallbackFrame
+{
+	const void* state;
+	DirtyCallbackFrame* previous;
+};
+
+thread_local DirtyCallbackFrame* gDirtyCallbackFrame = nullptr;
+
+class DirtyCallbackScope
+{
+public:
+	explicit DirtyCallbackScope( const void* state )
+		: mFrame{ state, gDirtyCallbackFrame }
+	{
+		gDirtyCallbackFrame = &mFrame;
+	}
+	~DirtyCallbackScope() { gDirtyCallbackFrame = mFrame.previous; }
+private:
+	DirtyCallbackFrame mFrame;
+};
+
+bool IsInDirtyCallback( const void* state )
+{
+	for( DirtyCallbackFrame* frame = gDirtyCallbackFrame;
+	     frame; frame = frame->previous )
+	{
+		if( frame->state == state ) return true;
+	}
+	return false;
+}
+
+}  // namespace
+
 void SceneEditor::BumpSceneLightGeneration()
 {
 	// IScenePriv carries no light-generation surface (keeping that off the
@@ -185,12 +220,16 @@ SceneEditor::SceneEditor( IScenePriv& scene )
 , mScenePhotonsExist( false )
 , mLastSetTime( 0 )
 , mSceneScale( 0 )
+, mDirtyNotificationState( std::make_shared<DirtyNotificationState>() )
 {
 	mScenePhotonsExist = ComputeScenePhotonsExist();
 }
 
 SceneEditor::~SceneEditor()
 {
+	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+	state->ownerAlive.store( false, std::memory_order_release );
+	CloseDirtyChangedListener();
 }
 
 namespace {
@@ -550,6 +589,12 @@ namespace
 
 	static void RestoreCameraTransform( Implementation::CameraCommon& cam, const SceneEdit& e )
 	{
+		if( e.prevCameraWasONB ) {
+			cam.RestoreInteractiveONBPose(
+				e.prevCameraPos, e.prevCameraONBU,
+				e.prevCameraONBV, e.prevCameraONBW );
+			return;
+		}
 		// Restore every captured field, not just the position triple.
 		// OrbitCamera mutates target_orientation only; RollCamera
 		// mutates orientation only; Pan / Zoom mutate position /
@@ -1038,14 +1083,242 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 
 void SceneEditor::FireDirtyChangedIfTransitioned()
 {
-	// Cheap O(1) check whether the dirty state's emptiness has
-	// flipped since the last time we fired.  Listener installed by
-	// the GUI bridge layer; tests that don't install one pay
-	// only the bool comparison.
-	const bool now = HasUnsavedChanges();
-	if( now == mPrevHasUnsavedChanges ) return;
-	mPrevHasUnsavedChanges = now;
-	if( mDirtyChangedListener ) mDirtyChangedListener( now );
+	// Document-first ADR phase 1: record-only.  The listener itself runs in
+	// DrainDirtyNotification, called by the controller AFTER releasing its
+	// mutex -- so a mark under any lock can never deadlock a re-entrant
+	// listener nor block the mutating thread on shell work.
+	// Round-5 review P1: every mutation site runs under its own lock with a
+	// stable Document, so this is also where the derived-dirty CACHE is
+	// recomputed race-free (the lock-free C-API query reads only the cache).
+	RecomputeHeadDiffers_();
+	RecomputeHasUnsavedChangesCached_();
+	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+	state->currentHasUnsavedChanges.store(
+		mHasUnsavedChangesCached.load( std::memory_order_acquire ),
+		std::memory_order_release );
+	state->pending.store( true, std::memory_order_release );
+}
+
+SceneEditor::DirtyNotificationDeferral::~DirtyNotificationDeferral()
+{
+	if( !mState ) return;
+	if( mState->deferDepth.fetch_sub( 1, std::memory_order_acq_rel ) == 1 )
+		SceneEditor::DrainDirtyNotificationState_( mState );
+}
+
+SceneEditor::DirtyNotificationDeferral SceneEditor::DeferDirtyNotifications()
+{
+	const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+	state->deferDepth.fetch_add( 1, std::memory_order_acq_rel );
+	return DirtyNotificationDeferral( state );
+}
+
+bool SceneEditor::DrainDirtyNotification()
+{
+	const std::shared_ptr<DirtyNotificationState> state =
+		mDirtyNotificationState;
+	return DrainDirtyNotificationState_( state );
+}
+
+bool SceneEditor::IsInDirtyChangedCallbackOnThisThread() const
+{
+	return IsInDirtyCallback( mDirtyNotificationState.get() );
+}
+
+void SceneEditor::SetDirtyChangedListener( DirtyChangedFn fn )
+{
+	DirtyChangedPtr retired = ExchangeDirtyChangedListener( std::move( fn ) );
+	// The last shared owner may live on this setter thread after it waited for
+	// an in-flight callback's snapshot to retire.  Keep lifecycle rejection TLS
+	// active through that arbitrary capture destructor as well.
+	DirtyCallbackScope retirementScope( mDirtyNotificationState.get() );
+	retired.reset();
+}
+
+bool SceneEditor::DrainDirtyNotificationState_(
+	const std::shared_ptr<DirtyNotificationState>& state )
+{
+	// Round-5 review P1 (listener OUTSIDE all locks + ordered delivery):
+	// single-deliverer loop. The complete dirty value was published by the
+	// mutator while its controller lock held, so this state-only routine
+	// neither races DirtyTracker containers nor borrows the SceneEditor.
+	// Lifecycle destruction is rejected until the callback and its copied
+	// std::function target have both retired.
+	if( state->deferDepth.load( std::memory_order_acquire ) != 0 )
+		return state->ownerAlive.load( std::memory_order_acquire );
+	if( !state->pending.load( std::memory_order_acquire ) )
+		return state->ownerAlive.load( std::memory_order_acquire );
+	if( state->delivering.exchange( true, std::memory_order_acq_rel ) )
+		return state->ownerAlive.load( std::memory_order_acquire );   // active deliverer will pick it up
+	struct DeliveringGuard
+	{
+		explicit DeliveringGuard(
+			const std::shared_ptr<DirtyNotificationState>& stateIn )
+			: state( stateIn ), active( true )
+		{
+		}
+		~DeliveringGuard()
+		{
+			Release();
+		}
+		void Release()
+		{
+			if( active ) {
+				state->delivering.store( false, std::memory_order_release );
+				active = false;
+			}
+		}
+		std::shared_ptr<DirtyNotificationState> state;
+		bool active;
+	};
+	DeliveringGuard deliveringGuard( state );
+	struct CallbackFlightGuard
+	{
+		explicit CallbackFlightGuard(
+			const std::shared_ptr<DirtyNotificationState>& stateIn )
+			: state( stateIn )
+		{
+		}
+		~CallbackFlightGuard()
+		{
+			std::lock_guard<std::mutex> lk( state->mutex );
+			if( state->callbacksInFlight > 0 ) --state->callbacksInFlight;
+			if( state->callbacksInFlight == 0 ) {
+				state->callbackThread = std::thread::id();
+				state->callbackCV.notify_all();
+			}
+		}
+		std::shared_ptr<DirtyNotificationState> state;
+	};
+	struct CopiedListenerRetireGuard
+	{
+		explicit CopiedListenerRetireGuard( DirtyChangedPtr& listenerIn )
+			: listener( listenerIn ) {}
+		~CopiedListenerRetireGuard()
+		{
+			listener.reset();
+		}
+		DirtyChangedPtr& listener;
+	};
+	for( ;; )
+	{
+		if( !state->pending.exchange( false, std::memory_order_acq_rel ) ) break;
+		bool fire = false;
+		const bool now = state->currentHasUnsavedChanges.load( std::memory_order_acquire );
+		DirtyChangedPtr listenerCopy;
+		{
+			std::lock_guard<std::mutex> lk( state->mutex );
+			if( now != state->prevHasUnsavedChanges )
+			{
+				state->prevHasUnsavedChanges = now;
+				fire = true;
+				listenerCopy = state->listener;
+				if( listenerCopy ) {
+					++state->callbacksInFlight;
+					state->callbackThread = std::this_thread::get_id();
+				}
+			}
+		}
+		if( fire && listenerCopy ) {
+			CallbackFlightGuard flight( state );
+			DirtyCallbackScope callbackScope( state.get() );
+			CopiedListenerRetireGuard retireCopy( listenerCopy );
+			try {
+				(*listenerCopy)( now );   // NO lock held
+			} catch( const std::exception& e ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: dirty-changed listener threw; notification contained: %s",
+					e.what() );
+			} catch( ... ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor: dirty-changed listener threw a non-standard exception; notification contained." );
+			}
+			if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
+				return false;
+			}
+		}
+	}
+	deliveringGuard.Release();
+	// Close the race where another thread flagged pending after our last
+	// exchange but saw us still delivering: one bounded retry.  A residual
+	// miss self-heals at the next drain (per-frame catch-all).
+	if( state->pending.load( std::memory_order_acquire )
+	 && !state->delivering.exchange( true, std::memory_order_acq_rel ) )
+	{
+		DeliveringGuard retryDeliveringGuard( state );
+		if( state->pending.exchange( false, std::memory_order_acq_rel ) )
+		{
+			bool fire = false;
+			const bool now = state->currentHasUnsavedChanges.load( std::memory_order_acquire );
+			DirtyChangedPtr listenerCopy;
+			{
+				std::lock_guard<std::mutex> lk( state->mutex );
+				if( now != state->prevHasUnsavedChanges )
+				{
+					state->prevHasUnsavedChanges = now;
+					fire = true;
+					listenerCopy = state->listener;
+					if( listenerCopy ) {
+						++state->callbacksInFlight;
+						state->callbackThread = std::this_thread::get_id();
+					}
+				}
+			}
+			if( fire && listenerCopy ) {
+				CallbackFlightGuard flight( state );
+				DirtyCallbackScope callbackScope( state.get() );
+				CopiedListenerRetireGuard retireCopy( listenerCopy );
+				try {
+					(*listenerCopy)( now );
+				} catch( const std::exception& e ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditor: dirty-changed listener threw; notification contained: %s",
+						e.what() );
+				} catch( ... ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"SceneEditor: dirty-changed listener threw a non-standard exception; notification contained." );
+				}
+				if( !state->ownerAlive.load( std::memory_order_acquire ) ) {
+					return false;
+				}
+			}
+		}
+	}
+	return state->ownerAlive.load( std::memory_order_acquire );
+}
+
+void SceneEditor::CaptureSavedHeadVersion_()
+{
+	// GetCstHeadVersion lives on IJobPriv (mJob is stored as IJob*); the
+	// downcast is safe in-tree (the controller always binds the concrete
+	// Job).  A null / non-priv job leaves the baseline defaulted (uuid 0),
+	// matching HeadDiffersFromSaved_'s legacy-scene arm.
+	if( const IJobPriv* priv = dynamic_cast<const IJobPriv*>( mJob ) )
+		mSavedHeadVersion = priv->GetCstHeadVersion();
+	else
+		mSavedHeadVersion = RISE::Cst::CstHeadVersion();
+	RecomputeHeadDiffers_();   // round-5 P1: the cache must track the new baseline
+	RecomputeHasUnsavedChangesCached_();
+}
+
+void SceneEditor::RecomputeHeadDiffers_()
+{
+	const IJobPriv* priv = dynamic_cast<const IJobPriv*>( mJob );
+	bool differs = false;
+	if( priv )
+	{
+		const RISE::Cst::CstHeadVersion cur = priv->GetCstHeadVersion();
+		if( cur.uuid != 0 ) differs = ( cur != mSavedHeadVersion );   // legacy scene (uuid 0): no floor
+	}
+	mHeadDiffersCached.store( differs, std::memory_order_release );
+}
+
+void SceneEditor::RecomputeHasUnsavedChangesCached_()
+{
+	const bool dirty = HeadDiffersFromSaved_()
+		|| mDirtyTracker.HasAnyDirty()
+		|| !mScaleFromAnchorSet.empty();
+	mHasUnsavedChangesCached.store( dirty, std::memory_order_release );
 }
 
 namespace {
@@ -1149,6 +1422,13 @@ static std::string FormatVec3( const Vector3& v )
 {
 	char buf[ 96 ];
 	std::snprintf( buf, sizeof( buf ), "%.17g %.17g %.17g", static_cast<double>( v.x ), static_cast<double>( v.y ), static_cast<double>( v.z ) );
+	return std::string( buf );
+}
+
+static std::string FormatPoint3( const Point3& p )
+{
+	char buf[ 96 ];
+	std::snprintf( buf, sizeof( buf ), "%.17g %.17g %.17g", static_cast<double>( p.x ), static_cast<double>( p.y ), static_cast<double>( p.z ) );
 	return std::string( buf );
 }
 
@@ -1290,7 +1570,8 @@ void SceneEditor::RebindToJob_()
 	// the animator's default time, but the user is parked at mLastSetTime -- re-apply it (the scrub-TIME twin of
 	// the camera/rasterizer/animation preservation) so the viewport pose matches the timeline slider; the
 	// production path already re-applies LastSceneTime before dispatch.  Skipped at the implicit t=0 (no scrub).
-	if( mScene && mLastSetTime != 0 ) mScene->SetSceneTimeForPreview( mLastSetTime );
+	const Scalar lastSetTime = mLastSetTime.load( std::memory_order_acquire );
+	if( mScene && lastSetTime != 0 ) mScene->SetSceneTimeForPreview( lastSetTime );
 }
 
 // P5 Slice 3 expansion: shared CST-routing for a property edit (material/light/...).  Mirrors the material
@@ -1553,14 +1834,43 @@ bool SceneEditor::CommitPendingCstCameraPose()
 	if( !mScene ) return false;
 	const ICameraManager* cams = mScene->GetCameras();
 	const ICamera* cam = cams ? cams->GetItem( camName.c_str() ) : 0;
-	if( !cam ) cam = mScene->GetCamera();   // fall back to the active camera (e.g. an unnamed sole camera)
+	// A recorded manager name is an identity boundary: if it vanished, fail
+	// closed instead of committing the pending pose onto the active camera.
+	// The empty-name legacy case may still use the sole active camera.
+	if( !cam && camName.empty() ) cam = mScene->GetCamera();
 	if( !cam ) return false;
-	const String loc    = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
-	const String lookat = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
-	const String up     = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
-	const String orient = CameraIntrospection::GetPropertyValue( *cam, String( "orientation" ) );
-	const String target = CameraIntrospection::GetPropertyValue( *cam, String( "target_orientation" ) );
-	const int r = mJob->ApplyCstCameraPoseEdit( camName.c_str(), loc.c_str(), lookat.c_str(), up.c_str(), orient.c_str(), target.c_str() );
+	const Implementation::CameraCommon* common =
+		dynamic_cast<const Implementation::CameraCommon*>( cam );
+	if( !common ) return false;
+	// Use full-precision serialization for the net pose.  The properties
+	// panel's display formatter is intentionally concise; feeding it into a
+	// CST re-derive quantized a camera origin by several micro-units, so the
+	// manager camera no longer exactly matched the just-rendered pane pose.
+	const String loc(
+		FormatPoint3( common->GetRestLocation() ).c_str() );
+	const String lookat(
+		FormatPoint3( common->GetStoredLookAt() ).c_str() );
+	const String up(
+		FormatVec3( common->GetStoredUp() ).c_str() );
+	const Vector3 orientation = common->GetEulerOrientation();
+	const String orient(
+		FormatVec3( Vector3(
+			orientation.x * RAD_TO_DEG,
+			orientation.y * RAD_TO_DEG,
+			orientation.z * RAD_TO_DEG ) ).c_str() );
+	const Vector2 targetOrientation = common->GetTargetOrientation();
+	const String target(
+		FormatVec3( Vector3(
+			targetOrientation.x * RAD_TO_DEG,
+			targetOrientation.y * RAD_TO_DEG, 0 ) ).c_str() );
+	String basisW;
+	String basisV;
+	const OrthonormalBasis3D basis = common->GetCurrentBasis();
+	basisW = String( FormatVec3( basis.w() ).c_str() );
+	basisV = String( FormatVec3( basis.v() ).c_str() );
+	const int r = mJob->ApplyCstCameraPoseEditWithBasis(
+		camName.c_str(), loc.c_str(), lookat.c_str(), up.c_str(),
+		orient.c_str(), target.c_str(), basisW.c_str(), basisV.c_str() );
 	if( r >= 2 ) RebindToJob_();
 	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
 	if( r == 0 )
@@ -1688,11 +1998,20 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 
 	if( SceneEdit::IsCameraOp( edit.op ) )
 	{
-		ICamera* baseCam = mScene->GetCameraMutable();
+		// A controller may explicitly route a gesture to an INACTIVE manager
+		// camera (SceneCameraNamed).  Preserve that identity; only legacy
+		// callers with no target supplied inherit the active camera.
+		ICamera* baseCam = 0;
+		if( edit.cameraTargetName.size() > 1 ) {
+			ICameraManager* cameras = mScene->GetCamerasMutable();
+			baseCam = cameras
+			        ? cameras->GetItem( edit.cameraTargetName.c_str() )
+			        : 0;
+		} else {
+			baseCam = mScene->GetCameraMutable();
+			edit.cameraTargetName = mScene->GetActiveCameraName();
+		}
 		if( !baseCam ) return false;
-		// Record the active camera name so ApplyForwardMutation resolves the
-		// SAME camera via ResolveEditedCamera (pActiveCamera == GetItem(name)).
-		edit.cameraTargetName = mScene->GetActiveCameraName();
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
 		if( !cam ) return true;   // skeleton camera: nothing to capture; forward arm no-ops
@@ -1701,12 +2020,19 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 		edit.prevCameraUp           = cam->GetStoredUp();
 		edit.prevCameraTargetOrient = cam->GetTargetOrientation();
 		edit.prevCameraOrient       = cam->GetEulerOrientation();
+		edit.prevCameraWasONB       = cam->IsFromONB();
+		if( edit.prevCameraWasONB ) {
+			const OrthonormalBasis3D basis = cam->GetCurrentBasis();
+			edit.prevCameraONBU = basis.u();
+			edit.prevCameraONBV = basis.v();
+			edit.prevCameraONBW = basis.w();
+		}
 		return true;
 	}
 
 	if( edit.op == SceneEdit::SetSceneTime )
 	{
-		edit.prevTime = mLastSetTime;
+		edit.prevTime = mLastSetTime.load( std::memory_order_acquire );
 		return true;
 	}
 
@@ -2116,6 +2442,14 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
 		if( !cam ) return true;   // skeleton-camera edit was a no-op
+		// Legacy active SceneCamera navigation deliberately leaves an
+		// explicit-ONB camera untouched.  Its inverse must be equally inert:
+		// restoring the captured pose and noting a CST drag here would
+		// canonicalize the authored ONB chunk merely by pressing Undo.
+		if( cam->IsFromONB() && !edit.allowONBPoseEdit ) {
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		RestoreCameraTransform( *cam, edit );
 		cam->RegenerateData();
 		// P5 Slice 3 expansion (camera drag): the inverse changed the live camera pose too -> note it for the same
@@ -2131,7 +2465,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// Restore the time captured before the edit.  Use the preview
 		// path (no photon regen) so undo is fast.
 		mScene->SetSceneTimeForPreview( edit.prevTime );
-		mLastSetTime = edit.prevTime;
+		mLastSetTime.store( edit.prevTime, std::memory_order_release );
 		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
 		return true;
 	}
@@ -2429,10 +2763,33 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
 		if( !cam ) { mLastScope = Dirty_Camera; return true; }   // H2-S3: skeleton camera no-op, keep Apply's scope
+		// T3 is deliberately scoped to the named-pane route.  Explicit-ONB
+		// active SceneCamera gestures historically leave the fixed basis
+		// unchanged; do not broaden that legacy behavior.
+		if( cam->IsFromONB() && !edit.allowONBPoseEdit ) {
+			mLastScope = Dirty_Camera;
+			return true;
+		}
+		const bool keepExplicitONB = cam->IsFromONB();
+		cam->BeginInteractivePoseEdit();
 		ApplyCameraOpForward( *cam, edit, SceneScale() );
 		cam->RegenerateData();
-		// P5 Slice 3 expansion (camera drag): on a CST scene, NOTE the active camera for a deferred pose commit
-		// (the controller flushes it at a parked boundary -- per-op routing would be N re-derives per drag).
+		if( keepExplicitONB ) {
+			// The shared camera math operates in lookAt/up space.  Preserve
+			// the manager camera's authored representation by immediately
+			// folding the realized result back into its explicit frame; this
+			// also keeps programmatic/no-CST ONB cameras explicit between
+			// events.  The retained-CST commit serializes W/V afterward.
+			const Point3 origin = cam->GetLocation();
+			const OrthonormalBasis3D basis = cam->GetCurrentBasis();
+			cam->RestoreInteractiveONBPose(
+				origin, basis.u(), basis.v(), basis.w() );
+			cam->RegenerateData();
+		}
+		// P5 Slice 3 expansion (camera drag): on a CST scene, note the
+		// explicitly recorded camera for a deferred pose commit (the
+		// controller flushes it at a parked boundary -- per-op routing would
+		// be N re-derives per drag).
 		if( mJob && mJob->HasRetainedCstDocument() )
 			NoteCstCameraDrag_( edit.cameraTargetName );
 		mLastScope = Dirty_Camera;
@@ -2551,7 +2908,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	if( edit.op == SceneEdit::SetSceneTime )
 	{
 		mScene->SetSceneTimeForPreview( edit.s );
-		mLastSetTime = edit.s;
+		mLastSetTime.store( edit.s, std::memory_order_release );
 		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
 		return true;
 	}

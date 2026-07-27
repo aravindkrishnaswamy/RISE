@@ -49,6 +49,7 @@ struct ViewportProperty {
     bool    editable = false;
     QVector<ViewportPropertyPreset> presets;   // empty when descriptor declared no presets
     QString unitLabel;                         // short suffix shown next to the field — "mm", "°", "scene units", or empty
+    int     index = -1;                        // snapshot position (the C-ABI property index) — jump-to-definition queries by index
 };
 
 /// Tool enum mirroring SceneEditController::Tool and the C-API
@@ -157,6 +158,9 @@ public:
     /// stopped".  Wired to RISE_API_SceneEditController_StopInteractive
     /// instead; see that function's doc.
     void stop();
+    /// Persist and close any controller-owned gesture before the shell drops
+    /// its matching release event. Safe when no interaction is active.
+    bool finalizeOpenInteractions();
     bool isRunning() const { return m_running; }
 
     /// Shrink the scene Film so the interactive preview renders at a
@@ -360,14 +364,14 @@ public:
     // render mode, INCLUDING "preview" (not just the four data modes:
     // normals/depth/facets/wireframe) -- resolution lives in the caster
     // layer, so it composes with whichever mode is active rather than
-    // being scoped to the data modes.  DEFAULT ON: the viewport starts
-    // see-through, and SceneEditController resets the flag back to ON
+    // being scoped to the data modes. DEFAULT OFF: the viewport shows the
+    // first transmissive surface, and SceneEditController resets the flag to OFF
     // on every whole-scene rebind (RebindEditorToJob).
 
     /// The CURRENT x-ray flag ("false" when no controller is attached --
     /// same null-controller fallback convention as `viewportRenderMode()`
     /// -- or while a render owns the scene, per the C-ABI's documented
-    /// never-blocks contract).  Otherwise true by default and after every
+    /// never-blocks contract). Otherwise false by default and after every
     /// scene rebind.
     bool viewportXray() const;
 
@@ -382,7 +386,7 @@ public:
     // -------- N-up multi-viewport pane model (docs/gui/RENDER_MODES.md §7) -
     // Mirrors the RISE_API_SceneEditController_{Set,Get}ViewportLayout /
     // {Set,Get}PrimaryPane / {Set,Get}PaneRenderMode / SetPaneSurfaceDims /
-    // SetPaneVantage{SceneCamera,NamedView} / GetPaneVantage /
+    // SetPaneVantage{SceneCamera,NamedView,SceneCameraNamed} / GetPaneVantage /
     // OnPanePointer{Down,Move,Up} / Pane{Enter,Exit}FreeFly /
     // GetPaneRefinementStatus C exports.  Four ALWAYS-PRESENT pane slots
     // (kViewportPaneCount); the layout selects the visible subset.  Pane 0
@@ -410,9 +414,15 @@ public:
 
     /// Mirrors RISE::SceneEditController::PaneVantageKind.
     enum class PaneVantageKind : int {
-        SceneCamera = 0,  ///< track the live active scene camera
-        FreeFly     = 1,  ///< per-pane free-fly pose (never mutates the scene camera)
-        NamedView   = 2   ///< re-resolved by name each pass
+        SceneCamera      = 0,  ///< track the live active scene camera
+        FreeFly          = 1,  ///< per-pane free-fly pose (never mutates the scene camera)
+        NamedView        = 2,  ///< re-resolved by name each pass
+        SceneCameraNamed = 3   ///< track one manager-registered scene camera by name
+    };
+
+    enum class PaneContentSource : int {
+        Interactive = 0,
+        LastRender  = 1
     };
 
     /// Panes a layout makes visible: Single=1, TwoH=2, OnePlusTwo=3, Quad=4.
@@ -434,6 +444,8 @@ public:
     /// "preview" on a null controller / invalid pane (mirrors
     /// viewportRenderMode()'s fail-closed default).
     QString paneRenderMode(unsigned int pane) const;
+    bool setPaneContentSource(unsigned int pane, PaneContentSource source);
+    PaneContentSource paneContentSource(unsigned int pane) const;
 
     /// Pane render-surface pixel dims (the GUI's pane rect -- caller passes
     /// actual DEVICE pixels, i.e. widget points times devicePixelRatioF()).
@@ -442,9 +454,10 @@ public:
     bool setPaneSurfaceDims(unsigned int pane, unsigned int w, unsigned int h);
 
     bool setPaneVantageSceneCamera(unsigned int pane);
+    bool setPaneVantageSceneCameraNamed(unsigned int pane, const QString& name);
     bool setPaneVantageNamedView(unsigned int pane, const QString& name);
-    /// Introspection: current vantage kind (+ named-view name when
-    /// applicable, "" otherwise).  Returns false on null controller,
+    /// Introspection: current vantage kind (+ referenced name for
+    /// NamedView/SceneCameraNamed, "" otherwise). Returns false on null controller,
     /// invalid pane, or an unrecognized kind from the C-ABI.
     bool paneVantage(unsigned int pane, PaneVantageKind* outKind, QString* outNamedView) const;
 
@@ -739,7 +752,8 @@ public:
         Medium     = 7,   ///< Participating media
         Animation  = 8,   ///< Named animation paths (pick to activate; no editable properties)
         SceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
-        Painter    = 10   ///< Painters (union of the IPainter + IScalarPainter managers)
+        Painter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
+        Geometry   = 11   ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
     };
 
     PanelMode panelMode() const;
@@ -754,6 +768,12 @@ public:
     /// edits the right material even when Object is the primary
     /// selection (auto-synced state).
     QVector<ViewportProperty> propertySnapshotFor(Category cat);
+    /// Jump-to-definition (GUI redesign 2026-07-22): for `cat`'s
+    /// snapshot row at `index` (a Reference-kind row), resolve which
+    /// category the value names.  False for non-Reference rows or
+    /// dangling references — the context-menu item stays hidden.
+    bool propertyJumpTargetFor(Category cat, int index,
+                               Category* outCat, QString* outName);
     bool setPropertyForCategory(Category cat, const QString& name, const QString& value);
     /// Per-category selection accessor.  Returns the entity name
     /// picked in `cat`'s section, or empty when nothing is picked.

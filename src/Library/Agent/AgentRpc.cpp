@@ -1560,10 +1560,10 @@ namespace RISE
 
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")
 					// ADDITIVE param: {"xray":false} -> AgentRenderParams::xray.
-					// DEFAULT TRUE (2026-07-17 user decision) -- absent means
-					// see-through, matching the viewport's own default; pass
-					// {"xray":false} to inspect the transmissive surface
-					// itself.  Meaningful ONLY under a view-mode `mode`
+					// DEFAULT FALSE -- absent means the transmissive surface is
+					// shown normally, matching the viewport's own default; pass
+					// {"xray":true} to see opaque geometry inside/behind it.
+					// Meaningful ONLY under a view-mode `mode`
 					// (normals/depth/facets/wireframe) -- supplying it under
 					// "beauty"/"objectmap" is ACCEPTED and silently ignored
 					// (same precedent as quality/samples under those targets),
@@ -1886,6 +1886,8 @@ namespace RISE
 						{
 							JsonValue pv = JsonValue::MakeObject();
 							pv.set( "visible",     JsonValue::MakeBool( panesInfo.panes[i].visible ) );
+							pv.set( "contentSource", JsonValue::MakeNumber(
+								panesInfo.panes[i].contentSource ) );
 							pv.set( "mode",        JsonValue::MakeString( panesInfo.panes[i].mode ) );
 							pv.set( "vantageKind", JsonValue::MakeNumber( panesInfo.panes[i].vantageKind ) );
 							pv.set( "namedView",   JsonValue::MakeString( panesInfo.panes[i].namedView ) );

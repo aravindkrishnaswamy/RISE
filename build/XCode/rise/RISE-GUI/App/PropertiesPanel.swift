@@ -59,8 +59,11 @@ struct PropertyRow: Identifiable {
     let editable: Bool
     let presets: [PropertyPreset] // empty when descriptor declared no presets
     let unitLabel: String         // empty for dimensionless / unlabelled fields
+    /// Snapshot position -- the C-ABI property index this row was built
+    /// from (jump-to-definition queries the core by index).
+    let index: Int
 
-    nonisolated static func from(_ src: RISEViewportProperty) -> PropertyRow {
+    nonisolated static func from(_ src: RISEViewportProperty, index: Int) -> PropertyRow {
         let presets: [PropertyPreset] = src.presets.enumerated().map { (idx, p) in
             PropertyPreset(id: "\(src.name).preset.\(idx)", label: p.label, value: p.value)
         }
@@ -72,7 +75,8 @@ struct PropertyRow: Identifiable {
             kind: PropertyKind(rawValue: src.kind) ?? .string,
             editable: src.editable,
             presets: presets,
-            unitLabel: src.unitLabel
+            unitLabel: src.unitLabel,
+            index: index
         )
     }
 }
@@ -94,6 +98,7 @@ private func categoryTitle(_ cat: RISEViewportCategory) -> String {
     case .animation:    return "Animation"
     case .sceneVariant: return "Variants"
     case .painter:      return "Painters"
+    case .geometry:     return "Geometry"
     case .none:         return "Scene"
     default:            return "Scene"
     }
@@ -116,6 +121,7 @@ private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
     case .animation:    return "▶"
     case .sceneVariant: return "⧉"
     case .painter:      return "▧"
+    case .geometry:     return "◇"
     case .none:         return "•"
     default:            return "•"
     }
@@ -257,8 +263,10 @@ struct PropertiesPanel: View {
         PropertyRowView(
             row: row,
             onCommit: { newValue in
-                _ = bridge.setProperty(for: selectionCategory, name: row.name, value: newValue)
+                let accepted = bridge.setProperty(
+                    for: selectionCategory, name: row.name, value: newValue)
                 reload()
+                return accepted
             },
             onScrubBegin: { bridge.beginPropertyScrub() },
             onScrubEnd:   { bridge.endPropertyScrub()   }
@@ -272,6 +280,24 @@ struct PropertiesPanel: View {
                     viewModel.revealSourceSpan(category: selectionCategory, name: selectionName, param: row.name)
                 } label: {
                     Label("Reveal “\(row.name)” in Scene File", systemImage: "text.magnifyingglass")
+                }
+            }
+            // Jump-to-definition (GUI redesign 2026-07-22): a Reference
+            // row whose value names a live element gets a direct jump to
+            // that element's own panel.  Resolution happens at menu-build
+            // time (right-click), so the item reflects the CURRENT scene
+            // -- a dangling reference simply shows no item.
+            if row.kind == .reference {
+                var jumpCat: RISEViewportCategory = .none
+                var jumpName: NSString? = nil
+                if bridge.propertyJumpTarget(atIndex: UInt(row.index),
+                                             outCategory: &jumpCat, outName: &jumpName),
+                   let name = jumpName as String? {
+                    Button {
+                        viewModel.jumpToEntity(category: jumpCat, name: name)
+                    } label: {
+                        Label("Jump to Definition of “\(name)”", systemImage: "arrow.uturn.right")
+                    }
                 }
             }
         }
@@ -438,9 +464,8 @@ struct PropertiesPanel: View {
     // Status codes mirror SaveResult::Status:
     //   0 = Saved   — silent success (button greys out via the dirty-
     //                 changed callback's clean→dirty=false transition)
-    //   1 = NoOp    — silent (nothing to write).  Shouldn't normally
-    //                 fire from a button that's disabled-when-clean,
-    //                 but it's safe to ignore.
+    //   1 = NoOp    — silent success.  A Save-As still re-anchors to
+    //                 the chosen byte-identical target.
     //   2 = Refused — engine declined (cross-file target, barrier-
     //                 conflict, external modification).  Modal alert.
     //   3 = Failed  — IO error or file-not-found.  Modal alert.
@@ -520,9 +545,32 @@ struct PropertiesPanel: View {
                 alert.runModal()
             }
         case 1:
-            // NoOp — silent success.  The file is unchanged on
-            // disk; no re-anchor needed.
-            break
+            // NoOp is still a successful Save-As: the chosen file already
+            // contains byte-identical CST, and the core re-anchored its file
+            // identity to this path.  Keep the shell's next in-place Save
+            // aligned with that same target.
+            if path != viewModel.loadedFilePath {
+                viewModel.loadedFilePath = path
+            }
+            if !viewModel.isEditorDirty {
+                viewModel.refreshEditorContents()
+            } else {
+                // Same conflict as the Saved arm: Save-As changed which
+                // file the editor session targets, but refreshing would
+                // discard the scene editor's independent text edits.
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "The scene is now anchored to \(path), which already " +
+                    "contained the current interactive scene.  The scene " +
+                    "editor pane still shows its own unsaved text changes.  " +
+                    "Clicking Save in the scene editor will overwrite that " +
+                    "file — use Revert in the scene editor to discard your " +
+                    "text edits and pull the selected file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         case 2:
             showSaveAlert(
                 title: "Save Refused",
@@ -555,7 +603,12 @@ struct PropertiesPanel: View {
         bridge.refreshProperties()
         selectionCategory = bridge.selectionCategory
         selectionName = bridge.selectionName
-        rows = bridge.propertySnapshot().map(PropertyRow.from)
+        // Read the per-category snapshot just like the Windows inspector.
+        // Animation and Scene Variant intentionally have no legacy
+        // primary PanelMode, but their accordion sections can still expose
+        // descriptor-backed rows.
+        rows = bridge.propertySnapshot(for: selectionCategory)
+            .enumerated().map { PropertyRow.from($1, index: $0) }
 
         // Reset the Advanced disclosure whenever the selected entity's
         // identity changes — otherwise it could stay open showing a
@@ -658,7 +711,7 @@ private struct AdvancedDisclosure<Content: View>: View {
 /// picked by `row.kind`; all kinds share the same 82pt label column.
 private struct PropertyRowView: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
     let onScrubBegin: () -> Void
     let onScrubEnd:   () -> Void
 
@@ -737,7 +790,7 @@ private struct PresetMenu: View {
 
 private struct TextWellCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
     let onScrubBegin: () -> Void
     let onScrubEnd: () -> Void
 
@@ -753,7 +806,7 @@ private struct TextWellCell: View {
                         name: row.name,
                         kind: row.kind,
                         onScrubBegin: onScrubBegin,
-                        onScrub: { onCommit($0) },
+                        onScrub: { _ = commit($0) },
                         onScrubEnd: onScrubEnd
                     )
                 }
@@ -762,10 +815,10 @@ private struct TextWellCell: View {
                     .font(Theme.mono(11))
                     .foregroundColor(Theme.textPrimary)
                     .focused($isFocused)
-                    .onSubmit { onCommit(text) }
+                    .onSubmit { _ = commit(text) }
                     .onChange(of: isFocused) { _, focused in
                         if !focused && text != row.initialValue {
-                            onCommit(text)
+                            _ = commit(text)
                         }
                     }
                 if !row.unitLabel.isEmpty {
@@ -777,7 +830,7 @@ private struct TextWellCell: View {
                 if !row.presets.isEmpty {
                     PresetMenu(row: row) { value in
                         text = value
-                        onCommit(value)
+                        _ = commit(value)
                     }
                 }
             } else {
@@ -803,13 +856,19 @@ private struct TextWellCell: View {
             if !isFocused { text = newValue }
         }
     }
+
+    private func commit(_ value: String) -> Bool {
+        let accepted = onCommit(value)
+        if !accepted { text = row.initialValue }
+        return accepted
+    }
 }
 
 // MARK: - Bool pill toggle
 
 private struct BoolPillCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var isOn: Bool = false
 
@@ -818,7 +877,9 @@ private struct BoolPillCell: View {
             Button {
                 guard row.editable else { return }
                 isOn.toggle()
-                onCommit(isOn ? "true" : "false")
+                if !onCommit(isOn ? "true" : "false") {
+                    isOn = Self.parseBool(row.initialValue)
+                }
             } label: {
                 ZStack(alignment: isOn ? .trailing : .leading) {
                     RoundedRectangle(cornerRadius: 9)
@@ -854,7 +915,7 @@ private struct BoolPillCell: View {
 
 private struct Vec3Cell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var comps: [String] = ["0", "0", "0"]
     @FocusState private var focusedIndex: Int?
@@ -890,7 +951,9 @@ private struct Vec3Cell: View {
     }
 
     private func commit() {
-        onCommit(comps.joined(separator: " "))
+        if !onCommit(comps.joined(separator: " ")) {
+            comps = Self.parseVec3(row.initialValue)
+        }
     }
 
     private func vecColor(_ i: Int) -> Color {
@@ -912,7 +975,7 @@ private struct Vec3Cell: View {
 
 private struct FilenameCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var text: String = ""
     @FocusState private var isFocused: Bool
@@ -925,9 +988,9 @@ private struct FilenameCell: View {
                 .foregroundColor(row.editable ? Theme.textPrimary : Theme.textMuted)
                 .disabled(!row.editable)
                 .focused($isFocused)
-                .onSubmit { onCommit(text) }
+                .onSubmit { _ = commit(text) }
                 .onChange(of: isFocused) { _, focused in
-                    if !focused && text != row.initialValue { onCommit(text) }
+                    if !focused && text != row.initialValue { _ = commit(text) }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
@@ -960,8 +1023,14 @@ private struct FilenameCell: View {
         panel.canChooseFiles = true
         if panel.runModal() == .OK, let url = panel.url {
             text = url.path
-            onCommit(url.path)
+            _ = commit(url.path)
         }
+    }
+
+    private func commit(_ value: String) -> Bool {
+        let accepted = onCommit(value)
+        if !accepted { text = row.initialValue }
+        return accepted
     }
 }
 
@@ -969,7 +1038,7 @@ private struct FilenameCell: View {
 
 private struct ReferenceChipCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var text: String = ""
     @FocusState private var isFocused: Bool
@@ -990,9 +1059,9 @@ private struct ReferenceChipCell: View {
                     .font(Theme.mono(11.5))
                     .foregroundColor(Theme.textPrimary)
                     .focused($isFocused)
-                    .onSubmit { onCommit(text) }
+                    .onSubmit { _ = commit(text) }
                     .onChange(of: isFocused) { _, focused in
-                        if !focused && text != row.initialValue { onCommit(text) }
+                        if !focused && text != row.initialValue { _ = commit(text) }
                     }
             } else {
                 Text(text.isEmpty ? row.initialValue : text)
@@ -1003,7 +1072,7 @@ private struct ReferenceChipCell: View {
             if !row.presets.isEmpty {
                 PresetMenu(row: row) { value in
                     text = value
-                    onCommit(value)
+                    _ = commit(value)
                 }
             }
         }
@@ -1015,13 +1084,19 @@ private struct ReferenceChipCell: View {
             if !isFocused { text = v }
         }
     }
+
+    private func commit(_ value: String) -> Bool {
+        let accepted = onCommit(value)
+        if !accepted { text = row.initialValue }
+        return accepted
+    }
 }
 
 // MARK: - Enum (bordered menu chip when presets exist, else a plain well)
 
 private struct EnumChipCell: View {
     let row: PropertyRow
-    let onCommit: (String) -> Void
+    let onCommit: (String) -> Bool
 
     @State private var text: String = ""
 
@@ -1031,7 +1106,9 @@ private struct EnumChipCell: View {
                 ForEach(row.presets) { preset in
                     Button(preset.label) {
                         text = preset.value
-                        onCommit(preset.value)
+                        if !onCommit(preset.value) {
+                            text = row.initialValue
+                        }
                     }
                 }
             } label: {
