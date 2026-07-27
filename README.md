@@ -67,6 +67,50 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ./run_scenes.sh
 ```
 
+### macOS release DMG
+
+The release script performs a clean `RISE-GUI-Opto` Xcode build in fresh
+DerivedData, bundles and relinks non-system runtime libraries, signs the app,
+and creates a drag-to-Applications DMG plus a dSYM archive and SHA-256 file:
+
+```sh
+scripts/create_macos_release.sh
+```
+
+The release requires a GPU-capable OIDN at `extlib/oidn/install/` — run
+`extlib/oidn/fetch_prebuilt.sh` (or `extlib/oidn/build.sh`) once first. The
+script stages that install into its source snapshot and refuses to build
+without a Metal device module, because the Homebrew fallback is built
+CPU-device-only and would silently ship a DMG that cannot denoise on the GPU.
+
+The current dependency stack produces an Apple Silicon (`arm64`) app and uses
+the Xcode project's deployment target (currently macOS 26.2). The default uses
+an ad-hoc signature. For public distribution, provide a Developer ID
+Application identity and a `notarytool` keychain profile; the script then
+signs, notarizes, and staples the DMG:
+
+```sh
+RISE_CODESIGN_IDENTITY='Developer ID Application: Example (TEAMID)' \
+RISE_NOTARY_PROFILE=rise-notary \
+scripts/create_macos_release.sh --version 1.2.0 --build 42
+```
+
+Run `scripts/create_macos_release.sh --help` for output and overwrite options.
+The source tree must be clean; the script builds a detached snapshot of the
+captured commit. Version and build default to `src/Library/Version.h`;
+overrides update both the compiled library and app bundle metadata, and version
+overrides use canonical `X.Y.Z` form. Artifacts include both version and build
+number and are written to `dist/macos/` by default.
+
+The script fails closed on anything it cannot account for: a bundled dylib with
+no third-party notice mapping, a notice directory with no licence file, a Mach-O
+image in the app bundle that the relinking pass never visited, or an entitlement
+the manual signing steps do not carry. Third-party notices land in
+`RISE-GUI.app/Contents/Resources/Third-Party Licenses/`, so a new dependency
+needs a mapping in `copy_dependency_license` (bundled dylibs) or a
+`copy_static_license` call (sources compiled straight into the executable)
+before a release will complete.
+
 ### Windows
 
 ```powershell

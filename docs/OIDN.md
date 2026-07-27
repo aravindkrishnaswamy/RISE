@@ -1171,6 +1171,69 @@ from a reviewer, or has its priority moved. Most recent first.
   real animation flow makes the cost-budget framing more
   important than intent matching.
 
+### 2026-07-26 — OIDN-P0-3 follow-up: the Xcode project was never rewired
+- **The macOS GUI — and therefore every shipped DMG — had been
+  denoising on the CPU the whole time.**  The OIDN-P0-3 sweep above
+  rewired `build/make/rise/Config.OSX`, the 8 Windows vcxproj files and
+  the rise-tests CMakeLists to prefer `extlib/oidn/install/`, but
+  `build/XCode/rise/rise.xcodeproj` was not in that list.  All 8 of its
+  build configurations (4 on the `rise` CLI/library target, 4 on
+  `RISE-GUI`) kept `HEADER_SEARCH_PATHS`, `LIBRARY_SEARCH_PATHS` and
+  `LD_RUNPATH_SEARCH_PATHS` pointed at `/opt/homebrew` only, so
+  `-lOpenImageDenoise` resolved to the CPU-device-only Homebrew bottle
+  and `DeviceType::Default` silently returned CPU.  Fixed by putting
+  `$(SRCROOT)/../../../extlib/oidn/install/{include,lib}` ahead of the
+  Homebrew prefix in all three settings across all 8 configurations —
+  the same prefer-in-tree-else-system behaviour Config.OSX gets, since
+  a search path that does not exist is simply skipped.
+- **Metal Toolchain gotcha (Xcode 26+).**  `extlib/oidn/build.sh` now
+  fails on stock Xcode 26 with `cannot execute tool 'metal' due to
+  missing Metal Toolchain` — Apple moved it to a separately downloaded
+  multi-GB component (`xcodebuild -downloadComponent MetalToolchain`).
+  The failure kills only the `OpenImageDenoise_device_metal` target, so
+  an unwary retry-with-`-k` would produce a CPU-only install that looks
+  successful.  Added `extlib/oidn/fetch_prebuilt.sh` as the alternative:
+  it installs Intel's official binary release for the version the
+  submodule pins, verified against a pinned SHA-256, cross-checked
+  against the submodule tag, and asserts the Metal device module is
+  present before declaring success.
+- **Release gating.**  `scripts/create_macos_release.sh` builds from a
+  detached worktree, which never contains gitignored build output — so
+  the Xcode fix alone would still have produced CPU-only DMGs.  The
+  script now stages `extlib/oidn/install` into the snapshot, refuses to
+  start without a Metal device module in it, verifies after bundling
+  that the module actually landed in `Contents/Frameworks`, and records
+  the shipped device backends in `Release-Info.txt`.
+- **oneTBB: one runtime per process.**  Intel's binary release is
+  packaged in OIDN's `OIDN_ZIP_MODE`, which vendors a private
+  `libtbb.12.dylib` next to the libraries and gives every module an
+  `@loader_path/../lib` runpath.  A source build never installs one — it
+  links whatever oneTBB the system provides.  RISE always links
+  Homebrew's openpgl, which records an **absolute** dependency on
+  `/opt/homebrew/opt/tbb/lib/libtbb.12.dylib`, so with the vendored copy
+  in place dyld loaded *two* oneTBB images (verified via
+  `DYLD_PRINT_LIBRARIES`) — two thread pools in one process, and nothing
+  in the link line can redirect an absolute dependency.  The fix is at
+  the install layer, not the link layer: `fetch_prebuilt.sh` drops the
+  vendored copy once it has confirmed a system oneTBB with a matching
+  `compatibility version` is reachable on the search path the build
+  configs already use, so OIDN's `@rpath/libtbb.12.dylib` falls through
+  to the same image openpgl uses.  That makes the prebuilt and
+  source-built installs behave identically and fixes the make build, the
+  Xcode build, and the release at once.  If no compatible system copy
+  exists the vendored one is kept (with a warning) — there is no
+  duplication in that case anyway, because openpgl could not have loaded
+  either.  As a backstop the release bundler also unifies same-basename
+  libraries whose LC_ID_DYLIB ABI version pair matches, and hard-fails
+  when the versions differ.
+- Verified by controlled experiment on an M-series host: with the Metal
+  module present, a render with `oidn_device gpu` emits no fallback
+  warning and dyld loads
+  `libOpenImageDenoise_device_metal.2.4.1.dylib`; hide that one file and
+  the identical render logs `OIDN: GPU device requested but unavailable
+  in this OIDN install; using CPU`.  `oidnBenchmark` on the same host:
+  Metal 27.2 ms/image vs CPU 164.0 ms/image at 1280×720 (6.0×).
+
 ### 2026-04-29 — OIDN-P0-3 code complete (Metal-ready, install-gated)
 - New scene-language parameter `oidn_device` (enum: `auto` / `cpu` /
   `gpu`, default `auto`).  Plumbed through the same surface as
