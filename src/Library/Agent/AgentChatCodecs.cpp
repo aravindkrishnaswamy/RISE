@@ -1272,6 +1272,62 @@ namespace RISE
 		// (3) AnthropicChatCodec
 		//======================================================================
 
+		namespace
+		{
+			//! Below this many bytes of message history BuildRequest places no
+			//! rolling cache breakpoint: a separate cache entry over a few
+			//! hundred bytes cannot repay its write premium, and the static
+			//! system/tools breakpoint already covers the request's bulk.
+			const std::size_t kAnthropicMinRollingCacheBytes = 2048;
+
+			//! Returns `entryJson` with cache_control:ephemeral added to the
+			//! LAST block of its content array, or `entryJson` unchanged when
+			//! that is not safe.  Three guards:
+			//!   * role must be "user" -- those entries are loop-generated
+			//!     (user turns, packed tool results) and reparsing them is
+			//!     already established practice (RewriteElidedImages).
+			//!     Assistant entries carry the verbatim byte-preservation
+			//!     contract and are never touched.
+			//!   * the content array must be non-empty and end in an object
+			//!     that does not already carry a marker.
+			//!   * the parse must round-trip to byte-identical input, so the
+			//!     ONLY difference from `entryJson` is the inserted marker.
+			//! The marker is request metadata, not message content: an entry
+			//! marked in one request and unmarked in the next still matches
+			//! the cached prefix (this is Anthropic's documented multi-turn
+			//! pattern -- the breakpoint moves to the newest turn each time).
+			std::string MarkAnthropicEntryCacheable( const std::string& entryJson )
+			{
+				JsonValue root;
+				std::string perr;
+				if( !JsonParse( entryJson, root, perr ) || !root.isObject() ) return entryJson;
+				if( root.get( "role" ).asString() != "user" ) return entryJson;
+				const JsonValue& content = root.get( "content" );
+				if( !content.isArray() || content.size() == 0 ) return entryJson;
+				const JsonValue& last = content.at( content.size() - 1 );
+				if( !last.isObject() || last.has( "cache_control" ) ) return entryJson;
+				if( JsonSerialize( root ) != entryJson ) return entryJson;
+
+				JsonValue cc = JsonValue::MakeObject();
+				cc.set( "type", JsonValue::MakeString( "ephemeral" ) );
+				JsonValue marked = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& lm = last.members();
+				for( std::size_t i = 0; i < lm.size(); ++i ) marked.set( lm[i].first, lm[i].second );
+				marked.set( "cache_control", cc );
+
+				JsonValue newContent = JsonValue::MakeArray();
+				for( std::size_t i = 0; i + 1 < content.size(); ++i )
+					newContent.push_back( content.at( i ) );
+				newContent.push_back( marked );
+
+				JsonValue newRoot = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& rm = root.members();
+				for( std::size_t i = 0; i < rm.size(); ++i )
+					newRoot.set( rm[i].first, rm[i].first == "content" ? newContent : rm[i].second );
+				return JsonSerialize( newRoot );
+			}
+		}
+
 		const char* AnthropicChatCodec::ProviderName() const { return "anthropic"; }
 
 		const char* AnthropicChatCodec::DefaultModelId() const { return "claude-sonnet-5"; }
@@ -1567,7 +1623,8 @@ namespace RISE
 			// block with cache_control:ephemeral so Anthropic caches that
 			// whole prefix -- tools render before system in the cache prefix,
 			// so one breakpoint on the last (only) system block covers tools
-			// AND system together (max 4 breakpoints/request; we use 1).
+			// AND system together.  The growing message history is covered
+			// separately, by the rolling breakpoints below.
 			// Cache reads bill at ~0.1x input and the 5-minute TTL is
 			// refreshed by any request in the window, which a live chat turn
 			// trivially satisfies.  Only this codec needs an explicit marker:
@@ -1587,9 +1644,56 @@ namespace RISE
 			body += ",\"tools\":";
 			body += AnthropicToolsJson();
 			body += ",\"messages\":[";
+			// ROLLING PROMPT-CACHE BREAKPOINTS.  The system marker above
+			// covers only the STATIC prefix; the message history grows every
+			// turn and would otherwise be re-sent uncached each time.
+			//
+			// Placement: the last content block of the TAIL entry, plus the
+			// last content block of entry n-3.  The loop appends exactly two
+			// entries between consecutive BuildRequests (assistant turn +
+			// packed tool results, or final assistant turn + the next user
+			// message), so n-3 is the position the PREVIOUS request marked --
+			// an exact-prefix read anchor that does not depend on Anthropic's
+			// backward scan to find a hit, and that still anchors a round
+			// whose two new entries carry many blocks.  The tail marker
+			// extends the cached prefix over this request's whole history so
+			// the NEXT request can read it.  Where the n-3 assumption misses
+			// (compaction dropped entries, two user turns in a row) that
+			// marker writes instead of reading; it is a strict prefix of the
+			// tail marker, so the loss is bounded by one extra cache entry.
+			//
+			// Both positions are role:"user" entries -- BuildRequest is only
+			// ever reached with a user turn or a tool-results turn last -- so
+			// MarkAnthropicEntryCacheable never reparses an assistant echo
+			// (and refuses to, if that ever changed).
+			//
+			// ELISION INTERACTION: the IMAGE RETENTION and SUPERSEDED-READ
+			// rules (AgentChatLoop.h) rewrite OLDER entries in place, i.e.
+			// inside the prefix both markers depend on, so the turn after a
+			// rewrite is a cache miss up to the tail.  No marker position
+			// avoids that: the rules can touch any entry, and the codec sees
+			// only the already-rewritten result.  It costs one re-write turn,
+			// not the feature -- both rules are convergent (an entry is
+			// elided at most once per rule), so the prefix re-stabilizes and
+			// the marker is read again on the following turn.
+			//
+			// Three breakpoints total (system + two), under the cap of four.
+			std::size_t rollingTail = rawEntries.size();
+			std::size_t rollingAnchor = rawEntries.size();
+			{
+				std::size_t historyBytes = 0;
+				for( std::size_t i = 0; i < rawEntries.size(); ++i )
+					historyBytes += rawEntries[i].size();
+				if( !rawEntries.empty() && historyBytes >= kAnthropicMinRollingCacheBytes ) {
+					rollingTail = rawEntries.size() - 1;
+					if( rawEntries.size() >= 3 ) rollingAnchor = rawEntries.size() - 3;
+				}
+			}
 			for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
 				if( i ) body += ",";
-				body += rawEntries[i];
+				body += ( i == rollingTail || i == rollingAnchor )
+					? MarkAnthropicEntryCacheable( rawEntries[i] )
+					: rawEntries[i];
 			}
 			body += "]}";
 			r.body = body;

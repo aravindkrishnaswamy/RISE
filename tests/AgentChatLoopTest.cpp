@@ -920,6 +920,284 @@ static void TestAnthropicRequestShape()
 }
 
 //----------------------------------------------------------------------
+// T1b: Anthropic ROLLING prompt-cache breakpoint on the message history.
+//
+// The static system breakpoint (T1) covers tools+system only.  This one
+// covers the growing transcript: the codec marks the last content block
+// of the tail entry and of entry n-3 (the position the PREVIOUS request
+// marked, given the loop's two-entries-per-round growth).
+//----------------------------------------------------------------------
+
+// Index of every messages[] entry whose LAST content block carries a
+// cache_control:ephemeral marker.
+static std::vector<std::size_t> MarkedMessageIndices( const JsonValue& root )
+{
+	std::vector<std::size_t> out;
+	const JsonValue& msgs = root.get( "messages" );
+	for( std::size_t i = 0; i < msgs.size(); ++i ) {
+		const JsonValue& c = msgs.at( i ).get( "content" );
+		if( !c.isArray() || c.size() == 0 ) continue;
+		if( c.at( c.size() - 1 ).get( "cache_control" ).get( "type" ).asString() == "ephemeral" )
+			out.push_back( i );
+	}
+	return out;
+}
+
+// Bounds-safe read of a marker-index list: an absent slot reads as a
+// sentinel rather than UB, so a red-proving perturbation that removes a
+// marker FAILS the assertion instead of crashing the binary.
+static std::size_t MarkAt( const std::vector<std::size_t>& v, std::size_t i )
+{
+	return i < v.size() ? v[i] : static_cast<std::size_t>( -1 );
+}
+
+// Every cache_control key anywhere in the request body (breakpoint count).
+static int CountCacheControl( const std::string& body )
+{
+	int n = 0;
+	std::size_t p = 0;
+	const std::string needle = "\"cache_control\"";
+	while( ( p = body.find( needle, p ) ) != std::string::npos ) { ++n; p += needle.size(); }
+	return n;
+}
+
+// The body with every breakpoint marker removed.  Cache markers are
+// request metadata, not message content -- comparing marker-stripped
+// bodies is what isolates "did any CONTENT byte move".
+static std::string StripCacheMarkers( const std::string& body )
+{
+	const std::string m = ",\"cache_control\":{\"type\":\"ephemeral\"}";
+	std::string out = body;
+	std::size_t p;
+	while( ( p = out.find( m ) ) != std::string::npos ) out.erase( p, m.size() );
+	return out;
+}
+
+// stripped(earlier) minus its trailing "]}" must be a BYTE-EXACT prefix of
+// stripped(later): every message the earlier request sent is re-sent at the
+// same offset, unchanged.  That is the property that makes the later
+// request a cache read.
+static void CheckContentPrefixUnchanged( const std::string& earlierBody,
+                                         const std::string& laterBody,
+                                         const char* label )
+{
+	const std::string a = StripCacheMarkers( earlierBody );
+	const std::string b = StripCacheMarkers( laterBody );
+	Check( a.size() >= 2 && a.compare( a.size() - 2, 2, "]}" ) == 0,
+	       std::string( label ) + ": earlier body ends with the messages array" );
+	if( a.size() < 2 ) return;
+	const std::string core = a.substr( 0, a.size() - 2 );
+	Check( b.size() > core.size() && b.compare( 0, core.size(), core ) == 0,
+	       std::string( label ) + ": every earlier content byte is re-sent unchanged, in place" );
+}
+
+static void TestAnthropicRollingCacheBreakpoint()
+{
+	std::printf( "T1b: Anthropic rolling prompt-cache breakpoint...\n" );
+
+	// (a) MINIMUM-SIZE GATE: a trivial history gets NO rolling marker --
+	//     a separate cache entry over a few dozen bytes cannot repay its
+	//     write premium.  The static system breakpoint is untouched.
+	{
+		AgentChatLoop tiny;
+		tiny.SetProvider( ChatProvider::Anthropic );
+		tiny.AddUserMessage( "hi" );
+		const std::string body = tiny.BuildRequest( kApiKey ).body;
+		JsonValue root = ParseBody( body );
+		Check( root.get( "system" ).at( 0 ).get( "cache_control" ).get( "type" ).asString()
+		       == "ephemeral", "T1b(a): the static system breakpoint is still present" );
+		Check( MarkedMessageIndices( root ).empty(),
+		       "T1b(a): a sub-threshold message history carries NO rolling marker" );
+		Check( CountCacheControl( body ) == 1,
+		       "T1b(a): exactly one breakpoint (system) below the size gate" );
+	}
+
+	// (b) BLOCK GUARDS, exercised on the codec directly: a marker never
+	//     lands on an assistant echo, on an entry with an EMPTY content
+	//     array, or on a last block that is not an object -- and every
+	//     unmarked entry still splices in byte-verbatim.
+	{
+		AnthropicChatCodec codec;
+		std::vector<std::string> entries;
+		entries.push_back( "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" +
+		                   std::string( 3000, 'y' ) + "\"}]}" );
+		entries.push_back( "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}" );
+		entries.push_back( "{\"role\":\"user\",\"content\":[]}" );                    // anchor (n-3)
+		entries.push_back( "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok2\"}]}" );
+		entries.push_back( "{\"role\":\"user\",\"content\":[\"not-an-object\"]}" );   // tail (n-1)
+		const ChatHttpRequest req =
+			codec.BuildRequest( "claude-sonnet-5", kApiKey, "sys", entries, false );
+		JsonValue root = ParseBody( req.body );
+		Check( MarkedMessageIndices( root ).empty(),
+		       "T1b(b): no marker on an empty content array or a non-object last block" );
+		Check( CountCacheControl( req.body ) == 1,
+		       "T1b(b): only the system breakpoint survives the block guards" );
+		for( std::size_t i = 0; i < entries.size(); ++i )
+			Check( req.body.find( entries[i] ) != std::string::npos,
+			       "T1b(b): an unmarked entry splices in byte-verbatim" );
+	}
+
+	// (c) THREE TURNS: the marker moves with the tail and the anchor
+	//     follows one round behind, and no content byte ever moves.
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	// Clears the 2048-byte rolling-cache size gate on turn one.
+	const std::string pad( 3000, 'x' );
+	loop.AddUserMessage( "Describe the scene. " + pad );
+
+	// read_schema is deliberately neither a mutation nor a visual observe,
+	// so the blind-edit nudge (which would rewrite the system prompt and
+	// legitimately break the prefix comparison) can never arm here.
+	const std::string fixtureA = AnthropicFixture(
+		"[{\"type\":\"text\",\"text\":\"Reading the schema.\"},"
+		"{\"type\":\"tool_use\",\"id\":\"toolu_R1\",\"name\":\"read_schema\",\"input\":{}}]",
+		"tool_use" );
+	const std::string fixtureB = AnthropicFixture(
+		"[{\"type\":\"text\",\"text\":\"Reading it again.\"},"
+		"{\"type\":\"tool_use\",\"id\":\"toolu_R2\",\"name\":\"read_schema\",\"input\":{}}]",
+		"tool_use" );
+	const std::string rpcOk =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"chunks\":[\"pinhole_camera\"]}}";
+
+	// --- request 1: n == 1 (user turn only) ---
+	const std::string body1 = loop.BuildRequest( kApiKey ).body;
+	JsonValue root1 = ParseBody( body1 );
+	std::vector<std::size_t> m1 = MarkedMessageIndices( root1 );
+	Check( root1.get( "messages" ).size() == 1, "T1b: request 1 carries one message" );
+	Check( m1.size() == 1 && MarkAt( m1, 0 ) == 0,
+	       "T1b: request 1 marks the tail entry (index 0); no anchor exists yet" );
+	Check( CountCacheControl( body1 ) == 2, "T1b: request 1 has 2 breakpoints (system + tail)" );
+
+	// --- request 2: n == 3 (assistant + tool results appended) ---
+	ChatStepResult s1 = loop.HandleResponse( 200, fixtureA );
+	Check( s1.kind == ChatStepResult::Kind::ToolCalls, "T1b: fixture A -> ToolCalls" );
+	if( s1.toolCalls.size() != 1 ) return;
+	loop.AddToolResult( s1.toolCalls[0], rpcOk );
+	const std::string body2 = loop.BuildRequest( kApiKey ).body;
+	JsonValue root2 = ParseBody( body2 );
+	std::vector<std::size_t> m2 = MarkedMessageIndices( root2 );
+	Check( root2.get( "messages" ).size() == 3, "T1b: request 2 carries three messages" );
+	Check( m2.size() == 2 && MarkAt( m2, 0 ) == 0 && MarkAt( m2, 1 ) == 2,
+	       "T1b: request 2 marks tail (2) and anchor (n-3 == 0)" );
+	Check( MarkAt( m2, 0 ) == MarkAt( m1, 0 ),
+	       "T1b: the anchor sits exactly where request 1's tail marker sat (an exact-prefix read)" );
+	Check( CountCacheControl( body2 ) == 3, "T1b: request 2 has 3 breakpoints (system + two)" );
+	CheckContentPrefixUnchanged( body1, body2, "T1b request 1->2" );
+
+	// --- request 3: n == 5 ---
+	ChatStepResult s2 = loop.HandleResponse( 200, fixtureB );
+	Check( s2.kind == ChatStepResult::Kind::ToolCalls, "T1b: fixture B -> ToolCalls" );
+	if( s2.toolCalls.size() != 1 ) return;
+	loop.AddToolResult( s2.toolCalls[0], rpcOk );
+	const std::string body3 = loop.BuildRequest( kApiKey ).body;
+	JsonValue root3 = ParseBody( body3 );
+	std::vector<std::size_t> m3 = MarkedMessageIndices( root3 );
+	Check( root3.get( "messages" ).size() == 5, "T1b: request 3 carries five messages" );
+	Check( m3.size() == 2 && MarkAt( m3, 0 ) == 2 && MarkAt( m3, 1 ) == 4,
+	       "T1b: request 3 marks tail (4) and anchor (n-3 == 2) -- both moved by one round" );
+	Check( MarkAt( m3, 0 ) == MarkAt( m2, 1 ),
+	       "T1b: request 3's anchor sits exactly where request 2's tail marker sat" );
+	Check( CountCacheControl( body3 ) == 3, "T1b: request 3 still has 3 breakpoints" );
+	CheckContentPrefixUnchanged( body2, body3, "T1b request 2->3" );
+
+	// The marked entries are always loop-generated role:"user" entries --
+	// an assistant echo is never reparsed to carry a marker.
+	for( std::size_t k = 0; k < m3.size(); ++k )
+		Check( root3.get( "messages" ).at( m3[k] ).get( "role" ).asString() == "user",
+		       "T1b: every rolling marker sits on a role:user (loop-generated) entry" );
+	Check( root3.get( "messages" ).at( 1 ).get( "role" ).asString() == "assistant" &&
+	       !root3.get( "messages" ).at( 1 ).get( "content" ).at( 0 ).has( "cache_control" ),
+	       "T1b: the assistant echo carries NO marker (byte-preservation contract intact)" );
+
+	// The static system breakpoint still covers tools+system: tools render
+	// before system, and system is still the one-block array carrying it.
+	Check( root3.get( "tools" ).isArray() && root3.get( "tools" ).size() > 0,
+	       "T1b: tools are still emitted (they precede system in the cache prefix)" );
+	Check( root3.get( "system" ).isArray() && root3.get( "system" ).size() == 1 &&
+	       root3.get( "system" ).at( 0 ).get( "cache_control" ).get( "type" ).asString()
+	       == "ephemeral",
+	       "T1b: the static system breakpoint survives the rolling ones" );
+	Check( CountCacheControl( body3 ) <= 4,
+	       "T1b: never more than Anthropic's four breakpoints per request" );
+}
+
+//----------------------------------------------------------------------
+// T1c: elision interaction.  IMAGE RETENTION / SUPERSEDED-READ rewrite
+// OLDER entries in place, i.e. inside the prefix the rolling markers
+// depend on -- so the turn after a rewrite is a miss.  This test does not
+// assert that a rewrite is harmless; it PINS the documented behaviour so
+// the codec comment cannot silently become false.
+//----------------------------------------------------------------------
+static void TestRollingCacheVsElision()
+{
+	std::printf( "T1c: rolling cache breakpoint vs. the elision rules...\n" );
+
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	const std::string pad( 3000, 'x' );
+	loop.AddUserMessage( "Read the document twice. " + pad );
+
+	// read_document IS on the supersession allowlist, so the SECOND result
+	// elides the first -- an in-place rewrite of an OLDER entry.
+	const std::string doc =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"document\":\"" + std::string( 400, 'd' ) +
+		"\",\"hasDocument\":true,\"headVersion\":{\"major\":1,\"minor\":0}}}";
+	const std::string fixture1 = AnthropicFixture(
+		"[{\"type\":\"tool_use\",\"id\":\"toolu_D1\",\"name\":\"read_document\",\"input\":{}}]",
+		"tool_use" );
+	const std::string fixture2 = AnthropicFixture(
+		"[{\"type\":\"tool_use\",\"id\":\"toolu_D2\",\"name\":\"read_document\",\"input\":{}}]",
+		"tool_use" );
+
+	const std::string body1 = loop.BuildRequest( kApiKey ).body;
+
+	ChatStepResult s1 = loop.HandleResponse( 200, fixture1 );
+	if( s1.toolCalls.size() != 1 ) { Check( false, "T1c: fixture 1 -> one call" ); return; }
+	loop.AddToolResult( s1.toolCalls[0], doc );
+	const std::string body2 = loop.BuildRequest( kApiKey ).body;
+	CheckContentPrefixUnchanged( body1, body2, "T1c pre-elision 1->2" );
+
+	ChatStepResult s2 = loop.HandleResponse( 200, fixture2 );
+	if( s2.toolCalls.size() != 1 ) { Check( false, "T1c: fixture 2 -> one call" ); return; }
+	loop.AddToolResult( s2.toolCalls[0], doc );
+	const std::string body3 = loop.BuildRequest( kApiKey ).body;
+
+	// The rewrite landed: entry 2 (the FIRST read_document result) is now a
+	// placeholder, so it is NOT byte-identical to what request 2 sent.  That
+	// entry sits BEFORE both of request 3's markers -- i.e. the documented
+	// one-turn miss, not a stable prefix.
+	JsonValue root2 = ParseBody( body2 );
+	JsonValue root3 = ParseBody( body3 );
+	const std::string old2 = JsonSerialize( root2.get( "messages" ).at( 2 ) );
+	const std::string new2 = JsonSerialize( root3.get( "messages" ).at( 2 ) );
+	Check( old2 != new2,
+	       "T1c: superseded-read elision really rewrote the older entry in place" );
+	std::vector<std::size_t> m3 = MarkedMessageIndices( root3 );
+	Check( m3.size() == 2 && MarkAt( m3, 0 ) == 2 && MarkAt( m3, 1 ) == 4,
+	       "T1c: the markers still sit at n-3 and n-1" );
+	Check( m3.size() == 2 && MarkAt( m3, 0 ) >= 2,
+	       "T1c: the rewritten entry sits at or before a marker -- the documented one-turn miss" );
+
+	// CONVERGENCE: the rule is one-shot per entry, so the NEXT round leaves
+	// entry 2 alone and the prefix is stable again.
+	const std::string fixture3 = AnthropicFixture(
+		"[{\"type\":\"tool_use\",\"id\":\"toolu_S1\",\"name\":\"read_schema\",\"input\":{}}]",
+		"tool_use" );
+	ChatStepResult s3 = loop.HandleResponse( 200, fixture3 );
+	if( s3.toolCalls.size() != 1 ) { Check( false, "T1c: fixture 3 -> one call" ); return; }
+	loop.AddToolResult( s3.toolCalls[0],
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"chunks\":[\"pinhole_camera\"]}}" );
+	const std::string body4 = loop.BuildRequest( kApiKey ).body;
+	CheckContentPrefixUnchanged( body3, body4, "T1c post-elision 3->4 (converged)" );
+	// Seven messages in, the breakpoint budget is still three (system +
+	// two rolling) -- markers do NOT accumulate with transcript length.
+	Check( ParseBody( body4 ).get( "messages" ).size() == 7,
+	       "T1c: the fourth request carries seven messages" );
+	Check( CountCacheControl( body4 ) == 3,
+	       "T1c: still exactly three breakpoints, well inside Anthropic's cap of four" );
+}
+
+//----------------------------------------------------------------------
 // T2: Anthropic tool loop end-to-end against a LIVE dispatcher.
 //----------------------------------------------------------------------
 static void TestAnthropicToolLoop( AgentRpcDispatcher& rpc )
@@ -7768,6 +8046,8 @@ int main()
 	TestXaiUsageParse();
 	TestOpenAIToolLoop();
 	TestAnthropicRequestShape();
+	TestAnthropicRollingCacheBreakpoint();
+	TestRollingCacheVsElision();
 	TestAnthropicToolLoop( rpc );
 	TestInsertChunkToolLoop( rpc );
 	TestAnthropicReadImagePacking( rpc );
