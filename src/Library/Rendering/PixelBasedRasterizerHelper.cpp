@@ -1184,7 +1184,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 					// state.  Exception-safe: if Resolve throws, the
 					// destructor still releases every tile lock.
 					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
+					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
@@ -1291,7 +1291,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 				mDenoisingPrefilter, pRect );
 		}
-		PropagateAOVsToFrameStore_( *pAOVBuffers );
+		PropagateAOVsToFrameStore_( *pAOVBuffers, pRect );
 		// FrameStore now owns the copied depth plane. Drop the float scratch
 		// before denoising/output (both can throw) and before the observer
 		// compacts its 7-B/pixel sidecar. OIDN needs only albedo+normal.
@@ -1704,7 +1704,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				{
 					// L6e-1.1 — bracket via RAII.
 					FrameStoreBulkBracket bracket( mFrameStore, image );
-					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
+					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( image );
@@ -1721,7 +1721,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		{
 			// L6e-1.1 — bracket via RAII.
 			FrameStoreBulkBracket bracket( mFrameStore, image );
-			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
+			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 		}
 
 		// Normalize per-pixel AOV by progressive-film alpha sum so the
@@ -1987,7 +1987,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 						interlacedFallbackPlan, static_cast<unsigned int>( upperField ), 2,
-						fallbackSPP, mDenoisingPrefilter );
+						fallbackSPP, mDenoisingPrefilter, pRect );
 				}
 			}
 
@@ -2014,7 +2014,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 					interlacedFallbackPlan, static_cast<unsigned int>( lowerField ), 2,
-					fallbackSPP, mDenoisingPrefilter );
+					fallbackSPP, mDenoisingPrefilter, pRect );
 			}
 		} else {
 			// Render to frames
@@ -2072,7 +2072,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter, pRect );
 			}
-			PropagateAOVsToFrameStore_( *pAOVBuffers );
+			PropagateAOVsToFrameStore_( *pAOVBuffers, pRect );
 			pAOVBuffers->ReleaseDepthStorage();
 		}
 #ifdef RISE_ENABLE_OIDN
@@ -2262,9 +2262,12 @@ IRasterImage* PixelBasedRasterizerHelper::AcquireRenderImage( unsigned int width
 // PixelBasedRasterizerHelper) can use the same logic.  See
 // `RISE::Implementation::PropagateAOVsToFrameStore` in FrameStore.h
 // for the contract.
-void PixelBasedRasterizerHelper::PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const
+void PixelBasedRasterizerHelper::PropagateAOVsToFrameStore_(
+	const AOVBuffers& aov,
+	const Rect* region
+	) const
 {
-	RISE::Implementation::PropagateAOVsToFrameStore( mFrameStore, aov );
+	RISE::Implementation::PropagateAOVsToFrameStore( mFrameStore, aov, region );
 }
 
 void PixelBasedRasterizerHelper::ReleaseRenderImage( IRasterImage* pImage ) const

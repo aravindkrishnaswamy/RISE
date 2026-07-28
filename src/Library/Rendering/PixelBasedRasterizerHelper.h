@@ -224,7 +224,10 @@ namespace RISE
 			void PrepareAOVBuffers_( unsigned int width, unsigned int height ) const;
 
 			//! Persist every allocated plane into the canonical FrameStore.
-			void PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const;
+			void PropagateAOVsToFrameStore_(
+				const AOVBuffers& aov,
+				const Rect* region = 0
+				) const;
 
 #ifdef RISE_ENABLE_OIDN
 			//! Whether OIDN should be invoked at the end of a render

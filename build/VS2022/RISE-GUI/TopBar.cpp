@@ -403,6 +403,9 @@ TopBar::TopBar(QWidget* parent)
     m_regionRenderBtn->setFont(Theme::sans(11, QFont::DemiBold));
     m_regionRenderBtn->setFixedHeight(28);
     m_regionRenderBtn->setPopupMode(QToolButton::InstantPopup);
+    m_regionRenderBtn->setAccessibleName(tr("Render options"));
+    m_regionRenderBtn->setAccessibleDescription(
+        tr("Contains the command to render only the active region"));
     auto* regionMenu = new QMenu(m_regionRenderBtn);
     QAction* regionAction = regionMenu->addAction(QStringLiteral("Render Active Region"));
     connect(regionAction, &QAction::triggered, this, &TopBar::renderRegionClicked);
@@ -887,8 +890,14 @@ void TopBar::updateReadout()
     m_statusRowLabel->setText(s.text);
     QString statusLabel = s.label;
     if (m_engine && m_engine->isRegionProductionRender()) {
-        statusLabel = (isCancelling || m_engineState == RenderEngine::Cancelled)
-            ? QStringLiteral("REGION CANCELLED") : QStringLiteral("REGION FINAL");
+        if (isCancelling || m_engineState == RenderEngine::Cancelled) {
+            statusLabel = QStringLiteral("REGION CANCELLED");
+        } else if (isProduction) {
+            statusLabel = isProductionPaused
+                ? QStringLiteral("REGION PAUSED") : QStringLiteral("REGION RENDERING");
+        } else if (m_engineState == RenderEngine::Completed && m_refinementPhase == 0) {
+            statusLabel = QStringLiteral("REGION FINAL");
+        }
     } else if (!isProduction && m_bridge) {
         unsigned int l = 0, t = 0, r = 0, b = 0;
         if (m_bridge->getInteractiveRegion(&l, &t, &r, &b)) {

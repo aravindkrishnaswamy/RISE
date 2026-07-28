@@ -552,8 +552,9 @@ public:
     int refinementPhase(unsigned int* outScaleDivisor) const;
 
     // ---- Interactive region-of-interest (UI redesign, A4) -----------
-    // Full-resolution film-pixel coordinates, INCLUSIVE.  Cleared
-    // automatically before production renders.
+    // Full-resolution film-pixel coordinates, INCLUSIVE. Preserved across
+    // production renders; full-frame and region-only production are explicit
+    // sibling commands and neither silently changes this interactive choice.
 
     void setInteractiveRegion(unsigned int left, unsigned int top,
                                unsigned int right, unsigned int bottom);

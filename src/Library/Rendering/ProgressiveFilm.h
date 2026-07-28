@@ -122,12 +122,27 @@ namespace RISE
 			/// `cret` return path in IntegratePixel is overwritten by this
 			/// resolve step, so the heatmap must be re-derived from the
 			/// progressive-film state here.
-			void Resolve( IRasterImage& target, bool showMap = false, unsigned int targetSamples = 0 ) const
+			void Resolve(
+				IRasterImage& target,
+				bool showMap = false,
+				unsigned int targetSamples = 0,
+				const Rect* region = 0
+				) const
 			{
 				const bool emitMap = showMap && targetSamples > 0;
 				const Scalar invTarget = emitMap ? 1.0 / Scalar( targetSamples ) : 0.0;
-				for( unsigned int y = 0; y < height; y++ ) {
-					for( unsigned int x = 0; x < width; x++ ) {
+				if( width == 0 || height == 0 ) return;
+				unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
+				if( region ) {
+					if( region->left > region->right || region->top > region->bottom ||
+						region->left >= width || region->top >= height ) return;
+					startX = region->left;
+					startY = region->top;
+					endX = r_min( region->right, width - 1 );
+					endY = r_min( region->bottom, height - 1 );
+				}
+				for( unsigned int y = startY; y <= endY; y++ ) {
+					for( unsigned int x = startX; x <= endX; x++ ) {
 						const ProgressivePixel& px = pixels[y * width + x];
 						if( emitMap ) {
 							const Scalar t = Scalar( px.sampleIndex ) * invTarget;

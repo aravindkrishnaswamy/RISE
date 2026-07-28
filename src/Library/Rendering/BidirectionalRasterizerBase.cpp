@@ -33,8 +33,28 @@ BidirectionalRasterizerBase::BidirectionalRasterizerBase(
 	pScratchImage( 0 ),
 	mSplatTotalSamples( 1.0 ),
 	mTotalAdaptiveSamples( 0 ),
+	mActiveSplatRegion( 0, 0, 0, 0 ),
+	mHasActiveSplatRegion( false ),
 	stabilityConfig( stabilityCfg )
 {
+}
+
+void BidirectionalRasterizerBase::ConfigureSplatRegion(
+	const Rect* region,
+	unsigned int width,
+	unsigned int height
+	) const
+{
+	mHasActiveSplatRegion = false;
+	if( !region || width == 0 || height == 0 ||
+		region->left > region->right || region->top > region->bottom ||
+		region->left >= width || region->top >= height ) return;
+	mActiveSplatRegion = Rect(
+		region->top,
+		region->left,
+		r_min( region->bottom, height - 1 ),
+		r_min( region->right, width - 1 ) );
+	mHasActiveSplatRegion = true;
 }
 
 BidirectionalRasterizerBase::~BidirectionalRasterizerBase()
@@ -48,6 +68,25 @@ void BidirectionalRasterizerBase::AddAdaptiveSamples( uint64_t count ) const
 	mTotalAdaptiveSamples.fetch_add( count, std::memory_order_relaxed );
 }
 
+Scalar BidirectionalRasterizerBase::RegionalSplatSPP(
+	Scalar fullFrameSPP,
+	unsigned int width,
+	unsigned int height,
+	const Rect* region
+	)
+{
+	if( !region || width == 0 || height == 0 ||
+		region->left > region->right || region->top > region->bottom ||
+		region->left >= width || region->top >= height ) return fullFrameSPP;
+	const unsigned int right = r_min( region->right, width - 1 );
+	const unsigned int bottom = r_min( region->bottom, height - 1 );
+	const Scalar regionArea =
+		static_cast<Scalar>( right - region->left + 1 ) *
+		static_cast<Scalar>( bottom - region->top + 1 );
+	const Scalar fullArea = static_cast<Scalar>( width ) * static_cast<Scalar>( height );
+	return fullFrameSPP * regionArea / fullArea;
+}
+
 Scalar BidirectionalRasterizerBase::GetEffectiveSplatSPP(
 	unsigned int width,
 	unsigned int height
@@ -57,8 +96,11 @@ Scalar BidirectionalRasterizerBase::GetEffectiveSplatSPP(
 	if( totalSamples > 0 && width > 0 && height > 0 ) {
 		const Scalar avgSPP =
 			static_cast<Scalar>( totalSamples ) /
-			static_cast<Scalar>( width * height );
+			( static_cast<Scalar>( width ) * static_cast<Scalar>( height ) );
 		return avgSPP * GetSplatSampleScale();
+	}
+	if( mHasActiveSplatRegion && width > 0 && height > 0 ) {
+		return RegionalSplatSPP( mSplatTotalSamples, width, height, &mActiveSplatRegion );
 	}
 	return mSplatTotalSamples;
 }
@@ -145,10 +187,10 @@ IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
 	// weightSum > 0, so it must go first; SplatFilm::Resolve ADDs on
 	// top.  Primary is never mutated.
 	if( pFilteredFilm ) {
-		pFilteredFilm->Resolve( *pScratchImage );
+		pFilteredFilm->Resolve( *pScratchImage, ActiveSplatRegion() );
 	}
 	if( pSplatFilm ) {
-		pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ) );
+		pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), ActiveSplatRegion() );
 	}
 
 	return *pScratchImage;
@@ -178,6 +220,6 @@ IRasterImage& BidirectionalRasterizerBase::ResolveSplatIntoScratch(
 			pScratchImage->SetPEL( x, y, src.GetPEL( x, y ) );
 		}
 	}
-	pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ) );
+	pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), ActiveSplatRegion() );
 	return *pScratchImage;
 }

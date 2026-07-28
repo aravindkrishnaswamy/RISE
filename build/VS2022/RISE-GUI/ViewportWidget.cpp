@@ -39,6 +39,7 @@ ViewportWidget::ViewportWidget(ViewportBridge* bridge, QWidget* parent)
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(320, 240);
+    setAccessibleName(tr("Render viewport"));
 
     // RISE UI redesign (A4 region refinement): 500ms poll of the
     // bridge's interactive-region state, independent of who set it.
@@ -293,6 +294,10 @@ void ViewportWidget::pollRegionState()
         m_hasRegion = has;
         m_regionLeft = l; m_regionTop = t; m_regionRight = r; m_regionBottom = b;
         emit regionStateChanged();
+        setAccessibleDescription(has
+            ? tr("Active render region %1 by %2 pixels. Arrow keys move it; Shift plus Arrow resizes it; Delete clears it.")
+                .arg(r - l + 1).arg(b - t + 1)
+            : tr("No active render region."));
         update();
     }
 }
@@ -324,19 +329,42 @@ void ViewportWidget::updateCursorForPosition(const QPointF& pos)
     // Tool cursor only over the rendered image area; outside, revert
     // to whatever the parent / window provides (default arrow).
     if (imageDrawRect().contains(pos.toPoint())) {
+        const RegionEditMode hoverMode = m_regionEditMode != RegionEditMode::None
+            ? m_regionEditMode : regionEditModeAt(pos);
         if (m_regionArmed || m_regionDragging) setCursor(Qt::CrossCursor);
-        else if (m_regionEditMode == RegionEditMode::Move) setCursor(Qt::SizeAllCursor);
-        else if (m_regionEditMode == RegionEditMode::Top
-              || m_regionEditMode == RegionEditMode::Bottom) setCursor(Qt::SizeVerCursor);
-        else if (m_regionEditMode == RegionEditMode::Left
-              || m_regionEditMode == RegionEditMode::Right) setCursor(Qt::SizeHorCursor);
-        else if (m_regionEditMode == RegionEditMode::TopRight
-              || m_regionEditMode == RegionEditMode::BottomLeft) setCursor(Qt::SizeBDiagCursor);
-        else if (m_regionEditMode != RegionEditMode::None) setCursor(Qt::SizeFDiagCursor);
+        else if (hoverMode == RegionEditMode::Move) setCursor(Qt::SizeAllCursor);
+        else if (hoverMode == RegionEditMode::Top
+              || hoverMode == RegionEditMode::Bottom) setCursor(Qt::SizeVerCursor);
+        else if (hoverMode == RegionEditMode::Left
+              || hoverMode == RegionEditMode::Right) setCursor(Qt::SizeHorCursor);
+        else if (hoverMode == RegionEditMode::TopRight
+              || hoverMode == RegionEditMode::BottomLeft) setCursor(Qt::SizeBDiagCursor);
+        else if (hoverMode != RegionEditMode::None) setCursor(Qt::SizeFDiagCursor);
         else setCursor(QCursor(m_toolCursor));
     } else {
         unsetCursor();
     }
+}
+
+ViewportWidget::RegionEditMode ViewportWidget::regionEditModeAt(const QPointF& pos) const
+{
+    if (!m_sceneEditable || !m_hasRegion || !m_bridge) return RegionEditMode::None;
+    const QRectF box = activeRegionWidgetRect(
+        imageDrawRect(), m_bridge->cameraSurfaceDimensions());
+    if (box.isEmpty()) return RegionEditMode::None;
+    // 24pt diameter targets match the macOS overlay and WCAG's practical
+    // pointer-target floor while keeping the painted dots visually compact.
+    constexpr qreal grab = 12.0;
+    auto near = [&](const QPointF& p) { return QLineF(pos, p).length() <= grab; };
+    if (near(box.topLeft())) return RegionEditMode::TopLeft;
+    if (near(box.topRight())) return RegionEditMode::TopRight;
+    if (near(box.bottomLeft())) return RegionEditMode::BottomLeft;
+    if (near(box.bottomRight())) return RegionEditMode::BottomRight;
+    if (near(QPointF(box.center().x(), box.top()))) return RegionEditMode::Top;
+    if (near(QPointF(box.right(), box.center().y()))) return RegionEditMode::Right;
+    if (near(QPointF(box.center().x(), box.bottom()))) return RegionEditMode::Bottom;
+    if (near(QPointF(box.left(), box.center().y()))) return RegionEditMode::Left;
+    return box.contains(pos) ? RegionEditMode::Move : RegionEditMode::None;
 }
 
 void ViewportWidget::leaveEvent(QEvent* event)
@@ -502,17 +530,20 @@ void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, cons
         const QFont f = Theme::mono(9);
         const QFontMetrics fm(f);
         const int textW = fm.horizontalAdvance(label);
-        QRect badge(0, static_cast<int>(boxRect.top()) - 20, textW + 14, 16);
-        badge.moveCenter(QPoint(static_cast<int>(boxRect.center().x()), badge.center().y()));
+        QRect badge(0, 0, textW + 14, 16);
+        badge.moveCenter(QPoint(static_cast<int>(boxRect.center().x()),
+                                static_cast<int>(boxRect.top()) - 24));
         if (badge.left() < drawRect.left()) badge.moveLeft(drawRect.left());
         if (badge.right() > drawRect.right()) badge.moveRight(drawRect.right());
         if (badge.top() < drawRect.top()) {
-            // Put the badge below the rectangle, not just inside its top edge,
-            // so it never steals pointer hits from the top resize handles.
-            badge.moveTop(static_cast<int>(boxRect.bottom()) + 4);
+            badge.moveCenter(QPoint(badge.center().x(),
+                                    static_cast<int>(boxRect.bottom()) + 24));
         }
         if (badge.bottom() > drawRect.bottom()) {
-            badge.moveBottom(drawRect.bottom());
+            // A full-height region has no exterior vertical space. Keep the
+            // badge inside but at least 24pt away from the top-edge handle.
+            badge.moveCenter(QPoint(badge.center().x(),
+                                    static_cast<int>(boxRect.top()) + 28));
         }
         m_regionBadgeRect = badge;
 
@@ -882,8 +913,22 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
         return;
     }
 
-    // A click on the persistent region badge clears the region --
-    // consumes the click rather than also forwarding it as a pick.
+    const RegionEditMode hitRegionMode = regionEditModeAt(event->position());
+
+    // Edge/corner handles take priority over the badge in cramped or
+    // full-frame regions. The badge still takes priority over moving the box.
+    if (hitRegionMode != RegionEditMode::None && hitRegionMode != RegionEditMode::Move
+        && event->button() == Qt::LeftButton) {
+        m_regionEditMode = hitRegionMode;
+        m_regionEditStart = event->position();
+        m_regionEditStartRect = activeRegionWidgetRect(
+            imageDrawRect(), m_bridge->cameraSurfaceDimensions());
+        m_regionEditRect = m_regionEditStartRect;
+        update();
+        event->accept();
+        return;
+    }
+
     if (m_sceneEditable && !m_regionArmed && m_hasRegion && event->button() == Qt::LeftButton
         && m_regionBadgeRect.contains(event->pos())) {
         // m_sceneEditable gate: clearInteractiveRegion -> KickRender takes the
@@ -898,34 +943,15 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
     // Direct manipulation of an active region. Corner grabs resize; a drag
     // inside the box moves it. The edit remains widget-local until release,
     // avoiding a KickRender on every mouse move.
-    if (m_sceneEditable && m_hasRegion && event->button() == Qt::LeftButton && m_bridge) {
-        const QSize surface = m_bridge->cameraSurfaceDimensions();
-        const QRectF box = activeRegionWidgetRect(imageDrawRect(), surface);
-        if (!box.isEmpty()) {
-            const QPointF pos = event->position();
-            const qreal grab = 9.0;
-            auto near = [&](const QPointF& p) {
-                return QLineF(pos, p).length() <= grab;
-            };
-            if (near(box.topLeft())) m_regionEditMode = RegionEditMode::TopLeft;
-            else if (near(box.topRight())) m_regionEditMode = RegionEditMode::TopRight;
-            else if (near(box.bottomLeft())) m_regionEditMode = RegionEditMode::BottomLeft;
-            else if (near(box.bottomRight())) m_regionEditMode = RegionEditMode::BottomRight;
-            else if (near(QPointF(box.center().x(), box.top()))) m_regionEditMode = RegionEditMode::Top;
-            else if (near(QPointF(box.right(), box.center().y()))) m_regionEditMode = RegionEditMode::Right;
-            else if (near(QPointF(box.center().x(), box.bottom()))) m_regionEditMode = RegionEditMode::Bottom;
-            else if (near(QPointF(box.left(), box.center().y()))) m_regionEditMode = RegionEditMode::Left;
-            else if (box.contains(pos)) m_regionEditMode = RegionEditMode::Move;
-
-            if (m_regionEditMode != RegionEditMode::None) {
-                m_regionEditStart = pos;
-                m_regionEditStartRect = box;
-                m_regionEditRect = box;
-                update();
-                event->accept();
-                return;
-            }
-        }
+    if (hitRegionMode == RegionEditMode::Move && event->button() == Qt::LeftButton) {
+        m_regionEditMode = hitRegionMode;
+        m_regionEditStart = event->position();
+        m_regionEditStartRect = activeRegionWidgetRect(
+            imageDrawRect(), m_bridge->cameraSurfaceDimensions());
+        m_regionEditRect = m_regionEditStartRect;
+        update();
+        event->accept();
+        return;
     }
 
     // Navigation axis-ball: a nub click snaps the view; the labeled controls
@@ -1099,6 +1125,7 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
                 static_cast<unsigned int>(sx1), static_cast<unsigned int>(sy1));
             pollRegionState();
         }
+        emit regionDrawFinished();
         update();
         event->accept();
         return;
@@ -1154,6 +1181,35 @@ void ViewportWidget::keyPressEvent(QKeyEvent* event)
         m_regionArmed = false;
         emit regionArmCancelled();
         update();
+        event->accept();
+        return;
+    }
+    if (m_sceneEditable && m_hasRegion && m_bridge
+        && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
+        m_bridge->clearInteractiveRegion();
+        pollRegionState();
+        event->accept();
+        return;
+    }
+    if (m_sceneEditable && m_hasRegion && m_bridge
+        && (event->key() == Qt::Key_Left || event->key() == Qt::Key_Right
+            || event->key() == Qt::Key_Up || event->key() == Qt::Key_Down)) {
+        const QSize surface = m_bridge->cameraSurfaceDimensions();
+        const unsigned int maxX = static_cast<unsigned int>(std::max(0, surface.width() - 1));
+        const unsigned int maxY = static_cast<unsigned int>(std::max(0, surface.height() - 1));
+        unsigned int l = m_regionLeft, t = m_regionTop, r = m_regionRight, b = m_regionBottom;
+        const bool resize = event->modifiers().testFlag(Qt::ShiftModifier);
+        if (resize) {
+            if (event->key() == Qt::Key_Left && r > l + 2) --r;
+            else if (event->key() == Qt::Key_Right && r < maxX) ++r;
+            else if (event->key() == Qt::Key_Up && b > t + 2) --b;
+            else if (event->key() == Qt::Key_Down && b < maxY) ++b;
+        } else if (event->key() == Qt::Key_Left && l > 0) { --l; --r; }
+        else if (event->key() == Qt::Key_Right && r < maxX) { ++l; ++r; }
+        else if (event->key() == Qt::Key_Up && t > 0) { --t; --b; }
+        else if (event->key() == Qt::Key_Down && b < maxY) { ++t; ++b; }
+        m_bridge->setInteractiveRegion(l, t, r, b);
+        pollRegionState();
         event->accept();
         return;
     }

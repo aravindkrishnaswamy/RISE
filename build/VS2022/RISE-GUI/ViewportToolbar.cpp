@@ -613,14 +613,6 @@ void ViewportToolbar::updateRegionChip()
     unsigned int l = 0, t = 0, r = 0, b = 0;
     const bool hasRegion = honors && m_bridge && m_bridge->getInteractiveRegion(&l, &t, &r, &b);
 
-    // A drag completed since we armed -- disarm now that the bridge
-    // reports an active region.  Poll-driven rather than event-driven
-    // so ViewportWidget doesn't need a back-channel signal.
-    if (hasRegion && m_regionArmed) {
-        m_regionArmed = false;
-        emit regionArmedChanged(false);
-    }
-
     QString text;
     QColor color;
     if (!honors) {

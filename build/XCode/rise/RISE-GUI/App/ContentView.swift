@@ -113,6 +113,12 @@ struct ContentView: View {
         .navigationTitle(windowTitle)
         .navigationSubtitle("RISE \(viewModel.versionString)")
         .frame(minWidth: 1320, minHeight: 760)
+        // `ViewportNSView` normally handles Escape, but drawing can be armed
+        // from the menu while a text editor or toolbar control owns focus.
+        // Catch the command at the workspace root so Escape always disarms it.
+        .onExitCommand {
+            if regionArmed { regionArmed = false }
+        }
         // Theme mode re-render hook — see `themeModeRaw` doc above.
         .id(themeModeRaw)
     }

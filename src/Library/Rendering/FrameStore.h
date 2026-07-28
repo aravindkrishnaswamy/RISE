@@ -471,7 +471,11 @@ namespace RISE
 		// `RasterizeSceneAnimation` after their respective
 		// `CollectFirstHitAOVs` calls — see commit messages for
 		// L7 + the L7 follow-up that wired MLT.
-		void PropagateAOVsToFrameStore( FrameStore* fs, const AOVBuffers& aov );
+		void PropagateAOVsToFrameStore(
+			FrameStore* fs,
+			const AOVBuffers& aov,
+			const Rect* region = 0
+			);
 
 		//! Builds the smallest float-sidecar plan needed by a FrameStore,
 		//! optionally unioned with the albedo+normal pair required by OIDN.

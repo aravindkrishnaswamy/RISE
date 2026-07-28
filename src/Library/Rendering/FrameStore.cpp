@@ -550,7 +550,11 @@ namespace RISE
 		// populate the canonical FrameStore's AOV channels.  See
 		// FrameStore.h doc + commit messages for the contract.
 		// ─────────────────────────────────────────────────────────────
-		void PropagateAOVsToFrameStore( FrameStore* fs, const AOVBuffers& aov )
+		void PropagateAOVsToFrameStore(
+			FrameStore* fs,
+			const AOVBuffers& aov,
+			const Rect* region
+			)
 		{
 			if( !fs ) return;
 
@@ -561,6 +565,15 @@ namespace RISE
 			const unsigned int fsW = static_cast<unsigned int>( fs->Width() );
 			const unsigned int fsH = static_cast<unsigned int>( fs->Height() );
 			if( aovW != fsW || aovH != fsH ) return;
+			unsigned int startX = 0, startY = 0, endX = aovW - 1, endY = aovH - 1;
+			if( region ) {
+				if( region->left > region->right || region->top > region->bottom ||
+					region->left >= aovW || region->top >= aovH ) return;
+				startX = region->left;
+				startY = region->top;
+				endX = r_min( region->right, aovW - 1 );
+				endY = r_min( region->bottom, aovH - 1 );
+			}
 
 			auto* albedoCh = fs->GetChannel<FrameStoreOutput::ChannelId::Albedo>();
 			auto* normalCh = fs->GetChannel<FrameStoreOutput::ChannelId::Normal>();
@@ -573,8 +586,8 @@ namespace RISE
 
 			{
 				FrameStoreBulkBracket bracket( fs, fs->AsBeautyRasterImage() );
-				for( unsigned int y = 0; y < aovH; ++y ) {
-					for( unsigned int x = 0; x < aovW; ++x ) {
+				for( unsigned int y = startY; y <= endY; ++y ) {
+					for( unsigned int x = startX; x <= endX; ++x ) {
 						const size_t idx = ( static_cast<size_t>( y ) * aovW + x ) * 3u;
 						if( albedoCh && albedoSrc ) {
 							RISEPel& pel = albedoCh->At( x, y );

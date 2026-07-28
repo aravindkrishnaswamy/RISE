@@ -2471,6 +2471,8 @@ void MainWindow::rebuildViewportForLoadedScene()
             m_viewportWidget, &ViewportWidget::setRegionArmed);
     connect(m_viewportWidget, &ViewportWidget::regionArmCancelled,
             m_viewportToolbar, &ViewportToolbar::cancelRegionArm);
+    connect(m_viewportWidget, &ViewportWidget::regionDrawFinished,
+            m_viewportToolbar, &ViewportToolbar::cancelRegionArm);
     connect(m_viewportWidget, &ViewportWidget::regionStateChanged,
             this, [this]() { updateMenuActionStates(); });
 

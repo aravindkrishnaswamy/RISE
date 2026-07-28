@@ -280,6 +280,8 @@ struct TopBar: View {
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                     .disabled(!viewModel.canRenderActiveRegion)
+                    .accessibilityLabel("Render options")
+                    .accessibilityHint("Contains the command to render only the active region")
                     .opacity(viewModel.canRenderActiveRegion ? 1.0 : 0.4)
                     .help(viewModel.canRenderActiveRegion
                           ? "Render only the active region"
@@ -412,7 +414,10 @@ struct TopBar: View {
         guard viewModel.isRegionProductionRender else { return status.label }
         if errorMessage != nil { return "REGION ERROR" }
         if viewModel.renderState == .cancelled || isCancelling { return "REGION CANCELLED" }
-        return "REGION FINAL"
+        if isProduction {
+            return viewModel.isProductionRenderPaused ? "REGION PAUSED" : "REGION RENDERING"
+        }
+        return viewModel.renderState == .completed ? "REGION FINAL" : status.label
     }
 
     private var statusLabelColor: Color {

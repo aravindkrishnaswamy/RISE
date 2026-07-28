@@ -376,6 +376,17 @@ struct ViewportView: View {
                     regionArmed = false
                 }
             }
+            .onChange(of: regionArmed) { _, armed in
+                // A workspace-level Escape can disarm while this view has an
+                // in-flight mouse gesture. Retire its uncommitted draft and
+                // swallow the matching physical mouse-up rather than routing
+                // an unmatched pointer event into the scene controller.
+                if !armed && regionDragStart != nil {
+                    regionDragStart = nil
+                    regionDragCurrent = nil
+                    suppressPointerUntilUp = true
+                }
+            }
             // Re-sync the toolbar's selection to the underlying
             // controller whenever the bridge identity changes (a new
             // scene was loaded, or the bridge was rebuilt for any
@@ -591,6 +602,18 @@ private struct RegionOverlay: View {
                             .accessibilityAction(named: "Move down") {
                                 move(region: region, dx: 0, dy: 8, surface: surface)
                             }
+                        let badgeW = badgeWidth(region: region, surface: surface)
+                        Button(action: onClearActiveRegion) {
+                            regionBadge(region: region, surface: surface)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear active render region")
+                        .position(badgePosition(rect: rect, badgeWidth: badgeW,
+                                                viewportSize: geom.size))
+                        .allowsHitTesting(interactionEnabled)
+                        // Handles are intentionally later in the Z-stack so
+                        // their 24pt targets win if a tiny/full-frame region
+                        // leaves no truly exterior space for the badge.
                         ForEach(Handle.allCases, id: \.self) { handle in
                             ZStack {
                                 Circle()
@@ -611,15 +634,6 @@ private struct RegionOverlay: View {
                                                         region: region, surface: surface)
                                 }
                         }
-                        let badgeW = badgeWidth(region: region, surface: surface)
-                        Button(action: onClearActiveRegion) {
-                            regionBadge(region: region, surface: surface)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Clear active render region")
-                        .position(badgePosition(rect: rect, badgeWidth: badgeW,
-                                                viewportSize: geom.size))
-                        .allowsHitTesting(interactionEnabled)
                     }
                 }
             }
@@ -627,6 +641,12 @@ private struct RegionOverlay: View {
         .onChange(of: activeRegion) { _, _ in
             draftRegion = nil
             editStartRegion = nil
+        }
+        .onChange(of: interactionEnabled) { _, enabled in
+            if !enabled {
+                draftRegion = nil
+                editStartRegion = nil
+            }
         }
     }
 
@@ -690,8 +710,19 @@ private struct RegionOverlay: View {
                                viewportSize: CGSize) -> CGPoint {
         let half = badgeWidth / 2
         let x = min(max(half + 4, rect.midX), max(half + 4, viewportSize.width - half - 4))
-        let above = rect.minY - 13
-        let y = above >= 10 ? above : min(viewportSize.height - 10, rect.maxY + 13)
+        let above = rect.minY - 24
+        let below = rect.maxY + 24
+        let y: CGFloat
+        if above >= 10 {
+            y = above
+        } else if below <= viewportSize.height - 10 {
+            y = below
+        } else {
+            // Full-height/tiny viewports have no exterior vertical space.
+            // Keep clear of the top-edge handle; handle hit-testing still
+            // wins because it is layered above the badge.
+            y = min(viewportSize.height - 10, rect.minY + 28)
+        }
         return CGPoint(x: x, y: y)
     }
 
