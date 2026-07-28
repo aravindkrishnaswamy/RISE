@@ -9,11 +9,15 @@
 //    (ClampToEdge returns uv unchanged) and BOTH pre-clamps
 //    (`u < 0` and `u > dim-1` are false for NaN), then hits the
 //    int/unsigned conversion (UB) and the unchecked raster GetPEL
-//    (raw pData[y*stride+x]) — a wild read; SetPel's twin is a wild
-//    write.  ±inf is in the same class: +inf under Repeat becomes
-//    inf - floor(inf) = NaN before the conversion.  Reachable via
-//    any geometry that produces a NaN ri.ptCoord (TexturePainter
-//    forwards ptCoord to the accessor unchecked).
+//    (raw pData[y*stride+x]) — a wild read; SetPel's twin is an
+//    out-of-bounds write.  ±inf is in the same class: under Repeat /
+//    MirroredRepeat it becomes inf - inf = NaN before the
+//    conversion, and under ClampToEdge it previously saturated to an
+//    edge texel — the guards deliberately trade that mode-dependent
+//    salvage for one uniform zero-pel outcome.  Reachable via any
+//    geometry that produces a NaN ri.ptCoord (TexturePainter
+//    forwards ptCoord to the accessor unchecked, including the NaN
+//    footprint Jacobian in lowmem mode).
 //
 //    Contract under test: every accessor entry point returns the
 //    zero pel (or drops the write) for a non-finite coordinate, on
@@ -83,8 +87,12 @@ static bool IsZeroPel( const RISEColor& c )
 
 static bool IsFillPel( const RISEColor& c )
 {
-	// The image is constant, so every in-range sample is exactly the
-	// fill value under every filter (all weight sets sum to 1).
+	// Exact comparison is safe because the controls sample at dyadic
+	// positions (ut = vt = 0.5 at base; the mip pre-clamp pins
+	// ut = vt = 0), where bilinear weights are exact; Catmull-Rom is
+	// exact for ANY parameter on a constant input (its a0..a2
+	// coefficients cancel to zero bit-exactly); NNB is a single texel
+	// fetch.
 	return c.base[0] == kFill && c.a == 1.0;
 }
 
@@ -130,13 +138,13 @@ int main()
 
 	const Scalar badCoords[3] = { nan, posInf, negInf };
 	const char* badNames[3] = { "NaN", "+inf", "-inf" };
-	const char wrapModes[2] = { eRasterWrap_ClampToEdge, eRasterWrap_Repeat };
-	const char* wrapNames[2] = { "Clamp", "Repeat" };
+	const char wrapModes[3] = { eRasterWrap_ClampToEdge, eRasterWrap_Repeat, eRasterWrap_MirroredRepeat };
+	const char* wrapNames[3] = { "Clamp", "Repeat", "Mirrored" };
 
 	IRasterImage* img = MakeOnesImage();
 
 	for( int a = 0; a < 3; ++a ) {
-		for( int w = 0; w < 2; ++w ) {
+		for( int w = 0; w < 3; ++w ) {
 			IRasterImageAccessor* ria = MakeAccessor( *img, (eAccessor)a, wrapModes[w] );
 			if( !ria ) {
 				continue;
@@ -209,8 +217,32 @@ int main()
 				untouched = untouched && t.base[0] == kFill && t.a == 1.0;
 			}
 		}
+		// (Bicubic inherits Bilin's guarded SetPel — its iteration
+		// re-exercises that shared path rather than a third guard.)
 		Check( untouched, std::string( kAccessorName[a] ) + ": non-finite SetPEL drops the write (image untouched)" );
 		ria->release();
+	}
+
+	// Footprint path: the subtlest producer — FINITE coordinates with
+	// a NaN Jacobian entry.  GetPELwithFootprint computes
+	// offU/offV = sx*dudx + sy*dudy, so one NaN derivative poisons the
+	// offset and the shifted coordinate; the guard in the downstream
+	// virtual GetPEL must absorb it.  This is exactly the call shape
+	// TexturePainter drives in lowmem (supersample) mode.  jitter 1.0
+	// keeps sx = 0.5 nonzero so no term is a compile-time zero.
+	{
+		IRasterImageAccessor* ria = MakeAccessor( *img, eBilin, eRasterWrap_ClampToEdge );
+		if( ria ) {
+			RISEColor c( RISEPel( 9, 9, 9 ), 9.0 );
+			ria->GetPELwithFootprint( 0.5, 0.5, nan, 0.0, 0.0, 0.0, 1.0, 1.0, c );
+			Check( IsZeroPel( c ), "footprint path: NaN dudx with finite coords returns the zero pel" );
+			c = RISEColor( RISEPel( 9, 9, 9 ), 9.0 );
+			ria->GetPELwithFootprint( 0.5, 0.5, 0.0, 0.0, negInf, 0.0, 1.0, 1.0, c );
+			Check( IsZeroPel( c ), "footprint path: -inf dvdx with finite coords returns the zero pel" );
+			ria->GetPELwithFootprint( 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, c );
+			Check( IsFillPel( c ), "footprint path: finite zero-extent footprint returns the fill value" );
+			ria->release();
+		}
 	}
 
 	img->release();
