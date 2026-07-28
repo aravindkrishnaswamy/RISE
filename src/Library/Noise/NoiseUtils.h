@@ -51,17 +51,25 @@ namespace RISE
 		return( P*x*x*x + Q*x*x + R*x + S );
 	}
 
-	inline Scalar Noise1( int x )
+	inline Scalar Noise1( const int x )
 	{
-		x = (x<<13) ^ x;
-		return ( 1.0 - Scalar( (x * (x * x * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.);
+		// Unsigned arithmetic for the hash chain: <<13 on a negative int
+		// and the cubic term overflow are UB in signed int (same hardening
+		// as WorleyNoise3D::HashCell).  Bit-identical to the historical
+		// two's-complement wrap-around output.
+		unsigned int n = (unsigned int)x;
+		n = (n<<13) ^ n;
+		return ( 1.0 - Scalar( (n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.);
 	}
 
 	inline Scalar Noise2( const int x, const int y )
 	{
-		int		n = x * y * 57;
+		// Additive lattice combine (the Hugo Elias original, matching
+		// Noise2D in Noise.h) -- the previous multiplicative x*y*57
+		// collapsed the entire x=0 row and y=0 column to one hash value.
+		unsigned int n = (unsigned int)x + (unsigned int)y * 57u;
 		n = (n<<13) ^ n;
-		return ( 1.0 - Scalar( (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.);
+		return ( 1.0 - Scalar( (n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.);
 	}
 
 	inline Scalar SmoothedNoise1( const int x )

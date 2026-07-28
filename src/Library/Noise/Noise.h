@@ -33,9 +33,13 @@ namespace RISE
 		public:
 			virtual inline Scalar Evaluate( const Scalar variable ) const
 			{
-				int x = int(variable);
+				// Unsigned arithmetic for the hash chain: <<13 on a negative
+				// int and the cubic term overflow are UB in signed int (same
+				// hardening as WorleyNoise3D::HashCell).  Bit-identical to the
+				// historical two's-complement wrap-around output.
+				unsigned int x = (unsigned int)int(variable);
 				x = (x<<13) ^ x;
-				return ( 1.0 - Scalar( (x * (x * x * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.);
+				return ( 1.0 - Scalar( (x * (x * x * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.);
 			}
 		};
 
@@ -47,9 +51,10 @@ namespace RISE
 		public:
 			virtual inline Scalar Evaluate( const Scalar x, const Scalar y ) const
 			{
-				int		n = int(x) + int(y) * 57;
+				// Unsigned hash chain -- see Noise1D::Evaluate.
+				unsigned int n = (unsigned int)int(x) + (unsigned int)int(y) * 57u;
 				n = (n<<13) ^ n;
-				return ( 1.0 - Scalar( (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.);
+				return ( 1.0 - Scalar( (n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.);
 			}
 		};
 
@@ -61,9 +66,10 @@ namespace RISE
 		public:
 			virtual inline Scalar Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
 			{
-				int		n = int(x) + int(y) * 57 + int(z) * 113;
+				// Unsigned hash chain -- see Noise1D::Evaluate.
+				unsigned int n = (unsigned int)int(x) + (unsigned int)int(y) * 57u + (unsigned int)int(z) * 113u;
 				n = (n<<13) ^ n;
-				return ( 1.0 - Scalar( (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.);
+				return ( 1.0 - Scalar( (n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.);
 			}
 		};
 	}
