@@ -340,8 +340,13 @@ namespace RISE
 					GetPEL( x, y, p );
 					return;
 				}
-				if( lod <= Scalar( 0 ) ) {
-					// Below the first mip level — base sample only.
+				// Below the first mip level — base sample only.  Written
+				// as !(lod > 0) so a NaN lod (a NaN texture-footprint
+				// determinant passes the fabs(det) < 1e-30 degeneracy
+				// check and log2 turns it into a NaN LOD) takes this safe
+				// path instead of flowing into floor()/int conversion
+				// (UB) and a garbage pyramid index below.
+				if( !(lod > Scalar( 0 )) ) {
 					GetPEL( x, y, p );
 					return;
 				}
@@ -446,10 +451,11 @@ namespace RISE
 				const Scalar wrappedX = ApplyWrapMode( x, wrap_t );
 
 				// Defensive: a zero-dimension image would make the clamp
-				// bounds below negative, sending xlo = -1 into the
-				// unchecked raster GetPEL (an out-of-range read).  Same
-				// guard as the Bicubic subclass (which additionally
-				// protects a modulo).
+				// bounds below negative, so xlo = -1 reaches the raster
+				// GetPEL, whose unsigned parameter turns it into a huge
+				// index into unchecked storage.  Same guard as the
+				// Bicubic subclass (which additionally protects a
+				// modulo).
 				if( image_width <= 0 || image_height <= 0 ) {
 					p = C();
 					return;

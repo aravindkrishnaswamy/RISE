@@ -242,7 +242,9 @@ static void TestGoldenValuesAtLowWidthSeam()
 {
 	std::cout << "Golden values at the low width seam (pin taps, collapse order, weights)\n";
 	IRasterImage* img = MakeWidthRampImage();
-	const Scalar tol = 1e-4;	// goldens truncated near 1e-9; margin to the nearest wrong answer is ~3e-2
+	const Scalar tol = 1e-4;	// goldens rounded at 8 dp (err <= 2.3e-9); nearest wrong
+								// answer: 2.97e-2 for a wrap-mode error, ~4e-3 for a
+								// one-texel tap error (|w0|/9)
 
 	const RISEColor rep = SampleBicubic( *img, eRasterWrap_Repeat, eRasterWrap_Repeat, 0.5, 0.02 );
 	Check( fabs( rep.base[0] - 0.15053511 ) < tol,

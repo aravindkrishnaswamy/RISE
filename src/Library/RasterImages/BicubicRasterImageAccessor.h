@@ -73,11 +73,13 @@ namespace RISE
 				// boundary path below.  Return a default-initialised
 				// (zero) pel.  The Bilin and NNB GetPel paths carry the
 				// same guard for the same index hazard — a 0-dim image
-				// makes the clamp bound Scalar(-1), reaching the unchecked
-				// raster GetPEL as index -1 (Bilin, and this class's
-				// ClampToEdge branches) or as a huge unsigned (NNB, which
-				// casts).  This class is additionally exposed to
-				// modulo-by-zero in the Repeat/MirroredRepeat path below.
+				// makes the clamp bound Scalar(-1), so the computed texel
+				// index is -1 (Bilin, and this class's ClampToEdge
+				// branches) or Scalar(-1) cast to unsigned (NNB).  Either
+				// way GetPEL's unsigned parameter sees a huge index into
+				// the unchecked raster.  This class is additionally
+				// exposed to modulo-by-zero in the Repeat/MirroredRepeat
+				// path below.
 				if( this->image_width <= 0 || this->image_height <= 0 ) {
 					p = C();
 					return;
