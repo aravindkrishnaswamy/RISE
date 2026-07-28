@@ -135,7 +135,8 @@ namespace
 	inline Scalar ComputeCoarseImageDeltaRMSE(
 		const IRasterImage& a,
 		const IRasterImage& b,
-		const unsigned int coarseResolution
+		const unsigned int coarseResolution,
+		const Rect* region
 		)
 	{
 		const unsigned int w = a.GetWidth();
@@ -143,21 +144,32 @@ namespace
 		if( w == 0 || h == 0 ) {
 			return 0;
 		}
+		unsigned int startX = 0, startY = 0, endX = w - 1, endY = h - 1;
+		if( region ) {
+			if( region->left > region->right || region->top > region->bottom ||
+				region->left >= w || region->top >= h ) return 0;
+			startX = region->left;
+			startY = region->top;
+			endX = r_min( region->right, w - 1 );
+			endY = r_min( region->bottom, h - 1 );
+		}
+		const unsigned int regionWidth = endX - startX + 1;
+		const unsigned int regionHeight = endY - startY + 1;
 
-		const unsigned int binsX = r_min( coarseResolution, w );
-		const unsigned int binsY = r_min( coarseResolution, h );
+		const unsigned int binsX = r_min( coarseResolution, regionWidth );
+		const unsigned int binsY = r_min( coarseResolution, regionHeight );
 
 		Scalar error = 0;
 		size_t samples = 0;
 		for( unsigned int by = 0; by < binsY; by++ )
 		{
-			const unsigned int y0 = (by * h) / binsY;
-			const unsigned int y1 = ((by + 1) * h) / binsY;
+			const unsigned int y0 = startY + (by * regionHeight) / binsY;
+			const unsigned int y1 = startY + ((by + 1) * regionHeight) / binsY;
 
 			for( unsigned int bx = 0; bx < binsX; bx++ )
 			{
-				const unsigned int x0 = (bx * w) / binsX;
-				const unsigned int x1 = ((bx + 1) * w) / binsX;
+				const unsigned int x0 = startX + (bx * regionWidth) / binsX;
+				const unsigned int x1 = startX + ((bx + 1) * regionWidth) / binsX;
 
 				Scalar accumA[3] = { 0, 0, 0 };
 				Scalar accumB[3] = { 0, 0, 0 };
@@ -537,7 +549,8 @@ void BDPTRasterizerBase::RasterizeScene(
 					coarseImageDelta = ComputeCoarseImageDeltaRMSE(
 						*pPreviousTrainingImage,
 						*pTrainImage,
-						kTrainingConvergenceGridResolution );
+						kTrainingConvergenceGridResolution,
+						pRect );
 
 					GlobalLog()->PrintEx( eLog_Info,
 						"PathGuidingField:: BDPT training iteration %u coarse image delta %.6f (%ux%u RMSE)",
@@ -571,8 +584,7 @@ void BDPTRasterizerBase::RasterizeScene(
 			}
 
 			const Scalar cameraSamples =
-				static_cast<Scalar>( width ) *
-				static_cast<Scalar>( height ) *
+				static_cast<Scalar>( RegionalPixelCount( width, height, pRect ) ) *
 				static_cast<Scalar>( currentTrainingSPP ) *
 				GetSplatSampleScale();
 				const size_t positiveSamples = pGuidingField->GetLastAddedSurfaceSampleCount();
@@ -1030,8 +1042,10 @@ void BDPTRasterizerBase::RasterizeScene(
 
 				// Convergence check runs with preview — keeps the two
 				// serial O(W×H) loops on the same cadence.
-				const unsigned int doneCount = progFilm.CountDone( totalSPP );
-				if( doneCount >= width * height ) {
+				const uint64_t doneCount = progFilm.CountDone( totalSPP, pRect );
+				const uint64_t renderPixelCount =
+					static_cast<uint64_t>( renderPixelsX ) * renderPixelsY;
+				if( doneCount >= renderPixelCount ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"BDPT Progressive:: All pixels complete after pass %u/%u",
 						passIdx+1, numPasses );

@@ -28,6 +28,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
+#include <QImage>
 #include <QMenu>
 #include <cmath>
 #include <algorithm>
@@ -579,8 +580,21 @@ void TopBar::setEngine(RenderEngine* engine)
 
 void TopBar::setViewportBridge(ViewportBridge* bridge)
 {
+    if (m_bridge) disconnect(m_bridge, nullptr, this, nullptr);
     m_bridge = bridge;
     if (m_bridge) {
+        // Unlike the 500 ms phase poll, this signal means an actual live
+        // viewport image reached the UI. Invalidate REGION FINAL exactly
+        // when those pixels replace the held production result.
+        connect(m_bridge, &ViewportBridge::imageUpdated, this,
+            [this](const QImage&) {
+                if (m_engine && m_engineState == RenderEngine::Completed
+                    && m_engine->isRegionProductionRender()
+                    && !m_regionFinalInvalidated) {
+                    m_regionFinalInvalidated = true;
+                    updateReadout();
+                }
+            });
         pollRefinementState();
         m_pollTimer->start();
     } else {
@@ -828,6 +842,9 @@ void TopBar::pollRefinementState()
 void TopBar::onEngineStateChanged(int newState)
 {
     m_engineState = newState;
+    if (m_engineState == RenderEngine::Rendering) {
+        m_regionFinalInvalidated = false;
+    }
     updateReadout();
     updateIntegratorChip();
     updateControlsEnabled();
@@ -889,7 +906,7 @@ void TopBar::updateReadout()
 
     m_statusRowLabel->setText(s.text);
     QString statusLabel = s.label;
-    if (m_engine && m_engine->isRegionProductionRender()) {
+    if (m_engine && m_engine->isRegionProductionRender() && !m_regionFinalInvalidated) {
         if (isCancelling || m_engineState == RenderEngine::Cancelled) {
             statusLabel = QStringLiteral("REGION CANCELLED");
         } else if (isProduction) {

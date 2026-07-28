@@ -1223,6 +1223,13 @@ final class RenderViewModel: ObservableObject {
                         // Drop any frame not from the CURRENT bridge.
                         guard let self = self, let vb = vb,
                               self.viewportBridge === vb else { return }
+                        // This callback is the authoritative signal that a
+                        // live interactive frame actually replaced the held
+                        // production result. A timer/phase poll can miss a
+                        // fast frame or clear the identity before pixels land.
+                        if self.isRegionProductionRender && self.renderState == .completed {
+                            self.isRegionProductionRender = false
+                        }
                         self.renderedImage = image
                     }
                     // N-up (RENDER_MODES.md §7): panes 1-3's image
@@ -1916,13 +1923,6 @@ final class RenderViewModel: ObservableObject {
         var divisor: UInt32 = 1
         let phase = vb.refinementPhase(withScaleDivisor: &divisor)
         if refinementPhase != Int(phase) { refinementPhase = Int(phase) }
-        // A completed regional final keeps its identity while the preserved
-        // production image is sitting untouched. As soon as a real interactive
-        // pass begins, the top-bar status must describe that live preview again
-        // instead of claiming the new pixels are still the regional final.
-        if isRegionProductionRender && renderState == .completed && phase > 0 {
-            isRegionProductionRender = false
-        }
         if refinementScaleDivisor != divisor { refinementScaleDivisor = divisor }
         let newUndo = vb.undoActionLabel()
         if undoLabel != newUndo { undoLabel = newUndo }

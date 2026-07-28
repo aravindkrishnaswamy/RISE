@@ -224,9 +224,11 @@ void ViewportWidget::setSceneEditable(bool editable)
         // interaction so a mid-render release can't commit it
         // (setInteractiveRegion -> KickRender -> mMutex) and it doesn't linger
         // armed across the render.
+        const bool cancelledRegionArm = m_regionArmed || m_regionDragging;
         m_regionArmed = false;
-        m_regionDragging = false;
+        cancelRegionDrag();
         m_regionEditMode = RegionEditMode::None;
+        if (cancelledRegionArm) emit regionArmCancelled();
         // N-up multi-viewport: same reasoning -- drop any in-progress
         // pane gesture pin rather than risk forwarding a stray Move/Up to
         // a pane once a render owns the scene.

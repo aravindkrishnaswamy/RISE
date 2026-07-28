@@ -165,11 +165,26 @@ namespace RISE
 
 			/// Count the number of pixels that have either converged or hit
 			/// the progressive sample budget.
-			unsigned int CountDone( const unsigned int targetSamples ) const
+			uint64_t CountDone(
+				const unsigned int targetSamples,
+				const Rect* region = 0
+				) const
 			{
-				unsigned int count = 0;
-				for( size_t i = 0; i < pixels.size(); i++ ) {
-					if( IsPixelDone( pixels[i], targetSamples ) ) count++;
+				if( width == 0 || height == 0 ) return 0;
+				unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
+				if( region ) {
+					if( region->left > region->right || region->top > region->bottom ||
+						region->left >= width || region->top >= height ) return 0;
+					startX = region->left;
+					startY = region->top;
+					endX = r_min( region->right, width - 1 );
+					endY = r_min( region->bottom, height - 1 );
+				}
+				uint64_t count = 0;
+				for( unsigned int y = startY; y <= endY; y++ ) {
+					for( unsigned int x = startX; x <= endX; x++ ) {
+						if( IsPixelDone( pixels[y * width + x], targetSamples ) ) count++;
+					}
 				}
 				return count;
 			}

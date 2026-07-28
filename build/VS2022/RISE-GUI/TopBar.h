@@ -338,6 +338,7 @@ private:
     // "Paused" readout below still reads m_refinementPhase directly from
     // the poll, so no status-display capability was lost.)
     int          m_refinementPhase = -1;         // -1 no controller, 0 Idle .. 4 Paused
+    bool         m_regionFinalInvalidated = false; // interactive pixels replaced last regional final
     unsigned int m_refinementScaleDivisor = 1;
     int          m_engineState = 0;              // RenderEngine::Idle
     double       m_productionProgress = 0.0;

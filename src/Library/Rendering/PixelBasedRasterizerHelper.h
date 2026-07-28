@@ -72,6 +72,18 @@ namespace RISE
 		private:
 
 			const ICamera* m_pViewportCameraOverride = nullptr;
+			// A regional irradiance-cache pre-pass must cover the full film
+			// because the cache is scene-wide. It renders into a private image;
+			// suppress tile callbacks so that hidden full-frame work is never
+			// published over the user's preserved outside-region pixels.
+			mutable bool mSuppressIntermediateOutput = false;
+			mutable bool mHasActiveOutputRegion = false;
+			mutable Rect mActiveOutputRegion = Rect( 0, 0, 0, 0 );
+			void ConfigureOutputRegion(
+				const Rect* region,
+				unsigned int width,
+				unsigned int height
+				) const;
 
 			// Used only by the RasterizeAnimation
 			void RenderFrameOfAnimation( 

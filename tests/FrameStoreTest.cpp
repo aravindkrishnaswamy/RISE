@@ -1075,8 +1075,21 @@ namespace
 			"regional adaptive-map resolve preserves outside pixels" );
 		Check( ApproxEq( image->GetPEL( 5, 7 ).base.r, 0.5, 1e-12 ),
 			"regional adaptive-map resolve writes in-region sample progress" );
+		for( unsigned int y=5; y<=10; ++y ) {
+			for( unsigned int x=5; x<=10; ++x ) {
+				progressive.Get( x, y ).sampleIndex = 8;
+			}
+		}
+		Check( progressive.CountDone( 8, &region ) == 36,
+			"regional progressive completion ignores unfinished outside pixels" );
+		Check( progressive.CountDone( 8 ) == 36,
+			"full-frame progressive completion still includes unfinished outside pixels" );
 
 		const Rect quarterFrame( 0, 0, 7, 7 );
+		Check(
+			RISE::Implementation::BidirectionalRasterizerBase::RegionalPixelCount(
+				w, h, &quarterFrame ) == 64,
+			"regional camera metrics count selected pixels only" );
 		Check( ApproxEq(
 			RISE::Implementation::BidirectionalRasterizerBase::RegionalSplatSPP(
 				8.0, w, h, &quarterFrame ), 2.0, 1e-12 ),

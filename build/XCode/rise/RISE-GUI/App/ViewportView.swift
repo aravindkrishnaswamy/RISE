@@ -602,6 +602,7 @@ private struct RegionOverlay: View {
                             .accessibilityAction(named: "Move down") {
                                 move(region: region, dx: 0, dy: 8, surface: surface)
                             }
+                            .accessibilityHidden(!interactionEnabled)
                         let badgeW = badgeWidth(region: region, surface: surface)
                         Button(action: onClearActiveRegion) {
                             regionBadge(region: region, surface: surface)
@@ -611,6 +612,7 @@ private struct RegionOverlay: View {
                         .position(badgePosition(rect: rect, badgeWidth: badgeW,
                                                 viewportSize: geom.size))
                         .allowsHitTesting(interactionEnabled)
+                        .accessibilityHidden(!interactionEnabled)
                         // Handles are intentionally later in the Z-stack so
                         // their 24pt targets win if a tiny/full-frame region
                         // leaves no truly exterior space for the badge.
@@ -633,6 +635,7 @@ private struct RegionOverlay: View {
                                     accessibilityResize(handle: handle, direction: direction,
                                                         region: region, surface: surface)
                                 }
+                                .accessibilityHidden(!interactionEnabled)
                         }
                     }
                 }

@@ -117,7 +117,14 @@ struct ContentView: View {
         // from the menu while a text editor or toolbar control owns focus.
         // Catch the command at the workspace root so Escape always disarms it.
         .onExitCommand {
-            if regionArmed { regionArmed = false }
+            if regionArmed {
+                regionArmed = false
+            } else if interacting,
+                      let vb = viewModel.viewportBridge,
+                      viewModel.activeRegion != nil {
+                vb.clearInteractiveRegion()
+                viewModel.activeRegion = nil
+            }
         }
         // Theme mode re-render hook — see `themeModeRaw` doc above.
         .id(themeModeRaw)

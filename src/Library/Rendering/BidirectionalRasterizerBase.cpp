@@ -68,8 +68,7 @@ void BidirectionalRasterizerBase::AddAdaptiveSamples( uint64_t count ) const
 	mTotalAdaptiveSamples.fetch_add( count, std::memory_order_relaxed );
 }
 
-Scalar BidirectionalRasterizerBase::RegionalSplatSPP(
-	Scalar fullFrameSPP,
+uint64_t BidirectionalRasterizerBase::RegionalPixelCount(
 	unsigned int width,
 	unsigned int height,
 	const Rect* region
@@ -77,12 +76,26 @@ Scalar BidirectionalRasterizerBase::RegionalSplatSPP(
 {
 	if( !region || width == 0 || height == 0 ||
 		region->left > region->right || region->top > region->bottom ||
-		region->left >= width || region->top >= height ) return fullFrameSPP;
+		region->left >= width || region->top >= height ) {
+		return static_cast<uint64_t>( width ) * height;
+	}
 	const unsigned int right = r_min( region->right, width - 1 );
 	const unsigned int bottom = r_min( region->bottom, height - 1 );
-	const Scalar regionArea =
-		static_cast<Scalar>( right - region->left + 1 ) *
-		static_cast<Scalar>( bottom - region->top + 1 );
+	return
+		static_cast<uint64_t>( right - region->left + 1 ) *
+		static_cast<uint64_t>( bottom - region->top + 1 );
+}
+
+Scalar BidirectionalRasterizerBase::RegionalSplatSPP(
+	Scalar fullFrameSPP,
+	unsigned int width,
+	unsigned int height,
+	const Rect* region
+	)
+{
+	if( width == 0 || height == 0 ) return fullFrameSPP;
+	const Scalar regionArea = static_cast<Scalar>(
+		RegionalPixelCount( width, height, region ) );
 	const Scalar fullArea = static_cast<Scalar>( width ) * static_cast<Scalar>( height );
 	return fullFrameSPP * regionArea / fullArea;
 }

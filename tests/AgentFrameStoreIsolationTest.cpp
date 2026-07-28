@@ -83,13 +83,17 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
+#include "../src/Library/Interfaces/IIrradianceCache.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Rendering/AutoRasterizer.h"
+#include "../src/Library/Utilities/Reference.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -146,6 +150,33 @@ static std::string BuildScene( const std::string& rasterizerChunk )
 		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
 		"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 		"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+}
+
+static std::string BuildIrradianceRegionScene()
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"distributiontracing_shaderop\n{\n\tname cached_gi\n\tsamples 2\n"
+		"\tforce_check_emitters true\n\tirradiance_caching true\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop cached_gi\n"
+		"\tshaderop DefaultEmission\n}\n\n"
+		"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 2\n\tlum_samples 1\n}\n\n"
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n"
+		"\tup 0 1 0\n\tfov 40\n}\n\n"
+		"uniformcolor_painter\n{\n\tname gray\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"lambertian_material\n{\n\tname diffuse\n\treflectance gray\n}\n\n"
+		"sphere_geometry\n{\n\tname sphere\n\tradius 0.8\n}\n\n"
+		"standard_object\n{\n\tname sphere_object\n\tgeometry sphere\n"
+		"\tmaterial diffuse\n}\n\n"
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname emitter\n\texitance white\n"
+		"\tscale 30\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname light_quad\n\tpta -0.6 0.6 3.5\n"
+		"\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+		"standard_object\n{\n\tname light_object\n\tgeometry light_quad\n"
+		"\tmaterial emitter\n}\n\n"
+		"irradiance_cache\n{\n\tsize 4\n\ttolerance 0.08\n\tmin_spacing 0.02\n}\n";
 }
 
 // Full-frame glass slab at z=[1.4,1.6], opaque backstop at z=[-0.1,0.1],
@@ -229,6 +260,10 @@ static const char* const kBdptRasterizer =
 	"bdpt_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
 static const char* const kVcmRasterizer =
 	"vcm_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kRegionBdptSpectralRasterizer =
+	"bdpt_spectral_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n"
+	"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
+	"\thwss false\n\toidn_denoise false\n}";
 // P2: MLT opted BACK INTO the FrameStore push in commit 36809dcf
 // ("L6d-2b") -- an ancestor of 81cdbadd -- so AcceptsFrameStorePush() is
 // TRUE for MLT and it IS subject to the private-store swap this file
@@ -281,6 +316,237 @@ static const char* const kSilhouetteVcmPel =
 	"vcm_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
 
 enum DepthSceneKind { kGlassDepth, kMediumDepth, kTransparencyDepth };
+
+class RegionCaptureOutput
+	: public virtual IRasterizerOutput
+	, public virtual RISE::Implementation::Reference
+{
+public:
+	std::vector<std::vector<RISEColor> > frames;
+	unsigned int width = 0;
+	unsigned int height = 0;
+	bool monitorOutside = false;
+	bool outsideContaminated = false;
+	Rect monitoredRegion = Rect( 0, 0, 0, 0 );
+	std::vector<RISEColor> outsideBaseline;
+	unsigned int baselineWidth = 0;
+	std::mutex monitorMutex;
+	unsigned int contaminationX = 0;
+	unsigned int contaminationY = 0;
+	RISEColor contaminationColor;
+	Rect contaminationRect = Rect( 0, 0, 0, 0 );
+
+	void OutputIntermediateImage( const IRasterImage& image, const Rect* changed ) override
+	{
+		if( !monitorOutside ) return;
+		std::lock_guard<std::mutex> lock( monitorMutex );
+		if( outsideContaminated ) return;
+		for( unsigned int y=0; y<image.GetHeight() && !outsideContaminated; ++y ) {
+			for( unsigned int x=0; x<image.GetWidth(); ++x ) {
+				const bool inside = x >= monitoredRegion.left && x <= monitoredRegion.right &&
+					y >= monitoredRegion.top && y <= monitoredRegion.bottom;
+				const RISEColor color = image.GetPEL( x, y );
+				const size_t baselineIndex = static_cast<size_t>( y ) * baselineWidth + x;
+				const bool changedOutside = !inside && baselineIndex < outsideBaseline.size() &&
+					( color.base.r != outsideBaseline[baselineIndex].base.r ||
+					  color.base.g != outsideBaseline[baselineIndex].base.g ||
+					  color.base.b != outsideBaseline[baselineIndex].base.b ||
+					  color.a != outsideBaseline[baselineIndex].a );
+				if( changedOutside ) {
+					outsideContaminated = true;
+					contaminationX = x;
+					contaminationY = y;
+					contaminationColor = color;
+					if( changed ) contaminationRect = *changed;
+					break;
+				}
+			}
+		}
+	}
+
+	void OutputImage(
+		const IRasterImage& image,
+		const Rect*,
+		const unsigned int
+		) override
+	{
+		width = image.GetWidth();
+		height = image.GetHeight();
+		frames.push_back( std::vector<RISEColor>( width * height ) );
+		std::vector<RISEColor>& pixels = frames.back();
+		for( unsigned int y=0; y<height; ++y ) {
+			for( unsigned int x=0; x<width; ++x ) {
+				pixels[y * width + x] = image.GetPEL( x, y );
+			}
+		}
+	}
+
+protected:
+	~RegionCaptureOutput() override = default;
+};
+
+static bool SameColor( const RISEColor& a, const RISEColor& b )
+{
+	return a.base.r == b.base.r && a.base.g == b.base.g &&
+		a.base.b == b.base.b && a.a == b.a;
+}
+
+static bool FiniteColor( const RISEColor& c )
+{
+	return std::isfinite( c.base.r ) && std::isfinite( c.base.g ) &&
+		std::isfinite( c.base.b ) && std::isfinite( c.a );
+}
+
+static void RunProductionRegionProbe( const char* label, const char* rasterizerChunk )
+{
+	const std::string scenePath = WriteTemp(
+		( std::string( "production_region_" ) + label + ".RISEscene" ).c_str(),
+		BuildScene( rasterizerChunk ) );
+	Check( !scenePath.empty(), std::string( label ) + ": regional production scene written" );
+	Job* pJob = new Job();
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
+	Check( loaded, std::string( label ) + ": regional production scene loads" );
+	if( !loaded || !pJob->GetRasterizer() ) {
+		pJob->release();
+		std::remove( scenePath.c_str() );
+		return;
+	}
+
+	pJob->RemoveRasterizerOutputs();
+	RegionCaptureOutput* capture = new RegionCaptureOutput();
+	pJob->GetRasterizer()->AddRasterizerOutput( capture );
+
+	const bool fullBefore = pJob->Rasterize();
+	Check( fullBefore && capture->frames.size() == 1,
+		std::string( label ) + ": initial full production render succeeds" );
+	if( !fullBefore || capture->frames.empty() ) {
+		pJob->RemoveRasterizerOutputs();
+		capture->release();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+		return;
+	}
+	const std::vector<RISEColor> baseline = capture->frames.back();
+
+	const unsigned int left = 6, top = 6, right = 17, bottom = 17;
+	const bool regionOK = pJob->RasterizeRegion( left, top, right, bottom );
+	Check( regionOK && capture->frames.size() == 2,
+		std::string( label ) + ": regional production render succeeds" );
+	if( regionOK && capture->frames.size() >= 2 ) {
+		const std::vector<RISEColor>& regional = capture->frames.back();
+		bool outsideExact = regional.size() == baseline.size();
+		bool insideFinite = true;
+		bool insideUseful = false;
+		for( unsigned int y=0; y<capture->height; ++y ) {
+			for( unsigned int x=0; x<capture->width; ++x ) {
+				const size_t i = static_cast<size_t>( y ) * capture->width + x;
+				const bool inside = x >= left && x <= right && y >= top && y <= bottom;
+				if( inside ) {
+					insideFinite = insideFinite && FiniteColor( regional[i] );
+					insideUseful = insideUseful || regional[i].base.r > 0 ||
+						regional[i].base.g > 0 || regional[i].base.b > 0;
+				} else {
+					outsideExact = outsideExact && SameColor( regional[i], baseline[i] );
+				}
+			}
+		}
+		Check( outsideExact,
+			std::string( label ) + ": regional final preserves every outside pixel exactly" );
+		Check( insideFinite && insideUseful,
+			std::string( label ) + ": regional final produces finite useful inside pixels" );
+	}
+
+	const bool fullAfter = pJob->Rasterize();
+	Check( fullAfter && capture->frames.size() == 3,
+		std::string( label ) + ": same rasterizer safely returns to a full render" );
+	if( fullAfter && capture->frames.size() >= 3 ) {
+		bool allFinite = true;
+		for( const RISEColor& color : capture->frames.back() ) {
+			allFinite = allFinite && FiniteColor( color );
+		}
+		Check( allFinite, std::string( label ) + ": follow-up full render is finite" );
+	}
+
+	pJob->RemoveRasterizerOutputs();
+	capture->release();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+static void RunIrradianceCacheRegionFirstProbe()
+{
+	const std::string scenePath = WriteTemp(
+		"production_region_irradiance_cache.RISEscene",
+		BuildIrradianceRegionScene() );
+	Check( !scenePath.empty(), "irradiance cache: regional-first scene written" );
+	Job* pJob = new Job();
+	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
+	Check( loaded, "irradiance cache: regional-first scene loads" );
+	if( !loaded || !pJob->GetRasterizer() ) {
+		pJob->release();
+		std::remove( scenePath.c_str() );
+		return;
+	}
+
+	pJob->RemoveRasterizerOutputs();
+	RegionCaptureOutput* capture = new RegionCaptureOutput();
+	capture->monitorOutside = true;
+	capture->monitoredRegion = Rect( 6, 6, 17, 17 );
+	if( RISE::Implementation::Rasterizer* rasterizer =
+		dynamic_cast<RISE::Implementation::Rasterizer*>( pJob->GetRasterizer() ) ) {
+		if( Implementation::FrameStore* frameStore = rasterizer->GetFrameStore() ) {
+			IRasterImage& initial = frameStore->AsBeautyRasterImage();
+			capture->baselineWidth = initial.GetWidth();
+			capture->outsideBaseline.resize( initial.GetWidth() * initial.GetHeight() );
+			for( unsigned int y=0; y<initial.GetHeight(); ++y ) {
+				for( unsigned int x=0; x<initial.GetWidth(); ++x ) {
+					capture->outsideBaseline[y * initial.GetWidth() + x] = initial.GetPEL( x, y );
+				}
+			}
+		}
+	}
+	Check( !capture->outsideBaseline.empty(),
+		"irradiance cache: initial canonical film captured" );
+	pJob->GetRasterizer()->AddRasterizerOutput( capture );
+	const bool regionOK = pJob->RasterizeRegion( 6, 6, 17, 17 );
+	Check( regionOK && capture->frames.size() == 1,
+		"irradiance cache: region-first production render succeeds" );
+	Check( pJob->GetScene()->GetIrradianceCache() &&
+		pJob->GetScene()->GetIrradianceCache()->Precomputed(),
+		"irradiance cache: regional render completes its scene-wide prepass" );
+	Check( !capture->outsideContaminated,
+		"irradiance cache: hidden full-film prepass never publishes outside pixels" );
+	if( capture->outsideContaminated ) {
+		std::printf( "  diagnostic: outside intermediate at (%u,%u) = %.6f %.6f %.6f; callback [%u,%u]-[%u,%u]\n",
+			capture->contaminationX, capture->contaminationY,
+			capture->contaminationColor.base.r, capture->contaminationColor.base.g,
+			capture->contaminationColor.base.b,
+			capture->contaminationRect.left, capture->contaminationRect.top,
+			capture->contaminationRect.right, capture->contaminationRect.bottom );
+	}
+	if( !capture->frames.empty() ) {
+		bool outsidePreserved = capture->frames.back().size() == capture->outsideBaseline.size();
+		for( unsigned int y=0; y<capture->height; ++y ) {
+			for( unsigned int x=0; x<capture->width; ++x ) {
+				if( x >= 6 && x <= 17 && y >= 6 && y <= 17 ) continue;
+				const RISEColor& color = capture->frames.back()[y * capture->width + x];
+				outsidePreserved = outsidePreserved &&
+					SameColor( color, capture->outsideBaseline[y * capture->width + x] );
+			}
+		}
+		Check( outsidePreserved,
+			"irradiance cache: regional final preserves the initial outside film" );
+	}
+
+	capture->monitorOutside = false;
+	const bool fullOK = pJob->Rasterize();
+	Check( fullOK && capture->frames.size() == 2,
+		"irradiance cache: same job safely follows with a full render" );
+	pJob->RemoveRasterizerOutputs();
+	capture->release();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
 
 static void RunDepthContractProbe( const char* label, const char* rasterizerChunk,
 	DepthSceneKind sceneKind = kGlassDepth )
@@ -1312,6 +1578,16 @@ int main()
 	// here, not just PT/BDPT/VCM.
 	RunIsolationProbe( "mlt", kMltRasterizer );
 	RunIsolationProbe( "auto", kAutoRasterizer, "accurate" );
+
+	// Production regional-render contract across the distinct PT, BDPT
+	// RGB/spectral, and VCM pipelines. Each probe reuses one real Job for
+	// full -> region -> full so stale crop state and scene-wide caches are
+	// exercised rather than mocked at the helper boundary.
+	RunProductionRegionProbe( "pt", kPtRasterizer );
+	RunProductionRegionProbe( "bdpt_pel", kBdptRasterizer );
+	RunProductionRegionProbe( "bdpt_spectral_nm", kRegionBdptSpectralRasterizer );
+	RunProductionRegionProbe( "vcm", kVcmRasterizer );
+	RunIrradianceCacheRegionFirstProbe();
 
 	RunDepthContractProbe( "shader_pel", kDepthShaderPel );
 	RunDepthContractProbe( "shader_spectral_nm", kDepthShaderSpectralNM );

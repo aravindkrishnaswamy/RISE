@@ -116,6 +116,15 @@ namespace RISE
 			}
 
 		public:
+			/// Number of film pixels represented by a regional camera pass.
+			/// Invalid/null regions retain the full-frame convention used by
+			/// callers that have no active crop.
+			static uint64_t RegionalPixelCount(
+				unsigned int width,
+				unsigned int height,
+				const Rect* region
+				);
+
 			/// Scale a full-frame light-path sample count to the effective
 			/// per-full-frame-pixel count produced by a regional camera pass.
 			/// Public only to keep the normalization rule directly testable.
