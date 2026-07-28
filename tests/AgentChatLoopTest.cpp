@@ -2013,11 +2013,11 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		       "an explicit host cap survives a switch back to a hosted provider" );
 	}
 
-	// BLIND-EDIT NUDGE: a run of document mutations with no visual observe
-	// arms a one-shot system-prompt reminder on the NEXT request; a visual
-	// observe resets the run; a non-visual read does not; and the nudge is
-	// one-shot (rides exactly the request after it trips).  Guards the
-	// behaviour that targets the measured "insert 70+ chunks, never render".
+	// BLIND-EDIT NUDGE, STREAK ACCOUNTING: which verbs grow the run, which
+	// reset it, and where the threshold trips.  Guards the behaviour that
+	// targets the measured "insert 70+ chunks, never render".  WHERE the
+	// reminder is delivered (a conversation message, never the system
+	// prompt) and its wire validity are T44's job, not this block's.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
@@ -2052,18 +2052,18 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		stepWith( insertFx );
 		const ChatHttpRequest armed = loop.BuildRequest( kApiKey );
 		Check( armed.body.find( "edits in a row without rendering" ) != std::string::npos,
-		       "nudge: at the threshold, the next request's system prompt carries the reminder" );
+		       "nudge: at the threshold, the reminder is on the wire" );
 
-		// One-shot: the SAME state on the very next request no longer carries it.
-		const ChatHttpRequest afterConsume = loop.BuildRequest( kApiKey );
-		Check( afterConsume.body.find( "edits in a row without rendering" ) == std::string::npos,
-		       "nudge: one-shot -- it rides exactly one request, not every subsequent one" );
-
-		// A visual observe (render) RESETS the streak: three more inserts are
-		// needed to re-arm, so a single insert right after does NOT nudge.
+		// A visual observe (render) RESETS the streak, so no SECOND reminder
+		// is added: three more inserts would be needed to re-arm.  Count
+		// occurrences rather than presence -- the first reminder is now a
+		// permanent history message, so a presence check would be vacuous.
+		const std::size_t armedCount = CountOccurrences( armed.body, "edits in a row without rendering" );
+		Check( armedCount == 1, "nudge: exactly one reminder at the threshold" );
 		stepWith( renderFx );
 		stepWith( insertFx );
-		Check( loop.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body,
+		                         "edits in a row without rendering" ) == armedCount,
 		       "nudge: a render resets the streak -- one edit after it does not re-arm" );
 
 		// Disable it entirely: threshold 0 -> never nudges no matter how many edits.
@@ -8028,6 +8028,299 @@ static void TestReasoningSurvivalMatrix()
 	}
 }
 
+//----------------------------------------------------------------------
+// T44: BLIND-EDIT NUDGE DELIVERY -- the nudge rides the CONVERSATION, not
+// the system prompt.
+//
+// WHY THIS TEST EXISTS.  The nudge used to be appended to BuildRequest's
+// system prompt.  Tools render before system in every provider's cached
+// prefix, so that made the system block differ on exactly the request
+// carrying the nudge -- and differ again on the next one, which reverted
+// -- invalidating tools + system + the whole history for TWO turns per
+// nudge, on all four codecs (Anthropic's explicit cache_control
+// breakpoint, OpenAI/xAI automatic prefix caching, Gemini implicit
+// caching).  The load-bearing assertion is therefore NOT "the nudge is
+// somewhere in the body" but "the system prompt is BYTE-IDENTICAL on
+// every request of a session that fires a nudge, AND the nudge still
+// reaches the model, AND the transcript is still wire-valid".
+//
+// RED-PROVE: against the pre-fix loop, SystemPromptOf() differs on the
+// armed turn and the nudge is found inside the system block -- the
+// byte-identity and not-in-system assertions both fail on every
+// provider.  A test that only grepped the whole body would have passed
+// before AND after, which is exactly why the old nudge test did not
+// catch this.
+//----------------------------------------------------------------------
+
+// The system prompt AS SENT, extracted per provider from the request body
+// (each codec puts it in a different place -- Anthropic a one-element
+// `system` block array, Gemini `systemInstruction`, OpenAI Responses
+// `instructions`, Chat Completions the leading system message).
+static std::string SystemPromptOf( ChatProvider provider, const std::string& body )
+{
+	const JsonValue root = ParseBody( body );
+	switch( provider ) {
+		case ChatProvider::Anthropic: {
+			const JsonValue& sys = root.get( "system" );
+			// The codec emits a plain string only for an EMPTY prompt.
+			if( sys.isString() ) return sys.asString();
+			return sys.at( 0 ).get( "text" ).asString();
+		}
+		case ChatProvider::Gemini:
+			return root.get( "systemInstruction" ).get( "parts" ).at( 0 ).get( "text" ).asString();
+		case ChatProvider::OpenAI:
+			return root.get( "instructions" ).asString();
+		case ChatProvider::XAI:
+		case ChatProvider::Local:
+		default: {
+			// Chat Completions: messages[0] is the synthesized system turn.
+			const JsonValue& m0 = root.get( "messages" ).at( 0 );
+			if( m0.get( "role" ).asString() != "system" ) return "<<no leading system message>>";
+			return m0.get( "content" ).asString();
+		}
+	}
+}
+
+// Collect every tool-CALL id and every tool-RESULT id a request body
+// carries, in the provider's own wire shape.  Equal multisets == every
+// call is answered and no answer is orphaned.
+static void CollectToolIds( ChatProvider provider, const JsonValue& root,
+                            std::vector<std::string>& calls,
+                            std::vector<std::string>& results )
+{
+	if( provider == ChatProvider::Anthropic ) {
+		const JsonValue& msgs = root.get( "messages" );
+		for( std::size_t i = 0; i < msgs.size(); ++i ) {
+			const JsonValue& c = msgs.at( i ).get( "content" );
+			for( std::size_t j = 0; j < c.size(); ++j ) {
+				const std::string t = c.at( j ).get( "type" ).asString();
+				if( t == "tool_use" ) calls.push_back( c.at( j ).get( "id" ).asString() );
+				else if( t == "tool_result" ) results.push_back( c.at( j ).get( "tool_use_id" ).asString() );
+			}
+		}
+	}
+	else if( provider == ChatProvider::Gemini ) {
+		// Gemini deliberately withholds a SYNTHESIZED id from the wire, so
+		// count parts rather than match ids: a functionResponse part is
+		// pushed as a fixed placeholder so the multisets still line up
+		// one-for-one when every call is answered.
+		const JsonValue& contents = root.get( "contents" );
+		for( std::size_t i = 0; i < contents.size(); ++i ) {
+			const JsonValue& parts = contents.at( i ).get( "parts" );
+			for( std::size_t j = 0; j < parts.size(); ++j ) {
+				if( parts.at( j ).has( "functionCall" ) ) calls.push_back( "fn" );
+				else if( parts.at( j ).has( "functionResponse" ) ) results.push_back( "fn" );
+			}
+		}
+	}
+	else if( provider == ChatProvider::OpenAI ) {
+		const JsonValue& input = root.get( "input" );
+		for( std::size_t i = 0; i < input.size(); ++i ) {
+			const std::string t = input.at( i ).get( "type" ).asString();
+			if( t == "function_call" ) calls.push_back( input.at( i ).get( "call_id" ).asString() );
+			else if( t == "function_call_output" ) results.push_back( input.at( i ).get( "call_id" ).asString() );
+		}
+	}
+	else {
+		const JsonValue& msgs = root.get( "messages" );
+		for( std::size_t i = 0; i < msgs.size(); ++i ) {
+			const JsonValue& m = msgs.at( i );
+			const JsonValue& tc = m.get( "tool_calls" );
+			for( std::size_t j = 0; j < tc.size(); ++j )
+				calls.push_back( tc.at( j ).get( "id" ).asString() );
+			if( m.get( "role" ).asString() == "tool" )
+				results.push_back( m.get( "tool_call_id" ).asString() );
+		}
+	}
+}
+
+// Provider-specific structural validity of a built request body.  `tag`
+// names the provider in the failure message.
+static void CheckWireValid( ChatProvider provider, const std::string& body, const char* tag )
+{
+	const JsonValue root = ParseBody( body );
+	Check( !root.isNull(), std::string( "T44[" ) + tag + "]: the request body parses as JSON" );
+	if( root.isNull() ) return;
+
+	std::vector<std::string> calls, results;
+	CollectToolIds( provider, root, calls, results );
+	std::sort( calls.begin(), calls.end() );
+	std::sort( results.begin(), results.end() );
+	Check( calls == results,
+	       std::string( "T44[" ) + tag + "]: WIRE -- every tool call is answered exactly once "
+	       "(the nudge message did not orphan a tool result)" );
+
+	if( provider == ChatProvider::Anthropic ) {
+		Check( AnthropicToolCallsAllAnswered( root.get( "messages" ) ),
+		       "T44[anthropic]: WIRE -- each tool_use is answered by the message that "
+		       "DIRECTLY follows it (the nudge lands after the results, never between)" );
+	}
+	else if( provider == ChatProvider::Gemini ) {
+		// Gemini requires ALTERNATING roles.  The nudge is a second
+		// adjacent user entry, so this is the assertion that proves
+		// BuildRequest's user-run merge actually absorbed it.
+		const JsonValue& contents = root.get( "contents" );
+		bool alternates = true;
+		for( std::size_t i = 1; i < contents.size(); ++i ) {
+			if( contents.at( i ).get( "role" ).asString() ==
+			    contents.at( i - 1 ).get( "role" ).asString() ) alternates = false;
+		}
+		Check( alternates,
+		       "T44[gemini]: WIRE -- contents still strictly alternate user/model "
+		       "(the adjacent-user merge absorbed the nudge)" );
+		// ... and within the merged content the functionResponse parts must
+		// still LEAD, ahead of the nudge text part.
+		bool responsesLead = true;
+		for( std::size_t i = 0; i < contents.size(); ++i ) {
+			const JsonValue& parts = contents.at( i ).get( "parts" );
+			bool sawNonResponse = false;
+			for( std::size_t j = 0; j < parts.size(); ++j ) {
+				if( parts.at( j ).has( "functionResponse" ) ) {
+					if( sawNonResponse ) responsesLead = false;
+				}
+				else { sawNonResponse = true; }
+			}
+		}
+		Check( responsesLead,
+		       "T44[gemini]: WIRE -- functionResponse parts still LEAD the merged content, "
+		       "ahead of the nudge text part" );
+	}
+}
+
+static void TestBlindEditNudgeDelivery()
+{
+	std::printf( "T44: blind-edit nudge rides the conversation, not the system prompt...\n" );
+
+	// The substring the nudge text is recognized by (see AddToolResult).
+	const char* const kNudgeMark = "edits in a row without rendering";
+
+	const struct { ChatProvider provider; const char* tag; } kCases[] = {
+		{ ChatProvider::Anthropic, "anthropic" },
+		{ ChatProvider::Gemini,    "gemini"    },
+		{ ChatProvider::OpenAI,    "openai"    },
+		{ ChatProvider::XAI,       "xai"       },
+		{ ChatProvider::Local,     "local"     },
+	};
+
+	for( std::size_t c = 0; c < sizeof( kCases ) / sizeof( kCases[0] ); ++c ) {
+		const ChatProvider provider = kCases[c].provider;
+		const char* const tag = kCases[c].tag;
+
+		AgentChatLoop loop;
+		loop.SetProvider( provider );
+		loop.SetBlindEditNudgeThreshold( 3 );   // small K so the test is short
+		loop.AddUserMessage( "build a scene" );
+
+		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+
+		// BASELINE: the system prompt on a turn that has fired no nudge.
+		const std::string baseline = SystemPromptOf( provider, loop.BuildRequest( kApiKey ).body );
+		Check( !baseline.empty() && baseline.find( kNudgeMark ) == std::string::npos,
+		       std::string( "T44[" ) + tag + "]: baseline system prompt is non-empty and carries no nudge" );
+
+		// Three blind edits -> the streak hits the threshold and the nudge
+		// is delivered.  Every BuildRequest along the way is checked.
+		bool armedSeen = false;
+		std::size_t sawNudgeInMessagesAt = 0;
+		for( int round = 1; round <= 6; ++round ) {
+			const std::string id = std::string( "call_" ) + tag + std::to_string( round );
+			Check( DriveToolRound( loop, provider, Vec1( "insert_chunk" ), Vec1( id ), Vec1( ok ) ),
+			       std::string( "T44[" ) + tag + "]: setup -- round " +
+			       std::to_string( round ) + " drives one insert_chunk" );
+
+			const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+
+			// (1) THE LOAD-BEARING ASSERTION: byte-identical system prompt.
+			Check( SystemPromptOf( provider, req.body ) == baseline,
+			       std::string( "T44[" ) + tag + "]: system prompt is BYTE-IDENTICAL after round " +
+			       std::to_string( round ) + " (the static cache prefix is never invalidated)" );
+
+			// (2) The nudge is never smuggled into the system block.
+			Check( SystemPromptOf( provider, req.body ).find( kNudgeMark ) == std::string::npos,
+			       std::string( "T44[" ) + tag + "]: the nudge is NOT in the system block" );
+
+			// (3) The transcript stays wire-valid for this provider.
+			CheckWireValid( provider, req.body, tag );
+
+			if( req.body.find( kNudgeMark ) != std::string::npos && !armedSeen ) {
+				armedSeen = true;
+				sawNudgeInMessagesAt = static_cast<std::size_t>( round );
+			}
+		}
+
+		// (4) The model really does receive it -- and at the threshold, not
+		// before.  Three mutations with no observe is the trip point.
+		Check( armedSeen,
+		       std::string( "T44[" ) + tag + "]: the nudge REACHES the model (it is on the wire)" );
+		Check( sawNudgeInMessagesAt == 3,
+		       std::string( "T44[" ) + tag + "]: it arrives on the threshold round (3), not earlier" );
+	}
+
+	// Anthropic close-ups: the nudge is a real user MESSAGE positioned
+	// directly after the tool results, and it persists (a deliberate
+	// change from the old one-shot system-prompt splice -- dropping it
+	// again would rewrite the message suffix and re-introduce exactly the
+	// invalidation this design removes).
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetBlindEditNudgeThreshold( 2 );
+		loop.AddUserMessage( "build a scene" );
+		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+
+		const std::size_t sizeBefore = loop.TranscriptSize();
+		Check( DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
+		                       Vec1( "toolu_p1" ), Vec1( ok ) ) &&
+		       DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
+		                       Vec1( "toolu_p2" ), Vec1( ok ) ),
+		       "T44: setup -- two blind inserts trip a threshold of 2" );
+
+		// Two rounds add 2 x (Assistant + ToolResults) = 4 entries, plus the
+		// ONE nudge entry the second round's flush appended.
+		Check( loop.TranscriptSize() == sizeBefore + 5,
+		       "T44: the nudge is exactly ONE extra transcript entry" );
+		const ChatTranscriptEntry& tail = loop.TranscriptAt( loop.TranscriptSize() - 1 );
+		Check( tail.role == ChatTranscriptEntry::Role::User,
+		       "T44: ... carried as a User entry" );
+		Check( tail.displayText.find( "edits in a row without rendering" ) != std::string::npos,
+		       "T44: ... whose displayText is the reminder, so a GUI can show the guard firing" );
+		Check( loop.TranscriptAt( loop.TranscriptSize() - 2 ).role ==
+		       ChatTranscriptEntry::Role::ToolResults,
+		       "T44: ... placed DIRECTLY after the tool-results entry (never between a "
+		       "tool_use and its answer)" );
+
+		// Persistence: still on the wire two requests later, with the system
+		// prompt still untouched.
+		const std::string sys1 = SystemPromptOf( ChatProvider::Anthropic, loop.BuildRequest( kApiKey ).body );
+		const ChatHttpRequest later = loop.BuildRequest( kApiKey );
+		Check( later.body.find( "edits in a row without rendering" ) != std::string::npos,
+		       "T44: the reminder PERSISTS in history (re-dropping it would rewrite the "
+		       "suffix and re-invalidate the cache)" );
+		Check( SystemPromptOf( ChatProvider::Anthropic, later.body ) == sys1,
+		       "T44: ... and the system prompt is still byte-identical" );
+	}
+
+	// Disabled (threshold 0) and reset-on-observe still hold, and neither
+	// perturbs the system prompt.
+	{
+		AgentChatLoop off;
+		off.SetProvider( ChatProvider::Anthropic );
+		off.SetBlindEditNudgeThreshold( 0 );
+		off.AddUserMessage( "build" );
+		const std::string base = SystemPromptOf( ChatProvider::Anthropic, off.BuildRequest( kApiKey ).body );
+		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
+		for( int i = 0; i < 8; ++i ) {
+			DriveToolRound( off, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
+			                Vec1( "toolu_off" + std::to_string( i ) ), Vec1( ok ) );
+		}
+		const ChatHttpRequest req = off.BuildRequest( kApiKey );
+		Check( req.body.find( "edits in a row without rendering" ) == std::string::npos,
+		       "T44: threshold 0 disables it -- 8 blind edits, still no reminder anywhere" );
+		Check( SystemPromptOf( ChatProvider::Anthropic, req.body ) == base,
+		       "T44: ... and the system prompt is unchanged either way" );
+	}
+}
+
 int main()
 {
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
@@ -8096,6 +8389,7 @@ int main()
 	TestSkillIndexDiscourageRelist();
 	TestReasoningTokenAccounting();
 	TestReasoningSurvivalMatrix();
+	TestBlindEditNudgeDelivery();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

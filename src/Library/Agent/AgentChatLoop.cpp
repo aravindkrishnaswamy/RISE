@@ -741,20 +741,19 @@ namespace RISE
 			// Facet 5 slice S1: append the skills section (when set) to the
 			// base prompt.  An empty index text sends the base prompt
 			// UNCHANGED -- byte-identical to the pre-S1 behaviour.
-			std::string systemPrompt = ComposeSystemPrompt();
-
-			// BLIND-EDIT NUDGE: fold a one-shot reminder into THIS request's
-			// system prompt when a run of unseen edits armed one (see
-			// AddToolResult).  One-shot -- cleared here so it rides exactly
-			// the request that follows the tripping edit, not every request
-			// after.  Deliberately NOT part of ComposeSystemPrompt() (which
-			// stamps the once-per-session trajectory record): the nudge is
-			// transient per-request state, not part of the session's identity.
-			if( !mPendingBuildNudge.empty() ) {
-				systemPrompt += "\n\n";
-				systemPrompt += mPendingBuildNudge;
-				mPendingBuildNudge.clear();
-			}
+			//
+			// PROMPT-CACHE INVARIANT: this is the ONLY input to the system
+			// block, and it is a pure function of (base prompt, skill index,
+			// override) -- none of which change per request.  The system
+			// prompt is therefore BYTE-IDENTICAL on every request of a
+			// session.  Nothing transient may be folded in here: tools render
+			// before system in every provider's cache prefix, so one changed
+			// system byte invalidates tools + system + the whole history for
+			// that request AND for the next one (which differs again by
+			// reverting).  The blind-edit nudge used to be appended here; it
+			// now rides the conversation instead -- see
+			// AppendPendingBuildNudge.
+			const std::string systemPrompt = ComposeSystemPrompt();
 
 			// The key goes straight through to the codec's auth header and
 			// is retained NOWHERE in this object.  REASONING-MODEL TOOLS-
@@ -952,8 +951,9 @@ namespace RISE
 			// read_schema / read_skill / validate -- inspecting text or the
 			// registry is not looking at the RENDERED result), and grow it on
 			// a mutation.  When it hits a positive multiple of the threshold
-			// we arm a one-shot reminder (folded into the next request's
-			// system prompt by BuildRequest).  Threshold <= 0 disables it.
+			// we arm a reminder (appended to the transcript as a user message
+			// by AppendPendingBuildNudge, once the whole parallel round is
+			// answered and flushed).  Threshold <= 0 disables it.
 			{
 				const std::string& v = call.name;
 				// The BATCH forms (insert_chunks / propose_patches) count as a
@@ -1266,6 +1266,12 @@ namespace RISE
 			// pending calls.  Clear defensively all the same.)
 			if( mPendingCalls.empty() ) {
 				mPendingResults.clear();
+				// Defensive, and unreachable in practice: the nudge is armed
+				// ONLY inside AddToolResult, which requires a pending call,
+				// so a nudge always finds its flush on the main path below.
+				// Draining it here too makes "an armed nudge is never
+				// stranded" true by construction rather than by argument.
+				AppendPendingBuildNudge();
 				return;
 			}
 
@@ -1443,6 +1449,65 @@ namespace RISE
 			// Eval-harness E1: the turn's tool calls are done -- drop any
 			// remaining stamped lines (unanswered/synthesized calls).
 			mToolLineStash.clear();
+
+			// BLIND-EDIT NUDGE: deliver it as conversation content, directly
+			// after the tool results whose flush it followed.  Runs AFTER the
+			// elision passes above so their entry indices are unperturbed.
+			AppendPendingBuildNudge();
+		}
+
+		void AgentChatLoop::AppendPendingBuildNudge()
+		{
+			if( mPendingBuildNudge.empty() ) return;
+
+			// WHY CONVERSATION CONTENT, NOT THE SYSTEM PROMPT.  The nudge
+			// used to be appended to BuildRequest's system prompt.  That made
+			// the system block differ on exactly the request carrying it --
+			// and differ again on the next one, which reverted -- so a single
+			// nudge cost TWO cache-invalidated turns on every provider:
+			// tools render before system in the cached prefix, so a changed
+			// system byte invalidates tools + system + everything after it
+			// (Anthropic's explicit cache_control breakpoint, OpenAI/xAI
+			// automatic prefix caching, and Gemini implicit caching all key
+			// on the leading prefix).  Appending a message instead EXTENDS
+			// the prefix rather than editing it, which is free.
+			//
+			// The reminder reaches the model with the same force -- it is a
+			// message it must read to answer, not a system line it may weigh
+			// against the rest of the prompt -- and it now persists in the
+			// history rather than evaporating after one request, so a model
+			// that keeps editing keeps seeing it.  This is deliberate: the
+			// alternative (drop it next turn) would mean rewriting the
+			// message suffix, which re-introduces the invalidation.
+			//
+			// WIRE POSITION: emitted from FlushPendingToolResults, i.e.
+			// immediately after the ToolResults entry that answers the
+			// assistant turn -- assistant(tool_use) -> user(tool_results) ->
+			// user(nudge).  Every tool_use is therefore still answered by the
+			// message that directly follows it, so no tool_result is
+			// orphaned.  Adjacent user entries are an ALREADY-SUPPORTED shape
+			// on all four codecs (AddUserMessage produces the same
+			// tool_results -> user(text) pair): Anthropic combines
+			// consecutive same-role messages, Gemini's BuildRequest merges a
+			// run of adjacent user contents with the functionResponse parts
+			// FIRST, and the OpenAI-family codecs emit a flat message list
+			// where a trailing user message is unremarkable.
+			ChatTranscriptEntry entry;
+			entry.role = ChatTranscriptEntry::Role::User;
+			entry.displayText = mPendingBuildNudge;
+			entry.rawJson = mCodec->MakeUserEntry( mPendingBuildNudge );
+			mTranscript.push_back( entry );
+
+			// Eval-harness E1: recorded as a history edit, NOT as a `user`
+			// record.  A `user` record would inflate the running user-turn
+			// count that AgentEvalRunner's toolCallAfterUserTurn check walks,
+			// silently changing what that assertion means -- the nudge is a
+			// loop-synthesized message, not a turn the user took.
+			RecordHistoryEdit( "blind_edit_nudge", 0,
+			                   static_cast<long long>( entry.rawJson.size() ),
+			                   static_cast<int>( mTranscript.size() - 1 ) );
+
+			mPendingBuildNudge.clear();
 		}
 
 		void AgentChatLoop::ElideSupersededToolResults()

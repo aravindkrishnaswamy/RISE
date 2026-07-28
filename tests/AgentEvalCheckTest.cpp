@@ -97,6 +97,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+// Per-process scratch directory -- see ScratchRunDir below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid(), fork(), pipe()
+	#include <sys/wait.h>		// waitpid() -- collision-hazard proof below
+#endif
 
 #ifndef NO_PNG_SUPPORT
 	#include <zlib.h>   // P1 fix test: WriteSyntheticSolidPng streams a genuinely valid oversized PNG
@@ -269,17 +277,84 @@ static const char* const kBodyFinalText =
 // needed on disk beyond the scratch AgentEvalScenario the test builds in
 // memory).
 //----------------------------------------------------------------------
-static std::string ScratchRunDir( const char* leaf )
+// Per-process scratch root.  Nothing stops two copies of this binary
+// running at once (a stray earlier run, a developer running it by hand
+// while the suite runs, a repeat-run loop chasing a suspected flake) --
+// with a FIXED root, those processes' ScratchRunDir() calls collide: each
+// invocation's remove_all() below can delete the OTHER process's
+// in-flight fixtures/results out from under it, surfacing as a bogus
+// "the test is flaky" failure (the exact hazard already fixed for the
+// WriteTemp-style file helpers in AgentRenderAsyncTest.cpp /
+// ViewportPaneSchedulerTest.cpp).  The pid suffix makes the whole tree
+// unique per process; ScratchTestRoot() is split out so main() can
+// recursively remove the ENTIRE per-process tree on exit, not just
+// individual leaf directories.
+static std::string ScratchTestRoot()
 {
 	const char* base = std::getenv( "TMPDIR" );
 	if( !base ) base = std::getenv( "TMP" );
 	std::string dir = base ? base : "/tmp";
 	if( !dir.empty() && dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	dir += "rise_agent_eval_check_test/";
-	dir += leaf;
+	dir += "rise_agent_eval_check_test_";
+	dir += std::to_string( (long)getpid() );
+	return dir;
+}
+
+static std::string ScratchRunDir( const char* leaf )
+{
+	std::string dir = ScratchTestRoot() + "/" + leaf;
 	std::error_code ec;
 	std::filesystem::remove_all( dir, ec );
 	return dir;
+}
+
+//----------------------------------------------------------------------
+// Collision-hazard proof: two processes calling ScratchTestRoot() must
+// get DISTINCT trees.  This is a cheap, honest regression guard for the
+// exact bug the pid suffix above fixes -- a real fork() (no exec, no
+// scene load, no render) is negligible cost, and it proves the actual
+// property (parent and child disagree) rather than just re-reading the
+// same source line back.  POSIX-only: Windows has no fork(), and the
+// pid-suffix logic itself is still exercised implicitly by every
+// ScratchRunDir() call the other tests make.
+//----------------------------------------------------------------------
+static void TestScratchRootDiffersAcrossProcesses()
+{
+#ifndef _WIN32
+	std::printf( "Collision-hazard check: ScratchTestRoot() differs across processes...\n" );
+	int fds[2];
+	if( pipe( fds ) != 0 ) { Check( false, "collision check: pipe() succeeded" ); return; }
+	const pid_t child = fork();
+	if( child < 0 ) {
+		Check( false, "collision check: fork() succeeded" );
+		close( fds[0] ); close( fds[1] );
+		return;
+	}
+	if( child == 0 ) {
+		// ---- child: report its OWN ScratchTestRoot() back to the parent ----
+		close( fds[0] );
+		const std::string childRoot = ScratchTestRoot();
+		ssize_t w = write( fds[1], childRoot.data(), childRoot.size() );
+		(void)w;
+		close( fds[1] );
+		_exit( 0 );
+	}
+	// ---- parent ----
+	close( fds[1] );
+	std::string childRoot;
+	char buf[4096]; ssize_t n;
+	while( ( n = read( fds[0], buf, sizeof( buf ) ) ) > 0 ) childRoot.append( buf, (size_t)n );
+	close( fds[0] );
+	int status = 0;
+	waitpid( child, &status, 0 );
+
+	const std::string parentRoot = ScratchTestRoot();
+	Check( !childRoot.empty(), "collision check: child reported a non-empty scratch root" );
+	Check( childRoot != parentRoot,
+		"collision check: parent (" + parentRoot + ") and child (" + childRoot + ") scratch roots differ" );
+#else
+	std::printf( "Collision-hazard check: skipped on Windows (no fork()); pid-suffix logic is still exercised by every ScratchRunDir() call above.\n" );
+#endif
 }
 
 static bool WriteFile( const std::string& path, const std::string& text )
@@ -4976,6 +5051,7 @@ int main()
 {
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
 
+	TestScratchRootDiffersAcrossProcesses();
 	TestDocumentCheckpoint();
 	TestUntouchedCheckpoint();
 	TestRenderCheckpoint();
@@ -5011,5 +5087,14 @@ int main()
 	TestAdversarialControlNeverAsksStillBuilds();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
+
+	// Leave the repo/TMPDIR clean: remove this process's ENTIRE scratch
+	// tree (every ScratchRunDir() leaf lives under it), not just the last
+	// leaf touched.
+	{
+		std::error_code ec;
+		std::filesystem::remove_all( ScratchTestRoot(), ec );
+	}
+
 	return g_fail == 0 ? 0 : 1;
 }

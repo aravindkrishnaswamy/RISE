@@ -48,6 +48,17 @@
 //        message" holds for every entry this loop records, on both
 //        providers (Anthropic hard-400s unanswered tool_use ids;
 //        Gemini rejects mismatched functionResponses).
+//      * THE SYSTEM PROMPT IS FIXED FOR A SESSION.  ComposeSystemPrompt()
+//        is a pure function of (base prompt, skill index, override), all
+//        of which a host sets before the first turn -- so every request
+//        of a session carries a BYTE-IDENTICAL system block.  This is
+//        load-bearing, not incidental: tools render before system in
+//        every provider's cached prefix, so one changed system byte
+//        invalidates tools + system + the whole history.  Anything
+//        transient the model needs to see rides the CONVERSATION
+//        instead, appended after the tool-results entry so no tool
+//        result is orphaned -- see AppendPendingBuildNudge, the one
+//        such message the loop synthesizes today.
 //      * HONEST POISON SCOPING: a user interrupt, tool crash, or
 //        hostile response body cannot create RECORDED-BUT-
 //        UNANSWERABLE tool calls -- the parse gates plus the flush
@@ -436,9 +447,12 @@ namespace RISE
 			//! (insert_chunk / insert_chunks / propose_patch /
 			//! propose_patches / remove_chunk) with NO intervening VISUAL
 			//! observation (render / read_image / read_viewport /
-			//! query_object_at), the loop appends a one-shot system-prompt
-			//! reminder to the NEXT request telling the model to render and
-			//! look at its work.  Chosen from a measured failure: a local
+			//! query_object_at), the loop appends a reminder MESSAGE to the
+			//! conversation telling the model to render and look at its work.
+			//! Delivered as conversation content, NOT in the system prompt --
+			//! the system prompt must stay byte-identical across a session or
+			//! every provider's prompt cache is invalidated (see
+			//! AppendPendingBuildNudge).  Chosen from a measured failure: a local
 			//! model asked to build a furnished scene inserted 70-100+ chunks
 			//! and NEVER rendered once, building entirely blind until it
 			//! exhausted its budget.  This is a general drive-loop nudge (like
@@ -855,6 +869,16 @@ namespace RISE
 			//! there is no pending turn.
 			void FlushPendingToolResults();
 
+			//! BLIND-EDIT NUDGE delivery: when AddToolResult armed one,
+			//! append it to the transcript as a User entry and clear the
+			//! stash.  No-op when nothing is armed.  Called from
+			//! FlushPendingToolResults (both paths) so the nudge lands
+			//! immediately AFTER the tool-results entry -- keeping every
+			//! tool_use answered by the message that directly follows it --
+			//! and so it can never be stranded.  Deliberately NOT folded into
+			//! the system prompt: see the rationale block on the definition.
+			void AppendPendingBuildNudge();
+
 			//! Compose the full system prompt (base + skills section when a
 			//! skill index is set) -- shared by BuildRequest and the session
 			//! record so the recorded prompt matches the sent prompt.
@@ -992,8 +1016,10 @@ namespace RISE
 			//! calls with no intervening visual observe; it resets to 0 on any
 			//! observe verb and on a new user turn.  When it reaches a positive
 			//! multiple of the threshold, `mPendingBuildNudge` is armed with a
-			//! one-shot reminder that the next BuildRequest folds into the
-			//! system prompt and clears.
+			//! reminder that the flush at the end of the round appends to the
+			//! transcript as a User entry and clears (AppendPendingBuildNudge).
+			//! The stash exists because arming happens per-call while delivery
+			//! must wait for the whole parallel round to be answered.
 			int         mBlindEditStreak = 0;
 			int         mBlindEditNudgeThreshold = kDefaultBlindEditNudgeThreshold;
 			std::string mPendingBuildNudge;
