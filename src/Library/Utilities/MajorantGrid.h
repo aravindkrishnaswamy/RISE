@@ -5,8 +5,9 @@
 //
 //  For heterogeneous media, a single global majorant leads to
 //  excessive null collisions in low-density regions.  This grid
-//  decomposes the volume bounding box into cells, each storing the
-//  maximum possible extinction within that cell.  Delta tracking
+//  decomposes the volume bounding box into cells, each storing a
+//  conservative upper bound on the extinction within that cell
+//  (see the class doc below for the exact bound).  Delta tracking
 //  and ratio tracking then use the local cell majorant instead of
 //  the global one, dramatically reducing null collisions.
 //
