@@ -46,9 +46,13 @@ inline const IPainter& LinesPainter::ComputeWhich( const RayIntersectionGeometri
 		pCoordToCheck = &ri.ptCoord.y;
 	}
 
-	const int		quot = int( *pCoordToCheck / dSize );
+	// floor-based (not int truncation) so negative coordinates keep the
+	// uniform stripe width -- truncation mapped all of (-dSize, dSize) to
+	// quotient 0, doubling the stripe that straddles the origin.  & 1
+	// keeps the parity correct for negative quotients.
+	const int		quot = int( floor( *pCoordToCheck / dSize ) );
 
-	return (quot % 2 == 0 ? a : b );
+	return ((quot & 1) == 0 ? a : b );
 }
 
 RISEPel LinesPainter::GetColor( const RayIntersectionGeometric& ri ) const

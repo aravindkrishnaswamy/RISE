@@ -16,10 +16,10 @@
 //       integer boundaries
 //
 //  Guards the negative-fraction modf defect: modf(x)/int-cast on a
-//  negative coordinate yields a fraction in (-1,0] and a lattice cell
-//  shifted by one, so interpolation becomes extrapolation from the
-//  wrong cell and the noise field is discontinuous at every negative
-//  integer boundary.
+//  negative non-integer coordinate yields a fraction in (-1,0) and a
+//  lattice cell shifted by one, so interpolation becomes extrapolation
+//  from the wrong cell and the noise field is discontinuous at every
+//  negative integer boundary.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: July 28, 2026

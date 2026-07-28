@@ -40,8 +40,12 @@ inline const IPainter& CheckerPainter::ComputeWhich( const RayIntersectionGeomet
 	const int	xquot = int( ceil( ri.ptCoord.x / dSize ) );
 	const int	yquot = int( ceil( ri.ptCoord.y / dSize ) );
 
-	const bool	bXIsEven = (xquot % 2 == (xquot<0 ? 1 : 0) ? true : false );
-	const bool	bYIsEven = (yquot % 2 == (yquot<0 ? 1 : 0) ? true : false );
+	// & 1, not % 2: parity must hold for negative quotients too, where
+	// C++ % yields 0 or -1 (never the +1 the old comparison expected, so
+	// every negative cell classified "odd" and the checker collapsed to a
+	// solid in the negative quadrant)
+	const bool	bXIsEven = ((xquot & 1) == 0);
+	const bool	bYIsEven = ((yquot & 1) == 0);
 
 	// If they are both the same, return one color, otherwise, return the other
 	if( (bXIsEven && bYIsEven) ||

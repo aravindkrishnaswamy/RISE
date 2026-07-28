@@ -41,7 +41,7 @@ InterpolatedNoise1D::~InterpolatedNoise1D()
 
 Scalar InterpolatedNoise1D::Evaluate( const Scalar x ) const
 {
-	// floor-based (not modf) so the fraction stays in [0,1) for negative
+	// floor-based (not modf) so the fraction stays in [0,1] for negative
 	// coordinates too -- noise inputs are world-space and can be negative
 	const double	fX = floor( x );
 	const double	fracX = x - fX;
@@ -75,7 +75,7 @@ InterpolatedNoise2D::~InterpolatedNoise2D()
 
 Scalar InterpolatedNoise2D::Evaluate( const Scalar x, const Scalar y ) const
 {
-	// floor-based (not modf) so the fractions stay in [0,1) for negative
+	// floor-based (not modf) so the fractions stay in [0,1] for negative
 	// coordinates too -- noise inputs are world-space and can be negative
 	const double	fX = floor( x );
 	const double	fracX = x - fX;
@@ -120,7 +120,7 @@ InterpolatedNoise3D::~InterpolatedNoise3D()
 
 Scalar InterpolatedNoise3D::Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
 {
-	// floor-based (not modf) so the fractions stay in [0,1) for negative
+	// floor-based (not modf) so the fractions stay in [0,1] for negative
 	// coordinates too -- noise inputs are world-space and can be negative
 	const double	fX = floor( x );
 	const double	fracX = x - fX;
