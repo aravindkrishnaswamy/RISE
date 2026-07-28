@@ -770,7 +770,7 @@ static void RunIrradianceCancellationProbe(
 	if( loaded && pJob->GetRasterizer() ) {
 		Implementation::Rasterizer* rasterizer =
 			dynamic_cast<Implementation::Rasterizer*>( pJob->GetRasterizer() );
-		if( rasterizer && singleThread ) rasterizer->ForTest_SetThreadCountOverride( 1 );
+		if( rasterizer ) rasterizer->ForTest_SetThreadCountOverride( singleThread ? 1 : 2 );
 		QueryOnlyCancelProgress cancel;
 		pJob->SetProgress( &cancel );
 		if( animation ) {
