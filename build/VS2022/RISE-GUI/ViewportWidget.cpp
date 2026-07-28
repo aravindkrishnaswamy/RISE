@@ -1200,6 +1200,7 @@ void ViewportWidget::keyPressEvent(QKeyEvent* event)
         const unsigned int maxX = static_cast<unsigned int>(std::max(0, surface.width() - 1));
         const unsigned int maxY = static_cast<unsigned int>(std::max(0, surface.height() - 1));
         unsigned int l = m_regionLeft, t = m_regionTop, r = m_regionRight, b = m_regionBottom;
+        const unsigned int oldL = l, oldT = t, oldR = r, oldB = b;
         const bool resize = event->modifiers().testFlag(Qt::ShiftModifier);
         if (resize) {
             if (event->key() == Qt::Key_Left && r > l + 2) --r;
@@ -1210,8 +1211,10 @@ void ViewportWidget::keyPressEvent(QKeyEvent* event)
         else if (event->key() == Qt::Key_Right && r < maxX) { ++l; ++r; }
         else if (event->key() == Qt::Key_Up && t > 0) { --t; --b; }
         else if (event->key() == Qt::Key_Down && b < maxY) { ++t; ++b; }
-        m_bridge->setInteractiveRegion(l, t, r, b);
-        pollRegionState();
+        if (l != oldL || t != oldT || r != oldR || b != oldB) {
+            m_bridge->setInteractiveRegion(l, t, r, b);
+            pollRegionState();
+        }
         event->accept();
         return;
     }

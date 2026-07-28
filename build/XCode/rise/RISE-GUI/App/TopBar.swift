@@ -423,6 +423,10 @@ struct TopBar: View {
     private var statusLabelColor: Color {
         if errorMessage != nil { return Theme.error }
         if isCancelling { return Theme.warn }
+        if viewModel.isRegionProductionRender &&
+            (viewModel.renderState == .cancelled || viewModel.isProductionRenderPaused) {
+            return Theme.warn
+        }
         if isProduction { return Theme.success }
         switch viewModel.refinementPhase {
         case 4: return Theme.warn

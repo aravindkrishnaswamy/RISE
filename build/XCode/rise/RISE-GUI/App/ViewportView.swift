@@ -590,6 +590,7 @@ private struct RegionOverlay: View {
                             .allowsHitTesting(interactionEnabled)
                             .accessibilityElement()
                             .accessibilityLabel("Active render region")
+                            .accessibilityValue(regionLabel(region: region, surface: surface))
                             .accessibilityAction(named: "Move left") {
                                 move(region: region, dx: -8, dy: 0, surface: surface)
                             }
@@ -609,6 +610,7 @@ private struct RegionOverlay: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Clear active render region")
+                        .accessibilityValue(regionLabel(region: region, surface: surface))
                         .position(badgePosition(rect: rect, badgeWidth: badgeW,
                                                 viewportSize: geom.size))
                         .allowsHitTesting(interactionEnabled)

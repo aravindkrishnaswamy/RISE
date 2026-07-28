@@ -530,6 +530,15 @@ void ViewportBridge::startSuppressingInitialRender()
 void ViewportBridge::stop()
 {
     if (!m_controller) return;
+    // Retire every presentation queued by the interactive loop before
+    // handing the scene to production. StopInteractive joins the controller
+    // thread, but a sink may still be converting or have a UI delivery queued.
+    // Without this generation bump, that stale preview can overwrite a fast
+    // regional final after production reaches Completed.
+    if (m_previewSink) m_previewSink->InvalidatePresentation();
+    for (unsigned int pane = 1; pane < kViewportPaneCount; ++pane) {
+        if (m_paneSinks[pane]) m_paneSinks[pane]->InvalidatePresentation();
+    }
     // Model-B F2 slice S4 fix round 4: StopInteractive, NOT the
     // monolithic Stop() -- see this method's header doc in
     // ViewportBridge.h.  The destructor above still gets the FULL
