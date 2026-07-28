@@ -202,9 +202,9 @@ static void TestOverAndNonFiniteLODs()
 		Check( !RISE::IsFiniteDouble( posInf ) && RISE::IsPositiveInfinityDouble( posInf ),
 			"strtod materialised +inf" );
 		Check( !RISE::IsFiniteDouble( negInf ) && !RISE::IsPositiveInfinityDouble( negInf ),
-			"strtod materialised -inf" );
+			"strtod -inf is non-finite and not +inf (the accessor's base-path class)" );
 		Check( !RISE::IsFiniteDouble( nanLod ) && !RISE::IsPositiveInfinityDouble( nanLod ),
-			"strtod materialised NaN" );
+			"strtod NaN is non-finite and not +inf (the accessor's base-path class)" );
 
 		Check( Near( SampleLOD( *ria, posInf ), kLevel2Expected ),
 			"lod=+inf clamps to the coarsest level" );

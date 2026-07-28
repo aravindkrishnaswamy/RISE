@@ -1,7 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  FiniteMathTest.cpp - Regression coverage for IsFiniteDouble under
-//    the production -ffast-math build.
+//  FiniteMathTest.cpp - Regression coverage for the FiniteMath.h
+//    helpers (IsFiniteDouble, IsPositiveInfinityDouble) under the
+//    production -ffast-math build.
 //
 //////////////////////////////////////////////////////////////////////
 
