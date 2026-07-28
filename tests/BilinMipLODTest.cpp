@@ -5,26 +5,29 @@
 //    which previously had no test at all.  Guards two recent
 //    memory-safety fixes in particular:
 //
-//      - the NaN-safe early-out (`!(lod > 0)`): a NaN lod must take
-//        the base-sample path instead of flowing into
-//        (int)std::floor(NaN) (UB) and a garbage pyramid index;
+//      - the non-finite LOD classification (FiniteMath.h bit tests):
+//        NaN and -inf must take the base-sample path instead of
+//        flowing into (int)std::floor(NaN) (UB) and a garbage
+//        pyramid index; +inf must clamp to the coarsest level;
 //      - the BuildMipPyramid zero-dimension guard: a 0-dim image
 //        with mipmapping enabled must not run the level-1 box
 //        filter (whose y0 = min(0, -1) would reach the unchecked
 //        raster GetPEL) — the pyramid stays empty, LOD clamps to 0,
 //        and sampling falls through to the guarded base path.
 //
-//    Determinism note: the stochastic bracket pick only engages for
-//    FRACTIONAL lod (chosenLevel = lvlFloor + (MipHash < frac)).
-//    Integer lods have frac == 0, so level selection is exact and
-//    the expectations below are deterministic.  The one fractional
-//    check asserts membership in the two bracketing levels' values
-//    rather than a specific pick.
+//    Determinism note: level selection is
+//      chosenLevel = lvlFloor + (lvlFloor < maxLevel && MipHash < frac)
+//    and MipHash returns a uniform double in [0, 1) — never negative.
+//    Integer lods therefore select deterministically (frac == 0 can
+//    never exceed a value in [0,1); MipHash may still be *evaluated*,
+//    its result just cannot matter).  The one fractional check
+//    asserts membership in the two bracketing levels' values rather
+//    than a specific pick.
 //
 //    Image: 4x4 width-axis ramp, texel value px/3 (0, 1/3, 2/3, 1),
-//    constant along the height axis.  Pyramid: level 1 is 2x2 with
-//    row-constant texels {1/6, 5/6}; level 2 (coarsest) is 1x1 with
-//    value 1/2.  Sampled at (x, y) = (0.5, 0.125) — input y is the
+//    constant along the height axis.  Pyramid: level 1 is 2x2, texels
+//    {1/6, 5/6} along the width axis and identical across both rows;
+//    level 2 (coarsest) is 1x1 with value 1/2.  Sampled at (x, y) = (0.5, 0.125) — input y is the
 //    width-axis UV in this accessor family:
 //      base:    u = 0.125*4 + 0.5 = 1.0  -> texel column 1 = 1/3
 //      level 1: u = 0.125*2 + 0.5 = 0.75 -> 0.25*(1/6) + 0.75*(5/6) = 2/3
@@ -41,7 +44,7 @@
 
 #include <iostream>
 #include <cmath>
-#include <limits>
+#include <cstdlib>
 #include <string>
 
 #include "../src/Library/RISE_API.h"
@@ -174,20 +177,26 @@ static void TestOverAndNonFiniteLODs()
 		Check( Near( SampleLOD( *ria, 1e300 ), kLevel2Expected ),
 			"huge finite lod clamps to the coarsest level" );
 
-		// Non-finite LODs are only assertable where FP comparisons have
-		// IEEE semantics.  The macOS release build compiles with
-		// -ffast-math (Config.OSX; legacy SGI/Solaris too), which makes
-		// any NaN/inf UB in BOTH this TU and the library — the
-		// accessor's !(lod > 0) early-out is source-level hardening
-		// whose guarantee holds in IEEE builds (Config.Linux's plain
-		// -O3, MSVC /fp:precise via run_all_tests.ps1, debug builds).
-		// Asserting UB would be a false test, so these checks compile
-		// out under fast-math.
-#if !defined(__FAST_MATH__) && !defined(_M_FP_FAST)
-		Check( Near( SampleLOD( *ria, std::numeric_limits<Scalar>::infinity() ), kLevel2Expected ),
-			"lod=+inf clamps to the coarsest level" );
+		// Non-finite LODs.  The accessor classifies them with the
+		// optimisation-safe bit tests from FiniteMath.h, so the
+		// contract (NaN and -inf -> base path; +inf -> coarsest level)
+		// holds even under this project's -ffast-math configs
+		// (Config.OSX; legacy SGI/Solaris) where plain FP comparisons
+		// on non-finite operands can be folded away.  The values are
+		// materialised through strtod at runtime — following
+		// FiniteMathTest.cpp — so no non-finite literal exists in this
+		// TU for the fast-math optimiser to constant-fold (a
+		// numeric_limits infinity() constant here trips clang's
+		// -Wnan-infinity-disabled, and legitimately so).
+		const Scalar posInf = std::strtod( "1e999", 0 );	// overflows to +inf
+		const Scalar negInf = std::strtod( "-1e999", 0 );
+		const Scalar nanLod = std::strtod( "nan", 0 );
 
-		const Scalar nanLod = std::numeric_limits<Scalar>::quiet_NaN();
+		Check( Near( SampleLOD( *ria, posInf ), kLevel2Expected ),
+			"lod=+inf clamps to the coarsest level" );
+		Check( Near( SampleLOD( *ria, negInf ), kBaseExpected ),
+			"lod=-inf takes the base path" );
+
 		RISEColor viaNaN, viaBase;
 		ria->GetPELwithLOD( kSampleX, kSampleY, nanLod, viaNaN );
 		ria->GetPEL( kSampleX, kSampleY, viaBase );
@@ -196,9 +205,6 @@ static void TestOverAndNonFiniteLODs()
 		    && viaNaN.base[2] == viaBase.base[2]
 		    && viaNaN.a == viaBase.a,
 			"lod=NaN takes the base path (bitwise-equal to GetPEL)" );
-#else
-		std::cout << "  SKIP: non-finite LOD checks (fast-math build: NaN/inf are UB by design)\n";
-#endif
 
 		ria->release();
 	}
@@ -219,11 +225,13 @@ static void TestMipmapDisabledForwards()
 	img->release();
 }
 
-// Regression guard for the BuildMipPyramid zero-dimension guard: the
-// partial-zero 4x0 shape is the dangerous one (the level-1 loop body
-// would run with y0 = min(0, -1) = -1 without the guard); 0x0 covers
-// the fully-degenerate corner.  Both must return a default (zero) pel
-// from the guarded base path without crashing.
+// Regression guard for the BuildMipPyramid zero-dimension guard.  Both
+// shapes are dangerous without it: level1.w/h = max(1, dim/2) is >= 1
+// even for a zero dimension, so the level-1 loop body always runs, and
+// min(0, dim-1) = -1 on every zero axis reaches the unchecked raster
+// GetPEL.  4x0 goes out of bounds on the height axis (y0 = -1); 0x0 on
+// BOTH axes (x0 = y0 = -1).  Both must return a default (zero) pel from
+// the guarded base path without crashing.
 static void TestZeroDimensionImages()
 {
 	std::cout << "Zero-dimension images with mipmapping do not crash and return zero\n";

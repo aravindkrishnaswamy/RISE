@@ -34,6 +34,23 @@ namespace RISE
 		std::memcpy( &bits, &materialised, sizeof( bits ) );
 		return ( ( bits >> 52 ) & 0x7FFULL ) != 0x7FFULL;
 	}
+
+	//! Returns true iff @a value is exactly +infinity.  Same volatile
+	//! materialisation rationale as IsFiniteDouble; the comparison is
+	//! integer-only (the +inf bit pattern is unique), so it cannot be
+	//! folded under -ffast-math.  Lets callers that already know a value
+	//! is non-finite distinguish +inf (often "saturate high") from NaN
+	//! and -inf without an FP comparison on the non-finite operand.
+	inline bool IsPositiveInfinityDouble( const double value )
+	{
+		static_assert( sizeof( double ) == sizeof( std::uint64_t ),
+			"IsPositiveInfinityDouble requires an IEEE-754 binary64 double" );
+		volatile double barrier = value;
+		const double materialised = barrier;
+		std::uint64_t bits = 0;
+		std::memcpy( &bits, &materialised, sizeof( bits ) );
+		return bits == 0x7FF0000000000000ULL;
+	}
 }
 
 #endif

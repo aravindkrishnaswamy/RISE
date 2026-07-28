@@ -17,6 +17,7 @@
 #define BILINRASTERIMAGEACCESSOR_
 
 #include "../Interfaces/IRasterImageAccessor.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/Reference.h"
 #include <cmath>
 #include <cstdint>
@@ -340,18 +341,28 @@ namespace RISE
 					GetPEL( x, y, p );
 					return;
 				}
-				// Below the first mip level — base sample only.  Written
-				// as !(lod > 0) so a NaN lod (a NaN texture-footprint
-				// determinant passes the fabs(det) < 1e-30 degeneracy
-				// check and log2 turns it into a NaN LOD) takes this safe
-				// path instead of flowing into floor()/int conversion
-				// (UB) and a garbage pyramid index below.  Caveat: the
-				// guarantee holds where FP comparisons have IEEE
-				// semantics (Linux -O3, MSVC /fp:precise, debug builds);
-				// the macOS release build uses -ffast-math, under which
-				// any NaN is UB everywhere and this form is best-effort
-				// source hardening only.
-				if( !(lod > Scalar( 0 )) ) {
+				// Non-finite LODs are classified with the optimisation-safe
+				// bit tests from FiniteMath.h — FP comparisons on NaN/inf
+				// operands can be folded incorrectly under this project's
+				// -ffast-math configs (Config.OSX, legacy SGI/Solaris,
+				// Xcode "Opto"), which is how a NaN lod previously flowed
+				// into (int)std::floor(NaN) (UB) and a garbage pyramid
+				// index.  A NaN lod is reachable in production: a NaN
+				// texture-footprint determinant passes the
+				// fabs(det) < 1e-30 degeneracy check and log2 turns it
+				// into a NaN LOD.  Semantics match the pre-existing IEEE
+				// behaviour: NaN and -inf take the base-sample path; +inf
+				// (unbounded footprint) clamps to the coarsest level.
+				bool lodIsPosInf = false;
+				if( !IsFiniteDouble( lod ) ) {
+					if( !IsPositiveInfinityDouble( lod ) ) {
+						GetPEL( x, y, p );	// NaN or -inf
+						return;
+					}
+					lodIsPosInf = true;
+				} else if( lod <= Scalar( 0 ) ) {
+					// Below the first mip level — base sample only.
+					// (Plain comparison is safe here: lod is finite.)
 					GetPEL( x, y, p );
 					return;
 				}
@@ -361,9 +372,11 @@ namespace RISE
 				// Clamp LOD to the available pyramid range.  pyramid[i]
 				// represents level (i+1), so the highest sampleable
 				// level number is mip_pyramid.size() (which corresponds
-				// to mip_pyramid[size-1]).
+				// to mip_pyramid[size-1]).  +inf substitutes the cap
+				// directly rather than relying on an FP comparison
+				// against the non-finite value.
 				const int maxLevel = (int)mip_pyramid.size();	// inclusive cap
-				Scalar lodClamped = lod;
+				Scalar lodClamped = lodIsPosInf ? Scalar( maxLevel ) : lod;
 				if( lodClamped > Scalar( maxLevel ) ) lodClamped = Scalar( maxLevel );
 				const int lvlFloor = (int)std::floor( lodClamped );
 				const Scalar frac = lodClamped - Scalar( lvlFloor );
