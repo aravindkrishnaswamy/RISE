@@ -17,6 +17,7 @@
 #define BicubicRasterImageAccessor_
 
 #include "../Interfaces/ICubicInterpolator.h"
+#include "../Utilities/FiniteMath.h"
 #include "BilinRasterImageAccessor.h"
 
 namespace RISE
@@ -81,6 +82,19 @@ namespace RISE
 				// exposed to modulo-by-zero in the Repeat/MirroredRepeat
 				// path below.
 				if( this->image_width <= 0 || this->image_height <= 0 ) {
+					p = C();
+					return;
+				}
+
+				// Non-finite UV guard: NaN survives the wrap and both
+				// pre-clamps into int(NaN) (UB) — and here it also
+				// breaks the ClampToEdge fallback's "px < 0 implies
+				// xlo == 0" invariant, so px would be ASSIGNED the
+				// garbage xlo instead of clamped.  Bit tests because
+				// plain FP comparisons are foldable under -ffast-math
+				// (rationale at BilinRasterImageAccessor::GetPel /
+				// FiniteMath.h).
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
 					p = C();
 					return;
 				}

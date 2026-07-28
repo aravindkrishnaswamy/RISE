@@ -17,6 +17,7 @@
 #define NNBRASTERIMAGEACCESSOR_
 
 #include "../Interfaces/IRasterImageAccessor.h"
+#include "../Utilities/FiniteMath.h"
 #include <cmath>
 
 namespace RISE
@@ -103,6 +104,16 @@ namespace RISE
 
 			void		GetPel( const Scalar x, const Scalar y, C& p ) const
 			{
+				// Non-finite UV guard: NaN survives the wrap and both
+				// clamps below into (unsigned)NaN (UB); +inf under
+				// Repeat becomes NaN too.  Bit tests because plain FP
+				// comparisons are foldable under -ffast-math (rationale
+				// at BilinRasterImageAccessor::GetPel / FiniteMath.h).
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
+					p = C();
+					return;
+				}
+
 				// Apply per-axis wrap before the pixel-coord scale (see
 				// BilinRasterImageAccessor for the rationale and the
 				// `wrap_s ↔ y / wrap_t ↔ x` axis convention).
@@ -141,6 +152,12 @@ namespace RISE
 				// clamp below would pin u/v to Scalar(-1) and drive an
 				// out-of-bounds write through SetPEL.
 				if( image_width <= 0 || image_height <= 0 ) {
+					return;
+				}
+
+				// Non-finite UV guard (rationale at GetPel); drop the
+				// write rather than risk a wild one.
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
 					return;
 				}
 

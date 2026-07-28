@@ -215,6 +215,13 @@ namespace RISE
 			void BilinearSampleMip( const Scalar x, const Scalar y,
 			                        const int level, C& p ) const
 			{
+				// Non-finite UV guard — this path bypasses GetPel, so it
+				// needs its own copy (rationale at GetPel).
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
+					p = C();
+					return;
+				}
+
 				const MipLevel& mip = mip_pyramid[ (size_t)level ];
 
 				// Apply wrap modes (same convention as base GetPel).
@@ -456,6 +463,22 @@ namespace RISE
 
 			void		GetPel( const Scalar x, const Scalar y, C& p ) const
 			{
+				// Non-finite UV guard: a NaN coordinate survives
+				// ApplyWrapMode (ClampToEdge returns uv unchanged) and
+				// BOTH pre-clamps below (`u < 0` and `u > dim-1` are
+				// false for NaN), reaching the int conversion (UB) and
+				// the unchecked raster GetPEL — the UV sibling of the
+				// GetPELwithLOD NaN-lod hazard.  ±inf is included: +inf
+				// under Repeat becomes inf - floor(inf) = NaN anyway.
+				// Bit tests, not FP comparisons — those are foldable
+				// under the -ffast-math configs (see FiniteMath.h).
+				// Non-finite UVs (e.g. from a NaN ri.ptCoord) return the
+				// zero pel, matching the zero-dimension convention.
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
+					p = C();
+					return;
+				}
+
 				// Apply per-axis wrap mode BEFORE pixel-coordinate scaling.
 				// (The existing variable mapping inverts width/height vs.
 				// the conventional U/V — `u` here is the horizontal pixel
@@ -557,6 +580,12 @@ namespace RISE
 				// clamp below would pin u/v to Scalar(-1) and drive an
 				// out-of-bounds write through SetPEL.
 				if( image_width <= 0 || image_height <= 0 ) {
+					return;
+				}
+
+				// Non-finite UV guard (rationale at GetPel); a wild WRITE
+				// is strictly worse than the read, so drop the write.
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
 					return;
 				}
 
