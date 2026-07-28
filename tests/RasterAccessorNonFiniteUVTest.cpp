@@ -9,8 +9,10 @@
 //    (ClampToEdge returns uv unchanged) and BOTH pre-clamps
 //    (`u < 0` and `u > dim-1` are false for NaN), then hits the
 //    int/unsigned conversion (UB) and the unchecked raster GetPEL
-//    (raw pData[y*stride+x]) — a wild read; SetPel's twin is an
-//    out-of-bounds write.  ±inf is in the same class: under Repeat /
+//    (raw pData[y*stride+x]) — a wild read; SetPel's twin corrupts
+//    texels (out-of-bounds where the conversion yields a huge index,
+//    e.g. x86-64's INT_MIN; in-bounds at texel 0 where it saturates
+//    to zero, e.g. arm64).  ±inf is in the same class: under Repeat /
 //    MirroredRepeat it becomes inf - inf = NaN before the
 //    conversion, and under ClampToEdge it previously saturated to an
 //    edge texel — the guards deliberately trade that mode-dependent
@@ -90,9 +92,10 @@ static bool IsFillPel( const RISEColor& c )
 	// Exact comparison is safe because the controls sample at dyadic
 	// positions (ut = vt = 0.5 at base; the mip pre-clamp pins
 	// ut = vt = 0), where bilinear weights are exact; Catmull-Rom is
-	// exact for ANY parameter on a constant input (its a0..a2
-	// coefficients cancel to zero bit-exactly); NNB is a single texel
-	// fetch.
+	// exact for ANY parameter here because kFill is dyadic (1.0), so
+	// its a0..a2 coefficient rows cancel to zero bit-exactly (a
+	// non-dyadic fill would leave ~1e-17 residues); NNB is a single
+	// texel fetch.
 	return c.base[0] == kFill && c.a == 1.0;
 }
 
@@ -227,9 +230,11 @@ int main()
 	// a NaN Jacobian entry.  GetPELwithFootprint computes
 	// offU/offV = sx*dudx + sy*dudy, so one NaN derivative poisons the
 	// offset and the shifted coordinate; the guard in the downstream
-	// virtual GetPEL must absorb it.  This is exactly the call shape
+	// virtual GetPEL must absorb it (offV = sx*dvdx + sy*dvdy feeds
+	// the accessor's x slot).  This is exactly the call shape
 	// TexturePainter drives in lowmem (supersample) mode.  jitter 1.0
-	// keeps sx = 0.5 nonzero so no term is a compile-time zero.
+	// keeps sx = 0.5 nonzero so the non-finite derivative is never
+	// multiplied by a zero coefficient a fast-math pass could fold.
 	{
 		IRasterImageAccessor* ria = MakeAccessor( *img, eBilin, eRasterWrap_ClampToEdge );
 		if( ria ) {
