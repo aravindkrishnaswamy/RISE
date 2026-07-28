@@ -1414,12 +1414,20 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// render {samples?,width?,height?,camera?} ->
+				// render {samples?,width?,height?,camera?,imageMaxEdge?} ->
 				//   {ok,width,height,meanR,meanG,meanB,integrator,
 				//    previewWidth,previewHeight,cameraOverridden,message,
 				//    renderJobId}
-				//   (NOT the image bytes -- render stays lean; read_image
-				//    carries the base64 PNG.  `integrator` = the ACTIVE
+				//   (Image bytes only when `imageMaxEdge` is given: then the
+				//    result also carries png_base64/byteLength/imageWidth/
+				//    imageHeight, downscaled to that long-edge bound by the
+				//    SAME AgentSession::ReadImage(maxEdge,...) call read_image
+				//    makes -- so the bytes equal what a following
+				//    read_image{maxEdge:N} would have returned, in one round
+				//    trip instead of two.  Refused with mode:"objectmap" (must
+				//    be read at native size) and with async (no pixels exist at
+				//    submit time).  Omitted -> the result is unchanged.
+				//    `integrator` = the ACTIVE
 				//    rasterizer's chunk keyword, empty when none is active.
 				//    width/height/camera are the OPTIONAL preview-render
 				//    overrides -- absent = today's exact behaviour.
@@ -1684,6 +1692,39 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'xray' must be a boolean" );
 					}
 
+					// ADDITIVE param {"imageMaxEdge":N}: return the rendered PNG
+					// INLINE, so an ordinary look costs ONE call instead of
+					// render + read_image.  PRESENCE is the opt-in -- absent
+					// leaves the result exactly what it was.  N is a long-edge
+					// bound clamped [16,1024], read_image's own maxEdge contract,
+					// because the bytes come from the SAME
+					// AgentSession::ReadImage(maxEdge,...) call read_image makes.
+					unsigned int imageMaxEdge = 0;
+					std::string imeErr;
+					const int imePresent = ParseClampedUInt( params, "imageMaxEdge", 16, 1024, imageMaxEdge, imeErr );
+					if( imePresent < 0 ) return MakeError( idValue, kInvalidParams, imeErr );
+					if( imePresent == 1 ) {
+						// An objectmap must be read at NATIVE size: the box
+						// downscale blends the flat identity colours and breaks
+						// the exact-byte legend match.  Refused here -- before the
+						// render runs, so nothing is wasted -- rather than
+						// silently downscaled (a corrupt map) or silently sent at
+						// native size (an unasked-for token bill).
+						if( rparams.renderTarget == AgentRenderTarget::ObjectMap ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'imageMaxEdge' is not supported with mode:\"objectmap\" "
+								"-- a downscale blends the identity colours and breaks the legend match. "
+								"Render without it, then read_image with NO maxEdge." );
+						}
+						// An async submit returns before any pixels exist.
+						if( wantAsync ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'imageMaxEdge' is not supported with 'async' -- the "
+								"submit returns before the render produces pixels. Use render_wait, "
+								"then read_image." );
+						}
+					}
+
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
 						JsonValue result = JsonValue::MakeObject();
@@ -1701,7 +1742,26 @@ namespace RISE
 					// is the SAME field-by-field shape this handler used to
 					// build inline -- factored out so render_wait's
 					// post-completion echo can return an IDENTICAL shape.
-					return MakeSuccess( idValue, RenderResultJson( rr ) );
+					JsonValue renderResult = RenderResultJson( rr );
+					// The inline image rides under the SAME "png_base64" field
+					// name read_image and compare_to_reference use, so
+					// AgentChatCodecs' IsImageResult -- and every retention /
+					// elision policy built on it -- covers this without a second
+					// code path.  Attached only on a SUCCESSFUL render: on a
+					// failure the cache still holds the PREVIOUS render, and
+					// returning those pixels as this call's image would be a lie.
+					if( imePresent == 1 && rr.ok ) {
+						unsigned int imgW = 0, imgH = 0;
+						const std::vector<unsigned char> png = s->ReadImage( imageMaxEdge, imgW, imgH );
+						if( !png.empty() ) {
+							renderResult.set( "png_base64", JsonValue::MakeString( Base64Encode( png ) ) );
+							renderResult.set( "byteLength", JsonValue::MakeNumber( static_cast<double>( png.size() ) ) );
+							// NOT "width"/"height" -- those are the RENDER's dims.
+							renderResult.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
+							renderResult.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
+						}
+					}
+					return MakeSuccess( idValue, renderResult );
 				}
 
 				//--------------------------------------------------------------

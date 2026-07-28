@@ -69,6 +69,7 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
+#include "../src/Library/Agent/Base64.h"
 #include "../src/Library/Agent/InMemoryRasterizerOutput.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
@@ -1450,6 +1451,188 @@ static void RunVerticalAsymmetryTest()
 	std::remove( scenePath.c_str() );
 }
 
+//----------------------------------------------------------------------
+// render{imageMaxEdge} -- the ONE-CALL observe form.
+//
+// The two-call form (render, then read_image) spent a whole round-trip
+// re-encoding bytes the render had already cached.  `imageMaxEdge` returns
+// them inline.  What must hold, and is proved below:
+//
+//   (a) IDENTITY.  The inline png_base64 EQUALS what a following
+//       read_image{maxEdge:N} returns -- i.e. one encoder, not two.
+//   (b) OPT-IN.  Omitting the parameter leaves the result's key set
+//       exactly what it was: no png_base64/byteLength/imageWidth/
+//       imageHeight, nothing else added or removed.
+//   (c) OBJECTMAP IS REFUSED.  A box-downscale blends the flat identity
+//       colours, so an inline objectmap would be a corrupt map.  The call
+//       is -32602'd BEFORE the render runs -- proved by showing the
+//       read_image cache still holds the earlier beauty frame, byte for
+//       byte.
+//   (d) ASYNC IS REFUSED.  The submit returns before any pixels exist.
+//   (e) A FAILED render carries no image (the cache still holds the
+//       PREVIOUS render; returning those pixels would be a lie).
+//   (f) The bound is CLAMPED to [16,1024], not rejected -- read_image's
+//       own contract, since it is read_image's own code path.
+//----------------------------------------------------------------------
+static std::string RenderReq( double id, const std::string& extraParamsJson )
+{
+	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( (long)id ) +
+	       ",\"method\":\"render\",\"params\":{" + extraParamsJson + "}}";
+}
+
+static std::string ReadImageReq( double id, const std::string& extraParamsJson )
+{
+	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( (long)id ) +
+	       ",\"method\":\"read_image\",\"params\":{" + extraParamsJson + "}}";
+}
+
+static void RunInlineRenderImageTest()
+{
+	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} one-call observe ===\n" );
+	const std::string scenePath = WriteTemp( "rise_inline_img.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "inline-image scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "inline-image session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+
+	// (b) OPT-IN: a plain render carries no image and no image fields.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ), "plain render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "the plain render succeeds" );
+		Check( !r.has( "png_base64" ) && !r.has( "byteLength" ) &&
+		       !r.has( "imageWidth" ) && !r.has( "imageHeight" ),
+		       "MONEY (b): omitting imageMaxEdge carries NO image fields at all" );
+		// The full key set, so a future edit cannot quietly add or drop a
+		// field on the no-parameter path either.
+		static const char* const kPlainKeys[] = {
+			"ok", "width", "height", "meanR", "meanG", "meanB", "integrator",
+			"previewWidth", "previewHeight", "cameraOverridden", "message",
+			"renderJobId", "samplesOverridden", "effectiveSamples", "renderMode",
+			"perceptionAvailable", "perceptionPersistentBytes", "perceptionAuxiliaryPeakBytes" };
+		const std::size_t nPlain = sizeof( kPlainKeys ) / sizeof( kPlainKeys[0] );
+		bool allPresent = true;
+		for( std::size_t i = 0; i < nPlain; ++i ) if( !r.has( kPlainKeys[i] ) ) allPresent = false;
+		Check( allPresent && r.members().size() == nPlain,
+		       "MONEY (b): the no-parameter result key set is EXACTLY today's " +
+		       std::to_string( nPlain ) + " fields (got " +
+		       std::to_string( r.members().size() ) + ")" );
+	}
+
+	// (a) IDENTITY: inline bytes == read_image at the same bound.
+	std::string inlineB64;
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 2, "\"imageMaxEdge\":48" ) ), env, err ),
+		       "inline render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "the inline render succeeds" );
+		inlineB64 = r.get( "png_base64" ).asString();
+		Check( !inlineB64.empty(), "the inline render carries a non-empty png_base64" );
+		Check( r.get( "byteLength" ).asNumber( 0 ) > 0, "it carries byteLength" );
+		Check( r.get( "imageWidth" ).asNumber( 0 ) == 48 && r.get( "imageHeight" ).asNumber( 0 ) == 48,
+		       "imageWidth/imageHeight report the DOWNSCALED image dims (48x48), not the render's" );
+		Check( r.get( "width" ).asNumber( 0 ) == 64 && r.get( "height" ).asNumber( 0 ) == 64,
+		       "width/height still report the RENDER dims (64x64) -- the two pairs are distinct" );
+		std::vector<unsigned char> png;
+		Check( Base64Decode( inlineB64, png ) && png.size() >= 8 &&
+		       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+		       "the inline base64 decodes to real PNG bytes" );
+
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 3, "\"maxEdge\":48" ) ), env, err ),
+		       "read_image response parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == inlineB64,
+		       "MONEY (a): the inline bytes are IDENTICAL to read_image{maxEdge:48} -- one encoder, "
+		       "not two" );
+	}
+
+	// (f) CLAMPED, not rejected -- and still identical to read_image's own
+	// clamp of the same out-of-range value.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 4, "\"imageMaxEdge\":4" ) ), env, err ),
+		       "below-range imageMaxEdge response parses" );
+		Check( !env.has( "error" ), "an out-of-range imageMaxEdge is CLAMPED, not rejected" );
+		const std::string lowB64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( env.get( "result" ).get( "imageWidth" ).asNumber( 0 ) == 16,
+		       "imageMaxEdge 4 clamps up to the [16,1024] floor" );
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 5, "\"maxEdge\":4" ) ), env, err ),
+		       "clamped read_image response parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == lowB64,
+		       "MONEY (f): the clamp is read_image's clamp, byte for byte" );
+	}
+
+	// Freeze the current cache so (c) can prove the refused call rendered
+	// nothing.
+	std::string cachedB64;
+	{
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 6, "" ) ), env, err ), "cache-probe response parses" );
+		cachedB64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( !cachedB64.empty(), "the beauty frame is cached before the refusal" );
+	}
+
+	// (c) OBJECTMAP: refused, and nothing rendered.
+	{
+		Check( JsonParse( rpc.HandleLine(
+			RenderReq( 7, "\"mode\":\"objectmap\",\"imageMaxEdge\":48" ) ), env, err ),
+		       "objectmap+imageMaxEdge response parses" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (c): mode:objectmap + imageMaxEdge is a clean -32602, never a corrupt "
+		       "downscaled identity map" );
+		Check( env.get( "error" ).get( "message" ).asString().find( "objectmap" ) != std::string::npos &&
+		       env.get( "error" ).get( "message" ).asString().find( "read_image" ) != std::string::npos,
+		       "the refusal names the mode and the read_image route out of it" );
+
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 8, "" ) ), env, err ), "post-refusal probe parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == cachedB64,
+		       "MONEY (c): the refusal happened BEFORE the render -- the cached frame is "
+		       "byte-identical, so no objectmap was rendered and thrown away" );
+
+		// The refusal is specific to the parameter, not to objectmap.
+		Check( JsonParse( rpc.HandleLine( RenderReq( 9, "\"mode\":\"objectmap\"" ) ), env, err ),
+		       "plain objectmap response parses" );
+		Check( !env.has( "error" ) && env.get( "result" ).get( "renderMode" ).asString() == "objectmap",
+		       "an objectmap render WITHOUT imageMaxEdge still works" );
+	}
+
+	// (d) ASYNC: refused.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 10, "\"async\":true,\"imageMaxEdge\":48" ) ), env, err ),
+		       "async+imageMaxEdge response parses" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (d): async + imageMaxEdge is a clean -32602 (the submit returns before "
+		       "pixels exist)" );
+	}
+
+	// (e) A FAILED render carries no image.  Run on a session that ALREADY
+	// has a good frame cached (an unresolvable `view` fails the render
+	// without disturbing the cache) -- so an implementation that attached the
+	// image unconditionally would hand back the PREVIOUS render's pixels
+	// labelled as this failed call's.  That is the failure this catches; a
+	// never-rendered session would not catch it, because the cache is empty
+	// there either way.
+	{
+		Check( JsonParse( rpc.HandleLine(
+			RenderReq( 11, "\"view\":\"no_such_view\",\"imageMaxEdge\":48" ) ), env, err ),
+		       "failed-render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( !env.has( "error" ) && !r.get( "ok" ).asBool(),
+		       "PRECONDITION: an unresolvable view FAILS the render (ok:false, not an RPC error)" );
+		Check( !r.has( "png_base64" ) && !r.has( "imageWidth" ),
+		       "MONEY (e): a FAILED render carries no inline image, even though the cache still "
+		       "holds a perfectly good EARLIER frame" );
+		// ... and that earlier frame is still readable, so the guard skipped
+		// the attach rather than clearing the cache.
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 12, "" ) ), env, err ), "post-failure probe parses" );
+		Check( !env.get( "result" ).get( "png_base64" ).asString().empty(),
+		       "the cache the failed render declined to serve is still there for read_image" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
 int main()
 {
 	RunCoreTests();
@@ -1470,6 +1653,7 @@ int main()
 	RunQueryObjectAtWireTest();
 	RunQueryObjectAtPreservesImageCacheTest();
 	RunVerticalAsymmetryTest();
+	RunInlineRenderImageTest();
 
 	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

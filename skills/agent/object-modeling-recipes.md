@@ -56,9 +56,9 @@ render -- the same observe loop, applied at the object level:
    gray blockout under one directional light tells you everything
    about form; add real colors/dielectric/metal only once the shape
    itself is confirmed (see materials-and-media-basics).
-5. **`read_image`** once you actually need to SEE the frame (silhouette,
-   proportion relationships) rather than just check the render's
-   channel means.
+5. **`render {imageMaxEdge:...}`** once you actually need to SEE the
+   frame (silhouette, proportion relationships) rather than just check
+   the render's channel means -- the image rides back in that one call.
 
 ## Recipe 1: a mug (`csg_object` hollow body + `torus_geometry` handle)
 

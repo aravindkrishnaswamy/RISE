@@ -117,11 +117,31 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
-//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?}
+//      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?,
+//                    imageMaxEdge?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
 //                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
-//                                            legend?}
+//                                            legend?,png_base64?,byteLength?,imageWidth?,imageHeight?}
+//                                           (`imageMaxEdge` (OPTIONAL number,
+//                                            clamped [16,1024]) returns the
+//                                            rendered PNG INLINE so an ordinary
+//                                            look costs ONE call instead of
+//                                            render + read_image.  The bytes come
+//                                            from the SAME
+//                                            AgentSession::ReadImage(maxEdge,...)
+//                                            call read_image makes, so they equal
+//                                            what a following
+//                                            read_image{maxEdge:N} would have
+//                                            returned.  Omit it and the result is
+//                                            byte-for-byte today's.  REFUSED
+//                                            (-32602) with mode:"objectmap" --
+//                                            that must be read at NATIVE size --
+//                                            and with async, which returns before
+//                                            any pixels exist.  Still use the
+//                                            separate read_image for a SECOND
+//                                            bound on the same render, and for
+//                                            representation:"perception".)
 //                                           (Toolkit slice 3a: `mode` (OPTIONAL
 //                                            string, "beauty"|"objectmap",
 //                                            default "beauty") selects the render
@@ -314,7 +334,15 @@
 //                                            NATIVE size -- OMIT maxEdge, since a
 //                                            box-downscale blends the flat identity
 //                                            colours and breaks the exact-byte
-//                                            legend match.)
+//                                            legend match.
+//                                            For an ordinary look at your OWN
+//                                            render, render{imageMaxEdge:N} returns
+//                                            the same bytes in one call.  This verb
+//                                            remains the way to read an ALREADY
+//                                            rendered frame at a different bound
+//                                            without re-rendering, to read an
+//                                            objectmap at native size, and to read
+//                                            representation:"perception".)
 //      read_viewport {maxEdge?}          -> {available:bool, reason:string,
 //                                            png_base64:string, byteLength:number,
 //                                            width:number, height:number}

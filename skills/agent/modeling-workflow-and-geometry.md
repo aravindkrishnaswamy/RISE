@@ -84,9 +84,10 @@ built a substantial scene and have not looked, render now.
   `"x y z"` strings of exactly 3 finite numbers; `fov` is optional in
   the open range `(0, 180)`.  The override is EPHEMERAL -- restored
   after that one render, never touches the document.
-- **`read_image {maxEdge:160}`** only when you actually need to SEE the
-  frame (composition, silhouette, colour) -- the channel means usually
-  already answered "did this change".
+- **`render {imageMaxEdge:160}`** when you actually need to SEE the
+  frame (composition, silhouette, colour) -- the PNG comes back in that
+  same call, so no separate `read_image` is needed.  Most of the time
+  the channel means already answered "did this change".
 - **`validate` with NO arguments** before a render if you are unsure an
   edit is well-formed -- it checks the CURRENT scene and is cheaper than
   a failed render.  Do NOT pass `text` to re-send the document you just

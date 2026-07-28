@@ -96,11 +96,13 @@ namespace RISE
 				{
 					"read_skill",
 					"Read a scene-authoring skill (curated RISE how-to notes with "
-					"verified scene snippets). Call with NO name first to list the "
-					"available skills (name + one-line hook each); call with a name to "
-					"read one BEFORE authoring or explaining scenes -- the skills carry "
-					"the conventions (light directions, power semantics, painter "
-					"wiring) that make first-try scenes render correctly.",
+					"verified scene snippets). Pass a NAME to read one BEFORE authoring "
+					"or explaining scenes -- the skills carry the conventions (light "
+					"directions, power semantics, painter wiring) that make first-try "
+					"scenes render correctly. Your system prompt normally already "
+					"lists every skill name with a one-line hook, so go straight to the "
+					"name you need; omitting 'name' re-lists that same index and is "
+					"only worth a round-trip if you were given no list.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"name\":{\"type\":\"string\",\"description\":"
 						"\"A skill name from the index (e.g. scene-skeleton-and-conventions); omit to list all available skills.\"}"
@@ -344,8 +346,13 @@ namespace RISE
 					"compare the channel means against the previous render to confirm "
 					"the edit changed the image. After inserting a rasterizer, check "
 					"`integrator` to confirm which one is live. "
+					"TO SEE THE RESULT, pass imageMaxEdge (e.g. 192) and the PNG comes back "
+					"in THIS call -- do not follow an ordinary render with a separate "
+					"read_image; that is a wasted round-trip. Call read_image only to re-read "
+					"a render you already have at a DIFFERENT size, to read an objectmap at "
+					"native size, or for representation:\"perception\". "
 					"TOKEN ECONOMY: for modeling/placement checks use width/height 128-192 "
-					"(NOT the full authored resolution) and read_image maxEdge ~192 -- a "
+					"(NOT the full authored resolution) and imageMaxEdge ~192 -- a "
 					"tiny preview is enough to confirm placement/shape/color and costs a "
 					"fraction of the tokens and render time. Use `camera` to check the "
 					"scene from 2-3 DIFFERENT ANGLES without editing the actual camera "
@@ -391,15 +398,21 @@ namespace RISE
 						"\"light\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
 						"\"perception\":{\"type\":\"boolean\",\"description\":"
-						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"}"
+						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"},"
+						"\"imageMaxEdge\":{\"type\":\"number\",\"description\":"
+						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Supply it and the rendered PNG comes back INLINE in this result -- one call instead of render then read_image. The image is downscaled (box filter, aspect-preserving, never upscales) by the same code read_image uses, so the bytes are exactly what read_image with that maxEdge would have returned. Use ~192 for a modeling/placement check. Omit it when you only want the statistics -- you then get no image. NOT allowed with mode:objectmap: that call is REJECTED, because an objectmap must be read at native size -- render it without this parameter, then call read_image with no maxEdge.\"}"
 					"}}"
 				},
 				{
 					"read_image",
 					"Fetch the LAST successful render as a PNG image so you can SEE the "
-					"scene. Call after propose_patch + render to visually verify your "
-					"edit did what you intended. If nothing has been rendered yet this "
+					"scene. If nothing has been rendered yet this "
 					"returns an empty png_base64 (byteLength 0) -- call render first. "
+					"DO NOT call this straight after your own render just to look at it: "
+					"pass imageMaxEdge on the render instead and the PNG arrives in that "
+					"one call. Use this verb to re-read a render you ALREADY have at a "
+					"different size without re-rendering, to read an objectmap at native "
+					"size, and for representation:\"perception\". "
 					"TOKEN ECONOMY: pass maxEdge ~192 for a modeling/placement check -- the "
 					"image is downscaled (no re-render) before being sent to you, so a "
 					"quick look costs far fewer tokens than the full-resolution image. "
@@ -911,16 +924,19 @@ namespace RISE
 				return summary;
 			}
 
-			//! True + the base64 payload iff this call is a read_image (or a
-			//! compare_to_reference called with visual:true -- see
-			//! AgentRpc.cpp's compare_to_reference dispatch doc: it
-			//! deliberately reuses the SAME "png_base64" field name so this
-			//! one predicate, and every retention/elision policy built on
-			//! it, covers both without a second code path) whose JSON-RPC
-			//! result carries a non-empty png_base64 string.
+			//! True + the base64 payload iff this call is one of the
+			//! image-CAPABLE verbs and its JSON-RPC result actually carries a
+			//! non-empty png_base64 string.  compare_to_reference (visual:true)
+			//! and render (imageMaxEdge:N) both reuse read_image's "png_base64"
+			//! field name deliberately, so this ONE predicate -- and every
+			//! retention/elision policy built on it -- covers all three without
+			//! a second code path.  The field test is what makes listing render
+			//! here safe: a render without imageMaxEdge has no png_base64 and is
+			//! not an image result.
 			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
 			{
-				if( ( call.name != "read_image" && call.name != "compare_to_reference" ) || !result.isObject() ) return false;
+				if( ( call.name != "read_image" && call.name != "compare_to_reference"
+				      && call.name != "render" ) || !result.isObject() ) return false;
 				const JsonValue* b64 = result.find( "png_base64" );
 				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;
 				outB64 = b64->asString();

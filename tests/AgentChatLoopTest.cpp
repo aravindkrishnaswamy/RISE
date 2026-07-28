@@ -1142,6 +1142,144 @@ static void TestAnthropicReadImagePacking( AgentRpcDispatcher& rpc )
 }
 
 //----------------------------------------------------------------------
+// T3b: render{imageMaxEdge} -- the ONE-CALL observe form -- reaches the
+//      model as a REAL image block and obeys IMAGE RETENTION.
+//
+// The whole point of the parameter is to spend one turn where the flow used
+// to spend two (render, then read_image).  That only pays off if the render
+// result travels the SAME codec path read_image's does: base64 lifted into a
+// provider-native image block, stripped from the textual half, and elided
+// from the transcript once a newer image arrives.  It does, because
+// IsImageResult keys on the png_base64 FIELD and now lists `render` -- so a
+// render WITHOUT the parameter (no such field) is still not an image result,
+// which is asserted here too.
+//
+// Two REAL renders through the live dispatcher, so this is the actual wire
+// payload and not a fabricated envelope.
+//----------------------------------------------------------------------
+static std::size_t CountOccurrences( const std::string& hay, const std::string& needle );   // defined with T14
+
+static void TestInlineRenderImagePacking( AgentRpcDispatcher& rpc )
+{
+	std::printf( "T3b: render{imageMaxEdge} packs a REAL image block and obeys retention...\n" );
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	loop.AddUserMessage( "Render it and show me, twice" );
+
+	std::string b64First, b64Second;
+	const char* const ids[] = { "toolu_inlA", "toolu_inlB" };
+	for( int round = 0; round < 2; ++round ) {
+		const std::string fx = AnthropicFixture(
+			std::string( "[{\"type\":\"tool_use\",\"id\":\"" ) + ids[round] +
+			"\",\"name\":\"render\",\"input\":{\"imageMaxEdge\":32}}]", "tool_use" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
+		       "T3b: inline-render fixture -> one ToolCall" );
+		if( st.toolCalls.size() != 1 ) return;
+		const std::string resp = rpc.HandleLine( loop.ToolCallToJsonRpcLine( st.toolCalls[0], 20 + round ) );
+		JsonValue env = ParseBody( resp );
+		Check( env.get( "result" ).get( "ok" ).asBool(), "T3b: the live inline render succeeds" );
+		const std::string b64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( !b64.empty(), "T3b: the render result carries the inline png_base64" );
+		( round == 0 ? b64First : b64Second ) = b64;
+		loop.AddToolResult( st.toolCalls[0], resp );
+	}
+	if( b64First.empty() || b64Second.empty() ) return;
+
+	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+	JsonValue root = ParseBody( req.body );
+	const JsonValue& msgs = root.get( "messages" );
+	Check( msgs.size() == 5, "T3b: user + 2x(assistant + tool-results)" );
+
+	// The NEWEST render's result is a real image block whose base64 decodes
+	// to PNG, with the base64 stripped from the textual half and the render
+	// statistics still there.
+	{
+		const JsonValue& tr = msgs.at( 4 ).get( "content" ).at( 0 );
+		Check( tr.get( "type" ).asString() == "tool_result", "T3b: the render result is a tool_result" );
+		std::string blockB64;
+		bool sawMeans = false;
+		const JsonValue& blocks = tr.get( "content" );
+		for( std::size_t i = 0; i < blocks.size(); ++i ) {
+			const JsonValue& b = blocks.at( i );
+			if( b.get( "type" ).asString() == "image" ) {
+				Check( b.get( "source" ).get( "media_type" ).asString() == "image/png",
+				       "T3b: the block is a real image/png block, not base64 in text" );
+				blockB64 = b.get( "source" ).get( "data" ).asString();
+			}
+			else if( b.get( "type" ).asString() == "text" &&
+			         b.get( "text" ).asString().find( "meanR" ) != std::string::npos ) {
+				sawMeans = true;
+				Check( b.get( "text" ).asString().find( b64Second.substr( 0, 48 ) ) == std::string::npos,
+				       "T3b: the base64 is STRIPPED from the textual half (not double-sent)" );
+			}
+		}
+		Check( blockB64 == b64Second,
+		       "T3b: MONEY -- the render's own inline bytes are what rides in the image block" );
+		std::vector<unsigned char> png;
+		Check( Base64Decode( blockB64, png ) && png.size() >= 8 &&
+		       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+		       "T3b: the image block's base64 decodes to real PNG bytes" );
+		Check( sawMeans,
+		       "T3b: MONEY -- the render STATISTICS survive alongside the image (the whole "
+		       "reason render is not on the superseded-read allowlist)" );
+	}
+
+	// IMAGE RETENTION: the OLDER render's image is gone, its statistics are
+	// not.  This is what keeps the one-call form from re-billing every
+	// historical PNG on every request.
+	{
+		Check( CountOccurrences( req.body, b64Second ) == 1,
+		       "T3b: the NEWEST render's base64 rides exactly once" );
+		Check( CountOccurrences( req.body, b64First ) == 0,
+		       "T3b: MONEY -- the OLDER render's base64 rides ZERO times (IMAGE RETENTION "
+		       "covers an inline render image, it does not bypass it)" );
+		const JsonValue& oldTr = msgs.at( 2 ).get( "content" ).at( 0 );
+		bool oldHasImage = false, oldHasNote = false, oldHasMeans = false;
+		const JsonValue& oldBlocks = oldTr.get( "content" );
+		for( std::size_t i = 0; i < oldBlocks.size(); ++i ) {
+			const std::string t = oldBlocks.at( i ).get( "type" ).asString();
+			if( t == "image" ) oldHasImage = true;
+			if( t == "text" ) {
+				const std::string s = oldBlocks.at( i ).get( "text" ).asString();
+				if( s.find( "image elided" ) != std::string::npos ) oldHasNote = true;
+				if( s.find( "meanR" ) != std::string::npos ) oldHasMeans = true;
+			}
+		}
+		Check( !oldHasImage, "T3b: the older render entry carries NO image block any more" );
+		Check( oldHasNote, "T3b: it carries the elision note instead" );
+		Check( oldHasMeans,
+		       "T3b: MONEY -- and it KEEPS its channel means, which the model is told to "
+		       "compare against the newer render" );
+	}
+
+	// The parameter is what makes a render an image result: a render without
+	// it must still pack as plain text, or every statistics-only render would
+	// start evicting the live image.
+	{
+		AgentChatLoop plain;
+		plain.SetProvider( ChatProvider::Anthropic );
+		plain.AddUserMessage( "just the numbers" );
+		const std::string fx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_plain\",\"name\":\"render\",\"input\":{}}]",
+			"tool_use" );
+		ChatStepResult st = plain.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != 1 ) { Check( false, "T3b: one plain render call expected" ); return; }
+		const std::string resp = rpc.HandleLine( plain.ToolCallToJsonRpcLine( st.toolCalls[0], 22 ) );
+		Check( !ChatToolResultCarriesImage( st.toolCalls[0], resp ),
+		       "T3b: MONEY -- a render WITHOUT imageMaxEdge is NOT an image result "
+		       "(the predicate keys on the png_base64 field, not on the verb name alone)" );
+		plain.AddToolResult( st.toolCalls[0], resp );
+		const JsonValue pr = ParseBody( plain.BuildRequest( kApiKey ).body );
+		const JsonValue& pblocks = LastArrayEntry( pr, "messages" ).get( "content" ).at( 0 ).get( "content" );
+		bool anyImage = false;
+		for( std::size_t i = 0; i < pblocks.size(); ++i )
+			if( pblocks.at( i ).get( "type" ).asString() == "image" ) anyImage = true;
+		Check( !anyImage, "T3b: ... and packs with no image block at all" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T8: parallel tool_use -> BOTH results in ONE user message.
 //----------------------------------------------------------------------
 static void TestParallelToolUse( AgentRpcDispatcher& rpc )
@@ -6344,6 +6482,83 @@ static void TestSystemPromptOverride()
 }
 
 //----------------------------------------------------------------------
+// T41b: the skills section tells the model NOT to re-list the index it was
+//       just given -- and says so ONLY when an index was actually given.
+//
+// MEASURED WASTE (2026-07-28).  The chat tool description used to open with
+// "Call with NO name first to list the available skills", while the system
+// prompt already carried every skill name and hook.  Models obeyed the tool
+// description and burned a round-trip fetching a list they were holding:
+// gemini-3.5-flash in 9 of 18 recorded sessions, qwen3.6 in 2 of 2 (gpt-5.6
+// ignored it, 0 of 1).  In the ten-turn "make the middle object red" session
+// that is one whole turn of ten.
+//
+// The instruction is only SAFE inside the have-an-index branch: a loop with
+// no index must leave the listing form as the right first move.  Both halves
+// are asserted here, because a future edit that hoists the sentence out of
+// the branch would silently tell an index-less model not to do the one thing
+// that would get it an index.
+//----------------------------------------------------------------------
+static void TestSkillIndexDiscourageRelist()
+{
+	std::printf( "T41b: skills section discourages re-listing, but only when an index exists...\n" );
+
+	// WITH an index: the guidance must be present, and must name the
+	// no-argument call as the thing NOT to do.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetSkillIndex( "lighting-recipes -- Read when adding or tuning lights" );
+		loop.AddUserMessage( "make the middle object red" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		const std::string system = root.get( "system" ).at( 0 ).get( "text" ).asString();
+
+		Check( system.find( "Available skills" ) != std::string::npos,
+		       "T41b: the skills section is present when an index was set" );
+		Check( system.find( "That list IS the skill index" ) != std::string::npos,
+		       "T41b: MONEY -- the prompt tells the model the list it has IS the index" );
+		Check( system.find( "Do NOT call it with no arguments" ) != std::string::npos,
+		       "T41b: MONEY -- the prompt names the wasteful bare read_skill{} call and forbids it" );
+	}
+
+	// WITHOUT an index: neither the section NOR the do-not-list guidance may
+	// appear, or an index-less model is talked out of the only call that
+	// would give it one.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "make the middle object red" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		JsonValue root = ParseBody( req.body );
+		const std::string system = root.get( "system" ).at( 0 ).get( "text" ).asString();
+
+		Check( system.find( "Available skills" ) == std::string::npos,
+		       "T41b: no skills section without an index" );
+		Check( system.find( "Do NOT call it with no arguments" ) == std::string::npos,
+		       "T41b: MONEY -- the do-not-list guidance is ABSENT without an index "
+		       "(otherwise the model is told not to fetch the index it lacks)" );
+	}
+
+	// The tool description itself must no longer instruct the list-first
+	// sequence that caused the waste.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "hi" );
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		const std::string body = req.body;
+		const std::size_t at = body.find( "read_skill" );
+		Check( at != std::string::npos, "T41b: read_skill is in the tool list" );
+		const std::string near = body.substr( at, 900 );
+		Check( near.find( "NO name first" ) == std::string::npos,
+		       "T41b: MONEY -- the read_skill description no longer says to list first" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T42: reasoning/thinking TOKEN accounting (ChatUsage::reasoningOutputTokens)
 //      and Gemini `thought:true` PART routing.
 //
@@ -7556,6 +7771,7 @@ int main()
 	TestAnthropicToolLoop( rpc );
 	TestInsertChunkToolLoop( rpc );
 	TestAnthropicReadImagePacking( rpc );
+	TestInlineRenderImagePacking( rpc );
 	TestParallelToolUse( rpc );
 	TestGemini( rpc );
 	TestVerbatimEcho();
@@ -7597,6 +7813,7 @@ int main()
 	TestAskUserParallelWithDispatchedTool( rpc );
 	TestAskUserAbandonedFlushSynthesis();
 	TestSystemPromptOverride();
+	TestSkillIndexDiscourageRelist();
 	TestReasoningTokenAccounting();
 	TestReasoningSurvivalMatrix();
 

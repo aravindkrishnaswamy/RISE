@@ -75,7 +75,8 @@ namespace RISE
 				"uses a fixed studio-preview shader, capped at 4 samples, that "
 				"IGNORES materials and lighting, so NEVER judge those from it; "
 				"check `renderMode`, not `integrator`, to confirm which "
-				"pipeline ran) and read_image maxEdge ~192. Use render's "
+				"pipeline ran) with imageMaxEdge ~192, which returns the PNG "
+				"in that same call -- do not follow it with read_image. Use render's "
 				"`camera` override to check 2-3 angles WITHOUT touching the "
 				"actual camera -- ephemeral, restored automatically, far "
 				"cheaper than a full render. Reserve a full-size, full-sample, "
@@ -1811,7 +1812,19 @@ namespace RISE
 			if( !mSkillIndexText.empty() ) {
 				systemPrompt += "\n\nAvailable skills:\n";
 				systemPrompt += mSkillIndexText;
-				systemPrompt += "\nCall read_skill before scene-authoring tasks.";
+				// The block above IS the index, so say so.  Measured 2026-07-28:
+				// the chat tool description used to open with "Call with NO name
+				// first to list the available skills", and models obeyed it --
+				// gemini-3.5-flash burned a bare read_skill{} round-trip in 9 of
+				// 18 sessions, qwen3.6 in 2 of 2 -- fetching a list they were
+				// already holding.  (gpt-5.6-terra ignored it: 0 of 1.)  This
+				// line is inside the have-an-index branch, which is what makes
+				// the instruction safe to give: when no index was supplied the
+				// sentence is absent and the listing form remains the right move.
+				systemPrompt += "\nThat list IS the skill index -- call read_skill"
+				                " with a NAME directly before scene-authoring tasks."
+				                "  Do NOT call it with no arguments to list them"
+				                " first; you already have the list.";
 			}
 			return systemPrompt;
 		}

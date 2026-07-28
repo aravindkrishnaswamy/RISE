@@ -58,8 +58,14 @@
 //        verbatim and may be invalid on replay.  Reset() /
 //        SetProvider() recovers; the GUI driver should offer that on
 //        repeated HTTP 400s.
-//      * IMAGE RETENTION: only the MOST RECENT read_image PNG stays
-//        live in the transcript.  When a new tool-results entry packs
+//      * IMAGE RETENTION: only the MOST RECENT tool-result PNG stays
+//        live in the transcript -- from read_image, from
+//        compare_to_reference, or from a render called with
+//        imageMaxEdge (the one-call observe form), all of which
+//        ChatToolResultCarriesImage recognizes alike.  A render's
+//        image is elided by this rule while its statistics stay
+//        live, since the elision replaces only the image block.
+//        When a new tool-results entry packs
 //        an image, every OLDER ToolResults entry's image block/part is
 //        rewritten to a short "[image elided -- superseded by a newer
 //        render]" text note (Anthropic: the {type:"image"} element;
@@ -221,8 +227,8 @@ namespace RISE
 			//! data the elision exists to avoid.
 			std::string resultJson;
 
-			//! True iff `resultJson` currently holds a LIVE read_image
-			//! base64 result (i.e. ChatToolResultCarriesImage was true for
+			//! True iff `resultJson` currently holds a LIVE base64 image
+			//! result (i.e. ChatToolResultCarriesImage was true for
 			//! this call at flush time) -- mirrors
 			//! ChatTranscriptEntry::carriesLiveImage but scoped to this ONE
 			//! summary rather than the whole entry (an entry can pack
@@ -869,7 +875,7 @@ namespace RISE
 
 			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: strip EVERY live
 			//! image from the WHOLE transcript in one sweep -- both packed
-			//! read_image tool-result images (via the codec's
+			//! tool-result images (via the codec's
 			//! RewriteElidedImages) and live user reference-image
 			//! attachments (via RewriteElidedUserImages), recording a
 			//! history_edit for each rewritten entry.  Idempotent (a second

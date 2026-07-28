@@ -326,7 +326,10 @@ namespace RISE
 						"Progressive-disclosure scene-authoring skills. STATELESS, like read_schema "
 						"-- works with no scene loaded. Omit 'name' to list the index; pass a listed "
 						"name to fetch its markdown. An unrecognized or unsafe (path-traversal) name "
-						"is rejected.",
+						"is rejected. (The listing form is genuinely useful HERE: an external MCP "
+						"client has no RISE system prompt and so has no index until it asks. The "
+						"in-app chat transport is the opposite case -- it injects the index into its "
+						"prompt, and its own tool description says to skip the listing call.)",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
@@ -551,12 +554,18 @@ namespace RISE
 						"OPTIONAL name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting (not a dim/approximate preview of it). Valid with mode:\"beauty\" (the default) and the four production-transport BeautyVariant view modes (deep_reflect/direct/indirect/clay_lights); silently IGNORED (honestly noted in `message`) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:\"draft\" -- none of those evaluate scene lighting at all. An unresolvable name FAILS the render (`ok:false`) with the available-name list in `message`, same contract as an unresolvable `view`. Use this to check one light's contribution in isolation (shadow shape, colour, falloff) without the others visually competing for attention." ) );
 					props.set( "perception", BoolProp(
 						"OPTIONAL, default true. For a production beauty render, captures albedo, world-space normal, and primary-camera-hit depth in the SAME render without changing beauty pixels. Then call read_image with representation:\"perception\" for one 2x2 atlas plus structured depth/memory metadata. Set false to avoid perception-specific allocation when beauty alone is sufficient; an OIDN-enabled render can still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes." ) );
+					props.set( "imageMaxEdge", NumberProp(
+						"OPTIONAL long-edge bound in pixels, CLAMPED to [16,1024]. Supply it to get the rendered PNG back INLINE in this result (png_base64/byteLength/imageWidth/imageHeight), downscaled to that bound -- one call instead of render followed by read_image. The bytes are produced by the SAME downscale+encode read_image uses, so they are exactly what read_image with that maxEdge would have returned. ~192 is enough for a modeling/placement check; omit the whole parameter to get today's lean statistics-only result and no image. REFUSED with mode:\"objectmap\" (an objectmap must be read at NATIVE size -- render without this parameter, then read_image with no maxEdge). Use read_image separately when you want a SECOND bound on a render you already have, or representation:\"perception\"." ) );
 					tools.push_back( MakeTool( "render",
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
 						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
-						"per-object `legend` when mode:\"objectmap\"). Does NOT "
-						"return image bytes -- call read_image afterward for the rendered PNG. "
+						"per-object `legend` when mode:\"objectmap\"). Returns NO image bytes by "
+						"default; pass `imageMaxEdge` (e.g. 192) to get the rendered PNG back inline "
+						"in this same result, which is the one-call form to prefer for an ordinary "
+						"look. A separate read_image is still the way to re-read a render you already "
+						"have at a different bound, to read an objectmap at native size, and to fetch "
+						"representation:\"perception\". "
 						"`integrator` is the active rasterizer's scene-file chunk keyword (e.g. "
 						"\"pathtracing_pel_rasterizer\"), empty when none is active -- useful to "
 						"confirm which integrator an insert_chunk activated; it does NOT change with "

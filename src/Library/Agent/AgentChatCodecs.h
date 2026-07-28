@@ -78,7 +78,8 @@
 //      * All tool results for one assistant turn are packed into ONE
 //        following user message (an Anthropic hard requirement for
 //        parallel tool_use; mirrored for Gemini).
-//      * read_image results carry a REAL image block: the base64 PNG is
+//      * Image-bearing tool results (see ChatToolResultCarriesImage)
+//        carry a REAL image block: the base64 PNG is
 //        extracted into an image part (Anthropic `tool_result` content
 //        image block; Gemini `functionResponse.parts[].inlineData` --
 //        the documented FunctionResponsePart mechanism for multimodal
@@ -426,7 +427,7 @@ namespace RISE
 			//! Pack ALL tool results of one assistant turn into ONE
 			//! provider-native user-turn entry.  Each element pairs the
 			//! ChatToolCall with the raw JSON-RPC response ENVELOPE line
-			//! from AgentRpcDispatcher::HandleLine.  read_image results
+			//! from AgentRpcDispatcher::HandleLine.  Image-bearing results
 			//! get a real image block/part (base64 stripped from the
 			//! textual half) -- but when SEVERAL results in one pack
 			//! carry images, only the LAST keeps a live image; earlier
@@ -689,8 +690,10 @@ namespace RISE
 		};
 
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
-		//! a LIVE image block/part -- i.e. a read_image success result with
-		//! a non-empty png_base64.  Shared by the loop (to decide when the
+		//! a LIVE image block/part -- i.e. a success result from one of the
+		//! image-capable verbs (read_image, compare_to_reference, or a
+		//! render called with imageMaxEdge) with a non-empty png_base64.
+		//! Shared by the loop (to decide when the
 		//! image-elision pass must run) and the codecs (which use the same
 		//! predicate to build the image block/part), so the two can never
 		//! disagree about what counts as an image-bearing result.
@@ -727,8 +730,7 @@ namespace RISE
 		//!       verb would need an argument-normalizing key function here;
 		//!       today none is on the list, and adding one without that
 		//!       function would elide results that do not supersede.
-		//!   (4) NOT ALREADY COVERED.  read_image and compare_to_reference are
-		//!       exactly the verbs IsImageResult matches, so their results are
+		//!   (4) NOT ALREADY COVERED.  A result IsImageResult matches is
 		//!       governed by the separate, older IMAGE RETENTION rule; running
 		//!       both rules over one result would elide it twice.  (An entry
 		//!       may still be touched by BOTH rules when it packs an image
@@ -739,7 +741,10 @@ namespace RISE
 		//!   * render -- the render result's per-channel means are explicitly
 		//!     meant to be COMPARED against the previous render (kToolDefs
 		//!     says so to the model), so eliding the older one would destroy
-		//!     information the model is instructed to use.
+		//!     information the model is instructed to use.  Its INLINE image
+		//!     (imageMaxEdge) is a different matter and IS elided, by IMAGE
+		//!     RETENTION -- that rule strips only the image, leaving the
+		//!     statistics live, which is exactly the split wanted here.
 		//!   * validate -- its result is a diagnostics list of tens of bytes,
 		//!     and in the `text` form it is a pure function of an argument
 		//!     (fails (3)).

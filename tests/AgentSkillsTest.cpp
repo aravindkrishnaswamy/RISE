@@ -744,8 +744,17 @@ static void TestChatLoopWiring()
 			saw = true;
 			Check( tools.at( i ).get( "input_schema" ).isObject(), "read_skill has an input_schema" );
 			const std::string desc = tools.at( i ).get( "description" ).asString();
-			Check( desc.find( "no name" ) != std::string::npos || desc.find( "NO name" ) != std::string::npos,
-			       "read_skill description teaches the no-name-first index call" );
+			// 2026-07-28: this used to assert the description TAUGHT the
+			// no-name-first index call.  Measured waste: it did, while the
+			// system prompt already carried the index, so models spent a
+			// round-trip fetching a list they held (gemini-3.5-flash in 9 of
+			// 18 recorded sessions).  The chat description now sends them
+			// straight to a name; the listing form still exists and is still
+			// documented, just not as the opening move.
+			Check( desc.find( "NO name first" ) == std::string::npos,
+			       "read_skill description no longer opens with the list-first sequence" );
+			Check( desc.find( "name" ) != std::string::npos,
+			       "read_skill description still tells the model to pass a name" );
 		}
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
@@ -814,8 +823,11 @@ static void TestChatLoopWiring()
 		       "skills section is APPENDED (the base prompt is the prefix)" );
 		Check( sys.find( "Available skills:\n" + index ) != std::string::npos,
 		       "system prompt carries the 'Available skills:' section with the index text" );
-		Check( sys.find( "Call read_skill before scene-authoring tasks." ) != std::string::npos,
-		       "system prompt carries the read_skill call-to-action" );
+		Check( sys.find( "call read_skill" ) != std::string::npos
+		       && sys.find( "with a NAME directly" ) != std::string::npos,
+		       "system prompt carries the read_skill call-to-action (by NAME)" );
+		Check( sys.find( "Do NOT call it with no arguments" ) != std::string::npos,
+		       "system prompt tells the model not to re-list the index it was just given" );
 
 		// The setting is provider-neutral config: it survives SetProvider.
 		loop.SetProvider( ChatProvider::Gemini );
