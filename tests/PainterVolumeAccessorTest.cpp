@@ -16,6 +16,8 @@
 //   10. NNB maps signed coordinates to the containing cell (floor)
 //   11. TriCubic (Catmull-Rom) reproduces knots and is continuous
 //       across integer coordinates at signed positions
+//   12. TriCubic (UniformBSpline) reproduces a linear ramp at signed
+//       coordinates (linear precision of the DVR 'b' accessor)
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 12, 2026
@@ -495,9 +497,12 @@ bool TestTRIIntegerReproduction()
 
 
 /// Test 7: TRI reproduces a linear ramp exactly at signed fractional
-/// coordinates.  Catches the negative-fraction modf defect (weights
-/// outside [0,1] extrapolate off the ramp) and the z-blend reversal
-/// (the z slope inverts within each cell).
+/// coordinates.  Discriminates the z-blend reversal (the z slope
+/// inverts within each cell).  NOTE: this test alone does NOT catch
+/// the negative-fraction modf defect -- affine weights that sum to 1
+/// reproduce a linear ramp exactly even when individual weights fall
+/// outside [0,1] (verified against a z-fixed/modf-broken mutant).
+/// Tests 8 and 9 are the modf-defect guards; keep them if pruning.
 bool TestTRISignedRampReproduction()
 {
 	std::cout << "  Test 7: TRI signed-coordinate ramp reproduction..." << std::endl;
@@ -681,7 +686,11 @@ bool TestNNBSignedCoordinates()
 /// Test 11: TriCubic (Catmull-Rom) reproduces voxel values at signed
 /// integer coordinates and is continuous across integer knots at
 /// signed positions.  Negative modf fractions handed the cubic a
-/// parameter in (-1, 0) around a mis-based footprint, breaking both.
+/// parameter in (-1, 0) around a mis-based footprint.  Part (b)
+/// continuity is what discriminates that historical defect; part (a)
+/// knot reproduction passed even the old code (modf at exact integers
+/// yields fraction -0.0 with a correct base) and is kept as a guard
+/// against future footprint off-by-ones or plane swaps.
 bool TestTriCubicSignedCoordinates()
 {
 	std::cout << "  Test 11: TriCubic signed knots and continuity..." << std::endl;
@@ -748,6 +757,53 @@ bool TestTriCubicSignedCoordinates()
 }
 
 
+/// Test 12: TriCubic with the UniformBSpline interpolator (the DVR 'b'
+/// accessor) reproduces a linear ramp at signed coordinates.  B-spline
+/// does not interpolate its control points, but it has linear
+/// precision, so a linear ramp is an exact expectation -- this
+/// exercises the shared floor-based fraction/footprint path under the
+/// second interpolator variant.
+bool TestTriCubicBSplineLinearPrecision()
+{
+	std::cout << "  Test 12: TriCubic B-spline linear precision..." << std::endl;
+
+	TestRampVolume vol( -0.25, 0.375, 0.0625, -0.5 );
+	ICubicInterpolator<Scalar>* interp = new UniformBSplineCubicInterpolator<Scalar>();
+	VolumeAccessor_TriCubic* accessor = new VolumeAccessor_TriCubic( *interp );
+	interp->release();
+	accessor->BindVolume( &vol );
+
+	bool passed = true;
+
+	const Scalar coords[] = { -4.75, -2.25, -1.9, -0.5, 0.0, 0.3, 1.5, 3.25 };
+	const int n = sizeof(coords) / sizeof(coords[0]);
+
+	for( int k = 0; k < n; k++ )
+	{
+		for( int j = 0; j < n; j++ )
+		{
+			for( int i = 0; i < n; i++ )
+			{
+				const Scalar x = coords[i], y = coords[j], z = coords[k];
+				const Scalar expected = vol.Evaluate( x, y, z );
+				const Scalar got = accessor->GetValue( x, y, z );
+				if( !IsClose( got, expected, 1e-9 ) )
+				{
+					std::cout << "    FAIL: at (" << x << "," << y << "," << z
+						<< ") got " << got << " expected " << expected << std::endl;
+					passed = false;
+				}
+			}
+		}
+	}
+
+	accessor->release();
+	if( passed )
+		std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
+
 int main()
 {
 	std::cout << "=== PainterVolumeAccessor Tests ===" << std::endl;
@@ -764,6 +820,7 @@ int main()
 	allPassed &= TestTRIConvexHull();
 	allPassed &= TestNNBSignedCoordinates();
 	allPassed &= TestTriCubicSignedCoordinates();
+	allPassed &= TestTriCubicBSplineLinearPrecision();
 
 	std::cout << std::endl;
 	if( allPassed )

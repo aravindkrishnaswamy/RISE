@@ -36,6 +36,11 @@ namespace RISE
 			// the cell that contains them -- heterogeneous volumes address
 			// with centered, signed coordinates, and int(-0.5) would land in
 			// voxel 0 instead of voxel -1.
+			//
+			// Note this is containing-cell (floor) selection, matching the
+			// TRI/TriCubic cell convention and the HeterogeneousMedium DDA --
+			// NOT round-to-nearest-knot (that would be floor(x + 0.5) and
+			// would shift results half a voxel against the other accessors).
 			return pVolume->GetValue( int(floor(x)), int(floor(y)), int(floor(z)) );
 		}
 

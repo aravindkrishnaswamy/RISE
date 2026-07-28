@@ -144,6 +144,15 @@ namespace RISE
 			// mip_pyramid[0] (stochastic).
 			void BuildMipPyramid() const
 			{
+				// Zero-dimension guard: with e.g. an 8×0 image (corrupt
+				// decode) the level-1 loop still runs (h = max(1, 0/2))
+				// and y0 = min(0, -1) = -1 reaches the unchecked raster
+				// GetPEL.  Leaving the pyramid empty is safe: the caller
+				// clamps LOD to the pyramid size, so chosenLevel is 0 and
+				// sampling falls through to the guarded GetPel path.
+				if( image_width <= 0 || image_height <= 0 ) {
+					return;
+				}
 				// Level 1 (first stored): box-filter directly from pImage.
 				// Each output pixel reads 4 pImage texels, so this is the
 				// only build phase that pays the per-call decode cost
@@ -475,11 +484,12 @@ namespace RISE
 				// Boundary handling for the lerp partner.  NOTE: with the
 				// pre-clamp above, xhi >= image_width can only happen when
 				// u == image_width-1 exactly, i.e. ut == 0 — so whichever
-				// texel is chosen here carries zero lerp weight.  The
-				// branches record the per-mode INTENT (and keep the axis
-				// convention explicit); they are currently behaviourally
-				// inert, and the top ~1.5 texels of a Repeat tile read the
-				// last texel flat instead of blending across the seam.
+				// texel the MODE selects carries zero lerp weight (the
+				// mode discrimination is weight-inert, and the top ~1.5
+				// texels of a Repeat tile read the last texel flat instead
+				// of blending across the seam).  The bounds test itself is
+				// NOT removable: without it xhi == image_width reaches the
+				// unchecked raster GetPEL.
 				//   - Repeat: the upper neighbour wraps to texel 0 (the
 				//     would-be cross-seam partner).
 				//   - MirroredRepeat: the upper neighbour mirrors back

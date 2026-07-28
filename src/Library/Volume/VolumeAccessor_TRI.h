@@ -51,7 +51,12 @@ namespace RISE
 			int	zlo = int(wlo);
 			int	zhi = zlo+1;
 
-			// Thus our final value is computed from these low and high values
+			// Thus our final value is computed from these low and high values.
+			// NOTE the historical two-letter names read (y, x), not (x, y):
+			// lhA is (ylo, xhi) i.e. GetValue(xhi, ylo), and hlA is
+			// (yhi, xlo) i.e. GetValue(xlo, yhi).  The weight pairing below
+			// is consistent with the reads (ut with xhi, vt with yhi); keep
+			// them in lockstep if renaming.
 			Scalar	llA = pVolume->GetValue( xlo, ylo, zlo );
 			Scalar	lhA = pVolume->GetValue( xhi, ylo, zlo );
 			Scalar	hlA = pVolume->GetValue( xlo, yhi, zlo );

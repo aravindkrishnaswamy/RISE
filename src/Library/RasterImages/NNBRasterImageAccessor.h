@@ -24,8 +24,8 @@ namespace RISE
 	namespace Implementation
 	{
 		// Duplicate of ApplyWrapMode (BilinRasterImageAccessor.h) under a
-		// distinct name so this header stays self-contained for NNB users
-		// who don't include the Bilin header.  Keep the two bodies in sync.
+		// distinct name so this header need not include the Bilin header.
+		// Keep the two bodies in sync.
 		inline Scalar ApplyWrapModeNNB( Scalar uv, char wrapMode )
 		{
 			switch( wrapMode ) {
