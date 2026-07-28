@@ -3081,6 +3081,31 @@ namespace RISE
 		//! Last Render callback/start barrier.
 		virtual void ForTest_OnLastRenderTransitionAttempt( unsigned int ) {}
 
+		//! Called from SetViewportLayout's SHRINK branch at the one instant the
+		//! new layout is authoritative and the render thread is provably idle:
+		//! mMutex is held, the park wait has already returned (mRendering is
+		//! false), and the scheduler has not yet been relocated to a visible
+		//! pane.  No interactive pass can be running or minting here -- a mint
+		//! needs this same mMutex, and a pass BODY (DoOneRenderPass) only runs
+		//! with mRendering true -- so a test subclass can stamp a STABLE
+		//! "everything after this point was scheduled by the post-shrink
+		//! layout" epoch.  Without such an epoch a test that clears its
+		//! recorder and then calls SetViewportLayout has an unsynchronised gap
+		//! in which a legitimate pre-shrink pass (an idle-refinement tick on
+		//! the still-visible, gesture-pinned pane) can land and masquerade as a
+		//! post-shrink scheduling violation.
+		//!
+		//! SCOPE of the stability guarantee: it covers state written ONLY from
+		//! inside the pass body, under the mRendering gate.  It does NOT extend
+		//! to state written from the UNLOCKED pass tail that runs after
+		//! DoOneRenderPass returns and after ActiveFlipGuard publishes
+		//! mRendering=false -- DrainSharedDirectPublishes_, the output detach /
+		//! ForTest_OnInteractivePassBeforeOutputDetach seam, the Last Render
+		//! drain.  A recorder driven from one of THOSE seams can still be
+		//! running concurrently with this branch's continuation, so it gets no
+		//! epoch guarantee here.  No-op in production.
+		virtual void ForTest_OnViewportShrinkParked() {}
+
 		//! Fix-round-4 P2 RED-PROVE test hook, the WORKER-side twin of
 		//! ForTest_OnAboutToMintInteractivePass above.  Called by
 		//! AgentRenderWorkerLoop_ once per occupant, unlocked, immediately

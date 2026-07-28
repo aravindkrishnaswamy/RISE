@@ -10372,6 +10372,11 @@ bool SceneEditController::SetViewportLayout( ViewportLayout layout )
 				mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 			}
 			mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+			// Test seam (no-op in production): the render thread is parked and
+			// mViewportLayout already holds the new, smaller layout, so this is
+			// the exact instant a recording test can stamp its post-shrink
+			// epoch.  See the declaration for why an epoch is required.
+			ForTest_OnViewportShrinkParked();
 			if( gestureHidden ) {
 				// user-review P1-2: the gesture's pane is gone -- FINALIZE the
 				// interrupted gesture EXACTLY as OnPointerUp would.  The first

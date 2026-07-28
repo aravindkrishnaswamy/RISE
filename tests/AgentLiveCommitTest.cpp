@@ -47,6 +47,8 @@
 #include <cstdio>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -92,9 +94,72 @@ public:
 
 	unsigned int CompletedCount() const { return mCompletedCount.load(); }
 
+	//! Block until at least `count` passes have run to COMPLETION (i.e. were
+	//! not cancelled).  Unlike ForTest_WaitForRenders -- which counts every
+	//! pass, including one that returned early because an edit cancelled it --
+	//! this only advances on real work, so "the edit kicked a FRESH pass" stays
+	//! a real assertion even when the edit also cancelled a held predecessor.
+	bool WaitForCompleted( unsigned int count, unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mHoldMutex );
+		return mHoldCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mCompletedCount.load() >= count; } );
+	}
+
+	//! Arm the NEXT render pass to enter flight and STAY there until something
+	//! trips the rasterizer cancel flag.
+	//!
+	//! Why this exists: SceneEditController::CancelAndParkRender_ only bumps
+	//! the cancel counter `if( mRendering )`.  A test that asserts "this edit
+	//! cancel-and-PARKED the in-flight pass" is therefore asserting an effect
+	//! whose PRECONDITION is "a pass is in flight right now" -- and the render
+	//! loop goes idle after each pass, so the precondition is not free.  Doing
+	//! it by sleeping (or by hoping the loop happens to be busy) is a race that
+	//! fails whenever the machine is loaded enough to slip the edit into the
+	//! idle gap.  Arm this, kick a render, WaitForHeldPass(), and the pass is
+	//! PROVABLY in flight when the code under test runs -- no timing assumption
+	//! at all.  The hold is bounded so a genuine "nobody ever cancels" bug
+	//! surfaces as a failed assertion rather than a hung suite.
+	void ArmHeldPass()
+	{
+		std::lock_guard<std::mutex> lk( mHoldMutex );
+		mHoldArmed = true;
+		mHoldReached = false;
+	}
+
+	//! Block until the armed pass has entered flight (mRendering is true and
+	//! the pass body is holding).  False on timeout.
+	bool WaitForHeldPass( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mHoldMutex );
+		return mHoldCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mHoldReached; } );
+	}
+
 protected:
 	void DoOneRenderPass() override
 	{
+		bool held = false;
+		{
+			std::lock_guard<std::mutex> lk( mHoldMutex );
+			if( mHoldArmed ) { mHoldArmed = false; mHoldReached = true; held = true; }
+		}
+		if( held )
+		{
+			mHoldCV.notify_all();
+			// Stay in flight until the code under test cancels us.  The bound
+			// only exists so a regression cannot wedge the suite; it is not a
+			// timing assumption -- the assertion that follows is on the cancel
+			// counter, which is what actually proves the park happened.
+			const auto deadline = std::chrono::steady_clock::now()
+				+ std::chrono::seconds( 10 );
+			while( !IsCancelRequested()
+			    && std::chrono::steady_clock::now() < deadline )
+			{
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+			return;   // cancelled: deliberately NOT counted as completed
+		}
 		const unsigned int sliceMs = 2;
 		const unsigned int slices  = ( mSimulatedRenderMs + sliceMs - 1 ) / sliceMs;
 		for( unsigned int i = 0; i < slices; ++i )
@@ -102,12 +167,20 @@ protected:
 			if( IsCancelRequested() ) return;
 			std::this_thread::sleep_for( std::chrono::milliseconds( sliceMs ) );
 		}
-		mCompletedCount.fetch_add( 1 );
+		{
+			std::lock_guard<std::mutex> lk( mHoldMutex );
+			mCompletedCount.fetch_add( 1 );
+		}
+		mHoldCV.notify_all();
 	}
 
 private:
 	unsigned int              mSimulatedRenderMs;
 	std::atomic<unsigned int> mCompletedCount;
+	std::mutex                mHoldMutex;
+	std::condition_variable   mHoldCV;
+	bool                      mHoldArmed = false;
+	bool                      mHoldReached = false;
 };
 
 // A base (variant-free) scene.  `lum` is a UNIQUELY-named luminaire so both
@@ -529,12 +602,18 @@ static void TestRenderParkedDuringEdit()
 	if( !pJob ) return;
 
 	{
-		// Long simulated render (300ms) so an edit reliably lands mid-pass.
 		TestController c( *pJob, /*simulatedRenderMs*/300 );
 		c.Start();
 
-		// Let a render pass get in flight, then fire an agent commit.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+		// Put a pass PROVABLY in flight, then fire an agent commit.  This used
+		// to be "sleep 40 ms into a 300 ms pass and hope" -- generous, but
+		// still a bet on scheduler latency (and the same bet Test 5c lost).
+		// The gate removes the bet entirely: the pass is holding in flight
+		// until this very edit cancels it.
+		c.ArmHeldPass();
+		c.ForTest_KickRender();
+		Check( c.WaitForHeldPass( 5000 ),
+		       "a render pass is provably in flight before the agent commit" );
 		const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
 
 		const SceneEditController::AgentCommitResult r =
@@ -792,8 +871,21 @@ static void TestInsertChunksLive()
 		//------------------------------------------------------------------
 		{
 			Check( !c.HasUnsavedChanges(), "scene is CLEAN before the live insert_chunks batch" );
+			// Put a pass PROVABLY in flight before the batch runs.  The
+			// cancel-and-park assertion below is about what the batch does to
+			// an in-flight pass, and the render loop is idle between passes --
+			// without this gate the batch could simply land in the idle gap,
+			// bump no counter, and fail an assertion that describes correct
+			// behaviour.  That was this test's flake (it inherited Test 4's
+			// assertion without inheriting Test 4's mid-pass setup).
+			c.ArmHeldPass();
+			c.ForTest_KickRender();
+			Check( c.WaitForHeldPass( 5000 ),
+			       "(a) a render pass is provably in flight before the live batch" );
+			// Sample the counters only ONCE the pass is holding, so the kick's
+			// own (conditional) cancel can never be miscredited to the batch.
 			const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
-			const unsigned int rendersBefore = c.ForTest_GetRenderCount();
+			const unsigned int completedBefore = c.CompletedCount();
 
 			std::vector<std::string> chunks;
 			chunks.push_back( "uniformcolor_painter\n{\nname pnt_ic\ncolor 0.2 0.4 0.6\n}\n" );
@@ -830,7 +922,10 @@ static void TestInsertChunksLive()
 			Check( c.ForTest_GetCancelCount() > cancelsBefore,
 			       "(a) the live batch cancel-and-PARKED the in-flight pass" );
 			Check( c.HasUnsavedChanges(), "(a) the live batch marked the editor DIRTY (Save enables)" );
-			Check( c.ForTest_WaitForRenders( rendersBefore + 1, 3000 ),
+			// Count COMPLETED passes, not all passes: the held predecessor the
+			// batch just cancelled returns early and is deliberately not
+			// counted, so this stays a real "a fresh pass ran" assertion.
+			Check( c.WaitForCompleted( completedBefore + 1, 5000 ),
 			       "(a) the live batch KICKED a fresh viewport pass" );
 			Check( c.IsRunning(), "(a) render thread alive after the live insert_chunks batch" );
 		}
@@ -1631,10 +1726,14 @@ static void TestPreviewRenderParked()
 	if( !pJob ) return;
 
 	{
-		// (a) Long simulated render so a callback reliably lands mid-pass.
+		// (a) Hold a pass in flight so the callback provably lands mid-pass --
+		// see ArmHeldPass for why "sleep 40 ms and hope" is not good enough.
 		TestController c( *pJob, /*simulatedRenderMs*/300 );
 		c.Start();
-		std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+		c.ArmHeldPass();
+		c.ForTest_KickRender();
+		Check( c.WaitForHeldPass( 5000 ),
+		       "a render pass is provably in flight before RunPreviewRenderParked" );
 		const unsigned int cancelsBefore = c.ForTest_GetCancelCount();
 
 		std::atomic<bool> ran{ false };

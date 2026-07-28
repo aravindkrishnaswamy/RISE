@@ -39,7 +39,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
-#include <cstdlib>			// getenv() -- TMPDIR lookup in WriteTemp
+#include <cstdlib>			// getenv() -- TMPDIR lookup in WriteTemp; getenv() -- RISE_TEST_SCHED_RACE_DELAY_MS
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -61,6 +61,67 @@ static void Check( bool c, const std::string& w )
 {
 	if( c ) ++g_pass;
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
+}
+
+//----------------------------------------------------------------------
+// Deterministic flake-reproduction seam.  It PAUSES at the three spots where
+// this test's timing assumptions used to live, so a load-dependent failure can
+// be reproduced on demand instead of by running the suite until it trips:
+//
+//     RISE_TEST_SCHED_RACE_DELAY_MS=200 ./bin/tests/ViewportPaneSchedulerTest
+//
+// Default 0 = no injection; an ordinary run behaves exactly as before.
+//
+// What it is measured to do (against the PRE-FIX version of this file, which
+// scanned the whole recorded sequence instead of the post-shrink epoch):
+//   * (j2) "no post-shrink render targets hidden pane 3" FAILS 1/1 at every
+//     value tried -- 50, 100, 200, 400, 800, 1200, 1600, 2500 ms.  The pause
+//     lets the render loop's idle-refinement wake (kRefineWakeMs, 100 ms) mint
+//     a legitimate pass on the still-visible, gesture-pinned pane 3 inside the
+//     unsynchronised ClearSequence() -> SetViewportLayout() gap.  With the
+//     epoch that assertion PASSES 1/1 at every one of those values.
+//   * (j) never reproduced -- correctly: that scenario has no live gesture, so
+//     nothing self-rearms during the gap.  The epoch is applied there anyway
+//     because the accounting is the same shape.
+//   * The BeautyVariant gesture bracket: the pause does NOT reliably reproduce
+//     its failure, but it does demonstrate the premise the old assertions
+//     relied on is false -- at 2500 ms the recorded stream is
+//     [live, live, final], not the assumed exactly-[live, final].  See
+//     checkBracket for why that makes a record-COUNT wait unsound.
+//
+// Keep injected values BELOW kScrubWatchdogMs (1500 ms).  Past that the pause
+// itself trips the lost-End scrub watchdog, which changes what the surrounding
+// scenarios are exercising -- the knob then stops being a timing probe and
+// starts being a different test.
+//----------------------------------------------------------------------
+static unsigned int RaceDelayMs()
+{
+	static const unsigned int value = []() -> unsigned int {
+		const char* s = std::getenv( "RISE_TEST_SCHED_RACE_DELAY_MS" );
+		if( !s ) return 0u;
+		const int v = std::atoi( s );
+		return v > 0 ? static_cast<unsigned int>( v ) : 0u;
+	}();
+	return value;
+}
+
+static void RaceDelay()
+{
+	const unsigned int ms = RaceDelayMs();
+	if( ms ) std::this_thread::sleep_for( std::chrono::milliseconds( ms ) );
+}
+
+//! Print the recorded pane sequence with the post-shrink epoch marked, so a
+//! "a hidden pane got scheduled" failure names the offending pass instead of
+//! just asserting that one exists.
+static void DumpSequence( const char* label, const std::vector<unsigned int>& seq,
+	std::size_t epoch )
+{
+	std::printf( "    %s sequence (epoch=%u):", label, (unsigned int)epoch );
+	for( std::size_t i = 0; i < seq.size(); ++i ) {
+		std::printf( " %s%u", ( i == epoch ) ? "| " : "", seq[i] );
+	}
+	std::printf( "\n" );
 }
 
 //----------------------------------------------------------------------
@@ -168,6 +229,25 @@ public:
 			[&]{ return mVariantPassRecords.size() >= count; } );
 	}
 
+	//! Block until a RELEASE-quality (non-live-gesture) BeautyVariant pass has
+	//! been recorded.  This is the CONDITION a gesture bracket actually cares
+	//! about.  Waiting on a record COUNT instead is unsound: the number of live
+	//! quanta a gesture mints before its End lands is not fixed, so "wait for 2
+	//! records" can be satisfied by a second LIVE pass and then assert the
+	//! release contract against it -- which is precisely how this test used to
+	//! fail intermittently on `records.back()`.
+	bool WaitForVariantReleasePass( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mVariantPassMutex );
+		return mVariantPassCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{
+				for( std::size_t i = 0; i < mVariantPassRecords.size(); ++i ) {
+					if( !mVariantPassRecords[i].liveGesture ) return true;
+				}
+				return false;
+			} );
+	}
+
 	bool LastVariantDenoiseSuppressed() const
 	{
 		std::lock_guard<std::mutex> lk( mVariantPassMutex );
@@ -233,6 +313,51 @@ public:
 		return mSeq.size() == count;
 	}
 
+	//! Block until the recorded sequence STOPS GROWING for `settleMs`, then
+	//! return its final length; returns false on `timeoutMs` without ever
+	//! settling.  This is the condition-based replacement for "sleep long
+	//! enough that any stray pass has surely landed": a scenario that asserts
+	//! a NEGATIVE (no pass targets a hidden pane) has to bound the observation
+	//! window somehow, but a fixed sleep either under-waits on a loaded
+	//! machine (false green) or is pure padding.  Waiting for a genuine
+	//! no-growth interval scales with the machine instead.
+	bool WaitForSequenceQuiescence( unsigned int settleMs, unsigned int timeoutMs,
+		std::size_t& outCount )
+	{
+		const auto deadline = std::chrono::steady_clock::now()
+			+ std::chrono::milliseconds( timeoutMs );
+		for(;;) {
+			std::size_t before;
+			{
+				std::lock_guard<std::mutex> lk( mSeqMutex );
+				before = mSeq.size();
+			}
+			std::this_thread::sleep_for( std::chrono::milliseconds( settleMs ) );
+			std::size_t after;
+			{
+				std::lock_guard<std::mutex> lk( mSeqMutex );
+				after = mSeq.size();
+			}
+			if( after == before ) { outCount = after; return true; }
+			if( std::chrono::steady_clock::now() >= deadline ) {
+				outCount = after;
+				return false;
+			}
+		}
+	}
+
+	//! The recorded-sequence length at the instant SetViewportLayout's shrink
+	//! branch parked the render thread and published the new layout.  Every
+	//! entry at or after this index was scheduled BY the post-shrink layout;
+	//! everything before it is pre-shrink history (an idle-refinement tick on
+	//! a pane that was still visible when it minted, say) and must not be read
+	//! as a scheduling violation.  See ForTest_OnViewportShrinkParked.
+	std::size_t ShrinkEpoch() const
+	{
+		std::lock_guard<std::mutex> lk( mSeqMutex );
+		return mShrinkEpoch;
+	}
+
 	void ClearSequence()
 	{
 		std::unique_lock<std::mutex> lk( mSeqMutex );
@@ -247,6 +372,7 @@ public:
 		if( !retired ) return;   // preserve evidence; the next phase must fail
 		mSeq.clear();
 		mCompletedPasses = 0;
+		mShrinkEpoch = 0;       // indices just shifted; the old epoch is meaningless
 	}
 
 	void SetSlowPassMs( unsigned int ms )
@@ -493,6 +619,20 @@ protected:
 		mSeqCV.notify_all();
 	}
 
+	//! Stamp the post-shrink epoch.  Called with the controller's mMutex held
+	//! and the render thread parked, so mSeq is provably stable here (a pass
+	//! body -- the only writer of mSeq -- runs only with mRendering true).
+	//! Lock order is safe: this is one of two seams that take mSeqMutex while
+	//! the controller holds mMutex (the other is
+	//! ForTest_OnInteractivePassRetired on the cancelled-pass path), both use
+	//! the SAME mMutex-outer / mSeqMutex-inner order, and no path in this file
+	//! ever takes mSeqMutex before mMutex.
+	void ForTest_OnViewportShrinkParked() override
+	{
+		std::lock_guard<std::mutex> lk( mSeqMutex );
+		mShrinkEpoch = mSeq.size();
+	}
+
 	void ForTest_OnInteractivePassBeforeOutputDetach() override
 	{
 		std::unique_lock<std::mutex> lk( mOutputDetachMutex );
@@ -609,6 +749,7 @@ private:
 	std::condition_variable     mSeqCV;
 	std::vector<unsigned int>   mSeq;
 	std::size_t                 mCompletedPasses = 0;
+	std::size_t                 mShrinkEpoch = 0;
 	bool                        mRunRealPass = false;
 	std::atomic<unsigned int>   mSlowPassMs { 0 };
 	std::mutex                  mGateMutex;
@@ -656,6 +797,21 @@ private:
 	std::vector<VariantPassRecord> mVariantPassRecords;
 	IRasterizer*                 mLastVariantRasterizer = nullptr;
 };
+
+//! Print every BeautyVariant quantum a gesture bracket recorded, so a failure
+//! says WHICH quantum broke the live/final quality contract instead of only
+//! that one did.
+static void DumpVariantRecords( const char* label,
+	const std::vector<RecordingController::VariantPassRecord>& records )
+{
+	std::printf( "    %s variant passes (%u):\n", label,
+		(unsigned int)records.size() );
+	for( std::size_t i = 0; i < records.size(); ++i ) {
+		std::printf( "      [%u] live=%d spp=%d denoiseKnown=%d denoise=%d\n",
+			(unsigned int)i, records[i].liveGesture ? 1 : 0, records[i].samples,
+			records[i].denoiseKnown ? 1 : 0, records[i].denoiseEnabled ? 1 : 0 );
+	}
+}
 
 class RecordingPaneSink
 	: public virtual IRasterizerOutput
@@ -1191,8 +1347,43 @@ struct Fixture
 	}
 };
 
+// kPreStartKickNote -- why every fixture below kicks BEFORE Start( true ).
+//
+// The standard preamble arms TWO independent invalidations: SetViewportLayout
+// (called before Start) arms the pane-rotation flag mPanePassPending, and
+// ForTest_KickRender arms the scene-edit flag mEditPending.  RenderLoop
+// consumes both in ONE lock hold, and only the EDIT flag triggers
+// MarkAllVisiblePanesDirtyLocked_ -- so the resulting pass count depends
+// entirely on whether the loop happens to wake between the two arms:
+//
+//   both flags already set when the loop first waits  -> one edit tick,
+//                                                        exactly N passes
+//   loop wakes on mPanePassPending alone first        -> one rotation tick on
+//                                                        the current pane,
+//                                                        THEN an edit tick that
+//                                                        re-dirties all N
+//                                                        -> N+1 passes
+//
+// Assertions of the form "the initial rotation is exactly [0,1,2,3]" and
+// SettlesAt( N, ... ) are therefore only well-defined in the first case.  On an
+// idle machine the render thread essentially never wins that gap, which is why
+// these read as stable; under CPU contention it does, and they flake.
+//
+// Kicking BEFORE Start closes the gap at the source rather than papering over
+// it with a longer wait: the render thread does not exist yet, so BOTH flags
+// are guaranteed to be set before RenderLoop evaluates its first wait
+// predicate.  Start() does not touch mEditPending (it only consumes the
+// separate mSuppressInitialRender one-shot and zeroes the render/cancel
+// counters), so the pre-Start kick survives into the loop.
 static const unsigned int kWaitMs   = 4000;
 static const unsigned int kSettleMs = 250;
+// The no-growth interval WaitForSequenceQuiescence must observe before it will
+// call a rotation settled.  300 ms, not kSettleMs, so the guaranteed minimum
+// observation window is never SHORTER than the fixed 300 ms drain sleep this
+// mechanism replaced in the (j) / (j2) shrink scenarios -- a condition-based
+// wait that observed for less time than the sleep it replaced would trade one
+// flake for a weaker assertion.
+static const unsigned int kDrainSettleMs = 300;
 
 static bool CaptureNamedCamera( Job& job, const char* name,
 	CameraSnapshot& out )
@@ -1329,8 +1520,9 @@ static void RunPaneLocalInvalidationTest()
 	if( !f.ctrl ) return;
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "initial rotation completes (4 passes)" );
 	f.ctrl->ClearSequence();
 
@@ -1408,8 +1600,9 @@ static void RunGesturePinningTest()
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
 	Check( f.ctrl->SetPrimaryPane( 1 ), "primary = pane 1 (so pinning is distinguishable from priority)" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes (2 passes)" );
 	f.ctrl->ClearSequence();
 
@@ -1504,8 +1697,9 @@ static void RunVariantGizmoGestureDoesNotSpinTest()
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
 	Check( f.ctrl->SetViewportRenderMode( "indirect" ), "pane 0 switches to indirect BeautyVariant" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial TwoH rotation completes" );
 	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "initial rotation settles" );
 	f.ctrl->ClearSequence();
@@ -1566,8 +1760,9 @@ static void RunVariantPropertyScrubRecoveryTest()
 	if( !f.ctrl ) return;
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial TwoH rotation completes" );
 	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
 	{
@@ -1641,8 +1836,9 @@ static void RunStopRecoversLostPointerUpTest()
 	if( !f.ctrl ) return;
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
 	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "initial rotation settles" );
 	f.ctrl->ClearSequence();
@@ -1801,8 +1997,9 @@ static void RunPausePreservesPolishStateTest()
 	Check( f.ctrl != nullptr, "fixture constructs" );
 	if( !f.ctrl ) return;
 
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "initial pass completes" );
 	Check( f.ctrl->SettlesAt( 1, kSettleMs ), "initial pass settles" );
 	f.ctrl->ClearSequence();
@@ -1830,8 +2027,9 @@ static void RunMidGesturePaneSwitchRefusedTest()
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
 	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
 	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "initial rotation settles" );
 	f.ctrl->ClearSequence();
@@ -1882,8 +2080,9 @@ static void RunSingleLayoutBaselineTest()
 	Check( f.ctrl != nullptr, "fixture constructs" );
 	if( !f.ctrl ) return;
 
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
 		"the edit's single pass retires" );
 	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
@@ -1912,8 +2111,9 @@ static void RunHiddenPaneNeverRendersTest()
 	Check( f.ctrl->SetPaneRenderMode( 3, "depth" ), "configure pane 3 (so it has non-default state)" );
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "shrink to TwoH (panes 2,3 hidden)" );
 
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
 		"the two VISIBLE pane passes retire" );
 	Check( f.ctrl->SettlesAt( 2, kSettleMs ),
@@ -1942,8 +2142,9 @@ static void RunLayoutGrowWakesLoopTest()
 	if( !f.ctrl ) return;
 
 	// Start in Single, render, and QUIESCE -- the loop is now asleep.
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ), "single-layout pass lands" );
 	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "loop is idle before the grow" );
 	f.ctrl->ClearSequence();
@@ -1984,8 +2185,9 @@ static void RunNamedViewUpdatePropagatesTest()
 	Check( f.ctrl->CaptureNamedView( "keyview" ), "capture a named view" );
 	Check( f.ctrl->SetPaneVantageNamedView( 1, "keyview" ), "bind pane 1 to it" );
 
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial rotation completes" );
 	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "loop idle before the update" );
 	f.ctrl->ClearSequence();
@@ -2017,8 +2219,9 @@ static void RunPaneIndexedGestureTest()
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ), "layout TwoH" );
 	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
 		"initial rotation retires both visible-pane passes" );
 	Check( f.ctrl->SettlesAt( 2, kSettleMs ),
@@ -2161,8 +2364,9 @@ static void RunShrinkCancelsHiddenPaneTest()
 	if( !f.ctrl ) return;
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "initial Quad rotation completes (4 passes)" );
 	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "Quad settles" );
 	// After a settled Quad rotation the scheduler's current pane is a
@@ -2173,14 +2377,20 @@ static void RunShrinkCancelsHiddenPaneTest()
 
 	// Shrink to Single.  The fix must relocate to pane 0 and repaint it,
 	// and NO further pass may land on a hidden pane (index >= 1).
+	RaceDelay();   // widen the ClearSequence -> shrink gap (see RaceDelayMs)
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Single ), "shrink Quad -> Single" );
-	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+	// Read the epoch the shrink stamped while the render was parked: only
+	// entries at or after it were scheduled by the post-shrink layout.
+	const std::size_t jEpoch = f.ctrl->ShrinkEpoch();
+	Check( f.ctrl->WaitForPassCount( jEpoch + 1, kWaitMs ),
 	       "MONEY ASSERTION (j): the shrink repaints the visible primary (pane 0)" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );   // drain any stray passes
+	std::size_t jSettled = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kDrainSettleMs, kWaitMs, jSettled ),
+	       "the post-shrink rotation quiesces instead of running away" );
 	const std::vector<unsigned int> seq = f.ctrl->Sequence();
 	bool anyHidden = false;
-	for( std::size_t i = 0; i < seq.size(); ++i ) {
-		if( seq[i] >= 1 ) anyHidden = true;
+	for( std::size_t i = jEpoch; i < seq.size(); ++i ) {
+		if( seq[i] >= 1 ) { anyHidden = true; DumpSequence( "(j) post-shrink", seq, jEpoch ); break; }
 	}
 	Check( !anyHidden,
 	       "MONEY ASSERTION (j): NO pass lands on a hidden pane (>=1) after the shrink -- the "
@@ -2203,10 +2413,21 @@ static void RunShrinkFinalizesHiddenGestureTest()
 	if( !f.ctrl ) return;
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "initial Quad rotation completes" );
-	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "Quad settles" );
+	{
+		// This preamble arms TWO independent invalidations -- SetViewportLayout's
+		// grow sets mPanePassPending, ForTest_KickRender sets mEditPending -- and
+		// the render loop may service them in ONE iteration (4 passes) or in two
+		// (a rotation tick, then an all-panes edit tick: 5+ passes), depending on
+		// whether it gets scheduled in between.  Dump the sequence when the
+		// settle fails so that split is visible rather than a bare boolean.
+		const bool settled = f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs );
+		if( !settled ) DumpSequence( "(j2) initial Quad", f.ctrl->Sequence(), 0 );
+		Check( settled, "Quad settles" );
+	}
 
 	f.ctrl->ForTest_SetSelection( SceneEditController::Category::Object, String( "obj" ) );
 	f.ctrl->SetTool( SceneEditController::Tool::TranslateObject );
@@ -2231,6 +2452,7 @@ static void RunShrinkFinalizesHiddenGestureTest()
 	       "precondition: transform gesture accumulated a CST-pending object edit" );
 	f.ctrl->ClearSequence();
 
+	RaceDelay();   // widen the ClearSequence -> shrink gap (see RaceDelayMs)
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::OnePlusTwo ),
 	       "shrink Quad -> OnePlusTwo hides the gestured pane 3" );
 	Check( !f.ctrl->Editor().IsCompositeOpen(),
@@ -2239,13 +2461,24 @@ static void RunShrinkFinalizesHiddenGestureTest()
 	       "MONEY (j2): shrink commits the interrupted gesture's pending CST transform" );
 	Check( !f.ctrl->IsGizmoDragActive(),
 	       "MONEY (j2): shrink clears the interrupted gizmo drag state" );
-	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
+	// The epoch the shrink stamped while the render thread was parked.  It is
+	// load-bearing HERE, not cosmetic: pane 3 is pinned by a live pointer
+	// gesture, so the render loop's idle-refinement tick (kRefineWakeMs) keeps
+	// minting legitimate pane-3 passes right up until the shrink lands.  One of
+	// those landing in the unsynchronised gap between ClearSequence() and
+	// SetViewportLayout() -- which is exactly what a loaded machine produces --
+	// used to be misread as a post-shrink scheduling violation and was this
+	// test's flake.
+	const std::size_t epoch = f.ctrl->ShrinkEpoch();
+	Check( f.ctrl->WaitForPassCount( epoch + 1, kWaitMs ),
 	       "shrink queues a repaint for the remaining visible panes" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+	std::size_t settled = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kDrainSettleMs, kWaitMs, settled ),
+	       "the post-shrink rotation quiesces instead of running away" );
 	const std::vector<unsigned int> seq = f.ctrl->Sequence();
 	bool renderedHidden = false;
-	for( std::size_t i = 0; i < seq.size(); ++i ) {
-		if( seq[i] >= 3 ) renderedHidden = true;
+	for( std::size_t i = epoch; i < seq.size(); ++i ) {
+		if( seq[i] >= 3 ) { renderedHidden = true; DumpSequence( "(j2) post-shrink", seq, epoch ); break; }
 	}
 	Check( !renderedHidden,
 	       "MONEY (j2): no post-shrink render targets hidden pane 3 after a finalized drag" );
@@ -2264,8 +2497,9 @@ static void RunShrinkPreservesUnrelatedPropertyScrubTest()
 	if( !f.ctrl ) return;
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ), "layout Quad" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "initial Quad rotation completes" );
 	Check( f.ctrl->SettlesAt( 4, kSettleMs ), "Quad settles" );
 
@@ -2460,8 +2694,9 @@ static void RunPaneZeroAliasUnderSecondaryPrimaryTest()
 	// Put the PRIMARY (pane 2) into free-fly, then pump a full rotation so
 	// the scheduler realizes it into pane 2's registers/slot (poseActive).
 	Check( f.ctrl->PaneEnterFreeFly( 2 ), "pane 2 enters free-fly" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "a full Quad rotation runs (pane 2's free-fly realized)" );
 	// Let the legitimate adaptive refinement tail drain before taking the
 	// quiescence baseline.  Sampling Sequence().size() immediately after the
@@ -2557,8 +2792,9 @@ static void RunPaneFreeFlyPreservesNamedViewTest()
 	       "pane 1 now reports Free-Fly" );
 
 	// Realize the configured pane once, then inspect its saved/free-fly pose.
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
 	    && f.ctrl->WaitForCompletedPassCount( 2, kWaitMs )
 	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
@@ -2612,8 +2848,9 @@ static void RunPaneFreeFlyPreservesNamedSceneCameraTest()
 	    && kind == SceneEditController::PaneVantageKind::FreeFly,
 		"pane 1 transitions from kind 3 to Free-Fly" );
 
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
 	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
@@ -2655,8 +2892,9 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH ),
 		"layout TwoH" );
 
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ),
 		"initial TwoH rotation realizes both default SceneCamera panes" );
 	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
@@ -2951,8 +3189,9 @@ static void RunNamedSceneCameraStampRecreationTest()
 		"layout TwoH" );
 	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" ),
 		"bind pane 1 to side" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"initial binding rotation settles" );
@@ -3013,8 +3252,9 @@ static void RunActiveCameraGestureInvalidatesNamedPaneTest()
 		"layout TwoH" );
 	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "cam" ),
 		"bind secondary to the active camera by name" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	// A pass is recorded at DoOneRenderPass entry, before its retirement hook.
 	// Wait for both retirements before reading the pose or clearing the recorder;
 	// otherwise a still-active pane-1 pass can make GetViewportPose's try-lock
@@ -3169,8 +3409,9 @@ static void RunNamedCameraGestureRoutingTest()
 		"grow to Quad for live reconciliation" );
 	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 2, "side" ),
 		"bind a second pane to the same inactive side camera" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 		"initial live Quad rotation completes" );
 	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
@@ -3329,8 +3570,9 @@ static void RunNamedSceneCameraPreRealizationHomeTest()
 		"move live side away from the saved Home pose" );
 	Check( f.ctrl->GoToHomeView( 1 ), "Go Home restores saved pane-1 pose" );
 
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
 	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
@@ -3366,8 +3608,9 @@ static void RunMultiplePanesBoundToSameCameraTest()
 	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "side" )
 	    && f.ctrl->SetPaneVantageSceneCameraNamed( 2, "side" ),
 		"bind panes 1 and 2 to the same inactive camera" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs )
 	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3 }
 	    && f.ctrl->SettlesAt( 4, kSettleMs ),
@@ -3450,8 +3693,9 @@ static void RunNamedSceneCameraTimeScrubTest()
 	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "animated_side_a" )
 	    && f.ctrl->SetPaneVantageSceneCameraNamed( 2, "animated_side_b" ),
 		"panes 1 and 2 bind distinct inactive animated cameras" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 		"initial animated-camera Quad rotation runs" );
 	Check( f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3 }
@@ -3505,8 +3749,9 @@ static void RunNamedSceneCameraONBTest()
 		"layout TwoH" );
 	Check( f.ctrl->SetPaneVantageSceneCameraNamed( 1, "onb_side" ),
 		"bind supported onb_pinhole_camera by manager name" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
 	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 }
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
@@ -3675,8 +3920,9 @@ static void RunNamedSceneCameraSetterParksRenderTest()
 		"layout TwoH" );
 	Check( f.ctrl->SetPaneRenderMode( 1, "direct" ),
 		"install an explicit non-Preview mode before the contention window" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs )
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"initial rotation settles" );
@@ -5007,8 +5253,9 @@ static void RunRasterizerOwnedSinkDestructorReentryTest()
 	sink->release();
 
 	f.ctrl->ArmOutputDetachGate( 1 );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForOutputDetachGate( kWaitMs ),
 		"pane-1 pass published mRendering=false while rasterizer still owns its sink" );
 	Check( f.ctrl->SetPaneSink( 1, nullptr ),
@@ -5042,8 +5289,9 @@ static void RunRasterizerSinkDestructorQueuesLastRenderTest()
 	pane1Sink->release();
 
 	f.ctrl->ArmOutputDetachGate( 1 );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForOutputDetachGate( kWaitMs ),
 		"pane-1 rasterizer retains the destructor-publish sink" );
 	Check( f.ctrl->SetPaneSink( 1, nullptr ),
@@ -5068,8 +5316,9 @@ static void RunDestructorRejectsOrdinarySinkReentryTest()
 	if( !f.ctrl ) return;
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
 		"layout Quad" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs )
 	    && f.ctrl->WaitForCompletedPassCount( 4, kWaitMs )
 	    && f.ctrl->SettlesAt( 4, kSettleMs )
@@ -5302,36 +5551,64 @@ static void RunBeautyVariantLiveQualityPolicyTest()
 	f.ctrl->ClearSequence();
 	f.ctrl->ClearVariantPassRecords();
 
+	// The bracket contract, stated over the WHOLE recorded run rather than over
+	// records.front() / records.back():
+	//   * every quantum minted while the gesture was live is classified live,
+	//     runs at 1 SPP, and has OIDN suppressed;
+	//   * the FIRST quantum minted after the gesture's End is classified final,
+	//     runs at the registry's authored 8 SPP, and has OIDN restored.
+	// The old form pinned "the live one" to index 0 and "the release one" to
+	// the LAST index after waiting for a record COUNT of 2 -- so a second live
+	// quantum (legitimate: the gesture is still held until end() returns) both
+	// satisfied the wait early and became records.back(), failing the release
+	// assertions.  Indexing by the live/final CLASSIFICATION instead of by
+	// position removes the dependence on how many live quanta happened to land.
 	auto checkBracket = [&]( const char* label, const auto& begin, const auto& end ) {
 		begin();
 		f.ctrl->ForTest_KickRender();
 		Check( f.ctrl->WaitForVariantPassCount( 1, kWaitMs ),
 		       std::string( label ) + ": live pass mints" );
+		RaceDelay();   // widen the live-window before End (see RaceDelayMs)
 		end();
-		Check( f.ctrl->WaitForVariantPassCount( 2, kWaitMs ),
-		       std::string( label ) + ": release pass mints" );
+		const bool released = f.ctrl->WaitForVariantReleasePass( kWaitMs );
+		Check( released, std::string( label ) + ": release pass mints" );
 		const std::vector<RecordingController::VariantPassRecord> records =
 			f.ctrl->VariantPassRecords();
-		Check( records.size() >= 2 && records.front().liveGesture
-		    && records.front().samples == 1,
+		std::size_t release = records.size();
+		for( std::size_t i = 0; i < records.size(); ++i ) {
+			if( !records[i].liveGesture ) { release = i; break; }
+		}
+		const bool haveRelease = ( release < records.size() );
+		bool liveOk = ( release > 0 );          // at least one live quantum ran
+		bool liveDenoiseOk = ( release > 0 );
+		for( std::size_t i = 0; i < release && i < records.size(); ++i ) {
+			if( records[i].samples != 1 ) liveOk = false;
+			if( !records[i].denoiseKnown || records[i].denoiseEnabled )
+				liveDenoiseOk = false;
+		}
+		const bool releaseOk = haveRelease && records[release].samples == 8;
+		const bool releaseDenoiseOk = haveRelease && records[release].denoiseKnown
+			&& records[release].denoiseEnabled;
+		Check( liveOk,
 		       std::string( "MONEY: " ) + label +
 		       " controller mint classifies live work at 1 SPP" );
-		Check( records.size() >= 2 && !records.back().liveGesture
-		    && records.back().samples == 8,
+		Check( releaseOk,
 		       std::string( "MONEY: " ) + label +
 		       " controller release restores Direct's 8 SPP" );
 #ifdef RISE_ENABLE_OIDN
-		Check( records.size() >= 2 && records.front().denoiseKnown
-		    && !records.front().denoiseEnabled,
+		Check( liveDenoiseOk,
 		       std::string( "MONEY: " ) + label +
 		       " live mint suppresses OIDN" );
-		Check( records.size() >= 2 && records.back().denoiseKnown
-		    && records.back().denoiseEnabled,
+		Check( releaseDenoiseOk,
 		       std::string( "MONEY: " ) + label +
 		       " release mint restores OIDN" );
+#else
+		(void)liveDenoiseOk;
+		(void)releaseDenoiseOk;
 #endif
-		Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
-		       std::string( label ) + ": both passes retire" );
+		if( !released || !liveOk || !releaseOk ) DumpVariantRecords( label, records );
+		Check( f.ctrl->WaitForCompletedPassCount( release + 1, kWaitMs ),
+		       std::string( label ) + ": the live run and its release pass retire" );
 		f.ctrl->ClearSequence();
 		f.ctrl->ClearVariantPassRecords();
 	};
@@ -5467,8 +5744,9 @@ static void RunCrossPaneVariantAdmissionPolicyTest()
 	       "layout TwoH" );
 	Check( f.ctrl->SetPaneRenderMode( 1, "direct" ),
 	       "pane 1 installs Direct while pane 0 remains Preview" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
 	       "initial two-pane rotation retires" );
 	f.ctrl->ClearSequence();
@@ -5526,8 +5804,9 @@ static void RunCrossPaneVariantAdmissionPolicyTest()
 	       "inverse pane 1 installs Direct" );
 	Check( inverse.ctrl->SetPrimaryPane( 1 ),
 	       "inverse all-pane kick starts on Direct" );
-	inverse.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	inverse.ctrl->ForTest_KickRender();
+	inverse.ctrl->Start( true );
 	Check( inverse.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
 	       "inverse initial rotation retires" );
 	inverse.ctrl->ClearSequence();
@@ -5581,8 +5860,9 @@ static void RunSharedDirectIndirectTransportTest()
 	Check( f.ctrl->SetPaneSink( 0, directSink )
 	    && f.ctrl->SetPaneSink( 1, indirectSink ),
 	       "both pane sinks install" );
-	f.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	f.ctrl->ForTest_KickRender();
+	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
 	       "shared source quantum retires" );
 	Check( directSink->WaitForDimensions( 4, 3, kWaitMs ),
@@ -5659,8 +5939,9 @@ static void RunSharedDirectIndirectTransportTest()
 	    && bound.ctrl->SetPaneSink( 0, boundDirectSink )
 	    && bound.ctrl->SetPaneSink( 1, boundIndirectSink ),
 	       "shared bound-FrameStore pair configures" );
-	bound.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	bound.ctrl->ForTest_KickRender();
+	bound.ctrl->Start( true );
 	Check( bound.ctrl->WaitForCompletedPassCount( 1, kWaitMs ),
 	       "shared bound-FrameStore source quantum retires" );
 	for( unsigned int i = 0;
@@ -5704,8 +5985,9 @@ static void RunSharedDirectIndirectTransportTest()
 	    && incompatible.ctrl->SetPaneSurfaceDims( 0, 5, 4 )
 	    && incompatible.ctrl->SetPaneSurfaceDims( 1, 10, 8 ),
 	       "base-aspect-matched but rounded-pass-aspect-mismatched pair configures" );
-	incompatible.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	incompatible.ctrl->ForTest_KickRender();
+	incompatible.ctrl->Start( true );
 	Check( incompatible.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
 	       "incompatible pair renders independently" );
 	Check( incompatible.ctrl->SettlesAt( 2, kSettleMs ),
@@ -5727,8 +6009,9 @@ static void RunSharedDirectIndirectTransportTest()
 	    && reentrant.ctrl->SetPaneSink( 0, reentrantSink )
 	    && reentrant.ctrl->SetPaneSink( 1, reentrantIndirectSink ),
 	       "shared reentrant-sink pair configures" );
-	reentrant.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	reentrant.ctrl->ForTest_KickRender();
+	reentrant.ctrl->Start( true );
 	Check( reentrant.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
 	       "shared pass plus replacement-sink retry retire" );
 	Check( replacementSink->WaitForDimensions( 4, 3, kWaitMs ),
@@ -5753,8 +6036,9 @@ static void RunSharedDirectIndirectTransportTest()
 	    && retry.ctrl->SetPaneSink( 0, retrySink )
 	    && retry.ctrl->SetPaneSink( 1, retryIndirectSink ),
 	       "shared throwing-sink pair configures" );
-	retry.ctrl->Start( true );
+	// Kick BEFORE Start: see kPreStartKickNote.
 	retry.ctrl->ForTest_KickRender();
+	retry.ctrl->Start( true );
 	Check( retry.ctrl->WaitForCompletedPassCount( 2, kWaitMs ),
 	       "throwing shared sink leaves Direct dirty and schedules a retry" );
 	Check( retrySink->Attempts() >= 2 && retry.ctrl->SettlesAt( 2, kSettleMs ),
