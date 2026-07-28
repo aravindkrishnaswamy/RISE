@@ -1240,7 +1240,7 @@ namespace RISE
 			//! is a separate literal, not a shared symbol -- keep the two in
 			//! sync by hand if the wording ever changes).
 			const char* const kSummaryImageElidedNote =
-				"[image elided -- superseded by a newer render]";
+				"[image elided -- superseded by a newer image]";
 
 			//! ELISION CONSISTENCY (see ChatToolDisplaySummary::carriesImage's
 			//! doc): rewrite every image-bearing summary in `summaries` to

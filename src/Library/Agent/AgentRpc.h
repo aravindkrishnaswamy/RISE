@@ -45,10 +45,13 @@
 //                                            the cheap post-edit check, so a model
 //                                            never has to re-emit the whole scene to
 //                                            verify its own patch.  A present-but-null
-//                                            `text` reads as absent -- and so does
-//                                            an EMPTY string, matching read_schema's
-//                                            `keyword` and read_skill's `name`; any
-//                                            other non-string -> -32602.  No head AND no
+//                                            `text` reads as absent; any other
+//                                            non-string -> -32602.  An EMPTY STRING
+//                                            does NOT read as absent -- PRESENCE of a
+//                                            string selects the text form, and a
+//                                            content-free candidate comes back with an
+//                                            EMPTY_DOCUMENT diagnostic rather than a
+//                                            clean verdict.  No head AND no
 //                                            `text` -> -32602 rather than a false
 //                                            "clean" verdict about a document that
 //                                            does not exist.)

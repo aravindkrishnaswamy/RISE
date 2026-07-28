@@ -883,7 +883,7 @@ namespace RISE
 			//! The text that replaces an elided (superseded) image block or
 			//! part -- see AgentChatLoop.h "IMAGE RETENTION".
 			const char* const kImageElidedNote =
-				"[image elided -- superseded by a newer render]";
+				"[image elided -- superseded by a newer image]";
 
 			//! The text that replaces an elided user reference-image
 			//! attachment once the live-image cap is exceeded -- see
@@ -926,17 +926,27 @@ namespace RISE
 
 			//! True + the base64 payload iff this call is one of the
 			//! image-CAPABLE verbs and its JSON-RPC result actually carries a
-			//! non-empty png_base64 string.  compare_to_reference (visual:true)
-			//! and render (imageMaxEdge:N) both reuse read_image's "png_base64"
-			//! field name deliberately, so this ONE predicate -- and every
-			//! retention/elision policy built on it -- covers all three without
-			//! a second code path.  The field test is what makes listing render
-			//! here safe: a render without imageMaxEdge has no png_base64 and is
-			//! not an image result.
+			//! non-empty png_base64 string.  compare_to_reference (visual:true),
+			//! render (imageMaxEdge:N) and read_viewport all reuse read_image's
+			//! "png_base64" field name deliberately, so this ONE predicate --
+			//! and every retention/elision policy built on it -- covers all
+			//! four without a second code path.  The field test is what makes
+			//! listing render here safe: a render without imageMaxEdge has no
+			//! png_base64 and is not an image result; likewise a read_viewport
+			//! that came back available:false carries an empty png_base64 and
+			//! is correctly not counted as an image.
+			//!
+			//! read_viewport is NOT declared in kToolDefs today, so no model
+			//! is told about it -- but ToolCallToJsonRpcLine forwards whatever
+			//! name the model emits and the dispatcher answers it, so an
+			//! injected or hallucinated read_viewport really does return a PNG
+			//! into the transcript.  Listing it here is what keeps the
+			//! image-retention cap covering every PNG that can actually get in.
 			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
 			{
 				if( ( call.name != "read_image" && call.name != "compare_to_reference"
-				      && call.name != "render" ) || !result.isObject() ) return false;
+				      && call.name != "render" && call.name != "read_viewport" )
+				    || !result.isObject() ) return false;
 				const JsonValue* b64 = result.find( "png_base64" );
 				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;
 				outB64 = b64->asString();
@@ -1077,14 +1087,13 @@ namespace RISE
 		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
 		                                           const std::string& rawJsonRpcResponseLine )
 		{
-			// THE ALLOWLIST.  One entry today; see the header for the four
-			// admission properties and, per excluded verb, either the property
-			// it fails or the separate reason it is off the list.  Because every listed verb
-			// is ARGUMENT-INDEPENDENT (property 3), the key is the verb name
-			// itself -- `call.argsJson` is deliberately NOT consulted, which
-			// is why a model that sends stray params to read_document still
-			// gets correct supersession.
-			static const char* const kSupersedableVerbs[] = { "read_document" };
+			// THE ALLOWLIST.  See the header for the four admission properties
+			// and, per excluded verb, the property it fails.  Because every
+			// listed verb is ARGUMENT-INDEPENDENT (property 3), the key is the
+			// verb name itself -- `call.argsJson` is deliberately NOT
+			// consulted, which is why a model that sends stray params to
+			// read_document still gets correct supersession.
+			static const char* const kSupersedableVerbs[] = { "read_document", "list_proposals" };
 
 			bool listed = false;
 			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )

@@ -400,7 +400,20 @@ namespace RISE
 		//! (each call to compute a fresh item's byte/newline stats). A correct
 		//! path-copy edit walks exactly ONE item (the new/changed one) regardless
 		//! of N; a hidden re-scan of the unchanged spine would bump this. Test-only
-		//! instrumentation (single-threaded parse/edit context).
+		//! instrumentation.  The counters behind these five accessors are ATOMIC
+		//! (relaxed): the parse/edit entry points are NOT single-threaded -- the
+		//! agent surface parses a candidate on one thread while another commits
+		//! an edit -- so a plain ++ was a genuine data race (ThreadSanitizer
+		//! flagged it on exactly that topology).  Relaxed is the right ordering:
+		//! they count events and order nothing.  The counters were the only
+		//! shared mutable state on that path -- every piece of per-parse
+		//! chunk-parser state (ChunkParserRegistry.cpp's s_painterColors,
+		//! s_cameraDefaults, s_sceneOptions, s_cameraNamesUsed,
+		//! s_lastAllocatedCameraName) and both derive sinks
+		//! (g_cstProductionSink / g_cstFinalizeDiagSink) are `thread_local`, so
+		//! concurrent derives do not interfere.  A gate test must still both
+		//! READ and RUN single-threaded for its bound to mean anything; nothing
+		//! in the library branches on these values.
 		unsigned long DebugItemStatWalks();
 
 		//! Diagnostic for the reparse cost gate: the running count of old-item

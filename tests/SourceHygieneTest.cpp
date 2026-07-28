@@ -1766,6 +1766,49 @@ int main()
 		Check( macVm.find( "compactedEntryCount" ) != std::string::npos,
 		       "macOS chat driver surfaces compactedEntryCount (its display keeps showing "
 		       "turns the model can no longer see -- silence there is the worse lie)" );
+		// MENTIONING the counter is not USING it.  The previous form of this
+		// check passed with the notice's own condition rewritten to
+		// `if false && droppedNow > lastReportedCompactedEntryCount` -- the
+		// identifier is still there, the notice is dead.  Pin the CONDITION
+		// itself: the delta comparison must be the whole guard.  (This is a
+		// source-shape guard, not an execution test -- the Swift driver
+		// cannot be exercised from the C++ suite; the same limitation every
+		// check in this block lives with.)
+		// Pin the WHOLE statement, brace included, so neither operand order
+		// of a short-circuit survives: `if false && droppedNow > ...` fails
+		// the prefix, and `if droppedNow > ... && false {` fails the brace.
+		Check( macVm.find( "if droppedNow > lastReportedCompactedEntryCount {" ) != std::string::npos,
+		       "macOS compaction notice is guarded by the DELTA comparison and NOTHING "
+		       "else -- no `&& false` / feature flag on either side of it" );
+		// ...and the guarded body must actually APPEND the notice.  Without
+		// this, deleting the transcript.append while keeping the condition and
+		// the wording leaves every other check green and the notice dead.
+		// Anchored as a contiguous span so the append cannot merely exist
+		// elsewhere in the file.
+		{
+			const std::string::size_type cond =
+				macVm.find( "if droppedNow > lastReportedCompactedEntryCount {" );
+			const std::string::size_type appended = ( cond == std::string::npos )
+				? std::string::npos
+				: macVm.find( "transcript.append(Entry(", cond );
+			const std::string::size_type worded = ( cond == std::string::npos )
+				? std::string::npos
+				: macVm.find( "earlier transcript row(s)", cond );
+			Check( appended != std::string::npos && worded != std::string::npos &&
+			       appended < worded && ( worded - cond ) < 1200,
+			       "the macOS compaction notice is APPENDED to the transcript inside that "
+			       "guard (condition -> transcript.append -> the row(s) wording, contiguous)" );
+		}
+		// ...and it must report the right UNIT.  CompactedEntryCount counts
+		// erased transcript ENTRIES; one compacted span is a user message
+		// plus every round it provoked, so calling them "turns" overstates
+		// the loss.  Windows already says "transcript row(s)"; both must.
+		Check( macVm.find( "earlier transcript row(s)" ) != std::string::npos &&
+		       macVm.find( "earlier turn(s)" ) == std::string::npos,
+		       "macOS compaction notice reports ENTRIES (\"transcript row(s)\"), matching "
+		       "what CompactedEntryCount counts and what Windows says" );
+		Check( winCode.find( "earlier transcript row(s)" ) != std::string::npos,
+		       "Windows compaction notice reports the same unit" );
 
 		// ...AND the same argument, for the same two shapes, applies to a
 		// note the LOOP injects into the conversation (Role::DriverNote --

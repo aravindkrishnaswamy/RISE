@@ -7346,6 +7346,49 @@ void SceneEditController::GetSceneTextVersion( std::uint64_t& outUuid,
 	outRevision = v.revision;
 }
 
+void SceneEditController::ReadAgentSceneSnapshot( bool& outHasDocument,
+                                                  std::string& outDocument,
+                                                  RISE::Cst::CstHeadVersion& outVersion ) const
+{
+	// TERMINAL-LIFECYCLE REFUSAL FIRST, before borrowing mJob -- the same
+	// test StageProposal makes and the same one the agent-edit funnels'
+	// destroying arm makes, and for the same reason those arms spell out:
+	// once destruction is claimed the owner may legitimately have released
+	// the Job already, so reading the head would be a use-after-free.
+	// Report the honest "no head" sentinel.  Checked on the atomics alone,
+	// NOT under mRenderAdmissionMutex: holding that across the mMutex wait
+	// below would block staging for a render's duration.  That makes this a
+	// narrowing check, not a barrier -- as the gate-publication sites say,
+	// the owner must still quiesce external callers before destroying the
+	// object; this cannot substitute for that.
+	outHasDocument = false;
+	outDocument.clear();
+	outVersion = RISE::Cst::CstHeadVersion{};
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return;
+
+	// BLOCKING, deliberately -- see the header.  No mRenderOwnsScene
+	// early-return and no try-lock: both would answer "no document" while
+	// one exists, which is the failure this method exists to remove.
+	std::lock_guard<std::mutex> lk( mMutex );
+	outHasDocument = mJob.HasRetainedCstDocument();
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	outDocument    = doc ? RISE::Cst::SerializeCst( *doc ) : std::string();
+	outVersion     = mJob.GetCstHeadVersion();
+}
+
+RISE::Cst::CstHeadVersion SceneEditController::ReadAgentHeadVersion() const
+{
+	// Same terminal-lifecycle refusal as ReadAgentSceneSnapshot above, for
+	// the same use-after-free reason; {0,0} is the "no head to report"
+	// sentinel every other refusal path uses.
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+		return RISE::Cst::CstHeadVersion{};
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mJob.GetCstHeadVersion();
+}
+
 namespace {
 
 // "Reveal in scene file": the CST role-kind-suffix + unique-fallback DocFindByNameAnyRole

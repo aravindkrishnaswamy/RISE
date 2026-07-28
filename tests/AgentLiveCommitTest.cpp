@@ -50,6 +50,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <map>
+#include <set>
 #include <vector>
 
 #include "../src/Library/Job.h"
@@ -5537,6 +5539,238 @@ static void TestTransientResolveLeavesProposalPending()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 53: RED-PROVE -- the READ verbs bind their document to their
+// headVersion ATOMICALLY.
+//
+// read_document and validate's head form both hand the model byte offsets
+// (or bytes) together with the headVersion those bytes are supposed to BE.
+// Built from three independent unlocked AgentSession accessor calls
+// (HasDocument / ReadDocument / HeadVersion) a commit on another thread can
+// land BETWEEN them, so the answer serializes revision N and stamps revision
+// N+1 -- and the serialization itself races the mutation.
+//
+// THE ORACLE: revision -> document bytes must be a FUNCTION.  A revision
+// names exactly one committed head, so two reads that report the same
+// revision must report byte-identical documents.  A split read breaks that
+// the moment the writer thread lands a commit inside the reader's window.
+// (Which document a reader sees is NOT constrained -- lagging is legitimate;
+// only the PAIRING is.)
+//
+// Topology mirrors the GUI's hosted-MCP wiring: one Job, one controller, a
+// writer thread committing through it, and a SECOND AgentSession + dispatcher
+// answering read verbs from another thread.
+//
+// RED-PROVED by reverting AgentRpc.cpp's read_document to the three separate
+// s->ReadDocument()/HasDocument()/HeadVersion() calls -- read_document ALONE,
+// the harder half (validate left fixed, so its lock still convoys the writer).
+// MEASURED on that mutant, 15 runs: 15/15 detected -- 9 by this oracle
+// (mispaired 14..114 of 4000 reads) and 6 by SIGSEGV, since serializing a
+// Document another thread is mutating is a real data race, not merely a
+// stale pairing.  12/12 clean runs on the fixed code, mispaired=0 every time.
+//
+// THE TEST IS PROBABILISTIC AND SAYS SO.  It cannot force the interleave
+// without a hook that parks the writer mid-commit, so it buys margin instead:
+// 4000 reads per run, and -- load-bearing -- the two verbs on SEPARATE reader
+// threads.  With both on one thread an earlier revision of this test detected
+// the same mutant in only 8 of 25 runs: the shared thread took mMutex every
+// iteration for the still-fixed `validate` call, which serialized it against
+// the writer and shrank the race window to ~24 distinct revisions per 4000
+// reads.  Split, the read_document reader races the writer directly (149-343
+// distinct revisions on the mutant).  On the FIXED code distinctRevisions
+// drops back to 2-4 -- that is the lock working, not the test failing, which
+// is why the non-vacuity guard asserts only that the head MOVED, not a floor
+// on overlap.
+//////////////////////////////////////////////////////////////////////
+//! The `scale` value declared in a serialized kBaseScene head, or "" when
+//! the text does not carry exactly one such line.  The oracle below needs
+//! the CONTENT of the snapshot, not just its length.
+static std::string ScaleValueOf( const std::string& doc )
+{
+	const std::string key = "\nscale ";
+	const std::string::size_type a = doc.find( key );
+	if( a == std::string::npos ) return std::string();
+	if( doc.find( key, a + 1 ) != std::string::npos ) return std::string();   // ambiguous
+	const std::string::size_type b = doc.find( '\n', a + key.size() );
+	if( b == std::string::npos ) return std::string();
+	return doc.substr( a + key.size(), b - a - key.size() );
+}
+
+static void TestReadVerbsBindDocumentToHeadVersion()
+{
+	std::cout << "Test 53: RED-PROVE -- read_document/validate bind the document to the headVersion atomically..." << std::endl;
+
+	const char* tmp = "agentlive_read_snapshot.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> writer =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		writer->AttachController( &c );
+
+		std::unique_ptr<Agent::AgentSession> readerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		readerSess->AttachController( &c );
+		Agent::AgentRpcDispatcher readDisp( std::move( readerSess ) );
+
+		std::unique_ptr<Agent::AgentSession> validateSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		validateSess->AttachController( &c );
+		Agent::AgentRpcDispatcher validateDisp( std::move( validateSess ) );
+
+		const RISE::Cst::CstHeadVersion startHead = pJob->GetCstHeadVersion();
+
+		// THE TRUTH TABLE.  Every clean commit reports the revision it
+		// produced, so the writer can record revision -> the exact `scale`
+		// text that revision's document MUST carry.  Checked after the join,
+		// so a reader that outran the writer's record is not a false positive.
+		std::mutex truthMutex;
+		std::map<std::uint64_t, std::string> revToScale;
+		revToScale[startHead.revision] = "5.0";   // kBaseScene's authored value
+
+		// The READERS are the bounded side and the WRITER runs until they say
+		// stop.  The reverse (a bounded writer) does not reliably overlap: a
+		// read is microseconds and each commit cancel-and-parks a simulated
+		// render, so a fixed-count reader finishes long before the writer
+		// lands its first commit and the oracle passes vacuously.
+		//
+		// TWO reader threads, one verb each, NOT one thread alternating.
+		// mMutex is a barging lock and the two verbs convoy viciously through
+		// it: with both verbs on one thread, a regression in read_document
+		// ALONE still has that thread taking the lock every iteration for the
+		// validate call, which serializes it against the writer and shrinks
+		// the race window to almost nothing (measured: ~24 distinct revisions
+		// across 4000 reads, and the mutant detected in only 8 of 25 runs).
+		// Split, the read_document reader races the writer directly.
+		const int kReads           = 4000;
+		const int kWriterSafetyCap = 400000;   // never spin forever if a reader dies
+		std::atomic<int>  commitOk( 0 );
+		std::atomic<int>  readersDone( 0 );
+
+		// WRITER: give `lum.scale` a DIFFERENT value on every commit, so the
+		// document a revision names is uniquely identifiable from its bytes.
+		std::thread writerThread( [&]{
+			for( int i = 0; i < kWriterSafetyCap && readersDone.load( std::memory_order_acquire ) < 2; ++i ) {
+				char v[32];
+				std::snprintf( v, sizeof(v), "%d.5", ( i % 900 ) + 10 );
+				Agent::AgentSetPatch p;
+				p.target = "lum";
+				p.kind   = "lambertian_luminaire_material";
+				p.param  = "scale";
+				p.value  = v;
+				const Agent::AgentPatchResult r = writer->ProposePatch( p );
+				if( r.applied ) {
+					commitOk.fetch_add( 1 );
+					std::lock_guard<std::mutex> lk( truthMutex );
+					revToScale[r.headVersion.revision] = v;
+				}
+			}
+		} );
+
+		// READER A: read_document, carrying the oracle.
+		int reads = 0, foreignUuid = 0, notHead = 0;
+		std::vector<std::pair<std::uint64_t, std::string> > observed;
+		std::thread docReader( [&]{
+			for( int i = 0; i < kReads; ++i )
+			{
+				const std::string resp = readDisp.HandleLine(
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}" );
+				Agent::JsonValue result;
+				if( JsonResultObj( resp, result ) )
+				{
+					++reads;
+					const std::string doc = result.get( "document" ).asString();
+					const Agent::JsonValue& hv = result.get( "headVersion" );
+					if( static_cast<std::uint64_t>( hv.get( "uuid" ).asNumber() ) != startHead.uuid )
+						++foreignUuid;
+					const std::string scale = ScaleValueOf( doc );
+					if( scale.empty() || doc.find( "lum" ) == std::string::npos ) ++notHead;
+					else observed.push_back( std::make_pair(
+						static_cast<std::uint64_t>( hv.get( "revision" ).asNumber() ), scale ) );
+				}
+				std::this_thread::yield();
+			}
+			readersDone.fetch_add( 1 );
+		} );
+
+		// READER B: validate's head form -- the SAME snapshot call, on its own
+		// thread and its own dispatcher (AgentRpcDispatcher is single-caller
+		// by contract, so the two readers must not share one).
+		int validates = 0, validateNotClean = 0;
+		std::thread validateReader( [&]{
+			for( int i = 0; i < kReads; ++i )
+			{
+				const std::string vResp = validateDisp.HandleLine(
+					"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"validate\",\"params\":{}}" );
+				Agent::JsonValue vResult;
+				if( JsonResultObj( vResp, vResult ) )
+				{
+					++validates;
+					if( vResult.get( "validated" ).asString() != "head" ) ++validateNotClean;
+					if( vResult.get( "diagnostics" ).size() != 0 ) ++validateNotClean;
+					const Agent::JsonValue& hv = vResult.get( "headVersion" );
+					if( static_cast<std::uint64_t>( hv.get( "uuid" ).asNumber() ) != startHead.uuid )
+						++foreignUuid;
+				}
+				else ++validateNotClean;
+				std::this_thread::yield();
+			}
+			readersDone.fetch_add( 1 );
+		} );
+		docReader.join();
+		validateReader.join();
+		writerThread.join();
+
+		// THE ORACLE: a revision names exactly one committed head, so the
+		// document reported alongside a revision must be THAT revision's
+		// document.  A split read serializes revision N and stamps revision
+		// N+1, which shows up here as revision N+1 carrying N's `scale`.
+		int mispaired = 0, checked = 0;
+		std::set<std::uint64_t> distinctRevisions;
+		for( std::size_t i = 0; i < observed.size(); ++i ) {
+			distinctRevisions.insert( observed[i].first );
+			const std::map<std::uint64_t, std::string>::const_iterator it =
+				revToScale.find( observed[i].first );
+			if( it == revToScale.end() ) continue;   // revision from a rejected/unrecorded path
+			++checked;
+			if( it->second != observed[i].second ) ++mispaired;
+		}
+
+		std::cout << "    commits=" << commitOk.load() << " reads=" << reads
+		          << " validates=" << validates
+		          << " distinctRevisions=" << distinctRevisions.size()
+		          << " checked=" << checked << " mispaired=" << mispaired << std::endl;
+
+		// The storm must actually have raced: both sides did real work and the
+		// reader observed the head MOVING under it.  Without this the oracle
+		// would pass vacuously on a serialized run.
+		Check( commitOk.load() > 0, "the writer landed commits during the read storm" );
+		Check( reads > 0 && validates > 0, "the reader completed reads and validates during the storm" );
+		Check( distinctRevisions.size() > 1,
+		       "the reader observed the head MOVE mid-storm (the race window was real)" );
+		Check( checked > 0, "the oracle had reader observations it could actually check" );
+
+		Check( mispaired == 0,
+		       "read_document: the document reported alongside a revision IS that revision's "
+		       "document -- bytes and headVersion come from one locked snapshot" );
+		Check( foreignUuid == 0, "every read reports the LIVE head's uuid" );
+		Check( notHead == 0, "no read returned a partial/unparseable document" );
+		Check( validateNotClean == 0,
+		       "validate {} stayed a clean head verdict throughout the storm" );
+
+		c.Stop();
+		Check( !c.IsRunning(), "controller stops + joins cleanly after the read storm" );
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -5591,6 +5825,7 @@ int main()
 	TestProposalListingUtf8BoundarySafety();
 	TestProposalHistoryEvictionSurvivesPending();
 	TestTransientResolveLeavesProposalPending();
+	TestReadVerbsBindDocumentToHeadVersion();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

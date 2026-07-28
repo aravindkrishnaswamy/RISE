@@ -24,6 +24,9 @@
 //                                                     parameter NAME is written to
 //                                                     the LOG, not the diag string)
 //     * other apply-time messages                    (kept as DERIVE_ERROR)
+//  ...and it reports NOTHING AT ALL for a text that declares no chunks, so
+//  ValidateText screens that case itself first (EMPTY_DOCUMENT) rather than
+//  letting an empty / whitespace / comments-only text come back clean.
 //  So for the "invalid parameter(s)" case we RE-DERIVE the classification
 //  ourselves against the live descriptor: for the named chunk we walk its
 //  Param nodes and find the first param whose name is not declared on the
@@ -883,6 +886,47 @@ namespace RISE
 			return RISE::Cst::SerializeCst( *doc );
 		}
 
+		AgentSession::AgentDocumentSnapshot AgentSession::ReadDocumentSnapshot() const
+		{
+			AgentDocumentSnapshot snap;
+			if( mController ) {
+				mController->ReadAgentSceneSnapshot( snap.hasDocument, snap.document,
+				                                     snap.headVersion );
+				return snap;
+			}
+			// Headless: no controller means no render thread and no second
+			// writer -- see the header for why these unlocked reads are the
+			// correct answer here rather than a fallback.
+			snap.hasDocument = HasDocument();
+			snap.document    = ReadDocument();
+			snap.headVersion = HeadVersion();
+			return snap;
+		}
+
+		RISE::Cst::CstHeadVersion AgentSession::ReadHeadVersion() const
+		{
+			return mController ? mController->ReadAgentHeadVersion() : HeadVersion();
+		}
+
+		bool AgentSession::IsAnalysableRejection_( const AgentPatchResult& r )
+		{
+			return !r.applied && r.rawCode == 0 && !r.retriable && r.headVersion.uuid != 0;
+		}
+
+		bool AgentSession::IsAnalysableRejection_( const AgentChunkResult& r )
+		{
+			return !r.applied && r.rawCode == 0 && !r.retriable && r.headVersion.uuid != 0;
+		}
+
+		bool AgentSession::ReadHeadDocumentAt_( const RISE::Cst::CstHeadVersion& stamped,
+		                                       RISE::Cst::Document& outDoc ) const
+		{
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument || snap.headVersion != stamped ) return false;
+			outDoc = RISE::Cst::ParseToCst( snap.document );
+			return true;
+		}
+
 		std::string AgentSession::ReadSchema( const std::string& keyword ) const
 		{
 			if( keyword.empty() ) return SchemaGenAll();
@@ -912,6 +956,32 @@ namespace RISE
 				d.severity = AgentDiagnostic::Severity::Error;
 				d.code     = AgentDiagnosticCode::PARSE_ERROR;
 				d.message  = "candidate text did not round-trip through the CST parser (malformed structure)";
+				out.push_back( d );
+				return out;
+			}
+
+			// (a2) NO CHUNKS AT ALL -> EMPTY_DOCUMENT, before the derive.
+			// "", "   \n", and a comments-only text all parse and round-trip
+			// perfectly and derive with ZERO diagnostics, so the derive layer
+			// below would call them clean.  A text that declares no scene
+			// object is not a clean scene, and saying otherwise is exactly the
+			// dishonesty this surface refuses everywhere else.  Degenerate
+			// inputs are therefore ONE answer, not three: emptiness is judged
+			// on chunk COUNT, not on byte length.
+			bool anyChunk = false;
+			{
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( candidateDoc, items, starts );
+				for( std::size_t i = 0; i < items.size() && !anyChunk; ++i )
+					anyChunk = items[i] && items[i]->kind == NodeKind::Chunk;
+			}
+			if( !anyChunk ) {
+				AgentDiagnostic d;
+				d.severity = AgentDiagnostic::Severity::Error;
+				d.code     = AgentDiagnosticCode::EMPTY_DOCUMENT;
+				d.message  = "the text declares no scene chunks at all -- an empty or "
+				             "comments-only document is not a valid scene";
 				out.push_back( d );
 				return out;
 			}
@@ -1095,12 +1165,15 @@ namespace RISE
 					// enqueued (stagedHead was left untouched by
 					// StageProposal), so headVersion here reads the
 					// CURRENT head fresh, same as every other permanent
-					// reject in this function.
+					// reject in this function.  Via ReadHeadVersion, NOT
+					// the bare accessor: a controller IS attached on this
+					// branch, so an unlocked read of the 16-byte
+					// CstHeadVersion races that controller's writers.
 					r.applied    = false;
 					r.rawCode    = 0;
 					r.status     = "rejected";
 					r.queueFull  = true;
-					r.headVersion = HeadVersion();
+					r.headVersion = ReadHeadVersion();
 					r.message = "propose_patch refused: the pending-proposal queue is full -- "
 					            "the Owner must resolve (approve/reject) some pending proposals "
 					            "before another can be staged";
@@ -1157,8 +1230,15 @@ namespace RISE
 				// open-editor-transaction refusal is never second-guessed.  A
 				// rejection leaves the head UNCHANGED, so the retained Document is
 				// the correct namespace to resolve the target/reference against.
-				if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
-					AttachParamEditRejectionIssues( r, *mJob->GetCstDocument(),
+				// Through IsAnalysableRejection_ + ReadHeadDocumentAt_, not
+				// `rawCode == 0` + a bare GetCstDocument(): a controller is
+				// attached here, so the head must be read under its lock and
+				// must still BE the version this result stamps -- and the
+				// controller's pre-derive GATE refusals share the rawCode==0
+				// bucket while having no head to read (see both helpers).
+				RISE::Cst::Document headDoc;
+				if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachParamEditRejectionIssues( r, headDoc,
 					                                patch.target, patch.kind, patch.param, patch.value );
 				return r;
 			}
@@ -2350,12 +2430,13 @@ namespace RISE
 				if( id == 0 )
 				{
 					// Secure-MCP slice 6: see ProposePatch's identical
-					// queue-full branch for the full rationale.
+					// queue-full branch for the full rationale, including
+					// why the head-version read is controller-mediated.
 					r.applied    = false;
 					r.rawCode    = 0;
 					r.status     = "rejected";
 					r.queueFull  = true;
-					r.headVersion = HeadVersion();
+					r.headVersion = ReadHeadVersion();
 					r.message = "insert_chunk refused: the pending-proposal queue is full -- "
 					            "the Owner must resolve (approve/reject) some pending proposals "
 					            "before another can be staged";
@@ -2391,8 +2472,15 @@ namespace RISE
 				// Model-B: non-blocking dangling-reference WARNING (see
 				// AttachChunkIssueWarnings's doc) -- the controller commits through
 				// the SAME mJob, so its retained Document already reflects this insert.
-				if( r.applied && mJob && mJob->GetCstDocument() )
-					AttachChunkIssueWarnings( r, *mJob->GetCstDocument(), chunkText );
+				// Through ReadHeadDocumentAt_ on BOTH arms: a controller is
+				// attached, so the head is read under its lock and only
+				// analysed while it still IS the version this result stamps.
+				// The reject arm additionally screens out the controller's
+				// pre-derive gate refusals (IsAnalysableRejection_).
+				RISE::Cst::Document headDoc;
+				if( r.applied && r.headVersion.uuid != 0
+				 && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachChunkIssueWarnings( r, headDoc, chunkText );
 				// ...and the REJECTION analyser on the failing side.  THIS is the
 				// GUI path -- the one where the unactionable "apply failed (e.g.
 				// unresolved reference); see log" was actually observed stalling a
@@ -2400,8 +2488,8 @@ namespace RISE
 				// as the headless path does.  A rejection leaves the head
 				// UNCHANGED, so the retained Document is the correct namespace to
 				// resolve the candidate chunk's references against.
-				else if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
-					AttachRejectionIssues( r, *mJob->GetCstDocument(), chunkText );
+				else if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachRejectionIssues( r, headDoc, chunkText );
 				return r;
 			}
 
@@ -2535,12 +2623,13 @@ namespace RISE
 				if( id == 0 )
 				{
 					// Secure-MCP slice 6: see ProposePatch's identical
-					// queue-full branch for the full rationale.
+					// queue-full branch for the full rationale, including
+					// why the head-version read is controller-mediated.
 					r.applied    = false;
 					r.rawCode    = 0;
 					r.status     = "rejected";
 					r.queueFull  = true;
-					r.headVersion = HeadVersion();
+					r.headVersion = ReadHeadVersion();
 					r.message = "remove_chunk refused: the pending-proposal queue is full -- "
 					            "the Owner must resolve (approve/reject) some pending proposals "
 					            "before another can be staged";
@@ -2576,8 +2665,13 @@ namespace RISE
 				// LIVE branch (this IS the GUI path).  A rejection leaves the
 				// head UNCHANGED, so the retained Document is the correct
 				// namespace to resolve the target + its referrers against.
-				if( !r.applied && r.rawCode == 0 && mJob && mJob->GetCstDocument() )
-					AttachRemoveRejectionIssues( r, *mJob->GetCstDocument(), target, kind );
+				// Through IsAnalysableRejection_ + ReadHeadDocumentAt_ (see
+				// ProposePatch's LIVE branch): controller-mediated read, only
+				// on a real derive rejection, and only while the head still IS
+				// the version this result stamps.
+				RISE::Cst::Document headDoc;
+				if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
+					AttachRemoveRejectionIssues( r, headDoc, target, kind );
 				return r;
 			}
 

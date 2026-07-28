@@ -691,8 +691,9 @@ namespace RISE
 
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
 		//! a LIVE image block/part -- i.e. a success result from one of the
-		//! image-capable verbs (read_image, compare_to_reference, or a
-		//! render called with imageMaxEdge) with a non-empty png_base64.
+		//! image-capable verbs (read_image, compare_to_reference,
+		//! read_viewport, or a render called with imageMaxEdge) with a
+		//! non-empty png_base64.
 		//! Shared by the loop (to decide when the
 		//! image-elision pass must run) and the codecs (which use the same
 		//! predicate to build the image block/part), so the two can never
@@ -709,8 +710,7 @@ namespace RISE
 		//! A verb qualifies for the allowlist only when ALL of these hold.
 		//! The list is deliberately short; every excluded verb below either
 		//! FAILS one of these properties or is named with the separate reason
-		//! it is off the list (list_proposals satisfies all four and is
-		//! excluded on reachability; render is excluded on
+		//! it is off the list (render is excluded on
 		//! information-preservation):
 		//!   (1) WHOLE-VIEW.  The result is the entire view of one named
 		//!       piece of state, so a later result fully CONTAINS what an
@@ -737,7 +737,27 @@ namespace RISE
 		//!       result ALONGSIDE a supersedable one -- that is fine and
 		//!       tested; what (4) forbids is one RESULT being claimed by
 		//!       both.)
-		//! Three further exclusions worth naming because they look eligible:
+		//! ON THE LIST TODAY: read_document and list_proposals.
+		//!
+		//! list_proposals is a parameterless whole-queue read of mutable
+		//! state and is not image-bearing, so it satisfies (1)-(4).  It is
+		//! NOT declared in kToolDefs, so no model is TOLD about it -- but
+		//! that is not unreachability: ToolCallToJsonRpcLine forwards
+		//! whatever name the model emits WITHOUT checking it against
+		//! kToolDefs, and the dispatcher answers it, so an injected or
+		//! hallucinated list_proposals really does dispatch and pack into
+		//! the transcript.  (An earlier revision of this comment excluded it
+		//! as "untestable dead code"; both halves of that were false -- the
+		//! path is reachable and the test below drives it.)  The same
+		//! forwarding makes read_viewport's PNGs real, which is why
+		//! IsImageResult now lists it -- and which is also why read_viewport
+		//! stays OFF this allowlist: property (4), it is claimed by the image
+		//! rule.  render_status / render_wait / render_cancel are keyed by
+		//! `renderJobId`, so they fail (1) WHOLE-VIEW and (3)
+		//! ARGUMENT-INDEPENDENT -- two calls describe two different jobs and
+		//! neither supersedes the other.
+		//!
+		//! Two further exclusions worth naming because they look eligible:
 		//!   * render -- the render result's per-channel means are explicitly
 		//!     meant to be COMPARED against the previous render (kToolDefs
 		//!     says so to the model), so eliding the older one would destroy
@@ -748,24 +768,6 @@ namespace RISE
 		//!   * validate -- its result is a diagnostics list of tens of bytes,
 		//!     and in the `text` form it is a pure function of an argument
 		//!     (fails (3)).
-		//!   * list_proposals -- this one DOES satisfy (1)-(4): a parameterless
-		//!     whole-queue read of mutable state, not image-bearing.  It is off
-		//!     the list on REACHABILITY: this predicate governs the CHAT
-		//!     transcript, and kToolDefs (in AgentChatCodecs.cpp, the one place
-		//!     chat tools are declared) does not expose list_proposals -- nor
-		//!     read_viewport (which returns a PNG but is NOT one of
-		//!     IsImageResult's verbs, so property (4) would NOT have covered
-		//!     it), render_status, render_wait, or render_cancel -- so none can
-		//!     ever be DECLARED to the model.  (Nothing GATES the verb name:
-		//!     ToolCallToJsonRpcLine forwards whatever the model emits, and
-		//!     the dispatcher speaks all five -- so a hallucinated name would
-		//!     dispatch and pack.  What that means here is only that an
-		//!     allowlist entry for one would be untestable dead code in
-		//!     practice, not that it is unreachable in principle.)  Adding
-		//!     an unreachable verb here would be untestable dead code.  If a
-		//!     future kToolDefs entry exposes list_proposals, add it HERE at
-		//!     the same time: the loop already groups elisions per key and
-		//!     emits a per-verb note, so a second entry needs no other change.
 		//!
 		//! ERROR RESULTS NEVER SUPERSEDE, and are never supersedable: this
 		//! returns "" for a JSON-RPC error envelope (or an unparseable line).

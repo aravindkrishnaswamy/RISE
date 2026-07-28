@@ -528,15 +528,35 @@ int main()
 			const JsonValue nullText = call( rpc, 102, "{\"text\":null}" );
 			Check( !nullText.has( "error" ) && nullText.get( "result" ).get( "headVersion" ).isObject(),
 			       "validate {text:null} reads as the no-argument head form" );
-			// ... and so does an EMPTY string, for the same reason read_schema
-			// treats keyword:"" as "no keyword".  Otherwise ValidateText("")
-			// would answer with an EMPTY diagnostics array -- a "clean" verdict
-			// on a non-document.
+			// ... but an EMPTY STRING does NOT.  PRESENCE of a string selects
+			// the text form; only OMISSION (or null) selects the head.  The
+			// empty candidate is answered HONESTLY -- EMPTY_DOCUMENT, not a
+			// clean verdict, and not a silent redirect to the head.
 			const JsonValue emptyText = call( rpc, 109, "{\"text\":\"\"}" );
 			Check( !emptyText.has( "error" ) &&
-			       emptyText.get( "result" ).get( "validated" ).asString() == "head",
-			       "validate {text:\"\"} reads as the no-argument head form (never a "
-			       "'clean' verdict on an empty non-document)" );
+			       emptyText.get( "result" ).get( "validated" ).asString() == "text",
+			       "validate {text:\"\"} takes the TEXT form -- presence of a string selects "
+			       "it, so an empty candidate is never silently rerouted to the head" );
+			Check( !emptyText.get( "result" ).has( "headVersion" ),
+			       "validate {text:\"\"} stamps NO headVersion (it validated a candidate)" );
+			Check( errorCount( emptyText ) == 1 &&
+			       emptyText.get( "result" ).get( "diagnostics" ).at( 0 ).get( "code" ).asString()
+			           == "EMPTY_DOCUMENT",
+			       "validate {text:\"\"} reports EMPTY_DOCUMENT -- never a 'clean' verdict on "
+			       "a non-document" );
+			// The SAME answer for every degenerate shape: whitespace-only and
+			// comments-only both round-trip and both derive with zero
+			// diagnostics, so emptiness is judged on chunk COUNT, not bytes.
+			const JsonValue wsText = call( rpc, 110, "{\"text\":\"   \\n\\t\\n\"}" );
+			Check( errorCount( wsText ) == 1 &&
+			       wsText.get( "result" ).get( "diagnostics" ).at( 0 ).get( "code" ).asString()
+			           == "EMPTY_DOCUMENT",
+			       "validate on a WHITESPACE-ONLY candidate reports EMPTY_DOCUMENT too" );
+			const JsonValue commentText = call( rpc, 111, "{\"text\":\"# just a comment\\n\"}" );
+			Check( errorCount( commentText ) == 1 &&
+			       commentText.get( "result" ).get( "diagnostics" ).at( 0 ).get( "code" ).asString()
+			           == "EMPTY_DOCUMENT",
+			       "validate on a COMMENTS-ONLY candidate reports EMPTY_DOCUMENT too" );
 
 			// ... but a non-string, non-null text is still refused.
 			const JsonValue badText = call( rpc, 103, "{\"text\":42}" );
@@ -733,6 +753,21 @@ int main()
 		Check( !withText.has( "error" ) &&
 		       withText.get( "result" ).get( "diagnostics" ).isArray(),
 		       "validate {text} still works with NO scene loaded (the stateless contract)" );
+
+		// ...INCLUDING an EMPTY candidate.  Presence of the string selects the
+		// text form, so this is a diagnosed candidate, NOT the head form's
+		// "no scene is loaded" error.  Reading "" as ABSENT made this call
+		// FAIL outright on a headless session -- a valid input turned into an
+		// error by a routing special case.
+		const JsonValue emptyNoHead = handle( headless,
+			"{\"jsonrpc\":\"2.0\",\"id\":302,\"method\":\"validate\",\"params\":{\"text\":\"\"}}" );
+		Check( !emptyNoHead.has( "error" ) &&
+		       emptyNoHead.get( "result" ).get( "validated" ).asString() == "text",
+		       "validate {text:\"\"} with NO scene loaded is the TEXT form, not an error" );
+		Check( emptyNoHead.get( "result" ).get( "diagnostics" ).size() == 1 &&
+		       emptyNoHead.get( "result" ).get( "diagnostics" ).at( 0 ).get( "code" ).asString()
+		           == "EMPTY_DOCUMENT",
+		       "...and it reports EMPTY_DOCUMENT" );
 	}
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );

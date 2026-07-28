@@ -70,6 +70,12 @@ namespace RISE
 			//! A derive-time (apply) failure not reducible to one of the
 			//! above -- carried verbatim from DeriveToJob's diagnostics.
 			static const char* const DERIVE_ERROR      = "DERIVE_ERROR";
+			//! The text holds NO scene chunk at all -- empty, whitespace, or
+			//! comments only.  DeriveToJob has nothing to complain about in
+			//! such a text, so without this an empty candidate came back with
+			//! an EMPTY diagnostics array: a CLEAN verdict on a non-document,
+			//! which reads to a model as "the scene I just wrote is fine".
+			static const char* const EMPTY_DOCUMENT    = "EMPTY_DOCUMENT";
 		}
 	}
 }

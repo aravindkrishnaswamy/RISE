@@ -2248,6 +2248,57 @@ namespace RISE
 		void GetSceneTextVersion( std::uint64_t& outUuid,
 		                          std::uint64_t& outRevision ) const;
 
+		//! The AGENT surface's read of the head: an ATOMIC
+		//! {hasDocument, document, headVersion} capture under ONE mMutex hold.
+		//!
+		//! read_document and validate's head form report byte offsets INTO a
+		//! document ALONGSIDE the headVersion those offsets are supposed to
+		//! describe.  Reading the three separately -- as three independent
+		//! unlocked AgentSession accessor calls -- lets a commit on another
+		//! thread land between them, so the answer pairs one revision's
+		//! offsets with another revision's stamp, and the serialization
+		//! itself races the mutation.  One lock, one snapshot, no window.
+		//!
+		//! Unlike SerializedSceneText / GetSceneTextVersion above (UI POLLS:
+		//! render-owns-scene guard + try-lock, silently serving nothing when
+		//! busy) this BLOCKS on mMutex.  A poll that skips a beat is
+		//! harmless; an agent read that answers "" / {0,0} while a head
+		//! exists is a lie the model cannot detect.  So: AGENT RPC THREAD
+		//! ONLY -- never from a UI frame callback, and never from inside a
+		//! render closure (mMutex is non-recursive -- see
+		//! RunPreviewRenderParked's `fn` contract).
+		//!
+		//! DISCLOSED LIVENESS COST of choosing to block.  The interactive
+		//! render loop takes only brief per-pass mMutex holds and a
+		//! cancel-and-park commit is bounded, so the ordinary wait is short.
+		//! The long one is an ASYNC AGENT RENDER (`render {async:true}` ->
+		//! AgentSession::RenderAsync), whose worker holds mMutex for the
+		//! render's whole duration: a read verb issued from ANOTHER thread
+		//! while one is in flight waits for it to finish.  That is a
+		//! deliberate trade -- a slow honest answer over a fast wrong one --
+		//! but it means a driver on the UI thread should not dispatch read
+		//! verbs while it has an async render outstanding (poll render_status
+		//! / render_wait, which take mJobStatusMutex and never block on
+		//! mMutex).  mMutex is also a BARGING lock: under a sustained commit
+		//! storm a reader can wait through many commits before winning it.
+		//!
+		//! TERMINAL LIFECYCLE.  Refuses BEFORE borrowing mJob (reporting the
+		//! "no head" answer: false / "" / {0,0}) once ~SceneEditController or
+		//! PrepareForDestruction has claimed the controller -- the same test
+		//! StageProposal and the agent-edit funnels' destroying arm make, and
+		//! for the same reason: past that point the owner may already have
+		//! released the Job.  Checked on the atomics alone, so it NARROWS the
+		//! window rather than closing it; owner quiescence is still the real
+		//! guarantee, exactly as the gate-publication sites say.
+		void ReadAgentSceneSnapshot( bool& outHasDocument,
+		                             std::string& outDocument,
+		                             RISE::Cst::CstHeadVersion& outVersion ) const;
+
+		//! The head-version half of ReadAgentSceneSnapshot without paying
+		//! for the serialization -- same lock, same thread contract.  For
+		//! the result-stamping sites that need only the version.
+		RISE::Cst::CstHeadVersion ReadAgentHeadVersion() const;
+
 		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
 		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --
 		//! its top-level chunk's byte offset and 1-based line number.

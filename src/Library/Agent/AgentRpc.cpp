@@ -861,9 +861,16 @@ namespace RISE
 						result.set( "headVersion", HeadVersionJson( RISE::Cst::CstHeadVersion{} ) );
 						return MakeSuccess( idValue, result );
 					}
-					result.set( "document", JsonValue::MakeString( s->ReadDocument() ) );
-					result.set( "hasDocument", JsonValue::MakeBool( s->HasDocument() ) );
-					result.set( "headVersion", HeadVersionJson( s->HeadVersion() ) );
+					// ONE snapshot: the bytes and the version that describes
+					// them must come from a single locked capture (see
+					// AgentSession::ReadDocumentSnapshot) -- an agent passes
+					// this headVersion straight back as a baseHeadVersion, so
+					// a version that does not match the bytes turns the
+					// optimistic-concurrency gate into a rubber stamp.
+					const AgentSession::AgentDocumentSnapshot snap = s->ReadDocumentSnapshot();
+					result.set( "document", JsonValue::MakeString( snap.document ) );
+					result.set( "hasDocument", JsonValue::MakeBool( snap.hasDocument ) );
+					result.set( "headVersion", HeadVersionJson( snap.headVersion ) );
 					return MakeSuccess( idValue, result );
 				}
 
@@ -996,10 +1003,16 @@ namespace RISE
 				//   dishonesty this surface refuses elsewhere.  The message names
 				//   the `text` form, which DOES work with no head.
 				//
-				//   A PRESENT-BUT-NULL or EMPTY `text` reads as ABSENT (the
-				//   same convention read_schema's `keyword` and read_skill's
-				//   `name` already use, where "" means "no keyword" / "the
-				//   index"); any other non-string value is still rejected.
+				//   A PRESENT-BUT-NULL `text` reads as ABSENT (the same
+				//   convention read_schema's `keyword` and read_skill's `name`
+				//   already use); any other non-string value is rejected.  An
+				//   EMPTY STRING does NOT read as absent -- presence of a
+				//   string selects the text form, so `{"text":""}` validates
+				//   the empty candidate and gets EMPTY_DOCUMENT back.  That
+				//   keeps the form selection a pure function of the argument's
+				//   presence, and puts the honesty where it belongs (in
+				//   ValidateText, which refuses to call a content-free
+				//   document clean) rather than in a routing special case.
 				//
 				//   STAGED EDITS.  This validates the HEAD as the engine holds
 				//   it.  Under AgentAutonomy::Propose with an External-authority
@@ -1029,14 +1042,16 @@ namespace RISE
 							"Invalid params: 'text' must be a string when supplied "
 							"(omit it entirely to validate the current scene)" );
 					}
-					// EMPTY reads as ABSENT too, matching read_schema's `keyword`
-					// and read_skill's `name` exactly.  Without this, a
-					// `{"text":""}` call took the candidate branch and
-					// ValidateText("") returned an EMPTY diagnostics array -- a
-					// "clean" verdict on a non-document, the same dishonesty the
-					// no-head branch below refuses.
-					const bool haveText = ( text != nullptr && text->isString() &&
-					                        !text->asString().empty() );
+					// PRESENCE of a string selects the text form; only
+					// OMISSION (or an explicit null) selects the head.  An
+					// empty candidate is a VALID candidate -- it just is not a
+					// valid scene, and ValidateText says so with an
+					// EMPTY_DOCUMENT diagnostic.  (Reading "" as ABSENT here
+					// instead was the wrong lever: it dodged the "clean verdict
+					// on a non-document" lie by silently validating something
+					// the caller did not ask about, and made `{"text":""}` fail
+					// outright when no scene is loaded.)
+					const bool haveText = ( text != nullptr && text->isString() );
 					// ONE renderer for both forms, so the two result shapes
 					// cannot drift apart field by field.
 					auto diagnosticsArray = []( const std::vector<AgentDiagnostic>& diags ) {
@@ -1053,17 +1068,31 @@ namespace RISE
 						return arr;
 					};
 					if( !haveText ) {
-						// The CURRENT-HEAD form.
-						if( !s || !s->HasDocument() ) {
+						// The CURRENT-HEAD form.  ONE snapshot binds the
+						// diagnostics' byte offsets to the headVersion this
+						// result stamps -- reading hasDocument / the bytes /
+						// the version separately let a commit on another
+						// thread (the hosted MCP server runs on its own,
+						// over the same Job) land between them, so the
+						// offsets described bytes that were not the reported
+						// head, with no document in the response to
+						// disambiguate.  See AgentSession::ReadDocumentSnapshot.
+						if( !s ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: no scene is loaded, so there is nothing to "
+								"validate; supply 'text' to validate a candidate document" );
+						}
+						const AgentSession::AgentDocumentSnapshot snap = s->ReadDocumentSnapshot();
+						if( !snap.hasDocument ) {
 							return MakeError( idValue, kInvalidParams,
 								"Invalid params: no scene is loaded, so there is nothing to "
 								"validate; supply 'text' to validate a candidate document" );
 						}
 						JsonValue headResult = JsonValue::MakeObject();
 						headResult.set( "diagnostics", diagnosticsArray(
-							AgentSession::ValidateText( s->ReadDocument() ) ) );
+							AgentSession::ValidateText( snap.document ) ) );
 						headResult.set( "validated", JsonValue::MakeString( "head" ) );
-						headResult.set( "headVersion", HeadVersionJson( s->HeadVersion() ) );
+						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
 						return MakeSuccess( idValue, headResult );
 					}
 					JsonValue result = JsonValue::MakeObject();

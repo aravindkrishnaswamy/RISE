@@ -73,9 +73,9 @@
 //        repeated HTTP 400s.
 //      * IMAGE RETENTION: only the MOST RECENT tool-result PNG stays
 //        live in the transcript -- from read_image, from
-//        compare_to_reference, or from a render called with
-//        imageMaxEdge (the one-call observe form), all of which
-//        ChatToolResultCarriesImage recognizes alike.  A render's
+//        compare_to_reference, from read_viewport, or from a render
+//        called with imageMaxEdge (the one-call observe form), all of
+//        which ChatToolResultCarriesImage recognizes alike.  A render's
 //        image is elided by this rule while its statistics stay
 //        live, since the elision replaces only the image block.
 //        When a new tool-results entry packs
@@ -102,9 +102,10 @@
 //        short "[<verb> result elided -- superseded by a later <verb>
 //        call ...]" note via the codec's RewriteElidedToolResults.
 //        The allowlist is ChatToolResultSupersessionKey's (today:
-//        read_document ONLY -- that function's doc states the four
-//        admission properties and gives, per excluded verb, either the
-//        property it fails or the other reason it is off the list).
+//        read_document and list_proposals -- that function's doc states
+//        the four admission properties and gives, per excluded verb,
+//        either the property it fails or the other reason it is off the
+//        list).
 //        MEASURED MOTIVATION (trajectory 20260727T063526Z-a7ee472c):
 //        one GUI session ("make the middle object red") called
 //        read_document SIX times, each returning a 19.8 KB document
@@ -231,7 +232,7 @@ namespace RISE
 			//! summary's call (the same IMAGE RETENTION rule that rewrites
 			//! the owning entry's rawJson -- see the file header), this
 			//! field is overwritten with the fixed placeholder
-			//! "[image elided -- superseded by a newer render]" and
+			//! "[image elided -- superseded by a newer image]" and
 			//! `carriesImage` is cleared, at BOTH elision call sites
 			//! (FlushPendingToolResults' older-entry rewrite pass and
 			//! ElideAllLiveImages).  Without this, a summary would keep
@@ -825,6 +826,15 @@ namespace RISE
 			//! notice when this is non-zero.  Dropping wire spans is the
 			//! intended behaviour; dropping them without telling the user is
 			//! not.
+			//!
+			//! THE UNIT IS ENTRIES, AND UI COPY MUST SAY SO.  Compaction
+			//! erases whole SPANS, and one span is a user message plus every
+			//! assistant/tool round it provoked -- many entries per
+			//! conversational turn, the exact count varying with how many
+			//! tool rounds that turn ran.  A notice that calls this number
+			//! "turns" therefore overstates the loss, by a factor nobody has
+			//! measured and nobody should guess.  Both shells say
+			//! "transcript row(s)".
 			std::size_t CompactedEntryCount() const { return mCompactedEntryCount; }
 
 			//! How many Role::DriverNote entries the loop has injected into

@@ -226,8 +226,11 @@ function of the transcript, so §6's replay contract holds unchanged.
 The allowlist lives in `ChatToolResultSupersessionKey`, whose four admission
 properties — and, per excluded verb, either the property it fails or the other
 reason it is off the list — are documented on its declaration in
-`AgentChatCodecs.h`. Today it holds
-`read_document` alone. Two exclusions worth restating here because they look
+`AgentChatCodecs.h`. Today it holds `read_document` and `list_proposals` —
+the latter is not declared in `kToolDefs`, but `ToolCallToJsonRpcLine` forwards
+whatever verb name the model emits without checking it against `kToolDefs` and
+the dispatcher answers it, so an injected or hallucinated call really does reach
+the transcript. Two exclusions worth restating here because they look
 eligible and are not: `read_schema` / `read_skill` are argument-keyed and
 STATELESS (two calls return different, never-stale content), and `render`
 results are explicitly meant to be COMPARED across calls, so eliding an older

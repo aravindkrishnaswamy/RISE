@@ -1265,6 +1265,17 @@ namespace RISE
 		//!     (typically the RPC dispatcher's serving thread), same as the
 		//!     original slice-0a contract -- no mutex protects them, and
 		//!     none is added by this fix.
+		//!     THIS IS A CONTRACT ON THIS OBJECT, NOT ON THE HEAD IT WRAPS.
+		//!     The Job behind mJob is SHARED: with a controller attached the
+		//!     GUI main thread commits to the same head while this session
+		//!     reads it, and the hosted-MCP topology runs a SECOND
+		//!     AgentSession over that same Job on its own thread.  The head
+		//!     is therefore genuinely multi-threaded state, and every read of
+		//!     it goes through ReadDocumentSnapshot / ReadHeadVersion, which
+		//!     take the controller's mMutex -- the lock every commit path
+		//!     already takes.  The bare accessors (ReadDocument / HasDocument
+		//!     / HeadVersion) must NOT be paired up under a live controller;
+		//!     that pairing WAS the split-read defect.
 		//!   * LIFETIME across the async surface: RenderAsync's submitted
 		//!     closure captures a raw `this` and runs on the ATTACHED
 		//!     controller's dedicated worker thread, independent of this
@@ -1407,16 +1418,77 @@ namespace RISE
 			//! Facet 5 slice 1a: the retained CST head's (uuid,revision)
 			//! optimistic-concurrency identity (see RISE::Cst::CstHeadVersion).
 			//! {0,0} when there is no wrapped Job (or the Job retains no head).
-			//! An agent reads this alongside ReadDocument, then passes it back as
-			//! a patch's baseVersion so a stale edit is rejected with a CONFLICT.
+			//! The agent passes this back as a patch's baseVersion so a stale
+			//! edit is rejected with a CONFLICT -- which is exactly why it must
+			//! be read TOGETHER with the bytes it describes: use
+			//! ReadDocumentSnapshot (or ReadHeadVersion for the version alone),
+			//! NOT this accessor paired with a separate ReadDocument() call.
+			//! This one is the raw, unsynchronized read the snapshot is built
+			//! on; no shipped read verb calls it directly.
 			RISE::Cst::CstHeadVersion HeadVersion() const;
+
+			//! One COHERENT read of the head: the document bytes and the
+			//! head-version that describes them, captured together.
+			struct AgentDocumentSnapshot
+			{
+				bool                      hasDocument = false;  //!< HasDocument() at capture time
+				std::string               document;             //!< ReadDocument() at capture time
+				RISE::Cst::CstHeadVersion headVersion;          //!< the version those exact bytes ARE
+			};
+
+			//! THE READ VERBS MUST USE THIS, not the three accessors above.
+			//! read_document and validate's head form hand the model byte
+			//! offsets plus the headVersion those offsets describe; calling
+			//! HasDocument() / ReadDocument() / HeadVersion() separately lets
+			//! a commit on another thread land between them, so the answer
+			//! pairs one revision's offsets with another revision's stamp
+			//! (and serializing a Document another thread is mutating is a
+			//! plain data race).  The hosted-MCP topology has exactly that
+			//! second thread: the GUI's loopback HTTP server runs its own
+			//! AgentSession over the SAME Job the main thread commits to.
+			//!
+			//! WITH A CONTROLLER: delegates to
+			//! SceneEditController::ReadAgentSceneSnapshot -- one mMutex
+			//! hold, the same lock every commit path takes.  It BLOCKS while
+			//! a render owns the scene (see that method's doc for why the
+			//! UI-poll try-lock convention is wrong here), so call it from
+			//! the agent RPC thread only.
+			//!
+			//! WITHOUT A CONTROLLER (headless -- a supported, first-class
+			//! configuration: the CLI agent, the eval harness, every
+			//! AgentSession unit test): the plain unlocked reads are
+			//! CORRECT, not a concession.  A controller is what introduces
+			//! the render thread and the second UI-thread writer; with none
+			//! attached, nothing touches this Job CONCURRENTLY with a
+			//! dispatcher call -- the headless Render() family runs
+			//! synchronously on the dispatcher's own thread (RenderAsync
+			//! refuses outright without a controller), and
+			//! AgentRpcDispatcher's single-caller contract (AgentRpc.h)
+			//! makes that thread the sole caller.  (The render's own worker
+			//! POOL touches the derived Scene during that synchronous call,
+			//! but the call has not returned, so no read can interleave.)
+			AgentDocumentSnapshot ReadDocumentSnapshot() const;
+
+			//! The head-version alone, read with the SAME discipline as
+			//! ReadDocumentSnapshot (controller-mediated under mMutex when
+			//! one is attached; direct otherwise) -- for the result-stamping
+			//! sites that need the version but no document.  CstHeadVersion
+			//! is 16 non-atomic bytes, so an unlocked read of it while a
+			//! controller is live can tear, not merely go stale.
+			RISE::Cst::CstHeadVersion ReadHeadVersion() const;
 
 			//! The descriptor-generated JSON schema (charter L6): one chunk
 			//! when `keyword` is non-empty, else the whole grammar.
 			std::string ReadSchema( const std::string& keyword = std::string() ) const;
 
 			//! THE KEYSTONE.  Validate a CANDIDATE scene text with NO side
-			//! effects on this session's Job: parse it to a CST, derive it
+			//! effects on this session's Job.  A candidate that declares NO
+			//! CHUNKS AT ALL (empty, whitespace-only, comments-only) is
+			//! screened FIRST and reported as EMPTY_DOCUMENT: such a text
+			//! round-trips and derives with zero diagnostics, so without the
+			//! screen a non-document came back CLEAN.  Emptiness is judged on
+			//! chunk COUNT, not byte length, so all three degenerate shapes
+			//! get one answer.  Otherwise: parse it to a CST, derive it
 			//! into a THROWAWAY Job, and map the derive diagnostics into
 			//! structured AgentDiagnostics with best-effort byte-offset
 			//! localization (see AgentSession.cpp for the localization
@@ -2573,6 +2645,50 @@ namespace RISE
 			              std::shared_ptr<AgentImageCache> sharedImageCache );
 			AgentSession( const AgentSession& );             // deleted
 			AgentSession& operator=( const AgentSession& );  // deleted
+
+			//! The head, as ONE locked snapshot, reparsed to a Document --
+			//! but ONLY when it still IS the version `stamped` names.
+			//!
+			//! The three Attach*Issues analysers pin their {param, value,
+			//! reason, suggestions} against the head the result REPORTS.
+			//! On the LIVE (controller-attached) branches that head is
+			//! whatever the commit returned, while the Document was being
+			//! walked through an unlocked mJob->GetCstDocument() -- a data
+			//! race with the controller's other writer thread, and, even
+			//! when it did not tear, issues that could describe a head the
+			//! result does not name.  Returns false (outputs untouched)
+			//! when there is no head or when it has MOVED since the commit;
+			//! callers then attach nothing, which `issues` already
+			//! documents as a legitimate answer ("an empty issues on a
+			//! rejection does not mean the patch was fine").
+			//!
+			//! `outDoc` is a REPARSE of the snapshot bytes, so its NodeIds are
+			//! positional rather than the stable ids a live DocReplaceItem /
+			//! DocInsertItem head carries.  Fine for the three analysers,
+			//! which only resolve ids WITHIN the document they are handed --
+			//! but do not hand it an id obtained from anywhere else.
+			bool ReadHeadDocumentAt_( const RISE::Cst::CstHeadVersion& stamped,
+			                          RISE::Cst::Document& outDoc ) const;
+
+			//! True iff `r` is a DERIVE rejection worth running an analyser
+			//! against -- i.e. NOT one of the controller's pre-derive GATE
+			//! refusals, which share the `rawCode == 0` bucket but have
+			//! nothing to analyse.
+			//!
+			//! Two gates, two hazards, both real:
+			//!   * `retriable` (an open editor transaction, or a render owning
+			//!     the scene) -- the controller answers these WITHOUT taking
+			//!     mMutex, on purpose, so the caller is not made to wait for a
+			//!     render that may run for minutes.  Reading the head here
+			//!     would take mMutex and hand back that exact wait, defeating
+			//!     the prompt-retry contract the refusal exists to offer.
+			//!   * `headVersion.uuid == 0` -- the "no head to report"
+			//!     sentinel the DESTROYING arm returns precisely because the
+			//!     owner may already have released the Job; touching it would
+			//!     be a use-after-free.  (The version can never match this
+			//!     sentinel anyway, so the read was pure cost even when safe.)
+			static bool IsAnalysableRejection_( const AgentPatchResult& r );
+			static bool IsAnalysableRejection_( const AgentChunkResult& r );
 
 			//! The shared core of both Render overloads: legacy Render(int) is a
 			//! thin forwarder that builds an all-absent AgentRenderParams (so

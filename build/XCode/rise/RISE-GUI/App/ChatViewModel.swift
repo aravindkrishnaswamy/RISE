@@ -2104,8 +2104,13 @@ final class ChatViewModel: ObservableObject {
                 lastReportedCompactedEntryCount = droppedNow
                 transcript.append(Entry(
                     kind: .notice,
-                    text: "\(droppedJustNow) earlier turn(s) of history — messages and "
-                        + "their tool results — were dropped from the model's memory to "
+                    // "transcript row(s)", NOT "turn(s)": compactedEntryCount
+                    // counts ERASED TRANSCRIPT ENTRIES, and one compacted span
+                    // is a user message plus every assistant/tool round it
+                    // provoked — many entries per conversational turn.
+                    // Windows says the same thing in the same unit.
+                    text: "\(droppedJustNow) earlier transcript row(s) of history — messages "
+                        + "and their tool results — were dropped from the model's memory to "
                         + "stay within the context budget (\(droppedNow) in total this "
                         + "conversation). They are still shown above, but the agent can "
                         + "no longer see them."))

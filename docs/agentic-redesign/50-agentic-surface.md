@@ -673,7 +673,19 @@ diagnostic for diagnostic on identical bytes; the result's `validated` field (`"
 says which was checked, so a malformed-argument call that degrades to the head form can never be
 misread as a clean verdict on the candidate it meant to send. With no head loaded the `text` form
 still works (it is stateless, as below) while the no-argument form returns `-32602` rather than a
-false "clean" answer about a document that does not exist.
+false "clean" answer about a document that does not exist. Form selection is by **presence**: an
+omitted or explicitly-null `text` selects the head, and *any* string — including `""` — selects the
+text form. A content-free candidate (empty, whitespace-only, comments-only) comes back with an
+`EMPTY_DOCUMENT` error diagnostic from `ValidateText` itself, so the honesty lives in the validator
+rather than in a routing special case that silently checked something the caller did not ask about.
+
+The head form binds its diagnostics to its `headVersion` **atomically**, through one lock on the
+attached `SceneEditController` (`ReadAgentSceneSnapshot`), as does `read_document`. The GUI's hosted
+MCP server runs its own `AgentSession` over the same `Job` on a background thread, so reading
+"has a document", "the bytes" and "the version" separately let a main-thread commit land between
+them and pair one revision's byte offsets with another revision's stamp. Headless sessions (no
+controller attached) keep the direct unlocked reads: with no controller there is no render thread and
+no second writer, and the dispatcher is single-caller by contract.
 
 `validate` is what makes the agent **self-correcting** — it is the `tsc`/`cargo check`/`pytest` of
 RISE. **It is the bounded synchronous semantic phase (D39)** — the same code that runs as the *front*
