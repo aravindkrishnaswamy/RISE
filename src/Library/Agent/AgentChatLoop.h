@@ -76,6 +76,43 @@
 //        ToolResults entries -- they are loop-generated; assistant
 //        entries keep the verbatim byte-preservation contract and are
 //        never touched.
+//      * SUPERSEDED-READ RETENTION: the TEXT-side sibling of the
+//        IMAGE RETENTION rule above.  For a read verb whose result is
+//        the WHOLE view of one piece of MUTABLE state, only the MOST
+//        RECENT result stays live; every older one is rewritten to a
+//        short "[<verb> result elided -- superseded by a later <verb>
+//        call ...]" note via the codec's RewriteElidedToolResults.
+//        The allowlist is ChatToolResultSupersessionKey's (today:
+//        read_document ONLY -- that function's doc states the four
+//        admission properties and gives, per excluded verb, either the
+//        property it fails or the other reason it is off the list).
+//        MEASURED MOTIVATION (trajectory 20260727T063526Z-a7ee472c):
+//        one GUI session ("make the middle object red") called
+//        read_document SIX times, each returning a 19.8 KB document
+//        (a ~21.5 KB JSON-RPC response), every copy live forever --
+//        the request grew from 10 K to 68 K PROVIDER-REPORTED input
+//        tokens, and the edit it was checking was a THREE-parameter
+//        patch (three propose_patch calls of ~183 bytes each).
+//        It is a CORRECTNESS improvement as much as a cost one, though
+//        state that precisely: FIVE of the six documents were BYTE-
+//        IDENTICAL (19,824 B) -- pure redundancy -- and the sixth
+//        differed (19,828 B), i.e. the head DID move under the agent
+//        mid-task, which is what makes an older copy potentially STALE
+//        rather than merely wasteful.  Like IMAGE RETENTION the rule is
+//        entry-internal too (one flush packing two read_documents
+//        keeps only the last live), it rewrites ONLY loop-generated
+//        ToolResults entries, and it is a deterministic pure function
+//        of the transcript -- so a replayed trajectory elides
+//        identically.  UNLIKE span compaction it is UNCONDITIONAL: there
+//        is no budget to enable, so it applies to EVERY host including
+//        the eval runner.  That is deliberate (it is a correctness rule
+//        about stale reads, not a cost knob), but it does mean the
+//        pre-existing eval baseline in docs/agentic-redesign/
+//        70-agent-eval-harness.md predates it and is no longer a
+//        like-for-like comparison.  It does NOT touch the display-layer
+//        ChatToolDisplaySummary::resultJson: unlike an image blob that
+//        one is capped at 8 KB, never rides the wire, and is the GUI's
+//        record of what the agent actually saw at that step.
 //      * USER IMAGE RETENTION (Model-B F5 chat image attachments): a
 //        SEPARATE, INDEPENDENT policy from the tool-result IMAGE
 //        RETENTION rule above -- user reference images are the
@@ -194,6 +231,28 @@ namespace RISE
 			bool        carriesImage = false;
 		};
 
+		//! SUPERSEDED-READ RETENTION bookkeeping for ONE packed tool
+		//! result of a ToolResults entry (see the file header).
+		//!
+		//! WIRE-BEARING, deliberately SEPARATE from the display-only
+		//! ChatToolDisplaySummary next to it: this vector's INDICES are
+		//! what the codec's RewriteElidedToolResults addresses, so it
+		//! must not be conflated with a field the CRITICAL INVARIANT
+		//! block below declares nothing on the wire path may read.
+		struct ChatToolResultSlot
+		{
+			//! ChatToolResultSupersessionKey's verdict for this result at
+			//! pack time -- "" when the result is not supersedable (the
+			//! overwhelmingly common case: every verb off the allowlist,
+			//! and every error envelope).
+			std::string supersessionKey;
+
+			//! False once this result's payload has been rewritten to the
+			//! superseded-result placeholder, so the pass is idempotent
+			//! and a second sweep re-elides nothing.
+			bool        live = true;
+		};
+
 		//! One transcript entry as the GUI sees it.  `rawJson` is the
 		//! provider-native message this entry contributes to BuildRequest;
 		//! `displayText` is the human-readable extraction.
@@ -267,6 +326,16 @@ namespace RISE
 			//!     toolSummaries, so populating these fields does not
 			//!     perturb the compaction estimate or trigger point by even
 			//!     one byte.
+			//!
+			//! SCOPE: this invariant covers reasoningText and toolSummaries
+			//! ONLY.  `toolResultSlots`, declared immediately after
+			//! toolSummaries below, is deliberately NOT part of the family
+			//! -- it is WIRE-BEARING (its indices drive the codec's
+			//! RewriteElidedToolResults rewrite of rawJson).  Do not fold
+			//! the two together, and do not "simplify" the elision to read
+			//! toolSummaries instead: that would make a display field
+			//! load-bearing for the wire, which is exactly what this block
+			//! forbids.
 			//! ======================================================
 
 			//! Assistant entries only: the model's reasoning/thinking text
@@ -286,6 +355,15 @@ namespace RISE
 			//! see ChatToolDisplaySummary's doc.  Empty for User/Assistant
 			//! entries.
 			std::vector<ChatToolDisplaySummary> toolSummaries;
+
+			//! ToolResults entries only: SUPERSEDED-READ RETENTION state,
+			//! one element per packed tool result, in the SAME order
+			//! PackToolResults wrote them (so index i here IS index i for
+			//! the codec's RewriteElidedToolResults).  Parallel to
+			//! toolSummaries in length and order, but NOT display-only:
+			//! see ChatToolResultSlot's doc.  Empty for User/Assistant
+			//! entries.
+			std::vector<ChatToolResultSlot> toolResultSlots;
 		};
 
 		//! The sans-IO chat loop (see the file header for the contract).
@@ -388,6 +466,84 @@ namespace RISE
 			//! conversation turn stay verbatim so a single over-budget turn
 			//! is accepted rather than mangled.
 			static const int kMinRetainedSpans = 2;
+
+			//! The compaction budget BOTH GUI drivers install at startup
+			//! (Mac: RISEAgentChatBridge's init; Windows: ChatPanel's
+			//! constructor).  Kept here rather than in each driver so the
+			//! two cannot drift.  Compaction is still OFF by default for
+			//! any other host -- SetContextBudget is what turns it on, and
+			//! the eval runner deliberately does not call it (a scenario's
+			//! honest per-run budgets, not a silent span drop, are what
+			//! should stop an eval).
+			//!
+			//! WHAT THIS KNOB CAN AND CANNOT REACH -- read this before
+			//! re-tuning the numbers, because it bounds their value.
+			//! CompactTranscript drops whole SPANS, a span starts at a User
+			//! entry, and it stops while `spanCount <= kMinRetainedSpans` (2)
+			//! -- so it can only ever fire in a conversation of THREE OR MORE
+			//! user turns.  MEASURED over the whole recorded GUI corpus (27
+			//! trajectories): 20 sessions have ONE user turn, 6 have two, and
+			//! exactly ONE has three.  The dominant shape is "one instruction,
+			//! then 13-48 tool rounds", which span compaction is structurally
+			//! blind to at ANY budget -- that shape is what SUPERSEDED-READ
+			//! RETENTION addresses instead.  So this is an honest backstop for
+			//! long MULTI-TURN sessions and nothing more; do not describe it
+			//! as catching the single-turn runaways in that corpus, because it
+			//! cannot.  (An earlier revision of this comment claimed exactly
+			//! that about the 141 K session below.  That session has ONE user
+			//! turn: spanCount == 1, so the loop breaks before erasing
+			//! anything.  Recorded because it is the same single-span error
+			//! this file already documents for a different trajectory.)
+			//!
+			//! THE NUMBERS.  150 K high / 75 K low, in the units
+			//! EstimateContextTokens produces (a chars/4 text proxy plus a
+			//! flat per-image charge -- NOT a provider's own count; see the
+			//! calibration caveat below).
+			//!   * HIGH must sit above a healthy session of the shape this
+			//!     mechanism can act on.  Max provider-reported input, by
+			//!     session, over the 27-trajectory corpus:
+			//!       141 K  20260710T191019Z-95c9935e   1 user turn  (unreachable)
+			//!        98 K  20260728T042751Z-6c02328e   3 user turns (REACHABLE)
+			//!        77 K  20260728T044129Z-781468ac   1 user turn  (unreachable)
+			//!        74 K  20260728T043424Z-d02506e9   1 user turn  (unreachable)
+			//!        68 K  20260727T063526Z-a7ee472c   1 user turn  (unreachable)
+			//!     The only COMPACTABLE session on record peaks at ~98 K, so
+			//!     150 K is ~1.5x over the largest healthy session this
+			//!     mechanism could actually mangle.  It is NOT chosen to sit
+			//!     under any provider's window (see the caveat), and it is
+			//!     NOT a claim that no session exceeds it.
+			//!   * LOW at half the high means one compaction event does
+			//!     real work instead of re-triggering on the very next
+			//!     turn; kMinRetainedSpans still floors it at the previous
+			//!     + current turn, so a single over-budget turn is
+			//!     accepted whole rather than mangled.
+			//!   * THIN-MARGIN DISCLOSURE: 1.5x is not generous, and the
+			//!     chars/4 proxy is not the provider's tokenizer, so a
+			//!     healthy long multi-turn session COULD cross this.  When it
+			//!     does the user is told (CompactedEntryCount, surfaced by
+			//!     both drivers) rather than silently losing history -- that
+			//!     notice, not the margin, is what makes the posture safe.
+			//! CALIBRATION CAVEAT: the two quantities above are NOT the same
+			//! unit.  EstimateContextTokens is a chars/4 proxy over the
+			//! request bytes; a provider's tokenizer is not.  The proxy is
+			//! deliberately used only as a monotone growth signal, and the
+			//! headroom factor is what absorbs the mismatch -- so this pair
+			//! is a BACKSTOP against unbounded growth, not a figure tuned to
+			//! any provider's context window.  A host that knows its model's
+			//! real window (and wants compaction to track it) should call
+			//! SetContextBudget with its own numbers rather than these.
+			//! DISCLOSED LIMITATION: for that reason this does nothing for a
+			//! small-window LOCAL model (an Ollama server may serve 8 K-32 K,
+			//! which this budget never reaches) -- the loop cannot know the
+			//! served model's window, and such servers truncate server-side.
+			//! Sizing for the smallest local window instead would compact
+			//! aggressively on every hosted session, which is the worse
+			//! trade.  Worth stating plainly because Local IS the DEFAULT
+			//! provider in both GUI drivers: on the out-of-the-box
+			//! configuration, against a server with a small num_ctx, this
+			//! budget is effectively inert.
+			static const std::size_t kDefaultContextBudgetHighTokens = 150000;
+			static const std::size_t kDefaultContextBudgetLowTokens  = 75000;
 
 			//! Constructs with the ChatGPT/OpenAI provider + its default model.
 			AgentChatLoop();
@@ -603,6 +759,21 @@ namespace RISE
 			//! The configured low-water (S2 compaction target), in tokens.
 			std::size_t ContextBudgetLow() const { return mContextBudgetLowTokens; }
 
+			//! How many transcript entries CompactTranscript has dropped in
+			//! the current conversation (0 until a compaction fires; cleared
+			//! by Reset/SetProvider along with the transcript itself).
+			//!
+			//! LOAD-BEARING FOR THE UI, not mere observability.  A driver that
+			//! renders the chat DIRECTLY out of this transcript -- the Windows
+			//! ChatPanel does; the Mac ChatViewModel keeps its own display
+			//! mirror and does not -- would otherwise have the user's earlier
+			//! messages silently VANISH from the panel the first time a long
+			//! session crosses the high-water mark.  Such a driver must show a
+			//! notice when this is non-zero.  Dropping wire spans is the
+			//! intended behaviour; dropping them without telling the user is
+			//! not.
+			std::size_t CompactedEntryCount() const { return mCompactedEntryCount; }
+
 			//==========================================================
 			// Eval-harness E1: trajectory recording.
 			//==========================================================
@@ -709,6 +880,25 @@ namespace RISE
 			//! re-sends an image.
 			void ElideAllLiveImages();
 
+			//! SUPERSEDED-READ RETENTION (see the file header): sweep the
+			//! WHOLE transcript and, for every supersession key present in
+			//! more than one still-live tool-result slot, rewrite all but
+			//! the LAST occurrence's payload to
+			//! ChatSupersededResultNote(verb) via the codec's
+			//! RewriteElidedToolResults.  Handles the cross-entry case (six
+			//! read_documents across six turns) and the entry-internal one
+			//! (two read_documents packed by ONE flush) with the same pass,
+			//! because it scans slots in wire order across all entries.
+			//!
+			//! Pure function of (mTranscript, the codec) -> deterministic
+			//! and replay-safe, and IDEMPOTENT (a second sweep finds every
+			//! superseded slot already dead and rewrites nothing).  Records
+			//! one "tool_result_supersession" history_edit per rewritten
+			//! entry (no-op with no trajectory sink).  Called at the end of
+			//! FlushPendingToolResults -- the only place ToolResults entries
+			//! are created.
+			void ElideSupersededToolResults();
+
 			//! Context-compaction slice S2: the structural span-dropper
 			//! (Option C core; design doc 71 §7).  When a valid budget
 			//! window is set AND the current EstimateContextTokens() has
@@ -770,6 +960,11 @@ namespace RISE
 			//! See SetContextBudget's doc.
 			std::size_t                         mContextBudgetHighTokens;
 			std::size_t                         mContextBudgetLowTokens;
+
+			//! Entries CompactTranscript has dropped this conversation -- see
+			//! CompactedEntryCount().  NOT provider-neutral config: it
+			//! describes the CURRENT transcript, so Reset() clears it.
+			std::size_t                         mCompactedEntryCount = 0;
 
 			std::vector<ChatTranscriptEntry>    mTranscript;
 

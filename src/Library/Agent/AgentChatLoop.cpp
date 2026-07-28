@@ -54,8 +54,12 @@ namespace RISE
 				"3. Verify by CHANGE KIND. PARAM/STRUCTURAL edits (value changes, "
 				"bindings, insert/remove of non-visual chunks) are confirmed by "
 				"the apply response's status and bumped headVersion alone -- "
-				"validate the document text too if the edit was structural "
-				"(insert_chunk/remove_chunk) -- then declare done from a clean "
+				"if the edit was structural (insert_chunk/remove_chunk), also "
+				"call validate WITH NO ARGUMENTS, which checks the CURRENT "
+				"scene; NEVER re-send the document you just edited (validate's "
+				"`text` argument is only for a candidate you have NOT applied, "
+				"and echoing a whole scene back costs thousands of output "
+				"tokens for nothing) -- then declare done from a clean "
 				"apply + clean validate; do NOT render just to confirm a "
 				"parameter took. When the user SPECIFIES the exact target (a "
 				"specific colour value, a named binding, a given chunk to "
@@ -366,8 +370,11 @@ namespace RISE
 
 		std::size_t AgentChatLoop::EstimateContextTokens() const
 		{
-			// Context-compaction slice S1 (observability only -- nothing
-			// acts on this estimate yet; S2 will).  Deterministic, provider-
+			// Context-compaction slice S1: the estimator slice S2's
+			// CompactTranscript triggers on (BuildRequest calls it every
+			// round; both GUI drivers install a budget via
+			// SetContextBudget / kDefaultContextBudget*, so this is a
+			// PRODUCTION trigger, not observability).  Deterministic, provider-
 			// aware, IMAGE-DISCOUNTED text-proxy estimator:
 			//
 			//   text tokens  ~= (system prompt + tool defs + PER-ENTRY
@@ -449,6 +456,8 @@ namespace RISE
 			mPendingResults.clear();
 			mToolLineStash.clear();
 			mToolRounds = 0;
+			// Describes the transcript we just cleared, so it goes with it.
+			mCompactedEntryCount = 0;
 			mBlindEditStreak = 0;
 			mPendingBuildNudge.clear();
 			// A fresh session may target a different, image-capable model --
@@ -1083,7 +1092,10 @@ namespace RISE
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
-			//!   8. anything else                            -> "ok"
+			//!   8. name == "validate" AND result.diagnostics is an array
+			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
+			//!                                                  each with " (candidate)" appended when validated == "text"
+			//!   9. anything else                            -> "ok"
 			//! A line that does not parse as a JSON object returns "?".
 			std::string ToolOutcomeLine( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine )
 			{
@@ -1130,7 +1142,7 @@ namespace RISE
 				// AgentRpc.cpp).  Both batch verbs return the IDENTICAL
 				// {applied,total,results} envelope, so they share this rule --
 				// without it propose_patches would fall through to the generic
-				// "ok" of rule 8 and report the SAME string whether 17/17 or
+				// "ok" of rule 9 and report the SAME string whether 17/17 or
 				// 0/17 elements applied, which is precisely the outcome a
 				// best-effort batch verb most needs to surface.
 				if( call.name == "insert_chunks" || call.name == "propose_patches" ) {
@@ -1183,9 +1195,37 @@ namespace RISE
 					return "ok";
 				}
 
-				// 8. Every other verb (read_document, read_schema, read_skill,
-				// validate, query_object_at, list_proposals, ...): a plain
-				// success with nothing terser to say than "ok".
+				// 8. validate: the one-liner must say whether the scene is
+				// CLEAN, for the same reason rule 4 summarises a batch as
+				// "3/4 applied" rather than "ok" -- reporting the identical
+				// string for a clean head and for one carrying errors is
+				// exactly the display defect that rule exists to avoid.  The
+				// exposure grew when the no-argument form made validate THE
+				// routine post-edit check (see the system prompt and both tool
+				// descriptions); the model always saw the diagnostics (they
+				// ride the raw JSON-RPC line), but the human watching the
+				// transcript saw "validate -> ok" over a diagnosed document.
+				if( call.name == "validate" && result.get( "diagnostics" ).isArray() ) {
+					const JsonValue& diags = result.get( "diagnostics" );
+					std::size_t errors = 0;
+					std::string firstCode;
+					for( std::size_t i = 0; i < diags.size(); ++i ) {
+						if( diags.at( i ).get( "severity" ).asString() != "error" ) continue;
+						++errors;
+						if( firstCode.empty() ) firstCode = diags.at( i ).get( "code" ).asString();
+					}
+					const std::string scope =
+						result.get( "validated" ).asString() == "text" ? " (candidate)" : "";
+					if( diags.size() == 0 ) return "clean" + scope;
+					if( errors == 0 )
+						return std::to_string( diags.size() ) + " warning(s)" + scope;
+					return std::to_string( errors ) + " error(s)" +
+					       ( firstCode.empty() ? std::string() : ": " + firstCode ) + scope;
+				}
+
+				// 9. Every other verb (read_document, read_schema, read_skill,
+				// query_object_at, list_proposals, ...): a plain success with
+				// nothing terser to say than "ok".
 				return "ok";
 			}
 
@@ -1361,6 +1401,15 @@ namespace RISE
 			entry.role = ChatTranscriptEntry::Role::ToolResults;
 			entry.displayText = joinedOutcome;
 			entry.toolSummaries = summaries;
+			// SUPERSEDED-READ RETENTION bookkeeping: one slot per packed
+			// result, in `ordered` order -- which IS the order
+			// PackToolResults writes them, and therefore the index space
+			// RewriteElidedToolResults addresses.  Built here (not lazily)
+			// so the key reflects the envelope AS PACKED.
+			entry.toolResultSlots.resize( ordered.size() );
+			for( std::size_t i = 0; i < ordered.size(); ++i )
+				entry.toolResultSlots[i].supersessionKey =
+					ChatToolResultSupersessionKey( ordered[i].first, ordered[i].second );
 			entry.rawJson = mCodec->PackToolResults( ordered );
 			entry.carriesLiveImage = carriesImage;
 			if( carriesImage ) {
@@ -1378,11 +1427,144 @@ namespace RISE
 			}
 			mTranscript.push_back( entry );
 
+			// SUPERSEDED-READ RETENTION (see the header): now that the new
+			// entry is in the transcript, keep only the LAST live result per
+			// supersession key across the whole conversation.  Runs AFTER the
+			// image pass and after entry.imageContentBytes is computed: the
+			// two rewrites are disjoint (an image result is never
+			// supersedable -- see ChatToolResultSupersessionKey's property
+			// (4)), and a text-only shrink of rawJson leaves the tracked
+			// image payload correct either way.
+			ElideSupersededToolResults();
+
 			mPendingResults.clear();
 			mPendingCalls.clear();
 			// Eval-harness E1: the turn's tool calls are done -- drop any
 			// remaining stamped lines (unanswered/synthesized calls).
 			mToolLineStash.clear();
+		}
+
+		void AgentChatLoop::ElideSupersededToolResults()
+		{
+			// PASS 1: find, for every supersession key, the LAST still-live
+			// slot in wire order.  Scanning forward and overwriting means the
+			// map ends holding exactly the survivor of each key.
+			//
+			// A dead slot is skipped entirely rather than treated as a
+			// survivor -- so a key whose only remaining live slot is the
+			// newest one converges, and re-running the sweep is a no-op
+			// (idempotence).
+			std::vector<std::pair<std::string, std::pair<std::size_t, std::size_t>>> lastLive;
+			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
+				const ChatTranscriptEntry& entry = mTranscript[e];
+				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+				for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+					const ChatToolResultSlot& slot = entry.toolResultSlots[s];
+					if( !slot.live || slot.supersessionKey.empty() ) continue;
+					bool replaced = false;
+					for( std::size_t k = 0; k < lastLive.size(); ++k ) {
+						if( lastLive[k].first == slot.supersessionKey ) {
+							lastLive[k].second = std::make_pair( e, s );
+							replaced = true;
+							break;
+						}
+					}
+					if( !replaced )
+						lastLive.push_back( std::make_pair( slot.supersessionKey,
+						                                    std::make_pair( e, s ) ) );
+				}
+			}
+			if( lastLive.empty() ) return;
+
+			// PASS 2: every OTHER live slot sharing a surviving key is
+			// superseded.  Collect per entry so each entry's rawJson is
+			// rewritten (and recorded) exactly once, even when it packs
+			// several superseded results.
+			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
+				ChatTranscriptEntry& entry = mTranscript[e];
+				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+
+				// Grouped BY KEY, not one bucket per entry: the placeholder
+				// names its own verb, so an entry that ever packs superseded
+				// results of TWO different allowlisted verbs must not be told
+				// one verb's note for both.  (Today's single-verb allowlist
+				// makes that unreachable -- grouping keeps it correct by
+				// construction rather than by that coincidence.)
+				std::vector<std::pair<std::string, std::vector<std::size_t>>> byKey;
+				for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+					ChatToolResultSlot& slot = entry.toolResultSlots[s];
+					if( !slot.live || slot.supersessionKey.empty() ) continue;
+					bool survives = false;
+					for( std::size_t k = 0; k < lastLive.size(); ++k ) {
+						if( lastLive[k].first != slot.supersessionKey ) continue;
+						survives = ( lastLive[k].second.first == e &&
+						             lastLive[k].second.second == s );
+						break;
+					}
+					if( survives ) continue;
+					bool bucketed = false;
+					for( std::size_t k = 0; k < byKey.size(); ++k ) {
+						if( byKey[k].first == slot.supersessionKey ) {
+							byKey[k].second.push_back( s );
+							bucketed = true;
+							break;
+						}
+					}
+					if( !bucketed ) {
+						std::vector<std::size_t> one;
+						one.push_back( s );
+						byKey.push_back( std::make_pair( slot.supersessionKey, one ) );
+					}
+				}
+				if( byKey.empty() ) continue;
+
+				// REWRITE FIRST, THEN mark the bucket dead -- and only when
+				// the rewrite actually LANDED.  Every codec returns its input
+				// UNCHANGED when the entry does not parse or its shape guards
+				// miss; clearing `live` before knowing that would leave the
+				// payload riding forever while the bookkeeping believed it
+				// elided, and pass 1 (which skips dead slots) would never
+				// retry.  A no-op rewrite instead leaves the slots live, so
+				// the next flush tries again -- bounded work, and no
+				// history_edit is emitted for a non-edit.
+				//
+				// GRANULARITY, stated exactly: the landing signal is
+				// PER BUCKET (did the entry's bytes move?), not per index.
+				// If a codec ever rewrote index i but skipped index j of the
+				// same bucket, both would be marked dead and j would ride on
+				// un-elided.  That is unreachable today -- RewriteElidedToolResults
+				// is TOTAL over a bucket's indices, because
+				// toolResultSlots.size() == ordered.size() and every codec
+				// emits exactly one addressable result per element of
+				// `ordered` at indices 0..N-1 (the OpenAI trailing image
+				// message is appended AFTER them).  A codec that ever
+				// violated that totality would need a per-index landing
+				// signal here.
+				const std::size_t beforeBytes = entry.rawJson.size();
+				bool anyLanded = false;
+				for( std::size_t k = 0; k < byKey.size(); ++k ) {
+					const std::string before = entry.rawJson;
+					entry.rawJson = mCodec->RewriteElidedToolResults(
+						entry.rawJson, byKey[k].second,
+						ChatSupersededResultNote( byKey[k].first ) );
+					if( entry.rawJson == before ) continue;
+					anyLanded = true;
+					for( std::size_t j = 0; j < byKey[k].second.size(); ++j )
+						entry.toolResultSlots[ byKey[k].second[j] ].live = false;
+				}
+				if( !anyLanded ) continue;
+				// Eval-harness E1: record the transcript rewrite, exactly as
+				// the image-elision pass does.
+				if( mRecorder ) {
+					EnsureSessionRecordEmitted();
+					TrajectoryHistoryEditRecord h;
+					h.entryIndex = static_cast<int>( e );
+					h.beforeBytes = static_cast<long long>( beforeBytes );
+					h.afterBytes = static_cast<long long>( entry.rawJson.size() );
+					h.reason = "tool_result_supersession";
+					mRecorder->EmitHistoryEdit( h );
+				}
+			}
 		}
 
 		//! GUI STAGE 2: a public, declared entry point onto the file-local
@@ -1508,6 +1690,10 @@ namespace RISE
 				// Erase the OLDEST whole span: entries [0 .. secondSpanStart).
 				mTranscript.erase( mTranscript.begin(),
 				                   mTranscript.begin() + static_cast<std::ptrdiff_t>( secondSpanStart ) );
+				// A driver that renders the chat straight out of this
+				// transcript must be able to TELL the user these turns are
+				// gone -- see CompactedEntryCount()'s doc.
+				mCompactedEntryCount += secondSpanStart;
 				dropped = true;
 			}
 

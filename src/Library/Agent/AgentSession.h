@@ -1564,7 +1564,8 @@ namespace RISE
 			//! Secure-MCP slice 5a: the structured result of ResolveProposal.
 			struct AgentResolveResult
 			{
-				bool        ok = false;        //!< true iff the resolve actually ran (id found, this session's authority permits it); false leaves `message` explaining why
+				bool        ok = false;        //!< true iff the resolve actually ran, i.e. the proposal LEFT the pending state (id found, this session's authority permits it, and the replay was not transiently refused); false leaves `message` explaining why
+				bool        retriable = false; //!< meaningful only when !ok: true = the refusal was TRANSIENT (a render held the admission gate, or the replay hit an open editor transaction/gesture). The proposal is STILL PENDING and nothing was applied, so resolving it again later is a true retry, not a double-apply. false = permanent (unknown id, already resolved, authority, teardown)
 				std::string status;            //!< "applied" / "rejected" / "conflict" -- meaningful only when ok
 				AgentPatchResult   paramResult;    //!< filled iff ok && the resolved proposal was a ParamEdit
 				AgentChunkResult   chunkResult;     //!< filled iff ok && the resolved proposal was Insert/RemoveChunk
@@ -1592,6 +1593,14 @@ namespace RISE
 			//! with the apply; a stale proposal (the head moved since it was
 			//! staged, including via a reload that minted a fresh uuid)
 			//! resolves to status="conflict" and is NOT applied.
+			//!
+			//! A TRANSIENT refusal -- a render holding the controller's
+			//! admission gate, or an open editor transaction/gesture the
+			//! replay refused on -- is reported with `ok=false` and
+			//! `retriable=true`, NOT as a resolve: the controller leaves
+			//! the proposal PENDING in that case, so reporting it as
+			//! resolved-and-rejected would describe a proposal that can
+			//! still be approved as one that never can be.
 			AgentResolveResult ResolveProposal( std::uint64_t proposalId, bool approve );
 
 			//! compare_to_reference: register (or wholesale REPLACE) the set

@@ -198,6 +198,19 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// and for the panel's own per-message attach-count cap.
 @property (class, nonatomic, readonly) NSInteger maxLiveUserImages;
 
+/// Mirrors AgentChatLoop::CompactedEntryCount() — how many transcript
+/// entries span compaction has dropped this conversation.
+///
+/// The Swift driver keeps its OWN append-only display transcript, so a
+/// dropped wire span costs it nothing VISUALLY — which is exactly the
+/// hazard: the panel keeps showing turns the model can no longer see, so
+/// the amnesia reads as a model defect with no signal anywhere.  The
+/// driver polls this and appends a `.notice` row when it grows.  (The
+/// Windows panel has the opposite shape — it renders the wire transcript
+/// directly, so there the turns visibly vanish — and needs its own,
+/// differently-worded notice.  Both are guarded by SourceHygieneTest.)
+@property (nonatomic, readonly) NSUInteger compactedEntryCount;
+
 /// Facet 5 slice S1: the "Available skills" section appended to every
 /// subsequent request's system prompt.  `indexText` is the rendered
 /// index (one "name -- hook" line per skill) the driver fetched ONCE

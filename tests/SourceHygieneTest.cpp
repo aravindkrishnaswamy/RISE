@@ -49,6 +49,8 @@
 #include <utility>
 #include <vector>
 
+#include "../src/Library/Agent/Json.h"
+
 namespace fs = std::filesystem;
 
 static int passCount = 0;
@@ -276,6 +278,132 @@ static std::vector<ProseBlock> ExtractProseBlocks( const std::string& src )
 	flushLines();
 	flushStrings();
 	return out;
+}
+
+//----------------------------------------------------------------------
+// FIX 2's double-apply gate, as a TRUTH TABLE.
+//
+// READ THE SCOPE HONESTLY.  The function below is a TRANSLITERATION of
+// the Qt driver's editRefusalIsWhollyUnapplied
+// (build/VS2022/RISE-GUI/ChatPanel.cpp) onto this repo's JSON reader --
+// a COPY, not the shipping predicate.  This binary links no Qt, so the
+// real gate cannot be called from here and no assertion in this file can
+// observe an edit to it; the only thing tying the copy to the code that
+// ships is the substring pinning in main()'s FIX-2 section, where every
+// condition below appears as a literal lifted from the driver's source.
+// What this DOES buy: the truth table the section's prose describes is
+// executable, so "which response shapes may be retried" is checked
+// rather than asserted in a comment -- including the partially-applied
+// batch, the shape whose mis-handling double-applies.
+//
+// Type-check parity is deliberate: QJsonValue::isDouble() -> isNumber(),
+// isBool() -> isBool(), and toBool()/toString() on a mismatched type
+// yield false / "" in both readers.
+//----------------------------------------------------------------------
+static bool TransliteratedEditRefusalIsWhollyUnapplied( const std::string& responseLine )
+{
+	using RISE::Agent::JsonValue;
+	JsonValue doc;
+	std::string err;
+	if( !RISE::Agent::JsonParse( responseLine, doc, err ) ) return false;
+	if( !doc.isObject() ) return false;
+	if( doc.has( "error" ) ) return false;
+	const JsonValue* resultV = doc.find( "result" );
+	if( !resultV || !resultV->isObject() ) return false;
+	const JsonValue& result = *resultV;
+
+	// BATCH FIRST -- the driver's ordering.
+	const JsonValue* results = result.find( "results" );
+	if( results && results->isArray() ) {
+		if( results->size() == 0 ) return false;
+		const JsonValue* applied = result.find( "applied" );
+		if( !applied || !applied->isNumber() ) return false;
+		if( applied->asNumber() != 0.0 ) return false;
+		for( std::size_t i = 0; i < results->size(); ++i ) {
+			const JsonValue& e = results->at( i );
+			if( !e.isObject() ) return false;
+			const JsonValue* ea = e.find( "applied" );
+			if( !ea || !ea->isBool() || ea->asBool() ) return false;
+			const JsonValue* er = e.find( "retriable" );
+			if( !er || !er->isBool() || !er->asBool() ) return false;
+			if( e.get( "status" ).asString() != "rejected" ) return false;
+		}
+		return true;
+	}
+
+	const JsonValue* applied = result.find( "applied" );
+	if( !applied || !applied->isBool() || applied->asBool() ) return false;
+	const JsonValue* retriable = result.find( "retriable" );
+	if( !retriable || !retriable->isBool() || !retriable->asBool() ) return false;
+	if( result.get( "status" ).asString() != "rejected" ) return false;
+	return true;
+}
+
+static void EditRefusalGateBehaviour()
+{
+	auto envelope = []( const std::string& body ) {
+		return std::string( "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":" ) + body + "}";
+	};
+
+	struct Case { const char* what; std::string line; bool expect; };
+	const std::vector<Case> cases = {
+		// --- singular (propose_patch / insert_chunk / remove_chunk) ---
+		{ "singular rejected+retriable -> RETRY",
+		  envelope( "{\"applied\":false,\"retriable\":true,\"status\":\"rejected\"}" ), true },
+		{ "singular applied -> never retry",
+		  envelope( "{\"applied\":true,\"retriable\":false,\"status\":\"applied\"}" ), false },
+		{ "singular rejected but PERMANENT -> never retry",
+		  envelope( "{\"applied\":false,\"retriable\":false,\"status\":\"rejected\"}" ), false },
+		{ "singular \"diagnosed\" (applied:false but the head MOVED) -> never retry",
+		  envelope( "{\"applied\":false,\"retriable\":true,\"status\":\"diagnosed\"}" ), false },
+		{ "singular with a NUMERIC applied (batch field in a singular shape) -> never retry",
+		  envelope( "{\"applied\":0,\"retriable\":true,\"status\":\"rejected\"}" ), false },
+
+		// --- batch (propose_patches / insert_chunks) ---
+		{ "batch wholly refused -> RETRY",
+		  envelope( "{\"applied\":0,\"total\":2,\"results\":["
+		            "{\"applied\":false,\"retriable\":true,\"status\":\"rejected\"},"
+		            "{\"applied\":false,\"retriable\":true,\"status\":\"rejected\"}]}" ), true },
+		{ "MONEY: batch PARTIALLY applied -> never retry (re-issuing double-applies element 0)",
+		  envelope( "{\"applied\":1,\"total\":2,\"results\":["
+		            "{\"applied\":true,\"retriable\":false,\"status\":\"applied\"},"
+		            "{\"applied\":false,\"retriable\":true,\"status\":\"rejected\"}]}" ), false },
+		{ "batch whose count says 0 but an ELEMENT applied -> never retry",
+		  envelope( "{\"applied\":0,\"total\":2,\"results\":["
+		            "{\"applied\":true,\"retriable\":false,\"status\":\"applied\"},"
+		            "{\"applied\":false,\"retriable\":true,\"status\":\"rejected\"}]}" ), false },
+		{ "batch containing a \"staged\" element -> never retry",
+		  envelope( "{\"applied\":0,\"total\":1,\"results\":["
+		            "{\"applied\":false,\"retriable\":false,\"status\":\"staged\"}]}" ), false },
+		{ "batch containing a \"diagnosed\" element (head moved) -> never retry",
+		  envelope( "{\"applied\":0,\"total\":1,\"results\":["
+		            "{\"applied\":false,\"retriable\":true,\"status\":\"diagnosed\"}]}" ), false },
+		{ "batch with a PERMANENT rejection among the refusals -> never retry",
+		  envelope( "{\"applied\":0,\"total\":2,\"results\":["
+		            "{\"applied\":false,\"retriable\":true,\"status\":\"rejected\"},"
+		            "{\"applied\":false,\"retriable\":false,\"status\":\"rejected\"}]}" ), false },
+		{ "batch with an EMPTY results array -> never retry",
+		  envelope( "{\"applied\":0,\"total\":0,\"results\":[]}" ), false },
+		{ "batch whose applied is a BOOL (a number reads as a bool on both toolchains) -> never retry",
+		  envelope( "{\"applied\":false,\"total\":1,\"results\":["
+		            "{\"applied\":false,\"retriable\":true,\"status\":\"rejected\"}]}" ), false },
+		{ "batch with a non-object element -> never retry",
+		  envelope( "{\"applied\":0,\"total\":1,\"results\":[\"rejected\"]}" ), false },
+
+		// --- malformed / non-result envelopes ---
+		{ "not JSON at all -> never retry", "this is not json", false },
+		{ "JSON but not an object -> never retry", "[1,2,3]", false },
+		{ "JSON-RPC error envelope -> never retry",
+		  "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32603,\"message\":\"boom\"}}", false },
+		{ "no result member -> never retry", "{\"jsonrpc\":\"2.0\",\"id\":7}", false },
+		{ "result is not an object -> never retry", "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":42}", false },
+		{ "result missing every gate field -> never retry", envelope( "{}" ), false },
+	};
+
+	for( const Case& c : cases ) {
+		Check( TransliteratedEditRefusalIsWhollyUnapplied( c.line ) == c.expect,
+		       std::string( "edit-retry gate truth table (transliterated copy): " ) + c.what );
+	}
 }
 
 int main()
@@ -1115,9 +1243,21 @@ int main()
 	// Dropping the `applied == 0` half of the gate would leave a retry that
 	// still LOOKS correct, still passes every functional test (the happy
 	// path is a full refusal), and silently duplicates chunks in exactly
-	// the scene-building sessions that batch the most.  There is no runtime
-	// test that can catch its removal without a live editor gesture racing
-	// a live batch, so it is pinned here, on both platforms.
+	// the scene-building sessions that batch the most, so it is pinned
+	// here, on both platforms.
+	//
+	// WHAT THESE PINS DO AND DO NOT PROVE.  They are SUBSTRING matches
+	// against the two drivers' source: they prove each condition's TEXT is
+	// still present in the named function's body.  They do NOT execute
+	// either gate, so they cannot see a change that leaves every pinned
+	// string in place and still admits a partially-applied batch (append
+	// `&& false` to each Qt guard, or `||` in a re-admitting clause on the
+	// Swift side, and this whole section stays green -- verified by doing
+	// it).  The truth table the pins are describing is asserted
+	// BEHAVIOURALLY, on a transliterated copy, by
+	// EditRefusalGateBehaviour() (defined above main, called at the end of
+	// this section) -- read that pair together: the copy is what runs, and
+	// these string pins are the only thing tying it to the code that ships.
 	//
 	// ROUND 2 (P1-1) -- THE GUARD MUST GUARD ITS OWN WIRING.  As first
 	// written this section pinned the helpers, the gate, the bound, the
@@ -1255,11 +1395,10 @@ int main()
 		       && macGate.find( "applied == false" ) != std::string::npos
 		       && macGate.find( "let retriable = result[\"retriable\"] as? Bool, retriable" )
 		          != std::string::npos,
-		       "macOS edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND EVERY "
-		       "element unapplied+retriable+rejected; singular: applied==false AND retriable AND "
-		       "status==rejected) -- dropping the applied==0 condition would DOUBLE-APPLY a "
-		       "partially-applied best-effort batch; dropping the status test would let a "
-		       "head-moving \"diagnosed\" outcome back in structurally" );
+		       "macOS edit-retry gate's body still CONTAINS every NOTHING-APPLIED condition (batch: "
+		       "applied count == 0 AND EVERY element unapplied+retriable+rejected; singular: "
+		       "applied==false AND retriable AND status==rejected) -- text presence only, not a "
+		       "behavioural check that the gate refuses a partially-applied batch" );
 
 		const std::string winGate = bodyBetween( winChat,
 			"bool editRefusalIsWhollyUnapplied(const QString& responseLine)",
@@ -1280,11 +1419,10 @@ int main()
 		       && winGate.find( "!result.value(\"applied\").isBool() || result.value(\"applied\").toBool()" )
 		          != std::string::npos
 		       && winGate.find( "!result.value(\"retriable\").toBool()" ) != std::string::npos,
-		       "Windows edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND EVERY "
-		       "element unapplied+retriable+rejected; singular: applied==false AND retriable AND "
-		       "status==rejected) -- dropping the applied==0 condition would DOUBLE-APPLY a "
-		       "partially-applied best-effort batch; dropping the status test would let a "
-		       "head-moving \"diagnosed\" outcome back in structurally" );
+		       "Windows edit-retry gate's body still CONTAINS every NOTHING-APPLIED condition (batch: "
+		       "applied count == 0 AND EVERY element unapplied+retriable+rejected; singular: "
+		       "applied==false AND retriable AND status==rejected) -- text presence only, not a "
+		       "behavioural check that the gate refuses a partially-applied batch" );
 
 		// (2) The gate is BATCH-FIRST on both platforms.  This is DEFENCE IN
 		//     DEPTH, not load-bearing, and the Check says so on purpose: a
@@ -1470,6 +1608,108 @@ int main()
 		Check( !winVerbSet.empty() && winMissing.empty()
 		       && quotedCount( winVerbSet ) == mutatingVerbs.size(),
 		       "Windows edit-retry verb set is exactly IsProposeSafeVerb's set" );
+
+		// (6) The truth table itself, executed -- on the transliterated copy
+		//     described above the pins.  Scope caveat there, not repeated.
+		EditRefusalGateBehaviour();
+	}
+
+	// ---- Context-compaction budget wiring parity (FIX 3) ----
+	// AgentChatLoop::CompactTranscript is fully implemented but INERT until a
+	// host calls SetContextBudget -- and for the whole life of the feature
+	// NEITHER GUI did, so span compaction never once ran in production.  The
+	// C++ side of that is unit-tested (AgentChatLoopTest T36), but "is it
+	// plugged in" is a source-wiring fact in two files no portable test can
+	// reach (an ObjC++ bridge and a Qt panel), which is exactly what this
+	// file exists for.  Unplugging either call must turn the suite red --
+	// otherwise the fix could silently regress to the state it was fixing.
+	//
+	// Both drivers must pass the SHARED constants rather than literals, so
+	// the two cannot drift apart or from the header's documented rationale.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& f ) -> std::string {
+			std::ifstream in( f, std::ios::binary );
+			return std::string( std::istreambuf_iterator<char>( in ),
+			                    std::istreambuf_iterator<char>() );
+		};
+		const std::string macBridge = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "Bridge" / "RISEAgentChatBridge.mm" );
+		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ChatPanel.cpp" );
+		const std::string loopHeader = slurp( repoRoot / "src" / "Library" / "Agent"
+			/ "AgentChatLoop.h" );
+		Check( !macBridge.empty() && !winChat.empty() && !loopHeader.empty(),
+		       "context-budget wiring: read both GUI chat drivers and AgentChatLoop.h" );
+
+		// The constants must EXIST in the header the drivers cite.  This is
+		// NOT what stops a bare-literal driver -- the two driver checks below
+		// already require the constant IDENTIFIERS by name, so a driver
+		// passing literals fails those.  What this one catches is the
+		// constants being RENAMED or DELETED from the header while the
+		// drivers still name them (which would fail to compile) or while a
+		// careless edit updates all three together (which would silently
+		// drop the shared source of truth).
+		// Comment-stripped like every other check in this block: without it,
+		// deleting the constants while a doc comment still spelled them out
+		// in full would leave this green.
+		const std::string loopHeaderCode = StripCommentsPreservingLayout( loopHeader );
+		Check( loopHeaderCode.find( "kDefaultContextBudgetHighTokens" ) != std::string::npos
+		       && loopHeaderCode.find( "kDefaultContextBudgetLowTokens" ) != std::string::npos,
+		       "context-budget wiring: AgentChatLoop.h declares the shared default budget" );
+
+		// StripCommentsPreservingLayout so a COMMENT mentioning the call (the
+		// cross-reference each driver carries to its twin) cannot stand in
+		// for the call itself.
+		const std::string macCode = StripCommentsPreservingLayout( macBridge );
+		const std::string winCode = StripCommentsPreservingLayout( winChat );
+		Check( macCode.find( "SetContextBudget" ) != std::string::npos
+		       && macCode.find( "kDefaultContextBudgetHighTokens" ) != std::string::npos
+		       && macCode.find( "kDefaultContextBudgetLowTokens" ) != std::string::npos,
+		       "macOS chat bridge installs the shared context budget (span compaction is LIVE)" );
+		Check( winCode.find( "SetContextBudget" ) != std::string::npos
+		       && winCode.find( "kDefaultContextBudgetHighTokens" ) != std::string::npos
+		       && winCode.find( "kDefaultContextBudgetLowTokens" ) != std::string::npos,
+		       "Windows chat panel installs the shared context budget (span compaction is LIVE)" );
+
+		// ...AND BOTH drivers must TELL the user when compaction drops turns
+		// from the model's memory.  The two have OPPOSITE symptoms, and both
+		// are dishonest without a notice:
+		//   * Windows renders straight out of the loop's transcript
+		//     (m_loop->TranscriptAt), so the rows visibly VANISH -- which
+		//     reads as data loss.
+		//   * macOS keeps its own append-only display array, so nothing
+		//     changes on screen -- the panel keeps showing turns the model
+		//     can no longer see, and the resulting amnesia is
+		//     indistinguishable from a model defect.  That is arguably the
+		//     WORSE case, and an earlier revision of this guard wrongly
+		//     concluded the mirror made a notice unnecessary.
+		// Asserted on comment-stripped source, so a comment mentioning the
+		// counter cannot stand in for reading it.
+		Check( winCode.find( "CompactedEntryCount" ) != std::string::npos,
+		       "Windows chat panel surfaces CompactedEntryCount() (compaction is not a "
+		       "silent history wipe -- it renders the loop transcript directly)" );
+		// COMMENT-STRIPPED, like the two driver checks above -- Swift's `//`
+		// and `/* */` are the same shapes StripCommentsPreservingLayout
+		// handles, and string literals are preserved.  Without this a
+		// COMMENT mentioning compactedEntryCount satisfies the notice check
+		// while the call is unplugged; red-proved by removing the call and
+		// watching this stay green until the strip was added.
+		const std::string macVmRaw = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "ChatViewModel.swift" );
+		Check( !macVmRaw.empty(),
+		       "context-budget wiring: read the macOS ChatViewModel" );
+		const std::string macVm = StripCommentsPreservingLayout( macVmRaw );
+		// NOTE the earlier form of this Check OR-ed against
+		// macBridge.find("transcript"), which is unconditionally true (the
+		// bridge declares transcript ACCESSORS) -- so it short-circuited and
+		// never read the Swift file at all.  Assert the two facts directly.
+		Check( macVm.find( "private(set) var transcript: [Entry]" ) != std::string::npos,
+		       "macOS driver keeps its own append-only display transcript (which is WHY "
+		       "a dropped wire span is invisible there, and why it needs a notice)" );
+		Check( macVm.find( "compactedEntryCount" ) != std::string::npos,
+		       "macOS chat driver surfaces compactedEntryCount (its display keeps showing "
+		       "turns the model can no longer see -- silence there is the worse lie)" );
 	}
 
 	// ---- read_viewport reason-code surface registry (fix rounds 17, 20) --

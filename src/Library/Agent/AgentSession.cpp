@@ -2616,7 +2616,39 @@ namespace RISE
 			if( !found )
 			{
 				r.ok = false;
-				r.message = "resolve_proposal refused: no pending proposal with that id (unknown id, or it was already resolved)";
+				// `false` covers TWO cases (see SceneEditController::
+				// ResolveProposal's doc): the queue said no, or the
+				// render-admission gate refused before the queue was even
+				// consulted.  Only the first is a not-found.
+				if( cr.retriable )
+				{
+					r.retriable = true;
+					r.message = std::string( "resolve_proposal did not resolve: " )
+					          + cr.message.c_str()
+					          + " -- the proposal is STILL PENDING; resolve it again once the gate clears";
+				}
+				else
+				{
+					r.message = "resolve_proposal refused: no pending proposal with that id (unknown id, or it was already resolved)";
+				}
+				return r;
+			}
+
+			// The replay was TRANSIENTLY refused (an open editor transaction
+			// or gesture), so SceneEditController::ResolveProposal left the
+			// proposal PENDING -- see its TRANSIENT-REFUSAL EXCEPTION.  This
+			// is not a resolve: reporting ok=true with status="rejected"
+			// would put a still-approvable proposal on the wire as resolved.
+			// The predicate MIRRORS that method's status fold (applied ->
+			// conflict -> retriable) so the two cannot disagree about which
+			// outcome left the entry pending.
+			if( !cr.applied && std::string( cr.status.c_str() ) != "conflict" && cr.retriable )
+			{
+				r.ok = false;
+				r.retriable = true;
+				r.message = std::string( "resolve_proposal did not resolve: " )
+				          + cr.message.c_str()
+				          + " -- the proposal is STILL PENDING; resolve it again once the gate clears";
 				return r;
 			}
 

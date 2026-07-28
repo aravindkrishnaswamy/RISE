@@ -87,8 +87,12 @@ built a substantial scene and have not looked, render now.
 - **`read_image {maxEdge:160}`** only when you actually need to SEE the
   frame (composition, silhouette, colour) -- the channel means usually
   already answered "did this change".
-- **`validate`** before a render if you are unsure an edit is
-  well-formed -- cheaper than a failed render.
+- **`validate` with NO arguments** before a render if you are unsure an
+  edit is well-formed -- it checks the CURRENT scene and is cheaper than
+  a failed render.  Do NOT pass `text` to re-send the document you just
+  edited; the `text` form is for a CANDIDATE document you have not
+  applied, and echoing a whole scene back costs thousands of output
+  tokens for nothing.
 - **Full-size, full-sample render** (no width/height/camera override)
   ONLY for final verification, once you are confident.
 

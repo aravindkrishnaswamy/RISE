@@ -5443,7 +5443,35 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 {
 	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
-	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+	{
+		// The queue was never consulted here, so `false` does NOT mean
+		// "unknown id" on this path -- the proposal is untouched and still
+		// pending.  Report it through `outResult` with the same
+		// latched-vs-transient split the ApplyAgent* verbs use (see
+		// ApplyAgentInsertChunk's gate above for the full rationale);
+		// `retriable` is what tells the caller whether resolving again
+		// later can work.
+		if( outResult )
+		{
+			outResult->applied = false;
+			outResult->status  = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				// headVersion left at {0,0}: this path must not touch mJob.
+				outResult->retriable = false;
+				outResult->message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+			}
+			else
+			{
+				outResult->retriable = true;
+				outResult->message = String( "render queued or in progress -- retry after it completes" );
+				outResult->headVersion = mJob.GetCstHeadVersion();
+			}
+		}
+		return false;
+	}
 	// Admission serializes resolvers and controller commits. Proposal
 	// bookkeeping itself uses a leaf mutex, while ApplyAgent* remains the
 	// authoritative optimistic check-and-apply under mMutex. This avoids

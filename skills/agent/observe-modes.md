@@ -65,16 +65,6 @@ persistent sidecar and transient AOV memory matters more than the added context.
 
 ## View modes: which `render{mode:}` value answers which question
 
-`objectmap` answers "which object is where"; the other four are
-structural DIAGNOSTIC modes that answer a narrower question still --
-not identity, but geometry.  Those five -- `objectmap` plus the four
-diagnostics -- share ONE call shape (`render {mode:"..."}`) and ONE cost
-profile (fixed 1 spp, single exact pass, `quality`/`samples` both
-honestly ignored -- noted in the result `message`).  `beauty`, the sixth
-row below, is the ordinary render and is NOT 1 spp: it honours
-`samples`/`quality` like any other `render` call.  `renderMode` in the
-result always echoes back the exact mode name that ran.
-
 | mode | Question it answers | Read it as | `legend`? |
 |---|---|---|---|
 | `beauty` (default) | What does the scene actually look like -- materials, lighting honored? | The real image (or the draft preview under `quality:"draft"`) | No |

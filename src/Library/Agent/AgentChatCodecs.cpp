@@ -108,14 +108,26 @@ namespace RISE
 				},
 				{
 					"validate",
-					"Validate a CANDIDATE scene document without touching the live scene. "
-					"Call this to check a document you are considering BEFORE proposing "
-					"changes; no error-severity diagnostics means the candidate will load "
-					"(warnings/info alone are not failures).",
+					"Check a scene for problems without touching or re-rendering it. "
+					"CALL IT WITH NO ARGUMENTS to validate the CURRENT scene -- that is "
+					"the normal post-edit check, and it also returns the headVersion it "
+					"validated. NEVER re-send the document you just edited: the engine "
+					"already has it, and echoing a whole scene back costs thousands of "
+					"output tokens and tens of seconds for nothing. Pass `text` ONLY to "
+					"check a CANDIDATE document you have not applied -- e.g. a "
+					"from-scratch scene you are composing before inserting it chunk by "
+					"chunk; that form works even with no scene loaded, while the "
+					"no-argument form needs one. Either way, no error-severity "
+					"diagnostics means the scene has no SEMANTIC errors (warnings/info "
+					"alone are not failures; a candidate still needs its `RISE ASCII "
+					"SCENE 7` header line to actually load, which this does not check), "
+					"and the result's `validated` field says which it actually checked -- "
+					"\"head\" or \"text\". If your edit came back status=\"staged\" it is "
+					"NOT in the current scene yet, so the no-argument form will not see it.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"text\":{\"type\":\"string\",\"description\":"
-						"\"The complete candidate .RISEscene document text to check.\"}"
-					"},\"required\":[\"text\"]}"
+						"\"OPTIONAL. A complete candidate .RISEscene document to check INSTEAD of the current scene. Omit it to validate the current scene -- do not re-send a document you already applied.\"}"
+					"}}"
 				},
 				{
 					"propose_patch",
@@ -940,6 +952,23 @@ namespace RISE
 				                : obj.has( "note" )       ? "note"
 				                : nullptr;
 				if( !key ) return text;
+				// VALUE GATE (added with SUPERSEDED-READ RETENTION): rewrite
+				// ONLY a note this loop wrote to announce an ATTACHED image.
+				// StripPngBase64's three attach notes all read "... is attached
+				// as ..."; nothing else does.  Without this gate the key alone
+				// decides, and `note` is NOT exclusively ours -- read_skill's
+				// missing-skills-root advisory (AgentRpc.cpp) is an RPC-owned
+				// top-level `note`, and OpenAI's RewriteElidedImages applies
+				// this rewrite to EVERY tool message of an image-bearing entry,
+				// not just the image one.  A parallel read_skill + read_image
+				// turn therefore had its ADVISORY silently replaced by
+				// "[image elided ...]" -- a pre-existing defect this gate
+				// closes, and the same collision the superseded-read
+				// placeholder would otherwise have hit.  Idempotent: a value
+				// already rewritten to kImageElidedNote no longer matches, so a
+				// second pass skips it (it was a self-assignment before).
+				if( obj.get( key ).asString().find( "is attached as" ) == std::string::npos )
+					return text;
 				JsonValue out = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = obj.members();
 				for( std::size_t i = 0; i < mem.size(); ++i ) {
@@ -1027,6 +1056,57 @@ namespace RISE
 			if( env.find( "error" ) ) return false;
 			std::string b64;
 			return IsImageResult( call, env.get( "result" ), b64 );
+		}
+
+		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
+		                                           const std::string& rawJsonRpcResponseLine )
+		{
+			// THE ALLOWLIST.  One entry today; see the header for the four
+			// admission properties and, per excluded verb, either the property
+			// it fails or the separate reason it is off the list.  Because every listed verb
+			// is ARGUMENT-INDEPENDENT (property 3), the key is the verb name
+			// itself -- `call.argsJson` is deliberately NOT consulted, which
+			// is why a model that sends stray params to read_document still
+			// gets correct supersession.
+			static const char* const kSupersedableVerbs[] = { "read_document" };
+
+			bool listed = false;
+			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )
+				if( call.name == kSupersedableVerbs[i] ) { listed = true; break; }
+			if( !listed ) return std::string();
+
+			// A result only supersedes -- and is only supersedable -- when it
+			// is a parseable JSON-RPC SUCCESS.  See the header: an errored
+			// read must never evict the last good one.
+			JsonValue env;
+			std::string perr;
+			if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+			if( env.find( "error" ) ) return std::string();
+			const JsonValue* result = env.find( "result" );
+			if( !result ) return std::string();
+
+			// INFORMATIVE-RESULT GATE.  "Success" is not enough: read_document
+			// answers the NO-HEAD case with a SUCCESS carrying
+			// {document:"", hasDocument:false, headVersion:{0,0}} (AgentRpc.cpp).
+			// In the co-editing GUI the user can close the scene between two
+			// agent reads, and without this gate that empty success would
+			// supersede -- evicting the last real document and leaving the
+			// model with neither it nor a useful remedy (the placeholder's
+			// "call read_document again" would return empty too).  The MUTABLE
+			// property in the header assumes the newer view is at least as
+			// informative as the older; this is the one shape where it is not.
+			// An uninformative result is simply not in the game: it neither
+			// supersedes nor is elided (it is a few bytes, so leaving it live
+			// costs nothing).
+			if( call.name == "read_document" &&
+			    !result->get( "hasDocument" ).asBool( false ) ) return std::string();
+			return call.name;
+		}
+
+		std::string ChatSupersededResultNote( const std::string& verbName )
+		{
+			return "[" + verbName + " result elided -- superseded by a later " + verbName +
+			       " call in this conversation; call " + verbName + " again for the current state]";
 		}
 
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
@@ -1377,6 +1457,53 @@ namespace RISE
 						newBlocks.push_back( b );
 					}
 				}
+				JsonValue newTr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = tr.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newTr.set( mem[j].first, mem[j].first == "content" ? newBlocks : mem[j].second );
+				newContent.push_back( newTr );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string AnthropicChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider.
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& tr = content.at( i );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				if( !hit || tr.get( "type" ).asString() != "tool_result" ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				changed = true;
+				// Swap the whole content-block array for the single
+				// placeholder text block.  Every OTHER member of the
+				// tool_result -- crucially tool_use_id -- is copied through,
+				// so this entry still answers its assistant turn's tool_use.
+				JsonValue newBlocks = JsonValue::MakeArray();
+				newBlocks.push_back( MakeTextBlock( placeholderText ) );
 				JsonValue newTr = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = tr.members();
 				for( std::size_t j = 0; j < mem.size(); ++j )
@@ -1998,6 +2125,70 @@ namespace RISE
 						newFr.set( mem[j].first, mem[j].second );
 					}
 				}
+				JsonValue newPart = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& pm = p.members();
+				for( std::size_t j = 0; j < pm.size(); ++j )
+					newPart.set( pm[j].first, pm[j].first == "functionResponse" ? newFr : pm[j].second );
+				newParts.push_back( newPart );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "parts" ? newParts : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string GeminiChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider.
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& parts = root.get( "parts" );
+			if( !parts.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newParts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& p = parts.at( i );
+				const JsonValue* fr = p.find( "functionResponse" );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				if( !hit || !fr || !fr->isObject() ) {
+					newParts.push_back( p );
+					continue;
+				}
+				changed = true;
+				// functionResponse.response MUST be an object, so the
+				// placeholder rides as its `note`.  A superseded result never
+				// carries an inlineData `parts` array (image results are on
+				// the separate IMAGE RETENTION path), but drop it defensively
+				// so a rewrite can never leave orphaned media behind.  id and
+				// name are copied through, keeping the call binding intact.
+				// KEY NAMESPACE (defense in depth alongside
+				// RewriteElidedSummaryText's value gate): deliberately NOT
+				// "note".  `note` is claimed by the image-elision rewrite AND
+				// is an RPC-owned field on some results (read_skill's
+				// missing-root advisory), so a distinct key makes a
+				// cross-rule collision structurally impossible rather than
+				// merely gated.
+				JsonValue newResp = JsonValue::MakeObject();
+				newResp.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+				JsonValue newFr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
+				for( std::size_t j = 0; j < mem.size(); ++j ) {
+					if( mem[j].first == "parts" ) continue;
+					newFr.set( mem[j].first, mem[j].first == "response" ? newResp : mem[j].second );
+				}
+				if( !newFr.find( "response" ) ) newFr.set( "response", newResp );
 				JsonValue newPart = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& pm = p.members();
 				for( std::size_t j = 0; j < pm.size(); ++j )
@@ -2727,6 +2918,58 @@ namespace RISE
 					}
 				}
 				out.push_back( msg );
+			}
+			return changed ? JsonSerialize( out ) : packedEntryJson;
+		}
+
+		std::string OpenAIChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ) const
+		{
+			// PackToolResults emits a loop-owned ARRAY of messages: one per
+			// result IN ORDER, so index i is result i.  (The only element
+			// that is not a result is the trailing image user message, which
+			// is APPENDED after all N of them and therefore never collides
+			// with a result index -- and is guarded against below anyway.)
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isArray() ) return packedEntryJson;
+
+			// The payload keeps the SHAPE every other result uses -- a
+			// serialized JSON object -- so a model parsing tool output
+			// uniformly does not hit a lone bare string here.
+			// See the Gemini twin above for why the key is NOT "note".
+			JsonValue note = JsonValue::MakeObject();
+			note.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+			const std::string notePayload = JsonSerialize( note );
+
+			bool changed = false;
+			JsonValue out = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < root.size(); ++i ) {
+				const JsonValue& msg = root.at( i );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				const bool chatTool = msg.get( "role" ).asString() == "tool" &&
+				                      msg.get( "content" ).isString();
+				const bool responsesTool = msg.get( "type" ).asString() == "function_call_output" &&
+				                           msg.get( "output" ).isString();
+				if( !hit || ( !chatTool && !responsesTool ) ) {
+					out.push_back( msg );
+					continue;
+				}
+				changed = true;
+				// tool_call_id / call_id are copied through, so the rewritten
+				// message still answers its tool call.
+				const char* const payloadKey = chatTool ? "content" : "output";
+				JsonValue newMsg = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = msg.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newMsg.set( mem[j].first, mem[j].first == payloadKey
+						? JsonValue::MakeString( notePayload ) : mem[j].second );
+				out.push_back( newMsg );
 			}
 			return changed ? JsonSerialize( out ) : packedEntryJson;
 		}

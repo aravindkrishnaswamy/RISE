@@ -672,6 +672,14 @@ ChatPanel::ChatPanel(QWidget* parent)
     : QWidget(parent)
     , m_loop(new AgentChatLoop())
 {
+    // Context compaction is OFF until a host sets a budget; both GUI
+    // drivers install the SAME shared default so they cannot drift.  See
+    // AgentChatLoop.h's kDefaultContextBudget* doc for the numbers and
+    // their justification.  (The Mac twin is RISEAgentChatBridge's init --
+    // keep the two in lockstep.)
+    m_loop->SetContextBudget(AgentChatLoop::kDefaultContextBudgetHighTokens,
+                             AgentChatLoop::kDefaultContextBudgetLowTokens);
+
     m_network = new QNetworkAccessManager(this);
     // P2-6: mirror the Mac driver's URLRequest.timeoutInterval = 300 --
     // without this a stalled connection blocks the turn (and the render-
@@ -1798,6 +1806,34 @@ void ChatPanel::rebuildTranscriptWidgets()
         m_transcriptLayout->addWidget(placeholder);
     }
 
+    // CONTEXT-COMPACTION NOTICE (FIX 3).  This panel renders DIRECTLY out of
+    // the loop's transcript -- there is no display mirror here.  So once a
+    // budget is installed (see the constructor's SetContextBudget call), the
+    // first compaction event ERASES the user's earlier rows from this panel.
+    // Dropping them from the WIRE is the intended behaviour; dropping them
+    // from the user's view with no explanation is not -- it reads as data
+    // loss.  Say so.
+    //
+    // The Mac driver has the OPPOSITE symptom and needs its OWN, differently
+    // worded notice (it has one -- ChatViewModel.swift, near buildRequest):
+    // its ChatViewModel keeps an append-only display array, so nothing
+    // changes on screen and it keeps showing turns the model can no longer
+    // see -- amnesia indistinguishable from a model defect, which is
+    // arguably the worse of the two.  SourceHygieneTest guards both.
+    if (m_loop->CompactedEntryCount() > 0) {
+        auto* dropped = new QLabel(
+            tr("\xE2\x8B\xAF %1 earlier transcript row(s) \xE2\x80\x94 messages and their "
+               "tool results \xE2\x80\x94 were dropped to stay within the context budget "
+               "(the running total for this conversation). They are gone from the "
+               "model's memory too.")
+                .arg(static_cast<qulonglong>(m_loop->CompactedEntryCount())));
+        dropped->setFont(Theme::sans(11));
+        dropped->setWordWrap(true);
+        dropped->setAlignment(Qt::AlignCenter);
+        dropped->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        m_transcriptLayout->addWidget(dropped);
+    }
+
     for (std::size_t i = 0; i < m_loop->TranscriptSize(); ++i) {
         const auto& entry = m_loop->TranscriptAt(i);
         const QString body = toQString(entry.displayText).trimmed();
@@ -2566,11 +2602,11 @@ void ChatPanel::scheduleEditToolCallRetry(const ChatToolCall& call, const std::s
             if (m_editRetryToken != token) return;
             m_editRetryPending = false;
 
-            // Re-verify after the yield, exactly as pollOutstandingRender
-            // re-verifies at the top of every tick: a Stop, a scene close,
-            // or a production render starting must abandon the retry rather
-            // than resume into a torn-down world.  Defensive -- every one of
-            // those transitions routes through cancelActiveTurn, which bumps
+            // Re-verify the driver's standing gates after the yield: a
+            // Stop, a scene close, or a production render starting must
+            // abandon the retry rather than resume into a torn-down world.
+            // Defensive -- every one of those transitions routes through
+            // cancelActiveTurn, which bumps
             // the token above -- so this arm ends the turn the same way
             // cancelActiveTurn would, rather than delivering into a world
             // that is already gone.  The cancelled envelope is the SAME one

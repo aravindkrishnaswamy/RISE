@@ -5352,6 +5352,191 @@ static void TestProposalHistoryEvictionSurvivesPending()
 	std::remove( tmp );
 }
 
+//////////////////////////////////////////////////////////////////////
+// A TRANSIENTLY refused resolve is reported as "did not resolve", not
+// as "resolved and rejected" / "unknown id".
+//
+// SceneEditController::ResolveProposal leaves the proposal PENDING on
+// both transient refusals -- the render-admission gate (it returns
+// false WITHOUT ever consulting the queue) and a replay that hit an
+// open editor transaction/gesture (it returns true with a retriable
+// AgentCommitResult).  Before this fix AgentSession folded the first
+// into "no pending proposal with that id (unknown id, or it was already
+// resolved)" and the second into ok=true/status="rejected": in both
+// cases a still-approvable proposal was reported as permanently gone.
+//
+// RED-PROVE for each leg is the pair (!ok, retriable) plus the
+// still-"pending" listing, and then the SAME resolve succeeding once
+// the gate clears -- the property the old shape denied.
+//////////////////////////////////////////////////////////////////////
+static void TestTransientResolveLeavesProposalPending()
+{
+	std::cout << "Test 45: a transiently refused resolve reports !ok+retriable and stays PENDING..." << std::endl;
+
+	const char* tmp = "agentlive_resolve_transient.RISEscene";
+	Job* pJob = LoadScene( kBaseScene, tmp );
+	Check( pJob != nullptr, "base scene loads via the CST path" );
+	if( !pJob ) return;
+
+	{
+		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		c.Start();
+		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
+
+		std::unique_ptr<Agent::AgentSession> ownerSess =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+		std::unique_ptr<Agent::AgentSession> ext =
+			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+		Check( ownerSess != nullptr && ext != nullptr, "both sessions wrap the live Job" );
+		if( !ownerSess || !ext ) { c.Stop(); pJob->release(); std::remove( tmp ); return; }
+		ownerSess->AttachController( &c );
+		ext->AttachController( &c );
+		Agent::AgentSession* owner = ownerSess.get();
+
+		auto stagePending = [&]( const char* value ) -> std::uint64_t {
+			Agent::AgentSetPatch p;
+			p.target = "lum";
+			p.kind   = "lambertian_luminaire_material";
+			p.param  = "scale";
+			p.value  = value;
+			const Agent::AgentPatchResult pr = ext->ProposePatch( p );
+			Check( pr.status == "staged", "external propose stages the proposal" );
+			std::uint64_t staged = 0;
+			for( const auto& e : owner->ListProposals() ) if( e.status == "pending" ) staged = e.id;
+			return staged;
+		};
+		auto isPending = [&]( std::uint64_t id ) -> bool {
+			for( const auto& e : owner->ListProposals() ) if( e.id == id ) return e.status == "pending";
+			return false;
+		};
+
+		//------------------------------------------------------------------
+		// (a) OPEN EDITOR TRANSACTION -- the replay refuses, the controller
+		// leaves the entry pending (its TRANSIENT-REFUSAL EXCEPTION).
+		//------------------------------------------------------------------
+		const std::uint64_t txnId = stagePending( "9.25" );
+		Check( txnId != 0, "the txn-leg proposal is staged pending" );
+		const double beforeTxn = LumR( *pJob );
+		Check( c.BeginTransaction(), "transaction opens" );
+
+		const Agent::AgentSession::AgentResolveResult rrTxn = owner->ResolveProposal( txnId, /*approve=*/true );
+		std::cout << "    [txn leg] ok=" << rrTxn.ok << " retriable=" << rrTxn.retriable
+		          << " status=\"" << rrTxn.status << "\" message=\"" << rrTxn.message << "\"" << std::endl;
+		Check( !rrTxn.ok,
+		       "MONEY RED-PROVE: a transaction-refused approve reports ok=FALSE -- it used to report "
+		       "ok=true/status=\"rejected\" for a proposal the controller left PENDING" );
+		Check( rrTxn.retriable, "MONEY: the refusal is flagged retriable (transient, resolvable again)" );
+		Check( rrTxn.status.empty(), "no resolve ran, so `status` stays empty (AgentRpc.h: empty when resolved is false)" );
+		Check( rrTxn.message.find( "transaction" ) != std::string::npos,
+		       "the message names the transaction that is actually blocking" );
+		Check( isPending( txnId ), "MONEY RED-PROVE: the proposal is STILL PENDING after the refused approve" );
+		Check( LumR( *pJob ) == beforeTxn, "the refused approve left the document UNCHANGED" );
+
+		// The same refusal on the WIRE: resolved=false AND retriable=true.
+		{
+			std::unique_ptr<Agent::AgentSession> wireSess =
+				Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::Owner );
+			Check( wireSess != nullptr, "wire owner session wraps the live Job" );
+			if( wireSess ) wireSess->AttachController( &c );
+			Agent::AgentRpcDispatcher wireDisp( std::move( wireSess ), Agent::AgentAutonomy::Commit );
+			char line[200];
+			std::snprintf( line, sizeof( line ),
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resolve_proposal\",\"params\":"
+				"{\"proposalId\":%llu,\"approve\":true}}",
+				static_cast<unsigned long long>( txnId ) );
+			Agent::JsonValue wireResult;
+			Check( JsonResultObj( wireDisp.HandleLine( line ), wireResult ),
+			       "wire resolve_proposal returns a result object mid-transaction" );
+			const Agent::JsonValue* wResolved = wireResult.find( "resolved" );
+			const Agent::JsonValue* wRetriable = wireResult.find( "retriable" );
+			Check( wResolved && wResolved->isBool() && !wResolved->asBool(),
+			       "MONEY RED-PROVE: the wire reports resolved=false mid-transaction" );
+			Check( wRetriable && wRetriable->isBool() && wRetriable->asBool(),
+			       "MONEY: the wire carries retriable=true, so a client can tell this apart from an unknown id" );
+			Check( isPending( txnId ), "the wire attempt also left the proposal pending" );
+		}
+
+		Check( c.RollbackTransaction(), "transaction rolls back" );
+
+		// The gate cleared -- the SAME resolve now works.  This is the whole
+		// point of leaving it pending.
+		const Agent::AgentSession::AgentResolveResult rrTxn2 = owner->ResolveProposal( txnId, /*approve=*/true );
+		Check( rrTxn2.ok && rrTxn2.status == "applied",
+		       "MONEY: the SAME proposal resolves cleanly once the transaction closes (it was not burned)" );
+		Check( !rrTxn2.retriable, "a real resolve carries retriable=false" );
+		Check( LumR( *pJob ) > 8.5 && LumR( *pJob ) < 10.0, "the retried approve reached the live scene (~9.25)" );
+
+		//------------------------------------------------------------------
+		// (b) RENDER-ADMISSION GATE -- SceneEditController::ResolveProposal
+		// returns false WITHOUT consulting the queue.  This used to reach
+		// the model as "no pending proposal with that id".
+		//------------------------------------------------------------------
+		const std::uint64_t busyId = stagePending( "2.0" );
+		Check( busyId != 0, "the busy-leg proposal is staged pending" );
+		const double beforeBusy = LumR( *pJob );
+
+		std::atomic<bool> release{ false };
+		std::atomic<bool> entered{ false };
+		SceneEditController::RenderJobId jobId = 0;
+		const bool accepted = c.SubmitAgentRenderAsync(
+			[&] {
+				entered.store( true, std::memory_order_release );
+				while( !release.load( std::memory_order_acquire ) )
+					std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			},
+			String( "resolve-transient-occupant" ), &jobId );
+		Check( accepted && jobId != 0, "the occupying agent render is accepted" );
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+			while( !entered.load( std::memory_order_acquire ) &&
+			       std::chrono::steady_clock::now() < deadline )
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+		Check( entered.load( std::memory_order_acquire ), "the occupying agent render is running" );
+		Check( !c.IsTransactionOpen(), "PRECONDITION: NO transaction is open in this leg" );
+
+		const Agent::AgentSession::AgentResolveResult rrBusy = owner->ResolveProposal( busyId, /*approve=*/true );
+		std::cout << "    [busy leg] ok=" << rrBusy.ok << " retriable=" << rrBusy.retriable
+		          << " message=\"" << rrBusy.message << "\"" << std::endl;
+		Check( !rrBusy.ok, "the admission-gate refusal reports ok=false" );
+		Check( rrBusy.retriable, "MONEY: it is flagged retriable -- the render clears and the proposal survives" );
+		Check( rrBusy.message.find( "no pending proposal with that id" ) == std::string::npos,
+		       "MONEY RED-PROVE: it does NOT claim the id is unknown/already resolved -- that permanent "
+		       "message was what a transient render-admission refusal used to report" );
+		Check( rrBusy.message.find( "render" ) != std::string::npos,
+		       "the message names the render that is actually blocking" );
+		Check( isPending( busyId ), "MONEY RED-PROVE: the proposal is STILL PENDING after the gate refusal" );
+		Check( LumR( *pJob ) == beforeBusy, "the gate refusal left the document UNCHANGED" );
+
+		release.store( true, std::memory_order_release );
+		Check( c.WaitForRenderJob( jobId, 15000 ), "the occupying agent render completes" );
+
+		const Agent::AgentSession::AgentResolveResult rrBusy2 = owner->ResolveProposal( busyId, /*approve=*/true );
+		Check( rrBusy2.ok && rrBusy2.status == "applied",
+		       "MONEY: the SAME proposal resolves cleanly once the render releases the gate" );
+		Check( LumR( *pJob ) > 1.5 && LumR( *pJob ) < 2.5, "the retried approve reached the live scene (~2.0)" );
+
+		//------------------------------------------------------------------
+		// (c) CONTROL: a genuinely unknown id is still PERMANENT -- the new
+		// `retriable` bit must not smear the two together.
+		//------------------------------------------------------------------
+		const Agent::AgentSession::AgentResolveResult rrUnknown = owner->ResolveProposal( 987654321u, /*approve=*/true );
+		Check( !rrUnknown.ok && !rrUnknown.retriable,
+		       "an unknown id is ok=false AND retriable=false (permanent, not a retry invitation)" );
+		Check( rrUnknown.message.find( "no pending proposal with that id" ) != std::string::npos,
+		       "the unknown-id message is unchanged" );
+
+		// And re-resolving an ALREADY-resolved proposal stays permanent too.
+		const Agent::AgentSession::AgentResolveResult rrAgain = owner->ResolveProposal( busyId, /*approve=*/true );
+		Check( !rrAgain.ok && !rrAgain.retriable,
+		       "re-resolving an already-applied proposal is ok=false AND retriable=false" );
+
+		c.Stop();
+	}
+	pJob->release();
+	std::remove( tmp );
+}
+
 int main()
 {
 	std::cout << "=== Agent Live-Commit Test (Facet 5 slice 1b) ===" << std::endl;
@@ -5405,6 +5590,7 @@ int main()
 	TestProposalListingTruncation();
 	TestProposalListingUtf8BoundarySafety();
 	TestProposalHistoryEvictionSurvivesPending();
+	TestTransientResolveLeavesProposalPending();
 
 	std::cout << "\n=== Results: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

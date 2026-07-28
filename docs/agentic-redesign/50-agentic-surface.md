@@ -662,6 +662,19 @@ longer equal to requested until the arbiter re-renders.
 |---|---|
 | `validate` | `{ text: string }` (whole scene) **or** `{ node_text: string }` (one chunk) **or** `{ baseHeadVersion, patch }` (validate a patch applied to the current CST head). Runs **exactly the bounded synchronous semantic phase** — lex → parse → CST → bind-to-descriptor → **reference resolution (traced `ReferenceUse`)** → type/pipe/typecheck (D39) — and returns a structured `ValidationReport` (§2.5). It is **not** a full async derive: no realization/tessellation, no asset I/O beyond identity, no TLAS, no prepare, no render. **No side effects.** |
 
+**SHIPPED SHAPE (2026-07-27).** The implemented verb takes `{ text?: string }`: `text` is now
+**OPTIONAL**, and omitting it validates the **currently retained head**, additionally returning the
+`headVersion` that was checked. `node_text` and `{ baseHeadVersion, patch }` remain unbuilt. The
+no-argument form exists because requiring `text` made the model re-emit the whole scene to check its
+own three-parameter patch. Measured (trajectory `20260727T063526Z-a7ee472c`): three `propose_patch`
+calls of 183/184/184 request bytes, then a `validate` whose `text` argument was 19,828 bytes — the
+whole head, already in memory — on a turn costing 6,369 output tokens and 27.8 s. Both forms run the same `AgentSession::ValidateText`, so they agree
+diagnostic for diagnostic on identical bytes; the result's `validated` field (`"head"` / `"text"`)
+says which was checked, so a malformed-argument call that degrades to the head form can never be
+misread as a clean verdict on the candidate it meant to send. With no head loaded the `text` form
+still works (it is stateless, as below) while the no-argument form returns `-32602` rather than a
+false "clean" answer about a document that does not exist.
+
 `validate` is what makes the agent **self-correcting** — it is the `tsc`/`cargo check`/`pytest` of
 RISE. **It is the bounded synchronous semantic phase (D39)** — the same code that runs as the *front*
 of the async derive job (so `validate` is **not a second resolver**, D35) and the same phase

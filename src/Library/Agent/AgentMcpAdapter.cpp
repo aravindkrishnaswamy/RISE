@@ -333,15 +333,24 @@ namespace RISE
 				// validate
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "text", StringProp( "The CANDIDATE scene text to validate (a full .RISEscene document)." ) );
-					std::vector<std::string> required; required.push_back( "text" );
+					props.set( "text", StringProp( "OPTIONAL candidate scene text (a full .RISEscene document) to validate INSTEAD of the current scene. Omit it to validate the current scene -- do NOT re-send the document you just edited." ) );
 					tools.push_back( MakeTool( "validate",
-						"Validate a CANDIDATE scene text with NO side effects: parses it to a CST "
-						"and derives it into a throwaway scene, returning structured diagnostics "
-						"{severity,code,message,offset,length}. STATELESS -- works with no scene "
-						"loaded, so an agent can validate a from-scratch scene before any head "
-						"exists. An empty diagnostics array means no errors were found.",
-						ObjectProp( "", props, required ) ) );
+						"Validate a scene with NO side effects, returning structured diagnostics "
+						"{severity,code,message,offset,length}. Call it with NO ARGUMENTS to check "
+						"the CURRENT scene -- that is the normal way to verify your own edit, and "
+						"it also returns the headVersion it validated. Do NOT re-send the document "
+						"you just edited: the engine already has it, and echoing a whole scene back "
+						"costs thousands of output tokens for nothing. Pass 'text' only to check a "
+						"CANDIDATE document you have not applied (e.g. a from-scratch scene you are "
+						"composing); that form is STATELESS and works with no scene loaded, while "
+						"the no-argument form needs a loaded scene. An empty diagnostics array "
+						"means no SEMANTIC errors were found -- it does not check for the "
+						"'RISE ASCII SCENE 7' header a candidate still needs in order to load. "
+						"The result's 'validated' field ('head' or 'text') says which document "
+						"was actually checked. NOTE under a propose-only posture: an edit that "
+						"came back status='staged' is NOT in the head yet, so the no-argument "
+						"form will not see it.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
 				// propose_patch
@@ -812,9 +821,13 @@ namespace RISE
 						"Approve or reject a staged proposal. OWNER-ONLY: this call is refused for any "
 						"session that is not the document owner, including a session resolving a "
 						"proposal it staged itself -- an external/proposing agent can list and poll "
-						"proposals but never approve or reject one. Returns {resolved,status,"
-						"headVersion,message}: resolved is true only when this session's authority "
-						"permitted the resolve to run at all; status is \"applied\"/\"rejected\"/"
+						"proposals but never approve or reject one. Returns {resolved,retriable,status,"
+						"headVersion,message}: resolved is true only when the resolve actually ran, "
+						"i.e. the proposal left the pending state; retriable (meaningful only when "
+						"resolved is false) is true when a TRANSIENT gate refused -- a render in "
+						"progress, or an open editor transaction/gesture -- in which case nothing was "
+						"applied and the proposal is STILL PENDING, so the same call works once that "
+						"clears; status is \"applied\"/\"rejected\"/"
 						"\"conflict\" on a real resolve (approve RE-CHECKS the proposal's staged "
 						"baseVersion against the current head -- a proposal staged against a head that "
 						"has since moved resolves to \"conflict\", not applied) and is empty when "

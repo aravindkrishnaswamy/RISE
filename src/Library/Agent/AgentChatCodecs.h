@@ -444,9 +444,18 @@ namespace RISE
 			//! The loop-written ATTACH note ("the PNG is attached as
 			//! ...") in the textual summary is rewritten to the elision
 			//! text as well, so the model is never shown a note
-			//! contradicting the elided block; an RPC-owned "note" field
-			//! is never clobbered (the attach note then lives under
-			//! "image_note", which the rewrite prefers).
+			//! contradicting the elided block.  An RPC-owned "note" field
+			//! is never clobbered, by TWO independent rules, both needed:
+			//! the KEY preference (when StripPngBase64 found the result
+			//! already owned a "note", it wrote the attach note under
+			//! "image_note", which this rewrite prefers) covers a note on
+			//! the SAME result -- and the VALUE gate (only a note reading
+			//! "... is attached as ..." is rewritten at all) covers a note
+			//! on a DIFFERENT result of the same entry, which the key rule
+			//! alone does NOT: the OpenAI codec applies this rewrite to
+			//! EVERY tool message of an image-bearing entry, so a
+			//! read_skill advisory co-packed with a read_image used to be
+			//! replaced by the image note.  See RewriteElidedSummaryText.
 			//! Used by the loop to keep only the MOST RECENT image live
 			//! (see AgentChatLoop.h "IMAGE RETENTION").  This regeneration
 			//! is legal ONLY because ToolResults entries are loop-generated
@@ -473,6 +482,38 @@ namespace RISE
 			//! entry carries no image.
 			virtual std::string RewriteElidedUserImages(
 				const std::string& userEntryJson, int countToElide ) const = 0;
+
+			//! SUPERSEDED-READ RETENTION (see AgentChatLoop.h): replace the
+			//! PAYLOAD of the tool results at the given positions of a
+			//! PackToolResults-produced entry with `placeholderText`, leaving
+			//! every other result -- and the per-result envelope that binds it
+			//! to its tool call -- untouched.
+			//!
+			//! POSITIONAL, not id-keyed, and deliberately so: the `results`
+			//! vector PackToolResults consumed maps 1:1 and IN ORDER onto this
+			//! codec's own container (Anthropic's `content` tool_result array,
+			//! Gemini's `parts` functionResponse array, OpenAI's message
+			//! array -- whose only extra element, the trailing image user
+			//! message, is APPENDED after all N results), so index i here is
+			//! result i everywhere.  Id-keying would not work uniformly:
+			//! Gemini deliberately WITHHOLDS a synthesized id from the wire
+			//! (see PackToolResults), so an id-keyed rewrite could not
+			//! address those results at all.
+			//!
+			//! The call binding is preserved verbatim (Anthropic's
+			//! tool_use_id, Gemini's functionResponse id/name, OpenAI's
+			//! tool_call_id / call_id), so a rewritten entry still answers
+			//! every tool call of its assistant turn -- the wire invariant in
+			//! AgentChatLoop.h's header.  Indices out of range are ignored;
+			//! an entry that does not parse is returned unchanged.
+			//!
+			//! Legal ONLY on entries this codec's PackToolResults produced
+			//! (loop-generated) -- never on assistant entries, which carry
+			//! the byte-preservation contract.
+			virtual std::string RewriteElidedToolResults(
+				const std::string& packedEntryJson,
+				const std::vector<std::size_t>& resultIndices,
+				const std::string& placeholderText ) const = 0;
 
 			//! Build the full HTTP request for the current conversation.
 			//! `apiKey` is used ONLY for the auth header -- it is not
@@ -525,6 +566,10 @@ namespace RISE
 			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
 			virtual std::string RewriteElidedUserImages(
 				const std::string& userEntryJson, int countToElide ) const;
+			virtual std::string RewriteElidedToolResults(
+				const std::string& packedEntryJson,
+				const std::vector<std::size_t>& resultIndices,
+				const std::string& placeholderText ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -556,6 +601,10 @@ namespace RISE
 			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
 			virtual std::string RewriteElidedUserImages(
 				const std::string& userEntryJson, int countToElide ) const;
+			virtual std::string RewriteElidedToolResults(
+				const std::string& packedEntryJson,
+				const std::vector<std::size_t>& resultIndices,
+				const std::string& placeholderText ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -620,6 +669,10 @@ namespace RISE
 			virtual std::string RewriteElidedImages( const std::string& packedEntryJson ) const;
 			virtual std::string RewriteElidedUserImages(
 				const std::string& userEntryJson, int countToElide ) const;
+			virtual std::string RewriteElidedToolResults(
+				const std::string& packedEntryJson,
+				const std::vector<std::size_t>& resultIndices,
+				const std::string& placeholderText ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -643,6 +696,92 @@ namespace RISE
 		//! disagree about what counts as an image-bearing result.
 		bool ChatToolResultCarriesImage( const ChatToolCall& call,
 		                                 const std::string& rawJsonRpcResponseLine );
+
+		//! SUPERSEDED-READ RETENTION (see AgentChatLoop.h): the supersession
+		//! KEY of one packed tool result, or "" when the result is not
+		//! supersedable.  Two results share a key iff a later one makes the
+		//! earlier one obsolete, so the loop's rule is simply "for each
+		//! non-empty key, keep only the LAST".
+		//!
+		//! A verb qualifies for the allowlist only when ALL of these hold.
+		//! The list is deliberately short; every excluded verb below either
+		//! FAILS one of these properties or is named with the separate reason
+		//! it is off the list (list_proposals satisfies all four and is
+		//! excluded on reachability; render is excluded on
+		//! information-preservation):
+		//!   (1) WHOLE-VIEW.  The result is the entire view of one named
+		//!       piece of state, so a later result fully CONTAINS what an
+		//!       earlier one carried.  (Excludes read_schema and read_skill:
+		//!       their results are keyed by keyword/category/name, so two
+		//!       calls return DIFFERENT content and neither supersedes the
+		//!       other.  Excludes query_object_at for the same reason.)
+		//!   (2) MUTABLE.  The underlying state can change between calls, so
+		//!       an older copy is not merely redundant but potentially STALE
+		//!       -- which is what makes elision a correctness improvement and
+		//!       not just a token saving.  (Excludes read_schema/read_skill
+		//!       again: both are STATELESS on-disk/registry reads whose
+		//!       results never go stale.)
+		//!   (3) ARGUMENT-INDEPENDENT.  The result does not depend on the
+		//!       call's arguments, so "same verb" IS "same view" and the key
+		//!       can be the verb name alone.  A future argument-DEPENDENT
+		//!       verb would need an argument-normalizing key function here;
+		//!       today none is on the list, and adding one without that
+		//!       function would elide results that do not supersede.
+		//!   (4) NOT ALREADY COVERED.  read_image and compare_to_reference are
+		//!       exactly the verbs IsImageResult matches, so their results are
+		//!       governed by the separate, older IMAGE RETENTION rule; running
+		//!       both rules over one result would elide it twice.  (An entry
+		//!       may still be touched by BOTH rules when it packs an image
+		//!       result ALONGSIDE a supersedable one -- that is fine and
+		//!       tested; what (4) forbids is one RESULT being claimed by
+		//!       both.)
+		//! Three further exclusions worth naming because they look eligible:
+		//!   * render -- the render result's per-channel means are explicitly
+		//!     meant to be COMPARED against the previous render (kToolDefs
+		//!     says so to the model), so eliding the older one would destroy
+		//!     information the model is instructed to use.
+		//!   * validate -- its result is a diagnostics list of tens of bytes,
+		//!     and in the `text` form it is a pure function of an argument
+		//!     (fails (3)).
+		//!   * list_proposals -- this one DOES satisfy (1)-(4): a parameterless
+		//!     whole-queue read of mutable state, not image-bearing.  It is off
+		//!     the list on REACHABILITY: this predicate governs the CHAT
+		//!     transcript, and kToolDefs (in AgentChatCodecs.cpp, the one place
+		//!     chat tools are declared) does not expose list_proposals -- nor
+		//!     read_viewport (which returns a PNG but is NOT one of
+		//!     IsImageResult's verbs, so property (4) would NOT have covered
+		//!     it), render_status, render_wait, or render_cancel -- so none can
+		//!     ever be DECLARED to the model.  (Nothing GATES the verb name:
+		//!     ToolCallToJsonRpcLine forwards whatever the model emits, and
+		//!     the dispatcher speaks all five -- so a hallucinated name would
+		//!     dispatch and pack.  What that means here is only that an
+		//!     allowlist entry for one would be untestable dead code in
+		//!     practice, not that it is unreachable in principle.)  Adding
+		//!     an unreachable verb here would be untestable dead code.  If a
+		//!     future kToolDefs entry exposes list_proposals, add it HERE at
+		//!     the same time: the loop already groups elisions per key and
+		//!     emits a per-verb note, so a second entry needs no other change.
+		//!
+		//! ERROR RESULTS NEVER SUPERSEDE, and are never supersedable: this
+		//! returns "" for a JSON-RPC error envelope (or an unparseable line).
+		//! A failed read_document must not evict the last GOOD one -- that
+		//! would leave the model with neither.
+		//!
+		//! NOR DOES AN UNINFORMATIVE SUCCESS.  read_document answers the
+		//! NO-HEAD case with a SUCCESS carrying hasDocument:false and an empty
+		//! document; in the co-editing GUI the user can close the scene
+		//! between two agent reads, and letting that supersede would evict the
+		//! last real document in favour of nothing.  See the .cpp's
+		//! INFORMATIVE-RESULT GATE.
+		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
+		                                           const std::string& rawJsonRpcResponseLine );
+
+		//! The honest, actionable placeholder that replaces a superseded
+		//! result's payload -- a pure function of the verb name, so the
+		//! rewrite stays deterministic and replay-safe.  It says WHAT was
+		//! removed, WHY, and HOW to get it back, exactly as the image
+		//! elision note does.
+		std::string ChatSupersededResultNote( const std::string& verbName );
 
 		//! Number of LIVE (not-yet-elided) image blocks/parts in a
 		//! MakeUserEntry-produced user entry -- i.e. how many of its

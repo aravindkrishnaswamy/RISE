@@ -290,6 +290,12 @@ final class ChatViewModel: ObservableObject {
     }
 
     @Published private(set) var transcript: [Entry] = []
+
+    /// Highest `compactedEntryCount` already reported to the user as a
+    /// `.notice` row -- so one compaction event produces one notice, not
+    /// one per subsequent request.  Reset wherever `transcript` is, since
+    /// the loop's own counter is cleared by Reset()/SetProvider() too.
+    private var lastReportedCompactedEntryCount: UInt = 0
     @Published var inputText: String = ""
     /// Images queued to go out with the NEXT send() (Model-B F5 chat
     /// image attachments) — populated by attachImageFile(at:), shown as
@@ -1086,6 +1092,7 @@ final class ChatViewModel: ObservableObject {
         currentScenePath = scenePath
         chatBridge.reset()
         transcript = []
+        lastReportedCompactedEntryCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         pendingAttachments = []
@@ -1151,6 +1158,7 @@ final class ChatViewModel: ObservableObject {
         chatBridge.startTrajectory(directory: trajectoryDirectory,
                                    scenePath: "", headVersion: -1, enabled: false)
         transcript = []
+        lastReportedCompactedEntryCount = 0
         inputText = ""
         clearErrorAffordances()
         consecutiveHttp400s = 0
@@ -1198,6 +1206,7 @@ final class ChatViewModel: ObservableObject {
         provider = newProvider
         modelId = chatBridge.modelId
         transcript = []
+        lastReportedCompactedEntryCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         // Eval-harness E1: setProvider closed the old session (a
@@ -1759,6 +1768,7 @@ final class ChatViewModel: ObservableObject {
         cancelTurn()
         chatBridge.reset()
         transcript = []
+        lastReportedCompactedEntryCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         transcript.append(Entry(kind: .notice, text: "Conversation reset."))
@@ -2063,6 +2073,32 @@ final class ChatViewModel: ObservableObject {
             }
 
             let request = chatBridge.buildRequest(apiKey: apiKey)
+            // buildRequest is where span compaction runs, so this is the
+            // moment to notice it did.  THIS DRIVER'S display transcript is
+            // append-only and independent of the wire transcript, so a
+            // dropped span costs it nothing visually -- which is precisely
+            // the hazard: the panel keeps showing turns the model can no
+            // longer see, and the resulting amnesia is indistinguishable
+            // from a model defect.  Say so once per compaction event.
+            // (The Windows panel renders the wire transcript directly and
+            // therefore has the OPPOSITE symptom -- the turns visibly
+            // disappear -- so its notice is worded differently.  Both are
+            // guarded by SourceHygieneTest.)
+            let droppedNow = chatBridge.compactedEntryCount
+            if droppedNow > lastReportedCompactedEntryCount {
+                // Report the DELTA, and name the running total separately --
+                // the bridge counter is cumulative, so printing it bare would
+                // read as additive on a second compaction event.
+                let droppedJustNow = droppedNow - lastReportedCompactedEntryCount
+                lastReportedCompactedEntryCount = droppedNow
+                transcript.append(Entry(
+                    kind: .notice,
+                    text: "\(droppedJustNow) earlier turn(s) of history — messages and "
+                        + "their tool results — were dropped from the model's memory to "
+                        + "stay within the context budget (\(droppedNow) in total this "
+                        + "conversation). They are still shown above, but the agent can "
+                        + "no longer see them."))
+            }
             guard !request.isEmpty, let url = URL(string: request.url) else { return }
 
             var urlRequest = URLRequest(url: url)

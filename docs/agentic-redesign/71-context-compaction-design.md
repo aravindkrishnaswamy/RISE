@@ -185,6 +185,98 @@ it doesn't regress task success.
   Option C this should *fail* (amnesia); under Option B (hybrid, user-messages
   retained) it should *pass*. That contrast is the design's acceptance test.
 
+## 6b. Within-span supersession elision (SHIPPED 2026-07-27, ahead of S2's gate)
+
+Span compaction (§7 S1-S4) is a **cross-turn** mechanism: its unit is a span,
+and a span begins at a `User` entry. That makes it structurally unable to help
+a whole class of blow-up that happens *inside one turn* — including the most
+common one in the measured GUI corpus.
+
+(Scoping that honestly: the single **largest** recorded context in the corpus is
+not this shape. `20260710T191019Z-95c9935e` peaked at 141 K provider-reported
+input, driven by one bare `read_schema` returning the 305 KB whole-grammar dump
+— a shape that predates the cheap `{category:…}` listing mode the tool
+description now steers to, and one this rule does **not** address, because
+`read_schema` fails admission properties (1) and (2). What follows is the
+most-frequent within-turn blow-up, not the largest single one.)
+
+**The measurement** (trajectory `20260727T063526Z-a7ee472c`): ONE user message
+("make the middle object red"), 23 model rounds, **six** `read_document` calls
+each returning a 19.8 KB document (a ~21.5 KB JSON-RPC response),
+provider-reported input growing **10 K -> 68 K** tokens — to check a
+**three**-parameter patch (three `propose_patch` calls of ~183 bytes each). Every one of those six lived in a **single span**, so
+`CompactTranscript` would have dropped nothing (`kMinRetainedSpans` = 2 floors
+it at the previous + current turn). A second session (`20260727T064005Z-d815b0c7`) made five `read_skill`
+calls -- the index plus four named skills, 52 KB of markdown (58 KB of
+JSON-RPC responses) -- before
+touching the scene.  That one is NOT addressed here: see the allowlist
+discussion below for why read_skill results do not supersede each other.
+
+**The rule shipped**: SUPERSEDED-READ RETENTION — the text-side sibling of the
+image-elision precedent §2 names. For a read verb whose result is the *whole*
+view of one piece of *mutable* state and does not depend on its arguments, only
+the MOST RECENT result stays live; older ones are rewritten in place to
+`[<verb> result elided -- superseded by a later <verb> call in this
+conversation; call <verb> again for the current state]`. Same boundary as image
+elision (loop-generated `ToolResults` entries only, C1 untouched), same wire
+guarantee (the per-result call binding — `tool_use_id` / `functionResponse.id`
+/ `call_id` — is copied through, so C2 holds), and a deterministic pure
+function of the transcript, so §6's replay contract holds unchanged.
+
+The allowlist lives in `ChatToolResultSupersessionKey`, whose four admission
+properties — and, per excluded verb, either the property it fails or the other
+reason it is off the list — are documented on its declaration in
+`AgentChatCodecs.h`. Today it holds
+`read_document` alone. Two exclusions worth restating here because they look
+eligible and are not: `read_schema` / `read_skill` are argument-keyed and
+STATELESS (two calls return different, never-stale content), and `render`
+results are explicitly meant to be COMPARED across calls, so eliding an older
+one would destroy information the tool description tells the model to use.
+
+Note this is a **correctness** improvement as much as a cost one — stated
+precisely: **five** of the six documents were byte-identical (19,824 B), i.e.
+pure redundancy, and the **sixth** differed (19,828 B), i.e. the head *did* move
+under the agent mid-task. That last fact is what makes an older copy potentially
+STALE rather than merely wasteful.
+
+**Span compaction was enabled at the same time**, as a secondary measure — but
+its reach must be stated honestly, because an earlier draft of this section
+overstated it. `CompactTranscript` stops while `spanCount <= kMinRetainedSpans`
+(2), so it can only fire in a conversation of **three or more user turns**.
+Across the 27-trajectory corpus, 20 sessions have one user turn, 6 have two, and
+exactly **one** has three. It therefore does **not** catch the 141 K
+`read_schema` session above (one user turn ⇒ one span ⇒ the loop breaks before
+erasing anything) — the same single-span reasoning this section already applies
+to `a7ee472c`. It is a genuine backstop for long multi-turn sessions and nothing
+more. Enabled via
+`SetContextBudget` from both GUI drivers (Mac `RISEAgentChatBridge`, Windows
+`ChatPanel`) using the shared `AgentChatLoop::kDefaultContextBudgetHighTokens`
+/ `...LowTokens` (150 K / 75 K — rationale, and the honest ~1.5× margin over the
+only compactable session on record, in that header). It would not have
+helped the session above, and is not claimed to; it bounds genuinely long
+multi-turn sessions. Until this wiring landed, S2's span-dropper had shipped
+but had **never once run in production** — `SetContextBudget` was called from
+neither GUI. `SourceHygieneTest` now guards both call sites.
+
+One consequence had to be handled with it, and it bites **both** drivers in
+opposite ways. Windows' `ChatPanel` renders the chat directly out of the loop's
+transcript, so a compaction event makes the user's visible history *vanish*.
+macOS' `ChatViewModel` keeps its own append-only display array, so *nothing*
+changes on screen — the panel keeps showing turns the model can no longer see,
+and the resulting amnesia is indistinguishable from a model defect, which is
+arguably the worse of the two. `AgentChatLoop::CompactedEntryCount()` now
+reports how many entries were dropped and **both** drivers surface it (a panel
+row on Windows, a `.notice` transcript row on macOS); `SourceHygieneTest` guards
+both. Dropping spans from the wire is intended; dropping them from the user's
+view — or from the model's memory while the view still shows them — without
+saying so is not.
+
+Finally, note that SUPERSEDED-READ RETENTION is **unconditional** (no budget
+gates it), so unlike span compaction it applies to the eval runner too. That is
+deliberate — it is a correctness rule about stale reads, not a cost knob — but
+the 312-run baseline in [70-agent-eval-harness.md](70-agent-eval-harness.md) §6.4
+predates it and is no longer a like-for-like comparison.
+
 ## 7. Phasing (when built)
 
 - S1: token estimator + high-water/low-water config (no rewriting yet; just

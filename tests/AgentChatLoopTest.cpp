@@ -63,6 +63,12 @@
 //        loop-written attach note is rewritten alongside the block
 //        (never an RPC-owned note field); two images packed in ONE
 //        flush keep only the LAST live (pre-elided at pack time).
+//    T14b Superseded-read retention: only the MOST RECENT read_document
+//        result stays live; older ones become an honest "[read_document
+//        result elided ...]" placeholder while their call binding stays
+//        intact.  Un-superseded results (read_skill, render) and a lone
+//        read_document are untouched; an ERROR result neither supersedes
+//        nor is elided; the two elision rules do not corrupt each other.
 //    T15 -ffast-math-safe non-finite guards: 1e999 tool args survive
 //        JSON serialization as the documented `0` fallback (the
 //        JSON-RPC line stays valid JSON); an `inf` numeric scene value
@@ -231,6 +237,7 @@
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/Agent/Base64.h"
 
+#include <algorithm>   // std::sort -- tool-call/tool-result id multiset comparison (T14b)
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -810,6 +817,23 @@ static void TestAnthropicRequestShape()
 		if( name == "validate" ) {
 			Check( desc.find( "error-severity" ) != std::string::npos,
 			       "validate description scopes failure to error-severity diagnostics" );
+			// FIX 4: `text` is OPTIONAL, and the NO-ARGUMENT current-scene
+			// form is what the description must steer the model to.  While
+			// `text` was required, the model re-emitted the WHOLE scene to
+			// check its own three-parameter patch (measured: 6,369 output
+			// tokens / 27.8 s in one GUI turn).  A schema that still marks
+			// `text` required would re-create that turn even with the RPC
+			// side fixed, so the schema is asserted, not just the prose.
+			const JsonValue& schema = tools.at( i ).get( "input_schema" );
+			Check( !schema.has( "required" ),
+			       "validate's schema does NOT mark text required (the no-arg form is legal)" );
+			Check( schema.get( "properties" ).get( "text" ).isObject(),
+			       "validate still declares the optional text parameter" );
+			Check( desc.find( "NO ARGUMENTS" ) != std::string::npos,
+			       "validate description leads with the no-argument current-scene form" );
+			Check( desc.find( "NEVER re-send" ) != std::string::npos ||
+			       desc.find( "never re-send" ) != std::string::npos,
+			       "validate description tells the model not to re-send the edited document" );
 		}
 		// Model-B F5 slice S2: the chunk-CRUD descriptions are prescriptive --
 		// insert_chunk teaches one-chunk-per-call, declare-before-use ordering,
@@ -1449,11 +1473,17 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 	}
 
 	// Malformed tool args degrade to empty params (never throws).
+	// The exemplar verb must be one with a REQUIRED parameter -- insert_chunk
+	// ('chunkText').  It was `validate` until FIX 4 made every one of that
+	// verb's parameters optional (empty params is now its legal current-scene
+	// form), which is the OTHER half of ToolCallToJsonRpcLine's documented
+	// behaviour: "verbs whose params are all optional simply execute with
+	// their defaults".
 	{
 		AgentChatLoop loop;
 		ChatToolCall bad;
 		bad.id = "toolu_badargs";
-		bad.name = "validate";
+		bad.name = "insert_chunk";
 		bad.argsJson = "{ not json";
 		const std::string line = loop.ToolCallToJsonRpcLine( bad, 9 );
 		JsonValue lineJson = ParseBody( line );
@@ -2367,6 +2397,602 @@ static void TestImageElision()
 		Check( oldFr != nullptr &&
 		       oldFr->get( "response" ).get( "image_note" ).asString().find( "image elided" ) != std::string::npos,
 		       "gemini: the attach note (image_note) is rewritten to the elision text" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T14b: SUPERSEDED-READ RETENTION (FIX 3) -- only the MOST RECENT
+//       read_document result stays live; older ones are rewritten to the
+//       honest "[read_document result elided ...]" placeholder.
+//
+//       MEASURED MOTIVATION (trajectory 20260727T063526Z-a7ee472c): ONE
+//       user message ("make the middle object red"), 23 model rounds, SIX
+//       read_document calls returning ~21.5 KB each, input growing 10 K ->
+//       68 K provider-reported input tokens.  Every one of the six lived in
+//       a SINGLE span, so span
+//       compaction could not have helped -- this is the within-span rule.
+//
+//       Proves on ALL FOUR wire shapes (Anthropic / Gemini / OpenAI
+//       Responses / OpenAI Chat Completions -- the last two are separate
+//       branches of one codec and must not share a fixture): the elision
+//       fires, the placeholder is honest and actionable, and the transcript
+//       stays WIRE-VALID (every recorded tool call still answered, ids
+//       intact).  The remaining properties -- an UN-superseded result is
+//       byte-untouched, an ERROR result neither supersedes nor is elided,
+//       the entry-internal case, determinism, idempotence, and the token
+//       gate counter -- are proven on the Anthropic shape only, since they
+//       exercise the PROVIDER-NEUTRAL loop pass rather than a codec.
+//----------------------------------------------------------------------
+static std::string DocEnvelope( int id, const char* marker, int revision )
+{
+	// Shaped like the real read_document result (AgentRpc.cpp): document +
+	// hasDocument + headVersion.  The marker makes old-vs-new occurrence
+	// counting unambiguous.
+	return std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( id ) +
+		",\"result\":{\"document\":\"RISE ASCII SCENE 7 " + marker +
+		"\",\"hasDocument\":true,\"headVersion\":{\"uuid\":7,\"revision\":" +
+		std::to_string( revision ) + "}}}";
+}
+
+// Every tool call recorded in an Anthropic transcript must be answered in
+// the immediately-following user message -- the wire invariant the elision
+// must not break.  Returns true when the id multisets match round for round.
+static bool AnthropicToolCallsAllAnswered( const JsonValue& messages )
+{
+	for( std::size_t m = 0; m + 1 < messages.size(); ++m ) {
+		const JsonValue& msg = messages.at( m );
+		if( msg.get( "role" ).asString() != "assistant" ) continue;
+		std::vector<std::string> uses;
+		const JsonValue& content = msg.get( "content" );
+		for( std::size_t i = 0; i < content.size(); ++i )
+			if( content.at( i ).get( "type" ).asString() == "tool_use" )
+				uses.push_back( content.at( i ).get( "id" ).asString() );
+		if( uses.empty() ) continue;
+		std::vector<std::string> answers;
+		const JsonValue& next = messages.at( m + 1 ).get( "content" );
+		for( std::size_t i = 0; i < next.size(); ++i )
+			if( next.at( i ).get( "type" ).asString() == "tool_result" )
+				answers.push_back( next.at( i ).get( "tool_use_id" ).asString() );
+		std::sort( uses.begin(), uses.end() );
+		std::sort( answers.begin(), answers.end() );
+		if( uses != answers ) return false;
+	}
+	return true;
+}
+
+// Drive `loop` through one assistant turn that calls the given verbs (one
+// tool call each) and answer each with the matching envelope.  `provider`
+// selects the fixture shape.  Returns false if a round did not parse.
+static bool DriveToolRound( AgentChatLoop& loop, ChatProvider provider,
+                            const std::vector<std::string>& verbs,
+                            const std::vector<std::string>& ids,
+                            const std::vector<std::string>& envelopes )
+{
+	// Local / xAI reuse the OpenAI codec on its CHAT COMPLETIONS wire, whose
+	// response shape differs from OpenAI's native Responses wire -- so the
+	// two must not share a fixture.
+	const bool chatCompletions = ( provider == ChatProvider::Local ||
+	                               provider == ChatProvider::XAI );
+	std::string blocks;
+	for( std::size_t i = 0; i < verbs.size(); ++i ) {
+		if( i ) blocks += ",";
+		if( provider == ChatProvider::Anthropic )
+			blocks += "{\"type\":\"tool_use\",\"id\":\"" + ids[i] + "\",\"name\":\"" +
+			          verbs[i] + "\",\"input\":{}}";
+		else if( provider == ChatProvider::Gemini )
+			blocks += "{\"functionCall\":{\"id\":\"" + ids[i] + "\",\"name\":\"" +
+			          verbs[i] + "\",\"args\":{}}}";
+		else if( chatCompletions )
+			blocks += "{\"id\":\"" + ids[i] + "\",\"type\":\"function\",\"function\":{\"name\":\"" +
+			          verbs[i] + "\",\"arguments\":\"{}\"}}";
+		else
+			blocks += "{\"type\":\"function_call\",\"call_id\":\"" + ids[i] +
+			          "\",\"name\":\"" + verbs[i] + "\",\"arguments\":\"{}\"}";
+	}
+	std::string fx;
+	if( provider == ChatProvider::Anthropic )
+		fx = AnthropicFixture( "[" + blocks + "]", "tool_use" );
+	else if( provider == ChatProvider::Gemini )
+		fx = GeminiFixture( "{\"parts\":[" + blocks + "],\"role\":\"model\"}", "STOP" );
+	else if( chatCompletions )
+		fx = OpenAIFixture( "null", "[" + blocks + "]", "tool_calls" );
+	else
+		fx = "{\"status\":\"completed\",\"output\":[" + blocks + "]}";
+
+	ChatStepResult st = loop.HandleResponse( 200, fx );
+	if( st.toolCalls.size() != verbs.size() ) return false;
+	for( std::size_t i = 0; i < st.toolCalls.size(); ++i )
+		loop.AddToolResult( st.toolCalls[i], envelopes[i] );
+	return true;
+}
+
+static std::vector<std::string> Vec1( const std::string& a )
+{
+	std::vector<std::string> v; v.push_back( a ); return v;
+}
+static std::vector<std::string> Vec2( const std::string& a, const std::string& b )
+{
+	std::vector<std::string> v; v.push_back( a ); v.push_back( b ); return v;
+}
+
+static void TestSupersededReadElision()
+{
+	std::printf( "T14b: older read_document results are elided (most recent stays live)...\n" );
+
+	const char* const kMarkerA = "DOC_MARKER_AAAA";
+	const char* const kMarkerB = "DOC_MARKER_BBBB";
+	const char* const kMarkerC = "DOC_MARKER_CCCC";
+	const std::string envA = DocEnvelope( 1, kMarkerA, 1 );
+	const std::string envB = DocEnvelope( 2, kMarkerB, 2 );
+	const std::string envC = DocEnvelope( 3, kMarkerC, 3 );
+
+	// --- (a) Anthropic: two read_documents, one turn each ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "make the middle object red" );
+		const std::size_t estFresh = loop.EstimateContextTokens();
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_document" ),
+		                     Vec1( "toolu_docA" ), Vec1( envA ) ) ) {
+			Check( false, "anthropic: first read_document round" ); return;
+		}
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_document" ),
+		                     Vec1( "toolu_docB" ), Vec1( envB ) ) ) {
+			Check( false, "anthropic: second read_document round" ); return;
+		}
+
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, kMarkerB ) == 1,
+		       "anthropic: the NEWEST document rides exactly once" );
+		Check( CountOccurrences( body, kMarkerA ) == 0,
+		       "anthropic: the SUPERSEDED document rides ZERO times (elided)" );
+
+		// PLACEHOLDER HONESTY: names what was removed, why, and how to get
+		// it back -- the same contract the image note carries.
+		const std::string note =
+			"[read_document result elided -- superseded by a later read_document "
+			"call in this conversation; call read_document again for the current state]";
+		Check( body.find( note ) != std::string::npos,
+		       "anthropic: the elided result carries the honest, actionable placeholder" );
+
+		JsonValue root = ParseBody( body );
+		const JsonValue& msgs = root.get( "messages" );
+		Check( msgs.size() == 5, "anthropic: user + 2x(assistant + tool-results)" );
+		// WIRE VALIDITY: the rewritten tool_result keeps its tool_use_id, so
+		// every recorded tool call is still answered.
+		Check( AnthropicToolCallsAllAnswered( msgs ),
+		       "anthropic: every recorded tool call is still answered after elision" );
+		const JsonValue& oldTr = msgs.at( 2 ).get( "content" ).at( 0 );
+		Check( oldTr.get( "type" ).asString() == "tool_result" &&
+		       oldTr.get( "tool_use_id" ).asString() == "toolu_docA",
+		       "anthropic: the rewritten result keeps its matching tool_use_id" );
+		Check( oldTr.get( "content" ).isArray() && oldTr.get( "content" ).size() == 1 &&
+		       oldTr.get( "content" ).at( 0 ).get( "type" ).asString() == "text",
+		       "anthropic: the elided result is exactly one text block" );
+
+		// Sanity only -- the estimate obviously exceeds an empty transcript's.
+		// The claim that MATTERS (the estimate barely grows across repeat
+		// reads) is case (h)'s gate counter; this is not that.
+		Check( loop.EstimateContextTokens() > estFresh,
+		       "anthropic: the transcript costs more than an empty one (sanity)" );
+
+		// A second BuildRequest reproduces the SAME bytes.  NOTE this is a
+		// serializer-stability check, NOT an idempotence check: BuildRequest
+		// calls FlushPendingToolResults, which EARLY-RETURNS with no pending
+		// calls, so the elision pass does not re-run here.  Real idempotence
+		// -- re-sweeping a transcript that already has dead slots -- is
+		// exercised below by driving a THIRD round over the two already-elided
+		// entries and asserting their bytes did not move again.
+		Check( loop.BuildRequest( kApiKey ).body == body,
+		       "anthropic: BuildRequest is a stable serializer of an unchanged transcript" );
+
+		// IDEMPOTENCE, properly: a further flush re-runs the whole sweep over
+		// entries whose slots are ALREADY dead.  The first entry must not be
+		// rewritten a second time (a double rewrite would nest or duplicate
+		// the placeholder), and the newly superseded second entry must now
+		// carry its own.
+		const std::string elidedEntryBefore = loop.TranscriptAt( 2 ).rawJson;
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_document" ),
+		                     Vec1( "toolu_docC" ), Vec1( envC ) ) ) {
+			Check( false, "anthropic: third read_document round" ); return;
+		}
+		Check( loop.TranscriptAt( 2 ).rawJson == elidedEntryBefore,
+		       "anthropic: a re-sweep leaves an ALREADY-elided entry byte-identical (idempotent)" );
+		const std::string body3 = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body3, "read_document result elided" ) == 2 &&
+		       CountOccurrences( body3, kMarkerC ) == 1 &&
+		       CountOccurrences( body3, kMarkerB ) == 0,
+		       "anthropic: after three reads exactly two placeholders ride and only the "
+		       "newest document is live" );
+	}
+
+	// --- (b) Gemini wire shape ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "make the middle object red" );
+		if( !DriveToolRound( loop, ChatProvider::Gemini, Vec1( "read_document" ),
+		                     Vec1( "fc_docA" ), Vec1( envA ) ) ||
+		    !DriveToolRound( loop, ChatProvider::Gemini, Vec1( "read_document" ),
+		                     Vec1( "fc_docB" ), Vec1( envB ) ) ) {
+			Check( false, "gemini: read_document rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, kMarkerB ) == 1,
+		       "gemini: the NEWEST document rides exactly once" );
+		Check( CountOccurrences( body, kMarkerA ) == 0,
+		       "gemini: the SUPERSEDED document rides ZERO times (elided)" );
+		JsonValue root = ParseBody( body );
+		const JsonValue& contents = root.get( "contents" );
+		bool sawAnsweredOldCall = false;
+		for( std::size_t i = 0; i < contents.size(); ++i ) {
+			const JsonValue& parts = contents.at( i ).get( "parts" );
+			for( std::size_t j = 0; j < parts.size(); ++j ) {
+				const JsonValue* fr = parts.at( j ).find( "functionResponse" );
+				if( !fr || fr->get( "id" ).asString() != "fc_docA" ) continue;
+				// The call binding (id + name) survives, and the response is
+				// still an object -- Gemini requires both.
+				// The placeholder rides under `superseded_note`, DELIBERATELY
+				// not `note` -- `note` is claimed by the image-elision rewrite
+				// and is an RPC-owned field on some results.
+				sawAnsweredOldCall = fr->get( "name" ).asString() == "read_document" &&
+				                     fr->get( "response" ).isObject() &&
+				                     fr->get( "response" ).get( "superseded_note" ).asString()
+					.find( "read_document result elided" ) != std::string::npos;
+			}
+		}
+		Check( sawAnsweredOldCall,
+		       "gemini: the elided functionResponse keeps id+name and carries the note" );
+	}
+
+	// --- (c) OpenAI (Responses) wire shape ---
+	{
+		AgentChatLoop loop;   // default provider = OpenAI
+		loop.AddUserMessage( "make the middle object red" );
+		if( !DriveToolRound( loop, ChatProvider::OpenAI, Vec1( "read_document" ),
+		                     Vec1( "call_docA" ), Vec1( envA ) ) ||
+		    !DriveToolRound( loop, ChatProvider::OpenAI, Vec1( "read_document" ),
+		                     Vec1( "call_docB" ), Vec1( envB ) ) ) {
+			Check( false, "openai: read_document rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, kMarkerB ) == 1,
+		       "openai: the NEWEST document rides exactly once" );
+		Check( CountOccurrences( body, kMarkerA ) == 0,
+		       "openai: the SUPERSEDED document rides ZERO times (elided)" );
+		JsonValue root = ParseBody( body );
+		const JsonValue& input = root.get( "input" );
+		bool keptCallId = false;
+		for( std::size_t i = 0; i < input.size(); ++i ) {
+			const JsonValue& m = input.at( i );
+			if( m.get( "type" ).asString() != "function_call_output" ) continue;
+			if( m.get( "call_id" ).asString() != "call_docA" ) continue;
+			keptCallId = m.get( "output" ).isString() &&
+			             m.get( "output" ).asString().find( "read_document result elided" )
+			                 != std::string::npos;
+		}
+		Check( keptCallId,
+		       "openai: the elided output keeps its call_id and carries the note" );
+	}
+
+	// --- (c2) OpenAI CHAT COMPLETIONS wire (Local / xAI) ---
+	//
+	// A SEPARATE branch of the same codec (useResponsesApi=false): results
+	// ride as role:"tool" messages keyed by tool_call_id, and the elided
+	// payload must stay a serialized JSON object like every other result.
+	// Worth its own case because LOCAL (Ollama) is the DEFAULT provider in
+	// BOTH GUIs, so this is the wire most production sessions actually use.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Local );
+		loop.AddUserMessage( "make the middle object red" );
+		if( !DriveToolRound( loop, ChatProvider::Local, Vec1( "read_document" ),
+		                     Vec1( "call_ccA" ), Vec1( envA ) ) ||
+		    !DriveToolRound( loop, ChatProvider::Local, Vec1( "read_document" ),
+		                     Vec1( "call_ccB" ), Vec1( envB ) ) ) {
+			Check( false, "chat-completions read_document rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, kMarkerB ) == 1,
+		       "openai/chat-completions: the NEWEST document rides exactly once" );
+		Check( CountOccurrences( body, kMarkerA ) == 0,
+		       "openai/chat-completions: the SUPERSEDED document rides ZERO times (elided)" );
+		JsonValue root = ParseBody( body );
+		const JsonValue& messages = root.get( "messages" );
+		bool keptToolCallId = false, payloadStillAnObject = false;
+		for( std::size_t i = 0; i < messages.size(); ++i ) {
+			const JsonValue& m = messages.at( i );
+			if( m.get( "role" ).asString() != "tool" ) continue;
+			if( m.get( "tool_call_id" ).asString() != "call_ccA" ) continue;
+			keptToolCallId = true;
+			// The rewritten payload keeps the SHAPE every other tool result
+			// uses -- a serialized JSON object, not a bare string.
+			JsonValue payload = ParseBody( m.get( "content" ).asString() );
+			payloadStillAnObject = payload.isObject() &&
+				payload.get( "superseded_note" ).asString().find( "read_document result elided" )
+					!= std::string::npos;
+		}
+		Check( keptToolCallId,
+		       "openai/chat-completions: the elided message keeps its tool_call_id" );
+		Check( payloadStillAnObject,
+		       "openai/chat-completions: the elided payload is still a JSON object carrying the note" );
+	}
+
+	// --- (d) UN-SUPERSEDED results are untouched ---
+	//
+	// read_skill / read_schema are argument-keyed STATIC reads -- a later
+	// one does NOT supersede an earlier one -- and render results are
+	// explicitly meant to be COMPARED across calls.  All must survive.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build me a scene" );
+		const std::string skill1 =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"name\":\"lighting-recipes\","
+			"\"markdown\":\"SKILL_MARKER_ONE\"}}";
+		const std::string skill2 =
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"name\":\"materials-and-media-basics\","
+			"\"markdown\":\"SKILL_MARKER_TWO\"}}";
+		const std::string render1 =
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true,\"width\":160,"
+			"\"height\":120,\"note\":\"RENDER_MARKER_ONE\"}}";
+		const std::string render2 =
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"ok\":true,\"width\":160,"
+			"\"height\":120,\"note\":\"RENDER_MARKER_TWO\"}}";
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_skill" ),
+		                     Vec1( "toolu_s1" ), Vec1( skill1 ) ) ||
+		    !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_skill" ),
+		                     Vec1( "toolu_s2" ), Vec1( skill2 ) ) ||
+		    !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "render" ),
+		                     Vec1( "toolu_r1" ), Vec1( render1 ) ) ||
+		    !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "render" ),
+		                     Vec1( "toolu_r2" ), Vec1( render2 ) ) ) {
+			Check( false, "un-superseded: drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "SKILL_MARKER_ONE" ) == 1 &&
+		       CountOccurrences( body, "SKILL_MARKER_TWO" ) == 1,
+		       "read_skill results are NOT superseded by a later read_skill (both ride)" );
+		Check( CountOccurrences( body, "RENDER_MARKER_ONE" ) == 1 &&
+		       CountOccurrences( body, "RENDER_MARKER_TWO" ) == 1,
+		       "render results are NOT superseded (the model is told to COMPARE them)" );
+		Check( body.find( "result elided" ) == std::string::npos,
+		       "no elision note appears when nothing was superseded" );
+
+		// A SINGLE read_document is likewise untouched -- nothing supersedes it.
+		AgentChatLoop solo;
+		solo.SetProvider( ChatProvider::Anthropic );
+		solo.AddUserMessage( "read it" );
+		if( !DriveToolRound( solo, ChatProvider::Anthropic, Vec1( "read_document" ),
+		                     Vec1( "toolu_only" ), Vec1( envA ) ) ) {
+			Check( false, "solo read_document round" ); return;
+		}
+		const std::string soloBody = solo.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( soloBody, kMarkerA ) == 1 &&
+		       soloBody.find( "result elided" ) == std::string::npos,
+		       "a lone read_document result is left completely alone" );
+	}
+
+	// --- (e) An ERROR read_document neither supersedes nor is elided ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "read it twice" );
+		const std::string errEnv =
+			"{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32603,"
+			"\"message\":\"ERR_MARKER transient failure\"}}";
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_document" ),
+		                     Vec1( "toolu_ok" ), Vec1( envA ) ) ||
+		    !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_document" ),
+		                     Vec1( "toolu_err" ), Vec1( errEnv ) ) ) {
+			Check( false, "error-supersession: drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, kMarkerA ) == 1,
+		       "a FAILED read_document does not evict the last GOOD one" );
+		Check( CountOccurrences( body, "ERR_MARKER" ) == 1,
+		       "the error result itself still rides (it is not supersedable either)" );
+
+		// ... and a later SUCCESS supersedes the earlier success as usual.
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_document" ),
+		                     Vec1( "toolu_ok2" ), Vec1( envC ) ) ) {
+			Check( false, "error-supersession: recovery round" ); return;
+		}
+		const std::string body2 = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body2, kMarkerA ) == 0 &&
+		       CountOccurrences( body2, kMarkerC ) == 1,
+		       "a later SUCCESS supersedes the earlier success across the failed one" );
+	}
+
+	// --- (f) ENTRY-INTERNAL: two read_documents packed by ONE flush ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "read it twice at once" );
+		std::vector<std::string> envs; envs.push_back( envA ); envs.push_back( envB );
+		if( !DriveToolRound( loop, ChatProvider::Anthropic,
+		                     Vec2( "read_document", "read_document" ),
+		                     Vec2( "toolu_p1", "toolu_p2" ), envs ) ) {
+			Check( false, "parallel read_document round" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, kMarkerA ) == 0 &&
+		       CountOccurrences( body, kMarkerB ) == 1,
+		       "within ONE flush, only the LAST read_document stays live" );
+		JsonValue root = ParseBody( body );
+		Check( AnthropicToolCallsAllAnswered( root.get( "messages" ) ),
+		       "both parallel calls are still answered after the entry-internal elision" );
+	}
+
+	// --- (g2) THE TWO ELISION RULES MUST NOT CORRUPT EACH OTHER ---
+	//
+	// Review-round P1.  Both rules can touch the SAME entry: a turn that
+	// calls read_document and read_image in parallel packs both results
+	// together, and each can later be superseded by its own kind.  On the
+	// OpenAI wire the image rule's summary rewriter used to rewrite the
+	// `note` key of EVERY tool message in an image-bearing entry, with no
+	// image guard -- so it overwrote the superseded-read placeholder with
+	// "[image elided -- superseded by a newer render]", a statement that is
+	// FALSE about that result and that destroys the "call read_document
+	// again" remedy the placeholder exists to give.
+	//
+	// Closed two ways.  THIS case red-proves the first: the placeholder
+	// rides under `superseded_note`, a key RewriteElidedSummaryText does not
+	// look at -- so it passes with or without the second defense.  The
+	// second (the summary rewriter only rewrites a value reading "... is
+	// attached as ...") is red-proved by (g3) below, whose result really
+	// does own a top-level `note`.  Verified by mutation probe: reverting
+	// the key alone leaves this case green; reverting BOTH turns it red.
+	{
+		const std::vector<unsigned char> px( 32, 0x7E );
+		const std::string b64 = Base64Encode( px );
+		const std::string imgEnv =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"png_base64\":\"" + b64 +
+			"\",\"byteLength\":32}}";
+		const std::vector<unsigned char> px2( 32, 0x1D );
+		const std::string b642 = Base64Encode( px2 );
+		const std::string imgEnv2 =
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"png_base64\":\"" + b642 +
+			"\",\"byteLength\":32}}";
+
+		for( int wire = 0; wire < 2; ++wire ) {
+			const ChatProvider prov = wire ? ChatProvider::Local : ChatProvider::OpenAI;
+			const char* label = wire ? "openai/chat-completions" : "openai/responses";
+			AgentChatLoop loop;
+			loop.SetProvider( prov );
+			loop.AddUserMessage( "look and read" );
+			// Turn 1: read_document + read_image, PARALLEL (one entry).
+			std::vector<std::string> envs; envs.push_back( envA ); envs.push_back( imgEnv );
+			if( !DriveToolRound( loop, prov, Vec2( "read_document", "read_image" ),
+			                     Vec2( "call_mixD", "call_mixI" ), envs ) ) {
+				Check( false, std::string( label ) + ": mixed round" ); return;
+			}
+			// Turn 2: supersede the DOCUMENT.
+			if( !DriveToolRound( loop, prov, Vec1( "read_document" ),
+			                     Vec1( "call_mixD2" ), Vec1( envB ) ) ) {
+				Check( false, std::string( label ) + ": doc supersede round" ); return;
+			}
+			// Turn 3: supersede the IMAGE -- this is what used to clobber the
+			// placeholder written in turn 2.
+			if( !DriveToolRound( loop, prov, Vec1( "read_image" ),
+			                     Vec1( "call_mixI2" ), Vec1( imgEnv2 ) ) ) {
+				Check( false, std::string( label ) + ": image supersede round" ); return;
+			}
+
+			const std::string body = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( body, kMarkerA ) == 0 &&
+			       CountOccurrences( body, kMarkerB ) == 1,
+			       std::string( label ) + ": the superseded document is gone, the newest rides" );
+			Check( CountOccurrences( body, b64 ) == 0 && CountOccurrences( body, b642 ) == 1,
+			       std::string( label ) + ": the superseded image is gone, the newest rides" );
+			Check( body.find( "read_document result elided" ) != std::string::npos,
+			       std::string( label ) + ": the superseded-read placeholder SURVIVES the later "
+			       "image elision (it is not overwritten with the image note)" );
+			Check( body.find( "image elided" ) != std::string::npos,
+			       std::string( label ) + ": the image elision still happened (positive control)" );
+		}
+	}
+
+	// --- (g3) THE IMAGE RULE MUST NOT CLOBBER AN RPC-OWNED `note` ---
+	//
+	// PRE-EXISTING defect the P1 above uncovered: read_skill's
+	// missing-skills-root advisory is an RPC-owned top-level `note` field.
+	// Packed alongside a read_image in ONE turn, the OpenAI image rewriter
+	// replaced that advisory with the image-elision text.  The value gate
+	// fixes it; this pins it.
+	{
+		const std::vector<unsigned char> px( 32, 0x33 );
+		const std::string b64 = Base64Encode( px );
+		const std::vector<unsigned char> px2( 32, 0x44 );
+		const std::string b642 = Base64Encode( px2 );
+		const std::string skillEnv =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"skills\":[],"
+			"\"note\":\"SKILLROOT_ADVISORY_MARKER\"}}";
+		const std::string img1 =
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"png_base64\":\"" + b64 + "\",\"byteLength\":32}}";
+		const std::string img2 =
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"png_base64\":\"" + b642 + "\",\"byteLength\":32}}";
+
+		AgentChatLoop loop;   // default provider = OpenAI (Responses)
+		loop.AddUserMessage( "list skills and look" );
+		std::vector<std::string> envs; envs.push_back( skillEnv ); envs.push_back( img1 );
+		if( !DriveToolRound( loop, ChatProvider::OpenAI, Vec2( "read_skill", "read_image" ),
+		                     Vec2( "call_sk", "call_im" ), envs ) ) {
+			Check( false, "read_skill+read_image round" ); return;
+		}
+		if( !DriveToolRound( loop, ChatProvider::OpenAI, Vec1( "read_image" ),
+		                     Vec1( "call_im2" ), Vec1( img2 ) ) ) {
+			Check( false, "image supersede round" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64 ) == 0,
+		       "the superseded image is elided (positive control)" );
+		Check( CountOccurrences( body, "SKILLROOT_ADVISORY_MARKER" ) == 1,
+		       "an RPC-OWNED `note` co-packed with an image SURVIVES the image elision" );
+	}
+
+	// --- (h) THE MEASURED CLAIM, as a gate counter ---
+	//
+	// Reproduces the production shape: a ~21.5 KB document read over and
+	// over inside ONE user turn.  WITHOUT the elision each read adds the
+	// whole document to every later request (the trajectory's 10 K -> 68 K
+	// provider-reported input growth); WITH it, the marginal cost of a repeat read is the assistant
+	// turn plus a 142-byte placeholder.  Asserting the MARGIN rather than
+	// an absolute number keeps this honest if the estimator is retuned.
+	{
+		const std::string bigDoc( 21500, 'x' );
+		const std::size_t docTokens = bigDoc.size() / 4;   // the estimator's chars/4 proxy
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "make the middle object red" );
+
+		std::vector<std::size_t> estAfterRound;
+		for( int r = 0; r < 6; ++r ) {
+			const std::string env =
+				std::string( "{\"jsonrpc\":\"2.0\",\"id\":" ) + std::to_string( r + 1 ) +
+				",\"result\":{\"document\":\"" + bigDoc + "\",\"hasDocument\":true,"
+				"\"headVersion\":{\"uuid\":7,\"revision\":" + std::to_string( r + 1 ) + "}}}";
+			if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "read_document" ),
+			                     Vec1( "toolu_big" + std::to_string( r ) ), Vec1( env ) ) ) {
+				Check( false, "gate counter: drive round" ); return;
+			}
+			// AddToolResult flushes once every pending call is answered, so
+			// the elision has already run by here.
+			estAfterRound.push_back( loop.EstimateContextTokens() );
+		}
+		Check( docTokens > 4000,
+		       "gate counter: the fixture document is genuinely large (>4000 est. tokens)" );
+		const std::size_t growth = estAfterRound.back() - estAfterRound.front();
+		Check( growth < 500,
+		       "SIX read_documents cost about ONE: five repeats add <500 est. tokens, "
+		       "not 5 x " + std::to_string( docTokens ) + " (growth was " +
+		       std::to_string( growth ) + ")" );
+		// And exactly one copy of the document is on the wire.
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, bigDoc ) == 1,
+		       "gate counter: exactly ONE copy of the document rides after six reads" );
+	}
+
+	// --- (g) DETERMINISM: two loops fed identical scripts agree byte for byte ---
+	{
+		AgentChatLoop a, b;
+		a.SetProvider( ChatProvider::Anthropic );
+		b.SetProvider( ChatProvider::Anthropic );
+		for( int which = 0; which < 2; ++which ) {
+			AgentChatLoop& L = which ? b : a;
+			L.AddUserMessage( "make the middle object red" );
+			for( int r = 0; r < 3; ++r ) {
+				const std::string id = "toolu_det" + std::to_string( r );
+				const std::string env = DocEnvelope( r + 1, kMarkerA, r + 1 );
+				if( !DriveToolRound( L, ChatProvider::Anthropic, Vec1( "read_document" ),
+				                     Vec1( id ), Vec1( env ) ) ) {
+					Check( false, "determinism: drive round" ); return;
+				}
+			}
+		}
+		Check( a.BuildRequest( kApiKey ).body == b.BuildRequest( kApiKey ).body,
+		       "the elision is deterministic: identical scripts -> identical request bytes" );
+		Check( a.EstimateContextTokens() == b.EstimateContextTokens(),
+		       "the elision is deterministic: identical scripts -> identical estimates" );
 	}
 }
 
@@ -3537,6 +4163,16 @@ static void TestOpenAIImageElision()
 	Check( !oldHasImage, "openai: the old round's trailing image message carries NO image_url any more" );
 	Check( JsonSerialize( oldImgUser ).find( "image elided" ) != std::string::npos,
 	       "openai: the old round's image message is rewritten to the elision text" );
+	// The TOOL message's own attach note must be rewritten too.  Without
+	// this the OpenAI half of RewriteElidedSummaryText's value gate is
+	// unguarded: an over-broad gate would leave the model an "attached"
+	// note over an elided image while every other check here stayed green
+	// (the Anthropic and Gemini twins DO assert their attach notes).
+	Check( oldTool.get( "output" ).asString().find( "attached" ) == std::string::npos,
+	       "openai: the elided tool result no longer claims the PNG is attached" );
+	Check( CountOccurrences( body, "the PNG is attached as a following user image_url message" ) == 1,
+	       "openai: exactly ONE attach note survives -- the LIVE image's (mirrors the "
+	       "Anthropic twin's count check)" );
 
 	const JsonValue& newTool = messages.at( 5 );
 	Check( newTool.get( "type" ).asString() == "function_call_output" &&
@@ -4571,6 +5207,16 @@ static void TestContextCompaction( AgentRpcDispatcher& rpc )
 		Check( entriesAfter < entriesBefore,
 		       "T36b: compaction dropped at least one whole span (fewer entries)" );
 
+		// FIX 3 review round 2, P1: a driver that renders the chat DIRECTLY
+		// out of this transcript (the Windows ChatPanel does) must be able to
+		// TELL the user those turns are gone -- otherwise enabling the budget
+		// silently erases their visible history.  The counter is the signal;
+		// it must equal exactly what was erased.
+		Check( loop.CompactedEntryCount() == entriesBefore - entriesAfter,
+		       "T36b: CompactedEntryCount() reports exactly the entries dropped" );
+		Check( loop.CompactedEntryCount() > 0,
+		       "T36b: RED-PROVE -- the counter is not stuck at zero" );
+
 		// WIRE VALIDITY on the serialized body.
 		JsonValue root = ParseBody( req.body );
 		CheckAnthropicToolPairing( root );
@@ -4912,6 +5558,39 @@ static void TestToolOutcomeDisplay()
 		       "T38a: displayText mirrors the single outcome line as \"name \\u2192 outcome\"" );
 	}
 
+	// (a2) validate: the one-liner must DISCRIMINATE clean from diagnosed.
+	// Before FIX 4 validate fell into the generic "ok" arm, so a GUI user
+	// watching the transcript saw the SAME string for a clean scene and for
+	// one carrying errors -- and the no-argument form made validate the
+	// routine post-edit check, so that string is now shown constantly.
+	{
+		const ChatTranscriptEntry clean = oneCallFlush( "validate",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"diagnostics\":[],"
+			"\"validated\":\"head\",\"headVersion\":{\"uuid\":1,\"revision\":4}}}" );
+		Check( clean.toolSummaries.size() == 1 && clean.toolSummaries[0].outcomeLine == "clean",
+		       "T38a2: validate on a clean head -> \"clean\"" );
+
+		const ChatTranscriptEntry bad = oneCallFlush( "validate",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"diagnostics\":["
+			"{\"severity\":\"error\",\"code\":\"UNKNOWN_PARAMETER\",\"message\":\"m\","
+			"\"offset\":3,\"length\":5},"
+			"{\"severity\":\"error\",\"code\":\"INVALID_VALUE\",\"message\":\"m2\","
+			"\"offset\":9,\"length\":2}],\"validated\":\"head\"}}" );
+		Check( bad.toolSummaries.size() == 1 &&
+		       bad.toolSummaries[0].outcomeLine == "2 error(s): UNKNOWN_PARAMETER",
+		       "T38a2: validate on a diagnosed head names the count and the first code" );
+		Check( bad.toolSummaries[0].outcomeLine != clean.toolSummaries[0].outcomeLine,
+		       "T38a2: RED-PROVE -- clean and diagnosed do NOT share one string" );
+
+		// The candidate form is labelled so a reader can tell WHICH document
+		// the verdict is about.
+		const ChatTranscriptEntry cand = oneCallFlush( "validate",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"diagnostics\":[],"
+			"\"validated\":\"text\"}}" );
+		Check( cand.toolSummaries[0].outcomeLine == "clean (candidate)",
+		       "T38a2: the text form's verdict is labelled (candidate)" );
+	}
+
 	// (b) rejected with NO issues -> falls back to the free-text message.
 	{
 		const ChatTranscriptEntry e = oneCallFlush( "propose_patch",
@@ -4940,7 +5619,7 @@ static void TestToolOutcomeDisplay()
 	// (d2) propose_patches: the OTHER batch verb returns the identical
 	// {applied,total,results} envelope and must get the identical summary.
 	// RED-PROVE target: with no case for it, it falls through to the generic
-	// "ok" of rule 8 and reports the SAME string whether every element
+	// "ok" of rule 9 and reports the SAME string whether every element
 	// applied or none did -- exactly the outcome a BEST-EFFORT batch verb
 	// most needs to surface, since a partial failure is its main hazard.
 	{
@@ -6888,6 +7567,7 @@ int main()
 	TestRequestGuards();
 	TestHostileDispositionGates();
 	TestImageElision();
+	TestSupersededReadElision();
 	TestFastMathGuards();
 	TestDuplicateIdRefusal();
 	TestGeminiUserRunMerge();

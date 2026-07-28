@@ -28,7 +28,30 @@
 //                                            '\\', ".." -> -32602; unknown or not in
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
-//      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
+//      validate     {text?}              -> {diagnostics:[{severity,code,message,offset,length}],
+//                                            validated:"head"|"text"}
+//                                           (TWO forms, both read-only.  WITH `text`:
+//                                            validate that CANDIDATE document --
+//                                            STATELESS, works with no head loaded.
+//                                            WITHOUT it: validate the CURRENTLY
+//                                            RETAINED head, and additionally return
+//                                            the `headVersion` that was validated.
+//                                            EITHER WAY the result says which it
+//                                            checked in `validated` ("head"/"text"),
+//                                            so a call whose arguments were malformed
+//                                            (and therefore degraded to the head form)
+//                                            can never be misread as a clean verdict
+//                                            on the candidate it meant to send --
+//                                            the cheap post-edit check, so a model
+//                                            never has to re-emit the whole scene to
+//                                            verify its own patch.  A present-but-null
+//                                            `text` reads as absent -- and so does
+//                                            an EMPTY string, matching read_schema's
+//                                            `keyword` and read_skill's `name`; any
+//                                            other non-string -> -32602.  No head AND no
+//                                            `text` -> -32602 rather than a false
+//                                            "clean" verdict about a document that
+//                                            does not exist.)
 //    DRIVER-INJECTED KEY, on the five mutating verbs below ONLY.  The two GUI
 //    chat drivers (build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
 //    stampDriverRetry and build/VS2022/RISE-GUI/ChatPanel.cpp's, "FIX 2") may
@@ -497,8 +520,8 @@
 //                                            is true iff this entry's listing was
 //                                            actually clipped.)
 //      resolve_proposal {proposalId,approve:bool}
-//                                        -> {resolved:bool,status:string,headVersion,
-//                                            message}
+//                                        -> {resolved:bool,retriable:bool,status:string,
+//                                            headVersion,message}
 //                                           (Secure-MCP slice 5b: approve or reject
 //                                            a staged proposal.  OWNER-ONLY: routes
 //                                            to AgentSession::ResolveProposal, which
@@ -516,6 +539,16 @@
 //                                            against a head that has since moved
 //                                            resolves to "conflict", not applied);
 //                                            empty when `resolved` is false.
+//                                            `retriable` splits resolved=false in
+//                                            two: true = a TRANSIENT gate refused
+//                                            (a render in progress, or an open
+//                                            editor transaction/gesture), nothing
+//                                            was applied and the proposal is STILL
+//                                            PENDING, so the same call works once
+//                                            the gate clears; false = permanent
+//                                            (unknown id, already resolved,
+//                                            non-Owner authority, teardown).
+//                                            Always false when `resolved` is true.
 //                                            `headVersion` is the head AFTER the
 //                                            call on a real resolve (whatever the
 //                                            underlying ApplyAgent* replay reports

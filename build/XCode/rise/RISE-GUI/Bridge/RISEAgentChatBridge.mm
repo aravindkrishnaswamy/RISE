@@ -220,6 +220,13 @@ static NSString *ToNS(const std::string& s) {
     self = [super init];
     if (self) {
         _loop = new Agent::AgentChatLoop();
+        // Context compaction is OFF until a host sets a budget; both GUI
+        // drivers install the SAME shared default so they cannot drift.
+        // See AgentChatLoop.h's kDefaultContextBudget* doc for the numbers
+        // and their justification.  (The Windows twin is ChatPanel's
+        // constructor -- keep the two in lockstep.)
+        _loop->SetContextBudget(Agent::AgentChatLoop::kDefaultContextBudgetHighTokens,
+                                Agent::AgentChatLoop::kDefaultContextBudgetLowTokens);
     }
     return self;
 }
@@ -304,6 +311,10 @@ static NSString *ToNS(const std::string& s) {
 
 + (NSInteger)maxLiveUserImages {
     return static_cast<NSInteger>(Agent::AgentChatLoop::kMaxLiveUserImages);
+}
+
+- (NSUInteger)compactedEntryCount {
+    return static_cast<NSUInteger>(_loop->CompactedEntryCount());
 }
 
 - (void)setSkillIndex:(NSString *)indexText {

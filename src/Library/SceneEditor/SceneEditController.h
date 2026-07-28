@@ -803,7 +803,14 @@ namespace RISE
 		//! Returns false (no such id, or already resolved -- resolving an
 		//! already-applied/rejected/conflict proposal is refused rather
 		//! than silently re-run) with the queue left untouched; true
-		//! otherwise, with `outResult` filled from the replay.  A REJECT
+		//! otherwise, with `outResult` filled from the replay.  The
+		//! render-admission gate ALSO returns false without consulting the
+		//! queue, so `false` alone does not mean "unknown id": that path
+		//! fills `outResult` with a refusal whose `retriable` says whether
+		//! resolving again later can work (true while a render is queued
+		//! or running, false once the controller is being destroyed).  A
+		//! caller that passes `outResult == nullptr` cannot tell the two
+		//! apart.  A REJECT
 		//! never calls ApplyAgent* at all, but still fills `outResult`
 		//! with status="rejected" plus the REAL current head (Secure-MCP
 		//! slice 5b fix round P2-2 -- leaving it default-constructed put

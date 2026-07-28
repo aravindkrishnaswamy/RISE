@@ -950,31 +950,126 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// validate {text} -> {diagnostics:[...]}
-				//   STATELESS: validation parses `text` to a CST and derives it
-				//   into a THROWAWAY Job (never a session's head), so it needs
-				//   NO loaded head -- an agent REPAIRING a scene from scratch
-				//   validates a candidate BEFORE any head exists.  We call the
-				//   static ValidateText directly so the no-head path works.
+				// validate {text?} -> {diagnostics:[...]}  (+ headVersion in the
+				//   no-argument form)
+				//
+				//   TWO FORMS, both read-only and both side-effect-free:
+				//
+				//   * WITH `text` -- the STATELESS candidate form.  Validation
+				//     parses `text` to a CST and derives it into a THROWAWAY Job
+				//     (never a session's head), so it needs NO loaded head -- an
+				//     agent REPAIRING or composing a scene from scratch validates
+				//     a candidate BEFORE any head exists.  We call the static
+				//     ValidateText directly so the no-head path works.
+				//
+				//   * WITHOUT `text` -- validate the CURRENTLY RETAINED document.
+				//     Added because requiring `text` made the model re-emit the
+				//     WHOLE scene just to check its own three-parameter patch.
+				//     MEASURED (trajectory 20260727T063526Z-a7ee472c): calls
+				//     17-19 were three propose_patch calls of 183/184/184
+				//     request bytes; call 22 was a `validate` whose `text`
+				//     argument was 19,828 bytes -- the ENTIRE head, which the
+				//     engine already had in memory -- and the turn that
+				//     produced it spent 6,369 output tokens and 27.8 s.
+				//     HONEST SCOPING of that evidence: a second session
+				//     (20260727T064005Z-d815b0c7) also spent 4,689 output
+				//     tokens / 26.5 s on a validate, but that one carried a
+				//     3,355-byte CANDIDATE against a ~1.9 KB head -- the LEGITIMATE
+				//     `text` form during a from-scratch build, not a re-echo.
+				//     It is not evidence for this change, and is recorded here
+				//     so the claim is not quietly doubled.  The head is validated
+				//     through the SAME static ValidateText on the SAME canonical
+				//     text ReadDocument() serves, so a diagnosed document reports
+				//     identical diagnostics either way -- this form is an
+				//     argument shortcut, not a second validator.  (It is also
+				//     literally the idiom the eval harness already used
+				//     internally for its "diagnostics" checkpoint --
+				//     AgentEvalRunner.cpp's CheckDiagnosticsKind -- which had
+				//     no way to express it over the wire until now.)  The result also
+				//     carries the `headVersion` that was validated (the text form
+				//     does NOT: a candidate is unrelated to the head, and stamping
+				//     one there would be a lie).
+				//
+				//   NO HEAD + no `text`: an ERROR, deliberately.  Returning an
+				//   empty diagnostics array would tell the model "your document
+				//   is clean" about a document that does not exist -- the exact
+				//   dishonesty this surface refuses elsewhere.  The message names
+				//   the `text` form, which DOES work with no head.
+				//
+				//   A PRESENT-BUT-NULL or EMPTY `text` reads as ABSENT (the
+				//   same convention read_schema's `keyword` and read_skill's
+				//   `name` already use, where "" means "no keyword" / "the
+				//   index"); any other non-string value is still rejected.
+				//
+				//   STAGED EDITS.  This validates the HEAD as the engine holds
+				//   it.  Under AgentAutonomy::Propose with an External-authority
+				//   session (the loopback-HTTP topology) a mutating verb answers
+				//   status="staged" and leaves the head UNTOUCHED -- so a clean
+				//   verdict here says nothing about a staged edit, which is not
+				//   in the head yet.  Both model-facing tool descriptions say so;
+				//   the `headVersion` in the result is the check (it will not
+				//   have moved).
+				//
+				//   BOTH forms stamp `validated`: "head" or "text".  It is not
+				//   redundant with the presence of `headVersion` -- a call whose
+				//   arguments were MALFORMED degrades to empty params
+				//   (ToolCallToJsonRpcLine's documented behaviour), so a model
+				//   that MEANT to check a candidate can silently land in the
+				//   head form.  Without an explicit discriminator it would read
+				//   an empty diagnostics array as "my candidate is clean"; with
+				//   one, the answer says plainly what was checked.
 				//--------------------------------------------------------------
 				if( m == "validate" ) {
 					const JsonValue* text = params.find( "text" );
-					if( !text || !text->isString() ) {
-						return MakeError( idValue, kInvalidParams, "Invalid params: 'text' (string) is required" );
+					// TYPE FIRST, then the absent/present decision -- so a
+					// non-string is refused rather than silently reinterpreted
+					// as the head form.
+					if( text && !text->isString() && !text->isNull() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'text' must be a string when supplied "
+							"(omit it entirely to validate the current scene)" );
 					}
-					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( text->asString() );
-					JsonValue arr = JsonValue::MakeArray();
-					for( const AgentDiagnostic& d : diags ) {
-						JsonValue dj = JsonValue::MakeObject();
-						dj.set( "severity", JsonValue::MakeString( SeverityName( d.severity ) ) );
-						dj.set( "code",     JsonValue::MakeString( d.code ) );
-						dj.set( "message",  JsonValue::MakeString( d.message ) );
-						dj.set( "offset",   JsonValue::MakeNumber( static_cast<double>( d.offset ) ) );
-						dj.set( "length",   JsonValue::MakeNumber( static_cast<double>( d.length ) ) );
-						arr.push_back( dj );
+					// EMPTY reads as ABSENT too, matching read_schema's `keyword`
+					// and read_skill's `name` exactly.  Without this, a
+					// `{"text":""}` call took the candidate branch and
+					// ValidateText("") returned an EMPTY diagnostics array -- a
+					// "clean" verdict on a non-document, the same dishonesty the
+					// no-head branch below refuses.
+					const bool haveText = ( text != nullptr && text->isString() &&
+					                        !text->asString().empty() );
+					// ONE renderer for both forms, so the two result shapes
+					// cannot drift apart field by field.
+					auto diagnosticsArray = []( const std::vector<AgentDiagnostic>& diags ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const AgentDiagnostic& d : diags ) {
+							JsonValue dj = JsonValue::MakeObject();
+							dj.set( "severity", JsonValue::MakeString( SeverityName( d.severity ) ) );
+							dj.set( "code",     JsonValue::MakeString( d.code ) );
+							dj.set( "message",  JsonValue::MakeString( d.message ) );
+							dj.set( "offset",   JsonValue::MakeNumber( static_cast<double>( d.offset ) ) );
+							dj.set( "length",   JsonValue::MakeNumber( static_cast<double>( d.length ) ) );
+							arr.push_back( dj );
+						}
+						return arr;
+					};
+					if( !haveText ) {
+						// The CURRENT-HEAD form.
+						if( !s || !s->HasDocument() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: no scene is loaded, so there is nothing to "
+								"validate; supply 'text' to validate a candidate document" );
+						}
+						JsonValue headResult = JsonValue::MakeObject();
+						headResult.set( "diagnostics", diagnosticsArray(
+							AgentSession::ValidateText( s->ReadDocument() ) ) );
+						headResult.set( "validated", JsonValue::MakeString( "head" ) );
+						headResult.set( "headVersion", HeadVersionJson( s->HeadVersion() ) );
+						return MakeSuccess( idValue, headResult );
 					}
 					JsonValue result = JsonValue::MakeObject();
-					result.set( "diagnostics", arr );
+					result.set( "diagnostics", diagnosticsArray(
+						AgentSession::ValidateText( text->asString() ) ) );
+					result.set( "validated", JsonValue::MakeString( "text" ) );
 					return MakeSuccess( idValue, result );
 				}
 
@@ -2225,7 +2320,8 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// resolve_proposal {proposalId, approve:bool} ->
-				//   {resolved:bool, status:string, headVersion, message}
+				//   {resolved:bool, retriable:bool, status:string, headVersion,
+				//    message}
 				//   Secure-MCP slice 5b: approve or reject a staged proposal.
 				//   OWNER-ONLY -- routes to AgentSession::ResolveProposal, which
 				//   refuses (resolved=false) for a non-Owner-authority session,
@@ -2260,6 +2356,13 @@ namespace RISE
 					const AgentSession::AgentResolveResult rr = s->ResolveProposal( proposalId, approve );
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "resolved", JsonValue::MakeBool( rr.ok ) );
+					// resolved:false has two flavours and a caller must be able
+					// to tell them apart: a TRANSIENT refusal (a render or an
+					// open editor gesture held the gate) leaves the proposal
+					// PENDING and resolving again later works, while every
+					// other refusal is permanent.  Always present so a client
+					// never has to treat a missing key as either.
+					result.set( "retriable", JsonValue::MakeBool( rr.retriable ) );
 					result.set( "status",   JsonValue::MakeString( rr.status ) );
 					// headVersion: exactly one of paramResult/chunkResult is
 					// populated on any REAL resolve -- approve, reject, OR

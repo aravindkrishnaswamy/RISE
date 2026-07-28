@@ -683,8 +683,11 @@ int main()
 		Check( env.get( "id" ).isNull(), "malformed line -> id is null (un-attributable)" );
 	}
 	{
-		// Missing required param (validate needs 'text') -> -32602.
-		const std::string resp = rpc.HandleLine( Req( 13, "validate", JsonValue::MakeObject() ) );
+		// Missing required param -> -32602.  The exemplar is insert_chunk
+		// ('chunkText'); it was `validate` with no params until FIX 4 made
+		// that verb's every parameter optional -- empty params is now its
+		// legal current-scene form, covered in AgentReadValidateTest.
+		const std::string resp = rpc.HandleLine( Req( 13, "insert_chunk", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 13 );
 		Check( env.get( "error" ).get( "code" ).asNumber() == -32602.0,
 		       "missing required param -> error.code == -32602" );

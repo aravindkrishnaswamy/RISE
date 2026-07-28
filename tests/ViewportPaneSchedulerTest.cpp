@@ -39,7 +39,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
-#include <cstdlib>			// getenv() -- TMPDIR lookup in WriteTemp; getenv() -- RISE_TEST_SCHED_RACE_DELAY_MS
+#include <cstdlib>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -64,9 +64,10 @@ static void Check( bool c, const std::string& w )
 }
 
 //----------------------------------------------------------------------
-// Deterministic flake-reproduction seam.  It PAUSES at the three spots where
-// this test's timing assumptions used to live, so a load-dependent failure can
-// be reproduced on demand instead of by running the suite until it trips:
+// Deterministic flake-reproduction seam.  It PAUSES at the four spots where
+// this test's timing assumptions used to live -- (j), (j2), (n5), and the
+// BeautyVariant gesture bracket -- so a load-dependent failure can be
+// reproduced on demand instead of by running the suite until it trips:
 //
 //     RISE_TEST_SCHED_RACE_DELAY_MS=200 ./bin/tests/ViewportPaneSchedulerTest
 //
@@ -83,16 +84,28 @@ static void Check( bool c, const std::string& w )
 //   * (j) never reproduced -- correctly: that scenario has no live gesture, so
 //     nothing self-rearms during the gap.  The epoch is applied there anyway
 //     because the accounting is the same shape.
-//   * The BeautyVariant gesture bracket: the pause does NOT reliably reproduce
-//     its failure, but it does demonstrate the premise the old assertions
-//     relied on is false -- at 2500 ms the recorded stream is
+//   * (n5) "shared-camera edit refresh is exactly [0,1,2,3]" FAILS 3/3 at
+//     200 ms against the pre-fix version.  Here the pause sits AFTER
+//     ClearSequence, which is the load-bearing placement: the race is whether
+//     the render loop wakes BETWEEN the camera activation and the property
+//     edit (two rotations, [0,1,2,3,0,1,2,3]) or after both (one coalesced
+//     rotation, [0,1,2,3]).  A pause before ClearSequence is useless -- it
+//     just lets the activation rotation land somewhere ClearSequence then
+//     wipes.  Pair it with a slow pass (SetSlowPassMs) and the MONEY pose
+//     assertion fails too, reproducing the exact two-assertion signature seen
+//     under 6-way concurrency.
+//   * The BeautyVariant gesture bracket: the pause did NOT reliably reproduce
+//     its failure, but it did demonstrate that the premise the old assertions
+//     relied on is false -- at 2500 ms the pre-fix build recorded
 //     [live, live, final], not the assumed exactly-[live, final].  See
 //     checkBracket for why that makes a record-COUNT wait unsound.
 //
-// Keep injected values BELOW kScrubWatchdogMs (1500 ms).  Past that the pause
-// itself trips the lost-End scrub watchdog, which changes what the surrounding
-// scenarios are exercising -- the knob then stops being a timing probe and
-// starts being a different test.
+// Prefer injected values BELOW kScrubWatchdogMs (1500 ms).  Past that the
+// pause is long enough to trip the lost-End scrub watchdog itself, which
+// changes what the surrounding scenarios are exercising -- the knob stops
+// being a timing probe and becomes a different test.  (Pre-fix builds were
+// observed failing unrelated timeline-watchdog assertions at 1600 and 2500 ms
+// for exactly that reason.)
 //----------------------------------------------------------------------
 static unsigned int RaceDelayMs()
 {
@@ -154,6 +167,17 @@ static const char* const kSharedDirectScene =
 	"standard_object\n{\n\tname obj\n\tgeometry geo\n\tmaterial mat\n}\n\n"
 	"omni_light\n{\n\tname lgt\n\tpower 8.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
 
+// Per-process, TMPDIR-honouring temp path.  Split out of WriteTemp so the
+// one site that needs a PATH without writing to it (the save-race target)
+// gets the identical treatment instead of hardcoding a fixed name.
+static std::string WriteTempPath( const char* name )
+{
+	const char* base = std::getenv( "TMPDIR" );
+	std::string dir = base ? base : "/tmp";
+	if( !dir.empty() && dir.back() != '/' ) dir += '/';
+	return dir + std::to_string( (long)getpid() ) + "_" + name;
+}
+
 static std::string WriteTemp( const char* name, const char* content )
 {
 	// Round-8: per-process filename.  These were fixed /tmp paths, so two
@@ -162,19 +186,7 @@ static std::string WriteTemp( const char* name, const char* content )
 	// scene files mid-load and surfaced as a bogus "fixture constructs"
 	// failure.  Reproduced by running 12 copies concurrently: 3 failed that
 	// way; with the pid suffix, 0 do.
-	// Round-9: honour TMPDIR like the other fourteen WriteTemp helpers do
-	// (AgentRenderAsyncTest, AgentObjectMapTest, ...) -- fifteen test files
-	// carry a copy of this helper; round 10 brought the last five
-	// (AgentFirstSliceTest, AgentHeadVersionTest, AgentMcpAdapterTest,
-	// AgentProposeRenderTest, AgentViewModeRenderTest) up to the same
-	// TMPDIR + pid shape.  A hardcoded "/tmp/"
-	// is not portable -- these tests are glob-enumerated into the Windows
-	// cmake build, where /tmp typically does not exist -- and having one
-	// member of the family differ is how the family drifts apart again.
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' ) dir += '/';
-	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
+	const std::string path = WriteTempPath( name );
 	std::ofstream f( path.c_str(), std::ios::trunc );
 	if( !f ) return std::string();
 	f << content;
@@ -303,6 +315,47 @@ public:
 		return false;
 	}
 
+	//! Retry GetViewportPose for at most kPoseContentionRetryMs, then give up.
+	//!
+	//! GetViewportPose returns false for FOUR different reasons: the
+	//! render-owns-scene guard, mMutex contention (it uses std::try_to_lock and
+	//! writes nothing to `out`), an out-of-range pane, and `poseActive` being
+	//! false.  Only CONTENTION is transient, and it is a deliberate production
+	//! contract -- a paint-thread getter must never block behind an mMutex
+	//! holder, so it reports "not now" and the GUI re-reads on the next paint.
+	//! A test that treats one contended sample as "this pane has no pose" is
+	//! reading a false negative; that was half of the n5 flake.
+	//!
+	//! The budget is deliberately SMALL and derived from the thing being
+	//! compensated for.  The holds this can collide with are the render loop's
+	//! mint block and its post-pass block -- both are explicitly scoped to NOT
+	//! span DoOneRenderPass, so they are microsecond-scale.  250 ms (the same
+	//! interval kSettleMs uses for rotation quiescence, declared separately
+	//! here only because this class is defined before that constant) gives
+	//! roughly four orders of magnitude of headroom while staying far
+	//! below any plausible "the pose was realized, just late" interval.  That
+	//! matters: retrying is only sound for the contention cause, and a long
+	//! budget would silently convert the NON-transient causes -- above all a
+	//! pane that never realizes a pose at all -- from a fast, correct failure
+	//! into a tolerated late success.  Do not raise this to kWaitMs.
+	//!
+	//! EVERY pose read in this file goes through here.  No call site expects a
+	//! false return (there are no negated reads), so routing them all through
+	//! one bounded retry removes the false-negative class rather than the one
+	//! instance that happened to be reported.
+	static const unsigned int kPoseContentionRetryMs = 250;
+
+	bool WaitForViewportPose( CameraSnapshot& out, unsigned int pane )
+	{
+		const auto deadline = std::chrono::steady_clock::now()
+			+ std::chrono::milliseconds( kPoseContentionRetryMs );
+		do {
+			if( GetViewportPose( out, pane ) ) return true;
+			std::this_thread::yield();
+		} while( std::chrono::steady_clock::now() < deadline );
+		return false;
+	}
+
 	//! True when NO further pass lands within `settleMs` -- rotation
 	//! quiescence.  (A sleeping loop stays asleep; a runaway one keeps
 	//! appending and fails this.)
@@ -352,10 +405,31 @@ public:
 	//! everything before it is pre-shrink history (an idle-refinement tick on
 	//! a pane that was still visible when it minted, say) and must not be read
 	//! as a scheduling violation.  See ForTest_OnViewportShrinkParked.
+	//!
+	//! ALWAYS pair this with ShrinkEpochStamped().  A caller that reads the
+	//! index alone cannot tell "the seam stamped index 0" from "the seam never
+	//! fired, so this is the default" -- and 0 is the ORDINARY stamped value
+	//! here, because the shrink scenarios ClearSequence() immediately before
+	//! the transition.  A `> 0` sanity check is therefore NOT a substitute: it
+	//! would reject nearly every healthy run.
 	std::size_t ShrinkEpoch() const
 	{
 		std::lock_guard<std::mutex> lk( mSeqMutex );
 		return mShrinkEpoch;
+	}
+
+	//! Did ForTest_OnViewportShrinkParked actually fire since the last
+	//! ClearSequence()?  The seam is nested inside SetViewportLayout's
+	//! `if( currentHidden || gestureHidden )` arm, so a shrink that hides
+	//! neither the scheduled pane nor a gesture-pinned one never stamps.  When
+	//! that happens ShrinkEpoch() reads 0 and a `for( i = epoch; ... )` scan
+	//! silently degrades to the whole-sequence scan the epoch exists to
+	//! replace -- i.e. straight back to the pre-fix flake, with no signal.
+	//! Every scan below asserts this FIRST and refuses to run without it.
+	bool ShrinkEpochStamped() const
+	{
+		std::lock_guard<std::mutex> lk( mSeqMutex );
+		return mShrinkEpochStamped;
 	}
 
 	void ClearSequence()
@@ -372,7 +446,11 @@ public:
 		if( !retired ) return;   // preserve evidence; the next phase must fail
 		mSeq.clear();
 		mCompletedPasses = 0;
-		mShrinkEpoch = 0;       // indices just shifted; the old epoch is meaningless
+		// Indices just shifted, so the old epoch is meaningless -- and the
+		// stamped flag must clear with it, or a LATER scan could accept a
+		// stamp left over from an earlier shrink in the same scenario.
+		mShrinkEpoch = 0;
+		mShrinkEpochStamped = false;
 	}
 
 	void SetSlowPassMs( unsigned int ms )
@@ -631,6 +709,7 @@ protected:
 	{
 		std::lock_guard<std::mutex> lk( mSeqMutex );
 		mShrinkEpoch = mSeq.size();
+		mShrinkEpochStamped = true;
 	}
 
 	void ForTest_OnInteractivePassBeforeOutputDetach() override
@@ -750,6 +829,7 @@ private:
 	std::vector<unsigned int>   mSeq;
 	std::size_t                 mCompletedPasses = 0;
 	std::size_t                 mShrinkEpoch = 0;
+	bool                        mShrinkEpochStamped = false;
 	bool                        mRunRealPass = false;
 	std::atomic<unsigned int>   mSlowPassMs { 0 };
 	std::mutex                  mGateMutex;
@@ -1347,7 +1427,29 @@ struct Fixture
 	}
 };
 
-// kPreStartKickNote -- why every fixture below kicks BEFORE Start( true ).
+// kPreStartKickNote -- why a fixture that kicks at all kicks BEFORE
+// Start( true ).
+//
+// THE RULE: when a fixture arms BOTH initial invalidations, the kick must come
+// before Start.
+//
+// THE EXCEPTION: a fixture that deliberately arms only ONE has nothing to
+// coalesce, so its pass count cannot depend on the wake ordering and it
+// correctly leaves Start where it is.  NINE fixtures are in this class -- eight
+// drive the initial rotation from the layout grow alone (no kick at all), and
+// RunStopRecoversLostPointerUpTest restarts specifically to prove the restart
+// consumes an already-DEFERRED edit, which a fresh kick would mask.
+//
+// Note the exemption is "one invalidation", NOT "drains first".  Some of the
+// nine do drain (RunRotationOrderTest waits out the grow rotation and says so);
+// the pointer-watchdog ones (w1/w1b/w5, RunActiveDragSurvivesSlowPassesTest)
+// deliberately do not -- they pin the scheduler with a gesture immediately and
+// never assert an exact initial pass count, so there is nothing for a stray
+// grow-rotation pass to corrupt.
+//
+// When counting these, note three of them spell the call
+// `Start( /*suppressInitialRender*/ true )`; a literal "Start( true )" grep
+// silently misses those and undercounts the exception set by three.
 //
 // The standard preamble arms TWO independent invalidations: SetViewportLayout
 // (called before Start) arms the pane-rotation flag mPanePassPending, and
@@ -1960,7 +2062,11 @@ static void RunStopRecoversLostPointerUpTest()
 	       "pointer Move is accepted while refinement is paused" );
 	Check( f.ctrl->Editor().IsCompositeOpen(),
 	       "precondition: paused lost-Up gesture opened a composite" );
-	const std::string saveRacePath = "/tmp/pane_sched_c4_save_race.RISEscene";
+	// Same per-process + TMPDIR treatment as WriteTemp: this was a FIXED
+	// name, so two copies of this binary racing (a hand run during a suite
+	// run) clobbered each other's save target mid-test.
+	const std::string saveRacePath =
+		WriteTempPath( "pane_sched_c4_save_race.RISEscene" );
 	std::remove( saveRacePath.c_str() );
 	SaveResult saveRaceResult;
 	f.ctrl->ArmSaveInterleaving();
@@ -2037,7 +2143,7 @@ static void RunMidGesturePaneSwitchRefusedTest()
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "pane-0 FreeFly change repaints both panes" );
 	Check( f.ctrl->SettlesAt( 2, kSettleMs ), "pane-0 FreeFly rotation settles" );
 	CameraSnapshot pane0Pose;
-	Check( f.ctrl->GetViewportPose( pane0Pose, 0 ), "capture pane-0 FreeFly pose" );
+	Check( f.ctrl->WaitForViewportPose( pane0Pose, 0 ), "capture pane-0 FreeFly pose" );
 	f.ctrl->ClearSequence();
 
 	Check( f.ctrl->OnPanePointerDown( 1, Point2( 10, 10 ) ),
@@ -2380,7 +2486,16 @@ static void RunShrinkCancelsHiddenPaneTest()
 	RaceDelay();   // widen the ClearSequence -> shrink gap (see RaceDelayMs)
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Single ), "shrink Quad -> Single" );
 	// Read the epoch the shrink stamped while the render was parked: only
-	// entries at or after it were scheduled by the post-shrink layout.
+	// entries at or after it were scheduled by the post-shrink layout.  The
+	// stamped FLAG is checked separately and fatally: index 0 is the ordinary
+	// stamped value here (ClearSequence just emptied the recorder), so a
+	// missing stamp is indistinguishable from a real one by index alone, and
+	// scanning anyway would silently revert to the whole-sequence scan this
+	// epoch replaced.  Bail loudly instead of measuring the wrong thing.
+	Check( f.ctrl->ShrinkEpochStamped(),
+	       "PRECONDITION (j): the shrink stamped a post-shrink epoch -- without it this "
+	       "scenario cannot distinguish pre- from post-shrink passes and must not scan" );
+	if( !f.ctrl->ShrinkEpochStamped() ) return;
 	const std::size_t jEpoch = f.ctrl->ShrinkEpoch();
 	Check( f.ctrl->WaitForPassCount( jEpoch + 1, kWaitMs ),
 	       "MONEY ASSERTION (j): the shrink repaints the visible primary (pane 0)" );
@@ -2468,7 +2583,13 @@ static void RunShrinkFinalizesHiddenGestureTest()
 	// those landing in the unsynchronised gap between ClearSequence() and
 	// SetViewportLayout() -- which is exactly what a loaded machine produces --
 	// used to be misread as a post-shrink scheduling violation and was this
-	// test's flake.
+	// test's flake.  The stamped FLAG is a separate, FATAL precondition -- see
+	// the (j) scan for why an index-only check cannot stand in for it and why
+	// scanning without a stamp is worse than not scanning at all.
+	Check( f.ctrl->ShrinkEpochStamped(),
+	       "PRECONDITION (j2): the shrink stamped a post-shrink epoch -- without it this "
+	       "scenario cannot distinguish pre- from post-shrink passes and must not scan" );
+	if( !f.ctrl->ShrinkEpochStamped() ) return;
 	const std::size_t epoch = f.ctrl->ShrinkEpoch();
 	Check( f.ctrl->WaitForPassCount( epoch + 1, kWaitMs ),
 	       "shrink queues a repaint for the remaining visible panes" );
@@ -2801,7 +2922,7 @@ static void RunPaneFreeFlyPreservesNamedViewTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 	       "both TwoH panes retire exactly once" );
 	CameraSnapshot actual;
-	Check( f.ctrl->GetViewportPose( actual, 1 ), "pane 1 has a realized Free-Fly pose" );
+	Check( f.ctrl->WaitForViewportPose( actual, 1 ), "pane 1 has a realized Free-Fly pose" );
 	Check( actual.location[0] == expected.location[0]
 	    && actual.location[1] == expected.location[1]
 	    && actual.location[2] == expected.location[2]
@@ -2856,7 +2977,7 @@ static void RunPaneFreeFlyPreservesNamedSceneCameraTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"kind-3 Free-Fly transition realizes exactly [0,1]" );
 	CameraSnapshot freeFlyPose;
-	Check( f.ctrl->GetViewportPose( freeFlyPose, 1 )
+	Check( f.ctrl->WaitForViewportPose( freeFlyPose, 1 )
 	    && std::fabs( freeFlyPose.location[0] - 6.0 ) < 1e-9
 	    && std::fabs( freeFlyPose.location[1] - 2.0 ) < 1e-9
 	    && std::fabs( freeFlyPose.location[2] - 9.0 ) < 1e-9,
@@ -2918,7 +3039,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 		"pane-local binding fully retires and settles" );
 
 	CameraSnapshot bindingSnapshot;
-	Check( f.ctrl->GetViewportPose( bindingSnapshot, 1 ),
+	Check( f.ctrl->WaitForViewportPose( bindingSnapshot, 1 ),
 		"read pane 1 binding-time camera snapshot" );
 	SceneEditController::PaneVantageKind kind;
 	String referencedName;
@@ -2955,7 +3076,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	Check( cameraEditSeq == std::vector<unsigned int>{ 0, 1 } && cameraEditSettled,
 		"camera-edit refresh is exactly [0,1] and settles" );
 	CameraSnapshot editedSnapshot;
-	Check( f.ctrl->GetViewportPose( editedSnapshot, 1 ),
+	Check( f.ctrl->WaitForViewportPose( editedSnapshot, 1 ),
 		"read pane 1 after bound camera edit" );
 	if( std::fabs( editedSnapshot.location[0] - 2.0 ) >= 1e-9
 	 || std::fabs( editedSnapshot.location[1] - 1.0 ) >= 1e-9
@@ -2984,7 +3105,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"explicit-kind agent refresh is exactly [0,1] and settles" );
 	CameraSnapshot explicitAgentSnapshot;
-	Check( f.ctrl->GetViewportPose( explicitAgentSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( explicitAgentSnapshot, 1 )
 	    && std::fabs( explicitAgentSnapshot.location[0] - 3.0 ) < 1e-9
 	    && std::fabs( explicitAgentSnapshot.location[1] - 2.0 ) < 1e-9
 	    && std::fabs( explicitAgentSnapshot.location[2] - 8.0 ) < 1e-9,
@@ -3001,7 +3122,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"generic-kind agent refresh is exactly [0,1]" );
 	CameraSnapshot genericAgentSnapshot;
-	Check( f.ctrl->GetViewportPose( genericAgentSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( genericAgentSnapshot, 1 )
 	    && std::fabs( genericAgentSnapshot.location[0] - 3.5 ) < 1e-9
 	    && std::fabs( genericAgentSnapshot.location[1] - 2.0 ) < 1e-9
 	    && std::fabs( genericAgentSnapshot.location[2] - 8.0 ) < 1e-9,
@@ -3018,7 +3139,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"kind-omitted agent refresh is exactly [0,1] and settles" );
 	CameraSnapshot agentSnapshot;
-	Check( f.ctrl->GetViewportPose( agentSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( agentSnapshot, 1 )
 	    && std::fabs( agentSnapshot.location[0] - 4.0 ) < 1e-9
 	    && std::fabs( agentSnapshot.location[1] - 2.0 ) < 1e-9
 	    && std::fabs( agentSnapshot.location[2] - 8.0 ) < 1e-9,
@@ -3043,7 +3164,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"undo camera property edit refreshes exactly [0,1]" );
 	CameraSnapshot undoSnapshot;
-	Check( f.ctrl->GetViewportPose( undoSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( undoSnapshot, 1 )
 	    && std::fabs( undoSnapshot.location[0] - 4.0 ) < 1e-9,
 		"MONEY ASSERTION (n): undo invalidates and restores the bound pane pose" );
 	f.ctrl->ClearSequence();
@@ -3053,7 +3174,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"redo camera property edit refreshes exactly [0,1]" );
 	CameraSnapshot redoSnapshot;
-	Check( f.ctrl->GetViewportPose( redoSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( redoSnapshot, 1 )
 	    && std::fabs( redoSnapshot.location[0] - 5.0 ) < 1e-9,
 		"MONEY ASSERTION (n): redo invalidates and reapplies the bound pane pose" );
 
@@ -3076,7 +3197,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"rollback refresh is exactly [0,1] and settles" );
 	CameraSnapshot rollbackSnapshot;
-	Check( f.ctrl->GetViewportPose( rollbackSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( rollbackSnapshot, 1 )
 	    && std::fabs( rollbackSnapshot.location[0] - 5.0 ) < 1e-9
 	    && std::fabs( rollbackSnapshot.location[1] - 2.0 ) < 1e-9
 	    && std::fabs( rollbackSnapshot.location[2] - 8.0 ) < 1e-9,
@@ -3111,7 +3232,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 1, kSettleMs ),
 		"reveal refresh is exactly [1] and settles" );
 	CameraSnapshot revealedSnapshot;
-	Check( f.ctrl->GetViewportPose( revealedSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( revealedSnapshot, 1 )
 	    && std::fabs( revealedSnapshot.location[0] - 7.0 ) < 1e-9
 	    && std::fabs( revealedSnapshot.location[1] - 4.0 ) < 1e-9
 	    && std::fabs( revealedSnapshot.location[2] - 10.0 ) < 1e-9,
@@ -3127,7 +3248,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"camera-deletion refresh is exactly [0,1] and settles" );
 	CameraSnapshot fallbackSnapshot;
-	Check( f.ctrl->GetViewportPose( fallbackSnapshot, 1 ),
+	Check( f.ctrl->WaitForViewportPose( fallbackSnapshot, 1 ),
 		"read pane 1 after the bound camera is deleted" );
 	Check( std::fabs( fallbackSnapshot.location[0] - bindingSnapshot.location[0] ) < 1e-9
 	    && std::fabs( fallbackSnapshot.location[1] - bindingSnapshot.location[1] ) < 1e-9
@@ -3154,7 +3275,7 @@ static void RunNamedSceneCameraReconcileAndFallbackTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"same-name recreation refresh is exactly [0,1]" );
 	CameraSnapshot recreatedSnapshot;
-	Check( f.ctrl->GetViewportPose( recreatedSnapshot, 1 )
+	Check( f.ctrl->WaitForViewportPose( recreatedSnapshot, 1 )
 	    && std::fabs( recreatedSnapshot.location[0] - 0.0 ) < 1e-9
 	    && std::fabs( recreatedSnapshot.location[1] - 0.0 ) < 1e-9
 	    && std::fabs( recreatedSnapshot.location[2] - 5.0 ) < 1e-9,
@@ -3205,7 +3326,7 @@ static void RunNamedSceneCameraStampRecreationTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"deletion refresh is exactly [0,1]" );
 	CameraSnapshot fallback;
-	Check( f.ctrl->GetViewportPose( fallback, 1 )
+	Check( f.ctrl->WaitForViewportPose( fallback, 1 )
 	    && std::fabs( fallback.location[0] - 4.0 ) < 1e-9,
 		"pane uses stored fallback after deletion" );
 
@@ -3228,7 +3349,7 @@ static void RunNamedSceneCameraStampRecreationTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"stamp recreation refresh is exactly [0,1]" );
 	CameraSnapshot resumed;
-	Check( f.ctrl->GetViewportPose( resumed, 1 )
+	Check( f.ctrl->WaitForViewportPose( resumed, 1 )
 	    && std::fabs( resumed.location[0] - 0.0 ) < 1e-9
 	    && std::fabs( resumed.location[1] - 0.0 ) < 1e-9
 	    && std::fabs( resumed.location[2] - 5.0 ) < 1e-9,
@@ -3256,15 +3377,17 @@ static void RunActiveCameraGestureInvalidatesNamedPaneTest()
 	f.ctrl->ForTest_KickRender();
 	f.ctrl->Start( true );
 	// A pass is recorded at DoOneRenderPass entry, before its retirement hook.
-	// Wait for both retirements before reading the pose or clearing the recorder;
-	// otherwise a still-active pane-1 pass can make GetViewportPose's try-lock
-	// fail and append into the next gesture phase after ClearSequence().
+	// Wait for both retirements before clearing the recorder; otherwise a
+	// still-active pane-1 pass appends into the next gesture phase after
+	// ClearSequence().  (The pose read itself no longer depends on this: every
+	// pose read in this file goes through WaitForViewportPose, which retries a
+	// contended try-lock instead of reporting it as a missing pose.)
 	Check( f.ctrl->WaitForCompletedPassCount( 2, kWaitMs )
 	    && f.ctrl->SettlesAt( 2, kSettleMs )
 	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1 },
 		"initial bound-camera rotation is exactly [0,1]" );
 	CameraSnapshot before;
-	Check( f.ctrl->GetViewportPose( before, 1 ), "capture bound pane before gesture" );
+	Check( f.ctrl->WaitForViewportPose( before, 1 ), "capture bound pane before gesture" );
 
 	f.ctrl->ClearSequence();
 	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
@@ -3297,7 +3420,7 @@ static void RunActiveCameraGestureInvalidatesNamedPaneTest()
 		"gesture release refreshes the bound pane and settles" );
 
 	CameraSnapshot after;
-	Check( f.ctrl->GetViewportPose( after, 1 )
+	Check( f.ctrl->WaitForViewportPose( after, 1 )
 	    && ( std::fabs( after.target_orientation[0] - before.target_orientation[0] ) > 1e-9
 	      || std::fabs( after.target_orientation[1] - before.target_orientation[1] ) > 1e-9 ),
 		"MONEY ASSERTION (n3): active-camera orbit invalidates and re-resolves bound pane 1" );
@@ -3447,8 +3570,8 @@ static void RunNamedCameraGestureRoutingTest()
 	CameraSnapshot livePane1;
 	CameraSnapshot livePane2;
 	Check( CaptureNamedCamera( *f.job, "side", liveSide )
-	    && f.ctrl->GetViewportPose( livePane1, 1 )
-	    && f.ctrl->GetViewportPose( livePane2, 2 )
+	    && f.ctrl->WaitForViewportPose( livePane1, 1 )
+	    && f.ctrl->WaitForViewportPose( livePane2, 2 )
 	    && SameCameraPose( livePane1, liveSide )
 	    && SameCameraPose( livePane2, liveSide ),
 		"MONEY (T3/reconcile): every side-bound pane realizes the edited manager pose" );
@@ -3578,7 +3701,7 @@ static void RunNamedSceneCameraPreRealizationHomeTest()
 	    && f.ctrl->SettlesAt( 2, kSettleMs ),
 		"Home realization rotation is exactly [0,1]" );
 	CameraSnapshot home;
-	Check( f.ctrl->GetViewportPose( home, 1 )
+	Check( f.ctrl->WaitForViewportPose( home, 1 )
 	    && std::fabs( home.location[0] - 6.0 ) < 1e-9
 	    && std::fabs( home.location[1] - 2.0 ) < 1e-9
 	    && std::fabs( home.location[2] - 9.0 ) < 1e-9,
@@ -3616,21 +3739,67 @@ static void RunMultiplePanesBoundToSameCameraTest()
 	    && f.ctrl->SettlesAt( 4, kSettleMs ),
 		"initial Quad rotation is exactly [0,1,2,3]" );
 
+	// Activating a camera is a SCENE MUTATION, not UI state: SetSelectionInner_
+	// takes mMutex, cancel-and-parks, calls IScenePriv::SetActiveCamera, then
+	// publishes mEditPending + notify_one -- i.e. it arms a full all-pane
+	// rotation of its own.  The measurement below counts the passes caused by
+	// the PROPERTY EDIT, so that activation rotation has to be finished and
+	// accounted for BEFORE the window opens.
+	//
+	// This was the n5 flake.  Nothing ordered the render thread's wake against
+	// the test thread, so the two invalidations either COALESCED (the loop had
+	// not woken yet when SetPropertyForCategory landed -> one wake, one
+	// 4-pass rotation -> assertion holds) or did NOT (the loop woke in between
+	// -> two rotations -> the recorded window is [0,1,2,3,0,1,2,3], or a
+	// prefix of it, and the assertion fails).  On an idle machine the loop
+	// essentially always loses that race, which is why this read as stable;
+	// under CPU contention it wins ~3 % of the time.  Waiting for the
+	// activation's own rotation makes the count deterministic either way, and
+	// it also turns a previously-swallowed behaviour into a real assertion:
+	// activating a camera must itself refresh every visible pane.
 	Check( f.ctrl->SetSelection( SceneEditController::Category::Camera, String( "side" ) ),
 		"select the shared bound camera" );
+	// Assert the COMPOSITION, not just the count -- the file's standard shape
+	// for a rotation assertion.  A count-only check would accept a second
+	// rotation that visited the wrong panes (say [0,0,1,3]); the initial
+	// rotation's own [0,1,2,3] is still in the recorder here, so the activation
+	// must extend it to exactly [0,1,2,3,0,1,2,3].
+	Check( f.ctrl->WaitForPassCount( 8, kWaitMs )
+	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3, 0, 1, 2, 3 }
+	    && f.ctrl->SettlesAt( 8, kSettleMs ),
+		"the camera ACTIVATION drives its own all-pane rotation, and it quiesces" );
 	f.ctrl->ClearSequence();
+	RaceDelay();   // hold the window open across the activation (see RaceDelayMs)
 	Check( f.ctrl->SetPropertyForCategory(
 			SceneEditController::Category::Camera,
 			String( "location" ), String( "7 3 11" ) ),
 		"edit shared bound camera" );
-	Check( f.ctrl->WaitForPassCount( 4, kWaitMs )
-	    && f.ctrl->Sequence() == std::vector<unsigned int>{ 0, 1, 2, 3 }
-	    && f.ctrl->SettlesAt( 4, kSettleMs ),
-		"shared-camera edit refresh is exactly [0,1,2,3]" );
+	{
+		const bool arrived = f.ctrl->WaitForPassCount( 4, kWaitMs );
+		const std::vector<unsigned int> seq = f.ctrl->Sequence();
+		const bool exact = ( seq == std::vector<unsigned int>{ 0, 1, 2, 3 } );
+		const bool settled = f.ctrl->SettlesAt( 4, kSettleMs );
+		if( !arrived || !exact || !settled )
+			DumpSequence( "(n5) edit refresh", f.ctrl->Sequence(), 0 );
+		Check( arrived && exact && settled,
+			"shared-camera edit refresh is exactly [0,1,2,3]" );
+	}
+	// Read the pane poses only once every pass of that rotation has RETIRED:
+	// a pane's pose register is published by SwitchToPaneLocked_ as the
+	// scheduler moves off it, so "all four passes retired" is the condition
+	// under which panes 1 and 2 are guaranteed to have saved theirs.
+	Check( f.ctrl->WaitForCompletedPassCount( 4, kWaitMs ),
+		"the shared-camera refresh rotation retires" );
 	CameraSnapshot pane1;
 	CameraSnapshot pane2;
-	Check( f.ctrl->GetViewportPose( pane1, 1 )
-	    && f.ctrl->GetViewportPose( pane2, 2 )
+	// A contended GetViewportPose reports "not now", not "no pose" -- treating
+	// one such sample as a contract violation was the second half of the n5
+	// flake, and is why these two assertions always failed as a pair.  The
+	// bounded retry lives in WaitForViewportPose; see its doc for the four
+	// distinct false-return causes and for why its budget is deliberately
+	// small and NOT caller-supplied.
+	Check( f.ctrl->WaitForViewportPose( pane1, 1 )
+	    && f.ctrl->WaitForViewportPose( pane2, 2 )
 	    && std::fabs( pane1.location[0] - 7.0 ) < 1e-9
 	    && std::fabs( pane1.location[1] - 3.0 ) < 1e-9
 	    && std::fabs( pane1.location[2] - 11.0 ) < 1e-9
@@ -3711,8 +3880,8 @@ static void RunNamedSceneCameraTimeScrubTest()
 		"time-scrub refresh is exactly [0,1,2,3] and settles" );
 	CameraSnapshot scrubbedA;
 	CameraSnapshot scrubbedB;
-	Check( f.ctrl->GetViewportPose( scrubbedA, 1 )
-	    && f.ctrl->GetViewportPose( scrubbedB, 2 )
+	Check( f.ctrl->WaitForViewportPose( scrubbedA, 1 )
+	    && f.ctrl->WaitForViewportPose( scrubbedB, 2 )
 	    && std::fabs( scrubbedA.location[0] - 8.0 ) < 1e-9
 	    && std::fabs( scrubbedB.location[0] - 9.0 ) < 1e-9,
 		"MONEY ASSERTION (o): time scrub's all-helper updates every inactive named-camera pane" );
@@ -3758,7 +3927,7 @@ static void RunNamedSceneCameraONBTest()
 		"ONB binding rotation is exactly [0,1]" );
 
 	CameraSnapshot onbPose;
-	Check( f.ctrl->GetViewportPose( onbPose, 1 )
+	Check( f.ctrl->WaitForViewportPose( onbPose, 1 )
 	    && onbPose.type == CameraSnapshot::Pinhole
 	    && std::fabs( onbPose.location[0] - 9.0 ) < 1e-9
 	    && std::fabs( onbPose.location[1] - 8.0 ) < 1e-9
