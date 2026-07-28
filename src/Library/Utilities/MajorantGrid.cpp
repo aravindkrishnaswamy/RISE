@@ -100,12 +100,28 @@ MajorantGrid::MajorantGrid(
 	// Trilinear interpolation uses a 2^3 stencil centered on the
 	// query point, so a lookup near a cell boundary can depend on
 	// voxels from the adjacent cell.  Tricubic (Catmull-Rom) uses a
-	// 4^3 stencil that can reach 2 cells away from the query point,
-	// AND the non-convex basis can overshoot local extrema.
+	// 4^3 stencil whose taps reach up to 2 VOXELS from the query
+	// point, AND the non-convex basis can overshoot local extrema.
 	//
-	// Two dilation passes (2-cell radius) ensure each cell's majorant
-	// covers all voxels that can contribute to any interpolation query
-	// within that cell, for both trilinear and tricubic accessors.
+	// The dilation radius must therefore cover 2 voxels expressed in
+	// CELLS, per axis: 2 * gridRes / volDim cells.  For typical
+	// volumes (>= 2 voxels per cell) that is <= 1 cell and the
+	// historical 2-cell radius is conservative, so 2 is kept as the
+	// minimum.  But a tiny axis dimension (volDim < 4 with the
+	// minimum 4-cell grid) makes cells SMALLER than a voxel, and a
+	// fixed 2-cell radius under-covers: a positive Catmull-Rom
+	// cross-term (two negative lobe factors) from a voxel 3+ cells
+	// away can exceed a distant cell's majorant and break the
+	// majorant invariant.  Hence, per axis:
+	//   radius = max( 2, ceil(2 * gridRes / volDim) )
+	// A ceil() radius always covers the worst-case floor-crossing:
+	// for any query offset d <= 2*gridRes/volDim cells, the cell
+	// index difference is at most ceil(2*gridRes/volDim).
+	//
+	// The dilation itself is an axis-separable max filter: radius
+	// passes of a 3-tap 1D dilation per axis.  When the per-axis
+	// radii are all R this is identical to R passes of the original
+	// 26-neighborhood (Chebyshev) dilation, at lower cost.
 	//
 	// The Catmull-Rom basis functions at mu=0.5 are [-1/16, 9/16,
 	// 9/16, -1/16].  Let P = 9/8 (sum of positive weights) and
@@ -119,53 +135,65 @@ MajorantGrid::MajorantGrid(
 	// achieved by setting voxels at positive-coefficient positions
 	// to M and the rest to 0.
 	//
-	// The cost of two passes is negligible (one-time grid build).
+	// The cost of the dilation is negligible (one-time grid build).
 	{
 		const unsigned int nCells = m_gridX * m_gridY * m_gridZ;
 
-		for( unsigned int pass = 0; pass < 2; pass++ )
+		// Per-axis dilation radius in cells (see comment above).
+		const unsigned int gridRes[3] = { m_gridX, m_gridY, m_gridZ };
+		const unsigned int volDim[3] = { volWidth, volHeight, volDepth };
+		unsigned int radius[3];
+		for( unsigned int axis = 0; axis < 3; axis++ )
 		{
-			Scalar* dilated = new Scalar[nCells];
-			for( unsigned int i = 0; i < nCells; i++ )
-				dilated[i] = m_data[i];
+			// ceil(2*gridRes/dim) in integer arithmetic; guard a
+			// degenerate zero dimension
+			const unsigned int dim = (volDim[axis] > 0) ? volDim[axis] : 1;
+			unsigned int r = (2 * gridRes[axis] + dim - 1) / dim;
+			if( r < 2 ) r = 2;
+			// Dilating past the axis length is pointless
+			if( r > gridRes[axis] ) r = gridRes[axis];
+			radius[axis] = r;
+		}
 
-			for( unsigned int z = 0; z < m_gridZ; z++ )
+		const unsigned int stride[3] = { 1, m_gridX, m_gridX * m_gridY };
+		Scalar* scratch = new Scalar[nCells];
+
+		for( unsigned int axis = 0; axis < 3; axis++ )
+		{
+			for( unsigned int pass = 0; pass < radius[axis]; pass++ )
 			{
-				for( unsigned int y = 0; y < m_gridY; y++ )
+				for( unsigned int z = 0; z < m_gridZ; z++ )
 				{
-					for( unsigned int x = 0; x < m_gridX; x++ )
+					for( unsigned int y = 0; y < m_gridY; y++ )
 					{
-						Scalar maxVal = m_data[CellIndex( x, y, z )];
-
-						// Check 26-neighborhood
-						for( int dz = -1; dz <= 1; dz++ )
+						for( unsigned int x = 0; x < m_gridX; x++ )
 						{
-							const int nz2 = (int)z + dz;
-							if( nz2 < 0 || nz2 >= (int)m_gridZ ) continue;
-							for( int dy = -1; dy <= 1; dy++ )
-							{
-								const int ny2 = (int)y + dy;
-								if( ny2 < 0 || ny2 >= (int)m_gridY ) continue;
-								for( int dx = -1; dx <= 1; dx++ )
-								{
-									const int nx2 = (int)x + dx;
-									if( nx2 < 0 || nx2 >= (int)m_gridX ) continue;
-									const Scalar neighborVal = m_data[CellIndex(
-										(unsigned int)nx2, (unsigned int)ny2, (unsigned int)nz2 )];
-									if( neighborVal > maxVal )
-										maxVal = neighborVal;
-								}
-							}
-						}
+							const unsigned int cellPos[3] = { x, y, z };
+							const unsigned int idx = CellIndex( x, y, z );
 
-						dilated[CellIndex( x, y, z )] = maxVal;
+							Scalar maxVal = m_data[idx];
+							if( cellPos[axis] > 0 )
+							{
+								const Scalar v = m_data[idx - stride[axis]];
+								if( v > maxVal ) maxVal = v;
+							}
+							if( cellPos[axis] + 1 < gridRes[axis] )
+							{
+								const Scalar v = m_data[idx + stride[axis]];
+								if( v > maxVal ) maxVal = v;
+							}
+							scratch[idx] = maxVal;
+						}
 					}
 				}
-			}
 
-			delete[] m_data;
-			m_data = dilated;
+				Scalar* tmp = m_data;
+				m_data = scratch;
+				scratch = tmp;
+			}
 		}
+
+		delete[] scratch;
 
 		// Safety factor for Catmull-Rom tricubic overshoot:
 		// P^3 + 3*P*N^2 = 756/512 ~= 1.4766 (see derivation above).

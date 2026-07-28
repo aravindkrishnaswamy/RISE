@@ -8,6 +8,8 @@
 //    3. DDA traversal visits correct cells for diagonal rays
 //    4. Empty cells have zero majorant
 //    5. Traversal range clamping works correctly
+//    6. Tiny volumes (axis dim < grid res) keep the majorant
+//       invariant under tricubic (Catmull-Rom) interpolation
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 8, 2026
@@ -26,8 +28,10 @@
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Ray.h"
+#include "../src/Library/Utilities/CubicInterpolator.h"
 #include "../src/Library/Interfaces/IVolumeAccessor.h"
 #include "../src/Library/Interfaces/IVolume.h"
+#include "../src/Library/Volume/VolumeAccessor_TriCubic.h"
 
 using namespace RISE;
 
@@ -255,7 +259,7 @@ bool TestEmptyCells()
 	const Point3 bboxMin( -100, -100, -100 );
 	const Point3 bboxMax( 100, 100, 100 );
 
-	// Use 16^3 grid so 2-pass dilation doesn't fill everything
+	// Use 16^3 grid so radius-2 dilation doesn't fill everything
 	MajorantGrid grid( accessor, volDim, volDim, volDim,
 		bboxMin, bboxMax, sigma_t_majorant,
 		16, 16, 16 );
@@ -274,7 +278,7 @@ bool TestEmptyCells()
 			}
 
 	// The sphere is very small relative to the grid; even with
-	// 2-pass dilation, most cells should remain empty.
+	// radius-2 dilation, most cells should remain empty.
 	bool passed = (zeroCells > 0 && nonZeroCells > 0 && zeroCells > nonZeroCells);
 	if( !passed )
 	{
@@ -333,6 +337,135 @@ bool TestVisitorStop()
 }
 
 
+/// Volume for Test 6: 2x2x2 voxels (centered indices in {-1, 0} per
+/// axis) with a single hot voxel at (-1,-1,-1) and zero elsewhere,
+/// including out-of-range indices (matching Volume::GetValue).
+class TestTinyHotVoxelVolume : public virtual IVolume
+{
+public:
+	unsigned int Width( ) const { return 2; }
+	unsigned int Height( ) const { return 2; }
+	unsigned int Depth( ) const { return 2; }
+
+	Scalar GetValue( const int x, const int y, const int z ) const
+	{
+		if( x < -1 || x > 0 || y < -1 || y > 0 || z < -1 || z > 0 )
+			return 0;
+		return ( x == -1 && y == -1 && z == -1 ) ? 1.0 : 0.0;
+	}
+
+	void addref() const {}
+	bool release() const { return false; }
+	unsigned int refcount() const { return 1; }
+};
+
+
+/// Test 6: Majorant invariant for a tiny volume under tricubic
+/// (Catmull-Rom) interpolation.
+///
+/// With the default resolution rule clamp(ceil(dim/8), 4, 32), an
+/// axis dimension < 4 makes grid cells SMALLER than a voxel (dim=2
+/// -> 4-cell grid -> 1 voxel spans 2 cells).  The tricubic stencil
+/// reaches 2 voxels = 4 cells from the query point, so a fixed
+/// 2-cell dilation radius under-covers: a positive Catmull-Rom
+/// cross-term (two negative lobe factors) from the hot voxel can
+/// make the interpolated density exceed a distant cell's majorant.
+/// Regression guard for the voxel-based dilation radius.
+bool TestTinyVolumeTricubicMajorant()
+{
+	std::cout << "  Test 6: Tiny-volume tricubic majorant invariant..." << std::endl;
+
+	const unsigned int volDim = 2;
+	const Scalar sigma_t_majorant = 1.0;
+
+	TestTinyHotVoxelVolume vol;
+	ICubicInterpolator<Scalar>* interp = new CatmullRomCubicInterpolator<Scalar>();
+	VolumeAccessor_TriCubic* accessor = new VolumeAccessor_TriCubic( *interp );
+	interp->release();
+	accessor->BindVolume( &vol );
+
+	unsigned int gridX, gridY, gridZ;
+	MajorantGrid::DefaultGridResolution( volDim, volDim, volDim,
+		gridX, gridY, gridZ );
+
+	const Point3 bboxMin( -3, -3, -3 );
+	const Point3 bboxMax( 5, 5, 5 );
+
+	MajorantGrid grid( *accessor, volDim, volDim, volDim,
+		bboxMin, bboxMax, sigma_t_majorant,
+		gridX, gridY, gridZ );
+
+	// Dense sweep over the volume's centered coordinate domain
+	// [-dim/2, dim/2).  For each sample, the interpolated extinction
+	// must not exceed the containing cell's majorant.  This mirrors
+	// how HeterogeneousMedium queries density: world point -> centered
+	// volume coordinates -> interpolating accessor.
+	bool passed = true;
+	unsigned int violations = 0;
+	Scalar worstExcess = 0;
+
+	const Scalar half = Scalar(volDim) / 2.0;
+	const Scalar step = 0.05;
+	const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
+
+	for( Scalar vz = -half; vz < half; vz += step )
+	{
+		for( Scalar vy = -half; vy < half; vy += step )
+		{
+			for( Scalar vx = -half; vx < half; vx += step )
+			{
+				const Scalar density = accessor->GetValue( vx, vy, vz );
+				const Scalar sigma = density * sigma_t_majorant;
+				if( sigma <= 0 )
+					continue;  // Undershoot can't break the majorant
+
+				// Centered -> world (reverse of LookupDensity's mapping)
+				const Point3 worldPt(
+					(vx / Scalar(volDim) + 0.5) * extent.x + bboxMin.x,
+					(vy / Scalar(volDim) + 0.5) * extent.y + bboxMin.y,
+					(vz / Scalar(volDim) + 0.5) * extent.z + bboxMin.z );
+
+				unsigned int cx, cy, cz;
+				if( !grid.WorldToCell( worldPt, cx, cy, cz ) )
+				{
+					std::cout << "    FAIL: sample (" << vx << "," << vy << "," << vz
+						<< ") maps outside the grid" << std::endl;
+					passed = false;
+					continue;
+				}
+
+				const Scalar cellMaj = grid.GetCellMajorant( cx, cy, cz );
+				if( sigma > cellMaj + 1e-12 )
+				{
+					if( violations < 5 )
+					{
+						std::cout << "    FAIL: at (" << vx << "," << vy << "," << vz
+							<< ") sigma_t=" << sigma
+							<< " > cell (" << cx << "," << cy << "," << cz
+							<< ") majorant=" << cellMaj << std::endl;
+					}
+					violations++;
+					if( sigma - cellMaj > worstExcess )
+						worstExcess = sigma - cellMaj;
+					passed = false;
+				}
+			}
+		}
+	}
+
+	accessor->release();
+
+	if( !passed && violations > 0 )
+	{
+		std::cout << "    " << violations << " majorant violations, worst excess "
+			<< worstExcess << std::endl;
+	}
+	if( passed )
+		std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
+
 int main()
 {
 	std::cout << "=== MajorantGrid Tests ===" << std::endl;
@@ -343,6 +476,7 @@ int main()
 	allPassed &= TestDDADiagonal();
 	allPassed &= TestEmptyCells();
 	allPassed &= TestVisitorStop();
+	allPassed &= TestTinyVolumeTricubicMajorant();
 
 	std::cout << std::endl;
 	if( allPassed )
