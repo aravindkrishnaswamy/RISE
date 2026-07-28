@@ -436,16 +436,27 @@ namespace RISE
 				const Scalar wrappedY = ApplyWrapMode( y, wrap_s );
 				const Scalar wrappedX = ApplyWrapMode( x, wrap_t );
 
+				// Defensive: a zero-dimension image would make the clamp
+				// bounds below negative, sending xlo = -1 into the
+				// unchecked raster GetPEL (an out-of-range read).  Same
+				// guard as the Bicubic subclass (which additionally
+				// protects a modulo).
+				if( image_width <= 0 || image_height <= 0 ) {
+					p = C();
+					return;
+				}
+
 				// Calculate x and y value in terms of pixels in the original
 				// image, also round up any pixel values
 				Scalar	u = wrappedY * Scalar( image_width ) + 0.5;
 				Scalar	v = wrappedX * Scalar( image_height ) + 0.5;
 
-				// Clamp u and v values to between 0 and the image size.
-				// For Repeat / MirroredRepeat the wrapped UV is already in
-				// [0, 1] so this clamp is normally a no-op (only catches
-				// fp-rounding overshoot near the upper edge).  For
-				// ClampToEdge the clamp does the actual saturation.
+				// Clamp u and v to [0, dim-1].  NOTE this is NOT a no-op
+				// for Repeat / MirroredRepeat: u = wrapped*W + 0.5 exceeds
+				// W-1 whenever wrapped > 1 - 1.5/W, so the top ~1.5 texels
+				// of every tile pin u to W-1 (ut == 0) and read the last
+				// texel flat.  Deliberate pre-clamp design — do not "fix".
+				// For ClampToEdge the clamp does the actual saturation.
 				if( u < 0.0 ) u = 0.0;
 				if( u > Scalar(image_width-1) ) u = Scalar(image_width-1);
 				if( v < 0.0 ) v = 0.0;
@@ -461,11 +472,16 @@ namespace RISE
 				int		ylo = int( vlo );
 				int		yhi = ylo+1;
 
-				// Boundary handling for the lerp partner.
-				//   - Repeat: the upper neighbour wraps to texel 0 — so
-				//     adjacent tiles share a seamless lerp across the
-				//     seam (the texel at UV=1.0 blends into the texel at
-				//     UV=0+ε of the next tile).
+				// Boundary handling for the lerp partner.  NOTE: with the
+				// pre-clamp above, xhi >= image_width can only happen when
+				// u == image_width-1 exactly, i.e. ut == 0 — so whichever
+				// texel is chosen here carries zero lerp weight.  The
+				// branches record the per-mode INTENT (and keep the axis
+				// convention explicit); they are currently behaviourally
+				// inert, and the top ~1.5 texels of a Repeat tile read the
+				// last texel flat instead of blending across the seam.
+				//   - Repeat: the upper neighbour wraps to texel 0 (the
+				//     would-be cross-seam partner).
 				//   - MirroredRepeat: the upper neighbour mirrors back
 				//     to texel image_width-1 (the SAME edge texel as
 				//     xlo) — that's the seam-free reflection: the
@@ -503,7 +519,14 @@ namespace RISE
 
 			void		SetPel( const Scalar x, const Scalar y, C& p ) const
 			{
-				// Calculate x and y value in terms of pixels in the original 
+				// Zero-dimension guard (mirrors GetPel): with a 0-dim image the
+				// clamp below would pin u/v to Scalar(-1) and drive an
+				// out-of-bounds write through SetPEL.
+				if( image_width <= 0 || image_height <= 0 ) {
+					return;
+				}
+
+				// Calculate x and y value in terms of pixels in the original
 				// image, also round up any pixel values
 				Scalar	u = y * Scalar( image_width ) + 0.5;
 				Scalar	v = x * Scalar( image_height ) + 0.5;

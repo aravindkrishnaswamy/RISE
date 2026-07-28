@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BicubicRasterImageAccessor.h - Implements a raster image accessor using 
-//  bilinear interpolation
+//  BicubicRasterImageAccessor.h - Implements a raster image accessor using
+//  bicubic interpolation
 //                
 //
 //  Author: Aravind Krishnaswamy
@@ -71,8 +71,9 @@ namespace RISE
 				// to 0×0, or a freshly-constructed unloaded image) would
 				// hit modulo-by-zero in the Repeat/MirroredRepeat
 				// boundary path below.  Return a default-initialised
-				// (zero) pel.  The Bilin parent's clamp-only path is
-				// implicitly safe because it never divides.
+				// (zero) pel.  The Bilin and NNB GetPel paths carry the
+				// same guard (theirs protects against the clamp bounds
+				// going negative into the unchecked raster GetPEL).
 				if( this->image_width <= 0 || this->image_height <= 0 ) {
 					p = C();
 					return;
@@ -89,9 +90,13 @@ namespace RISE
 				Scalar	u = wrappedY * Scalar( this->image_width ) + 0.5;
 				Scalar	v = wrappedX * Scalar( this->image_height ) + 0.5;
 
-				// Clamp u and v values to between 0 and the image size.
-				// (No-op when the input was already wrapped; saturates
-				// at the boundary texel for ClampToEdge.)
+				// Clamp u and v to [0, dim-1].  NOTE this is NOT a no-op
+				// for Repeat / MirroredRepeat: u = wrapped*W + 0.5
+				// exceeds W-1 whenever wrapped > 1 - 1.5/W, so the top
+				// ~1.5 texels of every tile pin u to W-1 (making the
+				// interpolation parameter 0 there).  Deliberate pre-clamp
+				// design — do not "fix" (see the Bilin accessor).  For
+				// ClampToEdge the clamp does the actual saturation.
 				if( u < 0.0 ) u = 0.0;
 				if( u > Scalar(this->image_width-1) ) u = Scalar(this->image_width-1);
 				if( v < 0.0 ) v = 0.0;
@@ -111,9 +116,11 @@ namespace RISE
 				//   - MirroredRepeat: off-image neighbour mirrors —
 				//     fold into [0, 2*W) then reflect into [0, W) so
 				//     adjacent tiles meet seam-free.
-				//   - ClampToEdge: replace out-of-range neighbour with
-				//     the centre texel (xlo / ylo).  Slightly biased
-				//     near edges but legacy-stable.
+				//   - ClampToEdge: saturate the neighbour index at the
+				//     boundary texel, matching Bilin's xhi/yhi clamp.
+				//     (The low branch writes xlo/ylo, but px < 0 implies
+				//     xlo == 0, so both branches land on the true edge
+				//     texel — textbook clamp-to-edge.)
 				auto wrapIndex = []( int p, int N, char mode ) -> int {
 					if( mode == eRasterWrap_Repeat ) {
 						return ((p % N) + N) % N;
@@ -123,7 +130,7 @@ namespace RISE
 						int q = ((p % twoN) + twoN) % twoN;	// [0, 2N)
 						return ( q < N ) ? q : ( twoN - 1 - q );
 					}
-					// ClampToEdge handled inline by the caller (uses xlo/ylo)
+					// ClampToEdge handled inline by the caller (saturates at the boundary texel)
 					return p;
 				};
 				C pixels[4][4];
@@ -133,14 +140,19 @@ namespace RISE
 					for( int x=0; x<4; x++ ) {
 						int px = (xlo-1+x);
 						int py = (ylo-1+y);
-						if( this->wrap_t != eRasterWrap_ClampToEdge ) {
-							px = wrapIndex( px, W, this->wrap_t );
+						// Axis convention (same as the wrapped-UV code
+						// above and Bilin's xhi/yhi seam partners): the
+						// width-axis index px comes from `u` (input `y`,
+						// wrap_s); the height-axis index py comes from
+						// `v` (input `x`, wrap_t).
+						if( this->wrap_s != eRasterWrap_ClampToEdge ) {
+							px = wrapIndex( px, W, this->wrap_s );
 						} else {
 							if( px < 0 ) px = xlo;
 							if( px >= W ) px = W-1;
 						}
-						if( this->wrap_s != eRasterWrap_ClampToEdge ) {
-							py = wrapIndex( py, H, this->wrap_s );
+						if( this->wrap_t != eRasterWrap_ClampToEdge ) {
+							py = wrapIndex( py, H, this->wrap_t );
 						} else {
 							if( py < 0 ) py = ylo;
 							if( py >= H ) py = H-1;

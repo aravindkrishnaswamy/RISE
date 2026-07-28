@@ -23,9 +23,9 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		// Forward-declared in BilinRasterImageAccessor.h; declared here too
-		// to keep the header self-contained for NNB users who don't
-		// transitively include the Bilin header.
+		// Duplicate of ApplyWrapMode (BilinRasterImageAccessor.h) under a
+		// distinct name so this header stays self-contained for NNB users
+		// who don't include the Bilin header.  Keep the two bodies in sync.
 		inline Scalar ApplyWrapModeNNB( Scalar uv, char wrapMode )
 		{
 			switch( wrapMode ) {
@@ -109,12 +109,24 @@ namespace RISE
 				const Scalar wrappedY = ApplyWrapModeNNB( y, wrap_s );
 				const Scalar wrappedX = ApplyWrapModeNNB( x, wrap_t );
 
+				// Defensive: a zero-dimension image would make the clamp
+				// bounds below negative; the unsigned cast then sends a
+				// huge index into the unchecked raster GetPEL.  Same
+				// guard as the Bilin/Bicubic accessors.
+				if( image_width <= 0 || image_height <= 0 ) {
+					p = C();
+					return;
+				}
+
 				Scalar	u = wrappedY * Scalar( image_width ) + 0.5;
 				Scalar	v = wrappedX * Scalar( image_height ) + 0.5;
 
-				// Clamp u and v values to between 0 and the image size.
-				// For Repeat / MirroredRepeat the wrapped UV is in [0,1]
-				// so this is a no-op except for fp-rounding overshoot.
+				// Clamp u and v to [0, dim-1].  NOTE this is NOT a strict
+				// no-op for Repeat: the top half-texel of a tile rounds up
+				// to W and pins to the last texel instead of wrapping to
+				// the next tile's texel 0.  Deliberate pre-clamp design —
+				// do not "fix" (see the Bilin accessor).  For ClampToEdge
+				// the clamp does the actual saturation.
 				if( u < 0.0 ) u = 0.0;
 				if( u > Scalar(image_width-1) ) u = Scalar(image_width-1);
 				if( v < 0.0 ) v = 0.0;
@@ -125,6 +137,13 @@ namespace RISE
 
 			void		SetPel( const Scalar x, const Scalar y, C& p ) const
 			{
+				// Zero-dimension guard (mirrors GetPel): with a 0-dim image the
+				// clamp below would pin u/v to Scalar(-1) and drive an
+				// out-of-bounds write through SetPEL.
+				if( image_width <= 0 || image_height <= 0 ) {
+					return;
+				}
+
 				Scalar	u = y * Scalar( image_width ) + 0.5;
 				Scalar	v = x * Scalar( image_height ) + 0.5;
 
