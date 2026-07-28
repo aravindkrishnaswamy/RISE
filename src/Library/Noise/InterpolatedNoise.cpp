@@ -39,10 +39,12 @@ InterpolatedNoise1D::~InterpolatedNoise1D()
 	safe_release( SmoothedNoise1 );
 }
 
-Scalar InterpolatedNoise1D::Evaluate( const Scalar x ) const 
+Scalar InterpolatedNoise1D::Evaluate( const Scalar x ) const
 {
-	double			fX = 0;
-	const double	fracX = modf( x, &fX );
+	// floor-based (not modf) so the fraction stays in [0,1) for negative
+	// coordinates too -- noise inputs are world-space and can be negative
+	const double	fX = floor( x );
+	const double	fracX = x - fX;
 	const int		X = int(fX);
 
 	const Scalar	v1 = SmoothedNoise1->Evaluate( X );
@@ -71,20 +73,16 @@ InterpolatedNoise2D::~InterpolatedNoise2D()
 	safe_release( SmoothedNoise2 );
 }
 
-Scalar InterpolatedNoise2D::Evaluate( const Scalar x, const Scalar y ) const 
+Scalar InterpolatedNoise2D::Evaluate( const Scalar x, const Scalar y ) const
 {
-//		int		X = int(x);
-//		double	fracX = x - double(X);
-
-	double	fX = 0;
-	const double	fracX = modf( x, &fX );
+	// floor-based (not modf) so the fractions stay in [0,1) for negative
+	// coordinates too -- noise inputs are world-space and can be negative
+	const double	fX = floor( x );
+	const double	fracX = x - fX;
 	const int		X = int(fX);
 
-//		int		Y = int(y);
-//		double	fracY = y - double(Y);
-
-	double	fY = 0;
-	const double	fracY = modf( y, &fY );
+	const double	fY = floor( y );
+	const double	fracY = y - fY;
 	const int		Y = int(fY);
 
 	const Scalar	v1 = SmoothedNoise2->Evaluate( X    , Y     );
@@ -120,24 +118,20 @@ InterpolatedNoise3D::~InterpolatedNoise3D()
 	safe_release( SmoothedNoise3 );
 }
 
-Scalar InterpolatedNoise3D::Evaluate( const Scalar x, const Scalar y, const Scalar z ) const 
+Scalar InterpolatedNoise3D::Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
 {
-//		int		X = int(x);
-//		double	fracX = x - double(X);
-
-	double			fX = 0;
-	const double	fracX = modf( x, &fX );
+	// floor-based (not modf) so the fractions stay in [0,1) for negative
+	// coordinates too -- noise inputs are world-space and can be negative
+	const double	fX = floor( x );
+	const double	fracX = x - fX;
 	const int		X = int(fX);
 
-//		int		Y = int(y);
-//		double	fracY = y - double(Y);
-
-	double			fY = 0;
-	const double	fracY = modf( y, &fY );
+	const double	fY = floor( y );
+	const double	fracY = y - fY;
 	const int		Y = int(fY);
 
-	double			fZ = 0;
-	const double	fracZ = modf( z, &fZ );
+	const double	fZ = floor( z );
+	const double	fracZ = z - fZ;
 	const int		Z = int(fZ);
 
 	const Scalar	v1 = SmoothedNoise3->Evaluate( X    , Y    , Z );

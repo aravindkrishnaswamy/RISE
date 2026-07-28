@@ -16,7 +16,7 @@
 #ifndef NOISE_UTILS_
 #define NOISE_UTILS_
 
-#include "Math3D/Constants.h"
+#include "../Utilities/Math3D/Constants.h"
 #include <math.h>
 namespace RISE
 {
@@ -78,11 +78,10 @@ namespace RISE
 
 	inline Scalar InterpolatedNoise1( const Scalar x )
 	{
-	//	int		X = int(x);
-	//	double	fracX = x - double(X);
-
-		double	fX = 0;
-		double	fracX = modf( x, &fX );
+		// floor-based (not modf) so the fraction stays in [0,1) for negative
+		// coordinates too -- noise inputs are world-space and can be negative
+		double	fX = floor( x );
+		double	fracX = x - fX;
 		int		X = int(fX);
 
 		Scalar	v1 = SmoothedNoise1( X );
@@ -93,18 +92,14 @@ namespace RISE
 
 	inline Scalar InterpolatedNoise2( const Scalar x, const Scalar y )
 	{
-	//	int		X = int(x);
-	//	double	fracX = x - double(X);
-
-		double	fX = 0;
-		double	fracX = modf( x, &fX );
+		// floor-based (not modf) so the fractions stay in [0,1) for negative
+		// coordinates too -- noise inputs are world-space and can be negative
+		double	fX = floor( x );
+		double	fracX = x - fX;
 		int		X = int(fX);
 
-	//	int		Y = int(y);
-	//	double	fracY = y - double(Y);
-
-		double	fY = 0;
-		double	fracY = modf( y, &fY );
+		double	fY = floor( y );
+		double	fracY = y - fY;
 		int		Y = int(fY);
 
 		Scalar	v1 = SmoothedNoise2( X    , Y     );
