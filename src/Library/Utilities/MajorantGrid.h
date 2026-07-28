@@ -49,10 +49,15 @@ namespace RISE
 {
 	/// \brief Low-resolution grid of per-cell majorant extinction values
 	///
-	/// Each cell stores the maximum extinction (sigma_t * density) that
-	/// can occur anywhere within that cell.  This enables delta tracking
-	/// and ratio tracking to use tight local majorants instead of a
-	/// single global majorant for the entire volume.
+	/// Each cell stores a conservative upper bound on the extinction
+	/// (sigma_t * density) that can occur anywhere within that cell:
+	/// the per-cell voxel maximum, dilated to cover the interpolation
+	/// stencil's reach and scaled by the Catmull-Rom overshoot factor
+	/// 756/512 (see MajorantGrid.cpp).  The bound can therefore exceed
+	/// the true in-cell maximum — safe for delta/ratio tracking, but
+	/// not a tight statistic.  This enables delta tracking and ratio
+	/// tracking to use local majorants instead of a single global
+	/// majorant for the entire volume.
 	class MajorantGrid
 	{
 	protected:
@@ -79,8 +84,10 @@ namespace RISE
 		/// Build the majorant grid from a volume accessor.
 		///
 		/// Iterates through all voxels in each cell to find the maximum
-		/// density, then scales by MaxValue(max_sigma_t) to produce the
-		/// majorant extinction for that cell.
+		/// density, scales by MaxValue(max_sigma_t), then dilates by the
+		/// interpolation stencil's per-axis reach and applies the
+		/// Catmull-Rom overshoot factor (see MajorantGrid.cpp) so each
+		/// cell conservatively bounds any interpolated lookup within it.
 		MajorantGrid(
 			IVolumeAccessor& accessor,			///< [in] Density field accessor
 			unsigned int volWidth,				///< [in] Volume width in voxels
