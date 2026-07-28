@@ -345,7 +345,12 @@ namespace RISE
 				// determinant passes the fabs(det) < 1e-30 degeneracy
 				// check and log2 turns it into a NaN LOD) takes this safe
 				// path instead of flowing into floor()/int conversion
-				// (UB) and a garbage pyramid index below.
+				// (UB) and a garbage pyramid index below.  Caveat: the
+				// guarantee holds where FP comparisons have IEEE
+				// semantics (Linux -O3, MSVC /fp:precise, debug builds);
+				// the macOS release build uses -ffast-math, under which
+				// any NaN is UB everywhere and this form is best-effort
+				// source hardening only.
 				if( !(lod > Scalar( 0 )) ) {
 					GetPEL( x, y, p );
 					return;
