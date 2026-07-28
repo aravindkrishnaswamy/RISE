@@ -421,6 +421,14 @@ namespace RISE
 		public:
 			PixelBasedRasterizerHelper( IRayCaster* pCaster_ , RISE::Implementation::FrameStore* frameStore = nullptr);
 
+			//! Test-only observation of the private post-processing crop state.
+			bool ForTest_HasActiveOutputRegion() const {
+				return mHasActiveOutputRegion;
+			}
+			Rect ForTest_ActiveOutputRegion() const {
+				return mActiveOutputRegion;
+			}
+
 			/// \return The ray caster this rasterizer drives (borrowed,
 			/// not addref'd).  Used by Job::SetActiveRasterizerRadianceScale
 			/// to reach the concrete RayCaster (via a further dynamic_cast)

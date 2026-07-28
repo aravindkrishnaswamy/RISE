@@ -504,8 +504,14 @@ static void RunProductionRegionProbe( const char* label, const char* rasterizerC
 		return;
 	}
 	const std::vector<RISEColor> baseline = capture->frames.back();
+	Implementation::PixelBasedRasterizerHelper* pixelBased =
+		dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( pJob->GetRasterizer() );
 	Implementation::BidirectionalRasterizerBase* bidirectional =
 		dynamic_cast<Implementation::BidirectionalRasterizerBase*>( pJob->GetRasterizer() );
+	if( !bidirectional ) {
+		Check( pixelBased && !pixelBased->ForTest_HasActiveOutputRegion(),
+			std::string( label ) + ": clean full render has no private output crop" );
+	}
 	const Scalar fullSplatSPPBefore = bidirectional
 		? bidirectional->GetEffectiveSplatSPP( capture->width, capture->height ) : 0;
 
@@ -514,6 +520,13 @@ static void RunProductionRegionProbe( const char* label, const char* rasterizerC
 	const bool regionOK = pJob->RasterizeRegion( left, top, right, bottom );
 	Check( regionOK && capture->frames.size() == 2,
 		std::string( label ) + ": regional production render succeeds" );
+	if( pixelBased && !bidirectional ) {
+		const Rect active = pixelBased->ForTest_ActiveOutputRegion();
+		Check( pixelBased->ForTest_HasActiveOutputRegion() &&
+			active.left == left && active.top == top &&
+			active.right == right && active.bottom == bottom,
+			std::string( label ) + ": regional render installs the exact private output crop" );
+	}
 	if( bidirectional ) {
 		const Scalar regionalSplatSPP =
 			bidirectional->GetEffectiveSplatSPP( capture->width, capture->height );
@@ -604,6 +617,10 @@ static void RunProductionRegionProbe( const char* label, const char* rasterizerC
 			bidirectional->GetEffectiveSplatSPP( capture->width, capture->height );
 		Check( std::fabs( fullSplatSPPAfter - fullSplatSPPBefore ) <= 1e-9,
 			std::string( label ) + ": follow-up full render clears private splat-region state" );
+	}
+	if( !bidirectional ) {
+		Check( pixelBased && !pixelBased->ForTest_HasActiveOutputRegion(),
+			std::string( label ) + ": follow-up full render clears private output crop state" );
 	}
 	Check( capture->frameWasRegional.size() == 3 &&
 		!capture->frameWasRegional[0] && capture->frameWasRegional[1] &&
@@ -734,7 +751,10 @@ public:
 	}
 };
 
-static void RunAnimationIrradianceCancellationProbe()
+static void RunIrradianceCancellationProbe(
+	const char* label,
+	const bool animation,
+	const bool singleThread )
 {
 	std::string scene = BuildIrradianceRegionScene();
 	const size_t widthPos = scene.find( "width 24" );
@@ -742,21 +762,28 @@ static void RunAnimationIrradianceCancellationProbe()
 	const size_t heightPos = scene.find( "height 24" );
 	if( heightPos != std::string::npos ) scene.replace( heightPos, 9, "height 8" );
 	const std::string scenePath = WriteTemp(
-		"animation_irradiance_cancel.RISEscene", scene );
-	Check( !scenePath.empty(), "irradiance cancellation: animation scene written" );
+		( std::string( "irradiance_cancel_" ) + label + ".RISEscene" ).c_str(), scene );
+	Check( !scenePath.empty(), std::string( label ) + ": cancellation scene written" );
 	Job* pJob = new Job();
 	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
-	Check( loaded, "irradiance cancellation: animation scene loads" );
+	Check( loaded, std::string( label ) + ": cancellation scene loads" );
 	if( loaded && pJob->GetRasterizer() ) {
+		Implementation::Rasterizer* rasterizer =
+			dynamic_cast<Implementation::Rasterizer*>( pJob->GetRasterizer() );
+		if( rasterizer && singleThread ) rasterizer->ForTest_SetThreadCountOverride( 1 );
 		QueryOnlyCancelProgress cancel;
 		pJob->SetProgress( &cancel );
-		pJob->RasterizeAnimation( 0.0, 1.0, 2, false, false );
+		if( animation ) {
+			pJob->RasterizeAnimation( 0.0, 1.0, 2, false, false );
+		} else {
+			pJob->Rasterize();
+		}
 		pJob->SetProgress( 0 );
 		const IIrradianceCache* cache = pJob->GetScene()->GetIrradianceCache();
 		Check( cancel.queries > 0,
-			"irradiance cancellation: one-tile pass observes query-only cancellation" );
+			std::string( label ) + ": one-tile pass observes query-only cancellation" );
 		Check( cache && !cache->Precomputed(),
-			"irradiance cancellation: partial animation cache is not marked complete" );
+			std::string( label ) + ": cancelled cache is not marked complete" );
 	}
 	pJob->release();
 	std::remove( scenePath.c_str() );
@@ -1808,7 +1835,10 @@ int main()
 	RunProductionRegionProbe( "vcm_spectral_hwss", kRegionVcmSpectralHWSS );
 	RunProductionRegionProbe( "pt_wide_gaussian", kRegionPtWideFilter );
 	RunIrradianceCacheRegionFirstProbe();
-	RunAnimationIrradianceCancellationProbe();
+	RunIrradianceCancellationProbe( "animation_mp", true, false );
+	RunIrradianceCancellationProbe( "animation_sp", true, true );
+	RunIrradianceCancellationProbe( "still_mp", false, false );
+	RunIrradianceCancellationProbe( "still_sp", false, true );
 
 	RunDepthContractProbe( "shader_pel", kDepthShaderPel );
 	RunDepthContractProbe( "shader_spectral_nm", kDepthShaderSpectralNM );

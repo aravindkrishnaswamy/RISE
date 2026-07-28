@@ -88,6 +88,7 @@ namespace RISE
 			//! migrated to allocate one — see L6a's verification
 			//! commit).
 			FrameStore*								mFrameStore;
+			int									mForTestThreadCountOverride = 0;
 
 			//! Auxiliary-surface selection is also consumed by agent
 			//! perception AOVs, so it must survive in builds without OIDN.
@@ -147,6 +148,11 @@ namespace RISE
 #endif
 
 		public:
+			//! Test seam for covering the single-thread dispatcher branch.
+			//! Zero restores topology-derived production behavior.
+			void ForTest_SetThreadCountOverride( const int count ) {
+				mForTestThreadCountOverride = count;
+			}
 			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
 			//! Removes exactly one matching output, if present.  This is an
 			//! implementation-level companion to the legacy all-or-nothing
