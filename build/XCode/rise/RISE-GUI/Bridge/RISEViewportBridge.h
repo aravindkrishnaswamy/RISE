@@ -1002,15 +1002,15 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// permitted to do.  The chat driver's own tool calls go through
 /// `-agentHandleToolCall:` instead — see that method's doc.
 ///
-/// CONSEQUENCE FOR `read_image` TYPED BY HAND HERE (2026-07): the chat
-/// panel's `render` used to run on THIS session, so a hand-typed
-/// `read_image` in the Agent (JSON-RPC) debug panel would return the chat
-/// agent's last frame.  It no longer does — chat renders now run on the
-/// autonomy-selected tool-call session (see `-agentHandleToolCall:`), and
-/// `AgentSession`'s last-render PNG cache is PER-SESSION.  So after a chat
-/// render, a `read_image` sent through THIS method reports `byteLength` 0
-/// until something is rendered through this session too.  That is expected,
-/// not a bug: send a `render` here first if you want pixels back here.
+/// `read_image` TYPED BY HAND HERE DOES SEE THE CHAT AGENT'S LAST FRAME
+/// (2026-07 shared image cache).  This session and the two tool-call
+/// sessions are handed the SAME AgentImageCache at construction, so a
+/// `read_image` sent through the Agent (JSON-RPC) debug panel returns
+/// whatever was rendered most recently through ANY of the three — the chat
+/// agent's frame included.  (An intermediate revision of this doc said the
+/// opposite, correctly for the per-session cache that preceded the shared
+/// one.)  The hosted loopback server's External session is NOT in that
+/// group and still sees nothing.
 - (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
     NS_SWIFT_NAME(agentHandleLine(_:));
 
@@ -1071,23 +1071,29 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 ///                AgentSession, but identical authority+autonomy, so
 ///                observably indistinguishable).
 ///
-/// `render` GOES THROUGH THIS SELECTOR TOO (2026-07 per-session image-cache
-/// fix).  It used to be routed to `-agentHandleLine:`'s administrative
-/// session instead, on the reasoning that a render's submit/poll/cancel
-/// sequence spans several calls against ONE session's per-job result cache
-/// and the user can flip `agentAutonomyLevel` mid-render.  That reasoning
-/// was right about the job-id problem and wrong about the fix: it split
-/// `render` away from `read_image`, and `AgentSession`'s LAST-RENDER PNG
-/// cache (`mLastPng` / `mLastSink`, populated in AgentSession.cpp's
-/// RenderCore_) is PER-SESSION.  With the two verbs on different sessions,
-/// the agent's `read_image` read a cache its own render never wrote —
-/// returning zero bytes, or the stale objectmap PNG left behind by
-/// `query_object_at`'s internal render.  Both verbs now run on the SAME
-/// session, so `read_image` sees what `render` produced.  (The stale-
-/// objectmap half has since been fixed at its own source as well —
-/// `query_object_at`'s internal render is stash/restore-guarded and no
-/// longer clobbers the cache; see AgentSession.cpp's
-/// EphemeralRenderCacheGuard.)
+/// `render` GOES THROUGH THIS SELECTOR TOO (2026-07 image-cache fix).  It
+/// used to be routed to `-agentHandleLine:`'s administrative session
+/// instead, on the reasoning that a render's submit/poll/cancel sequence
+/// spans several calls against ONE session's per-job result cache and the
+/// user can flip `agentAutonomyLevel` mid-render.  That reasoning was right
+/// about the job-id problem and wrong about the fix: it split `render` away
+/// from `read_image`, and the LAST-RENDER PNG cache was PER-SESSION at the
+/// time.  With the two verbs on different sessions, the agent's
+/// `read_image` read a cache its own render never wrote — returning zero
+/// bytes, or the stale objectmap PNG left behind by `query_object_at`'s
+/// internal render.  (The stale-objectmap half has since been fixed at its
+/// own source as well — `query_object_at`'s internal render is
+/// stash/restore-guarded and no longer clobbers the cache; see
+/// AgentSession.cpp's EphemeralRenderCacheGuard.)
+///
+/// THE CACHE IS NO LONGER WHY.  All three in-app sessions now share ONE
+/// AgentImageCache (see -initWithHostBridge:), so `read_image` finds the
+/// render whichever in-app session ran it — including across the
+/// autonomy-chip flip that co-routing could never cover.  What still binds
+/// `render` to this selector is the PER-SESSION half that was deliberately
+/// NOT shared: render_status / render_wait answer out of this session's own
+/// async-result record, so a poll on a sibling gets completed:true with no
+/// `result`.
 ///
 /// The mid-render level flip is handled by PINNING instead: the caller
 /// captures the level ONCE at submit time and passes it to the
@@ -1156,18 +1162,22 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// turn boundary; pinning a render job only works around the two
 /// mechanical session-scoping constraints listed above.
 ///
-/// KNOWN RESIDUAL (documented, not silently accepted) — and NARROWER than
-/// an earlier version of this doc claimed.  Only a flip that crosses
-/// **Propose** changes session: `Read` and `Apply` both select the SAME
-/// `_agentToolDispatcherOwner` (they differ only in the autonomy set on
-/// it), so a Read↔Apply flip between a completed `render` and the
-/// `read_image` that follows it changes nothing about which cache is read.
-/// A flip TO or FROM Propose does change it: the following `read_image`
-/// runs on the other session and reads ITS (empty or stale) PNG cache
-/// rather than the render's.  That is inherent to the deliberate
-/// Propose-gets-its-own-session design — the caches are per-session state,
-/// and pinning further would trade a safety property for it.  In practice
-/// the model self-corrects by re-rendering.
+/// THE AUTONOMY-FLIP RESIDUAL THIS DOC USED TO CARRY IS CLOSED (2026-07).
+/// It read: a flip TO or FROM **Propose** between a completed `render` and
+/// the `read_image` that follows lands that read on the other session,
+/// which returns ITS empty or stale PNG cache.  The three in-app sessions
+/// now share one `AgentImageCache` (see -initWithHostBridge:), so the read
+/// finds the render whichever of them ran it.  (A Read↔Apply flip never
+/// changed session in the first place — both select the SAME
+/// `_agentToolDispatcherOwner`, differing only in the autonomy set on it.)
+/// Library-level coverage: AgentRenderAsyncTest's "(shared-img-cache)".
+///
+/// WHAT A FLIP STILL COSTS: a poll or wait issued on the other session gets
+/// completed:true with no `result` payload, per constraint 1 above — which
+/// is why the render JOB is still pinned.  Sharing the cache bought back
+/// the pixels, not the per-session job bookkeeping, and that bookkeeping is
+/// deliberately NOT shared: a session must not report on another session's
+/// jobs.
 ///
 /// Same nil-safety contract: never returns nil.
 - (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest

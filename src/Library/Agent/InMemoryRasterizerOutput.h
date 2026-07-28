@@ -202,7 +202,7 @@ namespace RISE
 			//! renders QueryObjectAt and CompareToReference's split fire
 			//! internally) runs inside AgentSession.cpp's
 			//! EphemeralRenderCacheGuard, which has moved the cached sink OUT
-			//! of `mLastSink` and onto the guard's stack for the duration.
+			//! of the session's image cache and onto the guard's stack for the duration.
 			//! That sink is therefore in NEITHER of the two sets
 			//! `RetainedPerceptionBytesLocked_()` sums (the cache pointer and
 			//! the read-lease registry -- unless a concurrent reader happened
@@ -217,7 +217,7 @@ namespace RISE
 			//! the ephemeral render itself -- BOTH ephemeral callers discard
 			//! that result (QueryObjectAt keeps only the decoded pixel and
 			//! legend; CompareToReference keeps only `ok`/`png`); (2) a
-			//! concurrent `ReadPerception()`, which reads whatever `mLastSink`
+			//! concurrent `ReadPerception()`, which reads whatever the image cache
 			//! points at -- and for the whole guarded scope that is either
 			//! NULL (so ReadPerception returns empty, reporting nothing) or,
 			//! only after the ephemeral render's own cache tail has landed

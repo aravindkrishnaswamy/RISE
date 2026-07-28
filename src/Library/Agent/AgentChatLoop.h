@@ -58,7 +58,9 @@
 //        transient the model needs to see rides the CONVERSATION
 //        instead, appended after the tool-results entry so no tool
 //        result is orphaned -- see AppendPendingBuildNudge, the one
-//        such message the loop synthesizes today.
+//        such message the loop synthesizes today.  It goes on the wire
+//        as ordinary user content but is tagged Role::DriverNote in the
+//        transcript so a GUI does not attribute it to the human.
 //      * HONEST POISON SCOPING: a user interrupt, tool crash, or
 //        hostile response body cannot create RECORDED-BUT-
 //        UNANSWERABLE tool calls -- the parse gates plus the flush
@@ -279,7 +281,38 @@ namespace RISE
 			{
 				User,         //!< a user text message
 				Assistant,    //!< a model turn (text and/or tool calls)
-				ToolResults   //!< the packed tool results of one model turn
+				ToolResults,  //!< the packed tool results of one model turn
+
+				//! A note the LOOP ITSELF injected into the conversation --
+				//! today only the blind-edit nudge (AppendPendingBuildNudge);
+				//! the human never typed it.
+				//!
+				//! ON THE WIRE IT IS INDISTINGUISHABLE FROM Role::User, AND
+				//! THAT IS THE POINT.  rawJson is built by the SAME
+				//! mCodec->MakeUserEntry() a real user message uses, so every
+				//! codec emits an ordinary user message and no provider sees a
+				//! role it does not model.  BuildRequest never reads `role` at
+				//! all -- it assembles `rawEntries` from rawJson alone -- so
+				//! adding this enumerator cannot change one byte of any
+				//! request (T44 asserts exactly that, per provider).
+				//!
+				//! WHAT IT IS FOR: the two GUIs.  A driver that renders
+				//! straight out of this transcript (the Windows ChatPanel)
+				//! would otherwise paint a loop-synthesized reminder as the
+				//! USER's own chat bubble, which is a lie about who said it.
+				//! Both drivers render this role as a system-notice row (dim,
+				//! centered) -- the affordance they already use for the
+				//! compaction notice.  Do NOT silently drop it: the model DID
+				//! receive it, and a reminder that visibly steered the agent
+				//! must be visible to the person watching.
+				//!
+				//! COMPACTION: deliberately NOT a span boundary (spans start
+				//! at Role::User).  A driver note is not a user turn -- the
+				//! trajectory already records it as a `history_edit` rather
+				//! than a `user` record for the same reason -- so it stays
+				//! attached to the span it was injected into instead of
+				//! splitting it.
+				DriverNote
 			};
 
 			Role        role = Role::User;
@@ -794,6 +827,27 @@ namespace RISE
 			//! not.
 			std::size_t CompactedEntryCount() const { return mCompactedEntryCount; }
 
+			//! How many Role::DriverNote entries the loop has injected into
+			//! the CURRENT conversation (cleared by Reset/SetProvider along
+			//! with the transcript).  Monotone within a conversation, and --
+			//! unlike a transcript index -- unperturbed by compaction, which
+			//! is why a driver watermarks against this rather than against a
+			//! position in mTranscript.
+			//!
+			//! For the SAME reason CompactedEntryCount() exists: a driver
+			//! that keeps its own append-only display list (the Mac
+			//! ChatViewModel) never sees the transcript, so without this it
+			//! could not tell the user that the loop just told the agent to
+			//! go render.  Poll it where the compaction count is polled and
+			//! show the delta.  See LastDriverNoteText().
+			std::size_t DriverNoteCount() const { return mDriverNoteCount; }
+
+			//! The text of the most recent Role::DriverNote entry ("" until
+			//! one fires).  Companion to DriverNoteCount() for the
+			//! display-mirror drivers; a driver that renders the transcript
+			//! directly reads the entry's displayText instead.
+			const std::string& LastDriverNoteText() const { return mLastDriverNoteText; }
+
 			//==========================================================
 			// Eval-harness E1: trajectory recording.
 			//==========================================================
@@ -937,7 +991,8 @@ namespace RISE
 			//! target -- or until only kMinRetainedSpans trailing spans
 			//! remain, whichever comes first.  A "span" is a maximal run
 			//! beginning at a Role::User entry up to (not including) the next
-			//! Role::User entry; dropping whole spans from the front keeps
+			//! Role::User entry (Role::DriverNote does NOT start one -- see
+			//! its doc); dropping whole spans from the front keeps
 			//! mTranscript[0] a User entry (Anthropic requires the first wire
 			//! message be user) and never orphans a tool_result from its
 			//! tool_use (the wire invariants in the file header).  Pure
@@ -1017,12 +1072,19 @@ namespace RISE
 			//! observe verb and on a new user turn.  When it reaches a positive
 			//! multiple of the threshold, `mPendingBuildNudge` is armed with a
 			//! reminder that the flush at the end of the round appends to the
-			//! transcript as a User entry and clears (AppendPendingBuildNudge).
+			//! transcript as a Role::DriverNote entry and clears
+			//! (AppendPendingBuildNudge).
 			//! The stash exists because arming happens per-call while delivery
 			//! must wait for the whole parallel round to be answered.
 			int         mBlindEditStreak = 0;
 			int         mBlindEditNudgeThreshold = kDefaultBlindEditNudgeThreshold;
 			std::string mPendingBuildNudge;
+
+			//! Driver-note delivery bookkeeping -- see DriverNoteCount() /
+			//! LastDriverNoteText().  Describes the CURRENT transcript, so
+			//! Reset() clears both alongside mCompactedEntryCount.
+			std::size_t mDriverNoteCount = 0;
+			std::string mLastDriverNoteText;
 
 			//! TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: sticky once a
 			//! text-only model 400-rejects multimodal content.  While set,

@@ -461,6 +461,9 @@ namespace RISE
 			mCompactedEntryCount = 0;
 			mBlindEditStreak = 0;
 			mPendingBuildNudge.clear();
+			// Describe the transcript we just cleared, like mCompactedEntryCount.
+			mDriverNoteCount = 0;
+			mLastDriverNoteText.clear();
 			// A fresh session may target a different, image-capable model --
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
@@ -1492,11 +1495,24 @@ namespace RISE
 			// run of adjacent user contents with the functionResponse parts
 			// FIRST, and the OpenAI-family codecs emit a flat message list
 			// where a trailing user message is unremarkable.
+			//
+			// ROLE: DriverNote, not User.  The WIRE is unchanged -- rawJson
+			// still comes from the same MakeUserEntry a real user message
+			// uses, and BuildRequest reads rawJson only -- but a GUI that
+			// renders out of this transcript can now tell that the loop, not
+			// the human, said this, and render it as a system notice rather
+			// than as the user's chat bubble.  See Role::DriverNote's doc.
 			ChatTranscriptEntry entry;
-			entry.role = ChatTranscriptEntry::Role::User;
+			entry.role = ChatTranscriptEntry::Role::DriverNote;
 			entry.displayText = mPendingBuildNudge;
 			entry.rawJson = mCodec->MakeUserEntry( mPendingBuildNudge );
 			mTranscript.push_back( entry );
+
+			// Display-mirror drivers (the Mac ChatViewModel) never read the
+			// transcript, so they watermark against this counter instead --
+			// see DriverNoteCount().
+			++mDriverNoteCount;
+			mLastDriverNoteText = mPendingBuildNudge;
 
 			// Eval-harness E1: recorded as a history edit, NOT as a `user`
 			// record.  A `user` record would inflate the running user-turn
@@ -1728,6 +1744,12 @@ namespace RISE
 			// scan below always finds spanStarts[0] == 0.  Dropping WHOLE
 			// spans from the FRONT keeps mTranscript[0] a User entry and
 			// never orphans a tool_result from its preceding tool_use.
+			//
+			// Role::DriverNote is NOT a span boundary -- it is a message the
+			// loop injected mid-round, not a turn the user took, so it stays
+			// with the span it belongs to.  That is also what keeps the
+			// "mTranscript[0] is a real user message" guarantee above literal:
+			// the erase boundary can only ever land on a Role::User entry.
 			const std::size_t beforeEstimate = EstimateContextTokens();
 			bool dropped = false;
 

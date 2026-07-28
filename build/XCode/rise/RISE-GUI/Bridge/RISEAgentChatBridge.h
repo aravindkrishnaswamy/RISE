@@ -91,10 +91,19 @@ typedef NS_ENUM(NSInteger, RISEAgentChatErrorKind) {
 };
 
 /// Mirrors RISE::Agent::ChatTranscriptEntry::Role.
+///
+/// `DriverNote` is a message the LOOP injected into the conversation (today
+/// only the blind-edit nudge).  It rides the wire as ordinary user content
+/// but is NOT something the human said, so a driver must not render it as a
+/// user bubble — see Role::DriverNote's doc in AgentChatLoop.h.  This app's
+/// driver keeps its own display list rather than rendering the transcript,
+/// so it surfaces the note via `driverNoteCount` / `lastDriverNoteText`
+/// below instead of through these accessors.
 typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
     RISEAgentChatRoleUser        = 0,
     RISEAgentChatRoleAssistant   = 1,
     RISEAgentChatRoleToolResults = 2,
+    RISEAgentChatRoleDriverNote  = 3,
 };
 
 /// One user-supplied reference image attachment (Model-B F5 chat image
@@ -210,6 +219,22 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 /// directly, so there the turns visibly vanish — and needs its own,
 /// differently-worded notice.  Both are guarded by SourceHygieneTest.)
 @property (nonatomic, readonly) NSUInteger compactedEntryCount;
+
+/// Mirrors AgentChatLoop::DriverNoteCount() / LastDriverNoteText() — the
+/// notes the LOOP injected into the conversation this session (today only
+/// the blind-edit nudge, which tells the agent to stop editing blind and
+/// go render).
+///
+/// Same shape as compactedEntryCount above, and for the same reason: this
+/// driver renders its OWN display list, never the wire transcript, so a
+/// loop-injected message reaches the model and is invisible here — the
+/// user sees the agent abruptly change course with nothing to explain it.
+/// The driver polls the count and appends a `.notice` row when it grows.
+/// (The Windows panel renders the transcript directly and instead paints
+/// the Role::DriverNote entry itself, as a dim centered notice row.  Both
+/// end up showing the user the same thing.)
+@property (nonatomic, readonly) NSUInteger driverNoteCount;
+@property (nonatomic, readonly, copy) NSString *lastDriverNoteText;
 
 /// Facet 5 slice S1: the "Available skills" section appended to every
 /// subsequent request's system prompt.  `indexText` is the rendered

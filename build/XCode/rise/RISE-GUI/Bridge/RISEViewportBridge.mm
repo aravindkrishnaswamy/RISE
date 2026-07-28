@@ -667,9 +667,25 @@ private:
     // (see -shutdown).  WrapJob may return null (defensive; pJob is
     // non-null here), in which case the dispatcher speaks valid JSON-RPC
     // errors for the session-backed verbs — still safe.
+    //
+    // SHARED LAST-RENDER CACHE (2026-07).  All THREE in-app sessions below
+    // are handed the SAME AgentImageCache, so a `render` performed through
+    // any one of them is readable by `read_image` through the others.  Before
+    // this, the cache was per-session and flipping the composer's autonomy
+    // chip to or from Propose between a render and the read that followed it
+    // moved the read onto a session whose cache was empty or stale — the
+    // model then re-rendered for several turns trying to get pixels back.
+    //
+    // The hosted loopback (MCP) server's External session, stood up in
+    // -startAgentHostedServerWithLabel:, deliberately gets NO handle: it must
+    // not be able to read pixels an in-app render produced. Do not "tidy" that
+    // by hoisting this handle into an ivar the hosted path can reach.
+    std::shared_ptr<RISE::Agent::AgentImageCache> inAppImageCache =
+        RISE::Agent::AgentSession::MakeSharedImageCache();
     {
         std::unique_ptr<RISE::Agent::AgentSession> session =
-            RISE::Agent::AgentSession::WrapJob(pJob);
+            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::Owner,
+                                               inAppImageCache);
         if (session) {
             session->AttachController(_controller);
         }
@@ -684,7 +700,8 @@ private:
     // `_controller` `_agentDispatcher`'s own session is attached to.
     {
         std::unique_ptr<RISE::Agent::AgentSession> ownerSession =
-            RISE::Agent::AgentSession::WrapJob(pJob);
+            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::Owner,
+                                               inAppImageCache);
         if (ownerSession) {
             ownerSession->AttachController(_controller);
         }
@@ -696,7 +713,8 @@ private:
             std::move(ownerSession), RISE::Agent::AgentAutonomy::Commit);
 
         std::unique_ptr<RISE::Agent::AgentSession> proposeSession =
-            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External);
+            RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External,
+                                               inAppImageCache);
         if (proposeSession) {
             proposeSession->AttachController(_controller);
             // Diagnostic only (SceneEditController::AgentProposal::sessionLabel) --
@@ -2437,6 +2455,14 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     }
     IJobPriv* pJob = static_cast<IJobPriv*>(jobOpaque);
 
+    // ISOLATED LAST-RENDER CACHE, DELIBERATELY.  NO AgentImageCache handle is
+    // passed here, so this session allocates a PRIVATE one — a remote MCP
+    // client must never be able to `read_image` pixels an in-app render
+    // produced. The three in-app sessions in -initWithHostBridge: share one
+    // handle with each other and with nothing else; that separation is the
+    // whole reason sharing is opt-in rather than automatic. Passing a handle
+    // here would silently leak the user's viewport to whoever holds the
+    // bearer token.
     std::unique_ptr<RISE::Agent::AgentSession> session =
         RISE::Agent::AgentSession::WrapJob(pJob, RISE::Agent::AgentAuthority::External);
     if (!session) {

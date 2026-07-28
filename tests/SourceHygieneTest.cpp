@@ -677,21 +677,28 @@ int main()
 		       "Windows chat render retains occupancy through cancellation drain" );
 
 		// ---- Chat render session routing (fix round 2, P1-B) ----
-		// WHY THIS IS GUARDED IN SOURCE.  `AgentSession`'s last-render PNG
-		// cache -- the pair `ReadImage()` serves and the `read_image` verb
-		// returns (mLastPng / mLastSink, written at RenderCore_'s tail) --
-		// is PER-SESSION.  `agentHandleLine` is the ADMINISTRATIVE session;
-		// `agentHandleToolCall` is the autonomy-selected session every OTHER
-		// chat tool call uses.  Both GUI drivers used to submit and poll the
-		// chat `render` through `agentHandleLine`, so the agent's render
-		// populated one session's cache and its follow-up `read_image` read
-		// another's -- byteLength 0, or the stale objectmap left by
-		// query_object_at.  A model then re-rendered for 3-9 turns trying to
-		// get pixels back, and in one observed run judged a beauty render
-		// from a flat segmentation image.
+		// WHY THIS IS GUARDED IN SOURCE.  `agentHandleLine` is the
+		// ADMINISTRATIVE session; `agentHandleToolCall` is the
+		// autonomy-selected session every OTHER chat tool call uses.  Both GUI
+		// drivers used to submit and poll the chat `render` through
+		// `agentHandleLine`, so -- back when the last-render PNG cache was
+		// PER-SESSION -- the agent's render populated one session's cache and
+		// its follow-up `read_image` read another's: byteLength 0, or the
+		// stale objectmap left by query_object_at.  A model then re-rendered
+		// for 3-9 turns trying to get pixels back, and in one observed run
+		// judged a beauty render from a flat segmentation image.
 		//
-		// The library-level AgentRenderAsyncTest "(img-cache)" case
-		// characterizes WHY the caches are independent; it would still pass
+		// THE CACHE IS NO LONGER THE REASON (2026-07): the three in-app
+		// sessions share ONE AgentImageCache, so the pixels line up whichever
+		// of them rendered.  What still requires this routing is the state
+		// deliberately NOT shared -- render_status / render_wait answer out of
+		// the running session's own async-result record, so a poll on a
+		// sibling returns completed:true with no `result` payload.  Same
+		// markers, live rationale.
+		//
+		// The library-level AgentRenderAsyncTest "(img-cache)" and
+		// "(shared-img-cache)" cases characterize the isolated default and
+		// the opt-in sharing; both would still pass
 		// if someone reverted this GUI routing entirely.  These markers are
 		// what actually pin the routing.  Bodies are extracted by
 		// find(begin_symbol)/find(next_symbol) so a marker cannot be
@@ -755,6 +762,55 @@ int main()
 		// the other direction.  A no-agentHandleLine assertion is NOT made
 		// here: processNextToolCall / driveTurn carry the historical
 		// explanation of the old split in a comment, deliberately.
+		// ---- Shared image cache: WHO GETS THE HANDLE (2026-07) ----
+		// The three IN-APP sessions share one AgentImageCache so a `render` on
+		// any of them is readable by `read_image` on the others (this is what
+		// closed the autonomy-flip residual).  The hosted loopback (MCP)
+		// server's External session MUST NOT be in that group: a remote client
+		// holding the bearer token would otherwise be able to read pixels the
+		// user's own in-app render produced.  That isolation is no longer a
+		// consequence of where the fields live -- it is purely a question of
+		// which construction sites are passed the handle, which is exactly the
+		// kind of property a source guard is for.
+		//
+		// Bodies extracted by symbol so a marker cannot be satisfied from an
+		// unrelated part of the file.  Comment-stripped, so the prose above
+		// each site cannot stand in for the argument itself.
+		{
+			auto countOccurrences = []( const std::string& hay, const char* needle ) -> int {
+				int n = 0;
+				const std::string pat( needle );
+				for( size_t at = hay.find( pat ); at != std::string::npos;
+				     at = hay.find( pat, at + pat.size() ) ) ++n;
+				return n;
+			};
+			const std::string macBridgeCode = StripCommentsPreservingLayout( macBridge );
+			const std::string winBridgeCode = StripCommentsPreservingLayout( winBridge );
+
+			const std::string macInit = bodyBetween( macBridgeCode,
+				"MakeSharedImageCache()", "- (NSString *)agentHandleLine:" );
+			// The body STARTS at the MakeSharedImageCache() call, so the
+			// anchor itself covers the declaration and the count below is the
+			// three WrapJob call sites that consume it.
+			Check( !macInit.empty()
+			       && countOccurrences( macInit, "inAppImageCache" ) >= 3,
+			       "macOS bridge: all THREE in-app sessions are constructed with the SAME "
+			       "shared AgentImageCache handle" );
+
+			const std::string macHosted = bodyBetween( macBridgeCode,
+				"startAgentHostedServerWithLabel:", "- (void)stopAgentHostedServer" );
+			Check( !macHosted.empty()
+			       && macHosted.find( "WrapJob(pJob, RISE::Agent::AgentAuthority::External)" )
+			          != std::string::npos
+			       && macHosted.find( "inAppImageCache" ) == std::string::npos,
+			       "macOS bridge: the HOSTED External session is constructed with NO image-cache "
+			       "handle -- a remote MCP client must not be able to read in-app render pixels" );
+
+			Check( winBridgeCode.find( "MakeSharedImageCache()" ) != std::string::npos
+			       && countOccurrences( winBridgeCode, "inAppImageCache" ) >= 4,
+			       "Windows bridge: all THREE in-app sessions share ONE AgentImageCache handle" );
+		}
+
 		const std::string winOrdinaryToolBody = bodyBetween( winChat,
 			"void ChatPanel::processNextToolCall()", "void ChatPanel::startAsyncRenderToolCall" );
 		Check( !winOrdinaryToolBody.empty()
@@ -1710,6 +1766,27 @@ int main()
 		Check( macVm.find( "compactedEntryCount" ) != std::string::npos,
 		       "macOS chat driver surfaces compactedEntryCount (its display keeps showing "
 		       "turns the model can no longer see -- silence there is the worse lie)" );
+
+		// ...AND the same argument, for the same two shapes, applies to a
+		// note the LOOP injects into the conversation (Role::DriverNote --
+		// today the blind-edit nudge).  The model RECEIVES it and visibly
+		// changes course, so a driver that shows nothing leaves the user
+		// watching an unexplained swerve.  The two remedies differ because
+		// the two drivers differ:
+		//   * Windows renders the wire transcript, so it must handle the
+		//     Role::DriverNote entry itself -- and must not let it fall
+		//     through to the User branch, where it would be painted as the
+		//     user's own chat bubble (a lie about who said it).
+		//   * macOS renders its own display list and never sees the
+		//     transcript, so it polls DriverNoteCount()/LastDriverNoteText().
+		// Comment-stripped, like every check in this block.
+		Check( winCode.find( "Role::DriverNote" ) != std::string::npos,
+		       "Windows chat panel renders Role::DriverNote itself (a loop-injected note is "
+		       "not the user's chat bubble, and not invisible either)" );
+		Check( macVm.find( "driverNoteCount" ) != std::string::npos
+		       && macVm.find( "lastDriverNoteText" ) != std::string::npos,
+		       "macOS chat driver surfaces driverNoteCount/lastDriverNoteText (its display "
+		       "mirror would otherwise hide a message the model acted on)" );
 	}
 
 	// ---- read_viewport reason-code surface registry (fix rounds 17, 20) --

@@ -352,9 +352,22 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         RISE_API_SceneEditController_SetPaneSink(m_controller, pane, m_paneSinks[pane]);
     }
 
+    // SHARED LAST-RENDER CACHE (2026-07).  All THREE in-app sessions below
+    // are handed the SAME AgentImageCache, so a `render` performed through
+    // any one of them is readable by `read_image` through the others.  Before
+    // this, the cache was per-session and flipping the composer's autonomy
+    // chip to or from Propose between a render and the read that followed it
+    // moved the read onto a session whose cache was empty or stale -- the
+    // model then re-rendered for several turns trying to get pixels back.
+    // Windows stands up no hosted loopback server, so all three sessions here
+    // are inside the app's trust boundary; see the macOS bridge's hosted
+    // External session for the case that must NOT get this handle.
+    std::shared_ptr<Agent::AgentImageCache> inAppImageCache =
+        Agent::AgentSession::MakeSharedImageCache();
     {
         std::unique_ptr<Agent::AgentSession> session =
-            Agent::AgentSession::WrapJob(pJob);
+            Agent::AgentSession::WrapJob(pJob, Agent::AgentAuthority::Owner,
+                                         inAppImageCache);
         if (session) {
             session->AttachController(m_controller);
         }
@@ -369,7 +382,8 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
     // session is attached to.
     {
         std::unique_ptr<Agent::AgentSession> ownerSession =
-            Agent::AgentSession::WrapJob(pJob);
+            Agent::AgentSession::WrapJob(pJob, Agent::AgentAuthority::Owner,
+                                         inAppImageCache);
         if (ownerSession) {
             ownerSession->AttachController(m_controller);
         }
@@ -381,7 +395,8 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
             std::move(ownerSession), Agent::AgentAutonomy::Commit));
 
         std::unique_ptr<Agent::AgentSession> proposeSession =
-            Agent::AgentSession::WrapJob(pJob, Agent::AgentAuthority::External);
+            Agent::AgentSession::WrapJob(pJob, Agent::AgentAuthority::External,
+                                         inAppImageCache);
         if (proposeSession) {
             proposeSession->AttachController(m_controller);
             // Diagnostic only (SceneEditController::AgentProposal::sessionLabel)

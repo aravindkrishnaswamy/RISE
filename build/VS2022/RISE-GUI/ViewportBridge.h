@@ -791,10 +791,13 @@ public:
     ///      "render completed but no cached result was found" (see
     ///      ChatPanel::pollOutstandingRender).  The render really did
     ///      succeed; the agent just never sees its stats.
-    ///   2. The last-render PNG cache (mLastPng / mLastSink) that
-    ///      ReadImage() and the `read_image` verb serve -- the whole
-    ///      reason "render" was moved onto this selector in the first
-    ///      place.
+    ///   2. (RETIRED 2026-07.)  The last-render PNG cache that ReadImage()
+    ///      and the `read_image` verb serve used to be per-session too --
+    ///      the original reason "render" was moved onto this selector.  It
+    ///      is now an AgentImageCache SHARED by all three in-app sessions
+    ///      (see ViewportBridge's constructor), so it no longer scopes
+    ///      anything and no longer needs the pin.  Reason 1 above is the
+    ///      only remaining one; the pin stays for it.
     ///
     /// WHAT IS PINNED IS THE **SESSION SELECTION**, NOT THE AUTONOMY
     /// POSTURE.  `level` chooses WHICH dispatcher/session handles the
@@ -817,19 +820,22 @@ public:
     /// works around the two mechanical session-scoping constraints listed
     /// above.
     ///
-    /// KNOWN RESIDUAL (documented, not silently accepted) -- and NARROWER
-    /// than an earlier version of this doc claimed.  Only a flip that
-    /// crosses **Propose** changes session: Read and Apply both select
-    /// the SAME m_agentToolDispatcherOwner (they differ only in the
-    /// autonomy set on it), so a Read<->Apply flip between a completed
-    /// "render" and the "read_image" that follows it changes nothing
-    /// about which cache is read.  A flip TO or FROM Propose does change
-    /// it: the following read_image runs on the other session and reads
-    /// ITS (empty or stale) PNG cache rather than the render's.  That is
-    /// inherent to the deliberate Propose-gets-its-own-session design --
-    /// the caches are per-session state, and pinning further would trade
-    /// a safety property for it.  In practice the model self-corrects by
-    /// re-rendering.
+    /// THE AUTONOMY-FLIP RESIDUAL THIS DOC USED TO CARRY IS CLOSED.  It
+    /// read: a chip flip TO or FROM Propose between a completed "render"
+    /// and the "read_image" that follows lands that read on the other
+    /// session, which returns ITS empty or stale PNG cache.  The three
+    /// in-app sessions now share one AgentImageCache, so the read finds
+    /// the render whichever session ran it.  (A Read<->Apply flip never
+    /// changed session in the first place -- both select the SAME
+    /// m_agentToolDispatcherOwner, differing only in the autonomy set on
+    /// it.)  Covered at the library level by AgentRenderAsyncTest's
+    /// "(shared-img-cache)" case.
+    ///
+    /// WHAT A FLIP STILL COSTS: a poll or wait issued on the other session
+    /// gets completed:true with no `result` payload, per reason 1 above --
+    /// which is why the render JOB is still pinned.  Sharing the cache
+    /// bought back the pixels, not the per-session job bookkeeping, and
+    /// that bookkeeping is deliberately NOT shared.
     QString agentHandleToolCall(const QString& jsonRpcRequest, AgentAutonomyLevel level);
 
     // Properties panel ------------------------------------------------

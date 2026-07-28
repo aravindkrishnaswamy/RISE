@@ -544,8 +544,77 @@ namespace RISE
 			return r;
 		}
 
-		AgentSession::AgentSession( IJobPriv* job, bool owns, AgentAuthority authority )
-			: mJob( job ), mOwnsJob( owns ), mAuthority( authority )
+		//==============================================================
+		// AgentImageCache -- the last-render frame, optionally shared by a
+		// group of sessions.  Every method is a single leaf critical
+		// section; see the header for the sharing contract.
+		//==============================================================
+
+		AgentImageCache::~AgentImageCache()
+		{
+			// No lock: a destructor runs when the LAST shared_ptr owner is
+			// gone, so by definition nobody can still be calling in.  The
+			// sink may outlive this release -- a reader that leased it holds
+			// its own reference (AgentSession's lease bookkeeping addrefs
+			// before dropping the lock), so this only drops OUR reference.
+			safe_release( mSink );
+			mSink = nullptr;
+		}
+
+		void AgentImageCache::Store( std::vector<unsigned char> png,
+		                             InMemoryRasterizerOutput* sink )
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			mPng.swap( png );
+			// Self-store must not release the reference it is about to keep.
+			if( mSink != sink ) safe_release( mSink );
+			mSink = sink;
+		}
+
+		std::vector<unsigned char> AgentImageCache::Png() const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			return mPng;
+		}
+
+		std::vector<unsigned char> AgentImageCache::PngWithDims( unsigned int& outWidth,
+		                                                         unsigned int& outHeight ) const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			outWidth = 0;
+			outHeight = 0;
+			if( mSink ) {
+				outWidth  = mSink->Width();
+				outHeight = mSink->Height();
+			}
+			return mPng;
+		}
+
+		InMemoryRasterizerOutput* AgentImageCache::AcquireSink() const
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			if( mSink ) mSink->addref();
+			return mSink;
+		}
+
+		void AgentImageCache::Take( std::vector<unsigned char>& outPng,
+		                            InMemoryRasterizerOutput*& outSink )
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			outPng.swap( mPng );
+			mPng.clear();
+			outSink = mSink;
+			mSink = nullptr;   // reference handed to the caller, not released
+		}
+
+		AgentSession::AgentSession( IJobPriv* job, bool owns, AgentAuthority authority,
+		                            std::shared_ptr<AgentImageCache> sharedImageCache )
+			: mJob( job ), mOwnsJob( owns ), mAuthority( authority ),
+			  // No handle => a PRIVATE cache.  Isolation is the default; see
+			  // AgentImageCache's doc for why that matters (the hosted
+			  // loopback server's External session relies on it).
+			  mImageCache( sharedImageCache ? sharedImageCache
+			                                : std::make_shared<AgentImageCache>() )
 		{
 		}
 
@@ -558,10 +627,25 @@ namespace RISE
 				const std::uint64_t room = std::numeric_limits<std::uint64_t>::max() - total;
 				total += bytes <= room ? bytes : room;
 			};
-			add( mLastSink );
+			// The cached sink now lives in the (possibly SHARED) cache.
+			// AcquireSink takes the cache's leaf lock while we hold
+			// mAsyncCacheMutex -- the documented outer->inner order -- and
+			// hands back a reference, so the sink cannot be replaced out from
+			// under GetPerceptionInfo().
+			InMemoryRasterizerOutput* cached = mImageCache->AcquireSink();
+			add( cached );
 			for( const auto& lease : mActiveSinkReadLeases ) {
-				if( lease.first != mLastSink ) add( lease.first );
+				if( lease.first != cached ) add( lease.first );
 			}
+			safe_release( cached );
+			// SHARED-CACHE HONESTY: `mActiveSinkReadLeases` is this session's
+			// leases only, so with a shared cache a SIBLING session's lease on
+			// a SUPERSEDED sink is not counted here.  That under-reports a
+			// peak-bytes DIAGNOSTIC by the size of that sidecar; it cannot
+			// affect correctness or lifetime (the sibling holds its own
+			// reference).  Counting it would mean the cache tracking every
+			// session's leases, i.e. exactly the per-session lifetime coupling
+			// mImageCache's doc says must not be shared.
 			return total;
 		}
 
@@ -612,17 +696,22 @@ namespace RISE
 			// of that worker lifetime and are closed/drained below.
 			DrainAsyncRender_();
 
-			// Fix-round-1 P1-A: take mAsyncCacheMutex for the sink release
-			// -- mLastSink is the SAME field the (now-drained, but let's be
-			// precise about what "drained" guarantees) worker thread writes
-			// under this lock at the tail of a successful async render (see
-			// RenderCore_'s cache-population tail).  DrainAsyncRender_
-			// above already guarantees no worker call into THIS object is
-			// still in flight, so this lock is technically uncontended by
-			// the time we get here -- but taking it anyway costs nothing
-			// and removes any doubt for a future maintainer who changes the
-			// drain's bound (e.g. a shorter timeout) without re-deriving
-			// this invariant from scratch.
+			// Close ReadImage/ReadPerception admission, then wait for every
+			// call that entered before teardown -- unchanged by the cache
+			// move, and deliberately so: this protocol is about "is a call
+			// still in flight ON THIS OBJECT", which is per-session no matter
+			// where the pixels live.  A sibling session's readers are none of
+			// our business and must not hold this destructor up.
+			//
+			// WHAT THE CACHE MOVE DID CHANGE: this used to end by releasing
+			// mLastSink.  It no longer may -- the frame belongs to
+			// mImageCache, which a sibling session may still be sharing.  The
+			// handle is released with the rest of the members after this
+			// body, and the LAST session out runs ~AgentImageCache, which
+			// releases the sink exactly once.  A sink still leased by one of
+			// OUR readers is safe either way: the lease holds its own
+			// reference, and we do not get past the wait below until that
+			// lease is gone anyway.
 			std::function<void()> shutdownWaitHook;
 			{
 				std::unique_lock<std::mutex> cacheLk( mAsyncCacheMutex );
@@ -647,8 +736,6 @@ namespace RISE
 						return mSinkReadEntrants.load( std::memory_order_acquire ) == 0 &&
 						       mActiveSinkReadLeases.empty();
 					} );
-				safe_release( mLastSink );
-				mLastSink = nullptr;
 			}
 			if( mOwnsJob && mJob ) mJob->release();
 			mJob = nullptr;
@@ -745,13 +832,19 @@ namespace RISE
 				job->release();
 				return nullptr;
 			}
-			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/true, authority ) );
+			// A LoadFromFile session owns its Job outright, so there is
+			// nobody to share a last-render cache WITH -- always private.
+			return std::unique_ptr<AgentSession>(
+				new AgentSession( job, /*owns=*/true, authority,
+				                  std::shared_ptr<AgentImageCache>() ) );
 		}
 
-		std::unique_ptr<AgentSession> AgentSession::WrapJob( IJobPriv* job, AgentAuthority authority )
+		std::unique_ptr<AgentSession> AgentSession::WrapJob( IJobPriv* job, AgentAuthority authority,
+		                                                     std::shared_ptr<AgentImageCache> sharedImageCache )
 		{
 			if( !job ) return nullptr;
-			return std::unique_ptr<AgentSession>( new AgentSession( job, /*owns=*/false, authority ) );
+			return std::unique_ptr<AgentSession>(
+				new AgentSession( job, /*owns=*/false, authority, sharedImageCache ) );
 		}
 
 		void AgentSession::AttachController( SceneEditController* controller )
@@ -4176,7 +4269,7 @@ namespace RISE
 			// throw site), the normal release sites are skipped and the
 			// owning ref would leak.  safe_release() nulls the pointer, so
 			// every normal path (failure release, tail release, ownership
-			// transfer to mLastSink -- which nulls `sink` explicitly) leaves
+			// transfer to the image cache -- which nulls `sink` explicitly) leaves
 			// this a no-op.  Declared AFTER `sink` so it destructs FIRST.
 			struct SinkUnwindGuard {
 				InMemoryRasterizerOutput*& p;
@@ -4189,7 +4282,7 @@ namespace RISE
 			// active rasterizer after the render park ends.  Looking the rasterizer
 			// up through Job during unwind is a race; freeing every output can also
 			// erase a viewport sink installed by another owner in that window. On
-			// success mLastSink owns the observation, so keeping it attached would
+			// success the image cache owns the observation, so keeping it attached would
 			// strand a full image/sidecar on every inactive rasterizer after an
 			// integrator switch and invalidate the bounded-memory contract.
 			struct JobSinkAttachmentUnwindGuard {
@@ -5297,7 +5390,7 @@ namespace RISE
 				mJob->RemoveRasterizerOutputs();
 				// `new` yields refcount 1 (our owning ref); AddRasterizerOutput
 				// addrefs it. The attachment unwind guard removes this exact output
-				// on every exit, including success: mLastSink becomes the sole owner
+				// on every exit, including success: the image cache becomes the sole owner
 				// of a published observation, so inactive rasterizers cannot retain
 				// one full image/sidecar each after integrator switches. We drop OUR
 				// ref via safe_release(sink) after this
@@ -6211,17 +6304,17 @@ namespace RISE
 			// re-encode a downscaled PNG from the cached full-res linear
 			// pixels without re-rendering -- `sink` already carries refcount 1
 			// (our owning ref from `new` above); we transfer that ownership to
-			// mLastSink instead of releasing it.
+			// the image cache (AgentImageCache::Store) instead of releasing it.
 			//
-			// Model-B F2 slice S2a: guarded by mAsyncCacheMutex -- when this
-			// is running on the async worker thread (assumeParked), a
-			// concurrent ReadImage() call on the submitter's thread must not
-			// observe a torn mLastPng/mLastSink update.
+			// Model-B F2 slice S2a: the store is atomic under the cache's own
+			// lock -- when this is running on the async worker thread
+			// (assumeParked), a concurrent ReadImage() call on the
+			// submitter's thread must not observe a torn png/sink update.
+			// With a SHARED cache this is also the moment a render performed
+			// through one session becomes readable through its siblings,
+			// which is the entire point.
 			if( res.ok ) {
-				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
-				mLastPng = res.png;
-				safe_release( mLastSink );
-				mLastSink = sink;
+				mImageCache->Store( res.png, sink );
 				sink = nullptr;   // ownership transferred -- the unwind guard must not release it
 				return res;
 			}
@@ -6235,7 +6328,7 @@ namespace RISE
 		namespace
 		{
 			//! RAII stash/restore of the LAST-RENDER cache state -- the pair
-			//! `mLastPng` / `mLastSink` (the two fields `ReadImage()` serves
+			//! the AgentImageCache frame (the png/sink pair `ReadImage()` serves
 			//! and the `read_image` verb returns) PLUS the async-render
 			//! result record `mLastAsyncRenderResult` /
 			//! `mLastAsyncRenderResultJobId` (what `render_status` /
@@ -6284,18 +6377,18 @@ namespace RISE
 			//!    exception, not a precedent to copy here.)
 			//!  * THE GUARDED SCOPE IS PRIMARILY A ZERO-BYTE WINDOW, not a
 			//!    "shows-the-ephemeral-render" window.  The ctor moves the
-			//!    cache OUT (swaps `mLastPng` with a default-constructed
-			//!    vector, nulls `mLastSink`, zeroes the async-result id), so
+			//!    cache OUT (AgentImageCache::Take leaves the png empty and
+			//!    the sink null, and it zeroes the async-result id), so
 			//!    from the ctor until SOME render's cache tail repopulates
 			//!    it -- i.e. THE WHOLE RENDER DURATION -- a concurrent
 			//!    `ReadImage()` on another thread returns ZERO BYTES,
 			//!    `ReadImage(unsigned int,...)` returns empty too (by TWO
 			//!    different lines: for `maxEdge > 0` from the `if( !sink )`
 			//!    early-out right after that function's lock scope; for
-			//!    `maxEdge == 0` from the IN-LOCK `return mLastPng;` inside
+			//!    `maxEdge == 0` from the IN-LOCK `PngWithDims` read inside
 			//!    its `maxEdge == 0` branch, which hands back the emptied
 			//!    cache and leaves outWidth/outHeight at 0 because
-			//!    `mLastSink` is null), and `ReadPerception` likewise.
+			//!    the cached sink is null), and `ReadPerception` likewise.
 			//!    HOW WIDE, stated honestly: the ephemeral render is an
 			//!    OBJECTMAP IDENTITY render, not a beauty pass -- measured
 			//!    ~20ms at 256x256 (see QueryObjectAt's header doc);
@@ -6396,18 +6489,41 @@ namespace RISE
 			//!    ephemeral render never writes the cache at all and no
 			//!    stash/restore is needed.
 			//!
+			//!  * SHARED-CACHE SCOPE (2026-07).  The cache this guard stashes
+			//!    is now an `AgentImageCache` that a host may SHARE across
+			//!    several sessions (the GUIs' three in-app ones), so the
+			//!    zero-byte window and the RESIDUAL above are no longer
+			//!    confined to the session running the ephemeral render --
+			//!    they now apply to every session sharing the handle.  What
+			//!    that does and does not mean:
+			//!      - A SIBLING'S SYNCHRONOUS read cannot land in the window.
+			//!        Both bridges drive all three in-app sessions from the
+			//!        host UI thread (RISEViewportBridge's
+			//!        -agentHandleToolCall:autonomy: / -agentHandleLine:,
+			//!        ViewportBridge's agentHandleToolCall / agentHandleLine),
+			//!        and the guarded render blocks that thread for the whole
+			//!        window.  There is no thread left to observe it.
+			//!      - A SIBLING'S ASYNC render completing inside the window
+			//!        loses its cache write, exactly as a same-session one
+			//!        already does.  This widens an accepted residual; it
+			//!        does not introduce a new failure mode, and the upstream
+			//!        fix named above closes both at once.  It is now worth
+			//!        more than it was.
+			//!      - The hosted loopback server's External session is NOT in
+			//!        the group (nobody hands it the handle), so none of this
+			//!        reaches it.
+			//!
 			//! Takes the pieces of state by reference rather than an
 			//! `AgentSession&` so it stays a file-local helper with no access
 			//! to the class's private section (no friendship, no header churn).
 			class EphemeralRenderCacheGuard
 			{
 			public:
-				EphemeralRenderCacheGuard( std::mutex& cacheMutex,
-				                           std::vector<unsigned char>& lastPng,
-				                           InMemoryRasterizerOutput*& lastSink,
+				EphemeralRenderCacheGuard( std::mutex& sessionMutex,
+				                           AgentImageCache& imageCache,
 				                           AgentRenderResult& lastAsyncResult,
 				                           std::uint64_t& lastAsyncResultJobId )
-					: mCacheMutex( cacheMutex ), mLastPng( lastPng ), mLastSink( lastSink ),
+					: mSessionMutex( sessionMutex ), mImageCache( imageCache ),
 					  mLastAsyncResult( lastAsyncResult ), mLastAsyncResultJobId( lastAsyncResultJobId )
 				{
 					// THE STASH ORDER BELOW IS NOT LOAD-BEARING -- this
@@ -6445,18 +6561,26 @@ namespace RISE
 						"nothrow-move-assignable -- there is no safe restructuring that avoids the "
 						"destructor case." );
 
-					std::lock_guard<std::mutex> lk( mCacheMutex );
-					mSavedPng.swap( mLastPng );        // cache -> stash (cache now empty)
-					mSavedSink = mLastSink;            // take over the sink's ref
-					// Nulling this is MEMORY SAFETY, not just visibility (round-8
-					// sabotage finding, recorded so nobody "simplifies" it as a
-					// mere zero-byte-window nicety): the guarded Render()'s cache
-					// tail safe_release()s whatever mLastSink holds before storing
-					// its own sink.  Leave the stashed pointer aliased here and
-					// that release frees the framebuffer mSavedSink still owns, so
-					// the dtor hands a DANGLING sink back to the session.
-					// Verified: dropping this line segfaults the suite.
-					mLastSink  = nullptr;
+					// BOTH halves under the session lock, with the cache's
+					// leaf lock nested inside it (AgentImageCache::Take takes
+					// it) -- the documented outer->inner order.  Doing them in
+					// two SEPARATE scopes would open a window where the pixels
+					// are stashed but the async-result record is not, i.e.
+					// render_wait answering "completed, here is your result"
+					// for a frame read_image can no longer serve: the exact lie
+					// this guard exists to prevent.
+					std::lock_guard<std::mutex> lk( mSessionMutex );
+					// Take() moves the frame OUT and leaves the cache empty,
+					// handing us the sink's reference.  That transfer is what
+					// makes the stash MEMORY-SAFE, not merely invisible (round-8
+					// sabotage finding, recorded so nobody "simplifies" it): the
+					// guarded Render()'s cache tail releases whatever sink the
+					// cache holds before storing its own.  Leave the stashed
+					// pointer ALSO reachable from the cache and that release
+					// frees the framebuffer we still owe back, so the dtor hands
+					// a DANGLING sink to the session.  Verified: breaking this
+					// segfaults the suite.
+					mImageCache.Take( mSavedPng, mSavedSink );
 					// Same move-out for the async-render result record: the
 					// window must leave NO trace of anything that completed
 					// inside it, pixels and result alike (see the RESIDUAL
@@ -6471,10 +6595,10 @@ namespace RISE
 
 				~EphemeralRenderCacheGuard()
 				{
-					std::lock_guard<std::mutex> lk( mCacheMutex );
-					safe_release( mLastSink );         // drop the ephemeral render's sink
-					mLastPng.swap( mSavedPng );        // stashed bytes back in place
-					mLastSink  = mSavedSink;           // ownership handed back
+					std::lock_guard<std::mutex> lk( mSessionMutex );
+					// Store() releases whatever the ephemeral render left in
+					// the cache and takes over our stashed sink's reference.
+					mImageCache.Store( std::move( mSavedPng ), mSavedSink );
 					mSavedSink = nullptr;
 					mLastAsyncResult      = std::move( mSavedAsyncResult );
 					mLastAsyncResultJobId = mSavedAsyncResultJobId;
@@ -6484,9 +6608,8 @@ namespace RISE
 				EphemeralRenderCacheGuard& operator=( const EphemeralRenderCacheGuard& ) = delete;
 
 			private:
-				std::mutex&                 mCacheMutex;
-				std::vector<unsigned char>& mLastPng;
-				InMemoryRasterizerOutput*&  mLastSink;
+				std::mutex&                 mSessionMutex;
+				AgentImageCache&            mImageCache;
 				AgentRenderResult&          mLastAsyncResult;
 				std::uint64_t&              mLastAsyncResultJobId;
 				std::vector<unsigned char>  mSavedPng;
@@ -6531,7 +6654,7 @@ namespace RISE
 
 			// This objectmap render is EPHEMERAL -- it exists only to resolve
 			// ONE pixel to ONE object name -- but Render() unconditionally
-			// caches every success into mLastPng/mLastSink for ReadImage().
+			// caches every success into the image cache for ReadImage().
 			// Left unguarded it would clobber whatever beauty frame the
 			// caller last rendered, so the `read_image` that typically
 			// follows would hand the model a flat SEGMENTATION image to judge
@@ -6543,7 +6666,7 @@ namespace RISE
 			// decodes rr.png / rr.legend, never the session cache.
 			AgentRenderResult rr;
 			{
-				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink,
+				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
 				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
 				// Fix-round-8 P2 seam: the guard's ctor has run (cache and
 				// async-result record moved OUT to its stash) and the guarded
@@ -7045,7 +7168,7 @@ namespace RISE
 
 				// The objectmap render below is EPHEMERAL -- it exists only to
 				// build a mask -- but Render() unconditionally caches every
-				// success into mLastPng/mLastSink for ReadImage().  Left
+				// success into the image cache for ReadImage().  Left
 				// alone it would clobber the beauty frame this compare just
 				// graded, silently breaking the contract documented on
 				// CompareToReference ("a caller CAN read_image afterward to
@@ -7065,7 +7188,7 @@ namespace RISE
 				// this scope relies on.
 				AgentRenderResult omr;
 				{
-					EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, mLastPng, mLastSink,
+					EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
 					                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
 					omr = Render( omParams );
 				}
@@ -7348,7 +7471,7 @@ namespace RISE
 			// worker discards (`r` below), only OUT via
 			// SubmitAgentRenderAsync's `outJobId` param, which the caller
 			// already has.  The cache-population tail inside RenderCore_
-			// (guarded by mAsyncCacheMutex) populates mLastPng/mLastSink on a
+			// (guarded by the image cache's own lock) populates it on a
 			// successful render, which is how ReadImage() picks up the async
 			// result once it completes.  S2a's minimal surface exposes
 			// completion via RenderStatus/RenderWait + ReadImage rather than
@@ -7601,9 +7724,12 @@ namespace RISE
 		std::vector<unsigned char> AgentSession::ReadImage() const
 		{
 			SinkReadEntrantGuard entrant( *this );
+			// mAsyncCacheMutex still gates the closing check; the cache's own
+			// leaf lock is taken INSIDE it (the documented order), which keeps
+			// "a closing session reads empty" exactly as atomic as before.
 			std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 			if( mSinkReadsClosing ) return std::vector<unsigned char>();
-			return mLastPng;
+			return mImageCache->Png();
 		}
 
 		std::vector<unsigned char> AgentSession::ReadImage( unsigned int maxEdge,
@@ -7620,24 +7746,21 @@ namespace RISE
 				if( maxEdge == 0 ) {
 					// No bound requested -- byte-compatible with ReadImage(): same
 					// cached bytes, dims read off the cached sink when available.
-					if( mLastSink ) {
-						outWidth  = mLastSink->Width();
-						outHeight = mLastSink->Height();
-					}
-					return mLastPng;
+					// ONE cache-lock scope so the bytes and the dimensions
+					// cannot come from two different renders.
+					return mImageCache->PngWithDims( outWidth, outHeight );
 				}
-				sink = mLastSink;
+				// AcquireSink hands back a REFERENCE, so the sink is already
+				// safe from a replacing render before the registry insert
+				// below; the try/catch is now only about not leaking that
+				// reference if the map allocation throws.
+				sink = mImageCache->AcquireSink();
 				if( sink ) {
-					// Register first: map insertion may allocate and throw, while
-					// mLastSink still owns the object under this lock. Roll the
-					// registry back if the legacy virtual addref() ever throws.
-					++mActiveSinkReadLeases[sink];
 					try {
-						sink->addref();
+						++mActiveSinkReadLeases[sink];
 					}
 					catch( ... ) {
-						auto it = mActiveSinkReadLeases.find( sink );
-						if( --it->second == 0 ) mActiveSinkReadLeases.erase( it );
+						safe_release( sink );
 						throw;
 					}
 				}
@@ -7667,17 +7790,15 @@ namespace RISE
 			{
 				std::lock_guard<std::mutex> cacheLk( mAsyncCacheMutex );
 				if( mSinkReadsClosing ) return std::vector<unsigned char>();
-				sink = mLastSink;
+				// See ReadImage(maxEdge): AcquireSink returns an already-held
+				// reference, so the only failure to unwind is the map insert.
+				sink = mImageCache->AcquireSink();
 				if( sink ) {
-					// See ReadImage(maxEdge): registry insertion must precede the
-					// new reference so std::bad_alloc cannot leak an untracked sink.
-					++mActiveSinkReadLeases[sink];
 					try {
-						sink->addref();
+						++mActiveSinkReadLeases[sink];
 					}
 					catch( ... ) {
-						auto it = mActiveSinkReadLeases.find( sink );
-						if( --it->second == 0 ) mActiveSinkReadLeases.erase( it );
+						safe_release( sink );
 						throw;
 					}
 				}

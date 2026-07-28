@@ -1146,6 +1146,91 @@ namespace RISE
 			std::string                  note;       //!< index-only advisory: set when the skills ROOT DIRECTORY itself was not found (distinguishing a miswired root from a present-but-empty one; both give an empty index)
 		};
 
+		//! THE LAST-RENDER IMAGE CACHE -- the pair `read_image` serves.
+		//!
+		//! Holds the PNG bytes of the last successful render plus that
+		//! render's in-memory sink (kept alive so `read_image` with a
+		//! maxEdge, and `read_perception`, can re-encode from the cached
+		//! full-resolution linear pixels without re-rendering).  Written at
+		//! RenderCore_'s tail; read by AgentSession's ReadImage /
+		//! ReadPerception.
+		//!
+		//! WHY IT IS A SEPARATE, SHAREABLE OBJECT.  It used to be two plain
+		//! AgentSession members, so the cache was strictly PER-SESSION -- and
+		//! the GUIs stand up THREE sessions over one Job (an administrative
+		//! one, plus a tool-call Owner and a tool-call Propose session).  A
+		//! user who flipped the autonomy chip to or from Propose between a
+		//! `render` and the `read_image` that followed it moved the read onto
+		//! the OTHER session, which returned an empty or stale cache.  A host
+		//! now creates ONE cache (MakeSharedImageCache) and passes it to the
+		//! sessions that should share a view of "the last render".
+		//!
+		//! SHARING IS OPT-IN, AND MUST STAY THAT WAY.  A session constructed
+		//! without a cache allocates a private one, so isolation is the
+		//! DEFAULT.  That is not a convenience -- the hosted loopback (MCP)
+		//! server's External session MUST NOT be able to read pixels an
+		//! in-app render produced, and it stays isolated precisely because
+		//! nobody hands it the in-app handle.  Before adding a call site,
+		//! decide whether the new session is INSIDE the app's trust boundary.
+		//!
+		//! LIFETIME.  Held by std::shared_ptr, so sessions may be destroyed
+		//! in any order; the last one out destroys the cache, which releases
+		//! the sink exactly once.  A reader that leased the sink holds its
+		//! OWN reference on it (AgentSession's lease bookkeeping addrefs),
+		//! so even a sink dropped from here stays alive until that reader
+		//! finishes.
+		//!
+		//! LOCKING.  `mMutex` is a LEAF: every method takes it, does its
+		//! work, and releases it without acquiring any other lock (the only
+		//! thing it does under the lock is a refcount release, same as the
+		//! per-session code it replaced).  Callers may hold
+		//! AgentSession::mAsyncCacheMutex -- or, on the worker side,
+		//! SceneEditController::mMutex -- across a call here; nothing here
+		//! ever reaches back for either.  Leaf-ness is what makes that
+		//! deadlock-free by construction rather than by case analysis.
+		class AgentImageCache
+		{
+		public:
+			AgentImageCache() {}
+			~AgentImageCache();
+
+			AgentImageCache( const AgentImageCache& ) = delete;
+			AgentImageCache& operator=( const AgentImageCache& ) = delete;
+
+			//! Replace the cached frame.  TAKES OWNERSHIP of the caller's
+			//! reference on `sink` (null is legal: it empties the cache) and
+			//! releases whatever sink was cached before.
+			void Store( std::vector<unsigned char> png, InMemoryRasterizerOutput* sink );
+
+			//! The cached PNG bytes (empty when nothing is cached).
+			std::vector<unsigned char> Png() const;
+
+			//! The cached PNG bytes together with the cached sink's
+			//! dimensions, read under ONE lock so the two cannot come from
+			//! different renders.  Dimensions stay 0 when no sink is cached.
+			std::vector<unsigned char> PngWithDims( unsigned int& outWidth,
+			                                        unsigned int& outHeight ) const;
+
+			//! The cached sink with a NEW reference the caller must release
+			//! (null when nothing is cached).  Handing back a reference
+			//! rather than a bare pointer is what lets the caller drop this
+			//! lock and still encode safely while a newer render replaces
+			//! the cache underneath it.
+			InMemoryRasterizerOutput* AcquireSink() const;
+
+			//! Move the cached frame OUT, leaving the cache empty; the
+			//! caller inherits the sink's reference.  For
+			//! EphemeralRenderCacheGuard's stash half -- Store() is the
+			//! restore half.
+			void Take( std::vector<unsigned char>& outPng,
+			           InMemoryRasterizerOutput*& outSink );
+
+		private:
+			mutable std::mutex         mMutex;
+			std::vector<unsigned char> mPng;
+			InMemoryRasterizerOutput*  mSink = nullptr;
+		};
+
 		//! A headless read/validate session over a Job.  Owns the Job iff it
 		//! created it (LoadFromFile); a wrapped Job (WrapJob) is non-owning.
 		//!
@@ -1155,18 +1240,24 @@ namespace RISE
 		//! RenderAsync: this class now has a REAL, NARROW cross-thread
 		//! surface, and the actual contract is:
 		//!
-		//!   * mAsyncCacheMutex-guarded state (mLastPng, mLastSink,
-		//!     mActiveSinkReadLeases, mSinkReadsClosing, plus decrements of
-		//!     mSinkReadEntrants after its lock-free entry increment,
-		//!     mAsyncOutstandingJobId) is the ONLY
+		//!   * mAsyncCacheMutex-guarded state (mActiveSinkReadLeases,
+		//!     mSinkReadsClosing, plus decrements of mSinkReadEntrants after
+		//!     its lock-free entry increment, mAsyncOutstandingJobId,
+		//!     mLastAsyncRenderResult{,JobId}) plus the LAST-RENDER CACHE
+		//!     behind mImageCache (which has its own leaf lock -- see
+		//!     AgentImageCache) is the ONLY
 		//!     state touched from more
 		//!     than one thread -- written by the async worker thread
 		//!     (RenderCore_'s cache-population tail; RenderAsync's
 		//!     OutstandingGuard) and read/written by whatever thread calls
 		//!     ReadImage() / ReadImage(maxEdge) / ReadPerception / RenderAsync /
 		//!     DrainAsyncRender_.  Every access to these fields goes
-		//!     through mAsyncCacheMutex; there is no unguarded access
-		//!     anywhere in this class.
+		//!     through mAsyncCacheMutex (or, for the cache, through
+		//!     AgentImageCache's own methods); there is no unguarded access
+		//!     anywhere in this class.  LOCK ORDER where both are held:
+		//!     mAsyncCacheMutex OUTSIDE, the cache's lock INSIDE, never the
+		//!     reverse -- trivially satisfied because the cache's lock is a
+		//!     leaf that acquires nothing.
 		//!   * EVERYTHING ELSE (mJob, mController, mNextSessionLocalRenderJobId,
 		//!     ProposePatch / InsertChunk / RemoveChunk / Validate / the
 		//!     synchronous Render() family, AttachController) remains
@@ -1214,8 +1305,27 @@ namespace RISE
 			//! back-compat rationale) -- the GUI's own construction sites
 			//! are unaffected; an External-authority session over a live
 			//! controller is the two-session pattern this slice's tests use.
+			//!
+			//! `sharedImageCache` (default null) opts this session INTO a
+			//! shared last-render cache -- see AgentImageCache's doc for what
+			//! that is and why sharing is opt-in.  Null gives the session a
+			//! private cache, i.e. the historical per-session behaviour, and
+			//! is the right answer for anything outside the host's own trust
+			//! boundary (notably the hosted loopback server's External
+			//! session, which must never read in-app pixels).
 			static std::unique_ptr<AgentSession> WrapJob( IJobPriv* job,
-			                                               AgentAuthority authority = AgentAuthority::Owner );
+			                                               AgentAuthority authority = AgentAuthority::Owner,
+			                                               std::shared_ptr<AgentImageCache> sharedImageCache =
+			                                                   std::shared_ptr<AgentImageCache>() );
+
+			//! Allocate a cache for a group of sessions that should share one
+			//! view of "the last render" (the GUIs' three in-app sessions).
+			//! Pass the SAME handle to each WrapJob call in the group; give
+			//! any session outside the group nothing, so it stays isolated.
+			static std::shared_ptr<AgentImageCache> MakeSharedImageCache()
+			{
+				return std::make_shared<AgentImageCache>();
+			}
 
 			//! Secure-MCP slice 5a: this session's construction-time
 			//! authority (Owner / External).  Wire-immutable -- never
@@ -1869,7 +1979,7 @@ namespace RISE
 			//! recently.
 			//!
 			//! Guarded by mAsyncCacheMutex (the SAME lock already used for
-			//! mLastPng/mLastSink/mAsyncOutstandingJobId) -- populated by
+			//! the image cache / mAsyncOutstandingJobId) -- populated by
 			//! RenderAsync's submitted closure once RenderCore_ returns,
 			//! read here by whatever thread polls after
 			//! render_wait/render_status observes completion.
@@ -1877,7 +1987,7 @@ namespace RISE
 			//! ONE window reports `found == false` for a job that really did
 			//! complete: an EPHEMERAL internal render (QueryObjectAt,
 			//! CompareToReference's split mask) stashes this record along
-			//! with mLastPng/mLastSink for its duration, so an async render
+			//! with the image-cache frame for its duration, so an async render
 			//! that finishes inside that window has BOTH its pixels and its
 			//! result record discarded.  That is deliberate -- the pixels
 			//! are unrecoverable either way, and reporting `found` over a
@@ -2457,7 +2567,10 @@ namespace RISE
 			}
 
 		private:
-			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority );
+			//! `sharedImageCache` null => allocate a PRIVATE cache (the
+			//! isolated default; see AgentImageCache's doc).
+			AgentSession( IJobPriv* job, bool owns, AgentAuthority authority,
+			              std::shared_ptr<AgentImageCache> sharedImageCache );
 			AgentSession( const AgentSession& );             // deleted
 			AgentSession& operator=( const AgentSession& );  // deleted
 
@@ -2646,14 +2759,23 @@ namespace RISE
 			//! SceneEditController::ApplyAgentParamEdit.
 			SceneEditController* mController = nullptr;
 
-			std::vector<unsigned char> mLastPng;   //!< cached PNG bytes of the last Render (for ReadImage)
-
-			//! read_image maxEdge: the LAST successful Render's in-memory sink,
-			//! kept alive (addref'd) so ReadImage(maxEdge) can re-encode a
-			//! downscaled PNG from the cached full-resolution linear pixels
-			//! WITHOUT re-rendering.  Null before the first successful render.
-			//! Owned (released in the destructor and whenever replaced).
-			InMemoryRasterizerOutput* mLastSink = nullptr;
+			//! The last-render cache (PNG bytes + the sink read_image's
+			//! maxEdge downscale and read_perception re-encode from).  NEVER
+			//! null -- the constructor allocates a private one when the host
+			//! did not hand in a shared handle.
+			//!
+			//! MOVED OUT OF THIS CLASS on purpose: it is the ONE piece of the
+			//! old mAsyncCacheMutex-guarded state that is about THE JOB'S LAST
+			//! RENDER rather than about THIS SESSION OBJECT.  Everything that
+			//! stayed behind -- mActiveSinkReadLeases, mSinkReadEntrants,
+			//! mSinkReadsClosing, mSinkReadLeaseCv, mAsyncOutstandingJobId,
+			//! mLastAsyncRenderResult -- answers "is a call still in flight
+			//! ON THIS SESSION, and may this object be destroyed yet", which
+			//! is inherently per-session and would be WRONG to share: one
+			//! session's teardown must not wait on another session's readers,
+			//! and one session's render_status/render_wait must not answer
+			//! for another session's job ids.
+			std::shared_ptr<AgentImageCache> mImageCache;
 
 			//! Distinct cached sinks retained by lock-dropped ReadImage/
 			//! ReadPerception encodes. Counts, references, and iteration are all
@@ -2678,9 +2800,10 @@ namespace RISE
 			//! AgentRenderResult} before the first async render completes,
 			//! and reset to exactly that for the width of an ephemeral
 			//! internal render (EphemeralRenderCacheGuard stashes this pair
-			//! alongside mLastPng/mLastSink so the guarded window leaves no
+			//! alongside the image-cache frame so the guarded window leaves no
 			//! trace of anything that completed inside it).
-			//! Guarded by mAsyncCacheMutex, same as mLastPng/mLastSink.
+			//! Guarded by mAsyncCacheMutex (the image-cache frame has its own
+			//! leaf lock -- see AgentImageCache).
 			std::uint64_t     mLastAsyncRenderResultJobId = 0;
 			AgentRenderResult mLastAsyncRenderResult;
 
@@ -2714,7 +2837,7 @@ namespace RISE
 			static constexpr std::uint64_t kSessionLocalRenderJobIdStride = 2;
 			std::uint64_t mNextSessionLocalRenderJobId = 1;
 
-			//! Model-B F2 slice S2a: guards mLastPng / mLastSink against a
+			//! Model-B F2 slice S2a: guards the per-session async state against a
 			//! torn read/write race between the agent-render WORKER thread
 			//! (which runs RenderCore_'s cache-population tail at the end of
 			//! an async render, on the controller's dedicated worker

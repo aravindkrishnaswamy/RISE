@@ -1838,7 +1838,16 @@ void ChatPanel::rebuildTranscriptWidgets()
         const auto& entry = m_loop->TranscriptAt(i);
         const QString body = toQString(entry.displayText).trimmed();
 
-        if (entry.role == Role::User) {
+        // A SWITCH, NOT AN IF/ELSE CHAIN, AND DELIBERATELY WITHOUT A
+        // `default`.  The chain this replaced ended in a bare `else`
+        // meaning "ToolResults", so a newly added Role enumerator silently
+        // rendered as an empty tool row instead of failing loudly --
+        // exactly what happened when Role::DriverNote was introduced.
+        // With every enumerator named and no default, adding the next one
+        // is a -Wswitch warning at compile time, which this project treats
+        // as a build failure.
+        switch (entry.role) {
+        case Role::User: {
             // Right-aligned bubble -- Theme::bgBubbleUser fill, uneven
             // corners 12/12/4/12 (topLeft/topRight/bottomLeft/
             // bottomRight) via BubbleLabel's custom paintEvent -- see
@@ -1855,7 +1864,33 @@ void ChatPanel::rebuildTranscriptWidgets()
             row->addStretch(1);
             row->addWidget(bubble, 0, Qt::AlignRight);
             m_transcriptLayout->addLayout(row);
-        } else if (entry.role == Role::Assistant) {
+            break;
+        }
+        case Role::DriverNote: {
+            // A note the LOOP injected into the conversation (today: the
+            // blind-edit nudge).  It goes on the wire as ordinary user
+            // content, so before Role::DriverNote existed it landed in the
+            // User branch above and was painted as the user's own chat
+            // bubble -- a lie about who said it, and one this panel is
+            // uniquely exposed to because it renders straight out of the
+            // wire transcript.
+            //
+            // SHOWN, NOT FILTERED.  The model received this message and
+            // visibly changed course because of it; hiding it would leave
+            // the user watching an agent that suddenly renders for no
+            // reason they can see.  Rendered with the SAME dim centered
+            // notice affordance as the compaction message above, which is
+            // this panel's existing vocabulary for "the harness is
+            // speaking, not a participant".
+            auto* note = new QLabel(body.isEmpty() ? tr("[system note]") : body);
+            note->setFont(Theme::sans(11));
+            note->setWordWrap(true);
+            note->setAlignment(Qt::AlignCenter);
+            note->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            m_transcriptLayout->addWidget(note);
+            break;
+        }
+        case Role::Assistant: {
             // GUI stage 3 (Windows parity): the model's reasoning for
             // THIS turn, if the provider exposed any (Anthropic
             // `thinking` blocks; OpenAI-family `reasoning`/
@@ -1875,8 +1910,10 @@ void ChatPanel::rebuildTranscriptWidgets()
             lbl->setWordWrap(true);
             lbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textSecondary)));
             m_transcriptLayout->addWidget(lbl);
-        } else {
-            // ToolResults -- one expandable trace chip PER CALL, built
+            break;
+        }
+        case Role::ToolResults: {
+            // One expandable trace chip PER CALL, built
             // from entry.toolSummaries (name/outcomeLine/argsJson/
             // resultJson, populated by FlushPendingToolResults) rather
             // than parsing entry.displayText: stage 1 (AgentChatLoop.cpp)
@@ -1905,6 +1942,8 @@ void ChatPanel::rebuildTranscriptWidgets()
                     m_transcriptLayout->addWidget(buildToolRow(header, detail, true, false));
                 }
             }
+            break;
+        }
         }
     }
 
@@ -2228,34 +2267,34 @@ void ChatPanel::processNextToolCall()
             // tool call in this turn uses.  `render` used to go to
             // agentHandleLine's separate administrative session while every
             // other verb went through agentHandleToolCall -- and because
-            // AgentSession's last-render PNG cache (mLastPng / mLastSink,
-            // AgentSession.cpp's RenderCore_) is PER-SESSION, the agent's
-            // read_image then read a cache its own render had never written:
-            // zero bytes, or the stale objectmap PNG left by
-            // query_object_at's internal render.  Keep `render` and
-            // `read_image` on one session.  (That second symptom has since
-            // been fixed at its own source too -- query_object_at's internal
-            // render is now stash/restore-guarded and no longer clobbers the
-            // cache; see AgentSession.cpp's EphemeralRenderCacheGuard.  It is
-            // named here because it is what the split ACTUALLY surfaced in
-            // production trajectories.)
+            // AgentSession's last-render PNG cache was PER-SESSION, the
+            // agent's read_image then read a cache its own render had never
+            // written: zero bytes, or the stale objectmap PNG left by
+            // query_object_at's internal render.  (That second symptom has
+            // since been fixed at its own source too -- query_object_at's
+            // internal render is stash/restore-guarded and no longer clobbers
+            // the cache; see AgentSession.cpp's EphemeralRenderCacheGuard.
+            // It is named here because it is what the split ACTUALLY
+            // surfaced in production trajectories.)
             //
-            // KNOWN RESIDUAL, deliberately not "fixed", and narrower than it
-            // first looks: only a chip flip that CROSSES Propose changes
-            // session.  Read and Apply both select the SAME tool-call
-            // Owner session (m_agentToolDispatcherOwner; they differ only
-            // in the autonomy set on it), so a
-            // Read<->Apply flip between a render and the read_image that
-            // follows changes nothing.  A flip TO or FROM Propose does: that
-            // read_image lands on the other session and sees an empty/stale
-            // cache.  Pinning the whole TURN would close it, and we do not
-            // do that -- autonomy is a safety control that must bind on the
-            // very next tool call, so a mid-turn drop to Read cannot be
-            // deferred to a turn boundary.  Only a render JOB pins its
-            // session (see m_outstandingRenderAutonomy), and even there the
-            // live posture still governs what the pinned session may do.
-            // The model self-corrects here by re-rendering.  macOS sibling
-            // of this routing site:
+            // THE CACHE HALF OF THAT IS NOW CLOSED (2026-07): ViewportBridge's
+            // constructor hands all THREE in-app sessions ONE shared
+            // AgentImageCache, so whichever of them ran the render, the
+            // follow-up read_image reads it.  The autonomy-flip residual this
+            // comment used to carry -- "a flip TO or FROM Propose between a
+            // render and the read_image after it lands on the other session
+            // and sees an empty/stale cache" -- is gone.  Library-level
+            // coverage: AgentRenderAsyncTest's "(shared-img-cache)" case.
+            //
+            // KEEP THE ROUTING ANYWAY.  render_status / render_wait answer
+            // out of PER-SESSION state (the async result record keyed by a
+            // session-local render job id), and that is deliberately NOT
+            // shared -- a session must not report on another session's jobs.
+            // So a render and the calls that poll it still belong on one
+            // session; only the image cache stopped caring.  A render JOB
+            // therefore still pins its session (m_outstandingRenderAutonomy),
+            // while the live posture governs what that pinned session may do.
+            // macOS sibling of this routing site:
             // build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
             // driveTurn / executeRenderToolCallAsync.
             //

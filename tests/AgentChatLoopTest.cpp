@@ -8280,8 +8280,9 @@ static void TestBlindEditNudgeDelivery()
 		Check( loop.TranscriptSize() == sizeBefore + 5,
 		       "T44: the nudge is exactly ONE extra transcript entry" );
 		const ChatTranscriptEntry& tail = loop.TranscriptAt( loop.TranscriptSize() - 1 );
-		Check( tail.role == ChatTranscriptEntry::Role::User,
-		       "T44: ... carried as a User entry" );
+		Check( tail.role == ChatTranscriptEntry::Role::DriverNote,
+		       "T44: ... carried as a DriverNote entry (USER CONTENT on the wire, but "
+		       "tagged so a GUI does not attribute it to the human)" );
 		Check( tail.displayText.find( "edits in a row without rendering" ) != std::string::npos,
 		       "T44: ... whose displayText is the reminder, so a GUI can show the guard firing" );
 		Check( loop.TranscriptAt( loop.TranscriptSize() - 2 ).role ==
@@ -8298,6 +8299,174 @@ static void TestBlindEditNudgeDelivery()
 		       "suffix and re-invalidate the cache)" );
 		Check( SystemPromptOf( ChatProvider::Anthropic, later.body ) == sys1,
 		       "T44: ... and the system prompt is still byte-identical" );
+	}
+
+	// ==============================================================
+	// T44b: the DriverNote ROLE IS INVISIBLE ON THE WIRE.
+	//
+	// Role::DriverNote exists purely so the two GUIs can tell a
+	// loop-injected note apart from something the user typed.  It must not
+	// cost one byte of any request: `rawJson` still comes from the same
+	// mCodec->MakeUserEntry() a real user message uses, and BuildRequest
+	// assembles `rawEntries` from rawJson ALONE (it never reads `role`).
+	//
+	// Proved by CONSTRUCTION rather than against a stored golden: drive the
+	// identical tool rounds on two loops, one where the nudge fires
+	// (DriverNote entry) and one with the nudge DISABLED where the very
+	// same text is appended by AddUserMessage (a genuine User entry), and
+	// require the two request bodies to be byte-equal.  Since the User form
+	// is exactly what this loop emitted BEFORE the role existed, equality
+	// here IS "byte-identical to today's request for a nudge-firing
+	// session" -- on every provider.
+	//
+	// RED-PROVE: change AppendPendingBuildNudge to build rawJson any other
+	// way (or make any codec branch on role) and this fails on the first
+	// provider.
+	{
+		const struct { ChatProvider provider; const char* tag; } kWire[] = {
+			{ ChatProvider::Anthropic, "anthropic" },
+			{ ChatProvider::Gemini,    "gemini"    },
+			{ ChatProvider::OpenAI,    "openai"    },
+			{ ChatProvider::XAI,       "xai"       },
+			{ ChatProvider::Local,     "local"     },
+		};
+		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+
+		for( std::size_t c = 0; c < sizeof( kWire ) / sizeof( kWire[0] ); ++c ) {
+			const ChatProvider provider = kWire[c].provider;
+			const char* const tag = kWire[c].tag;
+
+			// (a) The nudge-firing loop.
+			AgentChatLoop nudged;
+			nudged.SetProvider( provider );
+			nudged.SetBlindEditNudgeThreshold( 2 );
+			nudged.AddUserMessage( "build a scene" );
+			Check( DriveToolRound( nudged, provider, Vec1( "insert_chunk" ),
+			                       Vec1( std::string( "call_w1_" ) + tag ), Vec1( ok ) ) &&
+			       DriveToolRound( nudged, provider, Vec1( "insert_chunk" ),
+			                       Vec1( std::string( "call_w2_" ) + tag ), Vec1( ok ) ),
+			       std::string( "T44b[" ) + tag + "]: setup -- two blind inserts trip the nudge" );
+			const ChatTranscriptEntry& note = nudged.TranscriptAt( nudged.TranscriptSize() - 1 );
+			Check( note.role == ChatTranscriptEntry::Role::DriverNote,
+			       std::string( "T44b[" ) + tag + "]: setup -- the tail really is the DriverNote" );
+			const std::string noteText = note.displayText;
+
+			// (b) The control: same rounds, nudge OFF, same text sent as a
+			//     real user message -- i.e. the pre-role shape.
+			AgentChatLoop control;
+			control.SetProvider( provider );
+			control.SetBlindEditNudgeThreshold( 0 );
+			control.AddUserMessage( "build a scene" );
+			Check( DriveToolRound( control, provider, Vec1( "insert_chunk" ),
+			                       Vec1( std::string( "call_w1_" ) + tag ), Vec1( ok ) ) &&
+			       DriveToolRound( control, provider, Vec1( "insert_chunk" ),
+			                       Vec1( std::string( "call_w2_" ) + tag ), Vec1( ok ) ),
+			       std::string( "T44b[" ) + tag + "]: setup -- control drives the same two rounds" );
+			control.AddUserMessage( noteText );
+			Check( control.TranscriptAt( control.TranscriptSize() - 1 ).role ==
+			       ChatTranscriptEntry::Role::User,
+			       std::string( "T44b[" ) + tag + "]: setup -- the control's tail is a real User entry" );
+
+			// The entry the codecs will serialize is byte-equal...
+			Check( note.rawJson ==
+			       control.TranscriptAt( control.TranscriptSize() - 1 ).rawJson,
+			       std::string( "T44b[" ) + tag + "]: the DriverNote's rawJson is BYTE-IDENTICAL "
+			       "to the user message carrying the same text" );
+
+			// ...and so is the whole request built around it.
+			const ChatHttpRequest a = nudged.BuildRequest( kApiKey );
+			const ChatHttpRequest b = control.BuildRequest( kApiKey );
+			Check( a.body == b.body,
+			       std::string( "T44b[" ) + tag + "]: the REQUEST BODY is byte-identical -- the "
+			       "new role changes nothing on the wire" );
+			Check( a.url == b.url && a.headers == b.headers,
+			       std::string( "T44b[" ) + tag + "]: ... url and headers too" );
+		}
+	}
+
+	// ==============================================================
+	// T44c: a DriverNote is NOT a compaction span boundary.
+	//
+	// CompactTranscript drops whole SPANS, and a span starts at a
+	// Role::User entry.  A loop-injected note is not a turn the user took
+	// (the trajectory records it as a `history_edit`, not a `user` record,
+	// for exactly this reason), so counting it as a span start would let
+	// compaction cut a conversation in a place the user never spoke --
+	// and would leave a synthesized note as mTranscript[0], which is
+	// supposed to be a real user message.
+	//
+	// RED-PROVE: this fails against the pre-fix loop, where the nudge was a
+	// Role::User entry -- it made spanCount 3 on a TWO-turn conversation,
+	// so compaction fired and erased the first turn.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetBlindEditNudgeThreshold( 2 );
+		// A budget so low that compaction runs on every request and never
+		// reaches its low-water target -- the span floor (kMinRetainedSpans)
+		// is then the ONLY thing that stops it.  (low MUST be > 0 and < high
+		// or the window is inert -- see ContextBudgetActive.)
+		loop.SetContextBudget( 2, 1 );
+		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+
+		loop.AddUserMessage( "first instruction" );
+		Check( DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
+		                       Vec1( "toolu_s1" ), Vec1( ok ) ) &&
+		       DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
+		                       Vec1( "toolu_s2" ), Vec1( ok ) ),
+		       "T44c: setup -- turn 1 trips the nudge" );
+		Check( loop.DriverNoteCount() == 1, "T44c: setup -- exactly one note fired" );
+		loop.AddUserMessage( "second instruction" );
+
+		// TWO user turns + one note.  If the note counted as a span the
+		// loop would see three spans, exceed the floor of two, and erase.
+		const std::size_t before = loop.TranscriptSize();
+		loop.BuildRequest( kApiKey );   // compaction runs inside BuildRequest
+		Check( loop.CompactedEntryCount() == 0,
+		       "T44c: nothing is dropped -- a DriverNote does not count as a user turn, so "
+		       "this is a TWO-span conversation and the floor holds" );
+		Check( loop.TranscriptSize() == before,
+		       "T44c: ... and the transcript is intact" );
+		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User,
+		       "T44c: ... with a real user message still leading it (wire invariant 1)" );
+
+		// A THIRD real user turn does make it compactable -- so the guard
+		// above is the span RULE holding, not compaction being inert.
+		loop.AddUserMessage( "third instruction" );
+		loop.BuildRequest( kApiKey );
+		Check( loop.CompactedEntryCount() > 0,
+		       "T44c: a third REAL user turn does compact (the check above is the span rule, "
+		       "not a dead compactor)" );
+		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User,
+		       "T44c: ... and the surviving head is still a real user message" );
+	}
+
+	// ==============================================================
+	// T44d: the driver-facing counters (DriverNoteCount /
+	// LastDriverNoteText).  The Mac driver keeps its own display list and
+	// never reads the transcript, so these are its ONLY way to tell the
+	// user the loop just steered the agent -- it watermarks against the
+	// count, which (unlike a transcript index) survives compaction.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetBlindEditNudgeThreshold( 2 );
+		loop.AddUserMessage( "build" );
+		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
+		Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
+		       "T44d: no notes before one fires" );
+		for( int i = 0; i < 4; ++i ) {
+			DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
+			                Vec1( "toolu_n" + std::to_string( i ) ), Vec1( ok ) );
+		}
+		Check( loop.DriverNoteCount() == 2,
+		       "T44d: four blind edits at threshold 2 fire exactly two notes" );
+		Check( loop.LastDriverNoteText().find( "edits in a row without rendering" ) !=
+		       std::string::npos,
+		       "T44d: ... and the last note's text is available for the notice row" );
+		loop.Reset();
+		Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
+		       "T44d: Reset clears them with the transcript they describe" );
 	}
 
 	// Disabled (threshold 0) and reset-on-observe still hold, and neither

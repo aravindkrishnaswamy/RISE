@@ -5283,11 +5283,10 @@ static void RunRenderOwnsSceneGuardTest()
 //////////////////////////////////////////////////////////////////////
 // (img-cache) CHARACTERIZATION: AgentSession's last-render PNG cache --
 // the one ReadImage() serves and the one the `read_image` JSON-RPC verb
-// returns -- is PER-SESSION state (`mLastPng` / `mLastSink`, populated
-// only inside AgentSession.cpp's RenderCore_ on the session that ran the
-// render).  It is NOT shared between two AgentSessions built over the
-// same Job, even when both have the SAME live SceneEditController
-// attached.
+// returns -- is PRIVATE PER SESSION unless a host explicitly shares one
+// (AgentSession::MakeSharedImageCache + WrapJob's third argument).  Two
+// sessions built over the same Job with NO shared handle do not see each
+// other's renders, even with the SAME live SceneEditController attached.
 //
 // THIS TEST EXISTS TO DOCUMENT WHY A GUI CHAT DRIVER MUST ROUTE `render`
 // AND `read_image` TO THE SAME SESSION.  Both GUI chat drivers stand up
@@ -5317,12 +5316,12 @@ static void RunRenderOwnsSceneGuardTest()
 //        startAsyncRenderToolCall / pollOutstandingRender /
 //        cancelOutstandingRender)
 //
-// This is a CHARACTERIZATION of library behaviour, not a claim that the
-// per-session cache is wrong: per-session is the correct design (an
-// External MCP client must not see an in-app render's pixels).  What is
-// wrong is a CALLER that splits one logical render-then-read across two
-// sessions -- and this test is what makes that consequence visible if
-// anyone re-splits the routing.
+// This is a CHARACTERIZATION of the DEFAULT: a session constructed with
+// no shared cache handle keeps a private one, and an External MCP client
+// therefore cannot see an in-app render's pixels.  Isolation being the
+// default is load-bearing -- see RunSharedImageCacheTest below, which
+// covers the opt-in sharing the GUIs now use for their THREE in-app
+// sessions, and asserts that an unshared session is still shut out.
 //////////////////////////////////////////////////////////////////////
 static void RunPerSessionImageCacheTest()
 {
@@ -5399,6 +5398,175 @@ static void RunPerSessionImageCacheTest()
 	std::remove( scenePath.c_str() );
 
 	std::printf( "=== (img-cache) per-session ReadImage cache: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// (shared-img-cache) The OPT-IN shared last-render cache.
+//
+// WHAT IT FIXES.  Both GUIs stand up THREE in-app AgentSessions over one
+// Job (an administrative one behind agentHandleLine, plus a tool-call
+// Owner session and a tool-call Propose session).  With a per-session
+// cache, a user who flipped the autonomy chip to or from Propose BETWEEN
+// a `render` and the `read_image` that followed it moved the read onto
+// the other session and got an empty (or stale) cache back.  Routing
+// render and read_image through one dispatcher fixed the common case but
+// could not fix that one, and it was carried as a documented residual in
+// ChatViewModel.swift and ViewportBridge.h.  The three in-app sessions
+// now share ONE AgentImageCache handle, so it does not matter which of
+// them ran the render.
+//
+// WHAT MUST NOT CHANGE.  The hosted loopback (MCP) server's External
+// session is NOT in that group -- a remote client must never read pixels
+// an in-app render produced.  That isolation is not a side effect of
+// where the fields live any more; it is now a property of WHO IS HANDED
+// THE HANDLE, so it is asserted here directly.
+//
+// RED-PROVE: against the pre-fix build every "sibling sees it" assertion
+// fails with an EMPTY read (that is exactly what RunPerSessionImageCacheTest
+// above pins for the unshared case).
+//////////////////////////////////////////////////////////////////////
+static void RunSharedImageCacheTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (shared-img-cache) the OPT-IN shared last-render cache ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_shared_image_cache.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the shared-image-cache scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (shared image-cache test)" );
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	{
+		// The GUI topology exactly: THREE in-app sessions on ONE handle
+		// (administrative + tool-call Owner + tool-call Propose), plus the
+		// hosted server's External session on NO handle.
+		std::shared_ptr<AgentImageCache> inApp = AgentSession::MakeSharedImageCache();
+		std::unique_ptr<AgentSession> admin =
+			AgentSession::WrapJob( pJob, AgentAuthority::Owner, inApp );
+		std::unique_ptr<AgentSession> owner =
+			AgentSession::WrapJob( pJob, AgentAuthority::Owner, inApp );
+		std::unique_ptr<AgentSession> propose =
+			AgentSession::WrapJob( pJob, AgentAuthority::External, inApp );
+		std::unique_ptr<AgentSession> hosted =
+			AgentSession::WrapJob( pJob, AgentAuthority::External );
+		Check( admin && owner && propose && hosted,
+		       "three in-app sessions share ONE cache handle; the hosted one gets none" );
+		if( admin && owner && propose && hosted )
+		{
+			admin->AttachController( &controller );
+			owner->AttachController( &controller );
+			propose->AttachController( &controller );
+			hosted->AttachController( &controller );
+
+			Check( admin->ReadImage().empty() && owner->ReadImage().empty()
+			       && propose->ReadImage().empty() && hosted->ReadImage().empty(),
+			       "every cache starts EMPTY" );
+
+			// --- render on the Owner session, read on its siblings -------
+			// This IS the autonomy-flip sequence: render under Apply, flip
+			// the chip to Propose, read_image.
+			AgentRenderParams noOverride;
+			const AgentRenderResult ro = owner->Render( noOverride );
+			Check( ro.ok && !ro.png.empty(), "the Owner session's render succeeds" );
+
+			Check( propose->ReadImage() == ro.png,
+			       "MONEY: the PROPOSE session reads the OWNER session's render -- an autonomy "
+			       "flip between render and read_image no longer hands back an empty cache" );
+			Check( admin->ReadImage() == ro.png,
+			       "MONEY: the ADMINISTRATIVE session reads it too (all three in-app sessions "
+			       "share one view of 'the last render')" );
+			Check( hosted->ReadImage().empty(),
+			       "MONEY (the property that must not regress): the HOSTED External session "
+			       "sees NOTHING -- a remote MCP client cannot read in-app pixels" );
+
+			// --- the SINK is shared, not just the bytes ------------------
+			// ReadImage(maxEdge) re-encodes from the cached full-res linear
+			// pixels, so this only works if the sibling can reach the sink.
+			unsigned int w = 0, h = 0;
+			const std::vector<unsigned char> small = propose->ReadImage( 8, w, h );
+			Check( !small.empty() && w > 0 && h > 0 && w <= 8 && h <= 8,
+			       "MONEY: a sibling re-encodes a DOWNSCALE from the shared sink (the cached "
+			       "pixels are shared, not merely the encoded PNG)" );
+			unsigned int hw = 0, hh = 0;
+			Check( hosted->ReadImage( 8, hw, hh ).empty(),
+			       "... and the hosted session still gets nothing from that path either" );
+
+			// --- last writer wins, across sessions -----------------------
+			AgentRenderParams smallParams;
+			smallParams.width  = 32;
+			smallParams.height = 32;
+			// perception:true so the sink carries the AOV sidecar the
+			// lease-across-teardown case below reads through.
+			smallParams.perception = true;
+			const AgentRenderResult ra = admin->Render( smallParams );
+			Check( ra.ok && !ra.png.empty(), "the administrative session's render succeeds" );
+			Check( ra.png != ro.png, "setup -- the two renders really are different images" );
+			Check( owner->ReadImage() == ra.png && propose->ReadImage() == ra.png,
+			       "MONEY: the newest render replaces the shared frame for EVERY sharer" );
+			Check( hosted->ReadImage().empty(),
+			       "... and STILL not for the hosted session" );
+
+			// --- the cache outlives the session that produced it ---------
+			// The handle is shared_ptr-owned, so destroying the producer
+			// must not take the frame (or the sink) with it.
+			admin->AttachController( nullptr );
+			admin.reset();
+			Check( owner->ReadImage() == ra.png,
+			       "MONEY (lifetime): destroying the session that RAN the render leaves the "
+			       "shared frame intact for the sessions still holding the handle" );
+			unsigned int w2 = 0, h2 = 0;
+			Check( !propose->ReadImage( 8, w2, h2 ).empty(),
+			       "... including the SINK -- the last sharer out owns it, not the producer" );
+
+			// --- a lease held ACROSS a sibling's teardown ----------------
+			// The delicate case: `propose` is inside ReadPerception with the
+			// shared sink leased and the cache lock DROPPED, and `owner` --
+			// a sibling on the same handle -- is destroyed underneath it.
+			// The lease holds its own reference, and owner's teardown must
+			// not touch the shared frame, so the encode below must still
+			// produce a valid PNG.
+			bool siblingTornDownInsideLease = false;
+			propose->ForTest_SetReadPerceptionAfterLeaseHook(
+				[&owner, &siblingTornDownInsideLease]() {
+					if( owner ) {
+						owner->AttachController( nullptr );
+						owner.reset();          // sibling dies WHILE the lease is held
+						siblingTornDownInsideLease = true;
+					}
+				} );
+			unsigned int pw = 0, ph = 0;
+			AgentPerceptionInfo info;
+			const std::vector<unsigned char> perception =
+				propose->ReadPerception( 16, pw, ph, info );
+			propose->ForTest_SetReadPerceptionAfterLeaseHook( std::function<void()>() );
+			Check( siblingTornDownInsideLease,
+			       "setup -- the sibling really was destroyed inside the lease window" );
+			Check( !perception.empty() && pw > 0 && ph > 0,
+			       "MONEY (lifetime): a read holding a lease on the SHARED sink survives a "
+			       "SIBLING session's teardown -- the lease's own reference keeps the sink "
+			       "alive and the sibling's drain never touches the shared frame" );
+
+			// The surviving sharer still reads the same frame afterwards.
+			Check( propose->ReadImage() == ra.png,
+			       "... and the shared frame is unchanged by that teardown" );
+
+			propose->AttachController( nullptr );
+			hosted->AttachController( nullptr );
+		}
+		// Every session (and then the handle) goes out of scope here: the
+		// LAST one out runs ~AgentImageCache, which releases the sink
+		// exactly once.  A double release would trip the refcount/allocator
+		// here rather than somewhere unrelated later.
+	}
+
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== (shared-img-cache) opt-in shared cache: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -6051,6 +6219,7 @@ int main()
 	RunLegacyProductionPreservesAgentWorkerTest();
 	RunGestureRenderAdmissionTest();
 	RunPerSessionImageCacheTest();
+	RunSharedImageCacheTest();
 	RunEphemeralGuardRestoresAsyncResultTest();
 	RunEphemeralGuardCtorWindowTest();
 	RunRefusalCauseAttributionTest();

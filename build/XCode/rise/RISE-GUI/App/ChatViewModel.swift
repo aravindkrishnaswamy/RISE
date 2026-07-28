@@ -296,6 +296,13 @@ final class ChatViewModel: ObservableObject {
     /// one per subsequent request.  Reset wherever `transcript` is, since
     /// the loop's own counter is cleared by Reset()/SetProvider() too.
     private var lastReportedCompactedEntryCount: UInt = 0
+
+    /// Highest `driverNoteCount` already reported as a `.notice` row — the
+    /// same one-event-one-notice watermark as above, for the notes the LOOP
+    /// injects into the conversation (today: the blind-edit nudge).  Reset
+    /// alongside `lastReportedCompactedEntryCount`; the loop's own counter
+    /// is cleared by Reset()/SetProvider() too.
+    private var lastReportedDriverNoteCount: UInt = 0
     @Published var inputText: String = ""
     /// Images queued to go out with the NEXT send() (Model-B F5 chat
     /// image attachments) — populated by attachImageFile(at:), shown as
@@ -1093,6 +1100,7 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         pendingAttachments = []
@@ -1159,6 +1167,7 @@ final class ChatViewModel: ObservableObject {
                                    scenePath: "", headVersion: -1, enabled: false)
         transcript = []
         lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         inputText = ""
         clearErrorAffordances()
         consecutiveHttp400s = 0
@@ -1207,6 +1216,7 @@ final class ChatViewModel: ObservableObject {
         modelId = chatBridge.modelId
         transcript = []
         lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         // Eval-harness E1: setProvider closed the old session (a
@@ -1769,6 +1779,7 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         lastReportedCompactedEntryCount = 0
+        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         transcript.append(Entry(kind: .notice, text: "Conversation reset."))
@@ -2099,6 +2110,25 @@ final class ChatViewModel: ObservableObject {
                         + "conversation). They are still shown above, but the agent can "
                         + "no longer see them."))
             }
+
+            // DRIVER NOTES (Role::DriverNote — today the blind-edit nudge).
+            // The loop injects these into the conversation itself, so the
+            // model reads them and changes course.  This driver renders its
+            // own display list, not the wire transcript, so without this the
+            // note would be invisible here and the agent would appear to
+            // stop editing and render for no reason the user can see.
+            // Checked at the SAME place as the compaction notice: a note is
+            // appended when a tool round flushes, and the next thing that
+            // happens is always the buildRequest that carries it to the
+            // model — so the user is told at (or just before) the moment it
+            // takes effect.  The Windows panel paints the transcript entry
+            // itself; both end up showing the same text.
+            let notesNow = chatBridge.driverNoteCount
+            if notesNow > lastReportedDriverNoteCount {
+                lastReportedDriverNoteCount = notesNow
+                transcript.append(Entry(kind: .notice,
+                                        text: chatBridge.lastDriverNoteText))
+            }
             guard !request.isEmpty, let url = URL(string: request.url) else { return }
 
             var urlRequest = URLRequest(url: url)
@@ -2226,36 +2256,40 @@ final class ChatViewModel: ObservableObject {
                     // `render` used to go to `agentHandleLine`'s separate
                     // administrative session while every other verb went
                     // through `agentHandleToolCall` — and because
-                    // AgentSession's last-render PNG cache (`mLastPng` /
-                    // `mLastSink`, AgentSession.cpp's RenderCore_) is
-                    // PER-SESSION, the agent's `read_image` then read a cache
-                    // its own `render` had never written: zero bytes, or the
-                    // stale objectmap PNG left by `query_object_at`'s internal
-                    // render.  Keep `render` and `read_image` on one session.
-                    // (That second symptom has since been fixed at its own
-                    // source too — `query_object_at`'s internal render is now
-                    // stash/restore-guarded and no longer clobbers the cache;
-                    // see AgentSession.cpp's EphemeralRenderCacheGuard.  It is
-                    // named here because it is what the split ACTUALLY
-                    // surfaced in production trajectories.)
+                    // AgentSession's last-render PNG cache was PER-SESSION,
+                    // the agent's `read_image` then read a cache its own
+                    // `render` had never written: zero bytes, or the stale
+                    // objectmap PNG left by `query_object_at`'s internal
+                    // render.  (That second symptom has since been fixed at
+                    // its own source too — `query_object_at`'s internal render
+                    // is stash/restore-guarded and no longer clobbers the
+                    // cache; see AgentSession.cpp's
+                    // EphemeralRenderCacheGuard.  It is named here because it
+                    // is what the split ACTUALLY surfaced in production
+                    // trajectories.)
                     //
-                    // KNOWN RESIDUAL, deliberately not "fixed", and narrower
-                    // than it first looks: only a chip flip that CROSSES
-                    // Propose changes session.  Read and Apply both select
-                    // the SAME tool-call Owner session
-                    // (`_agentToolDispatcherOwner`; they differ only in the
-                    // autonomy set on it), so a Read↔Apply flip between a
-                    // render and the `read_image` that follows changes
-                    // nothing.  A flip TO or FROM Propose does: that
-                    // `read_image` lands on the other session and sees an
-                    // empty/stale cache.  Pinning the whole TURN would close
-                    // it, and we do not do that — autonomy is a safety
-                    // control that must bind on the very next tool call, so a
-                    // mid-turn drop to Read cannot be deferred to a turn
-                    // boundary.  Only a render JOB pins its session (see
-                    // `outstandingChatRenderAutonomy`), and even there the
-                    // live posture still governs what the pinned session may
-                    // do.  The model self-corrects here by re-rendering.
+                    // THE CACHE HALF OF THAT IS NOW CLOSED (2026-07): the
+                    // bridge hands all THREE in-app sessions ONE shared
+                    // AgentImageCache (RISEViewportBridge's
+                    // -initWithHostBridge:), so whichever of them ran the
+                    // render, the follow-up `read_image` reads it.  The
+                    // autonomy-flip residual this comment used to carry —
+                    // "a flip TO or FROM Propose between a render and the
+                    // read_image after it lands on the other session and sees
+                    // an empty/stale cache" — is gone; `render` and
+                    // `read_image` no longer have to be on one session for
+                    // the PIXELS to line up.  Library-level coverage:
+                    // AgentRenderAsyncTest's "(shared-img-cache)" case.
+                    //
+                    // KEEP THE ROUTING ANYWAY.  render_status / render_wait
+                    // answer out of PER-SESSION state (the async result record
+                    // keyed by a session-local render job id), and that is
+                    // deliberately NOT shared — a session must not report on
+                    // another session's jobs.  So a render and the calls that
+                    // poll it still belong on one session; only the image
+                    // cache stopped caring.  A render JOB therefore still pins
+                    // its session (`outstandingChatRenderAutonomy`), while the
+                    // live posture governs what that pinned session may do.
                     // Windows/Qt sibling of this routing site:
                     // build/VS2022/RISE-GUI/ChatPanel.cpp's
                     // processNextToolCall / startAsyncRenderToolCall.
@@ -3162,8 +3196,9 @@ final class ChatViewModel: ObservableObject {
     /// SESSION ROUTING: every call this method makes goes through
     /// `agentHandleToolCall(_:autonomy:)` with the session PINNED at submit
     /// time — the same autonomy-selected session every OTHER tool call in
-    /// the turn uses.  That is what keeps `read_image` reading the PNG
-    /// cache THIS render populated (`AgentSession::mLastPng` is per-session).
+    /// the turn uses.  (Since 2026-07 the last-render PNG cache is SHARED by
+    /// the three in-app sessions, so `read_image` would find this render's
+    /// pixels either way; the pin is no longer about them.)
     /// The pin keeps every poll on the session that RAN the job, which is
     /// where `render_wait`'s optional `result` payload lives — not because
     /// the `renderJobId` would otherwise be unresolvable (it resolves on any
