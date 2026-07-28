@@ -1438,7 +1438,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	aovUnwindGuard.Dismiss();
 }
 
-void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
+bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 	const RuntimeContext::PASS pass,
 	const IScene& pScene,
 	const Rect* pRect,
@@ -1479,6 +1479,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int /*workerIdx*/ ) {
 			dispatcher.DoAnimWork();
 		} );
+		return !dispatcher.WasCancelled();
 
 	} else {
 
@@ -1497,6 +1498,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		seq.Begin( startx, endx, starty, endy );
 		const unsigned int numseq = seq.NumRegions();
+		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
 			const Rect rect = seq.GetNextRegion();
@@ -1517,6 +1519,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 					denom = static_cast<double>(numseq-1);
 				}
 				if( !pProgressFunc->Progress( num, denom ) ) {
+					completed = false;
 					break;		// abort the render
 				}
 			}
@@ -1527,6 +1530,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 		// Mirrors the non-animation SP path: explicitly flush the
 		// TLS splat buffer now that the workers won't do it for us.
 		FlushCallingThreadSplatBuffer();
+		return completed;
 	}
 }
 
@@ -1662,8 +1666,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			pFilteredFilm = 0;
 			pFilteredScratch = 0;
 		}
+		bool cacheCompleted = false;
 		try {
-			RenderFrameOfAnimationPass(
+			cacheCompleted = RenderFrameOfAnimationPass(
 				RuntimeContext::PASS_IRRADIANCE_CACHE, pScene, 0,
 				field, irradImage, time, *irrad_seq, framedata );
 		} catch( ... ) {
@@ -1683,7 +1688,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		mProgressBase   = savedBase;
 		mProgressWeight = savedWeight;
 		mProgressTotal  = savedTotal;
-		pIrradianceCache->FinishedPrecomputation();
+		if( cacheCompleted ) {
+			pIrradianceCache->FinishedPrecomputation();
+		}
 		safe_release( pIrradScratch );
 		safe_release( irrad_seq );
 		if( pProgressFunc ) {

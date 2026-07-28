@@ -157,7 +157,8 @@ namespace RISE
 				IRasterizeSequence& seq 
 				) const;
 
-			void RenderFrameOfAnimationPass( 
+			//! Returns false when the progress callback cancels before all blocks finish.
+			bool RenderFrameOfAnimationPass(
 				const RuntimeContext::PASS pass,
 				const IScene& pScene,
 				const Rect* pRect,

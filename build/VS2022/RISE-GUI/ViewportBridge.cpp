@@ -546,6 +546,13 @@ void ViewportBridge::stop()
     // RISE_API_DestroySceneEditController (a few lines down), whose
     // destructor call to the real Stop() retires the agent worker.
     RISE_API_SceneEditController_StopInteractive(m_controller);
+    // The pre-stop invalidation retires work already queued, while this
+    // post-join bump closes the drain-frame race: no producer remains that
+    // can capture the new generation after this point.
+    if (m_previewSink) m_previewSink->InvalidatePresentation();
+    for (unsigned int pane = 1; pane < kViewportPaneCount; ++pane) {
+        if (m_paneSinks[pane]) m_paneSinks[pane]->InvalidatePresentation();
+    }
     m_running = false;
 }
 
