@@ -55,6 +55,8 @@ namespace RISE
 			mutable IRasterImage*			pScratchImage;		///< Scratch buffer for splat composition
 			mutable Scalar					mSplatTotalSamples;	///< Cached for progressive resolve
 			mutable std::atomic<uint64_t>	mTotalAdaptiveSamples;	///< Total camera samples across all pixels
+			mutable Rect					mActiveSplatRegion;	///< Inclusive production-region bounds
+			mutable bool					mHasActiveSplatRegion;
 			StabilityConfig					stabilityConfig;	///< Production stability controls
 
 			BidirectionalRasterizerBase(
@@ -102,7 +104,37 @@ namespace RISE
 			/// non-null before calling.
 			IRasterImage& ResolveSplatIntoScratch( const IRasterImage& src ) const;
 
+			/// Configure the region used by every splat/filter preview and
+			/// by non-adaptive regional light-path normalization.
+			void ConfigureSplatRegion(
+				const Rect* region,
+				unsigned int width,
+				unsigned int height
+				) const;
+			const Rect* ActiveSplatRegion() const {
+				return mHasActiveSplatRegion ? &mActiveSplatRegion : 0;
+			}
+
 		public:
+			/// Number of film pixels represented by a regional camera pass.
+			/// Invalid/null regions retain the full-frame convention used by
+			/// callers that have no active crop.
+			static uint64_t RegionalPixelCount(
+				unsigned int width,
+				unsigned int height,
+				const Rect* region
+				);
+
+			/// Scale a full-frame light-path sample count to the effective
+			/// per-full-frame-pixel count produced by a regional camera pass.
+			/// Public only to keep the normalization rule directly testable.
+			static Scalar RegionalSplatSPP(
+				Scalar fullFrameSPP,
+				unsigned int width,
+				unsigned int height,
+				const Rect* region
+				);
+
 			/// Thread-safe: accumulates camera-sample count for
 			/// adaptive splat resolution.
 			void AddAdaptiveSamples( uint64_t count ) const;

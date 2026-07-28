@@ -51,6 +51,8 @@ namespace RISE
 			mutable IRasterImage*   pDirectCompanionRawImage;
 			mutable bool            mDirectCompanionDenoised;
 			mutable double          mDirectCompanionRenderSeconds;
+			mutable bool            mDirectCompanionHasRegion;
+			mutable Rect            mDirectCompanionRegion;
 			mutable std::vector<RISEPel> mDirectCompanionSums;
 			mutable std::vector<Scalar>  mDirectCompanionWeights;
 

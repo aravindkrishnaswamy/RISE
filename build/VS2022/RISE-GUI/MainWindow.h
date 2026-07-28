@@ -75,6 +75,7 @@ private slots:
     void onClearRecentFiles();
     void onClear();
     void onRender();
+    void onRenderActiveRegion();
     void onRenderAnimation();
     void onCancel();
     void onSaveScene();
@@ -431,7 +432,9 @@ private:
     QAction* m_redoAction = nullptr;
     QAction* m_pauseResumeAction = nullptr;
     QAction* m_restartAction = nullptr;
+    QAction* m_drawRegionAction = nullptr;
     QAction* m_renderAction = nullptr;
+    QAction* m_renderRegionAction = nullptr;
     QAction* m_renderAnimAction = nullptr;
     QAction* m_cancelAction = nullptr;
 

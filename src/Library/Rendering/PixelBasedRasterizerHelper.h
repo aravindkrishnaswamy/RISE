@@ -72,6 +72,18 @@ namespace RISE
 		private:
 
 			const ICamera* m_pViewportCameraOverride = nullptr;
+			// A regional irradiance-cache pre-pass must cover the full film
+			// because the cache is scene-wide. It renders into a private image;
+			// suppress tile callbacks so that hidden full-frame work is never
+			// published over the user's preserved outside-region pixels.
+			mutable bool mSuppressIntermediateOutput = false;
+			mutable bool mHasActiveOutputRegion = false;
+			mutable Rect mActiveOutputRegion = Rect( 0, 0, 0, 0 );
+			void ConfigureOutputRegion(
+				const Rect* region,
+				unsigned int width,
+				unsigned int height
+				) const;
 
 			// Used only by the RasterizeAnimation
 			void RenderFrameOfAnimation( 
@@ -145,7 +157,8 @@ namespace RISE
 				IRasterizeSequence& seq 
 				) const;
 
-			void RenderFrameOfAnimationPass( 
+			//! Returns false when the progress callback cancels before all blocks finish.
+			bool RenderFrameOfAnimationPass(
 				const RuntimeContext::PASS pass,
 				const IScene& pScene,
 				const Rect* pRect,
@@ -224,7 +237,10 @@ namespace RISE
 			void PrepareAOVBuffers_( unsigned int width, unsigned int height ) const;
 
 			//! Persist every allocated plane into the canonical FrameStore.
-			void PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const;
+			void PropagateAOVsToFrameStore_(
+				const AOVBuffers& aov,
+				const Rect* region = 0
+				) const;
 
 #ifdef RISE_ENABLE_OIDN
 			//! Whether OIDN should be invoked at the end of a render
@@ -338,23 +354,30 @@ namespace RISE
 			inline void BoundsFromRect( unsigned int& startx, unsigned int& starty, unsigned int& endx, unsigned int& endy, 
 				const Rect* pRect, const unsigned int width, const unsigned int height ) const
 			{
+				// A zero-sized film has no valid inclusive bounds. Callers normally
+				// reject it before rasterization, but keep this helper arithmetic-safe
+				// instead of underflowing width-1 / height-1.
+				if( width == 0 || height == 0 ) {
+					startx = starty = endx = endy = 0;
+					return;
+				}
+
 				startx = 0;
 				starty = 0;
 				endx = width-1;
 				endy = height-1;
 
-				if( pRect )
+				// Invalid or wholly out-of-film viewport regions are ignored for
+				// interactive passes (full-frame fallback by contract). Valid partial
+				// overlaps are intersected with the current film. This also makes a
+				// preserved region safe after a film resize.
+				if( pRect && pRect->left <= pRect->right && pRect->top <= pRect->bottom
+					&& pRect->left < width && pRect->top < height )
 				{
 					startx = pRect->left;
 					starty = pRect->top;
-					endx = pRect->right;
-					endy = pRect->bottom;
-
-					// Sanity check
-					startx = startx < width ? startx : width-2;
-					endx = endx < width-1 ? endx : width-1;
-					starty = starty < height ? starty : height-2;
-					endy = endy < height-1 ? endy : height-1;
+					endx = r_min( pRect->right, width-1 );
+					endy = r_min( pRect->bottom, height-1 );
 				}
 			}
 
@@ -397,6 +420,14 @@ namespace RISE
 
 		public:
 			PixelBasedRasterizerHelper( IRayCaster* pCaster_ , RISE::Implementation::FrameStore* frameStore = nullptr);
+
+			//! Test-only observation of the private post-processing crop state.
+			bool ForTest_HasActiveOutputRegion() const {
+				return mHasActiveOutputRegion;
+			}
+			Rect ForTest_ActiveOutputRegion() const {
+				return mActiveOutputRegion;
+			}
 
 			/// \return The ray caster this rasterizer drives (borrowed,
 			/// not addref'd).  Used by Job::SetActiveRasterizerRadianceScale

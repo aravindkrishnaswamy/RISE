@@ -113,6 +113,19 @@ struct ContentView: View {
         .navigationTitle(windowTitle)
         .navigationSubtitle("RISE \(viewModel.versionString)")
         .frame(minWidth: 1320, minHeight: 760)
+        // `ViewportNSView` normally handles Escape, but drawing can be armed
+        // from the menu while a text editor or toolbar control owns focus.
+        // Catch the command at the workspace root so Escape always disarms it.
+        .onExitCommand {
+            if regionArmed {
+                regionArmed = false
+            } else if interacting,
+                      let vb = viewModel.viewportBridge,
+                      viewModel.activeRegion != nil {
+                vb.clearInteractiveRegion()
+                viewModel.activeRegion = nil
+            }
+        }
         // Theme mode re-render hook — see `themeModeRaw` doc above.
         .id(themeModeRaw)
     }
@@ -275,6 +288,7 @@ struct ContentView: View {
                     // pattern for `selectedTool`.
                     .task(id: ObjectIdentifier(vb)) {
                         viewportLayout = .single
+                        viewModel.regionDrawLayoutAvailable = true
                     }
                     // user-review P2#5 (round 2): region refinement is a
                     // single-viewport affordance (N-up panes have no region-
@@ -284,6 +298,7 @@ struct ContentView: View {
                     // in the N-up panes to even show it.  Clear it on the way out,
                     // mirroring the chip's own clear path.
                     .onChange(of: viewportLayout) { _, newLayout in
+                        viewModel.regionDrawLayoutAvailable = (newLayout == .single)
                         if newLayout != .single {
                             // ViewportView owns the sole sceneTime ->
                             // native scrub observer. Leaving Single removes
@@ -342,6 +357,10 @@ struct ContentView: View {
                         // frame, so drive the shared refresh here — the inspector
                         // re-snapshots and the outliner highlight follows.
                         propertyRefresh &+= 1
+                    }
+                    .onChange(of: viewModel.regionDrawRequestEpoch) { _, _ in
+                        guard interacting, viewportLayout == .single else { return }
+                        regionArmed = true
                     }
                 } else {
                     // N-up (§7): TwoH / OnePlusTwo / Quad.
@@ -521,10 +540,12 @@ struct ContentView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Design brief A4 region-of-interest toggle.  Three visual
-    /// states: dimmed "REGION" (off), accent "REGION · armed" (next
-    /// drag draws a box), warn "REGION ×" (a region is active —
-    /// click clears it).  Disabled + explained via `.help` when the
+    /// Design brief A4 region-of-interest action. Three visual states:
+    /// dimmed "▧ Draw Region" (off), accent "▧ Cancel Draw" while the
+    /// viewport is waiting for a drag, and warn "▧ Region active ×"
+    /// once a box is active. The internal state remains `regionArmed`,
+    /// but product copy tells the user the available action instead of
+    /// exposing that state-machine term. Disabled + explained via `.help` when the
     /// active interactive rasterizer doesn't honor regions at all.
     private func regionChip(_ vb: RISEViewportBridge) -> some View {
         let honored = vb.interactiveRasterizerHonorsRegion()
@@ -532,7 +553,7 @@ struct ContentView: View {
         // while a production render owns the viewport can't lead
         // anywhere (pointer events are dropped by ViewportView's own
         // `interactionEnabled` guard while a render is in flight),
-        // and would otherwise leave a "REGION · armed" chip stuck
+        // and would otherwise leave a "Cancel Draw" chip stuck
         // with no drag ever able to consume it.
         // user-review P2#5: N-up panes have no region-drag gesture, so
         // arming a region there would strand the chip at "· armed" with no
@@ -541,35 +562,41 @@ struct ContentView: View {
         let singleViewport = ( viewportLayout == .single )
         let usable = honored && interacting && singleViewport
         let active = viewModel.activeRegion != nil
-        let text = active ? "REGION ×" : (regionArmed ? "REGION · armed" : "REGION")
-        let color: Color = active ? Theme.warn : (regionArmed ? Theme.accent : Theme.textFaint)
-        return Text(text)
-            .font(Theme.mono(10))
-            .foregroundColor(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(color.opacity(0.4), lineWidth: 1)
-            )
-            .contentShape(Rectangle())
-            .opacity(usable ? 1.0 : 0.4)
-            .onTapGesture {
-                guard usable else { return }
-                if active {
+        let text = regionArmed ? "▧ Cancel Draw" : (active ? "▧ Region active ×" : "▧ Draw Region")
+        let color: Color = regionArmed ? Theme.accent : (active ? Theme.warn : Theme.textFaint)
+        return Button {
+                if regionArmed {
+                    regionArmed = false
+                } else if active {
                     vb.clearInteractiveRegion()
                     viewModel.activeRegion = nil
-                    regionArmed = false
                 } else {
-                    regionArmed.toggle()
+                    regionArmed = true
                 }
+            } label: {
+                Text(text)
+                    .font(Theme.mono(10))
+                    .foregroundColor(color)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(color.opacity(0.4), lineWidth: 1)
+                    )
             }
+            .buttonStyle(.plain)
+            .disabled(!usable)
+            .accessibilityLabel(regionArmed ? "Cancel drawing render region"
+                                : (active ? "Clear active render region" : "Draw render region"))
+            .opacity(usable ? 1.0 : 0.4)
             .help(!honored
                   ? "The active integrator ignores regions"
                   : (!singleViewport
                      ? "Region refinement is available in the single viewport"
                      : (interacting
-                        ? "Toggle region refinement — drag in the viewport to draw a box"
+                        ? (regionArmed
+                           ? "Cancel drawing the render region"
+                           : "Draw a region to focus interactive refinement")
                         : "Unavailable while a render is in flight")))
     }
 

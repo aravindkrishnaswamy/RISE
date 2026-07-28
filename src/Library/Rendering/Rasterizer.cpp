@@ -59,6 +59,9 @@ Rasterizer::~Rasterizer( )
 
 int Rasterizer::HowManyThreadsToSpawn() const
 {
+	if( mForTestThreadCountOverride > 0 ) {
+		return mForTestThreadCountOverride;
+	}
 	// Thread count derives from CPU topology AND user overrides.
 	// ComputeRenderPoolSize already honours force_number_of_threads
 	// and maximum_thread_count, so caller dispatch count aligns with

@@ -179,11 +179,12 @@ void RISE::Implementation::CollectFirstHitAOVs(
 	IRayCaster& caster,
 	AOVBuffers& aovBuffers,
 	unsigned int samplesPerPixel,
-	OidnPrefilter prefilterMode
+	OidnPrefilter prefilterMode,
+	const Rect* region
 	)
 {
 	CollectFirstHitAOVRows( scene, caster, aovBuffers, aovBuffers.MissingPlan(),
-		0, 1, samplesPerPixel, prefilterMode );
+		0, 1, samplesPerPixel, prefilterMode, region );
 }
 
 void RISE::Implementation::CollectFirstHitAOVRows(
@@ -194,7 +195,8 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 	unsigned int firstRow,
 	unsigned int rowStride,
 	unsigned int samplesPerPixel,
-	OidnPrefilter prefilterMode
+	OidnPrefilter prefilterMode,
+	const Rect* region
 	)
 {
 	const ICamera* pCamera = scene.GetCamera();
@@ -206,6 +208,16 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 	const unsigned int height = pFilm->GetHeight();
 	if( width != aovBuffers.GetWidth() || height != aovBuffers.GetHeight() ) return;
 	if( !selected.Any() || firstRow >= height || rowStride == 0 ) return;
+	if( width == 0 || height == 0 ) return;
+	unsigned int startX = 0, startY = 0, endX = width-1, endY = height-1;
+	if( region ) {
+		if( region->left > region->right || region->top > region->bottom
+			|| region->left >= width || region->top >= height ) return;
+		startX = region->left;
+		startY = region->top;
+		endX = r_min( region->right, width-1 );
+		endY = r_min( region->bottom, height-1 );
+	}
 	if( samplesPerPixel == 0 ) samplesPerPixel = 1;
 	const AOVBuffers::Plan missing = selected;
 	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
@@ -213,11 +225,12 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 
 	GlobalThreadPool().ParallelFor( rowCount, [&]( unsigned int row ) {
 		const unsigned int y = firstRow + row * rowStride;
+		if( y < startY || y > endY ) return;
 		static thread_local RandomNumberGenerator tl_rng;
 		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
 		rc.aovPrefilterMode = prefilterMode;
 
-		for( unsigned int x = 0; x < width; ++x ) {
+		for( unsigned int x = startX; x <= endX; ++x ) {
 			for( unsigned int s = 0; s < samplesPerPixel; ++s ) {
 				const Point2 ptOnScreen(
 					static_cast<Scalar>( x ) + tl_rng.CanonicalRandom(),

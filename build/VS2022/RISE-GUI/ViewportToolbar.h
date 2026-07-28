@@ -153,6 +153,9 @@ public slots:
     /// style gate (a production render must not leave the toolbar
     /// showing "armed" for a drag that can no longer land).
     void cancelRegionArm();
+    /// Enter the same one-shot Draw Region mode as clicking the toolbar
+    /// action. Used by the Render-menu shortcut.
+    void beginRegionDraw();
 
 private slots:
     void onToolButtonClicked();

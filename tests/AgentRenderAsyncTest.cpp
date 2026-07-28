@@ -4657,7 +4657,9 @@ static void RunAgentRenderRestoresPersistentCallbackRedProveTest()
 
 // (z5) The legacy RequestProductionRender entry point pauses and restarts
 // only the interactive loop.  It must not call full Stop(), which also
-// retires the dedicated agent-render worker permanently.
+// retires the dedicated agent-render worker permanently.  A viewport-only
+// region must survive the ordinary FULL-FRAME production render so the user
+// does not have to redraw the focus box afterward.
 static void RunLegacyProductionPreservesAgentWorkerTest()
 {
 	std::printf( "=== AgentRenderAsyncTest: (z5) legacy production render preserves the agent worker ===\n" );
@@ -4670,8 +4672,25 @@ static void RunLegacyProductionPreservesAgentWorkerTest()
 
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
 	controller.Start( /*suppressInitialRender=*/true );
+	controller.SetInteractiveRegion( 3, 4, 10, 12 );
 	Check( controller.RequestProductionRender(),
 	       "legacy RequestProductionRender completes successfully (z5)" );
+	unsigned int left = 0, top = 0, right = 0, bottom = 0;
+	Check( controller.GetInteractiveRegion( left, top, right, bottom ),
+	       "MONEY (z5): ordinary production preserves the viewport region" );
+	Check( left == 3 && top == 4 && right == 10 && bottom == 12,
+	       "MONEY (z5): preserved viewport-region bounds are byte-for-byte unchanged" );
+	Check( controller.SubmitProductionRenderSync(
+		       [] {}, String( "region-preservation-production" ), nullptr, 2000 ),
+	       "MONEY (z5): composed production submission completes with a region active" );
+	left = top = right = bottom = 0;
+	Check( controller.GetInteractiveRegion( left, top, right, bottom )
+	    && left == 3 && top == 4 && right == 10 && bottom == 12,
+	       "MONEY (z5): composed production preserves the exact viewport-region bounds" );
+	Check( !pJob->RasterizeRegion( 30, 0, 40, 10 ),
+	       "MONEY (z5): a wholly out-of-film regional final is rejected instead of remapped" );
+	Check( !pJob->RasterizeRegion( 10, 10, 9, 12 ),
+	       "MONEY (z5): inverted regional-final bounds are rejected" );
 	Check( controller.SubmitAgentRenderSync(
 		       [] {}, String( "post-legacy-production" ), nullptr, 2000 ),
 	       "MONEY (z5): agent-render worker still accepts work after legacy production" );

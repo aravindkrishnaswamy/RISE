@@ -561,10 +561,26 @@ final class RenderViewModel: ObservableObject {
     /// `refinementPollTimer` cadence as `refinementPhase` below, and
     /// updated immediately (bypassing the poll) by ViewportView right
     /// after a region drag commits, for instant UI feedback.  The
-    /// core auto-clears the region before any production render;
+    /// core preserves the viewport region across production work;
     /// this poll picks that up within 0.5s like every other
     /// refinement-status field.
     @Published var activeRegion: CGRect? = nil
+    /// Menu/shortcut pulse consumed by ContentView, which owns the local
+    /// one-shot draw-mode binding used by ViewportView.
+    @Published var regionDrawRequestEpoch: UInt = 0
+    /// ContentView owns the viewport layout; mirroring only this boolean lets
+    /// app-menu commands stay disabled while the single viewport is unmounted.
+    @Published var regionDrawLayoutAvailable = true
+
+    var canRequestRegionDraw: Bool {
+        canUseSceneTransport && regionDrawLayoutAvailable
+            && (viewportBridge?.interactiveRasterizerHonorsRegion() ?? false)
+    }
+
+    func requestRegionDraw() {
+        guard canRequestRegionDraw else { return }
+        regionDrawRequestEpoch &+= 1
+    }
     /// Mirrors `RISEViewportBridge.undoActionLabel()` / `redoActionLabel()`
     /// — kept as published state (rather than a computed passthrough) so
     /// the Edit-menu item titles update reliably off the same poll that
@@ -1139,6 +1155,7 @@ final class RenderViewModel: ObservableObject {
     /// retention) is identical to a normal file open by design, so the
     /// agent edits an ordinary live scene.
     func loadScene(at path: String, untitled: Bool = false) {
+        isRegionProductionRender = false
         if !untitled {
             addToRecentFiles(path)
             // A NORMAL open must never inherit a stale create-prompt: if a
@@ -1206,6 +1223,13 @@ final class RenderViewModel: ObservableObject {
                         // Drop any frame not from the CURRENT bridge.
                         guard let self = self, let vb = vb,
                               self.viewportBridge === vb else { return }
+                        // This callback is the authoritative signal that a
+                        // live interactive frame actually replaced the held
+                        // production result. A timer/phase poll can miss a
+                        // fast frame or clear the identity before pixels land.
+                        if self.isRegionProductionRender && self.renderState == .completed {
+                            self.isRegionProductionRender = false
+                        }
                         self.renderedImage = image
                     }
                     // N-up (RENDER_MODES.md §7): panes 1-3's image
@@ -1298,6 +1322,24 @@ final class RenderViewModel: ObservableObject {
     }
 
     func startRender() {
+        startStillRender(region: nil)
+    }
+
+    /// Explicit production render of the current interactive region. The
+    /// ordinary startRender() path above remains full-frame even while a
+    /// viewport region is active.
+    func startActiveRegionRender() {
+        guard bridge.productionRasterizerHonorsRegion(),
+              let region = activeRegion, region.width >= 1, region.height >= 1 else { return }
+        startStillRender(region: region)
+    }
+
+    var canRenderActiveRegion: Bool {
+        canStartProductionRender && activeRegion != nil
+            && bridge.productionRasterizerHonorsRegion()
+    }
+
+    private func startStillRender(region: CGRect?) {
         guard renderState == .sceneLoaded || renderState == .completed
               || renderState == .cancelled else { return }
 
@@ -1336,13 +1378,21 @@ final class RenderViewModel: ObservableObject {
         // bridge is attached (no controller, no scrubs possible).
         let canonicalSceneTime = viewportBridge?.lastSceneTime() ?? sceneTime
 
+        isRegionProductionRender = (region != nil)
         renderState = .rendering
         progress = 0.0
         cancelFlag.value = false
         resetProductionPauseState()
-        renderedImage = nil
-        panePreviewImages = [:]
-        imageBuffer.reset()
+        // Keep the current display visible until the first regional-production
+        // callback arrives, avoiding a needless preflight flash. The production
+        // rasterizer still owns untouched-pixel semantics; this does not merge
+        // the interactive buffer into the final output. A normal final starts
+        // from a clean frame immediately.
+        if region == nil {
+            renderedImage = nil
+            panePreviewImages = [:]
+            imageBuffer.reset()
+        }
         elapsedTime = 0
         remainingTime = nil
         renderStartTime = Date()
@@ -1462,8 +1512,20 @@ final class RenderViewModel: ObservableObject {
         }
 
         let bridgeRef = bridge
+        let capturedRegion = region
         renderTask = Task.detached { [weak self] in
-            let success = bridgeRef.rasterize(atSceneTime: canonicalSceneTime)
+            let success: Bool
+            if let r = capturedRegion {
+                let left = UInt32(max(0, Int(r.minX)))
+                let top = UInt32(max(0, Int(r.minY)))
+                let right = UInt32(max(Int(r.minX), Int(r.maxX) - 1))
+                let bottom = UInt32(max(Int(r.minY), Int(r.maxY) - 1))
+                success = bridgeRef.rasterizeRegionLeft(
+                    left, top: top, right: right, bottom: bottom,
+                    atSceneTime: canonicalSceneTime)
+            } else {
+                success = bridgeRef.rasterize(atSceneTime: canonicalSceneTime)
+            }
 
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
@@ -1510,7 +1572,9 @@ final class RenderViewModel: ObservableObject {
                 } else {
                     self.resolvedIntegrator = nil
                     self.resolveReason = nil
-                    self.renderState = .error("Rasterization failed")
+                    self.renderState = .error(capturedRegion == nil
+                        ? "Rasterization failed"
+                        : "Region rasterization failed")
                 }
 
                 // Production render is done (success / cancel / error).
@@ -1544,6 +1608,7 @@ final class RenderViewModel: ObservableObject {
         chat.productionRenderStarting()
         viewportBridge?.stop()
 
+        isRegionProductionRender = false
         renderState = .rendering
         progress = 0.0
         cancelFlag.value = false
@@ -1724,6 +1789,10 @@ final class RenderViewModel: ObservableObject {
     /// TRUE while the in-flight production render is paused (workers
     /// parked at the bridge's pause gate; partial image stays up).
     @Published var isProductionRenderPaused = false
+    /// Identity of the current/most-recent still production result. It remains
+    /// true through completion/cancel/error so a fast regional final and its
+    /// saved result never become indistinguishable from a full-frame final.
+    @Published var isRegionProductionRender = false
 
     /// Wall-clock spent paused this render — subtracted from the
     /// elapsed-time display so the readout reflects actual work time.
@@ -1876,9 +1945,9 @@ final class RenderViewModel: ObservableObject {
         if viewportXray != engineXray { viewportXray = engineXray }
 
         // Design brief A4 — mirror the active region (full-res
-        // film-pixel space).  The core clears this automatically
-        // before any production render, so this poll is also how the
-        // UI notices that auto-clear rather than going stale.
+        // film-pixel space). The core preserves it across production
+        // work, so this poll also keeps shell state
+        // synchronized when another caller changes or clears it.
         var left: UInt32 = 0, top: UInt32 = 0, right: UInt32 = 0, bottom: UInt32 = 0
         if vb.getInteractiveRegionLeft(&left, top: &top, right: &right, bottom: &bottom) {
             // `right`/`bottom` are INCLUSIVE (see RISEViewportBridge.h)
@@ -2778,6 +2847,7 @@ final class RenderViewModel: ObservableObject {
         viewportBridge = nil
         sceneTime = 0
         bridge.clearAll()
+        isRegionProductionRender = false
         renderState = .idle
         renderedImage = nil
         panePreviewImages = [:]

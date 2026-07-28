@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <vector>
+#include "../Interfaces/IRasterImage.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/OidnConfig.h"
@@ -207,7 +208,8 @@ namespace RISE
 			IRayCaster& caster,
 			AOVBuffers& aovBuffers,
 			unsigned int samplesPerPixel = 1,
-			OidnPrefilter prefilterMode = OidnPrefilter::Fast
+			OidnPrefilter prefilterMode = OidnPrefilter::Fast,
+			const Rect* region = 0
 			);
 
 		/// Row-subset form used by interlaced animation fallback. `selected`
@@ -221,7 +223,8 @@ namespace RISE
 			unsigned int firstRow,
 			unsigned int rowStride,
 			unsigned int samplesPerPixel = 1,
-			OidnPrefilter prefilterMode = OidnPrefilter::Fast
+			OidnPrefilter prefilterMode = OidnPrefilter::Fast,
+			const Rect* region = 0
 			);
 	}
 }

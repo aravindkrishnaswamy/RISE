@@ -89,7 +89,8 @@ namespace RISE
 			//! After rendering: resolves accumulated contributions into the final image.
 			//! Each pixel's value is colorSum / weightSum.
 			void Resolve(
-				IRasterImage& target					///< [out] Target image to receive resolved result
+				IRasterImage& target,					///< [out] Target image to receive resolved result
+				const Rect* region = 0					///< [in] Optional inclusive write region
 				) const;
 
 			//! Subtracts previously resolved values from the image (inverse of Resolve).

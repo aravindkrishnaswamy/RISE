@@ -81,7 +81,8 @@ namespace
 		IRasterImage& imageInOut,
 		const IRasterImage& accum,
 		const Scalar accumWeight,
-		const Scalar finalWeight
+		const Scalar finalWeight,
+		const Rect* region
 		)
 	{
 		const Scalar totalWeight = accumWeight + finalWeight;
@@ -91,8 +92,18 @@ namespace
 		const Scalar invTotal = static_cast<Scalar>( 1.0 ) / totalWeight;
 		const unsigned int w = imageInOut.GetWidth();
 		const unsigned int h = imageInOut.GetHeight();
-		for( unsigned int y = 0; y < h; y++ ) {
-			for( unsigned int x = 0; x < w; x++ ) {
+		if( w == 0 || h == 0 ) return;
+		unsigned int startX = 0, startY = 0, endX = w - 1, endY = h - 1;
+		if( region ) {
+			if( region->left > region->right || region->top > region->bottom ||
+				region->left >= w || region->top >= h ) return;
+			startX = region->left;
+			startY = region->top;
+			endX = r_min( region->right, w - 1 );
+			endY = r_min( region->bottom, h - 1 );
+		}
+		for( unsigned int y = startY; y <= endY; y++ ) {
+			for( unsigned int x = startX; x <= endX; x++ ) {
 				const RISEColor accumPixel = accum.GetPEL( x, y );
 				RISEColor finalPixel = imageInOut.GetPEL( x, y );
 				finalPixel.base[0] = ( accumPixel.base[0] + finalWeight * finalPixel.base[0] ) * invTotal;
@@ -124,7 +135,8 @@ namespace
 	inline Scalar ComputeCoarseImageDeltaRMSE(
 		const IRasterImage& a,
 		const IRasterImage& b,
-		const unsigned int coarseResolution
+		const unsigned int coarseResolution,
+		const Rect* region
 		)
 	{
 		const unsigned int w = a.GetWidth();
@@ -132,21 +144,32 @@ namespace
 		if( w == 0 || h == 0 ) {
 			return 0;
 		}
+		unsigned int startX = 0, startY = 0, endX = w - 1, endY = h - 1;
+		if( region ) {
+			if( region->left > region->right || region->top > region->bottom ||
+				region->left >= w || region->top >= h ) return 0;
+			startX = region->left;
+			startY = region->top;
+			endX = r_min( region->right, w - 1 );
+			endY = r_min( region->bottom, h - 1 );
+		}
+		const unsigned int regionWidth = endX - startX + 1;
+		const unsigned int regionHeight = endY - startY + 1;
 
-		const unsigned int binsX = r_min( coarseResolution, w );
-		const unsigned int binsY = r_min( coarseResolution, h );
+		const unsigned int binsX = r_min( coarseResolution, regionWidth );
+		const unsigned int binsY = r_min( coarseResolution, regionHeight );
 
 		Scalar error = 0;
 		size_t samples = 0;
 		for( unsigned int by = 0; by < binsY; by++ )
 		{
-			const unsigned int y0 = (by * h) / binsY;
-			const unsigned int y1 = ((by + 1) * h) / binsY;
+			const unsigned int y0 = startY + (by * regionHeight) / binsY;
+			const unsigned int y1 = startY + ((by + 1) * regionHeight) / binsY;
 
 			for( unsigned int bx = 0; bx < binsX; bx++ )
 			{
-				const unsigned int x0 = (bx * w) / binsX;
-				const unsigned int x1 = ((bx + 1) * w) / binsX;
+				const unsigned int x0 = startX + (bx * regionWidth) / binsX;
+				const unsigned int x1 = startX + ((bx + 1) * regionWidth) / binsX;
 
 				Scalar accumA[3] = { 0, 0, 0 };
 				Scalar accumB[3] = { 0, 0, 0 };
@@ -316,6 +339,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	const IFilm* pFilm = pScene.GetFilm();
 	const unsigned int width = pFilm->GetWidth();
 	const unsigned int height = pFilm->GetHeight();
+	ConfigureSplatRegion( pRect, width, height );
 
 	// Training can cast probe rays to estimate incident radiance,
 	// so the ray caster needs the scene attached before training starts.
@@ -437,6 +461,10 @@ void BDPTRasterizerBase::RasterizeScene(
 		// Run training iterations
 			for( unsigned int trainIter = 0; trainIter < guidingConfig.trainingIterations; trainIter++ )
 			{
+				// Each temporary training image has its own splat film and sample
+				// divisor. Adaptive counters from prior iterations must not dilute
+				// this iteration's resolve.
+				mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 				pIntegrator->ResetGuidingTrainingStats();
 				pGuidingField->BeginTrainingIteration();
 				if( pLightGuidingField ) {
@@ -486,7 +514,10 @@ void BDPTRasterizerBase::RasterizeScene(
 				safe_release( pTrainBlocks );
 			}
 
-				pTrainSplat->Resolve( *pTrainImage, mSplatTotalSamples );
+				pTrainSplat->Resolve(
+					*pTrainImage,
+					GetEffectiveSplatSPP( width, height ),
+					ActiveSplatRegion() );
 
 				// Müller 2017 §5 combine: every training iteration's
 				// rendered pixels are added to the final image weighted
@@ -518,7 +549,8 @@ void BDPTRasterizerBase::RasterizeScene(
 					coarseImageDelta = ComputeCoarseImageDeltaRMSE(
 						*pPreviousTrainingImage,
 						*pTrainImage,
-						kTrainingConvergenceGridResolution );
+						kTrainingConvergenceGridResolution,
+						pRect );
 
 					GlobalLog()->PrintEx( eLog_Info,
 						"PathGuidingField:: BDPT training iteration %u coarse image delta %.6f (%ux%u RMSE)",
@@ -552,8 +584,7 @@ void BDPTRasterizerBase::RasterizeScene(
 			}
 
 			const Scalar cameraSamples =
-				static_cast<Scalar>( width ) *
-				static_cast<Scalar>( height ) *
+				static_cast<Scalar>( RegionalPixelCount( width, height, pRect ) ) *
 				static_cast<Scalar>( currentTrainingSPP ) *
 				GetSplatSampleScale();
 				const size_t positiveSamples = pGuidingField->GetLastAddedSurfaceSampleCount();
@@ -792,6 +823,7 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 
 		// Restore splat total samples for main render
+		mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 		mSplatTotalSamples = 1.0;
 		if( pSampling ) {
 			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
@@ -998,7 +1030,7 @@ void BDPTRasterizerBase::RasterizeScene(
 					// the post-Resolve image, not a torn half-resolved
 					// one.
 					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
+					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
@@ -1010,8 +1042,10 @@ void BDPTRasterizerBase::RasterizeScene(
 
 				// Convergence check runs with preview — keeps the two
 				// serial O(W×H) loops on the same cadence.
-				const unsigned int doneCount = progFilm.CountDone( totalSPP );
-				if( doneCount >= width * height ) {
+				const uint64_t doneCount = progFilm.CountDone( totalSPP, pRect );
+				const uint64_t renderPixelCount =
+					static_cast<uint64_t>( renderPixelsX ) * renderPixelsY;
+				if( doneCount >= renderPixelCount ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"BDPT Progressive:: All pixels complete after pass %u/%u",
 						passIdx+1, numPasses );
@@ -1119,7 +1153,8 @@ void BDPTRasterizerBase::RasterizeScene(
 				*pImage,
 				*pCombineAccum,
 				combineAccumWeight,
-				finalWeight );
+				finalWeight,
+				pRect );
 			safe_release( pCombineAccum );
 		}
 #endif
@@ -1143,9 +1178,9 @@ void BDPTRasterizerBase::RasterizeScene(
 #endif
 		if( pAOVBuffers->NeedsFallback() ) {
 			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
-				mDenoisingPrefilter );
+				mDenoisingPrefilter, pRect );
 		}
-		PropagateAOVsToFrameStore_( *pAOVBuffers );
+		PropagateAOVsToFrameStore_( *pAOVBuffers, pRect );
 		// Depth has been copied into FrameStore; OIDN consumes only the two
 		// guide planes. Release before denoise/output and sidecar compaction.
 		pAOVBuffers->ReleaseDepthStorage();
@@ -1174,7 +1209,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	if( pFilteredFilm && !bWillDenoise && !GetAdaptiveShowMap() ) {
 		// L6e-1.1 — bracket the full-image filter resolve via RAII.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-		pFilteredFilm->Resolve( *pImage );
+		pFilteredFilm->Resolve( *pImage, pRect );
 	}
 
 	if( bWillDenoise ) {
@@ -1193,12 +1228,12 @@ void BDPTRasterizerBase::RasterizeScene(
 		const Scalar splatSpp = GetEffectiveSplatSPP( width, height );
 		{
 			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			pSplatFilm->Resolve( *pImage, splatSpp );
+			pSplatFilm->Resolve( *pImage, splatSpp, ActiveSplatRegion() );
 		}
 		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
 		{
 			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			pSplatFilm->Unresolve( *pImage, splatSpp );
+			pSplatFilm->Unresolve( *pImage, splatSpp, ActiveSplatRegion() );
 		}
 	}
 
@@ -1223,9 +1258,16 @@ void BDPTRasterizerBase::RasterizeScene(
 		// OOM in scratch buffers); RAII unwinds correctly in that
 		// case.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-			mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-			GetRenderElapsedSeconds() );
+		if( pRect ) {
+			mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
+				pRect->left, pRect->top, pRect->right, pRect->bottom,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				GetRenderElapsedSeconds() );
+		} else {
+			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				GetRenderElapsedSeconds() );
+		}
 	}
 #endif
 
@@ -1241,7 +1283,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	if( !GetAdaptiveShowMap() ) {
 		// L6e-1.1 — bracket the full-image splat resolve via RAII.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-		pSplatFilm->Resolve( *pImage, GetEffectiveSplatSPP( width, height ) );
+		pSplatFilm->Resolve(
+			*pImage,
+			GetEffectiveSplatSPP( width, height ),
+			ActiveSplatRegion() );
 	}
 
 #ifdef RISE_ENABLE_OPENPGL

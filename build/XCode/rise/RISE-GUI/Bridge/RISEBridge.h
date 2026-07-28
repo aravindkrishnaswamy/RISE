@@ -184,6 +184,21 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
                       right:(uint32_t)right
                      bottom:(uint32_t)bottom;
 
+/// Rasterizes a specific region at `t`. The full SetSceneTime, including
+/// photon-map regeneration, runs inside the production-render coordinator
+/// before the captured inclusive region is rendered. This is the explicit
+/// "Render Active Region" production path; ordinary `rasterizeAtSceneTime:`
+/// remains full-frame. BLOCKING -- call from a background thread.
+- (BOOL)rasterizeRegionLeft:(uint32_t)left
+                        top:(uint32_t)top
+                      right:(uint32_t)right
+                     bottom:(uint32_t)bottom
+                atSceneTime:(double)t;
+
+/// Whether the active production rasterizer honors RasterizeRegion. MLT
+/// returns NO because clipping its global mutation chain is invalid.
+- (BOOL)productionRasterizerHonorsRegion;
+
 #pragma mark - Live exposure scrubbing & multi-format Save-As (L4b)
 
 /// Set the view exposure compensation in EV stops.  Updates the

@@ -86,7 +86,8 @@ void FilteredFilm::Splat(
 }
 
 void FilteredFilm::Resolve(
-	IRasterImage& target
+	IRasterImage& target,
+	const Rect* region
 	) const
 {
 	// XYZ -> RISEPel conversion happens here, exactly once per pixel.
@@ -103,8 +104,18 @@ void FilteredFilm::Resolve(
 	// physically-grounded scenes — that path was eliminated by the
 	// Stage A colour-space migration (`IntegratorXYZto*` no longer
 	// exists).
-	for( unsigned int y=0; y<height; y++ ) {
-		for( unsigned int x=0; x<width; x++ ) {
+	unsigned int startX = 0, startY = 0, endX = width ? width-1 : 0, endY = height ? height-1 : 0;
+	if( width == 0 || height == 0 ) return;
+	if( region ) {
+		if( region->left > region->right || region->top > region->bottom
+			|| region->left >= width || region->top >= height ) return;
+		startX = region->left;
+		startY = region->top;
+		endX = r_min( region->right, width-1 );
+		endY = r_min( region->bottom, height-1 );
+	}
+	for( unsigned int y=startY; y<=endY; y++ ) {
+		for( unsigned int x=startX; x<=endX; x++ ) {
 			const FilteredPixel& pixel = pixels[y * width + x];
 
 			if( fabs(pixel.weightSum) > 1e-10 ) {

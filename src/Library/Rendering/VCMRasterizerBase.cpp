@@ -324,7 +324,7 @@ namespace
 // merging per-thread segLens arrays and this pre-pass is only ~1%
 // of total time).
 //////////////////////////////////////////////////////////////////////
-void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRect*/ ) const
+void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 {
 	if( !pIntegrator || !pLightVertexStore ) {
 		return;
@@ -360,6 +360,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	const IFilm* pFilm = pScene.GetFilm();
 	const unsigned int width = pFilm->GetWidth();
 	const unsigned int height = pFilm->GetHeight();
+	ConfigureSplatRegion( pRect, width, height );
 
 	// PreRenderSetup runs ONE light pass to populate the photon
 	// store used by VM merging.  The t=1 splat strategy is handled
@@ -896,7 +897,7 @@ void VCMRasterizerBase::FlushToOutputs( const IRasterImage& img, const Rect* rcR
 	if( !GetAdaptiveShowMap() ) {
 		const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
 		FrameStoreBulkBracket bracket( mFrameStore, target );
-		pSplatFilm->Resolve( target, splatSpp );
+		pSplatFilm->Resolve( target, splatSpp, ActiveSplatRegion() );
 	}
 	PixelBasedRasterizerHelper::FlushToOutputs( target, rcRegion, frame );
 }
@@ -927,12 +928,12 @@ void VCMRasterizerBase::FlushPreDenoisedToOutputs( const IRasterImage& img, cons
 	const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
 	{
 		FrameStoreBulkBracket bracket( mFrameStore, target );
-		pSplatFilm->Resolve( target, splatSpp );
+		pSplatFilm->Resolve( target, splatSpp, ActiveSplatRegion() );
 	}
 	PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( target, rcRegion, frame );
 	{
 		FrameStoreBulkBracket bracket( mFrameStore, target );
-		pSplatFilm->Unresolve( target, splatSpp );
+		pSplatFilm->Unresolve( target, splatSpp, ActiveSplatRegion() );
 	}
 }
 
@@ -958,7 +959,7 @@ void VCMRasterizerBase::FlushDenoisedToOutputs( const IRasterImage& img, const R
 	if( !GetAdaptiveShowMap() ) {
 		const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
 		FrameStoreBulkBracket bracket( mFrameStore, target );
-		pSplatFilm->Resolve( target, splatSpp );
+		pSplatFilm->Resolve( target, splatSpp, ActiveSplatRegion() );
 	}
 	PixelBasedRasterizerHelper::FlushDenoisedToOutputs( target, rcRegion, frame );
 }

@@ -95,6 +95,14 @@ signals:
     /// arm/drag in progress; the toolbar's cancelRegionArm() is a
     /// no-op in that case.
     void regionArmCancelled();
+    /// One-shot draw gesture ended (valid region or rejected tiny click).
+    /// The toolbar uses this explicit edge to disarm without confusing an
+    /// already-active region with completion of a newly-requested redraw.
+    void regionDrawFinished();
+    /// Emitted whenever the controller's active-region presence or bounds
+    /// change, including changes made by non-widget callers. MainWindow uses
+    /// it to keep Draw/Render Active Region menu enablement truthful.
+    void regionStateChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -162,6 +170,7 @@ private:
     bool    handleNavClick(const QPointF& widgetPos, unsigned int pane);   // true == consumed
     void    paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface);
     void    cancelRegionDrag();
+    QRectF  activeRegionWidgetRect(const QRect& drawRect, const QSize& surface) const;
 
     ViewportBridge*  m_bridge = nullptr;
     QImage           m_image;
@@ -175,6 +184,15 @@ private:
     bool    m_regionDragging = false;
     QPointF m_regionDragStart;      // widget-local coords
     QPointF m_regionDragCurrent;    // widget-local coords
+
+    enum class RegionEditMode {
+        None, Move, TopLeft, Top, TopRight, Right,
+        BottomRight, Bottom, BottomLeft, Left
+    };
+    RegionEditMode m_regionEditMode = RegionEditMode::None;
+    QPointF        m_regionEditStart;
+    QRectF         m_regionEditStartRect;
+    QRectF         m_regionEditRect;
 
     // Set by cancelRegionDrag() when it cancels a drag WHILE the mouse
     // button is still physically down (Escape, or setRegionArmed(false)
@@ -190,6 +208,8 @@ private:
     unsigned int m_regionLeft = 0, m_regionTop = 0, m_regionRight = 0, m_regionBottom = 0;
     QRect        m_regionBadgeRect;     // last-painted badge rect, for click-to-clear hit-testing
     QTimer*      m_regionPollTimer = nullptr;
+
+    RegionEditMode regionEditModeAt(const QPointF& pos) const;
 
     // ==================================================================
     // N-up multi-viewport (docs/gui/RENDER_MODES.md §7).  SINGLE layout

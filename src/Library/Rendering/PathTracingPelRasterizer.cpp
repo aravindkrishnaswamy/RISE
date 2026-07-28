@@ -54,6 +54,8 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	  pDirectCompanionRawImage( 0 ),
 	  mDirectCompanionDenoised( false ),
 	  mDirectCompanionRenderSeconds( 0.0 ),
+	  mDirectCompanionHasRegion( false ),
+	  mDirectCompanionRegion( 0, 0, 0, 0 ),
 	  pSMSPhotonMap( 0 ),
   mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
@@ -149,6 +151,10 @@ void PathTracingPelRasterizer::PreRenderSetup(
 	safe_release( pDirectCompanionRawImage );
 	mDirectCompanionDenoised = false;
 	mDirectCompanionRenderSeconds = 0.0;
+	mDirectCompanionHasRegion = pRect != 0;
+	if( pRect ) {
+		mDirectCompanionRegion = *pRect;
+	}
 
 	if( mCaptureDirectCompanion ) {
 		const IFilm* film = pScene.GetFilm();
@@ -543,11 +549,21 @@ void PathTracingPelRasterizer::PostRenderCleanup() const
 					x, y, pDirectCompanionImage->GetPEL( x, y ) );
 			}
 		}
-		mDenoiser->ApplyDenoise(
-			*pDirectCompanionImage, *pAOVBuffers,
-			pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
-			mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-			mDirectCompanionRenderSeconds );
+		if( mDirectCompanionHasRegion ) {
+			mDenoiser->ApplyDenoiseRegion(
+				*pDirectCompanionImage, *pAOVBuffers,
+				pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
+				mDirectCompanionRegion.left, mDirectCompanionRegion.top,
+				mDirectCompanionRegion.right, mDirectCompanionRegion.bottom,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				mDirectCompanionRenderSeconds );
+		} else {
+			mDenoiser->ApplyDenoise(
+				*pDirectCompanionImage, *pAOVBuffers,
+				pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				mDirectCompanionRenderSeconds );
+		}
 		mDirectCompanionDenoised = true;
 	}
 #endif

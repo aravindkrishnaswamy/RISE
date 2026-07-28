@@ -1489,6 +1489,24 @@ private:
                         top:(uint32_t)top
                       right:(uint32_t)right
                      bottom:(uint32_t)bottom {
+    ViewportControllerLease lease(
+        _viewportController, _viewportControllerRequired,
+        _viewportControllerUsers, _viewportControllerMutex,
+        _viewportControllerCV );
+    if( !lease.CanProceed() ) return NO;
+
+    const double sceneTime = lease.Controller()
+        ? static_cast<double>(lease.Controller()->LastSceneTime())
+        : 0.0;
+    return [self rasterizeRegionLeft:left top:top right:right bottom:bottom
+                          atSceneTime:sceneTime];
+}
+
+- (BOOL)rasterizeRegionLeft:(uint32_t)left
+                        top:(uint32_t)top
+                      right:(uint32_t)right
+                     bottom:(uint32_t)bottom
+                atSceneTime:(double)t {
     if (!_job) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
@@ -1497,17 +1515,27 @@ private:
     if( !lease.CanProceed() ) return NO;
 
     IJobPriv* job = _job;
+    const Scalar sceneTime = static_cast<Scalar>(t);
     return RunProductionRenderThroughController(
         _job, lease.Controller(), String("gui_rasterize_region"), _progressCallback,
-        [self, job, left, top, right, bottom]() -> BOOL {
+        [self, job, left, top, right, bottom, sceneTime]() -> BOOL {
             IRasterizer* rasterizer = job->GetRasterizer();
             if (rasterizer) {
                 rasterizer->FreeRasterizerOutputs();
                 self->_productionVFSAttachedToRasterizer = NO;
             }
             [self ensureVFSAttachedToRasterizer:rasterizer];
+            if (IScenePriv* scene = job->GetScene()) {
+                scene->SetSceneTime(sceneTime);
+            }
             return job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
         });
+}
+
+- (BOOL)productionRasterizerHonorsRegion {
+    if (!_job) return NO;
+    IRasterizer* rasterizer = _job->GetRasterizer();
+    return rasterizer && rasterizer->HonorsRegion() ? YES : NO;
 }
 
 #pragma mark - Render-time ETA estimator
