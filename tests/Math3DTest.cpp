@@ -1,7 +1,11 @@
 #include <iostream>
+#ifdef NDEBUG
+#undef NDEBUG  // This standalone test relies on assert in Release builds too.
+#endif
 #include <cassert>
 #include <cmath>
 #include "../src/Library/Utilities/Math3D/Math3D.h"
+#include "../src/Library/Cameras/CameraTransforms.h"
 
 using namespace RISE;
 
@@ -374,12 +378,75 @@ void TestMatrix4Ops() {
     assert(IsClose(rp._22, 1.0, 1e-6));
     assert(IsClose(rp._01, 0.0, 1e-6));
 
+    // Rodrigues must agree with the cardinal-axis helpers.  The historical
+    // n02/n12 cross-term typo was invisible for +X but made +Z rotations
+    // shear, which the editor's Z and screen-space rotation rings exposed.
+    Matrix4 rz_arb = Matrix4Ops::Rotation(Vector3(0, 0, 1), PI / 2.0);
+    Vector3 rz_arb_x = Vector3Ops::Transform(rz_arb, Vector3(1, 0, 0));
+    assert(Vec3Close(rz_arb_x, Vector3(0, 1, 0), 1e-9));
+    assert(Vec3Close(Vector3Ops::Transform(rz_arb, Vector3(0, 0, 1)),
+                     Vector3(0, 0, 1), 1e-9));
+
+    // A non-cardinal arbitrary-axis rotation is rigid: transformed basis
+    // vectors retain unit length and remain mutually perpendicular.
+    const Vector3 arb_axis = Vector3Ops::Normalize(Vector3(2, -3, 4));
+    const Matrix4 arb_rot = Matrix4Ops::Rotation(arb_axis, 0.83);
+    const Vector3 arb_x = Vector3Ops::Transform(arb_rot, Vector3(1, 0, 0));
+    const Vector3 arb_y = Vector3Ops::Transform(arb_rot, Vector3(0, 1, 0));
+    const Vector3 arb_z = Vector3Ops::Transform(arb_rot, Vector3(0, 0, 1));
+    assert(IsClose(Vector3Ops::Magnitude(arb_x), 1.0, 1e-9));
+    assert(IsClose(Vector3Ops::Magnitude(arb_y), 1.0, 1e-9));
+    assert(IsClose(Vector3Ops::Magnitude(arb_z), 1.0, 1e-9));
+    assert(IsClose(Vector3Ops::Dot(arb_x, arb_y), 0.0, 1e-9));
+    assert(IsClose(Vector3Ops::Dot(arb_x, arb_z), 0.0, 1e-9));
+    assert(IsClose(Vector3Ops::Dot(arb_y, arb_z), 0.0, 1e-9));
+    assert(Vec3Close(Vector3Ops::Transform(arb_rot, arb_axis), arb_axis, 1e-9));
+
     // Stretch
     Matrix4 stretch = Matrix4Ops::Stretch(Vector3(2, 3, 4));
     Vector3 sv = Vector3Ops::Transform(stretch, Vector3(1, 1, 1));
     assert(Vec3Close(sv, Vector3(2, 3, 4)));
 
     std::cout << "Matrix4Ops Passed!" << std::endl;
+}
+
+void TestCameraTransformAxes() {
+    std::cout << "Testing CameraTransforms axis normalization..." << std::endl;
+    using RISE::Implementation::CameraTransforms;
+
+    Point3 p1, p2;
+    Vector3 u1, u2;
+    CameraTransforms::AdjustCameraForThetaPhi(
+        Vector2(0.31, -0.47), Point3(0, 0, 10), Point3(0, 0, 0),
+        Vector3(0, 1, 0), p1, u1);
+    CameraTransforms::AdjustCameraForThetaPhi(
+        Vector2(0.31, -0.47), Point3(0, 0, 10), Point3(0, 0, 0),
+        Vector3(0, 2, 0), p2, u2);
+    assert(Pt3Close(p1, p2, 1e-9));
+    assert(Vec3Close(u1, u2, 1e-9));
+
+    Vector3 f1, f2, o1, o2;
+    CameraTransforms::AdjustCameraForOrientation(
+        Vector3(0, 0, -1), Vector3(0, 1, 0), f1, o1,
+        Vector3(0.2, -0.3, 0.4));
+    CameraTransforms::AdjustCameraForOrientation(
+        Vector3(0, 0, -3), Vector3(0, 2, 0), f2, o2,
+        Vector3(0.2, -0.3, 0.4));
+    assert(Vec3Close(f1, f2, 1e-9));
+    assert(Vec3Close(o1, o2, 1e-9));
+
+    Point3 zeroUpPosition;
+    Vector3 repairedUp;
+    CameraTransforms::AdjustCameraForThetaPhi(
+        Vector2(0.2, 0.4), Point3(0, 0, 10), Point3(0, 0, 0),
+        Vector3(0, 0, 0), zeroUpPosition, repairedUp);
+    assert(IsClose(Vector3Ops::Magnitude(repairedUp), 1.0, 1e-9));
+    assert(IsClose(Point3Ops::Distance(zeroUpPosition, Point3(0, 0, 0)), 10.0, 1e-9));
+    const Vector3 repairedForward = Vector3Ops::Normalize(
+        Vector3Ops::mkVector3(Point3(0, 0, 0), zeroUpPosition));
+    assert(IsClose(Vector3Ops::Dot(repairedForward, repairedUp), 0.0, 1e-9));
+
+    std::cout << "CameraTransforms axis normalization Passed!" << std::endl;
 }
 
 // ==================== Quaternion Tests ====================
@@ -504,6 +571,7 @@ int main() {
     TestPointOps();
     TestMatrix3Ops();
     TestMatrix4Ops();
+    TestCameraTransformAxes();
     TestQuaternionOps();
     TestConstants();
     TestSmoothstep();

@@ -18,6 +18,8 @@
 #include <QCursor>
 #include <QFont>
 #include <QFontMetrics>
+#include <QRegion>
+#include <QLineF>
 #include <QTimer>
 #include <QComboBox>
 #include <QToolButton>
@@ -37,6 +39,7 @@ ViewportWidget::ViewportWidget(ViewportBridge* bridge, QWidget* parent)
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(320, 240);
+    setAccessibleName(tr("Render viewport"));
 
     // RISE UI redesign (A4 region refinement): 500ms poll of the
     // bridge's interactive-region state, independent of who set it.
@@ -76,11 +79,15 @@ void ViewportWidget::changeEvent(QEvent* e)
 
 void ViewportWidget::setImage(const QImage& image)
 {
+    const bool dimensionsChanged = m_image.size() != image.size();
     m_image = image;
     // N-up multi-viewport: pane 0 keeps arriving via this same signal (the
     // legacy preview sink is pane 0's sink -- see ViewportBridge's doc), so
     // the pane grid needs a copy too.
     m_paneImages[0] = image;
+    // A changed frame size can signal a newly loaded film aspect. Recompute
+    // the aspect-fitted physical surface; same-size preview frames stay cheap.
+    if (dimensionsChanged) recomputePaneLayout();
     update();
 }
 
@@ -217,19 +224,24 @@ void ViewportWidget::setSceneEditable(bool editable)
         // interaction so a mid-render release can't commit it
         // (setInteractiveRegion -> KickRender -> mMutex) and it doesn't linger
         // armed across the render.
+        const bool cancelledRegionArm = m_regionArmed || m_regionDragging;
         m_regionArmed = false;
-        m_regionDragging = false;
+        cancelRegionDrag();
+        m_regionEditMode = RegionEditMode::None;
+        if (cancelledRegionArm) emit regionArmCancelled();
         // N-up multi-viewport: same reasoning -- drop any in-progress
         // pane gesture pin rather than risk forwarding a stray Move/Up to
         // a pane once a render owns the scene.
         m_activeGesturePane = -1;
-    } else if (m_layout != ViewportBridge::ViewportLayout::Single) {
+    } else {
         // A geometry notification can race a production/chat render's
         // admission claim. recomputePaneLayout caches only dimensions the
         // controller accepted, so becoming editable is the reliable retry
         // edge for refused preset and SetPaneSurfaceDims calls.
         recomputePaneLayout();
-        applyMultiViewModePreset();
+        if (m_layout != ViewportBridge::ViewportLayout::Single) {
+            applyMultiViewModePreset();
+        }
     }
     update();   // re-evaluate the nav-overlay draw gate at the new state
 }
@@ -241,6 +253,7 @@ void ViewportWidget::setRegionArmed(bool armed)
     if (!armed) {
         cancelRegionDrag();
     }
+    if (underMouse()) updateCursorForPosition(mapFromGlobal(QCursor::pos()));
     update();
 }
 
@@ -282,6 +295,11 @@ void ViewportWidget::pollRegionState()
         || r != m_regionRight || b != m_regionBottom) {
         m_hasRegion = has;
         m_regionLeft = l; m_regionTop = t; m_regionRight = r; m_regionBottom = b;
+        emit regionStateChanged();
+        setAccessibleDescription(has
+            ? tr("Active render region %1 by %2 pixels. Arrow keys move it; Shift plus Arrow resizes it; Delete clears it.")
+                .arg(r - l + 1).arg(b - t + 1)
+            : tr("No active render region."));
         update();
     }
 }
@@ -313,10 +331,42 @@ void ViewportWidget::updateCursorForPosition(const QPointF& pos)
     // Tool cursor only over the rendered image area; outside, revert
     // to whatever the parent / window provides (default arrow).
     if (imageDrawRect().contains(pos.toPoint())) {
-        setCursor(QCursor(m_toolCursor));
+        const RegionEditMode hoverMode = m_regionEditMode != RegionEditMode::None
+            ? m_regionEditMode : regionEditModeAt(pos);
+        if (m_regionArmed || m_regionDragging) setCursor(Qt::CrossCursor);
+        else if (hoverMode == RegionEditMode::Move) setCursor(Qt::SizeAllCursor);
+        else if (hoverMode == RegionEditMode::Top
+              || hoverMode == RegionEditMode::Bottom) setCursor(Qt::SizeVerCursor);
+        else if (hoverMode == RegionEditMode::Left
+              || hoverMode == RegionEditMode::Right) setCursor(Qt::SizeHorCursor);
+        else if (hoverMode == RegionEditMode::TopRight
+              || hoverMode == RegionEditMode::BottomLeft) setCursor(Qt::SizeBDiagCursor);
+        else if (hoverMode != RegionEditMode::None) setCursor(Qt::SizeFDiagCursor);
+        else setCursor(QCursor(m_toolCursor));
     } else {
         unsetCursor();
     }
+}
+
+ViewportWidget::RegionEditMode ViewportWidget::regionEditModeAt(const QPointF& pos) const
+{
+    if (!m_sceneEditable || !m_hasRegion || !m_bridge) return RegionEditMode::None;
+    const QRectF box = activeRegionWidgetRect(
+        imageDrawRect(), m_bridge->cameraSurfaceDimensions());
+    if (box.isEmpty()) return RegionEditMode::None;
+    // 24pt diameter targets match the macOS overlay and WCAG's practical
+    // pointer-target floor while keeping the painted dots visually compact.
+    constexpr qreal grab = 12.0;
+    auto near = [&](const QPointF& p) { return QLineF(pos, p).length() <= grab; };
+    if (near(box.topLeft())) return RegionEditMode::TopLeft;
+    if (near(box.topRight())) return RegionEditMode::TopRight;
+    if (near(box.bottomLeft())) return RegionEditMode::BottomLeft;
+    if (near(box.bottomRight())) return RegionEditMode::BottomRight;
+    if (near(QPointF(box.center().x(), box.top()))) return RegionEditMode::Top;
+    if (near(QPointF(box.right(), box.center().y()))) return RegionEditMode::Right;
+    if (near(QPointF(box.center().x(), box.bottom()))) return RegionEditMode::Bottom;
+    if (near(QPointF(box.left(), box.center().y()))) return RegionEditMode::Left;
+    return box.contains(pos) ? RegionEditMode::Move : RegionEditMode::None;
 }
 
 void ViewportWidget::leaveEvent(QEvent* event)
@@ -358,11 +408,26 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
         }
     }
 
-    if (m_regionDragging || m_hasRegion) {
+    if (m_regionDragging || m_regionEditMode != RegionEditMode::None || m_hasRegion) {
         const QSize surface = m_bridge ? m_bridge->cameraSurfaceDimensions() : QSize();
         if (m_regionDragging || (surface.width() > 0 && surface.height() > 0)) {
             paintRegionOverlay(p, drawRect, surface);
         }
+    }
+
+    if (m_regionArmed && !m_regionDragging && m_sceneEditable) {
+        const QString prompt = tr("Drag to choose an area  \xC2\xB7  Esc to cancel");
+        const QFont promptFont = Theme::sans(11, QFont::DemiBold);
+        const QFontMetrics fm(promptFont);
+        const QSize promptSize(fm.horizontalAdvance(prompt) + 24, fm.height() + 14);
+        QRect promptRect(QPoint(0, 12), promptSize);
+        promptRect.moveCenter(QPoint(width() / 2, promptRect.center().y()));
+        p.setPen(QPen(Theme::accent, 1));
+        p.setBrush(Theme::bgBase);
+        p.drawRoundedRect(promptRect, 6, 6);
+        p.setFont(promptFont);
+        p.setPen(Theme::textPrimary);
+        p.drawText(promptRect, Qt::AlignCenter, prompt);
     }
 
     // Navigation axis-ball (Tier 2 §4): always available (not tool-gated),
@@ -377,10 +442,24 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
     }
 }
 
+QRectF ViewportWidget::activeRegionWidgetRect(const QRect& drawRect, const QSize& surface) const
+{
+    if (!m_hasRegion || surface.width() <= 0 || surface.height() <= 0) return QRectF();
+    const double scaleX = static_cast<double>(drawRect.width()) / surface.width();
+    const double scaleY = static_cast<double>(drawRect.height()) / surface.height();
+    return QRectF(
+        drawRect.left() + m_regionLeft * scaleX,
+        drawRect.top() + m_regionTop * scaleY,
+        (m_regionRight - m_regionLeft + 1) * scaleX,
+        (m_regionBottom - m_regionTop + 1) * scaleY);
+}
+
 void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface)
 {
     QRectF boxRect;
-    if (m_regionDragging) {
+    if (m_regionEditMode != RegionEditMode::None) {
+        boxRect = m_regionEditRect;
+    } else if (m_regionDragging) {
         // A live drag draws directly in widget-local coords -- no
         // surface mapping needed since both endpoints were captured in
         // the same coordinate space.
@@ -389,23 +468,21 @@ void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, cons
         boxRect = QRectF(QPointF(std::min(a.x(), b.x()), std::min(a.y(), b.y())),
                           QPointF(std::max(a.x(), b.x()), std::max(a.y(), b.y())));
     } else if (m_hasRegion && surface.width() > 0 && surface.height() > 0) {
-        const double scaleX = static_cast<double>(drawRect.width())  / surface.width();
-        const double scaleY = static_cast<double>(drawRect.height()) / surface.height();
-        auto toWidget = [&](double sx, double sy) -> QPointF {
-            return QPointF(drawRect.left() + sx * scaleX, drawRect.top() + sy * scaleY);
-        };
-        // Region bounds are INCLUSIVE full-res film pixels; +1 on the
-        // far edge converts to an exclusive draw rect.
-        const QPointF tl = toWidget(m_regionLeft, m_regionTop);
-        const QPointF br = toWidget(static_cast<double>(m_regionRight) + 1.0,
-                                     static_cast<double>(m_regionBottom) + 1.0);
-        boxRect = QRectF(tl, br);
+        boxRect = activeRegionWidgetRect(drawRect, surface);
     } else {
         m_regionBadgeRect = QRect();
         return;
     }
 
     p.setRenderHint(QPainter::Antialiasing, true);
+    if (!m_regionDragging && m_hasRegion) {
+        QRegion outside(drawRect);
+        outside = outside.subtracted(QRegion(boxRect.toAlignedRect()));
+        p.save();
+        p.setClipRegion(outside);
+        p.fillRect(drawRect, QColor(0, 0, 0, 41));
+        p.restore();
+    }
     QPen pen(Theme::warn);
     pen.setStyle(Qt::DashLine);
     pen.setWidthF(1.5);
@@ -414,18 +491,61 @@ void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, cons
     p.drawRect(boxRect);
 
     if (!m_regionDragging && m_hasRegion) {
+        p.setPen(QPen(QColor(0x0d, 0x0e, 0x10), 1));
+        p.setBrush(Theme::warn);
+        const qreal radius = 4.5;
+        const QPointF handles[] = {
+            boxRect.topLeft(), QPointF(boxRect.center().x(), boxRect.top()), boxRect.topRight(),
+            QPointF(boxRect.right(), boxRect.center().y()), boxRect.bottomRight(),
+            QPointF(boxRect.center().x(), boxRect.bottom()), boxRect.bottomLeft(),
+            QPointF(boxRect.left(), boxRect.center().y())
+        };
+        for (const QPointF& handle : handles) p.drawEllipse(handle, radius, radius);
+    }
+
+    if (!m_regionDragging && m_hasRegion) {
         // "REGION" badge, top-left of the box, click-to-clear (hit-
         // tested against m_regionBadgeRect in mousePressEvent).
-        const QString label = tr("REGION");
+        unsigned int regionW = m_regionRight - m_regionLeft + 1;
+        unsigned int regionH = m_regionBottom - m_regionTop + 1;
+        if (m_regionEditMode != RegionEditMode::None
+            && surface.width() > 0 && surface.height() > 0) {
+            const double scaleX = static_cast<double>(drawRect.width()) / surface.width();
+            const double scaleY = static_cast<double>(drawRect.height()) / surface.height();
+            const int left = std::clamp(static_cast<int>(std::floor(
+                (boxRect.left() - drawRect.left()) / scaleX)), 0, surface.width()-1);
+            const int top = std::clamp(static_cast<int>(std::floor(
+                (boxRect.top() - drawRect.top()) / scaleY)), 0, surface.height()-1);
+            const int right = std::clamp(static_cast<int>(std::ceil(
+                (boxRect.right() - drawRect.left()) / scaleX)) - 1, left, surface.width()-1);
+            const int bottom = std::clamp(static_cast<int>(std::ceil(
+                (boxRect.bottom() - drawRect.top()) / scaleY)) - 1, top, surface.height()-1);
+            regionW = static_cast<unsigned int>(right - left + 1);
+            regionH = static_cast<unsigned int>(bottom - top + 1);
+        }
+        const double framePixels = std::max(1.0,
+            static_cast<double>(surface.width()) * surface.height());
+        const int percent = static_cast<int>(std::lround(
+            100.0 * static_cast<double>(regionW) * regionH / framePixels));
+        const QString label = tr("REGION  %1\xC3\x97%2  \xC2\xB7  %3%")
+            .arg(regionW).arg(regionH).arg(percent);
         const QFont f = Theme::mono(9);
         const QFontMetrics fm(f);
         const int textW = fm.horizontalAdvance(label);
-        QRect badge(static_cast<int>(boxRect.left()), static_cast<int>(boxRect.top()) - 20,
-                    textW + 14, 16);
-        if (badge.top() < 0) {
-            // Clamp inside the viewport when the region touches the
-            // top edge -- draw the badge just below the box instead.
-            badge.moveTop(static_cast<int>(boxRect.top()) + 4);
+        QRect badge(0, 0, textW + 14, 16);
+        badge.moveCenter(QPoint(static_cast<int>(boxRect.center().x()),
+                                static_cast<int>(boxRect.top()) - 24));
+        if (badge.left() < drawRect.left()) badge.moveLeft(drawRect.left());
+        if (badge.right() > drawRect.right()) badge.moveRight(drawRect.right());
+        if (badge.top() < drawRect.top()) {
+            badge.moveCenter(QPoint(badge.center().x(),
+                                    static_cast<int>(boxRect.bottom()) + 24));
+        }
+        if (badge.bottom() > drawRect.bottom()) {
+            // A full-height region has no exterior vertical space. Keep the
+            // badge inside but at least 24pt away from the top-edge handle.
+            badge.moveCenter(QPoint(badge.center().x(),
+                                    static_cast<int>(boxRect.top()) + 28));
         }
         m_regionBadgeRect = badge;
 
@@ -795,14 +915,42 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
         return;
     }
 
-    // A click on the persistent region badge clears the region --
-    // consumes the click rather than also forwarding it as a pick.
+    const RegionEditMode hitRegionMode = regionEditModeAt(event->position());
+
+    // Edge/corner handles take priority over the badge in cramped or
+    // full-frame regions. The badge still takes priority over moving the box.
+    if (hitRegionMode != RegionEditMode::None && hitRegionMode != RegionEditMode::Move
+        && event->button() == Qt::LeftButton) {
+        m_regionEditMode = hitRegionMode;
+        m_regionEditStart = event->position();
+        m_regionEditStartRect = activeRegionWidgetRect(
+            imageDrawRect(), m_bridge->cameraSurfaceDimensions());
+        m_regionEditRect = m_regionEditStartRect;
+        update();
+        event->accept();
+        return;
+    }
+
     if (m_sceneEditable && !m_regionArmed && m_hasRegion && event->button() == Qt::LeftButton
         && m_regionBadgeRect.contains(event->pos())) {
         // m_sceneEditable gate: clearInteractiveRegion -> KickRender takes the
         // controller mutex a chat/production render holds for its duration.
         if (m_bridge) m_bridge->clearInteractiveRegion();
-        m_hasRegion = false;
+        pollRegionState();
+        update();
+        event->accept();
+        return;
+    }
+
+    // Direct manipulation of an active region. Corner grabs resize; a drag
+    // inside the box moves it. The edit remains widget-local until release,
+    // avoiding a KickRender on every mouse move.
+    if (hitRegionMode == RegionEditMode::Move && event->button() == Qt::LeftButton) {
+        m_regionEditMode = hitRegionMode;
+        m_regionEditStart = event->position();
+        m_regionEditStartRect = activeRegionWidgetRect(
+            imageDrawRect(), m_bridge->cameraSurfaceDimensions());
+        m_regionEditRect = m_regionEditStartRect;
         update();
         event->accept();
         return;
@@ -852,6 +1000,57 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
 
     if (m_regionDragging) {
         m_regionDragCurrent = event->position();
+        update();
+        event->accept();
+        return;
+    }
+
+    if (m_regionEditMode != RegionEditMode::None) {
+        const QPointF delta = event->position() - m_regionEditStart;
+        QRectF edited = m_regionEditStartRect;
+        const QRectF bounds = imageDrawRect();
+        const qreal minSize = 3.0;
+        const qreal boundLeft = bounds.left(), boundTop = bounds.top();
+        const qreal boundRight = bounds.right(), boundBottom = bounds.bottom();
+        qreal left = edited.left(), right = edited.right();
+        qreal top = edited.top(), bottom = edited.bottom();
+        auto clampOrdered = [](qreal value, qreal low, qreal high) {
+            return std::min(std::max(value, low), std::max(low, high));
+        };
+        switch (m_regionEditMode) {
+        case RegionEditMode::Move: edited.translate(delta); break;
+        case RegionEditMode::TopLeft:
+            left = clampOrdered(left + delta.x(), boundLeft, right - minSize);
+            top = clampOrdered(top + delta.y(), boundTop, bottom - minSize); break;
+        case RegionEditMode::Top:
+            top = clampOrdered(top + delta.y(), boundTop, bottom - minSize); break;
+        case RegionEditMode::TopRight:
+            right = clampOrdered(right + delta.x(), left + minSize, boundRight);
+            top = clampOrdered(top + delta.y(), boundTop, bottom - minSize); break;
+        case RegionEditMode::Right:
+            right = clampOrdered(right + delta.x(), left + minSize, boundRight); break;
+        case RegionEditMode::BottomRight:
+            right = clampOrdered(right + delta.x(), left + minSize, boundRight);
+            bottom = clampOrdered(bottom + delta.y(), top + minSize, boundBottom); break;
+        case RegionEditMode::Bottom:
+            bottom = clampOrdered(bottom + delta.y(), top + minSize, boundBottom); break;
+        case RegionEditMode::BottomLeft:
+            left = clampOrdered(left + delta.x(), boundLeft, right - minSize);
+            bottom = clampOrdered(bottom + delta.y(), top + minSize, boundBottom); break;
+        case RegionEditMode::Left:
+            left = clampOrdered(left + delta.x(), boundLeft, right - minSize); break;
+        case RegionEditMode::None: break;
+        }
+
+        if (m_regionEditMode == RegionEditMode::Move) {
+            if (edited.left() < bounds.left()) edited.moveLeft(bounds.left());
+            if (edited.top() < bounds.top()) edited.moveTop(bounds.top());
+            if (edited.right() > bounds.right()) edited.moveRight(bounds.right());
+            if (edited.bottom() > bounds.bottom()) edited.moveBottom(bounds.bottom());
+        } else {
+            edited = QRectF(QPointF(left, top), QPointF(right, bottom));
+        }
+        m_regionEditRect = edited;
         update();
         event->accept();
         return;
@@ -928,6 +1127,29 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
                 static_cast<unsigned int>(sx1), static_cast<unsigned int>(sy1));
             pollRegionState();
         }
+        emit regionDrawFinished();
+        update();
+        event->accept();
+        return;
+    }
+
+    if (m_regionEditMode != RegionEditMode::None) {
+        const QPointF topLeft = surfacePoint(m_regionEditRect.topLeft());
+        const QPointF bottomRight = surfacePoint(m_regionEditRect.bottomRight());
+        const QSize surface = m_bridge ? m_bridge->cameraSurfaceDimensions() : QSize();
+        const int maxX = std::max(0, surface.width() - 1);
+        const int maxY = std::max(0, surface.height() - 1);
+        const int left = std::clamp(static_cast<int>(std::floor(topLeft.x())), 0, maxX);
+        const int top = std::clamp(static_cast<int>(std::floor(topLeft.y())), 0, maxY);
+        const int right = std::clamp(static_cast<int>(std::ceil(bottomRight.x())) - 1, left, maxX);
+        const int bottom = std::clamp(static_cast<int>(std::ceil(bottomRight.y())) - 1, top, maxY);
+        m_regionEditMode = RegionEditMode::None;
+        if (m_bridge && m_sceneEditable && right - left >= 2 && bottom - top >= 2) {
+            m_bridge->setInteractiveRegion(
+                static_cast<unsigned int>(left), static_cast<unsigned int>(top),
+                static_cast<unsigned int>(right), static_cast<unsigned int>(bottom));
+            pollRegionState();
+        }
         update();
         event->accept();
         return;
@@ -954,11 +1176,45 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
 
 void ViewportWidget::keyPressEvent(QKeyEvent* event)
 {
-    if (event->key() == Qt::Key_Escape && (m_regionArmed || m_regionDragging)) {
+    if (event->key() == Qt::Key_Escape
+        && (m_regionArmed || m_regionDragging || m_regionEditMode != RegionEditMode::None)) {
         cancelRegionDrag();
+        m_regionEditMode = RegionEditMode::None;
         m_regionArmed = false;
         emit regionArmCancelled();
         update();
+        event->accept();
+        return;
+    }
+    if (m_sceneEditable && m_hasRegion && m_bridge
+        && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
+        m_bridge->clearInteractiveRegion();
+        pollRegionState();
+        event->accept();
+        return;
+    }
+    if (m_sceneEditable && m_hasRegion && m_bridge
+        && (event->key() == Qt::Key_Left || event->key() == Qt::Key_Right
+            || event->key() == Qt::Key_Up || event->key() == Qt::Key_Down)) {
+        const QSize surface = m_bridge->cameraSurfaceDimensions();
+        const unsigned int maxX = static_cast<unsigned int>(std::max(0, surface.width() - 1));
+        const unsigned int maxY = static_cast<unsigned int>(std::max(0, surface.height() - 1));
+        unsigned int l = m_regionLeft, t = m_regionTop, r = m_regionRight, b = m_regionBottom;
+        const unsigned int oldL = l, oldT = t, oldR = r, oldB = b;
+        const bool resize = event->modifiers().testFlag(Qt::ShiftModifier);
+        if (resize) {
+            if (event->key() == Qt::Key_Left && r > l + 2) --r;
+            else if (event->key() == Qt::Key_Right && r < maxX) ++r;
+            else if (event->key() == Qt::Key_Up && b > t + 2) --b;
+            else if (event->key() == Qt::Key_Down && b < maxY) ++b;
+        } else if (event->key() == Qt::Key_Left && l > 0) { --l; --r; }
+        else if (event->key() == Qt::Key_Right && r < maxX) { ++l; ++r; }
+        else if (event->key() == Qt::Key_Up && t > 0) { --t; --b; }
+        else if (event->key() == Qt::Key_Down && b < maxY) { ++t; ++b; }
+        if (l != oldL || t != oldT || r != oldR || b != oldB) {
+            m_bridge->setInteractiveRegion(l, t, r, b);
+            pollRegionState();
+        }
         event->accept();
         return;
     }
@@ -968,17 +1224,7 @@ void ViewportWidget::keyPressEvent(QKeyEvent* event)
 void ViewportWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-    if (m_layout != ViewportBridge::ViewportLayout::Single) {
-        recomputePaneLayout();
-    } else {
-        // Single doesn't push SetPaneSurfaceDims (see recomputePaneLayout's
-        // doc), but keep pane 0's cached rect current anyway -- cheap, and
-        // keeps paneAt()/paneSurfacePoint() well-defined if a caller ever
-        // reads them mid-Single (they aren't today, but nothing here
-        // depends on that staying true).
-        m_paneRects[0] = rect();
-        m_paneImageAreaRects[0] = rect();
-    }
+    recomputePaneLayout();
 }
 
 // ============================================================
@@ -1074,8 +1320,17 @@ void ViewportWidget::restyleTheme()
 
 void ViewportWidget::recomputePaneLayout()
 {
-    m_layout = m_bridge ? m_bridge->viewportLayout() : ViewportBridge::ViewportLayout::Single;
+    const ViewportBridge::ViewportLayout newLayout =
+        m_bridge ? m_bridge->viewportLayout() : ViewportBridge::ViewportLayout::Single;
+    if (newLayout != m_layout) {
+        // The core clears pane 0's N-up surface when returning to Single.
+        // Invalidate accepted-size caches on either direction so the first
+        // measurement in the new layout is actually re-published.
+        for (QSize& accepted : m_paneLastPushedDims) accepted = QSize();
+    }
+    m_layout = newLayout;
     m_visiblePaneCount = ViewportBridge::paneCountForLayout(m_layout);
+    m_lastSurfaceFilmDims = m_bridge ? m_bridge->cameraSurfaceDimensions() : QSize();
 
     // Hide every chrome widget first; only the loop below re-shows the
     // ones the new layout actually makes visible.  Cheap -- 4 panes.
@@ -1086,12 +1341,29 @@ void ViewportWidget::recomputePaneLayout()
     }
 
     if (m_layout == ViewportBridge::ViewportLayout::Single) {
-        // Pre-N-up path: pane 0 owns the WHOLE widget, no header strip, and
-        // deliberately no SetPaneSurfaceDims push -- pane 0 keeps relying
-        // on ViewportBridge::scaleFilmToFit's screen-fit sizing exactly as
-        // before this feature (see the header block doc for why).
+        // Pane 0 owns the whole widget with no chrome. Publish the physical
+        // pixel size of the aspect-fitted image surface so HiDPI gizmo
+        // geometry and drag sensitivity are expressed in displayed pixels.
         m_paneRects[0] = rect();
         m_paneImageAreaRects[0] = rect();
+        const double dpr = devicePixelRatioF();
+        QSize devDims(
+            std::max(1, static_cast<int>(rect().width() * dpr + 0.5)),
+            std::max(1, static_cast<int>(rect().height() * dpr + 0.5)));
+        if (m_bridge) {
+            const QSize film = m_bridge->cameraSurfaceDimensions();
+            if (film.width() > 0 && film.height() > 0) {
+                const double filmAspect = static_cast<double>(film.width()) / film.height();
+                const double areaAspect = static_cast<double>(devDims.width()) / devDims.height();
+                if (areaAspect > filmAspect) {
+                    devDims.setWidth(std::max(1, static_cast<int>(devDims.height() * filmAspect + 0.5)));
+                } else {
+                    devDims.setHeight(std::max(1, static_cast<int>(devDims.width() / filmAspect + 0.5)));
+                }
+            }
+        }
+        m_paneDesiredDims[0] = devDims;
+        retryPendingPaneSurfaceDims();
         return;
     }
 
@@ -1099,9 +1371,17 @@ void ViewportWidget::recomputePaneLayout()
     // drag/arm can't sensibly straddle a layout switch (there is no
     // "which pane" for it), so cancel it here -- mirrors
     // setSceneEditable(false)'s identical cancel-armed-state handling.
-    if (m_regionArmed || m_regionDragging) {
+    // Match macOS: an already-active region is cleared as Single is left,
+    // otherwise the controller would keep silently clipping pane 0 while
+    // N-up has neither an overlay nor a clear affordance.
+    if (m_hasRegion && m_bridge && m_sceneEditable) {
+        m_bridge->clearInteractiveRegion();
+        pollRegionState();
+    }
+    if (m_regionArmed || m_regionDragging || m_regionEditMode != RegionEditMode::None) {
         m_regionArmed = false;
         m_regionDragging = false;
+        m_regionEditMode = RegionEditMode::None;
         emit regionArmCancelled();
     }
 
@@ -1208,7 +1488,7 @@ void ViewportWidget::recomputePaneLayout()
 
 void ViewportWidget::retryPendingPaneSurfaceDims()
 {
-    if (!m_bridge || m_layout == ViewportBridge::ViewportLayout::Single) return;
+    if (!m_bridge) return;
     for (unsigned int i = 0; i < m_visiblePaneCount; ++i) {
         const QSize desired = m_paneDesiredDims[i];
         if (desired.width() <= 0 || desired.height() <= 0
@@ -1234,7 +1514,7 @@ void ViewportWidget::refreshForDpiChange()
     // devicePixelRatioF() in recomputePaneLayout() -- would stay stale and
     // the panes would render at the wrong resolution for the new screen.
     // MainWindow forwards its ScreenChangeInternal here; re-run the layout so
-    // fresh device dims push (recomputePaneLayout early-outs while Single).
+    // fresh device dims push for both Single and N-up layouts.
     recomputePaneLayout();
     update();
 }
@@ -1452,10 +1732,12 @@ void ViewportWidget::pollPaneChrome()
 {
     if (!m_bridge || !m_sceneEditable) return;
     const ViewportBridge::ViewportLayout current = m_bridge->viewportLayout();
-    if (current != m_layout) {
+    const QSize currentFilmDims = m_bridge->cameraSurfaceDimensions();
+    if (current != m_layout || currentFilmDims != m_lastSurfaceFilmDims) {
         // A layout change from elsewhere (or a click this widget's own
         // onViewportLayoutChanged() already handled, in which case this is
-        // a harmless no-op re-derive) -- resync fully.
+        // a harmless no-op re-derive), or a Film-aspect edit with unchanged
+        // widget geometry -- resync fully.
         recomputePaneLayout();
         // Keep externally-driven layout changes on the same preset path as
         // the toolbar action.  A newly-visible secondary otherwise remains
@@ -1469,9 +1751,9 @@ void ViewportWidget::pollPaneChrome()
         // m_sceneEditable or production state.  Retry only panes that have
         // not yet accepted their first-reveal preset.
         applyMultiViewModePreset();
-        retryPendingPaneSurfaceDims();
         refreshPaneChromeState();
     }
+    retryPendingPaneSurfaceDims();
 }
 
 void ViewportWidget::onPaneModeComboChanged(int index)

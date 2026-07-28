@@ -5266,6 +5266,14 @@ static void RunBeautyVariantLiveQualityPolicyTest()
 	Fixture f( "pane_sched_variant_quality.RISEscene", true );
 	Check( f.ctrl != nullptr, "live-pipeline fixture constructs" );
 	if( !f.ctrl ) return;
+	// Surface dimensions are render-target overrides only in N-up. Single's
+	// pane-0 measurement is display-only so a Retina/window resize cannot
+	// bypass the fit-capped interactive policy. Freeze pane 1 on Last Render
+	// so this quality-policy test still schedules only pane 0.
+	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::TwoH )
+	    && f.ctrl->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+	       "variant-quality fixture enters one-interactive-pane N-up layout" );
 	Check( f.ctrl->SetViewportRenderMode( "direct" ),
 	       "direct BeautyVariant installs" );
 	f.ctrl->Start( true );

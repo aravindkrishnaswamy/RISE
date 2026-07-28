@@ -87,6 +87,8 @@ signals:
     /// setProductionRenderPaused / cancelRender accessors -- no signal
     /// needed for those (see onRenderTransportClicked / onCancelClicked).
     void renderTransportClicked();
+    /// Explicit regional-final request from the dropdown adjacent to Render.
+    void renderRegionClicked();
 
 public slots:
     /// Mirrors the Render menu's "&Render" action's enable predicate
@@ -208,6 +210,7 @@ private:
     /// engine-state change, pause toggle, and chat/bridge transition --
     /// the same set of triggers the pause/restart buttons already use.
     void updateTransportButton();
+    void updateRegionRenderButton();
     /// P1 (docs/gui/RENDER_MODES.md §5): re-read the ACTIVE mode from the
     /// bridge and resync m_renderModeCombo's current index (QSignalBlocker-
     /// guarded so the programmatic sync never re-fires
@@ -316,6 +319,7 @@ private:
     // `.opacity(0.4)`, which dims background AND text together) --
     // installed once in the constructor, toggled by updateTransportButton.
     QGraphicsOpacityEffect* m_transportOpacity = nullptr;
+    QToolButton* m_regionRenderBtn = nullptr;
     // Mirrors the Render menu action's `canRender` predicate -- pushed in
     // by MainWindow via setCanStartProductionRender() (see that slot's
     // doc); only consulted while idle (SceneLoaded/Completed/Cancelled).
@@ -334,6 +338,7 @@ private:
     // "Paused" readout below still reads m_refinementPhase directly from
     // the poll, so no status-display capability was lost.)
     int          m_refinementPhase = -1;         // -1 no controller, 0 Idle .. 4 Paused
+    bool         m_regionFinalInvalidated = false; // interactive pixels replaced last regional final
     unsigned int m_refinementScaleDivisor = 1;
     int          m_engineState = 0;              // RenderEngine::Idle
     double       m_productionProgress = 0.0;

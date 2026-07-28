@@ -64,8 +64,9 @@ byte-exactly when unedited and minimal-diff when edited.
 **Major roadmap slices have shipped on both desktop platforms:** redesigned
 workspaces and start screen, outliner/entity creation, environment editing,
 canonical and named camera views, render modes, N-up panes, and the in-app plus
-external agent surface. Current gaps include the dedicated material graph,
-spectral-differentiator UX, region rendering, asset-library workflow, and some
+external agent surface, including editable region rendering and explicit
+region-only final renders. Current gaps include the dedicated material graph,
+spectral-differentiator UX, asset-library workflow, and some
 cross-client orchestration/security hardening. The sections below remain the
 umbrella rationale and backlog; their original phase language is not a
 present-day capability audit.
@@ -107,7 +108,7 @@ Highest leverage; mostly interaction-layer; leans on engine pieces RISE already 
 - **A1. Sensible default scene** — open/import → good image, zero clicks (studio HDRI + neutral material + auto-exposure + integrator = Auto + OIDN on). Leans on the auto-router + always-on OIDN.
 - **A2. The viewport *is* the renderer** — progressive, with pause-refine-on-navigation (drop to ½-res/checkerboard while moving via `ResizeFilm`, refine on idle) and restart-on-edit; start/pause/restart/stop; a convergence indicator + stop condition.
 - **A3. Drag-to-assign** — drag a thumbnailed material/HDRI onto an object (HDRI onto the viewport = relight), hover-preview, commit on release. *Feasibility spike:* is a spectral hover-preview cheap enough, or do we fall back to commit-on-release? (§11)
-- **A4. Region / ROI render** — modifier+drag a box; auto-clear for finals (Blender's #1 footgun is the region leaking into the final).
+- **A4. Region / ROI render** — discoverable Draw Region mode + shortcut, editable measured overlay, ordinary finals always full-frame while preserving the viewport box, and a separate explicit Render Active Region command.
 - **A5. Thumbnail asset libraries + search + shipped seed set** — materials and HDRIs out of the box (an empty library defeats A3).
 - **A6. Progressive disclosure + layout presets** — Basic vs Advanced on every panel; "Simple"/"Full" workspace layouts defaulting to Simple.
 

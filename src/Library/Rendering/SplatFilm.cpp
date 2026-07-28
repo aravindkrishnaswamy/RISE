@@ -268,17 +268,27 @@ void SplatFilm::BatchCommit(
 
 void SplatFilm::Resolve(
 	IRasterImage& target,
-	const Scalar sampleCount
+	const Scalar sampleCount,
+	const Rect* region
 	) const
 {
-	if( sampleCount <= 0 ) {
+	if( sampleCount <= 0 || width == 0 || height == 0 ) {
 		return;
 	}
 
 	const Scalar invSamples = 1.0 / sampleCount;
+	unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
+	if( region ) {
+		if( region->left > region->right || region->top > region->bottom ||
+			region->left >= width || region->top >= height ) return;
+		startX = region->left;
+		startY = region->top;
+		endX = r_min( region->right, width - 1 );
+		endY = r_min( region->bottom, height - 1 );
+	}
 
-	for( unsigned int y=0; y<height; y++ ) {
-		for( unsigned int x=0; x<width; x++ ) {
+	for( unsigned int y=startY; y<=endY; y++ ) {
+		for( unsigned int x=startX; x<=endX; x++ ) {
 			const SplatPixel& pixel = pixels[y * width + x];
 
 			if( pixel.weight > 0 ) {
@@ -297,17 +307,27 @@ void SplatFilm::Resolve(
 
 void SplatFilm::Unresolve(
 	IRasterImage& target,
-	const Scalar sampleCount
+	const Scalar sampleCount,
+	const Rect* region
 	) const
 {
-	if( sampleCount <= 0 ) {
+	if( sampleCount <= 0 || width == 0 || height == 0 ) {
 		return;
 	}
 
 	const Scalar invSamples = 1.0 / sampleCount;
+	unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
+	if( region ) {
+		if( region->left > region->right || region->top > region->bottom ||
+			region->left >= width || region->top >= height ) return;
+		startX = region->left;
+		startY = region->top;
+		endX = r_min( region->right, width - 1 );
+		endY = r_min( region->bottom, height - 1 );
+	}
 
-	for( unsigned int y=0; y<height; y++ ) {
-		for( unsigned int x=0; x<width; x++ ) {
+	for( unsigned int y=startY; y<=endY; y++ ) {
+		for( unsigned int x=startX; x<=endX; x++ ) {
 			const SplatPixel& pixel = pixels[y * width + x];
 
 			if( pixel.weight > 0 ) {

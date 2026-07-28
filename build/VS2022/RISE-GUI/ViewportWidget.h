@@ -49,8 +49,7 @@ public slots:
     /// DPI change.  A FIXED-SIZE window dragged to a different-DPI display
     /// fires no resizeEvent (logical size unchanged), so the device-pixel
     /// pane dims would otherwise stay stale.  MainWindow forwards its
-    /// QEvent::ScreenChangeInternal here.  No-op while Single is active
-    /// (recomputePaneLayout early-outs there).
+    /// QEvent::ScreenChangeInternal here for both Single and N-up layouts.
     void refreshForDpiChange();
 
     /// Update the cursor displayed over the viewport to match the
@@ -96,6 +95,14 @@ signals:
     /// arm/drag in progress; the toolbar's cancelRegionArm() is a
     /// no-op in that case.
     void regionArmCancelled();
+    /// One-shot draw gesture ended (valid region or rejected tiny click).
+    /// The toolbar uses this explicit edge to disarm without confusing an
+    /// already-active region with completion of a newly-requested redraw.
+    void regionDrawFinished();
+    /// Emitted whenever the controller's active-region presence or bounds
+    /// change, including changes made by non-widget callers. MainWindow uses
+    /// it to keep Draw/Render Active Region menu enablement truthful.
+    void regionStateChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -115,10 +122,8 @@ protected:
     // this mirrors.
     void changeEvent(QEvent* e) override;
     /// N-up multi-viewport: recomputes pane rects + repositions chrome +
-    /// pushes fresh SetPaneSurfaceDims on every geometry change.  A no-op
-    /// (early-out) while Single is the active layout -- see
-    /// recomputePaneLayout()'s doc for why Single stays on the pre-N-up
-    /// path untouched.
+    /// pushes fresh SetPaneSurfaceDims on every geometry change, including
+    /// the aspect-fitted pane-0 surface in Single layout.
     void resizeEvent(QResizeEvent* event) override;
 
 private slots:
@@ -165,6 +170,7 @@ private:
     bool    handleNavClick(const QPointF& widgetPos, unsigned int pane);   // true == consumed
     void    paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface);
     void    cancelRegionDrag();
+    QRectF  activeRegionWidgetRect(const QRect& drawRect, const QSize& surface) const;
 
     ViewportBridge*  m_bridge = nullptr;
     QImage           m_image;
@@ -178,6 +184,15 @@ private:
     bool    m_regionDragging = false;
     QPointF m_regionDragStart;      // widget-local coords
     QPointF m_regionDragCurrent;    // widget-local coords
+
+    enum class RegionEditMode {
+        None, Move, TopLeft, Top, TopRight, Right,
+        BottomRight, Bottom, BottomLeft, Left
+    };
+    RegionEditMode m_regionEditMode = RegionEditMode::None;
+    QPointF        m_regionEditStart;
+    QRectF         m_regionEditStartRect;
+    QRectF         m_regionEditRect;
 
     // Set by cancelRegionDrag() when it cancels a drag WHILE the mouse
     // button is still physically down (Escape, or setRegionArmed(false)
@@ -193,6 +208,8 @@ private:
     unsigned int m_regionLeft = 0, m_regionTop = 0, m_regionRight = 0, m_regionBottom = 0;
     QRect        m_regionBadgeRect;     // last-painted badge rect, for click-to-clear hit-testing
     QTimer*      m_regionPollTimer = nullptr;
+
+    RegionEditMode regionEditModeAt(const QPointF& pos) const;
 
     // ==================================================================
     // N-up multi-viewport (docs/gui/RENDER_MODES.md §7).  SINGLE layout
@@ -291,6 +308,11 @@ private:
     /// referenced in RENDER_MODES.md §7.3's invalidation matrix).
     QSize   m_paneLastPushedDims[ViewportBridge::kViewportPaneCount];
     QSize   m_paneDesiredDims[ViewportBridge::kViewportPaneCount];
+    /// Stable Film dimensions used for the latest aspect-fit calculation.
+    /// A Film edit can change aspect without resizing the widget or its
+    /// already-explicit pane frame, so the chrome poll compares this value
+    /// and forces a fresh layout when needed.
+    QSize   m_lastSurfaceFilmDims;
     /// user-review P2#2: panes the multi-view preset has already been
     /// applied to.  Applying it exactly once per pane (not "whenever the
     /// pane still reads preview") keeps an EXPLICIT Preview choice from

@@ -42,10 +42,14 @@ when code and this document disagree, trust the code and fix this file.
   full-res film-pixel box, packed into one atomic; applied in
   `DoOneRenderPass` **only at full-resolution passes** (coarse
   navigation passes stay full-frame so nothing outside the box goes
-  stale at mismatched scales); auto-cleared kick-free in **both**
-  production entry points (`SubmitProductionRenderSync` and
-  `RequestProductionRender`) — the Blender region-leak footgun from
-  the brief is structurally designed against.
+  stale at mismatched scales); preserved while production owns the
+  scene. Ordinary production callbacks never consult the viewport
+  region, while the separately named Render Active Region action
+  captures the bounds and calls `Job::RasterizeRegion` explicitly —
+  the Blender region-leak footgun remains structurally designed against.
+  Regional final post-processing is confined as well: filtered-film
+  resolve accepts the rect, and OIDN denoises a cropped beauty/AOV set
+  before copying only the selected pixels back.
 - **`IRasterizer::HonorsRegion()`** honesty query (defaulted, declared
   last per the header's ABI convention): MLT returns false (global
   splat film); `AutoRasterizer` forwards to its resolved delegate.
@@ -87,9 +91,10 @@ when code and this document disagree, trust the code and fix this file.
 - **Center column**: viewport toolbar row (tool group with the
   existing category flyouts, active-camera chip, 3-state REGION chip,
   EV chip with the exposure popover + EDR interlock, EDR chip),
-  region drag-to-refine with badge + Esc/clear paths and pointer
-  suppression so a cancelled drag never leaks an orphaned pointer-up
-  into tool state, selection chip + refinement pill overlays, log
+  region drag-to-refine with eight edge/corner handles, move + redraw,
+  measured badge, semantic accessibility actions, Esc/clear paths, and
+  pointer suppression so a cancelled drag never leaks an orphaned
+  pointer-up into tool state, selection chip + refinement pill overlays, log
   drawer (severity pills, WARN/ERR counts, filter, follow, collapse
   strip, ⌥L / Alt+L), restyled timeline (transport + thin track +
   "Render movie…"), preserving the exact scrub begin/move/end bridge

@@ -985,6 +985,13 @@ namespace RISE
 		//! timeout, or a PINNED occupant's fairness wait outlasting
 		//! `queueTimeoutMs`.  A thrown exception out of `fn` propagates to
 		//! the caller exactly as SubmitAgentRenderSync documents.
+		//!
+		//! Interactive-region state is deliberately preserved across this
+		//! submission. Ordinary production callbacks render full-frame by
+		//! calling Job::Rasterize / RasterizeAnimationUsingOptions and never
+		//! consult that state; an explicit "Render Active Region" command
+		//! captures the coordinates before submission and calls
+		//! Job::RasterizeRegion from `fn`.
 		bool SubmitProductionRenderSync(
 			std::function<void()> fn,
 			const String&         clientLabel,
@@ -1351,10 +1358,11 @@ namespace RISE
 		// (divisor > 1) still render the whole frame — otherwise pixels
 		// outside the box would go stale at mismatched scales during
 		// navigation.  The region applies ONLY to the interactive
-		// viewport; production renders are always full-frame and
-		// SubmitProductionRenderSync clears any active region first
-		// (the Blender-style "region box leaks into the final render"
-		// footgun is designed against — docs/gui/DESIGN_BRIEF.md A4).
+		// viewport. Production coordination preserves this state. Ordinary
+		// production renders are still always full-frame because their
+		// callbacks never read it; only the separately named Render Active
+		// Region action captures and forwards these bounds. See
+		// docs/gui/DESIGN_BRIEF.md A4.
 		// right/bottom are clamped to the film at use; a box whose
 		// left/top lies outside the film is ignored for that pass
 		// (full-frame render) while still reported by
@@ -2623,11 +2631,12 @@ namespace RISE
 		//! on refusal ownership remains with the caller.
 		bool AdoptAgentRenderImageParked( IRasterImage*& image );
 
-		//! P3a slice 3: set pane `pane`'s render-surface pixel dims (the
-		//! GUI's pane rect).  The pass renders at surface/previewScale and
-		//! the camera aspect adapts via the existing ResizeFilm swap.  0/0
-		//! resets to "use the film's rest dims".  Applies to VISIBLE panes
-		//! only (§7.4 fail-closed); marks the pane dirty.
+		//! P3a slice 3: set pane `pane`'s displayed-surface pixel dims (the
+		//! GUI's aspect-fitted pane rect). N-up passes render at
+		//! surface/previewScale; Single pane 0 retains the legacy
+		//! scaleFilmToFit resolution policy and uses these dimensions only for
+		//! display-space gizmo sizing. 0/0 resets to film dimensions. Applies
+		//! to VISIBLE panes only (§7.4 fail-closed); marks the pane dirty.
 		bool SetPaneSurfaceDims( unsigned int pane, unsigned int w, unsigned int h );
 
 		//! P3a slice 3: per-pane preview sink.  The render pass attaches
@@ -3113,6 +3122,11 @@ namespace RISE
 		//! when the active tool isn't an Object-transform tool or no
 		//! Object is selected.
 		std::vector<GizmoHandle>    mGizmoHandles;
+		//! Full-resolution film pixels per current primary-pane surface
+		//! pixel. Handle layout and ring hit tolerance are multiplied by
+		//! this value so their visible/clickable size stays stable when a
+		//! high-resolution film is shown in a smaller viewport.
+		double                      mGizmoPixelScale = 1.0;
 
 		//! Navigation axis-ball nubs, recomputed by RefreshNavGizmo (Tier 2
 		//! §4).  0 or 6 entries; read out through the count + per-index getter.
@@ -3139,20 +3153,14 @@ namespace RISE
 			double  pivotScreenY;
 			double  anchorPxX;        ///< pointer position at drag-start (for cumulative drags)
 			double  anchorPxY;
+			double  pixelScale = 1.0; ///< film pixels per displayed pixel at drag-start
 			double  axisDirX[3];      ///< pixels per world unit, x component
 			double  axisDirY[3];      ///< pixels per world unit, y component
 			bool    axisOk[3];        ///< false if axis colinear with view at drag-start
 			Vector3 prevOrient;       ///< object Euler at drag-start (for Rotate)
-			Matrix4 dragStartMatrix;  ///< object's `GetFinalTransformMatrix()` at drag-start.
-			                          ///< Used as the anchor for `ScaleObjectFromAnchor` —
-			                          ///< Apply restores this then pushes a Stretch on top,
-			                          ///< so the factor composes correctly with whatever
-			                          ///< transform-stack state the object had (matrix
-			                          ///< import / quaternion / earlier SetObjectScale).
-			TransformState dragStartState;  ///< F6: component-decomposed transform at
-			                                ///< drag-start, so undo of a ScaleObjectFromAnchor
-			                                ///< restores COMPONENTS (not a stack-collapsed matrix)
-			                                ///< -> a later absolute setter composes correctly.
+			Matrix4 dragStartMatrix;  ///< authoritative final-matrix anchor for scale drag.
+			TransformStateV2 dragStartState;  ///< exact components, stack entries, and
+			                                ///< authoritative-matrix metadata at drag-start.
 			bool    dragStartStateValid;    ///< F6: dragStartState captured this drag.
 			double  prevAngle;        ///< pointer angle around pivot (for Ring drags)
 		};

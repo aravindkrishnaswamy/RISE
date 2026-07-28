@@ -570,7 +570,7 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
 
 /// Restrict full-resolution interactive passes to an INCLUSIVE box in
 /// full-res film pixel coordinates.  Coarse ladder passes still render
-/// full-frame; the region auto-clears before any production render.
+/// full-frame; ordinary production renders ignore and preserve the region.
 - (void)setInteractiveRegionLeft:(unsigned int)left
                              top:(unsigned int)top
                            right:(unsigned int)right

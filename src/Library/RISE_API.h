@@ -68,6 +68,7 @@
 #include "Interfaces/IFunction1D.h"
 #include "Interfaces/ITriangleMeshGeometry.h"
 #include "Interfaces/ITriangleMeshLoader.h"
+#include "Interfaces/ITransformable.h"
 #include "Interfaces/ITwoColorOperator.h"
 #include "Interfaces/IWriteBuffer.h"
 #include "Rendering/DisplayTransform.h"
@@ -130,6 +131,19 @@ namespace RISE
 		char* szInfo,										///< [out] Pointer to string to recieve special info
 		unsigned int infoStrMax								///< [in] Maximum characters to store in info string
 		);
+
+	//! Capture/restore the exact transform representation through the public
+	//! interface without changing ITransformable's established vtable or
+	//! TransformState's binary layout. These additive V2 entry points preserve
+	//! authoritative matrix metadata used by matrix-authored objects, so later
+	//! absolute position/orientation/scale setters retain their semantics.
+	//! Restore accepts snapshots returned by the capture entry point and rejects
+	//! malformed/non-finite state without mutating the target. Returns false for
+	//! invalid state, null pointers, or non-RISE ITransformable implementations.
+	bool RISE_API_CaptureTransformStateV2(
+		const ITransformable* transformable, TransformStateV2* outState );
+	bool RISE_API_RestoreTransformStateV2(
+		ITransformable* transformable, const TransformStateV2* state );
 
 	//////////////////////////////////////////////////////////
 	// Defines camera creation
@@ -3804,8 +3818,11 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_GetPaneContentSource(
 		SceneEditController* p, unsigned int pane, int* out );
 
-	//! P3a slice 3: pane render-surface dims (the GUI's pane rect); 0/0
-	//! resets to film dims.  Fail-closed per the block contract.
+	//! P3a slice 3: displayed pane-surface dims (the GUI's aspect-fitted
+	//! pane rect); 0/0 resets to film dims. N-up uses these as render dims,
+	//! while Single pane 0 retains its legacy fit-capped render resolution
+	//! and uses them only for display-space gizmo sizing. Fail-closed per the
+	//! block contract.
 	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
 		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h );
 
@@ -3930,7 +3947,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	// ---- Interactive region-of-interest (UI redesign, A4) ------------
 	// Full-resolution film pixel coords, INCLUSIVE.  See
 	// SceneEditController::SetInteractiveRegion for semantics (full-res
-	// passes only; cleared automatically before production renders).
+	// passes only; preserved while production rendering is in flight).
 
 	bool RISE_API_SceneEditController_SetInteractiveRegion(
 		SceneEditController* p, unsigned int left, unsigned int top,

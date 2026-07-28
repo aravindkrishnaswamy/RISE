@@ -39,6 +39,13 @@
 #include <vector>
 
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/FilteredFilm.h"
+#include "../src/Library/Rendering/SplatFilm.h"
+#include "../src/Library/Rendering/ProgressiveFilm.h"
+#include "../src/Library/Rendering/BidirectionalRasterizerBase.h"
+#include "../src/Library/Rendering/OIDNDenoiser.h"
+#include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
 #include "../src/Library/Utilities/Reference.h"
 
@@ -194,9 +201,9 @@ namespace
 		FrameStore* store = MakeStore( w, h, 1,
 			{ ChannelId::Albedo, ChannelId::Normal, ChannelId::Depth } );
 		PropagateAOVsToFrameStore( store, full );
-		const auto* albedo = store->GetChannel<ChannelId::Albedo>();
-		const auto* normal = store->GetChannel<ChannelId::Normal>();
-		const auto* depth = store->GetChannel<ChannelId::Depth>();
+		auto* albedo = store->GetChannel<ChannelId::Albedo>();
+		auto* normal = store->GetChannel<ChannelId::Normal>();
+		auto* depth = store->GetChannel<ChannelId::Depth>();
 		Check( ApproxEq( albedo->At( 0, 0 ).r, 0.2, 1e-6 ) &&
 		       ApproxEq( albedo->At( 0, 0 ).b, 0.6, 1e-6 ),
 			"AOV bridge propagates albedo" );
@@ -205,6 +212,18 @@ namespace
 			"AOV bridge propagates world normal" );
 		Check( ApproxEq( depth->At( 0, 0 ), 7.5, 1e-6 ),
 			"AOV bridge propagates camera-ray depth" );
+
+		// A regional propagation must not replace previously valid AOV data
+		// outside the crop with the sidecar's zero-initialized pixels.
+		albedo->At( 1, 0 ) = RISEPel( 0.9, 0.8, 0.7 );
+		normal->At( 1, 0 ) = Vector3( 0.4, 0.5, 0.6 );
+		depth->At( 1, 0 ) = 42.0f;
+		const Rect firstPixelOnly( 0, 0, 0, 0 );
+		PropagateAOVsToFrameStore( store, full, &firstPixelOnly );
+		Check( ApproxEq( albedo->At( 1, 0 ).r, 0.9, 1e-6 )
+		    && ApproxEq( normal->At( 1, 0 ).z, 0.6, 1e-6 )
+		    && ApproxEq( depth->At( 1, 0 ), 42.0, 1e-6 ),
+			"regional AOV propagation preserves channels outside the crop" );
 
 		AOVBuffers silhouette( 1, 1, AOVBuffers::Plan( false, false, true ) );
 		silhouette.AccumulateDepth( 0, 0, 5.0, 1.0 );
@@ -990,6 +1009,138 @@ namespace
 		a->release();
 		b->release();
 	}
+
+	// ─── Section 10: regional post-processing confinement ─────────
+	void TestRegionalPostProcessingConfinement()
+	{
+		const unsigned int w = 16, h = 16;
+		IRasterImage* image = new RISERasterImage(
+			w, h, RISEColor( RISEPel( 0.25, 0.5, 0.75 ), 0.6 ) );
+
+		IPixelFilter* filter = nullptr;
+		Check( RISE_API_CreateBoxPixelFilter( &filter, 2.0, 2.0 ) && filter,
+			"regional filtered-film test creates a filter" );
+		if( filter ) {
+			RISE::Implementation::FilteredFilm* film =
+				new RISE::Implementation::FilteredFilm( w, h );
+			// Center the footprint across the left crop boundary: x=4 must
+			// remain sentinel while the adjacent x=5 resolve proves useful
+			// work happened inside the requested region.
+			film->Splat( 4.75, 7.0, XYZPel( 2.0, 1.0, 0.5 ), *filter );
+			const Rect region( 5, 5, 10, 10 );
+			film->Resolve( *image, &region );
+			const RISEColor outside = image->GetPEL( 4, 7 );
+			Check( ApproxEq( outside.base.r, 0.25, 1e-12 )
+			    && ApproxEq( outside.base.g, 0.5, 1e-12 )
+			    && ApproxEq( outside.base.b, 0.75, 1e-12 )
+			    && ApproxEq( outside.a, 0.6, 1e-12 ),
+				"regional filtered-film resolve leaves sentinel pixels outside untouched" );
+			const RISEColor inside = image->GetPEL( 5, 7 );
+			Check( !ApproxEq( inside.base.r, 0.25, 1e-6 )
+			    || !ApproxEq( inside.base.g, 0.5, 1e-6 )
+			    || !ApproxEq( inside.base.b, 0.75, 1e-6 ),
+				"regional filtered-film resolve still writes its in-region footprint" );
+			film->release();
+			filter->release();
+		}
+
+		// BDPT/VCM light-to-camera paths use SplatFilm, independently of
+		// FilteredFilm. Resolve and its temporary pre-denoise inverse must
+		// obey the same inclusive region bounds.
+		RISE::Implementation::SplatFilm* splats =
+			new RISE::Implementation::SplatFilm( w, h );
+		splats->Splat( 4, 7, RISEPel( 3.0, 2.0, 1.0 ) );
+		splats->Splat( 5, 7, RISEPel( 3.0, 2.0, 1.0 ) );
+		splats->FlushCallingThreadBuffer();
+		const Rect region( 5, 5, 10, 10 );
+		const RISEColor outsideSplatBefore = image->GetPEL( 4, 7 );
+		const RISEColor insideSplatBefore = image->GetPEL( 5, 7 );
+		splats->Resolve( *image, 2.0, &region );
+		Check( image->GetPEL( 4, 7 ).base.r == outsideSplatBefore.base.r,
+			"regional splat resolve leaves a contributed outside pixel untouched" );
+		Check( image->GetPEL( 5, 7 ).base.r > insideSplatBefore.base.r,
+			"regional splat resolve adds its in-region contribution" );
+		splats->Unresolve( *image, 2.0, &region );
+		Check( ApproxEq( image->GetPEL( 5, 7 ).base.r, insideSplatBefore.base.r, 1e-12 ),
+			"regional splat unresolve restores its in-region pixel" );
+		splats->release();
+
+		// Adaptive-map mode used to overwrite every outside pixel with zero
+		// because an unrendered ProgressivePixel has sampleIndex==0.
+		RISE::Implementation::ProgressiveFilm progressive( w, h );
+		progressive.Get( 5, 7 ).sampleIndex = 4;
+		const RISEColor progressiveOutsideBefore = image->GetPEL( 4, 7 );
+		progressive.Resolve( *image, true, 8, &region );
+		Check( image->GetPEL( 4, 7 ).base.r == progressiveOutsideBefore.base.r,
+			"regional adaptive-map resolve preserves outside pixels" );
+		Check( ApproxEq( image->GetPEL( 5, 7 ).base.r, 0.5, 1e-12 ),
+			"regional adaptive-map resolve writes in-region sample progress" );
+		for( unsigned int y=5; y<=10; ++y ) {
+			for( unsigned int x=5; x<=10; ++x ) {
+				progressive.Get( x, y ).sampleIndex = 8;
+			}
+		}
+		Check( progressive.CountDone( 8, &region ) == 36,
+			"regional progressive completion ignores unfinished outside pixels" );
+		Check( progressive.CountDone( 8 ) == 36,
+			"full-frame progressive completion still includes unfinished outside pixels" );
+
+		const Rect quarterFrame( 0, 0, 7, 7 );
+		Check(
+			RISE::Implementation::BidirectionalRasterizerBase::RegionalPixelCount(
+				w, h, &quarterFrame ) == 64,
+			"regional camera metrics count selected pixels only" );
+		Check( ApproxEq(
+			RISE::Implementation::BidirectionalRasterizerBase::RegionalSplatSPP(
+				8.0, w, h, &quarterFrame ), 2.0, 1e-12 ),
+			"regional BDPT/VCM splat normalization scales by selected area" );
+
+#ifdef RISE_ENABLE_OIDN
+		// Fill the beauty image with deterministic high-frequency input, then
+		// denoise only the middle crop. Outside RGB and alpha must remain exact.
+		for( unsigned int y=0; y<h; ++y ) {
+			for( unsigned int x=0; x<w; ++x ) {
+				const double v = ( (x+y) & 1u ) ? 0.9 : 0.1;
+				image->SetPEL( x, y, RISEColor( RISEPel( v, 0.5*v, 0.25*v ), 0.35 ) );
+			}
+		}
+		const RISEColor outsideBefore = image->GetPEL( 1, 1 );
+		std::vector<RISEColor> insideBefore;
+		for( unsigned int y=4; y<=11; ++y ) {
+			for( unsigned int x=4; x<=11; ++x ) insideBefore.push_back( image->GetPEL( x, y ) );
+		}
+		AOVBuffers noGuides( w, h, AOVBuffers::Plan( false, false, false ) );
+		RISE::Implementation::OIDNDenoiser denoiser;
+		denoiser.ApplyDenoiseRegion( *image, noGuides, w, h,
+			4, 4, 11, 11, OidnQuality::Fast, OidnDevice::CPU,
+			OidnPrefilter::Fast, 0.1 );
+		const RISEColor outsideAfter = image->GetPEL( 1, 1 );
+		Check( outsideAfter.base.r == outsideBefore.base.r
+		    && outsideAfter.base.g == outsideBefore.base.g
+		    && outsideAfter.base.b == outsideBefore.base.b
+		    && outsideAfter.a == outsideBefore.a,
+			"regional OIDN leaves every channel of an outside sentinel untouched" );
+		Check( image->GetPEL( 6, 6 ).a == 0.35,
+			"regional OIDN preserves alpha inside the crop" );
+		bool changedInside = false;
+		size_t insideIndex = 0;
+		for( unsigned int y=4; y<=11 && !changedInside; ++y ) {
+			for( unsigned int x=4; x<=11; ++x, ++insideIndex ) {
+				const RISEColor after = image->GetPEL( x, y );
+				const RISEColor before = insideBefore[insideIndex];
+				if( !ApproxEq( after.base.r, before.base.r, 1e-6 )
+				 || !ApproxEq( after.base.g, before.base.g, 1e-6 )
+				 || !ApproxEq( after.base.b, before.base.b, 1e-6 ) ) {
+					changedInside = true;
+					break;
+				}
+			}
+		}
+		Check( changedInside, "regional OIDN denoises pixels inside the crop" );
+#endif
+
+		image->release();
+	}
 }
 
 int main()
@@ -1011,6 +1162,7 @@ int main()
 	TestBeautyRasterImageShim();
 	TestHDRArchivalIdentity();
 	TestCopyTileFromRasterImage();
+	TestRegionalPostProcessingConfinement();
 
 	std::cout << "------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

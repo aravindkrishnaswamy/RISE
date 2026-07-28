@@ -38,6 +38,18 @@ namespace RISE
 	class ObjectIntrospection
 	{
 	public:
+		//! Split an affine transform's linear part into a proper orthonormal
+		//! rotation and a residual (`linear = rotation * residual`). The
+		//! residual retains scale, reflection, and shear. Degenerate columns
+		//! receive a deterministic frame inferred from the surviving columns.
+		static void DecomposeFinalAffine(
+			const Matrix4& transform, Matrix4& rotation, Matrix4& residual );
+
+		//! Euler XYZ read-back for a proper rotation matrix, in degrees.
+		//! Exact gimbal lock uses a deterministic z=0 representative that
+		//! reconstructs the same matrix.
+		static Vector3 RotationEulerDegrees( const Matrix4& rotation );
+
 		//! Inspect a single object.  `name` is the manager-registered
 		//! name.  Optional manager pointers let the editable surface
 		//! emit material / shader presets as quick-pick combo entries

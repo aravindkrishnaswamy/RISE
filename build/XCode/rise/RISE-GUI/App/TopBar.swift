@@ -257,12 +257,39 @@ struct TopBar: View {
                 cancelPill
             }
         } else {
-            transportPill("Render", filled: true) {
-                viewModel.startRender()
+            HStack(spacing: 4) {
+                transportPill("Render", filled: true) {
+                    viewModel.startRender()
+                }
+                .help("Start a full-frame production render (⌘R)")
+
+                if viewModel.activeRegion != nil {
+                    Menu {
+                        Button("Render Active Region") {
+                            viewModel.startActiveRegionRender()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(Theme.sans(10, .semibold))
+                            .foregroundColor(Color.black.opacity(0.92))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 7)
+                            .background(Theme.accent,
+                                        in: RoundedRectangle(cornerRadius: Theme.radiusMedium))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(!viewModel.canRenderActiveRegion)
+                    .accessibilityLabel("Render options")
+                    .accessibilityHint("Contains the command to render only the active region")
+                    .opacity(viewModel.canRenderActiveRegion ? 1.0 : 0.4)
+                    .help(viewModel.canRenderActiveRegion
+                          ? "Render only the active region"
+                          : "The active production rasterizer does not support region rendering")
+                }
             }
             .disabled(!viewModel.canStartProductionRender)
             .opacity(viewModel.canStartProductionRender ? 1.0 : 0.4)
-            .help("Start a production render (⌘R)")
         }
     }
 
@@ -383,11 +410,23 @@ struct TopBar: View {
     }
 
     private var statusRow1: String { status.text }
-    private var statusLabel: String { status.label }
+    private var statusLabel: String {
+        guard viewModel.isRegionProductionRender else { return status.label }
+        if errorMessage != nil { return "REGION ERROR" }
+        if viewModel.renderState == .cancelled || isCancelling { return "REGION CANCELLED" }
+        if isProduction {
+            return viewModel.isProductionRenderPaused ? "REGION PAUSED" : "REGION RENDERING"
+        }
+        return viewModel.renderState == .completed ? "REGION FINAL" : status.label
+    }
 
     private var statusLabelColor: Color {
         if errorMessage != nil { return Theme.error }
         if isCancelling { return Theme.warn }
+        if viewModel.isRegionProductionRender &&
+            (viewModel.renderState == .cancelled || viewModel.isProductionRenderPaused) {
+            return Theme.warn
+        }
         if isProduction { return Theme.success }
         switch viewModel.refinementPhase {
         case 4: return Theme.warn

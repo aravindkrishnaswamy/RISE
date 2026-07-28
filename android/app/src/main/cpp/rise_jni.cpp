@@ -286,6 +286,13 @@ JNIF(jlong, nativeViewportCameraDimensions)(JNIEnv* /*env*/, jobject /*thiz*/) {
     getBridge().viewportGetCameraDimensions(w, h);
     return (static_cast<jlong>(w) << 32) | static_cast<jlong>(h);
 }
+JNIF(jboolean, nativeViewportSetSurfaceDimensions)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                                    jint width, jint height) {
+    if (width <= 0 || height <= 0) return JNI_FALSE;
+    return getBridge().viewportSetSurfaceDimensions(
+        static_cast<unsigned int>(width), static_cast<unsigned int>(height))
+        ? JNI_TRUE : JNI_FALSE;
+}
 JNIF(jdouble, nativeViewportAnimationTimeEnd)(JNIEnv* /*env*/, jobject /*thiz*/) {
     double t0 = 0, t1 = 0;
     unsigned int nf = 0;

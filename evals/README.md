@@ -37,6 +37,8 @@ evals/
   scenarios/    committed scenario definitions (evals/scenarios/*.json)
   fixtures/     committed canned-response fixtures (evals/fixtures/*.fixture.jsonl)
   runconfigs/   committed run configs for `rise --agent-eval` (evals/runconfigs/*.json)
+  perception_ab/ paired local-vision cue-targeted manifest + methodology
+  results/      small curated evidence snapshots for committed result claims
   runs/         LIVE run output (gitignored — see .gitignore; never commit this)
 ```
 
@@ -92,6 +94,24 @@ Fields (`LoadEvalRunConfig`, `AgentEvalRunConfig`/`AgentEvalProviderConfig` in
 `evals/runconfigs/local_shootout.json` shows the full matrix shape: 4
 scenarios × 8 provider/model rows (gemini, five `local` Ollama models, openai,
 xai) × 3 repeats.
+
+### Local perception-atlas A/B
+
+The perception-atlas experiment is deliberately separate from the general
+tool-using scenario matrix. It needs to force one image observation per answer,
+disable expensive hidden reasoning, and keep the beauty/atlas image-token budget
+identical. It still drives the real RISE `render` and `read_image` JSON-RPC
+surface, then sends each PNG to the installed local vision model:
+
+```sh
+python3 tools/perception_ab_eval.py
+```
+
+See [perception_ab/README.md](perception_ab/README.md) for the paired design and
+[../docs/PERCEPTION_ATLAS_AB_RESULTS.md](../docs/PERCEPTION_ATLAS_AB_RESULTS.md)
+for the first measured result. Its compact audited evidence is tracked under
+`results/perception_ab_qwen36_20260726/`; other live artifacts remain under
+gitignored `evals/runs/` like the general harness.
 
 #### Env-var keys per provider
 
@@ -255,11 +275,11 @@ The two seed scenarios that exercise this end-to-end,
 `evals/scenarios/image_reconstruct_multi.json` (four multi-view reference
 photos, ground truth + poses + calibration under `evals/references/`), live
 in their **own** runconfig, `evals/runconfigs/image_reconstruct.json`,
-rather than in `full_baseline`/`local_shootout`: this repo's local (Ollama)
-shootout models are text-only, so mixing a vision-required scenario into a
-runconfig that includes `local` columns would silently starve those columns
-of usable input. `image_reconstruct.json` targets the 4 hosted vision
-providers only.
+rather than in `full_baseline`/`local_shootout`: four of the five local Ollama
+shootout models are text-only, so mixing a vision-required scenario into that
+matrix would silently starve those columns of usable input. The hosted board is
+`image_reconstruct.json`; the sole installed vision-capable local model has its
+own `image_reconstruct_local.json` runconfig.
 
 ### The raw fixture format
 

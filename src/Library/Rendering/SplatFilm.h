@@ -121,7 +121,8 @@ namespace RISE
 			//! Divides each pixel's accumulated color by the total number of samples.
 			void Resolve(
 				IRasterImage& target,					///< [in/out] Target image to receive resolved splats
-				const Scalar sampleCount				///< [in] Total number of samples taken
+				const Scalar sampleCount,				///< [in] Total number of samples taken
+				const Rect* region = 0					///< [in] Optional inclusive write bounds
 				) const;
 
 			//! Subtracts previously resolved splats from the image (inverse of Resolve).
@@ -129,7 +130,8 @@ namespace RISE
 			//! Unresolve afterward to avoid double-counting.
 			void Unresolve(
 				IRasterImage& target,					///< [in/out] Target image to undo resolved splats
-				const Scalar sampleCount				///< [in] Same sample count used in Resolve
+				const Scalar sampleCount,				///< [in] Same sample count used in Resolve
+				const Rect* region = 0					///< [in] Optional inclusive write bounds
 				) const;
 
 			//! Clears all accumulated splat data

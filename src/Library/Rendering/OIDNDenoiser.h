@@ -121,6 +121,24 @@ namespace RISE
 				OidnPrefilter requestedPrefilter,
 				double renderSecondsBeforeDenoise
 				);
+
+			/// Region-restricted counterpart used by RasterizeRegion. The OIDN
+			/// working image and guide planes are cropped to the inclusive bounds,
+			/// and only those pixels are written back to `image`.
+			void ApplyDenoiseRegion(
+				IRasterImage& image,
+				const AOVBuffers& aovBuffers,
+				unsigned int fullWidth,
+				unsigned int fullHeight,
+				unsigned int left,
+				unsigned int top,
+				unsigned int right,
+				unsigned int bottom,
+				OidnQuality requestedQuality,
+				OidnDevice requestedDevice,
+				OidnPrefilter requestedPrefilter,
+				double renderSecondsBeforeDenoise
+				);
 #endif
 
 		private:

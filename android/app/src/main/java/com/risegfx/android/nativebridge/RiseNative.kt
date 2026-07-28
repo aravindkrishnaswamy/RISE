@@ -328,6 +328,13 @@ object RiseNative {
     external fun nativeViewportCameraDimensions(): Long
 
     /**
+     * Aspect-fitted viewport draw area in physical pixels. Single-pane
+     * rendering keeps its fit-capped render resolution; the controller uses
+     * this measurement for display-space gizmo geometry and drag sensitivity.
+     */
+    external fun nativeViewportSetSurfaceDimensions(width: Int, height: Int): Boolean
+
+    /**
      * Scene's animation duration in scene-time units, derived from the
      * `animation_options` chunk's `time_end`.  Used by [ViewportPane]
      * to size the timeline scrubber's slider range.  Returns 0 when

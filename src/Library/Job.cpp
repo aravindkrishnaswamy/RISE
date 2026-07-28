@@ -30,6 +30,7 @@
 #include "RISE_API.h"
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
 #include "Utilities/FiniteMath.h"
+#include "Utilities/Transformable.h"
 #include <algorithm>
 #include <cmath>
 #ifndef M_PI
@@ -5701,8 +5702,13 @@ bool Job::AddObjectMatrix(
 
 	// FinalizeTransformations composes (P*O*Stretch*Scale) * stack-bottom, so leave the
 	// component transforms identity and push the supplied matrix onto the (cleared) stack.
-	object->ClearAllTransforms();
-	object->PushTopTransStack( mx );
+	if( Implementation::Transformable* transformable =
+		dynamic_cast<Implementation::Transformable*>( object ) ) {
+		transformable->SetFinalTransformMatrix( mx );
+	} else {
+		object->ClearAllTransforms();
+		object->PushTopTransStack( mx );
+	}
 	object->FinalizeTransformations();
 
 	if( repoint ) {
@@ -8268,10 +8274,6 @@ bool Job::AddFileRasterizerOutput(
 	const bool exr_with_alpha
 	)
 {
-	if( !pRasterizer ) {
-		return false;
-	}
-
 	// L5d — GUI hosts set m_suppressFileRasterizerOutputs at
 	// construction so loading a scene with `file_rasterizeroutput`
 	// chunks doesn't litter the user's filesystem with auto-generated
@@ -9341,9 +9343,21 @@ bool Job::RasterizeRegion(
 	const unsigned int bottom						///< [in] Bottom most scanline
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
 		return false;
 	}
+
+	const unsigned int width = pScene->GetFilm()->GetWidth();
+	const unsigned int height = pScene->GetFilm()->GetHeight();
+	if( width == 0 || height == 0 || left > right || top > bottom
+		|| left >= width || top >= height ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::RasterizeRegion: invalid or out-of-film region [%u,%u]-[%u,%u] for %ux%u film",
+			left, top, right, bottom, width, height );
+		return false;
+	}
+	const unsigned int clippedRight = r_min( right, width-1 );
+	const unsigned int clippedBottom = r_min( bottom, height-1 );
 
 	IRasterizeSequence* pSeq = 0;
 
@@ -9362,7 +9376,7 @@ bool Job::RasterizeRegion(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	Rect	rc( top, left, bottom, right );
+	Rect	rc( top, left, clippedBottom, clippedRight );
 
 	// See the matching comment in Job::Rasterize: pSeq must be released
 	// on every exit, including a worker exception propagated up through
@@ -10331,9 +10345,10 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 }
 
 // P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as the
-// authoritative `matrix` param (16 col-major doubles).  Strips the now-dead position/orientation/quaternion/
-// scale params first (matrix masks them AND a coexisting component param trips the parser's `matrix overrides`
-// warning).  Uniform for panel + gizmo edits -> avoids the param/matrix mixing break.  Same 0/1/2/3 contract.
+// authoritative `matrix` param (16 col-major doubles). If legacy same-name override_object chunks follow the
+// base, write the LAST override layer: committing only the base would let a later partial absolute override
+// mask the GUI edit on re-derive. Strips the now-dead position/orientation/quaternion/scale params from the
+// chosen owner first. Uniform for panel + gizmo edits -> avoids param/matrix mixing. Same 0/1/2/3 contract.
 int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 )
 {
 	if( !pCstDocument || !objectName || !matrix16 || !matrix16[0] ) return 0;
@@ -10361,12 +10376,23 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 			return 0;
 		}
 	}
-	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "position" );
-	d1 = RISE::Cst::DocRemoveParam( d1, id, "orientation" );
-	d1 = RISE::Cst::DocRemoveParam( d1, id, "quaternion" );
-	d1 = RISE::Cst::DocRemoveParam( d1, id, "scale" );
-	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "matrix", 0, matrix16 );
-	return DeriveEditedCstDocument_( std::move( d1 ), id, objectName, "matrix" );
+	RISE::Cst::NodeId ownerId = id;
+	const std::string overridePath = std::string( "override_object/" ) + objectName;
+	for( int index = RISE::Cst::DocItemCount( *pCstDocument ) - 1; index >= 0; --index ) {
+		const RISE::Cst::NodeId candidateId = RISE::Cst::DocNodeIdAt( *pCstDocument, index );
+		const RISE::Cst::NodeRef candidate = RISE::Cst::DocResolveNodeId( *pCstDocument, candidateId );
+		if( candidate && candidate->role == "override_object"
+		 && RISE::Cst::ChunkNamePath( candidate ) == overridePath ) {
+			ownerId = candidateId;
+			break;
+		}
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, ownerId, "position" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "orientation" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "quaternion" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "matrix", 0, matrix16 );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "matrix" );
 }
 
 // P5 Slice 3 expansion (object transform): classify how object `name`'s retained-CST chunk can accept a transform

@@ -28,6 +28,8 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
+#include <QImage>
+#include <QMenu>
 #include <cmath>
 #include <algorithm>
 
@@ -397,6 +399,21 @@ TopBar::TopBar(QWidget* parent)
     connect(m_transportBtn, &QPushButton::clicked, this, &TopBar::onRenderTransportClicked);
     layout->addWidget(m_transportBtn);
 
+    m_regionRenderBtn = new QToolButton(this);
+    m_regionRenderBtn->setText(QStringLiteral("\xE2\x96\xBE"));
+    m_regionRenderBtn->setFont(Theme::sans(11, QFont::DemiBold));
+    m_regionRenderBtn->setFixedHeight(28);
+    m_regionRenderBtn->setPopupMode(QToolButton::InstantPopup);
+    m_regionRenderBtn->setAccessibleName(tr("Render options"));
+    m_regionRenderBtn->setAccessibleDescription(
+        tr("Contains the command to render only the active region"));
+    auto* regionMenu = new QMenu(m_regionRenderBtn);
+    QAction* regionAction = regionMenu->addAction(QStringLiteral("Render Active Region"));
+    connect(regionAction, &QAction::triggered, this, &TopBar::renderRegionClicked);
+    m_regionRenderBtn->setMenu(regionMenu);
+    m_regionRenderBtn->hide();
+    layout->addWidget(m_regionRenderBtn);
+
     // ---- Right: Cancel pill --------------------------------------------
     // Shown beside m_transportBtn only while Rendering (error-tinted
     // outline, mirrors TopBar.swift's cancelPill); hidden the rest of
@@ -534,6 +551,7 @@ void TopBar::restyleTheme()
     updateReadout();
     updateIntegratorChip();
     updateTransportButton();
+    updateRegionRenderButton();
 
     // TopBarLogoSwatch and TopBarProgressStrip (m_logoSwatch,
     // m_progressStrip) are custom-painted widgets that read Theme::
@@ -562,8 +580,21 @@ void TopBar::setEngine(RenderEngine* engine)
 
 void TopBar::setViewportBridge(ViewportBridge* bridge)
 {
+    if (m_bridge) disconnect(m_bridge, nullptr, this, nullptr);
     m_bridge = bridge;
     if (m_bridge) {
+        // Unlike the 500 ms phase poll, this signal means an actual live
+        // viewport image reached the UI. Invalidate REGION FINAL exactly
+        // when those pixels replace the held production result.
+        connect(m_bridge, &ViewportBridge::imageUpdated, this,
+            [this](const QImage&) {
+                if (m_engine && m_engineState == RenderEngine::Completed
+                    && m_engine->isRegionProductionRender()
+                    && !m_regionFinalInvalidated) {
+                    m_regionFinalInvalidated = true;
+                    updateReadout();
+                }
+            });
         pollRefinementState();
         m_pollTimer->start();
     } else {
@@ -811,6 +842,9 @@ void TopBar::pollRefinementState()
 void TopBar::onEngineStateChanged(int newState)
 {
     m_engineState = newState;
+    if (m_engineState == RenderEngine::Rendering) {
+        m_regionFinalInvalidated = false;
+    }
     updateReadout();
     updateIntegratorChip();
     updateControlsEnabled();
@@ -852,7 +886,8 @@ void TopBar::updateReadout()
     // formatter so an error always wins regardless of stale phase state.
     if (m_engineState == RenderEngine::Error) {
         m_statusRowLabel->setText(QStringLiteral("Error"));
-        m_statusTagLabel->setText(QStringLiteral("ERROR"));
+        m_statusTagLabel->setText(m_engine && m_engine->isRegionProductionRender()
+            ? QStringLiteral("REGION ERROR") : QStringLiteral("ERROR"));
         m_statusTagLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::error)));
         m_lastNonPausedFraction = 0.0;
         if (m_progressStrip) m_progressStrip->setFraction(0.0);
@@ -870,10 +905,35 @@ void TopBar::updateReadout()
         m_bridge ? m_bridge->viewportRenderModeWantsDenoise() : true);
 
     m_statusRowLabel->setText(s.text);
-    m_statusTagLabel->setText(s.label);
+    QString statusLabel = s.label;
+    if (m_engine && m_engine->isRegionProductionRender() && !m_regionFinalInvalidated) {
+        if (isCancelling || m_engineState == RenderEngine::Cancelled) {
+            statusLabel = QStringLiteral("REGION CANCELLED");
+        } else if (isProduction) {
+            statusLabel = isProductionPaused
+                ? QStringLiteral("REGION PAUSED") : QStringLiteral("REGION RENDERING");
+        } else if (m_engineState == RenderEngine::Completed && m_refinementPhase == 0) {
+            statusLabel = QStringLiteral("REGION FINAL");
+        }
+    } else if (!isProduction && m_bridge) {
+        unsigned int l = 0, t = 0, r = 0, b = 0;
+        if (m_bridge->getInteractiveRegion(&l, &t, &r, &b)) {
+            if (m_refinementScaleDivisor == 1) {
+                const QSize dims = m_bridge->cameraSurfaceDimensions();
+                const double framePixels = std::max(1.0,
+                    static_cast<double>(dims.width()) * dims.height());
+                const int percent = static_cast<int>(std::lround(
+                    100.0 * static_cast<double>(r - l + 1) * (b - t + 1) / framePixels));
+                statusLabel = tr("REGION %1%").arg(percent);
+            } else {
+                statusLabel = tr("FULL PREVIEW \xE2\x86\x92 REGION");
+            }
+        }
+    }
+    m_statusTagLabel->setText(statusLabel);
     // Empty label = nothing to add beside the text (see the label-policy
     // comment in RefinementStatus above) -- hide so no stray gap renders.
-    m_statusTagLabel->setVisible(!s.label.isEmpty());
+    m_statusTagLabel->setVisible(!statusLabel.isEmpty());
 
     QColor tagColor = Theme::success;
     if (isCancelling) {
@@ -956,6 +1016,30 @@ void TopBar::updateControlsEnabled()
     refreshRenderModeCombo();
 
     updateTransportButton();
+    updateRegionRenderButton();
+}
+
+void TopBar::updateRegionRenderButton()
+{
+    if (!m_regionRenderBtn) return;
+    unsigned int left = 0, top = 0, right = 0, bottom = 0;
+    const bool hasRegion = m_bridge
+        && m_bridge->getInteractiveRegion(&left, &top, &right, &bottom);
+    const bool idle = m_engineState != RenderEngine::Rendering
+        && m_engineState != RenderEngine::Cancelling
+        && m_engineState != RenderEngine::Loading;
+    const bool supported = m_engine && m_engine->productionRasterizerHonorsRegion();
+    m_regionRenderBtn->setVisible(hasRegion && idle);
+    m_regionRenderBtn->setEnabled(hasRegion && idle
+        && m_canStartProductionRender && supported);
+    m_regionRenderBtn->setToolTip(supported
+        ? QStringLiteral("Render only the active region")
+        : QStringLiteral("The production rasterizer does not support region rendering"));
+    m_regionRenderBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { background-color: %1; color: %2; border: none;"
+        " border-radius: %3px; padding: 5px 9px; }")
+        .arg(Theme::hex(Theme::accent), Theme::hex(Theme::textOnAccent))
+        .arg(Theme::radiusMedium));
 }
 
 void TopBar::refreshRenderModeCombo()

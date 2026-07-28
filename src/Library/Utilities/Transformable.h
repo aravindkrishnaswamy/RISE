@@ -39,6 +39,8 @@ namespace RISE
 			Matrix4		m_mxOrientation;	// Orientation matrix
 			Matrix4		m_mxScale;			// Scale matrix
 			Matrix4		m_mxStretch;		// Stretch matrix
+			Matrix4 CollapsedTransformStack_( ) const;
+			void ReplaceFinalStack_( const Matrix4& matrix );
 
 		public:
 			// These two methods allow direct access to the transformation stack
@@ -70,13 +72,22 @@ namespace RISE
 			// Finalizes all transformations and computes the final matrix
 			virtual void FinalizeTransformations( );
 
-			//! Capture the full component-decomposed transform state (for
-			//! editor undo / restore) -- see TransformState.
+			//! Legacy component-only snapshot retained for ABI compatibility.
+			//! Matrix-authored callers needing exact subsequent setter semantics
+			//! must use the additive RISE_API_*TransformStateV2 entry points.
 			virtual TransformState CaptureTransformState( ) const;
 
-			//! Restore a state captured by CaptureTransformState, preserving the
-			//! component decomposition, then finalize.
+			//! Restore a legacy component-only state, then finalize.
 			virtual void RestoreTransformState( const TransformState& st );
+			TransformStateV2 CaptureTransformStateV2( ) const;
+			bool RestoreTransformStateV2( const TransformStateV2& st );
+			void CopyTransformMetadataTo( Transformable& destination ) const;
+
+			//! Replace the whole transform with one authoritative affine matrix.
+			//! Unlike a raw Clear+Push sequence, later absolute SetPosition /
+			//! SetOrientation / SetScale / SetStretch calls edit this matrix rather
+			//! than composing hidden component state underneath it.
+			void SetFinalTransformMatrix( const Matrix4& matrix );
 
 			// Retrieves the transformation matrix
 			virtual inline Matrix4 const GetFinalTransformMatrix( ) const { return m_mxFinalTrans; };
