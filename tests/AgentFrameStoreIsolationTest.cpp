@@ -92,6 +92,7 @@
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Rendering/AutoRasterizer.h"
+#include "../src/Library/Rendering/BidirectionalRasterizerBase.h"
 #include "../src/Library/Utilities/Reference.h"
 
 #include <cmath>
@@ -264,31 +265,37 @@ static const char* const kBdptRasterizer =
 static const char* const kVcmRasterizer =
 	"vcm_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}";
 static const char* const kRegionBdptSpectralRasterizer =
-	"bdpt_spectral_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n"
+	"bdpt_spectral_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n"
 	"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
 	"\thwss false\n\toidn_denoise false\n}";
 static const char* const kRegionPtSpectralNM =
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n"
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n"
 	"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
 	"\thwss false\n\toidn_denoise false\n}";
 static const char* const kRegionPtSpectralHWSS =
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n"
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n"
 	"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
 	"\thwss true\n\toidn_denoise false\n}";
 static const char* const kRegionBdptSpectralHWSS =
-	"bdpt_spectral_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n"
+	"bdpt_spectral_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n"
 	"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
 	"\thwss true\n\toidn_denoise false\n}";
 static const char* const kRegionVcmSpectralNM =
-	"vcm_spectral_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n"
+	"vcm_spectral_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n"
 	"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
 	"\thwss false\n\toidn_denoise false\n}";
 static const char* const kRegionVcmSpectralHWSS =
-	"vcm_spectral_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n"
+	"vcm_spectral_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n"
 	"\tnmbegin 450\n\tnmend 650\n\tnum_wavelengths 3\n\tspectral_samples 1\n"
 	"\thwss true\n\toidn_denoise false\n}";
 static const char* const kRegionPtWideFilter =
-	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter gaussian\n\toidn_denoise false\n}";
+	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter gaussian\n\toidn_denoise false\n}";
+static const char* const kRegionPtPel =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kRegionBdptPel =
+	"bdpt_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
+static const char* const kRegionVcmPel =
+	"vcm_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}";
 // P2: MLT opted BACK INTO the FrameStore push in commit 36809dcf
 // ("L6d-2b") -- an ancestor of 81cdbadd -- so AcceptsFrameStorePush() is
 // TRUE for MLT and it IS subject to the private-store swap this file
@@ -444,6 +451,28 @@ static double RegionEnergy(
 	return energy;
 }
 
+static double OutsideRegionEnergy(
+	const std::vector<RISEColor>& pixels,
+	const unsigned int width,
+	const unsigned int height,
+	const unsigned int left,
+	const unsigned int top,
+	const unsigned int right,
+	const unsigned int bottom )
+{
+	double energy = 0.0;
+	for( unsigned int y=0; y<height; ++y ) {
+		for( unsigned int x=0; x<width; ++x ) {
+			if( x >= left && x <= right && y >= top && y <= bottom ) continue;
+			const RISEColor& c = pixels[static_cast<size_t>( y ) * width + x];
+			energy += std::max( 0.0, static_cast<double>( c.base.r ) );
+			energy += std::max( 0.0, static_cast<double>( c.base.g ) );
+			energy += std::max( 0.0, static_cast<double>( c.base.b ) );
+		}
+	}
+	return energy;
+}
+
 static void RunProductionRegionProbe( const char* label, const char* rasterizerChunk )
 {
 	const std::string scenePath = WriteTemp(
@@ -475,12 +504,22 @@ static void RunProductionRegionProbe( const char* label, const char* rasterizerC
 		return;
 	}
 	const std::vector<RISEColor> baseline = capture->frames.back();
+	Implementation::BidirectionalRasterizerBase* bidirectional =
+		dynamic_cast<Implementation::BidirectionalRasterizerBase*>( pJob->GetRasterizer() );
+	const Scalar fullSplatSPPBefore = bidirectional
+		? bidirectional->GetEffectiveSplatSPP( capture->width, capture->height ) : 0;
 
 	const unsigned int left = 6, top = 6, right = 17, bottom = 17;
 	std::srand( 0x52495345 );
 	const bool regionOK = pJob->RasterizeRegion( left, top, right, bottom );
 	Check( regionOK && capture->frames.size() == 2,
 		std::string( label ) + ": regional production render succeeds" );
+	if( bidirectional ) {
+		const Scalar regionalSplatSPP =
+			bidirectional->GetEffectiveSplatSPP( capture->width, capture->height );
+		Check( std::fabs( regionalSplatSPP - fullSplatSPPBefore*Scalar(0.25) ) <= 1e-9,
+			std::string( label ) + ": regional light-path normalization tracks selected area" );
+	}
 	if( regionOK && capture->frames.size() >= 2 ) {
 		const std::vector<RISEColor>& regional = capture->frames.back();
 		bool outsideExact = regional.size() == baseline.size();
@@ -509,9 +548,9 @@ static void RunProductionRegionProbe( const char* label, const char* rasterizerC
 			regional, capture->width, left, top, right, bottom );
 		const double energyRatio = baselineEnergy > 1e-9
 			? regionalEnergy / baselineEnergy : 0.0;
-		Check( baselineEnergy > 1e-9 && energyRatio >= 0.25 && energyRatio <= 4.0,
+		Check( baselineEnergy > 1e-9 && energyRatio >= 0.75 && energyRatio <= 1.25,
 			std::string( label ) + ": regional crop retains full-render energy normalization" );
-		if( baselineEnergy <= 1e-9 || energyRatio < 0.25 || energyRatio > 4.0 ) {
+		if( baselineEnergy <= 1e-9 || energyRatio < 0.75 || energyRatio > 1.25 ) {
 			std::printf( "  diagnostic: %s crop energy full=%.9f region=%.9f ratio=%.6f\n",
 				label, baselineEnergy, regionalEnergy, energyRatio );
 		}
@@ -550,7 +589,21 @@ static void RunProductionRegionProbe( const char* label, const char* rasterizerC
 		}
 		Check( allFinite, std::string( label ) + ": follow-up full render is finite" );
 		Check( sentinelGone,
-			std::string( label ) + ": follow-up full render overwrites every stale outside pixel" );
+			std::string( label ) + ": follow-up full render overwrites every poisoned outside pixel" );
+		const double baselineOutside = OutsideRegionEnergy(
+			baseline, capture->width, capture->height, left, top, right, bottom );
+		const double followupOutside = OutsideRegionEnergy(
+			capture->frames.back(), capture->width, capture->height, left, top, right, bottom );
+		const double outsideRatio = baselineOutside > 1e-9
+			? followupOutside / baselineOutside : 0.0;
+		Check( baselineOutside > 1e-9 && outsideRatio >= 0.75 && outsideRatio <= 1.25,
+			std::string( label ) + ": follow-up full render matches clean outside-film energy" );
+	}
+	if( bidirectional ) {
+		const Scalar fullSplatSPPAfter =
+			bidirectional->GetEffectiveSplatSPP( capture->width, capture->height );
+		Check( std::fabs( fullSplatSPPAfter - fullSplatSPPBefore ) <= 1e-9,
+			std::string( label ) + ": follow-up full render clears private splat-region state" );
 	}
 	Check( capture->frameWasRegional.size() == 3 &&
 		!capture->frameWasRegional[0] && capture->frameWasRegional[1] &&
@@ -662,27 +715,32 @@ static void RunIrradianceCacheRegionFirstProbe()
 	std::remove( scenePath.c_str() );
 }
 
-class CancelImmediatelyProgress final : public IProgressCallback
+class QueryOnlyCancelProgress final : public IProgressCallback
 {
 public:
-	unsigned int calls = 0;
+	mutable unsigned int queries = 0;
 
 	bool Progress( const double, const double ) override
 	{
-		++calls;
-		return false;
+		return true;
 	}
 
 	void SetTitle( const char* ) override {}
+
+	bool IsCancelled() const override
+	{
+		++queries;
+		return true;
+	}
 };
 
 static void RunAnimationIrradianceCancellationProbe()
 {
 	std::string scene = BuildIrradianceRegionScene();
 	const size_t widthPos = scene.find( "width 24" );
-	if( widthPos != std::string::npos ) scene.replace( widthPos, 8, "width 128" );
+	if( widthPos != std::string::npos ) scene.replace( widthPos, 8, "width 8" );
 	const size_t heightPos = scene.find( "height 24" );
-	if( heightPos != std::string::npos ) scene.replace( heightPos, 9, "height 128" );
+	if( heightPos != std::string::npos ) scene.replace( heightPos, 9, "height 8" );
 	const std::string scenePath = WriteTemp(
 		"animation_irradiance_cancel.RISEscene", scene );
 	Check( !scenePath.empty(), "irradiance cancellation: animation scene written" );
@@ -690,13 +748,13 @@ static void RunAnimationIrradianceCancellationProbe()
 	const bool loaded = pJob->LoadAsciiSceneViaCst( scenePath.c_str() );
 	Check( loaded, "irradiance cancellation: animation scene loads" );
 	if( loaded && pJob->GetRasterizer() ) {
-		CancelImmediatelyProgress cancel;
+		QueryOnlyCancelProgress cancel;
 		pJob->SetProgress( &cancel );
 		pJob->RasterizeAnimation( 0.0, 1.0, 2, false, false );
 		pJob->SetProgress( 0 );
 		const IIrradianceCache* cache = pJob->GetScene()->GetIrradianceCache();
-		Check( cancel.calls > 0,
-			"irradiance cancellation: callback interrupts the animation cache pass" );
+		Check( cancel.queries > 0,
+			"irradiance cancellation: one-tile pass observes query-only cancellation" );
 		Check( cache && !cache->Precomputed(),
 			"irradiance cancellation: partial animation cache is not marked complete" );
 	}
@@ -1739,13 +1797,13 @@ int main()
 	// RGB/spectral, and VCM pipelines. Each probe reuses one real Job for
 	// full -> region -> full so stale crop state and scene-wide caches are
 	// exercised rather than mocked at the helper boundary.
-	RunProductionRegionProbe( "pt_pel", kPtRasterizer );
+	RunProductionRegionProbe( "pt_pel", kRegionPtPel );
 	RunProductionRegionProbe( "pt_spectral_nm", kRegionPtSpectralNM );
 	RunProductionRegionProbe( "pt_spectral_hwss", kRegionPtSpectralHWSS );
-	RunProductionRegionProbe( "bdpt_pel", kBdptRasterizer );
+	RunProductionRegionProbe( "bdpt_pel", kRegionBdptPel );
 	RunProductionRegionProbe( "bdpt_spectral_nm", kRegionBdptSpectralRasterizer );
 	RunProductionRegionProbe( "bdpt_spectral_hwss", kRegionBdptSpectralHWSS );
-	RunProductionRegionProbe( "vcm_pel", kVcmRasterizer );
+	RunProductionRegionProbe( "vcm_pel", kRegionVcmPel );
 	RunProductionRegionProbe( "vcm_spectral_nm", kRegionVcmSpectralNM );
 	RunProductionRegionProbe( "vcm_spectral_hwss", kRegionVcmSpectralHWSS );
 	RunProductionRegionProbe( "pt_wide_gaussian", kRegionPtWideFilter );

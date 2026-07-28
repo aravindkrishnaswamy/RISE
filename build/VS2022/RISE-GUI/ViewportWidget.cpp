@@ -936,7 +936,7 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
         // m_sceneEditable gate: clearInteractiveRegion -> KickRender takes the
         // controller mutex a chat/production render holds for its duration.
         if (m_bridge) m_bridge->clearInteractiveRegion();
-        m_hasRegion = false;
+        pollRegionState();
         update();
         event->accept();
         return;

@@ -922,7 +922,8 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 			dispatcher.DoWork();
 		} );
 
-		return !dispatcher.WasCancelled();
+		return !dispatcher.WasCancelled() &&
+			!( pProgressFunc && pProgressFunc->IsCancelled() );
 	} else {
 
 		// Legacy "render in the background" mode: the SP branch runs
@@ -960,6 +961,10 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 			}
 
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
+			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
+				completed = false;
+				break;
+			}
 		}
 
 		// MP-path dispatcher workers flush via DoWork's exit hook.
@@ -1479,7 +1484,8 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int /*workerIdx*/ ) {
 			dispatcher.DoAnimWork();
 		} );
-		return !dispatcher.WasCancelled();
+		return !dispatcher.WasCancelled() &&
+			!( pProgressFunc && pProgressFunc->IsCancelled() );
 
 	} else {
 
@@ -1525,6 +1531,10 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 			}
 
 			SPRasterizeSingleBlockOfAnimation( rc, image, pScene, rect, height, framedata );
+			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
+				completed = false;
+				break;
+			}
 		}
 
 		// Mirrors the non-animation SP path: explicitly flush the
