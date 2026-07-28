@@ -258,6 +258,12 @@ private struct AppMenus: Commands {
             }
             .disabled(!menu.snap.canUseSceneTransport)
 
+            Button("Draw Render Region") {
+                actions.requestRegionDraw()
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!menu.snap.canUseSceneTransport || menu.snap.hasActiveRegion)
+
             Divider()
 
             Button("Production Render") {
@@ -265,6 +271,12 @@ private struct AppMenus: Commands {
             }
             .keyboardShortcut("r", modifiers: .command)
             .disabled(!menu.snap.canStartProductionRender)
+
+            Button("Render Active Region") {
+                actions.startActiveRegionRender()
+            }
+            .disabled(!menu.snap.canStartProductionRender || !menu.snap.hasActiveRegion
+                      || !menu.snap.productionHonorsRegion)
 
             Button("Render Animation…") {
                 actions.startAnimationRender()

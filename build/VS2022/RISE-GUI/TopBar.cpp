@@ -870,10 +870,28 @@ void TopBar::updateReadout()
         m_bridge ? m_bridge->viewportRenderModeWantsDenoise() : true);
 
     m_statusRowLabel->setText(s.text);
-    m_statusTagLabel->setText(s.label);
+    QString statusLabel = s.label;
+    if (isProduction && m_engine && m_engine->isRegionProductionRender()) {
+        statusLabel = QStringLiteral("REGION FINAL");
+    } else if (!isProduction && m_bridge) {
+        unsigned int l = 0, t = 0, r = 0, b = 0;
+        if (m_bridge->getInteractiveRegion(&l, &t, &r, &b)) {
+            if (m_refinementScaleDivisor == 1) {
+                const QSize dims = m_bridge->cameraSurfaceDimensions();
+                const double framePixels = std::max(1.0,
+                    static_cast<double>(dims.width()) * dims.height());
+                const int percent = static_cast<int>(std::lround(
+                    100.0 * static_cast<double>(r - l + 1) * (b - t + 1) / framePixels));
+                statusLabel = tr("REGION %1%").arg(percent);
+            } else {
+                statusLabel = tr("FULL PREVIEW \xE2\x86\x92 REGION");
+            }
+        }
+    }
+    m_statusTagLabel->setText(statusLabel);
     // Empty label = nothing to add beside the text (see the label-policy
     // comment in RefinementStatus above) -- hide so no stray gap renders.
-    m_statusTagLabel->setVisible(!s.label.isEmpty());
+    m_statusTagLabel->setVisible(!statusLabel.isEmpty());
 
     QColor tagColor = Theme::success;
     if (isCancelling) {

@@ -3473,15 +3473,6 @@ Scalar SceneEditController::LastSceneTime() const
 
 bool SceneEditController::RequestProductionRender()
 {
-	// Design brief A4 (review-round-1 P1): a region NEVER leaks into or
-	// past a production render.  This is the SECOND live production
-	// entry point (the Mac shell's -requestProductionRender lands here;
-	// the composed path goes through SubmitProductionRenderSync, which
-	// clears too) — both must uphold the invariant or the post-render
-	// interactive restart refines only a stale box.  Kick-free store:
-	// the interactive loop is being stopped right below anyway.
-	mInteractiveRegionActive.store( false, std::memory_order_release );
-
 	const bool wasRunning = IsRunning();
 	if( wasRunning )
 	{
@@ -6313,19 +6304,12 @@ bool SceneEditController::SubmitProductionRenderSync(
 	RenderJobId*          outJobId,
 	unsigned int          queueTimeoutMs )
 {
-	// Design brief A4: a region NEVER leaks into a production render.
-	// The production path renders full-frame regardless (it does not
-	// read mInteractiveRegion*), but clearing here also stops the
-	// post-render interactive restart from refining only a stale box
-	// over the finished production image — and keeps the UI badge
-	// state honest (the bridges re-query GetInteractiveRegion).
-	// Review-round-1 P2: clear WITHOUT the KickRender() the public
-	// ClearInteractiveRegion() performs — the shells stop the
-	// interactive loop before submitting production work, and waking
-	// it here would invite exactly the two-rasterizers-one-scene race
-	// that convention prevents.  No repaint is needed either: the
-	// production result replaces the framebuffer wholesale.
-	mInteractiveRegionActive.store( false, std::memory_order_release );
+	// Design brief A4: viewport-region state survives production work.
+	// Ordinary production callbacks are full-frame by construction: they
+	// call Job::Rasterize / RasterizeAnimationUsingOptions and do not read
+	// mInteractiveRegion*. The separately named Render Active Region
+	// command captures explicit coordinates before entering this slot and
+	// calls Job::RasterizeRegion from its callback.
 	return SubmitAgentRenderSync( std::move( fn ), clientLabel, outJobId, queueTimeoutMs,
 		/*pinned=*/false, RenderClass::Production );
 }

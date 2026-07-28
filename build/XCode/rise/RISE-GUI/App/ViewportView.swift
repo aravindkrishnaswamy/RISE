@@ -273,6 +273,20 @@ struct ViewportView: View {
                     surfaceDimensionsProvider: { [weak bridge] in
                         bridge?.cameraSurfaceDimensions ?? .zero
                     },
+                    interactionEnabled: interactionEnabled,
+                    onCommitActiveRegion: { region in
+                        guard interactionEnabled else { return }
+                        let left = UInt32(max(0, Int(region.minX)))
+                        let top = UInt32(max(0, Int(region.minY)))
+                        let right = UInt32(max(Int(region.minX), Int(region.maxX) - 1))
+                        let bottom = UInt32(max(Int(region.minY), Int(region.maxY) - 1))
+                        bridge.setInteractiveRegionLeft(left, top: top,
+                                                        right: right, bottom: bottom)
+                        viewModel.activeRegion = CGRect(
+                            x: CGFloat(left), y: CGFloat(top),
+                            width: CGFloat(right - left + 1),
+                            height: CGFloat(bottom - top + 1))
+                    },
                     onClearActiveRegion: {
                         // The clear badge stays hit-testable during a chat
                         // render; clearInteractiveRegion -> KickRender takes the
@@ -298,6 +312,21 @@ struct ViewportView: View {
             .overlay(alignment: .topLeading) {
                 if selectionCategory != .none, !selectionNameText.isEmpty {
                     selectionChip.padding(12)
+                }
+            }
+            .overlay(alignment: .top) {
+                if regionArmed && regionDragStart == nil && interactionEnabled {
+                    Text("Drag to choose an area  ·  Esc to cancel")
+                        .font(Theme.sans(11, .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Theme.bgBase.opacity(0.9),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(Theme.accent.opacity(0.55), lineWidth: 1))
+                        .padding(.top, 12)
+                        .allowsHitTesting(false)
                 }
             }
             .overlay(alignment: .bottomLeading) {
@@ -332,13 +361,13 @@ struct ViewportView: View {
                 // reaching the region-drag branch above, so without
                 // this an in-progress drag's dashed preview box would
                 // be left stranded on screen with no way to clear it
-                // short of Esc, and an "armed" chip would sit lit
+                // short of Esc, and the "Cancel Draw" chip would sit lit
                 // with no drag able to ever consume it.  Clear both
                 // proactively — this only touches the UNCOMMITTED
                 // drag/arm state, not the persisted
-                // `viewModel.activeRegion` (which the core itself
-                // clears before the render); re-arming after the
-                // render finishes is one click away via the chip.
+                // `viewModel.activeRegion`, which deliberately survives
+                // production so interactive refinement can resume in the
+                // same box afterward.
                 if !newValue {
                     _ = bridge.finalizeOpenInteractions()
                     regionDragStart = nil
@@ -482,6 +511,17 @@ struct ViewportView: View {
                     .tracking(0.6)
                     .foregroundColor(Theme.success)
             }
+            if let region = viewModel.activeRegion {
+                let dims = bridge.cameraSurfaceDimensions
+                let framePixels = max(1.0, dims.width * dims.height)
+                let percent = Int((100.0 * region.width * region.height / framePixels).rounded())
+                Text(viewModel.refinementScaleDivisor == 1
+                     ? "REGION \(percent)%"
+                     : "FULL PREVIEW → REGION")
+                    .font(Theme.sans(9, .semibold))
+                    .tracking(0.4)
+                    .foregroundColor(Theme.warn)
+            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
@@ -507,7 +547,15 @@ private struct RegionOverlay: View {
     let dragStart: CGPoint?
     let dragCurrent: CGPoint?
     let surfaceDimensionsProvider: () -> CGSize
+    let interactionEnabled: Bool
+    let onCommitActiveRegion: (CGRect) -> Void
     let onClearActiveRegion: () -> Void
+    @State private var draftRegion: CGRect? = nil
+    @State private var editStartRegion: CGRect? = nil
+
+    private enum Handle: CaseIterable {
+        case topLeft, topRight, bottomLeft, bottomRight
+    }
 
     var body: some View {
         GeometryReader { geom in
@@ -515,27 +563,155 @@ private struct RegionOverlay: View {
             if let fit = ViewportLetterbox.fit(surface: surface, in: geom.size) {
                 if let start = dragStart, let current = dragCurrent {
                     dashedBox(widgetRect(filmRect(start, current), fit: fit))
-                } else if let region = activeRegion {
+                        .allowsHitTesting(false)
+                } else if let region = draftRegion ?? activeRegion {
                     let rect = widgetRect(region, fit: fit)
                     ZStack(alignment: .topLeading) {
-                        dashedBox(rect)
-                        regionBadge
-                            .position(x: rect.minX + 34, y: max(9, rect.minY - 9))
+                        outsideMask(viewportSize: geom.size, hole: rect)
+                            .allowsHitTesting(false)
+                        dashedBox(rect).allowsHitTesting(false)
+                        Rectangle()
+                            .fill(Color.clear)
+                            .contentShape(Rectangle())
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                            .gesture(moveGesture(region: region, fit: fit, surface: surface))
+                            .allowsHitTesting(interactionEnabled)
+                        ForEach(Handle.allCases, id: \.self) { handle in
+                            Circle()
+                                .fill(Theme.warn)
+                                .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1))
+                                .frame(width: 9, height: 9)
+                                .position(handlePoint(handle, in: rect))
+                                .gesture(resizeGesture(handle: handle, region: region,
+                                                       fit: fit, surface: surface))
+                                .allowsHitTesting(interactionEnabled)
+                        }
+                        regionBadge(region: region, surface: surface)
+                            .position(x: rect.minX + badgeWidth(region: region, surface: surface) / 2,
+                                      y: max(9, rect.minY - 9))
                             .onTapGesture { onClearActiveRegion() }
                     }
                 }
             }
         }
+        .onChange(of: activeRegion) { _, _ in
+            draftRegion = nil
+            editStartRegion = nil
+        }
     }
 
-    private var regionBadge: some View {
-        Text("REGION")
+    private func regionBadge(region: CGRect, surface: CGSize) -> some View {
+        Text(regionLabel(region: region, surface: surface))
             .font(Theme.mono(9, .semibold))
             .foregroundColor(.black)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(Theme.warn)
             .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private func regionLabel(region: CGRect, surface: CGSize) -> String {
+        let pixels = max(0, region.width) * max(0, region.height)
+        let framePixels = max(1, surface.width * surface.height)
+        let percent = Int((100.0 * pixels / framePixels).rounded())
+        return "REGION  \(Int(region.width))×\(Int(region.height))  ·  \(percent)%"
+    }
+
+    private func badgeWidth(region: CGRect, surface: CGSize) -> CGFloat {
+        let label = regionLabel(region: region, surface: surface)
+        return CGFloat(label.count) * 5.8 + 14
+    }
+
+    private func outsideMask(viewportSize: CGSize, hole: CGRect) -> some View {
+        Path { path in
+            path.addRect(CGRect(origin: .zero, size: viewportSize))
+            path.addRect(hole)
+        }
+        .fill(Color.black.opacity(0.16), style: FillStyle(eoFill: true))
+    }
+
+    private func handlePoint(_ handle: Handle, in rect: CGRect) -> CGPoint {
+        switch handle {
+        case .topLeft: return CGPoint(x: rect.minX, y: rect.minY)
+        case .topRight: return CGPoint(x: rect.maxX, y: rect.minY)
+        case .bottomLeft: return CGPoint(x: rect.minX, y: rect.maxY)
+        case .bottomRight: return CGPoint(x: rect.maxX, y: rect.maxY)
+        }
+    }
+
+    private func clamped(_ region: CGRect, to surface: CGSize) -> CGRect {
+        let width = min(max(3, region.width), surface.width)
+        let height = min(max(3, region.height), surface.height)
+        let x = min(max(0, region.minX), max(0, surface.width - width))
+        let y = min(max(0, region.minY), max(0, surface.height - height))
+        return CGRect(x: x.rounded(), y: y.rounded(),
+                      width: width.rounded(), height: height.rounded())
+    }
+
+    private func moveGesture(region: CGRect, fit: ViewportLetterbox.Fit,
+                             surface: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                let start = editStartRegion ?? region
+                if editStartRegion == nil { editStartRegion = region }
+                draftRegion = clamped(start.offsetBy(
+                    dx: value.translation.width / fit.scale,
+                    dy: value.translation.height / fit.scale), to: surface)
+            }
+            .onEnded { value in
+                let start = editStartRegion ?? region
+                let final = clamped(start.offsetBy(
+                    dx: value.translation.width / fit.scale,
+                    dy: value.translation.height / fit.scale), to: surface)
+                draftRegion = nil
+                editStartRegion = nil
+                onCommitActiveRegion(final)
+            }
+    }
+
+    private func resizeGesture(handle: Handle, region: CGRect,
+                               fit: ViewportLetterbox.Fit,
+                               surface: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let start = editStartRegion ?? region
+                if editStartRegion == nil { editStartRegion = region }
+                draftRegion = resized(start, handle: handle,
+                                      translation: value.translation,
+                                      scale: fit.scale, surface: surface)
+            }
+            .onEnded { value in
+                let start = editStartRegion ?? region
+                let final = resized(start, handle: handle,
+                                    translation: value.translation,
+                                    scale: fit.scale, surface: surface)
+                draftRegion = nil
+                editStartRegion = nil
+                onCommitActiveRegion(final)
+            }
+    }
+
+    private func resized(_ region: CGRect, handle: Handle,
+                         translation: CGSize, scale: CGFloat,
+                         surface: CGSize) -> CGRect {
+        let dx = translation.width / scale
+        let dy = translation.height / scale
+        var minX = region.minX, maxX = region.maxX
+        var minY = region.minY, maxY = region.maxY
+        switch handle {
+        case .topLeft: minX += dx; minY += dy
+        case .topRight: maxX += dx; minY += dy
+        case .bottomLeft: minX += dx; maxY += dy
+        case .bottomRight: maxX += dx; maxY += dy
+        }
+        minX = min(max(0, minX), maxX - 3)
+        minY = min(max(0, minY), maxY - 3)
+        maxX = max(minX + 3, min(surface.width, maxX))
+        maxY = max(minY + 3, min(surface.height, maxY))
+        return CGRect(x: minX.rounded(), y: minY.rounded(),
+                      width: (maxX - minX).rounded(),
+                      height: (maxY - minY).rounded())
     }
 
     private func filmRect(_ a: CGPoint, _ b: CGPoint) -> CGRect {

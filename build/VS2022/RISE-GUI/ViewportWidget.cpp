@@ -18,6 +18,8 @@
 #include <QCursor>
 #include <QFont>
 #include <QFontMetrics>
+#include <QRegion>
+#include <QLineF>
 #include <QTimer>
 #include <QComboBox>
 #include <QToolButton>
@@ -223,6 +225,7 @@ void ViewportWidget::setSceneEditable(bool editable)
         // armed across the render.
         m_regionArmed = false;
         m_regionDragging = false;
+        m_regionEditMode = RegionEditMode::None;
         // N-up multi-viewport: same reasoning -- drop any in-progress
         // pane gesture pin rather than risk forwarding a stray Move/Up to
         // a pane once a render owns the scene.
@@ -247,6 +250,7 @@ void ViewportWidget::setRegionArmed(bool armed)
     if (!armed) {
         cancelRegionDrag();
     }
+    if (underMouse()) updateCursorForPosition(mapFromGlobal(QCursor::pos()));
     update();
 }
 
@@ -288,6 +292,7 @@ void ViewportWidget::pollRegionState()
         || r != m_regionRight || b != m_regionBottom) {
         m_hasRegion = has;
         m_regionLeft = l; m_regionTop = t; m_regionRight = r; m_regionBottom = b;
+        emit regionStateChanged();
         update();
     }
 }
@@ -319,7 +324,10 @@ void ViewportWidget::updateCursorForPosition(const QPointF& pos)
     // Tool cursor only over the rendered image area; outside, revert
     // to whatever the parent / window provides (default arrow).
     if (imageDrawRect().contains(pos.toPoint())) {
-        setCursor(QCursor(m_toolCursor));
+        if (m_regionArmed || m_regionDragging) setCursor(Qt::CrossCursor);
+        else if (m_regionEditMode == RegionEditMode::Move) setCursor(Qt::SizeAllCursor);
+        else if (m_regionEditMode != RegionEditMode::None) setCursor(Qt::SizeFDiagCursor);
+        else setCursor(QCursor(m_toolCursor));
     } else {
         unsetCursor();
     }
@@ -364,11 +372,26 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
         }
     }
 
-    if (m_regionDragging || m_hasRegion) {
+    if (m_regionDragging || m_regionEditMode != RegionEditMode::None || m_hasRegion) {
         const QSize surface = m_bridge ? m_bridge->cameraSurfaceDimensions() : QSize();
         if (m_regionDragging || (surface.width() > 0 && surface.height() > 0)) {
             paintRegionOverlay(p, drawRect, surface);
         }
+    }
+
+    if (m_regionArmed && !m_regionDragging && m_sceneEditable) {
+        const QString prompt = tr("Drag to choose an area  \xC2\xB7  Esc to cancel");
+        const QFont promptFont = Theme::sans(11, QFont::DemiBold);
+        const QFontMetrics fm(promptFont);
+        const QSize promptSize(fm.horizontalAdvance(prompt) + 24, fm.height() + 14);
+        QRect promptRect(QPoint(0, 12), promptSize);
+        promptRect.moveCenter(QPoint(width() / 2, promptRect.center().y()));
+        p.setPen(QPen(Theme::accent, 1));
+        p.setBrush(Theme::bgBase);
+        p.drawRoundedRect(promptRect, 6, 6);
+        p.setFont(promptFont);
+        p.setPen(Theme::textPrimary);
+        p.drawText(promptRect, Qt::AlignCenter, prompt);
     }
 
     // Navigation axis-ball (Tier 2 §4): always available (not tool-gated),
@@ -383,10 +406,24 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
     }
 }
 
+QRectF ViewportWidget::activeRegionWidgetRect(const QRect& drawRect, const QSize& surface) const
+{
+    if (!m_hasRegion || surface.width() <= 0 || surface.height() <= 0) return QRectF();
+    const double scaleX = static_cast<double>(drawRect.width()) / surface.width();
+    const double scaleY = static_cast<double>(drawRect.height()) / surface.height();
+    return QRectF(
+        drawRect.left() + m_regionLeft * scaleX,
+        drawRect.top() + m_regionTop * scaleY,
+        (m_regionRight - m_regionLeft + 1) * scaleX,
+        (m_regionBottom - m_regionTop + 1) * scaleY);
+}
+
 void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface)
 {
     QRectF boxRect;
-    if (m_regionDragging) {
+    if (m_regionEditMode != RegionEditMode::None) {
+        boxRect = m_regionEditRect;
+    } else if (m_regionDragging) {
         // A live drag draws directly in widget-local coords -- no
         // surface mapping needed since both endpoints were captured in
         // the same coordinate space.
@@ -395,23 +432,21 @@ void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, cons
         boxRect = QRectF(QPointF(std::min(a.x(), b.x()), std::min(a.y(), b.y())),
                           QPointF(std::max(a.x(), b.x()), std::max(a.y(), b.y())));
     } else if (m_hasRegion && surface.width() > 0 && surface.height() > 0) {
-        const double scaleX = static_cast<double>(drawRect.width())  / surface.width();
-        const double scaleY = static_cast<double>(drawRect.height()) / surface.height();
-        auto toWidget = [&](double sx, double sy) -> QPointF {
-            return QPointF(drawRect.left() + sx * scaleX, drawRect.top() + sy * scaleY);
-        };
-        // Region bounds are INCLUSIVE full-res film pixels; +1 on the
-        // far edge converts to an exclusive draw rect.
-        const QPointF tl = toWidget(m_regionLeft, m_regionTop);
-        const QPointF br = toWidget(static_cast<double>(m_regionRight) + 1.0,
-                                     static_cast<double>(m_regionBottom) + 1.0);
-        boxRect = QRectF(tl, br);
+        boxRect = activeRegionWidgetRect(drawRect, surface);
     } else {
         m_regionBadgeRect = QRect();
         return;
     }
 
     p.setRenderHint(QPainter::Antialiasing, true);
+    if (!m_regionDragging && m_hasRegion) {
+        QRegion outside(drawRect);
+        outside = outside.subtracted(QRegion(boxRect.toAlignedRect()));
+        p.save();
+        p.setClipRegion(outside);
+        p.fillRect(drawRect, QColor(0, 0, 0, 41));
+        p.restore();
+    }
     QPen pen(Theme::warn);
     pen.setStyle(Qt::DashLine);
     pen.setWidthF(1.5);
@@ -420,9 +455,25 @@ void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, cons
     p.drawRect(boxRect);
 
     if (!m_regionDragging && m_hasRegion) {
+        p.setPen(QPen(QColor(0x0d, 0x0e, 0x10), 1));
+        p.setBrush(Theme::warn);
+        const qreal radius = 4.5;
+        const QPointF corners[] = { boxRect.topLeft(), boxRect.topRight(),
+                                    boxRect.bottomLeft(), boxRect.bottomRight() };
+        for (const QPointF& corner : corners) p.drawEllipse(corner, radius, radius);
+    }
+
+    if (!m_regionDragging && m_hasRegion) {
         // "REGION" badge, top-left of the box, click-to-clear (hit-
         // tested against m_regionBadgeRect in mousePressEvent).
-        const QString label = tr("REGION");
+        const unsigned int regionW = m_regionRight - m_regionLeft + 1;
+        const unsigned int regionH = m_regionBottom - m_regionTop + 1;
+        const double framePixels = std::max(1.0,
+            static_cast<double>(surface.width()) * surface.height());
+        const int percent = static_cast<int>(std::lround(
+            100.0 * static_cast<double>(regionW) * regionH / framePixels));
+        const QString label = tr("REGION  %1\xC3\x97%2  \xC2\xB7  %3%")
+            .arg(regionW).arg(regionH).arg(percent);
         const QFont f = Theme::mono(9);
         const QFontMetrics fm(f);
         const int textW = fm.horizontalAdvance(label);
@@ -814,6 +865,35 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
         return;
     }
 
+    // Direct manipulation of an active region. Corner grabs resize; a drag
+    // inside the box moves it. The edit remains widget-local until release,
+    // avoiding a KickRender on every mouse move.
+    if (m_sceneEditable && m_hasRegion && event->button() == Qt::LeftButton && m_bridge) {
+        const QSize surface = m_bridge->cameraSurfaceDimensions();
+        const QRectF box = activeRegionWidgetRect(imageDrawRect(), surface);
+        if (!box.isEmpty()) {
+            const QPointF pos = event->position();
+            const qreal grab = 9.0;
+            auto near = [&](const QPointF& p) {
+                return QLineF(pos, p).length() <= grab;
+            };
+            if (near(box.topLeft())) m_regionEditMode = RegionEditMode::TopLeft;
+            else if (near(box.topRight())) m_regionEditMode = RegionEditMode::TopRight;
+            else if (near(box.bottomLeft())) m_regionEditMode = RegionEditMode::BottomLeft;
+            else if (near(box.bottomRight())) m_regionEditMode = RegionEditMode::BottomRight;
+            else if (box.contains(pos)) m_regionEditMode = RegionEditMode::Move;
+
+            if (m_regionEditMode != RegionEditMode::None) {
+                m_regionEditStart = pos;
+                m_regionEditStartRect = box;
+                m_regionEditRect = box;
+                update();
+                event->accept();
+                return;
+            }
+        }
+    }
+
     // Navigation axis-ball: a nub click snaps the view; the labeled controls
     // drive Home / free-fly.  Consumes the click so it isn't also forwarded as
     // a scene pick.  Gated off during production render (the ball isn't drawn).
@@ -858,6 +938,36 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
 
     if (m_regionDragging) {
         m_regionDragCurrent = event->position();
+        update();
+        event->accept();
+        return;
+    }
+
+    if (m_regionEditMode != RegionEditMode::None) {
+        const QPointF delta = event->position() - m_regionEditStart;
+        QRectF edited = m_regionEditStartRect;
+        switch (m_regionEditMode) {
+        case RegionEditMode::Move: edited.translate(delta); break;
+        case RegionEditMode::TopLeft: edited.setTopLeft(edited.topLeft() + delta); break;
+        case RegionEditMode::TopRight: edited.setTopRight(edited.topRight() + delta); break;
+        case RegionEditMode::BottomLeft: edited.setBottomLeft(edited.bottomLeft() + delta); break;
+        case RegionEditMode::BottomRight: edited.setBottomRight(edited.bottomRight() + delta); break;
+        case RegionEditMode::None: break;
+        }
+
+        const QRectF bounds = imageDrawRect();
+        if (m_regionEditMode == RegionEditMode::Move) {
+            if (edited.left() < bounds.left()) edited.moveLeft(bounds.left());
+            if (edited.top() < bounds.top()) edited.moveTop(bounds.top());
+            if (edited.right() > bounds.right()) edited.moveRight(bounds.right());
+            if (edited.bottom() > bounds.bottom()) edited.moveBottom(bounds.bottom());
+        } else {
+            edited.setLeft(std::clamp(edited.left(), static_cast<qreal>(bounds.left()), edited.right() - 3.0));
+            edited.setTop(std::clamp(edited.top(), static_cast<qreal>(bounds.top()), edited.bottom() - 3.0));
+            edited.setRight(std::clamp(edited.right(), edited.left() + 3.0, static_cast<qreal>(bounds.right())));
+            edited.setBottom(std::clamp(edited.bottom(), edited.top() + 3.0, static_cast<qreal>(bounds.bottom())));
+        }
+        m_regionEditRect = edited;
         update();
         event->accept();
         return;
@@ -939,6 +1049,28 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
 
+    if (m_regionEditMode != RegionEditMode::None) {
+        const QPointF topLeft = surfacePoint(m_regionEditRect.topLeft());
+        const QPointF bottomRight = surfacePoint(m_regionEditRect.bottomRight());
+        const QSize surface = m_bridge ? m_bridge->cameraSurfaceDimensions() : QSize();
+        const int maxX = std::max(0, surface.width() - 1);
+        const int maxY = std::max(0, surface.height() - 1);
+        const int left = std::clamp(static_cast<int>(std::floor(topLeft.x())), 0, maxX);
+        const int top = std::clamp(static_cast<int>(std::floor(topLeft.y())), 0, maxY);
+        const int right = std::clamp(static_cast<int>(std::ceil(bottomRight.x())) - 1, left, maxX);
+        const int bottom = std::clamp(static_cast<int>(std::ceil(bottomRight.y())) - 1, top, maxY);
+        m_regionEditMode = RegionEditMode::None;
+        if (m_bridge && m_sceneEditable && right - left >= 2 && bottom - top >= 2) {
+            m_bridge->setInteractiveRegion(
+                static_cast<unsigned int>(left), static_cast<unsigned int>(top),
+                static_cast<unsigned int>(right), static_cast<unsigned int>(bottom));
+            pollRegionState();
+        }
+        update();
+        event->accept();
+        return;
+    }
+
     if (m_suppressPointerUntilRelease) {
         // Last leg of a gesture Escape/disarm cancelled mid-drag (see
         // cancelRegionDrag()'s doc) -- swallow it and clear the flag so
@@ -960,8 +1092,10 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
 
 void ViewportWidget::keyPressEvent(QKeyEvent* event)
 {
-    if (event->key() == Qt::Key_Escape && (m_regionArmed || m_regionDragging)) {
+    if (event->key() == Qt::Key_Escape
+        && (m_regionArmed || m_regionDragging || m_regionEditMode != RegionEditMode::None)) {
         cancelRegionDrag();
+        m_regionEditMode = RegionEditMode::None;
         m_regionArmed = false;
         emit regionArmCancelled();
         update();
@@ -1121,9 +1255,10 @@ void ViewportWidget::recomputePaneLayout()
     // drag/arm can't sensibly straddle a layout switch (there is no
     // "which pane" for it), so cancel it here -- mirrors
     // setSceneEditable(false)'s identical cancel-armed-state handling.
-    if (m_regionArmed || m_regionDragging) {
+    if (m_regionArmed || m_regionDragging || m_regionEditMode != RegionEditMode::None) {
         m_regionArmed = false;
         m_regionDragging = false;
+        m_regionEditMode = RegionEditMode::None;
         emit regionArmCancelled();
     }
 

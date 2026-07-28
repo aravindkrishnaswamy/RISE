@@ -3947,7 +3947,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	// ---- Interactive region-of-interest (UI redesign, A4) ------------
 	// Full-resolution film pixel coords, INCLUSIVE.  See
 	// SceneEditController::SetInteractiveRegion for semantics (full-res
-	// passes only; cleared automatically before production renders).
+	// passes only; preserved while production rendering is in flight).
 
 	bool RISE_API_SceneEditController_SetInteractiveRegion(
 		SceneEditController* p, unsigned int left, unsigned int top,

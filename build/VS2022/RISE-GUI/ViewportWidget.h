@@ -95,6 +95,10 @@ signals:
     /// arm/drag in progress; the toolbar's cancelRegionArm() is a
     /// no-op in that case.
     void regionArmCancelled();
+    /// Emitted whenever the controller's active-region presence or bounds
+    /// change, including changes made by non-widget callers. MainWindow uses
+    /// it to keep Draw/Render Active Region menu enablement truthful.
+    void regionStateChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -162,6 +166,7 @@ private:
     bool    handleNavClick(const QPointF& widgetPos, unsigned int pane);   // true == consumed
     void    paintRegionOverlay(QPainter& p, const QRect& drawRect, const QSize& surface);
     void    cancelRegionDrag();
+    QRectF  activeRegionWidgetRect(const QRect& drawRect, const QSize& surface) const;
 
     ViewportBridge*  m_bridge = nullptr;
     QImage           m_image;
@@ -175,6 +180,12 @@ private:
     bool    m_regionDragging = false;
     QPointF m_regionDragStart;      // widget-local coords
     QPointF m_regionDragCurrent;    // widget-local coords
+
+    enum class RegionEditMode { None, Move, TopLeft, TopRight, BottomLeft, BottomRight };
+    RegionEditMode m_regionEditMode = RegionEditMode::None;
+    QPointF        m_regionEditStart;
+    QRectF         m_regionEditStartRect;
+    QRectF         m_regionEditRect;
 
     // Set by cancelRegionDrag() when it cancels a drag WHILE the mouse
     // button is still physically down (Escape, or setRegionArmed(false)

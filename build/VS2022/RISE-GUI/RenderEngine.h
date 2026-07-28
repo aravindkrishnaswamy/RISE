@@ -167,6 +167,12 @@ public slots:
     /// photon-map regeneration, runs on the render worker rather than the
     /// UI thread and inside the production-render coordinator.
     void startRender(double sceneTime);
+    /// Explicit still-image production render restricted to inclusive
+    /// full-resolution film bounds. Ordinary startRender remains full-frame.
+    void startRegionRender(double sceneTime, unsigned int left, unsigned int top,
+                           unsigned int right, unsigned int bottom);
+    bool productionRasterizerHonorsRegion() const;
+    bool isRegionProductionRender() const { return m_regionProductionRender; }
     void startAnimationRender(const QString& videoOutputPath);
     void cancelRender();
     void clearScene();
@@ -232,6 +238,9 @@ public slots:
     void setupMediaPaths(const QString& sceneFilePath);
 
 private:
+    void startStillRender(double sceneTime, bool regionOnly,
+                          unsigned int left, unsigned int top,
+                          unsigned int right, unsigned int bottom);
     void setState(State newState);
     QImage buildImageFromBuffer();
 
@@ -276,6 +285,7 @@ private:
     State m_state = Idle;
     QString m_loadedFilePath;
     bool m_hasAnimation = false;
+    bool m_regionProductionRender = false;   // UI-thread lifecycle flag
 
     // Set on animation completion (worker thread, before the queued
     // Completed-state transition) to a summary of the written video files;

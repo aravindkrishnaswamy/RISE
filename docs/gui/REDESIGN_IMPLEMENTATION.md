@@ -42,10 +42,11 @@ when code and this document disagree, trust the code and fix this file.
   full-res film-pixel box, packed into one atomic; applied in
   `DoOneRenderPass` **only at full-resolution passes** (coarse
   navigation passes stay full-frame so nothing outside the box goes
-  stale at mismatched scales); auto-cleared kick-free in **both**
-  production entry points (`SubmitProductionRenderSync` and
-  `RequestProductionRender`) — the Blender region-leak footgun from
-  the brief is structurally designed against.
+  stale at mismatched scales); preserved while production owns the
+  scene. Ordinary production callbacks never consult the viewport
+  region, while the separately named Render Active Region action
+  captures the bounds and calls `Job::RasterizeRegion` explicitly —
+  the Blender region-leak footgun remains structurally designed against.
 - **`IRasterizer::HonorsRegion()`** honesty query (defaulted, declared
   last per the header's ABI convention): MLT returns false (global
   splat film); `AutoRasterizer` forwards to its resolved delegate.

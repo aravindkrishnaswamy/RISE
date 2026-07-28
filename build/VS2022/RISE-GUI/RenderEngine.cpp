@@ -673,8 +673,30 @@ void RenderEngine::loadScene(const QString& filePath, bool untitled)
 
 void RenderEngine::startRender(double sceneTime)
 {
+    startStillRender(sceneTime, false, 0, 0, 0, 0);
+}
+
+void RenderEngine::startRegionRender(double sceneTime, unsigned int left, unsigned int top,
+                                     unsigned int right, unsigned int bottom)
+{
+    if (!productionRasterizerHonorsRegion() || right < left || bottom < top) return;
+    startStillRender(sceneTime, true, left, top, right, bottom);
+}
+
+bool RenderEngine::productionRasterizerHonorsRegion() const
+{
+    if (!m_job) return false;
+    IRasterizer* rasterizer = m_job->GetRasterizer();
+    return rasterizer && rasterizer->HonorsRegion();
+}
+
+void RenderEngine::startStillRender(double sceneTime, bool regionOnly,
+                                    unsigned int left, unsigned int top,
+                                    unsigned int right, unsigned int bottom)
+{
     if (!m_job) return;
 
+    m_regionProductionRender = regionOnly;
     setState(Rendering);
     m_cancelFlag = false;
     m_sizeDetected = false;
@@ -734,11 +756,12 @@ void RenderEngine::startRender(double sceneTime)
     // the `delete progressCb` in its !guard branch does.
     QPointer<RenderEngine> guard(this);
     SceneEditController* const viewportController = m_viewportController;
-    QThread* thread = QThread::create([this, progressCb, guard, sceneTime, viewportController]() {
+    QThread* thread = QThread::create([this, progressCb, guard, sceneTime, viewportController,
+                                       regionOnly, left, top, right, bottom]() {
         IJobPriv* job = m_job;
         bool ok = RunProductionRenderThroughController(
             job, viewportController, "gui_render", progressCb,
-            [this, job, sceneTime]() -> bool {
+            [this, job, sceneTime, regionOnly, left, top, right, bottom]() -> bool {
                 ensureProductionVFSAttachedToRasterizer();
                 // Full SetSceneTime may regenerate photon maps for a long
                 // time. Execute it on this worker, inside the coordinator,
@@ -747,7 +770,9 @@ void RenderEngine::startRender(double sceneTime)
                 if (IScenePriv* scene = job->GetScene()) {
                     scene->SetSceneTime(static_cast<Scalar>(sceneTime));
                 }
-                return job->Rasterize();
+                return regionOnly
+                    ? job->RasterizeRegion(left, top, right, bottom)
+                    : job->Rasterize();
             });
 
         QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
@@ -788,6 +813,7 @@ void RenderEngine::startRender(double sceneTime)
             // here too.
             guard->resetProductionPauseState();
 
+            guard->m_regionProductionRender = false;
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
             } else if (ok) {
@@ -807,6 +833,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
 {
     if (!m_job) return;
 
+    m_regionProductionRender = false;
     setState(Rendering);
     m_cancelFlag = false;
     m_sizeDetected = false;

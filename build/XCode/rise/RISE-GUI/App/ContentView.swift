@@ -343,6 +343,11 @@ struct ContentView: View {
                         // re-snapshots and the outliner highlight follows.
                         propertyRefresh &+= 1
                     }
+                    .onChange(of: viewModel.regionDrawRequestEpoch) { _, _ in
+                        guard interacting, viewportLayout == .single,
+                              viewModel.activeRegion == nil else { return }
+                        regionArmed = true
+                    }
                 } else {
                     // N-up (§7): TwoH / OnePlusTwo / Quad.
                     MultiPaneViewportView(
@@ -521,10 +526,12 @@ struct ContentView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Design brief A4 region-of-interest toggle.  Three visual
-    /// states: dimmed "REGION" (off), accent "REGION · armed" (next
-    /// drag draws a box), warn "REGION ×" (a region is active —
-    /// click clears it).  Disabled + explained via `.help` when the
+    /// Design brief A4 region-of-interest action. Three visual states:
+    /// dimmed "▧ Draw Region" (off), accent "▧ Cancel Draw" while the
+    /// viewport is waiting for a drag, and warn "▧ Region active ×"
+    /// once a box is active. The internal state remains `regionArmed`,
+    /// but product copy tells the user the available action instead of
+    /// exposing that state-machine term. Disabled + explained via `.help` when the
     /// active interactive rasterizer doesn't honor regions at all.
     private func regionChip(_ vb: RISEViewportBridge) -> some View {
         let honored = vb.interactiveRasterizerHonorsRegion()
@@ -532,7 +539,7 @@ struct ContentView: View {
         // while a production render owns the viewport can't lead
         // anywhere (pointer events are dropped by ViewportView's own
         // `interactionEnabled` guard while a render is in flight),
-        // and would otherwise leave a "REGION · armed" chip stuck
+        // and would otherwise leave a "Cancel Draw" chip stuck
         // with no drag ever able to consume it.
         // user-review P2#5: N-up panes have no region-drag gesture, so
         // arming a region there would strand the chip at "· armed" with no
@@ -541,7 +548,7 @@ struct ContentView: View {
         let singleViewport = ( viewportLayout == .single )
         let usable = honored && interacting && singleViewport
         let active = viewModel.activeRegion != nil
-        let text = active ? "REGION ×" : (regionArmed ? "REGION · armed" : "REGION")
+        let text = active ? "▧ Region active ×" : (regionArmed ? "▧ Cancel Draw" : "▧ Draw Region")
         let color: Color = active ? Theme.warn : (regionArmed ? Theme.accent : Theme.textFaint)
         return Text(text)
             .font(Theme.mono(10))
@@ -569,7 +576,9 @@ struct ContentView: View {
                   : (!singleViewport
                      ? "Region refinement is available in the single viewport"
                      : (interacting
-                        ? "Toggle region refinement — drag in the viewport to draw a box"
+                        ? (regionArmed
+                           ? "Cancel drawing the render region"
+                           : "Draw a region to focus interactive refinement")
                         : "Unavailable while a render is in flight")))
     }
 

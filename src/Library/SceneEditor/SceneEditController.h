@@ -985,6 +985,13 @@ namespace RISE
 		//! timeout, or a PINNED occupant's fairness wait outlasting
 		//! `queueTimeoutMs`.  A thrown exception out of `fn` propagates to
 		//! the caller exactly as SubmitAgentRenderSync documents.
+		//!
+		//! Interactive-region state is deliberately preserved across this
+		//! submission. Ordinary production callbacks render full-frame by
+		//! calling Job::Rasterize / RasterizeAnimationUsingOptions and never
+		//! consult that state; an explicit "Render Active Region" command
+		//! captures the coordinates before submission and calls
+		//! Job::RasterizeRegion from `fn`.
 		bool SubmitProductionRenderSync(
 			std::function<void()> fn,
 			const String&         clientLabel,
@@ -1351,10 +1358,11 @@ namespace RISE
 		// (divisor > 1) still render the whole frame — otherwise pixels
 		// outside the box would go stale at mismatched scales during
 		// navigation.  The region applies ONLY to the interactive
-		// viewport; production renders are always full-frame and
-		// SubmitProductionRenderSync clears any active region first
-		// (the Blender-style "region box leaks into the final render"
-		// footgun is designed against — docs/gui/DESIGN_BRIEF.md A4).
+		// viewport. Production coordination preserves this state. Ordinary
+		// production renders are still always full-frame because their
+		// callbacks never read it; only the separately named Render Active
+		// Region action captures and forwards these bounds. See
+		// docs/gui/DESIGN_BRIEF.md A4.
 		// right/bottom are clamped to the film at use; a box whose
 		// left/top lies outside the film is ignored for that pass
 		// (full-frame render) while still reported by

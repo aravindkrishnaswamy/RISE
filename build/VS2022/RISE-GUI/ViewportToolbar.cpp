@@ -599,9 +599,15 @@ void ViewportToolbar::updateRegionChip()
     if (!m_regionChip) return;
 
     const bool honors = m_bridge && m_bridge->interactiveRasterizerHonorsRegion();
-    m_regionChip->setEnabled(honors);
-    m_regionChip->setToolTip(honors
-        ? tr("Toggle region refinement")
+    const bool singleViewport = m_bridge
+        && m_bridge->viewportLayout() == ViewportBridge::ViewportLayout::Single;
+    m_regionChip->setEnabled(honors && singleViewport);
+    m_regionChip->setToolTip(!singleViewport
+        ? tr("Region refinement is available in the single viewport")
+        : honors
+        ? (m_regionArmed
+            ? tr("Cancel drawing the render region")
+            : tr("Draw a region to focus interactive refinement"))
         : tr("This rasterizer doesn't support region refinement"));
 
     unsigned int l = 0, t = 0, r = 0, b = 0;
@@ -618,16 +624,16 @@ void ViewportToolbar::updateRegionChip()
     QString text;
     QColor color;
     if (!honors) {
-        text = tr("REGION");
+        text = tr("\xE2\x96\xA7 Draw Region");
         color = Theme::textDisabled;
     } else if (hasRegion) {
-        text = tr("REGION");
+        text = tr("\xE2\x96\xA7 Region active \xC3\x97");
         color = Theme::warn;
     } else if (m_regionArmed) {
-        text = tr("REGION \xE2\x80\xA6");
+        text = tr("\xE2\x96\xA7 Cancel Draw");
         color = Theme::warn;
     } else {
-        text = tr("REGION off");
+        text = tr("\xE2\x96\xA7 Draw Region");
         color = Theme::textFaint;
     }
     m_regionChip->setText(text);
@@ -660,6 +666,18 @@ void ViewportToolbar::cancelRegionArm()
     if (!m_regionArmed) return;
     m_regionArmed = false;
     emit regionArmedChanged(false);
+    updateRegionChip();
+}
+
+void ViewportToolbar::beginRegionDraw()
+{
+    if (!m_bridge || !m_bridge->interactiveRasterizerHonorsRegion()) return;
+    if (m_bridge->viewportLayout() != ViewportBridge::ViewportLayout::Single) return;
+    unsigned int l = 0, t = 0, r = 0, b = 0;
+    if (m_bridge->getInteractiveRegion(&l, &t, &r, &b)) return;
+    if (m_regionArmed) return;
+    m_regionArmed = true;
+    emit regionArmedChanged(true);
     updateRegionChip();
 }
 

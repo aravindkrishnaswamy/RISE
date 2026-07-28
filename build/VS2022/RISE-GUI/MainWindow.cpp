@@ -849,10 +849,19 @@ void MainWindow::createMenuBar()
         m_viewportBridge->start();
     });
 
+    m_drawRegionAction = renderMenu->addAction("Draw Render Region");
+    m_drawRegionAction->setShortcut(QKeySequence("Ctrl+Shift+R"));
+    connect(m_drawRegionAction, &QAction::triggered, this, [this]() {
+        if (m_viewportToolbar) m_viewportToolbar->beginRegionDraw();
+    });
+
     renderMenu->addSeparator();
 
     m_renderAction = renderMenu->addAction("&Render", this, &MainWindow::onRender);
     m_renderAction->setShortcut(QKeySequence("Ctrl+R"));
+
+    m_renderRegionAction = renderMenu->addAction(
+        "Render Active Region", this, &MainWindow::onRenderActiveRegion);
 
     m_renderAnimAction = renderMenu->addAction("Render &Animation", this, &MainWindow::onRenderAnimation);
 
@@ -981,6 +990,15 @@ void MainWindow::updateMenuActionStates()
                          || state == RenderEngine::Completed
                          || state == RenderEngine::Cancelled);
     if (m_renderAction)     m_renderAction->setEnabled(canRender);
+    unsigned int rl = 0, rt = 0, rr = 0, rb = 0;
+    const bool hasRegion = m_viewportBridge
+        && m_viewportBridge->getInteractiveRegion(&rl, &rt, &rr, &rb);
+    const bool canDrawRegion = bridgeInteractingEnabled && !hasRegion
+        && m_viewportBridge->interactiveRasterizerHonorsRegion()
+        && m_viewportBridge->viewportLayout() == ViewportBridge::ViewportLayout::Single;
+    if (m_drawRegionAction) m_drawRegionAction->setEnabled(canDrawRegion);
+    if (m_renderRegionAction) m_renderRegionAction->setEnabled(
+        canRender && hasRegion && m_engine->productionRasterizerHonorsRegion());
     // TopBar's render-transport pill (right side) mirrors this SAME
     // predicate for its idle "Render" state -- pushed in here rather
     // than re-derived in TopBar so the two enable rules can never
@@ -2057,10 +2075,10 @@ void MainWindow::onRender()
     if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
     if (m_viewportBridge) m_viewportBridge->stop();
 
-    // UI redesign (A4 region refinement): a region "armed" for a
+    // UI redesign (A4 region refinement): a draw mode waiting for a
     // not-yet-drawn drag can no longer land against Scene state the
     // production rasterizer is about to read off-main — clear it so
-    // the REGION chip doesn't lie about being armed through a render.
+    // the Draw Region control doesn't claim a drag can land mid-render.
     if (m_viewportToolbar) m_viewportToolbar->cancelRegionArm();
 
     // Capture the canonical scrubbed time for the production worker.
@@ -2076,6 +2094,33 @@ void MainWindow::onRender()
     double sceneTime = m_viewportTimeline ? m_viewportTimeline->currentTime() : 0.0;
     if (m_viewportBridge) sceneTime = m_viewportBridge->lastSceneTime();
     m_engine->startRender(sceneTime);
+}
+
+void MainWindow::onRenderActiveRegion()
+{
+    if (!m_viewportBridge || !m_engine) return;
+
+    unsigned int left = 0, top = 0, right = 0, bottom = 0;
+    if (!m_engine->productionRasterizerHonorsRegion()) {
+        statusBar()->showMessage("The active production rasterizer does not support region rendering.", 4000);
+        return;
+    }
+    if (!m_viewportBridge->getInteractiveRegion(&left, &top, &right, &bottom)) {
+        statusBar()->showMessage("Draw a render region first.", 3000);
+        return;
+    }
+
+    // Mirror onRender's complete admission discipline. Capture the region
+    // before production starts; the controller preserves it for the resumed
+    // interactive viewport, while this explicit action forwards the captured
+    // inclusive bounds to Job::RasterizeRegion inside the coordinator slot.
+    if (m_chatPanel) m_chatPanel->productionRenderStarting();
+    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+    m_viewportBridge->stop();
+    if (m_viewportToolbar) m_viewportToolbar->cancelRegionArm();
+
+    const double sceneTime = m_viewportBridge->lastSceneTime();
+    m_engine->startRegionRender(sceneTime, left, top, right, bottom);
 }
 
 void MainWindow::onRenderAnimation()
@@ -2422,6 +2467,8 @@ void MainWindow::rebuildViewportForLoadedScene()
             m_viewportWidget, &ViewportWidget::setRegionArmed);
     connect(m_viewportWidget, &ViewportWidget::regionArmCancelled,
             m_viewportToolbar, &ViewportToolbar::cancelRegionArm);
+    connect(m_viewportWidget, &ViewportWidget::regionStateChanged,
+            this, [this]() { updateMenuActionStates(); });
 
     // N-up multi-viewport (docs/gui/RENDER_MODES.md §7.5): the layout
     // picker lives in the toolbar; the pane grid it drives lives in the
@@ -2429,6 +2476,8 @@ void MainWindow::rebuildViewportForLoadedScene()
     // for the widget's own 500ms poll.
     connect(m_viewportToolbar, &ViewportToolbar::layoutChanged,
             m_viewportWidget, &ViewportWidget::onViewportLayoutChanged);
+    connect(m_viewportToolbar, &ViewportToolbar::layoutChanged,
+            this, [this]() { updateMenuActionStates(); });
 
     if (m_outlinerWidget) {
         m_outlinerWidget->setBridge(m_viewportBridge);
