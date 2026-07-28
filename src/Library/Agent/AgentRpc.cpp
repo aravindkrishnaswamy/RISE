@@ -75,17 +75,21 @@ namespace RISE
 
 			//! Secure-MCP slice 2 hardening: the gate is now DENY-BY-
 			//! DEFAULT -- an explicit allowlist of the READ-SAFE verb
-			//! names (read_document, read_schema, read_skill, validate,
-			//! render, render_status, render_wait, render_cancel,
-			//! read_image, read_viewport, list_proposals, query_object_at),
-			//! the ONE list the choke point in HandleLine
-			//! consults.  Anything NOT on this list -- including the 3
-			//! known-mutating verbs (propose_patch, insert_chunk,
-			//! remove_chunk) AND any FUTURE verb added to the dispatch
-			//! below without also being added here -- is refused under
+			//! names, ENUMERATED IN THE FUNCTION BODY IMMEDIATELY BELOW
+			//! (deliberately NOT restated here: a prose copy of a list
+			//! three lines away is pure drift surface, and it drifted --
+			//! review rounds 13 and 18 both landed on a stale copy of it.
+			//! The remote restatements that DO earn their keep, in
+			//! AgentRpc.h where the reader cannot see this body, are
+			//! machine-checked against these two function bodies by
+			//! tests/SourceHygieneTest).  This body is the ONE list the
+			//! choke point in HandleLine consults.  Anything NOT on it --
+			//! including the mutating verbs enumerated by
+			//! IsProposeSafeVerb below, AND any FUTURE verb added to the
+			//! dispatch without also being added here -- is refused under
 			//! AgentAutonomy::Read.  This is the deliberate polarity flip
 			//! from the pre-hardening `IsMutatingVerb` allow-list-of-
-			//! mutators: that shape was FAIL-OPEN (a new mutating verb #13
+			//! mutators: that shape was FAIL-OPEN (a NEW mutating verb
 			//! would be silently PERMITTED under Read until someone
 			//! remembered to add it to the mutating list).  Fail-closed
 			//! means a new verb is refused-under-read by construction --
@@ -796,9 +800,10 @@ namespace RISE
 				// (5b) Secure-MCP slice 2 hardening (extended by slice 5b): the
 				// ONE choke point for the launch-time autonomy policy --
 				// checked BEFORE any per-verb block, DENY-BY-DEFAULT against
-				// the fixed allowlist of read-safe verb names (IsReadSafeVerb,
-				// now 13 -- the original 9 plus read_viewport, list_proposals,
-				// query_object_at and compare_to_reference).  A verb that
+				// the fixed allowlist of read-safe verb names (IsReadSafeVerb
+				// in this file -- its BODY is the sole source of truth for
+				// membership; a count or a copy of it here would just be one
+				// more thing to drift).  A verb that
 				// is not on the read-safe list is refused under Read -- this
 				// covers the 5 known-mutating verbs, resolve_proposal, AND any
 				// future verb that reaches dispatch without being consciously

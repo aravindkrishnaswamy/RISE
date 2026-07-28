@@ -252,8 +252,11 @@ namespace RISE
 
 		//! Model-B F5 slice S3 (actionable insert_chunk diagnostics), extended by
 		//! a later slice to propose_patch and remove_chunk: ONE shape for EVERY
-		//! per-parameter / per-chunk diagnostic signal the three mutating verbs
-		//! can return -- a NON-BLOCKING WARNING attached to a SUCCESSFUL
+		//! per-parameter / per-chunk diagnostic signal the 5 mutating verbs
+		//! (propose_patch / propose_patches / insert_chunk / insert_chunks /
+		//! remove_chunk -- the batch forms surface it PER ELEMENT, through the
+		//! same single-item delegates) can return -- a NON-BLOCKING WARNING
+		//! attached to a SUCCESSFUL
 		//! insert_chunk (the chunk landed but names something not yet defined --
 		//! a forward reference is legitimate incremental authoring, so
 		//! `applied`/`status` are UNCHANGED by it) and the descriptor- or
@@ -2015,40 +2018,55 @@ namespace RISE
 			//!                    something that clears by itself -- which is
 			//!                    exactly the infinite-retry instruction the
 			//!                    chattiness work exists to remove)
-			//! SEVEN reason values in total.  Every surface that enumerates
-			//! them must list all seven; the MODEL-FACING surfaces must ALSO
-			//! state retriability inline, because that is what a model acts
-			//! on and a model does not follow a "see the header" pointer.
+			//! Every surface that enumerates them must list ALL of them; the
+			//! MODEL-FACING surfaces must ALSO state retriability inline,
+			//! because that is what a model acts on and a model does not
+			//! follow a "see the header" pointer.
 			//! Round-14 finding 3: that rule used to say "every surface ...
 			//! AND state retriability" while listing surfaces that do not and
 			//! need not -- the design doc defers here, and the two tests pin
 			//! WIRE VALUES, not prose.  Scoped to what its own rationale
-			//! actually justifies, the obligations are:
-			//!   MODEL-FACING (list all seven + retriability + what to do):
-			//!   * AgentMcpAdapter's read_viewport tool description (the
-			//!     model-facing MCP schema)
-			//!   * skills/agent/observe-modes.md -- three places: the
-			//!     "Anything when available:false" cell of the observe-verb
-			//!     table, "Hard warnings" item 3's reason/retriable/action
-			//!     table, and the later item-3 prose
-			//!   DEVELOPER-FACING (list all seven; retriability may be a
+			//! actually justifies, the obligations are the REGISTRY below.
+			//!
+			//! THE REGISTRY IS MACHINE-CHECKED.  tests/SourceHygieneTest
+			//! parses the repo-relative paths out of the delimited block
+			//! below and asserts, BOTH WAYS, that {files enumerating every
+			//! reason value} == {this registry} + AgentSession.cpp (which
+			//! DEFINES the values and is the test's ground truth).  So a new
+			//! surface added without registering it here FAILS the suite, and
+			//! a registered surface that falls behind on a newly-added reason
+			//! FAILS it too.  Do not restate a COUNT of the entries here --
+			//! four consecutive review rounds found a hand-maintained count in
+			//! this family stale; the delimited list IS the count.
+			//!
+			//! [read_viewport-reason-surfaces]
+			//!   MODEL-FACING (list every reason + retriability + what to do):
+			//!   * src/Library/Agent/AgentMcpAdapter.cpp -- the read_viewport
+			//!     tool description (the model-facing MCP schema)
+			//!   * skills/agent/observe-modes.md -- in the "Anything when
+			//!     available:false" cell of the observe-verb table; in "Hard
+			//!     warnings" item 3's reason/retriable/action table; in the
+			//!     prose under that same item 3; and in "Traps" item 3, which
+			//!     re-states all of them with retriability and an action
+			//!   DEVELOPER-FACING (list every reason; retriability may be a
 			//!   grouped summary that defers here for the detail):
-			//!   * AgentRpc.h's read_viewport tool-table comment
-			//!   * AgentRpc.cpp's read_viewport handler comment
-			//!   * docs/agentic-redesign/50-agentic-surface.md, the S1
+			//!   * src/Library/Agent/AgentRpc.h -- the read_viewport
+			//!     tool-table comment
+			//!   * src/Library/Agent/AgentRpc.cpp -- the read_viewport
+			//!     handler comment
+			//!   * docs/agentic-redesign/50-agentic-surface.md -- the S1
 			//!     read_viewport SHIPPED bullet
+			//!   * src/Library/Agent/AgentSession.h -- this block
 			//!   TESTS (pin the wire values / the model-facing wording; they
 			//!   are not themselves an enumeration a reader acts on):
-			//!   * tests/AgentSkillsTest's cross-reference assertion (which
-			//!     checks the skill names every value verbatim)
-			//!   * tests/AgentViewportReadTest, which pins the exact wire
+			//!   * tests/AgentSkillsTest.cpp -- the cross-reference assertion
+			//!     (which checks the skill names every value verbatim)
+			//!   * tests/AgentViewportReadTest.cpp -- pins the exact wire
 			//!     value each refusal produces
-			//! EIGHT files, TEN places including this one (observe-modes.md
-			//! carries three).  Adding an eighth reason, or changing the
-			//! retriability of an existing one, means touching every one of
-			//! them.  `git grep -l no_frame_yet` finds them all plus two
-			//! non-enumerating hits (AgentSession.cpp, which SETS the value,
-			//! and AgentChatLoopTest's canned JSON fixture).
+			//! [/read_viewport-reason-surfaces]
+			//!
+			//! Adding a reason, or changing the retriability of an existing
+			//! one, means touching every entry above.
 			//!
 			//! Round-12 finding 2 -- the `render` FALLBACK, stated once, here.
 			//! For "editor_transaction_in_progress",

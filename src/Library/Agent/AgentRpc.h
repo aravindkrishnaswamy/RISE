@@ -616,7 +616,7 @@
 //    Secure-MCP slice 5b (`Propose` autonomy): a THIRD posture, between
 //    Read and Commit.  Under `Propose`, the read-safe allowlist
 //    (IsReadSafeVerb -- includes list_proposals, read-safe under every
-//    posture, see below) still passes (same as Read) PLUS the 3 mutating
+//    posture, see below) still passes (same as Read) PLUS the 5 mutating
 //    verbs (propose_patch, propose_patches, insert_chunk, insert_chunks,
 //    remove_chunk) are let THROUGH
 //    to the wrapped
@@ -739,7 +739,7 @@ namespace RISE
 			//! part of this set).  Secure-MCP slice 2 hardening: under
 			//! AgentAutonomy::Read, any method NOT on the read-safe
 			//! allowlist (IsReadSafeVerb, the single source of truth for
-			//! membership) -- the 3 mutating verbs, an
+			//! membership) -- the 5 mutating verbs, an
 			//! unrecognized method, or any future verb not yet classified --
 			//! returns kAutonomyRefused (-32011) instead of dispatching; see
 			//! the file header's policy-refusal doc.

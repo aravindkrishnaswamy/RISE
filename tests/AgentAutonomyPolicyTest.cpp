@@ -6,8 +6,9 @@
 //  Six in-process/subprocess suites:
 //
 //    (a) READ posture (in-process AgentRpcDispatcher constructed with
-//        AgentAutonomy::Read): all 3 mutating verbs (propose_patch,
-//        insert_chunk, remove_chunk) are refused with the EXACT
+//        AgentAutonomy::Read): the single-item mutating verbs
+//        (propose_patch, insert_chunk, remove_chunk) are refused with
+//        the EXACT
 //        {code:-32011, message, data:{verb,autonomy:"read"}} shape;
 //        RED-PROVE the document is byte-UNCHANGED after each refused
 //        attempt (a naive "check-then-mutate" implementation would still
@@ -413,8 +414,11 @@ static void TestDenyByDefaultForUnclassifiedVerb()
 
 //----------------------------------------------------------------------
 // Secure-MCP slice 5b: AgentAutonomy::Propose -- the wire posture reaches
-// AgentSession for the 3 mutating verbs (propose_patch/insert_chunk/
-// remove_chunk) rather than refusing them at the dispatcher choke point,
+// AgentSession for the single-item mutating verbs (propose_patch/
+// insert_chunk/remove_chunk; the batch forms propose_patches and
+// insert_chunks carry the identical posture and are covered by the
+// tools/list suites below) rather than refusing them at the dispatcher
+// choke point,
 // but list_proposals stays read-safe under EVERY posture and
 // resolve_proposal stays refused under BOTH Read and Propose (Commit-only).
 // This test drives a HEADLESS session (no controller attached) under all

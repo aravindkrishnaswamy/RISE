@@ -260,17 +260,17 @@ namespace RISE
 			//! width/height, camera vector shapes, the async-refused-headless
 			//! note, pinned semantics, samples clamp, the ODD/EVEN id-space
 			//! split, the baseHeadVersion conflict protocol, retriable).
-			//! Secure-MCP slice 2: under AgentAutonomy::Read, the three
+			//! Secure-MCP slice 2: under AgentAutonomy::Read, the 5
 			//! mutating tools' descriptions are ANNOTATED (prefixed with
 			//! kAutonomyReadNote) rather than hidden -- see the note's doc.
 			//! Secure-MCP slice 5b: resolve_proposal is annotated (with the
 			//! DISTINCT kResolveProposalOwnerOnlyNote) under BOTH Read and
 			//! Propose -- it is refused at the dispatcher under either posture
-			//! (see AgentRpc.h); the 3 mutating tools' kAutonomyReadNote
+			//! (see AgentRpc.h); the 5 mutating tools' kAutonomyReadNote
 			//! annotation, by contrast, applies ONLY under Read (Propose lets
 			//! them reach the session, which stages rather than refuses).
 			//! Secure-MCP slice 5b fix round (P2-1): under AgentAutonomy::
-			//! Propose, the SAME 3 mutating tools instead get the DISTINCT
+			//! Propose, the SAME 5 mutating tools instead get the DISTINCT
 			//! kAutonomyProposeNote -- they are not refused (readOnly is
 			//! false), but they no longer commit directly either, so leaving
 			//! their description bare (Commit-identical) would hide that from
@@ -562,7 +562,7 @@ namespace RISE
 						"NOTE: the async submission mode the underlying RPC surface supports "
 						"(`{\"async\":true}`) is NOT exposed as an option here -- every render "
 						"through this tool is fully synchronous and blocks until complete. "
-						"Round-15 P2: whether `pinned` and the single-slot/30s-fairness semantics "
+						"Whether `pinned` and the single-slot/30s-fairness semantics "
 						"are LIVE depends on the transport, not on this tool. Over the headless "
 						"`rise --agent-stdio --mcp` process there is no in-app controller, so "
 						"`pinned` is a no-op and there is no slot to queue on; over the "

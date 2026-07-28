@@ -345,8 +345,9 @@ namespace RISE
 			int MaxToolRoundsPerTurn() const { return mMaxToolRoundsPerTurn; }
 
 			//! Default "blind-edit" nudge threshold: after this many
-			//! consecutive DOCUMENT-MUTATING tool calls (insert_chunk /
-			//! propose_patch / remove_chunk) with NO intervening VISUAL
+			//! consecutive calls to one of the 5 DOCUMENT-MUTATING tools
+			//! (insert_chunk / insert_chunks / propose_patch /
+			//! propose_patches / remove_chunk) with NO intervening VISUAL
 			//! observation (render / read_image / read_viewport /
 			//! query_object_at), the loop appends a one-shot system-prompt
 			//! reminder to the NEXT request telling the model to render and

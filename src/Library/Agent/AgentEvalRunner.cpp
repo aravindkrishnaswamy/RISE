@@ -5412,9 +5412,10 @@ namespace RISE
 				//! user-turn count.  askUserMin/askUserMax (stage 2 of the
 				//! clarifying-questions feature) count "ask_user" tool records;
 				//! askUserBeforeMutation asserts the FIRST "ask_user" record
-				//! precedes the FIRST document-mutating tool record (insert_chunk/
-				//! insert_chunks/propose_patch/remove_chunk -- the same mutation
-				//! set AgentChatLoop::AddToolResult's blind-edit nudge tracks).
+				//! precedes the FIRST record of one of the 5 document-mutating
+				//! tools (insert_chunk/insert_chunks/propose_patch/
+				//! propose_patches/remove_chunk -- the same mutation set
+				//! AgentChatLoop::AddToolResult's blind-edit nudge tracks).
 				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
 				{
 					std::vector<std::string> failures;
