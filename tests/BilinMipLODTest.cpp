@@ -51,6 +51,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Interfaces/IRasterImageAccessor.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "../src/Library/Utilities/FiniteMath.h"
 
 using namespace RISE;
 
@@ -181,16 +182,29 @@ static void TestOverAndNonFiniteLODs()
 		// optimisation-safe bit tests from FiniteMath.h, so the
 		// contract (NaN and -inf -> base path; +inf -> coarsest level)
 		// holds even under this project's -ffast-math configs
-		// (Config.OSX; legacy SGI/Solaris) where plain FP comparisons
-		// on non-finite operands can be folded away.  The values are
+		// (Config.OSX, legacy SGI/Solaris, Xcode "Opto") where plain
+		// FP comparisons on non-finite operands can be folded away.  The values are
 		// materialised through strtod at runtime — following
 		// FiniteMathTest.cpp — so no non-finite literal exists in this
 		// TU for the fast-math optimiser to constant-fold (a
 		// numeric_limits infinity() constant here trips clang's
 		// -Wnan-infinity-disabled, and legitimately so).
-		const Scalar posInf = std::strtod( "1e999", 0 );	// overflows to +inf
-		const Scalar negInf = std::strtod( "-1e999", 0 );
-		const Scalar nanLod = std::strtod( "nan", 0 );
+		const Scalar posInf = std::strtod( "1e999", nullptr );	// overflows to +inf
+		const Scalar negInf = std::strtod( "-1e999", nullptr );
+		const Scalar nanLod = std::strtod( "nan", nullptr );
+
+		// Guard against silent tautologies: if materialisation ever
+		// produced FINITE values here, the three sampling checks below
+		// would all still pass (any lod >= 2 clamps to the coarsest
+		// level; any lod <= 0 takes the base path) while covering
+		// nothing.  Assert the values really are non-finite first,
+		// with the same optimisation-safe helpers the accessor uses.
+		Check( !RISE::IsFiniteDouble( posInf ) && RISE::IsPositiveInfinityDouble( posInf ),
+			"strtod materialised +inf" );
+		Check( !RISE::IsFiniteDouble( negInf ) && !RISE::IsPositiveInfinityDouble( negInf ),
+			"strtod materialised -inf" );
+		Check( !RISE::IsFiniteDouble( nanLod ) && !RISE::IsPositiveInfinityDouble( nanLod ),
+			"strtod materialised NaN" );
 
 		Check( Near( SampleLOD( *ria, posInf ), kLevel2Expected ),
 			"lod=+inf clamps to the coarsest level" );

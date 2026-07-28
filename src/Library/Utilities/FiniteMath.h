@@ -36,10 +36,11 @@ namespace RISE
 	}
 
 	//! Returns true iff @a value is exactly +infinity.  Same volatile
-	//! materialisation rationale as IsFiniteDouble; the comparison is
-	//! integer-only (the +inf bit pattern is unique), so it cannot be
-	//! folded under -ffast-math.  Lets callers that already know a value
-	//! is non-finite distinguish +inf (often "saturate high") from NaN
+	//! materialisation rationale as IsFiniteDouble — the volatile
+	//! round-trip is what severs the optimiser's finiteness assumption;
+	//! the subsequent comparison is integer-only against the unique
+	//! +inf bit pattern.  Lets callers that already know a value is
+	//! non-finite distinguish +inf (often "saturate high") from NaN
 	//! and -inf without an FP comparison on the non-finite operand.
 	inline bool IsPositiveInfinityDouble( const double value )
 	{

@@ -32,6 +32,14 @@ namespace
 	{
 		return RISE::IsFiniteDouble( value );
 	}
+
+	#if defined(__GNUC__) || defined(__clang__)
+	__attribute__((noinline))
+	#endif
+	bool CheckPosInfAtValueBoundary( const double value )
+	{
+		return RISE::IsPositiveInfinityDouble( value );
+	}
 }
 
 int main()
@@ -50,6 +58,11 @@ int main()
 	Check( !CheckAtValueBoundary( nan ), "runtime NaN is rejected" );
 	Check( !CheckAtValueBoundary( pinf ), "runtime +infinity is rejected" );
 	Check( !CheckAtValueBoundary( ninf ), "runtime -infinity is rejected" );
+
+	Check( CheckPosInfAtValueBoundary( pinf ), "runtime +infinity is recognised as +inf" );
+	Check( !CheckPosInfAtValueBoundary( ninf ), "runtime -infinity is not +inf" );
+	Check( !CheckPosInfAtValueBoundary( nan ), "runtime NaN is not +inf" );
+	Check( !CheckPosInfAtValueBoundary( 1.0e300 ), "large finite value is not +inf" );
 
 	std::cout << gPassed << "/" << ( gPassed + gFailed ) << " checks passed" << std::endl;
 	return gFailed == 0 ? 0 : 1;
