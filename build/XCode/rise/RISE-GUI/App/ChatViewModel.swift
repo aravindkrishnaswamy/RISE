@@ -1982,10 +1982,18 @@ final class ChatViewModel: ObservableObject {
     /// HandleLine` is documented single-caller, and every actual call
     /// into it — submit, each poll slice — still happens on this
     /// MainActor Task, never concurrently with anything else.  EVERY
-    /// OTHER tool call still executes SYNCHRONOUSLY on main via
-    /// `agentHandleToolCall` in one shot (the 1c-1 contract: same thread the
-    /// GUI's own SetProperty edits drive) — they are fast CST reads/
-    /// edits with no render-duration cost to amortize.
+    /// OTHER tool call still DISPATCHES SYNCHRONOUSLY on main via
+    /// `agentHandleToolCall` (the 1c-1 contract: same thread the GUI's
+    /// own SetProperty edits drive) — they are fast CST reads/edits
+    /// with no render-duration cost to amortize.  ONE REFINEMENT (FIX
+    /// 2): an EDIT verb whose first dispatch comes back a
+    /// wholly-unapplied retriable refusal is re-dispatched up to
+    /// `editRetryMaxAttempts` times by `retryWhollyRefusedEditToolCall`
+    /// — the SAME same-actor slicing shape as the render path (each
+    /// individual dispatch is still one synchronous MainActor call into
+    /// the single-caller dispatcher; only the gaps between them are
+    /// `await Task.sleep`).  Every other verb, and every edit call that
+    /// is not refused, is still exactly one shot.
     ///
     /// PRODUCTION-RENDER INVARIANT (B2 review round 1; refined S2b):
     /// tool calls must never execute while the production rasterizer's
@@ -1994,13 +2002,16 @@ final class ChatViewModel: ObservableObject {
     /// is one synchronous MainActor slice.  Pre-S2b the tool loop had NO
     /// awaits at all, so `startRender` (also MainActor) could only ever
     /// interleave at the outer URLSession await.  S2b's render_wait
-    /// polling loop adds NEW suspension points INSIDE the tool loop —
-    /// the invariant is preserved by re-checking `Task.isCancelled`,
-    /// `stopRequested`, `viewportBridge`, and `sceneEditable()` at the
-    /// top of every render_wait slice (inside
-    /// executeRenderToolCallAsync) AND again at the call site
-    /// immediately after `await executeRenderToolCallAsync(...)`
-    /// returns, before the result is ever handed to `addToolResult`.
+    /// polling loop added the FIRST suspension points INSIDE the tool
+    /// loop, and FIX 2's edit-refusal backoff added a second family of
+    /// them — the invariant is preserved by re-checking
+    /// `Task.isCancelled`, `stopRequested`, `viewportBridge`, and
+    /// `sceneEditable()` after EVERY such suspension: at the top of
+    /// every render_wait slice (inside executeRenderToolCallAsync),
+    /// after every retry backoff (inside
+    /// retryWhollyRefusedEditToolCall), AND again at the call site
+    /// immediately after either awaited call returns, before the result
+    /// is ever handed to `addToolResult`.
     /// `startRender`'s `productionRenderStarting()` additionally calls
     /// `cancelAnyOutstandingChatRender()` (via `cancelTurn()`), which
     /// trips `render_cancel` on the controller so a production render
@@ -2103,19 +2114,17 @@ final class ChatViewModel: ObservableObject {
                                             text: step.assistantDisplayText))
                 }
                 for call in step.toolCalls {
-                    // Stop / scene-close checks (defensive): on the
-                    // MainActor these flags cannot flip inside this
-                    // awaitless loop (clicks queue until the slice
-                    // ends), so a user Stop actually lands at the next
-                    // URLSession await -- these checks matter for the
-                    // cancelTurn()-from-within-a-tool-call path (a tool
-                    // side effect triggering scene teardown): abandon
-                    // the rest; the loop synthesizes cancelled results
-                    // for them at the next flush.  The scene-editable
-                    // check cannot actually flip inside this loop
-                    // (no awaits — one MainActor slice, per the
-                    // invariant comment above); it is kept alongside
-                    // the others so every tool call is visibly gated.
+                    // Stop / scene-close / scene-editable checks: these
+                    // matter for the cancelTurn()-from-within-a-tool-call
+                    // path (a tool side effect triggering scene teardown)
+                    // AND for a real user Stop, which can now land inside
+                    // this loop — the loop is NO LONGER awaitless (an
+                    // async `render` slices at every render_wait poll, and
+                    // FIX 2's edit-refusal retry slices at every backoff),
+                    // so a click queued while we were suspended is
+                    // delivered before the next iteration starts.  On a
+                    // failure: abandon the rest; the loop synthesizes
+                    // cancelled results for them at the next flush.
                     if Task.isCancelled || stopRequested { return }
                     guard let vb = viewportBridge else { return }
                     guard sceneEditableOrReportRenderConflict() else { return }
@@ -2153,9 +2162,13 @@ final class ChatViewModel: ObservableObject {
                     // main/MainActor — see executeRenderToolCallAsync's
                     // doc for why this is a same-actor slicing scheme, NOT
                     // a second thread calling into the dispatcher).  Every
-                    // OTHER tool call keeps the 1c-1 synchronous contract
-                    // unchanged (they are all fast CST reads/edits with no
-                    // render-duration cost to amortize).
+                    // OTHER tool call keeps the 1c-1 synchronous DISPATCH
+                    // contract (they are all fast CST reads/edits with no
+                    // render-duration cost to amortize) — with the one
+                    // FIX-2 refinement noted in the `else` branch below: a
+                    // refused EDIT verb is re-dispatched a bounded number
+                    // of times, each dispatch still one synchronous
+                    // MainActor call, with an `await` only in the gaps.
                     //
                     // SESSION-ROUTING INVARIANT (2026-07 fix): BOTH branches
                     // below now reach the SAME autonomy-selected session.
@@ -2200,7 +2213,8 @@ final class ChatViewModel: ObservableObject {
                         responseLine = await executeRenderToolCallAsync(
                             call: call, submitLine: line, vb: vb)
                     } else {
-                        // Synchronous, on main — the 1c-1 executor contract.
+                        // Each dispatch below is synchronous, on main —
+                        // the 1c-1 executor contract.
                         // Agent autonomy selector: routes to whichever
                         // dispatcher matches the composer's CURRENT level
                         // (see RISEViewportBridge.h's `-agentHandleToolCall:`
@@ -2211,7 +2225,19 @@ final class ChatViewModel: ObservableObject {
                         // SESSION-ROUTING INVARIANT comment in the `if`
                         // branch above.  (Round-15 P2: this pointer existed
                         // only on the Qt side; the two halves now match.)
-                        responseLine = vb.agentHandleToolCall(line)
+                        let firstResponse = vb.agentHandleToolCall(line)
+                        // FIX 2 (edit-refusal retry): if that first attempt
+                        // came back a WHOLLY-UNAPPLIED retriable refusal
+                        // ("editor transaction or gesture in progress"), do
+                        // NOT burn an LLM round-trip on it — re-issue it
+                        // here, yielding the MainActor between attempts so
+                        // the blocking gesture can actually finish.  Returns
+                        // `firstResponse` unchanged for every other verb and
+                        // every other outcome.  See the method's doc for the
+                        // correctness constraint that makes this safe.
+                        responseLine = await retryWhollyRefusedEditToolCall(
+                            call: call, line: line, vb: vb,
+                            firstResponse: firstResponse)
                     }
 
                     // The awaited render path above can suspend across
@@ -2671,6 +2697,233 @@ final class ChatViewModel: ObservableObject {
         }
 
         return sendUnmodified()
+    }
+
+    // ================================================================
+    // FIX 2 — client-side retry of a WHOLLY-UNAPPLIED retriable edit
+    // refusal.
+    //
+    // THE MEASURED PROBLEM.  In a production GUI trajectory ("make the
+    // middle object red", gemini-3.5-flash) the agent's edits were
+    // refused five times in a row with `retriable:true` and the message
+    // "editor transaction or gesture in progress -- retry after it
+    // completes" (12 matching warnings in the GUI log, from
+    // SceneEditController's ApplyAgentParamEdit / ApplyAgentChunkCrud_
+    // `mTxnOpen || mEditor.IsCompositeOpen()` pre-flight).  Every one of
+    // those retries cost a FULL LLM round-trip: the model re-read the
+    // 21.5 KB document between attempts and thrashed between four
+    // different approaches because it did not believe the refusal.
+    // Roughly 13 of that session's 23 turns were this loop.  When the
+    // gesture finally cleared, the very first thing it tried worked.
+    //
+    // WHY THIS CANNOT BE FIXED SERVER-SIDE.  A GUI agent tool call runs
+    // SYNCHRONOUSLY on the MainActor (the 1c-1 executor contract, see
+    // `driveTurn`), and the editor transaction/composite that is
+    // blocking is owned by that SAME thread.  Blocking inside the RPC to
+    // wait for it would guarantee the gesture can never complete — a
+    // self-deadlock for the whole wait.  The retry therefore has to live
+    // in the driver, where it can YIELD the thread (`await Task.sleep`)
+    // between attempts.
+    //
+    // THE CORRECTNESS CONSTRAINT (get this wrong and the fix is worse
+    // than the bug).  The batch verbs are SEQUENTIAL and BEST-EFFORT,
+    // not atomic — AgentRpc.cpp documents it for both `insert_chunks`
+    // and `propose_patches`: every element is attempted in order and a
+    // rejected element does not stop the batch, so a batch can be
+    // PARTIALLY applied.  Blindly re-issuing a call whose result merely
+    // says `retriable` would DOUBLE-APPLY whatever already succeeded.
+    // So `editRefusalIsWhollyUnapplied` retries ONLY when NOTHING was
+    // applied — see its doc for the exact per-shape gate.
+    //
+    // Windows/Qt sibling: build/VS2022/RISE-GUI/ChatPanel.cpp's
+    // `scheduleEditToolCallRetry` / `editRefusalIsWhollyUnapplied` (a
+    // QTimer::singleShot chain rather than `await`, because Qt returns
+    // to the event loop instead of suspending a Task — the retry gate,
+    // the attempt bound, the backoff table and the driver stamp are
+    // deliberately identical).
+    // ================================================================
+
+    /// The FIVE mutating verbs whose results carry the `applied` +
+    /// `retriable` pair this retry gate reads — exactly the set
+    /// `AgentRpc.cpp`'s `IsProposeSafeVerb` enumerates, and exactly the
+    /// set whose result JSON is built by `ChunkResultJson` /
+    /// `propose_patch`'s inline result / `propose_patches`' per-element
+    /// result (the only three sites in AgentRpc.cpp that emit
+    /// `retriable` at all).  Checked BEFORE parsing the response so a
+    /// multi-megabyte `read_image` result is never JSON-parsed twice.
+    /// tests/SourceHygieneTest.cpp derives this set from
+    /// `IsProposeSafeVerb` and fails if the two drift.
+    private static let retriableEditVerbs: Set<String> = [
+        "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk"
+    ]
+
+    /// Total dispatch attempts for one refused edit call, the first
+    /// included.  Five attempts spread over the backoff table below is
+    /// ~2.25 s of added wall-clock in the WORST case, against a measured
+    /// alternative of ~5 LLM round-trips (seconds each, plus a 21.5 KB
+    /// document re-read per round).  The blocking condition is a
+    /// human-scale editor gesture — a viewport drag, a property-slider
+    /// scrub, an open composite — which ends when the user releases the
+    /// mouse; well under a second in the common case.  Past ~2 s the
+    /// block is no longer a transient gesture (a user is holding a drag,
+    /// or something is latched), and the honest move is to hand the
+    /// refusal to the model — which now also learns, from the stamp
+    /// below, that the driver already tried.
+    private static let editRetryMaxAttempts = 5
+
+    /// Backoff BEFORE attempt i+1 (index i-1), in milliseconds.  Starts
+    /// short so the overwhelmingly common "we caught the tail of a
+    /// gesture" case costs a sixth of a second, then doubles so the
+    /// total stays bounded and the controller's `mMutex` (which every
+    /// attempt takes) is not hammered.  Sum = 2250 ms across the four
+    /// gaps between five attempts.
+    private static let editRetryBackoffMs: [UInt64] = [150, 300, 600, 1200]
+
+    /// Is this tool result a refusal with **nothing applied** — the only
+    /// shape a client-side retry may re-issue?
+    ///
+    /// SINGULAR verbs (`propose_patch`, `insert_chunk`, `remove_chunk`):
+    /// `applied == false` AND `retriable == true`.  The rejection
+    /// contract guarantees the head is byte-identical on a reject
+    /// (SceneEditController refuses BEFORE any mutation or park), so
+    /// re-issuing is a true no-op-then-retry.
+    ///
+    /// BATCH verbs (`insert_chunks`, `propose_patches`): `applied` is a
+    /// COUNT, and it must be 0, AND every element must itself be
+    /// `applied == false` + `retriable == true`.  A PARTIALLY applied
+    /// batch is handed to the model exactly as today — re-issuing it
+    /// would double-apply the elements that already landed.
+    ///
+    /// `status:"diagnosed"` (the edit WAS applied, the re-derive
+    /// diagnosed), `status:"conflict"` (retriable-by-protocol via
+    /// re-read, not by verbatim resubmission) and every permanent
+    /// rejection all carry `retriable == false`, so they fall out here
+    /// without a separate status test.
+    ///
+    /// ORDER IS LOAD-BEARING: the batch shape is tested FIRST.
+    /// `JSONSerialization` decodes JSON booleans and JSON numbers alike
+    /// into `NSNumber`, and `NSNumber(0) as? Bool` succeeds as `false` —
+    /// so a batch response's `"applied": 0` would satisfy the singular
+    /// test's `applied == false` if the singular branch ran first, and a
+    /// partially-refused batch would be retried on the strength of a
+    /// count that happens to read as a boolean.
+    private static func editRefusalIsWhollyUnapplied(_ responseLine: String) -> Bool {
+        guard
+            let data = responseLine.data(using: .utf8),
+            let envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            envelope["error"] == nil,
+            let result = envelope["result"] as? [String: Any]
+        else { return false }
+
+        // BATCH FIRST — see the ORDER IS LOAD-BEARING note above.
+        if let results = result["results"] as? [[String: Any]] {
+            guard
+                !results.isEmpty,
+                let appliedCount = result["applied"] as? NSNumber,
+                appliedCount.intValue == 0
+            else { return false }
+            for element in results {
+                guard
+                    let elementApplied = element["applied"] as? Bool, elementApplied == false,
+                    let elementRetriable = element["retriable"] as? Bool, elementRetriable
+                else { return false }
+            }
+            return true
+        }
+
+        guard
+            let applied = result["applied"] as? Bool, applied == false,
+            let retriable = result["retriable"] as? Bool, retriable
+        else { return false }
+        return true
+    }
+
+    /// OBSERVABILITY.  Stamp a DRIVER-ATTRIBUTED retry record onto the
+    /// tool result the driver hands to `addToolResult`.
+    ///
+    /// The trajectory's `tool` record (AgentChatLoop.cpp's
+    /// `AddToolResult`) stores the raw JSON-RPC response line verbatim
+    /// as `jsonRpcResponse`, so stamping the response is what makes the
+    /// retries visible in the trajectory JSONL.  `latencyMs` needs
+    /// nothing: it is stamped at `toolCallToJsonRpcLine` (before attempt
+    /// 1) and completed at `addToolResult` (after the last attempt), so
+    /// it already spans the retries honestly.
+    ///
+    /// The model sees this too — the codecs pack `result` (not the
+    /// envelope) into the tool_result block.  That is DELIBERATE and is
+    /// why the key is namespaced `guiDriverRetry` and carries a note
+    /// saying who added it: a model that learns the driver already spent
+    /// five attempts should stop re-issuing the same call itself, which
+    /// is the whole point of this fix.  Nothing is fabricated — every
+    /// other field is the engine's own last-attempt result, untouched.
+    /// Emitted ONLY when at least one retry happened (`attempts > 1`),
+    /// so the response shape is byte-for-byte unchanged on the
+    /// overwhelmingly common single-attempt path.
+    private static func stampDriverRetry(onResponseLine line: String, attempts: Int) -> String {
+        guard
+            let data = line.data(using: .utf8),
+            var envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            var result = envelope["result"] as? [String: Any]
+        else { return line }
+        result["guiDriverRetry"] = [
+            "attempts": attempts,
+            "note": "Added by the RISE GUI chat driver, not by the scene engine: this "
+                + "call was refused as retriable with NOTHING applied, so the driver "
+                + "re-issued it verbatim, yielding the GUI thread between attempts. "
+                + "Only the last attempt's outcome is reported above; no earlier "
+                + "attempt applied anything."
+        ]
+        envelope["result"] = result
+        guard
+            let outData = try? JSONSerialization.data(withJSONObject: envelope),
+            let outLine = String(data: outData, encoding: .utf8)
+        else { return line }
+        return outLine
+    }
+
+    /// Re-issue an edit tool call that came back a wholly-unapplied
+    /// retriable refusal, up to `editRetryMaxAttempts` attempts total,
+    /// yielding the MainActor between them.  `firstResponse` is the
+    /// already-executed attempt 1 from `driveTurn`'s dispatch site (kept
+    /// there so the ordinary dispatch path — and the source-hygiene
+    /// marker that pins it to `agentHandleToolCall` — stays visible at
+    /// the call site, and so the Qt sibling can have the same shape).
+    ///
+    /// Returns `firstResponse` untouched for every non-edit verb and for
+    /// every outcome that is not a wholly-unapplied retriable refusal.
+    ///
+    /// POST-AWAIT RE-VERIFICATION: `Task.sleep` is a real suspension
+    /// point, so every one of the driver's standing gates is re-checked
+    /// before the next attempt — the SAME set `executeRenderToolCallAsync`
+    /// re-checks at the top of each poll slice, and the same set
+    /// `driveTurn` re-checks immediately after this call returns.  A
+    /// Stop, a scene close, a production render starting, or a cancelled
+    /// Task abandons the retry rather than resuming into a torn-down
+    /// world; the caller's own guards then return without recording
+    /// anything for this call, and the next send's flush synthesizes the
+    /// cancelled result (the same recovery every other interrupted tool
+    /// call uses).
+    private func retryWhollyRefusedEditToolCall(
+        call: RISEAgentChatToolCall, line: String, vb: RISEViewportBridge,
+        firstResponse: String
+    ) async -> String {
+        guard Self.retriableEditVerbs.contains(call.name) else { return firstResponse }
+
+        var responseLine = firstResponse
+        var attempts = 1
+        while attempts < Self.editRetryMaxAttempts,
+              Self.editRefusalIsWhollyUnapplied(responseLine) {
+            let backoffMs = Self.editRetryBackoffMs[
+                min(attempts - 1, Self.editRetryBackoffMs.count - 1)]
+            try? await Task.sleep(nanoseconds: backoffMs * 1_000_000)
+            if Task.isCancelled || stopRequested { break }
+            guard viewportBridge != nil else { break }
+            guard sceneEditable() else { break }
+            attempts += 1
+            responseLine = vb.agentHandleToolCall(line)
+        }
+        guard attempts > 1 else { return responseLine }
+        return Self.stampDriverRetry(onResponseLine: responseLine, attempts: attempts)
     }
 
     /// Model-B F2 slice S2b: execute a `render` tool call WITHOUT

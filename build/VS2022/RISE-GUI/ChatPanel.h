@@ -299,14 +299,32 @@ private:
     // P1-2: the tool-call loop's state machine.  networkFinished() used to
     // run a single synchronous `for` loop over step.toolCalls; that loop
     // is now split across processNextToolCall() (one call at a time,
-    // still synchronous for non-render verbs) with a `render` call
-    // suspending into startAsyncRenderToolCall()/pollOutstandingRender()
-    // and resuming back into processNextToolCall() on completion --
-    // mirroring how networkFinished() already resumes runNextStep()
-    // across the HTTP boundary.
+    // dispatched synchronously for non-render verbs) with TWO ways to
+    // suspend back into the event loop and resume into
+    // processNextToolCall() later -- mirroring how networkFinished()
+    // already resumes runNextStep() across the HTTP boundary:
+    //   * a `render` call -> startAsyncRenderToolCall() /
+    //     pollOutstandingRender(), resuming on job completion;
+    //   * (FIX 2) an EDIT call refused with nothing applied ->
+    //     scheduleEditToolCallRetry() / deliverEditToolCallResult(),
+    //     resuming after a bounded backoff.
     void processNextToolCall();
     void startAsyncRenderToolCall(const RISE::Agent::ChatToolCall& call,
                                    const std::string& submitLine);
+    // FIX 2 (edit-refusal retry): park a WHOLLY-UNAPPLIED retriable edit
+    // refusal and re-issue it after a short backoff that RETURNS TO THE
+    // EVENT LOOP, instead of spending an LLM round-trip per retry.  Full
+    // rationale, the anti-double-apply gate, and the attempt/backoff
+    // budget live in ChatPanel.cpp's block comment above
+    // editRefusalIsWhollyUnapplied.  macOS sibling:
+    // ChatViewModel.retryWhollyRefusedEditToolCall.
+    void scheduleEditToolCallRetry(const RISE::Agent::ChatToolCall& call,
+                                   const std::string& line,
+                                   int attemptsSoFar);
+    void deliverEditToolCallResult(const RISE::Agent::ChatToolCall& call,
+                                   const std::string& responseLine,
+                                   int attempts);
+
     // Fire cancellation but retain the published outstanding job until the
     // non-blocking poll observes actual worker completion.
     void cancelOutstandingRender();
@@ -529,6 +547,22 @@ private:
     // state machine (valid only while m_activeRenderPending is true).
     RISE::Agent::ChatToolCall m_activeRenderCall;
     bool m_activeRenderPending = false;
+
+    // FIX 2 (edit-refusal retry): the edit tool call currently PARKED
+    // between retry attempts (valid only while m_editRetryPending is
+    // true) -- the direct sibling of m_activeRenderCall /
+    // m_activeRenderPending above, and tracked for the same reason: the
+    // call has already been popped from m_pendingToolCalls, so
+    // drainPendingToolCallsAsCancelled cannot answer it and
+    // cancelActiveTurn must.
+    RISE::Agent::ChatToolCall m_editRetryCall;
+    bool m_editRetryPending = false;
+    // Monotonic anti-stale guard.  Every scheduled retry tick captures
+    // the token it was scheduled under; cancelActiveTurn bumps it, so a
+    // tick that fires after a cancellation -- or into a LATER turn that
+    // has parked a retry of its own -- is a no-op rather than a
+    // double-advance of the tool-call state machine.
+    quint64 m_editRetryToken = 0;
     // 0 = no async chat-render job outstanding on the controller's
     // single-slot agent-render worker.  Never assign this directly --
     // go through setOutstandingRenderJobId() so isChatRenderOutstanding()

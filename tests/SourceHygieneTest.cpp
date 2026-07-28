@@ -431,7 +431,18 @@ int main()
 		          != std::string::npos,
 		       "Windows ORDINARY tool dispatch still uses agentHandleToolCall -- render and read_image must share "
 		       "ONE session, in both directions" );
-		Check( macChat.find( "responseLine = vb.agentHandleToolCall(line)" ) != std::string::npos,
+		// macOS: attempt 1 is dispatched INLINE at driveTurn's routing site
+		// (`let firstResponse = ...`), and the FIX-2 retry helper re-issues
+		// the SAME line on the same selector.  Both are asserted so neither
+		// half can be moved onto agentHandleLine.
+		const std::string macEditRetryBody = bodyBetween( macChat,
+			"private func retryWhollyRefusedEditToolCall",
+			"/// Model-B F2 slice S2b: execute a `render` tool call WITHOUT" );
+		Check( macChat.find( "let firstResponse = vb.agentHandleToolCall(line)" ) != std::string::npos
+		       && !macEditRetryBody.empty()
+		       && macEditRetryBody.find( "responseLine = vb.agentHandleToolCall(line)" )
+		          != std::string::npos
+		       && macEditRetryBody.find( "agentHandleLine" ) == std::string::npos,
 		       "macOS ORDINARY tool dispatch still uses agentHandleToolCall -- render and read_image must share "
 		       "ONE session, in both directions" );
 		const size_t winDestructor = win.find( "MainWindow::~MainWindow()" );
@@ -841,6 +852,211 @@ int main()
 		       + std::to_string( mutatingRunsChecked ) + ", read-safe lists: "
 		       + std::to_string( readSafeRunsChecked )
 		       + ") -- a zero here means the anchor phrasings were reworded away" );
+	}
+
+	// ---- GUI edit-refusal retry gate (FIX 2) --------------------------
+	// WHY THIS IS GUARDED IN SOURCE.  Both GUI chat drivers now RETRY an
+	// edit tool call that came back a retriable refusal, instead of
+	// spending a full LLM round-trip per retry (the measured failure: an
+	// agent refused five times with "editor transaction or gesture in
+	// progress", burning ~13 of a 23-turn session).  The retry is SAFE only
+	// because of one condition: the batch verbs (insert_chunks /
+	// propose_patches) are SEQUENTIAL and BEST-EFFORT -- AgentRpc.cpp
+	// documents that a rejected element does not stop the batch -- so a
+	// batch can be PARTIALLY applied, and re-issuing one whose result
+	// merely says `retriable` would DOUBLE-APPLY whatever already landed.
+	//
+	// Dropping the `applied == 0` half of the gate would leave a retry that
+	// still LOOKS correct, still passes every functional test (the happy
+	// path is a full refusal), and silently duplicates chunks in exactly
+	// the scene-building sessions that batch the most.  There is no runtime
+	// test that can catch its removal without a live editor gesture racing
+	// a live batch, so it is pinned here, on both platforms.
+	//
+	// Ground truth for the VERB SET is AgentRpc.cpp's IsProposeSafeVerb --
+	// the five mutating verbs are exactly the ones whose results carry the
+	// `applied`+`retriable` pair the gate reads.  This file names no verb
+	// of its own.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& f ) -> std::string {
+			std::ifstream in( f, std::ios::binary );
+			return std::string( std::istreambuf_iterator<char>( in ),
+			                    std::istreambuf_iterator<char>() );
+		};
+		auto bodyBetween = []( const std::string& src, const char* begin,
+		                       const char* next ) -> std::string {
+			const size_t b = src.find( begin );
+			if( b == std::string::npos ) return std::string();
+			const size_t e = src.find( next, b );
+			if( e == std::string::npos ) return std::string();
+			return src.substr( b, e - b );
+		};
+		const std::string rpcCpp = slurp( repoRoot / "src" / "Library" / "Agent" / "AgentRpc.cpp" );
+		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
+			/ "RISE-GUI" / "App" / "ChatViewModel.swift" );
+		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ChatPanel.cpp" );
+		const std::string winChatHeader = slurp( repoRoot / "build" / "VS2022"
+			/ "RISE-GUI" / "ChatPanel.h" );
+
+		// The mutating verb set, parsed out of IsProposeSafeVerb's body.
+		std::vector<std::string> mutatingVerbs;
+		{
+			const size_t s = rpcCpp.find( "bool IsProposeSafeVerb( const std::string& method )" );
+			const size_t open = ( s == std::string::npos ) ? std::string::npos : rpcCpp.find( '{', s );
+			if( open != std::string::npos ) {
+				int depth = 0; size_t end = open;
+				for( size_t i = open; i < rpcCpp.size(); ++i ) {
+					if( rpcCpp[i] == '{' ) { ++depth; }
+					else if( rpcCpp[i] == '}' ) { if( --depth == 0 ) { end = i; break; } }
+				}
+				for( size_t i = open; i < end; ++i ) {
+					if( rpcCpp[i] != '"' ) { continue; }
+					const size_t q = rpcCpp.find( '"', i + 1 );
+					if( q == std::string::npos ) { break; }
+					mutatingVerbs.push_back( rpcCpp.substr( i + 1, q - i - 1 ) );
+					i = q;
+				}
+			}
+		}
+		Check( mutatingVerbs.size() >= 3,
+		       "edit-retry: parsed IsProposeSafeVerb's verb set (sanity: >=3; got "
+		       + std::to_string( mutatingVerbs.size() ) + ")" );
+
+		// (1) The retry gate itself, on BOTH platforms.  Bodies are
+		//     extracted by symbol so a marker cannot be satisfied by an
+		//     unrelated line elsewhere in the file.
+		const std::string macGate = bodyBetween( macChat,
+			"private static func editRefusalIsWhollyUnapplied",
+			"private static func stampDriverRetry" );
+		Check( !macGate.empty()
+		       // BATCH: `applied` is a COUNT and must be exactly zero, the
+		       // element list must be non-empty, and EVERY element must be
+		       // an unapplied retriable rejection.
+		       && macGate.find( "appliedCount.intValue == 0" ) != std::string::npos
+		       && macGate.find( "!results.isEmpty" ) != std::string::npos
+		       && macGate.find( "elementApplied == false" ) != std::string::npos
+		       && macGate.find( "elementRetriable" ) != std::string::npos
+		       // SINGULAR: applied==false AND retriable==true.
+		       && macGate.find( "applied == false" ) != std::string::npos
+		       && macGate.find( "let retriable = result[\"retriable\"] as? Bool, retriable" )
+		          != std::string::npos,
+		       "macOS edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND every "
+		       "element unapplied+retriable; singular: applied==false AND retriable) -- dropping the "
+		       "applied==0 condition would DOUBLE-APPLY a partially-applied best-effort batch" );
+
+		const std::string winGate = bodyBetween( winChat,
+			"bool editRefusalIsWhollyUnapplied(const QString& responseLine)",
+			"QString stampDriverRetry(" );
+		Check( !winGate.empty()
+		       && winGate.find( "result.value(\"applied\").isDouble()" ) != std::string::npos
+		       && winGate.find( "result.value(\"applied\").toDouble() != 0.0" ) != std::string::npos
+		       && winGate.find( "results.isEmpty()" ) != std::string::npos
+		       && winGate.find( "e.value(\"applied\").toBool()" ) != std::string::npos
+		       && winGate.find( "!e.value(\"retriable\").toBool()" ) != std::string::npos
+		       && winGate.find( "!result.value(\"applied\").isBool() || result.value(\"applied\").toBool()" )
+		          != std::string::npos
+		       && winGate.find( "!result.value(\"retriable\").toBool()" ) != std::string::npos,
+		       "Windows edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND every "
+		       "element unapplied+retriable; singular: applied==false AND retriable) -- dropping the "
+		       "applied==0 condition would DOUBLE-APPLY a partially-applied best-effort batch" );
+
+		// (2) The gate is BATCH-FIRST on both platforms.  A JSON number
+		//     coerces to a boolean on both toolchains (NSNumber bridging /
+		//     QJsonValue::toBool), so testing the singular shape first would
+		//     read a batch's numeric `applied: 0` as "applied == false" and
+		//     retry a partially-refused batch.
+		Check( macGate.find( "result[\"results\"] as? [[String: Any]]" )
+		         < macGate.find( "let applied = result[\"applied\"] as? Bool" )
+		       && winGate.find( "result.value(\"results\").isArray()" )
+		            < winGate.find( "!result.value(\"applied\").isBool()" ),
+		       "edit-retry gate tests the BATCH shape BEFORE the singular shape on both platforms "
+		       "(a JSON number coerces to false as a bool)" );
+
+		// (3) The retry is BOUNDED and YIELDS between attempts -- never a
+		//     blocking wait on the thread that owns the editor transaction
+		//     we are waiting on (that would deadlock the gesture).
+		const std::string macRetry = bodyBetween( macChat,
+			"private func retryWhollyRefusedEditToolCall",
+			"/// Model-B F2 slice S2b: execute a `render` tool call WITHOUT" );
+		Check( !macRetry.empty()
+		       && macRetry.find( "attempts < Self.editRetryMaxAttempts" ) != std::string::npos
+		       && macRetry.find( "await Task.sleep" ) != std::string::npos
+		       // Post-await re-verification: Stop / cancelled Task / scene
+		       // close / production render starting.
+		       && macRetry.find( "Task.isCancelled || stopRequested" ) != std::string::npos
+		       && macRetry.find( "guard viewportBridge != nil" ) != std::string::npos
+		       && macRetry.find( "guard sceneEditable()" ) != std::string::npos,
+		       "macOS edit retry is bounded, yields the MainActor between attempts, and re-verifies "
+		       "Stop/scene-close/production-render at every suspension point" );
+
+		const std::string winRetry = bodyBetween( winChat,
+			"void ChatPanel::scheduleEditToolCallRetry",
+			"void ChatPanel::deliverEditToolCallResult" );
+		Check( !winRetry.empty()
+		       && winRetry.find( "QTimer::singleShot" ) != std::string::npos
+		       && winRetry.find( "attempts < kEditRetryMaxAttempts" ) != std::string::npos
+		       && winRetry.find( "m_editRetryToken != token" ) != std::string::npos
+		       && winRetry.find( "m_stopRequested || !m_sceneEditable || !m_bridge" )
+		          != std::string::npos
+		       // A blocking wait here would guarantee the gesture can never
+		       // complete -- the retry MUST return to the event loop.
+		       && winRetry.find( "QThread::" ) == std::string::npos
+		       && winRetry.find( "processEvents" ) == std::string::npos,
+		       "Windows edit retry is bounded, returns to the Qt event loop between attempts (never a "
+		       "blocking sleep on the thread that owns the editor transaction), and re-verifies "
+		       "Stop/scene-close/production-render at every tick" );
+
+		// (4) The parked retry is answered when the turn is torn down.  Its
+		//     call was already popped from m_pendingToolCalls, so the drain
+		//     cannot see it -- cancelActiveTurn must, or the loop replays an
+		//     unanswered tool call forever.
+		const std::string winCancelTurn = bodyBetween( winChat,
+			"void ChatPanel::cancelActiveTurn", "// ============================================================" );
+		const std::string winRequestStop = bodyBetween( winChat,
+			"void ChatPanel::requestStop()", "void ChatPanel::resetConversation()" );
+		Check( !winCancelTurn.empty()
+		       && winCancelTurn.find( "++m_editRetryToken;" ) != std::string::npos
+		       && winCancelTurn.find( "if (m_editRetryPending)" ) != std::string::npos
+		       && winCancelTurn.find( "m_loop->AddToolResult(m_editRetryCall" ) != std::string::npos
+		       && !winRequestStop.empty()
+		       && winRequestStop.find( "m_editRetryPending" ) != std::string::npos
+		       && winRequestStop.find( "cancelActiveTurn" ) != std::string::npos
+		       && winChatHeader.find( "void scheduleEditToolCallRetry(" ) != std::string::npos,
+		       "Windows cancelActiveTurn abandons a parked edit retry and answers its call (it is "
+		       "already popped from m_pendingToolCalls, so the drain cannot), and requestStop routes "
+		       "a parked retry through it" );
+
+		// (5) Both drivers gate on the SAME verb set IsProposeSafeVerb
+		//     defines -- the only verbs whose results carry applied+retriable.
+		std::vector<std::string> macMissing, winMissing;
+		const std::string macVerbSet = bodyBetween( macChat,
+			"private static let retriableEditVerbs", "private static let editRetryMaxAttempts" );
+		const std::string winVerbSet = bodyBetween( winChat,
+			"bool isRetriableEditVerb(const std::string& name)", "int editRetryBackoffMs(" );
+		for( const std::string& v : mutatingVerbs ) {
+			if( macVerbSet.find( "\"" + v + "\"" ) == std::string::npos ) macMissing.push_back( v );
+			if( winVerbSet.find( "\"" + v + "\"" ) == std::string::npos ) winMissing.push_back( v );
+		}
+		// Count-equality too, so an EXTRA (non-mutating) verb cannot be
+		// smuggled into either driver's set.
+		auto quotedCount = []( const std::string& body ) {
+			size_t n = 0;
+			for( size_t p = body.find( '"' ); p != std::string::npos; ) {
+				const size_t q = body.find( '"', p + 1 );
+				if( q == std::string::npos ) break;
+				++n;
+				p = body.find( '"', q + 1 );
+			}
+			return n;
+		};
+		Check( !macVerbSet.empty() && macMissing.empty()
+		       && quotedCount( macVerbSet ) == mutatingVerbs.size(),
+		       "macOS edit-retry verb set is exactly IsProposeSafeVerb's set" );
+		Check( !winVerbSet.empty() && winMissing.empty()
+		       && quotedCount( winVerbSet ) == mutatingVerbs.size(),
+		       "Windows edit-retry verb set is exactly IsProposeSafeVerb's set" );
 	}
 
 	// ---- read_viewport reason-code surface registry (fix round 18) -----

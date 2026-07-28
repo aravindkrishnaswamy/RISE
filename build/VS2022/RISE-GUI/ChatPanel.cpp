@@ -44,6 +44,7 @@
 #include <QVBoxLayout>
 #include <QVector>
 
+#include <algorithm>
 #include <utility>
 
 #include <ctime>
@@ -152,6 +153,182 @@ namespace
             { "renderJobId", 0 }
         };
         return makeSyntheticResponseLine(result);
+    }
+
+    // ================================================================
+    // FIX 2 -- client-side retry of a WHOLLY-UNAPPLIED retriable edit
+    // refusal.  macOS sibling (same gate, same bound, same backoff
+    // table, same driver stamp):
+    // build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
+    // retryWhollyRefusedEditToolCall / editRefusalIsWhollyUnapplied /
+    // stampDriverRetry.
+    //
+    // THE MEASURED PROBLEM.  In a production GUI trajectory the agent's
+    // edits were refused five times in a row with `retriable:true` and
+    // the message "editor transaction or gesture in progress -- retry
+    // after it completes" (SceneEditController's ApplyAgentParamEdit /
+    // ApplyAgentChunkCrud_ `mTxnOpen || mEditor.IsCompositeOpen()`
+    // pre-flight).  Each retry cost a FULL LLM round-trip -- the model
+    // re-read the 21.5 KB document between attempts and thrashed
+    // between four different approaches because it did not believe the
+    // refusal; ~13 of that session's 23 turns were this loop.
+    //
+    // WHY NOT SERVER-SIDE.  A GUI agent tool call runs synchronously on
+    // the GUI thread, and the editor transaction/composite that is
+    // blocking is owned by that SAME thread.  Blocking inside the RPC
+    // to wait for it would guarantee the gesture can never complete.
+    // The retry must therefore yield back to the Qt event loop between
+    // attempts -- hence QTimer::singleShot, NEVER a blocking sleep.
+    //
+    // THE CORRECTNESS CONSTRAINT.  The batch verbs are SEQUENTIAL and
+    // BEST-EFFORT, not atomic (AgentRpc.cpp documents it for both
+    // insert_chunks and propose_patches): every element is attempted in
+    // order and a rejected element does not stop the batch, so a batch
+    // can be PARTIALLY applied.  Blindly re-issuing a call whose result
+    // merely says `retriable` would DOUBLE-APPLY whatever already
+    // succeeded.  editRefusalIsWhollyUnapplied() below therefore retries
+    // ONLY when NOTHING was applied.
+    // ================================================================
+
+    // Total dispatch attempts for one refused edit call, the first
+    // included.  Five attempts across the backoff table below is
+    // ~2.25 s of added wall-clock in the WORST case, against a measured
+    // alternative of ~5 LLM round-trips (seconds each, plus a 21.5 KB
+    // document re-read per round).  The blocking condition is a
+    // human-scale editor gesture -- a viewport drag, a slider scrub, an
+    // open composite -- which ends when the user releases the mouse;
+    // well under a second in the common case.  Past ~2 s the block is
+    // no longer a transient gesture, and the honest move is to hand the
+    // refusal to the model (which also learns, from the stamp below,
+    // that the driver already tried).
+    const int kEditRetryMaxAttempts = 5;
+
+    // Backoff BEFORE attempt i+1 (index i-1), in milliseconds.  Starts
+    // short so the common "we caught the tail of a gesture" case costs a
+    // sixth of a second, then doubles so the total stays bounded and the
+    // controller's mMutex (which every attempt takes) is not hammered.
+    // Sum = 2250 ms across the four gaps between five attempts.
+    const int kEditRetryBackoffMs[] = { 150, 300, 600, 1200 };
+
+    // The FIVE mutating verbs whose results carry the `applied` +
+    // `retriable` pair the gate below reads -- exactly the set
+    // AgentRpc.cpp's IsProposeSafeVerb enumerates, and exactly the set
+    // whose result JSON is built by ChunkResultJson / propose_patch's
+    // inline result / propose_patches' per-element result (the only
+    // three sites in AgentRpc.cpp that emit `retriable` at all).
+    // Checked BEFORE parsing the response so a multi-megabyte
+    // read_image result is never JSON-parsed twice.
+    // tests/SourceHygieneTest.cpp derives this set from IsProposeSafeVerb
+    // and fails if the two drift.
+    bool isRetriableEditVerb(const std::string& name)
+    {
+        return name == "propose_patch" ||
+               name == "propose_patches" ||
+               name == "insert_chunk" ||
+               name == "insert_chunks" ||
+               name == "remove_chunk";
+    }
+
+    int editRetryBackoffMs(int attemptsSoFar)
+    {
+        const int last =
+            static_cast<int>(sizeof(kEditRetryBackoffMs) / sizeof(kEditRetryBackoffMs[0])) - 1;
+        return kEditRetryBackoffMs[std::min(std::max(attemptsSoFar - 1, 0), last)];
+    }
+
+    // Is this tool result a refusal with NOTHING applied -- the only
+    // shape a client-side retry may re-issue?
+    //
+    // SINGULAR verbs (propose_patch / insert_chunk / remove_chunk):
+    // applied == false AND retriable == true.  The rejection contract
+    // guarantees the head is byte-identical on a reject
+    // (SceneEditController refuses BEFORE any mutation or park), so
+    // re-issuing is a true no-op-then-retry.
+    //
+    // BATCH verbs (insert_chunks / propose_patches): `applied` is a
+    // COUNT and it must be 0, AND every element must itself be
+    // applied == false + retriable == true.  A PARTIALLY applied batch
+    // is handed to the model exactly as today -- re-issuing it would
+    // double-apply the elements that already landed.
+    //
+    // status:"diagnosed" (the edit WAS applied, the re-derive
+    // diagnosed), status:"conflict" (retriable-by-protocol via re-read,
+    // not by verbatim resubmission) and every permanent rejection all
+    // carry retriable == false, so they fall out without a separate
+    // status test.
+    //
+    // ORDER: the batch shape is tested FIRST, and every read is
+    // TYPE-CHECKED (isDouble/isBool) rather than coerced -- QJsonValue's
+    // toBool()/toDouble() return a default for a mismatched type, so an
+    // untyped read of a batch's numeric `applied` would silently answer
+    // the singular question.  The macOS sibling needs the same ordering
+    // for the same reason (NSNumber bridges JSON numbers to Bool).
+    bool editRefusalIsWhollyUnapplied(const QString& responseLine)
+    {
+        const QJsonDocument doc = QJsonDocument::fromJson(responseLine.toUtf8());
+        if (!doc.isObject()) return false;
+        const QJsonObject envelope = doc.object();
+        if (envelope.contains("error")) return false;
+        if (!envelope.value("result").isObject()) return false;
+        const QJsonObject result = envelope.value("result").toObject();
+
+        // BATCH FIRST -- see the ORDER note above.
+        if (result.value("results").isArray()) {
+            const QJsonArray results = result.value("results").toArray();
+            if (results.isEmpty()) return false;
+            if (!result.value("applied").isDouble()) return false;
+            if (result.value("applied").toDouble() != 0.0) return false;
+            for (const QJsonValue& element : results) {
+                if (!element.isObject()) return false;
+                const QJsonObject e = element.toObject();
+                if (!e.value("applied").isBool() || e.value("applied").toBool()) return false;
+                if (!e.value("retriable").isBool() || !e.value("retriable").toBool()) return false;
+            }
+            return true;
+        }
+
+        if (!result.value("applied").isBool() || result.value("applied").toBool()) return false;
+        if (!result.value("retriable").isBool() || !result.value("retriable").toBool()) return false;
+        return true;
+    }
+
+    // OBSERVABILITY.  Stamp a DRIVER-ATTRIBUTED retry record onto the
+    // tool result handed to AddToolResult.
+    //
+    // The trajectory's `tool` record (AgentChatLoop.cpp's AddToolResult)
+    // stores the raw JSON-RPC response line verbatim as
+    // `jsonRpcResponse`, so stamping the response is what makes the
+    // retries visible in the trajectory JSONL.  `latencyMs` needs
+    // nothing: it is stamped at ToolCallToJsonRpcLine (before attempt 1)
+    // and completed at AddToolResult (after the last attempt), so it
+    // already spans the retries honestly.
+    //
+    // The model sees this too -- the codecs pack `result` (not the
+    // envelope) into the tool-result block.  That is DELIBERATE and is
+    // why the key is namespaced `guiDriverRetry` and carries a note
+    // saying who added it: a model that learns the driver already spent
+    // five attempts should stop re-issuing the same call itself, which
+    // is the whole point of this fix.  Nothing is fabricated -- every
+    // other field is the engine's own last-attempt result, untouched.
+    // Emitted ONLY when at least one retry happened, so the response is
+    // byte-for-byte unchanged on the common single-attempt path.
+    QString stampDriverRetry(const QString& responseLine, int attempts)
+    {
+        const QJsonDocument doc = QJsonDocument::fromJson(responseLine.toUtf8());
+        if (!doc.isObject()) return responseLine;
+        QJsonObject envelope = doc.object();
+        if (!envelope.value("result").isObject()) return responseLine;
+        QJsonObject result = envelope.value("result").toObject();
+        QJsonObject stamp;
+        stamp["attempts"] = attempts;
+        stamp["note"] = QStringLiteral(
+            "Added by the RISE GUI chat driver, not by the scene engine: this call "
+            "was refused as retriable with NOTHING applied, so the driver re-issued "
+            "it verbatim, yielding the GUI thread between attempts. Only the last "
+            "attempt's outcome is reported above; no earlier attempt applied anything.");
+        result["guiDriverRetry"] = stamp;
+        envelope["result"] = result;
+        return QString::fromUtf8(QJsonDocument(envelope).toJson(QJsonDocument::Compact));
     }
 }
 
@@ -941,6 +1118,14 @@ void ChatPanel::requestStop()
         // P1-2: suspended in the render_wait poll, not blocked on an HTTP
         // reply -- there is no networkFinished() callback coming to end
         // the turn, so do it here directly.
+        cancelActiveTurn("Stopped.");
+        return;
+    }
+    if (m_editRetryPending) {
+        // FIX 2: parked between attempts of a refused edit tool call --
+        // no HTTP reply and no render poll is coming to end the turn, so
+        // end it here directly (same reasoning as the render branch above).
+        // cancelActiveTurn abandons the parked retry and answers its call.
         cancelActiveTurn("Stopped.");
         return;
     }
@@ -1949,8 +2134,12 @@ void ChatPanel::processNextToolCall()
             return;
         }
 
-        // Every other verb keeps the existing synchronous contract: fast
-        // CST reads/edits with no render-duration cost to amortize.
+        // Every other verb keeps the existing synchronous DISPATCH
+        // contract: fast CST reads/edits with no render-duration cost to
+        // amortize.  (FIX 2 below can PARK an edit verb between retry
+        // attempts, but each individual dispatch is still one synchronous
+        // GUI-thread call -- the parking happens between them, in the
+        // event loop.)
         // Agent autonomy selector: routes to whichever dispatcher
         // matches the composer's CURRENT level (see ViewportBridge.h's
         // agentHandleToolCall doc) -- Read refuses edit verbs, Propose
@@ -1958,6 +2147,18 @@ void ChatPanel::processNextToolCall()
         // `render` goes through the SAME selector, just via the pinned
         // overload -- see the routing comment in the `if` branch above.
         const QString response = m_bridge->agentHandleToolCall(toQString(line));
+        // FIX 2 (edit-refusal retry): if that first attempt came back a
+        // WHOLLY-UNAPPLIED retriable refusal ("editor transaction or
+        // gesture in progress"), do NOT burn an LLM round-trip on it --
+        // park here and re-issue after a short backoff that RETURNS TO
+        // THE EVENT LOOP, so the blocking gesture can actually finish.
+        // See editRefusalIsWhollyUnapplied's doc for the gate that keeps
+        // a partially-applied batch from ever being re-issued.  macOS
+        // sibling: ChatViewModel.retryWhollyRefusedEditToolCall.
+        if (isRetriableEditVerb(call.name) && editRefusalIsWhollyUnapplied(response)) {
+            scheduleEditToolCallRetry(call, line, /*attemptsSoFar=*/1);
+            return;
+        }
         updatePendingToolRow(call, toStdString(response));
         m_loop->AddToolResult(call, toStdString(response));
         processNextToolCall();
@@ -2215,9 +2416,101 @@ void ChatPanel::drainPendingToolCallsAsCancelled()
     m_pendingToolCalls.clear();
 }
 
+// FIX 2 (edit-refusal retry) -- the parked-retry half of the tool-call
+// state machine.  See the block comment above editRefusalIsWhollyUnapplied
+// for WHY this lives in the driver and WHY the gate is what it is.
+//
+// SHAPE.  Qt cannot suspend a function the way Swift's `await` can, so the
+// retry is a QTimer::singleShot chain: each tick re-verifies the driver's
+// standing gates, re-issues the SAME JSON-RPC line, and either schedules
+// the next attempt or delivers.  Returning to the event loop is the whole
+// point -- a blocking sleep on the GUI thread would guarantee the editor
+// gesture we are waiting for can never complete.
+//
+// LIFECYCLE GUARD.  The call has ALREADY been popped from
+// m_pendingToolCalls by processNextToolCall, so it is invisible to
+// drainPendingToolCallsAsCancelled -- exactly like m_activeRenderCall
+// during an async render.  It is tracked the same way (m_editRetryCall /
+// m_editRetryPending) and cancelActiveTurn delivers its cancelled result
+// the same way.  m_editRetryToken is the anti-stale guard: cancelActiveTurn
+// bumps it, so a tick that fires after a cancellation -- or into a LATER
+// turn that has parked a retry of its own -- is a no-op instead of
+// double-advancing the state machine.
+void ChatPanel::scheduleEditToolCallRetry(const ChatToolCall& call, const std::string& line,
+                                          int attemptsSoFar)
+{
+    m_editRetryCall = call;
+    m_editRetryPending = true;
+    const quint64 token = ++m_editRetryToken;
+    QTimer::singleShot(editRetryBackoffMs(attemptsSoFar), this,
+        [this, call, line, attemptsSoFar, token]() {
+            // Superseded: cancelActiveTurn bumped the token (and already
+            // delivered a cancelled result for this call), or a newer
+            // retry owns the slot.  Do nothing.
+            if (m_editRetryToken != token) return;
+            m_editRetryPending = false;
+
+            // Re-verify after the yield, exactly as pollOutstandingRender
+            // re-verifies at the top of every tick: a Stop, a scene close,
+            // or a production render starting must abandon the retry rather
+            // than resume into a torn-down world.  Defensive -- every one of
+            // those transitions routes through cancelActiveTurn, which bumps
+            // the token above -- so this arm ends the turn the same way
+            // cancelActiveTurn would, rather than delivering into a world
+            // that is already gone.  The cancelled envelope is the SAME one
+            // drainPendingToolCallsAsCancelled reports for every other
+            // unexecuted call of the torn-down turn.
+            if (m_stopRequested || !m_sceneEditable || !m_bridge) {
+                const int rpcId = m_nextRpcId++;
+                m_loop->AddToolResult(call, toStdString(
+                    cancelledToolResultJson(rpcId, "tool call cancelled: scene is not editable")));
+                cancelActiveTurn("Stopped.");
+                return;
+            }
+
+            const int attempts = attemptsSoFar + 1;
+            const QString response = m_bridge->agentHandleToolCall(toQString(line));
+            if (attempts < kEditRetryMaxAttempts && editRefusalIsWhollyUnapplied(response)) {
+                scheduleEditToolCallRetry(call, line, attempts);
+                return;
+            }
+            deliverEditToolCallResult(call, toStdString(response), attempts);
+        });
+}
+
+// Hand one edit tool call's FINAL result to the loop and resume the tool
+// state machine.  `attempts` > 1 stamps the driver-attributed retry record
+// (see stampDriverRetry) so the retries are visible in the trajectory JSONL
+// and to the model; `attempts == 1` is never routed here (processNextToolCall
+// delivers the un-retried common case inline, byte-for-byte unchanged).
+void ChatPanel::deliverEditToolCallResult(const ChatToolCall& call,
+                                          const std::string& responseLine, int attempts)
+{
+    const std::string finalLine = (attempts > 1)
+        ? toStdString(stampDriverRetry(toQString(responseLine), attempts))
+        : responseLine;
+    updatePendingToolRow(call, finalLine);
+    m_loop->AddToolResult(call, finalLine);
+    processNextToolCall();
+}
+
 void ChatPanel::cancelActiveTurn(const QString& statusLine)
 {
     cancelOutstandingRender();
+    // FIX 2: a parked edit-tool-call retry must be abandoned HERE -- its
+    // call was already popped from m_pendingToolCalls, so
+    // drainPendingToolCallsAsCancelled below cannot see it.  Bumping the
+    // token makes the scheduled tick a no-op; the cancelled envelope keeps
+    // AgentChatLoop's "every pending call of the turn gets exactly one
+    // result" wire invariant.  Direct sibling of the m_activeRenderPending
+    // block just below.
+    ++m_editRetryToken;
+    if (m_editRetryPending) {
+        const int rpcId = m_nextRpcId++;
+        m_loop->AddToolResult(m_editRetryCall, toStdString(
+            cancelledToolResultJson(rpcId, "tool call cancelled: scene is not editable")));
+        m_editRetryPending = false;
+    }
     if (m_activeRenderPending) {
         const int rpcId = m_nextRpcId++;
         m_loop->AddToolResult(m_activeRenderCall, toStdString(
