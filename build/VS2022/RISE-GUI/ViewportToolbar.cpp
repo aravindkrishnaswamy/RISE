@@ -626,11 +626,11 @@ void ViewportToolbar::updateRegionChip()
     if (!honors) {
         text = tr("\xE2\x96\xA7 Draw Region");
         color = Theme::textDisabled;
-    } else if (hasRegion) {
-        text = tr("\xE2\x96\xA7 Region active \xC3\x97");
-        color = Theme::warn;
     } else if (m_regionArmed) {
         text = tr("\xE2\x96\xA7 Cancel Draw");
+        color = Theme::warn;
+    } else if (hasRegion) {
+        text = tr("\xE2\x96\xA7 Region active \xC3\x97");
         color = Theme::warn;
     } else {
         text = tr("\xE2\x96\xA7 Draw Region");
@@ -649,7 +649,9 @@ void ViewportToolbar::onRegionChipClicked()
 
     unsigned int l = 0, t = 0, r = 0, b = 0;
     const bool hasRegion = m_bridge->getInteractiveRegion(&l, &t, &r, &b);
-    if (hasRegion) {
+    if (m_regionArmed) {
+        m_regionArmed = false;
+    } else if (hasRegion) {
         m_bridge->clearInteractiveRegion();
         m_regionArmed = false;
     } else {
@@ -673,8 +675,6 @@ void ViewportToolbar::beginRegionDraw()
 {
     if (!m_bridge || !m_bridge->interactiveRasterizerHonorsRegion()) return;
     if (m_bridge->viewportLayout() != ViewportBridge::ViewportLayout::Single) return;
-    unsigned int l = 0, t = 0, r = 0, b = 0;
-    if (m_bridge->getInteractiveRegion(&l, &t, &r, &b)) return;
     if (m_regionArmed) return;
     m_regionArmed = true;
     emit regionArmedChanged(true);

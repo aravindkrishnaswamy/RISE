@@ -338,23 +338,30 @@ namespace RISE
 			inline void BoundsFromRect( unsigned int& startx, unsigned int& starty, unsigned int& endx, unsigned int& endy, 
 				const Rect* pRect, const unsigned int width, const unsigned int height ) const
 			{
+				// A zero-sized film has no valid inclusive bounds. Callers normally
+				// reject it before rasterization, but keep this helper arithmetic-safe
+				// instead of underflowing width-1 / height-1.
+				if( width == 0 || height == 0 ) {
+					startx = starty = endx = endy = 0;
+					return;
+				}
+
 				startx = 0;
 				starty = 0;
 				endx = width-1;
 				endy = height-1;
 
-				if( pRect )
+				// Invalid or wholly out-of-film viewport regions are ignored for
+				// interactive passes (full-frame fallback by contract). Valid partial
+				// overlaps are intersected with the current film. This also makes a
+				// preserved region safe after a film resize.
+				if( pRect && pRect->left <= pRect->right && pRect->top <= pRect->bottom
+					&& pRect->left < width && pRect->top < height )
 				{
 					startx = pRect->left;
 					starty = pRect->top;
-					endx = pRect->right;
-					endy = pRect->bottom;
-
-					// Sanity check
-					startx = startx < width ? startx : width-2;
-					endx = endx < width-1 ? endx : width-1;
-					starty = starty < height ? starty : height-2;
-					endy = endy < height-1 ? endy : height-1;
+					endx = r_min( pRect->right, width-1 );
+					endy = r_min( pRect->bottom, height-1 );
 				}
 			}
 

@@ -760,4 +760,85 @@ void OIDNDenoiser::ApplyDenoise(
 	GlobalLog()->PrintEx( eLog_Info, "OIDN denoising complete. (%.1f ms)", elapsedMs );
 }
 
+void OIDNDenoiser::ApplyDenoiseRegion(
+	IRasterImage& image,
+	const AOVBuffers& aovBuffers,
+	unsigned int fullWidth,
+	unsigned int fullHeight,
+	unsigned int left,
+	unsigned int top,
+	unsigned int right,
+	unsigned int bottom,
+	OidnQuality requestedQuality,
+	OidnDevice requestedDevice,
+	OidnPrefilter requestedPrefilter,
+	double renderSecondsBeforeDenoise
+	)
+{
+	if( fullWidth == 0 || fullHeight == 0 || left > right || top > bottom
+		|| left >= fullWidth || top >= fullHeight ) return;
+	right = r_min( right, fullWidth-1 );
+	bottom = r_min( bottom, fullHeight-1 );
+	const unsigned int regionWidth = right - left + 1;
+	const unsigned int regionHeight = bottom - top + 1;
+
+	GlobalLog()->PrintEx( eLog_Info,
+		"Running OIDN region denoiser (%ux%u at %u,%u)...",
+		regionWidth, regionHeight, left, top );
+	const auto t_begin = std::chrono::steady_clock::now();
+
+	const size_t regionFloatCount = static_cast<size_t>( regionWidth ) * regionHeight * 3;
+	mState->beautyStaging.resize( regionFloatCount );
+	mState->denoisedStaging.resize( regionFloatCount );
+	static const double kFloatMax = static_cast<double>( std::numeric_limits<float>::max() );
+	for( unsigned int y=0; y<regionHeight; ++y ) {
+		for( unsigned int x=0; x<regionWidth; ++x ) {
+			const RISEColor c = image.GetPEL( left+x, top+y );
+			const size_t idx = ( static_cast<size_t>( y ) * regionWidth + x ) * 3;
+			mState->beautyStaging[idx+0] = static_cast<float>( ClampMagnitudeForCast( c.base.r, kFloatMax ) );
+			mState->beautyStaging[idx+1] = static_cast<float>( ClampMagnitudeForCast( c.base.g, kFloatMax ) );
+			mState->beautyStaging[idx+2] = static_cast<float>( ClampMagnitudeForCast( c.base.b, kFloatMax ) );
+		}
+	}
+	std::copy( mState->beautyStaging.begin(), mState->beautyStaging.end(),
+		mState->denoisedStaging.begin() );
+
+	auto cropGuide = [=]( const float* source, std::vector<float>& cropped ) -> const float* {
+		if( !source ) return 0;
+		cropped.resize( regionFloatCount );
+		for( unsigned int y=0; y<regionHeight; ++y ) {
+			const size_t src = ( static_cast<size_t>( top+y ) * fullWidth + left ) * 3;
+			const size_t dst = static_cast<size_t>( y ) * regionWidth * 3;
+			std::copy( source+src, source+src+static_cast<size_t>( regionWidth )*3,
+				cropped.begin()+static_cast<std::ptrdiff_t>( dst ) );
+		}
+		return cropped.data();
+	};
+	std::vector<float> regionAlbedo;
+	std::vector<float> regionNormal;
+	const float* albedo = cropGuide( aovBuffers.GetAlbedoPtr(), regionAlbedo );
+	const float* normal = cropGuide( aovBuffers.GetNormalPtr(), regionNormal );
+
+	Denoise( mState->beautyStaging.data(), albedo, normal,
+		regionWidth, regionHeight, mState->denoisedStaging.data(),
+		requestedQuality, requestedDevice, requestedPrefilter,
+		renderSecondsBeforeDenoise );
+
+	for( unsigned int y=0; y<regionHeight; ++y ) {
+		for( unsigned int x=0; x<regionWidth; ++x ) {
+			const size_t idx = ( static_cast<size_t>( y ) * regionWidth + x ) * 3;
+			const RISEColor previous = image.GetPEL( left+x, top+y );
+			image.SetPEL( left+x, top+y, RISEColor(
+				RISEPel( static_cast<Chel>( mState->denoisedStaging[idx+0] ),
+					static_cast<Chel>( mState->denoisedStaging[idx+1] ),
+					static_cast<Chel>( mState->denoisedStaging[idx+2] ) ),
+				previous.a ) );
+		}
+	}
+
+	const auto t_end = std::chrono::steady_clock::now();
+	const double elapsedMs = std::chrono::duration<double, std::milli>( t_end-t_begin ).count();
+	GlobalLog()->PrintEx( eLog_Info, "OIDN region denoising complete. (%.1f ms)", elapsedMs );
+}
+
 #endif // RISE_ENABLE_OIDN

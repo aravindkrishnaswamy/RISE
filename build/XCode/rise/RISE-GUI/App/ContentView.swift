@@ -275,6 +275,7 @@ struct ContentView: View {
                     // pattern for `selectedTool`.
                     .task(id: ObjectIdentifier(vb)) {
                         viewportLayout = .single
+                        viewModel.regionDrawLayoutAvailable = true
                     }
                     // user-review P2#5 (round 2): region refinement is a
                     // single-viewport affordance (N-up panes have no region-
@@ -284,6 +285,7 @@ struct ContentView: View {
                     // in the N-up panes to even show it.  Clear it on the way out,
                     // mirroring the chip's own clear path.
                     .onChange(of: viewportLayout) { _, newLayout in
+                        viewModel.regionDrawLayoutAvailable = (newLayout == .single)
                         if newLayout != .single {
                             // ViewportView owns the sole sceneTime ->
                             // native scrub observer. Leaving Single removes
@@ -344,8 +346,7 @@ struct ContentView: View {
                         propertyRefresh &+= 1
                     }
                     .onChange(of: viewModel.regionDrawRequestEpoch) { _, _ in
-                        guard interacting, viewportLayout == .single,
-                              viewModel.activeRegion == nil else { return }
+                        guard interacting, viewportLayout == .single else { return }
                         regionArmed = true
                     }
                 } else {
@@ -548,29 +549,33 @@ struct ContentView: View {
         let singleViewport = ( viewportLayout == .single )
         let usable = honored && interacting && singleViewport
         let active = viewModel.activeRegion != nil
-        let text = active ? "▧ Region active ×" : (regionArmed ? "▧ Cancel Draw" : "▧ Draw Region")
-        let color: Color = active ? Theme.warn : (regionArmed ? Theme.accent : Theme.textFaint)
-        return Text(text)
-            .font(Theme.mono(10))
-            .foregroundColor(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(color.opacity(0.4), lineWidth: 1)
-            )
-            .contentShape(Rectangle())
-            .opacity(usable ? 1.0 : 0.4)
-            .onTapGesture {
-                guard usable else { return }
-                if active {
+        let text = regionArmed ? "▧ Cancel Draw" : (active ? "▧ Region active ×" : "▧ Draw Region")
+        let color: Color = regionArmed ? Theme.accent : (active ? Theme.warn : Theme.textFaint)
+        return Button {
+                if regionArmed {
+                    regionArmed = false
+                } else if active {
                     vb.clearInteractiveRegion()
                     viewModel.activeRegion = nil
-                    regionArmed = false
                 } else {
-                    regionArmed.toggle()
+                    regionArmed = true
                 }
+            } label: {
+                Text(text)
+                    .font(Theme.mono(10))
+                    .foregroundColor(color)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(color.opacity(0.4), lineWidth: 1)
+                    )
             }
+            .buttonStyle(.plain)
+            .disabled(!usable)
+            .accessibilityLabel(regionArmed ? "Cancel drawing render region"
+                                : (active ? "Clear active render region" : "Draw render region"))
+            .opacity(usable ? 1.0 : 0.4)
             .help(!honored
                   ? "The active integrator ignores regions"
                   : (!singleViewport

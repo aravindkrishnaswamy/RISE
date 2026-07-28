@@ -28,6 +28,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
+#include <QMenu>
 #include <cmath>
 #include <algorithm>
 
@@ -397,6 +398,18 @@ TopBar::TopBar(QWidget* parent)
     connect(m_transportBtn, &QPushButton::clicked, this, &TopBar::onRenderTransportClicked);
     layout->addWidget(m_transportBtn);
 
+    m_regionRenderBtn = new QToolButton(this);
+    m_regionRenderBtn->setText(QStringLiteral("\xE2\x96\xBE"));
+    m_regionRenderBtn->setFont(Theme::sans(11, QFont::DemiBold));
+    m_regionRenderBtn->setFixedHeight(28);
+    m_regionRenderBtn->setPopupMode(QToolButton::InstantPopup);
+    auto* regionMenu = new QMenu(m_regionRenderBtn);
+    QAction* regionAction = regionMenu->addAction(QStringLiteral("Render Active Region"));
+    connect(regionAction, &QAction::triggered, this, &TopBar::renderRegionClicked);
+    m_regionRenderBtn->setMenu(regionMenu);
+    m_regionRenderBtn->hide();
+    layout->addWidget(m_regionRenderBtn);
+
     // ---- Right: Cancel pill --------------------------------------------
     // Shown beside m_transportBtn only while Rendering (error-tinted
     // outline, mirrors TopBar.swift's cancelPill); hidden the rest of
@@ -534,6 +547,7 @@ void TopBar::restyleTheme()
     updateReadout();
     updateIntegratorChip();
     updateTransportButton();
+    updateRegionRenderButton();
 
     // TopBarLogoSwatch and TopBarProgressStrip (m_logoSwatch,
     // m_progressStrip) are custom-painted widgets that read Theme::
@@ -852,7 +866,8 @@ void TopBar::updateReadout()
     // formatter so an error always wins regardless of stale phase state.
     if (m_engineState == RenderEngine::Error) {
         m_statusRowLabel->setText(QStringLiteral("Error"));
-        m_statusTagLabel->setText(QStringLiteral("ERROR"));
+        m_statusTagLabel->setText(m_engine && m_engine->isRegionProductionRender()
+            ? QStringLiteral("REGION ERROR") : QStringLiteral("ERROR"));
         m_statusTagLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::error)));
         m_lastNonPausedFraction = 0.0;
         if (m_progressStrip) m_progressStrip->setFraction(0.0);
@@ -871,8 +886,9 @@ void TopBar::updateReadout()
 
     m_statusRowLabel->setText(s.text);
     QString statusLabel = s.label;
-    if (isProduction && m_engine && m_engine->isRegionProductionRender()) {
-        statusLabel = QStringLiteral("REGION FINAL");
+    if (m_engine && m_engine->isRegionProductionRender()) {
+        statusLabel = (isCancelling || m_engineState == RenderEngine::Cancelled)
+            ? QStringLiteral("REGION CANCELLED") : QStringLiteral("REGION FINAL");
     } else if (!isProduction && m_bridge) {
         unsigned int l = 0, t = 0, r = 0, b = 0;
         if (m_bridge->getInteractiveRegion(&l, &t, &r, &b)) {
@@ -974,6 +990,30 @@ void TopBar::updateControlsEnabled()
     refreshRenderModeCombo();
 
     updateTransportButton();
+    updateRegionRenderButton();
+}
+
+void TopBar::updateRegionRenderButton()
+{
+    if (!m_regionRenderBtn) return;
+    unsigned int left = 0, top = 0, right = 0, bottom = 0;
+    const bool hasRegion = m_bridge
+        && m_bridge->getInteractiveRegion(&left, &top, &right, &bottom);
+    const bool idle = m_engineState != RenderEngine::Rendering
+        && m_engineState != RenderEngine::Cancelling
+        && m_engineState != RenderEngine::Loading;
+    const bool supported = m_engine && m_engine->productionRasterizerHonorsRegion();
+    m_regionRenderBtn->setVisible(hasRegion && idle);
+    m_regionRenderBtn->setEnabled(hasRegion && idle
+        && m_canStartProductionRender && supported);
+    m_regionRenderBtn->setToolTip(supported
+        ? QStringLiteral("Render only the active region")
+        : QStringLiteral("The production rasterizer does not support region rendering"));
+    m_regionRenderBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { background-color: %1; color: %2; border: none;"
+        " border-radius: %3px; padding: 5px 9px; }")
+        .arg(Theme::hex(Theme::accent), Theme::hex(Theme::textOnAccent))
+        .arg(Theme::radiusMedium));
 }
 
 void TopBar::refreshRenderModeCombo()

@@ -568,9 +568,17 @@ final class RenderViewModel: ObservableObject {
     /// Menu/shortcut pulse consumed by ContentView, which owns the local
     /// one-shot draw-mode binding used by ViewportView.
     @Published var regionDrawRequestEpoch: UInt = 0
+    /// ContentView owns the viewport layout; mirroring only this boolean lets
+    /// app-menu commands stay disabled while the single viewport is unmounted.
+    @Published var regionDrawLayoutAvailable = true
+
+    var canRequestRegionDraw: Bool {
+        canUseSceneTransport && regionDrawLayoutAvailable
+            && (viewportBridge?.interactiveRasterizerHonorsRegion() ?? false)
+    }
 
     func requestRegionDraw() {
-        guard canUseSceneTransport, activeRegion == nil else { return }
+        guard canRequestRegionDraw else { return }
         regionDrawRequestEpoch &+= 1
     }
     /// Mirrors `RISEViewportBridge.undoActionLabel()` / `redoActionLabel()`
@@ -1147,6 +1155,7 @@ final class RenderViewModel: ObservableObject {
     /// retention) is identical to a normal file open by design, so the
     /// agent edits an ordinary live scene.
     func loadScene(at path: String, untitled: Bool = false) {
+        isRegionProductionRender = false
         if !untitled {
             addToRecentFiles(path)
             // A NORMAL open must never inherit a stale create-prompt: if a
@@ -1544,7 +1553,6 @@ final class RenderViewModel: ObservableObject {
                 self.resetProductionPauseState()
                 self.remainingTime = nil
 
-                self.isRegionProductionRender = false
                 if cancelRef.value {
                     self.resolvedIntegrator = nil
                     self.resolveReason = nil
@@ -1774,8 +1782,9 @@ final class RenderViewModel: ObservableObject {
     /// TRUE while the in-flight production render is paused (workers
     /// parked at the bridge's pause gate; partial image stays up).
     @Published var isProductionRenderPaused = false
-    /// True only while the explicit Render Active Region production job is
-    /// in flight; drives unmistakable status copy in the top bar.
+    /// Identity of the current/most-recent still production result. It remains
+    /// true through completion/cancel/error so a fast regional final and its
+    /// saved result never become indistinguishable from a full-frame final.
     @Published var isRegionProductionRender = false
 
     /// Wall-clock spent paused this render — subtracted from the
@@ -2831,6 +2840,7 @@ final class RenderViewModel: ObservableObject {
         viewportBridge = nil
         sceneTime = 0
         bridge.clearAll()
+        isRegionProductionRender = false
         renderState = .idle
         renderedImage = nil
         panePreviewImages = [:]

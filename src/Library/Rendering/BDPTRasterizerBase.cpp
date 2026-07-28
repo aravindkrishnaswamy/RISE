@@ -1143,7 +1143,7 @@ void BDPTRasterizerBase::RasterizeScene(
 #endif
 		if( pAOVBuffers->NeedsFallback() ) {
 			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
-				mDenoisingPrefilter );
+				mDenoisingPrefilter, pRect );
 		}
 		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		// Depth has been copied into FrameStore; OIDN consumes only the two
@@ -1174,7 +1174,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	if( pFilteredFilm && !bWillDenoise && !GetAdaptiveShowMap() ) {
 		// L6e-1.1 — bracket the full-image filter resolve via RAII.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-		pFilteredFilm->Resolve( *pImage );
+		pFilteredFilm->Resolve( *pImage, pRect );
 	}
 
 	if( bWillDenoise ) {
@@ -1223,9 +1223,16 @@ void BDPTRasterizerBase::RasterizeScene(
 		// OOM in scratch buffers); RAII unwinds correctly in that
 		// case.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-			mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-			GetRenderElapsedSeconds() );
+		if( pRect ) {
+			mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
+				pRect->left, pRect->top, pRect->right, pRect->bottom,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				GetRenderElapsedSeconds() );
+		} else {
+			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				GetRenderElapsedSeconds() );
+		}
 	}
 #endif
 

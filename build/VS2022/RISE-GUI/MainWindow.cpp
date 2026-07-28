@@ -230,6 +230,7 @@ MainWindow::MainWindow(QWidget* parent)
     // TopBar via the engine's setProductionRenderPaused accessor and
     // never reach this signal -- see TopBar::onRenderTransportClicked.
     connect(m_topBar, &TopBar::renderTransportClicked, this, &MainWindow::onRender);
+    connect(m_topBar, &TopBar::renderRegionClicked, this, &MainWindow::onRenderActiveRegion);
 
     // P1-2 fix (mirrors Mac's canUseSceneTransport): while a chat-driven
     // `render` tool call owns the scene, undo/redo and refinement
@@ -993,10 +994,13 @@ void MainWindow::updateMenuActionStates()
     unsigned int rl = 0, rt = 0, rr = 0, rb = 0;
     const bool hasRegion = m_viewportBridge
         && m_viewportBridge->getInteractiveRegion(&rl, &rt, &rr, &rb);
-    const bool canDrawRegion = bridgeInteractingEnabled && !hasRegion
+    const bool canDrawRegion = bridgeInteractingEnabled
         && m_viewportBridge->interactiveRasterizerHonorsRegion()
         && m_viewportBridge->viewportLayout() == ViewportBridge::ViewportLayout::Single;
-    if (m_drawRegionAction) m_drawRegionAction->setEnabled(canDrawRegion);
+    if (m_drawRegionAction) {
+        m_drawRegionAction->setText(hasRegion ? "Redraw Render Region" : "Draw Render Region");
+        m_drawRegionAction->setEnabled(canDrawRegion);
+    }
     if (m_renderRegionAction) m_renderRegionAction->setEnabled(
         canRender && hasRegion && m_engine->productionRasterizerHonorsRegion());
     // TopBar's render-transport pill (right side) mirrors this SAME

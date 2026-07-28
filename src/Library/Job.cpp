@@ -8274,10 +8274,6 @@ bool Job::AddFileRasterizerOutput(
 	const bool exr_with_alpha
 	)
 {
-	if( !pRasterizer ) {
-		return false;
-	}
-
 	// L5d — GUI hosts set m_suppressFileRasterizerOutputs at
 	// construction so loading a scene with `file_rasterizeroutput`
 	// chunks doesn't litter the user's filesystem with auto-generated
@@ -9347,9 +9343,21 @@ bool Job::RasterizeRegion(
 	const unsigned int bottom						///< [in] Bottom most scanline
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
 		return false;
 	}
+
+	const unsigned int width = pScene->GetFilm()->GetWidth();
+	const unsigned int height = pScene->GetFilm()->GetHeight();
+	if( width == 0 || height == 0 || left > right || top > bottom
+		|| left >= width || top >= height ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::RasterizeRegion: invalid or out-of-film region [%u,%u]-[%u,%u] for %ux%u film",
+			left, top, right, bottom, width, height );
+		return false;
+	}
+	const unsigned int clippedRight = r_min( right, width-1 );
+	const unsigned int clippedBottom = r_min( bottom, height-1 );
 
 	IRasterizeSequence* pSeq = 0;
 
@@ -9368,7 +9376,7 @@ bool Job::RasterizeRegion(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	Rect	rc( top, left, bottom, right );
+	Rect	rc( top, left, clippedBottom, clippedRight );
 
 	// See the matching comment in Job::Rasterize: pSeq must be released
 	// on every exit, including a worker exception propagated up through

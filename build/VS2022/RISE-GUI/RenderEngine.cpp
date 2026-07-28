@@ -611,6 +611,7 @@ void RenderEngine::cancelAndJoinInFlightWork()
 
 void RenderEngine::loadScene(const QString& filePath, bool untitled)
 {
+    m_regionProductionRender = false;
     if (!m_job) return;
 
     cancelAndJoinInFlightWork();
@@ -813,7 +814,6 @@ void RenderEngine::startStillRender(double sceneTime, bool regionOnly,
             // here too.
             guard->resetProductionPauseState();
 
-            guard->m_regionProductionRender = false;
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
             } else if (ok) {
@@ -1025,6 +1025,7 @@ void RenderEngine::resetProductionPauseState()
 
 void RenderEngine::clearScene()
 {
+    m_regionProductionRender = false;
     // Cancel + join any in-flight worker (load OR render) before wiping
     // scene state -- see cancelAndJoinInFlightWork's doc for the
     // discarded-completion reclaim this also performs.

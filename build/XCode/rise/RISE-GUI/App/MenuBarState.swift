@@ -37,6 +37,7 @@ struct MenuBarSnapshot: Equatable {
     var canSaveImage = false
     var canUseSceneTransport = false
     var canStartProductionRender = false
+    var canDrawRegion = false
     var hasActiveRegion = false
     var productionHonorsRegion = false
     var isRendering = false
@@ -112,6 +113,7 @@ final class MenuBarState: ObservableObject {
         s.canSaveImage = m.canSaveImage
         s.canUseSceneTransport = m.canUseSceneTransport
         s.canStartProductionRender = m.canStartProductionRender
+        s.canDrawRegion = m.canRequestRegionDraw
         s.hasActiveRegion = (m.activeRegion != nil)
         s.productionHonorsRegion = m.canRenderActiveRegion
         s.isRendering = (m.renderState == .rendering)

@@ -409,7 +409,10 @@ struct TopBar: View {
 
     private var statusRow1: String { status.text }
     private var statusLabel: String {
-        viewModel.isRegionProductionRender ? "REGION FINAL" : status.label
+        guard viewModel.isRegionProductionRender else { return status.label }
+        if errorMessage != nil { return "REGION ERROR" }
+        if viewModel.renderState == .cancelled || isCancelling { return "REGION CANCELLED" }
+        return "REGION FINAL"
     }
 
     private var statusLabelColor: Color {

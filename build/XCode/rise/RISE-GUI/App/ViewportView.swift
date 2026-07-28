@@ -273,7 +273,7 @@ struct ViewportView: View {
                     surfaceDimensionsProvider: { [weak bridge] in
                         bridge?.cameraSurfaceDimensions ?? .zero
                     },
-                    interactionEnabled: interactionEnabled,
+                    interactionEnabled: interactionEnabled && !regionArmed,
                     onCommitActiveRegion: { region in
                         guard interactionEnabled else { return }
                         let left = UInt32(max(0, Int(region.minX)))
@@ -554,7 +554,7 @@ private struct RegionOverlay: View {
     @State private var editStartRegion: CGRect? = nil
 
     private enum Handle: CaseIterable {
-        case topLeft, topRight, bottomLeft, bottomRight
+        case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
     }
 
     var body: some View {
@@ -577,20 +577,49 @@ private struct RegionOverlay: View {
                             .position(x: rect.midX, y: rect.midY)
                             .gesture(moveGesture(region: region, fit: fit, surface: surface))
                             .allowsHitTesting(interactionEnabled)
+                            .accessibilityElement()
+                            .accessibilityLabel("Active render region")
+                            .accessibilityAction(named: "Move left") {
+                                move(region: region, dx: -8, dy: 0, surface: surface)
+                            }
+                            .accessibilityAction(named: "Move right") {
+                                move(region: region, dx: 8, dy: 0, surface: surface)
+                            }
+                            .accessibilityAction(named: "Move up") {
+                                move(region: region, dx: 0, dy: -8, surface: surface)
+                            }
+                            .accessibilityAction(named: "Move down") {
+                                move(region: region, dx: 0, dy: 8, surface: surface)
+                            }
                         ForEach(Handle.allCases, id: \.self) { handle in
-                            Circle()
-                                .fill(Theme.warn)
-                                .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1))
-                                .frame(width: 9, height: 9)
+                            ZStack {
+                                Circle()
+                                    .fill(Theme.warn)
+                                    .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1))
+                                    .frame(width: 9, height: 9)
+                            }
+                                .frame(width: 24, height: 24)
+                                .contentShape(Circle())
                                 .position(handlePoint(handle, in: rect))
                                 .gesture(resizeGesture(handle: handle, region: region,
                                                        fit: fit, surface: surface))
                                 .allowsHitTesting(interactionEnabled)
+                                .accessibilityLabel(accessibilityLabel(for: handle))
+                                .accessibilityHint("Swipe up to expand or down to contract")
+                                .accessibilityAdjustableAction { direction in
+                                    accessibilityResize(handle: handle, direction: direction,
+                                                        region: region, surface: surface)
+                                }
                         }
-                        regionBadge(region: region, surface: surface)
-                            .position(x: rect.minX + badgeWidth(region: region, surface: surface) / 2,
-                                      y: max(9, rect.minY - 9))
-                            .onTapGesture { onClearActiveRegion() }
+                        let badgeW = badgeWidth(region: region, surface: surface)
+                        Button(action: onClearActiveRegion) {
+                            regionBadge(region: region, surface: surface)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear active render region")
+                        .position(badgePosition(rect: rect, badgeWidth: badgeW,
+                                                viewportSize: geom.size))
+                        .allowsHitTesting(interactionEnabled)
                     }
                 }
             }
@@ -634,10 +663,36 @@ private struct RegionOverlay: View {
     private func handlePoint(_ handle: Handle, in rect: CGRect) -> CGPoint {
         switch handle {
         case .topLeft: return CGPoint(x: rect.minX, y: rect.minY)
+        case .top: return CGPoint(x: rect.midX, y: rect.minY)
         case .topRight: return CGPoint(x: rect.maxX, y: rect.minY)
+        case .right: return CGPoint(x: rect.maxX, y: rect.midY)
+        case .bottom: return CGPoint(x: rect.midX, y: rect.maxY)
         case .bottomLeft: return CGPoint(x: rect.minX, y: rect.maxY)
         case .bottomRight: return CGPoint(x: rect.maxX, y: rect.maxY)
+        case .left: return CGPoint(x: rect.minX, y: rect.midY)
         }
+    }
+
+    private func accessibilityLabel(for handle: Handle) -> String {
+        switch handle {
+        case .topLeft: return "Resize region from top left"
+        case .top: return "Resize region top edge"
+        case .topRight: return "Resize region from top right"
+        case .right: return "Resize region right edge"
+        case .bottomRight: return "Resize region from bottom right"
+        case .bottom: return "Resize region bottom edge"
+        case .bottomLeft: return "Resize region from bottom left"
+        case .left: return "Resize region left edge"
+        }
+    }
+
+    private func badgePosition(rect: CGRect, badgeWidth: CGFloat,
+                               viewportSize: CGSize) -> CGPoint {
+        let half = badgeWidth / 2
+        let x = min(max(half + 4, rect.midX), max(half + 4, viewportSize.width - half - 4))
+        let above = rect.minY - 13
+        let y = above >= 10 ? above : min(viewportSize.height - 10, rect.maxY + 13)
+        return CGPoint(x: x, y: y)
     }
 
     private func clamped(_ region: CGRect, to surface: CGSize) -> CGRect {
@@ -647,6 +702,10 @@ private struct RegionOverlay: View {
         let y = min(max(0, region.minY), max(0, surface.height - height))
         return CGRect(x: x.rounded(), y: y.rounded(),
                       width: width.rounded(), height: height.rounded())
+    }
+
+    private func move(region: CGRect, dx: CGFloat, dy: CGFloat, surface: CGSize) {
+        onCommitActiveRegion(clamped(region.offsetBy(dx: dx, dy: dy), to: surface))
     }
 
     private func moveGesture(region: CGRect, fit: ViewportLetterbox.Fit,
@@ -701,17 +760,45 @@ private struct RegionOverlay: View {
         var minY = region.minY, maxY = region.maxY
         switch handle {
         case .topLeft: minX += dx; minY += dy
+        case .top: minY += dy
         case .topRight: maxX += dx; minY += dy
+        case .right: maxX += dx
+        case .bottom: maxY += dy
         case .bottomLeft: minX += dx; maxY += dy
         case .bottomRight: maxX += dx; maxY += dy
+        case .left: minX += dx
         }
-        minX = min(max(0, minX), maxX - 3)
-        minY = min(max(0, minY), maxY - 3)
-        maxX = max(minX + 3, min(surface.width, maxX))
-        maxY = max(minY + 3, min(surface.height, maxY))
+        if handle == .topLeft || handle == .bottomLeft || handle == .left {
+            minX = min(max(0, minX), region.maxX - 3)
+        } else if handle == .topRight || handle == .bottomRight || handle == .right {
+            maxX = max(region.minX + 3, min(surface.width, maxX))
+        }
+        if handle == .topLeft || handle == .top || handle == .topRight {
+            minY = min(max(0, minY), region.maxY - 3)
+        } else if handle == .bottomLeft || handle == .bottom || handle == .bottomRight {
+            maxY = max(region.minY + 3, min(surface.height, maxY))
+        }
         return CGRect(x: minX.rounded(), y: minY.rounded(),
                       width: (maxX - minX).rounded(),
                       height: (maxY - minY).rounded())
+    }
+
+    private func accessibilityResize(handle: Handle, direction: AccessibilityAdjustmentDirection,
+                                     region: CGRect, surface: CGSize) {
+        let outward = direction == .increment ? CGFloat(8) : CGFloat(-8)
+        var translation = CGSize.zero
+        switch handle {
+        case .topLeft: translation = CGSize(width: -outward, height: -outward)
+        case .top: translation.height = -outward
+        case .topRight: translation = CGSize(width: outward, height: -outward)
+        case .right: translation.width = outward
+        case .bottomRight: translation = CGSize(width: outward, height: outward)
+        case .bottom: translation.height = outward
+        case .bottomLeft: translation = CGSize(width: -outward, height: outward)
+        case .left: translation.width = -outward
+        }
+        onCommitActiveRegion(resized(region, handle: handle, translation: translation,
+                                     scale: 1, surface: surface))
     }
 
     private func filmRect(_ a: CGPoint, _ b: CGPoint) -> CGRect {

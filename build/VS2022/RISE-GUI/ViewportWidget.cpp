@@ -326,6 +326,12 @@ void ViewportWidget::updateCursorForPosition(const QPointF& pos)
     if (imageDrawRect().contains(pos.toPoint())) {
         if (m_regionArmed || m_regionDragging) setCursor(Qt::CrossCursor);
         else if (m_regionEditMode == RegionEditMode::Move) setCursor(Qt::SizeAllCursor);
+        else if (m_regionEditMode == RegionEditMode::Top
+              || m_regionEditMode == RegionEditMode::Bottom) setCursor(Qt::SizeVerCursor);
+        else if (m_regionEditMode == RegionEditMode::Left
+              || m_regionEditMode == RegionEditMode::Right) setCursor(Qt::SizeHorCursor);
+        else if (m_regionEditMode == RegionEditMode::TopRight
+              || m_regionEditMode == RegionEditMode::BottomLeft) setCursor(Qt::SizeBDiagCursor);
         else if (m_regionEditMode != RegionEditMode::None) setCursor(Qt::SizeFDiagCursor);
         else setCursor(QCursor(m_toolCursor));
     } else {
@@ -458,16 +464,35 @@ void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, cons
         p.setPen(QPen(QColor(0x0d, 0x0e, 0x10), 1));
         p.setBrush(Theme::warn);
         const qreal radius = 4.5;
-        const QPointF corners[] = { boxRect.topLeft(), boxRect.topRight(),
-                                    boxRect.bottomLeft(), boxRect.bottomRight() };
-        for (const QPointF& corner : corners) p.drawEllipse(corner, radius, radius);
+        const QPointF handles[] = {
+            boxRect.topLeft(), QPointF(boxRect.center().x(), boxRect.top()), boxRect.topRight(),
+            QPointF(boxRect.right(), boxRect.center().y()), boxRect.bottomRight(),
+            QPointF(boxRect.center().x(), boxRect.bottom()), boxRect.bottomLeft(),
+            QPointF(boxRect.left(), boxRect.center().y())
+        };
+        for (const QPointF& handle : handles) p.drawEllipse(handle, radius, radius);
     }
 
     if (!m_regionDragging && m_hasRegion) {
         // "REGION" badge, top-left of the box, click-to-clear (hit-
         // tested against m_regionBadgeRect in mousePressEvent).
-        const unsigned int regionW = m_regionRight - m_regionLeft + 1;
-        const unsigned int regionH = m_regionBottom - m_regionTop + 1;
+        unsigned int regionW = m_regionRight - m_regionLeft + 1;
+        unsigned int regionH = m_regionBottom - m_regionTop + 1;
+        if (m_regionEditMode != RegionEditMode::None
+            && surface.width() > 0 && surface.height() > 0) {
+            const double scaleX = static_cast<double>(drawRect.width()) / surface.width();
+            const double scaleY = static_cast<double>(drawRect.height()) / surface.height();
+            const int left = std::clamp(static_cast<int>(std::floor(
+                (boxRect.left() - drawRect.left()) / scaleX)), 0, surface.width()-1);
+            const int top = std::clamp(static_cast<int>(std::floor(
+                (boxRect.top() - drawRect.top()) / scaleY)), 0, surface.height()-1);
+            const int right = std::clamp(static_cast<int>(std::ceil(
+                (boxRect.right() - drawRect.left()) / scaleX)) - 1, left, surface.width()-1);
+            const int bottom = std::clamp(static_cast<int>(std::ceil(
+                (boxRect.bottom() - drawRect.top()) / scaleY)) - 1, top, surface.height()-1);
+            regionW = static_cast<unsigned int>(right - left + 1);
+            regionH = static_cast<unsigned int>(bottom - top + 1);
+        }
         const double framePixels = std::max(1.0,
             static_cast<double>(surface.width()) * surface.height());
         const int percent = static_cast<int>(std::lround(
@@ -477,12 +502,17 @@ void ViewportWidget::paintRegionOverlay(QPainter& p, const QRect& drawRect, cons
         const QFont f = Theme::mono(9);
         const QFontMetrics fm(f);
         const int textW = fm.horizontalAdvance(label);
-        QRect badge(static_cast<int>(boxRect.left()), static_cast<int>(boxRect.top()) - 20,
-                    textW + 14, 16);
-        if (badge.top() < 0) {
-            // Clamp inside the viewport when the region touches the
-            // top edge -- draw the badge just below the box instead.
-            badge.moveTop(static_cast<int>(boxRect.top()) + 4);
+        QRect badge(0, static_cast<int>(boxRect.top()) - 20, textW + 14, 16);
+        badge.moveCenter(QPoint(static_cast<int>(boxRect.center().x()), badge.center().y()));
+        if (badge.left() < drawRect.left()) badge.moveLeft(drawRect.left());
+        if (badge.right() > drawRect.right()) badge.moveRight(drawRect.right());
+        if (badge.top() < drawRect.top()) {
+            // Put the badge below the rectangle, not just inside its top edge,
+            // so it never steals pointer hits from the top resize handles.
+            badge.moveTop(static_cast<int>(boxRect.bottom()) + 4);
+        }
+        if (badge.bottom() > drawRect.bottom()) {
+            badge.moveBottom(drawRect.bottom());
         }
         m_regionBadgeRect = badge;
 
@@ -881,6 +911,10 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
             else if (near(box.topRight())) m_regionEditMode = RegionEditMode::TopRight;
             else if (near(box.bottomLeft())) m_regionEditMode = RegionEditMode::BottomLeft;
             else if (near(box.bottomRight())) m_regionEditMode = RegionEditMode::BottomRight;
+            else if (near(QPointF(box.center().x(), box.top()))) m_regionEditMode = RegionEditMode::Top;
+            else if (near(QPointF(box.right(), box.center().y()))) m_regionEditMode = RegionEditMode::Right;
+            else if (near(QPointF(box.center().x(), box.bottom()))) m_regionEditMode = RegionEditMode::Bottom;
+            else if (near(QPointF(box.left(), box.center().y()))) m_regionEditMode = RegionEditMode::Left;
             else if (box.contains(pos)) m_regionEditMode = RegionEditMode::Move;
 
             if (m_regionEditMode != RegionEditMode::None) {
@@ -946,26 +980,47 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
     if (m_regionEditMode != RegionEditMode::None) {
         const QPointF delta = event->position() - m_regionEditStart;
         QRectF edited = m_regionEditStartRect;
+        const QRectF bounds = imageDrawRect();
+        const qreal minSize = 3.0;
+        const qreal boundLeft = bounds.left(), boundTop = bounds.top();
+        const qreal boundRight = bounds.right(), boundBottom = bounds.bottom();
+        qreal left = edited.left(), right = edited.right();
+        qreal top = edited.top(), bottom = edited.bottom();
+        auto clampOrdered = [](qreal value, qreal low, qreal high) {
+            return std::min(std::max(value, low), std::max(low, high));
+        };
         switch (m_regionEditMode) {
         case RegionEditMode::Move: edited.translate(delta); break;
-        case RegionEditMode::TopLeft: edited.setTopLeft(edited.topLeft() + delta); break;
-        case RegionEditMode::TopRight: edited.setTopRight(edited.topRight() + delta); break;
-        case RegionEditMode::BottomLeft: edited.setBottomLeft(edited.bottomLeft() + delta); break;
-        case RegionEditMode::BottomRight: edited.setBottomRight(edited.bottomRight() + delta); break;
+        case RegionEditMode::TopLeft:
+            left = clampOrdered(left + delta.x(), boundLeft, right - minSize);
+            top = clampOrdered(top + delta.y(), boundTop, bottom - minSize); break;
+        case RegionEditMode::Top:
+            top = clampOrdered(top + delta.y(), boundTop, bottom - minSize); break;
+        case RegionEditMode::TopRight:
+            right = clampOrdered(right + delta.x(), left + minSize, boundRight);
+            top = clampOrdered(top + delta.y(), boundTop, bottom - minSize); break;
+        case RegionEditMode::Right:
+            right = clampOrdered(right + delta.x(), left + minSize, boundRight); break;
+        case RegionEditMode::BottomRight:
+            right = clampOrdered(right + delta.x(), left + minSize, boundRight);
+            bottom = clampOrdered(bottom + delta.y(), top + minSize, boundBottom); break;
+        case RegionEditMode::Bottom:
+            bottom = clampOrdered(bottom + delta.y(), top + minSize, boundBottom); break;
+        case RegionEditMode::BottomLeft:
+            left = clampOrdered(left + delta.x(), boundLeft, right - minSize);
+            bottom = clampOrdered(bottom + delta.y(), top + minSize, boundBottom); break;
+        case RegionEditMode::Left:
+            left = clampOrdered(left + delta.x(), boundLeft, right - minSize); break;
         case RegionEditMode::None: break;
         }
 
-        const QRectF bounds = imageDrawRect();
         if (m_regionEditMode == RegionEditMode::Move) {
             if (edited.left() < bounds.left()) edited.moveLeft(bounds.left());
             if (edited.top() < bounds.top()) edited.moveTop(bounds.top());
             if (edited.right() > bounds.right()) edited.moveRight(bounds.right());
             if (edited.bottom() > bounds.bottom()) edited.moveBottom(bounds.bottom());
         } else {
-            edited.setLeft(std::clamp(edited.left(), static_cast<qreal>(bounds.left()), edited.right() - 3.0));
-            edited.setTop(std::clamp(edited.top(), static_cast<qreal>(bounds.top()), edited.bottom() - 3.0));
-            edited.setRight(std::clamp(edited.right(), edited.left() + 3.0, static_cast<qreal>(bounds.right())));
-            edited.setBottom(std::clamp(edited.bottom(), edited.top() + 3.0, static_cast<qreal>(bounds.bottom())));
+            edited = QRectF(QPointF(left, top), QPointF(right, bottom));
         }
         m_regionEditRect = edited;
         update();
@@ -1255,6 +1310,13 @@ void ViewportWidget::recomputePaneLayout()
     // drag/arm can't sensibly straddle a layout switch (there is no
     // "which pane" for it), so cancel it here -- mirrors
     // setSceneEditable(false)'s identical cancel-armed-state handling.
+    // Match macOS: an already-active region is cleared as Single is left,
+    // otherwise the controller would keep silently clipping pane 0 while
+    // N-up has neither an overlay nor a clear affordance.
+    if (m_hasRegion && m_bridge && m_sceneEditable) {
+        m_bridge->clearInteractiveRegion();
+        pollRegionState();
+    }
     if (m_regionArmed || m_regionDragging || m_regionEditMode != RegionEditMode::None) {
         m_regionArmed = false;
         m_regionDragging = false;

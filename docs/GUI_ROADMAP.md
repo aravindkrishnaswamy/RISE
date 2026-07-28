@@ -64,8 +64,9 @@ byte-exactly when unedited and minimal-diff when edited.
 **Major roadmap slices have shipped on both desktop platforms:** redesigned
 workspaces and start screen, outliner/entity creation, environment editing,
 canonical and named camera views, render modes, N-up panes, and the in-app plus
-external agent surface. Current gaps include the dedicated material graph,
-spectral-differentiator UX, region rendering, asset-library workflow, and some
+external agent surface, including editable region rendering and explicit
+region-only final renders. Current gaps include the dedicated material graph,
+spectral-differentiator UX, asset-library workflow, and some
 cross-client orchestration/security hardening. The sections below remain the
 umbrella rationale and backlog; their original phase language is not a
 present-day capability audit.

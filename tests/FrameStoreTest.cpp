@@ -39,6 +39,10 @@
 #include <vector>
 
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/FilteredFilm.h"
+#include "../src/Library/Rendering/OIDNDenoiser.h"
+#include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
 #include "../src/Library/Utilities/Reference.h"
 
@@ -990,6 +994,60 @@ namespace
 		a->release();
 		b->release();
 	}
+
+	// ─── Section 10: regional post-processing confinement ─────────
+	void TestRegionalPostProcessingConfinement()
+	{
+		const unsigned int w = 16, h = 16;
+		IRasterImage* image = new RISERasterImage(
+			w, h, RISEColor( RISEPel( 0.25, 0.5, 0.75 ), 0.6 ) );
+
+		IPixelFilter* filter = nullptr;
+		Check( RISE_API_CreateBoxPixelFilter( &filter, 2.0, 2.0 ) && filter,
+			"regional filtered-film test creates a filter" );
+		if( filter ) {
+			RISE::Implementation::FilteredFilm* film =
+				new RISE::Implementation::FilteredFilm( w, h );
+			film->Splat( 7.5, 7.5, XYZPel( 2.0, 1.0, 0.5 ), *filter );
+			const Rect region( 5, 5, 10, 10 );
+			film->Resolve( *image, &region );
+			const RISEColor outside = image->GetPEL( 0, 0 );
+			Check( ApproxEq( outside.base.r, 0.25, 1e-12 )
+			    && ApproxEq( outside.base.g, 0.5, 1e-12 )
+			    && ApproxEq( outside.base.b, 0.75, 1e-12 )
+			    && ApproxEq( outside.a, 0.6, 1e-12 ),
+				"regional filtered-film resolve leaves sentinel pixels outside untouched" );
+			film->release();
+			filter->release();
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		// Fill the beauty image with deterministic high-frequency input, then
+		// denoise only the middle crop. Outside RGB and alpha must remain exact.
+		for( unsigned int y=0; y<h; ++y ) {
+			for( unsigned int x=0; x<w; ++x ) {
+				const double v = ( (x+y) & 1u ) ? 0.9 : 0.1;
+				image->SetPEL( x, y, RISEColor( RISEPel( v, 0.5*v, 0.25*v ), 0.35 ) );
+			}
+		}
+		const RISEColor outsideBefore = image->GetPEL( 1, 1 );
+		AOVBuffers noGuides( w, h, AOVBuffers::Plan( false, false, false ) );
+		RISE::Implementation::OIDNDenoiser denoiser;
+		denoiser.ApplyDenoiseRegion( *image, noGuides, w, h,
+			4, 4, 11, 11, OidnQuality::Fast, OidnDevice::CPU,
+			OidnPrefilter::Fast, 0.1 );
+		const RISEColor outsideAfter = image->GetPEL( 1, 1 );
+		Check( outsideAfter.base.r == outsideBefore.base.r
+		    && outsideAfter.base.g == outsideBefore.base.g
+		    && outsideAfter.base.b == outsideBefore.base.b
+		    && outsideAfter.a == outsideBefore.a,
+			"regional OIDN leaves every channel of an outside sentinel untouched" );
+		Check( image->GetPEL( 6, 6 ).a == 0.35,
+			"regional OIDN preserves alpha inside the crop" );
+#endif
+
+		image->release();
+	}
 }
 
 int main()
@@ -1011,6 +1069,7 @@ int main()
 	TestBeautyRasterImageShim();
 	TestHDRArchivalIdentity();
 	TestCopyTileFromRasterImage();
+	TestRegionalPostProcessingConfinement();
 
 	std::cout << "------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

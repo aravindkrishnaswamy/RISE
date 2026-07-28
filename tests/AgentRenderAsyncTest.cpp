@@ -4680,6 +4680,17 @@ static void RunLegacyProductionPreservesAgentWorkerTest()
 	       "MONEY (z5): ordinary production preserves the viewport region" );
 	Check( left == 3 && top == 4 && right == 10 && bottom == 12,
 	       "MONEY (z5): preserved viewport-region bounds are byte-for-byte unchanged" );
+	Check( controller.SubmitProductionRenderSync(
+		       [] {}, String( "region-preservation-production" ), nullptr, 2000 ),
+	       "MONEY (z5): composed production submission completes with a region active" );
+	left = top = right = bottom = 0;
+	Check( controller.GetInteractiveRegion( left, top, right, bottom )
+	    && left == 3 && top == 4 && right == 10 && bottom == 12,
+	       "MONEY (z5): composed production preserves the exact viewport-region bounds" );
+	Check( !pJob->RasterizeRegion( 30, 0, 40, 10 ),
+	       "MONEY (z5): a wholly out-of-film regional final is rejected instead of remapped" );
+	Check( !pJob->RasterizeRegion( 10, 10, 9, 12 ),
+	       "MONEY (z5): inverted regional-final bounds are rejected" );
 	Check( controller.SubmitAgentRenderSync(
 		       [] {}, String( "post-legacy-production" ), nullptr, 2000 ),
 	       "MONEY (z5): agent-render worker still accepts work after legacy production" );

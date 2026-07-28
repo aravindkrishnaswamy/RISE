@@ -258,11 +258,11 @@ private struct AppMenus: Commands {
             }
             .disabled(!menu.snap.canUseSceneTransport)
 
-            Button("Draw Render Region") {
+            Button(menu.snap.hasActiveRegion ? "Redraw Render Region" : "Draw Render Region") {
                 actions.requestRegionDraw()
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(!menu.snap.canUseSceneTransport || menu.snap.hasActiveRegion)
+            .disabled(!menu.snap.canDrawRegion)
 
             Divider()
 

@@ -1243,10 +1243,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 #ifdef RISE_ENABLE_OIDN
 		if( !bDenoisingEnabled ) {
-			pFilteredFilm->Resolve( *pImage );
+			pFilteredFilm->Resolve( *pImage, pRect );
 		}
 #else
-		pFilteredFilm->Resolve( *pImage );
+		pFilteredFilm->Resolve( *pImage, pRect );
 #endif
 	}
 
@@ -1289,7 +1289,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #endif
 		if( pAOVBuffers->NeedsFallback() ) {
 			CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
-				mDenoisingPrefilter );
+				mDenoisingPrefilter, pRect );
 		}
 		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		// FrameStore now owns the copied depth plane. Drop the float scratch
@@ -1322,9 +1322,16 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			if( ShouldDenoise() ) {
 				const double renderElapsedSeconds = GetRenderElapsedSeconds();
 				OnBeforeDenoise( renderElapsedSeconds );
-				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					renderElapsedSeconds );
+				if( pRect ) {
+					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
+						pRect->left, pRect->top, pRect->right, pRect->bottom,
+						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+						renderElapsedSeconds );
+				} else {
+					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+						renderElapsedSeconds );
+				}
 				appliedDenoise = true;
 			}
 		}
@@ -1773,10 +1780,10 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			FrameStoreBulkBracket bracket( mFrameStore, image );
 #ifdef RISE_ENABLE_OIDN
 			if( !bDenoisingEnabled ) {
-				pFilteredFilm->Resolve( image );
+				pFilteredFilm->Resolve( image, pRect );
 			}
 #else
-			pFilteredFilm->Resolve( image );
+			pFilteredFilm->Resolve( image, pRect );
 #endif
 		}
 		pFilteredFilm->Clear();
@@ -2063,7 +2070,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				pScene.GetObjects()->PrepareForRendering();
 				pScene.SetSceneTime( fallbackNominalTime );
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
-					mDenoisingPrefilter );
+					mDenoisingPrefilter, pRect );
 			}
 			PropagateAOVsToFrameStore_( *pAOVBuffers );
 			pAOVBuffers->ReleaseDepthStorage();
@@ -2078,9 +2085,16 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 				const double renderElapsedSeconds = GetRenderElapsedSeconds();
 				OnBeforeDenoise( renderElapsedSeconds );
-				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					renderElapsedSeconds );
+				if( pRect ) {
+					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
+						pRect->left, pRect->top, pRect->right, pRect->bottom,
+						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+						renderElapsedSeconds );
+				} else {
+					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+						renderElapsedSeconds );
+				}
 			}
 			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );
 		} else {

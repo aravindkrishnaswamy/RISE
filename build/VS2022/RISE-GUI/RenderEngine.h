@@ -285,7 +285,7 @@ private:
     State m_state = Idle;
     QString m_loadedFilePath;
     bool m_hasAnimation = false;
-    bool m_regionProductionRender = false;   // UI-thread lifecycle flag
+    bool m_regionProductionRender = false;   // current/last still-result identity
 
     // Set on animation completion (worker thread, before the queued
     // Completed-state transition) to a summary of the written video files;

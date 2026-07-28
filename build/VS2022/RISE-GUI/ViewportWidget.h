@@ -181,7 +181,10 @@ private:
     QPointF m_regionDragStart;      // widget-local coords
     QPointF m_regionDragCurrent;    // widget-local coords
 
-    enum class RegionEditMode { None, Move, TopLeft, TopRight, BottomLeft, BottomRight };
+    enum class RegionEditMode {
+        None, Move, TopLeft, Top, TopRight, Right,
+        BottomRight, Bottom, BottomLeft, Left
+    };
     RegionEditMode m_regionEditMode = RegionEditMode::None;
     QPointF        m_regionEditStart;
     QRectF         m_regionEditStartRect;
