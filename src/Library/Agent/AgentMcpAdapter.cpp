@@ -123,9 +123,12 @@ namespace RISE
 				return o;
 			}
 
-			//! The `baseHeadVersion` object shared by propose_patch /
-			//! insert_chunk / remove_chunk -- optional optimistic-concurrency
-			//! precondition, {uuid,revision} both numeric.
+			//! The `baseHeadVersion` object shared by all 5 mutating tools
+			//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
+			//! remove_chunk) -- optional optimistic-concurrency precondition,
+			//! {uuid,revision} both numeric.  The BATCH forms take it too:
+			//! the precondition is on the HEAD the batch starts from, not on
+			//! any one element.
 			JsonValue BaseHeadVersionSchema()
 			{
 				JsonValue props = JsonValue::MakeObject();
@@ -205,9 +208,10 @@ namespace RISE
 				return tool;
 			}
 
-			//! Secure-MCP slice 2: the mutating-verb refusal note prepended
-			//! to propose_patch/insert_chunk/remove_chunk's descriptions
-			//! under AgentAutonomy::Read.  DECIDED: annotate, don't hide --
+			//! Secure-MCP slice 2: the refusal note prepended to all 5
+			//! mutating tools' (propose_patch/propose_patches/insert_chunk/
+			//! insert_chunks/remove_chunk) descriptions under
+			//! AgentAutonomy::Read.  DECIDED: annotate, don't hide --
 			//! the tool stays fully visible (real inputSchema, callable
 			//! shape) so a client can still explain to its user what the
 			//! tool would do and why it is currently refused, rather than
@@ -218,8 +222,9 @@ namespace RISE
 				"--agent-autonomy=commit to enable it)] ";
 
 			//! Secure-MCP slice 5b fix round (P2-1): the sibling annotation for
-			//! propose_patch/insert_chunk/remove_chunk under
-			//! AgentAutonomy::Propose specifically.  Under Propose these three
+			//! the same 5 mutating tools (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk) under
+			//! AgentAutonomy::Propose specifically.  Under Propose those
 			//! tools REACH the session (unlike Read, where kAutonomyReadNote's
 			//! tool is refused before dispatch) -- but for an External-
 			//! authority session with a live controller attached, the call
@@ -296,8 +301,9 @@ namespace RISE
 					"optimistic-concurrency headVersion {uuid,revision}. Works with NO scene "
 					"loaded (hasDocument:false, headVersion {0,0}) -- an agent starting from "
 					"scratch calls this first. Pass the returned headVersion back as "
-					"baseHeadVersion on propose_patch/insert_chunk/remove_chunk to guard against "
-					"editing a stale head.",
+					"baseHeadVersion on any of the 5 mutating tools "
+					"(propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk) "
+					"to guard against editing a stale head.",
 					ObjectProp( "", JsonValue::MakeObject(), std::vector<std::string>() ) ) );
 
 				// read_schema

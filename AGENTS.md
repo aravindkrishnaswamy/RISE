@@ -116,6 +116,27 @@ themselves — only `bin/` and `rendered/` need to pre-exist.)
 Do this BEFORE the first `make -C build/make/rise -j8 all`.  (This cost
 a worktree-based reviewer real time; it is not obvious from the error.)
 
+**Expect `ld` search-path warnings when `extlib/oidn/install/` is
+absent, and do NOT chase them.**  That directory is a build product of
+the one-time OIDN setup in [CLAUDE.md](CLAUDE.md); it is neither tracked
+nor carried into a `git worktree add`.  The Xcode `RISE-GUI` link then
+emits, once per link action (two on a `-configuration Development`
+build here):
+
+```
+ld: warning: search path '…/extlib/oidn/install/lib' not found
+```
+
+and falls back to the system (Homebrew, CPU-only) OIDN.  Under this
+repo's "compiler warnings are bugs" rule that reads like a regression
+and it is not — it is a missing build product of the CHECKOUT, not of
+the change under review.  (The `make` build is unaffected: its
+`Config.OSX` `wildcard`-tests for the dylib and silently picks the
+Homebrew prefix instead, so no warning is emitted at all.)  Either
+populate the install (`extlib/oidn/fetch_prebuilt.sh`, run from the
+worktree) or discount exactly those `ld: warning: search path` lines;
+anything else in the log still counts as a warning you own.
+
 ### Render test scenes at lower resolution (CLI override)
 
 Production scenes often author 1920×1080 (or higher) in their `film`

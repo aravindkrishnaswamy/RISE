@@ -104,8 +104,10 @@ namespace RISE
 			External    //!< a remote/other agent: mutating verbs STAGE a proposal (inert) instead of committing; may NOT resolve (approve/reject) ANY proposal, including its own.
 		};
 
-		//! Secure-MCP slice 5a: the structured result of a STAGED
-		//! propose_patch / insert_chunk / remove_chunk call (External
+		//! Secure-MCP slice 5a: the structured result of a STAGED mutating
+		//! call -- any of the 5 mutating verbs (propose_patch/propose_patches/
+		//! insert_chunk/insert_chunks/remove_chunk); the batch forms stage per
+		//! element through the same single-item path (External
 		//! authority + Propose autonomy, with a live controller attached).
 		//! Deliberately narrow -- a stage is INERT, so there is no
 		//! rawCode/status tri-state to fold; `staged` is true iff the
@@ -290,8 +292,12 @@ namespace RISE
 		//!     caller can switch on without string-matching `message`, grouped
 		//!     by which verb(s) can produce it:
 		//!
-		//!     insert_chunk, propose_patch, AND remove_chunk (target/param
-		//!     resolution and reference-typing are shared concerns):
+		//!     insert_chunk AND propose_patch -- and therefore insert_chunks
+		//!     and propose_patches, which run each element through the SAME
+		//!     per-item call and so emit the SAME issues (target/param
+		//!     resolution and reference-typing are shared concerns).
+		//!     remove_chunk is NOT in this group: AnalyzeRejectedRemove
+		//!     emits "still_referenced" and nothing else.
 		//!       "unresolved_reference"      a Reference-kind param's value is
 		//!                                   a NAME that does not resolve
 		//!                                   against the document in scope
@@ -308,11 +314,11 @@ namespace RISE
 		//!                                   NAME belongs), not a dangling
 		//!                                   reference.
 		//!
-		//!     insert_chunk ONLY:
+		//!     insert_chunk / insert_chunks ONLY:
 		//!       "unknown_chunk_type"        the chunk keyword itself is not a
 		//!                                   registered chunk type.
 		//!
-		//!     propose_patch ONLY:
+		//!     propose_patch / propose_patches ONLY:
 		//!       "unknown_target"            the `target` entity name does not
 		//!                                   resolve to any chunk in the head
 		//!                                   (restricted to `kind` when given).
@@ -2035,9 +2041,29 @@ namespace RISE
 			//! DEFINES the values and is the test's ground truth).  So a new
 			//! surface added without registering it here FAILS the suite, and
 			//! a registered surface that falls behind on a newly-added reason
-			//! FAILS it too.  Do not restate a COUNT of the entries here --
-			//! four consecutive review rounds found a hand-maintained count in
-			//! this family stale; the delimited list IS the count.
+			//! FAILS it too.  Since round 20 it also checks each reader-facing
+			//! surface PASSAGE BY PASSAGE (a blank-line-delimited block that
+			//! names all but one value is an incomplete enumeration, not a
+			//! subset), and rejects a stale whole-set COUNT stated in prose.
+			//! Do not restate a COUNT of the entries here -- four consecutive
+			//! review rounds found a hand-maintained count in this family
+			//! stale; the delimited list IS the count.
+			//!
+			//! SCOPE, stated because it is not unlimited (round 20: the flat
+			//! "catches any new surface by construction" claim that used to
+			//! stand here was FALSE -- the scan then covered only
+			//! {src,skills,docs,tests,build}, and probe files at the repo
+			//! root, under scenes/, and as docs/*.txt or *.json each
+			//! enumerated all of them and left the suite green).  The scan
+			//! now walks the WHOLE repo for the text extensions listed in the
+			//! test's kTextExts, pruning only .git, extlib, bin, rendered,
+			//! agent worktrees, and build-output directories.  Anything the
+			//! scan can find can also be REGISTERED here -- including a
+			//! `build/...` GUI surface or a repo-root file such as AGENTS.md,
+			//! neither of which the round-17 extractor accepted.  A surface
+			//! with an extension outside kTextExts, or inside a pruned tree,
+			//! is still invisible: widen kTextExts rather than let this
+			//! paragraph over-claim again.
 			//!
 			//! [read_viewport-reason-surfaces]
 			//!   MODEL-FACING (list every reason + retriability + what to do):

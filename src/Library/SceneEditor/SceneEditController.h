@@ -704,7 +704,8 @@ namespace RISE
 			//! this is what closes the unlocked-read race (see StageProposal's
 			//! doc).  When true, the caller already supplied a real
 			//! caller-pinned baseVersion (an explicit baseHeadVersion argument
-			//! to propose_patch/insert_chunk/remove_chunk) and StageProposal
+			//! to one of the 5 mutating verbs -- propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk) and StageProposal
 			//! passes it through untouched.
 			bool                hasExplicitBaseVersion = false;
 			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied via AgentSession::SetSessionLabel); "" when the staging session never set one -- see struct doc above
@@ -802,11 +803,21 @@ namespace RISE
 		//! Returns false (no such id, or already resolved -- resolving an
 		//! already-applied/rejected/conflict proposal is refused rather
 		//! than silently re-run) with the queue left untouched; true
-		//! otherwise, with `outResult` filled from the replay (meaningful
-		//! only when `approve` was true AND the version check passed --
-		//! i.e. a real apply actually ran; a reject or a conflict leaves
-		//! `outResult` default-constructed since no ApplyAgent* call was
-		//! made).
+		//! otherwise, with `outResult` filled from the replay.  A REJECT
+		//! never calls ApplyAgent* at all, but still fills `outResult`
+		//! with status="rejected" plus the REAL current head (Secure-MCP
+		//! slice 5b fix round P2-2 -- leaving it default-constructed put
+		//! the {0,0} "no head to report" sentinel on the wire).
+		//!
+		//! TRANSIENT-REFUSAL EXCEPTION (round-2 FIX-2 review, C5): when
+		//! the approve replay comes back `retriable` -- ApplyAgent*
+		//! refused on an open editor transaction/gesture BEFORE touching
+		//! the Document -- the proposal is deliberately LEFT PENDING and
+		//! this still returns true with `outResult` carrying that
+		//! refusal.  Folding it to "rejected" would permanently burn a
+		//! staged proposal because an Owner clicked Approve mid-gesture;
+		//! nothing was applied and the head is byte-identical, so simply
+		//! approving again a moment later is a true retry.
 		//!
 		//! CALLER CONTRACT (enforced ONE LAYER UP, in AgentSession, not
 		//! here): the controller has no notion of "authority" -- it cannot
@@ -3081,8 +3092,19 @@ namespace RISE
 		//! Last Render callback/start barrier.
 		virtual void ForTest_OnLastRenderTransitionAttempt( unsigned int ) {}
 
-		//! Called from SetViewportLayout's SHRINK branch at the one instant the
-		//! new layout is authoritative and the render thread is provably idle:
+		//! Called from SetViewportLayout's shrink branch -- but ONLY on the
+		//! sub-branch that actually PARKS, i.e. when the shrink hides the
+		//! currently-scheduled pane or pins an active pointer gesture to a
+		//! now-invisible one (`currentHidden || gestureHidden`).  A shrink
+		//! that hides neither never parks and therefore never stamps: there
+		//! is no in-flight pass to make provably idle, so the epoch this seam
+		//! exists to publish would not be true.  A TEST that relies on the
+		//! stamp must construct a shrink that hides the scheduled or the
+		//! gesture pane, and must treat a missing stamp as a FATAL setup
+		//! failure -- a non-fatal precondition check silently degrades the
+		//! assertion it guards back to an unsynchronised whole-sequence scan.
+		//! At the instant it does fire, the new layout is authoritative and
+		//! the render thread is provably idle:
 		//! mMutex is held, the park wait has already returned (mRendering is
 		//! false), and the scheduler has not yet been relocated to a visible
 		//! pane.  No interactive pass can be running or minting here -- a mint

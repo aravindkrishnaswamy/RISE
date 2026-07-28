@@ -105,10 +105,15 @@
 //        silently dropping it, since core-layer gating is optional by
 //        design (documented in the skill / CLAUDE.md deviation notes).
 //
-//    The ten tool definitions (mapping 1:1 to the AgentRpc verbs) are
-//    defined ONCE, provider-neutrally, in AgentChatCodecs.cpp; each
-//    codec maps them into its native tool declaration shape.  Their
-//    parameter names/shapes mirror AgentRpc.cpp exactly.
+//    The tool definitions are defined ONCE, provider-neutrally, in
+//    AgentChatCodecs.cpp's kToolDefs (which IS the count -- do not restate
+//    one here); each codec maps them into its native tool declaration
+//    shape.  Every one of them but `ask_user` maps onto an AgentRpc verb
+//    of the same name, with parameter names/shapes mirroring AgentRpc.cpp
+//    exactly; `ask_user` is the exception -- it maps to NO verb, because
+//    the driver answers it locally from the user rather than dispatching
+//    it.  The dispatcher also speaks verbs no tool exposes, so the
+//    correspondence is one-way, not a bijection.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

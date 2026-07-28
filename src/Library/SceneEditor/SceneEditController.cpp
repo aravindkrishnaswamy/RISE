@@ -5253,9 +5253,45 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentInsertChun
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 		{
+			// Round-2 FIX-2 review (C4).  mAgentRenderBlocksInteractive has TWO
+			// very different meanings and they must not report the same
+			// `retriable`.  The ORDINARY meaning is transient: a render is
+			// queued or running and the gate clears when it finishes.  But
+			// ~SceneEditController and PrepareForDestruction ALSO set it (under
+			// this same admission mutex) and NEVER clear it -- from then on it
+			// is LATCHED, and reporting `retriable = true` invites exactly the
+			// infinite-retry loop ClassifyFinalizeFailure_ was written to
+			// remove for the latched mInteractionPersistenceFailed gate.  Since
+			// FIX 2 the GUI drivers act on `retriable` themselves, so a latched
+			// gate costs a wasted round-trip PLUS four dead client dispatches.
+			// The destruction test is StageProposal's, verbatim.
 			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+				// headVersion deliberately LEFT at the {0,0} "no head to
+				// report" sentinel: this path must not touch mJob -- an owner
+				// may legitimately have released the Job already (see
+				// ~SceneEditController's NOTE), so reading the head here would
+				// be a use-after-free.  The `retriable = false` above is what
+				// the caller acts on.
+				return r;
+			}
 			r.retriable = true;
 			r.message = String( "render queued or in progress -- retry after it completes" );
+			// Round-2 FIX-2 review (C3): report the CURRENT head, like every
+			// other refusal on these verbs.  Leaving it default-constructed
+			// put {0,0} -- documented elsewhere as the "no head to report"
+			// sentinel -- on the wire, and a model echoing that back as
+			// baseHeadVersion earns a guaranteed conflict.  Read WITHOUT
+			// mMutex, deliberately: this is exactly StageProposal's
+			// gate-is-set case -- every controller write funnel refuses under
+			// the admission lock we hold and the render only READS the
+			// retained Document, so the head is immutable here and taking
+			// mMutex would instead block for the render's whole duration.
+			r.headVersion = mJob.GetCstHeadVersion();
 			return r;
 		}
 		r = ApplyAgentChunkCrud_( /*isInsert*/ true, chunkText, String(), baseVersionOrNull );
@@ -5274,9 +5310,19 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 		{
+			// Latched-vs-transient split (C4) and the current-head report
+			// (C3) -- see ApplyAgentInsertChunk above for the full rationale.
 			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+				return r;
+			}
 			r.retriable = true;
 			r.message = String( "render queued or in progress -- retry after it completes" );
+			r.headVersion = mJob.GetCstHeadVersion();
 			return r;
 		}
 		r = ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
@@ -5481,9 +5527,25 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 				// version-mismatch case specifically, so map those other
 				// outcomes to "rejected" -- they are not what this
 				// invariant is about, but they are still NOT an apply.
-				if( cr.applied )                         p.status = String( "applied" );
+				//
+				// EXCEPT a RETRIABLE refusal (round-2 FIX-2 review, C5).
+				// `cr.retriable` means the replay never even reached the
+				// apply -- ApplyAgent{ParamEdit,InsertChunk,RemoveChunk}
+				// refused on a TRANSIENT gate (an open editor transaction /
+				// gesture) before touching the Document.  Folding that to
+				// "rejected" permanently BURNS the proposal: the pending
+				// check at the top of this method refuses a second resolve,
+				// so an Owner who happened to click Approve mid-gesture has
+				// to ask the agent to stage the whole thing again.  Leave
+				// the entry PENDING instead and let `outResult` carry the
+				// transient refusal, so the same Approve simply works a
+				// moment later.  Nothing was applied and the head is
+				// byte-identical, so re-resolving is a true retry, not a
+				// double-apply.
+				if( cr.applied )                             p.status = String( "applied" );
 				else if( cr.status == String( "conflict" ) ) p.status = String( "conflict" );
-				else                                      p.status = String( "rejected" );
+				else if( cr.retriable )                      { /* stays "pending" -- resolvable again */ }
+				else                                         p.status = String( "rejected" );
 				break;
 			}
 		}
@@ -12880,9 +12942,19 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 		{
+			// Latched-vs-transient split (C4) and the current-head report
+			// (C3) -- see ApplyAgentInsertChunk for the full rationale.
 			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+				return r;
+			}
 			r.retriable = true;
 			r.message = String( "render queued or in progress -- retry after it completes" );
+			r.headVersion = mJob.GetCstHeadVersion();
 			return r;
 		}
 		r = ApplyAgentParamEditInner_(

@@ -42,8 +42,9 @@
 //        non-```rise fenced block in any skill may contain
 //        "RISE ASCII SCENE" -- scene content cannot dodge the
 //        contract by dropping the fence tag.
-//    S4  Chat-loop wiring: the provider-neutral tool table now carries
-//        SEVEN tools (read_skill present in BOTH providers' request
+//    S4  Chat-loop wiring: every provider codec emits the SAME
+//        provider-neutral tool table, at the size TestChatLoopWiring
+//        asserts (read_skill present in all three providers' request
 //        bodies); SetSkillIndex("") omits the skills section (the
 //        system prompt is byte-identical to SystemPrompt());
 //        SetSkillIndex(text) appends the stable section to the next
@@ -719,12 +720,17 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (thirteen tools) + SetSkillIndex...\n" );
+	std::printf( "S4: chat-loop tool table (fourteen tools, three providers) + SetSkillIndex...\n" );
 
-	// Anthropic: thirteen tools (S2 added insert_chunk/remove_chunk; toolkit
-	// slice 3b added query_object_at; compare_to_reference is the twelfth;
-	// ask_user (stage 1a of clarifying-questions) is the thirteenth),
-	// read_skill present with a schema.
+	// The count below is asserted, not narrated: every provider's request
+	// body must carry the SAME kToolDefs table, so a tool added to one codec
+	// and not the others fails here.  (Round 20: the prose that used to run
+	// alongside these assertions said "thirteen", listed the additions in
+	// ordinal order, and had lost propose_patches -- three assertions of 14
+	// sat five lines below it.  A narrated count next to an asserted one is
+	// pure drift surface, so the narration is gone.)
+	//
+	// Anthropic: read_skill present with a schema.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );

@@ -157,7 +157,8 @@
 >   paying that 30 s block, and when the occupant is the user's production render, wait for it
 >   instead of retrying.) On the MCP
 >   surface as tool #15 (image content block when available); allowed under the Read autonomy
->   posture; deliberately NOT in the chat panel's curated 9-tool list. Shared C++ — Mac,
+>   posture; deliberately NOT in the chat panel's curated tool list (AgentChatCodecs.cpp's
+>   `kToolDefs` — no count restated here; every restated one in this family went stale). Shared C++ — Mac,
 >   Windows, and the loopback server with zero bridge changes.
 > - **S2 `quality:"draft"` — SHIPPED (2026-07-09).** The render verb's optional quality param:
 >   draft renders run on a fresh, per-call interactive-preview pipeline invoked directly against

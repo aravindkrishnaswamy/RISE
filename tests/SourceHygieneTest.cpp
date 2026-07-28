@@ -21,11 +21,17 @@
 //  generally -- claims that live in text and cannot be checked by
 //  running anything: cross-platform GUI preset parity, the IJob vtable
 //  append-only manifest, the chat-render session routing, and (fix round
-//  18) the two agent-facing ENUMERATION registries, which had produced a
-//  stale count or a stale list in four consecutive review rounds.  The
-//  rule for anything added here: derive the expected value from the CODE,
-//  never restate it in this file -- a test carrying its own copy of the
-//  list just moves the drift.
+//  17) the two agent-facing ENUMERATION registries, which had produced a
+//  stale count or a stale list in four consecutive review rounds -- and
+//  which round 20 then had to repair, because the enforcement itself
+//  false-positived on ordinary comments and was blind to the model-facing
+//  string literals it most needed to see.  The rule for anything added
+//  here: derive the expected value from the CODE, never restate it in
+//  this file -- a test carrying its own copy of the list just moves the
+//  drift.  Corollary the hard way: the GROUND-TRUTH parse must read CODE
+//  ONLY (StripCommentsPreservingLayout), and the PROSE scan must read
+//  comments AND literals (ExtractProseBlocks); getting those two backwards
+//  is what made round 17's mechanism defective.
 //
 //  Tabs: 4
 //
@@ -38,6 +44,7 @@
 #include <iostream>
 #include <string>
 #include <iterator>
+#include <sstream>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -73,6 +80,202 @@ static fs::path FindTestsDir()
 		if( fs::exists( p / "SourceHygieneTest.cpp" ) ) { return p; }
 	}
 	return fs::path();
+}
+
+// ---- Shared source-text helpers for the agent enumeration guards ----
+// (fix round 20).  The round-17 commit (d9487763, whose own in-code markers
+// said "18"; the markers now follow the commit titles, which are the only
+// immutable anchor) shipped two GROUND-TRUTH parsers that read raw
+// bytes, and a prose scanner that saw only `//` lines.  A reviewer red-proved
+// three defects in that mechanism, all of which live here now:
+//
+//   * The ground-truth parsers ingested COMMENT text.  An ordinary comment
+//     containing a quoted word inside IsProposeSafeVerb's body was parsed as
+//     if it were a verb name (24 spurious findings); a commented-out
+//     `outReason = "..."` line was parsed as a live reason value (8 spurious
+//     findings).  Both told the author to change the CORRECT text.  Ground
+//     truth must be CODE: StripCommentsPreservingLayout below.
+//   * The prose scanner missed `/* */` blocks and, worse, MODEL-FACING string
+//     literals -- the surface this whole family of findings is about.  A
+//     fully-anchored WRONG claim in either was invisible.  ExtractProseBlocks
+//     below covers `//` runs, block comments, and runs of adjacent string
+//     literals alike.
+
+// Replace every comment byte with a space, preserving the file's length,
+// newlines, and string/char literals.  Offsets into the result therefore
+// still index the original source.
+static std::string StripCommentsPreservingLayout( const std::string& src )
+{
+	std::string out = src;
+	const size_t n = src.size();
+	size_t i = 0;
+	while( i < n ) {
+		// Comments FIRST: an apostrophe inside prose ("don't") must never be
+		// mistaken for the start of a character literal.
+		if( src[i] == '/' && i + 1 < n && src[i + 1] == '/' ) {
+			while( i < n && src[i] != '\n' ) { out[i] = ' '; ++i; }
+			continue;
+		}
+		if( src[i] == '/' && i + 1 < n && src[i + 1] == '*' ) {
+			out[i] = ' '; out[i + 1] = ' ';
+			i += 2;
+			while( i < n ) {
+				if( src[i] == '*' && i + 1 < n && src[i + 1] == '/' ) {
+					out[i] = ' '; out[i + 1] = ' '; i += 2; break;
+				}
+				if( src[i] != '\n' ) { out[i] = ' '; }
+				++i;
+			}
+			continue;
+		}
+		if( src[i] == '"' || src[i] == '\'' ) {
+			const char quote = src[i];
+			++i;
+			while( i < n ) {
+				if( src[i] == '\\' ) { i += 2; continue; }
+				if( src[i] == quote || src[i] == '\n' ) { ++i; break; }
+				++i;
+			}
+			continue;
+		}
+		++i;
+	}
+	return out;
+}
+
+// A run of contiguous prose: consecutive `//` lines, one `/* */` block, or a
+// run of adjacent string literals (which C++ concatenates, and which is how
+// every multi-line model-facing tool description in this repo is written).
+struct ProseBlock
+{
+	std::string text;
+	std::vector<std::pair<size_t,int>> starts;   // (offset in text, source line)
+	const char* kind = "comment";
+
+	int LineAt( size_t off ) const
+	{
+		int best = starts.empty() ? 0 : starts.front().second;
+		for( const auto& s : starts ) { if( s.first <= off ) { best = s.second; } else { break; } }
+		return best;
+	}
+	void Append( const std::string& seg, int lineNo )
+	{
+		if( !text.empty() ) { text += " "; }
+		starts.push_back( std::make_pair( text.size(), lineNo ) );
+		text += seg;
+	}
+};
+
+// Decode the escapes a model-facing literal actually uses.  `\"` matters most:
+// these descriptions quote verb names and JSON keys.
+static std::string DecodeLiteral( const std::string& raw )
+{
+	std::string s;
+	for( size_t i = 0; i < raw.size(); ++i ) {
+		if( raw[i] != '\\' || i + 1 >= raw.size() ) { s += raw[i]; continue; }
+		const char e = raw[++i];
+		if( e == 'n' || e == 't' || e == 'r' ) { s += ' '; }
+		else { s += e; }
+	}
+	return s;
+}
+
+static std::vector<ProseBlock> ExtractProseBlocks( const std::string& src )
+{
+	std::vector<ProseBlock> out;
+	const size_t n = src.size();
+
+	ProseBlock lineRun;  int lineRunLast = -1;
+	ProseBlock strRun;   size_t strRunEnd = std::string::npos;
+	lineRun.kind = "comment";
+	strRun.kind  = "string";
+
+	auto flushLines = [&]() {
+		if( !lineRun.text.empty() ) { out.push_back( lineRun ); }
+		lineRun = ProseBlock(); lineRun.kind = "comment"; lineRunLast = -1;
+	};
+	auto flushStrings = [&]() {
+		if( !strRun.text.empty() ) { out.push_back( strRun ); }
+		strRun = ProseBlock(); strRun.kind = "string"; strRunEnd = std::string::npos;
+	};
+
+	int line = 1;
+	size_t i = 0;
+	while( i < n ) {
+		if( src[i] == '\n' ) { ++line; ++i; continue; }
+		if( src[i] == '/' && i + 1 < n && src[i + 1] == '/' ) {
+			flushStrings();
+			size_t b = i + 2;
+			if( b < n && src[b] == '!' ) { ++b; }
+			size_t e = b;
+			while( e < n && src[e] != '\n' ) { ++e; }
+			if( lineRunLast >= 0 && line != lineRunLast + 1 && line != lineRunLast ) { flushLines(); }
+			lineRun.Append( src.substr( b, e - b ), line );
+			lineRunLast = line;
+			i = e;
+			continue;
+		}
+		if( src[i] == '/' && i + 1 < n && src[i + 1] == '*' ) {
+			flushLines(); flushStrings();
+			ProseBlock blk; blk.kind = "comment";
+			size_t p = i + 2;
+			const int startLine = line;
+			size_t segBeg = p;
+			int segLine = startLine;
+			while( p < n ) {
+				if( src[p] == '*' && p + 1 < n && src[p + 1] == '/' ) { break; }
+				if( src[p] == '\n' ) {
+					blk.Append( src.substr( segBeg, p - segBeg ), segLine );
+					++line; segBeg = p + 1; segLine = line;
+				}
+				++p;
+			}
+			if( p > segBeg ) { blk.Append( src.substr( segBeg, p - segBeg ), segLine ); }
+			if( !blk.text.empty() ) { out.push_back( blk ); }
+			i = ( p < n ) ? p + 2 : n;
+			continue;
+		}
+		if( src[i] == '\'' ) {   // character literal -- never prose
+			++i;
+			while( i < n ) {
+				if( src[i] == '\\' ) { i += 2; continue; }
+				if( src[i] == '\'' || src[i] == '\n' ) { break; }
+				++i;
+			}
+			if( i < n && src[i] == '\n' ) { continue; }
+			if( i < n ) { ++i; }
+			continue;
+		}
+		if( src[i] == '"' ) {
+			// Adjacent literals separated only by whitespace concatenate; a
+			// literal reached over anything else starts a NEW run.
+			if( strRunEnd != std::string::npos ) {
+				bool onlySpace = true;
+				for( size_t k = strRunEnd; k < i; ++k ) {
+					if( !isspace( (unsigned char)src[k] ) ) { onlySpace = false; break; }
+				}
+				if( !onlySpace ) { flushStrings(); }
+			}
+			const int startLine = line;
+			size_t p = i + 1;
+			std::string raw;
+			while( p < n ) {
+				if( src[p] == '\\' && p + 1 < n ) { raw += src[p]; raw += src[p + 1]; p += 2; continue; }
+				if( src[p] == '"' || src[p] == '\n' ) { break; }
+				raw += src[p];
+				++p;
+			}
+			strRun.Append( DecodeLiteral( raw ), startLine );
+			if( p < n && src[p] == '\n' ) { i = p; continue; }
+			strRunEnd = ( p < n ) ? p + 1 : n;
+			i = strRunEnd;
+			continue;
+		}
+		++i;
+	}
+	flushLines();
+	flushStrings();
+	return out;
 }
 
 int main()
@@ -437,7 +640,7 @@ int main()
 		// half can be moved onto agentHandleLine.
 		const std::string macEditRetryBody = bodyBetween( macChat,
 			"private func retryWhollyRefusedEditToolCall",
-			"/// Model-B F2 slice S2b: execute a `render` tool call WITHOUT" );
+			"private func executeRenderToolCallAsync" );
 		Check( macChat.find( "let firstResponse = vb.agentHandleToolCall(line)" ) != std::string::npos
 		       && !macEditRetryBody.empty()
 		       && macEditRetryBody.find( "responseLine = vb.agentHandleToolCall(line)" )
@@ -479,17 +682,21 @@ int main()
 		const fs::path manifestPath = testsDir / "IJobVtableManifest.txt";
 
 		// Extract the ordered virtual-method names from `class IJob`'s body.
-		// Brace-count CODE only (strip `//` comments first -- doc text contains
-		// braces); skip the destructor (a `~` before the name).
+		// Brace-count CODE only (strip comments first -- doc text contains
+		// braces); skip the destructor (a `~` before the name).  Round 20:
+		// this uses the shared stripper, so a `/* */` block carrying a brace
+		// or a `virtual` cannot desynchronise the walk either.
 		std::vector<std::string> extracted;
 		{
-			std::ifstream in( header );
+			std::ifstream raw( header );
+			std::istringstream in( StripCommentsPreservingLayout(
+				std::string( std::istreambuf_iterator<char>( raw ),
+				             std::istreambuf_iterator<char>() ) ) );
 			std::string line;
 			bool inClass = false, started = false;
 			int depth = 0;
 			while( std::getline( in, line ) ) {
-				const size_t cpos = line.find( "//" );
-				const std::string code = ( cpos == std::string::npos ) ? line : line.substr( 0, cpos );
+				const std::string& code = line;
 				if( !inClass ) {
 					const size_t k = code.find( "class IJob" );
 					if( k != std::string::npos
@@ -559,13 +766,13 @@ int main()
 		       "IJob virtual count matches the manifest (tail appends update the manifest consciously)" );
 	}
 
-	// ---- Agent verb-set enumeration parity (fix round 18) --------------
+	// ---- Agent verb-set enumeration parity (fix rounds 17, 20) ---------
 	// WHY THIS EXISTS.  Nine review rounds on fix/gui-agent-chattiness; the
 	// executable code has been clean since round 2 and EVERY finding for the
 	// last five rounds was a doc/claim mismatch -- four of them COUNT or
 	// ENUMERATION drift in the agent-facing comment family.  Round 13
 	// declared this exact sweep done, fixed two instances, and missed the
-	// one attached to IsReadSafeVerb itself; round 18 found that one plus
+	// one attached to IsReadSafeVerb itself; round 17 found that one plus
 	// six siblings ("the 3 mutating verbs" where there are five, a
 	// blind-edit mutation set missing its batch forms).  Hand-fixing the
 	// cited number each round is what makes it recur, so the class is
@@ -591,6 +798,25 @@ int main()
 	// naming a subset in prose is not making a set claim.  The corollary --
 	// stated here because it is the maintenance rule -- is that a NEW remote
 	// restatement should use one of these anchor phrasings so it is covered.
+	//
+	// WHERE IT LOOKS (round 20 widened this; round 17's scanner saw `//`
+	// lines ONLY).  Every prose run in src/Library/Agent/*.{cpp,h}:
+	//   * runs of consecutive `//` lines,
+	//   * `/* */` blocks, and
+	//   * runs of adjacent string literals -- the MODEL-FACING tool
+	//     descriptions, which is where the finding that started this family
+	//     actually lived and which round 17 could not see at all.
+	// A finding in a literal is tagged "(MODEL-FACING literal)" so the author
+	// knows the text a model reads is what is wrong.
+	//
+	// DISCLOSED RESIDUAL, precisely.  (1) UN-ANCHORED prose: a bare
+	// "propose_patch/insert_chunk/remove_chunk" with no counted-mutating or
+	// read-safe-allowlist anchor is invisible by design (the anchors are what
+	// keep the many legitimate subsets from false-positiving).  Rephrase such
+	// a restatement into an anchor form to buy coverage.  (2) Files outside
+	// src/Library/Agent -- the GUI bridges, docs and skills restate these sets
+	// too; only the reason-code registry below scans repo-wide.  (3) Raw
+	// string literals (`R"(...)"`) are not decoded; none exist in this tree.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
 		const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
@@ -601,25 +827,30 @@ int main()
 		};
 		const std::string rpcCpp = slurp( agentDir / "AgentRpc.cpp" );
 		Check( !rpcCpp.empty(), "verb-parity: AgentRpc.cpp read" );
+		// GROUND TRUTH IS CODE, NOT COMMENT TEXT (fix round 20).  These
+		// predicates are heavily commented, and a comment inside the body
+		// that merely QUOTES a word used to be parsed as a verb name -- a
+		// false positive that told the author to "fix" correct comments.
+		const std::string rpcCode = StripCommentsPreservingLayout( rpcCpp );
 
 		// The ordered string literals inside a `bool <fn>( ... )` body.
 		auto verbsIn = [&]( const char* fn ) -> std::vector<std::string> {
 			std::vector<std::string> v;
 			const std::string sig = std::string( "bool " ) + fn + "( const std::string& method )";
-			const size_t s = rpcCpp.find( sig );
+			const size_t s = rpcCode.find( sig );
 			if( s == std::string::npos ) { return v; }
-			const size_t open = rpcCpp.find( '{', s );
+			const size_t open = rpcCode.find( '{', s );
 			if( open == std::string::npos ) { return v; }
 			int depth = 0; size_t end = open;
-			for( size_t i = open; i < rpcCpp.size(); ++i ) {
-				if( rpcCpp[i] == '{' ) { ++depth; }
-				else if( rpcCpp[i] == '}' ) { if( --depth == 0 ) { end = i; break; } }
+			for( size_t i = open; i < rpcCode.size(); ++i ) {
+				if( rpcCode[i] == '{' ) { ++depth; }
+				else if( rpcCode[i] == '}' ) { if( --depth == 0 ) { end = i; break; } }
 			}
 			for( size_t i = open; i < end; ++i ) {
-				if( rpcCpp[i] != '"' ) { continue; }
-				const size_t q = rpcCpp.find( '"', i + 1 );
+				if( rpcCode[i] != '"' ) { continue; }
+				const size_t q = rpcCode.find( '"', i + 1 );
 				if( q == std::string::npos ) { break; }
-				v.push_back( rpcCpp.substr( i + 1, q - i - 1 ) );
+				v.push_back( rpcCode.substr( i + 1, q - i - 1 ) );
 				i = q;
 			}
 			return v;
@@ -655,51 +886,6 @@ int main()
 			std::string s;
 			for( size_t i = 0; i < v.size(); ++i ) { if( i ) s += "/"; s += v[i]; }
 			return s;
-		};
-
-		// Contiguous comment text, so a list wrapped across `//` lines joins
-		// into one string.  A `//` that follows an odd number of quotes on the
-		// line is inside a string literal, not a comment.  `starts` records the
-		// offset in `text` at which each source line begins, so a finding can
-		// name the EXACT line rather than the (often far-away) block start --
-		// AgentRpc.h's file header is one 600-line block.
-		struct Block {
-			std::string text;
-			std::vector<std::pair<size_t,int>> starts;   // (offset in text, source line)
-			int LineAt( size_t off ) const {
-				int best = starts.empty() ? 0 : starts.front().second;
-				for( const auto& s : starts ) { if( s.first <= off ) { best = s.second; } else { break; } }
-				return best;
-			}
-		};
-		auto commentBlocks = []( const std::string& src ) {
-			std::vector<Block> out;
-			Block cur; int lineNo = 0;
-			size_t pos = 0;
-			while( pos <= src.size() ) {
-				const size_t nl = src.find( '\n', pos );
-				const std::string line = src.substr( pos, ( nl == std::string::npos ? src.size() : nl ) - pos );
-				++lineNo;
-				size_t c = std::string::npos;
-				int quotes = 0;
-				for( size_t i = 0; i + 1 < line.size(); ++i ) {
-					if( line[i] == '"' && ( i == 0 || line[i-1] != '\\' ) ) { ++quotes; }
-					if( line[i] == '/' && line[i+1] == '/' && ( quotes % 2 ) == 0 ) { c = i; break; }
-				}
-				if( c != std::string::npos ) {
-					size_t b = c + 2;
-					if( b < line.size() && line[b] == '!' ) { ++b; }
-					if( !cur.text.empty() ) { cur.text += " "; }
-					cur.starts.push_back( std::make_pair( cur.text.size(), lineNo ) );
-					cur.text += line.substr( b );
-				} else if( !cur.text.empty() ) {
-					out.push_back( cur ); cur = Block();
-				}
-				if( nl == std::string::npos ) { break; }
-				pos = nl + 1;
-			}
-			if( !cur.text.empty() ) { out.push_back( cur ); }
-			return out;
 		};
 
 		auto lower = []( std::string s ) {
@@ -740,6 +926,7 @@ int main()
 
 		std::vector<std::string> verbProblems;
 		int countedMutatingClaims = 0, mutatingRunsChecked = 0, readSafeRunsChecked = 0;
+		int literalClaimsChecked = 0;
 		std::vector<fs::path> agentFiles;
 		for( const auto& e : fs::directory_iterator( agentDir ) ) {
 			if( !e.is_regular_file() ) { continue; }
@@ -753,11 +940,13 @@ int main()
 
 		for( const fs::path& f : agentFiles ) {
 			const std::string name = f.filename().string();
-			for( const Block& blk : commentBlocks( slurp( f ) ) ) {
+			for( const ProseBlock& blk : ExtractProseBlocks( slurp( f ) ) ) {
 				const std::string& b = blk.text;
 				const std::string lb = lower( b );
+				const std::string kind = blk.kind;
 				auto where = [&]( size_t off ) {
-					return name + ":" + std::to_string( blk.LineAt( off ) );
+					return name + ":" + std::to_string( blk.LineAt( off ) )
+					       + ( kind == std::string( "string" ) ? " (MODEL-FACING literal)" : "" );
 				};
 
 				// (A) "<N> [<prefix>-]mutating verb(s)/tool(s)"
@@ -794,6 +983,7 @@ int main()
 					}
 					if( stated < 0 ) { continue; }   // not a counted claim
 					++countedMutatingClaims;
+					if( kind == std::string( "string" ) ) { ++literalClaimsChecked; }
 					if( (size_t)stated != proposeSafe.size() ) {
 						verbProblems.push_back(
 							where( numBeg ) + ": claims \"" + numTok + " mutating "
@@ -834,10 +1024,12 @@ int main()
 			std::cout << "  AGENT VERB-SET DRIFT: " << p << std::endl;
 		}
 		if( !verbProblems.empty() ) {
-			std::cout << "  Fix the COMMENT to match the code (src/Library/Agent/AgentRpc.cpp's "
-			          << "IsReadSafeVerb / IsProposeSafeVerb bodies are the source of truth); "
-			          << "if the CODE is what changed, the comment still has to follow."
-			          << std::endl;
+			std::cout << "  Fix the TEXT at each line above -- the comment, or, where it is "
+			          << "tagged (MODEL-FACING literal), the tool description a model reads. "
+			          << "src/Library/Agent/AgentRpc.cpp's IsReadSafeVerb / IsProposeSafeVerb "
+			          << "bodies are the source of truth; if the CODE is what changed, the text "
+			          << "still has to follow.  Prefer deleting a restated count over "
+			          << "re-deriving it." << std::endl;
 		}
 		Check( verbProblems.empty(),
 		       "agent verb-set enumerations in src/Library/Agent match IsReadSafeVerb / "
@@ -846,12 +1038,66 @@ int main()
 		// fixed expected count (that would be the very defect being fixed) --
 		// just proof that rewording every anchor away cannot silently disable
 		// the check.
-		Check( countedMutatingClaims > 0 && mutatingRunsChecked > 0 && readSafeRunsChecked > 0,
+		Check( countedMutatingClaims > 0 && mutatingRunsChecked > 0 && readSafeRunsChecked > 0
+		       && literalClaimsChecked > 0,
 		       "agent verb-set guard is LIVE (counted-mutating claims: "
 		       + std::to_string( countedMutatingClaims ) + ", mutating lists: "
 		       + std::to_string( mutatingRunsChecked ) + ", read-safe lists: "
-		       + std::to_string( readSafeRunsChecked )
-		       + ") -- a zero here means the anchor phrasings were reworded away" );
+		       + std::to_string( readSafeRunsChecked ) + ", MODEL-FACING literal claims: "
+		       + std::to_string( literalClaimsChecked )
+		       + ") -- a zero here means the anchor phrasings were reworded away; a zero on "
+		       "the LAST one means no model-facing description carries a checkable claim, "
+		       "which is where this family's findings keep landing" );
+	}
+
+	// ---- The enumeration guards' own parser, red-proved (fix round 20) --
+	// The round-17 mechanism was defective in ways only a test of the TEST
+	// can pin: it ingested comment text as ground truth and saw neither
+	// `/* */` blocks nor string literals.  Each case below is one of the
+	// reviewer's red-proofs, frozen so the mechanism cannot regress to it.
+	{
+		const std::string sample =
+			"bool Pick( const std::string& m )\n"
+			"{\n"
+			"\t// a comment that says \"ghost\" must not become a value\n"
+			"\treturn m == \"alpha\" || m == \"beta\";\n"
+			"}\n"
+			"//! run line one\n"
+			"//! run line two\n"
+			"int x = 1;   // detached\n"
+			"/* block comment mentions five mutating verbs */\n"
+			"const char* d = \"first literal \"\n"
+			"                \"second literal, escaped \\\"quoted\\\" word\";\n"
+			"// value = \"dead\";\n";
+
+		const std::string code = StripCommentsPreservingLayout( sample );
+		Check( code.size() == sample.size(),
+		       "self-test: comment stripping preserves offsets" );
+		Check( code.find( "ghost" ) == std::string::npos
+		       && code.find( "dead" ) == std::string::npos
+		       && code.find( "block comment" ) == std::string::npos,
+		       "self-test: a quoted word inside a `//` comment, a commented-out assignment, and a "
+		       "`/* */` block are ALL invisible to a ground-truth parser" );
+		Check( code.find( "\"alpha\"" ) != std::string::npos
+		       && code.find( "\"beta\"" ) != std::string::npos,
+		       "self-test: real string literals survive comment stripping" );
+
+		const std::vector<ProseBlock> blocks = ExtractProseBlocks( sample );
+		bool sawRun = false, sawBlockComment = false, sawJoinedLiteral = false, sawGhost = false;
+		for( const ProseBlock& b : blocks ) {
+			if( b.text.find( "run line one" ) != std::string::npos
+			    && b.text.find( "run line two" ) != std::string::npos ) { sawRun = true; }
+			if( b.text.find( "five mutating verbs" ) != std::string::npos ) { sawBlockComment = true; }
+			if( b.text.find( "first literal" ) != std::string::npos
+			    && b.text.find( "second literal" ) != std::string::npos
+			    && b.text.find( "\"quoted\"" ) != std::string::npos ) { sawJoinedLiteral = true; }
+			if( b.text.find( "ghost" ) != std::string::npos ) { sawGhost = true; }
+		}
+		Check( sawRun, "self-test: consecutive `//` lines join into ONE prose run" );
+		Check( sawBlockComment, "self-test: a `/* */` block is scanned for claims" );
+		Check( sawJoinedLiteral,
+		       "self-test: adjacent MODEL-FACING string literals join, with `\\\"` decoded" );
+		Check( sawGhost, "self-test: comment prose is still scanned as PROSE (only ground truth excludes it)" );
 	}
 
 	// ---- GUI edit-refusal retry gate (FIX 2) --------------------------
@@ -873,10 +1119,24 @@ int main()
 	// test that can catch its removal without a live editor gesture racing
 	// a live batch, so it is pinned here, on both platforms.
 	//
+	// ROUND 2 (P1-1) -- THE GUARD MUST GUARD ITS OWN WIRING.  As first
+	// written this section pinned the helpers, the gate, the bound, the
+	// backoff table, the teardown answer and the verb set -- but NOT the
+	// two DISPATCH SITES that call any of it.  Deleting one line on each
+	// platform (macOS `responseLine = await retryWhollyRefusedEditToolCall
+	// (...)` -> `responseLine = firstResponse`; Windows the
+	// `if (isRetriableEditVerb(...) && editRefusalIsWhollyUnapplied(...))`
+	// block in processNextToolCall) disconnected the ENTIRE fix while
+	// leaving every Check in this section green.  Section (0) below closes
+	// that: the wiring is now pinned inside the two dispatchers' extracted
+	// BODIES, so the fix cannot be silently unplugged.
+	//
 	// Ground truth for the VERB SET is AgentRpc.cpp's IsProposeSafeVerb --
-	// the five mutating verbs are exactly the ones whose results carry the
+	// the mutating verbs are exactly the ones whose results carry the
 	// `applied`+`retriable` pair the gate reads.  This file names no verb
-	// of its own.
+	// of its own, and (round 20) parses that set, and both drivers' copies
+	// of it, with COMMENTS STRIPPED: a comment containing a quoted word
+	// anywhere in any of the three bodies used to be read as a verb name.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
@@ -892,7 +1152,8 @@ int main()
 			if( e == std::string::npos ) return std::string();
 			return src.substr( b, e - b );
 		};
-		const std::string rpcCpp = slurp( repoRoot / "src" / "Library" / "Agent" / "AgentRpc.cpp" );
+		const std::string rpcCpp = StripCommentsPreservingLayout(
+			slurp( repoRoot / "src" / "Library" / "Agent" / "AgentRpc.cpp" ) );
 		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "ChatViewModel.swift" );
 		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
@@ -924,12 +1185,49 @@ int main()
 		       "edit-retry: parsed IsProposeSafeVerb's verb set (sanity: >=3; got "
 		       + std::to_string( mutatingVerbs.size() ) + ")" );
 
+		// Comment-stripped copies, for the assertions that must not be
+		// satisfiable (or defeated) by prose: the numeric bound/backoff
+		// comparison below, and the Windows never-block negative list.
+		const std::string macChatCode = StripCommentsPreservingLayout( macChat );
+		const std::string winChatCode = StripCommentsPreservingLayout( winChat );
+
+		// (0) THE DISPATCH SITES -- see the P1-1 note in this section's
+		//     header.  Everything else here guards machinery that a
+		//     one-line edit at these two call sites can orphan wholesale.
+		//     Both are asserted inside the extracted body of the
+		//     dispatcher that owns them, so an occurrence in a comment or
+		//     in some other function cannot satisfy them.
+		const std::string macDriveTurn = bodyBetween( macChatCode,
+			"private func driveTurn() async {", "private static func parseAskUserArgs" );
+		Check( !macDriveTurn.empty()
+		       && macDriveTurn.find( "let firstResponse = vb.agentHandleToolCall(line)" )
+		          != std::string::npos
+		       && macDriveTurn.find( "responseLine = await retryWhollyRefusedEditToolCall(" )
+		          != std::string::npos,
+		       "macOS driveTurn STILL ROUTES the ordinary tool dispatch through "
+		       "retryWhollyRefusedEditToolCall -- replacing that await with `responseLine = "
+		       "firstResponse` disconnects FIX 2 entirely while every other Check here stays green" );
+		const std::string winProcessNext = bodyBetween( winChatCode,
+			"void ChatPanel::processNextToolCall()", "void ChatPanel::startAsyncRenderToolCall" );
+		Check( !winProcessNext.empty()
+		       && winProcessNext.find(
+		              "isRetriableEditVerb(call.name) && editRefusalIsWhollyUnapplied(response)" )
+		          != std::string::npos
+		       // NB: matched WITHOUT the `/*attemptsSoFar=*/1` inline comment
+		       // -- winChatCode has had every comment blanked out.
+		       && winProcessNext.find( "scheduleEditToolCallRetry(call, line," )
+		          != std::string::npos
+		       && winProcessNext.find( "baselineHead);" ) != std::string::npos,
+		       "Windows processNextToolCall STILL PARKS a wholly-refused edit into "
+		       "scheduleEditToolCallRetry -- deleting that block disconnects FIX 2 entirely while "
+		       "every other Check here stays green" );
+
 		// (1) The retry gate itself, on BOTH platforms.  Bodies are
 		//     extracted by symbol so a marker cannot be satisfied by an
 		//     unrelated line elsewhere in the file.
 		const std::string macGate = bodyBetween( macChat,
 			"private static func editRefusalIsWhollyUnapplied",
-			"private static func stampDriverRetry" );
+			"private static func refusalHeadVersionKey" );
 		Check( !macGate.empty()
 		       // BATCH: `applied` is a COUNT and must be exactly zero, the
 		       // element list must be non-empty, and EVERY element must be
@@ -938,48 +1236,82 @@ int main()
 		       && macGate.find( "!results.isEmpty" ) != std::string::npos
 		       && macGate.find( "elementApplied == false" ) != std::string::npos
 		       && macGate.find( "elementRetriable" ) != std::string::npos
+		       // EVERY element, not just the first: rewriting the loop to
+		       // `results.first` would satisfy each marker above on its own.
+		       // The trailing `{` is load-bearing -- without it the marker is
+		       // a PREFIX of `for element in results.prefix(1) {` and the
+		       // weakening passes (proved by red/green, round 2).
+		       && macGate.find( "for element in results {" ) != std::string::npos
+		       // status == "rejected", per element AND singular (round 2, C1):
+		       // `applied` is CLEAN-APPLY-ONLY, so a "diagnosed" element
+		       // reports applied:false with the head ALREADY moved.
+		       && macGate.find( "elementStatus == \"rejected\"" ) != std::string::npos
+		       && macGate.find( "status == \"rejected\"" ) != std::string::npos
+		       // A JSON bool ALSO bridges to NSNumber -- the count position
+		       // must reject one, matching Qt's isDouble().
+		       && macGate.find( "CFGetTypeID(appliedCount) != CFBooleanGetTypeID()" )
+		          != std::string::npos
 		       // SINGULAR: applied==false AND retriable==true.
 		       && macGate.find( "applied == false" ) != std::string::npos
 		       && macGate.find( "let retriable = result[\"retriable\"] as? Bool, retriable" )
 		          != std::string::npos,
-		       "macOS edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND every "
-		       "element unapplied+retriable; singular: applied==false AND retriable) -- dropping the "
-		       "applied==0 condition would DOUBLE-APPLY a partially-applied best-effort batch" );
+		       "macOS edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND EVERY "
+		       "element unapplied+retriable+rejected; singular: applied==false AND retriable AND "
+		       "status==rejected) -- dropping the applied==0 condition would DOUBLE-APPLY a "
+		       "partially-applied best-effort batch; dropping the status test would let a "
+		       "head-moving \"diagnosed\" outcome back in structurally" );
 
 		const std::string winGate = bodyBetween( winChat,
 			"bool editRefusalIsWhollyUnapplied(const QString& responseLine)",
-			"QString stampDriverRetry(" );
+			"QString refusalHeadVersionKey(" );
 		Check( !winGate.empty()
 		       && winGate.find( "result.value(\"applied\").isDouble()" ) != std::string::npos
 		       && winGate.find( "result.value(\"applied\").toDouble() != 0.0" ) != std::string::npos
 		       && winGate.find( "results.isEmpty()" ) != std::string::npos
 		       && winGate.find( "e.value(\"applied\").toBool()" ) != std::string::npos
 		       && winGate.find( "!e.value(\"retriable\").toBool()" ) != std::string::npos
+		       // EVERY element, not just the first (see the macOS twin).
+		       && winGate.find( "for (const QJsonValue& element : results)" ) != std::string::npos
+		       // status == "rejected", per element AND singular (round 2, C1).
+		       && winGate.find( "e.value(\"status\").toString() != QStringLiteral(\"rejected\")" )
+		          != std::string::npos
+		       && winGate.find( "result.value(\"status\").toString() != QStringLiteral(\"rejected\")" )
+		          != std::string::npos
 		       && winGate.find( "!result.value(\"applied\").isBool() || result.value(\"applied\").toBool()" )
 		          != std::string::npos
 		       && winGate.find( "!result.value(\"retriable\").toBool()" ) != std::string::npos,
-		       "Windows edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND every "
-		       "element unapplied+retriable; singular: applied==false AND retriable) -- dropping the "
-		       "applied==0 condition would DOUBLE-APPLY a partially-applied best-effort batch" );
+		       "Windows edit-retry gate still requires NOTHING-APPLIED (batch: applied count == 0 AND EVERY "
+		       "element unapplied+retriable+rejected; singular: applied==false AND retriable AND "
+		       "status==rejected) -- dropping the applied==0 condition would DOUBLE-APPLY a "
+		       "partially-applied best-effort batch; dropping the status test would let a "
+		       "head-moving \"diagnosed\" outcome back in structurally" );
 
-		// (2) The gate is BATCH-FIRST on both platforms.  A JSON number
-		//     coerces to a boolean on both toolchains (NSNumber bridging /
-		//     QJsonValue::toBool), so testing the singular shape first would
-		//     read a batch's numeric `applied: 0` as "applied == false" and
-		//     retry a partially-refused batch.
+		// (2) The gate is BATCH-FIRST on both platforms.  This is DEFENCE IN
+		//     DEPTH, not load-bearing, and the Check says so on purpose: a
+		//     batch envelope carries no TOP-LEVEL `retriable` (AgentRpc.cpp
+		//     emits only {applied,total,results}), so the singular arm would
+		//     reject it on the missing key whichever order they ran in, and a
+		//     PARTIALLY applied batch has applied >= 1, which reads as `true`,
+		//     not `false`.  What is real is the bridging hazard the ordering
+		//     means nobody has to reason about: a JSON number reads as a bool
+		//     on both toolchains (NSNumber bridging / QJsonValue::toBool).
 		Check( macGate.find( "result[\"results\"] as? [[String: Any]]" )
 		         < macGate.find( "let applied = result[\"applied\"] as? Bool" )
 		       && winGate.find( "result.value(\"results\").isArray()" )
 		            < winGate.find( "!result.value(\"applied\").isBool()" ),
 		       "edit-retry gate tests the BATCH shape BEFORE the singular shape on both platforms "
-		       "(a JSON number coerces to false as a bool)" );
+		       "(defence in depth against a JSON number reading as a bool)" );
 
 		// (3) The retry is BOUNDED and YIELDS between attempts -- never a
 		//     blocking wait on the thread that owns the editor transaction
 		//     we are waiting on (that would deadlock the gesture).
+		//     End-anchors are SYMBOLS, never prose: a doc sentence in an
+		//     unrelated function is not a stable boundary -- rewording it
+		//     silently empties the extracted body and every marker below
+		//     goes vacuously green.
 		const std::string macRetry = bodyBetween( macChat,
 			"private func retryWhollyRefusedEditToolCall",
-			"/// Model-B F2 slice S2b: execute a `render` tool call WITHOUT" );
+			"private func executeRenderToolCallAsync" );
 		Check( !macRetry.empty()
 		       && macRetry.find( "attempts < Self.editRetryMaxAttempts" ) != std::string::npos
 		       && macRetry.find( "await Task.sleep" ) != std::string::npos
@@ -987,33 +1319,111 @@ int main()
 		       // close / production render starting.
 		       && macRetry.find( "Task.isCancelled || stopRequested" ) != std::string::npos
 		       && macRetry.find( "guard viewportBridge != nil" ) != std::string::npos
-		       && macRetry.find( "guard sceneEditable()" ) != std::string::npos,
-		       "macOS edit retry is bounded, yields the MainActor between attempts, and re-verifies "
-		       "Stop/scene-close/production-render at every suspension point" );
+		       && macRetry.find( "guard sceneEditable()" ) != std::string::npos
+		       // HEAD-VERSION GUARD (round 2, C2): a re-issue is admitted only
+		       // while the refusal keeps reporting the head attempt 1 saw.
+		       && macRetry.find( "let baselineHead = Self.refusalHeadVersionKey(firstResponse)" )
+		          != std::string::npos
+		       && macRetry.find( "Self.refusalHeadVersionKey(responseLine) == baselineHead" )
+		          != std::string::npos
+		       // The stamp fires ONLY on a real retry -- otherwise every
+		       // single-attempt edit result would be re-serialized and
+		       // annotated for nothing.
+		       && macRetry.find( "guard attempts > 1 else { return responseLine }" )
+		          != std::string::npos,
+		       "macOS edit retry is bounded, yields the MainActor between attempts, re-verifies "
+		       "Stop/scene-close/production-render at every suspension point, abandons on a MOVED head, "
+		       "and stamps the result only when a retry actually happened" );
 
 		const std::string winRetry = bodyBetween( winChat,
 			"void ChatPanel::scheduleEditToolCallRetry",
 			"void ChatPanel::deliverEditToolCallResult" );
+		// Negatives are evaluated on the COMMENT-STRIPPED body: the prose
+		// around this function legitimately talks about sleeping and event
+		// loops, and a negative assertion that a comment can trip (or that a
+		// reworded comment can silently satisfy) guards nothing.
+		const std::string winRetryCode = StripCommentsPreservingLayout( winRetry );
 		Check( !winRetry.empty()
 		       && winRetry.find( "QTimer::singleShot" ) != std::string::npos
 		       && winRetry.find( "attempts < kEditRetryMaxAttempts" ) != std::string::npos
 		       && winRetry.find( "m_editRetryToken != token" ) != std::string::npos
 		       && winRetry.find( "m_stopRequested || !m_sceneEditable || !m_bridge" )
 		          != std::string::npos
+		       // HEAD-VERSION GUARD (round 2, C2) -- the Qt half of the same
+		       // rule; the baseline itself is captured at the dispatch site
+		       // pinned in (0) above.
+		       && winRetry.find( "refusalHeadVersionKey(response) == baselineHead" )
+		          != std::string::npos
 		       // A blocking wait here would guarantee the gesture can never
-		       // complete -- the retry MUST return to the event loop.
-		       && winRetry.find( "QThread::" ) == std::string::npos
-		       && winRetry.find( "processEvents" ) == std::string::npos,
+		       // complete -- the retry MUST return to the event loop.  The
+		       // list is every blocking idiom reachable from a Qt GUI slot,
+		       // not just the two the first draft happened to name.
+		       && winRetryCode.find( "QThread::" ) == std::string::npos
+		       && winRetryCode.find( "processEvents" ) == std::string::npos
+		       && winRetryCode.find( "std::this_thread::sleep_for" ) == std::string::npos
+		       && winRetryCode.find( "QEventLoop" ) == std::string::npos
+		       && winRetryCode.find( "::Sleep(" ) == std::string::npos
+		       && winRetryCode.find( "QCoreApplication::exec" ) == std::string::npos
+		       && winRetryCode.find( "QApplication::exec" ) == std::string::npos,
 		       "Windows edit retry is bounded, returns to the Qt event loop between attempts (never a "
-		       "blocking sleep on the thread that owns the editor transaction), and re-verifies "
-		       "Stop/scene-close/production-render at every tick" );
+		       "blocking sleep/nested event loop on the thread that owns the editor transaction), "
+		       "re-verifies Stop/scene-close/production-render at every tick, and abandons on a MOVED head" );
+
+		// (3b) The driver stamp fires ONLY when a retry actually happened, on
+		//      BOTH platforms -- the macOS half is pinned in macRetry above,
+		//      the Windows half lives in deliverEditToolCallResult.
+		const std::string winDeliver = bodyBetween( winChat,
+			"void ChatPanel::deliverEditToolCallResult", "void ChatPanel::cancelActiveTurn" );
+		Check( !winDeliver.empty()
+		       && winDeliver.find( "(attempts > 1)" ) != std::string::npos
+		       && winDeliver.find( "stampDriverRetry(" ) != std::string::npos,
+		       "Windows edit-retry result is stamped only when attempts > 1 (the single-attempt path "
+		       "stays byte-for-byte unchanged)" );
+
+		// (3c) The two drivers agree on the ATTEMPT BOUND and the BACKOFF
+		//      TABLE, derived from each driver's own declaration.  Without
+		//      this, dropping Swift to 3 attempts (or re-tuning one backoff
+		//      table) while Qt stays at 5 is a silent cross-platform
+		//      behaviour split that every other Check here tolerates.
+		auto numbersAfterAssignment = []( const std::string& src, const char* marker ) -> std::string {
+			const size_t b = src.find( marker );
+			if( b == std::string::npos ) return std::string();
+			const size_t eq = src.find( '=', b );
+			if( eq == std::string::npos ) return std::string();
+			std::string out;
+			bool inNumber = false;
+			for( size_t i = eq + 1; i < src.size(); ++i ) {
+				const char c = src[i];
+				if( c == '\n' || c == ';' ) break;
+				if( isdigit( (unsigned char)c ) ) { out += c; inNumber = true; }
+				else if( inNumber ) { out += ','; inNumber = false; }
+			}
+			while( !out.empty() && out[out.size() - 1] == ',' ) out.erase( out.size() - 1 );
+			return out;
+		};
+		const std::string macAttempts = numbersAfterAssignment(
+			macChatCode, "private static let editRetryMaxAttempts" );
+		const std::string winAttempts = numbersAfterAssignment(
+			winChatCode, "const int kEditRetryMaxAttempts" );
+		const std::string macBackoff = numbersAfterAssignment(
+			macChatCode, "private static let editRetryBackoffMs" );
+		const std::string winBackoff = numbersAfterAssignment(
+			winChatCode, "const int kEditRetryBackoffMs" );
+		Check( !macAttempts.empty() && macAttempts == winAttempts,
+		       "edit-retry ATTEMPT BOUND matches across the two drivers (macOS \"" + macAttempts
+		       + "\" vs Windows \"" + winAttempts + "\")" );
+		Check( !macBackoff.empty() && macBackoff == winBackoff,
+		       "edit-retry BACKOFF TABLE matches across the two drivers (macOS \"" + macBackoff
+		       + "\" vs Windows \"" + winBackoff + "\")" );
 
 		// (4) The parked retry is answered when the turn is torn down.  Its
 		//     call was already popped from m_pendingToolCalls, so the drain
 		//     cannot see it -- cancelActiveTurn must, or the loop replays an
 		//     unanswered tool call forever.
+		//     (End-anchor is the NEXT SYMBOL, not a comment banner -- see the
+		//     note in (3).)
 		const std::string winCancelTurn = bodyBetween( winChat,
-			"void ChatPanel::cancelActiveTurn", "// ============================================================" );
+			"void ChatPanel::cancelActiveTurn", "void ChatPanel::refreshProposals()" );
 		const std::string winRequestStop = bodyBetween( winChat,
 			"void ChatPanel::requestStop()", "void ChatPanel::resetConversation()" );
 		Check( !winCancelTurn.empty()
@@ -1031,10 +1441,13 @@ int main()
 		// (5) Both drivers gate on the SAME verb set IsProposeSafeVerb
 		//     defines -- the only verbs whose results carry applied+retriable.
 		std::vector<std::string> macMissing, winMissing;
-		const std::string macVerbSet = bodyBetween( macChat,
-			"private static let retriableEditVerbs", "private static let editRetryMaxAttempts" );
-		const std::string winVerbSet = bodyBetween( winChat,
-			"bool isRetriableEditVerb(const std::string& name)", "int editRetryBackoffMs(" );
+		// Comments stripped INSIDE the extracted body only: the bodyBetween
+		// markers are code symbols, but the body itself is commented, and a
+		// quoted word in one of those comments would be counted as a verb.
+		const std::string macVerbSet = StripCommentsPreservingLayout( bodyBetween( macChat,
+			"private static let retriableEditVerbs", "private static let editRetryMaxAttempts" ) );
+		const std::string winVerbSet = StripCommentsPreservingLayout( bodyBetween( winChat,
+			"bool isRetriableEditVerb(const std::string& name)", "int editRetryBackoffMs(" ) );
 		for( const std::string& v : mutatingVerbs ) {
 			if( macVerbSet.find( "\"" + v + "\"" ) == std::string::npos ) macMissing.push_back( v );
 			if( winVerbSet.find( "\"" + v + "\"" ) == std::string::npos ) winMissing.push_back( v );
@@ -1059,30 +1472,74 @@ int main()
 		       "Windows edit-retry verb set is exactly IsProposeSafeVerb's set" );
 	}
 
-	// ---- read_viewport reason-code surface registry (fix round 18) -----
+	// ---- read_viewport reason-code surface registry (fix rounds 17, 20) --
 	// AgentSession.h's read_viewport authority block carries a hand-written
 	// "every surface that enumerates the reason codes" list, and used to
 	// carry hand-written counts of it ("EIGHT files, TEN places").  Both the
 	// list and the counts went stale -- the counts twice.  The counts are now
-	// deleted (a list is its own count) and the LIST is checked here, BOTH
+	// deleted (a list is its own count) and the LIST is checked here, THREE
 	// WAYS:
 	//   * every registered surface must still enumerate every reason value
-	//     (catches a surface falling behind when a reason is added), and
+	//     (catches a surface falling behind when a reason is added),
+	//   * every ENUMERATION PASSAGE inside a registered surface must be
+	//     complete, not just the file as a whole (round 20: scrubbing a
+	//     reason out of two of observe-modes.md's four registered passages
+	//     left the file-granular check GREEN, because the token survived
+	//     elsewhere in the same file -- and miscounting those very passages
+	//     is what started this family), and
 	//   * no unregistered file may enumerate them all (catches a NEW surface
 	//     being created without registration -- the failure the block exists
 	//     to prevent, and the half a human reviewer never catches).
 	// Ground truth is AgentSession.cpp's `outReason = "..."` assignments --
-	// the code that actually produces the wire values.  This test names no
-	// reason value of its own, so it cannot itself go stale.
+	// the code that actually produces the wire values, read with COMMENTS
+	// STRIPPED (round 20: a commented-out assignment used to be parsed as a
+	// live value, and every surface was then told to add a dead reason).
+	// This test names no reason value of its own, so it cannot itself go
+	// stale.
+	//
+	// SCAN SCOPE, stated exactly (round 20; round 17 scanned only
+	// {src,skills,docs,tests,build} and the authority block nonetheless
+	// claimed unregistered surfaces were caught "by construction" -- probe
+	// files at the repo root, under scenes/, and as docs/*.txt or *.json all
+	// enumerated every reason and left the suite green).  The walk now starts
+	// at the REPO ROOT and covers every file with a text extension in
+	// kTextExts, pruning only build outputs and vendored/binary trees
+	// (.git, extlib, bin, rendered, agent worktrees, _out, DerivedData,
+	// node_modules, and nested `build` dirs -- the top-level build/ tree,
+	// which holds the .swift/.mm GUI surfaces, is SCANNED).  Residual, and
+	// it is the honest one: a file with an extension outside kTextExts, or
+	// inside a pruned tree, is invisible.  Widen kTextExts rather than
+	// restate the claim if a new surface kind appears.
+	//
+	// The registry-path extractor uses THE SAME kTextExts and no root
+	// prefix list, so anything the scanner can FIND can also be REGISTERED
+	// (round 20: `build/...` surfaces were detected as unregistered but
+	// could not be registered -- the extractor's roots were
+	// {src,skills,docs,tests}, so the printed remedy prescribed an action
+	// that left the suite red with no hint why).
 	{
-		const fs::path repoRoot = testsDir.parent_path();
+		// ABSOLUTE, because the walk starts AT the repo root: testsDir is
+		// relative ("tests"), whose parent_path() is the empty path, and a
+		// recursive_directory_iterator over "" yields nothing -- which would
+		// make the unregistered-surface half silently vacuous.
+		const fs::path repoRoot = fs::weakly_canonical( fs::absolute( testsDir ) ).parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
 			return std::string( std::istreambuf_iterator<char>( in ),
 			                    std::istreambuf_iterator<char>() );
 		};
+		// ONE list, used by both the scanner and the registry-path extractor.
+		static const char* kTextExts[] = {
+			".cpp", ".h", ".hpp", ".c", ".mm", ".m", ".swift", ".cs", ".java", ".kt",
+			".md", ".txt", ".json", ".py", ".sh", ".ps1", ".yml", ".yaml", ".RISEscene",
+		};
+		auto isTextExt = []( const std::string& ext ) {
+			for( const char* e : kTextExts ) { if( ext == e ) { return true; } }
+			return false;
+		};
+
 		const fs::path definer = repoRoot / "src" / "Library" / "Agent" / "AgentSession.cpp";
-		const std::string definerSrc = slurp( definer );
+		const std::string definerSrc = StripCommentsPreservingLayout( slurp( definer ) );
 
 		std::vector<std::string> reasons;
 		{
@@ -1121,7 +1578,11 @@ int main()
 		};
 
 		// The registry: repo-relative paths inside the delimited block.
-		std::vector<std::string> registry;
+		// `readerFacing` drops the block's own TESTS group -- the block says
+		// in so many words that those "pin the wire values ...; they are not
+		// themselves an enumeration a reader acts on", and a test file walks
+		// the values one ARM at a time rather than restating the set.
+		std::vector<std::string> registry, readerFacing;
 		{
 			const std::string sessionH = slurp( repoRoot / "src" / "Library" / "Agent" / "AgentSession.h" );
 			const size_t b = sessionH.find( "[read_viewport-reason-surfaces]" );
@@ -1131,68 +1592,89 @@ int main()
 			       "[read_viewport-reason-surfaces] block (do not remove the markers -- "
 			       "they are what makes the surface list checkable)" );
 			if( b != std::string::npos && e != std::string::npos && b < e ) {
+				// NO ROOT PREFIX LIST (round 20).  Any path-shaped token whose
+				// extension is one the scanner can find is a registry entry, so
+				// the two halves cannot disagree about what is registerable.
+				// A repo-root file (AGENTS.md) qualifies; a bare filename
+				// mentioned in the surrounding prose does not.
 				const std::string block = sessionH.substr( b, e - b );
-				static const char* roots[] = { "src/", "skills/", "docs/", "tests/" };
-				for( const char* root : roots ) {
-					for( size_t p = block.find( root ); p != std::string::npos;
-					     p = block.find( root, p + 1 ) ) {
-						size_t q = p;
-						while( q < block.size()
-						       && ( isalnum( (unsigned char)block[q] ) || block[q] == '/'
-						            || block[q] == '.' || block[q] == '_' || block[q] == '-' ) ) { ++q; }
-						std::string path = block.substr( p, q - p );
-						while( !path.empty() && path.back() == '.' ) { path.pop_back(); }
-						const size_t dot = path.rfind( '.' );
-						if( dot == std::string::npos ) { continue; }
-						const std::string ext = path.substr( dot );
-						if( ext != ".cpp" && ext != ".h" && ext != ".md" ) { continue; }
-						registry.push_back( path );
+				const size_t testsHeading = block.find( "TESTS (" );
+				size_t p = 0;
+				while( p < block.size() ) {
+					if( !( isalnum( (unsigned char)block[p] ) || block[p] == '_'
+					       || block[p] == '.' || block[p] == '/' ) ) { ++p; continue; }
+					const size_t at = p;
+					size_t q = p;
+					while( q < block.size()
+					       && ( isalnum( (unsigned char)block[q] ) || block[q] == '/'
+					            || block[q] == '.' || block[q] == '_' || block[q] == '-' ) ) { ++q; }
+					std::string path = block.substr( p, q - p );
+					p = q;
+					while( !path.empty() && path.back() == '.' ) { path.pop_back(); }
+					const size_t dot = path.rfind( '.' );
+					if( dot == std::string::npos ) { continue; }
+					if( !isTextExt( path.substr( dot ) ) ) { continue; }
+					if( path.find( '/' ) == std::string::npos
+					    && !fs::exists( repoRoot / path ) ) { continue; }   // bare prose filename
+					registry.push_back( path );
+					if( testsHeading == std::string::npos || at < testsHeading ) {
+						readerFacing.push_back( path );
 					}
 				}
 				std::sort( registry.begin(), registry.end() );
 				registry.erase( std::unique( registry.begin(), registry.end() ), registry.end() );
+				std::sort( readerFacing.begin(), readerFacing.end() );
+				readerFacing.erase( std::unique( readerFacing.begin(), readerFacing.end() ),
+				                    readerFacing.end() );
 			}
 		}
-		Check( registry.size() >= 3,
-		       "reason-registry: extracted the registered surface paths (sanity: >=3; got "
-		       + std::to_string( registry.size() ) + ")" );
+		Check( registry.size() >= 3 && readerFacing.size() >= 3
+		       && readerFacing.size() < registry.size(),
+		       "reason-registry: extracted the registered surface paths (sanity: >=3, with the "
+		       "block's TESTS group split off; got " + std::to_string( registry.size() )
+		       + " total / " + std::to_string( readerFacing.size() ) + " reader-facing)" );
 
-		// Which tracked text files actually enumerate EVERY reason value?
-		// Scope: the source/doc/skill/test trees a reader-facing enumeration
-		// could plausibly live in.  Extensions are limited to the text kinds
-		// this family uses; widening them is safe but slower.
+		// Which files actually enumerate EVERY reason value?  Whole-repo walk
+		// (see SCAN SCOPE above) so a surface cannot dodge registration by
+		// living somewhere the round-17 root list happened not to name.
 		std::vector<std::string> enumerating;
+		size_t filesScanned = 0;
 		{
-			static const char* scanRoots[] = { "src", "skills", "docs", "tests", "build" };
-			for( const char* root : scanRoots ) {
-				const fs::path base = repoRoot / root;
-				if( !fs::exists( base ) ) { continue; }
-				std::error_code ec;
-				fs::recursive_directory_iterator it( base, ec ), end;
-				for( ; it != end; it.increment( ec ) ) {
-					if( ec ) { break; }
-					if( it->is_directory() ) {
-						const std::string d = it->path().filename().string();
-						if( d == ".git" || d == "_out" || d == "DerivedData"
-						    || d == "node_modules" || d == "build" ) { it.disable_recursion_pending(); }
-						continue;
-					}
-					if( !it->is_regular_file() ) { continue; }
-					const std::string ext = it->path().extension().string();
-					if( ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".mm"
-					    && ext != ".md" && ext != ".swift" ) { continue; }
-					const std::string body = slurp( it->path() );
-					bool all = true;
-					for( const std::string& r : reasons ) {
-						if( !containsToken( body, r ) ) { all = false; break; }
-					}
-					if( !all ) { continue; }
-					enumerating.push_back( fs::relative( it->path(), repoRoot ).generic_string() );
+			std::error_code ec;
+			fs::recursive_directory_iterator it( repoRoot, ec ), end;
+			for( ; it != end; it.increment( ec ) ) {
+				if( ec ) { break; }
+				if( it->is_directory() ) {
+					const std::string d = it->path().filename().string();
+					const std::string rel = fs::relative( it->path(), repoRoot ).generic_string();
+					// Build outputs, vendored sources, binaries, and the agent
+					// worktree pool -- none of which is a maintained surface.
+					// Note `build` is pruned only when NESTED: the top-level
+					// build/ tree holds the GUI's .swift/.mm surfaces.
+					if( d == ".git" || d == "_out" || d == "DerivedData" || d == "node_modules"
+					    || d == "worktrees" || rel == "extlib" || rel == "bin" || rel == "rendered"
+					    || ( d == "build" && rel != "build" ) ) { it.disable_recursion_pending(); }
+					continue;
 				}
+				if( !it->is_regular_file() ) { continue; }
+				if( !isTextExt( it->path().extension().string() ) ) { continue; }
+				++filesScanned;
+				const std::string body = slurp( it->path() );
+				bool all = true;
+				for( const std::string& r : reasons ) {
+					if( !containsToken( body, r ) ) { all = false; break; }
+				}
+				if( !all ) { continue; }
+				enumerating.push_back( fs::relative( it->path(), repoRoot ).generic_string() );
 			}
 			std::sort( enumerating.begin(), enumerating.end() );
 		}
 		Check( !enumerating.empty(), "reason-registry: found the enumerating surfaces to check" );
+		// A collapsed walk (a bad prune, a moved repo root) would silently
+		// make the unregistered-surface half vacuous.
+		Check( filesScanned > 1000,
+		       "reason-registry: the repo-wide scan is LIVE (text files scanned: "
+		       + std::to_string( filesScanned ) + ")" );
 
 		// (i) every registered surface still enumerates every reason.
 		std::vector<std::string> missing;
@@ -1222,6 +1704,183 @@ int main()
 		}
 		Check( missing.empty(),
 		       "every registered read_viewport reason surface enumerates all reason values" );
+
+		// (i-b) PASSAGE granularity, not just file granularity (round 20).
+		// A registered file typically restates the set in SEVERAL passages
+		// (observe-modes.md registers four); the file-level check above is
+		// satisfied by any ONE of them, so a reason scrubbed from the other
+		// three stayed green.
+		//
+		// A "passage" is a BLANK-LINE-DELIMITED block -- the natural unit in
+		// both of the shapes these surfaces use: a markdown table or paragraph,
+		// and a run of `//!` doc lines (which never contains a truly blank
+		// source line, so one doc block is one passage).  Proximity clustering
+		// was tried first and is NOT sufficient: observe-modes.md's
+		// "Hard warnings" table and the prose paragraph under it sit ~600
+		// characters apart, so any workable character window merged the two
+		// registered passages into one and re-hid exactly the defect this
+		// check exists for.
+		//
+		// A block counts as an ENUMERATION (rather than an incidental mention
+		// or a deliberate subset) only when it already names ALL BUT ONE of the
+		// values -- deliberately conservative, because several surfaces
+		// legitimately name the four same-gate reasons as a subset.  Such a
+		// block must then be COMPLETE.
+		{
+			auto ident = []( char ch ) { return isalnum( (unsigned char)ch ) || ch == '_'; };
+			std::vector<std::string> partial;
+			for( const std::string& r : readerFacing ) {
+				if( !fs::exists( repoRoot / r ) ) { continue; }
+				const std::string body = slurp( repoRoot / r );
+				// Per-offset block index: bumped by every blank (or whitespace-
+				// only) line.
+				std::vector<size_t> blockAt( body.size() + 1, 0 );
+				{
+					size_t blk = 0, pos = 0;
+					while( pos <= body.size() ) {
+						const size_t nl = body.find( '\n', pos );
+						const size_t stop = ( nl == std::string::npos ) ? body.size() : nl;
+						bool blank = true;
+						for( size_t k = pos; k < stop; ++k ) {
+							if( !isspace( (unsigned char)body[k] ) ) { blank = false; break; }
+						}
+						if( blank ) { ++blk; }
+						for( size_t k = pos; k <= stop && k < blockAt.size(); ++k ) { blockAt[k] = blk; }
+						if( nl == std::string::npos ) { break; }
+						pos = nl + 1;
+					}
+				}
+				std::vector<std::pair<size_t,size_t>> hits;   // (offset, reason index)
+				for( size_t k = 0; k < reasons.size(); ++k ) {
+					const std::string& tok = reasons[k];
+					for( size_t p = body.find( tok ); p != std::string::npos; p = body.find( tok, p + 1 ) ) {
+						const char before = ( p == 0 ) ? ' ' : body[p - 1];
+						const size_t after = p + tok.size();
+						const char nxt = ( after >= body.size() ) ? ' ' : body[after];
+						if( !ident( before ) && !ident( nxt ) ) { hits.push_back( std::make_pair( p, k ) ); }
+					}
+				}
+				std::sort( hits.begin(), hits.end() );
+				size_t i = 0;
+				while( i < hits.size() ) {
+					size_t j = i;
+					while( j + 1 < hits.size()
+					       && blockAt[hits[j + 1].first] == blockAt[hits[i].first] ) { ++j; }
+					std::vector<bool> seen( reasons.size(), false );
+					for( size_t k = i; k <= j; ++k ) { seen[hits[k].second] = true; }
+					size_t distinct = 0;
+					for( bool s : seen ) { if( s ) { ++distinct; } }
+					if( distinct + 1 == reasons.size() ) {
+						std::string absent;
+						for( size_t k = 0; k < reasons.size(); ++k ) {
+							if( !seen[k] ) { absent = reasons[k]; }
+						}
+						const size_t line =
+							1 + (size_t)std::count( body.begin(), body.begin() + (long)hits[i].first, '\n' );
+						partial.push_back( r + ":" + std::to_string( line )
+						                   + " (this passage names " + std::to_string( distinct )
+						                   + " of " + std::to_string( reasons.size() )
+						                   + " reasons; missing: " + absent + ")" );
+					}
+					i = j + 1;
+				}
+			}
+			for( const std::string& p : partial ) {
+				std::cout << "  READ_VIEWPORT REASON PASSAGE INCOMPLETE: " << p << std::endl;
+			}
+			if( !partial.empty() ) {
+				std::cout << "  A registered surface restates the reason set in more than one "
+				          << "passage, and EVERY passage that is enumerating the set has to be "
+				          << "complete -- a model reads whichever one it lands on.  Add the "
+				          << "missing value at that line, or, if that passage is deliberately a "
+				          << "SUBSET, say so by naming fewer of them (a passage naming all but "
+				          << "one reads as an incomplete enumeration, not as a subset)."
+				          << std::endl;
+			}
+			Check( partial.empty(),
+			       "every enumeration PASSAGE inside a registered read_viewport reason surface is "
+			       "complete (not just the file as a whole)" );
+		}
+
+		// (i-c) A stated COUNT of the reason set must equal it (round 20).
+		// Five reader-facing surfaces still restate "SEVEN reasons" in prose;
+		// the registry above deliberately carries no count, but these do, and
+		// an unguarded count in this family has gone stale in four separate
+		// rounds.
+		//
+		// The blanket rule -- "any number before the word reason(s)" -- was
+		// TRIED and REJECTED here: these same files legitimately count
+		// SUBSETS, e.g. observe-modes.md's "the two no-viewport reasons
+		// (no_controller, no_frame_yet)", "the ONE reason where a render call
+		// does not hit that same gate", "the OTHER FOUR refusal reasons", and
+		// 50-agentic-surface.md's unrelated "for two reasons (D42)".  A guard
+		// that fires on those would be the round-17 defect again, in a new
+		// place.  So only TOTALITY phrasings are checked -- and the corollary,
+		// which is the maintenance rule: state a whole-set count in one of
+		// these forms, or it buys no coverage.
+		{
+			static const char* kNumWords[] = { "zero","one","two","three","four","five",
+			                                   "six","seven","eight","nine","ten" };
+			auto lowerOf = []( std::string s ) {
+				for( char& ch : s ) { ch = (char)tolower( (unsigned char)ch ); }
+				return s;
+			};
+			std::vector<std::string> countProblems;
+			for( const std::string& r : readerFacing ) {
+				if( !fs::exists( repoRoot / r ) ) { continue; }
+				const std::string body = slurp( repoRoot / r );
+				const std::string lb = lowerOf( body );
+				for( long w = 0; w <= 10; ++w ) {
+					const std::string num = kNumWords[w];
+					const std::string digit = std::to_string( w );
+					for( int form = 0; form < 2; ++form ) {
+						const std::string tok = ( form == 0 ) ? num : digit;
+						for( size_t p = lb.find( tok ); p != std::string::npos; p = lb.find( tok, p + 1 ) ) {
+							const char before = ( p == 0 ) ? ' ' : lb[p - 1];
+							const size_t after = p + tok.size();
+							if( isalnum( (unsigned char)before ) || before == '_' ) { continue; }
+							if( after < lb.size() && ( isalnum( (unsigned char)lb[after] ) ) ) { continue; }
+							// Which totality phrasing, if any, is this?
+							const std::string tail = lb.substr( after, 24 );
+							const size_t backFrom = ( p >= 16 ) ? p - 16 : 0;
+							const std::string head = lb.substr( backFrom, p - backFrom );
+							const bool hyphenCompound = tail.compare( 0, 7, "-reason" ) == 0;
+							const bool thereAre =
+								( head.find( "there are " ) != std::string::npos
+								  || head.find( "there were " ) != std::string::npos )
+								&& ( tail.compare( 0, 7, " reason" ) == 0 );
+							const bool oneOf = head.find( "one of " ) != std::string::npos
+							                   && tail.compare( 0, 7, " reason" ) == 0;
+							bool totalWord = false;
+							if( tail.compare( 0, 8, " reasons" ) == 0 ) {
+								const std::string rest = tail.substr( 8, 12 );
+								totalWord = rest.compare( 0, 6, " total" ) == 0
+								            || rest.compare( 0, 9, " in total" ) == 0;
+							}
+							if( !hyphenCompound && !thereAre && !oneOf && !totalWord ) { continue; }
+							if( (size_t)w == reasons.size() ) { continue; }
+							const size_t line =
+								1 + (size_t)std::count( body.begin(), body.begin() + (long)p, '\n' );
+							countProblems.push_back(
+								r + ":" + std::to_string( line ) + ": states \"" + tok
+								+ "\" reasons, but AgentSession.cpp emits "
+								+ std::to_string( reasons.size() ) );
+						}
+					}
+				}
+			}
+			for( const std::string& c : countProblems ) {
+				std::cout << "  READ_VIEWPORT REASON COUNT STALE: " << c << std::endl;
+			}
+			if( !countProblems.empty() ) {
+				std::cout << "  Prefer DELETING the count -- the enumeration next to it is its "
+				          << "own count, and every restated one in this family has gone stale."
+				          << std::endl;
+			}
+			Check( countProblems.empty(),
+			       "no reader-facing surface states a whole-set reason COUNT that disagrees with "
+			       "AgentSession.cpp" );
+		}
 
 		// (ii) nothing else enumerates them without being registered.
 		std::vector<std::string> unregistered;

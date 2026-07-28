@@ -142,7 +142,8 @@ public slots:
     // sites even though onStateChanged's setSceneEditable(false) also
     // disables this panel, since that disable only lands on the NEXT
     // event-loop turn, which is too late for a turn already suspended in
-    // an HTTP await or a render_wait poll.
+    // an HTTP reply wait, a render_wait poll, or (FIX 2) a parked
+    // edit-tool-call retry backoff.
     void productionRenderStarting();
 
 signals:
@@ -314,13 +315,15 @@ private:
     // FIX 2 (edit-refusal retry): park a WHOLLY-UNAPPLIED retriable edit
     // refusal and re-issue it after a short backoff that RETURNS TO THE
     // EVENT LOOP, instead of spending an LLM round-trip per retry.  Full
-    // rationale, the anti-double-apply gate, and the attempt/backoff
+    // rationale, the anti-double-apply gate, the head-movement guard
+    // (`baselineHead`), and the attempt/backoff
     // budget live in ChatPanel.cpp's block comment above
     // editRefusalIsWhollyUnapplied.  macOS sibling:
     // ChatViewModel.retryWhollyRefusedEditToolCall.
     void scheduleEditToolCallRetry(const RISE::Agent::ChatToolCall& call,
                                    const std::string& line,
-                                   int attemptsSoFar);
+                                   int attemptsSoFar,
+                                   const QString& baselineHead);
     void deliverEditToolCallResult(const RISE::Agent::ChatToolCall& call,
                                    const std::string& responseLine,
                                    int attempts);
@@ -378,8 +381,10 @@ private:
     // line has returned: relabels it "-> name  <outcome>" via
     // AgentChatLoop::ToolOutcomeLineForDisplay, fills in the args+result
     // detail, and reveals the chevron.  QPointer-guarded (see the .cpp
-    // doc) so a transcript clear that races an in-flight async render
-    // tool call is a safe no-op rather than a dangling-pointer write.
+    // doc) so a transcript clear that races a tool call PARKED across an
+    // event-loop gap -- an in-flight async render, or (FIX 2) an edit
+    // call between retry attempts -- is a safe no-op rather than a
+    // dangling-pointer write.
     void updatePendingToolRow(const RISE::Agent::ChatToolCall& call,
                               const std::string& responseLine);
 
@@ -437,9 +442,11 @@ private:
     // QPointer, not raw pointers -- see updatePendingToolRow's header
     // doc for the lifetime story. At most one tool call is ever
     // in-flight at a time (processNextToolCall drains m_pendingToolCalls
-    // one at a time, synchronously except for the `render` verb's async
-    // submit/poll suspension), so a single set suffices -- no per-call
-    // container needed.
+    // one at a time, synchronously except for the TWO verbs that park
+    // back into the event loop: the `render` verb's async submit/poll
+    // suspension, and (FIX 2) a wholly-refused edit verb's retry
+    // backoff), so a single set suffices -- no per-call container
+    // needed.
     QPointer<QLabel>      m_pendingToolRowLabel;
     QPointer<QTextEdit>   m_pendingToolRowDetail;
     QPointer<QToolButton> m_pendingToolRowChevron;

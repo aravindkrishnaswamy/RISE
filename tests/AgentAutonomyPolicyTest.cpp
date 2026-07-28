@@ -7,16 +7,19 @@
 //
 //    (a) READ posture (in-process AgentRpcDispatcher constructed with
 //        AgentAutonomy::Read): the single-item mutating verbs
-//        (propose_patch, insert_chunk, remove_chunk) are refused with
+//        (propose_patch, insert_chunk, remove_chunk -- a SUBSET of the
+//        5 IsProposeSafeVerb names; the batch forms are covered by the
+//        tools/list annotation suite below) are refused with
 //        the EXACT
 //        {code:-32011, message, data:{verb,autonomy:"read"}} shape;
 //        RED-PROVE the document is byte-UNCHANGED after each refused
 //        attempt (a naive "check-then-mutate" implementation would still
 //        mutate before noticing the refusal -- this proves the choke
-//        point runs BEFORE dispatch, not as an after-the-fact undo).  All
-//        9 read/render verbs (read_document, read_schema, read_skill,
-//        validate, render, render_status, render_wait, render_cancel,
-//        read_image) still work -- spot-check render + read_image
+//        point runs BEFORE dispatch, not as an after-the-fact undo).  The
+//        read/render verbs exercised here (read_document, read_schema,
+//        read_skill, validate, render, render_status, render_wait,
+//        render_cancel, read_image -- a subset of IsReadSafeVerb, which is
+//        the membership list) still work -- spot-check render + read_image
 //        actually produce a real image (not just "no error").
 //
 //    (b) COMMIT posture: byte-IDENTICAL behavior to a no-param dispatcher
@@ -745,11 +748,13 @@ static void TestMcpLayer()
 	}
 
 	// Secure-MCP slice 5b fix round (P2-1) RED-PROVE: tools/list under
-	// Propose annotates the SAME 3 mutating tools with the DISTINCT
+	// Propose annotates the SAME mutating tools (IsProposeSafeVerb's set --
+	// the count is ASSERTED below as annotatedCount, not narrated here)
+	// with the DISTINCT
 	// staging note (kAutonomyProposeNote, "...STAGES a proposal..."), never
 	// the Read-only refusal note, and the staging note is ABSENT under
 	// Commit -- this is the coverage hole the P2-1 review finding named:
-	// under Propose, propose_patch/insert_chunk/remove_chunk's descriptions
+	// under Propose, those tools' descriptions
 	// used to be byte-identical to Commit's, giving an external MCP agent
 	// no textual clue that its edit only STAGES rather than commits.
 	{

@@ -67,11 +67,13 @@ persistent sidecar and transient AOV memory matters more than the added context.
 
 `objectmap` answers "which object is where"; the other four are
 structural DIAGNOSTIC modes that answer a narrower question still --
-not identity, but geometry.  All six share ONE call shape
-(`render {mode:"..."}`) and ONE cost profile (fixed 1 spp, single
-exact pass, `quality`/`samples` both honestly ignored -- noted in the
-result `message`).  `renderMode` in the result always echoes back the
-exact mode name that ran.
+not identity, but geometry.  Those five -- `objectmap` plus the four
+diagnostics -- share ONE call shape (`render {mode:"..."}`) and ONE cost
+profile (fixed 1 spp, single exact pass, `quality`/`samples` both
+honestly ignored -- noted in the result `message`).  `beauty`, the sixth
+row below, is the ordinary render and is NOT 1 spp: it honours
+`samples`/`quality` like any other `render` call.  `renderMode` in the
+result always echoes back the exact mode name that ran.
 
 | mode | Question it answers | Read it as | `legend`? |
 |---|---|---|---|
@@ -405,7 +407,9 @@ mention (viewport, objectmap/query).
    `editor_interaction_unrecoverable`, a `render` call passes through
    the SAME editor/admission gate that just refused read_viewport and
    is refused too (and on the permanent ones, an infinite loop if you
-   keep trying).
+   keep trying).  That leaves `render_in_progress`, the seventh and only
+   split case -- covered in the paragraph immediately below, and still
+   not a good fallback.
 
    `render_in_progress` is the ONE reason where a `render` call does
    not hit that same gate -- but it is still a POOR fallback, because

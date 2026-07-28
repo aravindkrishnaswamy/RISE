@@ -1027,7 +1027,7 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 };
 
 /// The chat composer's current autonomy level for its OWN tool calls (the
-/// LLM-issued `propose_patch`/`insert_chunk`/`remove_chunk`/etc. driven by
+/// LLM-issued mutating verbs and reads driven by
 /// `-agentHandleToolCall:`, NOT the administrative calls `-agentHandleLine:`
 /// makes on its own — see that method's note).  Defaults to
 /// `RISEAgentAutonomyApply` at bridge-attach time, matching every
@@ -1044,9 +1044,10 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// This is the entry point the chat driver's OWN tool-call execution uses
 /// (ChatViewModel's `driveTurn`, for every non-`render` tool call) — the
 /// verb-by-verb behaviour per level:
-///   * Read    -> the 10-verb read-safe allowlist (IsReadSafeVerb in
-///                AgentRpc.cpp) dispatches; `propose_patch`/`insert_chunk`/
-///                `remove_chunk` (and any other verb) are REFUSED
+///   * Read    -> the read-safe allowlist (IsReadSafeVerb in AgentRpc.cpp,
+///                which IS the membership list — no count or copy of it
+///                here) dispatches; the 5 mutating verbs and any other verb
+///                are REFUSED
 ///                (kAutonomyRefused, -32011) — this is Owner authority
 ///                under Read autonomy, so even the refusal path never
 ///                reaches ProposePatch/InsertChunk/RemoveChunk.
@@ -1054,8 +1055,8 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 ///                level runs over a SEPARATE, External-authority
 ///                AgentSession sharing the SAME live SceneEditController
 ///                `-agentHandleLine:`'s administrative session is
-///                attached to — so
-///                `propose_patch`/`insert_chunk`/`remove_chunk` STAGE a
+///                attached to — so the 5 mutating verbs (IsProposeSafeVerb)
+///                STAGE a
 ///                real proposal onto that controller's ONE queue (the
 ///                exact queue the existing proposals panel already reads
 ///                via `-agentHandleLine:`'s `list_proposals`/

@@ -678,8 +678,8 @@ public:
     };
 
     /// The chat composer's current autonomy level for its OWN tool
-    /// calls (the LLM-issued propose_patch/insert_chunk/remove_chunk/
-    /// etc. driven by `agentHandleToolCall()`, NOT the administrative
+    /// calls (the LLM-issued mutating verbs and reads driven by
+    /// `agentHandleToolCall()`, NOT the administrative
     /// calls `agentHandleLine()` makes on its own — see that method's
     /// note).  Defaults to Apply at construction time, matching every
     /// pre-existing call site's behaviour byte-for-byte until the Qt
@@ -696,8 +696,10 @@ public:
     /// the response line.  This is the entry point ChatPanel's OWN
     /// tool-call execution uses (processNextToolCall, for every
     /// non-"render" tool call) — the verb-by-verb behaviour per level:
-    ///   * Read    -> the read-safe allowlist dispatches;
-    ///                propose_patch/insert_chunk/remove_chunk (and any
+    ///   * Read    -> the read-safe allowlist dispatches (IsReadSafeVerb
+    ///                in AgentRpc.cpp IS the membership list -- no copy
+    ///                or count of it here);
+    ///                the 5 mutating verbs (and any
     ///                other verb) are REFUSED (kAutonomyRefused,
     ///                -32011) — this is Owner authority under Read
     ///                autonomy, so even the refusal path never reaches
@@ -707,8 +709,8 @@ public:
     ///                authority AgentSession sharing the SAME live
     ///                SceneEditController `agentHandleLine()`'s
     ///                administrative session is attached to — so
-    ///                propose_patch/
-    ///                insert_chunk/remove_chunk STAGE a real proposal
+    ///                the 5 mutating verbs
+    ///                (IsProposeSafeVerb) STAGE a real proposal
     ///                onto that controller's ONE queue (the exact queue
     ///                the existing proposals panel already reads via
     ///                `agentHandleLine()`'s list_proposals/

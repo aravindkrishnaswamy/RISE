@@ -29,6 +29,19 @@
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
 //      validate     {text}               -> {diagnostics:[{severity,code,message,offset,length}]}
+//    DRIVER-INJECTED KEY, on the five mutating verbs below ONLY.  The two GUI
+//    chat drivers (build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
+//    stampDriverRetry and build/VS2022/RISE-GUI/ChatPanel.cpp's, "FIX 2") may
+//    ADD one key the dispatcher never emits:
+//        "guiDriverRetry": {attempts:number, note:string}
+//    It appears iff that driver re-issued a WHOLLY-UNAPPLIED retriable refusal
+//    (attempts > 1); it is namespaced and self-attributed for exactly this
+//    reason, and the model IS meant to see it (a model that learns the driver
+//    already spent five attempts should stop re-issuing the call itself).
+//    Every OTHER field on such a result is the engine's own last-attempt
+//    result, field-for-field.  No non-GUI transport (MCP adapter, loopback
+//    HTTP, headless chat loop) ever produces it.
+//
 //      propose_patch{target,kind?,param,value,baseHeadVersion?:{uuid,revision}}
 //                                        -> {applied,rawCode,status,retriable,headVersion:{uuid,revision},message}
 //                                           (retriable=true marks the ONE transient

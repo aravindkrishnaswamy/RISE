@@ -741,7 +741,10 @@ static void TestAnthropicRequestShape()
 	Check( req.timeoutSeconds == 300,
 	       "Anthropic (hosted) request carries the unchanged 300s transport timeout budget" );
 
-	// Body shape: model / max_tokens / system / all ten tools / the user turn.
+	// Body shape: model / max_tokens / system / the whole kToolDefs table /
+	// the user turn.  (No count restated here -- AgentSkillsTest's S4 asserts
+	// the size for every provider; a second, narrated copy of it is exactly
+	// the drift surface round 20 swept out of this family.)
 	JsonValue root = ParseBody( req.body );
 	Check( root.isObject(), "body parses as JSON" );
 	Check( root.get( "model" ).asString() == "claude-sonnet-5", "body carries the model id" );

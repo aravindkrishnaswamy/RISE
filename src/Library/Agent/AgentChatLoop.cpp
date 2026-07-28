@@ -26,7 +26,10 @@ namespace RISE
 		namespace
 		{
 			//! The static co-editing system prompt (rule 7): the user and
-			//! the agent co-edit ONE live scene through the eleven verbs.
+			//! the agent co-edit ONE live scene through the tools
+			//! AgentChatCodecs.cpp's kToolDefs declares.  No count here --
+			//! this text is MODEL-FACING, and a stale count in it is a lie
+			//! told to the model on every single turn.
 			const char* const kSystemPrompt =
 				"You are a scene-editing agent embedded in the RISE renderer. You and "
 				"the user CO-EDIT one live scene: the user sees the same viewport and "

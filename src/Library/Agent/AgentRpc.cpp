@@ -78,7 +78,7 @@ namespace RISE
 			//! names, ENUMERATED IN THE FUNCTION BODY IMMEDIATELY BELOW
 			//! (deliberately NOT restated here: a prose copy of a list
 			//! three lines away is pure drift surface, and it drifted --
-			//! review rounds 13 and 18 both landed on a stale copy of it.
+			//! review rounds 13 and 17 both landed on a stale copy of it.
 			//! The remote restatements that DO earn their keep, in
 			//! AgentRpc.h where the reader cannot see this body, are
 			//! machine-checked against these two function bodies by
@@ -262,12 +262,16 @@ namespace RISE
 			}
 
 			//! Secure-MCP slice 6: the queue-full refusal error envelope for
-			//! propose_patch/insert_chunk/remove_chunk -- built when the
+			//! all 5 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk) -- built when the
 			//! wrapped AgentSession's result carries queueFull==true (see
 			//! AgentPatchResult::queueFull / AgentChunkResult::queueFull's
-			//! doc). A distinct top-level JSON-RPC error (kProposalQueueFull),
-			//! NOT the normal success-envelope result shape those three verbs
-			//! otherwise always return -- same posture as
+			//! doc).  The BATCH forms raise it too, from the per-element
+			//! result, so a queue that fills mid-batch is reported as
+			//! backpressure rather than as N rejections.  A distinct
+			//! top-level JSON-RPC error (kProposalQueueFull), NOT the normal
+			//! success-envelope result shape those verbs otherwise always
+			//! return -- same posture as
 			//! MakeAutonomyRefusedError above: a resource-backpressure
 			//! refusal must be tellable apart from a scene-state outcome
 			//! (status="rejected"/"conflict"), not folded into it, so a
@@ -305,7 +309,8 @@ namespace RISE
 			}
 
 			//! Model-B F5 slice S2: parse the OPTIONAL `baseHeadVersion` param
-			//! shared by propose_patch / insert_chunk / remove_chunk.  Returns
+			//! shared by all 5 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk).  Returns
 			//! 1 = present and valid (outBase filled), 0 = absent (or null --
 			//! unconditional edit), -1 = malformed (outErr carries the -32602
 			//! message).  The validation is the slice-1a contract verbatim:
@@ -448,10 +453,11 @@ namespace RISE
 			}
 
 			//! Serialize an AgentChunkIssue list as the wire `issues` array --
-			//! shared by ChunkResultJson (insert_chunk/remove_chunk) AND
-			//! propose_patch's own inline result construction below, so the
-			//! {param,value,reason,suggestions} shape can never drift between
-			//! the three verbs that can emit it.
+			//! shared by ChunkResultJson (insert_chunk/insert_chunks/
+			//! remove_chunk) AND the inline result construction of
+			//! propose_patch and propose_patches below, so the
+			//! {param,value,reason,suggestions} shape can never drift across
+			//! the 5 mutating verbs that can emit it.
 			JsonValue IssuesJson( const std::vector<AgentChunkIssue>& issues )
 			{
 				JsonValue arr = JsonValue::MakeArray();
