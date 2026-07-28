@@ -242,7 +242,7 @@ static void TestGoldenValuesAtLowWidthSeam()
 {
 	std::cout << "Golden values at the low width seam (pin taps, collapse order, weights)\n";
 	IRasterImage* img = MakeWidthRampImage();
-	const Scalar tol = 1e-4;	// hand-derived constants at 6 decimals
+	const Scalar tol = 1e-4;	// goldens truncated near 1e-9; margin to the nearest wrong answer is ~3e-2
 
 	const RISEColor rep = SampleBicubic( *img, eRasterWrap_Repeat, eRasterWrap_Repeat, 0.5, 0.02 );
 	Check( fabs( rep.base[0] - 0.15053511 ) < tol,

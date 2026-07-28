@@ -72,8 +72,12 @@ namespace RISE
 				// hit modulo-by-zero in the Repeat/MirroredRepeat
 				// boundary path below.  Return a default-initialised
 				// (zero) pel.  The Bilin and NNB GetPel paths carry the
-				// same guard (theirs protects against the clamp bounds
-				// going negative into the unchecked raster GetPEL).
+				// same guard for the same index hazard — a 0-dim image
+				// makes the clamp bound Scalar(-1), reaching the unchecked
+				// raster GetPEL as index -1 (Bilin, and this class's
+				// ClampToEdge branches) or as a huge unsigned (NNB, which
+				// casts).  This class is additionally exposed to
+				// modulo-by-zero in the Repeat/MirroredRepeat path below.
 				if( this->image_width <= 0 || this->image_height <= 0 ) {
 					p = C();
 					return;
@@ -130,8 +134,14 @@ namespace RISE
 						int q = ((p % twoN) + twoN) % twoN;	// [0, 2N)
 						return ( q < N ) ? q : ( twoN - 1 - q );
 					}
-					// ClampToEdge handled inline by the caller (saturates at the boundary texel)
-					return p;
+					// ClampToEdge is handled inline by the caller (saturates
+					// at the boundary texel), so this branch is reached only
+					// for an out-of-enum wrap value from the unvalidated
+					// public factory `char` params.  Clamp rather than pass
+					// the raw index through — Bilin and NNB are likewise
+					// total for any char value, and the raster GetPEL is
+					// unchecked.
+					return ( p < 0 ) ? 0 : ( ( p >= N ) ? N - 1 : p );
 				};
 				C pixels[4][4];
 				const int W = (int)this->image_width;
