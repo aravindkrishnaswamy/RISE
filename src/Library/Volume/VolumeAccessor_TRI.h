@@ -29,15 +29,20 @@ namespace RISE
 	public:
 		VolumeAccessor_TRI( ){};
 
-		Scalar GetValue( Scalar x, Scalar y, Scalar z )const 
+		Scalar GetValue( Scalar x, Scalar y, Scalar z )const
 		{
-			Scalar ulo, vlo, wlo;
-
 			// trilinear interpolation
-			// Extract the integer and decimal components of the value at the three axis
-			Scalar	ut = modf( x, &ulo );
-			Scalar	vt = modf( y, &vlo );
-			Scalar	wt = modf( z, &wlo );
+			// Extract the integer and decimal components at the three axis.
+			// floor-based (not modf) so fractions stay in [0,1] for negative
+			// coordinates too -- heterogeneous volumes address with centered,
+			// signed coordinates.
+			const Scalar ulo = floor( x );
+			const Scalar vlo = floor( y );
+			const Scalar wlo = floor( z );
+
+			Scalar	ut = x - ulo;
+			Scalar	vt = y - vlo;
+			Scalar	wt = z - wlo;
 
 			int	xlo = int(ulo);
 			int	xhi = xlo+1;
@@ -72,7 +77,8 @@ namespace RISE
 				+ lhB * (ut * omvt) 
 				+ hhB * (ut * vt));
 
-			return (front * wt + back * omwt);
+			// front is the zlo plane, back is the zhi plane
+			return (front * omwt + back * wt);
 		}
 
 		Scalar GetValue( int x, int y, int z )const 

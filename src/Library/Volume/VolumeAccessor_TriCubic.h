@@ -41,11 +41,17 @@ namespace RISE
 
 		Scalar GetValue( Scalar x, Scalar y, Scalar z )const 
 		{
-				// Extract the integer and decimal components of the x, y co-ordinates
-				double ulo, vlo, wlo;
-				const double ut = modf( x, &ulo );
-				const double vt = modf( y, &vlo );
-				const double wt = modf( z, &wlo );
+				// Extract the integer and decimal components of the co-ordinates.
+				// floor-based (not modf) so fractions stay in [0,1] for negative
+				// coordinates too -- heterogeneous volumes address with centered,
+				// signed coordinates.
+				const double ulo = floor( x );
+				const double vlo = floor( y );
+				const double wlo = floor( z );
+
+				const double ut = x - ulo;
+				const double vt = y - vlo;
+				const double wt = z - wlo;
 
 				int		xlo = int( ulo );
 				int		ylo = int( vlo );

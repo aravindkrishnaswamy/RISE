@@ -17,9 +17,11 @@
 
 #include "VolumeAccessorHelper.h"
 
+#include <math.h>
+
 namespace RISE
 {
-	class VolumeAccessor_NNB : 
+	class VolumeAccessor_NNB :
 		public virtual VolumeAccessorHelper
 	{
 	protected:
@@ -28,9 +30,13 @@ namespace RISE
 	public:
 		VolumeAccessor_NNB( ){};
 
-		Scalar GetValue( Scalar x, Scalar y, Scalar z ) const 
+		Scalar GetValue( Scalar x, Scalar y, Scalar z ) const
 		{
-			return pVolume->GetValue( int(x), int(y), int(z) );
+			// floor (not int-cast truncation) so negative coordinates map to
+			// the cell that contains them -- heterogeneous volumes address
+			// with centered, signed coordinates, and int(-0.5) would land in
+			// voxel 0 instead of voxel -1.
+			return pVolume->GetValue( int(floor(x)), int(floor(y)), int(floor(z)) );
 		}
 
 		Scalar GetValue( int x, int y, int z )const 
