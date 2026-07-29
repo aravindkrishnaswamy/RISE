@@ -86,6 +86,11 @@ namespace RISE
 			//! SetClayOverride's doc for the exact semantics.  Default false.
 			bool				mClayOverride;
 
+			//! Fire has no RGB/Pel transport until Phase-A step 7.  The pure
+			//! PathTracingPelRasterizer bypasses RayCaster::CastRay, so its
+			//! integrator entry needs the same one-shot diagnostic gate.
+			mutable std::atomic<bool>	mFirePelDiagnosticEmitted;
+
 			//! Shared clay reflectance state for `clay_lights`: a mid-grey
 			//! (~0.5 albedo) UniformColorPainter wrapped by a LambertianBRDF
 			//! and a LambertianSPF, all three built ONCE in the constructor
@@ -160,8 +165,8 @@ namespace RISE
 			static long long DestructionCount() { return sDestructionCount.load( std::memory_order_relaxed ); }
 
 			//! Configure the path-vertex loop cap (see mMaxPathDepth's doc).
-			//! DEPTH ACCOUNTING: the main loop is
-			//! `for (depth = startDepth; depth < mMaxPathDepth; depth++)`.
+			//! DEPTH ACCOUNTING: ordinary vertex processing runs while
+			//! `depth < mMaxPathDepth`.
 			//! `depth` is 0-based and counts LOOP ITERATIONS = VERTICES
 			//! PROCESSED, not "bounces past the camera hit": iteration
 			//! `depth == startDepth` (startDepth is 0 for every camera-ray
@@ -177,6 +182,12 @@ namespace RISE
 			//!              the end of that iteration (harmless wasted RNG/BSDF
 			//!              work) but the loop exits before it is ever traced --
 			//!              genuinely "direct lighting only, zero bounces".
+			//!              The spectral fire estimator may still march that
+			//!              sampled outgoing SEGMENT once to score additive
+			//!              source or a thermal collision, then stops before
+			//!              processing its surface/environment endpoint.  This
+			//!              is source-before-path-depth ordering, not another
+			//!              path vertex.  Pel retains the historical loop gate.
 			//!              This is the mapping the "direct" BeautyVariant mode
 			//!              (variantMaxBounces=1) relies on.
 			//!   n == 2  -> camera hit + exactly one indirect bounce.

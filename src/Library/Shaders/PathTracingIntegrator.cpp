@@ -164,10 +164,134 @@ namespace
 		Scalar	t;
 		bool	scattered;
 		Scalar	combinedPdf;			///< MIS-combined PDF (0 unless useExplicitThroughput)
+		Scalar	logCombinedPdf;		///< Log of the same density; avoids flooring/extinction-tail underflow for fire emission.
 		bool	useExplicitThroughput;	///< true => medWeight = Tr * sigma_s / combinedPdf
 		bool	zeroContrib;			///< true => equiangular landed at zero-density; no surface fallthrough
 		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5, so its true mixture probability is 0.5*pSurvival), 1.0 in the pure-DT / analog / no-positional-light regime. Consumed at the no-scatter survival sites as Tr / (noScatterPdfScale * pSurvival).
 	};
+
+	static Scalar PTLogBalancedDistanceMixture(
+		const Scalar logPdfDt,
+		const Scalar pdfEq )
+	{
+		const Scalar logHalf = log( Scalar( 0.5 ) );
+		if( pdfEq <= 0.0 ) return logHalf + logPdfDt;
+		const Scalar logPdfEq = log( pdfEq );
+		const Scalar common = fmax( logPdfDt, logPdfEq );
+		return logHalf + common + log(
+			exp( logPdfDt - common ) + exp( logPdfEq - common ) );
+	}
+
+	static bool PTMediumSegmentInterval(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		Scalar& segmentStart,
+		Scalar& segmentEnd )
+	{
+		Point3 bbMin;
+		Point3 bbMax;
+		if( !medium.GetBoundingBox( bbMin, bbMax ) ) {
+			segmentStart = 0.0;
+			segmentEnd = maxDist;
+			return segmentEnd > segmentStart;
+		}
+
+		segmentStart = 0.0;
+		segmentEnd = maxDist;
+		for( unsigned int axis = 0; axis < 3; ++axis ) {
+			const Scalar origin = ray.origin[axis];
+			const Scalar direction = ray.Dir()[axis];
+			if( fabs( direction ) <= 1e-20 ) {
+				if( origin < bbMin[axis] || origin > bbMax[axis] ) return false;
+				continue;
+			}
+			const Scalar inverseDirection = 1.0 / direction;
+			Scalar t0 = (bbMin[axis] - origin) * inverseDirection;
+			Scalar t1 = (bbMax[axis] - origin) * inverseDirection;
+			if( t0 > t1 ) {
+				const Scalar temporary = t0;
+				t0 = t1;
+				t1 = temporary;
+			}
+			segmentStart = fmax( segmentStart, t0 );
+			segmentEnd = fmin( segmentEnd, t1 );
+			if( segmentStart >= segmentEnd ) return false;
+		}
+		return segmentEnd > segmentStart;
+	}
+
+	static Scalar PTFullSegmentAdditiveEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar segmentStart,
+		const Scalar segmentEnd,
+		const Scalar nm,
+		const Scalar uniformXi )
+	{
+		const Scalar segmentLength = segmentEnd - segmentStart;
+		if( segmentLength <= 0.0 ) return 0.0;
+		if( medium.IsHomogeneous() ) {
+			const MediumCoefficientsNM coeff = medium.GetCoefficientsNM( ray.origin, nm );
+			if( coeff.emission == 0.0 ) return 0.0;
+			if( coeff.sigma_t > 0.0 ) {
+				const Scalar transmittanceToStart = exp( -coeff.sigma_t * segmentStart );
+				return transmittanceToStart * coeff.emission *
+					( -expm1( -coeff.sigma_t * segmentLength ) ) / coeff.sigma_t;
+			}
+			return coeff.emission * segmentLength;
+		}
+
+		const Scalar t = segmentStart + uniformXi * segmentLength;
+		const MediumCoefficientsNM coeff = medium.GetCoefficientsNM(
+			ray.PointAtLength( t ), nm );
+		if( coeff.emission == 0.0 ) return 0.0;
+		const Scalar logTr = medium.EvalLogDistancePdfNM(
+			ray, t, false, t, nm );
+		return segmentLength * exp( logTr ) * coeff.emission;
+	}
+
+	static Scalar PTFullSegmentAdditiveEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar nm,
+		const RandomNumberGenerator& random )
+	{
+		Scalar segmentStart = 0.0;
+		Scalar segmentEnd = 0.0;
+		if( !PTMediumSegmentInterval(
+			medium, ray, maxDist, segmentStart, segmentEnd ) ) return 0.0;
+		const Scalar additiveXi = medium.IsHomogeneous()
+			? 0.0 : random.CanonicalRandom();
+		return PTFullSegmentAdditiveEmissionNM(
+			medium, ray, segmentStart, segmentEnd, nm, additiveXi );
+	}
+
+	static Scalar PTEventThermalEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar t,
+		const Scalar nm,
+		const MediumSampleOutcome& sample )
+	{
+		if( !medium.IsFireMedium() ) return 0.0;
+		const Point3 eventPoint = ray.PointAtLength( t );
+		const MediumCoefficientsNM coeff = medium.GetCoefficientsNM( eventPoint, nm );
+		if( coeff.sigma_t <= 0.0 ) return 0.0;
+		const Scalar epsilonThermal = medium.GetThermalEmissionNM( eventPoint, nm );
+		if( epsilonThermal == 0.0 ) return 0.0;
+		if( sample.useExplicitThroughput ) {
+			const Scalar logPdfDt = medium.EvalLogDistancePdfNM(
+				ray, t, true, maxDist, nm );
+			const Scalar logTrDet = logPdfDt - log( coeff.sigma_t );
+			return epsilonThermal * exp( logTrDet - sample.logCombinedPdf );
+		}
+		// Pure per-wavelength delta tracking has p=sigma_t*T.  Cancel
+		// analytically so optically thick tails never divide underflowed PDFs.
+		return epsilonThermal / coeff.sigma_t;
+	}
 
 	//
 	// Medium distance sampling runs on an IndependentSampler (pure i.i.d.)
@@ -190,6 +314,7 @@ namespace
 		out.t = 0;
 		out.scattered = false;
 		out.combinedPdf = 0;
+		out.logCombinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
 		out.noScatterPdfScale = 1.0;
@@ -374,6 +499,7 @@ namespace
 		out.t = 0;
 		out.scattered = false;
 		out.combinedPdf = 0;
+		out.logCombinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
 		out.noScatterPdfScale = 1.0;
@@ -475,6 +601,9 @@ namespace
 						eqTNear, eqTFar, out.t );
 				}
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+				out.logCombinedPdf = PTLogBalancedDistanceMixture(
+					pMedium->EvalLogDistancePdfNM(
+						ray, out.t, true, maxDist, nm ), pdf_eq );
 				out.useExplicitThroughput = true;
 			}
 			else
@@ -512,6 +641,9 @@ namespace
 							eqTNear, eqTFar, out.t );
 					}
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+					out.logCombinedPdf = PTLogBalancedDistanceMixture(
+						pMedium->EvalLogDistancePdfNM(
+							ray, out.t, true, maxDist, nm ), pdf_eq );
 					out.useExplicitThroughput = true;
 				}
 				else
@@ -980,6 +1112,19 @@ namespace
 	inline typename SpectralValueTraits<Tag>::value_type PTValueOne();
 	template<> inline RISEPel PTValueOne<PelTag>() { return RISEPel( 1, 1, 1 ); }
 	template<> inline Scalar  PTValueOne<NMTag>()  { return Scalar( 1 ); }
+
+	// Keep the Pel instantiation byte-for-byte on its pre-fire arithmetic;
+	// only NM has a source value to add in steps 4-6.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTCombineMediumSource(
+		const typename SpectralValueTraits<Tag>::value_type& source,
+		const typename SpectralValueTraits<Tag>::value_type& transport )
+	{
+		if constexpr ( SpectralValueTraits<Tag>::is_pel ) {
+			return transport;
+		}
+		return source + transport;
+	}
 
 	// Reduce a transmittance value to the scalar used in the legacy
 	// max-channel medium-throughput denominator.  Pel -> min channel
@@ -1468,6 +1613,7 @@ PathTracingIntegrator::PathTracingIntegrator(
   mMaxPathDepth( 128 ),
   mIndirectOnly( false ),
   mClayOverride( false ),
+  mFirePelDiagnosticEmitted( false ),
   pClayPainter( 0 ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
@@ -1596,7 +1742,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	RayIntersection ri( firstHit );
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
-	bool needsIntersection = false;
+	// Normal callers provide a real first surface hit.  A camera-ray volume
+	// scatter instead supplies its continuation ray in a deliberately un-hit
+	// record so this same loop performs intersection AND medium transport on
+	// that immediately-following segment.
+	bool needsIntersection = !ri.geometric.bHit;
 
 	// Firefly tracing: assigns a monotonically increasing per-pixel sample
 	// ID so the output log can be grouped by sample.  Only enabled when
@@ -1657,8 +1807,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// caller that never calls the setter.
 	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
-	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
+	for( unsigned int depth = startDepth; ; depth++ )
 	{
+		// A spectral continuation segment is transport, not a new continuation
+		// decision: even when the preceding vertex consumed the final path-depth
+		// slot, §7.1 requires its additive source and any finite thermal collision
+		// to be scored before the path-depth gate.  Permit exactly that one
+		// intersection/medium pass.  Pel retains its historical depth behavior,
+		// and a pre-computed surface hit never receives an extra vertex.
+		const bool pathDepthAllowsContinuation = depth < maxDepth;
+		const bool scoreCappedSpectralSegment =
+			!Traits::is_pel && needsIntersection && !pathDepthAllowsContinuation;
+		if( !pathDepthAllowsContinuation && !scoreCappedSpectralSegment ) {
+			break;
+		}
+
 		// Runaway-throughput guard.  PT can compound per-bounce BSDF
 		// kray amplification (Ward / multi-lobe-select divides by
 		// selection probability < 1) into exponential throughput
@@ -1705,6 +1868,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			if( pCurrentMedium )
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				if constexpr ( !Traits::is_pel ) {
+					const Scalar additiveEmission = PTFullSegmentAdditiveEmissionNM(
+						*pCurrentMedium, currentRay, maxDist, tag.nm, rc.random );
+					result = result + throughput * additiveEmission;
+				}
 				IndependentSampler mediumSampler( rc.random );
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
 					pCurrentMedium, currentRay, maxDist, pLS, mediumSampler, tag );
@@ -1720,10 +1888,29 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					break;
 				}
 
-				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
+				// Preserve the pre-fire Pel cap behavior exactly: an RGB event at
+				// the cap skips this block and follows its historical fallthrough.
+				// NM must enter so it can score thermal emission before applying
+				// the continuation-only cap.
+				const bool handleScatteredEvent = !Traits::is_pel ||
+					volumeBounces < stabilityConfig.maxVolumeBounce;
+				if( scattered && handleScatteredEvent )
 				{
-					// Volume scatter event
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
+					if constexpr ( !Traits::is_pel ) {
+						const Scalar thermalEmission = PTEventThermalEmissionNM(
+							*pCurrentMedium, currentRay, maxDist, t_m, tag.nm, mso );
+						result = result + throughput * thermalEmission;
+					}
+
+					// The collision exists, and therefore emits, independently of
+					// whether the volume-scatter continuation budget is exhausted.
+					if( !pathDepthAllowsContinuation ||
+						volumeBounces >= stabilityConfig.maxVolumeBounce ) {
+						break;
+					}
+
+					// Volume scatter event
 					const Vector3 wo = currentRay.Dir();
 					const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
 					const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, currentRay, t_m, tag );
@@ -1932,6 +2119,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						pCurrentMedium, currentRay, maxDist, tag );
 					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
 				}
+			}
+
+			// The one spectral transport-only iteration ends after its medium
+			// source/event work.  Do not admit environment, surface emission,
+			// scattering, or any other continuation beyond the configured depth.
+			if( !pathDepthAllowsContinuation ) {
+				break;
 			}
 
 			// Miss — environment / radiance map
@@ -3391,6 +3585,18 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	PixelAOV* pAOV
 	) const
 {
+	const LightSampler* preparedLights = caster.GetLightSampler();
+	const IMedium* globalMedium = scene.GetGlobalMedium();
+	if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+		( globalMedium && globalMedium->IsFireMedium() ) ) {
+		bool expected = false;
+		if( mFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEasyError(
+				"PathTracingIntegrator::IntegrateFromHit:: fire media require spectral rendering until the Phase-A Pel preview lands" );
+		}
+		return RISEPel( 0.0 );
+	}
+
 	return IntegrateFromHitTemplated<PelTag>(
 		rc, rast, firstHit, scene, caster, sampler, pRadianceMap,
 		startDepth, initialIorStack, bsdfPdf_, bsdfTimesCos_,
@@ -3480,6 +3686,20 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	using Traits = SpectralValueTraits<Tag>;
 	using Value = typename Traits::value_type;
 
+	if constexpr ( Traits::is_pel ) {
+		const LightSampler* preparedLights = caster.GetLightSampler();
+		const IMedium* globalMedium = scene.GetGlobalMedium();
+		if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+			( globalMedium && globalMedium->IsFireMedium() ) ) {
+			bool expected = false;
+			if( mFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
+				GlobalLog()->PrintEasyError(
+					"PathTracingIntegrator::IntegrateRay:: fire media require spectral rendering until the Phase-A Pel preview lands" );
+			}
+			return Traits::zero();
+		}
+	}
+
 	IORStack iorStack( 1.0 );
 	sampler.StartStream( 16 );
 
@@ -3549,11 +3769,16 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// (PBRT-v4 VolPathIntegrator: beta *= T_maj before the `if (!si)`
 	// infinite-light branch).  Stays 1 (no-op) in vacuum.
 	Value escapeTr = PTValueOne<Tag>();
+	Value mediumSource = Traits::zero();
 
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
+		if constexpr ( !Traits::is_pel ) {
+			mediumSource = mediumSource + PTFullSegmentAdditiveEmissionNM(
+				*pCurrentMedium, cameraRay, maxDist, tag.nm, rc.random );
+		}
 		IndependentSampler mediumSampler( rc.random );
 		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
 			pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler, tag );
@@ -3565,7 +3790,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// Equiangular strategy sampled a zero-density / out-of-bounds
 			// point.  Scatter-measure sample with zero weight — do not
 			// fall through to surface shading.
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		if( scattered )
@@ -3574,8 +3799,18 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// delegate continuation to IntegrateFromHit if we get a hit.
 			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
 			const Vector3 wo = cameraRay.Dir();
+			if constexpr ( !Traits::is_pel ) {
+				mediumSource = mediumSource + PTEventThermalEmissionNM(
+					*pCurrentMedium, cameraRay, maxDist, t_m, tag.nm, mso );
+				// The collision emits independently of the scatter-continuation
+				// budget.  Apply the camera-first cap only after that score.
+				if( stabilityConfig.maxVolumeBounce == 0 ) {
+					return mediumSource;
+				}
+			}
 			const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
 			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, t_m, tag );
+			Value result = mediumSource;
 
 			Value medWeight = Traits::zero();
 			if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
@@ -3593,10 +3828,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			}
 
 			if( PTPositiveMagnitude( medWeight ) <= 0 ) {
-				return Traits::zero();
+				return result;
 			}
-
-			Value result = Traits::zero();
 
 			// NEE at scatter point.  GUI render modes P2b `indirect` fix
 			// (review-p2b P2-e): this in-scattering NEE is on the PRIMARY
@@ -3660,40 +3893,50 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				volThroughput = medWeight * phaseVal / phasePdf;
 			}
 
-			// Intersect the scattered direction
 			const Ray scatteredRay( scatterPt, wi );
-			RayIntersection ri2( scatteredRay, rast );
-			scene.GetObjects()->IntersectRay( ri2, true, true, false );
+			if constexpr ( Traits::is_pel ) {
+				// Pel is outside steps 1-6: retain its pre-fire continuation
+				// arithmetic and direct intersection path byte-for-byte.
+				RayIntersection ri2( scatteredRay, rast );
+				scene.GetObjects()->IntersectRay( ri2, true, true, false );
 
-			if( !ri2.geometric.bHit ) {
-				// Environment for volume-scattered ray.  The scattered ray
-				// continues through the same medium and escapes — attenuate
-				// the env contribution by the transmittance along that
-				// escape segment (PBRT-v4 beta *= T_maj convention).
-				if( ( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) || pDirectResult )
-				 && !PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
-					const Value TrEsc = PTEvalTransmittance<Tag>(
-						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
-					const Value volumeEnv = volThroughput * TrEsc *
-						PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
-					if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
-						if( pDirectResult ) *pDirectResult = *pDirectResult + volumeEnv;
-					} else {
-						result = result + volumeEnv;
+				if( !ri2.geometric.bHit ) {
+					if( ( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) || pDirectResult )
+					 && !PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
+						const Value TrEsc = PTEvalTransmittance<Tag>(
+							pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
+						const Value volumeEnv = volThroughput * TrEsc *
+							PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
+						if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
+							if( pDirectResult ) *pDirectResult = *pDirectResult + volumeEnv;
+						} else {
+							result = result + volumeEnv;
+						}
 					}
+					return result;
 				}
-				return result;
+
+				Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
+					sampler, pRadianceMap, 1, iorStack, phasePdf,
+					Traits::zero(), true, 1.0,
+					IRayCaster::RAY_STATE::eRayDiffuse,
+					0, 0, 0, 0, 1, 0,
+					pAOV, tag );
+				return result + volThroughput * hitResult;
+			} else {
+				// Start the iterative NM loop from the continuation ray itself.
+				// Its un-hit record makes the first loop iteration sample this
+				// segment's medium before looking for a surface or environment.
+				RayIntersection continuation( scatteredRay, rast );
+				Value continuationResult = IntegrateFromHitForTag<Tag>(
+					rc, rast, continuation, scene, caster,
+					sampler, pRadianceMap, 1, iorStack, phasePdf,
+					Traits::zero(), true, 1.0,
+					IRayCaster::RAY_STATE::eRayDiffuse,
+					0, 0, 0, 0, 1, 0,
+					pAOV, tag );
+				return result + volThroughput * continuationResult;
 			}
-
-			// Continue from the volume-scattered hit
-			Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
-				sampler, pRadianceMap, 1, iorStack, phasePdf,
-				Traits::zero(), true, 1.0,
-				IRayCaster::RAY_STATE::eRayDiffuse,
-				0, 0, 0, 0, 1, 0,
-				pAOV, tag );
-
-			return result + volThroughput * hitResult;
 		}
 		else if( ri.geometric.bHit )
 		{
@@ -3734,7 +3977,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			if( pDirectResult ) {
 				*pDirectResult = *pDirectResult + survivalWeight * directAtHit;
 			}
-			return survivalWeight * hitResult;
+			return PTCombineMediumSource<Tag>( mediumSource, survivalWeight * hitResult );
 		}
 		else
 		{
@@ -3763,7 +4006,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// lighting and are kept.  This is the ONLY primary-miss env site;
 		// the in-loop gates were dead (never reached at depth 0).
 		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && !pDirectResult ) {
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		// Camera ray missed all geometry.  Honour the rasterizer's
@@ -3774,14 +4017,14 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// drives indirect bounces but primary rays return black,
 		// matching Cycles' default for that pattern.
 		if( !caster.IsRadianceMapVisibleAsBackground() ) {
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		// review-p2d P1-1: a directly-visible environment IS env illumination
 		// reaching the camera; under a light/luminary solo it must read black
 		// so that solo(light) + solo(env) == all holds pixel-for-pixel.
 		if( PTSoloSuppressEnvironment( caster ) ) {
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		// Environment map
@@ -3797,9 +4040,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		const Value primaryEnvironment = escapeTr * envResult;
 		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
 			if( pDirectResult ) *pDirectResult = *pDirectResult + primaryEnvironment;
-			return Traits::zero();
+			return mediumSource;
 		}
-		return primaryEnvironment;
+		return PTCombineMediumSource<Tag>( mediumSource, primaryEnvironment );
 	}
 
 	if constexpr ( Traits::is_pel ) {
@@ -3810,12 +4053,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			0, 0, 0, 0, 0, 0, false, false,
 			pAOV, pDirectResult, tag );
 	}
-	return IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
+	return PTCombineMediumSource<Tag>( mediumSource, IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
 		sampler, pRadianceMap, 0, iorStack,
 		0, Traits::zero(), true, 1.0,
 		IRayCaster::RAY_STATE::eRayView,
 		0, 0, 0, 0, 0, 0,
-		pAOV, tag );
+		pAOV, tag ) );
 }
 
 
@@ -3975,6 +4218,29 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		pAOV->valid = true;
 	}
 
+	const LightSampler* preparedLights = caster.GetLightSampler();
+	const IMedium* globalMedium = scene.GetGlobalMedium();
+	if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+		( globalMedium && globalMedium->IsFireMedium() ) )
+	{
+		// The legacy hero-driven medium proposal divides companion
+		// wavelengths by the wrong density for chromatic fire.  Disable HWSS
+		// for the whole requested path before any medium proposal or phase
+		// lookup; each wavelength follows the already-correct NM integrator.
+		for( unsigned int i = 0; i < SampledWavelengths::N; ++i ) {
+			if( !swl.terminated[i] ) {
+				hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
+					swl.lambda[i], scene, caster, sampler, pRadianceMap,
+					startDepth, initialIorStack, bsdfPdf, 0,
+					considerEmission, importance, rayType,
+					diffuseBounces, glossyBounces, transmissionBounces,
+					translucentBounces, volumeBounces, glossyFilterWidth,
+					false, false, i == 0 ? pAOV : 0 );
+			}
+		}
+		return;
+	}
+
 	// Check material at first hit to determine path strategy
 	const IBSDF* pBRDF = firstHit.pMaterial ? firstHit.pMaterial->GetBSDF() : 0;
 
@@ -4119,6 +4385,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			if( pCurrentMedium )
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				Scalar additiveStart = 0.0;
+				Scalar additiveEnd = 0.0;
+				if( PTMediumSegmentInterval(
+					*pCurrentMedium, currentRay, maxDist, additiveStart, additiveEnd ) ) {
+					const Scalar additiveXi = pCurrentMedium->IsHomogeneous()
+						? 0.0 : rc.random.CanonicalRandom();
+					for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+						if( !swl.terminated[w] ) {
+							hwssResult[w] += throughputComp[w] *
+								PTFullSegmentAdditiveEmissionNM(
+									*pCurrentMedium, currentRay, additiveStart,
+									additiveEnd, swl.lambda[w], additiveXi );
+						}
+					}
+				}
 				IndependentSampler mediumSampler( rc.random );
 				// Hero wavelength drives free-flight sampling; the MIS
 				// combinedPdf is in distance measure (wavelength-independent
@@ -4889,18 +5170,51 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	const IObject* pMediumObject = 0;
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 		iorStack, &scene, pMediumObject );
+	const LightSampler* preparedLights = caster.GetLightSampler();
+	if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+		( pCurrentMedium && pCurrentMedium->IsFireMedium() ) )
+	{
+		// Fire is chromatic and the legacy HWSS medium proposal is hero-driven;
+		// its companion division is biased.  Until Phase D replaces that
+		// proposal, an HWSS request is four independent, correct NM paths.
+		// Route before distance sampling or any legacy phase lookup.
+		for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+			if( !swl.terminated[w] ) {
+				result[w] = IntegrateRayNM( rc, rast, cameraRay, swl.lambda[w],
+					scene, caster, sampler, pRadianceMap, w == 0 ? pAOV : 0 );
+			}
+		}
+		return;
+	}
 
 	// Per-wavelength residual transmittance along an escape segment
 	// (see RGB IntegrateRay).  Stays 1 (no-op) in vacuum.
 	Scalar escapeTr[SampledWavelengths::N];
+	Scalar additiveSource[SampledWavelengths::N];
 	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 		escapeTr[w] = 1;
+		additiveSource[w] = 0;
 	}
 
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
+		Scalar additiveStart = 0.0;
+		Scalar additiveEnd = 0.0;
+		if( PTMediumSegmentInterval(
+			*pCurrentMedium, cameraRay, maxDist, additiveStart, additiveEnd ) ) {
+			const Scalar additiveXi = pCurrentMedium->IsHomogeneous()
+				? 0.0 : rc.random.CanonicalRandom();
+			for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+				if( !swl.terminated[w] ) {
+					additiveSource[w] = PTFullSegmentAdditiveEmissionNM(
+						*pCurrentMedium, cameraRay, additiveStart, additiveEnd,
+						swl.lambda[w], additiveXi );
+					result[w] += additiveSource[w];
+				}
+			}
+		}
 		IndependentSampler mediumSampler( rc.random );
 		// Hero wavelength drives free-flight sampling; MIS combinedPdf
 		// in distance measure (hero-driven delta tracking + wavelength-
@@ -4920,6 +5234,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			// Volume scatter: fall back to per-wavelength NM
 			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
 			const Vector3 wo = cameraRay.Dir();
+
+			// The independent full-segment additive score above survives a
+			// zero continuation budget.  Fire never reaches this legacy HWSS
+			// branch (it routes to independent NM paths before sampling).
+			if( stabilityConfig.maxVolumeBounce == 0 ) {
+				return;
+			}
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
@@ -4974,33 +5295,16 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 						Scalar volThroughput = medWeight * phaseVal / phasePdf;
 
 						const Ray scatteredRay( scatterPt, wi );
-						RayIntersection ri2( scatteredRay, rast );
-						scene.GetObjects()->IntersectRay( ri2, true, true, false );
-
-						if( !ri2.geometric.bHit )
-						{
-						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
-							!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() )
-							{
-								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
-									scatteredRay, RISE_INFINITY, swl.lambda[w] );
-								result[w] += volThroughput * TrEsc *
-									scene.GetGlobalRadianceMap()->GetRadianceNM(
-										scatteredRay, rast, swl.lambda[w] );
-							}
-						}
-						else
-						{
-							result[w] += volThroughput * IntegrateFromHitNM(
-								rc, rast, ri2, swl.lambda[w], scene, caster,
-								sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
-								true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
-								0, 0, 0, 0, 1, 0, false, false,
-								// HWSS geometry is hero-driven. Let only the hero
-								// continuation populate the shared, wavelength-independent
-								// Accurate guide so companion paths cannot race to define it.
-								w == 0 ? pAOV : 0 );
-						}
+						RayIntersection continuation( scatteredRay, rast );
+						result[w] += volThroughput * IntegrateFromHitNM(
+							rc, rast, continuation, swl.lambda[w], scene, caster,
+							sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
+							true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
+							0, 0, 0, 0, 1, 0, false, false,
+							// HWSS geometry is hero-driven. Let only the hero
+							// continuation populate the shared, wavelength-independent
+							// Accurate guide so companion paths cannot race to define it.
+							w == 0 ? pAOV : 0 );
 					}
 				}
 			}
@@ -5031,7 +5335,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				0, 0, 0, 0, 0, 0, result, pAOV );
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w];
+				result[w] = additiveSource[w] + result[w] *
+					( ( pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w] );
 			}
 			return;
 		}
@@ -5061,9 +5366,6 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		// background is a direct contribution -- return black under
 		// indirect-only (see the RGB IntegrateRayTemplated twin).
 		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
-			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] = 0;
-			}
 			return;
 		}
 
@@ -5071,9 +5373,6 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		// camera-visible background stays black; indirect bounces
 		// still pull from the global radiance map elsewhere.
 		if( !caster.IsRadianceMapVisibleAsBackground() ) {
-			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] = 0;
-			}
 			return;
 		}
 
@@ -5088,7 +5387,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				if( !swl.terminated[w] ) {
-					result[w] = escapeTr[w] *
+					result[w] += escapeTr[w] *
 						pRadianceMap->GetRadianceNM( cameraRay, rast, swl.lambda[w] );
 				}
 			}
@@ -5097,7 +5396,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				if( !swl.terminated[w] ) {
-					result[w] = escapeTr[w] *
+					result[w] += escapeTr[w] *
 						scene.GetGlobalRadianceMap()->GetRadianceNM(
 							cameraRay, rast, swl.lambda[w] );
 				}

@@ -160,6 +160,7 @@ namespace RISE
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
 			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
+			bool						bSceneHasObjectFireMedia;	///< True if any object has a fire interior medium (cached during Prepare)
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -434,6 +435,14 @@ namespace RISE
 			/// evaluation — when false, all shadow transmittance calls
 			/// are skipped.
 			bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
+
+			/// Fire disables hero-wavelength medium transport until Phase D.
+			/// Cached during Prepare so HWSS routing never scans objects per sample.
+			bool SceneHasFireMedia() const
+			{
+				const IMedium* global = pPreparedScene ? pPreparedScene->GetGlobalMedium() : 0;
+				return bSceneHasObjectFireMedia || ( global && global->IsFireMedium() );
+			}
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  When M>0, EvaluateDirectLighting draws

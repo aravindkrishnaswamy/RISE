@@ -996,9 +996,13 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		// Non-"none" non-empty resolves through IJob::GetMedium.
 		if( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) {
 			obj.ClearInteriorMedium();
+			BumpSceneLightGeneration();
 		} else if( mJob ) {
 			const IMedium* med = mJob->GetMedium( edit.propertyValue.c_str() );
-			if( med ) obj.AssignInteriorMedium( *med );
+			if( med ) {
+				obj.AssignInteriorMedium( *med );
+				BumpSceneLightGeneration();
+			}
 			else      ok = false;   // P1: forward medium removed
 		} else {
 			ok = false;
@@ -2494,9 +2498,13 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		case SceneEdit::SetObjectInteriorMedium:
 			if( edit.prevPropertyValue.size() <= 1 ) {
 				obj->ClearInteriorMedium();   // valid prior state: no medium was bound
+				BumpSceneLightGeneration();
 			} else if( mJob ) {
 				const IMedium* med = mJob->GetMedium( edit.prevPropertyValue.c_str() );
-				if( med ) obj->AssignInteriorMedium( *med );
+				if( med ) {
+					obj->AssignInteriorMedium( *med );
+					BumpSceneLightGeneration();
+				}
 				else      restored = false;   // P1: prior medium removed
 			} else {
 				restored = false;

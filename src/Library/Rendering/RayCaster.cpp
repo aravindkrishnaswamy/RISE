@@ -764,7 +764,8 @@ bool RayCaster::CastRay(
 	// Fire has no Pel transport until Phase-A step 7.  Diagnose before
 	// recursion/RR gates so every RGB entry route fails loudly.
 	const IMedium* entryMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
-	if( entryMedium && entryMedium->IsFireMedium() ) {
+	const bool sceneHasFire = pLightSampler && pLightSampler->SceneHasFireMedia();
+	if( sceneHasFire || ( entryMedium && entryMedium->IsFireMedium() ) ) {
 		bool expected = false;
 		if( bFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
 			GlobalLog()->PrintEasyError(

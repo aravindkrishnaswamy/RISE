@@ -516,6 +516,7 @@ LightSampler::LightSampler() :
   risCandidates( 0 ),
   lightSampleRRThreshold( 0 ),
   bSceneHasObjectMedia( false ),
+  bSceneHasObjectFireMedia( false ),
   pLightBVH( 0 ),
   bUseLightBVH( false ),
   pEnvSampler( 0 ),
@@ -765,16 +766,22 @@ void LightSampler::Prepare(
 	// have media and there's no global medium, shadow transmittance
 	// evaluation is skipped entirely.
 	bSceneHasObjectMedia = false;
+	bSceneHasObjectFireMedia = false;
 	{
 		struct MediaScan : public IEnumCallback<IObject>
 		{
 			bool found;
-			MediaScan() : found(false) {}
+			bool foundFire;
+			MediaScan() : found(false), foundFire(false) {}
 			bool operator()( const IObject& obj )
 			{
-				if( obj.GetInteriorMedium() ) {
+				const IMedium* medium = obj.GetInteriorMedium();
+				if( medium ) {
 					found = true;
-					return false;  // stop enumeration
+					if( medium->IsFireMedium() ) {
+						foundFire = true;
+						return false;  // both answers are now final
+					}
 				}
 				return true;  // continue
 			}
@@ -782,6 +789,7 @@ void LightSampler::Prepare(
 		MediaScan scan;
 		scene.GetObjects()->EnumerateObjects( scan );
 		bSceneHasObjectMedia = scan.found;
+		bSceneHasObjectFireMedia = scan.foundFire;
 	}
 
 	// Compute scene bounding sphere from visible objects' world AABBs.

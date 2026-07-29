@@ -6110,6 +6110,9 @@ bool Job::SetObjectInteriorMedium(
 
 	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( it->second ) );   // D35: RESOLVED medium (interior_medium)
 	pObj->AssignInteriorMedium( *(it->second) );
+	// LightSampler caches both object-medium presence and the Phase-A fire
+	// routing bit.  Reused casters rebuild those caches on the next attach.
+	BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -9856,8 +9859,9 @@ bool Job::RemoveObject(
 	// set changes -> bump so a reused caster rebuilds.
 	IObjectPriv* pRObj = pObjectManager->GetItem( name );
 	const bool wasEmissive = ( pRObj && pRObj->GetMaterial() && pRObj->GetMaterial()->GetEmitter() );
+	const bool hadInteriorMedium = pRObj && pRObj->GetInteriorMedium();
 	const bool ok = pObjectManager->RemoveItem( name );
-	if( ok && wasEmissive ) BumpSceneLightGen( pScene );
+	if( ok && ( wasEmissive || hadInteriorMedium ) ) BumpSceneLightGen( pScene );
 	return ok;
 }
 

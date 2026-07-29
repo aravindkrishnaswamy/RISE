@@ -2016,7 +2016,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		// Bump if EITHER the pre-edit OR the post-edit material emits: post-edit catches
 		// add/move/emission-change of an emitter; pre-edit catches an emissive->non-emissive
 		// material switch that REMOVES one (the post-edit material no longer emits).
-		if( s.wasEmissive || ( m && m->GetEmitter() ) ) emitter = true;
+		if( s.wasEmissive || ( m && m->GetEmitter() ) || s.clearMedium ) emitter = true;
 	}
 	for( const Pending& p : pending ) if( p.cat == ChunkCategory::Light ) emitter = true;
 	if( spatial ) pJob.InvalidateSpatialStructure();
