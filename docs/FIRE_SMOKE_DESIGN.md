@@ -1,11 +1,11 @@
 # Fire & Smoke — Physics Simulation and Rendering Design
 
-**Status:** DRAFT (revision 15 — after internal review rounds 1–4,
-**six external expert review rounds**, and four post-r11 implementation-review
+**Status:** DRAFT (revision 16 — after internal review rounds 1–4,
+**six external expert review rounds**, and five post-r11 implementation-review
 rounds; see §14). No fire *feature* code has
 landed; one Phase-A prerequisite has (the trilinear-accessor repair, commit
 `2fba2b48`, in master). Phase gating per §7.0.
-**Date:** 2026-07-28 (r6–r15; r1–r5 were 2026-07-27).
+**Date:** 2026-07-28 (r6–r16; r1–r5 were 2026-07-27).
 **Goal:** accurately simulate fire and smoke — both the dynamics and the visual
 radiometry — and use the effort to improve RISE in two distinct categories:
 
@@ -472,10 +472,11 @@ for frozen per-step τ_mix:
 
 > ΔY_F = L · (1 − e^{−Δt/τ_mix}),  L = min(Y_F, Y_O/s_st,eff),
 
-This expression chooses the reacted fuel mass
-δm_F = ρ_g,begin·ΔY_F; it is **not** applied by subtracting mass fractions in
+This expression chooses the candidate reacted fuel mass
+δm_F⁰ = ρ_g,begin·ΔY_F; §3.4's shared O₂ allocator produces the accepted
+δm_F=θδm_F⁰. It is **not** applied by subtracting mass fractions in
 place. Fuel, O₂, gas products, gross carbon, condensable vapor, gas total mass,
-and ℋ_s are updated as conservative mass/energy densities from that one δm_F,
+and ℋ_s are updated as conservative mass/energy densities from that accepted δm_F,
 then all Y_k are recomputed using the accepted new ρ_g. This is the same
 one-consumption bookkeeping used by the phase-transfer formulas. **Named
 rates, every consumer assigned** (external-review catch — when
@@ -505,8 +506,8 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
   physics*, not by the gate (the external review noted that a bare
   adjacency gate propagates at one cell per step, i.e. δx/Δt — so refining
   Δt would *accelerate* ignition, a non-convergent scheme):
-  Build one **memoryless same-stage graph** from the beginning-of-stage
-  conservative state. A vertex exists only where both reactants are present,
+  Build one **memoryless same-source-pass graph** from the post-transport,
+  pre-source conservative state. A vertex exists only where both reactants are present,
   T>T_pilot (**T_pilot≈600 K**, per-fuel), and the extinction trial below
   passes. Edges use the 6-neighbor face stencil. Seeds are eligible cells in
   the fixed pilot-source mask plus eligible cells with T>T_AIT (≈700–900 K for
@@ -619,15 +620,28 @@ the burnout bookkeeping. The corrected model:
   just-positive, and deliberately invalid coefficients so the
   `Y_O/s_st,eff` limiter can never become singular/negative and primary
   combustion can never be an endothermic step mislabeled as fire.
+  **Primary combustion and soot burnout share one O₂ allocator.** From the
+  same post-transport/pre-source state form the individually bounded candidate
+  extents δm_F⁰ (§3.3 exponential map) and Δc_ox⁰ (below). Let
+
+  > D_O=s_st,eff δm_F⁰+2.667Δc_ox⁰,
+  > θ=1 when D_O=0, otherwise min(1,q_O/D_O),
+  > δm_F=θδm_F⁰,  Δc_ox=θΔc_ox⁰.
+
+  All fuel/O₂/products, soot/condensable inventories, heat, exported reaction
+  rates, and radiative Q̇_tot use only these accepted extents. No priority rule
+  or independent double claim on q_O is permitted. A closed cell in which both
+  candidates individually request all available oxygen is a V4 gate.
   Soot advects, then
   **mixing-limited oxidation with a stated rate equation** consumes the
   *transported* Y_O (§3.3):
 
-  > Δc_ox = min( c_carbon , ρ_g·Y_O/2.667 ) · (1 − e^{−Δt/τ_mix}),
+  > Δc_ox⁰ = min( c_carbon , ρ_g·Y_O/2.667 ) · (1 − e^{−Δt/τ_mix}),
   > active only where T > T_ox (≈ 1300 K — soot oxidation effectively
   > freezes below it),
 
-  releasing Δh_soot·Δc_ox into ℋ_s (= q̇‴_sox, §3.3) and its CO₂ into the
+  with accepted Δc_ox=θΔc_ox⁰ from the shared allocator, releasing
+  Δh_soot·Δc_ox into ℋ_s (= q̇‴_sox, §3.3) and its CO₂ into the
   element-balanced products. **The element/W̄ closure spans the full state
   (Z, Y_F, Y_O, Y_cv, c_carbon, c_condensed)** — Y_cv and c_condensed
   carry fuel elements too (round 4) — with only the *gas-phase* species
@@ -716,8 +730,8 @@ the burnout bookkeeping. The corrected model:
     than retaining Y*. The accepted latent power is
     **q̇‴_lat = +L_cv δc/Δt for condensation and −L_cv δc/Δt for
     evaporation**; it feeds ℋ_s and the H used by S_div exactly once.
-    One split-first-order pass per stage evaluates saturation at the
-    beginning-of-stage T; halving Δt must halve the split error. The
+    The one local phase-source pass evaluates saturation at its input T;
+    halving Δt must halve the Lie-splitting error. The
     condensable inventory is conserved end to end and never appears from
     nothing at the dew point.
 
@@ -736,8 +750,17 @@ the burnout bookkeeping. The corrected model:
   construction, and no mass is ever double-counted because each
   constituent has exactly one optics model at each temperature (§4.3).
 
+  Carbon and condensed aerosol sensible thermochemistry has one separate
+  versioned `aerosol_thermochemistry` owner. For each condensed phase it pins
+  c_p,i(T), h_s,i(T), certified T domain, interpolation, provenance, and the
+  **same T_ref convention** as `gas_thermochemistry`; optical hot/cool φ does
+  not change carbon's thermodynamic phase or heat capacity. Predictive mode
+  rejects missing/out-of-domain records. This closes the ℋ_s/C_T/S_div input
+  at the allowed 1 % loading rather than leaving carbon c_p as an implementation
+  constant.
+
 Production, transport, oxidation, condensation/evaporation, radiation, and
-projection follow §3.7's immutable-stage-input schedule, so escaped-soot mass
+projection follow §3.7's exact transport-then-source schedule, so escaped-soot mass
 and every source dependency are reproducible.
 
 **Known, accepted bias:** production is co-located with the reaction sheet
@@ -791,10 +814,11 @@ e(x) (a dying fire's hot smoke keeps cooling; χ_r is meaningless without
 heat release). Degenerate post-fire case pinned: Σe=0 and Q̇_tot=0 gives
 q̇‴_rad≡0; it is not the burning-regime escape hatch prohibited above.
 **Discrete closure — a split-first-order scheme, named as such** (third
-external round: beginning-of-stage normalization is exact only *before*
+external round: input-state normalization is exact only *before*
 the semi-implicit temperature update, so the *accepted* sink deviates from
 the budget by a first-order-in-Δt splitting error): β and γ are computed
-**once per stage from beginning-of-stage state and frozen**; the per-cell
+**once in the radiation source substep from that substep's input state and
+frozen**; the per-cell
 semi-implicit integration runs against frozen β; the *accepted*
 post-integration sink is the single value consumed identically by the ℋ_s
 update, S_div, and diagnostics (the same one-rate discipline as q̇‴_step,
@@ -962,24 +986,32 @@ The most notorious practical trap in fire LES; specified accordingly:
   accounting for boundary fluxes, reaction heat, latent exchange, radiation,
   and resident chemical potential. It is not permission for scalar-advection
   drift.
-- **Time stepping and exact stage schedule:** two-stage Heun predictor/
-  corrector. Form U*=Uⁿ+ΔtR(Uⁿ), project and accept the predictor, then form
-  Uⁿ⁺¹=Uⁿ+(Δt/2)[R(Uⁿ)+R(U*)] and project the final corrector; thus
-  **projection is applied to every accepted stage output**. `EvaluateRHS(U_s,Δt)` treats U_s as immutable: (1) invert
-  ℋ_s→T and evaluate all molecular/SGS properties; (2) build scalar advection,
-  constituent diffusion/J_h, conduction, and momentum advection/stress/
-  buoyancy fluxes; (3) from that same U_s independently evaluate primary
-  reaction/soot formation and its ignition+CFT graph, oxidation of only the
-  soot already in U_s, condensation/evaporation from U_s's T/Y_cv, and frozen-
-  β/γ radiation from U_s; newly formed soot/vapor/heat feeds these other
-  closures only at the next RK stage, never by accidental call order; (4)
-  assemble all low/high fluxes and source increments, apply FCT once, and form
-  the provisional conservative state. For each predictor/corrector assembly,
-  invert its T/EOS, derive S_div from those exact accepted increments, solve
-  the variable-density projection, and reject on feasibility/EOS/projection
-  gates. The exponential reaction and
-  phase formulas supply their accepted ΔU/Δt as R(U_s); they are not applied a
-  second time outside RK2. Predictor and corrector use the identical schedule.
+- **Time stepping and exact operator schedule:** transport and finite-step
+  local sources are deliberately separated. First advance only conservative
+  advection, constituent diffusion/J_h, conduction, and momentum advection/
+  stress/buoyancy with a two-stage Heun predictor/corrector; FCT is applied to
+  each scalar assembly, and the predictor and corrector are each T/EOS-inverted
+  and projected using the exact accepted transport increments. Then apply
+  **one** first-order local source map over Δt—never reinterpret its finite-step
+  increments as RK derivatives:
+
+  1. From the post-transport state, build the ignition/CFT graph and the
+     unscaled exponential primary-reaction and pre-existing-soot oxidation
+     extents. Allocate their shared O₂ as one coupled step (§3.4), then update
+     all products, withheld inventories, accepted q̇‴_gas/q̇‴_sox, and ℋ_s
+     simultaneously; newly formed soot is not an oxidation candidate until the
+     next time step. Invert T/EOS.
+  2. Evaluate condensation/evaporation from that post-combustion T/Y_cv,
+     apply its finite-step map and latent increment once, then invert T/EOS.
+  3. Compute β/γ from that post-phase state, apply the semi-implicit radiation
+     map once, then invert T/EOS.
+  4. Derive the aggregate source part of S_div from exactly those accepted
+     mass/energy increments, project, and run feasibility/EOS/projection gates.
+
+  This Lie split is explicitly first-order in the noncommuting local sources;
+  the existing Δt-halving gates must show first-order source-split convergence.
+  An analytic homogeneous y′=−y/τ fixture at Δt/τ≫1 must produce ye^{−Δt/τ},
+  not the ½y stiff-limit left by putting an exponential map inside Heun.
   Step size: min of advective CFL, the
   buoyant-acceleration limit Δt ≲ √(2δx/g′₊) (g′₊ = max(g′, 0) per §3.3 —
   the signed form goes non-real over cold dense fuel; the limit is simply
@@ -1535,7 +1567,7 @@ Each phase lands independently and is subject to the standard
 definition-of-done loop
 ([skills/implementation-review-loop.md](skills/implementation-review-loop.md)).
 
-### 7.0 Phase gating (adopted from the review verdicts, r6–r15)
+### 7.0 Phase gating (adopted from the review verdicts, r6–r16)
 
 Mechanical multi-channel-grid scaffolding, the pinned Planck kernel, and
 the collision-estimator work may start any time. **Predictive radiometry
@@ -1547,11 +1579,11 @@ the g/m³→SI conversion gates **in both §8 and the §4.3 optics formulas**
 (round 5 caught a surviving 1000× line), the repaired trilinear accessor
 (**landed**, commit `2fba2b48`; §7.1 step 0 verifies the fire path uses
 it), the **constituent aerosol inventories with derived φ(T) optics, the
-φ-aware 7-point quadrature/panel-splitting rule, the exact per-collision
+φ-aware 7-point optical-depth quadrature/panel-splitting rule, the exact per-collision
 **`MakePhaseClosure(x,λ)` / Pel-band closure API** carrying local constituent
 weights and wavelength-bound g, **and the pinned φ-sup extinction-majorant bound**
 (§3.4/§4.3, §7.1 steps 1/4, §7.2.3), the chem spectral contract with the
-length-allocated Gauss–Kronrod budget controller and the effective-HRR η
+support-safe randomized line estimator and the effective-HRR η
 convention (§4.4, §7.1 step 3), **plus a frozen absolutely-calibrated per-fuel
 chem record and absolute chem-slab power gate whenever chem is enabled**. Until
 §12 Q1 closes for a declared fuel, `chem_model=none` is predictive **only**
@@ -1578,8 +1610,8 @@ independent pivot/endpoint draws (u_m vs Y), shared-guide-state ordering,
 p_march support/survival, distinct q_m^V versus equiangular a coefficients,
 physical-band-power/scene-unit weighting, the near-collinear equiangular
 repair, labeled medium selection — plus the §7.2.7
-configuration matrix. **Phase C sim and motion-sequence
-work** additionally require: the r8 P0 correction (transported Y_O +
+configuration matrix. **Phase C simulation and mandatory time-varying-sequence
+ingestion/preparation** additionally require: the r8 P0 correction (transported Y_O +
 withheld-stream primary coefficients — extended r9 to condensables),
 the **r11 phase-transfer/EOS/energy closure** (gas-density definition,
 total-mixture ρ_totZ, conservative phase-transfer masses, latent power,
@@ -1598,12 +1630,16 @@ including r13's conservative-density owner, constituent sensible-enthalpy
 diffusion, invariant-coordinate FCT reconstruction and nondegeneracy/order
 gates, plus the exhaustive gas-thermochemistry schema and admissible fuel
 record, and the versioned simulator gas-opacity record. Predictive simulation
-waits for §12 Q5–Q7's actual frozen records, not merely their schemas — and §8's
-fixed sequence epoch with nominal/shutter time separation,
-halo-serialization/blur-disable policy, the render-global blur rule (no
-volume NEE/equiangular, uncapped NM pure DT, Pel nominal-only, independently
-seeded cap-free ratio-tracked chem),
-timestamped probes, residency model, and trilinear rules.
+waits for §12 Q5–Q7's actual frozen records, not merely their schemas. Every
+Phase-C sequence must implement §8's fixed epoch, deterministic manifest,
+time-varying frame selection, immutable frame preparation/swap, timestamped
+probes, residency model, and trilinear rules even when motion blur is disabled.
+**Velocity-grid motion blur is an optional Phase-C subfeature, not a Phase-C
+entry requirement.** If enabled, it additionally requires §8's nominal/shutter
+separation, halo serialization and preflight, render-global NEE/equiangular
+disable, uncapped NM pure DT, Pel nominal-only behavior, independently seeded
+cap-free ratio-tracked chem, and every corresponding gate; an implementation
+may instead ship time-varying still/frame rendering with blur explicitly off.
 The §8 fidelity state machine, complete digested sequence manifest, and
 single pre-worker `PrepareMediaForRender` lifecycle hook are also Phase-C
 entry gates rather than integration details left to implementers.
@@ -1770,38 +1806,25 @@ entry gates rather than integration details left to implementers.
    pilots — f_v ≈ 0 means σ_t ≈ 0: **no collisions ever occur there**, so a
    collision-based estimator collects nothing and the §3.8 methanol gate
    would be unpassable). ε_chem is absorption-free (it adds emission
-   without adding extinction), so it is collected by **deterministic line
-   integration along every marched segment**:
+   without adding extinction), so it is collected by an **independent
+   randomized line estimator on every marched segment**:
    ∫ T_det(t)·ε_chem(t,λ) dt, at MIS weight 1 (see §7.2.3 for why NEE
-   never competes for it). **Quadrature honesty** (external-review
-   catches, both rounds): per-knot Gauss–Legendre is exact for the
-   *optical-depth* integrand but NOT for e^{−τ(t)}·ε_chem(t) — at
-   per-panel optical thickness 20 the 5-point rule is ~2.5 % low, at 50 it
-   is ~43 % low — **and optical-depth-driven subdivision alone is
-   insufficient** (a thin reaction sheet in a nearly transparent medium
-   has τ ≈ 0 but a sharply peaked integrand). The committed scheme:
-   composite quadrature whose panels traverse the **union of the
-   reaction-channel and extinction-channel knot lattices**, subdividing on
-   an embedded nested-pair error estimate with the **pinned per-panel
-   acceptance test** (third external round — "scaled to the contribution
-   floor" was implementation-divergent prose):
+   never competes for it). Panels traverse the union of reaction and
+   extinction knot lattices. For each initial panel p, form the conservative
+   reaction-support weight R_p=L_p·q̇‴_gas,max,p from the panel's certified
+   channel bound, and define q_rxn(t) by choosing p with R_p/ΣR and sampling
+   uniformly inside it. The actual proposal is
 
-   > |I_h − I_l| ≤ a_λ,panel + 10⁻³·|I_h|,
-   > a_λ,panel = 10⁻⁴ · Î_seg(λ) · (L_panel,initial / L_seg),
+   > q_chem(t)=½/L+½q_rxn(t),
+   > Ĉ_chem=T_det(t)ε_chem(t,λ)/q_chem(t),  t~q_chem,
 
-   where I_h/I_l are the **Gauss–Kronrod 7/15 embedded pair**'s panel
-   estimates and Î_seg(λ) is a pilot one-pass estimate of the whole
-   segment's chem integral (units: spectral radiance,
-   W·m⁻²·sr⁻¹·nm⁻¹). The absolute budget is allocated **by initial panel
-   length, fixed before any subdivision** (children split their parent's
-   allowance pro rata) — round 5: dividing by the *current* panel count
-   let early-accepted panels keep stale larger allowances, making total
-   accepted error traversal-order-dependent and unbounded relative to
-   the 10⁻⁴·Î_seg target; the length-allocated fixed budget makes the
-   summed accepted error ≤ a true global budget. This is **controlled bias within the
-   declared tolerance — not unbiasedness**; the randomized-quadrature
-   alternative (T·ε/q) is recorded as the fallback if the tolerance
-   proves contentious. Segment
+   with q_chem=1/L when ΣR=0. The uniform half guarantees support even if a
+   bound or lattice corner is loose; the same piecewise density is evaluated
+   at the sampled t. One sample per segment is the baseline; a fixed N>1
+   averages independent samples and changes variance only. T_det is the exact
+   deterministic optical-depth evaluation in static mode. Therefore
+   E[Ĉ_chem] is the required integral without treating an embedded quadrature
+   discrepancy as a rigorous error bound. Segment
    semantics, stated precisely because they are where implementations
    diverge: the integral runs over the **full segment**
    [0, min(surface hit, medium exit)] **regardless of the scatter
@@ -1811,17 +1834,18 @@ entry gates rather than integration details left to implementers.
    scatter distance undercounts. Likewise, **every early-out in the
    distance-sampling code (e.g. the equiangular zero-contribution return)
    must still score the segment's chem integral** — dropping it there
-   biases exactly the zero-soot showcase this step exists for. Collected
-   with controlled bias (the declared quadrature tolerance above) for
-   every path with a segment through the medium; no collisions required.
-   This deterministic Gauss–Kronrod construction is **blur-off only**. When
+   biases exactly the zero-soot showcase this step exists for. It is collected
+   for every path with a segment through the medium; no collisions required.
+   This reaction-importance construction is **blur-off only**. When
    velocity blur is active, §8 replaces it with the independent uniform-distance
    plus ratio-tracked-transmittance estimator; the two estimators are never
    combined on one segment. Estimator tests may use a clearly marked synthetic
    SPD, but predictive enablement requires the §7.0 per-fuel record and an
    optically thin uniform reaction slab whose integrated spectral power equals
-   η_chem times the pinned effective gas HRR over [λ_a,λ_b] within the stated
-   numerical tolerance.
+   η_chem times the pinned effective gas HRR over [λ_a,λ_b] within a stated
+   confidence interval. A thin reaction sheet aligned adversarially with a
+   high-optical-depth transition is compared against a high-accuracy reference;
+   the old correlated Gauss–Kronrod alias is a RED implementation.
 4. **Chromatic heterogeneous coefficients** (G4): real `GetCoefficientsNM`
    with λ-dependent σ_a/σ_s from §4.1/§4.3 — plus the exact §4.3
    **`MakePhaseClosure(x,λ)` / `MakePhaseClosurePel(x,band_preset)` API**, with
@@ -2066,7 +2090,7 @@ importance for every per-λ path; radiometric, not photometric, weighting
 curve). **ε_chem is excluded from Φ and from the NEE estimator entirely**:
 measured chemiluminescent power is roughly 10⁻⁴ of **chemical HRR** (§2.3),
 not of soot power (which can vanish in methanol). It is collected solely
-by the deterministic line integral of §7.1 step 3 at weight 1 — which is
+by the randomized line estimator of §7.1 step 3 at weight 1 — which is
 also what makes that line integral MIS-free (NEE never competes for the
 chem term, so there is no double count by construction). Exclusion affects
 variance, not expected energy: a nearby diffuse receiver in a chem-only case
@@ -2306,11 +2330,19 @@ carry indistinguishable metadata. Each sequence stores:
   (t₀,α,t_scene,0,Δt_frame,i₀), an ordered explicit frame-index/file list
   (paths are UTF-8 NFC and relative to the manifest directory), frame count,
   first/last indices, SHA-256 digest for every frame, `end_policy`, velocity-
-  halo width, and outside-halo policy. The wire format is deterministic CBOR
-  per RFC 8949, media type `application/vnd.rise.fire-sequence+cbor`,
-  `schema_version=1`; all floats are finite IEEE-754 binary64 (NaN/Inf
-  forbidden), and the sequence provenance ID is SHA-256 over the exact
-  deterministic-CBOR bytes. Unknown versions are rejected. The scene locates
+  halo width, and outside-halo policy. The wire format is the application
+  profile **RISE-CBOR64-v1**: RFC-8949 CBOR with definite lengths only,
+  shortest integer encoding, UTF-8 NFC text, maps sorted lexicographically by
+  encoded UTF-8 key bytes, and every float encoded as big-endian IEEE-754
+  binary64 with −0 normalized to +0 (NaN/Inf forbidden). This intentionally
+  does not claim RFC's shortest-float core deterministic profile. The top-level
+  manifest envelope is exactly `{payload, sequence_id}`. `payload` contains
+  every semantic field listed in this section, including
+  `schema_version=1`, but contains no `sequence_id`; `sequence_id` is SHA-256
+  over the exact canonical RISE-CBOR64-v1 byte encoding of `payload` alone.
+  This avoids a self-hashing manifest while giving every implementation one
+  preimage. The complete envelope is then encoded with the same profile and
+  media type `application/vnd.rise.fire-sequence+cbor`. Unknown versions are rejected. The scene locates
   this file explicitly with `sequence_manifest`; no frame-pattern discovery is
   performed. For this arc `end_policy` is `hold` or `error`. Let
   i_first=i₀, require a nonempty strictly increasing **contiguous** unique index
@@ -2324,12 +2356,21 @@ carry indistinguishable metadata. Each sequence stores:
   inside the declared range but absent from the explicit list, or any digest
   mismatch, duplicate path, inconsistent channel set/type, or invalid cadence/
   index invariant is a hard manifest-load error, not a lazy render failure;
-- one canonical sequence-to-world transform plus a per-channel lattice
-  descriptor (voxel size/origin/dimensions/core bbox), fixed across frames.
+- one canonical, deliberately axis-aligned coordinate contract plus a per-
+  channel lattice descriptor, fixed across frames. Integer index (i,j,k)
+  denotes the **voxel center**
+  x_m=o_m+(i,j,k)⊙Δx_m in a right-handed SI-metre sequence frame; the core
+  face bbox is [o_m−Δx_m/2, o_m+(N−1/2)⊙Δx_m]. Placement is
+  x_scene=t_scene+x_m/s for `scene_unit=s` metres and a scene-space translation
+  t_scene only. Rotation, reflection, shear, and extra/nonuniform scale are
+  rejected in this arc (a future inverse-transform accessor can add them).
+  Velocity axes are therefore unchanged and u_scene=u_m/s; it is never
+  transformed as a point. Each channel descriptor stores o_m, Δx_m,
+  dimensions and core bbox.
   Carbon/temperature/condensed share the exact extinction lattice; reaction may
   use its separately declared knot lattice; velocity uses the declared core
   lattice plus its halo. Every VDB embedded transform, resolution, bbox,
-  channel type, and topology contract must match its manifest descriptor after
+  channel type, handedness, and topology contract must match its manifest descriptor after
   deterministic decode; the manifest is authoritative and mismatch is a load
   error. The offline transcode is the only place deterministic resampling may
   occur;
@@ -2346,9 +2387,17 @@ carry indistinguishable metadata. Each sequence stores:
 - `aerosol_humidity_model = none`, the χ_load≤1 % support flag, and the
   condensable record (formula/W_cv, formation and sensible enthalpy
   references, Δh_cv, s_cv, L_cv, T_sat,ref, p_sat,ref, and chem-HRR convention);
+- the `aerosol_thermochemistry` record/hash for carbon and condensed phases,
+  including c_p/h_s/common-T_ref, interpolation, provenance, and certified
+  domains;
 - one versioned optical record: E(m) ID/hash shared by sim and renderer,
   separate cool-carbon and condensed-organic full-spectrum k_m/n/ω/g data,
-  their IR extensions, and the φ(T) band;
+  their IR extensions, and the φ(T) band. Every optical/chem/thermochemistry/
+  transport record is an independently schema-versioned RISE-CBOR64-v1 byte
+  string embedded **verbatim** as a manifest byte string; its record ID is
+  SHA-256 of those exact bytes. An override file contains exactly that record
+  byte string, so equality has one preimage (not wrapper or parsed-map
+  equality);
 - the **simulator-only gas-opacity record**: CO₂/H₂O table ID/hash,
   wavelength/T ranges, p₀, composition basis, pressure/broadening convention,
   interpolation and overlap rule, plus the 380–780 nm negligibility bound;
@@ -2356,9 +2405,12 @@ carry indistinguishable metadata. Each sequence stores:
   wavelength units, [λ_a,λ_b], per-band fractions, or the measured negligible-
   chem upper-bound record required by §7.0; and
 - requested `fidelity_mode`, derived `fidelity_status`, stable reason-code
-  list, and a provenance hash over the grids and every record above, using the
-  same deterministic-CBOR/SHA-256 contract rather than implementation-native
-  JSON.
+  list; authenticated `source_kind`, whose enum is `rise_simulation`,
+  `qualified_external`, or `heuristic_import`, and `physical_mapping`, whose
+  value is `absolute_si` or `heuristic:<profile_id>`;
+  `sequence_id` transitively authenticates the frame digests and verbatim
+  record blobs above; no second ambiguously-defined "hash over everything" is
+  introduced.
 
 Every tabulated/polynomial record has a **closed certified domain** over all of
 its arguments. Predictive simulation rejects the stage before accepting any
@@ -2367,14 +2419,32 @@ only with a versioned extrapolation rule named in the record and adds
 `table_domain_exceeded`; the offending record/cell/range is logged. Q5/Q6 and
 the transport record cannot close without these policies and out-of-domain RED
 fixtures.
+Renderer preflight applies the same rule before workers launch: it checks the
+actual NM wavelength support (or every Pel projection quadrature node) and the
+loaded temperature/composition channel extrema against optical/chem record
+domains. Predictive mode rejects any possible out-of-domain lookup. Preview
+may extrapolate only when that exact record embeds a versioned rule and records
+`table_domain_exceeded`; worker-time clamp/extrapolate/error choices are
+forbidden.
+
+**Loadability precedes fidelity.** Invalid schema/version/digest/lattice,
+missing temperature/carbon/condensed or other configuration-required channel,
+or absence of a record needed to evaluate the selected path (optics always;
+chem when enabled; velocity when blur is enabled) is an unconditional load
+error in both modes. "Preview" never invents a missing coefficient. A
+`heuristic_import` is loadable only when `physical_mapping` names a versioned
+preview profile containing the complete normalized-field→T/aerosol/reaction
+mapping and optical/chem fixtures; otherwise it is also a load error.
 
 **Fidelity transition table:** `predictive` is permitted only for the
-standalone absolute-unit simulator source, spectral NM transport, matching
-frozen optical/chem/condensable/gas records, intact hashes, all required
+`rise_simulation` or validated `qualified_external` with `absolute_si`, spectral NM transport, matching
+frozen optical, chem, condensable, gas thermochemistry, aerosol
+thermochemistry, transport-closure, and simulator gas-opacity records, intact hashes, all required
 channels, χ_load≤1 %, dry-aerosol scope, and passed predictive gates. A
 heuristic/normalized source, a whole-record override whose canonical bytes/hash
 differ from the embedded record, any other hash mismatch, Pel or
-HWSS transport, missing required data/channel, out-of-scope loading/water, or
+HWSS transport, use of a complete named heuristic preview profile,
+out-of-scope loading/water, or
 an unqualified `chem_model=none` produces the corresponding preview reason.
 When the requested mode is predictive any such reason is a hard preflight
 error; when it is preview the render proceeds with all reasons embedded in
@@ -2387,7 +2457,8 @@ Reason codes are schema-v1 enum strings, emitted once each in lexicographic
 order: `requested_preview`, `heuristic_source`, `record_hash_mismatch`,
 `missing_optical_record`, `missing_chem_record`, `chem_none_unqualified`,
 `missing_condensable_record`, `missing_gas_opacity_record`,
-`missing_thermochemistry_record`, `missing_transport_record`,
+`missing_thermochemistry_record`, `missing_aerosol_thermochemistry_record`,
+`missing_transport_record`,
 `table_domain_exceeded`, `missing_channel`, `loading_exceeded`,
 `wet_aerosol_unsupported`, `pel_transport`, `hwss_transport`,
 `pel_blur_ignored`, `blur_halo_insufficient`, `gate_failure`, and
@@ -2396,10 +2467,14 @@ render carries only `requested_preview`; codes are never free-form log text.
 
 **Output provenance is a Phase-C data product.** Every still, animation frame,
 AOV artifact, and finalized movie writes a sibling deterministic-CBOR
-`*.rise-provenance.cbor` sidecar containing the requested/derived fidelity,
-reason codes, sequence/record hashes, render configuration, and SHA-256 of the
-finished artifact. `provenance_id` is SHA-256 of the canonical provenance
-payload **excluding** `artifact_sha256`; the sidecar stores both fields. EXR
+`*.rise-provenance.cbor` sidecar with an explicit envelope
+`{payload,provenance_id,artifact_sha256}`. `payload` contains neither digest
+field and enumerates: requested/derived fidelity and reason codes; sequence,
+frame, channel and record hashes; scene hash; scene_unit; rasterizer/integrator
+ID and version; spectral wavelength support/sampler; spp, seed, branching/
+guiding/RIS/MIS settings; nominal/full shutter support; exposure; crop/field;
+and every enabled fire/blur fallback. `provenance_id=SHA-256(canonical(payload))`;
+`artifact_sha256` hashes the finished artifact. EXR
 repeats the same fields as attributes where supported,
 **except its own artifact digest** (which cannot be embedded without changing
 the bytes being hashed); it embeds the sidecar provenance ID instead. Artifact
@@ -2440,7 +2515,7 @@ general pipeline; the OIDN submodule is the extlib precedent, and the
 native choice adds `scripts/create_macos_release.sh` staging work per that
 precedent).
 
-**Motion blur:** velocity-grid Eulerian blur with an explicit consistency
+**Optional motion blur:** velocity-grid Eulerian blur with an explicit consistency
 rule: **one shutter-time sample per camera path**, with density, emission,
 transmittance, *and majorants* all evaluated at that same time — mixed-time
 lookups make Tr and ε disagree and alias. Lookup is backward
@@ -2571,8 +2646,9 @@ slabs must match high-accuracy references; and nested static+blurred media,
 including a static emitter behind a null-bounded blurred medium, must match
 volume-NEE-on blur-off references within confidence intervals. A forced
 >1024-ratio-event case is a RED test against the current partial-product
-behavior and must converge to the cap-free reference. Ships in Phase
-C only if per-frame cadence proves visually insufficient; grid interpolation
+behavior and must converge to the cap-free reference. This optional subfeature
+ships in Phase C only if per-frame cadence proves visually insufficient;
+grid interpolation
 blur remains rejected because it fabricates density where none advected.
 
 ## 9. Scene-language sketch (illustrative, not final)
@@ -2655,10 +2731,15 @@ registry).
    when time-varying media are constructed. Append three prepared overloads to
    `IRasterizer`—`RasterizeScenePrepared`, `PredictTimeToRasterizeScenePrepared`,
    and `RasterizeSceneAnimationPrepared`—each taking non-const
-   `IRenderPreparationController&` plus explicit
-   `RenderTimeSupport{nominal,open,close}` (animation supplies the per-frame
-   base request and derives each field/frame support internally). `IJob`, CLI,
-   and editor routes own/pass the controller. Legacy direct rasterizer overloads
+   `IRenderPreparationController&`. Still/predict overloads accept only the
+   nominal scene time; animation retains its time range and derives each field/
+   frame nominal time internally. **Callers never supply open/close bounds.**
+   After animator evaluation the rasterizer itself computes
+   `RenderTimeSupport{nominal,open,close}` from the now-current camera, active
+   crop and field using `ComputePathTimeSupport`, then passes that value to the
+   controller. `IJob`, CLI, editor, and `AutoRasterizer` explicitly forward the
+   prepared overloads/controller; the latter may not fall back to its current
+   three legacy forwarding methods. Legacy direct rasterizer overloads
    retain `{0,0,0}` only for static scenes; `IScene::HasTimeVaryingMedia()` makes
    them hard-error before tracing when preparation is required. Editor/timeline
    calls must pass the scrubbed time explicitly.
@@ -2881,13 +2962,14 @@ registry).
    gate. Predictive Phase C is blocked until this closes; metadata
    fields without the actual table are not a model.
 6. **(thermochemistry)** Freeze the baseline air plus per-fuel
-   `gas_thermochemistry` records required by §3.3: source/provenance for every
+   `gas_thermochemistry` records required by §3.3 and the carbon/condensed
+   `aerosol_thermochemistry` record required by §3.4: source/provenance for every
    W/c_p/h_s record, common T_ref, ambient/injection composition, fuel formula
    and LHV, and atom-balanced primary products. The record generator must prove
    element balance and the y_form/y_cond admissibility inequalities over every
    accepted fuel preset, certify closed property domains, and pass the
    out-of-domain RED gate. Predictive simulation is blocked for a fuel until its
-   record is archived and hashed.
+   gas and aerosol record is archived and hashed.
 7. **(molecular/SGS transport)** Freeze the §3.2 `transport_closure` record:
    sourced μ_k/k_k tables and certified domains, Wilke and Wassiljewa/Mason–
    Saxena implementations, unit-Lewis D relation, Pr_t/Sc_t, Vreman C_v/filter
@@ -3288,3 +3370,18 @@ registry).
   guide refresh, completed manifest index/lattice/domain invariants, removed
   the EXR self-digest cycle, standardized CBOR overrides and reason codes, and
   added the transport record as §12 Q7.
+- **r16 (2026-07-28):** after the fifth fresh convergence review of committed
+  r15. CFD: separated the Heun transport integrator from one finite-step local
+  source map, added a stiff exponential-decay gate, coupled primary combustion
+  and soot oxidation through one proportional O₂ allocator, and added the
+  missing aerosol-thermochemistry record. Transport: replaced the
+  error-estimated adaptive chem quadrature with an explicitly unbiased
+  support-mixture line estimator. Pipeline: made rasterizers—not callers—own
+  post-animation shutter-support computation; required `AutoRasterizer` and all
+  entry surfaces to forward the prepared controller path; pinned axis-aligned
+  voxel/placement/vector-transform semantics; separated unconditional
+  loadability from preview fidelity; made source provenance authenticated;
+  defined non-self-referential manifest and output-provenance envelopes; pinned
+  the RISE-CBOR64-v1 wire profile and independent record preimages; required
+  pre-worker table-domain checks; and separated mandatory time-varying sequence
+  preparation from optional velocity blur.
